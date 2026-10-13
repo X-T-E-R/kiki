@@ -109,6 +109,43 @@ describe('browser REST persisted configuration and explicit secret access', () =
     expect(remaining.connections.map((connection) => connection.id)).toEqual(['a']);
     expect((await request('POST', '/secrets:reveal', { ref: { kind: 'browser_endpoint', browser_id: 'b' } })).code).toBe(ErrorCode.VALIDATION_FAILED);
   }, 30_000);
+  it('dispatches open, update, and shortcut setup actions to browser setup service', async () => {
+    const { vi } = await import('vitest');
+    const { IBrowserSetupService } = await import('@kiki/agent-core-v2');
+    const { browserSetupStatusSchema } = await import('@kiki/protocol');
+    home = await mkdtemp(join(tmpdir(), 'kiki-browser-actions-rest-'));
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, env: { ...process.env, KIKI_EXPERIMENTAL_SEARCH_WORKER: 'false' }, logLevel: 'silent' });
+    const setupService = server.core.accessor.get(IBrowserSetupService);
+    const mockStatus = {
+      preset: 'independent-browser' as const,
+      displayName: 'Independent',
+      controlSurface: 'browser-connection' as const,
+      state: 'ready' as const,
+      supported: true,
+      executionHost: 'local',
+      steps: [],
+      actions: [],
+      sourceUrl: 'https://example.test',
+    };
+    const openSpy = vi.spyOn(setupService, 'open').mockResolvedValue(mockStatus);
+    const updateSpy = vi.spyOn(setupService, 'update').mockResolvedValue(mockStatus);
+    const shortcutSpy = vi.spyOn(setupService, 'createShortcut').mockResolvedValue(mockStatus);
+
+    const openRes = await request('POST', '/browser/setup/independent-browser:open', {});
+    expect(openRes.code).toBe(0);
+    expect(browserSetupStatusSchema.parse(openRes.data)).toMatchObject({ preset: 'independent-browser' });
+    expect(openSpy).toHaveBeenCalledWith('independent-browser', {});
+
+    const updateRes = await request('POST', '/browser/setup/independent-browser:update', {});
+    expect(updateRes.code).toBe(0);
+    expect(browserSetupStatusSchema.parse(updateRes.data)).toMatchObject({ preset: 'independent-browser' });
+    expect(updateSpy).toHaveBeenCalledWith('independent-browser');
+
+    const shortcutRes = await request('POST', '/browser/setup/independent-browser:shortcut', { name: 'My Browser' });
+    expect(shortcutRes.code).toBe(0);
+    expect(browserSetupStatusSchema.parse(shortcutRes.data)).toMatchObject({ preset: 'independent-browser' });
+    expect(shortcutSpy).toHaveBeenCalledWith('independent-browser', { name: 'My Browser' });
+  }, 30_000);
 });
 
 

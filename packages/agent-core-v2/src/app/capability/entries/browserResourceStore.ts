@@ -69,7 +69,7 @@ function cancellableFetch(fetchImpl: typeof fetch, signal?: AbortSignal): FetchL
   };
 }
 
-async function promoteResourceDirectory(staged: string, destination: string): Promise<void> {
+export async function promoteResourcePath(staged: string, destination: string): Promise<void> {
   const previous = `${destination}.previous-${randomUUID()}`;
   let replaced = false;
   try { await rename(destination, previous); replaced = true; }
@@ -98,12 +98,11 @@ export async function installBrowserDriver(home: string, report: BrowserResource
     }
     signal?.throwIfAborted();
     report('verify');
-    await promoteResourceDirectory(staging, paths.driverDirectory);
+    await promoteResourcePath(staging, paths.driverDirectory);
   } finally { await rm(staging, { recursive: true, force: true }); }
 }
 
-export async function installBrowserChrome(home: string, report: BrowserResourceReporter, fetchImpl: typeof fetch = fetch, signal?: AbortSignal): Promise<void> {
-  if (await installedBrowserChrome(home) !== undefined) return;
+async function downloadAndInstallChrome(home: string, report: BrowserResourceReporter, fetchImpl: typeof fetch = fetch, signal?: AbortSignal): Promise<void> {
   const paths = browserResourcePaths(home);
   await mkdir(paths.root, { recursive: true });
   const staging = await mkdtemp(join(paths.root, '.chrome-install-'));
@@ -142,6 +141,15 @@ export async function installBrowserChrome(home: string, report: BrowserResource
     const files = Object.fromEntries(await Promise.all(['chrome.exe', 'chrome.dll'].map(async (name) => [name, await digest(join(extracted, 'chrome-win64', name))])));
     await writeFile(join(extracted, 'installed.json'), JSON.stringify({ version, files }));
     signal?.throwIfAborted();
-    await promoteResourceDirectory(extracted, paths.chromeDirectory);
+    await promoteResourcePath(extracted, paths.chromeDirectory);
   } finally { await rm(staging, { recursive: true, force: true }); }
+}
+
+export async function installBrowserChrome(home: string, report: BrowserResourceReporter, fetchImpl: typeof fetch = fetch, signal?: AbortSignal): Promise<void> {
+  if (await installedBrowserChrome(home) !== undefined) return;
+  await downloadAndInstallChrome(home, report, fetchImpl, signal);
+}
+
+export async function updateBrowserChrome(home: string, report: BrowserResourceReporter, fetchImpl: typeof fetch = fetch, signal?: AbortSignal): Promise<void> {
+  await downloadAndInstallChrome(home, report, fetchImpl, signal);
 }

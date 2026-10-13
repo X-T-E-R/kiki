@@ -2,7 +2,8 @@ import { IBrowserConnectionStore, IBrowserControlService, IBrowserSetupService, 
 import { ErrorCode, browserIdSchema, browserConnectionInputSchema, browserConnectionResponseSchema,
   browserDefaultInputSchema, browserControlListSchema, browserStatusSchema, browserFailureSchema,
   browserTabsResponseSchema, browserCatalogResponseSchema, browserCatalogQuerySchema,
-  browserPresetIdSchema, browserSetupListSchema, browserSetupStatusSchema, browserSetupPrepareInputSchema, browserSetupConnectInputSchema } from '@kiki/protocol';
+  browserPresetIdSchema, browserSetupListSchema, browserSetupStatusSchema, browserSetupPrepareInputSchema, browserSetupConnectInputSchema,
+  browserSetupOpenInputSchema, browserSetupUpdateInputSchema, browserSetupShortcutInputSchema } from '@kiki/protocol';
 import { z } from 'zod';
 
 import { okEnvelope, errEnvelope } from '../envelope';
@@ -42,8 +43,9 @@ export function registerBrowserRoutes(app: BrowserRouteHost, core: Scope): void 
   });
   app.get(setupStatus.path, setupStatus.options, protect(setupStatus.handler as Handler));
   const setupAction = defineRoute({ method: 'POST', path: '/browser/setup/{tail}', params: z.object({ tail: z.string().min(1) }),
-    body: z.union([browserSetupPrepareInputSchema, browserSetupConnectInputSchema]), success: { data: browserSetupStatusSchema }, errors: browserRouteErrors, tags: ['browser'] }, async (req, reply) => {
-    const action = parseActionSuffix({ tail: req.params.tail, allowedActions: ['prepare', 'connect', 'cancel'], resourceLabel: 'browser setup' });
+    body: z.union([browserSetupPrepareInputSchema, browserSetupConnectInputSchema, browserSetupOpenInputSchema, browserSetupUpdateInputSchema, browserSetupShortcutInputSchema]),
+    success: { data: browserSetupStatusSchema }, errors: browserRouteErrors, tags: ['browser'] }, async (req, reply) => {
+    const action = parseActionSuffix({ tail: req.params.tail, allowedActions: ['prepare', 'connect', 'cancel', 'open', 'update', 'shortcut'], resourceLabel: 'browser setup' });
     const preset = action.kind === 'action' ? browserPresetIdSchema.safeParse(action.id) : undefined;
     if (action.kind !== 'action' || preset?.success !== true) throw new BrowserError('browser.invalid', 'Unknown browser setup action');
     let result;
@@ -55,6 +57,18 @@ export function registerBrowserRoutes(app: BrowserRouteHost, core: Scope): void 
       const input = browserSetupConnectInputSchema.safeParse(req.body);
       if (!input.success) throw new BrowserError('browser.invalid', 'Invalid guided browser connection input');
       result = await setup().connect(preset.data, input.data);
+    } else if (action.action === 'open') {
+      const input = browserSetupOpenInputSchema.safeParse(req.body ?? {});
+      if (!input.success) throw new BrowserError('browser.invalid', 'Invalid guided browser open input');
+      result = await setup().open(preset.data, input.data);
+    } else if (action.action === 'update') {
+      const input = browserSetupUpdateInputSchema.safeParse(req.body ?? {});
+      if (!input.success) throw new BrowserError('browser.invalid', 'Invalid browser update input');
+      result = await setup().update(preset.data);
+    } else if (action.action === 'shortcut') {
+      const input = browserSetupShortcutInputSchema.safeParse(req.body ?? {});
+      if (!input.success) throw new BrowserError('browser.invalid', 'Invalid browser shortcut input');
+      result = await setup().createShortcut(preset.data, input.data);
     } else result = await setup().cancel(preset.data);
     reply.send(okEnvelope(result, req.id));
   });

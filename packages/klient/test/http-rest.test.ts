@@ -1427,6 +1427,9 @@ describe('guided browser setup HTTP facade', () => {
       await channel.rest.browser.prepare('kimi-webbridge', { consent: true });
       await channel.rest.browser.connectPreset('kimi-webbridge');
       await channel.rest.browser.connectPreset('independent-browser', { connectionId: 'work', name: 'Work', setDefault: true });
+      await channel.rest.browser.openPreset('independent-browser', { connectionId: 'work' });
+      await channel.rest.browser.updatePreset('independent-browser');
+      await channel.rest.browser.createShortcut('independent-browser', { connectionId: 'work', name: 'Work' });
       await channel.rest.browser.cancelSetup('independent-browser');
       expect(calls).toEqual([
         { path: '/api/browser/setup', method: 'GET', body: undefined },
@@ -1434,6 +1437,9 @@ describe('guided browser setup HTTP facade', () => {
         { path: '/api/browser/setup/kimi-webbridge:prepare', method: 'POST', body: { consent: true } },
         { path: '/api/browser/setup/kimi-webbridge:connect', method: 'POST', body: {} },
         { path: '/api/browser/setup/independent-browser:connect', method: 'POST', body: { connectionId: 'work', name: 'Work', setDefault: true } },
+        { path: '/api/browser/setup/independent-browser:open', method: 'POST', body: { connectionId: 'work' } },
+        { path: '/api/browser/setup/independent-browser:update', method: 'POST', body: {} },
+        { path: '/api/browser/setup/independent-browser:shortcut', method: 'POST', body: { connectionId: 'work', name: 'Work' } },
         { path: '/api/browser/setup/independent-browser:cancel', method: 'POST', body: {} },
       ]);
     } finally { await channel.close(); }

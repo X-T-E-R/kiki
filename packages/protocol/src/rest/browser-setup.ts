@@ -8,7 +8,7 @@ export const browserSetupStepSchema = z.object({
   reason: z.string().optional(), detail: z.string().optional(), percent: z.number().min(0).max(100).optional(),
 }).strict();
 export const browserSetupActionSchema = z.object({
-  id: z.enum(['prepare', 'connect', 'cancel', 'install_extension', 'open_instructions', 'enable_feature', 'choose_connection']),
+  id: z.enum(['prepare', 'connect', 'cancel', 'install_extension', 'open_instructions', 'enable_feature', 'choose_connection', 'open', 'update', 'shortcut']),
   url: z.string().url().optional(), target: z.enum(['chrome', 'edge', 'documentation']).optional(),
 }).strict();
 export const browserSetupStatusSchema = z.object({
@@ -29,3 +29,13 @@ export const browserSetupConnectInputSchema = z.object({
   connectionId: browserIdSchema.optional(), name: z.string().trim().min(1).max(256).optional(), setDefault: z.boolean().optional(),
 }).strict();
 export type BrowserSetupConnectInput = z.infer<typeof browserSetupConnectInputSchema>;
+export const browserSetupOpenInputSchema = z.object({
+  connectionId: browserIdSchema.optional(),
+}).strict();
+export type BrowserSetupOpenInput = z.infer<typeof browserSetupOpenInputSchema>;
+export const browserSetupUpdateInputSchema = z.object({}).strict();
+export type BrowserSetupUpdateInput = z.infer<typeof browserSetupUpdateInputSchema>;
+export const browserSetupShortcutInputSchema = z.object({
+  connectionId: browserIdSchema.optional(), name: z.string().trim().min(1).max(256).optional(),
+}).strict();
+export type BrowserSetupShortcutInput = z.infer<typeof browserSetupShortcutInputSchema>;

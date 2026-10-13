@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createKikiBrowserEntry } from '#/app/capability/entries/kikiBrowser';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
-import { BROWSER_DRIVER_FILES, CHROME_METADATA_URL, browserResourcePaths, installedBrowserChrome, installedBrowserDriver, installBrowserChrome, installBrowserDriver } from '#/app/capability/entries/browserResourceStore';
+import { BROWSER_DRIVER_FILES, CHROME_METADATA_URL, browserResourcePaths, installedBrowserChrome, installedBrowserDriver, installBrowserChrome, installBrowserDriver, promoteResourcePath, updateBrowserChrome } from '#/app/capability/entries/browserResourceStore';
 import type { CapabilityEntryContext } from '#/app/capability/entries/context';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
 import type { IHostProcessService } from '#/os/interface/hostProcess';
@@ -172,6 +172,44 @@ describe('browser components in isolated Kiki home', () => {
     await expect(installBrowserChrome(home, () => {}, fetchSource)).rejects.toThrow();
     expect(await installedBrowserChrome(home)).toBeUndefined();
     expect(await readdir(browserResourcePaths(home).root)).toEqual([]);
+  });
+
+  it('keeps the installed Chrome bytes when an update fails and reports a disk replacement when it succeeds', async () => {
+    await installBrowserChrome(home, () => {}, fetchSource);
+    const executable = browserResourcePaths(home).chrome;
+    const library = join(browserResourcePaths(home).chromeDirectory, 'chrome-win64', 'chrome.dll');
+    const beforeExe = await readFile(executable);
+    const beforeDll = await readFile(library);
+    fail = true;
+    await expect(updateBrowserChrome(home, () => {}, fetchSource)).rejects.toThrow('HTTP 503');
+    expect(await readFile(executable)).toEqual(beforeExe);
+    expect(await readFile(library)).toEqual(beforeDll);
+    expect(spawnProbe).not.toHaveBeenCalled();
+    fail = false;
+    chromeBytes = await archive({ 'chrome-win64/chrome.exe': 'updated executable', 'chrome-win64/chrome.dll': 'updated library' });
+    const entry = createKikiBrowserEntry(ctx(), driverSource);
+    expect(await entry.update!(() => {})).toBe('browser-components-updated-on-disk');
+    expect(await readFile(executable, 'utf8')).toBe('updated executable');
+    expect(spawnProbe).not.toHaveBeenCalled();
+    const names = await readdir(browserResourcePaths(home).root);
+    expect(names.filter((name) => name.includes('previous') || name.startsWith('.chrome-install-'))).toEqual([]);
+  }, 30_000);
+
+  it('rolls a failed resource promotion back onto the original bytes', async () => {
+    const destination = join(home, 'resource');
+    await mkdir(destination, { recursive: true });
+    await writeFile(join(destination, 'chrome.exe'), 'original-bytes');
+    await expect(promoteResourcePath(join(home, 'missing-staged'), destination)).rejects.toThrow();
+    expect(await readFile(join(destination, 'chrome.exe'), 'utf8')).toBe('original-bytes');
+    const staged = join(home, 'staged-file');
+    const file = join(home, 'daemon.bin');
+    await writeFile(file, 'original-file');
+    await expect(promoteResourcePath(join(home, 'missing-file'), file)).rejects.toThrow();
+    expect(await readFile(file, 'utf8')).toBe('original-file');
+    await writeFile(staged, 'updated-file');
+    await promoteResourcePath(staged, file);
+    expect(await readFile(file, 'utf8')).toBe('updated-file');
+    expect(await readdir(home)).not.toEqual(expect.arrayContaining([expect.stringContaining('previous')]));
   });
 
   it('reuses the bundled real driver without downloading it and rejects other platforms for automatic setup', async () => {

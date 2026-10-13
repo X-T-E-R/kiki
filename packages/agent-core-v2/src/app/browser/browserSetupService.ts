@@ -1,19 +1,29 @@
+import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
+import path from 'node:path';
+import { join } from 'pathe';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { ICapabilityService } from '#/app/capability/capability';
 import type { CapabilityStatus } from '#/app/capability/types';
+import { runCommand } from '#/app/capability/host';
+import { windowsPowerShellPath } from '#/app/capability/entries/kimiCu';
+import { installedBrowserChrome } from '#/app/capability/entries/browserResourceStore';
 import { ConfigTarget, IConfigService } from '#/app/config/config';
 import { EXPERIMENTAL_SECTION, IFlagService } from '#/app/flag/flag';
 import { IPluginService } from '#/app/plugin/plugin';
 import { readDefaultPluginCatalog } from '#/app/plugin/defaultCatalog';
 import { isRecognizedWebbridgePluginSource } from '#/app/plugin/prerequisites';
 import { LifecycleScope } from '#/app/scopes';
-import { IBrowserControlService } from './browser';
+import { IHostFileSystem } from '#/os/interface/hostFileSystem';
+import { IHostProcessService } from '#/os/interface/hostProcess';
+import { IBrowserControlService, type BrowserStatus } from './browser';
+import { browserResponse } from './browserControlService';
 import { IBrowserConnectionStore } from './browserConnectionStore';
 import { BrowserIdSchema } from './browserConfig';
 import { BrowserError } from './errors';
-import { IBrowserSetupService, type BrowserPresetId, type BrowserSetupConnectInput, type BrowserSetupStatus, type BrowserSetupStep } from './browserSetup';
+import { IBrowserSetupService, type BrowserPresetId, type BrowserSetupConnectInput, type BrowserSetupOpenInput, type BrowserSetupUpdateInput, type BrowserSetupShortcutInput, type BrowserSetupStatus, type BrowserSetupStep } from './browserSetup';
 import { readWebbridgeStatus, probeWebbridgeConnection } from './browserWebbridge';
 
 const KIMI_HELP = 'https://www.kimi.com/en/help/kimi-webbridge/kimi-webbridge-introduction';
@@ -21,6 +31,71 @@ const CODEX_HELP = 'https://developers.openai.com/codex/app/chrome-extension';
 const CHROME_STORE = 'https://chromewebstore.google.com/detail/kimi-webbridge/fldmhceldgbpfpkbgopacenieobmligc';
 const EDGE_STORE = 'https://microsoftedge.microsoft.com/addons/detail/kimi-webbridge/bnlffdbcfnanfbknnlaflhlhkocccckg';
 const INDEPENDENT_ID = 'independent-browser';
+const SHORTCUT_DESKTOP_FIXTURE = 'KIKI_BROWSER_SHORTCUT_DESKTOP';
+const SHORTCUT_SCRIPT = [
+  "$ErrorActionPreference = 'Stop'",
+  'if ($args.Count -ne 1) { throw "Shortcut payload path is required" }',
+  '$json = Get-Content -LiteralPath $args[0] -Raw -Encoding UTF8',
+  'if ($json.Length -gt 0 -and $json[0] -eq [char]0xFEFF) { $json = $json.Substring(1) }',
+  '$payload = $json | ConvertFrom-Json',
+  '$desktop = [string]$payload.desktop',
+  '$name = [string]$payload.name',
+  '$target = [string]$payload.target',
+  '$arguments = [string]$payload.arguments',
+  "if ([string]::IsNullOrWhiteSpace($desktop) -or -not (Test-Path -LiteralPath $desktop -PathType Container)) { throw 'Desktop folder not found' }",
+  "if ([string]::IsNullOrWhiteSpace($name) -or $name -match '[\\\\/:]' -or $name -eq '..' -or $name -eq '.') { throw 'Invalid shortcut name' }",
+  "$shortcutName = $name + '.lnk'",
+  "if ([System.IO.Path]::GetFileName($shortcutName) -ne $shortcutName) { throw 'Invalid shortcut name' }",
+  '$shortcutPath = Join-Path -Path $desktop -ChildPath $shortcutName',
+  "$desktopFull = [System.IO.Path]::GetFullPath($desktop).TrimEnd('\\')",
+  "$shortcutFull = [System.IO.Path]::GetFullPath($shortcutPath)",
+  "if (-not $shortcutFull.StartsWith($desktopFull + '\\', [System.StringComparison]::OrdinalIgnoreCase)) { throw 'Shortcut path escaped the desktop' }",
+  '$shell = New-Object -ComObject WScript.Shell',
+  'if (Test-Path -LiteralPath $shortcutPath) {',
+  '  $existing = $shell.CreateShortcut($shortcutPath)',
+  "  $existingTarget = ''",
+  '  if ($existing.TargetPath) { $existingTarget = [System.IO.Path]::GetFullPath([string]$existing.TargetPath) }',
+  '  $wantedTarget = [System.IO.Path]::GetFullPath($target)',
+  '  if ($existingTarget -ne $wantedTarget -or [string]$existing.Arguments -ne $arguments) {',
+  '    throw "Existing unrelated shortcut found at $shortcutPath"',
+  '  }',
+  '}',
+  '$created = $shell.CreateShortcut($shortcutPath)',
+  '$created.TargetPath = $target',
+  '$created.Arguments = $arguments',
+  '$created.Save()',
+].join('\r\n');
+
+function shortcutStem(name: string): string {
+  const stem = name.trim();
+  if (stem.length < 1 || stem.length > 240 || stem === '.' || stem === '..' || path.win32.basename(stem) !== stem) {
+    throw new BrowserError('browser.invalid', 'Shortcut name must be a single file name on the desktop');
+  }
+  if (/[<>:"|?*\\/\u0000-\u001f]/.test(stem) || stem.endsWith('.') || stem.endsWith(' ')) {
+    throw new BrowserError('browser.invalid', 'Shortcut name must be a single file name on the desktop');
+  }
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i.test(stem)) {
+    throw new BrowserError('browser.invalid', 'Shortcut name must be a single file name on the desktop');
+  }
+  return stem;
+}
+
+function profileShortcutArguments(profilePath: string): string {
+  if (profilePath.length === 0 || /[\0\r\n"]/.test(profilePath)) {
+    throw new BrowserError('browser.invalid', 'Browser profile path cannot be stored in a shortcut');
+  }
+  return `--user-data-dir="${profilePath}"`;
+}
+
+function diskUpdateFact(note: string | undefined): { reason: string; detail: string } | undefined {
+  if (note === 'webbridge-disk-updated' || note === 'browser-components-updated-on-disk') {
+    return { reason: 'disk_updated', detail: 'Files on disk were replaced. A browser or daemon that is already running was not switched.' };
+  }
+  if (note === 'webbridge-disk-updated-running-daemon-unchanged') {
+    return { reason: 'disk_updated_running_unchanged', detail: 'Files on disk were replaced. The running WebBridge daemon was not stopped or switched.' };
+  }
+  return undefined;
+}
 
 export class BrowserSetupService implements IBrowserSetupService {
   declare readonly _serviceBrand: undefined;
@@ -37,6 +112,9 @@ export class BrowserSetupService implements IBrowserSetupService {
     @IFlagService private readonly flags: IFlagService,
     @IConfigService private readonly config: IConfigService,
     @ILogService private readonly log: ILogService,
+    @IBootstrapService private readonly bootstrap: IBootstrapService,
+    @IHostProcessService private readonly hostProcess: IHostProcessService,
+    @IHostFileSystem private readonly hostFs: IHostFileSystem,
   ) {}
 
   list(): Promise<{ readonly presets: readonly BrowserSetupStatus[] }> {
@@ -67,7 +145,10 @@ export class BrowserSetupService implements IBrowserSetupService {
           : ready ? this.checked.has(preset) ? 'connected' : 'ready' : bridge?.running === true ? 'needs_user_action' : 'not_prepared',
         steps, error, checkedAt: ready ? this.checked.get(preset) : undefined,
         actions: installing ? [] : [
-          { id: 'prepare' }, { id: 'connect' },
+          { id: 'prepare' },
+          ...(ready ? [{ id: 'open' as const }] : []),
+          { id: 'connect' },
+          { id: 'update' },
           { id: 'install_extension', url: CHROME_STORE, target: 'chrome' }, { id: 'install_extension', url: EDGE_STORE, target: 'edge' },
           { id: 'open_instructions', url: KIMI_HELP, target: 'documentation' },
         ],
@@ -86,7 +167,15 @@ export class BrowserSetupService implements IBrowserSetupService {
       state: installing ? 'preparing' : error !== undefined ? 'failed' : !capability.supported ? 'unsupported'
         : blocked?.reason === 'feature_forced_off' ? 'needs_user_action' : !prepared ? 'not_prepared' : !feature ? 'needs_user_action' : status?.state === 'failed' || status?.state === 'unconfirmed' ? 'failed' : status?.state === 'ready' || status?.state === 'running' ? 'connected' : 'ready',
       steps, error: error ?? status?.error, reason: blocked?.reason, connectionId: connection?.id, connection: status,
-      actions: installing ? [{ id: 'cancel' }] : blocked?.reason === 'feature_forced_off' ? [] : [{ id: 'prepare' }, { id: 'connect' }],
+      actions: installing ? [{ id: 'cancel' }] : blocked?.reason === 'feature_forced_off' ? [] : [
+        { id: 'prepare' },
+        ...(prepared ? [
+          { id: 'open' as const },
+          { id: 'connect' as const },
+          { id: 'update' as const },
+          ...(process.platform === 'win32' ? [{ id: 'shortcut' as const }] : []),
+        ] : [{ id: 'connect' as const }]),
+      ],
     };
   }
 
@@ -161,6 +250,137 @@ export class BrowserSetupService implements IBrowserSetupService {
     await this.capabilities.cancelCapability('kiki-browser');
     this.errors.delete(preset);
     return { ...await this.status(preset), reason: 'cancelled' };
+  }
+
+  async open(preset: BrowserPresetId, input: BrowserSetupOpenInput = {}): Promise<BrowserSetupStatus> {
+    if (preset === 'codex-browser') return this.status(preset);
+    if (preset === 'kimi-webbridge') return this.connect(preset, input);
+    if (preset !== 'independent-browser') throw new BrowserError('browser.invalid', 'Unknown browser setup preset');
+    this.errors.delete(preset);
+    const id = input.connectionId ?? this.independentConnectionId;
+    if (!BrowserIdSchema.safeParse(id).success) throw new BrowserError('browser.invalid', 'Invalid browser connection id');
+    const existing = (await this.connections.list()).connections.find((c) => c.id === id);
+    if (existing !== undefined && existing.type !== 'agent-browser-profile') {
+      return { ...await this.status(preset), connectionId: id, connection: undefined, state: 'needs_user_action', reason: 'connection_conflict', actions: [{ id: 'choose_connection' }] };
+    }
+    if (existing?.enabled === false) {
+      return { ...await this.status(preset), connectionId: id, connection: undefined, state: 'needs_user_action', reason: 'connection_disabled', error: 'This browser connection is disabled', actions: [{ id: 'choose_connection' }] };
+    }
+    if (!this.flags.enabled('native_browser')) return this.status(preset);
+    const prepared = await this.status(preset);
+    if (prepared.state === 'preparing' || prepared.state === 'unsupported' || prepared.state === 'not_prepared') return prepared;
+    try {
+      if (existing === undefined) {
+        await this.control.upsert(id, { type: 'agent-browser-profile', name: 'Independent browser', enabled: true, headed: true });
+      } else if (existing.headed !== true) {
+        await this.control.upsert(id, { type: 'agent-browser-profile', name: existing.name, enabled: existing.enabled, headed: true, profilePath: existing.profilePath, executablePath: existing.executablePath, driverPath: existing.driverPath });
+      }
+      this.independentConnectionId = id;
+      const current = await this.control.status(id);
+      if (current.state !== 'ready') {
+        const status = await this.control.connect(id);
+        return this.openResult(preset, id, status);
+      }
+      const invoked = await this.control.invoke({
+        browser: id, caller: { sessionId: 'browser-setup', agentId: 'main' }, tool: 'agent_browser_open', args: {},
+      });
+      const body = browserResponse(invoked.result);
+      if (invoked.result.isError === true || body.success !== true) {
+        const message = body.error ?? 'Browser open was not confirmed';
+        this.errors.set(preset, message);
+        const status = await this.control.status(id);
+        return { ...await this.status(preset), connectionId: id, connection: status, state: 'failed', error: message };
+      }
+      return this.openResult(preset, id, await this.control.status(id));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Browser open failed';
+      this.errors.set(preset, message);
+      this.log.warn('browser setup open failed', { preset, connectionId: id, error });
+      return { ...await this.status(preset), connectionId: id, state: 'failed', error: message };
+    }
+  }
+
+  async update(preset: BrowserPresetId, _input: BrowserSetupUpdateInput = {}): Promise<BrowserSetupStatus> {
+    if (preset === 'codex-browser') return this.status(preset);
+    if (preset !== 'kimi-webbridge' && preset !== 'independent-browser') throw new BrowserError('browser.invalid', 'Unknown browser setup preset');
+    this.errors.delete(preset);
+    const id = preset === 'kimi-webbridge' ? preset : 'kiki-browser';
+    try {
+      await this.capabilities.updateCapability(id);
+    } catch (error) {
+      this.errors.set(preset, error instanceof Error ? error.message : 'Browser update failed; retry');
+      this.log.warn('browser setup update failed', { preset, error });
+      return this.status(preset);
+    }
+    const capability = await this.capabilities.getCapability(id);
+    const status = await this.status(preset);
+    if (capability.install.error !== undefined || status.state === 'failed') return status;
+    const disk = diskUpdateFact(capability.install.note);
+    if (disk === undefined) return status;
+    return { ...status, reason: disk.reason, steps: [...status.steps, { id: 'update', state: 'ready', reason: disk.reason, detail: disk.detail }] };
+  }
+
+  async createShortcut(preset: BrowserPresetId, input: BrowserSetupShortcutInput = {}): Promise<BrowserSetupStatus> {
+    if (preset !== 'independent-browser') throw new BrowserError('browser.invalid', 'Desktop shortcut is only available for independent browser');
+    const shortcutName = shortcutStem(input.name ?? 'Kiki Independent Browser');
+    if (process.platform !== 'win32') throw new BrowserError('browser.unsupported', 'Desktop shortcut creation is supported on Windows execution hosts only');
+    if (!this.flags.enabled('native_browser') && this.featureBlock().reason === 'feature_forced_off') {
+      throw new BrowserError('browser.disabled', this.featureBlock().detail);
+    }
+    const id = input.connectionId ?? this.independentConnectionId;
+    const resolved = await this.connections.resolve(id);
+    if (resolved.type !== 'agent-browser-profile') throw new BrowserError('browser.invalid', 'Desktop shortcut requires a profile-based browser connection');
+    if (resolved.enabled === false) throw new BrowserError('browser.disabled', 'This browser connection is disabled');
+    const executable = resolved.executablePath ?? (await installedBrowserChrome(this.bootstrap.homeDir))?.executable;
+    if (executable === undefined) throw new BrowserError('browser.not_found', 'No browser executable found to create shortcut');
+    const profilePath = resolved.profilePath ?? join(this.bootstrap.homeDir, 'browser', 'profiles', resolved.id);
+    const desktop = path.win32.resolve(await this.shortcutDesktop());
+    const shortcutPath = path.win32.join(desktop, `${shortcutName}.lnk`);
+    if (path.win32.resolve(path.win32.dirname(shortcutPath)) !== desktop) {
+      throw new BrowserError('browser.invalid', 'Shortcut name must be a single file name on the desktop');
+    }
+    const requestDir = join(this.bootstrap.homeDir, 'browser', 'shortcut-requests', randomUUID());
+    const scriptPath = join(requestDir, 'create-shortcut.ps1');
+    const payloadPath = join(requestDir, 'payload.json');
+    await this.hostFs.mkdir(requestDir, { recursive: true });
+    try {
+      await this.hostFs.writeText(scriptPath, SHORTCUT_SCRIPT);
+      await this.hostFs.writeText(payloadPath, `\uFEFF${JSON.stringify({
+        desktop, name: shortcutName, target: executable, arguments: profileShortcutArguments(profilePath),
+      })}`);
+      const res = await runCommand(this.hostProcess, windowsPowerShellPath(), [
+        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, payloadPath,
+      ], { timeout: 15_000 });
+      if (res.code !== 0) {
+        const msg = (res.stderr || res.stdout || 'Failed to create desktop shortcut').trim();
+        throw new BrowserError('browser.execution_failed', msg);
+      }
+    } finally {
+      await this.hostFs.remove(requestDir);
+    }
+    return this.status(preset);
+  }
+
+  private async shortcutDesktop(): Promise<string> {
+    const fixture = process.env[SHORTCUT_DESKTOP_FIXTURE];
+    const candidate = fixture !== undefined && fixture.trim().length > 0 ? fixture.trim() : await this.queryDesktop();
+    if (!path.win32.isAbsolute(candidate)) throw new BrowserError('browser.execution_failed', 'Desktop folder not found');
+    const stat = await this.hostFs.stat(candidate);
+    if (!stat.isDirectory) throw new BrowserError('browser.execution_failed', 'Desktop folder not found');
+    return candidate;
+  }
+
+  private async queryDesktop(): Promise<string> {
+    const res = await runCommand(this.hostProcess, windowsPowerShellPath(), [
+      '-NoProfile', '-NonInteractive', '-Command', "[Environment]::GetFolderPath('Desktop')",
+    ], { timeout: 15_000 });
+    if (res.code !== 0) throw new BrowserError('browser.execution_failed', (res.stderr || res.stdout || 'Desktop folder not found').trim());
+    return res.stdout.trim();
+  }
+
+  private async openResult(preset: BrowserPresetId, id: string, status: BrowserStatus): Promise<BrowserSetupStatus> {
+    return { ...await this.status(preset), connectionId: id, connection: status,
+      state: status.state === 'ready' ? 'connected' : 'failed', error: status.error, reason: status.failure?.reason };
   }
 
   private featureBlock(): { reason: string; detail: string } {

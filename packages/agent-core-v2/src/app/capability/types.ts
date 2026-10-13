@@ -91,4 +91,5 @@ export interface CapabilityEntry {
   readonly plan?: CapabilityInstallPlan;
   detect(): Promise<CapabilityDetectResult>;
   install(report: CapabilityInstallReporter, signal?: AbortSignal, browserMode?: 'driver-only' | 'managed-browser'): Promise<string | undefined>;
+  update?(report: CapabilityInstallReporter, signal?: AbortSignal): Promise<string | undefined>;
 }

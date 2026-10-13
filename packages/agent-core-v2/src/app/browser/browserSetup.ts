@@ -10,7 +10,7 @@ export interface BrowserSetupStep {
   readonly percent?: number;
 }
 export interface BrowserSetupAction {
-  readonly id: 'prepare' | 'connect' | 'cancel' | 'install_extension' | 'open_instructions' | 'enable_feature' | 'choose_connection';
+  readonly id: 'prepare' | 'connect' | 'cancel' | 'install_extension' | 'open_instructions' | 'enable_feature' | 'choose_connection' | 'open' | 'update' | 'shortcut';
   readonly url?: string;
   readonly target?: 'chrome' | 'edge' | 'documentation';
 }
@@ -38,6 +38,14 @@ export interface BrowserSetupConnectInput {
   readonly name?: string;
   readonly setDefault?: boolean;
 }
+export interface BrowserSetupOpenInput {
+  readonly connectionId?: string;
+}
+export interface BrowserSetupUpdateInput {}
+export interface BrowserSetupShortcutInput {
+  readonly connectionId?: string;
+  readonly name?: string;
+}
 export interface IBrowserSetupService {
   readonly _serviceBrand: undefined;
   list(): Promise<{ readonly presets: readonly BrowserSetupStatus[] }>;
@@ -45,5 +53,8 @@ export interface IBrowserSetupService {
   prepare(preset: BrowserPresetId, input: { readonly consent: true }): Promise<BrowserSetupStatus>;
   connect(preset: BrowserPresetId, input: BrowserSetupConnectInput): Promise<BrowserSetupStatus>;
   cancel(preset: BrowserPresetId): Promise<BrowserSetupStatus>;
+  open(preset: BrowserPresetId, input?: BrowserSetupOpenInput): Promise<BrowserSetupStatus>;
+  update(preset: BrowserPresetId, input?: BrowserSetupUpdateInput): Promise<BrowserSetupStatus>;
+  createShortcut(preset: BrowserPresetId, input?: BrowserSetupShortcutInput): Promise<BrowserSetupStatus>;
 }
 export const IBrowserSetupService = createDecorator<IBrowserSetupService>('browserSetupService');

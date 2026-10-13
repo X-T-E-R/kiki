@@ -367,6 +367,9 @@ export interface HttpRestFacade {
     setupStatus(preset: import('@kiki/protocol').BrowserPresetId): Promise<import('@kiki/protocol').BrowserSetupStatus>;
     prepare(preset: import('@kiki/protocol').BrowserPresetId, input: import('@kiki/protocol').BrowserSetupPrepareInput): Promise<import('@kiki/protocol').BrowserSetupStatus>;
     connectPreset(preset: import('@kiki/protocol').BrowserPresetId, input?: import('@kiki/protocol').BrowserSetupConnectInput): Promise<import('@kiki/protocol').BrowserSetupStatus>;
+    openPreset(preset: import('@kiki/protocol').BrowserPresetId, input?: import('@kiki/protocol').BrowserSetupOpenInput): Promise<import('@kiki/protocol').BrowserSetupStatus>;
+    updatePreset(preset: import('@kiki/protocol').BrowserPresetId, input?: import('@kiki/protocol').BrowserSetupUpdateInput): Promise<import('@kiki/protocol').BrowserSetupStatus>;
+    createShortcut(preset: import('@kiki/protocol').BrowserPresetId, input?: import('@kiki/protocol').BrowserSetupShortcutInput): Promise<import('@kiki/protocol').BrowserSetupStatus>;
     cancelSetup(preset: import('@kiki/protocol').BrowserPresetId): Promise<import('@kiki/protocol').BrowserSetupStatus>;
     list(): Promise<import('@kiki/protocol').BrowserControlList>;
     upsert(id: string, input: import('@kiki/protocol').BrowserConnectionInput): Promise<{ readonly connection: import('@kiki/protocol').BrowserConnection }>;
