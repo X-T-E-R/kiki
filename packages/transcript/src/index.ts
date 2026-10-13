@@ -19,6 +19,7 @@ export * from './store/agentTranscriptDraft';
 export * from './store/transcriptStore';
 export * from './facts/reducer';
 export * from './facts/goalProjection';
+export * from './facts/externalToolDisplay';
 export * from './facts/wireAdapter';
 export * from './granularity/grade';
 export * from './granularity/filterOps';

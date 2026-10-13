@@ -5,9 +5,11 @@ import { StringDecoder } from 'node:string_decoder';
 import { redactCtx } from '#/_base/log/formatter';
 import { redactMemorySecrets } from '#/app/memory/memorySafety';
 
-import type {
-  NormalizedExecutorContent,
-  NormalizedExecutorEvent,
+import {
+  externalToolKindConflicts,
+  projectExternalToolDisplay,
+  type NormalizedExecutorContent,
+  type NormalizedExecutorEvent,
 } from '@kiki/protocol';
 
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
@@ -928,6 +930,30 @@ export class ExternalTurnRecorder {
 }
 
 export function externalToolDisplay(event: Extract<ExternalExecutorEvent, { type: 'tool.call' }>): ToolInputDisplay {
+  const projected = projectExternalToolDisplay({
+    name: event.name,
+    title: event.title,
+    kind: event.kind,
+    rawInput: event.rawInput,
+    content: event.content,
+    locations: event.locations,
+    summary: event.title,
+    titleFallback: true,
+  });
+  if (projected.kind !== 'generic') return projected;
+  const detail = projected.detail;
+  if (typeof detail === 'object' && detail !== null && !Array.isArray(detail)) {
+    const record = detail as Readonly<Record<string, unknown>>;
+    if (Array.isArray(record['diffs']) || Array.isArray(record['paths'])) return projected;
+  }
+  const input = objectOf(event.rawInput);
+  if (input?.['truncated'] === true || externalToolKindConflicts({ name: event.name, title: event.title, kind: event.kind })) {
+    return { kind: 'generic', summary: event.title, detail: boundedUnknown({ kind: event.kind, locations: event.locations }) };
+  }
+  return legacyExternalToolDisplay(event);
+}
+
+function legacyExternalToolDisplay(event: Extract<ExternalExecutorEvent, { type: 'tool.call' }>): ToolInputDisplay {
   const input = objectOf(event.rawInput);
   const location = objectOf(event.locations?.[0]);
   const change = Array.isArray(event.rawInput) ? objectOf(event.rawInput[0]) : undefined;

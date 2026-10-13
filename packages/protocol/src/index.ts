@@ -9,6 +9,7 @@ export * from './executor-events';
 export * from './executorPrompt';
 export * from './execution';
 export * from './display';
+export * from './externalToolDisplay';
 export * from './ws-control';
 export * from './asyncapi';
 

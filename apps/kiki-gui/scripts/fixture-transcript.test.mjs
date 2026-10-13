@@ -638,3 +638,31 @@ test('projects a terminated foreground task-id subagent as cancelled', () => {
   });
   assert.equal(projector.snapshot('agent-worker').meta.agent.phase.reason, 'cancelled');
 });
+
+test('seedMessages copies an optional tool display onto the frame', () => {
+  const projector = new TranscriptProjector('session_fixture_external_display');
+  const display = { kind: 'command', command: 'rg -n tool src', cwd: '/workspace/example' };
+  seedMessages(projector, [
+    {
+      id: 'um-ext',
+      role: 'user',
+      content: [{ type: 'text', text: 'Look.' }],
+      created_at: '2026-01-01T00:00:00.000Z',
+    },
+    {
+      id: 'am-ext',
+      role: 'assistant',
+      content: [{
+        type: 'tool_use',
+        tool_call_id: 'external:agy:run',
+        tool_name: 'run_command',
+        input: { CommandLine: 'rg -n tool src' },
+        display,
+      }],
+      created_at: '2026-01-01T00:00:01.000Z',
+    },
+  ]);
+  const frame = projector.snapshot('main').items[0].steps[0].frames.find((entry) => entry.kind === 'tool');
+  assert.deepEqual(frame.display, display);
+  assert.equal(frame.name, 'run_command');
+});

@@ -1575,6 +1575,7 @@ export function seedMessages(projector, messages, options = {}) {
             name: part.tool_name,
             state: 'done',
             input: part.input,
+            ...(part.display === undefined ? {} : { display: part.display }),
           });
         }
       }

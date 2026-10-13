@@ -1,4 +1,5 @@
 import type { TranscriptFact } from './reducer';
+import { normalizeStoredExternalToolDisplay } from './externalToolDisplay';
 import { projectGoalChange } from './goalProjection';
 import { CompactionProjection, type CompactionProjectionCheckpoint } from './compactionProjection';
 import { bundledSkillActivations, isUndoAnchorOrigin, isVisibleLegacyTurnOrigin } from './wireIdentity';
@@ -2007,17 +2008,23 @@ export class TranscriptWireAdapter {
     if (toolCallId === undefined || stepId === undefined || turnId === undefined ||
       (state !== 'running' && state !== 'done' && state !== 'error' && state !== 'interrupted')) return [];
     const previous = this.#tools.get(toolCallId)?.frame ?? this.lookups?.tool?.(toolCallId)?.frame;
-    const output = record['output'];
-    const text = stringOf(objectOf(output)?.['text']);
+    const output = objectOf(record['output']);
+    const text = stringOf(output?.['text']);
+    const name = stringOf(record['name']) ?? stringOf(output?.['title']) ?? stringOf(output?.['name']) ?? previous?.name;
     const frame: ToolCallFrame = {
       ...previous,
       kind: 'tool', frameId: previous?.frameId ?? `${stepId}.${toolCallId}`,
-      toolCallId, name: stringOf(record['name']) ?? previous?.name ?? 'External tool',
-      state, input: record['input'], display: record['display'], output,
+      toolCallId, name: name ?? 'External tool',
+      state, input: record['input'] ?? output?.['rawInput'], display: normalizeStoredExternalToolDisplay(record['display'], {
+        name, title: stringOf(output?.['title']) ?? name, kind: stringOf(output?.['toolKind']),
+        rawInput: record['input'] ?? output?.['rawInput'],
+        content: Array.isArray(output?.['content']) ? output['content'] : undefined,
+        locations: Array.isArray(output?.['locations']) ? output['locations'] : undefined,
+      }), output: record['output'],
       error: state === 'error' ? text : undefined,
       startedAt: previous?.startedAt ?? isoOf(record.time),
       endedAt: state === 'running' ? undefined : previous?.endedAt ?? isoOf(record.time),
-      progress: state === 'running' ? { kind: 'status', text: stringOf(objectOf(output)?.['status']) } : previous?.progress,
+      progress: state === 'running' ? { kind: 'status', text: stringOf(output?.['status']) } : previous?.progress,
       todoId: undefined,
     };
     const hit = { turnId, stepId, frame };
@@ -2053,6 +2060,8 @@ export class TranscriptWireAdapter {
     const stepId = stringOf(event['stepUuid']);
     const turnId = turnIdOf(event['turnId'], undefined) ?? this.turnForStep(stepId);
     if (toolCallId === undefined || stepId === undefined || turnId === undefined) return [];
+    const extras = objectOf(event['extras']);
+    const name = stringOf(event['name']);
     const frame: ToolCallFrame = {
       kind: 'tool',
       frameId: `${stepId}.${toolCallId}`,
@@ -2066,11 +2075,15 @@ export class TranscriptWireAdapter {
         },
       },
       toolCallId,
-      name: stringOf(event['name']) ?? '',
+      name: name ?? '',
       state: 'running',
       input: event['args'],
       inputText: this.#tools.get(toolCallId)?.frame.inputText ?? this.lookups?.tool?.(toolCallId)?.frame.inputText,
-      display: event['display'] ?? objectOf(event['extras'])?.['display'],
+      display: normalizeStoredExternalToolDisplay(event['display'] ?? extras?.['display'], {
+        name, title: name, kind: stringOf(extras?.['kind']), rawInput: event['args'],
+        content: Array.isArray(extras?.['content']) ? extras['content'] : undefined,
+        locations: Array.isArray(event['locations']) ? event['locations'] : Array.isArray(extras?.['locations']) ? extras['locations'] : undefined,
+      }),
       startedAt: isoOf(time),
     };
     const hit = { turnId, stepId, frame };

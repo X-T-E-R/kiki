@@ -20,11 +20,19 @@ const cases: { id: string; event: Partial<AcpToolEvent>; display: object }[] = [
   { id: 'pos-grok-websearch-variant', event: { kind: 'search', rawInput: { query: 'acp', variant: 'WebSearch' } }, display: { kind: 'search', query: 'acp' } },
   { id: 'neg-title-as-command', event: { title: 'Execute `npm test`', kind: 'execute' }, display: { kind: 'generic', summary: 'Execute `npm test`' } },
   { id: 'neg-title-bash-not-shellblock', event: { title: 'Bash', kind: 'execute', rawInput: { command: 'ls' } }, display: { kind: 'command', command: 'ls' } },
-  { id: 'neg-native-name-semantics', event: { title: 'WebSearch', name: 'WebSearch', kind: 'other', rawInput: { query: 'acp' } }, display: { kind: 'generic', summary: 'WebSearch' } },
+  { id: 'neg-native-name-semantics', event: { title: 'WebSearch', name: 'WebSearch', kind: 'other', rawInput: { query: 'acp' } }, display: { kind: 'search', query: 'acp' } },
+  { id: 'pos-agy-view-file', event: { title: 'view_file', name: 'view_file', kind: 'other', rawInput: { AbsolutePath: '/workspace/example/file.ts' } }, display: { kind: 'file_io', operation: 'read', path: '/workspace/example/file.ts' } },
+  { id: 'pos-agy-run-command', event: { title: 'run_command', name: 'run_command', kind: 'other', rawInput: { CommandLine: 'rg -n tool src', Cwd: '/workspace/example' } }, display: { kind: 'command', command: 'rg -n tool src', cwd: '/workspace/example' } },
+  { id: 'pos-agy-write-path', event: { title: 'write_to_file', name: 'write_to_file', kind: 'other', rawInput: { TargetFile: '/workspace/example/out.ts' } }, display: { kind: 'file_io', operation: 'write', path: '/workspace/example/out.ts' } },
+  { id: 'pos-agy-write-content', event: { title: 'write_to_file', name: 'write_to_file', kind: 'other', rawInput: { TargetFile: '/workspace/example/out.ts', CodeContent: 'export {}\n' } }, display: { kind: 'file_io', operation: 'write', path: '/workspace/example/out.ts', content: 'export {}\n' } },
+  { id: 'pos-agy-grep', event: { title: 'grep_search', name: 'grep_search', kind: 'other', rawInput: { Query: 'tool', SearchPath: '/workspace/example' } }, display: { kind: 'search', query: 'tool', scope: '/workspace/example' } },
+  { id: 'pos-agy-list-dir', event: { title: 'list_dir', name: 'list_dir', kind: 'other', rawInput: { DirectoryPath: '/workspace/example' } }, display: { kind: 'file_io', operation: 'glob', path: '/workspace/example' } },
+  { id: 'pos-agy-task-status', event: { title: 'manage_task', name: 'manage_task', kind: 'other', rawInput: { Action: 'status', TaskId: 'task-example' } }, display: { kind: 'task', task_id: 'task-example', status: 'status', description: 'task-example' } },
+  { id: 'pos-agy-task-kill', event: { title: 'manage_task', name: 'manage_task', kind: 'other', rawInput: { Action: 'kill', TaskId: 'task-example' } }, display: { kind: 'task_stop', task_id: 'task-example', task_description: 'task-example' } },
   { id: 'neg-kind-name-conflict', event: { title: 'grep', name: 'grep', kind: 'execute', rawInput: { pattern: 'x', command: 'rg x' } }, display: { kind: 'generic', summary: 'grep' } },
   { id: 'neg-opencode-websearch-kind-other', event: { title: 'Exa: acp diff', kind: 'other', rawInput: { query: 'acp diff' } }, display: { kind: 'generic', summary: 'Exa: acp diff' } },
   { id: 'neg-snake-diff-not-v1', event: { title: 'edit', kind: 'edit', content: [{ type: 'diff', path: '/work/a.ts', old_text: 'old', new_text: 'new' }] }, display: { kind: 'generic', summary: 'edit' } },
-  { id: 'neg-multi-diff', event: { kind: 'edit', content: [diff('/work/a.ts', 'a', 'b'), diff('/work/b.ts', 'c', 'd')] }, display: { kind: 'generic', summary: 'Tool' } },
+  { id: 'neg-multi-diff', event: { kind: 'edit', content: [diff('/work/a.ts', 'a', 'b'), diff('/work/b.ts', 'c', 'd')] }, display: { kind: 'generic', summary: '/work/a.ts, /work/b.ts', detail: { diffs: [{ path: '/work/a.ts', before: 'a', after: 'b' }, { path: '/work/b.ts', before: 'c', after: 'd' }] } } },
   { id: 'neg-new-file-null-oldText', event: { kind: 'edit', content: [diff('/work/new.ts', null, 'export {}\n')] }, display: { kind: 'diff', path: '/work/new.ts', before: '', after: 'export {}\n' } },
 ];
 
@@ -110,6 +118,31 @@ describe('ACP tool timeline display mapping', () => {
   it.each(['delete', 'move', 'think', 'switch_mode', 'other'])('does not invent edit or agent semantics for %s', (kind) => {
     expect(acpToolDisplay(mergeAcpToolState(undefined, { ...base, kind, rawInput: { path: 'a.ts', content: 'b' } }))).toEqual({ kind: 'generic', summary: 'Tool' });
   });
+
+  it('keeps one path when repeated locations name the same file', () => {
+    expect(acpToolDisplay(mergeAcpToolState(undefined, {
+      ...base, name: 'view_file', title: 'view_file', kind: 'other',
+      rawInput: { AbsolutePath: '/workspace/example/other.ts' },
+      locations: [{ path: '/workspace/example/file.ts' }, { path: '/workspace/example/file.ts' }],
+    }))).toEqual({ kind: 'file_io', operation: 'read', path: '/workspace/example/file.ts' });
+  });
+
+  it('keeps every distinct location instead of pretending there is one file', () => {
+    expect(acpToolDisplay(mergeAcpToolState(undefined, {
+      ...base, name: 'view_file', title: 'view_file', kind: 'read',
+      locations: [{ path: '/workspace/example/a.ts' }, { path: '/workspace/example/b.ts' }],
+    }))).toEqual({
+      kind: 'generic',
+      summary: '/workspace/example/a.ts, /workspace/example/b.ts',
+      detail: { paths: ['/workspace/example/a.ts', '/workspace/example/b.ts'] },
+    });
+  });
+
+  it('leaves an unknown manage_task action generic', () => {
+    expect(acpToolDisplay(mergeAcpToolState(undefined, {
+      ...base, name: 'manage_task', title: 'manage_task', kind: 'other', rawInput: { Action: 'frob', TaskId: 'task-example' },
+    }))).toEqual({ kind: 'generic', summary: 'manage_task' });
+  });
 });
 
 describe('Codex app-server display compatibility', () => {
@@ -118,5 +151,17 @@ describe('Codex app-server display compatibility', () => {
     expect(externalToolDisplay({ ...base, kind: 'webSearch', rawInput: { query: 'docs' } })).toEqual({ kind: 'search', query: 'docs' });
     expect(externalToolDisplay({ ...base, kind: 'collabAgentToolCall', rawInput: { agent: 'reviewer', prompt: 'inspect' } })).toEqual({ kind: 'agent_call', agent_name: 'reviewer', prompt: 'inspect' });
     expect(externalToolDisplay({ ...base, kind: 'file', rawInput: [{ path: 'a.ts' }] })).toEqual({ kind: 'file_io', operation: 'edit', path: 'a.ts' });
+    expect(externalToolDisplay({ ...base, kind: 'command' })).toEqual({ kind: 'command', command: 'Tool' });
+    expect(externalToolDisplay({ ...base, kind: 'webSearch' })).toEqual({ kind: 'search', query: 'Tool' });
+    expect(externalToolDisplay({ ...base, kind: 'file', rawInput: [{ path: '/workspace/example/a.ts' }, { path: '/workspace/example/b.ts' }] })).toEqual({
+      kind: 'generic', summary: '/workspace/example/a.ts, /workspace/example/b.ts',
+      detail: { paths: ['/workspace/example/a.ts', '/workspace/example/b.ts'] },
+    });
+    expect(externalToolDisplay({ ...base, title: 'grep', name: 'grep', kind: 'execute', rawInput: { pattern: 'x', command: 'rg x' } })).toEqual({
+      kind: 'generic', summary: 'grep', detail: { kind: 'execute' },
+    });
+    expect(externalToolDisplay({ ...base, kind: 'execute', rawInput: { truncated: true, preview: '{"command":"echo' } })).toEqual({
+      kind: 'generic', summary: 'Tool', detail: { kind: 'execute' },
+    });
   });
 });
