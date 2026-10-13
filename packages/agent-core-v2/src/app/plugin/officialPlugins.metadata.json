@@ -3,6 +3,39 @@
   "engineVersion": "0.4.1",
   "official": [
     {
+      "id": "kiki-cloudflare",
+      "tier": "official",
+      "version": "0.1.1",
+      "displayName": "Cloudflare Tunnel",
+      "description": "Connect an existing Cloudflare Tunnel and manage its Kiki-owned connector.",
+      "homepage": "https://developers.cloudflare.com/tunnel/",
+      "keywords": [
+        "cloudflare",
+        "cloudflared",
+        "tunnel",
+        "remote"
+      ],
+      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-cloudflare/icon-0.1.1.svg",
+      "engines": {
+        "kiki": "^0.4.0"
+      },
+      "license": "MIT",
+      "author": "Kiki",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-cloudflare-20261010.1/kiki-cloudflare-0.1.1.zip",
+      "sha256": "bb3b84bc4b46cdef2b1a8db3acdccc8ae91ce120f0aed6fbdb61e65676ed72d3",
+      "localizations": {
+        "zh": {
+          "description": "连接已有 Cloudflare 隧道，管理随 Kiki 常驻的连接器。",
+          "keywords": [
+            "隧道",
+            "外部连接",
+            "远程",
+            "cloudflare"
+          ]
+        }
+      }
+    },
+    {
       "id": "kiki-extract",
       "tier": "official",
       "version": "0.1.1",
@@ -47,7 +80,7 @@
     {
       "id": "kiki-media",
       "tier": "official",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "displayName": "Kiki Media",
       "description": "One media plugin with OpenAI, Google, Ark, xAI, MiniMax, StepFun, Novita, Agnes, NewAPI and ComfyUI sources. Configure or disable each service inside Media, or add your own local script. Requires a Kiki host with grouped media sources and script-source management. Cloud generation requires media API access and can incur charges.",
       "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media",
@@ -70,14 +103,14 @@
         "comfyui"
       ],
       "group": "media",
-      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-media/icon-0.2.0.svg",
+      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-media/icon-0.2.1.svg",
       "engines": {
         "kiki": ">=0.4.0"
       },
       "license": "MIT AND Apache-2.0",
       "author": "Kiki",
-      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-media-20261007.1/kiki-media-0.2.0.zip",
-      "sha256": "5fb452b70650a8772f4750730e3b38c985247794d9478ecc7448b3a2a1db9aea",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261013.1/kiki-media-0.2.1.zip",
+      "sha256": "2f96944f00d2cacc54ac3979a6264921addea5a57a1c409b51254db998426c93",
       "localizations": {
         "zh": {
           "description": "一个媒体插件，内置 OpenAI、Google、Ark、xAI、MiniMax、StepFun、Novita、Agnes、NewAPI 和 ComfyUI 来源。可在媒体页分别配置、启停或移除，也可添加自己的本地脚本。需要支持媒体来源分组及脚本来源管理的 Kiki 宿主。云端生成需媒体 API 权限，并可能产生费用。",
@@ -173,6 +206,131 @@
             "docx",
             "xlsx",
             "pptx"
+          ]
+        }
+      }
+    },
+    {
+      "id": "kiki-pet",
+      "tier": "official",
+      "version": "0.1.0",
+      "displayName": "Desktop Pet",
+      "description": "An isolated native desktop companion that reacts to Kiki tasks, imports Codex pets and carries a pet-making skill.",
+      "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-pet",
+      "keywords": [
+        "pet",
+        "desktop",
+        "companion"
+      ],
+      "engines": {
+        "kiki": "^0.4.0"
+      },
+      "license": "GPL-3.0-or-later",
+      "author": "Kiki",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261013.1/kiki-pet-0.1.0.zip",
+      "sha256": "cc6b3766300a6377621c45c902f1eff3f61460b050df680b5fde07ad2b46a280",
+      "localizations": {
+        "zh": {
+          "description": "随 Kiki 任务反应的隔离桌面伴侣，可导入 Codex 宠物，并带制作 skill。",
+          "keywords": [
+            "桌宠",
+            "宠物",
+            "伴侣"
+          ]
+        }
+      }
+    },
+    {
+      "id": "kiki-sites",
+      "tier": "official",
+      "version": "0.1.0",
+      "displayName": "Kiki Sites",
+      "description": "Connect code hosting and deploy sites or apps through official service CLIs and APIs.",
+      "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-sites",
+      "keywords": [
+        "sites",
+        "deploy",
+        "github",
+        "hosting"
+      ],
+      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-sites/icon-0.1.0.svg",
+      "engines": {
+        "kiki": "^0.4.0"
+      },
+      "license": "MIT",
+      "author": "Kiki",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261013.1/kiki-sites-0.1.0.zip",
+      "sha256": "68077256d33e602e092811fa30cbbfbb465f2728156f95a4ccbf2b7521745f4d",
+      "localizations": {
+        "zh": {
+          "description": "连接代码托管，并用官方服务 CLI 与 API 部署站点或应用。",
+          "keywords": [
+            "站点",
+            "部署",
+            "代码托管"
+          ]
+        }
+      }
+    },
+    {
+      "id": "kiki-task-board",
+      "tier": "official",
+      "version": "0.1.0",
+      "displayName": "Task board",
+      "description": "Persistent requirement cards for a workspace.",
+      "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-task-board",
+      "keywords": [
+        "tasks",
+        "board",
+        "requirements"
+      ],
+      "icon": "https://x-t-e-r.github.io/kiki-plugins/official/kiki-task-board/icon-0.1.0.svg",
+      "engines": {
+        "kiki": ">=0.4.1"
+      },
+      "license": "MIT",
+      "author": "Kiki",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261013.1/kiki-task-board-0.1.0.zip",
+      "sha256": "2e4900dacd9de243a73293a394e014a1337daa216b6111cdaf5cba830d427bb0",
+      "localizations": {
+        "zh": {
+          "description": "工作区里长期保存的需求卡片。",
+          "keywords": [
+            "任务",
+            "看板",
+            "需求"
+          ]
+        }
+      }
+    },
+    {
+      "id": "kiki-work",
+      "tier": "official",
+      "version": "0.1.0",
+      "displayName": "Kiki Work",
+      "description": "Local table checks for office work: audit CSV keys and reconcile two tables without modifying or uploading them.",
+      "homepage": "https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-work",
+      "keywords": [
+        "work",
+        "csv",
+        "table",
+        "reconcile"
+      ],
+      "engines": {
+        "kiki": "^0.4.0"
+      },
+      "license": "MIT",
+      "author": "Kiki",
+      "source": "https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261013.1/kiki-work-0.1.0.zip",
+      "sha256": "2b2d216e961af4746fa6e51070cc9b7198ac7f7499ee98e9db71a6204a810f16",
+      "localizations": {
+        "zh": {
+          "description": "在本机核对 CSV/TSV 键并对照两张表，不改原文件，也不上传。",
+          "keywords": [
+            "工作",
+            "表格",
+            "核对",
+            "csv"
           ]
         }
       }

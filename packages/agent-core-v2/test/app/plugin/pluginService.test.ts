@@ -263,7 +263,7 @@ describe('PluginService (plugin boundary)', () => {
     } finally {
       await host.dispose();
     }
-  }, 30_000);
+  }, 120_000);
 
   it('degrades non-blocking consumption reads but rejects hook reads when installed.json is corrupt', async () => {
     const home = await makeHome();

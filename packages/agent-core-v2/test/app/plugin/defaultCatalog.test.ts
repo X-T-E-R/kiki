@@ -19,6 +19,7 @@ function expectCompleteBundled(result: Awaited<ReturnType<typeof readDefaultPlug
 
 const repoRoot = resolve(import.meta.dirname, '../../../../..');
 const generator = join(repoRoot, 'packages/agent-core-v2/scripts/gen-official-plugin-metadata.mjs');
+const publishedCatalog = join(import.meta.dirname, 'fixtures/published-marketplace.json');
 const createdDirs: string[] = [];
 
 async function scratch(): Promise<string> {
@@ -224,7 +225,7 @@ describe('default plugin catalog', () => {
     await expect(stat(join(dir, 'official'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it('regenerates every checked-in entry without any official directory and matches the shipped snapshot', async () => {
+  it('projects the checked-in development catalog without a payload directory', async () => {
     const dir = await scratch();
     await cp(join(repoRoot, 'plugins/marketplace.json'), join(dir, 'marketplace.json'));
     const generated = await generate(dir, join(dir, 'metadata.json'));
@@ -238,7 +239,30 @@ describe('default plugin catalog', () => {
       official: published.filter((entry) => entry.tier === 'official').toSorted((a, b) => a.id.localeCompare(b.id)),
       curated: published.filter((entry) => entry.tier === 'curated'),
     });
+    await expect(stat(join(dir, 'official'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('projects the published catalog into the shipped snapshot', async () => {
+    const dir = await scratch();
+    await cp(publishedCatalog, join(dir, 'marketplace.json'));
+    const generated = await generate(dir, join(dir, 'metadata.json'));
+    const catalog = JSON.parse(await readFile(join(dir, 'marketplace.json'), 'utf8')) as {
+      plugins: Record<string, unknown>[];
+    };
+    const published = parsePluginMarketplace(JSON.stringify(catalog), resolveMarketplaceLocation(join(dir, 'marketplace.json'), dir), true).plugins;
+    expect(generated).toEqual({
+      version: 1,
+      engineVersion: '0.4.1',
+      official: published.filter((entry) => entry.tier === 'official').toSorted((a, b) => a.id.localeCompare(b.id)),
+      curated: published.filter((entry) => entry.tier === 'curated'),
+    });
     expect(generated).toEqual(bundledMetadata);
+    const board = (generated as { official: { id: string; version: string; source: string; sha256: string }[] }).official.find((entry) => entry.id === 'kiki-task-board');
+    expect(board).toMatchObject({
+      version: '0.1.0',
+      source: 'https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261013.1/kiki-task-board-0.1.0.zip',
+      sha256: '2e4900dacd9de243a73293a394e014a1337daa216b6111cdaf5cba830d427bb0',
+    });
     await expect(stat(join(dir, 'official'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
