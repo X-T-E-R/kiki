@@ -11,7 +11,7 @@ import type { BrowserConnectionInput, BrowserResolvedConnection } from './browse
 import { BrowserError } from './errors';
 import { IFlagService } from '#/app/flag/flag';
 import { NATIVE_BROWSER_FLAG_ID } from './flag';
-import type { BrowserRequestContext } from './codexBrowser';
+import { CODEX_BRIDGE_PAGE_TOOLS, type BrowserRequestContext } from './codexBrowser';
 
 interface LiveBrowser {
   connection: BrowserResolvedConnection;
@@ -44,7 +44,7 @@ export function browserResponse(result: MCPToolResult): { success?: boolean; dat
 export const BROWSER_OWNED_FIELDS = new Set(['session', 'namespace', 'extraArgs', 'restore', 'restoreSave', 'restoreCheckUrl',
   'restoreCheckText', 'restoreCheckFn', 'profile', 'cdp', 'pinTab', 'allowedDomains', 'caCert', 'clearCaCert', 'idleTimeout', 'timeoutMs', 'screenshotDir']);
 export function isBrowserOperation(name: string): boolean {
-  if (name === 'codex_browser_js' || name === 'codex_browser_js_reset') return true;
+  if (name === 'codex_browser_js' || name === 'codex_browser_js_reset' || (CODEX_BRIDGE_PAGE_TOOLS as readonly string[]).includes(name)) return true;
   return name.startsWith('agent_browser_') && !/^agent_browser_(?:tools_profiles|connect|close|tab_|frame_|window_|session(?:_|$)|profiles(?:_|$)|skills(?:_|$)|install$|upgrade$|doctor$|dashboard_|plugin(?:_|$)|plugins(?:_|$)|chat$|batch$|confirm$|deny$|auth(?:_|$)|state_(?:list|show|rename|clear|clean))/.test(name);
 }
 export function browserToolGroup(name: string): string {

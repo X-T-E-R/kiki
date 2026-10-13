@@ -54,3 +54,38 @@ describe.skipIf(runtimeRoot === undefined)('installed official cua-repl launcher
     } finally { await backend?.close(); await rm(root, { recursive: true, force: true }); }
   }, 70_000);
 });
+
+const bridgeBinary = process.env['KIKI_CODEX_BRIDGE_TEST_BIN'];
+const bridgePipe = 'codex-browser-use-kiki-offline-00000000-0000-4000-8000-000000000001';
+describe.skipIf(bridgeBinary === undefined)('codex-browser-bridge stdio contract, no selected pipe', () => {
+  it('initializes the real basic-profile server twice and does not dial an unselected pipe', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-codex-bridge-'));
+    const runtime = Object.assign(new FakeRuntime({ workspaceId: 'fixture', runtimeId: 'local', generation: 'codex-bridge' },
+      { capabilities: ['process', 'fs'], pathClass: 'win32', environment: { osKind: 'Windows' } }),
+      { fs: new HostFileSystem(), process: new HostProcessService() });
+    const context: BrowserRequestContext = { caller: { sessionId: 'fixture-bridge', agentId: 'main' }, turnId: 1,
+      toolCallId: 'fixture-bridge-call', elicit: async () => ({ action: 'cancel' }) };
+    const open = () => openCodexBrowser({ runtimeRoot: bridgeBinary!, browserId: bridgePipe, cwd: root, runtime,
+      resolver: { _serviceBrand: undefined, inspect: () => runtime, acquire: () => ({ runtime, track: (resource) => resource, dispose: () => undefined }) } });
+    let first: Awaited<ReturnType<typeof openCodexBrowser>> | undefined;
+    let second: Awaited<ReturnType<typeof openCodexBrowser>> | undefined;
+    try {
+      first = await open();
+      const names = (await first.client.listTools()).map((tool) => tool.name);
+      record({ step: 'bridge-tools', version: first.version, namespace: first.namespace, names });
+      expect(first.version).toMatch(/^codex-browser-bridge \d+\.\d+\.\d+ MIT$/);
+      expect(first.namespace).toBe('codex-browser-bridge');
+      expect(names).toEqual(expect.arrayContaining(['codex_browser_navigate', 'codex_browser_dom_snapshot', 'codex_browser_dom_visible', 'codex_browser_fill', 'codex_browser_click', 'codex_browser_screenshot']));
+      expect(names.join('\n')).not.toMatch(/claim|user_tabs|cookie|execute_cdp|cua_/);
+      await expect(first.official!.connect(context)).rejects.toMatchObject({ code: 'browser.requires_action' });
+      await first.close();
+      first = undefined;
+      second = await open();
+      expect((await second.client.listTools()).map((tool) => tool.name)).toEqual(names);
+      record({ step: 'bridge-reconnect', version: second.version });
+    } catch (error) {
+      record({ step: 'bridge-error', message: error instanceof Error ? error.message : String(error) });
+      throw error;
+    } finally { await first?.close(); await second?.close(); await rm(root, { recursive: true, force: true }); }
+  }, 90_000);
+});
