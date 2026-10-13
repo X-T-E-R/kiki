@@ -674,19 +674,16 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
 
   private cancelActive(active: ActiveCompaction, reason?: string): boolean {
     if (this._compacting !== active || active.phase !== 'preparing') return false;
-    if (active.appliedResult !== undefined) {
-      this._compacting = null;
-      active.persistBlocked = false;
-      void this.releaseCompaction(active);
-      return false;
-    }
+    const applied = active.appliedResult !== undefined;
     void this.dispatcher.dispatch(new FullCompactionCancel({ reason }));
     this._compacting = null;
+    if (applied) active.persistBlocked = false;
     if (!active.abortController.signal.aborted) {
       active.abortController.abort();
     }
     void this.dispatcher.dispatch(new CompactionCancelled({ trigger: active.trigger, reason }));
-    return true;
+    if (applied) void this.releaseCompaction(active);
+    return !applied;
   }
 
   private markCompleted(active: ActiveCompaction): boolean {

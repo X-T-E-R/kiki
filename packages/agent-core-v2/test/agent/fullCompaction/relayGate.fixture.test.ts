@@ -3,9 +3,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { applyContextCompactionRecord } from '#/agent/contextMemory/contextOps';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { resolveAutoCompact } from '#/agent/fullCompaction/autoCompact';
+import { fullCompactionKey } from '#/agent/fullCompaction/compactionOps';
+import { IAgentLoopService } from '#/agent/loop/loop';
+import { panelAccountingKey } from '#/agent/usage/panelAccounting';
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import type { ContentPart } from '#/kosong/contract/message';
-import { IAgentLoopService } from '#/agent/loop/loop';
+import type { WireRecord } from '#/wire/record';
 import {
   IAgentFullCompactionService,
   ISessionTodoService,
@@ -102,12 +105,43 @@ async function holdFailedFlush() {
   ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
   const service = ctx.get(IAgentFullCompactionService);
   const dispatcher = (service as unknown as { dispatcher: { flush: () => Promise<void> } }).dispatcher;
-  vi.spyOn(dispatcher, 'flush').mockImplementation(async () => {
+  const flush = vi.spyOn(dispatcher, 'flush').mockImplementation(async () => {
     throw new Error('disk full');
   });
   expect(service.begin({ source: 'manual' })).toBe(true);
   await expect(service.compacting!.promise).rejects.toMatchObject({ name: 'CompactionPersistError' });
-  return { ctx, service };
+  return { ctx, service, flush };
+}
+
+function wireTypeCount(records: readonly WireRecord[], type: string): number {
+  return records.filter((record) => record.type === type).length;
+}
+
+function rpcCount(ctx: TestAgentContext, name: string): number {
+  return ctx.allEvents.filter((event) => {
+    if (typeof event !== 'object' || event === null) return false;
+    const candidate = event as { type?: unknown; event?: unknown };
+    return candidate.type === '[rpc]' && candidate.event === name;
+  }).length;
+}
+
+async function expectColdRestoreContinues(records: readonly WireRecord[]): Promise<void> {
+  const cold = agent();
+  try {
+    await cold.restore(records.map((record) => structuredClone(record)));
+    expect(cold.agentState.get(fullCompactionKey).phase).toBe('idle');
+    expect(cold.get(IAgentFullCompactionService).isCompacting()).toBe(false);
+    expect(cold.agentState.get(panelAccountingKey).successfulCompactions).toBe(0);
+    expect(cold.context.get().some((message) => message.origin?.kind === 'compaction_summary')).toBe(true);
+    cold.mockNextResponse({ type: 'text', text: 'Continued after the interrupted save.' });
+    await cold.rpc.prompt({ input: [{ type: 'text', text: 'Continue after the interrupted compaction' }] });
+    await cold.untilTurnEnd();
+    expect(cold.llmCalls).toHaveLength(1);
+    expect(cold.agentState.get(fullCompactionKey).phase).toBe('idle');
+    expect(cold.get(IAgentFullCompactionService).isCompacting()).toBe(false);
+  } finally {
+    await cold.dispose();
+  }
 }
 
 describe('relay gate fixtures', () => {
@@ -432,6 +466,7 @@ describe('relay gate fixtures', () => {
     await expect(first).rejects.toMatchObject({ name: 'CompactionPersistError' });
     blocked = false;
     expect(service.isCompacting()).toBe(true);
+    expect(ctx.agentState.get(fullCompactionKey).phase).toBe('running');
     expect(ctx.llmCalls).toHaveLength(0);
     expect(wireCounts(ctx, ['context.apply_compaction', 'full_compaction.complete', 'full_compaction.cancel'])).toEqual({
       'context.apply_compaction': 1,
@@ -445,6 +480,8 @@ describe('relay gate fixtures', () => {
     flush.mockRestore();
     expect(result).toMatchObject({ strategy: 'relay' });
     expect(result.fallbackFrom).toBeUndefined();
+    expect(ctx.agentState.get(fullCompactionKey).phase).toBe('idle');
+    expect(ctx.agentState.get(panelAccountingKey).successfulCompactions).toBe(1);
     expect(ctx.llmCalls).toHaveLength(0);
     expect(wireCounts(ctx, ['context.apply_compaction', 'full_compaction.complete', 'full_compaction.cancel'])).toEqual({
       'context.apply_compaction': 0,
@@ -454,59 +491,64 @@ describe('relay gate fixtures', () => {
     await ctx.expectResumeMatches();
   });
 
-  it('releases the quiescence lease on cancel after a failed flush without applying again', async () => {
-    const { ctx, service } = await holdFailedFlush();
+  it('cancels a failed flush without rolling back the apply or leaving compaction running', async () => {
+    const { ctx, service, flush } = await holdFailedFlush();
     const summary = ctx.context.get().find((message) => message.origin?.kind === 'compaction_summary');
     const length = ctx.context.get().length;
     expect(summary).toBeDefined();
     expect(service.isCompacting()).toBe(true);
+    expect(ctx.agentState.get(fullCompactionKey).phase).toBe('running');
     expect(ctx.get(IAgentLoopService).tryAcquireQuiescence()).toBeUndefined();
-    expect(wireCounts(ctx, ['context.apply_compaction', 'full_compaction.complete', 'full_compaction.cancel', 'compaction.cancelled'])).toEqual({
-      'context.apply_compaction': 1,
-      'full_compaction.complete': 0,
-      'full_compaction.cancel': 0,
-      'compaction.cancelled': 0,
-    });
+    flush.mockRestore();
     service.cancel();
     const lease = ctx.get(IAgentLoopService).tryAcquireQuiescence();
     expect(lease).toBeDefined();
     await lease?.dispose();
     expect(service.isCompacting()).toBe(false);
+    expect(ctx.agentState.get(fullCompactionKey).phase).toBe('idle');
+    expect(ctx.agentState.get(panelAccountingKey).successfulCompactions).toBe(0);
     expect(ctx.context.get()).toHaveLength(length);
     expect(ctx.context.get().find((message) => message.origin?.kind === 'compaction_summary')).toBe(summary);
-    expect(wireCounts(ctx, ['context.apply_compaction', 'full_compaction.complete', 'full_compaction.cancel', 'compaction.cancelled'])).toEqual({
-      'context.apply_compaction': 0,
-      'full_compaction.complete': 0,
-      'full_compaction.cancel': 0,
-      'compaction.cancelled': 0,
-    });
+    expect(rpcCount(ctx, 'compaction.cancelled')).toBe(1);
+    expect(rpcCount(ctx, 'compaction.completed')).toBe(0);
+    const records = await ctx.persistedWireRecords();
+    expect(wireTypeCount(records, 'context.apply_compaction')).toBe(1);
+    expect(wireTypeCount(records, 'full_compaction.complete')).toBe(0);
+    expect(wireTypeCount(records, 'full_compaction.cancel')).toBe(1);
+    ctx.mockNextResponse({ type: 'text', text: 'Continued after cancelling the failed save.' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Continue after cancelling the failed save' }] });
+    await ctx.untilTurnEnd();
+    expect(ctx.llmCalls).toHaveLength(1);
+    expect(ctx.agentState.get(fullCompactionKey).phase).toBe('idle');
+    expect(service.isCompacting()).toBe(false);
+    expect(ctx.context.get().find((message) => message.origin?.kind === 'compaction_summary')).toBe(summary);
+    await expectColdRestoreContinues(records);
   });
 
-  it('releases the quiescence lease on dispose after a failed flush without applying again', async () => {
-    const { ctx, service } = await holdFailedFlush();
+  it('disposes a failed flush without rolling back the apply or leaving compaction running', async () => {
+    const { ctx, service, flush } = await holdFailedFlush();
     const summary = ctx.context.get().find((message) => message.origin?.kind === 'compaction_summary');
     const length = ctx.context.get().length;
     expect(summary).toBeDefined();
+    expect(ctx.agentState.get(fullCompactionKey).phase).toBe('running');
     expect(ctx.get(IAgentLoopService).tryAcquireQuiescence()).toBeUndefined();
-    expect(wireCounts(ctx, ['context.apply_compaction', 'full_compaction.complete', 'full_compaction.cancel', 'compaction.cancelled'])).toEqual({
-      'context.apply_compaction': 1,
-      'full_compaction.complete': 0,
-      'full_compaction.cancel': 0,
-      'compaction.cancelled': 0,
-    });
+    flush.mockRestore();
     await (service as unknown as { dispose(): void | Promise<void> }).dispose();
     const lease = ctx.get(IAgentLoopService).tryAcquireQuiescence();
     expect(lease).toBeDefined();
     await lease?.dispose();
     expect(service.isCompacting()).toBe(false);
+    expect(ctx.agentState.get(fullCompactionKey).phase).toBe('idle');
+    expect(ctx.agentState.get(panelAccountingKey).successfulCompactions).toBe(0);
     expect(ctx.context.get()).toHaveLength(length);
     expect(ctx.context.get().find((message) => message.origin?.kind === 'compaction_summary')).toBe(summary);
-    expect(wireCounts(ctx, ['context.apply_compaction', 'full_compaction.complete', 'full_compaction.cancel', 'compaction.cancelled'])).toEqual({
-      'context.apply_compaction': 0,
-      'full_compaction.complete': 0,
-      'full_compaction.cancel': 0,
-      'compaction.cancelled': 0,
-    });
+    expect(rpcCount(ctx, 'compaction.cancelled')).toBe(1);
+    expect(rpcCount(ctx, 'compaction.completed')).toBe(0);
+    const records = await ctx.persistedWireRecords();
+    expect(wireTypeCount(records, 'context.apply_compaction')).toBe(1);
+    expect(wireTypeCount(records, 'full_compaction.complete')).toBe(0);
+    expect(wireTypeCount(records, 'full_compaction.cancel')).toBe(1);
+    await expectColdRestoreContinues(records);
   });
 
   it('keeps an explicit threshold positive inside a 32k window with a 50k reserve', () => {
