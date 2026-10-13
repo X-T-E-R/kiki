@@ -25,7 +25,6 @@
 import { useEffect, useRef, useState } from 'react';
 
 import type { GoalBudgetPatch, GoalFollowUpTiming, GoalSnapshot } from '@kiki/protocol';
-import type { I18nKey } from '@kiki/session-core/i18n';
 
 import { API_CODES, ApiError } from '../lib/client';
 import type { UpdateAgentGoalInput } from '../lib/client';
@@ -78,10 +77,6 @@ function errorDetail(error: unknown): string {
 
 function budgetField(value: number | null, divisor = 1): string {
   return value === null ? '' : String(value / divisor);
-}
-
-function goalCopy(t: (key: I18nKey, params?: Readonly<Record<string, string | number>>) => string, key: string): string {
-  return t(key as I18nKey);
 }
 
 export function GoalPauseButton({ onPause }: { readonly onPause: () => Promise<unknown> }) {
@@ -203,11 +198,11 @@ export function GoalCard({
     };
     if (Object.values(budgetLimits).some((value) => value !== null && (!Number.isSafeInteger(value) || value <= 0)) ||
       (wallClockBudgetMs !== null && (wallClockBudgetMs < 1_000 || wallClockBudgetMs / 1_000 !== seconds))) {
-      setActionError(goalCopy(t, 'goal.invalidBudget'));
+      setActionError(t('goal.invalidBudget'));
       return;
     }
     setPending('save');
-    const input = {
+    const input: UpdateAgentGoalInput = {
       goalId: baseline.goalId,
       expectedRevision: baseline.controlRevision,
       objective: trimmed,
@@ -324,13 +319,13 @@ export function GoalCard({
               ['seconds', Math.floor(goal.wallClockMs / 1_000), goal.budget.wallClockBudgetMs === null ? null : goal.budget.wallClockBudgetMs / 1_000, goal.budget.wallClockBudgetReached],
             ] as const).map(([unit, used, limit, reached]) => (
               <span key={unit} data-goal-budget={unit} className={reached ? 'text-amber-ink' : undefined}>
-                {goalCopy(t, `goal.budget.${unit}`)} · {used.toLocaleString()}{limit === null ? ` · ${goalCopy(t, 'goal.noLimit')}` : `/${limit.toLocaleString()}`}
-                {reached ? ` · ${goalCopy(t, 'goal.limitReached')}` : ''}
+                {t(`goal.budget.${unit}`)} · {used.toLocaleString()}{limit === null ? ` · ${t('goal.noLimit')}` : `/${limit.toLocaleString()}`}
+                {reached ? ` · ${t('goal.limitReached')}` : ''}
               </span>
             ))}
           </div>
           {goal.status === 'blocked' && goal.budget.overBudget ? (
-            <p className="mt-1 text-[12px] text-amber-ink">{goalCopy(t, 'goal.budgetBlocked')}</p>
+            <p className="mt-1 text-[12px] text-amber-ink">{t('goal.budgetBlocked')}</p>
           ) : null}
         </div>
         {(
@@ -419,7 +414,7 @@ export function GoalCard({
               />
             </label>
             <fieldset disabled={busy} className="min-w-0 space-y-2">
-              <legend className="text-[12px] font-medium text-ink-soft">{goalCopy(t, 'goal.hardBudgets')}</legend>
+              <legend className="text-[12px] font-medium text-ink-soft">{t('goal.hardBudgets')}</legend>
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                 {([
                   ['turns', turnBudget, setTurnBudget, 1],
@@ -427,16 +422,16 @@ export function GoalCard({
                   ['seconds', wallClockBudget, setWallClockBudget, 0.001],
                 ] as const).map(([unit, value, setter, step]) => (
                   <label key={unit} className="block min-w-0 text-[12px] text-ink-soft">
-                    {goalCopy(t, `goal.budget.${unit}`)}
+                    {t(`goal.budget.${unit}`)}
                     <input type="number" min="1" step={step} value={value} data-goal-budget-input={unit}
-                      placeholder={goalCopy(t, 'goal.noLimit')} onChange={(event) => { setter(event.target.value); }}
+                      placeholder={t('goal.noLimit')} onChange={(event) => { setter(event.target.value); }}
                       className="mt-1 w-full min-w-0 rounded-lg border border-hairline bg-panel px-2 py-1 text-[13px] text-ink focus:border-accent focus:outline-none disabled:opacity-60" />
                   </label>
                 ))}
               </div>
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-[12px] text-ink-faint">{goalCopy(t, 'goal.budgetHint')}</span>
-                <button type="button" className={actionClass} onClick={() => { setTurnBudget(''); setTokenBudget(''); setWallClockBudget(''); }}>{goalCopy(t, 'goal.clearBudgets')}</button>
+                <span className="text-[12px] text-ink-faint">{t('goal.budgetHint')}</span>
+                <button type="button" className={actionClass} onClick={() => { setTurnBudget(''); setTokenBudget(''); setWallClockBudget(''); }}>{t('goal.clearBudgets')}</button>
               </div>
             </fieldset>
             <div className="flex flex-wrap items-center gap-2">

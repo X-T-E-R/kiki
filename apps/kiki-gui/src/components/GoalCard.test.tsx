@@ -125,26 +125,27 @@ describe('GoalCard', () => {
 
   it('shows no default limits and displays each configured budget with reached feedback', async () => {
     const unlimited = await renderCard();
-    expect(unlimited.container.querySelector('[data-goal-budgets]')?.textContent).toMatch(/No limit|goal\.noLimit/);
+    expect(unlimited.container.querySelector('[data-goal-budgets]')?.textContent).toContain('No limit');
+    expect(unlimited.container.querySelector('[data-goal-budgets]')?.textContent).not.toContain('goal.');
     const base = goalFixture();
     const { container } = await renderCard({ goal: goalFixture({ status: 'blocked', budget: {
       ...base.budget, turnBudget: 1, tokenBudget: 200, wallClockBudgetMs: 2_000,
       turnBudgetReached: true, overBudget: true,
     } }) });
     expect(container.querySelector('[data-goal-budget="turns"]')?.textContent).toContain('1/1');
-    expect(container.querySelector('[data-goal-budget="turns"]')?.textContent).toMatch(/Limit reached|goal\.limitReached/);
+    expect(container.querySelector('[data-goal-budget="turns"]')?.textContent).toContain('Limit reached');
     expect(container.querySelector('[data-goal-budget="tokens"]')?.textContent).toContain('100/200');
     expect(container.querySelector('[data-goal-budget="seconds"]')?.textContent).toContain('1/2');
-    expect(container.textContent).toMatch(/then Resume|goal\.budgetBlocked/);
+    expect(container.textContent).toContain('Raise or clear the reached limit, then Resume to continue.');
   });
 
   it('keeps cumulative usage visible when every budget is unlimited', async () => {
     const { container } = await renderCard({ goal: goalFixture({
       turnsUsed: 4, tokensUsed: 24_000, wallClockMs: 125_000,
     }) });
-    expect(container.querySelector('[data-goal-budget="turns"]')?.textContent).toMatch(/^(Goal turns|goal\.budget\.turns) · 4 · (No limit|goal\.noLimit)$/);
-    expect(container.querySelector('[data-goal-budget="tokens"]')?.textContent).toMatch(/^(Output tokens|goal\.budget\.tokens) · 24,000 · (No limit|goal\.noLimit)$/);
-    expect(container.querySelector('[data-goal-budget="seconds"]')?.textContent).toMatch(/^(Active time \(seconds\)|goal\.budget\.seconds) · 125 · (No limit|goal\.noLimit)$/);
+    expect(container.querySelector('[data-goal-budget="turns"]')?.textContent).toBe('Goal turns · 4 · No limit');
+    expect(container.querySelector('[data-goal-budget="tokens"]')?.textContent).toBe('Output tokens · 24,000 · No limit');
+    expect(container.querySelector('[data-goal-budget="seconds"]')?.textContent).toBe('Active time (seconds) · 125 · No limit');
   });
 
   it('edits and clears all budgets in one save without resuming', async () => {
@@ -165,7 +166,9 @@ describe('GoalCard', () => {
     expect(onResume).not.toHaveBeenCalled();
     await click(container.querySelector('button[title^="Edit the objective"]')!);
     await settle();
-    await click([...container.querySelectorAll('button')].find((button) => button.textContent === 'Clear limits' || button.textContent === 'goal.clearBudgets')!);
+    const clear = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Clear limits');
+    expect(clear).toBeDefined();
+    await click(clear!);
     await click(container.querySelector('[data-goal-save]')!);
     expect(onUpdate.mock.calls[1]?.[0]).toMatchObject({ budgetLimits: { turnBudget: null, tokenBudget: null, wallClockBudgetMs: null } });
   });
@@ -188,10 +191,11 @@ describe('GoalCard', () => {
     await click(container.querySelector('[data-goal-save]')!);
     if (expectedMs === null) {
       expect(onUpdate).not.toHaveBeenCalled();
-      expect(container.querySelector('[data-goal-error]')).not.toBeNull();
+      expect(container.querySelector('[data-goal-error]')?.textContent).toBe(
+        'Goal action failed: Use positive whole turns and tokens, and at least one second of active time.',
+      );
     } else {
-      const saved = onUpdate.mock.calls[0]?.[0] as { budgetLimits?: { wallClockBudgetMs?: number | null } } | undefined;
-      expect(saved?.budgetLimits?.wallClockBudgetMs).toBe(expectedMs);
+      expect(onUpdate.mock.calls[0]?.[0].budgetLimits?.wallClockBudgetMs).toBe(expectedMs);
     }
   });
 
