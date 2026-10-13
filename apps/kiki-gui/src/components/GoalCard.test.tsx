@@ -324,6 +324,38 @@ describe('GoalCard', () => {
     expect(container.querySelector('[data-goal-error]')?.textContent).toContain('engine busy');
     expect(container.querySelector('[data-goal-card]')).not.toBeNull();
   });
+
+  it('toggles advanced settings and changes custom budget mode and stepper values', async () => {
+    const { container } = await renderCard();
+    await click(container.querySelector('button[title^="Edit the objective"]')!);
+    await settle();
+    const advancedToggle = container.querySelector<HTMLButtonElement>('[data-goal-advanced-toggle]')!;
+    expect(advancedToggle).not.toBeNull();
+    // Toggle advanced section
+    await click(advancedToggle);
+    expect(container.querySelector('[data-goal-advanced]')?.className).not.toContain('hidden');
+
+    // Switch turns to custom mode
+    const turnsCustom = container.querySelector<HTMLButtonElement>('[data-goal-budget-mode="turns-custom"]')!;
+    await click(turnsCustom);
+    const turnsInput = container.querySelector<HTMLInputElement>('[data-goal-budget-input="turns"]')!;
+    expect(turnsInput.value).toBe('5');
+
+    // Use stepper plus button
+    const plusBtn = container.querySelector<HTMLButtonElement>('[data-goal-budget-row="turns"] button[aria-label="Increase turns"]')!;
+    await click(plusBtn);
+    expect(turnsInput.value).toBe('6');
+
+    // Use stepper minus button
+    const minusBtn = container.querySelector<HTMLButtonElement>('[data-goal-budget-row="turns"] button[aria-label="Decrease turns"]')!;
+    await click(minusBtn);
+    expect(turnsInput.value).toBe('5');
+
+    // Switch back to unlimited
+    const turnsUnlimited = container.querySelector<HTMLButtonElement>('[data-goal-budget-mode="turns-unlimited"]')!;
+    await click(turnsUnlimited);
+    expect(turnsInput.value).toBe('');
+  });
 });
 
 describe('GoalPauseButton', () => {

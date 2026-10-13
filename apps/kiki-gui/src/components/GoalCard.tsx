@@ -29,7 +29,7 @@ import type { GoalBudgetPatch, GoalFollowUpTiming, GoalSnapshot } from '@kiki/pr
 import { API_CODES, ApiError } from '../lib/client';
 import type { UpdateAgentGoalInput } from '../lib/client';
 import { useI18n } from '../i18n';
-import { Icon, Spinner } from './icons';
+import { DisclosureChevron, Icon, Spinner } from './icons';
 import { InlineEditor } from './InlineEditor';
 import { LifeMark } from './LifeMark';
 
@@ -139,6 +139,8 @@ export function GoalCard({
   const [pending, setPending] = useState<'refresh' | 'save' | 'pause' | 'resume' | 'cancel' | null>(null);
   const [armedResume, setArmedResume] = useState(false);
   const [armedCancel, setArmedCancel] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const errorRef = useRef<HTMLParagraphElement | null>(null);
   const resumeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cancelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -157,6 +159,13 @@ export function GoalCard({
     setTokenBudget(budgetField(snapshot.budget.tokenBudget));
     setTurnBudget(budgetField(snapshot.budget.turnBudget));
     setWallClockBudget(budgetField(snapshot.budget.wallClockBudgetMs, 1_000));
+    // If any budget limit is configured or timing is customized, open advanced by default
+    const hasCustomBudget = snapshot.budget.turnBudget !== null ||
+      snapshot.budget.tokenBudget !== null ||
+      snapshot.budget.wallClockBudgetMs !== null;
+    if (hasCustomBudget || snapshot.followUpTiming === 'tasks_done') {
+      setAdvancedOpen(true);
+    }
   };
 
   const openEditor = () => {
@@ -199,6 +208,10 @@ export function GoalCard({
     if (Object.values(budgetLimits).some((value) => value !== null && (!Number.isSafeInteger(value) || value <= 0)) ||
       (wallClockBudgetMs !== null && (wallClockBudgetMs < 1_000 || wallClockBudgetMs / 1_000 !== seconds))) {
       setActionError(t('goal.invalidBudget'));
+      setAdvancedOpen(true);
+      setTimeout(() => {
+        errorRef.current?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+      }, 0);
       return;
     }
     setPending('save');
@@ -388,18 +401,22 @@ export function GoalCard({
           </span>
         )}
       </div>
-        <InlineEditor open={editing} lazy className="mt-2 mb-1 ml-4 space-y-2">
-          <div className="space-y-2" data-goal-editor>
+        <InlineEditor open={editing} lazy className="mt-2 mb-1 ml-4 space-y-3">
+          <div className="space-y-3" data-goal-editor>
             <label className="block">
               <span className="mb-1 block text-[12px] font-medium text-ink-soft">
                 {t('goal.editObjective')}
               </span>
               <textarea
                 value={objective}
-                onChange={(event) => { setObjective(event.target.value); }}
+                onChange={(event) => {
+                  setObjective(event.target.value);
+                  if (actionError !== null) setActionError(null);
+                }}
                 rows={2}
                 disabled={pending === 'refresh' || pending === 'save'}
-                className="w-full resize-none rounded-lg border border-hairline bg-panel px-2 py-1 text-[13px] text-ink focus:border-accent focus:outline-none disabled:opacity-60"
+                placeholder={t('composer.placeholder')}
+                className="w-full resize-none rounded-lg border border-hairline bg-panel px-2.5 py-1.5 text-[13px] leading-5 text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none disabled:opacity-60 transition-colors"
               />
             </label>
             <label className="block">
@@ -408,91 +425,224 @@ export function GoalCard({
               </span>
               <input
                 value={criterion}
-                onChange={(event) => { setCriterion(event.target.value); }}
+                onChange={(event) => {
+                  setCriterion(event.target.value);
+                  if (actionError !== null) setActionError(null);
+                }}
                 disabled={pending === 'refresh' || pending === 'save'}
-                className="w-full rounded-lg border border-hairline bg-panel px-2 py-1 text-[13px] text-ink focus:border-accent focus:outline-none disabled:opacity-60"
+                placeholder={t('goal.editCriterion')}
+                className="w-full rounded-lg border border-hairline/60 bg-panel/60 px-2.5 py-1 text-[13px] text-ink placeholder:text-ink-faint focus:border-accent focus:bg-panel focus:outline-none disabled:opacity-60 transition-colors"
               />
             </label>
-            <fieldset disabled={busy} className="min-w-0 space-y-2">
-              <legend className="text-[12px] font-medium text-ink-soft">{t('goal.hardBudgets')}</legend>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                {([
-                  ['turns', turnBudget, setTurnBudget, 1],
-                  ['tokens', tokenBudget, setTokenBudget, 1],
-                  ['seconds', wallClockBudget, setWallClockBudget, 0.001],
-                ] as const).map(([unit, value, setter, step]) => (
-                  <label key={unit} className="block min-w-0 text-[12px] text-ink-soft">
-                    {t(`goal.budget.${unit}`)}
-                    <input type="number" min="1" step={step} value={value} data-goal-budget-input={unit}
-                      placeholder={t('goal.noLimit')} onChange={(event) => { setter(event.target.value); }}
-                      className="mt-1 w-full min-w-0 rounded-lg border border-hairline bg-panel px-2 py-1 text-[13px] text-ink focus:border-accent focus:outline-none disabled:opacity-60" />
-                  </label>
-                ))}
-              </div>
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-[12px] text-ink-faint">{t('goal.budgetHint')}</span>
-                <button type="button" className={actionClass} onClick={() => { setTurnBudget(''); setTokenBudget(''); setWallClockBudget(''); }}>{t('goal.clearBudgets')}</button>
-              </div>
-            </fieldset>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[12px] font-medium text-ink-soft">
-                {t('goal.editTiming')}
-              </span>
-              <span
-                role="radiogroup"
-                aria-label={t('goal.editTiming')}
-                className="flex items-center gap-0.5 rounded-lg bg-ink/[0.04] p-0.5"
+            <div className="pt-0.5">
+              <button
+                type="button"
+                data-goal-advanced-toggle
+                onClick={() => { setAdvancedOpen((open) => !open); }}
+                className="flex items-center gap-1.5 text-[12px] font-medium text-ink-soft transition-colors hover:text-ink focus-visible:outline-none"
               >
-                {GOAL_FOLLOW_UP_TIMINGS.map((timing) => (
-                  <button
-                    key={timing}
-                    type="button"
-                    role="radio"
-                    aria-checked={timing === followUpTiming}
-                    data-goal-timing={timing}
-                    onClick={() => { setFollowUpTiming(timing); }}
-                    className={`h-6 rounded-md px-2 text-[12px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none ${
-                      timing === followUpTiming ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-soft hover:text-ink'
-                    }`}
+                <DisclosureChevron open={advancedOpen} size={12} />
+                <span>{t('st.section.advanced')}</span>
+                {(turnBudget.trim() !== '' || tokenBudget.trim() !== '' || wallClockBudget.trim() !== '') ? (
+                  <span className="rounded-full bg-accent/10 px-1.5 py-0.2 text-[10px] font-medium text-accent">
+                    {t('goal.hardBudgets')}
+                  </span>
+                ) : null}
+              </button>
+              <div
+                data-goal-advanced
+                className={advancedOpen ? 'mt-2 space-y-3 rounded-lg border border-hairline/40 bg-ink/[0.02] p-2.5' : 'hidden'}
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[12px] font-medium text-ink-soft">
+                    {t('goal.editTiming')}
+                  </span>
+                  <span
+                    role="radiogroup"
+                    aria-label={t('goal.editTiming')}
+                    className="flex items-center gap-0.5 rounded-lg bg-ink/[0.04] p-0.5"
                   >
-                    {t(GOAL_TIMING_LABEL_KEY[timing])}
-                  </button>
-                ))}
-              </span>
-              <span className="ml-auto flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditing(false);
-                    setConflict(false);
-                    setActionError(null);
-                  }}
-                  disabled={pending === 'save'}
-                  className="h-7 rounded-md px-3 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
-                >
-                  {t('common.cancel')}
-                </button>
-                <button
-                  type="button"
-                  onClick={save}
-                  disabled={pending !== null || baseline === null || objective.trim() === ''}
-                  data-goal-save
-                  className="h-7 rounded-md bg-accent px-3 text-[12px] font-medium text-on-accent transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
-                >
-                  {t('common.save')}
-                </button>
-              </span>
+                    {GOAL_FOLLOW_UP_TIMINGS.map((timing) => (
+                      <button
+                        key={timing}
+                        type="button"
+                        role="radio"
+                        aria-checked={timing === followUpTiming}
+                        data-goal-timing={timing}
+                        onClick={() => { setFollowUpTiming(timing); }}
+                        className={`h-6 rounded-md px-2 text-[12px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none ${
+                          timing === followUpTiming
+                            ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                            : 'text-ink-soft hover:text-ink'
+                        }`}
+                      >
+                        {t(GOAL_TIMING_LABEL_KEY[timing])}
+                      </button>
+                    ))}
+                  </span>
+                </div>
+                <fieldset disabled={busy} className="min-w-0 space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <legend className="text-[12px] font-medium text-ink-soft">{t('goal.hardBudgets')}</legend>
+                    <button
+                      type="button"
+                      className={actionClass}
+                      onClick={() => {
+                        setTurnBudget('');
+                        setTokenBudget('');
+                        setWallClockBudget('');
+                        if (actionError !== null) setActionError(null);
+                      }}
+                    >
+                      {t('goal.clearBudgets')}
+                    </button>
+                  </div>
+                  <div className="space-y-1.5">
+                    {([
+                      { unit: 'turns', value: turnBudget, setter: setTurnBudget, step: 1, min: 1, defaultVal: '5' },
+                      { unit: 'tokens', value: tokenBudget, setter: setTokenBudget, step: 1000, min: 1, defaultVal: '10000' },
+                      { unit: 'seconds', value: wallClockBudget, setter: setWallClockBudget, step: 10, min: 1, defaultVal: '300' },
+                    ] as const).map(({ unit, value, setter, step, min, defaultVal }) => {
+                      const isCustom = value.trim() !== '';
+                      return (
+                        <div
+                          key={unit}
+                          data-goal-budget-row={unit}
+                          className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-hairline/40 bg-panel/80 px-2 py-1.5"
+                        >
+                          <span className="text-[12px] text-ink-soft">
+                            {t(`goal.budget.${unit}`)}
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              role="radiogroup"
+                              aria-label={t(`goal.budget.${unit}`)}
+                              className="flex items-center gap-0.5 rounded-lg bg-ink/[0.04] p-0.5"
+                            >
+                              <button
+                                type="button"
+                                role="radio"
+                                aria-checked={!isCustom}
+                                data-goal-budget-mode={`${unit}-unlimited`}
+                                onClick={() => {
+                                  setter('');
+                                  if (actionError !== null) setActionError(null);
+                                }}
+                                className={`h-5 rounded px-1.5 text-[11px] transition-colors focus-visible:outline-none ${
+                                  !isCustom
+                                    ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                                    : 'text-ink-soft hover:text-ink'
+                                }`}
+                              >
+                                {t('goal.noLimit')}
+                              </button>
+                              <button
+                                type="button"
+                                role="radio"
+                                aria-checked={isCustom}
+                                data-goal-budget-mode={`${unit}-custom`}
+                                onClick={() => {
+                                  if (!isCustom) setter(defaultVal);
+                                  if (actionError !== null) setActionError(null);
+                                }}
+                                className={`h-5 rounded px-1.5 text-[11px] transition-colors focus-visible:outline-none ${
+                                  isCustom
+                                    ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                                    : 'text-ink-soft hover:text-ink'
+                                }`}
+                              >
+                                {t('st.nbSearch.advanced.customValue')}
+                              </button>
+                            </span>
+                            <div className={`flex items-center gap-1 ${isCustom ? '' : 'hidden'}`}>
+                              <button
+                                type="button"
+                                aria-label={`Decrease ${unit}`}
+                                disabled={Number(value) <= min}
+                                onClick={() => {
+                                  const current = Number(value) || min;
+                                  const next = Math.max(min, Math.round((current - step) * 1000) / 1000);
+                                  setter(String(next));
+                                  if (actionError !== null) setActionError(null);
+                                }}
+                                className="flex h-5 w-5 items-center justify-center rounded border border-hairline bg-paper text-ink-soft hover:bg-ink/[0.05] hover:text-ink disabled:opacity-30 focus-visible:outline-none"
+                              >
+                                <Icon name="dash" size={10} />
+                              </button>
+                              <input
+                                type="number"
+                                min={min}
+                                step={unit === 'seconds' ? 0.001 : 1}
+                                value={value}
+                                data-goal-budget-input={unit}
+                                placeholder={t('goal.noLimit')}
+                                onChange={(event) => {
+                                  setter(event.target.value);
+                                  if (actionError !== null) setActionError(null);
+                                }}
+                                className="h-5 w-16 rounded border border-hairline bg-paper px-1 text-center text-[11px] tabular-nums text-ink focus:border-accent focus:outline-none"
+                              />
+                              <button
+                                type="button"
+                                aria-label={`Increase ${unit}`}
+                                onClick={() => {
+                                  const current = Number(value) || 0;
+                                  const next = Math.round((current + step) * 1000) / 1000;
+                                  setter(String(next));
+                                  if (actionError !== null) setActionError(null);
+                                }}
+                                className="flex h-5 w-5 items-center justify-center rounded border border-hairline bg-paper text-ink-soft hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-none"
+                              >
+                                <Icon name="plus" size={10} />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <span className="block text-[11px] text-ink-faint">{t('goal.budgetHint')}</span>
+                </fieldset>
+              </div>
             </div>
+            {actionError !== null ? (
+              <p
+                ref={errorRef}
+                role="alert"
+                data-goal-error
+                className="rounded-md border border-danger/30 bg-danger/10 px-2.5 py-1.5 text-[12px] leading-snug text-danger"
+              >
+                {t('goal.actionFailed', { detail: actionError })}
+              </p>
+            ) : null}
             {conflict ? (
               <p role="status" data-goal-conflict className="text-[12px] text-amber-ink">
                 {t('goal.conflict')}
               </p>
             ) : null}
-            {actionError !== null ? (
-              <p role="alert" data-goal-error className="text-[12px] text-danger">
-                {t('goal.actionFailed', { detail: actionError })}
-              </p>
-            ) : null}
+            <div className="flex items-center justify-end gap-1.5 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setEditing(false);
+                  setConflict(false);
+                  setActionError(null);
+                }}
+                disabled={pending === 'save'}
+                className="h-7 rounded-md px-3 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
+              >
+                {t('common.cancel')}
+              </button>
+              <button
+                type="button"
+                onClick={save}
+                disabled={pending !== null || baseline === null || objective.trim() === ''}
+                data-goal-save
+                className="h-7 rounded-md bg-accent px-3 text-[12px] font-medium text-on-accent transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
+              >
+                {t('common.save')}
+              </button>
+            </div>
           </div>
         </InlineEditor>
         {!editing && actionError !== null ? (
