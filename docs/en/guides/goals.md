@@ -84,6 +84,8 @@ Pausing a goal stops its current goal-driven turn and automatic follow-up turns 
 
 A blocked goal does not cancel work it already started. When a task launched for it finishes, the result wakes the main agent to process that one completion; the goal itself stays blocked until you resume it. If you cancel the goal or its budget runs out, that result waits for your next message.
 
+While a goal is active, each finished background task is delivered when the main agent is idle, including when another task is still running. That delivery does not wait for the other tasks, and it is not the goal's follow-up turn. The goal follows up on its own timing.
+
 ## Manage goals in the web UI
 
 The web UI shows the current goal above the composer. The Pause button remains visible beside an active goal, even when its details are collapsed. Select the goal title to expand its objective, completion criterion, follow-up timing, budget usage, and other controls; editing or loading those details does not disable Pause.

@@ -1641,6 +1641,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     if (this.loop.status().lastTurnResult === 'cancelled' || lastEnded?.reason === 'cancelled') {
       return 'activeOrNextTurn';
     }
+    if (goal?.status === 'active') return 'activeOrNewTurn';
     if (goal?.status === 'blocked' && info.goalId === goal.goalId &&
       (goal.budgetLimits.tokenBudget === undefined || goal.tokensUsed < goal.budgetLimits.tokenBudget) &&
       (goal.budgetLimits.turnBudget === undefined || goal.turnsUsed < goal.budgetLimits.turnBudget) &&

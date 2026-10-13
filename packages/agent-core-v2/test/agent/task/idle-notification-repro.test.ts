@@ -308,6 +308,126 @@ describe('task notification → main agent (real Agent instance)', () => {
       expect(ctx.context.get().filter((m) => m.origin?.kind === 'system_trigger' && m.origin.name === 'goal_continuation')).toHaveLength(0);
     }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+    it('ACTIVE GOAL: a finished child is delivered while another child keeps running', async () => {
+      const goals = ctx.get(IAgentGoalService);
+      const tasks = background as TaskServiceTestManager;
+      const finished = createControlledPromise<{ result: string }>();
+      const running = createControlledPromise<{ result: string }>();
+      const finishedId = background.registerTask(new SubagentTask(
+        { agentId: 'agent-finished', profileName: 'coder', completion: finished },
+        'finished before the goal',
+        new AbortController(),
+      ));
+      const goal = await goals.createGoal({
+        objective: 'finish delegated work',
+        followUpTiming: 'subagents_done',
+      });
+      expect(goal.budget.tokenBudget).toBeNull();
+      expect(goal.budget.turnBudget).toBeNull();
+      expect(goal.budget.wallClockBudgetMs).toBeNull();
+      const runningId = background.registerTask(new SubagentTask(
+        { agentId: 'agent-running', profileName: 'coder', completion: running },
+        'still running sibling',
+        new AbortController(),
+      ));
+      expect(background.getTask(finishedId)?.goalId).toBeUndefined();
+      expect(background.getTask(runningId)?.goalId).toBe(goal.goalId);
+      try {
+        ctx.mockNextResponse({ type: 'text', text: 'parent turn done' });
+        await ctx.rpc.prompt({ input: [{ type: 'text', text: 'start delegated work' }] });
+        await ctx.untilTurnEnd();
+        await loop.settled();
+        const turnsAfterParent = goals.getGoal().goal?.turnsUsed;
+        expect(goals.getGoal().goal?.status).toBe('active');
+        expect(ctx.context.get().filter((m) => m.origin?.kind === 'system_trigger' && m.origin.name === 'goal_continuation')).toHaveLength(0);
+        expect(notifiedCount(ctx)).toBe(0);
+
+        ctx.mockNextResponse({ type: 'text', text: 'saw the finished child' });
+        const ended = ctx.untilTurnEnd();
+        finished.resolve({ result: 'child receipt ready' });
+        await ended;
+        await loop.settled();
+        expect(notifiedCount(ctx)).toBe(1);
+        expect(ctx.llmCalls).toHaveLength(2);
+        const delivered = JSON.stringify(ctx.llmCalls.at(-1)!.history);
+        expect(delivered).toContain('<notification');
+        expect(delivered).toContain(finishedId);
+        expect(delivered).toContain('child receipt ready');
+        expect(delivered).not.toContain('Continue the active goal');
+        expect(ctx.context.get().filter((m) => m.origin?.kind === 'task' && m.origin.taskId === finishedId)).toHaveLength(1);
+        expect(ctx.context.get().filter((m) => m.origin?.kind === 'system_trigger' && m.origin.name === 'goal_continuation')).toHaveLength(0);
+        expect(goals.getGoal().goal).toMatchObject({ status: 'active', turnsUsed: turnsAfterParent });
+        expect(background.getTask(runningId)?.status).toBe('running');
+        await tasks.reconcile();
+        expect(notifiedCount(ctx)).toBe(1);
+        expect(ctx.context.get().filter((m) => m.origin?.kind === 'task' && m.origin.taskId === finishedId)).toHaveLength(1);
+        expect(ctx.context.get().filter((m) => m.origin?.kind === 'task' && m.origin.taskId === runningId)).toHaveLength(0);
+      } finally {
+        finished.resolve({ result: 'cleanup' });
+        running.resolve({ result: 'cleanup' });
+      }
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+    it('ACTIVE GOAL: cancelling the notification turn holds the next completion', async () => {
+      const goals = ctx.get(IAgentGoalService);
+      await goals.createGoal({ objective: 'finish delegated work' });
+      const first = createControlledPromise<{ result: string }>();
+      const second = createControlledPromise<{ result: string }>();
+      const sibling = createControlledPromise<{ result: string }>();
+      const firstId = background.registerTask(agentTask(first, 'first completion'));
+      background.registerTask(new SubagentTask(
+        { agentId: 'agent-sibling', profileName: 'coder', completion: sibling },
+        'keeps the goal from following up',
+        new AbortController(),
+      ));
+      const secondId = background.registerTask(new SubagentTask(
+        { agentId: 'agent-second', profileName: 'coder', completion: second },
+        'completion after cancel',
+        new AbortController(),
+      ));
+      let armCancel = false;
+      const hook = loop.hooks.onDidFinishStep.register('test.goal-notification-cancel', async (step, next) => {
+        if (armCancel && step.firstStepOfTurn) {
+          armCancel = false;
+          loop.cancel();
+        }
+        await next();
+      });
+      try {
+        ctx.mockNextResponse({ type: 'text', text: 'parent turn done' });
+        await ctx.rpc.prompt({ input: [{ type: 'text', text: 'start delegated work' }] });
+        await ctx.untilTurnEnd();
+        await loop.settled();
+        armCancel = true;
+        ctx.mockNextResponse({ type: 'text', text: 'notification response' });
+        const ended = ctx.untilTurnEnd();
+        first.resolve({ result: 'first receipt' });
+        await ended;
+        await loop.settled();
+        expect(loop.status().lastTurnResult).toBe('cancelled');
+        expect(goals.getGoal().goal?.status).toBe('active');
+        const enqueue = vi.spyOn(loop, 'enqueue');
+        second.resolve({ result: 'held receipt' });
+        await background.wait(secondId);
+        await vi.waitFor(() => expect(enqueue.mock.calls.some(([request]) => request.kind === 'task_notification')).toBe(true));
+        expect(enqueue.mock.calls.find(([request]) => request.kind === 'task_notification')![0].admission).toBe('activeOrNextTurn');
+        expect(ctx.context.get().filter((m) => m.origin?.kind === 'task' && m.origin.taskId === secondId)).toHaveLength(0);
+        ctx.mockNextResponse({ type: 'text', text: 'authorized handling' });
+        await ctx.rpc.prompt({ input: [{ type: 'text', text: 'inspect the held completion' }] });
+        await ctx.untilTurnEnd();
+        await loop.settled();
+        expect(JSON.stringify(ctx.llmCalls.at(-1)!.history)).toContain('held receipt');
+        expect(ctx.context.get().filter((m) => m.origin?.kind === 'task' && m.origin.taskId === firstId)).toHaveLength(1);
+        expect(ctx.context.get().filter((m) => m.origin?.kind === 'task' && m.origin.taskId === secondId)).toHaveLength(1);
+      } finally {
+        armCancel = false;
+        first.resolve({ result: 'cleanup' });
+        second.resolve({ result: 'cleanup' });
+        sibling.resolve({ result: 'cleanup' });
+        await hook.dispose();
+      }
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
     it.each(['paused', 'cancelled', 'complete', 'replaced', 'token budget', 'turn budget', 'time budget'] as const)(
       'GOAL CONTROL: %s retains completion until an authorized prompt', async (control) => {
         const goals = ctx.get(IAgentGoalService);

@@ -1508,7 +1508,7 @@ describe('AgentGoalService core workflow hooks', () => {
     expect(JSON.stringify(context.get().at(-1)?.content)).toContain('TaskWait');
   });
 
-  it('waits for every subagent result and coalesces the final notification with one continuation turn', async () => {
+  it('notifies the first finished subagent without a goal continuation while another subagent is running', async () => {
     let settleFirst!: (value: { result: string }) => void;
     let settleSecond!: (value: { result: string }) => void;
     const firstCompletion = new Promise<{ result: string }>((resolve) => { settleFirst = resolve; });
@@ -1533,11 +1533,36 @@ describe('AgentGoalService core workflow hooks', () => {
     expect(loopService.launches).toEqual([]);
 
     settleFirst({ result: 'first done' });
-    await vi.waitFor(() => expect(tasks.list(true)).toHaveLength(1));
-    expect(loopService.launches).toEqual([]);
+    await vi.waitFor(() => expect(loopService.launches).toHaveLength(1));
+    expect(tasks.list(true)).toHaveLength(1);
+    const notificationTurnId = loopService.launches[0]!;
+    eventBus.publish(new TurnStarted({
+      turnId: notificationTurnId,
+      origin: {
+        kind: 'task',
+        taskId: 'pending-notification',
+        status: 'completed',
+        notificationId: 'task:pending-notification:completed',
+      },
+    }));
+    endTurn(eventBus, makeTurn(notificationTurnId));
+    expect(loopService.launches).toEqual([notificationTurnId]);
+    expect(context.get().filter((message) => message.origin?.kind === 'system_trigger')).toHaveLength(0);
 
     settleSecond({ result: 'second done' });
-    await vi.waitFor(() => expect(loopService.launches).toHaveLength(1));
+    await vi.waitFor(() => expect(tasks.list(true)).toHaveLength(0));
+    expect(loopService.launches).toEqual([notificationTurnId]);
+    eventBus.publish(new TurnStarted({
+      turnId: notificationTurnId,
+      origin: {
+        kind: 'task',
+        taskId: 'final-notification',
+        status: 'completed',
+        notificationId: 'task:final-notification:completed',
+      },
+    }));
+    endTurn(eventBus, makeTurn(notificationTurnId));
+    expect(loopService.launches).toHaveLength(2);
     expect(loopService.drainNextBatch(context)).toBeDefined();
     expect(context.get().filter((message) => message.origin?.kind === 'task')).toHaveLength(2);
     expect(context.get().filter((message) => message.origin?.kind === 'system_trigger')).toHaveLength(1);

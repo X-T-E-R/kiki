@@ -248,6 +248,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
 
   private readonly wallClockDeadline = this._register(new MutableDisposable<IDisposable>());
   private readonly independentScheduledTurns = new Set<number>();
+  private readonly notificationTurns = new Set<number>();
   private pendingContinuation?: PendingContinuation;
   private yieldedGoalId?: string;
 
@@ -828,13 +829,16 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     this.goalTurnTargets.delete(turnId);
     this.goalTurnRevisions.delete(turnId);
     this.exhaustedTurnBudgetGoals.delete(turnId);
+    const notificationTurn = origin.kind === 'task';
+    if (notificationTurn) this.notificationTurns.add(turnId);
+    else this.notificationTurns.delete(turnId);
     const independentScheduled = isIndependentScheduledOrigin(origin);
-    if (independentScheduled) {
+    if (independentScheduled || notificationTurn) {
       this.independentScheduledTurns.add(turnId);
     } else {
       this.independentScheduledTurns.delete(turnId);
     }
-    if (!independentScheduled && !this.goalDrivenTurns.has(turnId)) {
+    if (!independentScheduled && !notificationTurn && !this.goalDrivenTurns.has(turnId)) {
       const state = this.goalState;
       const continuationGoalId = isGoalContinuationOrigin(origin)
         ? this.pendingContinuationGoals.get(turnId)
@@ -950,6 +954,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     turnId: number,
     result: Pick<TurnEnded, 'reason' | 'error'>,
   ): Promise<void> {
+    const notificationTurn = this.notificationTurns.has(turnId);
     const { goalId, lifecycleGoalId, starterTurn } = this.clearTurnTracking(turnId);
     const resumeContinuation = this.resumeContinuation;
     if (resumeContinuation?.turnId === turnId) this.resumeContinuation = undefined;
@@ -962,7 +967,15 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
       this.launchContinuationTurn(resumeContinuation.goalId);
       return;
     }
-    if (goalId === undefined || lifecycleGoalId === undefined) return;
+    if (goalId === undefined || lifecycleGoalId === undefined) {
+      if (notificationTurn && result.reason === 'completed') {
+        const state = this.goalState;
+        if (state !== null && state.status === 'active' && this.blockIfBudgetReached(state) === null) {
+          this.launchContinuationTurn(state.goalId);
+        }
+      }
+      return;
+    }
     const stepCapped = isMaxStepsTurnFailure(result);
     if (
       !stepCapped &&
@@ -994,6 +1007,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     const lifecycleGoalId = this.goalTurnTarget(turnId);
     const starterTurn = this.goalStarterTurns.delete(turnId);
     this.independentScheduledTurns.delete(turnId);
+    this.notificationTurns.delete(turnId);
     this.goalDrivenTurns.delete(turnId);
     this.countedGoalTurns.delete(turnId);
     this.goalOutcomeToolResultTurns.delete(turnId);
