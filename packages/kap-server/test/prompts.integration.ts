@@ -12,13 +12,17 @@ import {
   IAgentExecutionService,
   IAgentExecutorRegistry,
   type AgentExecutorProvider,
+  type AgentExecutorSession,
+  type ResolvedAgentExecutor,
   type ProfileBindingSnapshot,
   IAgentLifecycleService,
   IAgentPermissionModeService,
   IAgentTaskService,
   IAgentPlanService,
+  IAgentProfileRegistry,
   IAgentProfileService,
   IAgentPromptService,
+  normalizeAgentProfile,
   IAgentToolPolicyService,
   IEventBus,
   IEventDispatcher,
@@ -160,6 +164,54 @@ async function writeConfigToml(dir: string, content: string): Promise<void> {
       await new Promise<void>((resolve) => setTimeout(resolve, 25));
     }
   }
+}
+
+function holdExternalSession(): { readonly session: {
+  run: () => Promise<{ agentId: string; completion: Promise<{ summary: string }>; turn: { id: number; signal: AbortSignal; ready: Promise<void>; result: Promise<unknown>; cancel: () => boolean } }>;
+  status: () => { state: 'idle' | 'running' };
+  cancel: () => boolean;
+  settled: () => Promise<void>;
+  shutdown: () => Promise<void>;
+  updateBinding: () => void;
+  hooks: ReturnType<typeof createHooks>;
+}; readonly finish: () => void } {
+  const pending: Array<() => void> = [];
+  let state: 'idle' | 'running' = 'idle';
+  const finish = (): void => {
+    state = 'idle';
+    for (const release of pending.splice(0)) release();
+  };
+  return {
+    finish,
+    session: {
+      run: async () => {
+        state = 'running';
+        const controller = new AbortController();
+        let release = (): void => {};
+        const result = new Promise((resolve) => {
+          release = () => resolve({ type: 'cancelled', steps: 0 });
+        });
+        pending.push(() => { state = 'idle'; release(); });
+        return {
+          agentId: 'main',
+          completion: result.then(() => ({ summary: '' })),
+          turn: {
+            id: 1,
+            signal: controller.signal,
+            ready: Promise.resolve(),
+            result,
+            cancel: () => { controller.abort(); state = 'idle'; release(); return true; },
+          },
+        };
+      },
+      status: () => ({ state }),
+      cancel: () => { finish(); return true; },
+      settled: async () => {},
+      shutdown: async () => { finish(); },
+      updateBinding: () => {},
+      hooks: createHooks(['onWillRun']),
+    },
+  };
 }
 
 describe('server-v2 /api prompts', () => {
@@ -960,6 +1012,139 @@ describe('server-v2 /api prompts', () => {
     expect(main.accessor.get(IAgentPromptService).list().active).toBeUndefined();
     expect(main.accessor.get(IAgentProfileService).getModel()).toBe('stub');
   });
+
+  it('rejects a cross-executor native selection when the projected model has no credential and keeps the binding', async () => {
+    const id = await createSession(home as string);
+    await createHeldMainAgent(id);
+    const externalPath = join(home as string, 'external.md');
+    await writeFile(externalPath, '---\nname: external-file\ndescription: External file\nexecutor: grok-acp\nmodel_alias: grok-raw\n---\nEXTERNAL_FILE\n');
+    await writeConfigToml(home as string, PROMPT_TOML + [
+      '', '[providers.bare]', 'type = "openai"', 'base_url = "http://127.0.0.1:9"',
+      '[models.bare-model]', 'provider = "bare"', 'model = "bare-model"', 'max_context_size = 1000',
+      '', '[agent_executor_overrides.native.defaults]', 'model_alias = "bare-model"', '',
+    ].join('\n'));
+    const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+    const profile = main.accessor.get(IAgentProfileService);
+    const before = { model: profile.getModel(), executorId: profile.data().executorId, execution: profile.data().execution };
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'Use the native engine default, not the external alias.' }],
+      execution: { executor: 'native', profile_file: externalPath },
+    });
+    expect(submitted.body.code, submitted.body.msg).toBe(40111);
+    expect(submitted.body.msg).not.toContain('Profile file does not use executor');
+    const prompt = main.accessor.get(IAgentPromptService);
+    expect(prompt.list().active).toBeUndefined();
+    expect(prompt.list().pending).toEqual([]);
+    expect(profile.getModel()).toBe(before.model);
+    expect(profile.data().executorId).toBe(before.executorId);
+    expect(profile.data().execution).toEqual(before.execution);
+  });
+
+  it('binds named and file profiles across native and external through the projected model', async () => {
+    const externalPath = join(home as string, 'external.md');
+    const nativePath = join(home as string, 'native.md');
+    await writeFile(externalPath, '---\nname: external-file\ndescription: External file\nexecutor: grok-acp\nmodel_alias: grok-raw\n---\nEXTERNAL_FILE\n');
+    await writeFile(nativePath, '---\nname: native-file\ndescription: Native file\nmodel_alias: stub\n---\nNATIVE_FILE\n');
+    server!.core.accessor.get(IAgentProfileRegistry).register({
+      sourceId: 'external-named-fixture', priority: 50,
+      contribution: { profiles: [normalizeAgentProfile({
+        name: 'external-named', definitionId: 'fixture:external-named', executor: 'grok-acp',
+        modelAlias: 'grok-raw', systemPrompt: () => 'EXTERNAL_NAMED',
+      })] },
+    });
+    const executors = server!.core.accessor.get(IAgentExecutorRegistry);
+    const resolve = executors.resolveExecutable.bind(executors);
+    const held = holdExternalSession();
+    const mocked = vi.spyOn(executors, 'resolveExecutable').mockImplementation(async (executorId, options): Promise<ResolvedAgentExecutor> => executorId === 'grok-acp'
+      ? {
+        descriptor: { ...executors.get(executorId)!, command: process.execPath, revision: 'fixture' },
+        options: executors.resolve(executorId, options ?? {}).options,
+        provider: {
+          id: 'fixture-acp', protocol: 'acp-v1',
+          validateOptions: (value) => value as Record<string, string | number | boolean>,
+          validateBinding: (binding) => ({ ok: true, binding }),
+          create: () => held.session as unknown as AgentExecutorSession,
+        },
+      }
+      : resolve(executorId, options));
+    const open = async () => {
+      const id = await createSession(home as string);
+      await createHeldMainAgent(id);
+      return id;
+    };
+    const profile = (id: string) => getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentProfileService);
+    const submit = (id: string, body: Record<string, unknown>) => call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'Switch executor.' }], ...body,
+    });
+    try {
+      const namedNativeId = await open();
+      const namedNative = await submit(namedNativeId, { execution: { executor: 'native', profile: 'external-named' } });
+      expect(namedNative.body.code, namedNative.body.msg).toBe(0);
+      expect(profile(namedNativeId).data()).toMatchObject({
+        executorId: 'native', modelAlias: 'stub', profileName: 'external-named',
+        execution: { selection: { executor: 'native', profile: 'external-named' }, effective: { model: 'stub' }, sources: { model: 'harness-default' } },
+      });
+      expect(profile(namedNativeId).getModel()).not.toBe('grok-raw');
+
+      const explicitId = await open();
+      const explicit = await submit(explicitId, { execution: { executor: 'native', profile_file: externalPath }, model: 'stub-alt' });
+      expect(explicit.body.code, explicit.body.msg).toBe(0);
+      expect(profile(explicitId).data()).toMatchObject({
+        executorId: 'native', modelAlias: 'stub-alt',
+        execution: { effective: { model: 'stub-alt' }, sources: { model: 'session' } },
+      });
+
+      await writeConfigToml(home as string, PROMPT_TOML + [
+        '', '[agent_executor_overrides.native.defaults]', 'model_alias = "stub-alt"', '',
+      ].join('\n'));
+      const fileNativeId = await open();
+      const fileNative = await submit(fileNativeId, { execution: { executor: 'native', profile_file: externalPath } });
+      expect(fileNative.body.code, fileNative.body.msg).toBe(0);
+      expect(fileNative.body.msg).not.toContain('Profile file does not use executor');
+      expect(profile(fileNativeId).data()).toMatchObject({
+        executorId: 'native', modelAlias: 'stub-alt',
+        execution: { selection: { executor: 'native' }, effective: { model: 'stub-alt' }, sources: { model: 'harness-settings' } },
+      });
+      expect(profile(fileNativeId).getModel()).not.toBe('grok-raw');
+
+      const sameGroupId = await open();
+      const sameGroup = await submit(sameGroupId, { execution: { executor: 'native', profile_file: nativePath } });
+      expect(sameGroup.body.code, sameGroup.body.msg).toBe(0);
+      expect(profile(sameGroupId).data()).toMatchObject({
+        executorId: 'native', modelAlias: 'stub', profileName: 'native-file',
+        execution: { effective: { model: 'stub' }, sources: { model: 'profile' } },
+      });
+
+      const fileExternalId = await open();
+      const fileExternal = await submit(fileExternalId, { execution: { executor: 'grok-acp', profile_file: nativePath } });
+      expect(fileExternal.body.code, fileExternal.body.msg).toBe(0);
+      expect(profile(fileExternalId).data()).toMatchObject({
+        executorId: 'grok-acp', profileName: 'native-file',
+        execution: { selection: { executor: 'grok-acp' }, sources: { model: 'harness-default' } },
+      });
+      expect(profile(fileExternalId).data().modelAlias).toBeUndefined();
+
+      const namedExternalId = await open();
+      const namedExternal = await submit(namedExternalId, { execution: { executor: 'grok-acp', profile: 'agent' } });
+      expect(namedExternal.body.code, namedExternal.body.msg).toBe(0);
+      expect(profile(namedExternalId).data()).toMatchObject({
+        executorId: 'grok-acp', profileName: 'agent',
+        execution: { selection: { executor: 'grok-acp', profile: 'agent' }, sources: { model: 'harness-default' } },
+      });
+      expect(profile(namedExternalId).data().modelAlias).toBeUndefined();
+
+      const sameExternalId = await open();
+      const sameExternal = await submit(sameExternalId, { execution: { executor: 'grok-acp', profile_file: externalPath } });
+      expect(sameExternal.body.code, sameExternal.body.msg).toBe(0);
+      expect(profile(sameExternalId).data()).toMatchObject({
+        executorId: 'grok-acp', modelAlias: 'grok-raw', profileName: 'external-file',
+        execution: { effective: { model: 'grok-raw' }, sources: { model: 'profile' } },
+      });
+    } finally {
+      held.finish();
+      mocked.mockRestore();
+    }
+  }, 60_000);
 
   it.each([false, true])('applies prompt-bound plan controls with skills=%s', async (skills) => {
     const id = await createSession(home as string);

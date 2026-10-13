@@ -4,7 +4,7 @@ import { composeRecipeLayers, recipeReferences } from '#/app/recipes/recipeOverl
 import { snapshotRecipeModelSettings } from '#/app/recipes/recipeModelSettings';
 import type { AgentPromptDiagnostics, ExecutionSelection } from '@kiki/protocol';
 import { AGENT_EXECUTOR_OVERRIDES_SECTION, type AgentExecutorOverridesConfig } from '#/app/agentExecutor/executorOverrides';
-import { resolveExecutionBinding } from './executionBinding';
+import { resolveSelectedExecutionBinding } from './executionBinding';
 import { agentExecutorBindingFingerprint, agentExecutorBindingMatches } from '#/app/agentExecutor/agentExecutor';
 import { ExecutorSessionUpdated, externalExecutorKey } from '#/agent/execution/externalExecutorOps';
 import { resolveExecutorPrompt } from '@kiki/agent-profiles/executorPrompt';
@@ -850,13 +850,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       requested.executor === 'native' ? (id) => this.models.resolveId(id) : (id) => id);
     const sameGroup = profile !== undefined && (profile.executor ?? 'native') === requested.executor;
     const defaults = this.config.get<AgentExecutorOverridesConfig>(AGENT_EXECUTOR_OVERRIDES_SECTION)?.[requested.executor]?.defaults;
-    const execution = resolveExecutionBinding({ ...requested, overrides: {
-      ...requested.overrides, model: input.model ?? requested.overrides?.model,
-      thinking: input.thinking ?? requested.overrides?.thinking,
-    } }, defaults, profile, this.profileState.execution, profile !== undefined && !sameGroup && requested.executor === 'native' ? {
+    const execution = resolveSelectedExecutionBinding(requested, input, defaults, profile, this.profileState.execution, {
       model: this.nativeEngineDefaultModel(),
       thinkingFor: (model) => this.nativeEngineDefaultThinking(model),
-    } : undefined);
+    });
     if (execution.effective.model === INHERIT_MODEL_ALIAS) throw new ProfileError(ProfileErrors.codes.MODEL_CONFIG_INVALID, 'A main agent execution selection cannot inherit a caller model');
     if (this.profileState.execution === undefined) execution.generation = this.profileState.renderGeneration + 1;
     const role = profile === undefined ? undefined : executionSelectionProfile(profile, requested.executor, execution.effective);

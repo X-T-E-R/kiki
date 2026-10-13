@@ -56,3 +56,25 @@ export function resolveExecutionBinding(
   const changed = JSON.stringify(executionContextIdentity({ selection, effective })) !== JSON.stringify(previous === undefined ? undefined : executionContextIdentity(previous));
   return { version: 1, selection, effective, sources, generation: previous === undefined ? 1 : previous.generation + (changed ? 1 : 0) };
 }
+
+export function resolveSelectedExecutionBinding(
+  requested: ExecutionSelection,
+  prompt: { readonly model?: string | null; readonly thinking?: string | null },
+  defaults: AgentExecutorDefaults | undefined,
+  profile: AgentProfile | undefined,
+  previous: ExecutionBinding | undefined,
+  nativeEngine?: {
+    readonly model?: string;
+    readonly thinkingFor?: (model: string) => string | undefined;
+  },
+): ExecutionBinding {
+  const sameGroup = profile !== undefined && (profile.executor ?? 'native') === requested.executor;
+  return resolveExecutionBinding({
+    ...requested,
+    overrides: {
+      ...requested.overrides,
+      model: prompt.model ?? requested.overrides?.model,
+      thinking: prompt.thinking ?? requested.overrides?.thinking,
+    },
+  }, defaults, profile, previous, profile !== undefined && !sameGroup && requested.executor === 'native' ? nativeEngine : undefined);
+}

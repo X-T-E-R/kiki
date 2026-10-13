@@ -5,10 +5,13 @@ import { join } from 'node:path';
 import {
   AGENT_WIRE_RECORD_KEY,
   AgentProfileSourceDiagnosticCodes,
+  ensureMainAgent,
   IAgentExecutorRegistry,
   IAgentLifecycleService,
+  IAgentLoopService,
   IAgentProfileRegistry,
   IAgentProfileService,
+  IAgentPromptService,
   IAgentUsageService,
   IAppendLogStore,
   IConfigService,
@@ -25,6 +28,8 @@ import {
   normalizeAgentProfile,
   type AgentProfileCatalogSnapshot,
   type AgentProfileRegistration,
+  type AgentExecutorSession,
+  type ResolvedAgentExecutor,
 } from '@kiki/agent-core-v2';
 import { IAgentPlanService } from '@kiki/agent-core-v2/features/plan/plan';
 import { ISessionDispatchService } from '@kiki/agent-core-v2/session/dispatch/dispatch';
@@ -32,6 +37,7 @@ import { evaluateDispatchAdmission } from '@kiki/agent-core-v2/session/dispatch/
 import { SHIPPED_AGENT_PROFILE_TEMPLATES } from '@kiki/agent-core-v2/app/shippedAgentProfiles/shippedAgentProfiles';
 import { ErrorCode, listNamedAgentProfilesResponseSchema, agentCapabilitiesResponseSchema, listShippedAgentProfilesResponseSchema } from '@kiki/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHooks } from '@kiki/agent-core-v2/hooks';
 import { createKlient } from '@kiki/klient/http';
 import { type RunningServer, startServer } from '../src/start';
 import { registerAgentProfilesRoute } from '../src/routes/agentProfiles';
@@ -54,6 +60,54 @@ interface Envelope<T> {
   msg: string;
   data: T;
   request_id: string;
+}
+
+function holdExternalSession(): { readonly session: {
+  run: () => Promise<{ agentId: string; completion: Promise<{ summary: string }>; turn: { id: number; signal: AbortSignal; ready: Promise<void>; result: Promise<unknown>; cancel: () => boolean } }>;
+  status: () => { state: 'idle' | 'running' };
+  cancel: () => boolean;
+  settled: () => Promise<void>;
+  shutdown: () => Promise<void>;
+  updateBinding: () => void;
+  hooks: ReturnType<typeof createHooks>;
+}; readonly finish: () => void } {
+  const pending: Array<() => void> = [];
+  let state: 'idle' | 'running' = 'idle';
+  const finish = (): void => {
+    state = 'idle';
+    for (const release of pending.splice(0)) release();
+  };
+  return {
+    finish,
+    session: {
+      run: async () => {
+        state = 'running';
+        const controller = new AbortController();
+        let release = (): void => {};
+        const result = new Promise((resolve) => {
+          release = () => resolve({ type: 'cancelled', steps: 0 });
+        });
+        pending.push(() => { state = 'idle'; release(); });
+        return {
+          agentId: 'main',
+          completion: result.then(() => ({ summary: '' })),
+          turn: {
+            id: 1,
+            signal: controller.signal,
+            ready: Promise.resolve(),
+            result,
+            cancel: () => { controller.abort(); state = 'idle'; release(); return true; },
+          },
+        };
+      },
+      status: () => ({ state }),
+      cancel: () => { finish(); return true; },
+      settled: async () => {},
+      shutdown: async () => { finish(); },
+      updateBinding: () => {},
+      hooks: createHooks(['onWillRun']),
+    },
+  };
 }
 
 describe('GET /api/agents', () => {
@@ -134,6 +188,81 @@ describe('GET /api/agents', () => {
       await klient.close();
     }
   });
+
+  it('selects a file profile across executors without registering or editing it', async () => {
+    const externalText = '---\nname: external-file\ndescription: External file\nexecutor: grok-acp\nmodel_alias: grok-raw\n---\nEXTERNAL_FILE\n';
+    const nativeText = '---\nname: native-file\ndescription: Native file\nmodel_alias: stub\n---\nNATIVE_FILE\n';
+    const externalPath = join(home!, 'external.md');
+    const nativePath = join(home!, 'native.md');
+    await writeFile(externalPath, externalText);
+    await writeFile(nativePath, nativeText);
+    await writeFile(join(home!, 'config.toml'), 'default_model = "stub"\n[providers.stub]\ntype = "openai"\nbase_url = "http://127.0.0.1:9999"\napi_key = "YOUR_API_KEY"\n[models.stub]\nprovider = "stub"\nmodel = "stub"\nmax_context_size = 1000\ncapabilities = ["thinking"]\nsupport_efforts = ["low", "high"]\ndefault_effort = "high"\n');
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    const created = await (await authedFetch(server, base, '/api/sessions', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ metadata: { cwd: home } }),
+    })).json() as Envelope<{ id: string }>;
+    expect(created.code, created.msg).toBe(0);
+    const main = await ensureMainAgent(server.core.accessor.get(ISessionManager).get(created.data.id)!);
+    main.accessor.get(IAgentLoopService).hooks.onWillBeginStep.register('hold-file-selection', async (ctx) => {
+      await new Promise<void>((resolve) => {
+        if (ctx.signal.aborted) resolve();
+        else ctx.signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      ctx.signal.throwIfAborted();
+    }, { before: 'context-injector' });
+    const executors = server.core.accessor.get(IAgentExecutorRegistry);
+    const resolve = executors.resolveExecutable.bind(executors);
+    const held = holdExternalSession();
+    const mocked = vi.spyOn(executors, 'resolveExecutable').mockImplementation(async (executorId, options): Promise<ResolvedAgentExecutor> => executorId === 'grok-acp'
+      ? {
+        descriptor: { ...executors.get(executorId)!, command: process.execPath, revision: 'fixture' },
+        options: executors.resolve(executorId, options ?? {}).options,
+        provider: {
+          id: 'fixture-acp', protocol: 'acp-v1',
+          validateOptions: (value) => value as Record<string, string | number | boolean>,
+          validateBinding: (binding) => ({ ok: true, binding }),
+          create: () => held.session as unknown as AgentExecutorSession,
+        },
+      }
+      : resolve(executorId, options));
+    const post = async (execution: { executor: string; profile_file: string }) => {
+      const response = await authedFetch(server!, base, `/api/sessions/${created.data.id}/prompts`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ content: [{ type: 'text', text: 'Select the file.' }], execution }),
+      });
+      return response.json() as Promise<Envelope<{ prompt_id: string }>>;
+    };
+    const registered = (name: string) => server!.core.accessor.get(IAgentProfileRegistry).entries()
+      .flatMap((entry) => entry.contribution.profiles).some((candidate) => candidate.name === name);
+    try {
+      const native = await post({ executor: 'native', profile_file: externalPath });
+      expect(native.code, native.msg).toBe(0);
+      expect(native.msg).not.toContain('Profile file does not use executor');
+      expect(main.accessor.get(IAgentProfileService).data()).toMatchObject({
+        executorId: 'native', modelAlias: 'stub', profileName: 'external-file',
+        execution: { selection: { executor: 'native' }, effective: { model: 'stub' }, sources: { model: 'harness-default' } },
+      });
+      main.accessor.get(IAgentPromptService).abort(native.data.prompt_id);
+      await vi.waitFor(() => expect(main.accessor.get(IAgentPromptService).list().active).toBeUndefined());
+      const external = await post({ executor: 'grok-acp', profile_file: nativePath });
+      expect(external.code, external.msg).toBe(0);
+      expect(main.accessor.get(IAgentProfileService).data()).toMatchObject({
+        executorId: 'grok-acp', profileName: 'native-file',
+        execution: { selection: { executor: 'grok-acp' }, sources: { model: 'harness-default' } },
+      });
+      expect(main.accessor.get(IAgentProfileService).data().modelAlias).toBeUndefined();
+      expect(await readFile(externalPath, 'utf8')).toBe(externalText);
+      expect(await readFile(nativePath, 'utf8')).toBe(nativeText);
+      expect(registered('external-file')).toBe(false);
+      expect(registered('native-file')).toBe(false);
+      main.accessor.get(IAgentPromptService).abort(external.data.prompt_id);
+    } finally {
+      held.finish();
+      mocked.mockRestore();
+    }
+  }, 60_000);
 
   it('saves and re-reads subagent tool settings without overriding global or parent restrictions', async () => {
     const configText = '[tools]\ndisabled = ["Bash"]\n';
