@@ -7,11 +7,14 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { Task } from '@kiki/protocol';
-import { buildAgentForest, createViewState, type ApprovalBlock } from '@kiki/session-core/session';
+import { buildAgentForest, createViewState, SessionController, type ApprovalBlock, type SessionViewState } from '@kiki/session-core/session';
+import type { SessionTransport } from '@kiki/session-core/transport';
+import type { SessionViewFacade } from '@kiki/klient/session-view';
 import { I18nProvider } from '../i18n';
 import { RightRail, type SubagentRailContext } from './RightRail';
 import { PreviewFocusBridge } from './SessionView';
 import { useInspectorFocusTracking } from './inspectorFocus';
+import { LiveControllerRegistry } from '../state/connection';
 
 // The profile head and capability block read the agent panel over the
 // connection; these fixtures have none, so they render as plain stand-ins.
@@ -45,6 +48,15 @@ vi.mock('./AgentPanelContainer', () => ({
     return renderOverview === undefined ? body : renderOverview(body, overviewMode === 'cockpit' ? null : <div data-usage-scope-switch />);
   },
 }));
+
+const registryHolder: { current: any } = { current: null };
+vi.mock('../state/connection', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../state/connection')>();
+  return {
+    ...actual,
+    useOptionalControllerRegistry: () => registryHolder.current,
+  };
+});
 
 const forest = buildAgentForest([], [
   { agentId: 'main', name: 'Main' },
@@ -88,6 +100,7 @@ beforeAll(() => {
   actEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
 });
 afterEach(async () => {
+  registryHolder.current = null;
   for (const { container, root } of mounts.splice(0)) {
     await act(async () => { root.unmount(); });
     container.remove();
@@ -110,6 +123,7 @@ async function renderRail({
   onOpenSubagent,
   sessionPending,
   onResolveApproval,
+  stateOverrides,
 }: {
   sessionPending?: readonly ApprovalBlock[];
   onResolveApproval?: (approvalId: string, decision: 'approved' | 'rejected') => Promise<void>;
@@ -123,6 +137,7 @@ async function renderRail({
   stateTasks?: readonly Task[];
   /** Rail cancel/detail owner scope (the focused agent's task service). */
   ownerAgentId?: string;
+  stateOverrides?: Partial<SessionViewState>;
 } = {}) {
   const container = document.createElement('div');
   document.body.append(container);
@@ -133,7 +148,7 @@ async function renderRail({
       <MemoryRouter>
         <I18nProvider>
           <RightRail
-            state={{ ...createViewState('sess-1'), tasks: (empty ? [] : stateTasks) ?? tasks }}
+            state={{ ...createViewState('sess-1'), tasks: (empty ? [] : stateTasks) ?? tasks, ...stateOverrides }}
             forest={agentForest ?? (empty ? buildAgentForest([], [{ agentId: 'main', name: 'Main' }]) : forest)}
             selectedAgentId={subagent?.agentId}
             subagent={subagent}
@@ -807,5 +822,346 @@ describe('inspector focus resolution', () => {
     expect(resolveInspectorTarget(at('railtext'))).toBeNull();
     expect(resolveInspectorTarget(document.body)).toBeNull();
     host.remove();
+  });
+});
+
+function createMockController(sessionId: string, initialMainState: SessionViewState) {
+  let mainState = initialMainState;
+  const agentStates = new Map<string, SessionViewState>();
+  const listeners = new Set<() => void>();
+  const agentListeners = new Map<string, Set<() => void>>();
+  const refreshSession = vi.fn();
+
+  return {
+    sessionId,
+    getState: () => mainState,
+    getAgentState: (id: string) => agentStates.get(id),
+    setMainState: (next: SessionViewState) => {
+      mainState = next;
+      for (const l of listeners) l();
+    },
+    setAgentState: (id: string, next: SessionViewState) => {
+      agentStates.set(id, next);
+      agentListeners.get(id)?.forEach((l) => l());
+    },
+    subscribe: (l: () => void) => {
+      listeners.add(l);
+      return () => { listeners.delete(l); };
+    },
+    subscribeAgent: (id: string, l: () => void) => {
+      let set = agentListeners.get(id);
+      if (!set) {
+        set = new Set();
+        agentListeners.set(id, set);
+      }
+      set.add(l);
+      return () => { set?.delete(l); };
+    },
+    refreshSession,
+  };
+}
+
+function createMockRegistry(controller: any) {
+  let ver = 1;
+  const listeners = new Set<() => void>();
+  return {
+    add: () => {},
+    delete: () => {},
+    acquire: () => ({ controller, release: () => {} }),
+    [Symbol.iterator]: () => [controller][Symbol.iterator]() as Iterator<SessionController>,
+    subscribe: (l: () => void) => {
+      listeners.add(l);
+      return () => { listeners.delete(l); };
+    },
+    snapshot: () => ver,
+    bump: () => { ver++; for (const l of listeners) l(); },
+  };
+}
+
+describe('RightRail Todos resilient baseline and fallback', () => {
+  it('displays current main todos when registry is missing controller (fallback to routed state)', async () => {
+    const rail = await renderRail({
+      stateOverrides: {
+        loaded: true,
+        transcriptReady: true,
+        todos: [
+          { title: 'Main task via routed state', status: 'pending' },
+          { title: 'Completed milestone', status: 'done' },
+        ],
+      },
+    });
+    expect(rail.querySelector('[data-rail-todos]')).not.toBeNull();
+    expect(rail.textContent).toContain('Main task via routed state');
+    expect(rail.textContent).toContain('Completed milestone');
+  });
+
+  it('strictly isolates main and subagent so sub does not borrow main todos', async () => {
+    const rail = await renderRail({
+      subagent: context,
+      stateOverrides: {
+        loaded: true,
+        transcriptReady: true,
+        todos: [
+          { title: 'Main secret task', status: 'pending' },
+        ],
+      },
+    });
+    expect(rail.textContent).not.toContain('Main secret task');
+    expect(rail.querySelector('[data-rail-todos]')).toBeNull();
+  });
+
+  it('renders lightweight loading state when shell is loaded but Todo baseline is unconfirmed', async () => {
+    const rail = await renderRail({
+      stateOverrides: {
+        loaded: true,
+        transcriptReady: false,
+        todos: [],
+      },
+    });
+    expect(rail.querySelector('[data-rail-todos-loading]')).not.toBeNull();
+    expect(rail.querySelector('[role="status"]')?.textContent).toContain('Reading todos…');
+  });
+
+  it('does not resurrect old stale todos once empty baseline is confirmed', async () => {
+    const mount = document.createElement('div');
+    document.body.append(mount);
+    const root = createRoot(mount);
+    mounts.push({ container: mount, root });
+
+    // Step 1: initial render with an active task
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <I18nProvider>
+            <RightRail
+              state={{ ...createViewState('sess-1'), loaded: true, transcriptReady: true, todos: [{ title: 'Stale todo item', status: 'pending' }], tasks: [] }}
+              forest={forest}
+              onCancelTask={() => {}}
+              onStopAgentTask={async () => {}}
+              onOpenSubagent={() => {}}
+            />
+          </I18nProvider>
+        </MemoryRouter>,
+      );
+    });
+    expect(mount.textContent).toContain('Stale todo item');
+
+    // Step 2: confirmed empty reset
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <I18nProvider>
+            <RightRail
+              state={{ ...createViewState('sess-1'), loaded: true, transcriptReady: true, todos: [], tasks: [] }}
+              forest={forest}
+              onCancelTask={() => {}}
+              onStopAgentTask={async () => {}}
+              onOpenSubagent={() => {}}
+            />
+          </I18nProvider>
+        </MemoryRouter>,
+      );
+    });
+    expect(mount.textContent).not.toContain('Stale todo item');
+    expect(mount.querySelector('[data-rail-todos]')).toBeNull();
+  });
+
+  it('renders lightweight loading state when controller exists with shell loaded but transcript unconfirmed (Astra counterexample)', async () => {
+    const ctrl = createMockController('sess-1', {
+      ...createViewState('sess-1'),
+      loaded: true,
+      transcriptReady: false,
+      todos: [],
+    });
+    registryHolder.current = createMockRegistry(ctrl);
+
+    const rail = await renderRail();
+    expect(rail.querySelector('[data-rail-todos-loading]')).not.toBeNull();
+    expect(rail.querySelector('[role="status"]')?.textContent).toContain('Reading todos…');
+  });
+
+  it('clears retained todos and does not resurrect them when real controller confirms empty baseline', async () => {
+    const view = {
+      snapshot: async () => ({
+        as_of_seq: 1,
+        epoch: 'e',
+        session: {
+          id: 'sess-1',
+          workspace_id: 'workspace_example',
+          metadata: { cwd: 'C:/example' },
+          agent_config: {},
+          usage: { turn_count: 0 },
+        },
+        in_flight_turn: null,
+      }),
+      transcript: { page: vi.fn(), content: vi.fn() },
+      subscribe: () => ({
+        close() {},
+        updateTranscriptCursor() {},
+        updateSessionCursor() {},
+        setTranscriptGrades() {},
+      }),
+    } as unknown as SessionViewFacade;
+
+    const controller = new SessionController({} as SessionTransport, view, 'sess-1', {
+      scheduler: { schedule: (fn) => { fn(); return 0; }, cancel() {} },
+    });
+    const registry = new LiveControllerRegistry();
+    registry.add(controller);
+    registryHolder.current = registry;
+
+    const mount = document.createElement('div');
+    document.body.append(mount);
+    const root = createRoot(mount);
+    mounts.push({ container: mount, root });
+
+    // Step 1: Initial mount before open or transcript - shell loading / unconfirmed
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <I18nProvider>
+            <RightRail
+              state={{ ...createViewState('sess-1'), loaded: false, transcriptReady: false, tasks: [] }}
+              forest={forest}
+              onCancelTask={() => {}}
+              onStopAgentTask={async () => {}}
+              onOpenSubagent={() => {}}
+            />
+          </I18nProvider>
+        </MemoryRouter>,
+      );
+    });
+
+    // Step 2: Controller open - shell loaded, but transcript not yet ready (todo baseline unconfirmed)
+    await act(async () => {
+      await controller.open();
+    });
+    expect(mount.querySelector('[data-rail-todos-loading]')).not.toBeNull();
+
+    // Step 3: Todo baseline arrives with active todos
+    await act(async () => {
+      controller.handleTranscript({
+        type: 'transcript.reset',
+        session_id: 'sess-1',
+        agent_id: 'main',
+        snapshot: {
+          items: [],
+          tasks: [],
+          interactions: [],
+          attachments: [],
+          prompts: [],
+          meta: {},
+          todos: [{ todoId: 'todo', items: [{ title: 'Active real task', status: 'pending' }] }],
+        },
+        grade: 'delta',
+        coverage: { kind: 'full', hasMoreOlder: false },
+        cursor: { seq: 1, epoch: 'e' },
+      });
+    });
+
+    expect(mount.textContent).toContain('Active real task');
+    expect(mount.querySelector('[data-rail-todos]')).not.toBeNull();
+
+    // Step 4: Real controller receives transcript update confirming empty todos
+    await act(async () => {
+      controller.handleTranscript({
+        type: 'transcript.reset',
+        session_id: 'sess-1',
+        agent_id: 'main',
+        snapshot: {
+          items: [],
+          tasks: [],
+          interactions: [],
+          attachments: [],
+          prompts: [],
+          meta: {},
+          todos: [{ todoId: 'todo', items: [] }],
+        },
+        grade: 'delta',
+        coverage: { kind: 'full', hasMoreOlder: false },
+        cursor: { seq: 2, epoch: 'e' },
+      });
+    });
+
+    // Step 5: Confirmed empty! Retained cache is cleared, and does not resurrect
+    expect(mount.textContent).not.toContain('Active real task');
+    expect(mount.querySelector('[data-rail-todos]')).toBeNull();
+
+    controller.close();
+  });
+
+  it('strictly isolates scope on agent and session switch so subagent does not borrow main todos', async () => {
+    const ctrl = createMockController('sess-1', {
+      ...createViewState('sess-1'),
+      loaded: true,
+      transcriptReady: true,
+      todos: [{ title: 'Main secret task', status: 'pending' }],
+    });
+    registryHolder.current = createMockRegistry(ctrl);
+
+    const mount = document.createElement('div');
+    document.body.append(mount);
+    const root = createRoot(mount);
+    mounts.push({ container: mount, root });
+
+    // Render with main focused
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <I18nProvider>
+            <RightRail
+              state={{ ...createViewState('sess-1'), loaded: true, transcriptReady: true, tasks: [] }}
+              forest={forest}
+              onCancelTask={() => {}}
+              onStopAgentTask={async () => {}}
+              onOpenSubagent={() => {}}
+            />
+          </I18nProvider>
+        </MemoryRouter>,
+      );
+    });
+    expect(mount.textContent).toContain('Main secret task');
+
+    // Switch focus to subagent (which has no todos)
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <I18nProvider>
+            <RightRail
+              state={{ ...createViewState('sess-1'), loaded: true, transcriptReady: true, tasks: [] }}
+              forest={forest}
+              subagent={context}
+              selectedAgentId={context.agentId}
+              onCancelTask={() => {}}
+              onStopAgentTask={async () => {}}
+              onOpenSubagent={() => {}}
+            />
+          </I18nProvider>
+        </MemoryRouter>,
+      );
+    });
+    expect(mount.textContent).not.toContain('Main secret task');
+    expect(mount.querySelector('[data-rail-todos]')).toBeNull();
+  });
+
+  it('renders lightweight error recovery state with actionable retry when todo read fails', async () => {
+    const ctrl = createMockController('sess-1', {
+      ...createViewState('sess-1'),
+      loaded: false,
+      transcriptReady: false,
+      loadError: 'Failed to load session transcript',
+      todos: [],
+    });
+    registryHolder.current = createMockRegistry(ctrl);
+
+    const rail = await renderRail();
+    expect(rail.querySelector('[data-rail-todos-error]')).not.toBeNull();
+    expect(rail.textContent).toContain('Could not read todos');
+    const retryBtn = rail.querySelector<HTMLButtonElement>('[data-rail-todos-retry]');
+    expect(retryBtn).not.toBeNull();
+    await act(async () => {
+      retryBtn?.click();
+    });
+    expect(ctrl.refreshSession).toHaveBeenCalledTimes(1);
   });
 });

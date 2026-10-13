@@ -14,7 +14,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import type { AgentForest, ApprovalBlock, QuestionBlock, SessionController, SessionViewState } from '@kiki/session-core/session';
 import { MAIN_AGENT_ID } from '@kiki/session-core/session';
@@ -539,9 +539,38 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   // none are known. Callers label an incomplete sum as such rather than
   // passing it off as the whole tree.
   const tree = sumAgentTreeMetrics(ids, metrics);
-  const todos = (agentState?.todos ?? []).filter((todo): todo is typeof todo & { status: 'pending' | 'in_progress' | 'done' } =>
+  const { id: routeSessionId } = useParams<{ id?: string }>();
+  const isMain = agentId === MAIN_AGENT_ID;
+  const routeMatchesSession = routeSessionId === undefined || routeSessionId === state.sessionId;
+  const sessionMatchesState = state.session === undefined || state.session.id === state.sessionId;
+  const canFallbackToState = controller === undefined && isMain && routeMatchesSession && sessionMatchesState;
+  const fallbackTodos = canFallbackToState ? state.todos : undefined;
+  const rawTodos = (agentState?.todos ?? fallbackTodos ?? []).filter((todo): todo is typeof todo & { status: 'pending' | 'in_progress' | 'done' } =>
     todo.status === 'pending' || todo.status === 'in_progress' || todo.status === 'done');
-  const loaded = agentState?.loaded === true;
+  const loaded = (agentState?.loaded ?? (canFallbackToState ? state.loaded : false)) === true;
+  const baselineConfirmed = (agentState !== undefined && agentState.loaded === true && agentState.transcriptReady === true) ||
+    (canFallbackToState && state.loaded === true && state.transcriptReady === true);
+  const fallbackCoverage = canFallbackToState ? state.globalCoverage?.todos : undefined;
+  const effectiveCoverage = todoCoverage ?? fallbackCoverage;
+  const fallbackRefs = canFallbackToState ? state.contentRefs?.filter((ref) => ref.source.kind === 'todo' && ref.source.id === 'todo' && ref.path[0] === 'items') ?? [] : [];
+  const effectiveRefs = todoRefs.length > 0 ? todoRefs : fallbackRefs;
+  const fallbackLoadError = canFallbackToState ? (!state.loaded && state.loadError !== undefined) : false;
+  const hasMoreOrRefs = effectiveCoverage?.hasMore === true || effectiveRefs.length > 0;
+  const retainedTodosRef = useRef<Map<string, typeof rawTodos>>(new Map());
+  const isConfirmedEmpty = baselineConfirmed && !agentState?.resyncing && !state.resyncing &&
+    !hasMoreOrRefs && rawTodos.length === 0 && !todoReadFailed && !fallbackLoadError;
+
+  if (isConfirmedEmpty) {
+    retainedTodosRef.current.delete(identityKey);
+  } else if (rawTodos.length > 0) {
+    if (retainedTodosRef.current.size > 50) {
+      const oldestKey = retainedTodosRef.current.keys().next().value;
+      if (oldestKey !== undefined) retainedTodosRef.current.delete(oldestKey);
+    }
+    retainedTodosRef.current.set(identityKey, rawTodos);
+  }
+  const retainedTodos = retainedTodosRef.current.get(identityKey);
+  const todos = isConfirmedEmpty ? [] : rawTodos.length > 0 ? rawTodos : (!baselineConfirmed || hasMoreOrRefs ? (retainedTodos ?? []) : []);
   const planMode = agentState?.planMode;
   const profileName = profile?.name === 'unknown' ? '' : (profile?.name ?? agentState?.profile ?? '');
   const unavailableReason = data === undefined
@@ -565,10 +594,12 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   const [scope, setScope] = useState<'agent' | 'tree'>('agent');
 
   const todoStatus = agentState === undefined
-    ? 'unknown'
-    : todoReadFailed || !loaded && agentState.loadError !== undefined
+    ? canFallbackToState
+      ? (!state.loaded || !state.transcriptReady || hasMoreOrRefs) ? 'loading' : undefined
+      : 'unknown'
+    : todoReadFailed || (!loaded && agentState.loadError !== undefined)
       ? 'error'
-      : !loaded || todoRefs.length > 0 || todoCoverage?.hasMore === true
+      : !loaded || effectiveRefs.length > 0 || effectiveCoverage?.hasMore === true
         ? 'loading'
         : undefined;
   const notesReadProvenance = agentState?.todoRead ?? agentState?.historyRead;
