@@ -900,8 +900,24 @@ export async function loadCapturedMessageHistoryTail(
 ): Promise<CapturedMessageHistoryTail> {
   const startIndex = Math.max(0, contextMessages.length - Math.max(0, tailCount));
   const hydrated = await rehydrate(agent, contextMessages.slice(startIndex));
+  return projectHydratedMessageHistoryTail(
+    sessionId,
+    sessionCreatedAtMs,
+    hydrated,
+    contextMessageTimes,
+    startIndex,
+  );
+}
+
+export function projectHydratedMessageHistoryTail(
+  sessionId: string,
+  sessionCreatedAtMs: number,
+  hydratedTail: readonly ContextMessage[],
+  contextMessageTimes: readonly (number | undefined)[],
+  startIndex: number,
+): CapturedMessageHistoryTail {
   let previousMs = normalizedPrefixEndMs(contextMessageTimes, startIndex, sessionCreatedAtMs);
-  const items = hydrated.map((message, offset) => {
+  const items = hydratedTail.map((message, offset) => {
     const index = startIndex + offset;
     const baseMs = contextMessageTimes[index] ?? sessionCreatedAtMs + index;
     const createdAtMs = Math.max(previousMs + 1, baseMs);
@@ -941,7 +957,7 @@ async function projectMessageHistory(
   });
 }
 
-async function rehydrateCold(
+export async function rehydrateCold(
   core: Scope,
   sessionScope: string,
   messages: readonly ContextMessage[],
@@ -1003,7 +1019,7 @@ async function readTranscript(core: Scope, agent: IAgentScopeHandle): Promise<Co
   return reducer.result();
 }
 
-function alignFrozenContextHistory(
+export function alignFrozenContextHistory(
   transcript: ContextTranscript,
   contextMessages: readonly ContextMessage[],
 ): CapturedContextMessageHistory {

@@ -225,6 +225,8 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 | `POST /api/sessions/{session_id}/export` | 导出会话与诊断信息（zip 流，不走信封） |
 | `GET /api/sessions/{session_id}/snapshot` | 客户端重建用全量快照（含 `as_of_seq` 与 `epoch`） |
 
+会话在本进程中不是 live 时，快照从已保存的 main agent wire 和会话元数据读取，不会恢复该会话或其 workspace。`messages` 是压缩、撤销和编辑之后的当前逻辑 context 里最新的 100 条，按从旧到新排列。更早的逻辑条目仍存在时 `has_more` 为 true，`message_count` 等于该逻辑长度。`as_of_seq` 和 `epoch` 是会话 journal 水位。权限模式和 plan mode 来自已保存的 runtime 记录；模型和思考强度来自已保存的 agent 绑定。本进程没有测量过的 context token 总量和 breakdown 会省略。`in_flight_turn`、`pending_approvals` 和 `pending_questions` 只描述本进程里的活动，另一个进程里仍在运行的会话不会在这里被标成本地 active。
+
 快照的 `subagents` 名册条目包含可选的 `created_at`，以 UTC ISO 时间表示 Agent 不变的创建时刻。新建 Agent 在首次运行前就带有该值，包括仍在排队时；续跑同一 Agent、恢复其作用域、重启服务或切换模型均不会改变它。fork 若创建了新的 Agent 实体，则记录新的创建时间。另一个可选字段 `started_at` 表示该条目所描述的运行开始时间，后续运行可以更新它。
 
 模型、思考强度与执行器字段优先使用 Agent 当前已提交的元数据，当前值缺失时才回退到创建快照。思考强度来源与执行器协议沿用所选数据源；当前绑定本身不证明哪个模型处理了真实请求。

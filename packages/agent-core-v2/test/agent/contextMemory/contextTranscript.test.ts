@@ -95,7 +95,7 @@ describe('reduceContextTranscript', () => {
       compaction('SUM', 4),
       appendMessage(userMessage('u3')),
     ]);
-    expect(texts(result)).toEqual(['u1', 'a1', 'u2', 'a2', 'SUM', 'u3']);
+    expect(texts(result)).toEqual(['u1', 'a1', 'u2', 'a2', 'prefixed SUM', 'u3']);
     expect(result.entries[4]!.origin).toEqual({ kind: 'compaction_summary' });
     expect(result.entries[4]!.role).toBe('user');
     expect(result.foldedLength).toBe(2);
@@ -169,7 +169,7 @@ describe('reduceContextTranscript', () => {
       appendMessage(assistantMessage('reply B')),
       undo(1),
     ]);
-    expect(texts(result)).toEqual(['message A', 'reply A', 'summary text']);
+    expect(texts(result)).toEqual(['message A', 'reply A', 'prefixed summary text']);
     expect(result.entries.map((m) => m.role)).toEqual(['user', 'assistant', 'user']);
     expect(result.foldedLength).toBe(2);
   });
@@ -212,7 +212,7 @@ describe('reduceContextTranscript', () => {
       appendMessage(assistantMessage('answer')),
       undo(1),
     ]);
-    expect(texts(result)).toEqual(['old', 'SUM']);
+    expect(texts(result)).toEqual(['old', 'prefixed SUM']);
     expect(result.foldedLength).toBe(2);
   });
 
@@ -403,6 +403,9 @@ describe('live fold parity', () => {
     const transcript = reduceContextTranscript(records);
     expect(live).toHaveLength(5);
     expect(transcript.foldedLength).toBe(live.length);
+    expect(transcript.logicalEntries).toHaveLength(transcript.foldedLength);
+    expect(comparable(transcript.logicalEntries)).toEqual(comparable(live));
+    expect(transcript.logicalEntries[2]!.origin).toEqual(live[2]!.origin);
     expect(live[2]!.origin).toEqual({ kind: 'compaction_summary' });
   });
 
@@ -434,7 +437,7 @@ describe('live fold parity', () => {
       'recent user',
       '',
       'done',
-      'SUM',
+      'prefixed SUM',
     ]);
     expect(transcript.foldedLength).toBe(live.length);
   });
@@ -454,7 +457,7 @@ describe('live fold parity', () => {
     const live = foldLive(records);
     const transcript = reduceContextTranscript(records);
 
-    expect(texts(transcript)).toEqual(['old user', 'old assistant', 'SUM']);
+    expect(texts(transcript)).toEqual(['old user', 'old assistant', 'prefixed SUM']);
     expect(transcript.foldedLength).toBe(live.length);
     expect(live.map((message) => message.role)).toEqual(['user', 'user']);
     expect(live[1]?.origin?.kind).toBe('compaction_summary');
@@ -471,7 +474,7 @@ describe('live fold parity', () => {
     const live = foldLive(records);
     const transcript = reduceContextTranscript(records);
     expect(live.map((m) => m.role)).toEqual(['user', 'user', 'assistant']);
-    expect(texts(transcript)).toEqual(['u1', 'a1', '', 'SUM', 'a3']);
+    expect(texts(transcript)).toEqual(['u1', 'a1', '', 'prefixed SUM', 'a3']);
     expect(transcript.foldedLength).toBe(live.length);
   });
 

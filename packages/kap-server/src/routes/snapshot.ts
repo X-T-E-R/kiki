@@ -9,6 +9,7 @@ import {
   IAgentLifecycleService,
   IAgentActivityView,
   IAtomicDocumentStore,
+  IBootstrapService,
   ISessionContext,
   ISessionIndex,
   ISessionManager,
@@ -21,9 +22,12 @@ import {
 } from '@kiki/agent-core-v2';
 import { z } from 'zod';
 
+import { sessionScopeOf, workspacePersistenceScope } from '@kiki/agent-core-v2/workspace/sessionLifecycle/internal/addressing';
+
 import { errEnvelope, okEnvelope } from '../envelope';
 import { acquireSessionOperation, type SessionOperationLease } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
+import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { toRestContextBreakdown } from '../protocol/context-usage';
 import { ErrorCode } from '../protocol/error-codes';
 import {
@@ -32,7 +36,13 @@ import {
   type SessionSnapshotResponse,
   type SnapshotSubagent,
 } from '../protocol/rest-snapshot';
-import { loadCapturedMessageHistoryTail } from '../services/messages/messageHistory';
+import {
+  alignFrozenContextHistory,
+  loadCapturedMessageHistoryTail,
+  projectHydratedMessageHistoryTail,
+  rehydrateCold,
+} from '../services/messages/messageHistory';
+import { readColdMainWireProjection } from '../services/snapshot/coldSnapshotSource';
 import { type SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBroadcaster';
 import { readAgentRuntimeControls } from './sessionAgentConfig';
 import { resolveSessionBindingFacts, resolveSessionFacts, toWireSession } from './sessions';
@@ -95,19 +105,21 @@ export function registerSnapshotRoutes(app: SnapshotRouteHost, deps: SnapshotRou
         'Atomic session snapshot for client rebuild: state + as_of_seq watermark + epoch',
       tags: ['sessions'],
     },
-    async (req, reply) => {
+    async (req, reply) => withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], async (signal) => {
       const { session_id } = req.params;
       try {
-        const data = await assembleSnapshot(core, broadcaster, session_id, req.query.mode);
+        const data = await assembleSnapshot(core, broadcaster, session_id, req.query.mode, signal);
+        if (signal.aborted) return;
         reply.send(okEnvelope(data, req.id));
       } catch (err) {
+        if (signal.aborted) return;
         if (err instanceof SnapshotNotFoundError) {
           reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, err.message, req.id, err.stack));
           return;
         }
         throw err;
       }
-    },
+    }, req),
   );
   app.get(route.path, route.options, route.handler as Parameters<SnapshotRouteHost['get']>[2]);
 }
@@ -145,8 +157,17 @@ export async function assembleBrowseSnapshotSource(
   };
 }
 
-export async function assembleSnapshot(...args: Parameters<typeof assembleSnapshotSource>): Promise<SessionSnapshotResponse> {
-  return boundedSessionSnapshot(await assembleSnapshotSource(...args), args[3] === 'transcript' ? '' : 'legacy');
+export async function assembleSnapshot(
+  core: Scope,
+  broadcaster: SessionEventBroadcaster,
+  sessionId: string,
+  mode?: 'transcript',
+  signal?: AbortSignal,
+): Promise<SessionSnapshotResponse> {
+  return boundedSessionSnapshot(
+    await assembleSnapshotSource(core, broadcaster, sessionId, mode, signal),
+    mode === 'transcript' ? '' : 'legacy',
+  );
 }
 
 export function boundedSessionSnapshot(snapshot: SessionSnapshotResponse, id: string): SessionSnapshotResponse {
@@ -158,13 +179,87 @@ async function assembleSnapshotSource(
   broadcaster: SessionEventBroadcaster,
   sessionId: string,
   mode: 'transcript' | undefined,
+  signal?: AbortSignal,
 ): Promise<SessionSnapshotResponse> {
+  signal?.throwIfAborted();
+  if (core.accessor.get(ISessionManager).get(sessionId) === undefined) {
+    return assembleColdSnapshot(core, broadcaster, sessionId, mode, signal);
+  }
   const lease = await acquireSessionOperation(core, sessionId, 'operation');
   try {
     return await assembleSnapshotFromLease(core, broadcaster, sessionId, mode, lease);
   } finally {
     await lease.dispose();
   }
+}
+
+async function assembleColdSnapshot(
+  core: Scope,
+  broadcaster: SessionEventBroadcaster,
+  sessionId: string,
+  mode: 'transcript' | undefined,
+  signal?: AbortSignal,
+): Promise<SessionSnapshotResponse> {
+  const summary = await core.accessor.get(ISessionIndex).get(sessionId);
+  if (summary === undefined) throw new SnapshotNotFoundError(sessionId);
+  const meta = await core.accessor.get(IAtomicDocumentStore).get<SessionMeta>(
+    `sessions/${summary.workspaceId}/${sessionId}`, 'state.json',
+  );
+  if (meta === undefined) throw new SnapshotNotFoundError(sessionId);
+  signal?.throwIfAborted();
+  const cursor = await broadcaster.getCursor(sessionId);
+  const projection = await readColdMainWireProjection(core, summary.workspaceId, sessionId, signal);
+  const aligned = alignFrozenContextHistory(projection.transcript, projection.transcript.logicalEntries);
+  const compact = mode === 'transcript';
+  const startIndex = Math.max(0, aligned.messages.length - SNAPSHOT_MESSAGE_PAGE_SIZE);
+  const sessionScope = sessionScopeOf(
+    workspacePersistenceScope(core.accessor.get(IBootstrapService).scope('sessions'), summary.workspaceId),
+    sessionId,
+  );
+  const messageTail = compact
+    ? undefined
+    : projectHydratedMessageHistoryTail(
+      sessionId,
+      meta.createdAt,
+      await rehydrateCold(core, sessionScope, aligned.messages.slice(startIndex)),
+      aligned.times,
+      startIndex,
+    );
+  const workspace = await core.accessor.get(IWorkspaceService).get(summary.workspaceId);
+  const session = toWireSession(
+    { ...meta, workspaceId: summary.workspaceId },
+    workspace?.root ?? meta.cwd ?? '',
+    await resolveSessionBindingFacts(core, sessionId, summary.workspaceId, summary.usage, meta.agents?.['main']),
+    cursor.seq,
+  );
+  const subagentCandidates = sessionAgentRoster(sessionId, meta);
+  const subagents = enrichSnapshotSubagents(
+    subagentCandidates,
+    meta.agents,
+    broadcaster.getMaterializedTranscriptToolCallCounts(
+      sessionId,
+      subagentCandidates.map((subagent) => subagent.id),
+    ),
+  );
+  return {
+    as_of_seq: cursor.seq,
+    epoch: cursor.epoch,
+    session: {
+      ...session,
+      message_count: aligned.messages.length,
+      agent_config: {
+        ...session.agent_config,
+        permission_mode: projection.permissionMode,
+        plan_mode: projection.planActive,
+      },
+    },
+    messages: { items: messageTail?.items ?? [], has_more: messageTail?.has_more ?? false },
+    in_flight_turn: null,
+    subagents,
+    agent_counts: sessionAgentCounts(meta.agents, subagents),
+    pending_approvals: [],
+    pending_questions: [],
+  };
 }
 
 async function assembleSnapshotFromLease(

@@ -14,6 +14,8 @@ import type { ContextMessage, ContextMessageSource } from './types';
 export interface ContextTranscript {
   readonly entries: readonly ContextMessage[];
   readonly times: readonly (number | undefined)[];
+  readonly logicalEntries: readonly ContextMessage[];
+  readonly logicalTimes: readonly (number | undefined)[];
   readonly foldedLength: number;
 }
 
@@ -178,6 +180,8 @@ export function createContextTranscriptReducer(): ContextTranscriptReducer {
     result: () => ({
       entries: transcript.map((e) => e.message),
       times: transcript.map((e) => e.time),
+      logicalEntries: logical.map((e) => e.message),
+      logicalTimes: logical.map((e) => e.time),
       foldedLength: logical.length,
     }),
   };
@@ -208,10 +212,10 @@ function removeEntry(entries: MutableEntry[], entry: MutableEntry): void {
 }
 
 function readCompactionSummaryText(record: WireRecord): string {
-  const summary = record['summary'];
-  if (typeof summary === 'string') return summary;
   const contextSummary = record['contextSummary'];
   if (typeof contextSummary === 'string') return contextSummary;
+  const summary = record['summary'];
+  if (typeof summary === 'string') return summary;
   if (isContextMessageLike(summary)) return textOfParts(summary.content);
   return '';
 }
