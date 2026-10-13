@@ -102,8 +102,20 @@ interface ActiveCompaction extends FullCompactionTask {
   readonly quiescence?: IDisposable;
   trace?: LLMRequestTrace;
   committedResult?: CompactionResult;
+  appliedResult?: CompactionResult;
+  appliedInput?: ContextCompactionInput;
+  completeDispatched?: boolean;
+  persistBlocked?: boolean;
   phase: 'preparing' | 'committing' | 'finalizing';
   blockedByTurn: boolean;
+}
+
+class CompactionPersistError extends Error {
+  constructor(cause: unknown) {
+    super('Compaction was not durable; the same operation can retry without changing strategy.');
+    this.name = 'CompactionPersistError';
+    this.cause = cause;
+  }
 }
 
 interface CompactionAttemptResult {
@@ -338,7 +350,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     const profileStrategy = this.profile.resolveContextStrategy?.();
     if (this.scope.agentId !== 'main') {
       if (profileStrategy !== undefined) return { strategy: profileStrategy, source: 'profile', shadow };
-      return { strategy: config?.subagentContextStrategy ?? 'summarize', source: 'subagent', shadow };
+      return { strategy: config?.subagentContextStrategy ?? 'auto', source: 'subagent', shadow };
     }
     const override = this.states.get(contextStrategyOverrideKey);
     if (override !== null) return { strategy: override, source: 'session', shadow };
@@ -427,6 +439,10 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
   }
 
   begin(input: FullCompactionInput): boolean {
+    if (this._compacting?.persistBlocked) {
+      this.resumePersist();
+      return true;
+    }
     const data: CompactionBeginData = { source: input.source, instruction: input.instruction, strategy: input.strategy };
     if (data.source === 'manual') {
       if (this.pendingManual !== null || this._compacting?.trigger === 'manual') return false;
@@ -518,7 +534,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     if (history.length === 0) {
       throw new Error2(ErrorCodes.COMPACTION_UNABLE, 'No messages to compact in current history.');
     }
-    if (this.strategy.computeCompactCount(history, source) <= 0) {
+    if (Math.max(this.strategy.computeCompactCount(history, source, true), this.strategy.computeCompactCount(history, source, false)) <= 0) {
       throw new Error2(ErrorCodes.COMPACTION_UNABLE, 'No messages to compact in current history.');
     }
     return this.requestTokens(history);
@@ -568,24 +584,102 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     return super.dispose();
   }
 
-  private commitCompaction(active: ActiveCompaction, input: ContextCompactionInput): CompactionResult {
+  private async commitCompaction(active: ActiveCompaction, input: ContextCompactionInput): Promise<CompactionResult> {
     active.abortController.signal.throwIfAborted();
     if (this._compacting !== active) throw compactionCancelledReason(active);
+    if (active.committedResult !== undefined) return active.committedResult;
     active.phase = 'committing';
+    active.appliedInput = input;
     try {
-      const result = this.context.applyCompaction(input);
-      active.committedResult = result;
+      if (active.appliedResult === undefined) active.appliedResult = this.context.applyCompaction(input);
+      await this.flushDurable(active);
+      if (!active.completeDispatched) {
+        await this.dispatcher.dispatch(new FullCompactionComplete({}));
+        active.completeDispatched = true;
+      }
+      await this.flushDurable(active);
+      active.committedResult = active.appliedResult;
       active.phase = 'finalizing';
-      void this.dispatcher.dispatch(new FullCompactionComplete({}));
+      active.persistBlocked = false;
+      return active.appliedResult;
+    } catch (error) {
+      if (!(error instanceof CompactionPersistError) && active.committedResult === undefined && !active.persistBlocked) active.phase = 'preparing';
+      throw error;
+    }
+  }
+
+  private async flushDurable(active: ActiveCompaction): Promise<void> {
+    active.abortController.signal.throwIfAborted();
+    try {
+      await this.dispatcher.flush();
+    } catch (error) {
+      if (active.abortController.signal.aborted || isAbortError(error)) throw error;
+      try {
+        await this.dispatcher.flush();
+      } catch (retryError) {
+        if (active.abortController.signal.aborted || isAbortError(retryError)) throw retryError;
+        active.phase = 'preparing';
+        active.persistBlocked = true;
+        throw new CompactionPersistError(retryError);
+      }
+    }
+  }
+
+  private resumePersist(): void {
+    const active = this._compacting;
+    if (active === null || !active.persistBlocked || active.appliedInput === undefined) return;
+    active.persistBlocked = false;
+    const promise = this.finishPersist(active);
+    (active as { promise: Promise<CompactionResult> }).promise = promise;
+    void promise.catch(() => undefined);
+  }
+
+  private async finishPersist(active: ActiveCompaction): Promise<CompactionResult> {
+    try {
+      const input = active.appliedInput;
+      if (input === undefined) throw new Error2(ErrorCodes.COMPACTION_UNABLE, 'Compaction recovery has no prepared result.');
+      const result = await this.publishCompactionSuccess(active, await this.commitCompaction(active, input));
       return result;
     } catch (error) {
-      if (active.committedResult === undefined) active.phase = 'preparing';
+      if (active.persistBlocked) active.phase = 'preparing';
       throw error;
+    } finally {
+      if (!active.persistBlocked) await this.releaseCompaction(active);
+    }
+  }
+
+  private async publishCompactionSuccess(active: ActiveCompaction, result: CompactionResult): Promise<CompactionResult> {
+    if (this._compacting !== active) throw compactionCancelledReason(active);
+    try {
+      await this.profile.refreshSystemPrompt();
+    } catch (error) {
+      this.log.error('failed to refresh system prompt after compaction', { error });
+    }
+    this.lastCompactedTokenCount = result.tokensAfter;
+    this.compactedHistoryLength = this.context.get().length;
+    if (!this.markCompleted(active)) throw compactionCancelledReason(active);
+    const { contextSummary: _contextSummary, ...eventResult } = result;
+    void _contextSummary;
+    void this.dispatcher.dispatch(new CompactionCompleted({ trigger: active.trigger, result: eventResult }));
+    return result;
+  }
+
+  private async releaseCompaction(active: ActiveCompaction): Promise<void> {
+    try {
+      this._onDidFinishCompaction.fire(active);
+    } finally {
+      await active.quiescence?.dispose();
     }
   }
 
   private cancelActive(active: ActiveCompaction, reason?: string): boolean {
     if (this._compacting !== active || active.phase !== 'preparing') return false;
+    if (active.appliedResult !== undefined) {
+      this._compacting = null;
+      active.persistBlocked = false;
+      void this.releaseCompaction(active);
+      return false;
+    }
     void this.dispatcher.dispatch(new FullCompactionCancel({ reason }));
     this._compacting = null;
     if (!active.abortController.signal.aborted) {
@@ -746,22 +840,12 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
   ): Promise<CompactionResult> {
     try {
       const result = await this.compactionRound(active, data);
-      if (this._compacting !== active) throw compactionCancelledReason(active);
-      try {
-        await this.profile.refreshSystemPrompt();
-      } catch (error) {
-        this.log.error('failed to refresh system prompt after compaction', { error });
-      }
-      this.lastCompactedTokenCount = result.tokensAfter;
-      this.compactedHistoryLength = this.context.get().length;
-      if (!this.markCompleted(active)) {
-        throw compactionCancelledReason(active);
-      }
-      const { contextSummary: _contextSummary, ...eventResult } = result;
-      void _contextSummary;
-      void this.dispatcher.dispatch(new CompactionCompleted({ trigger: active.trigger, result: eventResult }));
-      return result;
+      return await this.publishCompactionSuccess(active, result);
     } catch (error) {
+      if (active.persistBlocked && this._compacting === active) {
+        active.phase = 'preparing';
+        throw error;
+      }
       if (active.abortController.signal.aborted || isAbortError(error)) {
         this.cancelActive(active);
         throw error;
@@ -776,15 +860,13 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       void this.dispatcher.dispatch(new AgentErrorEvent(toKimiErrorPayload(error)));
       throw error;
     } finally {
-      try {
+      if (!active.persistBlocked) {
         try {
-          this._onDidFinishCompaction.fire(active);
-        } finally {
-          await active.quiescence?.dispose();
+          await this.releaseCompaction(active);
+        } catch (error) {
+          if (active.committedResult === undefined) throw error;
+          this.log.error('failed to release compaction resources after commit', { error });
         }
-      } catch (error) {
-        if (active.committedResult === undefined) throw error;
-        this.log.error('failed to release compaction resources after commit', { error });
       }
     }
   }
@@ -873,15 +955,20 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
           customInstruction.length > 0 ? `\nOptional user instruction:\n${customInstruction}\n` : '',
       }).trimEnd();
 
-      let compactCount = this.strategy.computeCompactCount(originalHistory, data.source);
-      if (compactCount <= 0) {
-        throw new Error2(ErrorCodes.COMPACTION_UNABLE, 'No messages to compact in current history.');
-      }
-
       const choice = data.strategy === undefined ? this.getContextStrategy() : {
         strategy: data.strategy === 'relay' ? 'fresh' as const : 'summarize' as const,
         source: 'session' as const, shadow: false,
       };
+      const requestedStrategy = data.strategy ?? choice.strategy;
+      const selectionSource = data.strategy === undefined ? choice.source : 'request';
+      const modelCompactCount = this.strategy.computeCompactCount(originalHistory, data.source, true);
+      const relayCompactCount = this.strategy.computeCompactCount(originalHistory, data.source, false);
+      let compactCount = (data.strategy === 'relay' || choice.strategy !== 'summarize') && relayCompactCount > 0
+        ? relayCompactCount : modelCompactCount;
+      if (compactCount <= 0) {
+        throw new Error2(ErrorCodes.COMPACTION_UNABLE, 'No messages to compact in current history.');
+      }
+      if (data.strategy === 'relay') attemptedStrategy = 'relay';
       const epoch = this.states.get(contextWindowEpochKey);
       const notes = this.todo.getNotes?.(this.scope.agentId) ?? {};
       const [liveEntries, memoryReferences, linkedBoardCards] = await Promise.all([
@@ -897,6 +984,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         sessionId: this.session.sessionId, epoch,
         notes: notes.notes, meta: notes.meta, todos: this.currentTodos(),
         estimateText: (text) => this.tokenCounting.estimateText(text), memoryEntries, memoryReferences, linkedBoardCards,
+        instruction: customInstruction.length > 0 ? customInstruction : undefined,
       };
       let relaySummary: string | undefined;
       let relayError: unknown;
@@ -920,19 +1008,21 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         }
         if (!historySafeToCompact(this.context.get(), originalHistory)) throw compactionCancelledReason(active);
         attemptedStrategy = 'relay';
-        const result = this.commitCompaction(active, {
+        const relayReasons = selectionReasons(requestedStrategy, selectionSource, []);
+        const result = await this.commitCompaction(active, {
           summary: relaySummary, contextSummary: relaySummary, compactedCount: compactCount, tokensBefore,
           requestOverheadTokens: this.requestTokens([]), strategy: 'relay', shapeVersion: 1,
-          reasonCodes: [],
+          reasonCodes: relayReasons,
         });
         this.telemetry.track2('compaction_finished', {
           source: data.source, turn_id: active.originTurnId, tokens_before: result.tokensBefore,
           tokens_after: result.tokensAfter, duration_ms: Date.now() - startedAt,
           compacted_count: result.compactedCount, retry_count: 0, round: 1,
-          thinking_effort: thinkingEffort, strategy: 'relay', reason_codes: [],
+          thinking_effort: thinkingEffort, strategy: 'relay', reason_codes: relayReasons,
         });
         return result;
       }
+      const autoCompact = this.getAutoCompact();
       const projected = relaySummary === undefined ? 0 : buildContextCompactionShape(originalHistory, {
         summary: relaySummary, compactedCount: compactCount, tokensBefore,
         requestOverheadTokens: this.requestTokens([]),
@@ -945,9 +1035,13 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         : renderFailed ? { eligible: false, safe: false, reasons: ['relay_render_failed'] as ReasonCode[] }
           : evaluateFreshEligibility({
             history: originalHistory, compactCount, notes: notes.notes, meta: notes.meta,
-            windowEpoch: epoch, strategy: choice.strategy, threshold: this.getAutoCompact().tokens,
+            windowEpoch: epoch, strategy: choice.strategy, threshold: autoCompact.tokens,
             projectedTokens: projected, instruction: customInstruction,
-            historyAvailable: historyToolAvailable('HistoryRead') && historyToolAvailable('HistorySearch'),
+            historyAvailable: historyToolAvailable('HistoryRead'),
+            historyReadAvailable: historyToolAvailable('HistoryRead'),
+            windowTokens: autoCompact.effectiveMaxContextTokens,
+            outputReserve: autoCompact.reservedContextTokens,
+            tokensBefore,
             estimateMessage: (message) => this.tokenCounting.estimateMessage(message),
             estimateText: relayInput.estimateText, sessionId: relayInput.sessionId, agentId: relayInput.agentId,
           });
@@ -958,20 +1052,23 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       if (useRelay && relaySummary !== undefined) {
         attemptedStrategy = 'relay';
         if (!historySafeToCompact(this.context.get(), originalHistory)) throw compactionCancelledReason(active);
-        const result = this.commitCompaction(active, {
+        const relayReasons = selectionReasons(requestedStrategy, selectionSource, reasons);
+        const result = await this.commitCompaction(active, {
           summary: relaySummary, contextSummary: relaySummary, compactedCount: compactCount, tokensBefore,
           requestOverheadTokens: this.requestTokens([]), strategy: 'relay', shapeVersion: 1,
-          reasonCodes: reasons,
+          reasonCodes: relayReasons,
         });
         this.telemetry.track2('compaction_finished', {
           source: data.source, turn_id: active.originTurnId, tokens_before: result.tokensBefore,
           tokens_after: result.tokensAfter, duration_ms: Date.now() - startedAt,
           compacted_count: result.compactedCount, retry_count: 0, round: 1,
-          thinking_effort: thinkingEffort, strategy: 'relay', reason_codes: reasons,
+          thinking_effort: thinkingEffort, strategy: 'relay', reason_codes: relayReasons,
         });
         return result;
       }
 
+      attemptedStrategy = 'summarize';
+      if (modelCompactCount > 0) compactCount = modelCompactCount;
       const maxAttempts = resolvedModel.compactionMaxAttempts ?? MAX_COMPACTION_RETRY_ATTEMPTS;
       let attempt: CompactionAttemptResult | undefined;
       let droppedCount = 0;
@@ -1047,12 +1144,14 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         }
       }
       } catch (error) {
+        if (error instanceof CompactionPersistError) throw error;
         if (choice.strategy === 'summarize' || !eligibility.safe || customInstruction ||
             !(this.shouldRecoverFromContextOverflow(error) || isRetryableCompactionError(error) || error instanceof CompactionTruncatedError)) throw error;
         if (!historySafeToCompact(this.context.get(), originalHistory)) throw error;
-        const rescueReasons = [...reasons, 'summarize_failed_relay_rescue'];
-        const summary = renderRelay(relayInput);
-        const result = this.commitCompaction(active, { summary, contextSummary: summary, compactedCount: relayInput.compactCount,
+        const rescueReasons = selectionReasons(requestedStrategy, selectionSource, [...reasons, 'summarize_failed_relay_rescue']);
+        const summary = renderRelay({ ...relayInput, compactCount: relayCompactCount > 0 ? relayCompactCount : compactCount });
+        attemptedStrategy = 'relay';
+        const result = await this.commitCompaction(active, { summary, contextSummary: summary, compactedCount: relayCompactCount > 0 ? relayCompactCount : compactCount,
           tokensBefore, requestOverheadTokens: this.requestTokens([]), strategy: 'relay', shapeVersion: 1,
           reasonCodes: rescueReasons, fallbackFrom: 'summarize' });
         this.telemetry.track2('compaction_finished', { source: data.source, turn_id: active.originTurnId,
@@ -1080,7 +1179,8 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       const directiveBudget = summarizedDirectives && summarizedDirectives !== '(none)' ? compactionDirectivesBudget(notes.notes, summarizedDirectives) : undefined;
       if (directiveBudget?.exceeded) reasons.push('notes_directives_budget');
       const summary = this.postProcessSummary(attempt.summary, { ...relayInput, compactCount });
-      const result = this.commitCompaction(active, {
+      const summarizeReasons = selectionReasons(requestedStrategy, selectionSource, reasons);
+      const result = await this.commitCompaction(active, {
         summary,
         contextSummary: buildCompactionSummaryText(summary),
         compactedCount: compactCount,
@@ -1090,7 +1190,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         droppedCount: droppedCount === 0 ? undefined : droppedCount,
         strategy: 'summarize',
         shapeVersion: 1,
-        reasonCodes: reasons,
+        reasonCodes: summarizeReasons,
         fallbackFrom,
       });
 
@@ -1107,7 +1207,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         thinking_effort: thinkingEffort,
         trace_id: attempt.traceId,
         strategy: 'summarize',
-        reason_codes: reasons,
+        reason_codes: summarizeReasons,
         fallback_from: fallbackFrom,
         ...usageTelemetry(attempt.usage),
       };
@@ -1117,6 +1217,16 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       if (active.committedResult !== undefined) {
         this.log.error('failed to report compaction telemetry after commit', { error });
         return active.committedResult;
+      }
+      if (error instanceof CompactionPersistError || active.persistBlocked) {
+        const properties: CompactionFailedEvent = {
+          turn_id: active.originTurnId, source: data.source, tokens_before: tokensBefore,
+          duration_ms: Date.now() - startedAt, round: 1, retry_count: retryCount,
+          thinking_effort: thinkingEffort, error_type: 'CompactionPersistError',
+          trace_id: active.traceId, strategy: attemptedStrategy, reason_codes: failureReasons,
+        };
+        this.telemetry.track2('compaction_failed', properties);
+        throw error;
       }
       if (isAbortError(error)) throw error;
       const properties: CompactionFailedEvent = {
@@ -1169,6 +1279,10 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
   private tokenCountWithPending(): number {
     return this.tokenCounting.get().size;
   }
+}
+
+function selectionReasons(requested: string, source: string, reasons: readonly string[]): string[] {
+  return [...reasons, `requested:${requested}`, `strategy_source:${source}`];
 }
 
 function findAPIStatusError(error: unknown): APIStatusError | undefined {

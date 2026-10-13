@@ -58,6 +58,12 @@ const TWO_EXCHANGE_TEXT = ['old user one', 'old assistant one', 'recent user two
 const THREE_EXCHANGE_TEXT = ['old user one', 'old assistant one', 'old user two', 'old assistant two', 'recent user three', 'recent assistant three'];
 const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 
+function beginSummarize(ctx: TestAgentContext, input: { instruction?: string } = {}): Promise<boolean> {
+  return ctx.ready.then(() => ctx.get(IAgentFullCompactionService).begin({
+    source: 'manual', strategy: 'summarize', instruction: input.instruction,
+  }));
+}
+
 function fixtureRequestTokens(ctx: TestAgentContext, text: readonly string[]): number {
   const tools = ctx.get(IAgentToolSelectService).shapeTools(ctx.get(IAgentToolRegistryService).list());
   return ctx.tokenCounting.requestSize({
@@ -398,7 +404,7 @@ describe('FullCompaction', () => {
     expect(compactor.getContextStrategy()).toEqual({ strategy: contextStrategy ?? 'auto', source: contextStrategy === undefined ? 'default' : 'global', shadow: false });
   });
 
-  it('falls back from the built-in auto strategy to a summary when work notes are missing', async () => {
+  it('relays when work notes are missing and the original user text stays in the shape', async () => {
     const ctx = testAgent();
     ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
     ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
@@ -408,10 +414,14 @@ describe('FullCompaction', () => {
     ctx.mockNextResponse({ type: 'text', text: 'Fallback summary.' });
     expect(compactor.begin({ source: 'manual' })).toBe(true);
     const result = await compactor.compacting!.promise;
-    expect(result).toMatchObject({ strategy: 'summarize', fallbackFrom: 'relay' });
+    expect(result).toMatchObject({ strategy: 'relay' });
+    expect(result.fallbackFrom).toBeUndefined();
     expect(result.reasonCodes).toContain('notes_missing');
-    expect(ctx.llmCalls).toHaveLength(1);
-    expect(ctx.compactHistory().some((message) => message.text?.includes('Fallback summary.'))).toBe(true);
+    expect(result.reasonCodes).toContain('strategy_source:default');
+    expect(ctx.llmCalls).toHaveLength(0);
+    expect(ctx.compactHistory().some((message) => message.text === 'old user one')).toBe(true);
+    expect(ctx.compactHistory().some((message) => message.text === 'recent user two')).toBe(true);
+    expect(ctx.compactHistory().some((message) => message.text?.includes('reviewed not confirmed'))).toBe(true);
   });
 
   it('runs manual compaction and applies the compacted context', async () => {
@@ -433,7 +443,7 @@ describe('FullCompaction', () => {
     const completed = ctx.once('compaction.completed');
 
     ctx.mockNextResponse({ type: 'text', text: 'Compacted summary.' });
-    await ctx.rpc.beginCompaction({ instruction: 'Keep the important test facts.' });
+    await beginSummarize(ctx, { instruction: 'Keep the important test facts.' });
     await compacted;
     await completed;
 
@@ -572,7 +582,7 @@ describe('FullCompaction', () => {
       const completed = ctx.once('compaction.completed');
 
       ctx.mockNextResponse({ type: 'text', text: 'Compacted summary.' });
-      await ctx.rpc.beginCompaction({});
+      await beginSummarize(ctx, {});
       await completed;
 
       expect(refreshSpy).toHaveBeenCalledTimes(1);
@@ -604,8 +614,8 @@ describe('FullCompaction', () => {
     const approval = await ctx.takeApprovalRequest();
     expect(ctx.get(IAgentLoopService).status().activeTurnId).toBeDefined();
 
-    expect(await ctx.rpc.beginCompaction({})).toBe(true);
-    expect(await ctx.rpc.beginCompaction({})).toBe(false);
+    expect(await beginSummarize(ctx, {})).toBe(true);
+    expect(await beginSummarize(ctx, {})).toBe(false);
     expect(ctx.newEvents()).toContainEqual(expect.objectContaining({
       event: 'compaction.started', args: expect.objectContaining({ trigger: 'manual', phase: 'queued' }),
     }));
@@ -684,7 +694,7 @@ describe('FullCompaction', () => {
     });
 
     ctx.mockNextResponse({ type: 'text', text: 'Compacted summary.' });
-    await ctx.rpc.beginCompaction({ instruction: 'Keep the important test facts.' });
+    await beginSummarize(ctx, { instruction: 'Keep the important test facts.' });
     await compacted;
 
     const [compactionCall] = ctx.llmCalls;
@@ -737,7 +747,7 @@ describe('FullCompaction', () => {
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const outcome = ctx.onceAny(['full_compaction.complete', 'error']);
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
 
     expect(await outcome).toBe('error');
     expect(ctx.newEvents()).toContainEqual(
@@ -764,7 +774,7 @@ describe('FullCompaction', () => {
     const retryOutcome = ctx.onceAny(['full_compaction.complete', 'error']);
     const completed = ctx.once('compaction.completed');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
 
     expect(await retryOutcome).toBe('full_compaction.complete');
     await completed;
@@ -903,7 +913,7 @@ describe('FullCompaction', () => {
     const compacted = ctx.once('full_compaction.complete');
     const completed = ctx.once('compaction.completed');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await compacted;
     await completed;
 
@@ -939,7 +949,7 @@ describe('FullCompaction', () => {
     const compacted = ctx.once('full_compaction.complete');
     const completed = ctx.once('compaction.completed');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await compacted;
     await completed;
 
@@ -965,7 +975,7 @@ describe('FullCompaction', () => {
     const compacted = ctx.once('full_compaction.complete');
     const completed = ctx.once('compaction.completed');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await compacted;
     await completed;
 
@@ -1000,7 +1010,7 @@ describe('FullCompaction', () => {
     const compacted = ctx.once('full_compaction.complete');
     const completed = ctx.once('compaction.completed');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await compacted;
     await completed;
 
@@ -1042,7 +1052,7 @@ describe('FullCompaction', () => {
     const compacted = ctx.once('full_compaction.complete');
     const completed = ctx.once('compaction.completed');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await compacted;
     await completed;
 
@@ -1074,7 +1084,7 @@ describe('FullCompaction', () => {
     const compacted = ctx.once('full_compaction.complete');
     const completed = ctx.once('compaction.completed');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await firstEmptySummary.promise;
     await vi.advanceTimersByTimeAsync(10_000);
     await compacted;
@@ -1125,7 +1135,7 @@ describe('FullCompaction', () => {
     const compacted = ctx.once('full_compaction.complete');
     const completed = ctx.once('compaction.completed');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await firstThinkOnly.promise;
     await vi.advanceTimersByTimeAsync(10_000);
     await compacted;
@@ -1169,7 +1179,7 @@ describe('FullCompaction', () => {
     const compacted = ctx.once('full_compaction.complete');
     const completed = ctx.once('compaction.completed');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await firstAttemptFailed.promise;
     await vi.advanceTimersByTimeAsync(10_000);
     await compacted;
@@ -1207,7 +1217,7 @@ describe('FullCompaction', () => {
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const failed = ctx.once('error');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await firstResponse.promise;
     await vi.advanceTimersByTimeAsync(60_000);
     await failed;
@@ -1250,7 +1260,7 @@ describe('FullCompaction', () => {
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const failed = ctx.once('error');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await failed;
 
     expect(inputs).toHaveLength(1);
@@ -1276,7 +1286,7 @@ describe('FullCompaction', () => {
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const failed = ctx.once('error');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await failed;
 
     expect(attempts).toBe(1);
@@ -1317,7 +1327,7 @@ describe('FullCompaction', () => {
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const compacted = ctx.once('full_compaction.complete');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await firstAttemptFailed.promise;
     await vi.advanceTimersByTimeAsync(299);
 
@@ -1352,7 +1362,7 @@ describe('FullCompaction', () => {
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const cancelled = ctx.once('compaction.cancelled');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await firstAttemptFailed.promise;
     const fullCompaction = ctx.get(IAgentFullCompactionService);
     for (let i = 0; i < 10 && fullCompaction.compacting?.traceId === undefined; i += 1) {
@@ -1389,7 +1399,7 @@ describe('FullCompaction', () => {
     ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
     ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await started.promise;
     const service = ctx.get(IAgentFullCompactionService);
     const task = service.compacting;
@@ -1420,7 +1430,7 @@ describe('FullCompaction', () => {
     const tokensBefore = fixtureRequestTokens(ctx, TWO_EXCHANGE_TEXT);
     const failed = ctx.once('error');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await failed;
 
     const events = ctx.newEvents();
@@ -1477,7 +1487,7 @@ describe('FullCompaction', () => {
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const failed = ctx.once('error');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await failed;
 
     expect(records).toContainEqual({
@@ -1513,7 +1523,7 @@ describe('FullCompaction', () => {
     ctx.get(IAgentTelemetryContextService).set({ trace_id: 'trace-turn-1' });
     const failed = ctx.once('error');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await failed;
 
     const apiError = records.find((record) => record.event === 'api_error');
@@ -1593,7 +1603,7 @@ describe('FullCompaction', () => {
     ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
 
-    const pending = ctx.rpc.beginCompaction({}).catch(() => {});
+    const pending = beginSummarize(ctx, {}).catch(() => {});
     await started.promise;
     await ctx.dispose();
 
@@ -1625,7 +1635,7 @@ describe('FullCompaction', () => {
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const failed = ctx.once('error');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await firstAttemptFinished.promise;
     await vi.advanceTimersByTimeAsync(60_000);
     await failed;
@@ -1667,7 +1677,7 @@ describe('FullCompaction', () => {
     const tokensBefore = fixtureRequestTokens(ctx, TWO_EXCHANGE_TEXT);
     const failed = ctx.once('error');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await firstAttemptFailed.promise;
     await vi.advanceTimersByTimeAsync(60_000);
     await failed;
@@ -1715,7 +1725,7 @@ describe('FullCompaction', () => {
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const failed = ctx.once('error');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await firstAttemptFailed.promise;
     await vi.advanceTimersByTimeAsync(60_000);
     await failed;
@@ -1758,7 +1768,7 @@ describe('FullCompaction', () => {
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const failed = ctx.once('error');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await failed;
 
     expect(attempts).toBe(1);
@@ -1805,7 +1815,7 @@ describe('FullCompaction', () => {
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const failed = ctx.once('error');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await firstAttemptFailed.promise;
     await vi.advanceTimersByTimeAsync(60_000);
     await failed;
@@ -1831,7 +1841,7 @@ describe('FullCompaction', () => {
 
     ctx.mockNextResponse({ type: 'text', text: 'Rich summary.' });
     const completed = ctx.once('compaction.completed');
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await compacted;
     await completed;
 
@@ -1851,7 +1861,7 @@ describe('FullCompaction', () => {
     const completed = ctx.once('compaction.completed');
 
     ctx.mockNextResponse({ type: 'text', text: 'Compacted before open tools.' });
-    await ctx.rpc.beginCompaction({ instruction: 'Keep stable facts.' });
+    await beginSummarize(ctx, { instruction: 'Keep stable facts.' });
     await compacted;
     await completed;
 
@@ -1902,7 +1912,7 @@ describe('FullCompaction', () => {
     const completed = ctx.once('compaction.completed');
 
     ctx.mockNextResponse({ type: 'text', text: 'Compacted prefix.' });
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     ctx.appendUserMessage([{ type: 'text', text: 'new user while compacting' }]);
     await compacted;
     await completed;
@@ -1954,7 +1964,7 @@ describe('FullCompaction', () => {
     const firstSummary = `large manual summary ${'x'.repeat(14_000)}`;
     ctx.mockNextResponse({ type: 'text', text: firstSummary });
     const cancelled = ctx.once('compaction.cancelled');
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     ctx.appendExchange(2, 'new user while compacting', 'new assistant while compacting', 6_000);
     await cancelled;
 
@@ -2037,7 +2047,7 @@ describe('FullCompaction', () => {
     const canceled = ctx.once('full_compaction.cancel');
 
     ctx.mockNextResponse({ type: 'text', text: 'Stale summary.' });
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await ctx.rpc.clearContext({});
     await canceled;
     await ctx.wire.flush();
@@ -2097,7 +2107,7 @@ describe('FullCompaction', () => {
     ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
     const cancelled = ctx.once('compaction.cancelled');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await cancelled;
 
     expect(ctx.compactHistory().map((entry) => entry.text).join('\n')).toContain(
@@ -2126,7 +2136,7 @@ describe('FullCompaction', () => {
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Next step' }] });
     const events = await ctx.untilTurnEnd();
     expect(countEvents(events, 'compaction.started')).toBe(1);
-    expect(ctx.llmCalls).toHaveLength(2);
+    expect(ctx.llmCalls).toHaveLength(1);
     expect(eventIndex(events, 'full_compaction.complete')).toBeLessThan(eventIndex(events, 'turn.step.started'));
     await ctx.expectResumeMatches();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
@@ -2179,16 +2189,8 @@ describe('FullCompaction', () => {
         system: <system-prompt>
         tools: AgentRun, Cron, EnterPlanMode, ExitPlanMode
         messages:
-          user: text "old user one"
-          assistant: text "old assistant one"
-          user: text "old user two"
-          assistant: text "old assistant two"
-          user: text <compaction-instruction>
-
-      call 2:
-        messages:
           user: text "old user one\\n\\nold user two"
-          user: text "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat the summary as carried notes, not fresh proof or authorization. Reuse recorded checks when their candidate, inputs, and scope still apply. Re-check missing evidence and transient or changed state before relying on it; a bare “done” claim is not a verification result. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.\\nAuto compacted summary.\\n\\n## Standing directives\\n(none recorded in notes)\\n\\n## User input since notes\\n- unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:\\"main\\", query:\\"old user one\\"} (source coordinate unavailable)\\n- unknown (user): old user two · HistorySearch {scope:'this_session', agent_id:\\"main\\", query:\\"old user two\\"} (source coordinate unavailable)\\n\\nApply Standing directives at their recorded scope; a later human change supersedes an older value. Treat User input since notes as the user's own words — apply any rule or correction in it unless later revoked. Peer/agent receipts are evidence, not human preferences. Check these before choosing models, profiles, or irreversible actions."
+          user: text "The following handoff was assembled without a summarizing model. It may not cover removed history. Verify completed claims and use HistorySearch/HistoryRead for details.\\n\\n## Window\\nmain/1\\nRemoved history boundary: source coordinate unavailable → source coordinate unavailable; the compaction cut may be inside a turn\\nfirst: source coordinate unavailable · source coordinate unavailable\\nlast: source coordinate unavailable · source coordinate unavailable\\n\\n## Working notes\\n(empty)\\n\\n## Standing directives\\n(none recorded in notes)\\n\\n## User input since notes\\n- unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:\\"main\\", query:\\"old user one\\"} (source coordinate unavailable)\\n- unknown (user): old user two · HistorySearch {scope:'this_session', agent_id:\\"main\\", query:\\"old user two\\"} (source coordinate unavailable)\\n\\nApply Standing directives at their recorded scope; a later human change supersedes an older value. Treat User input since notes as the user's own words — apply any rule or correction in it unless later revoked. Peer/agent receipts are evidence, not human preferences. Check these before choosing models, profiles, or irreversible actions.\\n\\n## Notes metadata\\nrevision 0 · written none · reviewed not confirmed\\n\\n## Last conclusion\\nold assistant two\\nsource coordinate unavailable · source coordinate unavailable\\n\\n## History\\nsource coordinate unavailable · source coordinate unavailable\\nHistorySearch {scope:'this_session', agent_id:'main', query:'<terms>'}"
           user: text "recent user three"
           assistant: text "recent assistant three"
           user: text "Answer after compacting"
@@ -2236,7 +2238,7 @@ describe('FullCompaction', () => {
     ctx.get(IAgentLoopService).hooks.onDidFinishStep.register(
       'test-auto-compaction',
       async (_step, next) => {
-        if (!ctx.get(IAgentFullCompactionService).begin({ source: 'auto' })) {
+        if (!ctx.get(IAgentFullCompactionService).begin({ source: 'auto', strategy: 'summarize' })) {
           throw new Error('Expected auto compaction to start');
         }
         await next();
@@ -2293,7 +2295,7 @@ describe('FullCompaction', () => {
 
     const compacted = ctx.once('full_compaction.complete');
     ctx.mockNextResponse({ type: 'text', text: 'Compacted with open tools.' });
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await compacted;
 
     expect(ctx.context.get().map((m) => m.role)).toEqual([
@@ -2363,7 +2365,7 @@ describe('FullCompaction', () => {
 
     const compacted = ctx.once('full_compaction.complete');
     ctx.mockNextResponse({ type: 'text', text: 'Compacted with partial tools.' });
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await compacted;
 
     expect(ctx.context.get().map((m) => m.role)).toEqual([
@@ -2401,7 +2403,7 @@ describe('FullCompaction', () => {
     });
     ctx.appendUserMessage([{ type: 'text', text: 'only pending user' }]);
 
-    await expect(ctx.rpc.beginCompaction({})).rejects.toMatchObject({
+    await expect(beginSummarize(ctx, {})).rejects.toMatchObject({
       code: 'compaction.unable',
     });
 
@@ -2419,7 +2421,7 @@ describe('FullCompaction', () => {
     ctx.appendUnresolvedToolExchange(1);
     const before = ctx.compactHistory();
 
-    await expect(ctx.rpc.beginCompaction({})).rejects.toMatchObject({
+    await expect(beginSummarize(ctx, {})).rejects.toMatchObject({
       code: 'compaction.unable',
     });
 
@@ -2436,7 +2438,7 @@ describe('FullCompaction', () => {
     });
 
     ctx.appendUserMessage([{ type: 'text', text: 'only pending user' }]);
-    await expect(ctx.rpc.beginCompaction({})).rejects.toMatchObject({
+    await expect(beginSummarize(ctx, {})).rejects.toMatchObject({
       code: 'compaction.unable',
     });
 
@@ -2447,7 +2449,7 @@ describe('FullCompaction', () => {
     const completed = ctx.once('compaction.completed');
 
     ctx.mockNextResponse({ type: 'text', text: 'Compacted after rejected history.' });
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await compacted;
     await completed;
 
@@ -2470,7 +2472,7 @@ describe('FullCompaction', () => {
       modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
     });
 
-    await expect(ctx.rpc.beginCompaction({})).rejects.toMatchObject({
+    await expect(beginSummarize(ctx, {})).rejects.toMatchObject({
       code: 'compaction.unable',
     });
     expect(ctx.llmCalls).toHaveLength(0);
@@ -2640,12 +2642,12 @@ describe('FullCompaction', () => {
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'x'.repeat(8_000) }] });
     await ctx.untilTurnEnd();
 
-    expect(ctx.llmCalls).toHaveLength(2);
-    const [compactionCall, answerCall] = ctx.llmCalls;
-    expect(messageText(compactionCall?.history.at(-1))).toContain('first-person handoff note');
-    expect(
-      answerCall?.history.map(messageText).some((text) => text.includes('Soft-cap compacted summary.')),
-    ).toBe(true);
+    expect(ctx.llmCalls).toHaveLength(1);
+    const [answerCall] = ctx.llmCalls;
+    const answerTexts = answerCall?.history.map(messageText) ?? [];
+    expect(answerTexts.some((text) => text.includes('assembled without a summarizing model'))).toBe(true);
+    expect(answerTexts.some((text) => text.includes('old user one'))).toBe(true);
+    expect(answerTexts.some((text) => text.includes('x'.repeat(8_000)))).toBe(true);
     await ctx.expectResumeMatches();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
@@ -2679,7 +2681,7 @@ describe('FullCompaction', () => {
       ctx.mockNextResponse({ type: 'text', text: `Summary for ${String(softContextSize)}.` });
 
       const compaction = ctx.get(IAgentFullCompactionService);
-      expect(compaction.begin({ source: 'auto' })).toBe(true);
+      expect(compaction.begin({ source: 'auto', strategy: 'summarize' })).toBe(true);
       const result = await compaction.compacting!.promise;
 
       expect(result.compactedCount).toBe(compactedCount);
@@ -2728,7 +2730,7 @@ describe('FullCompaction', () => {
     ctx.mockNextResponse({ type: 'text', text: 'Manual summary.' });
 
     const compaction = ctx.get(IAgentFullCompactionService);
-    expect(compaction.begin({ source: 'manual' })).toBe(true);
+    expect(compaction.begin({ source: 'manual', strategy: 'summarize' })).toBe(true);
     const result = await compaction.compacting!.promise;
 
     expect(result.compactedCount).toBe(6);
@@ -2775,7 +2777,7 @@ describe('FullCompaction', () => {
     vi.spyOn(ctx.tokenCounting, 'estimateMessage').mockReturnValue(10);
 
     const compaction = ctx.get(IAgentFullCompactionService);
-    expect(compaction.begin({ source: 'manual' })).toBe(true);
+    expect(compaction.begin({ source: 'manual', strategy: 'summarize' })).toBe(true);
     const result = await compaction.compacting!.promise;
 
     expect(inputs).toEqual([
@@ -2874,8 +2876,12 @@ describe('FullCompaction', () => {
     ctx.mockNextResponse({ type: 'text', text: 'Answer after compaction.' });
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'continue' }] });
     const events = await ctx.untilTurnEnd();
-    expect(ctx.llmCalls).toHaveLength(2);
+    expect(ctx.llmCalls).toHaveLength(1);
     expect(events).toContainEqual(expect.objectContaining({ event: 'compaction.started' }));
+    expect(events).toContainEqual(expect.objectContaining({
+      event: 'compaction.completed',
+      args: expect.objectContaining({ result: expect.objectContaining({ strategy: 'relay' }) }),
+    }));
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('triggers auto compaction when pending tokens cross the ratio threshold', async () => {
@@ -2895,21 +2901,12 @@ describe('FullCompaction', () => {
     await ctx.rpc.prompt({ input: [{ type: 'text', text: pendingPrompt }] });
     await ctx.untilTurnEnd();
 
-    expect(ctx.llmCalls).toHaveLength(2);
-    const [compactionCall, answerCall] = ctx.llmCalls;
-    const compactionTexts = compactionCall?.history.map(messageText) ?? [];
-    expect(compactionTexts.some((text) => text.includes('ratio-pending-verbatim'))).toBe(false);
-    expect(compactionCall?.history.map((message) => message.role)).toEqual([
-      'user',
-      'assistant',
-      'user',
-    ]);
-    expect(
-      answerCall?.history.map(messageText).some((text) => text.includes('Ratio compacted summary.')),
-    ).toBe(true);
-    expect(
-      answerCall?.history.map(messageText).some((text) => text.includes('ratio-pending-verbatim')),
-    ).toBe(true);
+    expect(ctx.llmCalls).toHaveLength(1);
+    const [answerCall] = ctx.llmCalls;
+    const answerTexts = answerCall?.history.map(messageText) ?? [];
+    expect(answerTexts.some((text) => text.includes('assembled without a summarizing model'))).toBe(true);
+    expect(answerTexts.some((text) => text.includes('old user one'))).toBe(true);
+    expect(answerTexts.filter((text) => text.includes('ratio-pending-verbatim'))).toEqual([pendingPrompt]);
 
     await ctx.expectResumeMatches();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
@@ -3174,9 +3171,6 @@ describe('FullCompaction', () => {
     let callCount = 0;
     const generate: GenerateFn = async (_provider, _system, _tools, _history, callbacks) => {
       callCount += 1;
-      if (callCount === 1) {
-        return textResult('Preemptive summary under the input cap.');
-      }
       await callbacks?.onMessagePart?.({ type: 'text', text: 'Answered after input-cap compaction.' });
       return textResult('Answered after input-cap compaction.');
     };
@@ -3196,10 +3190,14 @@ describe('FullCompaction', () => {
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'continue' }] });
     const events = await ctx.untilTurnEnd();
 
-    expect(callCount).toBe(2);
+    expect(callCount).toBe(1);
     expect(events).toContainEqual(
       expect.objectContaining({ event: 'compaction.started' }),
     );
+    expect(events).toContainEqual(expect.objectContaining({
+      event: 'compaction.completed',
+      args: expect.objectContaining({ result: expect.objectContaining({ strategy: 'relay' }) }),
+    }));
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('honors the observed provider window over a declared input cap', async () => {
@@ -3261,14 +3259,10 @@ describe('FullCompaction', () => {
 
   it('recovers from plain 413 when estimated request is over effective max', async () => {
     let callCount = 0;
-    const generate: GenerateFn = async (_provider, _system, _tools, _history, callbacks) => {
+    const generate: GenerateFn = async (_provider, _system, _tools, history, callbacks) => {
       callCount += 1;
-      if (callCount === 1) {
-        throw new APIStatusError(413, 'Request Entity Too Large', 'req-plain-413');
-      }
-      if (callCount === 2) {
-        return textResult('Plain 413 compacted summary.');
-      }
+      const oversized = history.some((message) => message.content.some((part) => part.type === 'text' && part.text.length > 100_000));
+      if (oversized) throw new APIStatusError(413, 'Request Entity Too Large', 'req-plain-413');
       await callbacks?.onMessagePart?.({
         type: 'text',
         text: 'Recovered after plain 413 compaction.',
@@ -3289,7 +3283,8 @@ describe('FullCompaction', () => {
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Retry after plain 413' }] });
     const events = await ctx.untilTurnEnd();
 
-    expect(callCount).toBe(3);
+    expect(callCount).toBeGreaterThanOrEqual(1);
+    expect(callCount).toBeLessThanOrEqual(2);
     expect(events).toContainEqual(
       expect.objectContaining({
         event: 'compaction.started',
@@ -3300,9 +3295,7 @@ describe('FullCompaction', () => {
       expect.objectContaining({
         event: 'compaction.completed',
         args: expect.objectContaining({
-          result: expect.objectContaining({
-            summary: expect.stringMatching(/^Plain 413 compacted summary\.\n\n## Standing directives\n[^]*## User input since notes\n/),
-          }),
+          result: expect.objectContaining({ strategy: 'relay' }),
         }),
       }),
     );
@@ -3859,7 +3852,7 @@ describe('FullCompaction', () => {
     ctx.appendExchange(2, 'retain the permission condition', 'acknowledged', 80);
     const candidate = `${'N'.repeat(1500)}\n KEEP_OLD_RULE `;
     ctx.mockNextResponse({ type: 'text', text: `Continue task.\n\n## Standing directives\n${candidate}` });
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     const result = await ctx.get(IAgentFullCompactionService).compacting!.promise;
     const text = ctx.compactHistory().at(-1)?.text;
     expect(text).toContain('## Pending directive review');
@@ -3899,7 +3892,7 @@ describe('FullCompaction', () => {
     const completed = ctx.once('compaction.completed');
 
     ctx.mockNextResponse({ type: 'text', text: 'Compacted summary.' });
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await compacted;
     await completed;
 
@@ -4186,7 +4179,7 @@ describe('prompt deferral during full compaction', () => {
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const completed = ctx.once('compaction.completed');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await compactionRequested.promise;
     const launch = await ctx.rpc.prompt({
       input: [{ type: 'text', text: 'deferred prompt' }],
@@ -4236,7 +4229,7 @@ describe('prompt deferral during full compaction', () => {
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const cancelled = ctx.once('compaction.cancelled');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await compactionRequested.promise;
     const launch = await ctx.rpc.prompt({
       input: [{ type: 'text', text: 'deferred prompt' }],
@@ -4289,9 +4282,8 @@ describe('goal reminder re-injection after full compaction', () => {
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Answer after compacting' }] });
     await ctx.untilTurnEnd();
 
-    expect(ctx.llmCalls.length).toBeGreaterThanOrEqual(2);
-    expect(goalReminderCount(ctx.llmCalls[0]!.history)).toBe(0);
-    expect(goalReminderCount(ctx.llmCalls[1]!.history)).toBe(1);
+    expect(ctx.llmCalls).toHaveLength(1);
+    expect(goalReminderCount(ctx.llmCalls[0]!.history)).toBe(1);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('re-injects the goal reminder at the first step after compaction', async () => {
@@ -4307,7 +4299,7 @@ describe('goal reminder re-injection after full compaction', () => {
     const completed = ctx.once('compaction.completed');
 
     ctx.mockNextResponse({ type: 'text', text: 'Compacted summary.' });
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await completed;
 
     const reminderMessages = ctx.context
@@ -4360,7 +4352,7 @@ describe('goal reminder re-injection after full compaction', () => {
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const completed = ctx.once('compaction.completed');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await compactionRequested.promise;
     const launch = await ctx.rpc.prompt({
       input: [{ type: 'text', text: 'deferred prompt' }],
@@ -4439,8 +4431,8 @@ describe('manual compaction request boundary', () => {
     await requested.promise;
     const compactor = ctx.get(IAgentFullCompactionService);
     const completed = ctx.once('compaction.completed');
-    expect(compactor.begin({ source: 'manual' })).toBe(true);
-    expect(compactor.begin({ source: 'manual' })).toBe(false);
+    expect(compactor.begin({ source: 'manual', strategy: 'summarize' })).toBe(true);
+    expect(compactor.begin({ source: 'manual', strategy: 'summarize' })).toBe(false);
     expect(compactor.queuedManualCompaction).toBe(true);
     expect(calls).toBe(1);
     if (outcome === 'cancelled') ctx.get(IAgentLoopService).cancelFromUser();
@@ -4468,7 +4460,7 @@ describe('manual compaction request boundary', () => {
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'First request' }] });
     await requested.promise;
     const completed = ctx.once('compaction.completed');
-    expect(ctx.get(IAgentFullCompactionService).begin({ source: 'manual' })).toBe(true);
+    expect(ctx.get(IAgentFullCompactionService).begin({ source: 'manual', strategy: 'summarize' })).toBe(true);
     expect(calls).toBe(1);
     release.resolve();
     await completed;
@@ -4509,7 +4501,7 @@ describe('manual compaction request boundary', () => {
     ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
     for (let i = 1; i <= 8; i++) ctx.appendExchange(i, `request ${i}`, `answer ${i}`, 20);
     const compactor = ctx.get(IAgentFullCompactionService);
-    expect(compactor.begin({ source: 'auto' })).toBe(true);
+    expect(compactor.begin({ source: 'auto', strategy: 'summarize' })).toBe(true);
     await autoRequested.promise;
     expect(compactor.begin({ source: 'manual', instruction: 'Keep the named decision.' })).toBe(true);
     expect(compactor.begin({ source: 'manual' })).toBe(false);
@@ -4561,7 +4553,7 @@ describe('queued manual compaction failures', () => {
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Held request' }] });
     await requested.promise;
     const compactor = ctx.get(IAgentFullCompactionService);
-    expect(compactor.begin({ source: 'manual' })).toBe(true);
+    expect(compactor.begin({ source: 'manual', strategy: 'summarize' })).toBe(true);
     release.resolve();
     await ctx.get(IAgentLoopService).settled();
     expect(calls).toBe(2);

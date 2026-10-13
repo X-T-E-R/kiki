@@ -99,12 +99,17 @@ export function buildContextCompactionShape(
     ? [...selection.head, ...selection.tail]
     : [...selection.head, elisionMessage, ...selection.tail];
   const contextSummary = input.contextSummary ?? input.summary;
-  const summaryMessage = createCompactionSummaryMessage(contextSummary);
+  const carriedMedia = retainedContinuableMedia(history, input.compactedCount, [...keptMessages, ...tail]);
+  const summaryMessage = createCompactionSummaryMessage(contextSummary, carriedMedia);
   const messages = [...keptMessages, summaryMessage, ...tail];
+  const carriedMediaTokens = carriedMedia.length === 0
+    ? 0
+    : estimate.message(summaryMessage) - estimate.message(createCompactionSummaryMessage(contextSummary));
   const tokensAfter =
     input.tokensAfter ??
     (input.requestOverheadTokens ?? 0) +
       (input.summaryOutputTokens ?? estimate.text(contextSummary)) +
+      carriedMediaTokens +
       estimate.messages([...keptMessages, ...tail]);
   const keptUserMessageCount =
     input.keptUserMessageCount ?? selection.head.length + selection.tail.length;
@@ -129,13 +134,39 @@ export function buildCompactionSummaryText(summary: string): string {
   return `${COMPACTION_SUMMARY_PREFIX}\n${suffix.length > 0 ? suffix : '(no summary available)'}`;
 }
 
-export function createCompactionSummaryMessage(text: string): ContextMessage {
+export function createCompactionSummaryMessage(text: string, media: readonly ContentPart[] = []): ContextMessage {
   return {
     role: 'user',
-    content: [{ type: 'text', text }],
+    content: media.length === 0 ? [{ type: 'text', text }] : [{ type: 'text', text }, ...media],
     toolCalls: [],
     origin: { kind: 'compaction_summary' },
   };
+}
+
+export function isContinuableMediaPart(part: ContentPart): boolean {
+  const payload = part.type === 'image_url' ? part.imageUrl : part.type === 'audio_url' ? part.audioUrl : part.type === 'video_url' ? part.videoUrl : undefined;
+  if (payload === undefined) return false;
+  return (payload.url?.trim().length ?? 0) > 0 || (payload.id?.trim().length ?? 0) > 0 || (payload.attachment?.fileId?.trim().length ?? 0) > 0;
+}
+
+export function retainedContinuableMedia(
+  history: readonly ContextMessage[],
+  compactedCount: number,
+  retainedMessages: readonly ContextMessage[] = [],
+): readonly ContentPart[] {
+  const retainedParts = new Set<ContentPart>();
+  for (const message of retainedMessages) {
+    for (const part of message.content) {
+      if (isContinuableMediaPart(part)) retainedParts.add(part);
+    }
+  }
+  const parts: ContentPart[] = [];
+  for (const message of history.slice(0, Math.max(0, compactedCount))) {
+    for (const part of message.content) {
+      if (isContinuableMediaPart(part) && !retainedParts.has(part)) parts.push(part);
+    }
+  }
+  return parts;
 }
 
 export function createCompactionElisionMessage(omittedTokens: number): ContextMessage {

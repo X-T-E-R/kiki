@@ -32,7 +32,7 @@ export const DEFAULT_COMPACTION_CONFIG: CompactionConfig = {
 export interface CompactionStrategy {
   shouldCompact(usedSize: number): boolean;
   shouldBlock(usedSize: number): boolean;
-  computeCompactCount(messages: readonly Message[], source: CompactionSource): number;
+  computeCompactCount(messages: readonly Message[], source: CompactionSource, limitToModel?: boolean): number;
   reduceCompactOnOverflow(messages: readonly Message[]): number;
   readonly checkAfterStep: boolean;
   readonly maxCompactionPerTurn: number;
@@ -56,13 +56,13 @@ export class RuntimeCompactionStrategy implements CompactionStrategy {
     return usedSize >= this.automaticThreshold(model, this.config(model).blockRatio);
   }
 
-  computeCompactCount(messages: readonly Message[], source: CompactionSource): number {
+  computeCompactCount(messages: readonly Message[], source: CompactionSource, limitToModel = true): number {
     const model = this.context();
     const maxSize = source === 'auto' ? this.compactionWindowSize(model) : this.modelWindowSize(model);
     const recentBase = source === 'auto' && this.hasAutoCompact(model)
       ? this.automaticThreshold(model, this.config(model).triggerRatio)
       : maxSize;
-    return this.windowDelegate(maxSize, recentBase).computeCompactCount(messages, source);
+    return this.windowDelegate(maxSize, recentBase).computeCompactCount(messages, source, limitToModel);
   }
 
   reduceCompactOnOverflow(messages: readonly Message[]): number {
@@ -175,12 +175,12 @@ export class DefaultCompactionStrategy implements CompactionStrategy {
     return reservedSize > 0 && reservedSize < this.maxSize && usedSize + reservedSize >= this.maxSize;
   }
 
-  computeCompactCount(messages: readonly Message[], source: CompactionSource): number {
+  computeCompactCount(messages: readonly Message[], source: CompactionSource, limitToModel = true): number {
 
     if (source === 'manual') {
       for (let i = messages.length - 1; i > 0; i--) {
         if (canSplitAfter(messages, i)) {
-          return this.fitCompactCountToWindow(messages, i + 1);
+          return this.fitCompactCountToWindow(messages, i + 1, limitToModel);
         }
       }
       return 0;
@@ -213,7 +213,7 @@ export class DefaultCompactionStrategy implements CompactionStrategy {
       }
     }
 
-    return this.fitCompactCountToWindow(messages, bestN ?? 0);
+    return this.fitCompactCountToWindow(messages, bestN ?? 0, limitToModel);
   }
 
   reduceCompactOnOverflow(messages: readonly Message[]): number {
@@ -239,8 +239,9 @@ export class DefaultCompactionStrategy implements CompactionStrategy {
   private fitCompactCountToWindow(
     messages: readonly Message[],
     compactedCount: number,
+    limitToModel = true,
   ): number {
-    if (this.maxSize <= 0 || compactedCount <= 0) {
+    if (!limitToModel || this.maxSize <= 0 || compactedCount <= 0) {
       return compactedCount;
     }
 

@@ -21,10 +21,10 @@ function resolveProfile(modelId: string, selected = profile) {
   return AgentProfileService.prototype.resolveContextStrategy.call(fake as unknown as AgentProfileService);
 }
 
-function effective(agentId: string, strategy: ReturnType<typeof resolveProfile>, override: string | null) {
+function effective(agentId: string, strategy: ReturnType<typeof resolveProfile>, override: string | null, config: { contextStrategy?: 'summarize' | 'auto' | 'fresh'; subagentContextStrategy?: 'summarize' | 'auto' | 'fresh' } = { contextStrategy: 'auto', subagentContextStrategy: 'summarize' }, executorId = 'native') {
   const fake = {
-    profile: { data: () => ({ executorId: 'native' }), resolveContextStrategy: () => strategy },
-    appConfig: { get: () => ({ contextStrategy: 'auto', subagentContextStrategy: 'summarize' }) },
+    profile: { data: () => ({ executorId }), resolveContextStrategy: () => strategy },
+    appConfig: { get: () => config },
     scope: { agentId }, states: { get: () => override },
   };
   return AgentFullCompactionService.prototype.getContextStrategy.call(fake as unknown as AgentFullCompactionService);
@@ -41,6 +41,9 @@ describe('context strategy profile precedence', () => {
     expect(effective('main', resolveProfile('test'), null)).toMatchObject({ strategy: 'fresh', source: 'profile' });
     expect(effective('child-1', resolveProfile('test'), 'summarize')).toMatchObject({ strategy: 'fresh', source: 'profile' });
     expect(effective('child-2', undefined, 'fresh')).toMatchObject({ strategy: 'summarize', source: 'subagent' });
+    expect(effective('child-3', undefined, 'summarize', {})).toMatchObject({ strategy: 'auto', source: 'subagent' });
+    expect(effective('child-4', undefined, null, { subagentContextStrategy: 'fresh' })).toMatchObject({ strategy: 'fresh', source: 'subagent' });
+    expect(effective('child-5', 'auto', null, {}, 'codex')).toMatchObject({ strategy: 'summarize', source: 'executor' });
     expect(effective('main', undefined, null)).toMatchObject({ strategy: 'auto', source: 'global' });
   });
 });
