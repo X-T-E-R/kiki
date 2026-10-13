@@ -7,13 +7,14 @@ import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import { ToolAccesses, type AgentTool, type ToolExecution } from '#/tool/toolContract';
+import { classifyHistorySession, historyTargetError } from './historyTools';
 
 const AgentIdSchema = z.string().regex(/^[A-Za-z0-9._-]{1,128}$/).refine((id) => id !== '.' && id !== '..');
 
 export const HistoryListInputSchema = z.object({
   kind: z.enum(['turns', 'agents']).optional().describe('Directory to browse; defaults to transcript turns. Use agents to discover archived agents in one session.'),
-  session_id: z.string().min(1).max(256).optional().describe('Session to browse; defaults to this session. A cursor supplies its original session.'),
-  workspace_id: z.string().min(1).max(512).optional().describe('Workspace containing the session; another workspace requires access approval.'),
+  session_id: z.string().min(1).max(256).optional().describe('Session to browse; defaults to this session. Omit workspace_id to use its indexed workspace. A cursor supplies its original session.'),
+  workspace_id: z.string().min(1).max(512).optional().describe('Workspace containing the session. Omit to use the indexed workspace. Another workspace requires access approval.'),
   agent_id: AgentIdSchema.optional().describe('Exact agent for turns; defaults to this agent in the current session or main in another session. Not valid for agents.'),
   before_turn: z.number().int().nonnegative().optional().describe('List turns strictly before this 0-based turn number.'),
   after_turn: z.number().int().nonnegative().optional().describe('List turns strictly after this 0-based turn number.'),
@@ -192,7 +193,7 @@ function cursorInputMismatch(input: HistoryListInput, cursor: HistoryDirectoryCu
 export class HistoryListTool implements IHistoryListTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'HistoryList' as const;
-  readonly description = 'Browse a compact transcript directory when you do not know a turn number or useful search words. Defaults to this session and this agent, newest first. Use before_turn or after_turn for a known range, at for a timestamp, and kind=agents to discover archived agents. Entries omit tool bodies and include coverage plus a ref when available. Pass only cursor to continue, including partial navigation preparation; an empty partial page is not an empty directory. For currently owned child executions, use AgentList.';
+  readonly description = 'Browse a compact transcript directory when you do not know a turn number or useful search words. Defaults to this session and this agent, newest first. Use before_turn or after_turn for a known range, at for a timestamp, and kind=agents to discover archived agents. Entries omit tool bodies and include coverage plus a ref when available. Pass only cursor to continue, including partial navigation preparation; an empty partial page is not an empty directory. A known session_id can omit workspace_id. An unknown session is omitted from the recovery call. For currently owned child executions, use AgentList.';
   readonly parameters = toInputJsonSchema(HistoryListInputSchema, (schema) => {
     schema['allOf'] = [
       {
@@ -236,7 +237,7 @@ export class HistoryListTool implements IHistoryListTool {
     const source = cursor?.request;
     const kind = source?.kind ?? input.kind ?? 'turns';
     const sessionId = source?.sessionId ?? input.session_id ?? this.session.sessionId;
-    const workspaceId = source?.workspaceId ?? input.workspace_id ?? this.session.workspaceId;
+    const explicitWorkspace = source !== undefined ? source.workspaceId : input.workspace_id;
     const agentId = kind === 'turns'
       ? source?.agentId ?? input.agent_id ?? (sessionId === this.session.sessionId ? this.caller.agentId : 'main')
       : undefined;
@@ -257,10 +258,29 @@ export class HistoryListTool implements IHistoryListTool {
     if (beforeTurn !== undefined && afterTurn !== undefined && afterTurn >= beforeTurn) {
       throw new Error('after_turn must be earlier than before_turn.');
     }
-    const summary = await this.sessions.get(sessionId);
-    if (summary === undefined || summary.workspaceId !== workspaceId) throw new Error('Session not found in the requested workspace.');
+    const classified = await classifyHistorySession(this.sessions,
+      { sessionId: this.session.sessionId, workspaceId: this.session.workspaceId }, sessionId, explicitWorkspace);
+    if (classified.kind === 'unknown') {
+      if (input.cursor !== undefined) {
+        return historyTargetError({ code: 'history_target_unavailable', message: 'The cursor session is not in the session index. Retry without the cursor and do not repeat a missing session.', retryable: true,
+          scope: 'session', targetKind: 'cursor', nextCall: { tool: 'HistoryList', arguments: { kind, session_id: sessionId } } });
+      }
+      return historyTargetError({ code: 'history_target_unavailable', message: 'The requested session is not in the session index. Browse this session without that session_id.', retryable: true,
+        scope: 'session', targetKind: 'session', nextCall: { tool: 'HistoryList', arguments: { kind } } });
+    }
+    if (classified.kind === 'mismatch') {
+      return historyTargetError({ code: 'history_target_unavailable', message: 'The session is indexed in a different workspace. Retry that workspace and session; this call does not read it.', retryable: true,
+        scope: 'session', targetKind: 'session', nextCall: { tool: 'HistoryList', arguments: {
+          kind, session_id: classified.summary.id, workspace_id: classified.summary.workspaceId,
+          ...(kind === 'turns' && agentId !== undefined ? { agent_id: agentId } : {}),
+        } } });
+    }
+    const workspaceId = classified.workspaceId;
     const external = workspaceId === this.session.workspaceId ? undefined : await this.workspaces.get(workspaceId);
-    if (workspaceId !== this.session.workspaceId && external === undefined) throw new Error('Workspace not found.');
+    if (workspaceId !== this.session.workspaceId && external === undefined) {
+      return historyTargetError({ code: 'workspace_not_found', message: 'The requested workspace is unavailable; use a real workspace_id or browse the current workspace.', retryable: false,
+        scope: 'session', targetKind: 'workspace', nextCall: { tool: 'HistoryList', arguments: { kind } } });
+    }
     const request: NormalizedList = {
       workspaceId,
       sessionId,

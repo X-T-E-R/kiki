@@ -4,11 +4,11 @@ import { z } from 'zod';
 
 import { createDecorator } from '#/_base/di/instantiation';
 import { IWorkspaceService } from '#/app/workspace/workspace';
-import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
+import { ISessionIndex, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { toInputJsonSchema } from '#/tool/input-schema';
-import { ToolAccesses, type AgentTool, type ToolExecution, type ExecutableToolResult } from '#/tool/toolContract';
+import { ToolAccesses, type AgentTool, type ToolExecution, type ExecutableToolErrorResult, type ExecutableToolResult } from '#/tool/toolContract';
 
 const AgentIdSchema = z.string().regex(/^[A-Za-z0-9._-]{1,128}$/).refine((id) => id !== '.' && id !== '..');
 
@@ -16,8 +16,8 @@ export const HistorySearchInputSchema = z.object({
   query: z.string().trim().min(1).max(1024).optional().describe('Distinctive words or a phrase; required on the first page. Omit when continuing with cursor.'),
   mode: z.enum(['auto', 'all', 'any', 'literal', 'terms']).optional().describe('Defaults to auto: matching complete phrases, without requiring every phrase. all requires every phrase; any allows one; literal is contiguous; terms preserves the legacy token-AND behavior.'),
   scope: z.enum(['session', 'this_session', 'workspace', 'peer']).optional().describe('Defaults to session (this session, this agent). workspace searches other sessions; peer searches only cross-thread messages in this workspace, optionally narrowed by session_id, newest-first. this_session is the locked-current-session legacy alias.'),
-  session_id: z.string().min(1).max(256).optional().describe('Choose a known session when scope=session; another session defaults to agent main.'),
-  workspace_id: z.string().min(1).max(512).optional().describe('Defaults to this workspace; another workspace requires access approval.'),
+  session_id: z.string().min(1).max(256).optional().describe('Choose a known session when scope=session. Omit workspace_id to use its indexed workspace. Another session defaults to agent main.'),
+  workspace_id: z.string().min(1).max(512).optional().describe('Workspace for the session or search. Omit with session_id to use the indexed workspace. Another workspace requires access approval.'),
   agent_id: AgentIdSchema.optional().describe('Exact agent ID; defaults to this agent in the current session, or main in another session/workspace.'),
   include_subagents: z.boolean().optional().describe('Search all readable agents in the selected scope; mutually exclusive with agent_id.'),
   include_tool_output: z.boolean().optional().describe('Include tool-result text; omitted or false searches conversation user and assistant text only. Thinking, tool names, and tool parameters are never searched.'),
@@ -33,8 +33,8 @@ export const HistorySearchInputSchema = z.object({
 });
 
 export const HistoryReadInputSchema = z.object({
-  session_id: z.string().min(1).max(256).optional().describe('Session to read; defaults to this session. A cursor supplies its original session.'),
-  workspace_id: z.string().min(1).max(512).optional().describe('Workspace ID; another workspace requires explicit access approval.'),
+  session_id: z.string().min(1).max(256).optional().describe('Session to read; defaults to this session. Omit workspace_id to use its indexed workspace. A cursor or ref supplies its original session.'),
+  workspace_id: z.string().min(1).max(512).optional().describe('Workspace for the session or ref. Omit to use the indexed workspace. Another workspace requires explicit access approval.'),
   agent_id: AgentIdSchema.optional().describe('Exact agent ID; defaults to this agent here or main in another session.'),
   turn: z.number().int().nonnegative().optional().describe('0-based transcript turn; omit when step_id or cursor identifies it.'),
   step_id: z.string().regex(/^t\d+\.\d+$/).optional().describe('Step ID such as t42.3; sufficient without turn.'),
@@ -148,6 +148,51 @@ export const IHistoryReadTool = createDecorator<AgentTool<z.infer<typeof History
 
 const PAGE_CHARS = 3_000;
 
+type HistoryTargetKind = 'session' | 'workspace' | 'ref' | 'cursor' | 'selector';
+
+type HistoryRecoveryCall = { readonly tool: string; readonly arguments: Record<string, unknown> };
+
+export function historyTargetError(options: {
+  readonly code: 'history_target_unavailable' | 'workspace_not_found';
+  readonly message: string;
+  readonly retryable: boolean;
+  readonly scope: string;
+  readonly targetKind: HistoryTargetKind;
+  readonly nextCall: HistoryRecoveryCall;
+}): ExecutableToolErrorResult {
+  return { isError: true, output: JSON.stringify({ error: {
+    code: options.code,
+    message: options.message,
+    retryable: options.retryable,
+    scope: options.scope,
+    target_kind: options.targetKind,
+    next_call: options.nextCall,
+  } }) };
+}
+
+export async function classifyHistorySession(
+  sessions: ISessionIndex,
+  current: { readonly sessionId: string; readonly workspaceId: string },
+  sessionId: string,
+  explicitWorkspaceId: string | undefined,
+): Promise<
+  | { readonly kind: 'ready'; readonly workspaceId: string }
+  | { readonly kind: 'mismatch'; readonly summary: SessionSummary }
+  | { readonly kind: 'unknown' }
+> {
+  const summary = await sessions.get(sessionId);
+  const liveHere = sessionId === current.sessionId &&
+    (explicitWorkspaceId === undefined || explicitWorkspaceId === current.workspaceId);
+  if (summary === undefined) {
+    return liveHere ? { kind: 'ready', workspaceId: current.workspaceId } : { kind: 'unknown' };
+  }
+  if (explicitWorkspaceId !== undefined && explicitWorkspaceId !== summary.workspaceId) {
+    return { kind: 'mismatch', summary };
+  }
+  if (liveHere) return { kind: 'ready', workspaceId: current.workspaceId };
+  return { kind: 'ready', workspaceId: explicitWorkspaceId ?? summary.workspaceId };
+}
+
 type ReadCursor = { v: 1; session: string; agent: string; turn: number; step?: string; offset: number; hash: string };
 type BlockCursor = { v: 2; ref: string; offset: number; maxChars: number };
 type DirectoryCursor = { v: 3; ref: string; maxChars: number; position: number; offset: number;
@@ -240,11 +285,11 @@ abstract class HistoryToolBase {
     protected readonly workspaces: IWorkspaceService,
   ) {}
 
-  protected async target(workspaceId?: string): Promise<{ id: string; externalRoot?: string }> {
+  protected async target(workspaceId?: string): Promise<{ id: string; externalRoot?: string } | undefined> {
     const id = workspaceId ?? this.session.workspaceId;
     if (id === this.session.workspaceId) return { id };
     const workspace = await this.workspaces.get(id);
-    if (workspace === undefined) throw new Error('Workspace not found.');
+    if (workspace === undefined) return undefined;
     return { id, externalRoot: workspace.root };
   }
 }
@@ -271,7 +316,7 @@ function decodeSearchCursor(value: string): SearchCursor {
 export class HistorySearchTool extends HistoryToolBase implements AgentTool<SearchInput> {
   declare readonly _serviceBrand: undefined;
   readonly name = 'HistorySearch';
-  readonly description = 'Find earlier conversation text. Defaults to this session and this agent, with auto phrase matching over user and assistant text only; set include_tool_output=true or role=tool to include tool results. Thinking, tool names, and tool parameters are never searched. To search other sessions use scope=workspace or select a session_id; include_subagents explicitly expands to other readable agents. scope=peer searches only cross-thread messages in the selected workspace, newest-first, with optional session_id; peer hits carry communication message/endpoints rather than transcript turns or HistoryRead refs. This is lexical search. Transcript fallback prepares visibility before returning hits; relevance is page-local, not a global ranking, and continuation scans newest-first. Check coverage when results may be partial; use a hit ref when present or its turn/step with HistoryRead. Pass only cursor to continue available pages; use HistoryList without search words.';
+  readonly description = 'Find earlier conversation text. Defaults to this session and this agent, with auto phrase matching over user and assistant text only; set include_tool_output=true or role=tool to include tool results. Thinking, tool names, and tool parameters are never searched. To search other sessions use scope=workspace or select a session_id; include_subagents explicitly expands to other readable agents. scope=peer searches only cross-thread messages in the selected workspace, newest-first, with optional session_id; peer hits carry communication message/endpoints rather than transcript turns or HistoryRead refs. This is lexical search. Transcript fallback prepares visibility before returning hits; relevance is page-local, not a global ranking, and continuation scans newest-first. Check coverage when results may be partial; use a hit ref when present or its turn/step with HistoryRead. Pass only cursor to continue available pages; use HistoryList without search words. A known session_id can omit workspace_id; the indexed workspace is used and another workspace still requires access approval. An explicit mismatch returns a recovery call for that indexed target and does not read it. An unknown session is not replaced with this session.';
   readonly parameters = toInputJsonSchema(HistorySearchInputSchema, (schema) => {
     schema['anyOf'] = [{ required: ['query'] }, { required: ['cursor'] }];
   });
@@ -310,10 +355,30 @@ export class HistorySearchTool extends HistoryToolBase implements AgentTool<Sear
     const sessionId = scope === 'workspace' ? undefined : scope === 'peer' ? request.session_id : request.session_id ?? this.session.sessionId;
     const agentId = scope === 'peer' ? 'main' : request.include_subagents ? undefined : request.agent_id ??
       (sessionId === this.session.sessionId && scope !== 'workspace' ? this.caller.agentId : 'main');
-    const target = await this.target(request.workspace_id);
-    if (sessionId !== undefined) {
-      const summary = await this.sessions.get(sessionId);
-      if (summary === undefined || summary.workspaceId !== target.id) throw new Error('Session not found in the requested workspace.');
+    const classified = sessionId === undefined ? undefined : await classifyHistorySession(
+      this.sessions, { sessionId: this.session.sessionId, workspaceId: this.session.workspaceId }, sessionId, request.workspace_id);
+    const discovered = request.query !== undefined
+      ? { tool: 'HistorySearch', arguments: { query: request.query, scope: scope === 'peer' ? 'peer' : 'workspace' } }
+      : { tool: 'HistoryList', arguments: { kind: 'turns' } };
+    if (classified?.kind === 'mismatch') {
+      return historyTargetError({ code: 'history_target_unavailable', message: 'The session is indexed in a different workspace. Retry that workspace and session; this call does not read it.', retryable: true,
+        scope, targetKind: cursor === undefined ? 'session' : 'cursor', nextCall: { tool: 'HistorySearch', arguments: {
+          ...request, cursor: undefined, scope: scope === 'peer' ? 'peer' : 'session',
+          session_id: classified.summary.id, workspace_id: classified.summary.workspaceId,
+        } } });
+    }
+    if (classified?.kind === 'unknown') {
+      if (input.cursor !== undefined) {
+        return historyTargetError({ code: 'history_target_unavailable', message: 'The cursor session is not in the session index. Retry the same selector without the cursor; do not read a different session.', retryable: true,
+          scope, targetKind: 'cursor', nextCall: { tool: 'HistorySearch', arguments: { ...request, cursor: undefined } } });
+      }
+      return historyTargetError({ code: 'history_target_unavailable', message: 'The requested session is not in the session index. Search without that session_id or use HistoryList. Do not repeat the unknown session.', retryable: true,
+        scope, targetKind: 'session', nextCall: discovered });
+    }
+    const target = await this.target(classified?.kind === 'ready' ? classified.workspaceId : request.workspace_id);
+    if (target === undefined) {
+      return historyTargetError({ code: 'workspace_not_found', message: 'The requested workspace is unavailable; use a real workspace_id or search the current workspace.', retryable: false,
+        scope, targetKind: 'workspace', nextCall: discovered });
     }
     if (request.source === 'transcript' && sessionId === undefined) throw new Error('source=transcript requires one session.');
     return {
@@ -399,7 +464,7 @@ export class HistorySearchTool extends HistoryToolBase implements AgentTool<Sear
 export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infer<typeof HistoryReadInputSchema>> {
   declare readonly _serviceBrand: undefined;
   readonly name = 'HistoryRead';
-  readonly description = 'Read original history as bounded source blocks. A HistoryList turn ref opens the entire turn; step_id such as t42.3 or a 0-based turn also selects a block directory. A Search hit ref starts near its match. Pass cursor alone for more blocks or navigation preparation; a partial scan with empty blocks is not a no-match result. Reopen one block by ref plus start_char=range.end. For a stale ref, use the returned recovery call to obtain a fresh source.';
+  readonly description = 'Read original history as bounded source blocks. A HistoryList turn ref opens the entire turn; step_id such as t42.3 or a 0-based turn also selects a block directory. A Search hit ref starts near its match and stays bound to its workspace, session, and agent. Pass cursor alone for more blocks or navigation preparation; a partial scan with empty blocks is not a no-match result. Reopen one block by ref plus start_char=range.end. For a stale ref, use the returned recovery call to obtain a fresh source. An unknown session is not read as this session\'s turn.';
   readonly parameters = toInputJsonSchema(HistoryReadInputSchema, (schema) => {
     schema['anyOf'] = [{ required: ['ref'] }, { required: ['turn'] }, { required: ['step_id'] }, { required: ['cursor'] }];
   });
@@ -447,6 +512,36 @@ export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infe
     }) };
   }
 
+  private async bindRefTarget(ref: string, source: RefTarget, input: {
+    readonly workspace_id?: string; readonly session_id?: string; readonly agent_id?: string;
+  }): Promise<{ readonly ok: true; readonly target: { id: string; externalRoot?: string } } |
+    { readonly ok: false; readonly error: ExecutableToolErrorResult }> {
+    const summary = await this.sessions.get(source.session);
+    const conflicts = input.workspace_id !== undefined && input.workspace_id !== source.workspace ||
+      input.session_id !== undefined && input.session_id !== source.session ||
+      input.agent_id !== undefined && input.agent_id !== source.agent;
+    if (summary !== undefined && summary.workspaceId !== source.workspace) {
+      return { ok: false, error: historyTargetError({ code: 'history_target_unavailable', message: 'The ref session is indexed in a different workspace. List that session there; this call does not read the ref.', retryable: true,
+        scope: 'ref', targetKind: 'ref', nextCall: { tool: 'HistoryList', arguments: {
+          kind: 'turns', session_id: summary.id, workspace_id: summary.workspaceId, agent_id: source.agent,
+        } } }) };
+    }
+    if (summary !== undefined && conflicts) {
+      return { ok: false, error: historyTargetError({ code: 'history_target_unavailable', message: 'The ref stays bound to its original workspace, session, and agent. Retry with the ref alone.', retryable: true,
+        scope: 'ref', targetKind: 'ref', nextCall: { tool: 'HistoryRead', arguments: { ref } } }) };
+    }
+    if (summary === undefined) {
+      return { ok: false, error: historyTargetError({ code: 'history_target_unavailable', message: 'The ref session is not in the session index. Discard the ref and browse this session; do not repeat the missing session.', retryable: true,
+        scope: 'ref', targetKind: 'ref', nextCall: { tool: 'HistoryList', arguments: { kind: 'turns' } } }) };
+    }
+    const target = await this.target(source.workspace);
+    if (target === undefined) {
+      return { ok: false, error: historyTargetError({ code: 'workspace_not_found', message: 'The ref workspace is unavailable. Browse this workspace and obtain a fresh ref.', retryable: false,
+        scope: 'ref', targetKind: 'workspace', nextCall: { tool: 'HistoryList', arguments: { kind: 'turns' } } }) };
+    }
+    return { ok: true, target };
+  }
+
   private async resolveDirectory(input: z.infer<typeof HistoryReadInputSchema>, ref: string,
     cursor?: DirectoryCursor): Promise<ToolExecution> {
     const source = refTarget(ref);
@@ -457,14 +552,9 @@ export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infe
           input.max_chars !== undefined && input.max_chars !== cursor.maxChars)) {
       throw new Error('HistoryRead directory cursor conflicts with another selector.');
     }
-    const summary = await this.sessions.get(source.session);
-    if (summary === undefined) throw new Error('Session not found.');
-    const target = await this.target(input.workspace_id ?? source.workspace);
-    if (summary.workspaceId !== source.workspace || target.id !== source.workspace ||
-        input.session_id !== undefined && input.session_id !== source.session ||
-        input.agent_id !== undefined && input.agent_id !== source.agent) {
-      throw new Error('HistoryRead ref conflicts with the requested target.');
-    }
+    const bound = await this.bindRefTarget(ref, source, input);
+    if (!bound.ok) return bound.error;
+    const target = bound.target;
     const maxChars = cursor?.maxChars ?? input.max_chars ?? 6000;
     return { approvalRule: this.name, description: 'Reading historical turn or step blocks',
       accesses: target.externalRoot === undefined ? ToolAccesses.none() : ToolAccesses.readFile(target.externalRoot, true),
@@ -481,14 +571,9 @@ export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infe
           input.max_chars !== undefined && input.max_chars !== cursor.maxChars))) {
       throw new Error('HistoryRead ref or cursor conflicts with another selector.');
     }
-    const summary = await this.sessions.get(source.session);
-    if (summary === undefined) throw new Error('Session not found.');
-    const target = await this.target(input.workspace_id ?? source.workspace);
-    if (summary.workspaceId !== source.workspace || target.id !== source.workspace ||
-        input.session_id !== undefined && input.session_id !== source.session ||
-        input.agent_id !== undefined && input.agent_id !== source.agent) {
-      throw new Error('HistoryRead ref conflicts with the requested target.');
-    }
+    const bound = await this.bindRefTarget(ref, source, input);
+    if (!bound.ok) return bound.error;
+    const target = bound.target;
     const limit = cursor?.maxChars ?? input.max_chars ?? 6000;
     const start = cursor?.offset ?? input.start_char ?? Math.max(0, (source.focus ?? 0) - 160);
     return {
@@ -501,7 +586,9 @@ export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infe
           message: read?.status === 'invalid_ref' ? 'Invalid historical source ref; search for a fresh hit.' :
             'Historical source is missing or no longer matches this ref.',
           retryable: read?.status === 'stale_ref',
-          next_call: { tool: 'HistorySearch', arguments: { query: '<distinctive words>' } },
+          next_call: { tool: 'HistoryList', arguments: {
+            kind: 'turns', session_id: source.session, workspace_id: source.workspace, agent_id: source.agent,
+          } },
         } }) };
         if (read.text === undefined) return { isError: true, output: JSON.stringify({ error: {
           code: 'no_text_block', message: 'This ref identifies a turn or step directory entry; read by its turn or step_id.',
@@ -552,11 +639,35 @@ export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infe
       throw new Error('step_id does not belong to turn.');
     }
     const sessionId = input.session_id ?? selector?.session ?? this.session.sessionId;
-    const summary = await this.sessions.get(sessionId);
-    if (summary === undefined) throw new Error('Session not found.');
-    const target = await this.target(input.workspace_id ?? preparing?.workspace ??
-      (cursor === undefined ? undefined : summary.workspaceId));
-    if (summary.workspaceId !== target.id) throw new Error('Session not found in the requested workspace.');
+    const classified = await classifyHistorySession(this.sessions,
+      { sessionId: this.session.sessionId, workspaceId: this.session.workspaceId }, sessionId, input.workspace_id ?? preparing?.workspace);
+    const selectorAgent = input.agent_id ?? selector?.agent;
+    const selectorStep = input.step_id ?? selector?.step;
+    if (classified.kind === 'mismatch') {
+      return historyTargetError({ code: 'history_target_unavailable', message: 'The session is indexed in a different workspace. Retry that workspace and session; this call does not read it.', retryable: true,
+        scope: 'selector', targetKind: selector === undefined ? 'session' : 'cursor', nextCall: { tool: 'HistoryRead', arguments: {
+          session_id: classified.summary.id, workspace_id: classified.summary.workspaceId, turn,
+          ...(selectorAgent !== undefined ? { agent_id: selectorAgent } : {}),
+          ...(selectorStep !== undefined ? { step_id: selectorStep } : {}),
+        } } });
+    }
+    if (classified.kind === 'unknown') {
+      if (selector !== undefined && input.cursor !== undefined) {
+        return historyTargetError({ code: 'history_target_unavailable', message: 'The cursor session is not in the session index. Retry the same selector without the cursor; do not read a different session.', retryable: true,
+          scope: 'selector', targetKind: 'cursor', nextCall: { tool: 'HistoryRead', arguments: {
+            session_id: sessionId, turn,
+            ...(selectorAgent !== undefined ? { agent_id: selectorAgent } : {}),
+            ...(selectorStep !== undefined ? { step_id: selectorStep } : {}),
+          } } });
+      }
+      return historyTargetError({ code: 'history_target_unavailable', message: 'The requested session is not in the session index. Browse this session with HistoryList; do not read this turn on another session.', retryable: true,
+        scope: 'selector', targetKind: 'session', nextCall: { tool: 'HistoryList', arguments: { kind: 'turns' } } });
+    }
+    const target = await this.target(classified.workspaceId);
+    if (target === undefined) {
+      return historyTargetError({ code: 'workspace_not_found', message: 'The requested workspace is unavailable; use a real workspace_id and restart the selector.', retryable: false,
+        scope: 'selector', targetKind: 'workspace', nextCall: { tool: 'HistoryList', arguments: { kind: 'turns' } } });
+    }
     const agentId = input.agent_id ?? selector?.agent ??
       (sessionId === this.session.sessionId ? this.caller.agentId : 'main');
     const stepId = input.step_id ?? selector?.step;
