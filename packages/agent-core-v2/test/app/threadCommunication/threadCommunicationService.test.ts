@@ -24,7 +24,7 @@ import { MEMORY_SECTION } from '#/app/memory/configSection';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
 import { CapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshotService';
 import { ISessionIndex, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
-import { ISessionManager } from '#/app/sessionManager/sessionManager';
+import { ISessionManager, type ISessionManager as SessionManager } from '#/app/sessionManager/sessionManager';
 import {
   IThreadCommunicationService,
   type ThreadRef,
@@ -130,9 +130,9 @@ describe('ThreadCommunicationService', () => {
   let promptEnqueue: Mock<IAgentPromptService['enqueue']>;
   let promptInject: ReturnType<typeof vi.fn>;
   let promptAbort: ReturnType<typeof vi.fn>;
-  let promptSteer: ReturnType<typeof vi.fn>;
+  let promptSteer: Mock<(promptIds: readonly string[]) => Promise<unknown>>;
   let steerBehavior: 'success' | 'prompt-not-found';
-  let resume: ReturnType<typeof vi.fn>;
+  let resume: Mock<SessionManager['resume']>;
   let activityEvents: Array<{
     seq: number;
     epoch: string;
@@ -166,7 +166,7 @@ describe('ThreadCommunicationService', () => {
     promptState = 'running';
     steerBehavior = 'success';
     promptInject = vi.fn();
-    promptSteer = vi.fn(async (promptIds: readonly string[]) => {
+    promptSteer = vi.fn<(promptIds: readonly string[]) => Promise<unknown>>(async (promptIds) => {
       events.push(`steer:${promptIds.join(',')}`);
       if (steerBehavior === 'success') return promptIds.map((id) => ({ id, state: 'steered' }));
       throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'no active turn to steer into');
@@ -206,7 +206,7 @@ describe('ThreadCommunicationService', () => {
       accessor: accessor([[IAgentLifecycleService, agents]]),
       dispose: () => {},
     };
-    resume = vi.fn(async () => {
+    resume = vi.fn<SessionManager['resume']>(async () => {
       events.push('resume');
       return session;
     });
