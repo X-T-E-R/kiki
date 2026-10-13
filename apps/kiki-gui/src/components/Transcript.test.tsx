@@ -2381,7 +2381,9 @@ describe('live and event chrome', () => {
     const state = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
     const container = await renderTranscript([...state.blocks]);
     const toggle = container.querySelector<HTMLButtonElement>('[data-notice-reasons-toggle]')!;
-    expect(toggle.textContent).toBe('Context compacted · summary generated · 3 successful compactions');
+    // No strategy on the wire: the label stays the generic compaction line.
+    // "summary generated" is selected only by strategy `summarize`, covered below.
+    expect(toggle.textContent).toBe('Context compacted · 3 successful compactions');
     expect(toggle.textContent).not.toContain('×');
     await act(async () => { click(toggle); });
     const entries = container.querySelectorAll('[data-compaction-history] li');
@@ -2816,9 +2818,8 @@ describe('explicit unknown timing', () => {
     const container = await renderToolCard(toolBlock({ toolCallId: 'external:session:call', name: 'Bash', display: { kind: 'command', command: 'npm test' }, output }));
     await act(async () => { flushSync(() => { click(container.querySelector('button')!); }); });
     expect(container.textContent).toContain('partial stdout');
-    const loadImage = Array.from(container.querySelectorAll('button')).find(button => button.textContent?.includes('Load full file'));
-    expect(loadImage).toBeDefined();
-    await act(async () => { flushSync(() => { click(loadImage!); }); });
+    // External images render as media parts. The retired "Load full file" gate is not part of this card.
+    expect(container.textContent).not.toContain('Load full file');
     expect(container.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,iVBORw0KGgo=');
     const preserved = container.querySelector('details');
     expect(preserved?.textContent).toContain('first.ts');

@@ -1839,7 +1839,11 @@ const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
   const reasons = [...(block.reasonCodes ?? []).map(reasonText), ...(block.compactionFailure === undefined ? [] : [block.compactionFailure])];
   const history = block.compactionHistory ?? [];
   const expandable = reasons.length > 0 || history.length > 0;
-  const title = [time.absoluteTime(block.createdAt), ...reasons].filter(Boolean).join('\n');
+  // `goalChange.reason` is the engine string for this notice. Compaction
+  // reason codes stay in `reasons` and can also open under the line.
+  const title = [time.absoluteTime(block.createdAt), block.goalChange?.reason, ...reasons]
+    .filter((part) => part !== undefined && part !== '')
+    .join('\n');
   const count = block.markerRepeatCount ?? 1;
   const repeatedText = count > 1 ? history.length > 0
     ? t('transcript.marker.compactionRepeated', { label: text, count }) : `${text} ×${count}` : text;
