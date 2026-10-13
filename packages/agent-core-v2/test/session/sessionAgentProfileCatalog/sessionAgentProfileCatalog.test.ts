@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { parseAgentFileText } from '@kiki/agent-profiles/agentFile';
+import { profilesFromDiscovery } from '@kiki/agent-profiles/agentProfileFromFile';
 
 import { Emitter } from '#/_base/event';
 import { createDecorator } from '#/_base/di/instantiation';
@@ -401,6 +403,30 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
     expect(() => catalog.resolveSelection({ profile: 'other' })).not.toThrow(/unrelated\.md/);
     await catalog.dispose();
     await container.dispose();
+  });
+
+  it.each(['agent', 'reviewer'])('does not replace an unavailable explicit external %s with a lower-priority native profile', async (name) => {
+    const definition = parseAgentFileText({ path: '/user/agents/runner.md', source: 'user',
+      text: `---\nname: ${name}\ndescription: External runner\nexecutor: missing-acp\nmodel_alias: vendor-model\n---\nExternal body` });
+    const rejected = profilesFromDiscovery({ agents: [definition], routes: [], skipped: [], scannedRoots: [],
+      sourceDefinitions: new Map(), scopedBindings: new Map(), dependencyIndex: new Map(), diagnostics: [] },
+      () => ({ text: '', environment: { cwd: '/work', date: { disclosed: false } } }), undefined,
+      { allowExternal: true, validateExecutor: () => ({ ok: false, diagnostic: 'External executor missing-acp is unavailable' }) });
+    const { container, catalog } = makeCatalog(WORKSPACE_KEY, [], [
+      { sourceId: BUILTIN_AGENT_PROFILE_SOURCE_ID, priority: AGENT_PROFILE_SOURCE_PRIORITY.builtin,
+        contribution: { profiles: [profile(name)] } },
+      { sourceId: 'user', priority: AGENT_PROFILE_SOURCE_PRIORITY.user, contribution: rejected },
+    ]);
+    try {
+      await catalog.ready;
+      expect(catalog.get(name)).toBeUndefined();
+      expect(() => catalog.resolveSelection({ profile: name })).toThrow(/missing-acp.*unavailable/);
+      if (name === DEFAULT_AGENT_PROFILE_NAME) expect(() => catalog.getDefault()).toThrow(/missing-acp.*unavailable/);
+      expect(catalog.snapshot().resolvableProfiles?.has(name)).toBe(false);
+    } finally {
+      await catalog.dispose();
+      await container.dispose();
+    }
   });
 
   it('lets a higher-priority file profile replace a same-name low-priority candidate', async () => {

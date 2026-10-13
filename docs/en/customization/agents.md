@@ -104,7 +104,7 @@ Picking a profile file directly in the composer (see [Choosing the engine and it
 
 ### Profile reloads and live sessions
 
-Agent files are watched and reloaded on change, and a reload never breaks a live session: an agent already running or resumed keeps the prompt and constraint snapshot it was bound with, even if its profile is edited, made `private`, deleted or made invalid. Your edit therefore applies to **new** dispatches only, and dispatching to a private or deleted profile fails with an explicit error. A frozen dispatch list skips an invalid target instead of failing the whole turn. Restoring an old record whose profile is gone falls back to the default profile with a warning, after checking its model, effort and executor.
+Agent files are watched and reloaded on change. An agent already running or resumed keeps its saved prompt and constraints even if the source profile is edited, made `private`, deleted or made invalid; changing only its model also keeps that saved role. Your edit applies to **new** dispatches only, and dispatching to a private or deleted profile fails with an explicit error. A frozen dispatch list skips an invalid target instead of failing the whole turn. A profile that explicitly names an unavailable external executor reports that failure rather than silently selecting a lower-priority, same-name native profile; repair the executor or choose another profile. Only older records without a saved binding fall back to the default profile with a warning, after checking their model, effort and executor.
 
 ### Choosing the engine and its profile
 

@@ -1008,7 +1008,8 @@ describe('agentProfileFromFile', () => {
     expect(contribution.profiles).toEqual([]);
     expect(contribution.sourceDefinitions?.size).toBe(0);
     expect(contribution.skipped).toEqual([
-      expect.objectContaining({ reason: 'provider missing', code: 'agent_executor.invalid_profile' }),
+      expect.objectContaining({ reason: 'provider missing', code: 'agent_executor.invalid_profile',
+        profileName: definition.name, executor: 'missing-executor' }),
     ]);
     expect(contribution.diagnostics).toEqual([
       expect.objectContaining({ message: 'provider missing' }),

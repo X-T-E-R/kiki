@@ -109,6 +109,44 @@ describe('projectAgentProfileCatalog', () => {
     expect(warnings).toEqual([]);
   });
 
+  it('keeps an external executor failure above lower-priority defaults and routes, but allows a valid higher-priority replacement', () => {
+    const entries: AgentProfileRegistration[] = [
+      { sourceId: 'builtin', priority: 0, contribution: { profiles: [profile('agent')], routes: [{
+        id: 'agent.fast', profile: 'agent', description: 'fast', promptMode: 'inherit', prompt: '',
+        overriddenFields: [], path: '/builtin/agents/.routes/agent/fast.md',
+      }] } },
+      { sourceId: 'user', priority: 10, contribution: { profiles: [], skipped: [{
+        path: '/user/agents/custom.md', profileName: 'agent', executor: 'example-acp',
+        code: 'agent_executor.invalid_profile', reason: 'Executor unavailable',
+      }] } },
+    ];
+    const blocked = project(entries).result;
+    expect(blocked.snapshot.defaultProfile).toBeUndefined();
+    expect(blocked.resolvableProfiles.has('agent')).toBe(false);
+    expect(blocked.routes.has('agent.fast')).toBe(false);
+    expect(blocked.snapshot.diagnostics).toEqual([expect.objectContaining({ alias: 'agent', message: 'Executor unavailable' })]);
+    const replacement = normalizeAgentProfile({ ...profile('agent'), executor: 'other-acp' });
+    const recovered = project([...entries, { sourceId: 'extra', priority: 20, contribution: { profiles: [replacement] } }]).result;
+    expect(recovered.snapshot.defaultProfile?.executor).toBe('other-acp');
+    expect(recovered.routes.has('agent.fast')).toBe(true);
+    expect(recovered.snapshot.diagnostics).toEqual([]);
+    const sameSource = project(entries.map((entry) => entry.sourceId === 'user'
+      ? { ...entry, contribution: { ...entry.contribution, profiles: [replacement] } } : entry)).result;
+    expect(sameSource.snapshot.defaultProfile?.executor).toBe('other-acp');
+  });
+
+  it.each([undefined, 'native'])('preserves existing fallback for skipped files without an external executor (%s)', (executor) => {
+    const builtin = profile('agent');
+    const { result } = project([
+      { sourceId: 'builtin', priority: 0, contribution: { profiles: [builtin] } },
+      { sourceId: 'user', priority: 10, contribution: { profiles: [], skipped: [{
+        path: '/user/agents/agent.md', profileName: 'agent', executor,
+        code: 'agent_executor.invalid_profile', reason: 'Invalid file',
+      }] } },
+    ]);
+    expect(result.snapshot.defaultProfile).toMatchObject(builtin);
+  });
+
   it('keeps private profiles and routes resolvable while omitting them from public projections', () => {
     const hidden = normalizeAgentProfile({ ...profile('writer'), private: true });
     const route = {

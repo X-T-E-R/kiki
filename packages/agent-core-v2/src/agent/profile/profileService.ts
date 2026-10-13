@@ -14,9 +14,10 @@ import {
   bindingAdvisoryKey,
   type BindingAdvisory,
 } from '@kiki/agent-profiles/bindingAdvisory';
-import type {
-  ExecutorBinding,
-  ExecutorValidationResult,
+import {
+  modelAliasResolverForExecutor,
+  type ExecutorBinding,
+  type ExecutorValidationResult,
 } from '@kiki/agent-profiles/ports';
 
 import { type CollectionView } from '#/_base/di/collection';
@@ -3123,6 +3124,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         const rendered = bound.routeDefinition === undefined ? restored : resolveAgentProfileRoute(bound.routeDefinition, restored).effectiveProfile;
         return { ...bound, systemPrompt: rendered.systemPrompt, renderSystemPrompt: rendered.renderSystemPrompt };
       }
+      if (bound.promptBase !== undefined) {
+        const base = bound.promptBase;
+        return { ...bound, systemPrompt: () => base.text, renderSystemPrompt: () => ({ text: base.text, environment: base.environment }) };
+      }
     }
     const profileName = this.profileName;
     if (profileName === undefined) return undefined;
@@ -3142,7 +3147,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
           ? undefined
           : resolveSnapshotProfileDefinition(this.catalog.snapshot(), definitionId, profileName);
     if (catalogProfile === undefined) return undefined;
-    const resolveId = aliasIdentity(this.models);
+    const resolveId = aliasIdentity(modelAliasResolverForExecutor(this.profileState.executorId ?? catalogProfile.executor, this.models));
     const restored = applySpawnPolicy(
       applyLease({ ...catalogProfile, restrictModelsToMenu: false, modelMenuConstraint: undefined }, this.profileState.appliedLease, resolveId),
       this.profileState.spawnPolicy,

@@ -79,8 +79,19 @@ export function projectAgentProfileCatalog(input: {
   let disabledMainProfile: AgentProfile | undefined;
 
   const fileCandidates = new Map<string, ProfileCandidate[]>();
+  const executorFailures = new Map<string, { readonly priority: number; readonly diagnostic: AgentProfileDiagnostic }>();
+  const diagnostics: AgentProfileDiagnostic[] = [];
   const ordered = [...input.entries].toSorted((a, b) => b.priority - a.priority);
   for (const entry of ordered) {
+    for (const skipped of entry.contribution.skipped ?? []) {
+      if (skipped.code !== 'agent_executor.invalid_profile' || skipped.profileName === undefined ||
+          skipped.executor === undefined || skipped.executor === 'native' ||
+          entry.contribution.profiles.some((profile) => profile.name === skipped.profileName) ||
+          executorFailures.has(skipped.profileName)) continue;
+      executorFailures.set(skipped.profileName, { priority: entry.priority, diagnostic: {
+        code: skipped.code, severity: 'error', message: skipped.reason, path: skipped.path, alias: skipped.profileName,
+      } });
+    }
     const entryProfiles = new Map<string, AgentProfile>();
     for (const profile of entry.contribution.profiles) {
       const prior = entryProfiles.get(profile.name);
@@ -104,6 +115,8 @@ export function projectAgentProfileCatalog(input: {
   for (const candidates of fileCandidates.values()) {
     const suppressed: AgentProfileSuppressedCandidate[] = [];
     for (const [candidateIndex, candidate] of candidates.entries()) {
+      const failure = executorFailures.get(candidate.profile.name);
+      if (failure !== undefined && failure.priority >= candidate.priority) break;
       let profile: AgentProfile;
       try {
         profile = resolveInheritedCandidate(candidates, candidateIndex);
@@ -135,6 +148,12 @@ export function projectAgentProfileCatalog(input: {
       }
       break;
     }
+  }
+
+  for (const [name, failure] of executorFailures) {
+    if (resolvableProfiles.has(name) || disabledMainProfile?.name === name) continue;
+    diagnostics.push(failure.diagnostic);
+    input.warn(`Agent profile "${name}" is unavailable: ${failure.diagnostic.message}`);
   }
 
   const routeDiagnostics: AgentProfileRouteDiagnostic[] = [];
@@ -173,7 +192,6 @@ export function projectAgentProfileCatalog(input: {
   const scopedBindings = new Map<string, ReadonlyMap<string, ScopedAgentProfileBinding>>();
   const sourceDefinitions = new Map<string, AgentProfile>();
   const dependencyIndex = new Map<string, readonly string[]>();
-  const diagnostics: AgentProfileDiagnostic[] = [];
   const visited = new Set<string>();
   const visit = (definitionId: string): void => {
     if (visited.has(definitionId)) return;

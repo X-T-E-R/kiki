@@ -1781,6 +1781,24 @@ describe('AgentProfileService.bind', () => {
     expect(svc.data()).toEqual(before);
   });
 
+  it.each(['appliedLease', 'spawnPolicy'] as const)('keeps external model identities distinct from native aliases when restoring legacy %s', async (scope) => {
+    const configured = resumeProfile({ executor: 'grok-acp', modelAlias: 'vendor-a', allowedModels: ['vendor-a'] });
+    ctx = createTestAgent(hostEnvironmentServices(homeDir, hostPathClass),
+      appService(IAgentExecutorRegistry, externalExecutorRegistry()),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(configured)),
+      agentService(IAgentScopeContext, makeAgentScopeContext({ agentId: 'child', parentAgentId: 'main', agentScope: 'test/child' })));
+    const nativeResolve = vi.spyOn(ctx.get(IModelService), 'resolveId').mockImplementation((alias) =>
+      alias === 'vendor-a' || alias === 'vendor-b' ? 'native-collision' : undefined);
+    const svc = ctx.get(IAgentProfileService);
+    svc.applyBindingSnapshot({ profileName: configured.name, executorId: 'grok-acp', executorProtocol: 'acp-v1',
+      modelAlias: 'vendor-a', thinkingLevel: 'low', systemPrompt: 'Saved external child prompt',
+      [scope]: { name: configured.name, allowedModels: ['vendor-b'] } });
+    const before = svc.data();
+    await expect(svc.prepareResumeBinding({})).rejects.toMatchObject({ code: ErrorCodes.PROFILE_CONSTRAINT_VIOLATION });
+    expect(nativeResolve).not.toHaveBeenCalledWith('vendor-b');
+    expect(svc.data()).toEqual(before);
+  });
+
   it.each(['lease', 'spawnPolicy'] as const)('does not let explicit pins or preferences widen caller %s hard rules', async (scope) => {
     const configured = resumeProfile();
     ctx = createTestAgent(nativeResumeOptions(), hostEnvironmentServices(homeDir, hostPathClass),
@@ -2977,6 +2995,8 @@ describe('AgentProfileService.bind', () => {
         thinking: 'low',
         delegationPosition: 'sub',
       });
+      const savedPromptBase = initial.data().boundProfile?.promptBase?.text;
+      expect(savedPromptBase).toBeTruthy();
       await ctx.get(IWireService).flush();
       await ctx.dispose();
 
@@ -2991,7 +3011,7 @@ describe('AgentProfileService.bind', () => {
             )
           : missingProfileCatalog();
       ctx = createTestAgent(
-        { ...nativeResumeOptions(), persistence },
+        { ...nativeResumeOptions(), persistence, autoConfigure: false },
         sessionService(ISessionAgentProfileCatalog, liveCatalog),
         hostEnvironmentServices(homeDir, hostPathClass),
       );
@@ -3007,6 +3027,8 @@ describe('AgentProfileService.bind', () => {
       if (catalogState === 'missing') {
         await restored.rebuildPromptContext();
         expect(restored.data().profileName).toBe(original.name);
+        expect(restored.getSystemPrompt()).toContain(savedPromptBase!);
+        expect(restored.getSystemPrompt()).not.toContain('missing profile catalog');
       }
       const apply = await prepareResumeBinding(restored, {
         modelAlias: RESUME_NEW_MODEL,

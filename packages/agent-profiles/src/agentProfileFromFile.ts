@@ -179,6 +179,8 @@ export function profilesFromDiscovery(
         path: definition.path,
         reason: validated.error,
         code: validated.code ?? 'agent_executor.invalid_profile',
+        profileName: definition.name,
+        executor: definition.executor,
       });
     }
   }
