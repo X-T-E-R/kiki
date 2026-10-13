@@ -2,7 +2,7 @@ import { QueryClient } from '@tanstack/react-query';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { SESSION_FIRST_PAGE_POLL_INTERVAL_MS, isEditableTarget } from './App';
-import { SESSION_INDEX_RETRY_LIMIT, retryRootReadModelDelay, retryRootReadModelQuery } from './lib/readModelRetry';
+import { retryRootReadModelDelay, retryRootReadModelQuery } from './lib/readModelRetry';
 import { resolveFallbackPhase } from './components/ConversationShell';
 import { ApiError } from './lib/client';
 import { shouldGuardNavigation } from './components/dirtyGuard';
@@ -74,12 +74,36 @@ describe('session first-page polling', () => {
 });
 
 describe('root read-model query retry', () => {
-  it('retries a cold index only within a bounded loading window', () => {
+  it('recovers a query after a long initial index build', async () => {
+    vi.useFakeTimers();
+    const client = new QueryClient();
+    let attempts = 0;
+    try {
+      const result = client.fetchQuery({
+        queryKey: ['long-index-build'],
+        queryFn: () => {
+          attempts += 1;
+          if (attempts <= 10) throw new ApiError({ code: 40939, msg: 'session index is building', data: null });
+          return ['ready'];
+        },
+        retry: retryRootReadModelQuery,
+        retryDelay: retryRootReadModelDelay,
+      });
+      await vi.advanceTimersByTimeAsync(35_000);
+      expect(await result).toEqual(['ready']);
+      expect(attempts).toBe(11);
+    } finally {
+      client.clear();
+      vi.useRealTimers();
+    }
+  });
+
+  it('waits while the server reports building without an arbitrary retry-count gate', () => {
     const building = new ApiError({ code: 40939, msg: 'session index is building', data: null });
     expect(retryRootReadModelQuery(0, building)).toBe(true);
-    expect(retryRootReadModelQuery(SESSION_INDEX_RETRY_LIMIT, building)).toBe(false);
-    expect(retryRootReadModelDelay(0)).toBe(250);
-    expect(retryRootReadModelDelay(4)).toBe(2_000);
+    expect(retryRootReadModelQuery(5, building)).toBe(true);
+    expect(retryRootReadModelQuery(1_000, building)).toBe(true);
+    expect([0, 1, 2, 3, 4, 5, 1_000].map(retryRootReadModelDelay)).toEqual([250, 500, 1_000, 2_000, 4_000, 5_000, 5_000]);
     expect(
       retryRootReadModelQuery(
         0,

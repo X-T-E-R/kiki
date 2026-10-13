@@ -14,6 +14,7 @@ import { IGitService, type FsPullRequest } from '@kiki/agent-core-v2/app/git/git
 import { z } from 'zod';
 
 import { defineRoute } from '../../middleware/defineRoute';
+import { withReplyCloseSignal } from '../../procedures/requestSignal';
 import { errEnvelope, okEnvelope } from '../../protocol/envelope';
 import { ErrorCode } from '../../protocol/error-codes';
 import { resolveSessionFacts, type SessionFacts } from '../sessions';
@@ -438,7 +439,8 @@ export function registerV2SessionsRoutes(app: V2SessionsRouteHost, core: Scope):
         "List sessions with domain-grouped metadata (workspace / meta / activity; git via include=git). Paginate with the opaque page_token (binds the first page’s query conditions) or with the stateless 1-based page parameter; every page carries total. fields=id,archived trims each item to the lightweight ids projection (select-all-matching flows; page_size ceiling relaxed to 10000).",
       tags: ['v2-sessions'],
     },
-    async (req, reply) => {
+    async (req, reply) => withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], async (signal) => {
+      try {
       const raw = req.query;
 
       const query: NormalizedQuery = {
@@ -476,57 +478,62 @@ export function registerV2SessionsRoutes(app: V2SessionsRouteHost, core: Scope):
         workspaceIds = [...new Set(sets.flat())];
       }
 
-      const page = await core.accessor.get(ISessionIndex).listRecent({
-        workspaceIds,
-        includeArchived: query.archived !== 'false',
-      });
-
-      const factsById = new Map<string, SessionFacts>();
-      const factsOf = (id: string): SessionFacts => {
-        let facts = factsById.get(id);
-        if (facts === undefined) {
-          facts = resolveSessionFacts(core, id);
-          factsById.set(id, facts);
-        }
-        return facts;
-      };
-
-      const filtered = page.items.filter((summary) => {
-        if (query.archived === 'true' && !summary.archived) return false;
-        if (query.updatedAfter !== undefined && summary.updatedAt < query.updatedAfter) {
-          return false;
-        }
-        if (query.updatedBefore !== undefined && summary.updatedAt > query.updatedBefore) {
-          return false;
-        }
-        if (
-          query.statuses !== undefined &&
-          !query.statuses.includes(mapActivityStatus(factsOf(summary.id), summary.lastTurnReason))
-        ) {
-          return false;
-        }
-        return true;
-      });
-
+      const index = core.accessor.get(ISessionIndex);
+      const baseQuery = { workspaceIds, includeArchived: query.archived !== 'false' };
+      const factsOf = (id: string): SessionFacts => resolveSessionFacts(core, id);
       const comparator = makeComparator(query.sort);
-      const sorted = filtered.toSorted(comparator);
-
-      let start = 0;
-      if (raw.page !== undefined) {
-        start = (raw.page - 1) * query.pageSize;
-      } else if (cursor !== undefined) {
-        const [cursorKey, cursorId] = cursor;
-        const cursorItem = {
-          id: cursorId,
-          updatedAt: cursorKey,
-          createdAt: cursorKey,
-        } as SessionSummary;
-        start = sorted.findIndex((item) => comparator(item, cursorItem) > 0);
-        if (start === -1) start = sorted.length;
+      const start = raw.page === undefined ? 0 : (raw.page - 1) * query.pageSize;
+      const cursorItem = cursor === undefined ? undefined : {
+        id: cursor[1], updatedAt: cursor[0], createdAt: cursor[0],
+      } as SessionSummary;
+      const canonical = query.sort === 'meta.updated_at_desc' && query.archived !== 'true' &&
+        query.updatedAfter === undefined && query.updatedBefore === undefined && query.statuses === undefined;
+      let total: number;
+      let candidates: SessionSummary[];
+      if (canonical) {
+        total = await index.count(baseQuery);
+        let beforePosition = cursor === undefined ? undefined : { updatedAt: cursor[0], id: cursor[1] };
+        let remaining = start;
+        while (remaining > 0) {
+          signal.throwIfAborted();
+          const skipped = await index.listRecent({ ...baseQuery, beforePosition, limit: Math.min(remaining, 500) });
+          if (skipped.items.length === 0) break;
+          remaining -= skipped.items.length;
+          const last = skipped.items.at(-1)!;
+          beforePosition = { updatedAt: last.updatedAt, id: last.id };
+          if (skipped.nextCursor === undefined) break;
+        }
+        signal.throwIfAborted();
+        candidates = remaining > 0 ? [] : [...(await index.listRecent({
+          ...baseQuery, beforePosition, limit: query.pageSize + 1,
+        })).items];
+      } else {
+        total = 0;
+        candidates = [];
+        let beforePosition: { updatedAt: number; id: string } | undefined;
+        const capacity = start + query.pageSize + 1;
+        for (;;) {
+          signal.throwIfAborted();
+          const page = await index.listRecent({ ...baseQuery, beforePosition, limit: 500 });
+          const matched = page.items.filter((summary) =>
+            (query.archived !== 'true' || summary.archived) &&
+            (query.updatedAfter === undefined || summary.updatedAt >= query.updatedAfter) &&
+            (query.updatedBefore === undefined || summary.updatedAt <= query.updatedBefore) &&
+            (query.statuses === undefined || query.statuses.includes(mapActivityStatus(factsOf(summary.id), summary.lastTurnReason))),
+          );
+          total += matched.length;
+          candidates = [...candidates, ...matched.filter((summary) =>
+            cursorItem === undefined || comparator(summary, cursorItem) > 0,
+          )].toSorted(comparator).slice(0, capacity);
+          if (page.nextCursor === undefined || page.items.length === 0) break;
+          const last = page.items.at(-1)!;
+          beforePosition = { updatedAt: last.updatedAt, id: last.id };
+        }
+        candidates = candidates.slice(start);
       }
-
-      const window = sorted.slice(start, start + query.pageSize);
-      const hasMore = start + query.pageSize < sorted.length;
+      signal.throwIfAborted();
+      const window = candidates.slice(0, query.pageSize);
+      const hasMore = candidates.length > query.pageSize;
       const lastServed = window.at(-1);
       const nextPageToken =
         raw.page === undefined && hasMore && lastServed !== undefined
@@ -542,7 +549,7 @@ export function registerV2SessionsRoutes(app: V2SessionsRouteHost, core: Scope):
           okEnvelope(
             {
               items: projected,
-              total: sorted.length,
+              total,
               has_more: hasMore,
               next_page_token: nextPageToken,
             },
@@ -592,11 +599,15 @@ export function registerV2SessionsRoutes(app: V2SessionsRouteHost, core: Scope):
 
       reply.send(
         okEnvelope(
-          { items, total: sorted.length, has_more: hasMore, next_page_token: nextPageToken },
+          { items, total, has_more: hasMore, next_page_token: nextPageToken },
           req.id,
         ),
       );
-    },
+      } catch (error) {
+        if (signal.aborted) return;
+        throw error;
+      }
+    }, req),
   );
 
   app.get(

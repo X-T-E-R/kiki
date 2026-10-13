@@ -1,8 +1,16 @@
+import type { IQueryStore } from '#/persistence/interface/queryStore';
 import type { SessionSummary } from './sessionIndex';
 
 export const SESSION_INDEX_STORAGE_VERSION = 4;
 export const SESSION_INDEX_MANIFEST = `sessionIndex:v${SESSION_INDEX_STORAGE_VERSION}`;
 export const LEGACY_SESSION_INDEX_MANIFEST = 'sessionIndex:v3';
+export const SESSION_INDEX_REVISION = `${SESSION_INDEX_MANIFEST}:revision`;
+
+/** Advance under the shared publication lock before modifying the derived index. */
+export async function advanceSessionIndexRevision(store: IQueryStore): Promise<void> {
+  const current = await store.getCheckpoint(SESSION_INDEX_REVISION);
+  await store.setCheckpoint(SESSION_INDEX_REVISION, { seq: (current?.seq ?? 0) + 1 });
+}
 
 export const PARENT_INDEX_NAME = 'byParent';
 export const SESSION_SOURCE_ROOT_KEY = '\0root';

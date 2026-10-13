@@ -1,4 +1,5 @@
 import { Disposable, toDisposable } from '#/_base/di/lifecycle';
+import { Emitter } from '#/_base/event';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
@@ -6,9 +7,10 @@ import { IntervalTimer } from '#/_base/utils/timer';
 import { IFlagService } from '#/app/flag/flag';
 import { IQueryStore } from '#/persistence/interface/queryStore';
 
-import { ISessionIndexMirror, type SessionSummary } from './sessionIndex';
+import { ISessionIndexMirror, type SessionIndexMutation, type SessionSummary } from './sessionIndex';
 import {
   SESSION_INDEX_MANIFEST,
+  advanceSessionIndexRevision,
   recencyColumn,
   sessionCollection,
   sessionCountersCollection,
@@ -32,6 +34,8 @@ export async function drainSessionIndexMirror(): Promise<void> {
 export class SessionIndexMirror extends Disposable implements ISessionIndexMirror {
   declare readonly _serviceBrand: undefined;
 
+  private readonly changeEmitter = this._register(new Emitter<SessionIndexMutation>());
+  readonly onDidChange = this.changeEmitter.event;
   private readonly pendingMap = new Map<string, SessionSummary>();
   private readonly timer = this._register(new IntervalTimer({ unref: true }));
   private exclusiveTail: Promise<void> = Promise.resolve();
@@ -64,6 +68,7 @@ export class SessionIndexMirror extends Disposable implements ISessionIndexMirro
     if (this.disposed) return;
     const enabled = this.observeReadModelFlag();
     this.mutationEpochValue += 1;
+    this.changeEmitter.fire({ id: summary.id, workspaceId: summary.workspaceId });
     if (!enabled || this.isDirty()) {
       this.markDirty();
       return;
@@ -103,6 +108,7 @@ export class SessionIndexMirror extends Disposable implements ISessionIndexMirro
     if (this.disposed) return;
     const enabled = this.observeReadModelFlag();
     this.mutationEpochValue += 1;
+    this.changeEmitter.fire({ id });
     this.pendingMap.delete(id);
     if (this.pendingMap.size === 0) this.timer.cancel();
     if (!enabled || this.isDirty()) this.markDirty();
@@ -265,6 +271,7 @@ export class SessionIndexMirror extends Disposable implements ISessionIndexMirro
           return { kind: 'put' as const, collection: counters, key: workspaceId, value };
         }),
       ];
+      await advanceSessionIndexRevision(this.queryStore);
       await this.queryStore.batch(ops);
       this.acknowledge(chunk.map(([, summary]) => summary));
       this.consecutiveFailures = 0;

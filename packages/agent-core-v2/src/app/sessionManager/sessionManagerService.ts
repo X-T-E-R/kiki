@@ -194,6 +194,26 @@ export class SessionManager implements ISessionManager {
     }
   }
 
+  acquireLive(sessionId: string, _reason: string): Promise<SessionLease | undefined> {
+    return this.serializeLifecycle(sessionId, async () => {
+      const handle = this.sessions.get(sessionId);
+      if (handle === undefined) return undefined;
+      const entry = this.ensureResidency(sessionId);
+      entry.pins += 1;
+      entry.generation += 1;
+      entry.idleSince = undefined;
+      let released = false;
+      return {
+        handle,
+        dispose: () => {
+          if (released) return;
+          released = true;
+          this.releasePin(sessionId, entry);
+        },
+      };
+    });
+  }
+
   get(sessionId: string): ISessionScopeHandle | undefined {
     const handle = this.sessions.get(sessionId);
     if (handle !== undefined) this.touchResidency(sessionId);

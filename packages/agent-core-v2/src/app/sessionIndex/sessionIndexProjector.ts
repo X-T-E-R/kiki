@@ -10,6 +10,7 @@ import {
   PARENT_INDEX_NAME,
   SESSION_INDEX_MANIFEST,
   SESSION_SOURCE_ROOT_KEY,
+  advanceSessionIndexRevision,
   legacySessionCollection,
   legacySessionCountersCollection,
   recencyColumn,
@@ -122,6 +123,7 @@ export class SessionIndexProjector {
     const counters = sessionCountersCollection(generation);
     const sources = sessionSourcesCollection(generation);
     const workspaces = sessionWorkspaceSourcesCollection(generation);
+    await advanceSessionIndexRevision(queryStore);
     await Promise.all([
       queryStore.dropCollection(collection),
       queryStore.dropCollection(counters),
@@ -134,29 +136,29 @@ export class SessionIndexProjector {
       field: `custom.${PARENT_SESSION_ID_KEY}`,
     });
 
-    const ops: WriteOp[] = summaries.map((summary) => ({
-      kind: 'put',
-      collection,
-      key: summary.id,
-      value: withRecencyField(generation, summary),
-      columns: { [recencyColumn(generation)]: summary.updatedAt },
-    }));
-    for (const [sessionId, fingerprint] of fingerprints) {
-      ops.push({ kind: 'put', collection: sources, key: sessionId, value: fingerprint });
+    function* writes(): Generator<WriteOp> {
+      for (const summary of summaries) {
+        yield {
+          kind: 'put', collection, key: summary.id,
+          value: withRecencyField(generation, summary),
+          columns: { [recencyColumn(generation)]: summary.updatedAt },
+        };
+      }
+      for (const [sessionId, fingerprint] of fingerprints) {
+        yield { kind: 'put', collection: sources, key: sessionId, value: fingerprint };
+      }
+      for (const [workspaceId, value] of workspaceSources) {
+        yield { kind: 'put', collection: workspaces, key: workspaceId, value };
+      }
+      yield {
+        kind: 'put', collection: workspaces, key: SESSION_SOURCE_ROOT_KEY,
+        value: { workspaceIds: [...workspaceSources.keys()].toSorted() } satisfies SessionSourceRoot,
+      };
+      for (const [workspaceId, value] of counts) {
+        yield { kind: 'put', collection: counters, key: workspaceId, value };
+      }
     }
-    for (const [workspaceId, value] of workspaceSources) {
-      ops.push({ kind: 'put', collection: workspaces, key: workspaceId, value });
-    }
-    ops.push({
-      kind: 'put',
-      collection: workspaces,
-      key: SESSION_SOURCE_ROOT_KEY,
-      value: { workspaceIds: [...workspaceSources.keys()].toSorted() } satisfies SessionSourceRoot,
-    });
-    for (const [workspaceId, value] of counts) {
-      ops.push({ kind: 'put', collection: counters, key: workspaceId, value });
-    }
-    await this.batchChunks(ops);
+    await this.batchChunks(writes());
     await queryStore.setCheckpoint(SESSION_INDEX_MANIFEST, { seq: generation, sourceMaxMtimeMs });
     log.info('session index generation published', { generation, sessions: summaries.length });
     const legacyManifest = await queryStore.getCheckpoint(LEGACY_SESSION_INDEX_MANIFEST);
@@ -385,6 +387,7 @@ export class SessionIndexProjector {
       });
     }
 
+    if (ops.length > 0) await advanceSessionIndexRevision(queryStore);
     await this.batchChunks(ops);
     const manifest = await queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
     if (
@@ -452,10 +455,16 @@ export class SessionIndexProjector {
     return { summaries, counts, fingerprints, workspaceSources, sourceMaxMtimeMs };
   }
 
-  private async batchChunks(ops: readonly WriteOp[]): Promise<void> {
-    for (let start = 0; start < ops.length; start += WRITE_CHUNK) {
-      await this.deps.queryStore.batch(ops.slice(start, start + WRITE_CHUNK));
+  private async batchChunks(ops: Iterable<WriteOp>): Promise<void> {
+    let chunk: WriteOp[] = [];
+    for (const op of ops) {
+      chunk.push(op);
+      if (chunk.length === WRITE_CHUNK) {
+        await this.deps.queryStore.batch(chunk);
+        chunk = [];
+      }
     }
+    if (chunk.length > 0) await this.deps.queryStore.batch(chunk);
   }
 }
 

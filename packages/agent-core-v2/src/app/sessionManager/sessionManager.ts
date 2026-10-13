@@ -53,6 +53,7 @@ export interface ISessionManager {
   create(options: CreateManagedSessionOptions): Promise<ISessionScopeHandle>;
   resume(sessionId: string, options?: ResumeSessionOptions): Promise<ISessionScopeHandle | undefined>;
   acquire?(sessionId: string, reason: string, options?: ResumeSessionOptions): Promise<SessionLease | undefined>;
+  acquireLive?(sessionId: string, reason: string): Promise<SessionLease | undefined>;
   get(sessionId: string): ISessionScopeHandle | undefined;
   residencyReport?(): SessionResidencyReport;
   evictIfIdle?(sessionId: string): Promise<boolean>;

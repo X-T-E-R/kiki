@@ -59,6 +59,7 @@ export interface SessionListQuery {
   readonly childOf?: string;
   /** Keyset cursor: the page strictly older than this session id. */
   readonly before?: string;
+  readonly beforePosition?: { readonly updatedAt: number; readonly id: string };
   /** Keyset cursor: the page strictly newer than this session id. */
   readonly after?: string;
 }
@@ -111,8 +112,14 @@ export interface ISessionIndex {
 export const ISessionIndex: ServiceIdentifier<ISessionIndex> =
   createDecorator<ISessionIndex>('sessionIndex');
 
+export interface SessionIndexMutation {
+  readonly id: string;
+  readonly workspaceId?: string;
+}
+
 export interface ISessionIndexMirror {
   readonly _serviceBrand: undefined;
+  readonly onDidChange: Event<SessionIndexMutation>;
 
   /**
    * Enqueue the latest summary of a session for read-your-writes and eventual

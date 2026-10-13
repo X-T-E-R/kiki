@@ -34,6 +34,8 @@ import {
 import {
   PARENT_INDEX_NAME,
   SESSION_INDEX_MANIFEST,
+  SESSION_INDEX_REVISION,
+  advanceSessionIndexRevision,
   recencyColumn,
   sessionCollection,
   sessionCountersCollection,
@@ -44,8 +46,9 @@ import { SessionIndexBuildingError } from './errors';
 import { readSessionArchiveFamily } from './sessionArchiveFamily';
 import { SessionIndexProjector } from './sessionIndexProjector';
 import {
+  listSessionIds,
+  listWorkspaceIds,
   readSessionSummaryResult,
-  scanSessionsMaxMtime,
   summaryMatchesChildOf,
 } from './sessionIndexSource';
 
@@ -54,7 +57,7 @@ const RECONCILE_INTERVAL_MS = 10 * 60_000;
 const DEGRADED_RETRY_MS = 5_000;
 const UNBOUNDED = Number.MAX_SAFE_INTEGER;
 
-function canonicalOrder(a: SessionSummary, b: SessionSummary): number {
+function canonicalOrder(a: Pick<SessionSummary, 'updatedAt' | 'id'>, b: Pick<SessionSummary, 'updatedAt' | 'id'>): number {
   if (a.updatedAt !== b.updatedAt) return b.updatedAt - a.updatedAt;
   return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
 }
@@ -92,6 +95,8 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   private prepareFlight: Promise<SessionIndexStatus> | undefined;
   private projectFlight: Promise<boolean> | undefined;
   private catchUpFlight: Promise<boolean> | undefined;
+  private readonly authoritativeFlights = new Map<string, Promise<readonly SessionSummary[]>>();
+  private readonly authoritativePointFlights = new Map<string, Promise<SessionSummary | undefined>>();
   private readonly statusEmitter = this._register(new Emitter<SessionIndexStatus>());
   readonly onDidChangeStatus = this.statusEmitter.event;
   private publishedStatus: SessionIndexStatus = {
@@ -211,7 +216,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     this.emitStatusIfChanged();
     try {
       const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
-      if (manifest === undefined || !(await this.manifestFresh(manifest))) {
+      if (manifest === undefined) {
         const projection = this.ensureProjection();
         if (deadlineMs === undefined) {
           await projection;
@@ -226,6 +231,11 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       } else {
         this.generation = manifest.seq;
         await this.ensureSchema(manifest.seq);
+        this.watchDebounce.cancelAndSet(() => {
+          void this.reconcileNow().catch((error: unknown) => {
+            this.log.warn('session index startup reconciliation failed', { error: String(error) });
+          });
+        }, 0);
       }
       const published = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
       if (published !== undefined) {
@@ -237,23 +247,6 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       this.markDegraded('prepare failed', error);
     }
     return this.status();
-  }
-
-  private async manifestFresh(manifest: Checkpoint): Promise<boolean> {
-    const published = manifest.sourceMaxMtimeMs;
-    if (published === undefined) return false;
-
-    try {
-      return (
-        (await scanSessionsMaxMtime(this.storage, this.bootstrap.scope('sessions'), this.log)) <=
-        published
-      );
-    } catch (error) {
-      this.log.warn('session index freshness check failed; re-projecting', {
-        error: String(error),
-      });
-      return false;
-    }
   }
 
   private ensureProjection(fresh = false): Promise<boolean> {
@@ -268,11 +261,16 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     try {
       let scanFresh = fresh;
       while (!projected) {
-        const epoch = this.mirror.epoch();
+        const baseline = await this.mirror.runExclusive(async () => ({
+          epoch: this.mirror.epoch(),
+          generation: (await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST))?.seq,
+          revision: (await this.queryStore.getCheckpoint(SESSION_INDEX_REVISION))?.seq,
+        }));
         const scan = await this.projector.scan({ fresh: scanFresh });
         const result = await this.mirror.runExclusive(async () => {
-          if (this.mirror.epoch() !== epoch) return undefined;
           const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
+          const revision = await this.queryStore.getCheckpoint(SESSION_INDEX_REVISION);
+          if (this.mirror.epoch() !== baseline.epoch || manifest?.seq !== baseline.generation || revision?.seq !== baseline.revision) return undefined;
           const next = (manifest?.seq ?? 0) + 1;
           return this.projector.project(next, scan);
         });
@@ -657,6 +655,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     const collection = sessionCollection(generation);
     const storedValue: unknown = await this.queryStore.get(collection, id);
     if (storedValue === undefined) return;
+    await advanceSessionIndexRevision(this.queryStore);
     if (!isSessionSummaryShape(storedValue)) {
       await this.queryStore.delete(collection, id);
       return;
@@ -751,15 +750,18 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     | { filter: QueryFilter; bounds: ColumnBounds; position?: { u: number; id: string; before: boolean } }
     | undefined
   > {
-    const id = query.before ?? query.after;
+    const id = query.beforePosition?.id ?? query.before ?? query.after;
     if (id === undefined) return { filter: {}, bounds: {} };
-    const queued = pending.find((summary) => summary.id === id);
-    const storedValue: unknown = await this.queryStore.get(sessionCollection(generation), id);
-    const stored = isSessionSummaryShape(storedValue) ? storedValue : undefined;
-    const cursor = queued ?? stored;
+    let cursor: { readonly updatedAt: number; readonly id: string } | undefined = query.beforePosition;
+    if (cursor === undefined) {
+      const queued = pending.find((summary) => summary.id === id);
+      const storedValue: unknown = await this.queryStore.get(sessionCollection(generation), id);
+      const stored = isSessionSummaryShape(storedValue) ? storedValue : undefined;
+      cursor = queued ?? stored;
+    }
     if (cursor === undefined) return undefined;
     const u = cursor.updatedAt;
-    if (query.before !== undefined) {
+    if (query.beforePosition !== undefined || query.before !== undefined) {
       return {
         bounds: { lte: u },
         filter: {
@@ -823,7 +825,11 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     let start = 0;
     let end = items.length;
     const cursorId = query.before ?? query.after;
-    if (cursorId !== undefined) {
+    if (query.beforePosition !== undefined) {
+      const position = query.beforePosition;
+      start = items.findIndex((summary) => canonicalOrder(summary, position) > 0);
+      if (start === -1) start = items.length;
+    } else if (cursorId !== undefined) {
       const index = items.findIndex((summary) => summary.id === cursorId);
       if (index === -1) return { items: [] };
       if (query.before !== undefined) start = index + 1;
@@ -842,7 +848,10 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     id: string,
     knownWorkspaceIds?: readonly string[],
   ): Promise<SessionSummary | undefined> {
-    return this.readAuthoritativeWithRetry(async () => {
+    const key = JSON.stringify([id, knownWorkspaceIds?.toSorted()]);
+    const existing = this.authoritativePointFlights.get(key);
+    if (existing !== undefined) return existing;
+    const flight = this.readAuthoritativeWithRetry(id, async () => {
       const pendingBefore = this.mirror.pending().find(
         (summary) =>
           summary.id === id &&
@@ -850,11 +859,11 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       );
       let authoritative: SessionSummary | undefined;
       const workspaceIds =
-        knownWorkspaceIds ?? (await this.listStorage(this.sessionsScope)) ?? [];
+        knownWorkspaceIds ?? await listWorkspaceIds(this.storage, this.sessionsScope, this.log);
       for (const workspaceId of workspaceIds) {
         if (knownWorkspaceIds === undefined) {
-          const sessionIds = await this.listStorage(`${this.sessionsScope}/${workspaceId}`);
-          if (sessionIds === undefined || !sessionIds.includes(id)) continue;
+          const sessionIds = await listSessionIds(this.storage, this.sessionsScope, workspaceId, this.log);
+          if (!sessionIds.includes(id)) continue;
         }
         const result = await readSessionSummaryResult(
           this.docs,
@@ -875,7 +884,11 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
           (knownWorkspaceIds === undefined || knownWorkspaceIds.includes(summary.workspaceId)),
       );
       return pendingAfter ?? pendingBefore ?? authoritative;
+    }).finally(() => {
+      if (this.authoritativePointFlights.get(key) === flight) this.authoritativePointFlights.delete(key);
     });
+    this.authoritativePointFlights.set(key, flight);
+    return flight;
   }
 
   private async countLegacy(query: SessionCountQuery): Promise<number> {
@@ -889,39 +902,50 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   private collectAuthoritative(
     workspaceIds: readonly string[] | undefined,
   ): Promise<SessionSummary[]> {
-    return this.readAuthoritativeWithRetry(async () => {
-      let ids = workspaceIds;
-      if (ids === undefined) ids = (await this.listStorage(this.sessionsScope)) ?? [];
-      const collected: SessionSummary[] = [];
+    const key = workspaceIds === undefined ? '*' : [...workspaceIds].toSorted().join('\u0000');
+    const existing = this.authoritativeFlights.get(key);
+    if (existing !== undefined) return existing.then((items) => [...items]);
+    const flight = this.scanAuthoritativeSnapshot(workspaceIds).finally(() => {
+      if (this.authoritativeFlights.get(key) === flight) this.authoritativeFlights.delete(key);
+    });
+    this.authoritativeFlights.set(key, flight);
+    return flight.then((items) => [...items]);
+  }
+
+  private async scanAuthoritativeSnapshot(workspaceIds: readonly string[] | undefined): Promise<SessionSummary[]> {
+    const changed = new Map<string, string | undefined>();
+    const subscription = this.mirror.onDidChange(({ id, workspaceId }) => changed.set(id, workspaceId));
+    const collected = new Map<string, SessionSummary>();
+    try {
+      const ids = workspaceIds ?? await listWorkspaceIds(this.storage, this.sessionsScope, this.log);
       for (const workspaceId of ids) {
-        const sessionIds = await this.listStorage(`${this.sessionsScope}/${workspaceId}`);
-        if (sessionIds === undefined) continue;
+        const sessionIds = await listSessionIds(this.storage, this.sessionsScope, workspaceId, this.log);
         for (const sessionId of sessionIds) {
-          const result = await readSessionSummaryResult(
-            this.docs,
-            this.sessionsScope,
-            workspaceId,
-            sessionId,
-            this.log,
-          );
-          if (result.kind === 'found') collected.push(result.summary);
+          const result = await readSessionSummaryResult(this.docs, this.sessionsScope, workspaceId, sessionId, this.log);
+          if (result.kind === 'found') collected.set(sessionId, result.summary);
         }
       }
-      return collected;
-    });
+    } finally {
+      subscription.dispose();
+    }
+    for (const [id, changedWorkspace] of changed) {
+      const workspaceId = changedWorkspace ?? collected.get(id)?.workspaceId;
+      collected.delete(id);
+      if (workspaceId === undefined || workspaceIds !== undefined && !workspaceIds.includes(workspaceId)) continue;
+      const result = await readSessionSummaryResult(this.docs, this.sessionsScope, workspaceId, id, this.log);
+      if (result.kind === 'found') collected.set(id, result.summary);
+    }
+    return [...collected.values()];
   }
 
-  private async readAuthoritativeWithRetry<T>(read: () => Promise<T>): Promise<T> {
-    const before = this.mirror.epoch();
-    const result = await read();
-    return this.mirror.epoch() === before ? result : read();
-  }
-
-  private async listStorage(scope: string): Promise<readonly string[] | undefined> {
+  private async readAuthoritativeWithRetry<T>(id: string, read: () => Promise<T>): Promise<T> {
+    let changed = false;
+    const subscription = this.mirror.onDidChange((mutation) => { if (mutation.id === id) changed = true; });
     try {
-      return await this.storage.list(scope);
-    } catch {
-      return undefined;
+      const result = await read();
+      return changed ? await read() : result;
+    } finally {
+      subscription.dispose();
     }
   }
 

@@ -723,7 +723,7 @@ describe('SessionManager', () => {
     await manager.dispose();
   });
 
-  it('keeps an acquired session pinned until its lease is released', async () => {
+  it.each(['acquire', 'acquireLive'] as const)('keeps a session pinned by %s until its lease is released', async (acquire) => {
     const fake = controller();
     const unload = vi.spyOn(fake.service, 'unload');
     const workspace = {
@@ -744,7 +744,7 @@ describe('SessionManager', () => {
     );
 
     await manager.create({ workDir: '/workspace' });
-    const lease = await manager.acquire('session-1', 'test');
+    const lease = await manager[acquire]('session-1', 'test');
     await expect(manager.evictIfIdle('session-1')).resolves.toBe(false);
     expect(unload).not.toHaveBeenCalled();
     expect(manager.residencyReport().pinnedSessions).toBe(1);

@@ -30,6 +30,7 @@ import {
 } from '../lib/promptMedia';
 import { requestLog } from '../lib/requestLog';
 import { acquireSessionOperation, type SessionOperationLease } from '../lib/sessionOperationLease';
+import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { defineRoute } from '../middleware/defineRoute';
 import { parseActionSuffix } from './action-suffix';
 import {
@@ -117,15 +118,17 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
       description: 'List messages for a session',
       tags: ['messages'],
     },
-    async (req, reply) => {
+    async (req, reply) => withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], async (signal) => {
       try {
         const { session_id } = req.params;
-        const page = await listMessages(core, session_id, req.query);
+        const page = await listMessages(core, session_id, req.query, signal);
+        if (signal.aborted) return;
         reply.send(okEnvelope(page, req.id));
       } catch (err) {
+        if (signal.aborted) return;
         sendMappedError(reply, req, err);
       }
-    },
+    }, req),
   );
   app.get(
     listRoute.path,
@@ -147,15 +150,17 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
       description: 'Get a message by ID',
       tags: ['messages'],
     },
-    async (req, reply) => {
+    async (req, reply) => withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], async (signal) => {
       try {
         const { session_id, message_id } = req.params;
-        const message = await getMessage(core, session_id, message_id);
+        const message = await getMessage(core, session_id, message_id, signal);
+        if (signal.aborted) return;
         reply.send(okEnvelope(message, req.id));
       } catch (err) {
+        if (signal.aborted) return;
         sendMappedError(reply, req, err);
       }
-    },
+    }, req),
   );
   app.get(
     getRoute.path,

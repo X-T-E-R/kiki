@@ -34,6 +34,7 @@ import {
   sessionCollection,
 } from '#/app/sessionIndex/sessionIndexModel';
 import { FileSessionIndex } from '#/app/sessionIndex/sessionIndexService';
+import { SessionIndexProjector } from '#/app/sessionIndex/sessionIndexProjector';
 import { scanSessionsMaxMtime } from '#/app/sessionIndex/sessionIndexSource';
 import {
   drainSessionIndexMirror,
@@ -1143,29 +1144,6 @@ describe('FileSessionIndex (read model)', () => {
       .toEqual(canonicalIds(summaries.filter((item) => item.updatedAt > 100 || item.updatedAt === 100 && item.id > 'tie-0600')).slice(0, 50));
   });
 
-  it('hydrates own recency from unchanged historical metadata without rebuilding the published index', async () => {
-    await seedSession('parent', { createdAt: 1, updatedAt: 10, activityUpdatedAt: 100 });
-    await seedSession('other', { createdAt: 1, updatedAt: 50 });
-    const store = build();
-    await store.prepare();
-    const manifest = await queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
-    const collection = sessionCollection(manifest!.seq);
-    for (const id of ['parent', 'other']) {
-      const cached = await queryStore.get<SessionSummary>(collection, id);
-      const { ownUpdatedAt: _own, ...old } = cached!;
-      await queryStore.put(collection, id, old, { columns: { [recencyColumn(manifest!.seq)]: old.updatedAt } });
-    }
-    const page = await store.listRecent({ limit: 1 });
-    expect(page.items).toMatchObject([{ id: 'parent', updatedAt: 100, ownUpdatedAt: 10 }]);
-    expect(page.nextCursor).toBe('parent');
-    expect(await store.get('other')).toMatchObject({ updatedAt: 50, ownUpdatedAt: 50 });
-    await (mirror as SessionIndexMirror).drain();
-    expect((await queryStore.getCheckpoint(SESSION_INDEX_MANIFEST))?.seq).toBe(manifest!.seq);
-    expect(await queryStore.get(collection, 'parent')).toMatchObject({ updatedAt: 100, ownUpdatedAt: 10 });
-    const raw = JSON.parse(await fsp.readFile(join(sessionsDir, workspaceId, 'parent', 'session-meta', 'state.json'), 'utf8'));
-    expect(raw).toEqual({ createdAt: 1, updatedAt: 10, activityUpdatedAt: 100 });
-  });
-
   it('listRecent treats a cache entry missing required fields as a cold miss', async () => {
     await seedSession('s1', { title: 'on-disk', createdAt: 1, updatedAt: 2 });
     const store = build();
@@ -1329,7 +1307,44 @@ describe('FileSessionIndex (read model)', () => {
     expect(await store.get('a')).toBeUndefined();
   });
 
-  it('retries flag-off authoritative scans that cross create, update, and delete', async () => {
+  it('shares one authoritative inventory across concurrent fallback list and count reads', async () => {
+    let release: () => void = () => {};
+    let notify: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const entered = new Promise<void>((resolve) => { notify = resolve; });
+    class GatedStorage extends FileStorageService {
+      sessionListReads = 0;
+      override async list(scope: string, prefix?: string): Promise<readonly string[]> {
+        const entries = await super.list(scope, prefix);
+        if (scope === `sessions/${workspaceId}`) {
+          this.sessionListReads += 1;
+          notify();
+          await gate;
+        }
+        return entries;
+      }
+    }
+    await seedSession('a', { title: 'a', createdAt: 1, updatedAt: 2 });
+    const storage = new GatedStorage(homeDir);
+    const store = build(storage, false);
+    const reads = Promise.all([
+      store.listRecent({ workspaceIds: [workspaceId], limit: 1 }),
+      store.count({ workspaceIds: [workspaceId] }),
+      store.listRecent({ workspaceIds: [workspaceId], includeArchived: true }),
+    ]);
+    await entered;
+    release();
+    const [page, count, all] = await reads;
+    expect(page.items.map((item) => item.id)).toEqual(['a']);
+    expect(count).toBe(1);
+    expect(all.items).toEqual(page.items);
+    expect(storage.sessionListReads).toBe(1);
+    await seedSession('b', { createdAt: 3, updatedAt: 4 });
+    expect(await store.count({ workspaceIds: [workspaceId] })).toBe(2);
+    expect(storage.sessionListReads).toBe(2);
+  });
+
+  it('repairs only changed sessions when authoritative scans cross create, update, and delete', async () => {
     let listGate: Promise<void> | undefined;
     let releaseList: () => void = () => {};
     let notifyList: (() => void) | undefined;
@@ -1387,7 +1402,7 @@ describe('FileSessionIndex (read model)', () => {
     mirror.record(summary('b', { title: 'b', createdAt: 3, updatedAt: 4 }));
     releaseList();
     await expect(creatingScan).resolves.toMatchObject({ items: [{ id: 'b' }, { id: 'a' }] });
-    expect(fileStorage.sessionListReads - beforeCreateReads).toBeGreaterThanOrEqual(2);
+    expect(fileStorage.sessionListReads - beforeCreateReads).toBe(1);
     expect(mirror.pending()).toEqual([]);
 
     const updateReadEntered = new Promise<void>((resolve) => {
@@ -1429,7 +1444,7 @@ describe('FileSessionIndex (read model)', () => {
     expect(mirror.pending()).toEqual([]);
   });
 
-  it('bounds flag-off authoritative reads to one retry under mutation churn', async () => {
+  it('does not repeat the full authoritative inventory under mutation churn', async () => {
     let mutationsRemaining = 3;
     class ChurningStorage extends FileStorageService {
       sessionListReads = 0;
@@ -1452,8 +1467,8 @@ describe('FileSessionIndex (read model)', () => {
     await expect(store.listRecent({ workspaceIds: [workspaceId] })).resolves.toMatchObject({
       items: [{ id: 'a' }],
     });
-    expect(fileStorage.sessionListReads).toBe(2);
-    expect(mutationsRemaining).toBe(1);
+    expect(fileStorage.sessionListReads).toBe(1);
+    expect(mutationsRemaining).toBe(2);
   });
 
   it('replaces pending rows before archive filtering and limited-page refill', async () => {
@@ -1538,6 +1553,19 @@ describe('FileSessionIndex (read model)', () => {
     expect(older.nextCursor).toBeUndefined();
     const newer = await store.listRecent({ workspaceIds: [workspaceId], after: 's4' });
     expect(newer.items.map((item) => item.id)).toEqual(['s3']);
+  });
+
+  it('keeps an explicit keyset position after its cursor row changes or disappears', async () => {
+    for (const id of ['a', 'b', 'c']) await seedSession(id, { createdAt: 1, updatedAt: 10 });
+    const store = build();
+    await store.prepare();
+    const query = { workspaceIds: [workspaceId], beforePosition: { updatedAt: 10, id: 'b' }, limit: 2 };
+    expect((await store.listRecent(query)).items.map((item) => item.id)).toEqual(['a']);
+    mirror.record(summary('b', { createdAt: 1, updatedAt: 20 }));
+    expect((await store.listRecent(query)).items.map((item) => item.id)).toEqual(['a']);
+    await fsp.rm(join(sessionsDir, workspaceId, 'b'), { recursive: true });
+    await store.remove('b');
+    expect((await store.listRecent(query)).items.map((item) => item.id)).toEqual(['a']);
   });
 
   it('removes summaries and workspace counters atomically and idempotently', async () => {
@@ -2654,6 +2682,67 @@ describe('FileSessionIndex (read model)', () => {
     ]);
   });
 
+  it.each(['reprojectNow', 'reconcileNow'] as const)('discards an old scan after a peer %s publishes deletion and addition with unchanged max mtime', async (publish) => {
+    await seedSession('a', { title: 'a', createdAt: 1, updatedAt: 2 });
+    await seedSession('b', { title: 'b', createdAt: 2, updatedAt: 3 });
+    const time = new Date('2025-01-01T00:00:00Z');
+    for (const id of ['a', 'b']) await fsp.utimes(join(sessionsDir, workspaceId, id, 'session-meta', 'state.json'), time, time);
+    const first = build();
+    await first.prepare();
+    const peerQuery = new MiniDbQueryStore(stubBootstrap(homeDir), stubLog());
+    const peerMirror = new SessionIndexMirror(peerQuery, stubFlag(true), stubLog());
+    const storage = new FileStorageService(homeDir);
+    const peer = new FileSessionIndex(stubBootstrap(homeDir), storage, new JsonAtomicDocumentStore(storage), peerQuery, stubFlag(true), peerMirror, stubLog(), new TestSessionIndexWatch());
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const captured = new Promise<void>((resolve) => { entered = resolve; });
+    const exclusive = mirror.runExclusive.bind(mirror);
+    let sections = 0;
+    const hold = vi.spyOn(mirror, 'runExclusive').mockImplementation(async (operation) => {
+      sections += 1;
+      if (sections === 2) {
+        entered();
+        await gate;
+      }
+      return exclusive(operation);
+    });
+    const stale = first.reprojectNow();
+    await captured;
+    try {
+      await fsp.rm(join(sessionsDir, workspaceId, 'a'), { recursive: true });
+      await seedSession('c', { title: 'c', createdAt: 3, updatedAt: 4 });
+      await fsp.utimes(join(sessionsDir, workspaceId, 'c', 'session-meta', 'state.json'), time, time);
+      await peer[publish]();
+      release();
+      await stale;
+      expect((await first.listRecent({})).items.map((item) => item.id)).toEqual(['c', 'b']);
+      expect(await first.count({})).toBe(2);
+    } finally {
+      release();
+      await stale;
+      hold.mockRestore();
+      await peer.dispose();
+      await peerMirror.dispose();
+      await peerQuery.close();
+    }
+  }, 60_000);
+
+  it('prepare serves a published generation without waiting for source stats', async () => {
+    await seedSession('a', { title: 'a', createdAt: 1, updatedAt: 2 });
+    const first = build();
+    await first.prepare();
+    const storage = new FileStorageService(homeDir);
+    const stats = vi.spyOn(storage, 'mtime');
+    const second = new FileSessionIndex(stubBootstrap(homeDir), storage, new JsonAtomicDocumentStore(storage), queryStore, stubFlag(true), mirror, stubLog(), new TestSessionIndexWatch());
+    try {
+      expect((await second.prepare()).state).toBe('ready');
+      expect(stats).not.toHaveBeenCalled();
+    } finally {
+      await second.dispose();
+    }
+  });
+
   it('serves an existing published generation immediately on restart', async () => {
     await seedSession('a', { title: 'a', createdAt: 1, updatedAt: 2 });
     await seedSession('b', { title: 'b', createdAt: 2, updatedAt: 3 });
@@ -2828,7 +2917,7 @@ describe('FileSessionIndex (read model)', () => {
     expect(docs.gets).toBe(0);
   });
 
-  it('re-projects on the next startup when the session directories changed externally', async () => {
+  it('serves the published generation before background startup reconciliation repairs external changes', async () => {
     await seedSession('a', { title: 'a', createdAt: 1, updatedAt: 2 });
     await seedSession('b', { title: 'b', createdAt: 2, updatedAt: 3 });
 
@@ -2850,12 +2939,14 @@ describe('FileSessionIndex (read model)', () => {
 
     const second = build();
     const status = await second.prepare();
-    expect(status).toEqual({ source: 'read-model', state: 'ready', generation: 2, degradedCount: 0 });
-    const page = await second.listRecent({ workspaceIds: [workspaceId] });
-    expect(page.items.map((s) => s.id)).toEqual(['c', 'b', 'a']);
+    expect(status).toEqual({ source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 });
+    await vi.waitFor(async () => {
+      const page = await second.listRecent({ workspaceIds: [workspaceId] });
+      expect(page.items.map((s) => s.id)).toEqual(['c', 'b', 'a']);
+    });
   });
 
-  it('treats a published checkpoint without sourceMaxMtimeMs as stale and re-projects', async () => {
+  it('serves an older published checkpoint and repairs its source watermark in the background', async () => {
     await seedSession('a', { title: 'a', createdAt: 1, updatedAt: 2 });
 
     const first = build();
@@ -2868,9 +2959,12 @@ describe('FileSessionIndex (read model)', () => {
 
     const second = build();
     const status = await second.prepare();
-    expect(status).toEqual({ source: 'read-model', state: 'ready', generation: 2, degradedCount: 0 });
+    expect(status).toEqual({ source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 });
     const page = await second.listRecent({ workspaceIds: [workspaceId] });
     expect(page.items.map((s) => s.id)).toEqual(['a']);
+    await vi.waitFor(async () => {
+      expect((await queryStore.getCheckpoint(SESSION_INDEX_MANIFEST))?.sourceMaxMtimeMs).toBeGreaterThan(0);
+    });
   });
 
   it('reconciliation refreshes the published source max mtime', async () => {
@@ -2952,6 +3046,33 @@ describe('FileSessionIndex (read model)', () => {
     expect(files.filter((name) => name === 'db.textindexes.json')).toEqual([]);
     expect(files.filter((name) => /^db\.text-.*\.postings$/.test(name))).toEqual([]);
     expect(files.filter((name) => /^text-.*\.(dictionary|postings|docs)$/.test(name))).toEqual([]);
+  });
+
+  it('materializes at most one write chunk at a time during a 50k-session initial projection', async () => {
+    let materialized = 0;
+    const summaries = Array.from({ length: 50_000 }, (_, id) => ({
+      ...summary(`s${id}`),
+      get title() { materialized += 1; return 'saved title'; },
+    }));
+    const baselineHeap = process.memoryUsage().heapUsed;
+    let peakHeap = baselineHeap;
+    let firstChunkMaterialized: number | undefined;
+    let maxBatch = 0;
+    let written = 0;
+    const store = stubQueryStore();
+    store.batch = async (ops) => {
+      firstChunkMaterialized ??= materialized;
+      peakHeap = Math.max(peakHeap, process.memoryUsage().heapUsed);
+      maxBatch = Math.max(maxBatch, ops.length);
+      written += ops.length;
+    };
+    const storage = new FileStorageService(homeDir);
+    const projector = new SessionIndexProjector({ storage, docs: new JsonAtomicDocumentStore(storage), queryStore: store, log: stubLog(), sessionsScope: 'sessions' });
+    await projector.project(1, { summaries, counts: new Map(), fingerprints: new Map(), workspaceSources: new Map(), sourceMaxMtimeMs: 0 });
+    console.log('[projection-memory]', JSON.stringify({ sessions: summaries.length, firstChunkMaterialized, maxBatch, heapGrowthMiB: (peakHeap - baselineHeap) / (1 << 20) }));
+    expect(firstChunkMaterialized).toBe(500);
+    expect(maxBatch).toBe(500);
+    expect(written).toBe(50_001);
   });
 
   const baseline = { retry: 1, timeout: 120_000 };
