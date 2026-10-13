@@ -58,7 +58,7 @@ MCP 和插件工具会以名称和简短说明公告。需要调用时，先用 
 
 ## 历史工具
 
-`HistorySearch`、`HistoryRead` 和 `HistoryList` 是 `history` 工具组中的常驻内置工具。启用后，它们会直接出现在工具列表中，无需使用 `SelectTools`。它们按照既有工作区访问权限读取会话原文；来源 `ref` 是证据位置，不授予额外权限。
+`HistorySearch`、`HistoryRead` 和 `HistoryList` 是 `history` 工具组中的常驻内置工具。启用后，它们会直接出现在工具列表中，无需使用 `SelectTools`。它们按照既有工作区访问权限读取会话原文；来源 `ref` 是证据位置，不授予额外权限。已知 `session_id` 可以省略 `workspace_id`，工具会用会话索引里的工作区，工作区外的读取仍走访问审批。显式传入的工作区如果不包含该会话，会返回指向索引目标的恢复调用，并且这次不会读取它。未知会话不会被换成当前会话。`scope: "workspace"` 会搜索工作区，不接受 `session_id`。
 
 **从旧版 Search 默认值迁移：**`HistorySearch({"query":"有辨识度的词"})` 现在默认以 `mode: "auto"`（完整词组匹配）搜索当前会话、当前 Agent 的用户与 Assistant 正文；此前默认在整个工作区进行词元 AND 检索。设置 `include_tool_output: true` 可纳入工具结果，`role: "tool"` 则只搜索工具结果。勾选工具输出也不搜索思考块、工具名称或工具输入；`role: "record"` 显式选择已保存的外部材料。改变内容范围须去掉旧 cursor 重新查询，`HistoryRead` 仍可读取原始来源块。仍持有旧工具描述的窗口也执行新默认值，执行契约不会按模型见过的 schema 版本锁定。每次 Search 都返回 `scope_used`、`mode_used` 和 `target`。会话范围内的结果少于 `limit` 时，`expand_hint.next_call` 给出可直接调用的 `scope: "workspace"` 扩大范围方案；对 auto/all/any 会明确切换到索引支持的 `mode: "terms"`（词元 AND），返回值会回显这一模式变化。需要明确保留旧检索方式时，传 `{"scope":"workspace","mode":"terms"}`；`scope: "this_session"` 仍是锁定当前会话的兼容别名。搜索已知旧会话须显式给 `session_id`；扩大 Agent 范围须指定 `agent_id` 或 `include_subagents`。检查 `coverage` 和 `next_cursor`：空结果且状态为 partial 表示已扫描或已索引范围尚未覆盖完整。扫描 cursor 续接有界片段；cursor 过期后重新发起原查询。
 
@@ -70,9 +70,9 @@ MCP 和插件工具会以名称和简短说明公告。需要调用时，先用 
 
 检索期间的正常追加不需要暂停写入：本次读取会完成已固定的历史范围，而不是最新内容。若这一范围改变，或来源被替换、截短，`HistorySearch` 会返回 `source_changed`；按 `error.next_call` 去掉 cursor 重新查询。cursor 与来源、共享导航或查询不再匹配时，同样需要重新查询。两类错误都不会把旧位置套到不同内容上。
 
-省略新版的 scope 和 mode 参数时，会按当前 session 和 `auto` 模式处理。不要假定旧版默认值，请读取响应中的 `scope_used` 和 `mode_used`；如果结果范围太窄，按 `expand_hint.next_call` 的建议改用 `scope: "workspace"` 重试。
+会话或工作区无法定位时，按结构化错误中的 `next_call` 继续。已知会话保留索引中的工作区及相应访问审批；未知会话转向浏览发现，而不是在另一个会话中读取同号轮次。失效 cursor 可能先去掉 cursor 重试原会话；如果该会话仍不存在，就使用返回的浏览调用，不再重复缺失的 id。
 
-不知道关键词时，用 `HistoryList` 浏览短轮次摘录或旧会话的 Agent 目录。轮次条目的 `ref` 传给 `HistoryRead` 会按来源 block 读取整轮；也可用 `turn` 或 `step_id` 选择有界的轮次、步骤 block。导航目录尚在构建时，返回的是 `partial` 准备页，会披露已扫描范围并带上 cursor——用它继续，而不是把当前列表当成完整结果。已知步骤可用 `HistoryRead({"step_id":"t42.3"})`。Search 命中文本块时，`HistoryRead({"ref":"<hit.ref>"})` 从命中附近开始读。每个 block 返回自己的 `ref` 和 UTF-16 `range`；用 `cursor` 续读，若 cursor 失效，可用 block 的 `ref` 加上一次的 `range.end` 作为 `start_char` 重开。来源撤销或失效会明确报错，不会跳到同号的新轮次。已有的 v1 Read cursor 仍按旧 JSON 形式续页；用 ref、turn 或 step_id 重新发起可切换到 blocks。
+不知道关键词时，用 `HistoryList` 浏览短轮次摘录或旧会话的 Agent 目录。轮次条目的 `ref` 传给 `HistoryRead` 会按来源 block 读取整轮；也可用 `turn` 或 `step_id` 选择有界的轮次、步骤 block。cursor 已携带原来的目标，续页时只传 cursor。导航目录尚在构建时，返回的是 `partial` 准备页，会披露已扫描范围并带上 cursor——用它继续，而不是把当前列表当成完整结果。已知步骤可用 `HistoryRead({"step_id":"t42.3"})`。Search 命中文本块时，`HistoryRead({"ref":"<hit.ref>"})` 从命中附近开始读。每个 block 返回自己的 `ref` 和 UTF-16 `range`；用 `cursor` 续读，若 cursor 失效，可用 block 的 `ref` 加上一次的 `range.end` 作为 `start_char` 重开。来源撤销或失效会返回结构化恢复错误：丢弃 `ref` 或 cursor，按 `next_call` 重新定位，不要原样重试。已有的 v1 Read cursor 仍按旧 JSON 形式续页；用 ref、turn 或 step_id 重新发起可切换到 blocks。
 
 `HistoryRead` 正常返回 `partial` 时，会带上已扫描到的 block 和续读 cursor。`no_match` 表示扫描已完成、这个定位没有内容。`source_pending` 表示持久化转录末尾是一条未写完的记录，还无法判断该定位是否命中，等写入方稳定后重试。导航目录仍在准备时同样是 `partial`，但带的是准备 cursor 和进度；此时的空 block 列表表示「还没扫到」而不是「没有」，先用该 cursor 续读再判断。若该 Agent 的持久化转录整体不可用，错误会指向 `HistoryList` 的 `kind: "agents"` 去核对 agent id。来源已变化时返回错误，不会读到另一轮内容。
 

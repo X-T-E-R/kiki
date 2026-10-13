@@ -416,6 +416,27 @@ These endpoints manage saved browser connections, not the sessions that use them
 
 Execution actions fail closed: without the `native_browser` experimental flag `:connect` returns envelope code `40001` with `details.code: "browser.disabled"` and `details.reason: "feature_disabled"`, while a switched-off connection returns `details.reason: "connection_disabled"`. Klient exposes the same surface as `rest.browser.list()`, `upsert(id, input)`, `remove(id)`, `setDefault(browser?)`, `status(id)`, `tabs(id)`, `catalog(id, { includeSchema })`, `check(id)`, `connect(id)`, and `disconnect(id)`.
 
+### Browser setup presets
+
+Presets are `kimi-webbridge`, `independent-browser`, and `codex-browser`. The Codex preset reports `external_only` and official instructions; it does not install or connect the external app. The other presets expose setup and connection actions.
+
+| Method and path | Description |
+| --- | --- |
+| `GET /api/browser/setup` | List presets with their step states and available actions |
+| `GET /api/browser/setup/{preset}` | Read a preset's status |
+| `POST /api/browser/setup/{preset}:prepare` | Install components with `{ "consent": true }` |
+| `POST /api/browser/setup/{preset}:connect` | Connect a prepared preset |
+| `POST /api/browser/setup/{preset}:open` | Open or activate the independent browser; for WebBridge, connect the bridge |
+| `POST /api/browser/setup/{preset}:update` | Update components from verified downloads; retain the previous installation on failure |
+| `POST /api/browser/setup/{preset}:shortcut` | Create an independent-browser shortcut on the Windows server's desktop |
+| `POST /api/browser/setup/{preset}:cancel` | Cancel preparation |
+
+`:connect` accepts optional `connectionId`, `name`, and `setDefault`; `:open` accepts optional `connectionId`; `:shortcut` accepts optional `connectionId` and shortcut `name`. `:update` takes an empty object. All actions return a setup status: inspect `state`, `reason`, `error`, `steps`, and `actions`, not just HTTP success. A disabled connection returns `connection_disabled` without opening another profile. A failed window activation returns `state: "failed"`.
+
+Updates replace files on disk without switching an already-running browser or daemon. `reason: "disk_updated"` reports the disk change; `"disk_updated_running_unchanged"` also identifies an unchanged running WebBridge daemon. Neither means that a running process has upgraded.
+
+Klient exposes these operations as `rest.browser.setupPresets()`, `setupStatus(preset)`, `prepare(preset, { consent })`, `connectPreset(preset, input?)`, `openPreset(preset, input?)`, `updatePreset(preset, input?)`, `createShortcut(preset, input?)`, and `cancelSetup(preset)`.
+
 ### Terminals
 
 PTY terminal endpoints; mounted only on loopback binds.
