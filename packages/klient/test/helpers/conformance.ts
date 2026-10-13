@@ -1107,6 +1107,27 @@ export function defineKlientConformance(
       }
     });
 
+    it('saves versioned goal budgets atomically and preserves omitted or cleared limits', async () => {
+      const created = await target.klient.global.sessions.create({ workDir: process.cwd() });
+      const session = target.klient.session(created.id);
+      const agent = session.agent('main');
+      try {
+        const goal = await agent.createGoal({ objective: 'example budget goal', initialStatus: 'paused' });
+        expect(goal.budget).toMatchObject({ tokenBudget: null, turnBudget: null, wallClockBudgetMs: null });
+        const saved = await agent.updateGoal({ goalId: goal.goalId, expectedRevision: goal.controlRevision,
+          objective: 'bounded goal', budgetLimits: { tokenBudget: 100, turnBudget: 3, wallClockBudgetMs: 5_000 } });
+        expect(saved).toMatchObject({ objective: 'bounded goal', status: 'paused', controlRevision: 2 });
+        await expect(agent.updateGoal({ goalId: goal.goalId, expectedRevision: 1, budgetLimits: { turnBudget: 4 } })).rejects.toThrow();
+        const cleared = await agent.updateGoal({ goalId: goal.goalId, expectedRevision: saved.controlRevision,
+          budgetLimits: { tokenBudget: null } });
+        expect(cleared.budget).toMatchObject({ tokenBudget: null, turnBudget: 3, wallClockBudgetMs: 5_000 });
+        await expect(agent.updateGoal({ goalId: goal.goalId, budgetLimits: { tokenBudget: -1 } })).rejects.toThrow();
+        expect((await agent.getGoal()).goal?.budget).toEqual(cleared.budget);
+      } finally {
+        await session.close();
+      }
+    });
+
     it('retains the completion snapshot when the engine clears the finished goal', async () => {
       const created = await target.klient.global.sessions.create({ workDir: process.cwd() });
       const session = target.klient.session(created.id);

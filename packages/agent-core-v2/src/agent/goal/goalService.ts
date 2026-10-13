@@ -540,28 +540,67 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
       : input.completionCriterion === null
         ? null
         : normalizeCompletionCriterion(input.completionCriterion) ?? null;
-    if (
-      objective === undefined &&
-      completionCriterion === undefined &&
-      input.followUpTiming === undefined
-    ) {
-      return this.toSnapshot(state);
+    if (input.budgetLimits !== undefined && actor !== 'user') {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'Goal budgets can only be changed by the user in the goal editor');
     }
-    this.cancelPendingContinuation(true, abortError('Goal definition changed'));
+    const budgetLimits = input.budgetLimits === undefined
+      ? undefined
+      : this.patchBudgetLimits(state.budgetLimits, input.budgetLimits);
+    const definitionChanged =
+      (objective !== undefined && objective !== state.objective) ||
+      (completionCriterion !== undefined && (completionCriterion ?? undefined) !== state.completionCriterion) ||
+      (input.followUpTiming !== undefined && input.followUpTiming !== state.followUpTiming);
+    const budgetChanged = budgetLimits !== undefined && (
+      budgetLimits.tokenBudget !== state.budgetLimits.tokenBudget ||
+      budgetLimits.turnBudget !== state.budgetLimits.turnBudget ||
+      budgetLimits.wallClockBudgetMs !== state.budgetLimits.wallClockBudgetMs
+    );
+    if (!definitionChanged && !budgetChanged) return this.toSnapshot(state);
+    if (definitionChanged) {
+      this.cancelPendingContinuation(true, abortError('Goal definition changed'));
+    }
     void this.dispatcher.dispatch(new GoalUpdate({
       goalId: state.goalId,
       objective,
       completionCriterion,
       followUpTiming: input.followUpTiming,
+      budgetLimits,
       controlRevision: controlRevision + 1,
       actor,
     }));
     const next = this.requireState();
+    if (budgetChanged) {
+      this.telemetry.track2('goal_budget_set', { actor, ...budgetTelemetryProperties(next.budgetLimits) });
+    }
+    const blocked = this.blockIfBudgetReached(next);
+    if (blocked !== null) return blocked;
+    if (budgetChanged) this.refreshWallClockDeadline(next);
     this.emitGoalUpdated(this.toSnapshot(next));
-    if (next.status === 'active' && this.canLaunchContinuation()) {
+    if (definitionChanged && next.status === 'active' && this.canLaunchContinuation()) {
       this.launchContinuationTurn(next.goalId);
     }
     return this.toSnapshot(next);
+  }
+
+  private patchBudgetLimits(
+    current: GoalBudgetLimits,
+    patch: NonNullable<UpdateGoalInput['budgetLimits']>,
+  ): GoalBudgetLimits {
+    const parsed = z.object({
+      tokenBudget: z.number().int().positive().safe().nullable().optional(),
+      turnBudget: z.number().int().positive().safe().nullable().optional(),
+      wallClockBudgetMs: z.number().int().min(1_000).safe().nullable().optional(),
+    }).strict().safeParse(patch);
+    if (!parsed.success) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'Invalid goal budget limits');
+    }
+    const limits = { ...current };
+    for (const key of ['tokenBudget', 'turnBudget', 'wallClockBudgetMs'] as const) {
+      const value = parsed.data[key];
+      if (value === null) delete limits[key];
+      else if (value !== undefined) limits[key] = value;
+    }
+    return limits;
   }
 
   private validateObjective(value: string): string {
@@ -663,12 +702,15 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
   ): Promise<GoalSnapshot> {
     this.assertSupportedAgent();
     const state = this.requireState();
+    if (actor !== 'user') {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'Goal budgets can only be changed by the user in the goal editor');
+    }
     const budgetLimits = { ...state.budgetLimits, ...input.budgetLimits };
     void this.dispatcher.dispatch(new GoalUpdate({ budgetLimits }));
     const next = this.requireState();
     this.emitGoalUpdated(this.toSnapshot(next));
     this.telemetry.track2('goal_budget_set', {
-      actor,
+      actor: actor as GoalActor,
       ...budgetTelemetryProperties(input.budgetLimits),
     });
     const blocked = this.blockIfBudgetReached(next);

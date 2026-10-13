@@ -29,7 +29,7 @@ import type {
   RequestIdentityPolicyWire,
   Session,
 } from '@kiki/protocol';
-import type { TranscriptGradeSpec } from '@kiki/transcript';
+import type { GoalMeta, TranscriptGradeSpec } from '@kiki/transcript';
 
 export class ApiError extends Error {
   readonly code: number;
@@ -446,15 +446,7 @@ export interface AgentTranscriptPrompt {
 }
 
 export interface AgentTranscriptMeta {
-  readonly goal?: {
-    readonly objective: string;
-    readonly status: 'active' | 'paused' | 'blocked' | 'complete';
-    readonly completionCriterion?: string;
-    readonly budgetUsed?: number;
-    readonly budgetLimit?: number;
-    readonly followUpTiming?: 'subagents_done' | 'tasks_done';
-    readonly controlRevision?: number;
-  };
+  readonly goal?: GoalMeta;
   readonly modes?: {
     readonly plan?: { readonly reviewPath?: string; readonly version?: number };
   };

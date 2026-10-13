@@ -324,6 +324,9 @@ describe('BuiltinSkillSource product-skill switch', () => {
     expect(workflows?.content).toContain('## File inspection and editing');
     expect(workflows?.content).toContain('## Shell and background work');
     expect(workflows?.content).toContain('## Plan, goal, and schedule');
+    expect(workflows?.content).toContain('Only the user can set or clear budgets manually in the GUI goal editor');
+    expect(workflows?.content).toContain('never configure budgets from chat instructions or your own judgment');
+    expect(workflows?.content).not.toContain('set_budget');
   });
 
   it('embeds both complete example files for installed skill invocation', () => {

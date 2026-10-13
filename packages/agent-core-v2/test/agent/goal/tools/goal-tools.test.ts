@@ -103,156 +103,50 @@ describe('goal tools', () => {
     });
   });
 
-  it('SetGoalBudget reports no current goal without failing', async () => {
-    const execution = setGoalBudgetTool.resolveExecution({ value: 20, unit: 'turns' });
-    if (execution.isError === true) throw new Error('execution should not be an error');
-
-    const result = await execution.execute({ turnId: 0, toolCallId: 'call_1', signal });
-
-    expect(result.isError).toBeFalsy();
-    expect(result.stopTurn).toBeFalsy();
-    expect(result.output).toBe('Goal budget not set: no current goal.');
+  it('CreateGoal does not accept budget parameters', () => {
+    const tool = ctx.get(IAgentToolRegistryService).resolve('CreateGoal');
+    if (tool === undefined) throw new Error('CreateGoal should be registered');
+    const validator = compileToolArgsValidator(tool.parameters);
+    expect(validateToolArgs(validator, { objective: 'work' })).toBeNull();
+    expect(validateToolArgs(validator, { objective: 'work', budgetLimits: { turnBudget: 2 } })).not.toBeNull();
+    expect(validateToolArgs(validator, { objective: 'work', tokenBudget: 100 })).not.toBeNull();
   });
 
-  it('SetGoalBudget returns stop signals when the requested limit is already exhausted', async () => {
-    await goals.createGoal({ objective: 'work' });
+  it('SetGoalBudget explicitly refuses model calls with or without a current goal', async () => {
+    expect(setGoalBudgetTool.resolveExecution({ value: 20, unit: 'turns' })).toMatchObject({
+      isError: true,
+      output: 'Goal budgets can only be set or cleared by the user in the goal editor.',
+    });
+    const created = await goals.createGoal({ objective: 'work' });
+    expect(setGoalBudgetTool.resolveExecution({ value: 1, unit: 'seconds' })).toMatchObject({ isError: true });
+    expect(goals.getGoal().goal).toMatchObject({
+      controlRevision: created.controlRevision,
+      budget: { tokenBudget: null, turnBudget: null, wallClockBudgetMs: null },
+    });
+    const configured = await goals.updateGoal({ goalId: created.goalId, budgetLimits: { wallClockBudgetMs: 5_000, turnBudget: 4 } }, 'user');
+    expect(setGoalBudgetTool.resolveExecution({ value: 1, unit: 'seconds' })).toMatchObject({ isError: true });
+    expect(goals.getGoal().goal).toMatchObject({
+      controlRevision: configured.controlRevision,
+      budget: { tokenBudget: null, turnBudget: 4, wallClockBudgetMs: 5_000 },
+    });
+    expect(ctx.get(IAgentToolRegistryService).resolve('SetGoalBudget')).toBeUndefined();
+  });
+
+  it('keeps user budgets enforceable after model calls are unavailable', async () => {
+    const created = await goals.createGoal({ objective: 'work' });
     await countGoalTurn(1);
-
-    const execution = setGoalBudgetTool.resolveExecution({ value: 1, unit: 'turns' });
-    if (execution.isError === true) throw new Error('execution should not be an error');
-
-    expect(execution.stopBatchAfterThis).toBe(true);
-    const result = await execution.execute({ turnId: 0, toolCallId: 'call_1', signal });
-
-    expect(result.stopTurn).toBe(true);
-    expect(result.output).toContain('will stop now');
-    expect(goals.getGoal().goal).toMatchObject({
-      status: 'blocked',
-      budget: { overBudget: true },
-    });
-  });
-
-  it('SetGoalBudget leaves the turn running when the requested limit has room', async () => {
-    await goals.createGoal({ objective: 'work' });
-    await countGoalTurn(2);
-
-    const execution = setGoalBudgetTool.resolveExecution({ value: 5, unit: 'turns' });
-    if (execution.isError === true) throw new Error('execution should not be an error');
-
-    expect(execution.stopBatchAfterThis).toBeFalsy();
-    const result = await execution.execute({ turnId: 0, toolCallId: 'call_1', signal });
-
-    expect(result.stopTurn).toBeFalsy();
-    expect(result.output).toBe('Goal budget set: 5 turns.');
-    expect(goals.getGoal().goal).toMatchObject({
-      status: 'active',
-      budget: { turnBudget: 5, overBudget: false },
-    });
-  });
-
-  it('SetGoalBudget accepts a time budget beyond the former 24-hour cap', async () => {
-    await goals.createGoal({ objective: 'work' });
-
-    const execution = setGoalBudgetTool.resolveExecution({ value: 720, unit: 'hours' });
-    if (execution.isError === true) throw new Error('execution should not be an error');
-
-    const result = await execution.execute({ turnId: 0, toolCallId: 'call_long_budget', signal });
-
-    expect(result.stopTurn).toBeFalsy();
-    expect(result.output).toBe('Goal budget set: 720 hours.');
-    expect(goals.getGoal().goal).toMatchObject({
-      status: 'active',
-      budget: { wallClockBudgetMs: 2_592_000_000, overBudget: false },
-    });
-  });
-
-  it('SetGoalBudget does not apply a delayed execution to a replacement goal', async () => {
-    await goals.createGoal({ objective: 'old task' });
-    const execution = setGoalBudgetTool.resolveExecution({ value: 5, unit: 'turns' });
-    if (execution.isError === true) throw new Error('execution should not be an error');
-    const replacement = await goals.createGoal({ objective: 'new task', replace: true });
-
-    const result = await execution.execute({ turnId: 0, toolCallId: 'call_old_budget', signal });
-
-    expect(result.output).toBe('Goal budget not set: the current goal changed.');
-    expect(goals.getGoal().goal).toMatchObject({
-      goalId: replacement.goalId,
-      budget: { turnBudget: null },
-    });
-  });
-
-  it('SetGoalBudget does not apply a no-goal execution to an externally created goal', async () => {
-    const execution = setGoalBudgetTool.resolveExecution({ value: 5, unit: 'turns' });
-    if (execution.isError === true) throw new Error('execution should not be an error');
-    const created = await goals.createGoal({ objective: 'external task' });
-
-    const result = await execution.execute({ turnId: 0, toolCallId: 'call_old_budget', signal });
-
-    expect(result.output).toBe('Goal budget not set: the current goal changed.');
-    expect(goals.getGoal().goal).toMatchObject({
+    const snapshot = await goals.updateGoal({
       goalId: created.goalId,
-      budget: { turnBudget: null },
+      expectedRevision: created.controlRevision,
+      budgetLimits: { turnBudget: 1 },
     });
+    expect(snapshot).toMatchObject({ status: 'blocked', budget: { turnBudget: 1, overBudget: true } });
   });
 
-  it('SetGoalBudget ignores a stale call from a replaced goal turn', async () => {
-    await goals.createGoal({ objective: 'old task' });
-    eventBus.publish(new TurnStarted({ turnId: 1, origin: USER_PROMPT_ORIGIN }));
-    const replacement = await goals.createGoal({ objective: 'new task', replace: true });
-
-    const results = await executeGoalCalls(
-      [goalToolCall('call_old_budget', 'SetGoalBudget', { value: 5, unit: 'turns' })],
-      1,
-    );
-
-    expect(results[0]?.result.output).toBe(
-      'Goal changed since this turn started; ignored stale goal tool call.',
-    );
-    expect(goals.getGoal().goal).toMatchObject({
-      goalId: replacement.goalId,
-      budget: { turnBudget: null },
-    });
-  });
-
-  it('SetGoalBudget applies a delayed execution to a goal created earlier in the same batch', async () => {
-    eventBus.publish(new TurnStarted({ turnId: 2, origin: USER_PROMPT_ORIGIN }));
-
-    const results = await executeGoalCalls(
-      [
-        goalToolCall('call_create', 'CreateGoal', { objective: 'new task' }),
-        goalToolCall('call_budget', 'SetGoalBudget', { value: 5, unit: 'turns' }),
-      ],
-      2,
-    );
-
-    expect(results.find((result) => result.toolName === 'SetGoalBudget')?.result.output).toBe(
-      'Goal budget set: 5 turns.',
-    );
-    expect(goals.getGoal().goal).toMatchObject({
-      objective: 'new task',
-      budget: { turnBudget: 5 },
-    });
-  });
-
-  it('SetGoalBudget applies a same-batch budget to the replacement goal', async () => {
-    await goals.createGoal({ objective: 'old task' });
-    eventBus.publish(new TurnStarted({ turnId: 3, origin: USER_PROMPT_ORIGIN }));
-
-    const results = await executeGoalCalls(
-      [
-        goalToolCall('call_replace', 'CreateGoal', { objective: 'new task', replace: true }),
-        goalToolCall('call_budget', 'SetGoalBudget', { value: 5, unit: 'turns' }),
-      ],
-      3,
-    );
-
-    expect(results.find((result) => result.toolName === 'SetGoalBudget')?.result.output).toBe(
-      'Goal budget set: 5 turns.',
-    );
-    expect(goals.getGoal().goal).toMatchObject({
-      objective: 'new task',
-      budget: { turnBudget: 5 },
-    });
+  it('accepts a user time budget beyond the former 24-hour cap', async () => {
+    const created = await goals.createGoal({ objective: 'work' });
+    const snapshot = await goals.updateGoal({ goalId: created.goalId, budgetLimits: { wallClockBudgetMs: 2_592_000_000 } });
+    expect(snapshot.budget).toMatchObject({ wallClockBudgetMs: 2_592_000_000, overBudget: false });
   });
 
   it('UpdateGoal accepts only active / complete / blocked statuses', () => {
@@ -439,7 +333,6 @@ describe('goal tool main-agent gating', () => {
   const gatedTools = [
     ['CreateGoalTool', CreateGoalTool],
     ['GetGoalTool', GetGoalTool],
-    ['SetGoalBudgetTool', SetGoalBudgetTool],
     ['UpdateGoalTool', UpdateGoalTool],
   ] as const;
 

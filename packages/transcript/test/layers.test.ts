@@ -1813,6 +1813,26 @@ describe('TranscriptWireAdapter', () => {
     expect(unreadable.getTodo('todo')?.notesStatus?.state).toBe('incompatible');
   });
 
+  it('restores all goal budget counters and clears limits through full replacement records', () => {
+    const records = [
+      { type: 'goal.create', goalId: 'goal-budget', objective: 'bounded work' },
+      { type: 'goal.update', turnsUsed: 2, tokensUsed: 100, wallClockMs: 5_000,
+        budgetLimits: { turnBudget: 2, tokenBudget: 100, wallClockBudgetMs: 5_000 } },
+    ];
+    const before = replay(records).getMeta().goal;
+    expect(before).toMatchObject({ goalId: 'goal-budget', turnsUsed: 2, budgetUsed: 100, wallClockMs: 5_000,
+      budgetLimit: 100, turnBudget: 2, wallClockBudgetMs: 5_000 });
+    const after = replay([...records, { type: 'goal.update', budgetLimits: { turnBudget: 3 } }]).getMeta().goal;
+    expect(after).toMatchObject({ turnsUsed: 2, budgetUsed: 100, wallClockMs: 5_000, turnBudget: 3 });
+    expect(after?.budgetLimit).toBeUndefined();
+    expect(after?.wallClockBudgetMs).toBeUndefined();
+    const cleared = replay([...records, { type: 'goal.update', budgetLimits: {} }]).getMeta().goal;
+    expect(cleared).toMatchObject({ turnsUsed: 2, budgetUsed: 100, wallClockMs: 5_000 });
+    expect(cleared?.budgetLimit).toBeUndefined();
+    expect(cleared?.turnBudget).toBeUndefined();
+    expect(cleared?.wallClockBudgetMs).toBeUndefined();
+  });
+
   it('folds todo, goal, plan, task, and interruption facts through the shared reducer', () => {
     const transcript = replay([
       { type: 'tools.update_store', key: 'todo', value: [{ title: 'old', status: 'pending' }], time: 1 },

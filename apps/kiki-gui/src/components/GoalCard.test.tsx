@@ -123,6 +123,78 @@ describe('GoalCard', () => {
     expect(card.textContent).toContain('follow-up · Subagents done');
   });
 
+  it('shows no default limits and displays each configured budget with reached feedback', async () => {
+    const unlimited = await renderCard();
+    expect(unlimited.container.querySelector('[data-goal-budgets]')?.textContent).toMatch(/No limit|goal\.noLimit/);
+    const base = goalFixture();
+    const { container } = await renderCard({ goal: goalFixture({ status: 'blocked', budget: {
+      ...base.budget, turnBudget: 1, tokenBudget: 200, wallClockBudgetMs: 2_000,
+      turnBudgetReached: true, overBudget: true,
+    } }) });
+    expect(container.querySelector('[data-goal-budget="turns"]')?.textContent).toContain('1/1');
+    expect(container.querySelector('[data-goal-budget="turns"]')?.textContent).toMatch(/Limit reached|goal\.limitReached/);
+    expect(container.querySelector('[data-goal-budget="tokens"]')?.textContent).toContain('100/200');
+    expect(container.querySelector('[data-goal-budget="seconds"]')?.textContent).toContain('1/2');
+    expect(container.textContent).toMatch(/then Resume|goal\.budgetBlocked/);
+  });
+
+  it('keeps cumulative usage visible when every budget is unlimited', async () => {
+    const { container } = await renderCard({ goal: goalFixture({
+      turnsUsed: 4, tokensUsed: 24_000, wallClockMs: 125_000,
+    }) });
+    expect(container.querySelector('[data-goal-budget="turns"]')?.textContent).toMatch(/^(Goal turns|goal\.budget\.turns) · 4 · (No limit|goal\.noLimit)$/);
+    expect(container.querySelector('[data-goal-budget="tokens"]')?.textContent).toMatch(/^(Output tokens|goal\.budget\.tokens) · 24,000 · (No limit|goal\.noLimit)$/);
+    expect(container.querySelector('[data-goal-budget="seconds"]')?.textContent).toMatch(/^(Active time \(seconds\)|goal\.budget\.seconds) · 125 · (No limit|goal\.noLimit)$/);
+  });
+
+  it('edits and clears all budgets in one save without resuming', async () => {
+    const onUpdate = vi.fn<Parameters<typeof GoalCard>[0]['onUpdate']>(() => Promise.resolve(goalFixture()));
+    const onResume = vi.fn(() => Promise.resolve());
+    const { container } = await renderCard({ onUpdate, onResume });
+    await click(container.querySelector('button[title^="Edit the objective"]')!);
+    await settle();
+    for (const [unit, value] of [['turns', '5'], ['tokens', '200'], ['seconds', '1.5']]) {
+      const input = container.querySelector<HTMLInputElement>(`[data-goal-budget-input="${unit}"]`)!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    }
+    await click(container.querySelector('[data-goal-save]')!);
+    expect(onUpdate.mock.calls[0]?.[0]).toMatchObject({ budgetLimits: { turnBudget: 5, tokenBudget: 200, wallClockBudgetMs: 1_500 } });
+    expect(onResume).not.toHaveBeenCalled();
+    await click(container.querySelector('button[title^="Edit the objective"]')!);
+    await settle();
+    await click([...container.querySelectorAll('button')].find((button) => button.textContent === 'Clear limits' || button.textContent === 'goal.clearBudgets')!);
+    await click(container.querySelector('[data-goal-save]')!);
+    expect(onUpdate.mock.calls[1]?.[0]).toMatchObject({ budgetLimits: { turnBudget: null, tokenBudget: null, wallClockBudgetMs: null } });
+  });
+
+  it.each([
+    { unit: 'seconds', value: '1.001', expectedMs: 1001 },
+    { unit: 'seconds', value: '1.0001', expectedMs: null },
+    { unit: 'turns', value: '1.5', expectedMs: null },
+    { unit: 'tokens', value: '0', expectedMs: null },
+  ])('validates $unit budget $value before saving', async ({ unit, value, expectedMs }) => {
+    const onUpdate = vi.fn<Parameters<typeof GoalCard>[0]['onUpdate']>(() => Promise.resolve(goalFixture()));
+    const { container } = await renderCard({ onUpdate });
+    await click(container.querySelector('button[title^="Edit the objective"]')!);
+    await settle();
+    const input = container.querySelector<HTMLInputElement>(`[data-goal-budget-input="${unit}"]`)!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await click(container.querySelector('[data-goal-save]')!);
+    if (expectedMs === null) {
+      expect(onUpdate).not.toHaveBeenCalled();
+      expect(container.querySelector('[data-goal-error]')).not.toBeNull();
+    } else {
+      const saved = onUpdate.mock.calls[0]?.[0] as { budgetLimits?: { wallClockBudgetMs?: number | null } } | undefined;
+      expect(saved?.budgetLimits?.wallClockBudgetMs).toBe(expectedMs);
+    }
+  });
+
   it('keeps pause usable while the editor waits for its authoritative read', async () => {
     let finishRead!: (value: GoalSnapshot) => void;
     const onRefresh = vi.fn(() => new Promise<GoalSnapshot>((resolve) => { finishRead = resolve; }));
@@ -205,6 +277,7 @@ describe('GoalCard', () => {
       objective: 'Rewritten objective',
       completionCriterion: null,
       followUpTiming: 'tasks_done',
+      budgetLimits: { tokenBudget: null, turnBudget: null, wallClockBudgetMs: null },
     });
   });
 

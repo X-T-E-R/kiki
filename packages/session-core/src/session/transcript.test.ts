@@ -2102,6 +2102,22 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       budget: { remainingTokens: 8, remainingTurns: 2, remainingWallClockMs: 800 } });
   });
 
+  it('projects complete goal budget snapshots from replay and preserves explicit clears', () => {
+    const records = [
+      { type: 'goal.create', goalId: 'goal-budget', objective: 'Ship' },
+      { type: 'goal.update', status: 'blocked', reason: 'budget reached', turnsUsed: 2, tokensUsed: 50, wallClockMs: 10_000,
+        budgetLimits: { tokenBudget: 50, turnBudget: 2, wallClockBudgetMs: 10_000 } },
+    ];
+    const state = projectAgentTranscriptView(createViewState('session_test'), 'main', replayAgentWire('main', records));
+    expect(state.goal).toMatchObject({ goalId: 'goal-budget', turnsUsed: 2, tokensUsed: 50, wallClockMs: 10_000,
+      terminalReason: 'budget reached', budget: { tokenBudgetReached: true, turnBudgetReached: true, wallClockBudgetReached: true } });
+    const cleared = projectAgentTranscriptView(state, 'main', replayAgentWire('main', [...records,
+      { type: 'goal.update', budgetLimits: {} },
+    ]));
+    expect(cleared.goal).toMatchObject({ status: 'blocked', tokensUsed: 50,
+      budget: { tokenBudget: null, turnBudget: null, wallClockBudgetMs: null, overBudget: false } });
+  });
+
   it('folds live marker operations idempotently and recomputes counts when older history arrives', () => {
     const store = new AgentTranscript('main');
     const ops: TranscriptOperation[] = Array.from({ length: 12 }, (_, index) => ({

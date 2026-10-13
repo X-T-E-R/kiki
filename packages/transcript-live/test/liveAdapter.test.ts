@@ -1842,6 +1842,39 @@ describe('AgentTranscriptLiveAdapter', () => {
     expect(tx.getMeta().goal).toBeUndefined();
   });
 
+  it('keeps cumulative goal usage when a live snapshot clears one or every limit', () => {
+    const liveAdapter = new AgentTranscriptLiveAdapter('main');
+    const tx = new AgentTranscript('main');
+    const snapshot = {
+      goalId: 'g1', objective: 'ship it', status: 'blocked' as const, controlRevision: 4,
+      turnsUsed: 4, tokensUsed: 24_000, wallClockMs: 125_000, terminalReason: 'budget reached',
+      budget: {
+        tokenBudget: 24_000, turnBudget: 4, wallClockBudgetMs: 125_000,
+        remainingTokens: 0, remainingTurns: 0, remainingWallClockMs: 0,
+        tokenBudgetReached: true, turnBudgetReached: true, wallClockBudgetReached: true, overBudget: true,
+      },
+    };
+    tx.apply(liveAdapter.map(ev({ type: 'goal.updated', snapshot })));
+    tx.apply(liveAdapter.map(ev({ type: 'goal.updated', snapshot: {
+      ...snapshot,
+      budget: { ...snapshot.budget, tokenBudget: null, remainingTokens: null, tokenBudgetReached: false, overBudget: true },
+    } })));
+    expect(tx.getMeta().goal).toMatchObject({ turnsUsed: 4, budgetUsed: 24_000, wallClockMs: 125_000, turnBudget: 4, wallClockBudgetMs: 125_000 });
+    expect(tx.getMeta().goal?.budgetLimit).toBeUndefined();
+    tx.apply(liveAdapter.map(ev({ type: 'goal.updated', snapshot: {
+      ...snapshot, status: 'blocked',
+      budget: {
+        tokenBudget: null, turnBudget: null, wallClockBudgetMs: null,
+        remainingTokens: null, remainingTurns: null, remainingWallClockMs: null,
+        tokenBudgetReached: false, turnBudgetReached: false, wallClockBudgetReached: false, overBudget: false,
+      },
+    } })));
+    expect(tx.getMeta().goal).toMatchObject({ turnsUsed: 4, budgetUsed: 24_000, wallClockMs: 125_000, status: 'blocked' });
+    expect(tx.getMeta().goal?.budgetLimit).toBeUndefined();
+    expect(tx.getMeta().goal?.turnBudget).toBeUndefined();
+    expect(tx.getMeta().goal?.wallClockBudgetMs).toBeUndefined();
+  });
+
   it('aligns goal semantics across wire, live snapshots and seeded accounting without duplicate notices', () => {
     const records: TranscriptWireRecord[] = [
       { type: 'goal.create', goalId: 'example-goal', objective: 'Complete the experiment', completionCriterion: 'Verified results', time: 1 },

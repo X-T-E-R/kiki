@@ -376,7 +376,9 @@ Root 不应为了等待该结果，使用 `TaskWait`、`TaskOutput` 或 `AgentLi
 
 ## 目标
 
-主 Agent 的 `Goal` 工具通过 `action: "create"`、`"get"`、`"set_budget"` 或 `"update"` 指定操作；旧名称 `CreateGoal`、`GetGoal`、`SetGoalBudget` 和 `UpdateGoal` 仍可供已有 profile 和审批规则使用，但不再作为独立工具公告。`create` 需要可验证的 `objective`，可附 `completionCriterion`；`replace: true` 仅在用户要求替换时放弃现有目标。`get` 查询状态。用户给出明确上限时，`set_budget` 接受正数 `value` 和单位（`turns`、`tokens`、`milliseconds`、`seconds`、`minutes`、`hours`）。`update` 将状态设为 `active`、`complete` 或 `blocked`；完成前须核实目标，非终局阻碍须连续三个目标轮次阻止推进。用户侧操作和示例见[目标](../guides/goals.md)。
+主 Agent 的 `Goal` 工具通过 `action: "create"`、`"get"` 或 `"update"` 指定操作；旧名称 `CreateGoal`、`GetGoal` 和 `UpdateGoal` 仍可供已有 profile 和审批规则使用，但不再作为独立工具公告。`create` 需要可验证的 `objective`，可附 `completionCriterion`；`replace: true` 仅在用户要求替换时放弃现有目标。`get` 查询状态。`update` 将状态设为 `active`、`complete` 或 `blocked`；完成前须核实目标，非终局阻碍须连续三个目标轮次阻止推进。
+
+目标默认没有硬预算。只有用户能在 GUI 目标编辑器中设置或清除预算，聊天指令不会配置预算。旧 `SetGoalBudget` 和 `action: "set_budget"` 调用会返回不可用错误，不改变预算。用户侧操作和示例见 [目标](../guides/goals.md#在-web-界面中管理目标)。
 
 ## 下一步
 

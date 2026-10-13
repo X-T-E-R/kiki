@@ -10,6 +10,12 @@ export interface GoalBudgetLimits {
   readonly wallClockBudgetMs?: number;
 }
 
+export interface GoalBudgetPatch {
+  readonly tokenBudget?: number | null;
+  readonly turnBudget?: number | null;
+  readonly wallClockBudgetMs?: number | null;
+}
+
 export interface GoalBudgetReport {
   readonly tokenBudget: number | null;
   readonly turnBudget: number | null;
@@ -71,4 +77,5 @@ export interface UpdateGoalInput {
   readonly objective?: string;
   readonly completionCriterion?: string | null;
   readonly followUpTiming?: GoalFollowUpTiming;
+  readonly budgetLimits?: GoalBudgetPatch;
 }

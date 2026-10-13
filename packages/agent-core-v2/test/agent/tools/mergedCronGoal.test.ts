@@ -79,6 +79,7 @@ describe('merged Goal tool', () => {
     expect(results.map((result) => 'approvalRule' in result ? result.approvalRule : undefined))
       .toEqual(['CreateGoal', 'GetGoal', 'SetGoalBudget', 'UpdateGoal']);
     expect(budget.resolveExecution).toHaveBeenCalledOnce();
+    expect(JSON.stringify(tool.parameters)).not.toContain('set_budget');
   });
 
   it('rejects disabled actions without creating a goal', async () => {

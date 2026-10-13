@@ -176,7 +176,7 @@ describe('GoalInjection content', () => {
   ] as const)('discloses only configured budget dimensions (%j) and their sampling freshness', async (budgetLimits, present, absent) => {
     const text = (await readGoalReminder(async (goals) => {
       await goals.createGoal({ objective: 'work' });
-      await goals.setBudgetLimits({ budgetLimits }, 'model');
+      await goals.setBudgetLimits({ budgetLimits }, 'user');
     }))!;
     expect(text).toContain('Budgets as of this reminder:');
     expect(text).toContain('Goal({action:"get"})');
@@ -187,7 +187,7 @@ describe('GoalInjection content', () => {
   it('does not claim a live within-budget band below 75 percent', async () => {
     const text = (await readGoalReminder(async (goals) => {
       await goals.createGoal({ objective: 'work' });
-      await goals.setBudgetLimits({ budgetLimits: { turnBudget: 10 } }, 'model');
+      await goals.setBudgetLimits({ budgetLimits: { turnBudget: 10 } }, 'user');
     }))!;
     expect(text).not.toContain('within budget');
     expect(text).not.toContain('nearing its limit');
@@ -196,7 +196,7 @@ describe('GoalInjection content', () => {
   it('uses the convergence band at or above 75 percent', async () => {
     const text = (await readGoalReminder(async (goals) => {
       await goals.createGoal({ objective: 'work' });
-      await goals.setBudgetLimits({ budgetLimits: { turnBudget: 4 } }, 'model');
+      await goals.setBudgetLimits({ budgetLimits: { turnBudget: 4 } }, 'user');
       await goals.incrementTurn();
       await goals.incrementTurn();
       await goals.incrementTurn();
@@ -209,10 +209,10 @@ describe('GoalInjection content', () => {
   it('shows a blocked note once a budget is reached', async () => {
     const text = (await readGoalReminder(async (goals) => {
       await goals.createGoal({ objective: 'work' });
-      await goals.setBudgetLimits({ budgetLimits: { turnBudget: 2 } }, 'model');
+      await goals.setBudgetLimits({ budgetLimits: { turnBudget: 2 } }, 'user');
       await goals.incrementTurn();
       await goals.incrementTurn();
-      await goals.setBudgetLimits({ budgetLimits: { turnBudget: 2 } }, 'model');
+      await goals.setBudgetLimits({ budgetLimits: { turnBudget: 2 } }, 'user');
     }))!;
     expect(text).toContain('Blocked after goal budget reached: turn budget 2');
     expect(text).not.toContain('Budget guidance');
@@ -230,20 +230,20 @@ describe('GoalInjection content', () => {
     expect(text).not.toMatch(/UpdateGoal|SetGoalBudget|3 consecutive|broad goal in one turn/);
   });
 
-  it('honors explicit limits through the canonical set_budget action', async () => {
+  it('keeps natural-language limits from becoming model-controlled budgets', async () => {
     const text = (await readGoalReminder(async (goals) => {
       await goals.createGoal({ objective: 'work for up to 20 turns' });
+      expect(goals.getGoal().goal?.budget.turnBudget).toBeNull();
     }))!;
-    expect(text).toContain('Goal({action:"set_budget",value:...,unit:...})');
-    expect(text).toContain('Do not invent, silently relax, or ignore a limit');
-    expect(text).toContain('cannot be represented');
-    expect(text).not.toContain('not reasonable');
+    expect(text).toContain('controlled only by the user in the GUI goal editor');
+    expect(text).not.toContain('SetGoalBudget');
+    expect(text).not.toContain('set_budget');
   });
 
   it('renders the budget block adjacent to status without template-tag blank lines', async () => {
     const text = (await readGoalReminder(async (goals) => {
       await goals.createGoal({ objective: 'Ship feature X', completionCriterion: 'tests pass' });
-      await goals.setBudgetLimits({ budgetLimits: { tokenBudget: 100, turnBudget: 5 } }, 'model');
+      await goals.setBudgetLimits({ budgetLimits: { tokenBudget: 100, turnBudget: 5 } }, 'user');
     }))!;
     expect(text).not.toContain('\n\n\n');
     expect(text).toContain('</untrusted_objective>\n<untrusted_completion_criterion>');

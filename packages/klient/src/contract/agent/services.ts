@@ -7,6 +7,7 @@
  */
 
 import { z } from 'zod';
+import { goalBudgetPatchSchema } from '@kiki/protocol';
 
 import { maybe, noResult } from '../helpers.js';
 import { mcpServerConfigSchema } from '../mcp.js';
@@ -62,6 +63,7 @@ export const agentGoalContract = {
       objective: z.string().optional(),
       completionCriterion: z.string().nullable().optional(),
       followUpTiming: z.enum(['subagents_done', 'tasks_done']).optional(),
+      budgetLimits: goalBudgetPatchSchema.optional(),
     })]),
     output: goalSnapshotSchema,
   },

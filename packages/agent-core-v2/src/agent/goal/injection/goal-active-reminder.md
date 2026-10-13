@@ -7,7 +7,7 @@ ${objective}
 ${completion_criterion_block}
 Status: ${status}
 ${budgets_block}
-Honor explicit user limits. If a clear, supported limit is not yet recorded, set it with Goal({action:"set_budget",value:...,unit:...}) before further goal work. Do not invent, silently relax, or ignore a limit. If the requested bound cannot be represented or its unit is ambiguous, state the limitation and resolve it before undertaking work that could exceed that bound.
+Goal budgets are controlled only by the user in the GUI goal editor. Do not set, raise, or clear budgets through tools or infer a budget from the objective or conversation. Without a configured budget, the goal has no hard budget limit. If a limit is already recorded, honor it; do not silently relax or ignore it.
 
 Work toward the objective under the current user instructions and permissions. Continue useful, authorized work; choose coherent work boundaries rather than stopping merely because the objective is broad.
 

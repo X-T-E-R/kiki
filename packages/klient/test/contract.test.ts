@@ -16,7 +16,7 @@ import { mcpServerAuthFlowHandleSchema } from '../src/contract/global/mcpManagem
 import { createSessionOptionsSchema } from '../src/contract/session/lifecycle.js';
 import { activateSkillPayloadSchema, promptPayloadSchema } from '../src/contract/agent/schemas.js';
 import { agentEvents } from '../src/contract/agent/events.js';
-import { agentPromptContract, agentSkillContract } from '../src/contract/agent/services.js';
+import { agentGoalContract, agentPromptContract, agentSkillContract } from '../src/contract/agent/services.js';
 import { sessionCommandContract } from '../src/contract/session/commands.js';
 import { agentCollaborationMessagingContract } from '../src/contract/session/agentMessage.js';
 import {
@@ -35,6 +35,22 @@ import {
 import { modelConfigSchema } from '../src/contract/global/models.js';
 
 import { sessionViewSubscribeInputSchema, sessionViewTranscriptPageInputSchema, sessionViewSignalSchema } from '../src/contract/session/view.js';
+
+describe('goal budget edit contract', () => {
+  it('preserves omitted fields and explicit clears without adding a separate procedure', () => {
+    const input = [{ goalId: 'goal-example', expectedRevision: 3,
+      budgetLimits: { turnBudget: 3, tokenBudget: null } }];
+    expect(agentGoalContract.updateGoal.input.parse(input)).toEqual(input);
+    expect(agentGoalContract.updateGoal.input.parse([{ goalId: 'goal-example' }])).toEqual([{ goalId: 'goal-example' }]);
+  });
+
+  it('rejects invalid budgets before dispatch', () => {
+    for (const budgetLimits of [{ turnBudget: 0 }, { tokenBudget: -1 }, { turnBudget: 1.5 },
+      { wallClockBudgetMs: 999 }, { tokenBudget: Infinity }, { unknown: 5 }]) {
+      expect(agentGoalContract.updateGoal.input.safeParse([{ goalId: 'goal-example', budgetLimits }]).success).toBe(false);
+    }
+  });
+});
 
 describe('skill activation output contract', () => {
   it('preserves accepted queue receipts with or without a launched turn', () => {
