@@ -342,12 +342,12 @@ describe('GoalCard', () => {
     expect(turnsInput.value).toBe('5');
 
     // Use stepper plus button
-    const plusBtn = container.querySelector<HTMLButtonElement>('[data-goal-budget-row="turns"] button[aria-label="Increase turns"]')!;
+    const plusBtn = container.querySelector<HTMLButtonElement>('[data-goal-budget-row="turns"] button[aria-label="Increase Goal turns"]')!;
     await click(plusBtn);
     expect(turnsInput.value).toBe('6');
 
     // Use stepper minus button
-    const minusBtn = container.querySelector<HTMLButtonElement>('[data-goal-budget-row="turns"] button[aria-label="Decrease turns"]')!;
+    const minusBtn = container.querySelector<HTMLButtonElement>('[data-goal-budget-row="turns"] button[aria-label="Decrease Goal turns"]')!;
     await click(minusBtn);
     expect(turnsInput.value).toBe('5');
 
@@ -355,6 +355,23 @@ describe('GoalCard', () => {
     const turnsUnlimited = container.querySelector<HTMLButtonElement>('[data-goal-budget-mode="turns-unlimited"]')!;
     await click(turnsUnlimited);
     expect(turnsInput.value).toBe('');
+  });
+
+  it('renders localized aria labels for stepper buttons in Chinese', async () => {
+    vi.stubGlobal('navigator', { language: 'zh-CN' });
+    try {
+      const { container } = await renderCard();
+      await click(container.querySelector('button[title^="编辑"]')!);
+      await settle();
+      const advancedToggle = container.querySelector<HTMLButtonElement>('[data-goal-advanced-toggle]')!;
+      await click(advancedToggle);
+      const turnsCustom = container.querySelector<HTMLButtonElement>('[data-goal-budget-mode="turns-custom"]')!;
+      await click(turnsCustom);
+      expect(container.querySelector('button[aria-label="增加目标轮次"]')).not.toBeNull();
+      expect(container.querySelector('button[aria-label="减少目标轮次"]')).not.toBeNull();
+    } finally {
+      vi.stubGlobal('navigator', { language: 'en-US' });
+    }
   });
 });
 

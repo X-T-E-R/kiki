@@ -1297,6 +1297,8 @@ export const en = {
   'goal.budget.turns': 'Goal turns',
   'goal.budget.tokens': 'Output tokens',
   'goal.budget.seconds': 'Active time (seconds)',
+  'goal.budget.increase': 'Increase {unit}',
+  'goal.budget.decrease': 'Decrease {unit}',
   'goal.noLimit': 'No limit',
   'goal.limitReached': 'Limit reached',
   'goal.clearBudgets': 'Clear limits',

@@ -152,6 +152,18 @@ export function GoalCard({
     [],
   );
 
+  useEffect(() => {
+    if (actionError !== null && editing) {
+      errorRef.current?.scrollIntoView?.({ block: 'center', behavior: 'auto' });
+      const timer = setTimeout(() => {
+        errorRef.current?.scrollIntoView?.({ block: 'center', behavior: 'auto' });
+      }, 50);
+      return () => {
+        clearTimeout(timer);
+      };
+    }
+  }, [actionError, editing]);
+
   const seedForm = (snapshot: GoalSnapshot) => {
     setObjective(snapshot.objective);
     setCriterion(snapshot.completionCriterion ?? '');
@@ -164,6 +176,7 @@ export function GoalCard({
   const openEditor = () => {
     setActionError(null);
     setConflict(false);
+    setAdvancedOpen(false);
     setEditing(true);
     setPending('refresh');
     seedForm(goal);
@@ -202,9 +215,6 @@ export function GoalCard({
       (wallClockBudgetMs !== null && (wallClockBudgetMs < 1_000 || wallClockBudgetMs / 1_000 !== seconds))) {
       setActionError(t('goal.invalidBudget'));
       setAdvancedOpen(true);
-      setTimeout(() => {
-        errorRef.current?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
-      }, 0);
       return;
     }
     setPending('save');
@@ -550,7 +560,7 @@ export function GoalCard({
                             <div className={`flex items-center gap-1 ${isCustom ? '' : 'hidden'}`}>
                               <button
                                 type="button"
-                                aria-label={`Decrease ${unit}`}
+                                aria-label={t('goal.budget.decrease', { unit: t(`goal.budget.${unit}` as const) })}
                                 disabled={Number(value) <= min}
                                 onClick={() => {
                                   const current = Number(value) || min;
@@ -577,7 +587,7 @@ export function GoalCard({
                               />
                               <button
                                 type="button"
-                                aria-label={`Increase ${unit}`}
+                                aria-label={t('goal.budget.increase', { unit: t(`goal.budget.${unit}` as const) })}
                                 onClick={() => {
                                   const current = Number(value) || 0;
                                   const next = Math.round((current + step) * 1000) / 1000;
@@ -603,7 +613,7 @@ export function GoalCard({
                 ref={errorRef}
                 role="alert"
                 data-goal-error
-                className="rounded-md border border-danger/30 bg-danger/10 px-2.5 py-1.5 text-[12px] leading-snug text-danger"
+                className="rounded-md border border-danger/30 bg-danger/10 px-2.5 py-1.5 text-[12px] leading-snug break-words text-danger"
               >
                 {t('goal.actionFailed', { detail: actionError })}
               </p>

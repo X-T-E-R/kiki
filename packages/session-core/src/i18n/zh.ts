@@ -1283,6 +1283,8 @@ export const zh = {
   'goal.budget.turns': '目标轮次',
   'goal.budget.tokens': '输出 token',
   'goal.budget.seconds': '活跃时间（秒）',
+  'goal.budget.increase': '增加{unit}',
+  'goal.budget.decrease': '减少{unit}',
   'goal.noLimit': '无上限',
   'goal.limitReached': '已达上限',
   'goal.clearBudgets': '清除上限',
