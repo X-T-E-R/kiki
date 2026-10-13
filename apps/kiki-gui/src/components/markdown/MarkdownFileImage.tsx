@@ -9,6 +9,7 @@ import { mediaOutcomeKey, useMediaReady } from '../imageActions';
 import { safeImagePreviewName } from '../imagePreviewName';
 import { MediaPart, useGalleryImage, useSessionMedia } from '../mediaParts';
 import { useMediaPreview } from '../mediaPreviewContext';
+import { useRecordRenderedImage } from './renderedImages';
 
 type ImageProps = ComponentProps<'img'>;
 
@@ -43,6 +44,7 @@ export function MarkdownFileImage({ src, alt, title: _title, node: _node, docume
   const galleryItem = useMemo<MediaRef>(() => ({ kind: 'image', fileId, path: localPath, url: localPath === undefined && typeof src === 'string' ? src : undefined, name }), [fileId, localPath, src, name]);
   const offset = (_node as { position?: { start?: { offset?: number } } } | undefined)?.position?.start?.offset ?? 0;
   const openImage = useGalleryImage(galleryItem, 0, undefined, offset);
+  useRecordRenderedImage(typeof src === 'string' && src !== '' ? src : undefined);
   if (fileId !== undefined) return <MediaPart item={{ kind: 'image', fileId }} />;
   const label = name ?? t('media.image');
   const description = safeImagePreviewName({ name: alt }) ?? label;

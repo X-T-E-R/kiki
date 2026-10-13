@@ -86,6 +86,7 @@ import type { AgentTranscriptResponse, KikiClient } from '../lib/client';
 import { revealSubagentCard } from './ActivityHistory';
 import { locateInTimeline, normalizeTurnId, registerTimelineLocator, resetTimelineLocatorsForTests } from '../lib/timelineLocate';
 import { Markdown } from './Markdown';
+import { RenderedImageScope, useRenderedImageTargets } from './markdown/renderedImages';
 import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
 import { resolveSubagentToolCalls } from './subagentToolCalls';
 import { ToolCard, toolIcon, resolvedToolName } from './ToolCard';
@@ -805,44 +806,63 @@ describe('gallery order seam', () => {
   });
 });
 
+function RenderedTargetProbe() {
+  const targets = useRenderedImageTargets();
+  return <div data-rendered-image-targets={JSON.stringify(targets)} />;
+}
+
+/** Targets the production Streamdown image nodes published for this text. */
+async function renderedImageTargets(text: string): Promise<string[]> {
+  const { root, container } = makeRoot();
+  await renderSettled(
+    root,
+    <RenderedImageScope>
+      <Markdown text={text} mode="static" />
+      <RenderedTargetProbe />
+    </RenderedImageScope>,
+  );
+  const raw = container.querySelector('[data-rendered-image-targets]')?.getAttribute('data-rendered-image-targets') ?? '[]';
+  return JSON.parse(raw) as string[];
+}
+
 describe('media part deduplication', () => {
-  it('omits media parts already rendered inline in markdown to avoid duplicate thumbnails', () => {
+  it('omits media parts already rendered inline in markdown to avoid duplicate thumbnails', async () => {
     const media: readonly import('@kiki/session-core/composer/media').MediaRef[] = [
       { kind: 'image', url: 'https://example.test/rendered.png' },
     ];
     const text = 'Here is the diagram: ![diagram](https://example.test/rendered.png)';
-    const filtered = filterMediaNotRenderedInText(media, text);
+    const filtered = filterMediaNotRenderedInText(media, await renderedImageTargets(text));
     expect(filtered).toBeUndefined();
   });
 
-  it('keeps distinct duplicate parts when only one is referenced in markdown text', () => {
+  it('keeps distinct duplicate parts when only one is referenced in markdown text', async () => {
     const media: readonly import('@kiki/session-core/composer/media').MediaRef[] = [
       { kind: 'image', url: 'https://example.test/img.png' },
       { kind: 'image', url: 'https://example.test/img.png' },
     ];
     const text = 'First instance: ![img](https://example.test/img.png)';
-    const filtered = filterMediaNotRenderedInText(media, text);
+    const filtered = filterMediaNotRenderedInText(media, await renderedImageTargets(text));
     expect(filtered).toHaveLength(1);
     expect(filtered?.[0]?.url).toBe('https://example.test/img.png');
   });
 
-  it('preserves media parts across different messages independently', () => {
+  it('preserves media parts across different messages independently', async () => {
     const part = { kind: 'image' as const, url: 'https://example.test/shared.png' };
     const textWithImg = 'Inline: ![pic](https://example.test/shared.png)';
     const textWithoutImg = 'Just text referring to something else';
 
-    const msg1Filtered = filterMediaNotRenderedInText([part], textWithImg);
-    const msg2Filtered = filterMediaNotRenderedInText([part], textWithoutImg);
+    const msg1Filtered = filterMediaNotRenderedInText([part], await renderedImageTargets(textWithImg));
+    const msg2Filtered = filterMediaNotRenderedInText([part], await renderedImageTargets(textWithoutImg));
 
     expect(msg1Filtered).toBeUndefined();
     expect(msg2Filtered).toHaveLength(1);
     expect(msg2Filtered?.[0]?.url).toBe('https://example.test/shared.png');
   });
 
-  it('preserves non-image media parts even if path/name matches text', () => {
+  it('preserves non-image media parts even if path/name matches text', async () => {
     const filePart = { kind: 'file' as const, path: '/workspace/doc.pdf', name: 'doc.pdf' };
     const text = 'See [document](/workspace/doc.pdf)';
-    const filtered = filterMediaNotRenderedInText([filePart], text);
+    const filtered = filterMediaNotRenderedInText([filePart], await renderedImageTargets(text));
     expect(filtered).toEqual([filePart]);
   });
 
@@ -871,7 +891,7 @@ describe('media part deduplication', () => {
     expect(container.querySelector('img[src="https://example.test/extra.png"]')).not.toBeNull();
   });
 
-  it('preserves media parts referenced only within fenced, indented, inline code or escaped syntax', () => {
+  it('preserves media parts referenced only within fenced, indented, inline code or escaped syntax', async () => {
     const partFenced = { kind: 'image' as const, url: 'https://example.test/fenced.png' };
     const partTilde = { kind: 'image' as const, url: 'https://example.test/tilde.png' };
     const partInline = { kind: 'image' as const, url: 'https://example.test/inline.png' };
@@ -893,39 +913,44 @@ describe('media part deduplication', () => {
       'And escaped: \\![escaped](https://example.test/escaped.png)',
     ].join('\n');
 
+    const targets = await renderedImageTargets(text);
+    // The production parser renders a four-space indented image as an image.
+    // Fenced, tilde, inline-code and escaped forms stay literal, so those
+    // attachments remain.
+    expect(targets).toEqual(['https://example.test/indented.png']);
     const filtered = filterMediaNotRenderedInText(
       [partFenced, partTilde, partInline, partIndented, partEscaped],
-      text,
+      targets,
     );
-    expect(filtered).toHaveLength(5);
-    expect(filtered?.map((m) => m.url)).toEqual([
+    expect(filtered?.map((item) => item.url)).toEqual([
       'https://example.test/fenced.png',
       'https://example.test/tilde.png',
       'https://example.test/inline.png',
-      'https://example.test/indented.png',
       'https://example.test/escaped.png',
     ]);
   });
 
-  it('preserves media parts with same basename but different directory path', () => {
+  it('preserves media parts with same basename but different directory path', async () => {
     const partA = { kind: 'image' as const, path: '/workspace/dirA/img.png', name: 'img.png' };
     const text = 'Look at: ![diagram](/workspace/dirB/img.png)';
-    const filtered = filterMediaNotRenderedInText([partA], text);
+    const filtered = filterMediaNotRenderedInText([partA], await renderedImageTargets(text));
     expect(filtered).toEqual([partA]);
   });
 
-  it('preserves media parts with different query strings', () => {
+  it('preserves media parts with different query strings', async () => {
     const partV1 = { kind: 'image' as const, url: 'https://example.test/pic.png?v=1' };
-    const text = 'Look at: ![photo](https://example.test/pic.png?v=2)';
-    const filtered = filterMediaNotRenderedInText([partV1], text);
+    const text = 'Look at: ![photo](https://example.test/pic.png?v=2#frame)';
+    const targets = await renderedImageTargets(text);
+    expect(targets).toContain('https://example.test/pic.png?v=2#frame');
+    const filtered = filterMediaNotRenderedInText([partV1], targets);
     expect(filtered).toEqual([partV1]);
   });
 
-  it('never removes video parts even when image markdown syntax uses the same url or path', () => {
+  it('never removes video parts even when image markdown syntax uses the same url or path', async () => {
     const videoUrl = { kind: 'video' as const, url: 'https://example.test/clip.mp4' };
     const videoPath = { kind: 'video' as const, path: '/workspace/clip.mp4' };
     const text = 'Preview: ![video](https://example.test/clip.mp4) and ![local](/workspace/clip.mp4)';
-    const filtered = filterMediaNotRenderedInText([videoUrl, videoPath], text);
+    const filtered = filterMediaNotRenderedInText([videoUrl, videoPath], await renderedImageTargets(text));
     expect(filtered).toEqual([videoUrl, videoPath]);
   });
 
@@ -950,6 +975,35 @@ describe('media part deduplication', () => {
     ]);
     const videoElem = container.querySelector('video');
     expect(videoElem).not.toBeNull();
+  });
+
+  it('omits the attachment when a reference-style image renders the same url', async () => {
+    const container = await renderTranscript([
+      assistantBlock('asst-ref', 'See ![board][fig]\n\n[fig]: https://example.test/board.png?v=1#crop', {
+        media: [{ kind: 'image', url: 'https://example.test/board.png?v=1#crop' }],
+      }),
+    ]);
+    expect(container.querySelector('img[src="https://example.test/board.png?v=1#crop"]')).not.toBeNull();
+    const prose = container.querySelector('[data-block-id="asst-ref"] [data-assistant-prose]');
+    expect(prose?.querySelectorAll(':scope > div.flex.flex-wrap')).toHaveLength(0);
+  });
+
+  it('omits the attachment when a nested-list image renders, and keeps one inside a nested fence', async () => {
+    const nested = await renderTranscript([
+      assistantBlock('asst-nested', '- notes\n  - ![diagram](https://example.test/nested.png)', {
+        media: [{ kind: 'image', url: 'https://example.test/nested.png' }],
+      }),
+    ]);
+    expect(nested.querySelector('img[src="https://example.test/nested.png"]')).not.toBeNull();
+    expect(nested.querySelector('[data-block-id="asst-nested"] [data-assistant-prose]')?.querySelectorAll(':scope > div.flex.flex-wrap')).toHaveLength(0);
+
+    const fenced = await renderTranscript([
+      assistantBlock('asst-nested-fence', '- notes\n\n  ```markdown\n  ![diagram](https://example.test/nested-fence.png)\n  ```', {
+        media: [{ kind: 'image', url: 'https://example.test/nested-fence.png' }],
+      }),
+    ]);
+    expect(fenced.textContent).toContain('![diagram](https://example.test/nested-fence.png)');
+    expect(fenced.querySelector('[data-block-id="asst-nested-fence"] [data-assistant-prose] img[src="https://example.test/nested-fence.png"]')).not.toBeNull();
   });
 
   it('preserves media parts across multiple assistant messages independently in rendered Transcript', async () => {

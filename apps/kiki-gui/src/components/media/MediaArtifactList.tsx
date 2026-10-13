@@ -79,40 +79,16 @@ export function artifactFacts(artifact: MediaArtifact): string {
     .join(' · ');
 }
 
-function stemOf(filename: string): string {
-  const dot = filename.lastIndexOf('.');
-  return dot > 0 ? filename.slice(0, dot) : filename;
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
+/**
+ * A preview is the same media as an original only when both name the same
+ * session-media `file_id` and that original is complete. A shared stem,
+ * `preview`/`thumb` filename, or any other label is not an association the
+ * protocol records. An incomplete original does not hide its preview.
+ */
 export function isProvenPreviewOf(preview: MediaArtifact, original: MediaArtifact): boolean {
+  if (preview.role !== 'preview') return false;
   if (original.role !== 'original' || original.complete !== true) return false;
-  const meta = preview.metadata;
-  if (meta !== undefined) {
-    if (meta['original_id'] === original.id || meta['originalId'] === original.id) return true;
-    if (meta['original_file_id'] === original.file_id || meta['originalFileId'] === original.file_id) return true;
-    if (meta['parent_id'] === original.id || meta['parentId'] === original.id) return true;
-  }
-  const origMeta = original.metadata;
-  if (origMeta !== undefined) {
-    if (origMeta['preview_id'] === preview.id || origMeta['previewId'] === preview.id) return true;
-    if (origMeta['preview_file_id'] === preview.file_id || origMeta['previewFileId'] === preview.file_id) return true;
-  }
-  if (preview.kind !== original.kind && !(preview.kind === 'image' && original.kind === 'video')) {
-    return false;
-  }
-  const origStem = stemOf(original.name).toLowerCase();
-  const prevStem = stemOf(preview.name).toLowerCase();
-  if (origStem === '' || prevStem === '') return false;
-  if (origStem === prevStem) return true;
-  const pattern = new RegExp(`^${escapeRegExp(origStem)}[-_.](?:preview|thumb|thumbnail|small)$`, 'i');
-  if (pattern.test(prevStem)) return true;
-  const prefixPattern = new RegExp(`^(?:preview|thumb|thumbnail|small)[-_.]${escapeRegExp(origStem)}$`, 'i');
-  if (prefixPattern.test(prevStem)) return true;
-  return false;
+  return preview.file_id !== '' && preview.file_id === original.file_id;
 }
 
 export function visibleArtifacts(artifacts: readonly MediaArtifact[]): readonly MediaArtifact[] {

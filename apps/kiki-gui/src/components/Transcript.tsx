@@ -170,6 +170,7 @@ import {
 } from './timeline/PromptOutcome';
 import { Markdown } from './Markdown';
 import { projectTextWithAnnotationMarks } from './markdown/annotationMarks';
+import { RenderedImageScope, useRenderedImageTargets } from './markdown/renderedImages';
 import { MediaPartList } from './mediaParts';
 import { unwrapFileLinkTarget, type MediaRef } from '@kiki/session-core/composer/media';
 import { MediaGalleryOrder } from './mediaPreviewContext';
@@ -617,73 +618,6 @@ const UserMessage = memo(function UserMessage({
   );
 });
 
-function codeSpanRanges(text: string): readonly (readonly [number, number])[] {
-  const ranges: Array<readonly [number, number]> = [];
-  const delimiters = /`+/gu;
-  let opening: { readonly start: number; readonly length: number } | undefined;
-  for (const match of text.matchAll(delimiters)) {
-    const start = match.index ?? 0;
-    const length = match[0].length;
-    if (opening === undefined) {
-      opening = { start, length };
-    } else if (length === opening.length) {
-      ranges.push([opening.start, start + length]);
-      opening = undefined;
-    }
-  }
-  if (opening !== undefined) ranges.push([opening.start, text.length]);
-  return ranges;
-}
-
-function maskRanges(text: string, ranges: readonly (readonly [number, number])[]): string {
-  if (ranges.length === 0) return text;
-  let result = '';
-  let cursor = 0;
-  for (const [start, end] of ranges) {
-    result += text.slice(cursor, start);
-    result += ' '.repeat(end - start);
-    cursor = end;
-  }
-  result += text.slice(cursor);
-  return result;
-}
-
-export function extractInlineImageTargets(text: string): string[] {
-  if (text === '') return [];
-  // 1. Mask fenced code blocks (``` or ~~~)
-  let clean = text.replace(
-    /(?:^|\n)[ \t]{0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:\n[ \t]{0,3}\1[ \t]*(?:\n|$)|$)/g,
-    (match) => '\n'.repeat((match.match(/\n/g) || []).length),
-  );
-  // 2. Mask indented code blocks (4 spaces or tab at start of line)
-  clean = clean.replace(
-    /(?:^|\n)(?: {4}|\t)[^\n]*(?:\n(?: {4}|\t)[^\n]*)*/g,
-    (match) => '\n'.repeat((match.match(/\n/g) || []).length),
-  );
-  // 3. Mask HTML comments
-  clean = clean.replace(/<!--[\s\S]*?-->/g, (match) => ' '.repeat(match.length));
-  // 4. Mask HTML pre/code elements
-  clean = clean.replace(/<(pre|code)\b[^>]*>[\s\S]*?<\/\1>/gi, (match) => ' '.repeat(match.length));
-  // 5. Mask inline code spans using accurate CommonMark backtick matching
-  const spans = codeSpanRanges(clean);
-  clean = maskRanges(clean, spans);
-
-  const targets: string[] = [];
-  // 6. Match Markdown images: ![...](...) where ! is not backslash-escaped
-  const mdImgRe = /(?:^|[^\\])(?:\\\\)*!\[(?:[^\]\\]|\\.)*\]\(\s*(?:<([^>]+)>|([^\s)]+))(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)/g;
-  for (const match of clean.matchAll(mdImgRe)) {
-    const target = match[1] ?? match[2];
-    if (target !== undefined && target !== '') targets.push(target);
-  }
-  // 7. Match HTML img tags: <img ... src=...> where < is not escaped
-  const htmlImgRe = /(?:^|[^\\])(?:\\\\)*<img\b[^>]*?\bsrc=(?:"([^"]+)"|'([^']+)'|([^\s>]+))[^>]*>/gi;
-  for (const match of clean.matchAll(htmlImgRe)) {
-    const target = match[1] ?? match[2] ?? match[3];
-    if (target !== undefined && target !== '') targets.push(target);
-  }
-  return targets;
-}
-
 function parseFileUriPath(target: string): string | undefined {
   if (!/^file:\/\//i.test(target)) return undefined;
   try {
@@ -747,11 +681,9 @@ export function matchesMediaRef(item: MediaRef, rawTarget: string): boolean {
 
 export function filterMediaNotRenderedInText(
   media: readonly MediaRef[] | undefined,
-  text: string,
+  targets: readonly string[],
 ): readonly MediaRef[] | undefined {
-  if (media === undefined || media.length === 0 || text === '') return media;
-  const targets = extractInlineImageTargets(text);
-  if (targets.length === 0) return media;
+  if (media === undefined || media.length === 0 || targets.length === 0) return media;
   const remainingTargets = [...targets];
   const filtered: MediaRef[] = [];
   for (const item of media) {
@@ -767,6 +699,13 @@ export function filterMediaNotRenderedInText(
     }
   }
   return filtered.length > 0 ? filtered : undefined;
+}
+
+function DedupedAssistantMedia({ media }: { readonly media: readonly MediaRef[] | undefined }) {
+  const targets = useRenderedImageTargets();
+  const visible = filterMediaNotRenderedInText(media, targets);
+  if (visible === undefined) return null;
+  return <MediaPartList media={visible} />;
 }
 
 const AssistantMessage = memo(function AssistantMessage({
@@ -792,10 +731,6 @@ const AssistantMessage = memo(function AssistantMessage({
   const incomplete = useContentContinuation(source, MESSAGE_TEXT_ROOTS).pending.length > 0;
   const internalProse = useMessageViewContext().internalProse && block.text !== '';
   const streaming = block.streaming && block.text !== '';
-  const media = useMemo(
-    () => filterMediaNotRenderedInText(block.media, block.text),
-    [block.media, block.text],
-  );
   const { prefix, tail } = useMemo(
     () => (streaming ? splitStreamingText(block.text) : { prefix: '', tail: '' }),
     [streaming, block.text],
@@ -825,6 +760,7 @@ const AssistantMessage = memo(function AssistantMessage({
       {/* No leading marker: the right-aligned user bubble already carries
           the turn boundary, so the answer sits on the page as prose. */}
       <div data-assistant-prose className="kiki-prose min-w-0">
+        <RenderedImageScope>
         {streaming ? (
           <>
             {segments.length > 0 ? (
@@ -844,11 +780,12 @@ const AssistantMessage = memo(function AssistantMessage({
             {/* Marks ride the settled render only: a streaming block's text
                 still moves under the quote, and a quote split across the
                 memoized prefix chunks would silently lose its mark anyway. */}
-            {block.text !== '' ? <Markdown text={block.text} sourceBlockId={block.id} annotationTargets={annotations} /> : null}
+            {block.text !== '' ? <Markdown text={block.text} mode="static" sourceBlockId={block.id} annotationTargets={annotations} /> : null}
             {block.streaming ? <span className="stream-caret font-mono">▍</span> : null}
           </>
         )}
-        {media !== undefined ? <MediaPartList media={media} /> : null}
+        <DedupedAssistantMedia media={block.media} />
+        </RenderedImageScope>
         {/* The turn tail's "Stopped by you" divider already states the stop
             of the latest turn; the inline mark stays for older stopped turns. */}
         {block.stopped === true && !stopShownByTail ? (

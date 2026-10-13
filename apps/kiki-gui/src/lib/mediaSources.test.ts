@@ -489,11 +489,20 @@ describe('subscriptions', () => {
 });
 
 describe('visibleArtifacts deduplication', () => {
-  it('omits preview role when an original role is present to prevent thumbnail duplicates', () => {
+  it('omits a preview that is the same file as a complete original', () => {
     const original = { id: 'art-1', file_id: 'f-1', name: 'image.png', mime: 'image/png', bytes: 1024, kind: 'image' as const, role: 'original' as const, complete: true };
-    const preview = { id: 'art-2', file_id: 'f-2', name: 'image_thumb.png', mime: 'image/png', bytes: 256, kind: 'image' as const, role: 'preview' as const, complete: true };
+    const preview = { id: 'art-2', file_id: 'f-1', name: 'image.png', mime: 'image/png', bytes: 256, kind: 'image' as const, role: 'preview' as const, complete: true };
     const result = visibleArtifacts([original, preview]);
     expect(result).toEqual([original]);
+  });
+
+  it('keeps a preview whose name shares a stem but whose file_id differs', () => {
+    const original = { id: 'art-1', file_id: 'f-1', name: 'image.png', mime: 'image/png', bytes: 1024, kind: 'image' as const, role: 'original' as const, complete: true };
+    const sameName = { id: 'art-2', file_id: 'f-2', name: 'image.png', mime: 'image/png', bytes: 256, kind: 'image' as const, role: 'preview' as const, complete: true };
+    const thumb = { id: 'art-3', file_id: 'f-3', name: 'image_thumb.png', mime: 'image/png', bytes: 128, kind: 'image' as const, role: 'preview' as const, complete: true };
+    const prefixed = { id: 'art-4', file_id: 'f-4', name: 'thumb-image.png', mime: 'image/png', bytes: 64, kind: 'image' as const, role: 'preview' as const, complete: true };
+    const small = { id: 'art-5', file_id: 'f-5', name: 'image-small.png', mime: 'image/png', bytes: 64, kind: 'image' as const, role: 'preview' as const, complete: true };
+    expect(visibleArtifacts([original, sameName, thumb, prefixed, small])).toEqual([original, sameName, thumb, prefixed, small]);
   });
 
   it('keeps preview artifact if no original is available', () => {
@@ -512,19 +521,20 @@ describe('visibleArtifacts deduplication', () => {
 
   it('keeps preview artifact when corresponding original is incomplete', () => {
     const original = { id: 'art-1', file_id: 'f-1', name: 'image.png', mime: 'image/png', bytes: 1024, kind: 'image' as const, role: 'original' as const, complete: false };
-    const preview = { id: 'art-2', file_id: 'f-2', name: 'image_thumb.png', mime: 'image/png', bytes: 256, kind: 'image' as const, role: 'preview' as const, complete: true };
+    const preview = { id: 'art-2', file_id: 'f-1', name: 'image_thumb.png', mime: 'image/png', bytes: 256, kind: 'image' as const, role: 'preview' as const, complete: true };
     const result = visibleArtifacts([original, preview]);
     expect(result).toEqual([original, preview]);
   });
 
   it('preserves mixed independent previews and incomplete originals alongside deduplicated complete originals', () => {
     const origComplete = { id: 'orig-1', file_id: 'f-1', name: 'img1.png', mime: 'image/png', bytes: 1024, kind: 'image' as const, role: 'original' as const, complete: true };
-    const prevComplete = { id: 'prev-1', file_id: 'f-p1', name: 'img1_thumb.png', mime: 'image/png', bytes: 256, kind: 'image' as const, role: 'preview' as const, complete: true };
+    const prevSameFile = { id: 'prev-1', file_id: 'f-1', name: 'img1_thumb.png', mime: 'image/png', bytes: 256, kind: 'image' as const, role: 'preview' as const, complete: true };
+    const prevSameStem = { id: 'prev-stem', file_id: 'f-stem', name: 'img1-preview.png', mime: 'image/png', bytes: 200, kind: 'image' as const, role: 'preview' as const, complete: true };
     const origIncomplete = { id: 'orig-2', file_id: 'f-2', name: 'img2.png', mime: 'image/png', bytes: 2048, kind: 'image' as const, role: 'original' as const, complete: false };
-    const prevIncomplete = { id: 'prev-2', file_id: 'f-p2', name: 'img2-preview.png', mime: 'image/png', bytes: 512, kind: 'image' as const, role: 'preview' as const, complete: true };
+    const prevIncomplete = { id: 'prev-2', file_id: 'f-2', name: 'img2-preview.png', mime: 'image/png', bytes: 512, kind: 'image' as const, role: 'preview' as const, complete: true };
     const prevIndependent = { id: 'prev-3', file_id: 'f-p3', name: 'thumb.png', mime: 'image/png', bytes: 128, kind: 'image' as const, role: 'preview' as const, complete: true };
 
-    const result = visibleArtifacts([origComplete, prevComplete, origIncomplete, prevIncomplete, prevIndependent]);
-    expect(result).toEqual([origComplete, origIncomplete, prevIncomplete, prevIndependent]);
+    const result = visibleArtifacts([origComplete, prevSameFile, prevSameStem, origIncomplete, prevIncomplete, prevIndependent]);
+    expect(result).toEqual([origComplete, prevSameStem, origIncomplete, prevIncomplete, prevIndependent]);
   });
 });
