@@ -65,6 +65,12 @@ const scenarios = [
       // A wide job takes the phone-width twin of the states that have to survive
       // the narrow layout, so both widths come out of one run.
       const phoneWidth = view.width > 600;
+      const phoneShot = async (name) => {
+        if (!phoneWidth) return;
+        await page.setViewportSize({ width: 390, height: 844 });
+        await shot(name);
+        await page.setViewportSize({ width: view.width, height: 900 });
+      };
       await page.goto(link('/settings/browser-control'), { waitUntil: 'domcontentloaded', timeout: 60_000 });
       // The wizard is the opening state: three named routes, each saying what
       // it still needs. Nothing below it has to be opened to see this.
@@ -83,7 +89,7 @@ const scenarios = [
       await page.locator('[data-confirm-action="confirm"]').click();
       await page.waitForSelector('[data-browser-route="independent-browser"] [data-browser-route-open]', { timeout: 30_000 });
       await shot('wizard-ready');
-      if (phoneWidth) await shot('wizard-ready-390', { width: 390, height: 844 });
+      await phoneShot('wizard-ready-390');
 
       // Advanced update / shortcut within the route
       await page.locator('[data-browser-route="independent-browser"] [data-browser-route-advanced] summary').click();
@@ -92,22 +98,34 @@ const scenarios = [
       await page.locator('[data-browser-route="independent-browser"] [data-browser-route-update]').click();
       await page.waitForSelector('[data-browser-route="independent-browser"] [data-feedback-tone="info"]', { timeout: 10_000 });
       await shot('wizard-updated-disk');
-      if (phoneWidth) await shot('wizard-updated-disk-390', { width: 390, height: 844 });
+      await phoneShot('wizard-updated-disk-390');
 
       // Primary open action
       await page.locator('[data-browser-route="independent-browser"] [data-browser-route-open]').click();
       await page.waitForSelector('[data-browser-route="independent-browser"] [data-browser-route-connected]', { timeout: 30_000 });
       await shot('wizard-opened-connected');
-      if (phoneWidth) await shot('wizard-opened-connected-390', { width: 390, height: 844 });
+      await phoneShot('wizard-opened-connected-390');
 
-      // Codex is another app's control surface: named, linked, and given no
-      // Kiki connect button. The shot proves the absence rather than a claim.
+      // Codex route: candidate connection selector and save flow.
       await page.locator('[data-browser-route="codex-browser"]').scrollIntoViewIfNeeded();
+      await page.waitForSelector('[data-browser-route="codex-browser"] [data-browser-candidates-region]', { timeout: 10_000 });
       await page.waitForSelector('[data-browser-route="codex-browser"] [data-browser-route-instructions]', { timeout: 10_000 });
-      const codexButtons = await page.locator('[data-browser-route="codex-browser"] [data-browser-route-prepare], [data-browser-route="codex-browser"] [data-browser-route-connect]').count();
-      if (codexButtons !== 0) throw new Error(`external control surface offered ${codexButtons} Kiki actions`);
+      const connectBtn = page.locator('[data-browser-route="codex-browser"] [data-browser-route-connect]');
+      if (!await connectBtn.isDisabled()) throw new Error('codex connect button should be disabled before selection');
+
+      // Explicit selection of candidate pipe 1
+      await page.locator('#candidate-select-codex-browser').click();
+      await page.waitForSelector('[role="option"][data-option-value="codex-browser-use-pipe-1"]', { timeout: 10_000 });
+      await page.locator('[role="option"][data-option-value="codex-browser-use-pipe-1"]').click();
+
+      // Save connection
+      await connectBtn.click();
+      await page.waitForSelector('[data-browser-route="codex-browser"][data-browser-route-state="ready"]', { timeout: 10_000 });
+      const connectedBadge = await page.locator('[data-browser-route="codex-browser"] [data-browser-route-connected]').count();
+      if (connectedBadge !== 0) throw new Error('codex saved connection should not claim connected or approved');
       await resetScroll(page);
       await shot('wizard-codex');
+      await phoneShot('wizard-codex-390');
 
       // The Kimi route: everything installed except the store approval, which
       // is a link to a page only a person can click through.
@@ -115,7 +133,7 @@ const scenarios = [
       await page.waitForSelector('[data-browser-route-blocker="extension"]', { timeout: 10_000 });
       await resetScroll(page);
       await shot('wizard-kimi-extension');
-      if (phoneWidth) await shot('wizard-kimi-extension-390', { width: 390, height: 844 });
+      await phoneShot('wizard-kimi-extension-390');
 
       // The connections and the default live below the routes, in the advanced
       // region — the things a person fills in, not picks.
@@ -299,7 +317,7 @@ const scenarios = [
       await page.waitForSelector('[data-browser-route="independent-browser"]', { timeout: 30_000 });
       await resetScroll(page);
       await shot('wizard-zh');
-      if (phoneWidth) await shot('wizard-zh-390', { width: 390, height: 844 });
+      await phoneShot('wizard-zh-390');
 
       // Chinese independent browser route: ready and advanced
       const advZh = page.locator('[data-browser-route="independent-browser"] [data-browser-route-advanced] summary');
@@ -310,8 +328,15 @@ const scenarios = [
         await page.locator('[data-browser-route="independent-browser"] [data-browser-route-update]').click();
         await page.waitForSelector('[data-browser-route="independent-browser"] [data-feedback-tone="info"]', { timeout: 10_000 });
         await shot('wizard-updated-disk-zh');
-        if (phoneWidth) await shot('wizard-updated-disk-zh-390', { width: 390, height: 844 });
+        await phoneShot('wizard-updated-disk-zh-390');
       }
+
+      // Chinese Codex route
+      await page.locator('[data-browser-route="codex-browser"]').scrollIntoViewIfNeeded();
+      await page.waitForSelector('[data-browser-route="codex-browser"] [data-browser-candidates-region]', { timeout: 10_000 });
+      await resetScroll(page);
+      await shot('wizard-codex-zh');
+      await phoneShot('wizard-codex-zh-390');
     },
   },
   {

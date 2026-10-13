@@ -221,6 +221,17 @@ async function save() {
   await click('[data-settings-draft] button');
 }
 
+async function selectOption(triggerSelector: string, optionValueOrText: string) {
+  await act(async () => { query<HTMLButtonElement>(triggerSelector)?.click(); });
+  await settle();
+  await act(async () => {
+    const opt = [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+      .find((option) => option.dataset['optionValue'] === optionValueOrText || option.textContent?.includes(optionValueOrText));
+    opt?.click();
+  });
+  await settle();
+}
+
 beforeEach(() => {
   connection.scopeId = 'local';
   connection.sshLabel = null;
@@ -1357,6 +1368,161 @@ describe('BrowserControlSection', () => {
       const retryBtn = query('[data-webbridge-prepare]');
       expect(retryBtn).not.toBeNull();
       expect(retryBtn?.textContent).toContain('Try setup again…');
+    });
+  });
+
+  describe('Codex browser extension route with candidates', () => {
+    const codexWithCandidates = preset({
+      preset: 'codex-browser', displayName: 'Codex / ChatGPT browser extension', controlSurface: 'browser-connection',
+      state: 'needs_user_action', reason: 'choose_connection',
+      sourceUrl: 'https://developers.openai.com/codex/app/chrome-extension',
+      steps: [
+        { id: 'driver', state: 'ready' },
+        { id: 'desktop-app', state: 'user_action', reason: 'external_app_required' },
+        { id: 'detect', state: 'user_action', reason: 'choose_connection' },
+      ],
+      candidates: [
+        { browserId: 'codex-browser-use-pipe-1' },
+        { browserId: 'codex-browser-use-pipe-2' },
+        { browserId: 'codex-browser-use-pipe-3' },
+      ],
+      actions: [
+        { id: 'prepare' },
+        { id: 'choose_connection' },
+        { id: 'connect' },
+        { id: 'open_instructions', url: 'https://developers.openai.com/codex/app/chrome-extension', target: 'documentation' },
+      ],
+    });
+
+    it('requires explicit selection from candidates, sends correct body, and saves as ready approval_unproven', async () => {
+      let current = codexWithCandidates;
+      setupPresets.mockImplementation(async () => ({ presets: [current] }));
+      await render();
+      await settleUntil('[data-browser-route="codex-browser"]');
+
+      expect(query('[data-browser-candidate-select]')).not.toBeNull();
+      const connectBtn = query<HTMLButtonElement>('[data-browser-route="codex-browser"] [data-browser-route-connect]');
+      expect(connectBtn?.disabled).toBe(true);
+
+      await selectOption('#candidate-select-codex-browser', 'codex-browser-use-pipe-2');
+
+      expect(connectBtn?.disabled).toBe(false);
+
+      connectPreset.mockImplementationOnce(async () => {
+        current = {
+          ...codexWithCandidates,
+          state: 'ready',
+          reason: 'approval_unproven',
+          connectionId: 'codex-browser',
+          browserId: 'codex-browser-use-pipe-2',
+        };
+        return current;
+      });
+
+      await act(async () => { connectBtn?.click(); });
+      await settle();
+
+      expect(connectPreset).toHaveBeenCalledWith('codex-browser', {
+        connectionId: 'codex-browser',
+        browserId: 'codex-browser-use-pipe-2',
+      });
+
+      expect(query('[data-browser-route="codex-browser"]')?.getAttribute('data-browser-route-state')).toBe('ready');
+      expect(query('[data-browser-route="codex-browser"] [data-browser-route-connected]')).toBeNull();
+      expect(query('[data-browser-route="codex-browser"] [data-browser-route-readiness]')?.textContent).toContain('Ready');
+      expect(query('[data-browser-route="codex-browser"] [data-browser-route-readiness]')?.textContent).not.toContain('Connected');
+      expect(query('[data-feedback-tone="info"]')?.textContent).toContain('Connection saved. Complete first-time approval');
+      expect(query('[data-feedback-tone="info"]')?.textContent).not.toContain('Connected.');
+    });
+
+    it('allows cancelling selection to restore original choice with no network request', async () => {
+      const savedCodex = {
+        ...codexWithCandidates,
+        state: 'ready' as const,
+        reason: 'approval_unproven',
+        connectionId: 'codex-browser',
+        browserId: 'codex-browser-use-pipe-2',
+      };
+      setupPresets.mockResolvedValue({ presets: [savedCodex] });
+      await render();
+      await settleUntil('[data-browser-route="codex-browser"]');
+
+      expect(query('[data-browser-candidate-cancel]')).toBeNull();
+
+      await selectOption('#candidate-select-codex-browser', 'codex-browser-use-pipe-3');
+
+      const cancelBtn = query<HTMLButtonElement>('[data-browser-candidate-cancel]');
+      expect(cancelBtn).not.toBeNull();
+
+      connectPreset.mockClear();
+      await act(async () => { cancelBtn?.click(); });
+      await settle();
+
+      expect(query('[data-browser-candidate-select]')?.dataset['browserCandidateSelect']).toBe('codex-browser-use-pipe-2');
+      expect(query('[data-browser-candidate-cancel]')).toBeNull();
+      expect(connectPreset).not.toHaveBeenCalled();
+    });
+
+    it('renders empty candidate state when no candidates are discovered and disables connect', async () => {
+      const codexEmpty = {
+        ...codexWithCandidates,
+        candidates: [],
+      };
+      setupPresets.mockResolvedValue({ presets: [codexEmpty] });
+      await render();
+      await settleUntil('[data-browser-route="codex-browser"]');
+
+      expect(query('[data-browser-candidates-empty]')).not.toBeNull();
+      expect(query('[data-browser-candidates-empty]')?.textContent).toContain('No running extension connections found');
+      expect(query('[data-browser-candidate-select]')).toBeNull();
+      expect(query<HTMLButtonElement>('[data-browser-route="codex-browser"] [data-browser-route-connect]')?.disabled).toBe(true);
+    });
+
+    it('displays error on failed connect and supports retry', async () => {
+      setupPresets.mockResolvedValue({ presets: [codexWithCandidates] });
+      await render();
+      await settleUntil('[data-browser-route="codex-browser"]');
+
+      await selectOption('#candidate-select-codex-browser', 'codex-browser-use-pipe-1');
+
+      connectPreset.mockResolvedValueOnce({
+        ...codexWithCandidates,
+        state: 'failed',
+        error: 'Connection to extension pipe was refused',
+      });
+
+      await act(async () => { query<HTMLButtonElement>('[data-browser-route="codex-browser"] [data-browser-route-connect]')?.click(); });
+      await settle();
+
+      expect(query('[data-feedback-tone="error"]')?.textContent).toContain('Connection to extension pipe was refused');
+
+      connectPreset.mockResolvedValueOnce({
+        ...codexWithCandidates,
+        state: 'ready',
+        reason: 'approval_unproven',
+        connectionId: 'codex-browser',
+        browserId: 'codex-browser-use-pipe-1',
+      });
+
+      await act(async () => { query<HTMLButtonElement>('[data-browser-route="codex-browser"] [data-browser-route-connect]')?.click(); });
+      await settle();
+      expect(connectPreset).toHaveBeenCalledTimes(2);
+    });
+
+    it('handles late-arriving candidates cleanly when refetched', async () => {
+      setupPresets.mockResolvedValueOnce({ presets: [{ ...codexWithCandidates, candidates: [] }] });
+      await render();
+      await settleUntil('[data-browser-route="codex-browser"]');
+
+      expect(query('[data-browser-candidates-empty]')).not.toBeNull();
+      expect(query('[data-browser-candidate-select]')).toBeNull();
+
+      setupPresets.mockResolvedValueOnce({ presets: [codexWithCandidates] });
+      await act(async () => { await queries.invalidateQueries({ queryKey: ['browser', 'setup', 'local'] }); });
+      await settleUntil('[data-browser-candidate-select]');
+
+      expect(query('[data-browser-candidate-select]')).not.toBeNull();
+      expect(query('[data-browser-candidates-empty]')).toBeNull();
     });
   });
 });

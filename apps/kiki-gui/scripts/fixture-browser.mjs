@@ -134,13 +134,22 @@ const PRESETS = {
   'codex-browser': {
     preset: 'codex-browser',
     displayName: 'Codex / ChatGPT browser extension',
-    controlSurface: 'external-app',
-    supported: false,
-    state: 'external_only',
-    reason: 'external_app_required',
+    controlSurface: 'browser-connection',
+    supported: true,
+    state: 'needs_user_action',
+    reason: 'choose_connection',
     sourceUrl: CODEX_HELP,
-    steps: [{ id: 'desktop-app', state: 'user_action', reason: 'external_app_required' }],
-    actions: [{ id: 'open_instructions', url: CODEX_HELP, target: 'documentation' }],
+    steps: [
+      { id: 'driver', state: 'ready' },
+      { id: 'desktop-app', state: 'user_action', reason: 'external_app_required', detail: 'Codex or ChatGPT desktop and its Chrome or Edge extension remain the approval surface. Kiki does not approve the extension, register a native host, or restart the browser.' },
+      { id: 'detect', state: 'user_action', reason: 'choose_connection', detail: '3 Codex extension pipes are listed in candidates. Choose one browserId. Discovery does not open a pipe.' },
+    ],
+    candidates: [
+      { browserId: 'codex-browser-use-pipe-1' },
+      { browserId: 'codex-browser-use-pipe-2' },
+      { browserId: 'codex-browser-use-pipe-3' },
+    ],
+    actions: [{ id: 'prepare' }, { id: 'choose_connection' }, { id: 'connect' }, { id: 'open_instructions', url: CODEX_HELP, target: 'documentation' }],
   },
 };
 
@@ -154,7 +163,10 @@ function presetStatus(browser, seed) {
   const base = PRESETS[seed];
   const override = browser.overrides?.[base.preset] ?? {};
   const steps = override.steps ?? base.steps;
-  const state = override.state ?? (override.error !== undefined ? 'failed' : 'not_prepared');
+  const state = override.state ?? base.state ?? (override.error !== undefined ? 'failed' : 'not_prepared');
+  const reason = override.reason ?? (override.error !== undefined ? undefined : base.reason);
+  const candidates = override.candidates !== undefined ? override.candidates : base.candidates;
+  const browserId = override.browserId ?? base.browserId;
   const flagOff = steps.some((step) => step.reason === 'feature_disabled');
   const served = base.actions.filter((action) => {
     if (override.omitAction === action.id) return false;
@@ -171,8 +183,11 @@ function presetStatus(browser, seed) {
     executionHost: browser.host,
     steps,
     actions,
-    connectionId: override.connectionId,
+    connectionId: override.connectionId ?? base.connectionId,
     error: override.error,
+    reason,
+    candidates,
+    browserId,
   };
   if (base.controlSurface === 'external-app') {
     return { ...base, executionHost: browser.host, ...common };
@@ -216,11 +231,51 @@ function handleSetup(server, browser, res, path, method, body) {
       server.envelope(res, null, 40001, override.prepareError);
       return true;
     }
-    browser.overrides = { ...browser.overrides, [id]: { ...override, state: 'ready', prepareError: undefined } };
+    const cleanSteps = (override.steps ?? PRESETS[id]?.steps ?? []).map((s) => s.id === 'driver' ? { ...s, state: 'ready', reason: undefined } : s).filter((s) => s.id !== 'feature');
+    const nextState = id === 'codex-browser' ? (override.browserId ? 'ready' : 'needs_user_action') : 'ready';
+    const nextReason = id === 'codex-browser' ? (override.browserId ? 'approval_unproven' : 'choose_connection') : undefined;
+    browser.overrides = { ...browser.overrides, [id]: { ...override, state: nextState, reason: nextReason, steps: cleanSteps, prepareError: undefined } };
     server.envelope(res, presetStatus(browser, id));
     return true;
   }
   if (name === 'connect') {
+    if (override.connectError !== undefined) {
+      server.envelope(res, null, 40001, override.connectError);
+      return true;
+    }
+    if (id === 'codex-browser') {
+      const candidates = override.candidates ?? PRESETS[id]?.candidates ?? [];
+      const candidateNames = candidates.map((c) => c.browserId);
+      const chosenBrowserId = body?.browserId;
+      if (!chosenBrowserId || !candidateNames.includes(chosenBrowserId)) {
+        server.envelope(res, { ...presetStatus(browser, id), state: 'needs_user_action', reason: 'choose_connection' });
+        return true;
+      }
+      const connectionId = body?.connectionId ?? 'codex-browser';
+      browser.connections = [
+        ...browser.connections.filter((c) => c.id !== connectionId),
+        {
+          id: connectionId,
+          name: 'Codex browser extension',
+          enabled: true,
+          type: 'codex-extension',
+          browserId: chosenBrowserId,
+          status: { state: 'idle', executionHost: browser.host, generation: 1 },
+        },
+      ];
+      browser.overrides = {
+        ...browser.overrides,
+        [id]: {
+          ...override,
+          connectionId,
+          browserId: chosenBrowserId,
+          state: 'ready',
+          reason: 'approval_unproven',
+        },
+      };
+      server.envelope(res, presetStatus(browser, id));
+      return true;
+    }
     if (override.state !== 'ready' && override.state !== 'connected') { server.envelope(res, presetStatus(browser, id)); return true; }
     if (id === 'independent-browser') {
       if (find(browser, 'independent-browser') === undefined) {

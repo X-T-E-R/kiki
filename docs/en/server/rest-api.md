@@ -418,20 +418,20 @@ Execution actions fail closed: without the `native_browser` experimental flag `:
 
 ### Browser setup presets
 
-Presets are `kimi-webbridge`, `independent-browser`, and `codex-browser`. The Codex preset reports `external_only` and official instructions; it does not install or connect the external app. The other presets expose setup and connection actions.
+Presets are `kimi-webbridge`, `independent-browser`, and `codex-browser`. `kimi-webbridge` and `independent-browser` manage local components, while `codex-browser` discovers active extension pipes as candidates (`candidates`, up to 20 entries) and pairs with a selected pipe rather than pretending to install the external app.
 
 | Method and path | Description |
 | --- | --- |
 | `GET /api/browser/setup` | List presets with their step states and available actions |
 | `GET /api/browser/setup/{preset}` | Read a preset's status |
 | `POST /api/browser/setup/{preset}:prepare` | Install components with `{ "consent": true }` |
-| `POST /api/browser/setup/{preset}:connect` | Connect a prepared preset |
+| `POST /api/browser/setup/{preset}:connect` | Connect a prepared preset or save a selected candidate pipe |
 | `POST /api/browser/setup/{preset}:open` | Open or activate the independent browser; for WebBridge, connect the bridge |
 | `POST /api/browser/setup/{preset}:update` | Update components from verified downloads; retain the previous installation on failure |
 | `POST /api/browser/setup/{preset}:shortcut` | Create an independent-browser shortcut on the Windows server's desktop |
 | `POST /api/browser/setup/{preset}:cancel` | Cancel preparation |
 
-`:connect` accepts optional `connectionId`, `name`, and `setDefault`; `:open` accepts optional `connectionId`; `:shortcut` accepts optional `connectionId` and shortcut `name`. `:update` takes an empty object. All actions return a setup status: inspect `state`, `reason`, `error`, `steps`, and `actions`, not just HTTP success. A disabled connection returns `connection_disabled` without opening another profile. A failed window activation returns `state: "failed"`.
+`:connect` accepts optional `connectionId` (stable connection ID), `browserId` (the selected pipe identifier, e.g. `codex-browser-use-...`), `name`, and `setDefault`; `:open` accepts optional `connectionId`; `:shortcut` accepts optional `connectionId` and shortcut `name`. `:update` takes an empty object. All actions return a setup status: inspect `state`, `reason`, `error`, `steps`, `actions`, `candidates`, and saved `browserId`, not just HTTP success. Saving a candidate returns `state: "ready"` with `reason: "approval_unproven"`; this means the connection target is saved but first-time approval still belongs to the user in Codex or the browser extension, not that the pipe is already `connected` or approved. A disabled connection returns `connection_disabled` without opening another profile. A failed window activation returns `state: "failed"`.
 
 Updates replace files on disk without switching an already-running browser or daemon. `reason: "disk_updated"` reports the disk change; `"disk_updated_running_unchanged"` also identifies an unchanged running WebBridge daemon. Neither means that a running process has upgraded.
 

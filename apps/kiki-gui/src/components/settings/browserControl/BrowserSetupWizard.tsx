@@ -31,7 +31,7 @@
  * column would read as a gallery rather than as three answers to one question.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 
@@ -47,6 +47,7 @@ import { Icon } from '../../icons';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
 import { ConfirmDialog } from '../../ConfirmDialog';
 import { AdvancedDetails } from '../fields';
+import { SettingsSelect } from '../SettingsPrimitives';
 
 const READINESS_TONE: Readonly<Record<PresetReadiness, { text: I18nKey; dot: string }>> = {
   preparing: { text: 'st.browser.route.preparing', dot: 'status-dot-busy bg-ink-soft' },
@@ -98,6 +99,13 @@ const REASON_KEYS: Readonly<Record<string, I18nKey>> = {
   external_app_required: 'st.browser.reason.externalApp',
   connection_conflict: 'st.browser.reason.connectionConflict',
   connection_disabled: 'st.browser.reason.connectionDisabled',
+  extension_not_connected: 'st.browser.reason.extensionNotConnected',
+  artifact_missing: 'st.browser.reason.artifactMissing',
+  artifact_mismatch: 'st.browser.reason.artifactMismatch',
+  mismatch: 'st.browser.reason.artifactMismatch',
+  choose_connection: 'st.browser.reason.chooseConnection',
+  approval_unproven: 'st.browser.reason.approvalUnproven',
+  pipe_discovery_failed: 'st.browser.reason.pipeDiscoveryFailed',
   disk_updated: 'st.browser.route.done.updateDisk',
   disk_updated_running_unchanged: 'st.browser.route.done.updateRunningUnchanged',
 };
@@ -114,6 +122,10 @@ function BrowserRoute({ preset, active, onSelect }: {
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [busy, setBusy] = useState<'prepare' | 'connect' | 'cancel' | 'open' | 'update' | 'shortcut' | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [selectedBrowserId, setSelectedBrowserId] = useState(preset.browserId ?? '');
+  useEffect(() => {
+    setSelectedBrowserId(preset.browserId ?? '');
+  }, [preset.browserId]);
   /** Set by the forced-off line so its fold opens; the fold owns its state. */
   const [openDiagnostics, setDiagnosticsOpen] = useState(false);
 
@@ -162,16 +174,18 @@ function BrowserRoute({ preset, active, onSelect }: {
   // or only the flag is left. Once every installable component is in place,
   // pushing "install" at the reader is the thing this page exists to stop.
   const personOwned = blocking !== undefined && (blocking.state === 'user_action' || blocking.id === 'feature');
-  // Everything Kiki could install is in place and nothing failed: the honest
-  // thing to say, and the reason Set up is not on offer. Only a route Kiki
-  // itself fills in can be described that way — an external route has no such
-  // work, and a forced-off route is not settled at all.
-  const settled = !external && !moving && !installable && !repairable && !featureOnly && !forcedOff;
   // An external route has no Kiki action left, so "still needs X" would only
   // restate what its own action row already offers — and its reasons are the
   // other app's business, not something this page can move.
   // Forced off already says what is wrong and why, in its own line below.
-  const needsLine = !external && !forcedOff && (installable || personOwned || (blocking !== undefined && blocking.state === 'failed'));
+  // Connected / ready routes do not show blocking lines.
+  const needsLine = !external && !forcedOff && readiness !== 'connected' && (installable || personOwned || (blocking !== undefined && blocking.state === 'failed'));
+  // Everything Kiki could install is in place and nothing failed: the honest
+  // thing to say, and the reason Set up is not on offer. Only a route Kiki
+  // itself fills in can be described that way — an external route has no such
+  // work, and a forced-off route is not settled at all.
+  // When already connected or when blocker/actions already explain what to do, omit repetitive wall text.
+  const settled = !external && !moving && !installable && !repairable && !featureOnly && !forcedOff && readiness !== 'connected' && !needsLine;
   // A step the server marked `warning` is not blocking — nothing is missing —
   // but it is the one thing a person should know before trusting the route, so
   // it gets its own line rather than hiding in the diagnostics fold. It is
@@ -191,7 +205,12 @@ function BrowserRoute({ preset, active, onSelect }: {
       const api = browserApi(client);
       let res: BrowserSetupStatus | undefined;
       if (action === 'prepare') res = await api.prepare(preset.preset, { consent: true });
-      else if (action === 'connect') res = await api.connectPreset(preset.preset, {});
+      else if (action === 'connect') {
+        const body = preset.candidates !== undefined
+          ? { connectionId: preset.connectionId ?? (preset.preset === 'codex-browser' ? 'codex-browser' : undefined), browserId: selectedBrowserId || undefined }
+          : {};
+        res = await api.connectPreset(preset.preset, body);
+      }
       else if (action === 'open') res = await api.openPreset(preset.preset, {});
       else if (action === 'update') res = await api.updatePreset(preset.preset, {});
       else if (action === 'shortcut') res = await api.createShortcut(preset.preset, {});
@@ -200,7 +219,7 @@ function BrowserRoute({ preset, active, onSelect }: {
       await reload();
       // The managed route's connect or open writes a real connection, so the list and
       // the default selector below have to be re-read from the server.
-      if (preset.preset === 'independent-browser' && (action === 'connect' || action === 'open')) {
+      if ((preset.preset === 'independent-browser' || preset.preset === 'codex-browser') && (action === 'connect' || action === 'open')) {
         await queryClient.invalidateQueries({ queryKey: browserKeys.connections(scopeId) });
       }
 
@@ -216,9 +235,19 @@ function BrowserRoute({ preset, active, onSelect }: {
         setFeedback({ tone: 'error', text: res?.error ?? t('st.browser.route.openFailed') });
         return;
       }
-      if (action === 'connect' && res?.state !== 'connected' && res?.state !== 'ready') {
-        setFeedback({ tone: 'error', text: res?.error ?? t('st.browser.outcome.connectIncomplete') });
-        return;
+      if (action === 'connect') {
+        if (res?.state !== 'connected' && res?.state !== 'ready') {
+          setFeedback({ tone: 'error', text: res?.error ?? t('st.browser.outcome.connectIncomplete') });
+          return;
+        }
+        if (res?.reason === 'approval_unproven') {
+          setFeedback({ tone: 'info', text: t('st.browser.route.done.savedApprovalUnproven') });
+          return;
+        }
+        if (res?.state === 'connected') {
+          setFeedback(null);
+          return;
+        }
       }
       if (action === 'update') {
         if (res?.reason === 'disk_updated_running_unchanged') {
@@ -325,6 +354,50 @@ function BrowserRoute({ preset, active, onSelect }: {
         </p>
       )}
 
+      {preset.candidates !== undefined ? (
+        <div className="mt-2.5 space-y-1.5" data-browser-candidates-region>
+          {preset.candidates.length === 0 ? (
+            <p className="text-[12px] leading-[18px] text-ink-soft" data-browser-candidates-empty>
+              {t('st.browser.candidates.empty')}
+            </p>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2">
+              <label htmlFor={`candidate-select-${preset.preset}`} className="text-[12px] font-medium text-ink-soft shrink-0">
+                {t('st.browser.candidates.label')}
+              </label>
+              <div className="min-w-[240px] max-w-full">
+                <SettingsSelect
+                  id={`candidate-select-${preset.preset}`}
+                  ariaLabel={t('st.browser.candidates.label')}
+                  dataAttr="data-browser-candidate-select"
+                  choices={preset.candidates.map((c) => ({
+                    value: c.browserId,
+                    label: c.browserId,
+                  }))}
+                  value={selectedBrowserId}
+                  emptyText={t('st.browser.candidates.placeholder')}
+                  onChange={(val) => { setSelectedBrowserId(val); }}
+                  disabled={busy !== null}
+                  variant="row"
+                  mono
+                />
+              </div>
+              {selectedBrowserId !== (preset.browserId ?? '') ? (
+                <button
+                  type="button"
+                  className={SECONDARY_BUTTON}
+                  data-browser-candidate-cancel
+                  disabled={busy !== null}
+                  onClick={() => { setSelectedBrowserId(preset.browserId ?? ''); }}
+                >
+                  {t('st.browser.route.cancelSelection')}
+                </button>
+              ) : null}
+            </div>
+          )}
+        </div>
+      ) : null}
+
       <div className="mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-2">
         {/* External control surfaces get no Kiki button: there is nothing here
             for Kiki to install or connect, so a primary button would promise a
@@ -354,9 +427,9 @@ function BrowserRoute({ preset, active, onSelect }: {
         )}
         {external || connect === undefined || (readiness !== 'ready' && preset.state !== 'needs_user_action' && preset.state !== 'failed' && preset.error === undefined) || busy !== null ? null : (
           <button type="button" className={openAction !== undefined ? SECONDARY_BUTTON : PRIMARY_BUTTON} data-browser-route-connect
-            disabled={busy !== null}
+            disabled={busy !== null || (preset.candidates !== undefined && (!selectedBrowserId || selectedBrowserId === ''))}
             onClick={() => { void act('connect'); }}>
-            {busy === 'connect' ? t('st.browser.route.connecting') : t('st.browser.route.connect')}
+            {busy === 'connect' ? t('st.browser.route.connecting') : (preset.candidates !== undefined ? t('st.browser.route.saveConnection') : t('st.browser.route.connect'))}
           </button>
         )}
         {hasVersionMismatch && updateAction !== undefined ? (

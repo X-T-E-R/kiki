@@ -8,12 +8,12 @@
  */
 
 import { browserFailureSchema } from '@kiki/protocol';
-import type { BrowserCatalogResponse, BrowserConnection, BrowserConnectionInput, BrowserControlList, BrowserFailure, BrowserPresetId, BrowserSetupList, BrowserSetupStatus, BrowserStatus, BrowserTab } from '@kiki/protocol';
+import type { BrowserCatalogResponse, BrowserConnection, BrowserConnectionInput, BrowserControlList, BrowserFailure, BrowserPresetId, BrowserSetupCandidate, BrowserSetupList, BrowserSetupStatus, BrowserStatus, BrowserTab } from '@kiki/protocol';
 
 import type { KikiClient } from './client';
 
 export type {
-  BrowserCatalogResponse, BrowserConnection, BrowserConnectionInput, BrowserControlList, BrowserFailure, BrowserPresetId, BrowserSetupList, BrowserSetupStatus, BrowserStatus, BrowserTab,
+  BrowserCatalogResponse, BrowserConnection, BrowserConnectionInput, BrowserControlList, BrowserFailure, BrowserPresetId, BrowserSetupCandidate, BrowserSetupList, BrowserSetupStatus, BrowserStatus, BrowserTab,
 } from '@kiki/protocol';
 
 export type BrowserConnectionType = BrowserConnection['type'];

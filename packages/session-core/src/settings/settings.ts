@@ -2216,7 +2216,7 @@ export const SETTINGS_SECTION_META: Readonly<Record<string, SettingsSectionMeta>
   // what this page is, and a second orientation sentence only repeats them.
   plugins: { scopes: ['server'] },
   search: { scopes: ['server'], purposeKey: 'st.purpose.search' },
-  'browser-control': { scopes: ['server'], purposeKey: 'st.purpose.browserControl' },
+  'browser-control': { scopes: ['server'] },
   'computer-control': { scopes: ['server'], purposeKey: 'st.purpose.computerControl' },
   hooks: { scopes: ['server'], purposeKey: 'st.purpose.hooks' },
   workspaces: { scopes: ['server'], purposeKey: 'st.purpose.workspaces' },
