@@ -7001,7 +7001,7 @@ describe('semantic tool cards', () => {
   async function renderCard(
     block: Extract<Block, { kind: 'tool' }>,
     options: { sessionId?: string; onOpenAgent?: (agentId: string) => void } = {},
-  ): Promise<{ container: HTMLDivElement; path: () => string }> {
+  ): Promise<{ container: HTMLDivElement; path: () => string; navState: () => unknown }> {
     const { root, container } = makeRoot();
     let location = '';
     let navState: unknown;
