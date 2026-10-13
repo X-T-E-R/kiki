@@ -11,7 +11,7 @@ import type { BrowserConnectionInput, BrowserResolvedConnection } from './browse
 import { BrowserError } from './errors';
 import { IFlagService } from '#/app/flag/flag';
 import { NATIVE_BROWSER_FLAG_ID } from './flag';
-import { CODEX_BRIDGE_PAGE_TOOLS, type BrowserRequestContext } from './codexBrowser';
+import type { BrowserRequestContext } from './codexBrowser';
 
 interface LiveBrowser {
   connection: BrowserResolvedConnection;
@@ -43,8 +43,12 @@ export function browserResponse(result: MCPToolResult): { success?: boolean; dat
 
 export const BROWSER_OWNED_FIELDS = new Set(['session', 'namespace', 'extraArgs', 'restore', 'restoreSave', 'restoreCheckUrl',
   'restoreCheckText', 'restoreCheckFn', 'profile', 'cdp', 'pinTab', 'allowedDomains', 'caCert', 'clearCaCert', 'idleTimeout', 'timeoutMs', 'screenshotDir']);
+export function browserManagedLifecycle(name: string): boolean {
+  return /^agent_browser_(?:connect|close|tab_|frame_|window_)/.test(name) || /^(?:codex_list_tabs|codex_create_tab|codex_close_tab|codex_finalize)$/.test(name);
+}
 export function isBrowserOperation(name: string): boolean {
-  if (name === 'codex_browser_js' || name === 'codex_browser_js_reset' || (CODEX_BRIDGE_PAGE_TOOLS as readonly string[]).includes(name)) return true;
+  if (name === 'codex_browser_js' || name === 'codex_browser_js_reset') return true;
+  if (name.startsWith('codex_')) return !browserManagedLifecycle(name);
   return name.startsWith('agent_browser_') && !/^agent_browser_(?:tools_profiles|connect|close|tab_|frame_|window_|session(?:_|$)|profiles(?:_|$)|skills(?:_|$)|install$|upgrade$|doctor$|dashboard_|plugin(?:_|$)|plugins(?:_|$)|chat$|batch$|confirm$|deny$|auth(?:_|$)|state_(?:list|show|rename|clear|clean))/.test(name);
 }
 export function browserToolGroup(name: string): string {
@@ -52,7 +56,7 @@ export function browserToolGroup(name: string): string {
   if (/cookies|storage|state_/.test(name)) return 'state';
   if (/react|vitals|pushstate/.test(name)) return 'react';
   if (/console|errors|trace|profiler|record|diff|a11y|inspect|highlight/.test(name)) return 'debug';
-  if (/mouse|touch|swipe|viewport|device|geo|media/.test(name)) return 'input';
+  if (/mouse|touch|swipe|viewport|device|geo|media|cua_/.test(name)) return 'input';
   return 'page';
 }
 

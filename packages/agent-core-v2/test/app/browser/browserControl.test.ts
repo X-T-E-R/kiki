@@ -388,9 +388,13 @@ describe('official Codex browser adapter', () => {
 const bridgePipe = 'codex-browser-use-selected';
 const bridgePng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 function bridgeCatalog() {
-  const schema = (properties: Record<string, unknown>, required: string[]) => ({ type: 'object', properties, required });
-  return ['codex_list_tabs', 'codex_create_tab', 'codex_close_tab', 'codex_navigate', 'codex_dom_snapshot', 'codex_dom_get_visible', 'codex_fill', 'codex_click', 'codex_screenshot', 'codex_get_url', 'codex_get_title', 'codex_wait_for_load', 'codex_claim_tab', 'codex_user_tabs', 'codex_network_cookies', 'codex_execute_cdp'].map((name) => ({
-    name, description: name, inputSchema: schema({ tab_id: { type: 'string' }, url: { type: 'string' }, selector: { type: 'string' }, value: { type: 'string' }, format: { type: 'string' } }, name === 'codex_navigate' ? ['tab_id', 'url'] : name === 'codex_click' ? ['tab_id', 'selector'] : ['tab_id']),
+  const schema = (fields: string[], required: string[]) => ({ type: 'object', properties: Object.fromEntries(fields.map((field) => [field, { type: 'string' }])), required });
+  const fields: Record<string, string[]> = {
+    codex_navigate: ['tab_id', 'url'], codex_fill: ['tab_id', 'selector', 'value'], codex_click: ['tab_id', 'selector'],
+    codex_screenshot: ['tab_id', 'format'], codex_cua_click: ['tab_id', 'x', 'y'],
+  };
+  return ['codex_list_tabs', 'codex_create_tab', 'codex_close_tab', 'codex_navigate', 'codex_dom_snapshot', 'codex_dom_get_visible', 'codex_fill', 'codex_click', 'codex_screenshot', 'codex_get_url', 'codex_get_title', 'codex_wait_for_load', 'codex_claim_tab', 'codex_user_tabs', 'codex_network_cookies', 'codex_execute_cdp', 'codex_cua_click', 'codex_finalize'].map((name) => ({
+    name, description: name, inputSchema: schema(fields[name] ?? ['tab_id'], name === 'codex_navigate' ? ['tab_id', 'url'] : name === 'codex_click' ? ['tab_id', 'selector'] : name === 'codex_cua_click' ? ['tab_id', 'x', 'y'] : ['tab_id']),
   }));
 }
 function bridgeAdapter(callTool: (name: string, args: Record<string, unknown>) => Promise<MCPToolResult>, discover: () => Promise<readonly string[]> = async () => [bridgePipe]) {
@@ -400,14 +404,19 @@ function bridgeAdapter(callTool: (name: string, args: Record<string, unknown>) =
 describe('Codex extension bridge adapter', () => {
   const context: BrowserRequestContext = { caller, turnId: 7, toolCallId: 'fixture-call', elicit: async () => ({ action: 'cancel' }) };
 
-  it('publishes the basic page tools and keeps claim, cookies and CDP out of the catalog', async () => {
+  it('publishes the donor catalog and keeps session-tab binding off claim', async () => {
     const adapter = bridgeAdapter(async () => { throw new Error('not called'); });
-    const names = (await adapter.client.listTools()).map((tool) => tool.name);
-    expect(names).toEqual(['codex_browser_navigate', 'codex_browser_dom_snapshot', 'codex_browser_dom_visible', 'codex_browser_fill', 'codex_browser_click', 'codex_browser_screenshot', 'codex_browser_get_url', 'codex_browser_get_title', 'codex_browser_wait_for_load']);
+    const listed = await adapter.client.listTools();
+    const names = listed.map((tool) => tool.name);
+    expect(names).toEqual(expect.arrayContaining(['codex_navigate', 'codex_dom_snapshot', 'codex_fill', 'codex_click', 'codex_screenshot', 'codex_claim_tab', 'codex_user_tabs', 'codex_network_cookies', 'codex_execute_cdp', 'codex_cua_click']));
     expect(names.some((name) => isBrowserOperation(name))).toBe(true);
-    expect(isBrowserOperation('codex_claim_tab')).toBe(false);
-    expect(isBrowserOperation('codex_user_tabs')).toBe(false);
-    expect((await adapter.client.listTools()).find((tool) => tool.name === 'codex_browser_navigate')?.inputSchema).toMatchObject({ required: ['url'] });
+    expect(isBrowserOperation('codex_claim_tab')).toBe(true);
+    expect(isBrowserOperation('codex_user_tabs')).toBe(true);
+    expect(isBrowserOperation('codex_cua_click')).toBe(true);
+    expect(isBrowserOperation('codex_list_tabs')).toBe(false);
+    expect(isBrowserOperation('codex_finalize')).toBe(false);
+    expect(listed.find((tool) => tool.name === 'codex_navigate')?.inputSchema).toMatchObject({ required: ['url'] });
+    expect(listed.find((tool) => tool.name === 'codex_claim_tab')?.inputSchema).toMatchObject({ required: ['tab_id'] });
     const stub = { callTool: async () => { throw new Error('not called'); }, listTools: async () => [], ping: async () => undefined };
     expect(() => new BridgeCodexBrowser(stub, 'first-pipe', [], async () => [])).toThrow(/codex-browser-use-/);
     expect(() => new BridgeCodexBrowser(stub, 'codex-browser-use\\11111111-2222-4333-8444-555555555555', [], async () => [])).not.toThrow();
@@ -442,42 +451,45 @@ describe('Codex extension bridge adapter', () => {
     expect(opened.structuredContent).toMatchObject({ response: { success: true, data: { targetId: '7', tabId: '7' } } });
     expect(callTool).toHaveBeenNthCalledWith(2, 'codex_navigate', { tab_id: '7', url: 'http://127.0.0.1:9/form' }, undefined, expect.any(Object));
     expect(await adapter.tabs(context)).toEqual([{ tabId: '7', targetId: '7', url: 'http://127.0.0.1:9/', title: 'local' }]);
-    expect(bridgeTextResult(await adapter.invoke('codex_browser_dom_snapshot', {}, '7', context))).toContain('textbox');
-    await adapter.invoke('codex_browser_fill', { selector: '#q', text: 'local-value' }, '7', context);
+    expect(bridgeTextResult(await adapter.invoke('codex_dom_snapshot', {}, '7', context))).toContain('textbox');
+    await adapter.invoke('codex_fill', { selector: '#q', value: 'local-value' }, '7', context);
     expect(callTool).toHaveBeenLastCalledWith('codex_fill', { tab_id: '7', selector: '#q', value: 'local-value' }, undefined, expect.any(Object));
-    await adapter.invoke('codex_browser_click', { selector: '#go' }, '7', context);
+    await adapter.invoke('codex_click', { selector: '#go' }, '7', context);
     expect(callTool.mock.calls.filter(([name]) => name === 'codex_click')).toHaveLength(1);
-    const shot = await adapter.invoke('codex_browser_screenshot', { format: 'png' }, '7', context);
+    const shot = await adapter.invoke('codex_screenshot', { format: 'png' }, '7', context);
     expect(shot.content.find((item) => item.type === 'image')?.data).toBe(bridgePng);
     expect(shot.structuredContent).toMatchObject({ response: { success: true, data: { mimeType: 'image/png', byteLength: pngBytes } } });
     callTool.mockResolvedValueOnce({ content: [{ type: 'text', text: 'Screenshot omitted because it is too large' }], isError: false });
-    await expect(adapter.invoke('codex_browser_screenshot', {}, '7', context)).rejects.toThrow('did not include an image');
-    await expect(adapter.invoke('codex_browser_navigate', { url: 'javascript:alert(1)' }, '7', context)).rejects.toMatchObject({ code: 'browser.invalid' });
-    await expect(adapter.invoke('codex_browser_navigate', { url: 'https://user:secret@127.0.0.1/' }, '7', context)).rejects.toMatchObject({ code: 'browser.invalid' });
-    await expect(adapter.invoke('codex_claim_tab', { tab_id: '99' }, undefined, context)).rejects.toMatchObject({ code: 'browser.unsupported' });
-    await expect(adapter.invoke('codex_browser_click', { selector: '#go', x: 1, y: 2 }, '7', context)).rejects.toMatchObject({ code: 'browser.invalid' });
-    expect(callTool.mock.calls.map(([name]) => name)).not.toContain('codex_claim_tab');
-    expect(callTool.mock.calls.map(([name]) => name)).not.toContain('codex_user_tabs');
+    await expect(adapter.invoke('codex_screenshot', {}, '7', context)).rejects.toThrow('did not include an image');
+    await expect(adapter.invoke('codex_navigate', { url: 'javascript:alert(1)' }, '7', context)).rejects.toMatchObject({ code: 'browser.invalid' });
+    await expect(adapter.invoke('codex_navigate', { url: 'https://user:secret@127.0.0.1/' }, '7', context)).rejects.toMatchObject({ code: 'browser.invalid' });
+    await adapter.invoke('codex_claim_tab', { tab_id: '99' }, '7', context);
+    expect(callTool).toHaveBeenLastCalledWith('codex_claim_tab', { tab_id: '99' }, undefined, expect.any(Object));
+    await adapter.invoke('codex_click', { selector: '#go', x: 1, y: 2 }, '7', context);
+    expect(callTool).toHaveBeenLastCalledWith('codex_click', { tab_id: '7', selector: '#go' }, undefined, expect.any(Object));
+    await adapter.invoke('codex_cua_click', { x: 1, y: 2 }, '7', context);
+    expect(callTool).toHaveBeenLastCalledWith('codex_cua_click', { tab_id: '7', x: 1, y: 2 }, undefined, expect.any(Object));
+    await expect(adapter.invoke('codex_click', { selector: '#go', tab_id: '8' }, '7', context)).rejects.toMatchObject({ code: 'browser.target' });
   });
 
   it('does not replay a lost click and finalizes only a confirmed disconnect', async () => {
     const thrown = vi.fn(async (): Promise<MCPToolResult> => { throw new Error('response channel closed'); });
     const adapter = bridgeAdapter(thrown);
-    await expect(adapter.invoke('codex_browser_click', { selector: '#go' }, '7', context)).rejects.toThrow('response channel closed');
-    await expect(adapter.invoke('codex_browser_click', { selector: '#go' }, '7', context)).rejects.toMatchObject({ code: 'browser.disconnected' });
+    await expect(adapter.invoke('codex_click', { selector: '#go' }, '7', context)).rejects.toThrow('response channel closed');
+    await expect(adapter.invoke('codex_click', { selector: '#go' }, '7', context)).rejects.toMatchObject({ code: 'browser.disconnected' });
     expect(thrown).toHaveBeenCalledTimes(1);
     await adapter.prepareClose();
     expect(thrown).toHaveBeenCalledTimes(1);
     const missed = vi.fn(async (name: string): Promise<MCPToolResult> => ({ content: [{ type: 'text', text: name === 'codex_click' ? 'Error: selector not found' : 'title' }], isError: name === 'codex_click' }));
     const readable = bridgeAdapter(missed);
-    await expect(readable.invoke('codex_browser_click', { selector: '#missing' }, '7', context)).rejects.toThrow('did not send it again');
-    expect(await readable.invoke('codex_browser_get_title', {}, '7', context)).toMatchObject({ isError: false });
+    await expect(readable.invoke('codex_click', { selector: '#missing' }, '7', context)).rejects.toThrow('did not send it again');
+    expect(await readable.invoke('codex_get_title', {}, '7', context)).toMatchObject({ isError: false });
     expect(missed).toHaveBeenCalledTimes(2);
     const lostCalls = vi.fn(async (name: string): Promise<MCPToolResult> => name === 'codex_finalize'
       ? { content: [{ type: 'text', text: 'Tabs finalized' }], isError: false }
       : { content: [{ type: 'text', text: 'Error: response channel closed for fill' }], isError: true });
     const lost = bridgeAdapter(lostCalls);
-    await expect(lost.invoke('codex_browser_fill', { selector: '#q', value: 'x' }, '7', context)).rejects.toThrow('did not confirm');
+    await expect(lost.invoke('codex_fill', { selector: '#q', value: 'x' }, '7', context)).rejects.toThrow('did not confirm');
     await lost.prepareClose();
     await lost.endTurn(caller, 7);
     expect(lostCalls.mock.calls.map(([name]) => name)).toEqual(['codex_fill']);
@@ -505,10 +517,10 @@ describe('Codex extension bridge adapter', () => {
     try {
       expect((await f.control.connect('bridge', undefined, context)).state).toBe('ready');
       expect((await f.control.status('bridge')).currentCall).toBeUndefined();
-      await expect(f.control.invoke({ browser: 'bridge', caller, requestContext: context, tool: 'codex_browser_click', args: { selector: '#go' }, tab: '7', generation: 1 })).rejects.toThrow('response channel closed');
+      await expect(f.control.invoke({ browser: 'bridge', caller, requestContext: context, tool: 'codex_click', args: { selector: '#go' }, tab: '7', generation: 1 })).rejects.toThrow('response channel closed');
       expect(callTool.mock.calls.filter(([name]) => name === 'codex_click')).toHaveLength(1);
       expect(await f.control.status('bridge')).toMatchObject({ state: 'unconfirmed', currentCall: undefined, failure: { reason: 'outcome_unknown' } });
-      await expect(f.control.invoke({ browser: 'bridge', caller, requestContext: context, tool: 'codex_browser_click', args: { selector: '#go' }, tab: '7' })).rejects.toMatchObject({ code: 'browser.disconnected' });
+      await expect(f.control.invoke({ browser: 'bridge', caller, requestContext: context, tool: 'codex_click', args: { selector: '#go' }, tab: '7' })).rejects.toMatchObject({ code: 'browser.disconnected' });
       expect(callTool.mock.calls.filter(([name]) => name === 'codex_click')).toHaveLength(1);
       expect((await f.control.disconnect('bridge')).state).toBe('disconnected');
       expect(callTool.mock.calls.map(([name]) => name)).not.toContain('codex_finalize');

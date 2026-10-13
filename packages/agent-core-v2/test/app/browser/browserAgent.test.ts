@@ -166,4 +166,75 @@ describe('native browser agent selection, schema and local file channel', () => 
       await vi.waitFor(() => expect(endTurn).toHaveBeenLastCalledWith({ sessionId: 'fixture-session', agentId: 'main' }));
     } finally { ix.dispose(); }
   });
+
+  it('covers bridge discovery, connect, registration, DOM, fill, click, image, and unload through BrowserConnections', async () => {
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+    const ix = new TestInstantiationService();
+    const config = { id: 'bridge', type: 'codex-extension' as const, name: 'Bridge', enabled: true, runtimeRoot: 'C:/components/codex-browser-bridge.exe', browserId: 'codex-browser-use-selected' };
+    const schema = (fields: string[], required: string[]) => ({ type: 'object', properties: Object.fromEntries(fields.map((field) => [field, { type: 'string' }])), required });
+    const catalog = [
+      { name: 'codex_dom_snapshot', description: 'DOM', inputSchema: schema(['tab_id'], ['tab_id']) },
+      { name: 'codex_fill', description: 'Fill', inputSchema: schema(['tab_id', 'selector', 'value'], ['tab_id', 'selector', 'value']) },
+      { name: 'codex_click', description: 'Click', inputSchema: schema(['tab_id', 'selector'], ['tab_id', 'selector']) },
+      { name: 'codex_screenshot', description: 'Shot', inputSchema: schema(['tab_id'], ['tab_id']) },
+      { name: 'codex_claim_tab', description: 'Claim an existing user tab', inputSchema: schema(['tab_id'], ['tab_id']) },
+      { name: 'codex_list_tabs', description: 'List', inputSchema: schema([], []) },
+      { name: 'codex_finalize', description: 'Finalize', inputSchema: schema([], []) },
+    ];
+    const invoke = vi.fn(async (input: BrowserInvocation): Promise<BrowserInvocationResult> => ({
+      browser: input.browser, executionHost: 'fixture-host', runtimeSession: 'bridge-runtime', generation: 1, tab: input.tab,
+      result: input.tool === 'agent_browser_tab_switch'
+        ? { isError: false, content: [], structuredContent: { response: { success: true, data: {} } } }
+        : input.tool === 'codex_screenshot'
+          ? { isError: false, content: [{ type: 'image', data: png, mimeType: 'image/png' }], structuredContent: { response: { success: true } } }
+          : { isError: false, content: [{ type: 'text', text: input.tool === 'codex_dom_snapshot' ? '{"role":"textbox"}' : 'ok' }], structuredContent: { response: { success: true, data: {} } } },
+    }));
+    ix.stub(IBrowserConnectionStore, { list: async () => ({ connections: [config] }), resolve: async () => config });
+    ix.stub(defaults, { ready: Promise.resolve(undefined) });
+    ix.stub(IAgentScopeContext, { agentId: 'main' });
+    ix.stub(ISessionContext, { sessionId: 'fixture-session', sessionDir: '/fixture/session' });
+    ix.stub(ISessionWorkspaceContext, { workDir: '/fixture', additionalDirs: [] });
+    ix.stub(IAgentRuntimeService, {});
+    ix.stub(ISessionMediaStore, {});
+    ix.stub(ISessionInteractionService, { hasConsumer: () => false });
+    ix.set(IAgentToolRegistryService, new SyncDescriptor(AgentToolRegistryService));
+    ix.set(IEventBus, new SyncDescriptor(EventBusService));
+    const connect = vi.fn(async () => ({ browser: 'bridge', state: 'ready' as const, executionHost: 'fixture-host', generation: 1 }));
+    ix.stub(IBrowserControlService, {
+      catalog: async () => catalog, status: async () => ({ browser: 'bridge', state: 'ready' as const, executionHost: 'fixture-host', generation: 1 }),
+      tabs: async () => [{ tabId: '7', targetId: '7' }], invoke, endTurn: async () => undefined, connect,
+      list: async () => ({ connections: [{ ...config, status: { browser: 'bridge', state: 'idle' as const, executionHost: 'fixture-host', generation: 0 } }] }),
+    });
+    ix.set(IAgentBrowserService, new SyncDescriptor(AgentBrowserService));
+    try {
+      const service = ix.get(IAgentBrowserService);
+      const registry = ix.get(IAgentToolRegistryService);
+      expect(JSON.stringify((await service.connections({ action: 'list' })).output)).toContain('codex-browser-use-selected');
+      const context = { turnId: 1, toolCallId: 'bridge-connect', signal: new AbortController().signal };
+      expect((await service.connections({ action: 'connect', browser: 'bridge' }, context.signal, context)).isError).not.toBe(true);
+      expect(connect).toHaveBeenCalledOnce();
+      const loaded = await service.connections({ action: 'tools', browser: 'bridge', tools: ['codex_dom_snapshot', 'codex_fill', 'codex_click', 'codex_screenshot', 'codex_claim_tab'] });
+      const loadedText = JSON.stringify(loaded.output);
+      expect(loadedText).toContain('codex-browser-bridge');
+      expect(loadedText).not.toContain('official-cua-repl');
+      expect(loadedText).toContain('codex_claim_tab');
+      expect(loadedText).toContain('codex_finalize');
+      expect(registry.resolve('browser__codex_finalize')).toBeUndefined();
+      expect(registry.list().map((tool) => tool.name).sort()).toEqual(['browser__codex_claim_tab', 'browser__codex_click', 'browser__codex_dom_snapshot', 'browser__codex_fill', 'browser__codex_screenshot']);
+      await service.tabs({ action: 'select', browser: 'bridge', target: '7' });
+      expect(JSON.stringify((await execute(registry.resolve('browser__codex_dom_snapshot')!.resolveExecution({}))).output)).toContain('textbox');
+      expect((await execute(registry.resolve('browser__codex_fill')!.resolveExecution({ selector: '#q', value: 'local' }))).isError).not.toBe(true);
+      expect(invoke).toHaveBeenCalledWith(expect.objectContaining({ tool: 'codex_fill', tab: '7', args: { selector: '#q', value: 'local' }, caller: { sessionId: 'fixture-session', agentId: 'main' } }), expect.any(AbortSignal));
+      expect((await execute(registry.resolve('browser__codex_click')!.resolveExecution({ selector: '#go', tab_id: 'other' }))).isError).toBe(true);
+      expect(invoke.mock.calls.filter(([call]) => call.tool === 'codex_click')).toHaveLength(0);
+      expect((await execute(registry.resolve('browser__codex_click')!.resolveExecution({ selector: '#go' }))).isError).not.toBe(true);
+      expect(invoke.mock.calls.filter(([call]) => call.tool === 'codex_click')).toHaveLength(1);
+      expect(JSON.stringify((await execute(registry.resolve('browser__codex_screenshot')!.resolveExecution({}))).output)).toContain(`data:image/png;base64,${png}`);
+      expect((await execute(registry.resolve('browser__codex_claim_tab')!.resolveExecution({ tab_id: '99' }))).isError).not.toBe(true);
+      expect(invoke).toHaveBeenCalledWith(expect.objectContaining({ tool: 'codex_claim_tab', args: { tab_id: '99' }, tab: undefined }), expect.any(AbortSignal));
+      await service.connections({ action: 'tools', unload: ['codex_dom_snapshot', 'codex_fill', 'codex_click', 'codex_screenshot', 'codex_claim_tab'] });
+      expect(registry.resolve('browser__codex_click')).toBeUndefined();
+      expect(registry.resolve('browser__codex_screenshot')).toBeUndefined();
+    } finally { ix.dispose(); }
+  });
 });

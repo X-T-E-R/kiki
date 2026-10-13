@@ -58,7 +58,7 @@ describe.skipIf(runtimeRoot === undefined)('installed official cua-repl launcher
 const bridgeBinary = process.env['KIKI_CODEX_BRIDGE_TEST_BIN'];
 const bridgePipe = 'codex-browser-use-kiki-offline-00000000-0000-4000-8000-000000000001';
 describe.skipIf(bridgeBinary === undefined)('codex-browser-bridge stdio contract, no selected pipe', () => {
-  it('initializes the real basic-profile server twice and does not dial an unselected pipe', async () => {
+  it('initializes the real full catalog twice and does not dial an unselected pipe', async () => {
     const root = await mkdtemp(join(tmpdir(), 'kiki-codex-bridge-'));
     const runtime = Object.assign(new FakeRuntime({ workspaceId: 'fixture', runtimeId: 'local', generation: 'codex-bridge' },
       { capabilities: ['process', 'fs'], pathClass: 'win32', environment: { osKind: 'Windows' } }),
@@ -75,8 +75,8 @@ describe.skipIf(bridgeBinary === undefined)('codex-browser-bridge stdio contract
       record({ step: 'bridge-tools', version: first.version, namespace: first.namespace, names });
       expect(first.version).toMatch(/^codex-browser-bridge \d+\.\d+\.\d+ MIT$/);
       expect(first.namespace).toBe('codex-browser-bridge');
-      expect(names).toEqual(expect.arrayContaining(['codex_browser_navigate', 'codex_browser_dom_snapshot', 'codex_browser_dom_visible', 'codex_browser_fill', 'codex_browser_click', 'codex_browser_screenshot']));
-      expect(names.join('\n')).not.toMatch(/claim|user_tabs|cookie|execute_cdp|cua_/);
+      expect(names).toEqual(expect.arrayContaining(['codex_dom_snapshot', 'codex_fill', 'codex_click', 'codex_screenshot', 'codex_claim_tab', 'codex_user_tabs', 'codex_execute_cdp', 'codex_cua_click']));
+      expect(names.length).toBeGreaterThan(34);
       await expect(first.official!.connect(context)).rejects.toMatchObject({ code: 'browser.requires_action' });
       await first.close();
       first = undefined;

@@ -8,6 +8,7 @@ import { SyncDescriptor } from '#/_base/di/descriptors';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IBrowserSetupService } from '#/app/browser/browserSetup';
 import { BrowserSetupService } from '#/app/browser/browserSetupService';
+import { codexBridgeSelection, verifiedCodexBridge } from '#/app/browser/codexBrowser';
 import { IBrowserControlService } from '#/app/browser/browser';
 import { BrowserControlService } from '#/app/browser/browserControlService';
 import { IBrowserBackendFactory, type BrowserBackend } from '#/app/browser/browserBackend';
@@ -91,12 +92,33 @@ function fixture(options: { home?: string; hostProcess?: IHostProcessService; ho
     extension: () => { extension = true; }, existing: () => { installed = true; enabled = true; daemon = true; }, disableNative: () => { native = false; }, forceOff: (source: 'env' | 'memory') => { native = false; forced = source; } };
 }
 
-it('reads presets without installing, enabling or connecting anything and keeps Codex external-only', async () => {
+it('reads presets without installing or connecting and reports the unpinned Codex component', async () => {
   const f = fixture();
   const result = await f.setup.list();
   expect(result.presets.map((preset) => preset.preset)).toEqual(['kimi-webbridge', 'independent-browser', 'codex-browser']);
-  expect(result.presets[2]).toMatchObject({ state: 'external_only', controlSurface: 'external-app', reason: 'external_app_required' });
-  expect(f.installPlugin).not.toHaveBeenCalled(); expect(f.enablePlugin).not.toHaveBeenCalled(); expect(f.installCapability).not.toHaveBeenCalled(); expect(f.connect).not.toHaveBeenCalled();
+  expect(result.presets[2]).toMatchObject({ state: 'not_prepared', controlSurface: 'browser-connection', reason: 'artifact_unpinned', supported: true });
+  expect(result.presets[2]?.steps.find((step) => step.id === 'driver')?.detail).toContain('browserResourceStore.ts');
+  expect(result.presets[2]?.steps.find((step) => step.id === 'driver')?.detail).not.toContain('.tmp');
+  expect(f.installPlugin).not.toHaveBeenCalled(); expect(f.enablePlugin).not.toHaveBeenCalled(); expect(f.installCapability).not.toHaveBeenCalled(); expect(f.connect).not.toHaveBeenCalled(); expect(f.upsert).not.toHaveBeenCalled();
+});
+
+it('shows a discovered Codex pipe without selecting it or opening it', async () => {
+  const pipe = 'codex-browser-use-11111111-2222-4333-8444-555555555555';
+  const spawn = vi.fn(async () => ({ stdout: Readable.from([`${pipe}\r\nfirst-pipe\r\n`]), stderr: Readable.from(['']), wait: () => Promise.resolve(0), dispose: () => undefined }));
+  const f = fixture({ hostProcess: { spawn } as never });
+  const status = await f.setup.status('codex-browser');
+  expect(status.steps.some((step) => step.detail === pipe)).toBe(true);
+  expect(status.steps.some((step) => step.detail === 'first-pipe')).toBe(false);
+  expect(status.actions.map((action) => action.id)).toEqual(expect.arrayContaining(['prepare', 'choose_connection', 'open_instructions']));
+  const connected = await f.setup.connect('codex-browser', { connectionId: pipe });
+  expect(connected.state).toBe('not_prepared');
+  expect(connected.reason).toBe('artifact_unpinned');
+  expect(f.upsert).not.toHaveBeenCalled();
+  expect(f.connect).not.toHaveBeenCalled();
+  expect(verifiedCodexBridge(undefined, { 'codex-browser-bridge.exe': 'abc' })).toBe(false);
+  expect(verifiedCodexBridge({ 'codex-browser-bridge.exe': 'abc' }, { 'codex-browser-bridge.exe': 'abc' })).toBe(true);
+  expect(codexBridgeSelection(pipe, [pipe])).toBe(pipe);
+  expect(codexBridgeSelection(undefined, [pipe])).toBeUndefined();
 });
 
 it('prepares the official pinned plugin and daemon with consent, then waits for browser authorization and probes only its own session', async () => {

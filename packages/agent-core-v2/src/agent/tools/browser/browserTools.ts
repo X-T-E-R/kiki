@@ -15,7 +15,7 @@ import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { IBrowserControlService, type BrowserInvocationResult } from '#/app/browser/browser';
 import { IBrowserConnectionStore } from '#/app/browser/browserConnectionStore';
 import { BrowserIdSchema } from '#/app/browser/browserConfig';
-import { BROWSER_OWNED_FIELDS, browserResponse, browserToolGroup, isBrowserOperation } from '#/app/browser/browserControlService';
+import { BROWSER_OWNED_FIELDS, browserManagedLifecycle, browserResponse, browserToolGroup, isBrowserOperation } from '#/app/browser/browserControlService';
 import { BrowserError } from '#/app/browser/errors';
 import { LifecycleScope } from '#/app/scopes';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -23,7 +23,7 @@ import { ISessionInteractionService } from '#/session/interaction/interaction';
 import { IEventBus } from '#/app/event/eventBus';
 import { TurnEnded } from '#/agent/loop/turnOps';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
-import type { BrowserRequestContext } from '#/app/browser/codexBrowser';
+import { catalogBackend, type BrowserRequestContext } from '#/app/browser/codexBrowser';
 import { browserElicitation } from './browserElicitation';
 import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { buildDaemonFileUrl } from '#/agent/media/mediaRef';
@@ -37,8 +37,8 @@ import { ToolAccesses, type AgentTool, type ExecutableToolContext, type Executab
 
 export const BrowserConnectionsInputSchema = z.object({ action: z.enum(['list', 'select', 'status', 'check', 'connect', 'disconnect', 'tools']).default('list'),
   browser: BrowserIdSchema.optional(), groups: z.array(z.enum(['page', 'network', 'state', 'debug', 'input', 'react'])).optional(),
-  tools: z.array(z.string().regex(/^(?:agent_browser_[a-z0-9_]+|codex_browser_js(?:_reset)?)$/)).optional(),
-  unload: z.array(z.string().regex(/^(?:agent_browser_[a-z0-9_]+|codex_browser_js(?:_reset)?)$/)).optional() }).strict();
+  tools: z.array(z.string().regex(/^(?:agent_browser_[a-z0-9_]+|codex_[a-z0-9_]+)$/)).optional(),
+  unload: z.array(z.string().regex(/^(?:agent_browser_[a-z0-9_]+|codex_[a-z0-9_]+)$/)).optional() }).strict();
 export type BrowserConnectionsInput = z.infer<typeof BrowserConnectionsInputSchema>;
 export const BrowserTabsInputSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('list'), browser: BrowserIdSchema.optional() }).strict(),
@@ -97,6 +97,7 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
   private initialized = false;
   private readonly selections = new Map<string, Selection>();
   private readonly registrations = new Map<string, { dispose(): void }>();
+  private readonly providers = new Map<string, ReturnType<typeof catalogBackend>>();
   private readonly recordings = new Map<string, string>();
   constructor(
     @IBrowserControlService private readonly control: IBrowserControlService,
@@ -138,15 +139,20 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
           const name = this.modelName(tool); this.registrations.get(name)?.dispose(); this.registrations.delete(name);
         }
         const tools = await this.control.catalog(browser, signal);
+        const backend = catalogBackend(tools);
+        this.providers.set(browser, backend);
         const operations = tools.filter((tool) => isBrowserOperation(tool.name));
         const requested = operations.filter((tool) => input.groups?.includes(browserToolGroup(tool.name) as 'page') || input.tools?.includes(tool.name));
         for (const tool of requested) this.register(tool);
-        const official = (await this.store.resolve(browser)).type === 'codex-extension';
-        return this.json({ browser, backend: official ? 'official-cua-repl' : 'agent-browser', backendToolCount: tools.length,
-          contextIsolation: official ? 'Official extension browser/tab ids are preserved. Use codex_browser_js and its runtime documentation; window/frame emulation is unsupported.' : 'BrowserTabs window creates an opaque donor browser context and a targetId-bound tab. Named context list/switch/dispose APIs are unavailable; no synthetic context ids are exposed.',
+        return this.json({ browser, backend, namespace: backend, backendToolCount: tools.length,
+          contextIsolation: backend === 'official-cua-repl'
+            ? 'Official extension browser/tab ids are preserved. Use codex_browser_js and its runtime documentation; window/frame emulation is unsupported.'
+            : backend === 'codex-browser-bridge'
+              ? 'Tools that declare tab_id use this agent\'s selected tab. codex_claim_tab keeps the user-tab id returned by codex_user_tabs. The bridge writes its own session id on the pipe frame; Kiki caller metadata stays on the MCP request and is not copied onto that frame. Approval remains the existing elicitation.'
+              : 'BrowserTabs window creates an opaque donor browser context and a targetId-bound tab. Named context list/switch/dispose APIs are unavailable; no synthetic context ids are exposed.',
           operations: operations.map((tool) => ({ name: tool.name, modelTool: this.modelName(tool.name), group: browserToolGroup(tool.name) })),
-          managedLifecycle: tools.filter((tool) => /^agent_browser_(?:connect|close|tab_|frame_|window_)/.test(tool.name)).map((tool) => ({ name: tool.name, surface: /connect|close$/.test(tool.name) && !/tab_close/.test(tool.name) ? 'BrowserConnections' : 'BrowserTabs' })),
-          administrativeCapabilities: tools.filter((tool) => !isBrowserOperation(tool.name) && !/^agent_browser_(?:connect|close|tab_|frame_|window_)/.test(tool.name)).map((tool) => ({ name: tool.name, availableAsPageTool: false,
+          managedLifecycle: tools.filter((tool) => browserManagedLifecycle(tool.name)).map((tool) => ({ name: tool.name, surface: /connect|close$|finalize$/.test(tool.name) && !/tab_close/.test(tool.name) ? 'BrowserConnections' : 'BrowserTabs' })),
+          administrativeCapabilities: tools.filter((tool) => !isBrowserOperation(tool.name) && !browserManagedLifecycle(tool.name)).map((tool) => ({ name: tool.name, availableAsPageTool: false,
             reason: 'Donor-wide installation, plugins, credential or cross-session administration is outside a selected page execution lease.' })),
           loaded: [...this.registrations.keys()], note: 'Use groups or tools to load only the typed operations needed for this task. Tab/frame lifecycle uses BrowserTabs. Browser installation and cross-session management are not page operations.' });
       }
@@ -218,18 +224,30 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
           if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) throw new BrowserError('browser.invalid', 'Expected typed browser tool arguments');
           const input = raw as Record<string, unknown>;
           const { browser: requested, browserTab: requestedTab, ...args } = input;
-          if (tool.name !== 'codex_browser_js') validateBrowserValues(args);
           const browser = await this.choose(typeof requested === 'string' ? requested : undefined);
-          const official = (await this.store.resolve(browser)).type === 'codex-extension';
-          if (official !== /^codex_browser_js(?:_reset)?$/.test(tool.name)) throw new BrowserError('browser.unsupported', 'Load the typed tools for the selected browser provider; agent-browser and the official extension are not interchangeable');
+          const provider = this.providers.get(browser) ?? 'agent-browser';
+          const jsTool = /^codex_browser_js(?:_reset)?$/.test(tool.name);
+          if (provider === 'agent-browser' && tool.name.startsWith('codex_') || provider === 'official-cua-repl' && !jsTool || provider === 'codex-browser-bridge' && (!tool.name.startsWith('codex_') || jsTool)) {
+            throw new BrowserError('browser.unsupported', 'Load the typed tools for the selected browser provider; agent-browser, the official runtime, and codex-browser-bridge are not interchangeable');
+          }
+          if (provider === 'agent-browser') validateBrowserValues(args);
+          else if (tool.name !== 'codex_browser_js') {
+            for (const key of Object.keys(args)) if (BROWSER_OWNED_FIELDS.has(key)) throw new BrowserError('browser.invalid', `Browser identity field "${key}" is managed by Kiki`);
+          }
           const selection = this.selections.get(browser);
-          const tab = tool.name === 'codex_browser_js_reset' ? undefined : typeof requestedTab === 'string' ? requestedTab : selection?.tab;
-          if (official) {
+          const properties = schemaProperties(tool.inputSchema);
+          const claim = tool.name === 'codex_claim_tab';
+          const tabScoped = provider === 'codex-browser-bridge' && !claim && properties !== undefined && 'tab_id' in properties;
+          const tab = tool.name === 'codex_browser_js_reset' || claim ? undefined : typeof requestedTab === 'string' ? requestedTab : selection?.tab;
+          if (tabScoped && tab === undefined) throw new BrowserError('browser.target', 'Select or open a tab with BrowserTabs before reading or operating');
+          if (tabScoped && 'tab_id' in args && args['tab_id'] !== undefined && args['tab_id'] !== tab) throw new BrowserError('browser.target', 'The bridge tab is the selected Kiki tab, not a different caller-supplied id');
+          const forwarded = tabScoped ? Object.fromEntries(Object.entries(args).filter(([key]) => key !== 'tab_id')) : args;
+          if (provider === 'official-cua-repl' || provider === 'codex-browser-bridge') {
             const status = await this.control.status(browser);
             return { approvalRule: name, accesses: ToolAccesses.all(), execute: async (ctx) => {
               try {
                 const result = await this.control.invoke({ browser, caller: { sessionId: this.session.sessionId, agentId: this.agent.agentId },
-                  requestContext: this.requestContext(ctx), tool: tool.name, args, tab, generation: selection?.generation ?? status.generation }, ctx.signal);
+                  requestContext: this.requestContext(ctx), tool: tool.name, args: forwarded, tab, generation: selection?.generation ?? status.generation }, ctx.signal);
                 return await this.output(result, ctx);
               } catch (error) { return this.error(error); }
             } };
@@ -323,6 +341,12 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
 
   private json(value: unknown): ExecutableToolResult { return { output: JSON.stringify(value, null, 2) }; }
   private error(error: unknown): ExecutableToolResult { return { isError: true, output: error instanceof Error ? error.message : String(error) }; }
+}
+
+function schemaProperties(schema: unknown): Record<string, unknown> | undefined {
+  if (schema === null || typeof schema !== 'object' || Array.isArray(schema)) return undefined;
+  const properties = (schema as Record<string, unknown>)['properties'];
+  return properties !== null && typeof properties === 'object' && !Array.isArray(properties) ? properties as Record<string, unknown> : undefined;
 }
 
 function containsElementRef(args: Readonly<Record<string, unknown>>): boolean {

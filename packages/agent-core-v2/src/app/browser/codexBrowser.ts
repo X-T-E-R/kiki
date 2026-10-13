@@ -92,16 +92,46 @@ export async function openCodexBrowser(input: { runtimeRoot: string; browserId: 
   } catch (error) { await client.close(); throw error; }
 }
 
+export const CODEX_BRIDGE_ADOPTION = {
+  version: '1.11.1',
+  revision: 'c692fb017d79d458927c6a8e350dc2d06224d46e',
+  marker: 'kiki-no-resend-r1',
+  license: 'MIT',
+  repository: 'https://github.com/DeliciousBuding/codex-browser-bridge',
+  directory: 'codex-browser-bridge-1.11.1-kiki-no-resend-r1',
+  binary: 'codex-browser-bridge.exe',
+  pinConsumer: 'packages/agent-core-v2/src/app/capability/entries/browserResourceStore.ts',
+} as const;
+export const CODEX_BRIDGE_PIN: Readonly<Record<string, string>> | undefined = undefined;
 const CODEX_BRIDGE_BINARY = /^(?:codex-browser-bridge)(?:\.exe)?$/i;
 const CODEX_BRIDGE_PIPE = /^codex-browser-use(?:-|\\)[A-Za-z0-9][A-Za-z0-9-]{7,80}$/;
-const CODEX_BRIDGE_RECOVERY = 'Start Codex or ChatGPT desktop and connect its Chrome or Edge extension until a codex-browser-use-<id> pipe is listed. The desktop app is the extension approval surface. Kiki does not approve the extension, register a native host, restart the browser, or choose a pipe. Save that exact discover name, including a single backslash when the bridge prints one, as browserId, then connect again from BrowserConnections.';
-const CODEX_BRIDGE_DONOR: Readonly<Record<string, string>> = {
-  codex_browser_navigate: 'codex_navigate', codex_browser_dom_snapshot: 'codex_dom_snapshot', codex_browser_dom_visible: 'codex_dom_get_visible',
-  codex_browser_fill: 'codex_fill', codex_browser_click: 'codex_click', codex_browser_screenshot: 'codex_screenshot',
-  codex_browser_get_url: 'codex_get_url', codex_browser_get_title: 'codex_get_title', codex_browser_wait_for_load: 'codex_wait_for_load',
-};
-export const CODEX_BRIDGE_PAGE_TOOLS = Object.keys(CODEX_BRIDGE_DONOR);
-const CODEX_BRIDGE_REQUIRED = ['codex_list_tabs', 'codex_create_tab', 'codex_close_tab', 'codex_navigate', 'codex_dom_snapshot', 'codex_dom_get_visible', 'codex_fill', 'codex_click', 'codex_screenshot', 'codex_get_url', 'codex_get_title', 'codex_wait_for_load', 'codex_name_session', 'codex_finalize', 'codex_get_info'];
+const CODEX_BRIDGE_RECOVERY = 'Start Codex or ChatGPT desktop and connect its Chrome or Edge extension. Browser setup lists each codex-browser-use pipe it can see. Choose one of those names there. Kiki does not approve the extension, register a native host, restart the browser, or dial an unselected pipe.';
+const CODEX_BRIDGE_FLOOR = ['codex_list_tabs', 'codex_create_tab', 'codex_close_tab', 'codex_navigate', 'codex_name_session', 'codex_finalize', 'codex_get_info'];
+
+export function codexBridgePipeName(value: string): boolean {
+  return CODEX_BRIDGE_PIPE.test(value);
+}
+
+export function codexBridgeResource(home: string, joinPath: (...parts: string[]) => string): { directory: string; binary: string } {
+  const directory = joinPath(home, 'browser', 'resources', CODEX_BRIDGE_ADOPTION.directory);
+  return { directory, binary: joinPath(directory, CODEX_BRIDGE_ADOPTION.binary) };
+}
+
+export function verifiedCodexBridge(pin: Readonly<Record<string, string>> | undefined, digests: Readonly<Record<string, string>>): boolean {
+  if (pin?.[CODEX_BRIDGE_ADOPTION.binary] === undefined) return false;
+  return Object.entries(pin).every(([name, sha]) => digests[name] === sha);
+}
+
+export function codexBridgeSelection(requested: string | undefined, pipes: readonly string[]): string | undefined {
+  if (requested === undefined || !pipes.includes(requested) || !CODEX_BRIDGE_PIPE.test(requested)) return undefined;
+  return requested;
+}
+
+export function catalogBackend(tools: readonly { name: string }[]): 'official-cua-repl' | 'codex-browser-bridge' | 'agent-browser' {
+  if (tools.some((tool) => tool.name === 'codex_browser_js' || tool.name === 'codex_browser_js_reset')) return 'official-cua-repl';
+  if (tools.some((tool) => tool.name.startsWith('codex_'))) return 'codex-browser-bridge';
+  return 'agent-browser';
+}
 
 async function resolveCodexBridgeBinary(runtime: Runtime, root: string): Promise<string | undefined> {
   const fs = runtime.fs;
@@ -147,8 +177,8 @@ async function openCodexBridge(input: { runtimeRoot: string; browserId: string; 
   const identified = await captureCommand(runtime, binary, ['--version'], 15_000);
   const version = /^codex-browser-bridge (\d+\.\d+\.\d+)\b/.exec(identified.stdout.trim());
   if (identified.exit !== 0 || version === null) throw new BrowserError('browser.unsupported', 'The selected executable did not identify itself as codex-browser-bridge');
-  const env = { CODEX_BRIDGE_PROFILE: 'basic' };
-  const client = new StdioMcpClient({ transport: 'stdio', command: binary, args: ['--mode', 'mcp', '--profile', 'basic', '--pipe', input.browserId], env, executor: 'local' }, {
+  const env: Record<string, string> = {};
+  const client = new StdioMcpClient({ transport: 'stdio', command: binary, args: ['--mode', 'mcp', '--pipe', input.browserId], env, executor: 'local' }, {
     runtimeResolver: codexBrowserRuntimeResolver(input.resolver, env), workspaceId: runtime.identity.workspaceId,
     runtimeId: runtime.identity.runtimeId, defaultCwd: input.cwd, startupTimeoutMs: 20_000, toolCallTimeoutMs: 60_000, elicitation: true,
   });
@@ -156,7 +186,7 @@ async function openCodexBridge(input: { runtimeRoot: string; browserId: string; 
     await client.connect();
     const tools = await client.listTools();
     const names = new Set(tools.map((tool) => tool.name));
-    if (CODEX_BRIDGE_REQUIRED.some((name) => !names.has(name))) throw new BrowserError('browser.unsupported', 'This codex-browser-bridge build does not expose the basic tab, navigation, DOM, fill, click, screenshot and finalize tools');
+    if (CODEX_BRIDGE_FLOOR.some((name) => !names.has(name))) throw new BrowserError('browser.unsupported', 'This codex-browser-bridge build does not expose the tab, navigation, session, and finalize tools this connection uses');
     const adapter = new BridgeCodexBrowser(client, input.browserId, tools, () => discoverCodexBridgePipes(runtime, binary));
     return { client: adapter.client, official: adapter, runtime, session: `codex-bridge-${randomUUID()}`, namespace: 'codex-browser-bridge',
       version: `codex-browser-bridge ${version[1]} MIT`, close: async () => {
@@ -203,16 +233,16 @@ function bridgeImage(result: MCPToolResult): { mimeType: string; byteLength: num
   return { mimeType, byteLength: bytes.byteLength };
 }
 
-function bridgeSchema(schema: unknown): unknown {
+function bridgeSchema(schema: unknown, keepTabRequired: boolean): unknown {
   const source = object(schema) ?? { type: 'object' };
   const properties = { ...object(source['properties']) };
-  delete properties['tab_id'];
-  const required = Array.isArray(source['required']) ? source['required'].filter((item) => item !== 'tab_id') : [];
+  const required = Array.isArray(source['required']) ? source['required'].filter((item) => keepTabRequired || item !== 'tab_id') : [];
   return { ...source, properties, required };
 }
 
 export class BridgeCodexBrowser implements CodexBrowserBackend {
   readonly client: MCPClient;
+  private readonly byName: ReadonlyMap<string, MCPToolDefinition>;
   private readonly projected: MCPToolDefinition[];
   private readonly turns = new Map<string, BrowserRequestContext>();
   private readonly lifetime = new AbortController();
@@ -222,10 +252,8 @@ export class BridgeCodexBrowser implements CodexBrowserBackend {
   private closeWork?: Promise<void>;
   constructor(private readonly transport: MCPClient, private readonly pipe: string, tools: readonly MCPToolDefinition[], private readonly discover: () => Promise<readonly string[]>) {
     if (!CODEX_BRIDGE_PIPE.test(pipe)) throw new BrowserError('browser.requires_action', `${CODEX_BRIDGE_RECOVERY} The saved browserId is not an explicit codex-browser-use-<id> pipe.`);
-    this.projected = tools.flatMap((tool) => {
-      const name = Object.entries(CODEX_BRIDGE_DONOR).find(([, donor]) => donor === tool.name)?.[0];
-      return name === undefined ? [] : [{ ...tool, name, inputSchema: bridgeSchema(tool.inputSchema) }];
-    });
+    this.byName = new Map(tools.map((tool) => [tool.name, tool]));
+    this.projected = tools.map((tool) => ({ ...tool, inputSchema: bridgeSchema(tool.inputSchema, tool.name === 'codex_claim_tab') }));
     this.client = { listTools: async () => this.projected.map((tool) => ({ ...tool })), ping: (signal) => transport.ping(signal),
       callTool: async () => { throw new BrowserError('browser.requires_action', 'Bridge calls need a Kiki caller and the selected tab'); } };
   }
@@ -280,20 +308,17 @@ export class BridgeCodexBrowser implements CodexBrowserBackend {
   }
 
   async invoke(tool: string, args: Readonly<Record<string, unknown>>, tab: string | undefined, context?: BrowserRequestContext, signal?: AbortSignal): Promise<MCPToolResult> {
-    if (/claim|user_tabs|cookie|execute_cdp|file_input|cua_/.test(tool)) throw new BrowserError('browser.unsupported', 'Kiki does not claim existing tabs, read private tabs, or send coordinate clicks through this bridge');
     if (tool === 'agent_browser_window_new' || tool === 'agent_browser_frame_main' || tool === 'agent_browser_frame_switch') {
       throw new BrowserError('browser.unsupported', 'The bridge keeps one explicit extension pipe and tabs created for this session. Window and frame substitution is unsupported.');
     }
     if (tool === 'agent_browser_tab_new') return this.createTab(args, context, signal);
     if (tool === 'agent_browser_tab_switch') return this.selectTab(args, context, signal);
     if (tool === 'agent_browser_tab_close') return this.closeTab(args, context, signal);
-    const donor = CODEX_BRIDGE_DONOR[tool];
-    if (donor === undefined) throw new BrowserError('browser.unsupported', 'This operation is not part of the Codex extension bridge surface');
-    if (tab === undefined) throw new BrowserError('browser.target', 'Select a tab created for this bridge session before operating');
-    if ('tab_id' in args && args['tab_id'] !== tab) throw new BrowserError('browser.target', 'The bridge tab is the selected Kiki tab, not a caller-supplied id');
-    const bridged = this.bridgeArguments(donor, args, tab);
-    const result = await this.send(donor, bridged, context, signal);
-    if (donor === 'codex_screenshot') {
+    const definition = this.byName.get(tool);
+    if (definition === undefined) throw new BrowserError('browser.unsupported', 'This operation is not in the connected codex-browser-bridge catalog');
+    const bridged = this.bridgeArguments(definition, args, tab);
+    const result = await this.send(tool, bridged, context, signal);
+    if (tool === 'codex_screenshot') {
       const image = bridgeImage(result);
       return this.response({ mimeType: image.mimeType, byteLength: image.byteLength }, result);
     }
@@ -323,28 +348,16 @@ export class BridgeCodexBrowser implements CodexBrowserBackend {
     return this.response({ closed: true }, result);
   }
 
-  private bridgeArguments(donor: string, args: Readonly<Record<string, unknown>>, tab: string): Record<string, unknown> {
-    if (donor === 'codex_navigate') return { tab_id: tab, url: bridgeNavigationUrl(args['url']) };
-    if (donor === 'codex_fill') {
-      const value = typeof args['value'] === 'string' ? args['value'] : args['text'];
-      if (typeof args['selector'] !== 'string' || args['selector'].trim() === '' || typeof value !== 'string') throw new BrowserError('browser.invalid', 'Fill requires a selector and a value');
-      return { tab_id: tab, selector: args['selector'], value };
-    }
-    if (donor === 'codex_click') {
-      if (typeof args['selector'] !== 'string' || args['selector'].trim() === '' || 'x' in args || 'y' in args) throw new BrowserError('browser.invalid', 'Click requires a CSS selector in the selected tab');
-      return { tab_id: tab, selector: args['selector'] };
-    }
-    if (donor === 'codex_screenshot') {
-      const out: Record<string, unknown> = { tab_id: tab };
-      if (args['format'] === 'png' || args['format'] === 'jpeg' || args['format'] === 'webp') out['format'] = args['format'];
-      if (typeof args['quality'] === 'number' && Number.isInteger(args['quality']) && args['quality'] >= 0 && args['quality'] <= 100) out['quality'] = args['quality'];
-      return out;
-    }
-    if (donor === 'codex_wait_for_load' && args['timeout_ms'] !== undefined) {
-      if (typeof args['timeout_ms'] !== 'number' || !Number.isInteger(args['timeout_ms']) || args['timeout_ms'] < 0 || args['timeout_ms'] > 60_000) throw new BrowserError('browser.invalid', 'Wait timeout must be an integer from 0 through 60000');
-      return { tab_id: tab, timeout_ms: args['timeout_ms'] };
-    }
-    return { tab_id: tab };
+  private bridgeArguments(tool: MCPToolDefinition, args: Readonly<Record<string, unknown>>, tab: string | undefined): Record<string, unknown> {
+    const properties = object(object(tool.inputSchema)?.['properties']) ?? {};
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(args)) if (key in properties) out[key] = value;
+    if ('url' in properties && out['url'] !== undefined) out['url'] = bridgeNavigationUrl(out['url']);
+    if (!('tab_id' in properties) || tool.name === 'codex_claim_tab') return out;
+    if (tab === undefined) throw new BrowserError('browser.target', 'Select a tab created for this bridge session before operating');
+    if ('tab_id' in out && out['tab_id'] !== tab) throw new BrowserError('browser.target', 'The bridge tab is the selected Kiki tab, not a different caller-supplied id');
+    out['tab_id'] = tab;
+    return out;
   }
 
   private send(tool: string, args: Record<string, unknown>, context?: BrowserRequestContext, signal?: AbortSignal): Promise<MCPToolResult> {
