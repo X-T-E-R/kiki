@@ -272,6 +272,65 @@ describe('SessionController transcript detail', () => {
   });
 
 
+  it('reports a reverse structure failure at the top edge and retries without losing its tail or ref', async () => {
+    const source = { kind: 'turn' as const, id: 'retry-tail' };
+    const ref: import('@kiki/transcript').ContentRef = { source, revision: 'fixed-tail', path: ['steps'], kind: 'array', direction: 'backward', offset: 1, total: 2 };
+    const step = { kind: 'step' as const, stepId: 's1', turnId: source.id, ordinal: 1, state: 'completed' as const,
+      frames: [{ kind: 'text' as const, frameId: 'f1', role: 'assistant' as const, text: 'latest' }] };
+    const content = vi.fn<NonNullable<SessionViewFacade['transcript']['content']>>()
+      .mockRejectedValueOnce(new Error('reverse page unavailable'))
+      .mockResolvedValueOnce({ ref, start: 0, value: [{ ...step, stepId: 's0', ordinal: 0, frames: [{ ...step.frames[0]!, frameId: 'f0', text: 'earlier' }] }], contentRefs: [] });
+    const { controller, deliver } = harness(undefined, content);
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ items: [{ kind: 'turn', turnId: source.id, ordinal: 0, state: 'completed',
+      origin: { kind: 'user' }, steps: [step], contentRefs: [ref] }] }), 2));
+    try {
+      expect(await controller.loadOlderMessages()).toBe(false);
+      expect(controller.getState()).toMatchObject({ loadingOlder: false, hasMoreHistory: true, olderError: 'reverse page unavailable' });
+      expect(controller.getState().blocks.filter(block => block.kind === 'assistant').map(block => block.text)).toEqual(['latest']);
+      expect(controller.contentRefsFor('main', source)).toEqual([ref]);
+      expect(await controller.loadOlderMessages()).toBe(true);
+      expect(controller.getState().olderError).toBeUndefined();
+      expect(controller.getState().blocks.filter(block => block.kind === 'assistant').map(block => block.text)).toEqual(['earlier', 'latest']);
+      expect(controller.contentRefsFor('main', source)).toEqual([]);
+    } finally { controller.close(); }
+  });
+
+  it.each(['resolve', 'reject'] as const)('detaches a cancelled reverse flight before immediate retry and ignores its late %s', async (late) => {
+    const source = { kind: 'turn' as const, id: 'immediate-retry-tail' };
+    const ref: import('@kiki/transcript').ContentRef = { source, revision: 'fixed-tail', path: ['steps'], kind: 'array', direction: 'backward', offset: 1, total: 2 };
+    const step = { kind: 'step' as const, stepId: 's1', turnId: source.id, ordinal: 1, state: 'completed' as const,
+      frames: [{ kind: 'text' as const, frameId: 'f1', role: 'assistant' as const, text: 'latest' }] };
+    const pending: Array<{ resolve: (segment: import('@kiki/transcript').ContentSegment) => void; reject: (error: Error) => void; signal?: AbortSignal }> = [];
+    const content = vi.fn<NonNullable<SessionViewFacade['transcript']['content']>>((_input, options) => new Promise((resolve, reject) => {
+      pending.push({ resolve, reject, signal: options?.signal });
+    }));
+    const { controller, deliver } = harness(undefined, content);
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ items: [{ kind: 'turn', turnId: source.id, ordinal: 0, state: 'completed',
+      origin: { kind: 'user' }, steps: [step], contentRefs: [ref] }] }), 2));
+    const request = new AbortController();
+    try {
+      const abandoned = controller.loadOlderMessages('main', request.signal);
+      request.abort();
+      expect(await abandoned).toBe(false);
+      expect(pending[0]?.signal?.aborted).toBe(true);
+      const fresh = controller.loadOlderMessages();
+      expect(content).toHaveBeenCalledTimes(2);
+      expect(pending[1]?.signal?.aborted).toBe(false);
+      if (late === 'reject') pending[0]!.reject(new Error('obsolete failure'));
+      else pending[0]!.resolve({ ref, start: 0, value: [{ ...step, stepId: 'old', ordinal: 0 }], contentRefs: [] });
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(controller.getState().loadingOlder).toBe(true);
+      expect(controller.getState().olderError).toBeUndefined();
+      expect(controller.getState().detailLoads[`content:${JSON.stringify(ref)}`]).toEqual({ status: 'loading' });
+      pending[1]!.resolve({ ref, start: 0, value: [{ ...step, stepId: 's0', ordinal: 0, frames: [{ ...step.frames[0]!, frameId: 'f0', text: 'fresh earlier' }] }], contentRefs: [] });
+      expect(await fresh).toBe(true);
+      expect(controller.getState().blocks.filter(block => block.kind === 'assistant').map(block => block.text)).toEqual(['fresh earlier', 'latest']);
+      expect(controller.getState().loadingOlder).toBe(false);
+    } finally { controller.close(); }
+  });
+
   it('cancels a reverse structure page without publishing its result over the retained tail', async () => {
     const source = { kind: 'turn' as const, id: 'cancel-tail' };
     const ref: import('@kiki/transcript').ContentRef = { source, revision: 'fixed-tail', path: ['steps'], kind: 'array', direction: 'backward', offset: 1, total: 2 };

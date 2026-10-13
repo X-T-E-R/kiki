@@ -19,6 +19,37 @@ function canonicalService(snapshot: AgentTranscriptSnapshot): TranscriptService 
 const empty = (): AgentTranscriptSnapshot => ({ items: [], tasks: [], attachments: [], prompts: [], interactions: [], todos: [], meta: {} });
 
 describe('bounded session-view canonical reads', () => {
+  it('continues empty cold preparation through a same-anchor orphan repair and stops at unverified EOF', async () => {
+    const orphan: TranscriptTurn = { kind: 'turn', turnId: 't7', ordinal: 7, state: 'completed', origin: { kind: 'other' },
+      steps: [{ kind: 'step', stepId: 's7', turnId: 't7', ordinal: 1, state: 'completed', frames: [] }] };
+    const repaired: TranscriptTurn = { ...orphan, origin: { kind: 'user' }, prompt: 'Recovered opening', promptId: 'p7', startedAt: '2026-01-01T00:00:00Z' };
+    const earlier: TranscriptTurn = { kind: 'turn', turnId: 't6', ordinal: 6, state: 'completed', origin: { kind: 'user' }, prompt: 'Earlier opening', steps: [] };
+    const windows: AgentTranscriptSnapshot[] = [
+      { ...empty(), items: [orphan], hasMoreOlder: true, toolCallCountKnown: false },
+      { ...empty(), items: [orphan], hasMoreOlder: true, toolCallCountKnown: false },
+      { ...empty(), items: [repaired], hasMoreOlder: true, toolCallCountKnown: false },
+      { ...empty(), items: [earlier, repaired], hasMoreOlder: false, toolCallCountKnown: false },
+    ];
+    let window = 0;
+    const service = {
+      forSessionLive: () => undefined,
+      readColdPageSnapshot: async (_sessionId: string, _agentId: string, project: (snapshot: AgentTranscriptSnapshot) => AgentTranscriptSnapshot, _signal?: AbortSignal, extend?: boolean) => {
+        if (extend) window += 1;
+        return project(windows[window]!);
+      },
+      coldHistoryTruncated: async () => windows[window]!.hasMoreOlder === true,
+      readColdRoster: async () => [],
+      reconcileQuestionSnapshot: (_sessionId: string, snapshot: AgentTranscriptSnapshot) => snapshot,
+    } as unknown as TranscriptService;
+    const cursor = Buffer.from(JSON.stringify({ v: 2, agentId: 'main', source: 'cold', anchor: 'turn:t7', epoch: 'cold:fixture-session:main' })).toString('base64url');
+    const preparing = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: cursor });
+    expect(preparing).toMatchObject({ items: [], has_more: true, next_cursor: cursor, read: { source: 'cold', readiness: 'partial' } });
+    const repair = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: preparing!.next_cursor });
+    expect(repair).toMatchObject({ items: [{ turnId: 't7', prompt: 'Recovered opening' }], has_more: true, next_cursor: cursor });
+    const eof = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: repair!.next_cursor });
+    expect(eof).toMatchObject({ items: [{ turnId: 't6' }], has_more: false, coverage: { kind: 'unknown' }, read: { readiness: 'partial' } });
+    expect(eof!.next_cursor).toBeUndefined();
+  });
   it('returns structured stale continuations when source-bound page and detail cursors change source', async () => {
     const snapshot: AgentTranscriptSnapshot = { ...empty(), toolCallCountKnown: true,
       items: [0, 1, 2].map((ordinal) => ({ kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' }, steps: [] })),

@@ -34,6 +34,7 @@ import {
   type TranscriptTurn,
 } from '@kiki/transcript';
 import type { SessionViewTranscriptDetail } from '@kiki/klient/session-view';
+import { OlderLoadCoordinator, type OlderLoadResult } from './olderLoadCoordinator';
 
 import {
   API_CODES,
@@ -264,6 +265,9 @@ export class SessionController {
   private readonly historyReads = new Map<string, TranscriptRead>();
   private readonly todoReads = new Map<string, TranscriptRead>();
   private readonly appliedTranscriptGrades = new Map<string, TranscriptGrade>();
+  /** Bumps on every applied reset so a resync can tell a baseline that landed during its snapshot from the one it is about to drop. */
+  private readonly transcriptBaselineSerial = new Map<string, number>();
+  private transcriptBaselineClock = 0;
   private readonly publishedTranscriptCursors = new Map<string, TranscriptCursor>();
   private readonly toolCountObservations = new Map<string, ToolCountObservation>();
   private readonly toolCountSpans = new Map<string, ToolCountSpan[]>();
@@ -271,10 +275,10 @@ export class SessionController {
   private readonly pendingTranscriptAgents = new Set<string>();
   private readonly forestDirtyAgents = new Set<string>();
   private readonly historyGeneration = new Map<string, number>();
-  private readonly inFlightOlder = new Map<string, string>();
-  private readonly olderReads = new Map<string, { promise: Promise<boolean>; controller: AbortController; consumers: Set<symbol> }>();
-  private readonly historyReadFailures = new Map<string, number>();
-  private readonly historyReadBlocked = new Set<string>();
+  private readonly olderLoads = new OlderLoadCoordinator((agentId) => {
+    const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId);
+    if (current?.loadingOlder) this.publishAgentView(agentId, setLoadingOlder(current, false));
+  });
   private readonly emptyAgentState: SessionViewState;
   /** "Send now" echoes per agent, laid over each published view (transcript/steer.ts). */
   private readonly pendingSteers = new Map<string, readonly PendingSteer[]>();
@@ -574,7 +578,7 @@ export class SessionController {
     this.catchupReplay.clear();
     this.flushFrames();
     for (const agentId of this.agentTranscripts.keys()) this.bumpHistoryGeneration(agentId);
-    this.inFlightOlder.clear();
+    this.olderLoads.cancelAll();
     if (this.state.loadingOlder || this.state.olderError !== undefined) {
       this.setState({ ...this.state, loadingOlder: false, olderError: undefined }, false);
     }
@@ -663,7 +667,7 @@ export class SessionController {
     this.contentBodies.clear();
     this.toolDetails.clear();
     this.contentRanges.clear(); this.contentRangeBytes = 0;
-    this.inFlightOlder.clear();
+    this.olderLoads.cancelAll();
     this.queuedTimingWrites.clear();
     if (this.state.loadingOlder || this.state.olderError !== undefined) {
       this.state = { ...this.state, loadingOlder: false, olderError: undefined };
@@ -1095,6 +1099,7 @@ export class SessionController {
     this.clearResyncTimer();
     this.setState(setResyncing(this.state, true));
     const attachment = this.viewAttachment;
+    const baselineAtStart = new Map(this.transcriptBaselineSerial);
     try {
       const snapshot = await this.readSnapshot();
       if (this.closed || attachment !== this.viewAttachment) return;
@@ -1102,18 +1107,29 @@ export class SessionController {
       this.pendingTranscriptBatches.clear();
       this.pendingTranscriptAgents.clear();
       this.catchupReplay.clear();
+      const retainedReady = (agentId: string): boolean => this.transcriptBaselineSerial.get(agentId) !== baselineAtStart.get(agentId)
+        && this.hasTranscriptBaseline(agentId);
+      for (const [agentId, state] of this.agentStates) {
+        const transcriptReady = retainedReady(agentId);
+        if (state.transcriptReady === transcriptReady) continue;
+        this.agentStates.set(agentId, { ...state, version: state.version + 1, transcriptReady });
+        this.dirtyAgents.add(agentId);
+      }
+      const transcriptReady = retainedReady(MAIN_AGENT_ID);
       this.transcriptCursors.clear();
       this.appliedTranscriptGrades.clear();
       this.setState(
         setResyncing(
           {
             ...applyTranscriptShell(this.sessionId, snapshot, this.state),
+            transcriptReady,
             loadingOlder: false,
             olderError: undefined,
           },
           false,
         ),
       );
+      this.publishAgents();
       this.attachView({ seq: snapshot.as_of_seq, epoch: snapshot.epoch });
       if (rewriteHoldToken !== undefined) this.armRewriteSubscription(rewriteHoldToken);
     } catch (error) {
@@ -1264,10 +1280,7 @@ export class SessionController {
 
 
   private cancelHistoryRead(agentId: string): void {
-    const flight = this.olderReads.get(agentId);
-    this.olderReads.delete(agentId);
-    this.inFlightOlder.delete(agentId);
-    flight?.controller.abort();
+    this.olderLoads.cancel(agentId);
     for (const [key, read] of this.historyPreviewReads) if (JSON.parse(key)[0] === agentId) {
       this.historyPreviewReads.delete(key); read.controller.abort();
     }
@@ -1347,48 +1360,21 @@ export class SessionController {
     return promise;
   }
 
-  loadOlderMessages(agentId: string = MAIN_AGENT_ID, signal?: AbortSignal): Promise<boolean> {
-    if (this.closed || this.isSuspended || signal?.aborted) return Promise.resolve(false);
-    this.historyReadFailures.delete(agentId);
-    this.historyReadBlocked.delete(agentId);
-    let flight = this.olderReads.get(agentId);
-    if (flight === undefined) {
-      const controller = new AbortController();
-      const promise = this.loadOlderTranscript(agentId, controller.signal).finally(() => {
-        if (this.olderReads.get(agentId)?.controller === controller) this.olderReads.delete(agentId);
-      });
-      flight = { promise, controller, consumers: new Set() };
-      this.olderReads.set(agentId, flight);
-    }
-    const shared = flight;
-    const consumer = Symbol();
-    shared.consumers.add(consumer);
-    return new Promise<boolean>((resolve) => {
-      let settled = false;
-      const finish = (result: boolean) => {
-        if (settled) return;
-        settled = true;
-        signal?.removeEventListener('abort', abort);
-        shared.consumers.delete(consumer);
-        if (shared.consumers.size === 0 && this.olderReads.get(agentId) === shared) {
-          this.olderReads.delete(agentId);
-          this.inFlightOlder.delete(agentId);
-          shared.controller.abort();
-          const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId);
-          if (current?.loadingOlder) this.publishAgentView(agentId, setLoadingOlder(current, false));
-        }
-        resolve(result);
-      };
-      const abort = () => { finish(false); };
-      signal?.addEventListener('abort', abort, { once: true });
-      if (signal?.aborted) abort();
-      void shared.promise.then(finish, () => { finish(false); });
-    });
+  async loadOlderMessages(agentId: string = MAIN_AGENT_ID, signal?: AbortSignal): Promise<boolean> {
+    return (await this.loadOlderHistory(agentId, signal)).changed;
   }
 
-  private async loadOlderTranscript(agentId: string, signal: AbortSignal): Promise<boolean> {
-    if (!this.flushPendingTranscriptBatch(agentId)) return false;
+  loadOlderHistory(agentId: string = MAIN_AGENT_ID, signal?: AbortSignal): Promise<OlderLoadResult> {
+    if (this.closed || this.isSuspended) return Promise.resolve({ kind: 'cancelled', changed: false });
+    return this.olderLoads.request(agentId, (sharedSignal) => this.loadOlderTranscript(agentId, sharedSignal), signal);
+  }
+
+  private async loadOlderTranscript(agentId: string, signal: AbortSignal): Promise<OlderLoadResult> {
+    if (!this.flushPendingTranscriptBatch(agentId)) return { kind: 'cancelled', changed: false };
     const store = this.ensureAgentTranscript(agentId);
+    const generation = this.historyGeneration.get(agentId) ?? 0;
+    const obsolete = () => this.closed || signal.aborted || this.agentTranscripts.get(agentId) !== store ||
+      (this.historyGeneration.get(agentId) ?? 0) !== generation;
     if (this.pendingTranscriptAgents.delete(agentId)) this.publishProjectedAgent(agentId, store);
     const currentSnapshot = this.composeAgentSnapshot(agentId);
     const olderStructure = currentSnapshot.items.flatMap((item) => {
@@ -1405,35 +1391,39 @@ export class SessionController {
       const cancel = () => { this.cancelContentSegment(agentId, olderStructure); };
       signal.addEventListener('abort', cancel, { once: true });
       try {
-        return !signal.aborted && await this.loadContentSegment(agentId, olderStructure);
+        const changed = !signal.aborted && await this.loadContentSegment(agentId, olderStructure);
+        if (obsolete()) return { kind: 'cancelled', changed: false };
+        const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
+        if (changed) {
+          this.publishAgentView(agentId, { ...setLoadingOlder(current, false), olderError: undefined });
+          return { kind: 'advanced', changed: true };
+        }
+        const detail = current.detailLoads[`content:${JSON.stringify(olderStructure)}`];
+        this.publishAgentView(agentId, setOlderError(current, detail?.status === 'error' ? detail.message : 'Could not load earlier content'));
+        return { kind: 'failed', changed: false };
       } finally {
         signal.removeEventListener('abort', cancel);
-        const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
-        this.publishAgentView(agentId, setLoadingOlder(current, false));
+        if (!obsolete()) {
+          const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
+          if (current.loadingOlder) this.publishAgentView(agentId, setLoadingOlder(current, false));
+        }
       }
     }
     let beforeItem = this.olderPageCursors.get(agentId);
     let beforeTurn = beforeItem === undefined
       ? this.olderPageTurns.get(agentId) ?? currentSnapshot.items.find((item) => item.kind === 'turn')?.turnId : undefined;
-    if (this.closed || !currentSnapshot.hasMoreOlder) return false;
+    if (!currentSnapshot.hasMoreOlder) return { kind: 'exhausted', changed: false };
     if (beforeItem === undefined && beforeTurn === undefined) {
-      this.historyReadBlocked.add(agentId);
       const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
       this.publishAgentView(agentId, setOlderError(current, 'History window has no continuation cursor'));
-      return false;
+      return { kind: 'failed', changed: false };
     }
-    const inFlightKey = `${agentId}:${beforeItem ?? beforeTurn}`;
-    if (this.inFlightOlder.get(agentId) === inFlightKey) return false;
-    const generation = this.historyGeneration.get(agentId) ?? 0;
-    this.inFlightOlder.set(agentId, inFlightKey);
     const loadingView = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
     this.publishAgentView(agentId, setLoadingOlder(loadingView, true));
     try {
       const read = () => this.readPreparedContent(() => this.view.transcript.page({ agentId, beforeTurn, beforeItem, pageSize: 20 }, { signal }), signal);
-      const obsolete = () => this.closed || signal.aborted || this.agentTranscripts.get(agentId) !== store ||
-        (this.historyGeneration.get(agentId) ?? 0) !== generation;
       let page = await read();
-      if (obsolete()) return false;
+      if (obsolete()) return { kind: 'cancelled', changed: false };
       if (page.agent_id !== agentId) throw new Error('History page returned a different agent');
       if (page.read?.stale !== undefined) {
         this.historyReads.set(agentId, page.read);
@@ -1444,20 +1434,29 @@ export class SessionController {
         if (page.read.stale.retry === 'resync' || beforeTurn === undefined) {
           this.publishProjectedAgent(agentId, store, { loadingOlder: false, historyCoverageKind: 'unknown' });
           void this.resync();
-          return false;
+          return { kind: 'preparing', changed: false };
         }
         page = await this.readAuthoritativeTranscriptContinuation(read, 'History continuation is still stale', signal);
-        if (obsolete()) return false;
+        if (obsolete()) return { kind: 'cancelled', changed: false };
+        if (page.agent_id !== agentId) throw new Error('History page returned a different agent');
       }
       const nextTurn = page.items.find((item) => item.kind === 'turn')?.turnId;
       const pageReadiness = page.read?.readiness;
-      const readIsPreparing = page.items.length === 0 && (pageReadiness === 'preparing' || pageReadiness === 'partial');
-      if (page.has_more && !readIsPreparing &&
+      const readIsPreparing = page.has_more && page.items.length === 0 && (pageReadiness === 'preparing' || pageReadiness === 'partial');
+      const recoveredHeaders: TranscriptOperation[] = [];
+      for (const item of page.items) {
+        if (item.kind !== 'turn' || item.startedAt === undefined) continue;
+        const current = store.getTurn(item.turnId);
+        if (current?.origin.kind !== 'other' || current.message !== undefined || current.promptId !== undefined || current.startedAt !== undefined) continue;
+        const { steps: _steps, ...header } = item;
+        recoveredHeaders.push({ op: 'turn.upsert', turn: { ...header, state: current.state, endedAt: current.endedAt } });
+      }
+      const knownItems = new Set(currentSnapshot.items.map(item => item.kind === 'turn' ? `turn:${item.turnId}` : item.kind === 'marker' ? `marker:${item.markerId}` : `taskref:${item.refId}`));
+      const addedItems = page.items.some(item => !knownItems.has(item.kind === 'turn' ? `turn:${item.turnId}` : item.kind === 'marker' ? `marker:${item.markerId}` : `taskref:${item.refId}`));
+      if (page.has_more && !readIsPreparing && !addedItems && recoveredHeaders.length === 0 &&
           (page.next_cursor !== undefined ? page.next_cursor === beforeItem : nextTurn === undefined || nextTurn === beforeTurn)) {
-        this.historyReadBlocked.add(agentId);
         throw new Error('History page did not advance its cursor');
       }
-      this.historyReadFailures.delete(agentId);
       if (page.read !== undefined) this.historyReads.set(agentId, page.read);
       if (this.flushPendingTranscriptBatch(agentId)) this.observeToolCount(agentId, page);
       const older: AgentTranscriptSnapshot = {
@@ -1468,16 +1467,8 @@ export class SessionController {
         todos: currentSnapshot.todos,
         prompts: currentSnapshot.prompts,
         meta: currentSnapshot.meta,
-        hasMoreOlder: page.coverage?.kind === 'unknown' ? true : page.has_more,
+        hasMoreOlder: page.has_more,
       };
-      const recoveredHeaders: TranscriptOperation[] = [];
-      for (const item of older.items) {
-        if (item.kind !== 'turn' || item.startedAt === undefined) continue;
-        const current = store.getTurn(item.turnId);
-        if (current?.origin.kind !== 'other' || current.message !== undefined || current.promptId !== undefined || current.startedAt !== undefined) continue;
-        const { steps: _steps, ...header } = item;
-        recoveredHeaders.push({ op: 'turn.upsert', turn: { ...header, state: current.state, endedAt: current.endedAt } });
-      }
       if (recoveredHeaders.length > 0) store.apply(recoveredHeaders);
       const merged = prependOlderTranscriptSnapshot(this.olderPages.get(agentId) ?? emptyOlderSnapshot(), older);
       this.olderPages.set(agentId, merged);
@@ -1496,29 +1487,20 @@ export class SessionController {
         historyCoverageKind: page.coverage?.kind === 'unknown' ? 'unknown'
           : !page.has_more && page.coverage !== undefined ? 'full' : undefined,
       });
-      return older.items.length > 0 || page.next_cursor !== beforeItem;
+      const changed = older.items.length > 0 || page.next_cursor !== beforeItem;
+      if (!page.has_more) return { kind: 'exhausted', changed };
+      if (readIsPreparing) return { kind: 'preparing', changed };
+      return { kind: 'advanced', changed: true };
     } catch (error) {
-      if (!this.closed && !signal.aborted && (this.historyGeneration.get(agentId) ?? 0) === generation) {
-        const code = error instanceof ApiError || error instanceof RPCError ? error.code : undefined;
-        if (code === 40923) {
-          this.historyReadFailures.delete(agentId);
-          const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
-          this.publishAgentView(agentId, { ...setLoadingOlder(current, false), olderError: undefined });
-          return false;
-        }
-        this.historyReadFailures.set(agentId, (this.historyReadFailures.get(agentId) ?? 0) + 1);
-        if (code === API_CODES.INVALID_RESPONSE || code === API_CODES.SESSION_NOT_FOUND ||
-            (code !== undefined && code >= 40000 && code < 50000)) this.historyReadBlocked.add(agentId);
-        const current =
-          agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
-        this.publishAgentView(
-          agentId,
-          setOlderError(current, errorMessage(error, 'Could not load earlier messages')),
-        );
+      if (obsolete()) return { kind: 'cancelled', changed: false };
+      const code = error instanceof ApiError || error instanceof RPCError ? error.code : undefined;
+      const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
+      if (code === 40923) {
+        this.publishAgentView(agentId, { ...setLoadingOlder(current, false), olderError: undefined });
+        return { kind: 'preparing', changed: false };
       }
-      return false;
-    } finally {
-      if (this.inFlightOlder.get(agentId) === inFlightKey) this.inFlightOlder.delete(agentId);
+      this.publishAgentView(agentId, setOlderError(current, errorMessage(error, 'Could not load earlier messages')));
+      return { kind: 'failed', changed: false };
     }
   }
 
@@ -1574,6 +1556,7 @@ export class SessionController {
     if (read !== undefined) this.historyReads.set(agentId, read);
     else this.historyReads.delete(agentId);
     this.appliedTranscriptGrades.set(agentId, grade);
+    this.transcriptBaselineSerial.set(agentId, ++this.transcriptBaselineClock);
     if (this.hasTranscriptBaseline(agentId)) this.viewHandle?.updateTranscriptCursor(agentId, cursor);
     this.forestDirtyAgents.add(agentId);
     this.globalCoverage.set(agentId, snapshot.globalCoverage);
@@ -2148,17 +2131,25 @@ export class SessionController {
         return false;
       } finally {
         this.snapshotControllers.delete(controller);
-        this.contentControllers.delete(requestKey);
+        if (this.contentControllers.get(requestKey) === controller) this.contentControllers.delete(requestKey);
         const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId);
-        if (!this.closed && current?.detailLoads[key]?.status === 'loading') this.setDetailLoad(agentId, key, undefined);
+        if (!this.closed && !controller.signal.aborted && (rosterRead || (this.historyGeneration.get(agentId) ?? 0) === generation) &&
+          current?.detailLoads[key]?.status === 'loading') this.setDetailLoad(agentId, key, undefined);
       }
-    })().finally(() => { this.detailReads.delete(requestKey); });
+    })().finally(() => { if (this.detailReads.get(requestKey) === run) this.detailReads.delete(requestKey); });
     this.detailReads.set(requestKey, run);
     return run;
   }
 
   cancelContentSegment(agentId: string, ref: ContentRef): void {
-    this.contentControllers.get(`${agentId}/content:${JSON.stringify(ref)}`)?.abort();
+    const key = `content:${JSON.stringify(ref)}`;
+    const requestKey = `${agentId}/${key}`;
+    const controller = this.contentControllers.get(requestKey);
+    if (controller === undefined) return;
+    this.contentControllers.delete(requestKey);
+    this.detailReads.delete(requestKey);
+    controller.abort();
+    this.setDetailLoad(agentId, key, undefined);
   }
 
   private todoPageWins(agentId: string, current: TranscriptTodo | undefined, todo: TranscriptTodo, read: TranscriptRead | undefined): boolean {

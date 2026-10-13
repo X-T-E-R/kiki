@@ -1649,6 +1649,30 @@ describe('SessionController transcript authority', () => {
     return { controller, client, socket, flushAll };
   }
 
+  it('accepts a repaired orphan at the same cursor after an empty partial page and then reaches earlier turns', async () => {
+    const { controller, client } = await openTranscriptController();
+    const orphan: import('@kiki/transcript').TranscriptTurn = { kind: 'turn', turnId: 't7', ordinal: 7, state: 'completed', origin: { kind: 'other' },
+      steps: [{ kind: 'step', stepId: 's7', turnId: 't7', ordinal: 1, state: 'completed', frames: [{ kind: 'text', frameId: 'a7', role: 'assistant', text: 'Retained response' }] }] };
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [orphan], olderCursor: 'bound-t7' }), 1, true));
+    const recovered = { ...orphan, origin: { kind: 'user' as const }, prompt: 'Recovered opening', promptId: 'p7', startedAt: '2026-01-01T00:00:00Z', steps: [] };
+    client.getAgentTranscript
+      .mockResolvedValueOnce({ agent_id: 'main', items: [], has_more: true, next_cursor: 'bound-t7', read: { source: 'cold', readiness: 'partial' } })
+      .mockResolvedValueOnce({ agent_id: 'main', items: [recovered], has_more: true, next_cursor: 'bound-t7', read: { source: 'cold', readiness: 'partial' } })
+      .mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(6)], has_more: false, coverage: { kind: 'unknown', hasMoreOlder: true } });
+    try {
+      expect(await controller.loadOlderMessages()).toBe(false);
+      expect(controller.getState().olderError).toBeUndefined();
+      expect(await controller.loadOlderMessages()).toBe(true);
+      expect(controller.getState().olderError).toBeUndefined();
+      expect(await controller.loadOlderMessages()).toBe(true);
+      expect(historyTexts(controller)).toEqual(['History 6', 'Recovered opening']);
+      expect(controller.getState().blocks).toContainEqual(expect.objectContaining({ kind: 'assistant', text: 'Retained response' }));
+      expect(controller.getState()).toMatchObject({ hasMoreHistory: false, historyCoverageKind: 'unknown' });
+      expect(await controller.loadOlderMessages()).toBe(false);
+      expect(client.getAgentTranscript).toHaveBeenCalledTimes(3);
+    } finally { controller.close(); }
+  });
+
   it('repairs an orphan opening from a continuation without replacing its live steps or a newer message', async () => {
     const { controller, client } = await openTranscriptController();
     const orphan: import('@kiki/transcript').TranscriptTurn = { kind: 'turn', turnId: 't7', ordinal: 7, state: 'completed', origin: { kind: 'other' },
@@ -2231,7 +2255,7 @@ describe('SessionController transcript authority', () => {
   it('stops repeated cursors as a retryable error without falsely completing history', async () => {
     const { controller, client } = await openTranscriptController();
     controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(2)], olderCursor: 'cursor-2' }), 1, true));
-    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(1)], has_more: true, next_cursor: 'cursor-2' });
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(2)], has_more: true, next_cursor: 'cursor-2' });
     await readHistoryToBoundary(controller);
     try {
       await waitFor(() => controller.getState().olderError !== undefined);
@@ -2521,9 +2545,9 @@ describe('SessionController transcript authority', () => {
         coverage: { kind: 'full', hasMoreOlder: false },
       });
     await expect(controller.loadOlderMessages()).resolves.toBe(true);
-    expect(controller.getState()).toMatchObject({ historyCoverageKind: 'unknown', hasMoreHistory: true });
+    expect(controller.getState()).toMatchObject({ historyCoverageKind: 'unknown', hasMoreHistory: false });
     await expect(controller.loadOlderMessages()).resolves.toBe(false);
-    expect(client.getAgentTranscript).toHaveBeenCalledTimes(2);
+    expect(client.getAgentTranscript).toHaveBeenCalledTimes(1);
     const unknownReset = resetEvent('main', emptySnapshot({ items: [] }), 2, true);
     if (unknownReset.type !== 'transcript.reset') throw new Error('Expected transcript reset');
     const beforeResetVersion = controller.getState().transcriptResetVersion;
