@@ -518,15 +518,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         const submit = async () => {
         if (retryPromptId !== undefined && retryFingerprint !== undefined) {
           const receipt = await promptRetryFor(resolved.prompt).lookup(retryPromptId, retryFingerprint);
-          if (receipt !== undefined) return {
-            prompt_id: retryPromptId,
-            user_message_id: retryPromptId,
-            status: receipt.status,
-            content: req.body.content,
-            created_at: receipt.createdAt,
-            append_timing: receipt.appendTiming,
-            revision: receipt.revision,
-          };
+          if (receipt !== undefined) return projectPromptRetryReceipt(retryPromptId, receipt, req.body.content);
         }
         if (req.body.skills !== undefined) await assertActivatableSkills(session.accessor.get(ISessionSkillCatalog), req.body.skills);
         await assertPromptFileRefs(req.body.content, core.accessor.get(IFileService));

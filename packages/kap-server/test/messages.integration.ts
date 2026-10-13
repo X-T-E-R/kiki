@@ -18,6 +18,9 @@ import {
   getLiveSessionById,
   IModelCatalog,
   ISessionInteractionService,
+  ISessionManager,
+  IWorkspaceInstanceManager,
+  closeSessionById,
   resumeSessionById,
   type ContextMessage,
   type ScopeSeed,
@@ -294,6 +297,113 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
     }
   }
 
+  it('reads cold message pages and media without restoring a session or workspace', async () => {
+    const id = await createSession();
+    await seedMainAgentMessages(id, [
+      { id: 'saved-user', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'saved' }], toolCalls: [] },
+      { role: 'assistant', content: [{ type: 'text', text: 'reply' }], toolCalls: [] },
+      { id: 'saved-image', role: 'user', origin: { kind: 'user' }, content: [{ type: 'image_url', imageUrl: { url: `data:image/png;base64,${Buffer.alloc(5000, 1).toString('base64')}` } }], toolCalls: [] },
+    ]);
+    const warm = await getJson<PageWire>(`/api/sessions/${id}/messages`);
+    await closeSessionById(server!.core.accessor, id);
+    await server!.close();
+    await boot();
+    const manager = server!.core.accessor.get(ISessionManager);
+    const acquire = vi.spyOn(manager, 'acquire');
+    const resume = vi.spyOn(manager, 'resume');
+    const workspaceAcquire = vi.spyOn(server!.core.accessor.get(IWorkspaceInstanceManager), 'acquire');
+    const read = vi.spyOn(server!.core.accessor.get(IAppendLogStore), 'read');
+    try {
+      const cold = await getJson<PageWire>(`/api/sessions/${id}/messages?page_size=2`);
+      expect(cold.body.code, JSON.stringify(cold.body)).toBe(0);
+      expect(cold.body.data).toEqual({ items: warm.body.data.items.slice(0, 2), has_more: true });
+      const older = await getJson<PageWire>(`/api/sessions/${id}/messages?before_id=${cold.body.data.items.at(-1)!.id}`);
+      expect(older.body.data.items).toEqual(warm.body.data.items.slice(2));
+      const single = await getJson<MessageWire>(`/api/sessions/${id}/messages/saved-image`);
+      expect(single.body.data).toEqual(warm.body.data.items[0]);
+      expect((await getJson<null>(`/api/sessions/${id}/messages/missing`)).body.code).toBe(40403);
+      expect(acquire).not.toHaveBeenCalled();
+      expect(resume).not.toHaveBeenCalled();
+      expect(workspaceAcquire).not.toHaveBeenCalled();
+      expect(manager.residencyReport?.()).toMatchObject({ liveSessions: 0, pinnedSessions: 0, pendingRestores: 0 });
+      expect(read.mock.calls.filter(([scope, key]) => scope.endsWith('/agents/main') && key === AGENT_WIRE_RECORD_KEY)).toHaveLength(1);
+      await manager.resume(id);
+      const resumed = await getJson<PageWire>(`/api/sessions/${id}/messages`);
+      expect(resumed.body.data).toEqual(warm.body.data);
+    } finally {
+      acquire.mockRestore();
+      resume.mockRestore();
+      workspaceAcquire.mockRestore();
+      read.mockRestore();
+    }
+  });
+
+  it('pins live message reads without invoking the restoring acquire path', async () => {
+    const id = await createSession();
+    await seedMainAgentMessages(id, [{ role: 'user', content: [{ type: 'text', text: 'live' }], toolCalls: [] }]);
+    const manager = server!.core.accessor.get(ISessionManager);
+    const acquire = vi.spyOn(manager, 'acquire');
+    try {
+      const page = await getJson<PageWire>(`/api/sessions/${id}/messages`);
+      expect(page.body.code).toBe(0);
+      expect(page.body.data.items[0]?.content).toEqual([{ type: 'text', text: 'live' }]);
+      expect(acquire).not.toHaveBeenCalled();
+      expect(manager.residencyReport?.().pinnedSessions).toBe(0);
+    } finally {
+      acquire.mockRestore();
+    }
+  });
+
+  it('cancels an in-flight cold message wire read without caching a partial transcript', async () => {
+    const id = await createSession();
+    await seedMainAgentMessages(id, [
+      { id: 'saved-user', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'saved' }], toolCalls: [] },
+    ]);
+    await closeSessionById(server!.core.accessor, id);
+    await server!.close();
+    await boot();
+    const appendLog = server!.core.accessor.get(IAppendLogStore);
+    const original = appendLog.read.bind(appendLog);
+    let releaseRead = (): void => {};
+    let observed: AbortSignal | undefined;
+    const read = vi.spyOn(appendLog, 'read').mockImplementation((scope, key, options) => {
+      if (scope.endsWith('/agents/main') && key === AGENT_WIRE_RECORD_KEY) {
+        if (options?.signal === undefined) throw new Error('cold wire read has no cancellation signal');
+        observed = options.signal;
+        const signal = options.signal;
+        const held = new Promise<void>((resolve) => {
+          releaseRead = resolve;
+          if (signal.aborted) resolve();
+          else signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+        return (async function* () {
+          await held;
+          if (signal.aborted) throw new DOMException('The operation was aborted', 'AbortError');
+          yield* original(scope, key, options);
+        })();
+      }
+      return original(scope, key, options);
+    });
+    const controller = new AbortController();
+    const pending = fetch(`${base}/api/sessions/${id}/messages`, {
+      headers: authHeaders(server as RunningServer),
+      signal: controller.signal,
+    });
+    void pending.catch(() => undefined);
+    try {
+      await vi.waitFor(() => expect(observed).toBeDefined());
+      controller.abort();
+      await vi.waitFor(() => expect(observed?.aborted).toBe(true));
+      await expect(pending).rejects.toThrow();
+    } finally {
+      releaseRead();
+      read.mockRestore();
+    }
+    const cold = await getJson<PageWire>(`/api/sessions/${id}/messages`);
+    expect(cold.body.code).toBe(0);
+    expect(cold.body.data.items[0]?.content).toEqual([{ type: 'text', text: 'saved' }]);
+  });
+
   it('returns an empty page when the session has no main agent', async () => {
     const id = await createSession();
     const { body } = await getJson<PageWire>(`/api/sessions/${id}/messages`);
@@ -395,6 +505,8 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
       `/api/sessions/${id}/messages/user_1:edit`,
       {
         content: [{ type: 'text', text: 'first edited' }],
+        model: 'stub',
+        thinking: 'high',
         expected_cursor: await cursor(id),
       },
     );
@@ -402,8 +514,10 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
     expect(result.data.user_message_id).toBe('user_1');
 
     const listed = await getJson<PageWire>(`/api/sessions/${id}/messages?page_size=100`);
-    const userMessages = listed.body.data.items.filter((message) => message.role === 'user');
-    expect(userMessages).toHaveLength(1);
+    const userMessages = listed.body.data.items.filter((message) =>
+      message.role === 'user' && (message.metadata?.['origin'] as { kind?: string } | undefined)?.kind === 'user',
+    );
+    expect(userMessages, JSON.stringify(listed.body.data.items)).toHaveLength(1);
     expect(userMessages[0]).toMatchObject({
       id: 'user_1',
       content: [{ type: 'text', text: 'first edited' }],
@@ -419,9 +533,38 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
       .filter((line) => line.kind === 'event')
       .map((line) => line.envelope?.type);
     expect(eventTypes.indexOf('event.session.history_rewritten')).toBeGreaterThanOrEqual(0);
-    expect(eventTypes.indexOf('turn.started')).toBeGreaterThan(
+    expect(eventTypes.indexOf('turn.started'), journal).toBeGreaterThan(
       eventTypes.indexOf('event.session.history_rewritten'),
     );
+  });
+
+  it('reports an edit-resend launch failure without emitting turn.started when no model is configured', async () => {
+    const id = await createSession();
+    await seedMainAgentMessages(id, [
+      { id: 'unbound_user', role: 'user', content: [{ type: 'text', text: 'before' }], toolCalls: [], origin: { kind: 'user' } },
+    ]);
+    const result = await postJson<PromptWire>(`/api/sessions/${id}/messages/unbound_user:edit`, {
+      operation_id: 'unbound-edit',
+      content: [{ type: 'text', text: 'after' }],
+      expected_cursor: await cursor(id),
+    });
+    expect(result.code, JSON.stringify(result)).toBe(0);
+    const main = await ensureMainAgent(getLiveSessionById(server!.core.accessor, id)!);
+    await waitForTerminal(main);
+    expect(main.accessor.get(IAgentPromptService).lookup(result.data.prompt_id)).toMatchObject({
+      phase: 'terminal', terminal: { state: 'failed', result: { type: 'failed', error: { code: 'model.not_configured' } } },
+    });
+    await cursor(id);
+    const journal = await readFile(join(home as string, 'server', 'events', `${id}.jsonl`), 'utf8');
+    const events = journal.trim().split('\n')
+      .map((line) => JSON.parse(line) as { kind: string; envelope?: { type: string; payload?: unknown } })
+      .filter((line) => line.kind === 'event')
+      .map((line) => line.envelope!);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'prompt.completed', payload: expect.objectContaining({ reason: 'failed', error: expect.objectContaining({ code: 'model.not_configured' }) }),
+    }));
+    expect(events.some((event) => event.type === 'turn.started')).toBe(false);
+    expect(modelRequestCount).toBe(0);
   });
 
   it('applies the prompt-sized body budget to edit-resend media payloads', async () => {
@@ -1169,9 +1312,17 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
     expect(first.code, JSON.stringify(first)).toBe(0);
     expect(['running', 'queued']).toContain(first.data.status);
     expect(first.data.user_message_id).toBe(first.data.prompt_id);
+    expect(first.data).toMatchObject({ origin: { kind: 'user' } });
     expect(first.data.content).toEqual([
       { type: 'text', text, presentation },
-      expect.objectContaining({ type: 'text', text: expect.stringContaining('Attached file "fixture.txt"') }),
+      expect.objectContaining({
+        type: 'text', text: expect.stringContaining('Attached file "fixture.txt"'),
+        presentation: { spans: [expect.objectContaining({
+          start: 0, kind: 'attachment', attachment: expect.objectContaining({
+            name: 'fixture.txt', mime: 'text/plain', size: bytes.byteLength, path: expect.any(String),
+          }),
+        })] },
+      }),
     ]);
     expect(concurrent.code, JSON.stringify(concurrent)).toBe(0);
     expect(concurrent.data).toEqual(first.data);
@@ -1191,6 +1342,20 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
       { ...body, content: [{ type: 'text', text: 'different', presentation }, body.content[1] ] },
     );
     expect(mismatch.code).toBe(40938);
+    const changedPresentation = await postJson(`/api/sessions/${id}/prompts`, {
+      ...body, content: [{ type: 'text', text, presentation: { spans: [{ ...presentation.spans[0], quote: 'changed' }] } }, body.content[1]],
+    });
+    expect(changedPresentation.code).toBe(40938);
+    const fresh = await postJson(`/api/sessions/${id}/prompts`, { ...body, prompt_id: 'fresh-attachment' });
+    expect(fresh.code).toBe(40407);
+    expect(modelRequestCount).toBe(1);
+
+    await server!.close();
+    server = undefined;
+    await boot();
+    const restoredReplay = await postJson<PromptWire>(`/api/sessions/${id}/prompts`, body);
+    expect(restoredReplay.code, JSON.stringify(restoredReplay)).toBe(0);
+    expect(restoredReplay.data).toEqual(first.data);
     expect(modelRequestCount).toBe(1);
   });
 
