@@ -32,7 +32,8 @@ import { formatStartupError } from './cli/startup-error';
 import { runPluginNodeEntry } from './cli/sub/plugin-run-node';
 import { getVersion } from './cli/version';
 import { PROCESS_NAME } from './constant/app';
-import { cleanupStaleNativeCacheForCurrent, getPluginHostRunnerFile, getHistoryImportEntryFile, getKapSqliteQueryWorkerFile, getWindowsProcessHelperFile } from './native/native-assets';
+import { SOURCE_OWNED_ADAPTER_ROOT_ENV } from '../../../scripts/external-harness/production-manifest.mjs';
+import { cleanupStaleNativeCacheForCurrent, getPluginHostRunnerFile, getHistoryImportEntryFile, getKapSqliteQueryWorkerFile, getSourceOwnedAdapterRoot, getWindowsProcessHelperFile } from './native/native-assets';
 import { installMinidbTextBuildWorker } from './native/minidb-worker';
 import { installKapModelPricing } from './native/model-pricing';
 import { installKikiDocs } from './native/product-docs';
@@ -104,6 +105,8 @@ function bootstrap(): void {
   if (windowsProcessHelper !== null) process.env['KIKI_WINDOWS_PROCESS_HELPER'] = windowsProcessHelper;
   const historyEntry = getHistoryImportEntryFile();
   if (historyEntry !== null) process.env['KIKI_HISTORY_IMPORT_ENTRY'] = historyEntry;
+  const sourceOwnedAdapterRoot = getSourceOwnedAdapterRoot();
+  if (sourceOwnedAdapterRoot !== null) process.env[SOURCE_OWNED_ADAPTER_ROOT_ENV] = sourceOwnedAdapterRoot;
   // Best-effort SEA worker installation. Diagnostics are trace-only and avoid
   // exposing the user's cache path; failure keeps MiniDb's bounded inline mode.
   const workerInstall = installMinidbTextBuildWorker();

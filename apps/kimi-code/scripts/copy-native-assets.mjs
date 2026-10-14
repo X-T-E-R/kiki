@@ -1,6 +1,7 @@
 import { cp, mkdir, rm, stat } from 'node:fs/promises';
 import { collectAuthNativePackage } from './native/assets.mjs';
 import { copyHistoryImportAssets } from './native/history-assets.mjs';
+import { copySourceOwnedAdapterAssets } from './native/external-harness-assets.mjs';
 import { mergeAuthNativeLanes } from '../../../packages/auth-native/scripts/lane-assets.mjs';
 import { buildWindowsProcessHelper } from '../../../packages/agent-core-v2/scripts/build-windows-process-helper.mjs';
 import { dirname, resolve } from 'node:path';
@@ -63,6 +64,7 @@ await cp(
 );
 
 await copyHistoryImportAssets({ appRoot, outDir: resolve(appRoot, 'dist') });
+await copySourceOwnedAdapterAssets({ repoRoot, outDir: resolve(appRoot, 'dist') });
 
 const processHelperArtifact = process.env.KIKI_WINDOWS_PROCESS_HELPER_ARTIFACT;
 await buildWindowsProcessHelper({
@@ -71,4 +73,4 @@ await buildWindowsProcessHelper({
   prebuiltPath: processHelperArtifact,
 });
 
-console.log(`Copied pi-tui native prebuilds to ${target}, plugin host runner and history rules to dist`);
+console.log(`Copied pi-tui native prebuilds to ${target}, plugin host runner, history rules and source-owned adapters to dist`);

@@ -19,6 +19,7 @@ import {
 import { nativeDeps, resolveTargetDeps, SUPPORTED_TARGETS } from './native-deps.mjs';
 import { collectBrowserDriverAssets } from './browser-assets.mjs';
 import { collectHistoryImportAssets } from './history-assets.mjs';
+import { collectSourceOwnedAdapterAssets } from './external-harness-assets.mjs';
 import { collectWindowsProcessAssets } from './windows-process-assets.mjs';
 import { copyKikiDocs } from '../local-docs.mjs';
 
@@ -418,6 +419,10 @@ export async function collectNativeAssets({ appRoot, target }) {
   const history = await collectHistoryImportAssets({ appRoot, target });
   runtimeFiles.push(...history.runtimeFiles);
   Object.assign(assets, history.assets);
+
+  const externalHarness = await collectSourceOwnedAdapterAssets({ appRoot, target });
+  runtimeFiles.push(...externalHarness.runtimeFiles);
+  Object.assign(assets, externalHarness.assets);
 
   const windowsProcess = await collectWindowsProcessAssets({ appRoot, target });
   runtimeFiles.push(...windowsProcess.runtimeFiles);

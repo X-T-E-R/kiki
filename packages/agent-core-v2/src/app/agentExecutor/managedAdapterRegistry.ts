@@ -1,4 +1,6 @@
-import { join } from 'pathe';
+import { basename, join, normalize } from 'pathe';
+
+import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
 
 import type { AgentExecutorDescriptor } from './agentExecutor';
 
@@ -29,11 +31,30 @@ export const MANAGED_ADAPTER_RELEASES: Readonly<Record<string, ManagedAdapterRel
 
 export const MANAGED_ADAPTER_SCOPE = 'managed-executors';
 
+export const SOURCE_OWNED_ADAPTER_FILES = Object.freeze([
+  'agy-cli-acp.mjs',
+  'agy-hook-registration.mjs',
+  'agy-permission-hook.mjs',
+]);
+
+export const SOURCE_OWNED_ADAPTER_ENTRY = 'agy-cli-acp.mjs';
+
+export const SOURCE_OWNED_ADAPTER_VERSION = '0.4.1';
+
+export const SOURCE_OWNED_ADAPTER_SUPPORTS_MCP = true;
+
+export const SOURCE_OWNED_ADAPTER_ROOT_ENV = 'KIKI_SOURCE_OWNED_ADAPTER_ROOT';
+
+export const SOURCE_OWNED_ADAPTER_SOURCE = 'bundled:external-harness';
+
+export const SOURCE_OWNED_ADAPTER_PACKAGE = 'kiki-external-harness';
+
 export interface ManagedAdapterInstallation {
   readonly version: string;
   readonly integrity: string;
   readonly source: string;
   readonly installId: string;
+  readonly targetDir?: string;
 }
 
 export interface ManagedAdapterState {
@@ -52,6 +73,26 @@ export function managedAdapterEntry(
       !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/.test(installation.version)) return undefined;
   return join(homeDir, 'tools', 'managed-executors', id,
     `${installation.version}-${installation.installId}`, 'node_modules', release.packageName, release.entry);
+}
+
+export function sourceOwnedAdapterScript(descriptor: AgentExecutorDescriptor): string | undefined {
+  const sources = descriptor.sources;
+  if (sources === undefined || sources.length === 0) return undefined;
+  const selected = descriptor.source === undefined
+    ? (sources.length === 1 ? sources : [])
+    : sources.filter((source) => source.id === descriptor.source);
+  const source = selected.length === 1 ? selected[0] : undefined;
+  if (source === undefined || source.kind !== 'node-script') return undefined;
+  if (basename(source.path) !== SOURCE_OWNED_ADAPTER_ENTRY) return undefined;
+  return source.path;
+}
+
+export function expandSourceOwnedAdapterPath(
+  value: string,
+  bootstrap: Pick<IBootstrapService, 'homeDir' | 'osHomeDir'>,
+): string {
+  const homeExpanded = value.replace(/^~(?=$|[\\/])/, bootstrap.osHomeDir);
+  return normalize(homeExpanded.replaceAll('${KIKI_HOME}', bootstrap.homeDir));
 }
 
 export function withManagedAdapterSource(

@@ -15,6 +15,7 @@ import {
   IAgentUsageService,
   IAppendLogStore,
   IConfigService,
+  IManagedAdapterService,
   ILogService,
   IModelService,
   ISessionAgentProfileCatalog,
@@ -533,6 +534,82 @@ describe('GET /api/agents', () => {
 
     const unknown = await authedFetch(server, base, '/api/executors/constructor/install', { method: 'POST' });
     expect((await unknown.json() as Envelope<unknown>).code).toBe(ErrorCode.AGENT_PROFILE_NOT_FOUND);
+  });
+
+  it('installs and rolls back the selected source-owned adapter without changing executor config', async () => {
+    const adapterDir = join(home!, 'tools', 'agy-cli-adapter-909');
+    const script = join(adapterDir, 'agy-cli-acp.mjs');
+    await mkdir(adapterDir, { recursive: true });
+    await mkdir(join(adapterDir, 'audit'), { recursive: true });
+    await writeFile(script, 'export const legacy = "pre-mcp";\n');
+    await writeFile(join(adapterDir, 'agy-file-admission.mjs'), 'export const admission = true;\n');
+    await writeFile(join(adapterDir, 'agy-cli-audit-acp.mjs'), 'audit-copy\n');
+    await writeFile(join(adapterDir, 'audit', 'session.ndjson'), '{"keep":true}\n');
+    const scriptPath = script.replaceAll('\\', '/');
+    await writeFile(join(home!, 'config.toml'), [
+      '[agent_executors."agy-cli-909"]',
+      'protocol = "acp-v1"',
+      'args = []',
+      'source = "local-adapter"',
+      'supports_mcp = false',
+      '[agent_executors."agy-cli-909".env]',
+      'KEEP_ME = "retain-adapter-env"',
+      '[[agent_executors."agy-cli-909".sources]]',
+      'id = "local-adapter"',
+      'kind = "node-script"',
+      `path = "${scriptPath}"`,
+      '[agent_executors."not-owned"]',
+      'protocol = "acp-v1"',
+      'args = []',
+      'source = "path"',
+      '[[agent_executors."not-owned".sources]]',
+      'id = "path"',
+      'kind = "path-lookup"',
+      'command = "agy"',
+      '',
+    ].join('\n'));
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    const missed = await authedFetch(server, base, '/api/executors/not-owned/install', { method: 'POST' });
+    expect((await missed.json() as Envelope<unknown>).code).toBe(ErrorCode.AGENT_PROFILE_NOT_FOUND);
+    expect(await readFile(script, 'utf8')).toBe('export const legacy = "pre-mcp";\n');
+
+    const installed = await authedFetch(server, base, '/api/executors/agy-cli-909/install', { method: 'POST' });
+    const body = await installed.json() as Envelope<{ release: { source: string; entry: string }; active?: { version: string } }>;
+    expect(body.code).toBe(0);
+    expect(body.data.release).toMatchObject({ source: 'bundled:external-harness', entry: 'agy-cli-acp.mjs' });
+    expect(body.data.active?.version).toBe('0.4.1');
+    expect(JSON.stringify(body.data)).not.toContain('supports_mcp');
+    const updated = await readFile(script, 'utf8');
+    expect(updated).toContain('registerMcpAgent');
+    expect(updated).toBe(await readFile(new URL('../../../scripts/external-harness/agy-cli-acp.mjs', import.meta.url), 'utf8'));
+    expect(await readFile(join(adapterDir, 'agy-hook-registration.mjs'), 'utf8')).toBe(
+      await readFile(new URL('../../../scripts/external-harness/agy-hook-registration.mjs', import.meta.url), 'utf8'));
+    expect(await readFile(join(adapterDir, 'agy-permission-hook.mjs'), 'utf8')).toBe(
+      await readFile(new URL('../../../scripts/external-harness/agy-permission-hook.mjs', import.meta.url), 'utf8'));
+    await expect(readFile(join(adapterDir, 'fixture-cli.mjs'))).rejects.toThrow();
+    expect(await readFile(join(adapterDir, 'agy-file-admission.mjs'), 'utf8')).toBe('export const admission = true;\n');
+    expect(await readFile(join(adapterDir, 'agy-cli-audit-acp.mjs'), 'utf8')).toBe('audit-copy\n');
+    expect(await readFile(join(adapterDir, 'audit', 'session.ndjson'), 'utf8')).toBe('{"keep":true}\n');
+    const executors = server.core.accessor.get(IConfigService).get<{
+      'agy-cli-909'?: { supportsMcp?: boolean; env?: Record<string, string> };
+    }>('agentExecutors');
+    expect(executors?.['agy-cli-909']?.supportsMcp).toBe(false);
+    expect(executors?.['agy-cli-909']?.env?.['KEEP_ME']).toBe('retain-adapter-env');
+    expect((await server.core.accessor.get(IManagedAdapterService).status('agy-cli-909')).supportsMcp).toBe(true);
+    const configText = await readFile(join(home!, 'config.toml'), 'utf8');
+    expect(configText).toContain('supports_mcp = false');
+    expect(configText).toContain('KEEP_ME = "retain-adapter-env"');
+
+    const rolled = await authedFetch(server, base, '/api/executors/agy-cli-909/rollback', { method: 'POST' });
+    expect((await rolled.json() as Envelope<unknown>).code).toBe(0);
+    expect(await readFile(script, 'utf8')).toBe('export const legacy = "pre-mcp";\n');
+    await expect(readFile(join(adapterDir, 'agy-hook-registration.mjs'))).rejects.toThrow();
+    expect(await readFile(join(adapterDir, 'agy-file-admission.mjs'), 'utf8')).toBe('export const admission = true;\n');
+    expect(await readFile(join(adapterDir, 'audit', 'session.ndjson'), 'utf8')).toBe('{"keep":true}\n');
+    expect(server.core.accessor.get(IConfigService).get<{
+      'agy-cli-909'?: { supportsMcp?: boolean };
+    }>('agentExecutors')?.['agy-cli-909']?.supportsMcp).toBe(false);
   });
 
   it('previews user profiles before any workspace exists and binds them in an automatic workspace', async () => {

@@ -14,7 +14,6 @@ import {
   LOCAL_SESSION_RESUME_FLAG,
   localSessionEngine,
   type LocalSessionSummary,
-  MANAGED_ADAPTER_RELEASES,
   IBootstrapService,
   EXECUTOR_OVERRIDE_SOURCE_ID,
   executorCapabilities,
@@ -319,11 +318,12 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
     errors: { [ErrorCode.AGENT_PROFILE_NOT_FOUND]: {} },
     description: 'Install the checksum-pinned adapter under the Kiki home', tags: ['agents'],
   }, async (req, reply) => {
-    if (!Object.hasOwn(MANAGED_ADAPTER_RELEASES, req.params.id)) {
+    const service = core.accessor.get(IManagedAdapterService);
+    if (!await service.installable(req.params.id)) {
       reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_NOT_FOUND, 'Managed adapter not found', req.id));
       return;
     }
-    const status = await core.accessor.get(IManagedAdapterService).install(req.params.id);
+    const status = await service.install(req.params.id);
     reply.send(okEnvelope(projectManagedStatus(status), req.id));
   });
   app.post(installRoute.path, installRoute.options,
@@ -335,11 +335,12 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
     errors: { [ErrorCode.AGENT_PROFILE_NOT_FOUND]: {} },
     description: 'Atomically activate the previous managed adapter version', tags: ['agents'],
   }, async (req, reply) => {
-    if (!Object.hasOwn(MANAGED_ADAPTER_RELEASES, req.params.id)) {
+    const service = core.accessor.get(IManagedAdapterService);
+    if (!await service.installable(req.params.id)) {
       reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_NOT_FOUND, 'Managed adapter not found', req.id));
       return;
     }
-    const status = await core.accessor.get(IManagedAdapterService).rollback(req.params.id);
+    const status = await service.rollback(req.params.id);
     reply.send(okEnvelope(projectManagedStatus(status), req.id));
   });
   app.post(rollbackRoute.path, rollbackRoute.options,
