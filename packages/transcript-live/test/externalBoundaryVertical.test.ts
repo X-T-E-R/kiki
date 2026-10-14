@@ -20,6 +20,46 @@ function boundaryOf(frames: readonly { kind: string; role?: string }[]): number 
   return index < 0 ? frames.length : index;
 }
 
+function projectRecords(records: readonly TranscriptWireRecord[]): { ops: TranscriptOperation[]; blocks: ReturnType<SessionController['getState']>['blocks'] } {
+  const transcript = new AgentTranscript('main');
+  const adapter = new TranscriptWireAdapter('main');
+  const reducer = new TranscriptFactReducer(transcript);
+  const ops: TranscriptOperation[] = [];
+  for (const record of records) {
+    const facts = adapter.add(record);
+    reducer.apply(facts);
+    for (const fact of facts) ops.push(...fact.operations);
+  }
+  const controller = new SessionController({} as never, {} as never, SESSION_ID, {
+    scheduler: { schedule(callback: () => void) { callback(); return 0; }, cancel() {} },
+  });
+  try {
+    const reset: TranscriptEvent = {
+      type: 'transcript.reset', session_id: SESSION_ID, agent_id: 'main', grade: 'delta',
+      snapshot: { items: [], tasks: [], attachments: [], prompts: [], interactions: [], todos: [], meta: {}, hasMoreOlder: false },
+      coverage: { kind: 'full', hasMoreOlder: false },
+      cursor: { seq: 1, epoch: 'epoch-vertical' },
+    };
+    const batch: TranscriptEvent = {
+      type: 'transcript.ops', session_id: SESSION_ID, agent_id: 'main', ops,
+      cursor: { seq: 2, epoch: 'epoch-vertical' }, through_seq: 2,
+    };
+    controller.handleTranscript(reset);
+    controller.handleTranscript(batch);
+    return { ops, blocks: controller.getState().blocks };
+  } finally {
+    controller.close();
+  }
+}
+
+function anchorLabels(blocks: ReturnType<SessionController['getState']>['blocks']): string[] {
+  return blocks.flatMap((block) => {
+    if (block.kind === 'user' || block.kind === 'system') return [`${block.kind}:${block.text}`];
+    if (block.kind === 'thinking' || block.kind === 'tool') return [block.kind];
+    return [];
+  });
+}
+
 async function readJournal(wire: IWireService): Promise<TranscriptWireRecord[]> {
   const records: TranscriptWireRecord[] = [];
   for await (const record of wire.readJournal()) records.push(record as TranscriptWireRecord);
@@ -63,7 +103,11 @@ describe('external boundary vertical', () => {
         for (const fact of facts) ops.push(...fact.operations);
       }
       const turn = transcript.getTurn('t4');
+      expect(turn?.prompt).toBe('work');
+      expect(turn?.origin).toMatchObject({ kind: 'user' });
+      expect(turn?.promptId).toBe('prompt-1');
       const frames = turn?.steps[0]?.frames ?? [];
+      expect(frames.some((frame) => frame.kind === 'text' && frame.text === 'work')).toBe(false);
       expect(frames.map((frame) => frame.frameId)).toEqual([
         'preamble', 'echo', expect.any(String), expect.stringContaining('read-1'), expect.any(String), 'after',
       ]);
@@ -108,20 +152,26 @@ describe('external boundary vertical', () => {
       controller.handleTranscript(reset);
       controller.handleTranscript(batch);
       const blocks = controller.getState().blocks;
+      const work = blocks.find((block) => block.kind === 'user' && block.text === 'work');
       const preamble = blocks.find((block) => block.kind === 'system' && block.text === '[Kiki memory]\nremember this');
       const echo = blocks.find((block) => block.kind === 'system' && block.text.includes('TAILMARK'));
       const after = blocks.find((block) => block.kind === 'user' && block.text === 'brand new after tool');
       const tool = blocks.find((block) => block.kind === 'tool');
       const thinking = blocks.find((block) => block.kind === 'thinking');
+      expect(work).toMatchObject({ kind: 'user', turnId: 't4', promptId: 'prompt-1' });
       expect(preamble).toMatchObject({ kind: 'system', ownerPromptId: 'prompt-1' });
       expect(echo).toMatchObject({ kind: 'system', ownerPromptId: 'prompt-1' });
       expect(after).toMatchObject({ kind: 'user', sourceOrigin: { kind: 'unknown' } });
-      expect(blocks.indexOf(preamble!)).toBeGreaterThanOrEqual(0);
+      expect(blocks.indexOf(work!)).toBeGreaterThanOrEqual(0);
+      expect(blocks.indexOf(preamble!)).toBeGreaterThan(blocks.indexOf(work!));
       expect(blocks.indexOf(echo!)).toBeGreaterThan(blocks.indexOf(preamble!));
       expect(blocks.indexOf(thinking!)).toBeGreaterThan(blocks.indexOf(echo!));
       expect(blocks.indexOf(tool!)).toBeGreaterThan(blocks.indexOf(thinking!));
       expect(blocks.indexOf(after!)).toBeGreaterThan(blocks.indexOf(tool!));
       expect(blocks.some((block) => block.kind === 'user' && block.text.includes('[Kiki memory]'))).toBe(false);
+      const liveAnchors = anchorLabels(blocks);
+      const cold = projectRecords(records);
+      expect(anchorLabels(cold.blocks)).toEqual(liveAnchors);
     } finally {
       controller.close();
       await agent.dispose();

@@ -71,7 +71,7 @@ import {
 } from './transcript';
 import { emptyOlderSnapshot } from './transcript/selectors';
 import { collectTranscriptContentRefs, patchTranscriptContent, patchAgentTranscriptContent, replaceAgentContentEntity, replaceSnapshotContentEntity, snapshotContentEntity, transcriptContentEntity } from './transcript/content';
-import { applyContentSegment, restoreContentPreview, sameContentRef, type ContentRef, type ContentSource, type ContentWindow } from '@kiki/transcript';
+import { applyContentSegment, carryContentHydration, restoreContentPreview, sameContentRef, type ContentRef, type ContentSource, type ContentWindow } from '@kiki/transcript';
 import { isModelSwitchQueueId } from './modelSwitchQueue';
 import { questionAnswerTexts } from './transcript/questionAnswers';
 import { interactionToBlock } from './transcript/project';
@@ -243,6 +243,8 @@ export class SessionController {
   private rosterReadQueued = false;
   private rosterReadInFlight = false;
   private rosterRevisionRefreshes = 0;
+  /** Turn-structure paths with a preview already in flight. The replacement read must not preview again. */
+  private readonly turnStructureRefreshKeys = new Set<string>();
   private rosterRefreshQueuedCursor: SessionCursor | undefined;
   /** Agent id → roster reads spent chasing its row (see `requestRosterRows`). */
   private readonly requestedRosterAgents = new Map<string, number>();
@@ -2054,6 +2056,67 @@ export class SessionController {
     }
   }
 
+  private turnStructureRefreshKey(agentId: string, ref: ContentRef): string {
+    return `${agentId}/${ref.source.kind}/${ref.source.id}/${JSON.stringify(ref.path)}`;
+  }
+
+  private isTurnStructureRef(ref: ContentRef): boolean {
+    return ref.source.kind === 'turn' && ref.kind === 'array' && ref.direction === 'backward' && ref.path[0] === 'steps' &&
+      (ref.path.length === 1 || ref.path.length === 3 && ref.path[2] === 'frames');
+  }
+
+  /** One bounded preview of this turn. The revision has to come back on the preview; a matching revision is left as a real conflict. */
+  private async refreshTurnStructurePreview(agentId: string, ref: ContentRef, signal: AbortSignal): Promise<ContentRef | undefined> {
+    if (ref.source.kind !== 'turn' || signal.aborted || this.closed) return undefined;
+    const turnId = ref.source.id;
+    const items = this.composeAgentSnapshot(agentId).items;
+    const index = items.findIndex((item) => item.kind === 'turn' && item.turnId === turnId);
+    if (index < 0) return undefined;
+    const nextTurn = items.slice(index + 1).find((item) => item.kind === 'turn');
+    const page = await this.readPreparedContent(() => this.view.transcript.page(
+      nextTurn?.kind === 'turn' ? { agentId, beforeTurn: nextTurn.turnId, pageSize: 1 } : { agentId, pageSize: 1 },
+      { signal },
+    ), signal);
+    if (this.closed || signal.aborted || page.agent_id !== agentId) return undefined;
+    const preview = page.items.find((item) => item.kind === 'turn' && item.turnId === turnId);
+    if (preview?.kind !== 'turn') return undefined;
+    const fresh = preview.contentRefs?.find((candidate) => candidate.kind === 'array' && candidate.direction === 'backward' &&
+      candidate.path.length === ref.path.length && candidate.path.every((part, partIndex) => part === ref.path[partIndex]) &&
+      candidate.source.kind === ref.source.kind && candidate.source.id === ref.source.id);
+    if (fresh === undefined || fresh.revision === ref.revision || signal.aborted) return undefined;
+    if (!this.installTurnStructureRef(agentId, ref, fresh) || signal.aborted) return undefined;
+    const installed = this.contentEntity(agentId, ref.source)?.contentRefs?.find((candidate) => candidate.kind === fresh.kind &&
+      candidate.direction === 'backward' && candidate.revision === fresh.revision && candidate.offset === fresh.offset &&
+      candidate.total === fresh.total && candidate.path.every((part, partIndex) => part === fresh.path[partIndex]));
+    return installed?.revision === ref.revision ? undefined : installed;
+  }
+
+  private installTurnStructureRef(agentId: string, ref: ContentRef, fresh: ContentRef): boolean {
+    if (ref.source.kind !== 'turn') return false;
+    const turnId = ref.source.id;
+    const contentRefsOf = (turn: TranscriptTurn): TranscriptTurn['contentRefs'] => (turn.contentRefs ?? []).map((current) =>
+      current.direction === 'backward' && current.path.length === ref.path.length &&
+      current.path.every((part, partIndex) => part === ref.path[partIndex]) ? fresh : current);
+    const store = this.ensureAgentTranscript(agentId);
+    const live = store.getTurn(turnId);
+    if (live !== undefined) {
+      const { steps: _steps, ...rest } = live;
+      const header = carryContentHydration(live, { ...rest, contentRefs: contentRefsOf(live) });
+      return store.apply([{ op: 'turn.upsert', turn: header }]).accepted.length > 0;
+    }
+    const older = this.olderPages.get(agentId);
+    if (older === undefined) return false;
+    let changed = false;
+    const items = older.items.map((item) => {
+      if (item.kind !== 'turn' || item.turnId !== turnId) return item;
+      changed = true;
+      return carryContentHydration(item, { ...item, contentRefs: contentRefsOf(item) });
+    });
+    if (!changed) return false;
+    this.olderPages.set(agentId, { ...older, items });
+    return true;
+  }
+
   async loadContentSegment(agentId: string, ref: ContentRef): Promise<boolean> {
     const read = this.view.transcript.content?.bind(this.view.transcript);
     if (this.closed || read === undefined) return false;
@@ -2125,6 +2188,31 @@ export class SessionController {
           if (!this.closed && !controller.signal.aborted && this.latestSnapshot !== rosterBaseline) {
             this.setDetailLoad(agentId, key, undefined);
             return true;
+          }
+        }
+        const refreshKey = this.turnStructureRefreshKey(agentId, ref);
+        if (this.isTurnStructureRef(ref) && error instanceof RPCError && error.code === 40922 &&
+          !this.closed && !controller.signal.aborted && !this.turnStructureRefreshKeys.has(refreshKey)) {
+          this.turnStructureRefreshKeys.add(refreshKey);
+          try {
+            const fresh = await this.refreshTurnStructurePreview(agentId, ref, controller.signal);
+            if (fresh !== undefined && !this.closed && !controller.signal.aborted) {
+              const continued = await this.loadContentSegment(agentId, fresh);
+              if (continued) return true;
+              const view = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId);
+              const freshDetail = view?.detailLoads[`content:${JSON.stringify(fresh)}`];
+              if (!this.closed && !controller.signal.aborted) this.setDetailLoad(agentId, key, {
+                status: 'error',
+                message: freshDetail?.status === 'error' ? freshDetail.message : errorMessage(error, 'Could not load the next content segment'),
+              });
+              return false;
+            }
+          } catch (refreshError) {
+            if (this.closed || controller.signal.aborted) return false;
+            this.setDetailLoad(agentId, key, { status: 'error', message: errorMessage(refreshError, 'Could not load the next content segment') });
+            return false;
+          } finally {
+            this.turnStructureRefreshKeys.delete(refreshKey);
           }
         }
         if (!this.closed && !controller.signal.aborted) this.setDetailLoad(agentId, key, { status: 'error', message: errorMessage(error, 'Could not load the next content segment') });

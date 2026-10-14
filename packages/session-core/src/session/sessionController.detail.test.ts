@@ -1,8 +1,20 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { SessionSnapshotResponse } from '@kiki/protocol';
-import type { SessionViewFacade, SessionViewSignal, SessionViewTranscriptDetail } from '@kiki/klient/session-view';
-import type { AgentTranscriptSnapshot, TranscriptTask } from '@kiki/transcript';
+import { RPCError, type SessionViewFacade, type SessionViewSignal, type SessionViewTranscriptDetail } from '@kiki/klient/session-view';
+import {
+  applyOperation,
+  EMPTY_AGENT_STATE,
+  rebindTurnContentRefs,
+  transcriptTurnSchema,
+  type AgentTranscriptSnapshot,
+  type ContentRef,
+  type TranscriptFrame,
+  type TranscriptOperation,
+  type TranscriptTask,
+  type TranscriptTurn,
+} from '@kiki/transcript';
+import { boundedEntity, ContentChangedError, readContentSegment } from '../../../kap-server/src/transport/klient/boundedContent';
 
 import type { SessionTransport } from '../transport';
 import { SessionController } from './sessionController';
@@ -1651,5 +1663,201 @@ describe('automatic lightweight roster', () => {
     expect(controller.getState().snapshotSubagents).toHaveLength(4);
     expect(controller.getState().contentRefs).toContainEqual(ref);
     controller.close();
+  });
+});
+
+describe('hidden prefix turn preview', () => {
+  const turnOp: TranscriptOperation = {
+    op: 'turn.upsert',
+    turn: { kind: 'turn', turnId: 't1', ordinal: 0, state: 'running', origin: { kind: 'user' }, promptId: 'prompt-1' },
+  };
+  const stepOp: TranscriptOperation = {
+    op: 'step.upsert', turnId: 't1',
+    step: { kind: 'step', stepId: 's1', turnId: 't1', ordinal: 0, state: 'running' },
+  };
+  const text = (frameId: string, role: 'user' | 'assistant', body: string): TranscriptOperation => ({
+    op: 'frame.upsert', turnId: 't1', stepId: 's1',
+    frame: { kind: 'text', frameId, role, text: body },
+  });
+  const hiddenFrame: TranscriptFrame = {
+    kind: 'text', frameId: 'hidden', role: 'user', text: 'hidden-injection',
+    origin: { kind: 'injection', variant: 'memory' },
+  };
+
+  function reduce(ops: readonly TranscriptOperation[]) {
+    return ops.reduce((current, op) => applyOperation(current, op).state, EMPTY_AGENT_STATE);
+  }
+
+  function turnOf(state: ReturnType<typeof reduce>): TranscriptTurn {
+    const turn = state.items.find((item) => item.kind === 'turn');
+    if (turn?.kind !== 'turn') throw new Error('missing turn');
+    return turn;
+  }
+
+  function frameRef(turn: TranscriptTurn): ContentRef {
+    const ref = turn.contentRefs?.find((candidate) => candidate.direction === 'backward' && candidate.path[2] === 'frames');
+    if (ref === undefined) throw new Error('missing backward frame ref');
+    return ref;
+  }
+
+  function mintTail(turn: TranscriptTurn): { preview: TranscriptTurn; ref: ContentRef; maxBytes: number } {
+    for (let maxBytes = 250; maxBytes <= 12000; maxBytes += 25) {
+      const preview = boundedEntity(turn, { kind: 'turn', id: turn.turnId }, maxBytes, 'main', 'tail');
+      const ref = preview.contentRefs?.find((candidate) => candidate.direction === 'backward' && candidate.path[2] === 'frames');
+      if (ref?.offset === 1 && ref.total === 3) return { preview, ref, maxBytes };
+    }
+    throw new Error('boundedEntity did not mint a backward frame ref at offset 1 total 3');
+  }
+
+  function hiddenPrefixFixture() {
+    const fresh = reduce([
+      turnOp, stepOp,
+      text('omitted-reply', 'assistant', 'OMITTED-PREFIX '.repeat(40)),
+      text('user-b', 'user', 'VISIBLE-USER '.repeat(40)),
+      text('reply', 'assistant', 'VISIBLE-REPLY '.repeat(40)),
+    ]);
+    const full = transcriptTurnSchema.parse(turnOf(fresh));
+    const { preview, ref, maxBytes } = mintTail(full);
+    const bumped = applyOperation({ ...EMPTY_AGENT_STATE, items: [preview] }, {
+      op: 'frame.upsert', turnId: 't1', stepId: 's1', place: 'safety_boundary', frameIndex: 0, frame: hiddenFrame,
+    });
+    const loaded = applyOperation(bumped.state, text('follow-up', 'user', 'LOADED-LATER'));
+    const { steps: _steps, ...header } = turnOf(loaded.state);
+    const named = applyOperation(loaded.state, {
+      op: 'turn.upsert',
+      turn: { ...header, prompt: 'owned-prompt', promptId: 'prompt-1', origin: { kind: 'user' } },
+    });
+    const inserted = transcriptTurnSchema.parse({
+      ...full,
+      steps: full.steps.map((step, index) => index === 0 ? { ...step, frames: [hiddenFrame, ...step.frames] } : step),
+    });
+    const insertedAgain = transcriptTurnSchema.parse({
+      ...inserted,
+      steps: inserted.steps.map((step, index) => index === 0 ? { ...step, frames: [{ ...hiddenFrame, frameId: 'hidden-2', text: 'second-hidden' }, ...step.frames] } : step),
+    });
+    return { ref, maxBytes, client: turnOf(named.state), inserted, insertedAgain };
+  }
+
+  function segmentRead(entity: TranscriptTurn): NonNullable<SessionViewFacade['transcript']['content']> {
+    return async ({ ref: requested }) => {
+      try {
+        return readContentSegment(entity, requested);
+      } catch (error) {
+        if (error instanceof ContentChangedError) throw new RPCError(40922, error.message);
+        throw error;
+      }
+    };
+  }
+
+  function previewPage(entity: TranscriptTurn, maxBytes: number): NonNullable<SessionViewFacade['transcript']['page']> {
+    return (async () => ({
+      session_id: 'session_test', agent_id: 'main', has_more: false,
+      tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [],
+      coverage: { kind: 'tail', hasMoreOlder: false },
+      items: [rebindTurnContentRefs(boundedEntity(entity, { kind: 'turn', id: entity.turnId }, maxBytes, 'main', 'tail'))],
+    })) as NonNullable<SessionViewFacade['transcript']['page']>;
+  }
+
+  function blockText(controller: SessionController, textValue: string): boolean {
+    return controller.getState().blocks.some((block) => 'text' in block && block.text === textValue || 'text' in block && typeof block.text === 'string' && block.text.includes(textValue));
+  }
+
+  it('reloads one fresh turn preview after a hidden prefix insert and keeps the loaded suffix', async () => {
+    const fixture = hiddenPrefixFixture();
+    const content = vi.fn(segmentRead(fixture.inserted));
+    const { controller, deliver, view } = harness(undefined, content);
+    vi.mocked(view.transcript.page).mockImplementation(previewPage(fixture.inserted, fixture.maxBytes));
+    await controller.open();
+    const sibling: TranscriptTurn = {
+      kind: 'turn', turnId: 't2', ordinal: 2, state: 'completed', origin: { kind: 'user' }, prompt: 'SIBLING-PAGE', steps: [],
+    };
+    deliver(resetEvent('main', emptySnapshot({ items: [fixture.client, sibling] }), 2));
+    const source = { kind: 'turn' as const, id: 't1' };
+    const before = controller.contentRefsFor('main', source).find((candidate) => candidate.direction === 'backward' && candidate.path[2] === 'frames');
+    expect(before).toMatchObject({ offset: fixture.ref.offset + 1, total: fixture.ref.total + 1, revision: fixture.ref.revision });
+    expect(blockText(controller, 'LOADED-LATER')).toBe(true);
+    expect(blockText(controller, 'hidden-injection')).toBe(false);
+    try {
+      expect(await controller.loadOlderMessages()).toBe(true);
+      expect(view.snapshot).toHaveBeenCalledTimes(1);
+      expect(view.transcript.catchUp).not.toHaveBeenCalled();
+      expect(view.transcript.page).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(view.transcript.page).mock.calls[0]?.[0]).toEqual({ agentId: 'main', beforeTurn: 't2', pageSize: 1 });
+      expect(content.mock.calls[0]?.[0].ref.revision).toBe(fixture.ref.revision);
+      expect(content.mock.calls.slice(1).every(([input]) => input.ref.revision !== fixture.ref.revision)).toBe(true);
+      expect(content.mock.calls.length).toBeGreaterThan(1);
+      const after = controller.contentRefsFor('main', source).find((candidate) => candidate.direction === 'backward' && candidate.path[2] === 'frames');
+      expect(after === undefined || after.offset < (before?.offset ?? 0)).toBe(true);
+      expect(blockText(controller, 'owned-prompt')).toBe(true);
+      expect(blockText(controller, 'hidden-injection')).toBe(true);
+      expect(blockText(controller, 'OMITTED-PREFIX')).toBe(true);
+      expect(blockText(controller, 'VISIBLE-USER')).toBe(true);
+      expect(blockText(controller, 'LOADED-LATER')).toBe(true);
+      expect(controller.getState().blocks.find((block) => block.kind === 'user' && block.text === 'owned-prompt')).toMatchObject({
+        turnId: 't1', promptId: 'prompt-1',
+      });
+      expect(blockText(controller, 'SIBLING-PAGE')).toBe(true);
+      expect(controller.getAgentTranscriptCursor('main')).toEqual({ seq: 2, epoch: 'epoch-canonical' });
+      expect(controller.getState().olderError).toBeUndefined();
+      const calls = content.mock.calls.length;
+      await controller.loadOlderMessages();
+      expect(view.transcript.page).toHaveBeenCalledTimes(1);
+      expect(view.snapshot).toHaveBeenCalledTimes(1);
+      expect(content.mock.calls.slice(calls).some(([input]) => input.ref.revision === fixture.ref.revision)).toBe(false);
+    } finally { controller.close(); }
+  });
+
+  it('surfaces a second structure conflict instead of paging the turn again', async () => {
+    const fixture = hiddenPrefixFixture();
+    const content = vi.fn(segmentRead(fixture.insertedAgain));
+    const { controller, deliver, view } = harness(undefined, content);
+    vi.mocked(view.transcript.page).mockImplementation(previewPage(fixture.inserted, fixture.maxBytes));
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ items: [fixture.client] }), 2));
+    try {
+      expect(await controller.loadOlderMessages()).toBe(false);
+      expect(view.transcript.page).toHaveBeenCalledTimes(1);
+      expect(content).toHaveBeenCalledTimes(2);
+      expect(content.mock.calls[1]?.[0].ref.revision).not.toBe(fixture.ref.revision);
+      expect(controller.getState().olderError).toMatch(/Content changed/);
+      expect(blockText(controller, 'LOADED-LATER')).toBe(true);
+      expect(blockText(controller, 'hidden-injection')).toBe(false);
+      expect(view.snapshot).toHaveBeenCalledTimes(1);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(view.transcript.page).toHaveBeenCalledTimes(1);
+      expect(content).toHaveBeenCalledTimes(2);
+    } finally { controller.close(); }
+  });
+
+  it('drops a cancelled preview and leaves the loaded suffix on the old ref', async () => {
+    const fixture = hiddenPrefixFixture();
+    const content = vi.fn(segmentRead(fixture.inserted));
+    let releasePage!: (page: Awaited<ReturnType<NonNullable<SessionViewFacade['transcript']['page']>>>) => void;
+    const { controller, deliver, view } = harness(undefined, content);
+    vi.mocked(view.transcript.page).mockImplementation(() => new Promise((resolve) => { releasePage = resolve; }));
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ items: [fixture.client] }), 2));
+    const source = { kind: 'turn' as const, id: 't1' };
+    const revisionOf = () => controller.contentRefsFor('main', source).find((candidate) => candidate.direction === 'backward' && candidate.path.length === 3)?.revision;
+    expect(revisionOf()).toBe(fixture.ref.revision);
+    const request = new AbortController();
+    try {
+      const pending = controller.loadOlderMessages('main', request.signal);
+      await vi.waitFor(() => { expect(view.transcript.page).toHaveBeenCalledTimes(1); });
+      request.abort();
+      const pageSignal = vi.mocked(view.transcript.page).mock.calls[0]?.[1]?.signal;
+      expect(pageSignal?.aborted).toBe(true);
+      expect(revisionOf()).toBe(fixture.ref.revision);
+      const late = await previewPage(fixture.inserted, fixture.maxBytes)({ agentId: 'main' });
+      expect(revisionOf()).toBe(fixture.ref.revision);
+      releasePage(late);
+      expect(await pending).toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(revisionOf()).toBe(fixture.ref.revision);
+      expect(blockText(controller, 'LOADED-LATER')).toBe(true);
+      expect(blockText(controller, 'hidden-injection')).toBe(false);
+      expect(content).toHaveBeenCalledTimes(1);
+      expect(view.snapshot).toHaveBeenCalledTimes(1);
+    } finally { controller.close(); }
   });
 });
