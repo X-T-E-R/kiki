@@ -1039,6 +1039,41 @@ describe('server-v2 /api prompts', () => {
     expect(profile.data().execution).toEqual(before.execution);
   });
 
+  it('authorizes a legacy unpinned profile switch with the current model when the native default has no credential', async () => {
+    server!.core.accessor.get(IAgentProfileRegistry).register({
+      sourceId: 'legacy-unpinned-switch-fixture', priority: 50,
+      contribution: { profiles: [normalizeAgentProfile({
+        name: 'open-legacy', definitionId: 'fixture:open-legacy', systemPrompt: () => 'OPEN_LEGACY',
+      })] },
+    });
+    const id = await createSession(home as string);
+    await createHeldMainAgent(id);
+    const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+    const profile = main.accessor.get(IAgentProfileService);
+    expect(profile.data().execution).toBeUndefined();
+    expect(profile.getModel()).toBe('stub');
+    expect(profile.data().executorId ?? 'native').toBe('native');
+    await writeConfigToml(home as string, PROMPT_TOML + [
+      '', '[providers.bare]', 'type = "openai"', 'base_url = "http://127.0.0.1:9"',
+      '[models.bare-model]', 'provider = "bare"', 'model = "bare-model"', 'max_context_size = 1000',
+      '', '[agent_executor_overrides.native.defaults]', 'model_alias = "bare-model"', '',
+    ].join('\n'));
+    const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'Keep the current model.' }],
+      execution: { executor: 'native', profile: 'open-legacy' },
+    });
+    expect(submitted.body.code, submitted.body.msg).toBe(0);
+    expect(profile.getModel()).toBe('stub');
+    expect(profile.data()).toMatchObject({
+      profileName: 'open-legacy', modelAlias: 'stub',
+      execution: {
+        selection: { executor: 'native', profile: 'open-legacy', overrides: { model: 'stub' } },
+        effective: { model: 'stub' }, sources: { model: 'session' },
+      },
+    });
+    expect(main.accessor.get(IAgentPromptService).abort(submitted.body.data.prompt_id)).toBe(true);
+  }, 60_000);
+
   it('keeps the current model across an unpinned profile switch and applies a pin or an explicit clear', async () => {
     server!.core.accessor.get(IAgentProfileRegistry).register({
       sourceId: 'unpinned-switch-fixture', priority: 50,

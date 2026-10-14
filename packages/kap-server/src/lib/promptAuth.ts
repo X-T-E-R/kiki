@@ -78,7 +78,11 @@ async function nativeExecutionAuthModel(
   const defaults = config.get<AgentExecutorOverridesConfig>(AGENT_EXECUTOR_OVERRIDES_SECTION)?.[requested.executor]?.defaults;
   const configured = config.get<string>('defaultModel')?.trim();
   const engineModel = configured === undefined || configured.length === 0 ? undefined : models.resolveId(configured);
+  const binding = profile.data();
+  const liveModel = binding.execution === undefined && (binding.executorId ?? 'native') === requested.executor
+    ? profile.getModel() || undefined
+    : undefined;
   return resolveSelectedExecutionBinding(requested, {
     model: requestedModel ?? execution.overrides?.model,
-  }, defaults, selected, profile.data().execution, { model: engineModel }).effective.model;
+  }, defaults, selected, binding.execution, { model: engineModel }, liveModel).effective.model;
 }
