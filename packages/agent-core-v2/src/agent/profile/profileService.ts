@@ -850,10 +850,14 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       requested.executor === 'native' ? (id) => this.models.resolveId(id) : (id) => id);
     const sameGroup = profile !== undefined && (profile.executor ?? 'native') === requested.executor;
     const defaults = this.config.get<AgentExecutorOverridesConfig>(AGENT_EXECUTOR_OVERRIDES_SECTION)?.[requested.executor]?.defaults;
+    const liveModel = this.profileState.execution === undefined
+      && (this.profileState.executorId ?? 'native') === requested.executor
+      ? this.modelAlias
+      : undefined;
     const execution = resolveSelectedExecutionBinding(requested, input, defaults, profile, this.profileState.execution, {
       model: this.nativeEngineDefaultModel(),
       thinkingFor: (model) => this.nativeEngineDefaultThinking(model),
-    });
+    }, liveModel);
     if (execution.effective.model === INHERIT_MODEL_ALIAS) throw new ProfileError(ProfileErrors.codes.MODEL_CONFIG_INVALID, 'A main agent execution selection cannot inherit a caller model');
     if (this.profileState.execution === undefined) execution.generation = this.profileState.renderGeneration + 1;
     const role = profile === undefined ? undefined : executionSelectionProfile(profile, requested.executor, execution.effective);

@@ -1039,6 +1039,74 @@ describe('server-v2 /api prompts', () => {
     expect(profile.data().execution).toEqual(before.execution);
   });
 
+  it('keeps the current model across an unpinned profile switch and applies a pin or an explicit clear', async () => {
+    server!.core.accessor.get(IAgentProfileRegistry).register({
+      sourceId: 'unpinned-switch-fixture', priority: 50,
+      contribution: { profiles: [
+        normalizeAgentProfile({ name: 'open-role', definitionId: 'fixture:open-role', systemPrompt: () => 'OPEN' }),
+        normalizeAgentProfile({ name: 'open-other', definitionId: 'fixture:open-other', systemPrompt: () => 'OTHER' }),
+        normalizeAgentProfile({ name: 'pinned-role', definitionId: 'fixture:pinned-role', modelAlias: 'stub-alt', systemPrompt: () => 'PINNED' }),
+      ] },
+    });
+    const id = await createSession(home as string);
+    await createHeldMainAgent(id);
+    const main = () => getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+    const profile = () => main().accessor.get(IAgentProfileService);
+    const submit = async (body: Record<string, unknown>) => {
+      const response = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+        content: [{ type: 'text', text: 'Switch profile.' }], ...body,
+      });
+      if (response.body.code === 0) {
+        const prompts = main().accessor.get(IAgentPromptService);
+        expect(prompts.abort(response.body.data.prompt_id)).toBe(true);
+        await vi.waitFor(() => expect(prompts.list().active).toBeUndefined());
+      }
+      return response;
+    };
+    const selected = await submit({ execution: { executor: 'native', profile: 'open-role', overrides: { model: 'stub' } } });
+    expect(selected.body.code, selected.body.msg).toBe(0);
+    expect(profile().data()).toMatchObject({
+      profileName: 'open-role', modelAlias: 'stub',
+      execution: { effective: { model: 'stub' }, sources: { model: 'session' } },
+    });
+
+    await writeConfigToml(home as string, PROMPT_TOML + [
+      '', '[providers.bare]', 'type = "openai"', 'base_url = "http://127.0.0.1:9"',
+      '[models.bare-model]', 'provider = "bare"', 'model = "bare-model"', 'max_context_size = 1000',
+      '', '[agent_executor_overrides.native.defaults]', 'model_alias = "bare-model"', '',
+    ].join('\n'));
+    const kept = await submit({ execution: { executor: 'native', profile: 'open-other' } });
+    expect(kept.body.code, kept.body.msg).toBe(0);
+    expect(profile().getModel()).toBe('stub');
+    expect(profile().data().execution).toMatchObject({
+      selection: { executor: 'native', profile: 'open-other', overrides: { model: 'stub' } },
+      effective: { model: 'stub' }, sources: { model: 'session' },
+    });
+
+    const pinned = await submit({ execution: { executor: 'native', profile: 'pinned-role' } });
+    expect(pinned.body.code, pinned.body.msg).toBe(0);
+    expect(profile().data()).toMatchObject({
+      profileName: 'pinned-role', modelAlias: 'stub-alt',
+      execution: {
+        selection: { executor: 'native', profile: 'pinned-role' },
+        effective: { model: 'stub-alt' }, sources: { model: 'profile' },
+      },
+    });
+    expect(profile().data().execution?.selection.overrides?.model).toBeUndefined();
+
+    await writeConfigToml(home as string, PROMPT_TOML + [
+      '', '[agent_executor_overrides.native.defaults]', 'model_alias = "stub"', '',
+    ].join('\n'));
+    const cleared = await submit({ execution: { executor: 'native', profile: 'open-other', overrides: { model: null } } });
+    expect(cleared.body.code, cleared.body.msg).toBe(0);
+    expect(profile().data()).toMatchObject({
+      profileName: 'open-other', modelAlias: 'stub',
+      execution: { effective: { model: 'stub' }, sources: { model: 'harness-settings' } },
+    });
+    expect(profile().data().execution?.selection.overrides?.model).toBeUndefined();
+    expect(profile().getModel()).not.toBe('stub-alt');
+  }, 60_000);
+
   it('binds named and file profiles across native and external through the projected model', async () => {
     const externalPath = join(home as string, 'external.md');
     const nativePath = join(home as string, 'native.md');

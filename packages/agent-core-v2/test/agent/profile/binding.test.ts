@@ -541,11 +541,104 @@ describe('AgentProfileService.bind', () => {
     const switched = resolveExecutionBinding({ executor: 'grok-acp' }, undefined, native, previous);
     expect(switched.effective.model).toBeUndefined();
     expect(switched.selection.overrides).toBeUndefined();
+    const open = normalizeAgentProfile({ name: 'open', systemPrompt: () => 'open' });
+    const kept = resolveExecutionBinding({ executor: 'native', profile: 'open' }, undefined, open, previous);
+    expect(kept.effective.model).toBe('old-native');
+    expect(kept.sources.model).toBe('session');
+    expect(kept.selection.overrides).toEqual({ model: 'old-native' });
+    const pinnedProfile = normalizeAgentProfile({ name: 'pinned', modelAlias: 'native-pin', systemPrompt: () => 'pin' });
+    const adopted = resolveExecutionBinding({ executor: 'native', profile: 'pinned' }, undefined, pinnedProfile, kept);
+    expect(adopted.effective.model).toBe('native-pin');
+    expect(adopted.sources.model).toBe('profile');
+    expect(adopted.selection.overrides?.model).toBeUndefined();
+    const clearedPin = resolveExecutionBinding({ executor: 'native', profile: 'open', overrides: { model: null } }, {
+      model_alias: 'settings-model',
+    }, open, adopted);
+    expect(clearedPin.effective.model).toBe('settings-model');
+    expect(clearedPin.sources.model).toBe('harness-settings');
+    expect(resolveExecutionBinding({ executor: 'native', profile: 'open' }, undefined, open, undefined).effective.model).toBeUndefined();
+    expect(resolveExecutionBinding({ executor: 'native', profile: 'open' }, undefined, open, undefined, undefined, 'live-model').effective)
+      .toMatchObject({ model: 'live-model' });
+    expect(resolveExecutionBinding({ executor: 'grok-acp' }, undefined, open, previous, undefined, 'old-native').effective.model).toBeUndefined();
     const external = normalizeAgentProfile({
       name: 'ext', executor: 'grok-acp', modelAlias: 'raw-id', thinkingEffort: 'max', systemPrompt: () => 'x',
     });
     expect(resolveExecutionBinding({ executor: 'grok-acp' }, undefined, external, undefined, engineDefault).effective)
       .toMatchObject({ model: 'raw-id', thinking: 'max' });
+  });
+
+  it('keeps the live model when an unpinned profile is selected and still applies a pin or an explicit clear', async () => {
+    const open = normalizeAgentProfile({ name: 'open', systemPrompt: () => 'OPEN' });
+    const other = normalizeAgentProfile({ name: 'other', systemPrompt: () => 'OTHER' });
+    const pinned = normalizeAgentProfile({ name: 'pinned', modelAlias: 'mock-pin', systemPrompt: () => 'PINNED' });
+    const profiles = [open, other, pinned];
+    const catalog: ISessionAgentProfileCatalog = {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      onDidChange: Event.None as ISessionAgentProfileCatalog['onDidChange'],
+      get: (name) => profiles.find((profile) => profile.name === name),
+      getDefault: () => open,
+      list: () => profiles,
+      listRoutes: () => [],
+      routeDiagnostics: () => [],
+      resolveSelection: ({ profile: name }) => {
+        const profile = profiles.find((candidate) => candidate.name === name);
+        if (profile === undefined) throw new Error(`Unknown agent profile: "${name ?? ''}"`);
+        return { profile, baseProfile: profile };
+      },
+      inspect: () => undefined,
+      load: async () => {},
+      reload: async () => {},
+    };
+    ctx = createTestAgent(
+      appService(IAgentExecutorRegistry, externalExecutorRegistry()),
+      sessionService(ISessionAgentProfileCatalog, catalog),
+      hostEnvironmentServices(homeDir, hostPathClass),
+    );
+    await ctx.get(IModelService).set('mock-pin', {
+      provider: 'test-provider', model: 'mock-pin', maxContextSize: 1_000_000, defaultEffort: 'off',
+    });
+    const service = ctx.get(IAgentProfileService);
+    await service.bind({ profile: 'open', model: MOCK_MODEL });
+    expect(service.data().execution).toBeUndefined();
+    expect(service.getModel()).toBe(MOCK_MODEL);
+
+    await service.bind({ execution: { executor: 'native', profile: 'other' } });
+    expect(service.data()).toMatchObject({
+      profileName: 'other', modelAlias: MOCK_MODEL,
+      execution: {
+        selection: { executor: 'native', profile: 'other', overrides: { model: MOCK_MODEL } },
+        effective: { model: MOCK_MODEL }, sources: { model: 'session' },
+      },
+    });
+
+    await service.bind({ execution: { executor: 'native', profile: 'pinned' } });
+    expect(service.data()).toMatchObject({
+      profileName: 'pinned', modelAlias: 'mock-pin',
+      execution: { selection: { executor: 'native', profile: 'pinned' }, effective: { model: 'mock-pin' }, sources: { model: 'profile' } },
+    });
+    expect(service.data().execution?.selection.overrides?.model).toBeUndefined();
+
+    await service.bind({ execution: { executor: 'native', profile: 'other' } });
+    expect(service.getModel()).toBe('mock-pin');
+    expect(service.data().execution).toMatchObject({
+      selection: { profile: 'other', overrides: { model: 'mock-pin' } },
+      effective: { model: 'mock-pin' }, sources: { model: 'session' },
+    });
+
+    await ctx.get(IConfigService).set('agentExecutorOverrides', { native: { defaults: { model_alias: MOCK_MODEL } } }, ConfigTarget.Memory);
+    await service.bind({ execution: { executor: 'native', profile: 'other', overrides: { model: null } } });
+    expect(service.data()).toMatchObject({
+      profileName: 'other', modelAlias: MOCK_MODEL,
+      execution: { effective: { model: MOCK_MODEL }, sources: { model: 'harness-settings' } },
+    });
+    expect(service.data().execution?.selection.overrides?.model).toBeUndefined();
+
+    await service.bind({ execution: { executor: 'grok-acp', profile: 'other' } });
+    expect(service.data().executorId).toBe('grok-acp');
+    expect(service.data().modelAlias).toBeUndefined();
+    expect(service.data().execution?.effective.model).toBeUndefined();
+    expect(service.data().execution?.selection.overrides).toBeUndefined();
   });
 
   it('selects an external executor on a native profile without borrowing its model, effort, or options', async () => {

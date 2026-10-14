@@ -13,6 +13,7 @@ export function resolveExecutionBinding(
     readonly model?: string;
     readonly thinkingFor?: (model: string) => string | undefined;
   },
+  liveModel?: string,
 ): ExecutionBinding {
   const sameSelection = previous?.selection.executor === requested.executor && previous.selection.profile === requested.profile
     && previous.selection.profile_file === requested.profile_file;
@@ -20,6 +21,18 @@ export function resolveExecutionBinding(
   for (const [key, value] of Object.entries(requested.overrides ?? {})) {
     if (value === null) delete overrides[key as keyof ExecutionOverrides];
     else if (value !== undefined) Object.assign(overrides, { [key]: value });
+  }
+  const sameGroup = profile !== undefined && (profile.executor ?? 'native') === requested.executor;
+  // A profile change drops every prior override. On the same executor, an unpinned
+  // profile keeps the model already in effect; a pin, an explicit model, null, a
+  // different executor, or a first bind with no live model does not.
+  if (requested.overrides?.model === undefined && sameGroup && profile?.modelAlias === undefined && overrides.model === undefined) {
+    const carried = previous === undefined
+      ? liveModel
+      : previous.selection.executor === requested.executor && !sameSelection
+        ? previous.effective.model
+        : undefined;
+    if (carried !== undefined && carried.length > 0) overrides.model = carried;
   }
   const selection: ExecutionSelection = { executor: requested.executor, profile: requested.profile, profile_file: requested.profile_file,
     overrides: Object.keys(overrides).length > 0 ? overrides : undefined };
@@ -32,7 +45,6 @@ export function resolveExecutionBinding(
     sources[key] = 'harness-default';
     return undefined;
   };
-  const sameGroup = profile !== undefined && (profile.executor ?? 'native') === requested.executor;
   let model = pick('model', sameGroup ? profile?.modelAlias : undefined, defaults?.model_alias);
   if (model === undefined && profile !== undefined && !sameGroup && engineDefault?.model !== undefined) {
     model = engineDefault.model;
@@ -67,6 +79,7 @@ export function resolveSelectedExecutionBinding(
     readonly model?: string;
     readonly thinkingFor?: (model: string) => string | undefined;
   },
+  liveModel?: string,
 ): ExecutionBinding {
   const sameGroup = profile !== undefined && (profile.executor ?? 'native') === requested.executor;
   return resolveExecutionBinding({
@@ -76,5 +89,5 @@ export function resolveSelectedExecutionBinding(
       model: prompt.model ?? requested.overrides?.model,
       thinking: prompt.thinking ?? requested.overrides?.thinking,
     },
-  }, defaults, profile, previous, profile !== undefined && !sameGroup && requested.executor === 'native' ? nativeEngine : undefined);
+  }, defaults, profile, previous, profile !== undefined && !sameGroup && requested.executor === 'native' ? nativeEngine : undefined, liveModel);
 }
