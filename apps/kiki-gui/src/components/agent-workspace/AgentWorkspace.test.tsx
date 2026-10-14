@@ -19,6 +19,8 @@ import { I18nProvider } from '../../i18n';
 import { ApiError, ExternalAgentAttachmentUnsupportedError, NativeChildPromptConflictError, NativeChildPromptSendError, type AgentModelSwitchEvent, type QueuedModelSwitch } from '../../lib/client';
 import type { MediaPreviewApi } from '../mediaPreviewContext';
 import { AgentTreeView } from '../AgentTreeView';
+import { relatedAgentNodes } from '../AgentBreadcrumb';
+import { agentContinuationAvailable } from './AgentWorkspace';
 import { AgentWorkspace } from './OwnedAgentWorkspace';
 
 const harness = vi.hoisted(() => ({
@@ -105,7 +107,14 @@ vi.mock('../ConversationShell', () => ({
       : null,
 }));
 vi.mock('../ActivityHistory', () => ({ revealSubagentCard: () => true }));
-vi.mock('../AgentBreadcrumb', () => ({ AgentBreadcrumb: () => null, AgentRelations: () => null }));
+vi.mock('../AgentBreadcrumb', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../AgentBreadcrumb')>();
+  return {
+    ...actual,
+    AgentBreadcrumb: () => null,
+    AgentRelations: () => null,
+  };
+});
 vi.mock('../mediaPreview', () => ({
   MediaPreviewProvider: (props: { children?: ReactNode; apiRef?: unknown }) => {
     harness.mediaProviderProps.push(props);
@@ -116,8 +125,9 @@ vi.mock('../PreviewToggleButton', () => ({ PreviewToggleButton: () => <div data-
 vi.mock('../RightRail', () => ({ RightRail: () => null }));
 vi.mock('../../host', () => ({ useHost: () => harness.host }));
 vi.mock('../../host/vscode', () => ({ isVscodeWebview: () => false, vscodeHost: { preparePrompt: vi.fn() } }));
-vi.mock('../Transcript', () => ({ Transcript: ({ state, agentId }: { state: { blocks: readonly unknown[] }; agentId?: string }) =>
-  <div data-timeline-agent={agentId ?? 'main'} data-timeline-blocks={state.blocks.length} /> }));
+vi.mock('../Transcript', () => ({ Transcript: ({ state, agentId }: { state: { blocks: readonly unknown[]; loadError?: string; transcriptReady?: boolean }; agentId?: string }) =>
+  <div data-timeline-agent={agentId ?? 'main'} data-timeline-blocks={state.blocks.length}
+    data-timeline-error={state.loadError} data-timeline-ready={state.transcriptReady === true ? 'true' : 'false'} /> }));
 vi.mock('./ResyncStatusBanner', () => ({ ResyncStatusBanner: () => null }));
 vi.mock('../../lib/toasts', () => ({ pushToast: harness.pushToast }));
 
@@ -1213,7 +1223,12 @@ it('keeps the preview-tab composer disabled for an agent the forest does not kno
   }
 });
 
-const EMPTY_AGENT_STATE = createViewState('');
+const EMPTY_AGENT_STATE = {
+  ...createViewState(''),
+  loaded: true,
+  transcriptReady: true,
+  historyCoverageKind: 'full' as const,
+};
 
 it('mounts no annotation tray over the child dock — sent notes fold into the message bubble', async () => {
   const forest = testForest('completed');
@@ -1802,4 +1817,72 @@ it('keeps child A text and attachments through real A/B/A routes without sending
   await clickComposerSend();
   expect(harness.sendAgentMessage.mock.calls[1]?.slice(0, 3)).toEqual(['session', 'child', 'DRAFT FOR A']);
   expect(harness.sendAgentMessage.mock.calls[1]?.[3]).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'image' })]));
+});
+
+it('falls back to main agent as parent when subagent is missing from forest', () => {
+  const forest = forestWithoutChild();
+  const related = relatedAgentNodes(forest, 'missing-child');
+  expect(related.parent?.agentId).toBe('main');
+  expect(related.siblings).toEqual([]);
+  expect(related.children).toEqual([]);
+});
+
+it('retains delta view on mount and releases on unmount for deep-linked child agent', async () => {
+  const retainAgentView = vi.fn();
+  const releaseAgentView = vi.fn();
+  const updateAgentView = vi.fn();
+  const controller = Object.assign(
+    controllerStub({ forest: testForest(), agentStates: {} }),
+    { retainAgentView, releaseAgentView, updateAgentView },
+  );
+  await renderWorkspace({ controller, transcriptVisible: true });
+  expect(retainAgentView).toHaveBeenCalledWith('workspace:session:child', 'child', 'delta');
+
+  await act(async () => { root.unmount(); });
+  expect(releaseAgentView).toHaveBeenCalledWith('workspace:session:child');
+});
+
+it('opens a persisted body when the recent forest omits its agent, but keeps the body as the continuation evidence', async () => {
+  const legacyState = {
+    ...createViewState('session'),
+    loaded: true,
+    transcriptReady: true,
+    model: 'legacy/model',
+    historyCoverageKind: 'full' as const,
+    blocks: [{ kind: 'user', id: 'legacy-user', text: 'saved history' }] as never,
+  };
+  const forest = forestWithoutChild();
+  const controller = controllerStub({ forest, agentStates: { child: legacyState } });
+  await renderWorkspace({ controller, forest });
+  await settle();
+
+  expect(container.querySelector('[data-timeline-agent="child"]')?.getAttribute('data-timeline-blocks')).toBe('1');
+  expect(dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')?.disabled).toBe(false);
+  expect(agentContinuationAvailable({ controller, node: undefined, subagent: undefined, state: legacyState })).toBe(true);
+});
+
+it('settles a loaded partial empty target as unavailable and never enables continuation', async () => {
+  const main = forestWithoutChild().byId['main']!;
+  const unknown: AgentTreeNode = {
+    agentId: 'child', parentAgentId: 'main', name: 'child', label: 'child', status: 'unknown',
+    busy: false, toolCallCount: 0, childIds: [],
+  };
+  const forest: AgentForest = { roots: [main], byId: { main: { ...main, childIds: ['child'] }, child: unknown } };
+  const unknownState = {
+    ...createViewState('session'),
+    loaded: true,
+    transcriptReady: true,
+    historyCoverageKind: 'unknown' as const,
+  };
+  const controller = controllerStub({ forest, agentStates: { child: unknownState } });
+  await renderWorkspace({ controller, forest });
+  await settle();
+
+  expect(agentContinuationAvailable({ controller, node: unknown, subagent: undefined, state: unknownState })).toBe(false);
+  expect(dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')?.disabled).toBe(true);
+  expect(container.querySelector('[data-timeline-error]')?.getAttribute('data-timeline-error')).toContain('Name not registered');
+  expect(harness.getAgentExecutor).not.toHaveBeenCalled();
+  await typeText(dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!, 'must not send');
+  await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.click(); });
+  expect(harness.sendAgentMessage).not.toHaveBeenCalled();
 });

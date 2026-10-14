@@ -277,6 +277,30 @@ export function resolveRunningSubagentTask(input: {
 
 const emptyAgentView = createViewState('');
 
+/**
+ * A routed agent may be absent from the session's recent roster while its
+ * persisted transcript is still readable. Continuation needs stronger
+ * evidence than the route itself: an opened body, an effective identity, a
+ * terminal status, or an authoritative full read. A partial empty read is
+ * kept read-only and settles as an unavailable target instead of becoming a
+ * send gate by accident.
+ */
+export function agentContinuationAvailable(input: {
+  readonly controller: SessionController | null;
+  readonly node: AgentTreeNode | undefined;
+  readonly subagent: SubagentBlock | undefined;
+  readonly state: Pick<SessionViewState, 'blocks' | 'model' | 'historyCoverageKind' | 'transcriptReady'>;
+}): boolean {
+  if (input.controller === null) return input.node !== undefined || input.subagent !== undefined;
+  // Test/legacy embeddings may not expose view retention and already provide
+  // an authoritative forest; the real SessionController always has it.
+  if (typeof input.controller.retainAgentView === 'function' && !input.state.transcriptReady) return false;
+  if (input.state.blocks.length > 0 || input.state.model !== undefined) return true;
+  const status = input.node?.status ?? input.subagent?.status;
+  if (status !== undefined && status !== 'unknown') return true;
+  return input.state.historyCoverageKind === 'full';
+}
+
 export function WorkspaceHeader({ children, main = false }: { children: ReactNode; main?: boolean }) {
   // A quiet bar on the sheet's own ground: no rule under it — the sheet edge
   // and the transcript's top padding carry the separation.
@@ -628,6 +652,17 @@ function ChildAgentWorkspace({
       : emptyAgentView,
   );
 
+  const workspaceViewId = useMemo(() => `workspace:${sessionId}:${agentId}`, [sessionId, agentId]);
+  useEffect(() => {
+    if (controller === null || typeof controller.retainAgentView !== 'function') return;
+    controller.retainAgentView(workspaceViewId, agentId, transcriptVisible ? 'delta' : 'off');
+    return () => { controller.releaseAgentView?.(workspaceViewId); };
+  }, [controller, workspaceViewId, agentId, transcriptVisible]);
+  useEffect(() => {
+    if (controller === null || typeof controller.updateAgentView !== 'function') return;
+    controller.updateAgentView(workspaceViewId, transcriptVisible ? 'delta' : 'off');
+  }, [controller, workspaceViewId, transcriptVisible]);
+
   // Same query key as the session view: one catalog fetch, shared cache.
   const handleLoadOlder = useCallback(async (signal?: AbortSignal): Promise<boolean> => {
     if (controller === null) return false;
@@ -670,6 +705,34 @@ function ChildAgentWorkspace({
       block.kind === 'subagent' && block.subagentId === agentId,
   );
   const crumbs = useMemo(() => agentPath(forest, agentId), [forest, agentId]);
+  const selectedStatus = selectedNode?.status ?? selectedSubagent?.status;
+  const headerBusy = selectedNode?.busy === true || agentLiveState.busy;
+  const displayName = selectedNode?.label ?? selectedSubagent?.name ?? agentId;
+  const displayModel = agentLiveState.model ?? selectedNode?.model ?? selectedSubagent?.model;
+  const resolvedCrumbs = useMemo(() => {
+    if (crumbs.length > 0) return crumbs;
+    const sessionLabel = sessionState.session?.title || t('sv.sessionCrumb');
+    const mainNode: AgentTreeNode = {
+      agentId: MAIN_AGENT_ID,
+      name: 'main',
+      label: sessionLabel,
+      status: 'completed',
+      busy: false,
+      toolCallCount: 0,
+      childIds: [agentId],
+    };
+    const childNode: AgentTreeNode = {
+      agentId,
+      parentAgentId: MAIN_AGENT_ID,
+      name: displayName,
+      label: displayName,
+      status: selectedStatus ?? 'completed',
+      busy: headerBusy,
+      toolCallCount: 0,
+      childIds: [],
+    };
+    return [mainNode, childNode];
+  }, [crumbs, agentId, sessionState.session?.title, t, displayName, selectedStatus, headerBusy]);
 
   // Parent jump-back: navigate to the spawning agent's timeline, then locate
   // this agent's card there (the locate entry waits for the target view to
@@ -681,9 +744,6 @@ function ChildAgentWorkspace({
     const spawn = locateSpawnTarget(sessionId, agentId, spawnParentId);
     navigateTimeline(spawn.target, { ...spawn.options, route: spawn.route });
   };
-  const headerBusy = selectedNode?.busy === true || agentLiveState.busy;
-  const displayName = selectedNode?.label ?? selectedSubagent?.name ?? agentId;
-  const displayModel = agentLiveState.model ?? selectedNode?.model ?? selectedSubagent?.model;
   // The child run is a task on the PARENT agent's task service; nested agents
   // therefore need the parent's per-agent snapshot rather than the main one.
   const { ownerAgentId, task: runningAgentTask } = resolveRunningSubagentTask({
@@ -692,11 +752,15 @@ function ChildAgentWorkspace({
     mainTasks: sessionState.tasks,
     parentTasks: parentAgentState.tasks,
   });
-  // Sendable whenever the forest can still resolve this agent: a closed child
-  // (completed / cancelled / failed) is a wakeable target the engine resumes on
-  // a new prompt, so terminal status is not an input gate. Only a node the
-  // forest does not know at all is genuinely unreachable.
-  const agentKnown = selectedNode !== undefined;
+  // A terminal child remains wakeable, but a route alone is not permission to
+  // continue it. Old persisted bodies can establish identity after the recent
+  // roster has already dropped the row; a partial empty read cannot.
+  const agentKnown = agentContinuationAvailable({
+    controller,
+    node: selectedNode,
+    subagent: selectedSubagent,
+    state: agentLiveState,
+  });
   const reportedExecutorId = selectedNode?.executorId ?? selectedSubagent?.executorId;
   const executorBindingQuery = useQuery({
     queryKey: ['agentExecutor', scopeId, sessionId, agentId],
@@ -708,8 +772,9 @@ function ChildAgentWorkspace({
   const executorId = reportedExecutorId ?? (executorBindingQuery.isSuccess ? executorBindingQuery.data ?? 'native' : undefined);
   const externalExecutor = executorId !== undefined && !isNativeExecutor(executorId);
   const childExecution: ExecutionChoice | undefined = executorId === undefined ? undefined : {
-    executor: executorId, profile: undefined, overrides: undefined,
+    executor: executorId, profile: undefined, overrides: displayModel === undefined ? undefined : { model: displayModel },
   };
+  const agentReadUnavailable = controller !== null && agentLiveState.transcriptReady && !agentKnown;
   const composerDisabled = !agentKnown || executorId === undefined;
   const handleComposerSend = async (
     text: string,
@@ -1067,7 +1132,6 @@ function ChildAgentWorkspace({
     displayModel !== undefined
       ? resolveCatalogModel(modelsQuery.data?.items ?? [], displayModel)
       : undefined;
-  const selectedStatus = selectedNode?.status ?? selectedSubagent?.status;
   const agentTerminal =
     selectedStatus === 'completed' || selectedStatus === 'cancelled' || selectedStatus === 'failed';
   const supportedEfforts =
@@ -1137,7 +1201,8 @@ function ChildAgentWorkspace({
     // would spend the one-time initial scroll on an empty list.
     loaded: agentLiveState.loaded,
     loadError: agentLiveState.loadError ?? sessionState.loadError ??
-      (!agentLiveState.transcriptReady && sessionState.resyncFailed ? sessionState.resyncError?.message : undefined),
+      (agentReadUnavailable ? t('subagent.name.unreported', { id: agentId }) :
+        !agentLiveState.transcriptReady && sessionState.resyncFailed ? sessionState.resyncError?.message : undefined),
     busy: headerBusy,
     model: displayModel,
     thinkingEffort: displayEffort,
@@ -1156,7 +1221,7 @@ function ChildAgentWorkspace({
       slots={slots}
       header={<AgentWorkspaceHeader
         target={target} name={displayName} model={displayModel} effort={displayEffort}
-        crumbs={crumbs} forest={forest} railOpen={railOpen} onToggleRail={onToggleRail}
+        crumbs={resolvedCrumbs} forest={forest} railOpen={railOpen} onToggleRail={onToggleRail}
         navigation={navigation} showPreviewToggle={showPreviewToggle}
         showRailToggle={showRailToggle} railAvailable={railAvailable}
         showBreadcrumb={showBreadcrumb}
@@ -1189,7 +1254,7 @@ function ChildAgentWorkspace({
         </p> : null}
         <Composer
           variant="subagent" replyingTo={displayName} busy={headerBusy} disabled={composerDisabled}
-          execution={childExecution} boundExecution={childExecution}
+          boundExecution={childExecution}
           engine={executorId === undefined ? { label: t('composer.unknown'), fork: false, images: false } : undefined}
           disabledPlaceholder={t('subagent.composerUnavailable')}
           value={draft} onChange={handleDraftChange}
