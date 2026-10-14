@@ -166,6 +166,12 @@ export interface ControllerRegistry {
    * Lease ownership is separate from legacy add/delete; never borrow an externally owned controller.
    */
   acquire(sessionId: string, connectionScope: object, createController: () => SessionController): ControllerLease;
+  /**
+   * Leased or parked on this connection. The live iterator omits parked views
+   * so rails do not treat them as open; route admission must not treat that
+   * omission as "the transcript is gone".
+   */
+  hasRetained(sessionId: string, connectionScope: object): boolean;
   [Symbol.iterator](): Iterator<SessionController>;
   subscribe(listener: () => void): () => void;
   snapshot(): number;
@@ -300,6 +306,11 @@ export class LiveControllerRegistry implements ControllerRegistry {
   /** Number of parked views (for diagnostics and tests). */
   get parkedCount(): number {
     return this.parked.size;
+  }
+
+  hasRetained(sessionId: string, connectionScope: object): boolean {
+    if (sessionId === '') return false;
+    return this.retained.get(connectionScope)?.has(sessionId) === true;
   }
 
   /** Close every parked view that belongs to a connection that is going away. */

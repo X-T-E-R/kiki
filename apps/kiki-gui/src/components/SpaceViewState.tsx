@@ -62,8 +62,12 @@ export function SpaceViewState({ children }: { readonly children: ReactNode }) {
     },
   });
   const registry = useOptionalControllerRegistry();
+  // The live roster hides parked views. A return still holds that session's
+  // store on this connection, so admission must not wait out getSession
+  // before painting it. A different connection object does not count.
   const hasRetainedController = useMemo(() => {
-    if (sessionId === undefined || !registry) return false;
+    if (sessionId === undefined || registry == null) return false;
+    if (typeof registry.hasRetained === 'function') return registry.hasRetained(sessionId, client);
     try {
       for (const ctrl of registry) {
         if (ctrl.sessionId === sessionId) return true;
@@ -72,7 +76,7 @@ export function SpaceViewState({ children }: { readonly children: ReactNode }) {
       return false;
     }
     return false;
-  }, [registry, sessionId]);
+  }, [client, registry, sessionId]);
   // Only this visit's creation result, a retained controller, or an already admitted target can keep
   // its controller mounted during revalidation; an old cache entry cannot.
   const confirmed = (target.data === true && (createdHere ||
