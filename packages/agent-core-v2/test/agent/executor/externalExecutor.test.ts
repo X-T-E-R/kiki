@@ -1431,6 +1431,51 @@ describe('ACP external executor', () => {
     ]);
   });
 
+  it('reclassifies a split known preamble without placing the continuation or promoting a later unknown user', async () => {
+    const managed: { message: ContextMessage; delivery: { placement?: string } }[] = [];
+    const services = new Map<unknown, unknown>([
+      [IEventDispatcher, { dispatch: async () => {}, flush: async () => {} }],
+      [IWireService, { _serviceBrand: undefined, flush: async () => {} }],
+      [IAgentContextMemoryService, {
+        _serviceBrand: undefined,
+        appendManaged: (message: ContextMessage, delivery: { placement?: string }) => {
+          managed.push({ message, delivery });
+        },
+        appendLoopEvent: () => {},
+      }],
+      [IAgentUsageService, { _serviceBrand: undefined, record: () => {}, status: () => ({}), onDidRecord: () => ({ dispose: () => {} }) }],
+    ]);
+    const outbound = '[Kiki memory]\nremember this\n\nwork';
+    const recorder = new ExternalTurnRecorder(
+      { id: 'split-agent', accessor: { get: (id: unknown) => services.get(id) as never } },
+      4,
+      'split-session',
+      { executorId: 'example-acp', protocol: 'acp-v1', model: 'model', resumeMode: 'new', profileDelivery: 'native', outboundPrompt: outbound },
+    );
+    await recorder.begin('work', { kind: 'user' }, [], 'prompt-1');
+    await recorder.record({ type: 'message.delta', role: 'user', messageId: 'preamble', content: { type: 'text', text: '[Kiki mem' } });
+    await recorder.record({ type: 'thought.delta', messageId: 'think-1', content: { type: 'text', text: 'planning' } });
+    await recorder.record({ type: 'message.delta', role: 'user', messageId: 'preamble', content: { type: 'text', text: 'ory]\nremember this' } });
+    await recorder.record({ type: 'tool.call', toolCallId: 'read-1', title: 'Read', status: 'pending' });
+    await recorder.record({ type: 'message.delta', role: 'user', messageId: 'after', content: { type: 'text', text: 'brand new after tool' } });
+    await recorder.complete('end_turn');
+
+    const preamble = managed.filter((entry) => entry.message.id === 'preamble');
+    const after = managed.filter((entry) => entry.message.id === 'after');
+    expect(preamble.map((entry) => entry.message.origin)).toEqual([
+      { kind: 'unknown' },
+      { kind: 'injection', variant: 'memory', ownerPromptId: 'prompt-1' },
+    ]);
+    expect(preamble.map((entry) => entry.message.content)).toEqual([
+      [{ type: 'text', text: '[Kiki mem' }],
+      [{ type: 'text', text: '[Kiki memory]\nremember this' }],
+    ]);
+    expect(preamble.every((entry) => entry.delivery.placement === undefined)).toBe(true);
+    expect(after.map((entry) => [entry.message.origin, entry.delivery.placement])).toEqual([
+      [{ kind: 'unknown' }, undefined],
+    ]);
+  });
+
   it('preserves unkeyed external user frames with an attribution loss', async () => {
     const harness = createHarness({
       mode: 'live',

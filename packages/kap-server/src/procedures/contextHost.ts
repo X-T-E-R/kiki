@@ -90,7 +90,7 @@ export class ContextProcedureHost {
             turnId: runningTurnId,
             deliveredAt: new Date().toISOString(),
             origin: 'queue',
-            ...(beforeModel ? { placement: 'safety_boundary' as const } : {}),
+            placement: beforeModel ? 'safety_boundary' : undefined,
           });
         } else {
           memory.appendObservable({ role: 'user', content: [{ type: 'text', text }], toolCalls: [], origin });

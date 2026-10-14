@@ -221,9 +221,19 @@ function applyOp(snapshot, op) {
       const turn = findTurn(snapshot, op.turnId);
       const step = findStep(turn, op.stepId);
       if (step === undefined) return snapshot;
-      const existing = findFrame(step, op.frame.frameId);
-      if (existing === undefined) step.frames.push(clone(op.frame));
-      else Object.assign(existing, op.frame);
+      const frames = step.frames;
+      const existingIndex = frames.findIndex((frame) => frame.frameId === op.frame.frameId);
+      if (existingIndex >= 0) {
+        Object.assign(frames[existingIndex], op.frame);
+        return snapshot;
+      }
+      const frame = clone(op.frame);
+      if (op.place === 'safety_boundary') {
+        const boundary = frames.findIndex((entry) => entry.kind !== 'text' || entry.role !== 'user');
+        frames.splice(boundary < 0 ? frames.length : boundary, 0, frame);
+      } else {
+        frames.push(frame);
+      }
       return snapshot;
     }
     case 'append': {

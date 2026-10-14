@@ -6,6 +6,8 @@ import type { TranscriptOperation } from '#/ops/operation';
 import { transcriptOperationSchema } from '#/contract/schema';
 import { AgentTranscript } from '#/store/agentTranscript';
 import { AgentTranscriptDraft } from '#/store/agentTranscriptDraft';
+import { TranscriptFactReducer } from '#/facts/reducer';
+import { TranscriptWireAdapter, type TranscriptWireRecord } from '#/facts/wireAdapter';
 
 const turn: TranscriptOperation = {
   op: 'turn.upsert',
@@ -32,6 +34,16 @@ const boundary = (frameId: string, frameIndex?: number): TranscriptOperation => 
 function idsOf(snapshot: { items: readonly { kind: string; steps?: readonly { frames: readonly { frameId: string }[] }[] }[] }): string[] {
   const item = snapshot.items.find((entry) => entry.kind === 'turn');
   return item?.steps?.[0]?.frames.map((frame) => frame.frameId) ?? [];
+}
+
+function frameRefOf(state: AgentState): ContentRef | undefined {
+  const item = state.items.find((entry) => entry.kind === 'turn');
+  return item?.kind === 'turn' ? item.contentRefs?.[0] : undefined;
+}
+
+function boundaryOf(frames: readonly { kind: string; role?: string }[]): number {
+  const index = frames.findIndex((frame) => frame.kind !== 'text' || frame.role !== 'user');
+  return index < 0 ? frames.length : index;
 }
 
 function reduce(ops: readonly TranscriptOperation[], state: AgentState = EMPTY_AGENT_STATE): AgentState {
@@ -70,9 +82,54 @@ describe('safety-boundary frame placement', () => {
       items: tail.items.map((item) => item.kind === 'turn' ? { ...item, contentRefs: [omitted] } : item),
     };
     const dropped = applyOperation(windowed, boundary('hidden', 0));
-    expect(dropped.changed).toBe(false);
+    expect(dropped.changed).toBe(true);
     expect(idsOf(dropped.state)).toEqual(['user-b', 'reply']);
+    expect(frameRefOf(dropped.state)).toMatchObject({ offset: 2, total: 4, revision: 'r', direction: 'backward' });
+    const repeated = applyOperation(dropped.state, boundary('hidden', 0));
+    expect(repeated.changed).toBe(false);
+    expect(frameRefOf(repeated.state)).toMatchObject({ offset: 2, total: 4, revision: 'r' });
+    const stillHidden = applyOperation(dropped.state, boundary('next-hidden', 1));
+    expect(idsOf(stillHidden.state)).toEqual(['user-b', 'reply']);
+    expect(frameRefOf(stillHidden.state)).toMatchObject({ offset: 3, total: 5, revision: 'r' });
     const inserted = applyOperation(windowed, boundary('visible-boundary', 1));
     expect(idsOf(inserted.state)).toEqual(['visible-boundary', 'user-b', 'reply']);
+  });
+
+  it('keeps a revised boundary frame at its splice after checkpoint restore', () => {
+    const records: TranscriptWireRecord[] = [
+      { type: 'context.append_loop_event', time: 1, event: { type: 'step.begin', turnId: 1, step: 1, uuid: 's1' } },
+      { type: 'context.append_loop_event', time: 2, event: { type: 'content.part', turnId: 1, stepUuid: 's1', uuid: 'reply', part: { type: 'text', text: 'answer' } } },
+      {
+        type: 'context.append_message', time: 3,
+        message: { id: 'echo', role: 'user', content: [{ type: 'text', text: '[Kiki memory]\nremember this' }], origin: { kind: 'injection', variant: 'memory', ownerPromptId: 'prompt-1' } },
+        delivery: { messageId: 'echo', turnId: 1, stepId: 's1', step: 1, origin: 'injection', placement: 'safety_boundary' },
+      },
+      {
+        type: 'context.append_message', time: 4,
+        message: { id: 'echo', role: 'user', content: [{ type: 'text', text: '[Kiki memory]\nremember this TAILMARK' }], origin: { kind: 'injection', variant: 'memory', ownerPromptId: 'prompt-1' } },
+        delivery: { messageId: 'echo', turnId: 1, stepId: 's1', step: 1, origin: 'injection' },
+      },
+    ];
+    const transcript = new AgentTranscript('main');
+    const adapter = new TranscriptWireAdapter('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    for (const record of records) reducer.apply(adapter.add(record));
+    const seeded = transcript.getTurn('t1')?.steps[0]?.frames ?? [];
+    expect(seeded.map((frame) => frame.frameId)).toEqual(['echo', 'reply']);
+    expect(seeded[0]).toMatchObject({ text: '[Kiki memory]\nremember this TAILMARK', origin: { kind: 'injection', variant: 'memory' } });
+    const restored = new TranscriptWireAdapter('main');
+    restored.restore(JSON.parse(JSON.stringify(adapter.checkpoint())));
+    const next: TranscriptWireRecord = {
+      type: 'context.append_message', time: 5,
+      message: { id: 'next-boundary', role: 'user', content: [{ type: 'text', text: '[Kiki memory]\nremember this' }], origin: { kind: 'injection', variant: 'memory', ownerPromptId: 'prompt-1' } },
+      delivery: { messageId: 'next-boundary', turnId: 1, stepId: 's1', step: 1, origin: 'injection', placement: 'safety_boundary' },
+    };
+    const liveIndex = adapter.add(next).flatMap((fact) => fact.operations).find((op) => op.op === 'frame.upsert' && op.frame.frameId === 'next-boundary');
+    const restoredIndex = restored.add(next).flatMap((fact) => fact.operations).find((op) => op.op === 'frame.upsert' && op.frame.frameId === 'next-boundary');
+    expect(liveIndex?.op === 'frame.upsert' && restoredIndex?.op === 'frame.upsert').toBe(true);
+    if (liveIndex?.op !== 'frame.upsert' || restoredIndex?.op !== 'frame.upsert') return;
+    expect(restoredIndex.frameIndex).toBe(liveIndex.frameIndex);
+    expect(restoredIndex.frameIndex).toBe(boundaryOf(seeded));
+    expect(restoredIndex.place).toBe('safety_boundary');
   });
 });

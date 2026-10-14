@@ -18,7 +18,7 @@ import type {
 } from './operation';
 import { transcriptValueEquals } from './equality';
 import { safetyBoundaryIndex } from './framePlace';
-import { carryContentHydration, mergeContentPreview } from '../contract/content';
+import { carryContentHydration, mergeContentPreview, noteHiddenStructuralInsert } from '../contract/content';
 
 const EMPTY_REMOVED_ITEM_IDS: ReadonlySet<string> = new Set();
 const REMOVED_ITEM_ID_LIMIT = 2048;
@@ -460,9 +460,23 @@ function applyFrameUpsert(
   const omittedSteps = turn.contentRefs?.find((ref) => ref.direction === 'backward' && ref.path.length === 1 && ref.path[0] === 'steps');
   const omittedFrames = turn.contentRefs?.find((ref) => ref.direction === 'backward' && ref.path.length === 3 &&
     ref.path[0] === 'steps' && ref.path[1] === (op.stepIndex ?? step.ordinal) && ref.path[2] === 'frames');
-  if (frameIndex < 0 && (stepIndex < 0 && omittedSteps !== undefined && (op.stepIndex ?? step.ordinal) < omittedSteps.offset ||
-    op.frameIndex !== undefined && omittedFrames !== undefined && op.frameIndex < omittedFrames.offset)) {
-    return { state, changed: false, toolCallCountDelta: 0 };
+  const hiddenStep = frameIndex < 0 && stepIndex < 0 && omittedSteps !== undefined
+    && (op.stepIndex ?? step.ordinal) < omittedSteps.offset;
+  const hiddenFrame = frameIndex < 0 && op.frameIndex !== undefined && omittedFrames !== undefined
+    && op.frameIndex < omittedFrames.offset;
+  if (hiddenStep) return { state, changed: false, toolCallCountDelta: 0 };
+  if (hiddenFrame && omittedFrames !== undefined) {
+    const contentRefs = turn.contentRefs?.map((ref) => ref === omittedFrames
+      ? { ...ref, offset: ref.offset + 1, total: ref.total + 1 }
+      : ref);
+    const bumped = carryContentHydration(turn, { ...turn, contentRefs });
+    if (!noteHiddenStructuralInsert(turn, bumped, op.frame.frameId)) {
+      return { state, changed: false, toolCallCountDelta: 0 };
+    }
+    const items = located !== undefined
+      ? replaceAt(state.items, located.index, bumped)
+      : insertTurn(state.items, bumped);
+    return { state: { ...state, items }, changed: true, toolCallCountDelta: 0 };
   }
   let frames: readonly TranscriptFrame[];
   let toolCallCount = state.toolCallCount;

@@ -155,11 +155,23 @@ function mergeCanonicalArray(current: readonly unknown[], incoming: readonly unk
 }
 
 const hydratedVersions = new WeakMap<object, ReadonlyMap<string, string>>();
+const hiddenStructuralInserts = new WeakMap<object, ReadonlySet<string>>();
+
+export function noteHiddenStructuralInsert(source: object, target: object, frameId: string): boolean {
+  const seen = hiddenStructuralInserts.get(source);
+  if (seen?.has(frameId)) return false;
+  const next = new Set(seen);
+  next.add(frameId);
+  hiddenStructuralInserts.set(target, next);
+  return true;
+}
 
 /** Preserve accepted field revisions when canonical operations clone an entity. */
 export function carryContentHydration<T extends ContentWindow>(source: ContentWindow, target: T): T {
   const versions = hydratedVersions.get(source as object);
   if (versions !== undefined && !hydratedVersions.has(target as object)) hydratedVersions.set(target as object, versions);
+  const hidden = hiddenStructuralInserts.get(source as object);
+  if (hidden !== undefined && !hiddenStructuralInserts.has(target as object)) hiddenStructuralInserts.set(target as object, hidden);
   return target;
 }
 

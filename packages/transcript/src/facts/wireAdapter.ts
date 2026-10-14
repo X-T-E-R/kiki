@@ -1675,9 +1675,10 @@ export class TranscriptWireAdapter {
       operations.push({ op: 'step.upsert', turnId, step });
     }
     const place = canonical?.['placement'] === 'safety_boundary' ? 'safety_boundary' as const : undefined;
+    const frameIndex = place === undefined ? undefined : this.boundaryFrameIndex(turnId, stepId);
     operations.push({
       op: 'frame.upsert', turnId, stepId,
-      ...(place === undefined ? {} : { place, frameIndex: this.boundaryFrameIndex(turnId, stepId) }),
+      place, frameIndex,
       frame: {
         kind: 'text', frameId: messageId,
         part: {
@@ -1702,13 +1703,16 @@ export class TranscriptWireAdapter {
     const stepId = delivery?.stepId;
     if (turnId === undefined || stepId === undefined) return [];
     const key = `${turnId}\0${stepId}\0${messageId}`;
-    const previous = this.#frameRecords.get(key)?.operation.frame;
-    if (previous === undefined || previous.kind !== 'text' || previous.role !== 'user') return [];
+    const stored = this.#frameRecords.get(key)?.operation;
+    const previous = stored?.frame;
+    if (stored === undefined || previous === undefined || previous.kind !== 'text' || previous.role !== 'user') return [];
     const incoming = arrayOf(message['content']).map(textOfPart).join('');
     const text = previous.text.length > 0 && !incoming.startsWith(previous.text) ? `${previous.text}${incoming}` : incoming;
     const revision = (previous.part?.revision ?? 0) + 1;
     return [{
       op: 'frame.upsert', turnId, stepId,
+      place: stored.place,
+      frameIndex: stored.frameIndex,
       frame: {
         ...previous,
         text,

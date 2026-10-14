@@ -3,6 +3,8 @@ import test from 'node:test';
 
 import {
   TranscriptProjector,
+  applyOps,
+  emptySnapshot,
   filterOpsForGrade,
   gradeFor,
   redactSnapshotForGrade,
@@ -23,6 +25,21 @@ function userFrames(snapshot) {
       })),
   );
 }
+
+test('frame.upsert splices a new safety-boundary frame and revises that id in place', () => {
+  const snapshot = applyOps(emptySnapshot(), [
+    { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't1', ordinal: 0, state: 'running', origin: { kind: 'user' }, steps: [] } },
+    { op: 'step.upsert', turnId: 't1', step: { kind: 'step', stepId: 's1', turnId: 't1', ordinal: 0, state: 'running', frames: [] } },
+    { op: 'frame.upsert', turnId: 't1', stepId: 's1', frame: { kind: 'text', frameId: 'user-a', role: 'user', text: 'already' } },
+    { op: 'frame.upsert', turnId: 't1', stepId: 's1', frame: { kind: 'text', frameId: 'reply', role: 'assistant', text: 'answer' } },
+    { op: 'frame.upsert', turnId: 't1', stepId: 's1', place: 'safety_boundary', frame: { kind: 'text', frameId: 'injection', role: 'user', text: 'memory', origin: { kind: 'injection', variant: 'memory' } } },
+    { op: 'frame.upsert', turnId: 't1', stepId: 's1', frame: { kind: 'text', frameId: 'injection', role: 'user', text: 'memory revised' } },
+    { op: 'frame.upsert', turnId: 't1', stepId: 's1', frame: { kind: 'text', frameId: 'follow', role: 'user', text: 'later' } },
+  ]);
+  const frames = snapshot.items[0].steps[0].frames;
+  assert.deepEqual(frames.map((frame) => frame.frameId), ['user-a', 'injection', 'reply', 'follow']);
+  assert.equal(frames[1].text, 'memory revised');
+});
 
 test('projects a basic stream of session_event frames into reset/ops', () => {
   const projector = new TranscriptProjector('session_fixture_basic');

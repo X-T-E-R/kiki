@@ -915,14 +915,18 @@ export class ExternalTurnRecorder {
       const committed = segment.messageId === undefined ? undefined : this.#committedUsers.get(segment.messageId);
       if (committed !== undefined && segment.messageId !== undefined) {
         const text = committed.text + segment.text;
-        this.#committedUsers.set(segment.messageId, { text, origin: committed.origin });
-        this.#appendUserMessage(segment.messageId, text, committed.origin, false, segment.messageId);
+        const variant = preambleVariant(text, this.metadata.outboundPrompt, this.#prompt);
+        const origin: PromptOrigin = variant === undefined
+          ? committed.origin
+          : { kind: 'injection', variant, ownerPromptId: this.#promptId };
+        this.#committedUsers.set(segment.messageId, { text, origin });
+        this.#appendUserMessage(segment.messageId, text, origin, false, segment.messageId);
         continue;
       }
       const variant = preambleVariant(segment.text, this.metadata.outboundPrompt, this.#prompt);
       const origin: PromptOrigin = variant === undefined
         ? { kind: 'unknown' }
-        : { kind: 'injection', variant, ...(this.#promptId === undefined ? {} : { ownerPromptId: this.#promptId }) };
+        : { kind: 'injection', variant, ownerPromptId: this.#promptId };
       const messageId = segment.messageId ?? newMessageId();
       if (segment.messageId !== undefined) this.#committedUsers.set(segment.messageId, { text: segment.text, origin });
       this.#appendUserMessage(messageId, segment.text, origin, variant !== undefined, segment.messageId);
@@ -938,7 +942,7 @@ export class ExternalTurnRecorder {
       step: 1,
       deliveredAt: new Date().toISOString(),
       origin: deliveryOriginOf(origin),
-      ...(place ? { placement: 'safety_boundary' as const } : {}),
+      placement: place ? 'safety_boundary' : undefined,
     };
     this.#context.appendManaged({
       role: 'user',
