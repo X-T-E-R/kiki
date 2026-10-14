@@ -11324,102 +11324,58 @@ export const zh = {
 
 
   'st.modelPrompt.keepAsModelBody': '把这段正文留在模型上',
-
-
-
   'st.modelPrompt.promptWords': '提示正文',
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+  'composer.profileGroupPassthrough': '内置直通（默认）',
+  'composer.profileGroupCustom': '自定义 Profile',
+  'composer.profilePassthroughBadge': '直通',
+  'composer.execution.effortHeading': '思考强度',
+  'composer.execution.defaultModelOption': '默认模型',
+  'onboarding.step.appearance': '外观与主题',
+  'onboarding.depart.model.readyBadge': '模型服务已就绪',
+  'onboarding.depart.model.notReadyBadge': '尚未连接模型服务',
+  'onboarding.depart.model.configureCta': '前往设置配置模型服务 →',
+  'onboarding.depart.model.startChatCta': '开始第一次对话',
+  'onboarding.depart.tour.title': '1 分钟实景交互导览',
+  'onboarding.depart.tour.subtitle': '在真实界面中跟随聚光灯走一遍核心工作流，无需先配好模型。',
+  'onboarding.depart.tour.startBtn': '立即开始导览 →',
+  'onboarding.returnBanner.text': '配好模型服务后，即可返回开始对话',
+  'onboarding.returnBanner.action': '返回开始第一次对话 →',
+  'discovery.tour.stepBadge': '{current} / {total}',
+  'discovery.tour.nextShort': '下一站 →',
+  'discovery.tour.exitEsc': '退出 Esc',
+  'st.group.preferences': '偏好与外观',
+  'st.group.workspacesMemory': '工作区与记忆',
+  'st.group.capabilitiesSafety': '能力与安全边界',
+  'st.group.systemConnection': '系统与连接',
+  'st.section.generalMerged': '通用与外观',
+  'st.section.providers': '模型服务商',
+  'st.purpose.providers': '通过账号授权、本机 CLI 宿主或 API 密钥接入模型服务。',
+  'st.section.models': '模型目录与默认项',
+  'st.purpose.models': '配置新会话默认模型与思考强度，管理可用模型目录。',
+  'st.section.agentsMerged': 'Profile 与子智能体',
+  'st.section.workspacesMerged': '工作区与会话',
+  'st.section.memoryMerged': '记忆与知识',
+  'st.section.permissionsMerged': '权限、任务与钩子',
+  'st.section.extensions': '技能、MCP 与插件',
+  'st.purpose.extensions': '管理技能目录、MCP 工具服务器与已安装的插件扩展。',
+  'st.section.environmentTools': '联网、浏览器与桌面控制',
+  'st.purpose.environmentTools': '配置联网搜索与抓取、浏览器驱动和本机桌面控制。',
+  'st.section.remote': '远程守护进程与 SSH',
+  'st.purpose.remote': '管理当前服务端连接、SSH 远程主机与外部客户端接入。',
+  'st.section.system': '开发者、实验特性与关于',
+  'st.purpose.system': '底层引擎诊断、实验特性索引、日志级别与版本更新。',
+  'st.providers.zone1.title': '① 账号登录（订阅直连）',
+  'st.providers.zone1.hint': '使用已有的 Codex、Grok、Claude 或 Kimi 账号直接授权登录，无需手动管理密钥。',
+  'st.providers.zone2.title': '② 本机 CLI 宿主',
+  'st.providers.zone2.hint': '自动探测本机 AGY CLI、Codex、Claude Code 等宿主状态；启用后直接出现在左下角 Profile 列表。',
+  'st.providers.zone3.title': '③ API Key 服务商',
+  'st.providers.zone3.hint': '使用常用厂商快捷模板或自定义兼容端点接入 API Key，支持一键测试连接并拉取模型。',
+  'st.providers.advancedProtocol': '高级协议设置（协议类型覆写、请求身份与图片策略）',
+  'st.modelEditor.tab.basics': '基础配置',
+  'st.modelEditor.tab.advanced': '高级协议与能力',
+  'composer.profile.retained': '只读保留身份',
+  'composer.profile.searchPlaceholder': '搜索 Profile',
+  'composer.model.searchPlaceholder': '搜索模型',
+  'composer.execution.defaultEffort': '默认',
+  'composer.model.useCustomId': '使用模型 ID "{id}"',
 };

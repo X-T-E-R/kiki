@@ -325,7 +325,7 @@ export function NamedAgentProfileRow({
             />
             <span
               data-toggle-scope="server"
-              className={embedded ? 'sr-only' : 'shrink-0 rounded-full border border-hairline bg-panel px-1.5 py-px font-mono text-[11px] text-ink-faint'}
+              className="sr-only"
             >
               {t('st.namedAgents.namedToggleScope')}
             </span>
@@ -337,7 +337,7 @@ export function NamedAgentProfileRow({
           />}
           {embedded && subagentDispatch.key === 'undeclared' ? null : <span
             data-subagent-policy={subagentDispatch.key}
-            className={embedded ? 'rounded-[4px] bg-hairline/60 px-1.5 py-px text-[12px] text-ink-faint' : 'rounded-full border border-hairline px-2 py-0.5 text-[11px] text-ink-faint'}
+            className={subagentDispatch.key === 'undeclared' ? 'sr-only' : embedded ? 'rounded-[4px] bg-hairline/60 px-1.5 py-px text-[12px] text-ink-faint' : 'rounded-full border border-hairline px-2 py-0.5 text-[11px] text-ink-faint'}
           >
             {subagentDispatch.label}
           </span>}
@@ -370,7 +370,7 @@ export function NamedAgentProfileRow({
         </div>
       </div>
       {profile.source !== 'builtin' ? (
-        <p data-toggle-scope-hint className="mt-1 text-[12px] text-ink-faint">
+        <p data-toggle-scope-hint className="sr-only">
           {t('st.namedAgents.namedToggleHint')}
         </p>
       ) : null}

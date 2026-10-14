@@ -310,8 +310,6 @@ function PrimaryNav({
     [location.pathname],
   );
 
-  // Folded by default: the reader sees the destinations they kept, and the
-  // ones they tucked away still carry their own direction and count.
   const sectionCollapsed = layoutPrefs.sidebarNavSectionCollapsed ?? true;
   const foldedItems = useMemo(
     () => (sectionCollapsed ? secondaryItems.filter((item) => !isItemActive(item)) : []),

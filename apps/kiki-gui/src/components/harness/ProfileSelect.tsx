@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 
 import type { ExecutorCatalogItem, NamedAgentProfile } from '@kiki/protocol';
 import {
@@ -25,6 +27,12 @@ import {
 } from '../ComposerControls';
 import { POPOVER_SURFACE_CLASS } from '../SearchableSelect';
 import { Icon } from '../icons';
+import {
+  configuredEngineDescriptors,
+  engineDisplayOf,
+  engineOverridesOf,
+  visibleEngines,
+} from '../settings/profileEditor/engines';
 
 function Check({ on }: { on: boolean }) {
   return (
@@ -86,6 +94,7 @@ export function ProfileSelect({
   const host = useHost();
   const { client, meta, connectionSource } = useConnection();
   const rootRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState('');
@@ -101,6 +110,17 @@ export function ProfileSelect({
   const popoverKeyDown = usePopover(open, close, rootRef, 'composer-profile-select');
 
   useComposerPanelAnchor(rootRef, open);
+
+  const [openDirection, setOpenDirection] = useState<'up' | 'down'>('up');
+  useEffect(() => {
+    if (!open) return;
+    const rect = rootRef.current?.getBoundingClientRect();
+    if (rect && rect.top > 0 && rect.top < 380 && window.innerHeight - rect.bottom > rect.top) {
+      setOpenDirection('down');
+    } else {
+      setOpenDirection('up');
+    }
+  }, [open]);
 
   const clientRef = useRef(client);
   clientRef.current = client;
@@ -257,47 +277,171 @@ export function ProfileSelect({
     return () => { controller.abort(); };
   }, [open, choice.profile_file, serverId, catalogKey, previewProfileFile]);
 
+  const configQuery = useQuery({
+    queryKey: ['config'],
+    queryFn: () => client.getConfig(),
+    enabled: typeof client.getConfig === 'function',
+    staleTime: 60_000,
+  });
+
+  const externalExecutors = useMemo(() => {
+    return visibleEngines(
+      catalog,
+      profiles,
+      engineOverridesOf(configQuery.data),
+      engineDisplayOf(configQuery.data),
+      configuredEngineDescriptors(configQuery.data),
+    ).filter((item) => !isNativeExecutor(item.id));
+  }, [catalog, profiles, configQuery.data]);
+
   const candidateProfiles = useMemo(() => {
     return profiles.filter((p) => {
       if (!pickableProfile(p)) return false;
       if (p.disabled === true) return false;
-      if (p.main !== true) return false;
-      if (!p.source_file || p.source_file.trim() === '') return false;
+      if (p.source === 'builtin' && (!p.source_file || p.source_file.trim() === '')) return false;
+      const pExecutor = profileExecutor(p);
+      if (!isNativeExecutor(pExecutor) && !externalExecutors.some((item) => item.id === pExecutor)) return false;
       return true;
     });
-  }, [profiles, pickableProfile]);
+  }, [profiles, pickableProfile, externalExecutors]);
 
-  const filteredProfiles = useMemo(() => {
+  const mainProfiles = useMemo(() => {
+    return candidateProfiles.filter((p) => p.main === true);
+  }, [candidateProfiles]);
+
+  const otherProfiles = useMemo(() => {
+    return candidateProfiles.filter((p) => p.main !== true);
+  }, [candidateProfiles]);
+
+  const filterProfileList = useCallback((list: readonly NamedAgentProfile[]) => {
     const needle = query.trim().toLowerCase();
-    if (needle === '') return candidateProfiles;
-    return candidateProfiles.filter((p) =>
+    if (needle === '') return list;
+    return list.filter((p) =>
       `${p.name} ${p.description ?? ''} ${p.when_to_use ?? ''} ${p.source_file ?? ''}`.toLowerCase().includes(needle)
     );
-  }, [candidateProfiles, query]);
+  }, [query]);
 
-  const isUnspecified = choice.profile === undefined && choice.profile_file === undefined;
+  const filteredMainProfiles = useMemo(() => filterProfileList(mainProfiles), [filterProfileList, mainProfiles]);
+  const filteredOtherProfiles = useMemo(() => filterProfileList(otherProfiles), [filterProfileList, otherProfiles]);
+
+  const currentExecutorItem = catalog.find((item) => item.id === choice.executor);
+  const currentExecutorLabel = isNativeExecutor(choice.executor)
+    ? nativeLabel
+    : (currentExecutorItem?.label ?? choice.executor);
+
+  const hasFile = choice.profile_file !== undefined && choice.profile_file !== '';
+  const isCustomProfile = choice.profile !== undefined && choice.profile !== '' && !(choice.profile === 'agent' && isNativeExecutor(choice.executor));
+
   const resolvedFileName = resolvedFile.path === choice.profile_file ? resolvedFile.name : undefined;
-  const currentProfileName = choice.profile !== undefined
-    ? (choice.profile === 'agent' && isNativeExecutor(choice.executor) ? nativeLabel : choice.profile)
-    : choice.profile_file !== undefined
-      ? (resolvedFileName ?? profileFileLabel(choice.profile_file))
-      : undefined;
+  const buttonLabel = hasFile
+    ? (resolvedFileName ?? profileFileLabel(choice.profile_file!))
+    : isCustomProfile
+      ? choice.profile
+      : currentExecutorLabel;
 
-  const baseTriggerText = currentProfileName ? `Profile · ${currentProfileName}` : `Profile · ${t('st.namedAgents.unspecified')}`;
+  const baseTriggerText = buttonLabel;
   const triggerText = pending ? t('composer.execution.pendingSuffix', { name: baseTriggerText }) : baseTriggerText;
   const showPersona = persona !== undefined && !pending;
+
+  const isNativeSelected = isNativeExecutor(choice.executor) && (choice.profile === undefined || choice.profile === '' || choice.profile === 'agent') && !hasFile;
+
+  const isPassthroughMatching = useCallback((id: string, label: string) => {
+    const needle = query.trim().toLowerCase();
+    if (needle === '') return true;
+    return `${id} ${label}`.toLowerCase().includes(needle);
+  }, [query]);
+
+  const pickDefault = useCallback(() => {
+    onChange({
+      ...choice,
+      executor: 'native',
+      profile: undefined,
+      profile_file: undefined,
+      overrides: undefined,
+      external_connection_id: undefined,
+      external_connection_name: undefined,
+    });
+    close(true);
+  }, [choice, onChange, close]);
+
+  const retainedUnavailableExternal = !isNativeExecutor(choice.executor)
+    && choice.external_connection_id === undefined
+    && !externalExecutors.some((item) => item.id === choice.executor);
 
   const checkedProfile = check?.profile;
   const checkedPath = check?.path;
   const useFile = (profile: NamedAgentProfile, path: string) => {
     const source = profile.source_file ?? path;
     setResolvedFile({ path: source, name: profile.name, description: profile.description });
-    onChange({ executor: profileExecutor(profile), profile: undefined, profile_file: source, overrides: undefined });
+    onChange({
+      executor: profileExecutor(profile),
+      profile: undefined,
+      profile_file: source,
+      overrides: undefined,
+      external_connection_id: undefined,
+      external_connection_name: undefined,
+    });
     formOpenRef.current = false;
     formPathRef.current = '';
     setFileForm({ open: false, path: '' });
     setCheck(undefined);
     close(true);
+  };
+
+  const renderProfileRow = (p: NamedAgentProfile) => {
+    const isSelected = choice.profile === p.name && choice.profile_file === undefined;
+    const pExecutor = profileExecutor(p);
+    const pEngine = catalog.find((item) => item.id === pExecutor);
+    const pEngineLabel = isNativeExecutor(pExecutor) ? nativeLabel : (pEngine?.label ?? pExecutor);
+    const pModel = p.pinned_model_alias;
+    const pEffort = p.thinking_effort;
+    const comboPreview = pModel
+      ? [pEngineLabel, pModel, pEffort].filter(Boolean).join(' · ')
+      : `${pEngineLabel} · ${t('composer.engineModelDefault')}`;
+    const sourceLabel = formatProfileSource(p, locale);
+
+    return (
+      <li key={p.name} data-execution-engine={pExecutor}>
+        <button
+          type="button"
+          role="option"
+          aria-selected={isSelected}
+          data-menu-row
+          data-execution-profile={p.name}
+          data-option-value={p.name}
+          onClick={() => {
+            onChange({
+              executor: pExecutor,
+              profile: p.name,
+              profile_file: undefined,
+              overrides: undefined,
+              external_connection_id: undefined,
+              external_connection_name: undefined,
+            });
+            close(true);
+          }}
+          className={`${MENU_ROW_CLASS} items-start ${isSelected ? MENU_ROW_SELECTED_CLASS : ''}`}
+        >
+          <Check on={isSelected} />
+          <span className="min-w-0 flex-1">
+            <span className="flex min-w-0 items-center justify-between gap-1.5">
+              <span className="min-w-0 truncate font-medium text-ink">{p.name}</span>
+              {sourceLabel ? (
+                <span className="shrink-0 text-[11px] text-ink-faint">{sourceLabel}</span>
+              ) : null}
+            </span>
+            {p.description !== undefined && p.description !== '' ? (
+              <span className="mt-0.5 block truncate text-[11.5px] leading-snug text-ink-faint">
+                {p.description}
+              </span>
+            ) : null}
+            <span className="mt-0.5 block truncate text-[11.5px] leading-snug text-ink-faint">
+              {comboPreview}
+            </span>
+          </span>
+        </button>
+      </li>
+    );
   };
 
   return (
@@ -320,6 +464,8 @@ export function ProfileSelect({
         data-profile-trigger
         data-execution-profile-file={choice.profile_file}
         data-execution-pending={pending ? 'true' : undefined}
+        data-profile-badge={isCustomProfile ? 'true' : undefined}
+        data-profile-file-badge={hasFile ? 'true' : undefined}
         data-composer-persona-chip={showPersona === true ? persona.id : undefined}
         disabled={disabled}
         title={pending
@@ -380,10 +526,12 @@ export function ProfileSelect({
 
       {open ? (
         <div
+          ref={panelRef}
           data-execution-panel
           role="radiogroup"
           aria-label="Profile"
-          className={`anim-enter ${COMPOSER_PANEL_START} flex max-h-[min(var(--cp-max-h,none),28rem)] w-88 max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden rounded-[10px] border border-hairline bg-paper shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]`}
+          className={`anim-enter absolute left-0 z-50 w-[min(360px,calc(100vw-2rem))] overflow-hidden rounded-[var(--radius-card)] border border-hairline bg-paper text-ink shadow-lg ${openDirection === 'up' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'}`}
+          style={{ backgroundColor: 'var(--color-paper)' }}
         >
           {fileForm.open ? (
             <div data-execution-file-form className="flex flex-col">
@@ -486,193 +634,236 @@ export function ProfileSelect({
                   data-execution-filter
                   value={query}
                   onChange={(e) => { setQuery(e.target.value); }}
-                  placeholder={locale === 'zh' ? '搜索 Profile' : 'Search Profile'}
+                  placeholder={t('composer.profile.searchPlaceholder')}
                   aria-label={t('composer.execution.filterAria')}
                   className="w-full rounded-md border border-hairline bg-paper px-2.5 py-1 text-[12.5px] text-ink outline-none focus-visible:border-selected-ink placeholder:text-ink-faint"
                 />
               </div>
 
-              <div className="flex-1 overflow-y-auto p-1">
-                <ul className="space-y-0.5">
-                  {/* Unspecified option */}
-                  <li>
-                    <button
-                      type="button"
-                      role="option"
-                      aria-selected={isUnspecified ? 'true' : 'false'}
-                      data-menu-row
-                      data-profile-unspecified
-                      data-execution-bare="native"
-                      onClick={() => {
-                        onChange({ ...choice, profile: undefined, profile_file: undefined });
-                        close(true);
-                      }}
-                      className={`${MENU_ROW_CLASS} items-start ${isUnspecified ? MENU_ROW_SELECTED_CLASS : ''}`}
+              <div className="flex-1 overflow-y-auto p-1 max-h-[min(var(--cp-max-h,24rem),24rem)] space-y-2">
+                {retainedUnavailableExternal ? (
+                  <div data-execution-restore={choice.executor} className="mx-1 my-1 space-y-1 px-2.5 py-1.5 rounded border border-hairline bg-surface/40">
+                    <p className="text-[11.5px] leading-snug text-ink-faint">
+                      {t(
+                        currentExecutorItem?.status === 'unavailable'
+                          ? 'composer.execution.needsSetup'
+                          : 'composer.execution.keptEngine',
+                        { engine: currentExecutorLabel },
+                      )}
+                    </p>
+                    <Link
+                      to="/settings/ai?tab=providers#st-card-engines"
+                      data-execution-configure
+                      onClick={() => { close(); }}
+                      className="text-[11.5px] font-medium text-ink underline decoration-dotted underline-offset-2"
                     >
-                      <Check on={isUnspecified} />
-                      <span className="min-w-0 flex-1">
-                        <span className="block min-w-0 truncate font-medium text-ink">
-                          {t('st.namedAgents.unspecified')}
-                        </span>
-                        <span className="mt-0.5 block text-[11.5px] leading-snug text-ink-faint">
-                          {locale === 'zh' ? '使用默认系统提示与引擎设置' : 'Use default system prompt and engine settings'}
-                        </span>
-                      </span>
-                    </button>
-                  </li>
+                      {t('composer.execution.configure')}
+                    </Link>
+                  </div>
+                ) : null}
 
-                  {/* Active Profile File Row if chosen */}
-                  {choice.profile_file !== undefined ? (
-                    <li>
-                      <button
-                        type="button"
-                        role="option"
-                        aria-selected
-                        data-menu-row
-                        data-execution-file-row={choice.profile_file}
-                        onClick={() => { close(true); }}
-                        className={`${MENU_ROW_CLASS} items-start ${MENU_ROW_SELECTED_CLASS}`}
-                      >
-                        <Check on />
-                        <span className="min-w-0 flex-1">
-                          <span className="block min-w-0 truncate font-medium text-ink">
-                            {resolvedFile.path === choice.profile_file && resolvedFile.name !== undefined
-                              ? resolvedFile.name
-                              : profileFileLabel(choice.profile_file)}
-                          </span>
-                          <span className="mt-0.5 block min-w-0 truncate font-mono text-[11px] text-ink-faint">{choice.profile_file}</span>
-                          {resolvedFile.path === choice.profile_file && resolvedFile.description !== undefined && resolvedFile.description !== '' ? (
-                            <span className="mt-0.5 block text-[11.5px] leading-snug text-ink-faint">{resolvedFile.description}</span>
-                          ) : null}
-                          {resolvedFile.path === choice.profile_file && resolvedFile.name === undefined ? (
-                            <span data-execution-file-unread className="mt-0.5 block text-[11.5px] leading-snug text-danger">
-                              {t('composer.execution.fileUnread')}
-                            </span>
-                          ) : null}
-                        </span>
-                      </button>
-                    </li>
-                  ) : null}
-                  {/* Retained built-in profile from previous session / read-only */}
-                  {(() => {
-                    const retainedProfile = (boundExecution?.profile !== undefined && boundExecution.profile_file === undefined && !candidateProfiles.some((p) => p.name === boundExecution.profile))
-                      ? boundExecution.profile
-                      : (choice.profile !== undefined && choice.profile_file === undefined && !candidateProfiles.some((p) => p.name === choice.profile))
-                        ? choice.profile
-                        : undefined;
-                    if (!retainedProfile) return null;
-                    const isSelected = choice.profile === retainedProfile && choice.profile_file === undefined;
-                    return (
-                      <li key={retainedProfile} data-profile-retained={retainedProfile}>
+                {/* Group 1: 内置直通（默认） */}
+                <div>
+                  <div className="px-3 pt-1 pb-1 text-[11px] font-medium uppercase tracking-wider text-ink-faint">
+                    {t('composer.profileGroupPassthrough')}
+                  </div>
+                  <ul className="space-y-0.5">
+                    {/* Native passthrough */}
+                    {isPassthroughMatching('native', nativeLabel) ? (
+                      <li>
                         <button
                           type="button"
                           role="option"
-                          aria-selected={isSelected ? 'true' : 'false'}
-                          data-execution-profile={retainedProfile}
-                          onClick={() => {
-                            onChange({
-                              ...choice,
-                              executor: boundExecution?.executor ?? choice.executor,
-                              profile: retainedProfile,
-                              profile_file: undefined,
-                            });
-                            close(true);
-                          }}
-                          className={`${MENU_ROW_CLASS} items-start ${isSelected ? MENU_ROW_SELECTED_CLASS : ''}`}
-                        >
-                          <Check on={isSelected} />
-                          <span className="min-w-0 flex-1">
-                            <span className="block min-w-0 truncate font-medium text-ink">
-                              {retainedProfile === 'agent' && isNativeExecutor(boundExecution?.executor ?? choice.executor) ? nativeLabel : retainedProfile}
-                            </span>
-                            <span className="mt-0.5 block text-[11px] text-ink-faint">
-                              {locale === 'zh' ? '只读保留身份' : 'Read-only retained identity'}
-                            </span>
-                          </span>
-                        </button>
-                      </li>
-                    );
-                  })()}
-
-                  {/* Catalog Profiles matching search */}
-                  {filteredProfiles.map((p) => {
-                    const isSelected = choice.profile === p.name && choice.profile_file === undefined;
-                    const pExecutor = profileExecutor(p);
-                    const pEngine = catalog.find((item) => item.id === pExecutor);
-                    const pEngineLabel = isNativeExecutor(pExecutor) ? nativeLabel : (pEngine?.label ?? pExecutor);
-                    const pModel = p.pinned_model_alias;
-                    const pEffort = p.thinking_effort;
-                    const comboPreview = pModel
-                      ? [pEngineLabel, pModel, pEffort].filter(Boolean).join(' · ')
-                      : `${pEngineLabel} · ${t('composer.engineModelDefault')}`;
-                    const sourceLabel = formatProfileSource(p, locale);
-
-                    return (
-                      <li key={p.name} data-execution-engine={pExecutor}>
-                        <button
-                          type="button"
-                          role="option"
-                          aria-selected={isSelected}
+                          aria-selected={isNativeSelected ? 'true' : 'false'}
                           data-menu-row
-                          data-execution-profile={p.name}
-                          onClick={() => {
-                            onChange({
-                              executor: pExecutor,
-                              profile: p.name,
-                              profile_file: undefined,
-                              overrides: undefined,
-                              external_connection_id: undefined,
-                              external_connection_name: undefined,
-                            });
-                            close(true);
-                          }}
-                          className={`${MENU_ROW_CLASS} items-start ${isSelected ? MENU_ROW_SELECTED_CLASS : ''}`}
+                          data-profile-unspecified
+                          data-execution-bare="native"
+                          data-option-value=""
+                          data-execution-passthrough="native"
+                          onClick={pickDefault}
+                          className={`${MENU_ROW_CLASS} items-start ${isNativeSelected ? MENU_ROW_SELECTED_CLASS : ''}`}
                         >
-                          <Check on={isSelected} />
+                          <Check on={isNativeSelected} />
                           <span className="min-w-0 flex-1">
                             <span className="flex min-w-0 items-center justify-between gap-1.5">
-                              <span className="min-w-0 truncate font-medium text-ink">{p.name}</span>
-                              {sourceLabel ? (
-                                <span className="shrink-0 text-[11px] text-ink-faint">{sourceLabel}</span>
-                              ) : null}
+                              <span className="block min-w-0 truncate font-medium text-ink">{nativeLabel}</span>
+                              <span className="shrink-0 text-[11px] text-ink-faint">{t('composer.profilePassthroughBadge')}</span>
                             </span>
-                            {p.description !== undefined && p.description !== '' ? (
-                              <span className="mt-0.5 block truncate text-[11.5px] leading-snug text-ink-faint">
-                                {p.description}
-                              </span>
-                            ) : null}
-                            <span className="mt-0.5 block truncate text-[11.5px] leading-snug text-ink-faint">
-                              {comboPreview}
+                            <span className="mt-0.5 block text-[11.5px] leading-snug text-ink-faint">
+                              {t('composer.execution.nativeBareHint') || (locale === 'zh' ? '使用默认系统提示与引擎设置' : 'Use default system prompt and engine settings')}
                             </span>
                           </span>
                         </button>
                       </li>
-                    );
-                  })}
+                    ) : null}
 
-                  {filteredProfiles.length === 0 && query.trim() !== '' ? (
-                    <li className="px-3 py-4 text-center text-[12px] text-ink-faint">
-                      {t('composer.execution.noMatch', { query: query.trim() })}
+                    {/* External engines passthrough */}
+                    {externalExecutors.map((item) => {
+                      if (!isPassthroughMatching(item.id, item.label)) return null;
+                      if (item.status === 'unavailable' && choice.executor === item.id) {
+                        return null;
+                      }
+                      const isSelected = choice.executor === item.id && (choice.profile === undefined || choice.profile === '') && !hasFile;
+                      const usable = item.status !== 'unavailable';
+                      return (
+                        <li key={item.id} data-execution-engine={item.id}>
+                          <button
+                            type="button"
+                            role="option"
+                            aria-selected={isSelected ? 'true' : 'false'}
+                            data-menu-row
+                            data-execution-engine={item.id}
+                            data-execution-bare={item.id}
+                            data-execution-passthrough={item.id}
+                            data-option-value={item.id}
+                            disabled={!usable && choice.executor !== item.id}
+                            onClick={() => {
+                              onChange({
+                                ...choice,
+                                executor: item.id,
+                                profile: undefined,
+                                profile_file: undefined,
+                                overrides: undefined,
+                                external_connection_id: undefined,
+                                external_connection_name: undefined,
+                              });
+                              close(true);
+                            }}
+                            className={`${MENU_ROW_CLASS} items-start ${isSelected ? MENU_ROW_SELECTED_CLASS : ''} ${!usable && choice.executor !== item.id ? 'opacity-60 cursor-not-allowed' : ''}`}
+                          >
+                            <Check on={isSelected} />
+                            <span className="min-w-0 flex-1">
+                              <span className="flex min-w-0 items-center justify-between gap-1.5">
+                                <span className="block min-w-0 truncate font-medium text-ink">{item.label}</span>
+                                <span className="shrink-0 text-[11px] text-ink-faint">{t('composer.profilePassthroughBadge')}</span>
+                              </span>
+                              {item.status === 'unavailable' ? (
+                                <span className="mt-0.5 block text-[11.5px] leading-snug text-ink-faint">
+                                  {t('composer.execution.needsSetup', { engine: item.label })}
+                                </span>
+                              ) : (
+                                <span className="mt-0.5 block text-[11.5px] leading-snug text-ink-faint">
+                                  {item.version ? `${item.id} · ${item.version}` : item.id}
+                                </span>
+                              )}
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+
+                {/* Group 2: 自定义 Profile */}
+                <div className="border-t border-hairline pt-1">
+                  <div className="px-3 pt-1 pb-1 text-[11px] font-medium uppercase tracking-wider text-ink-faint">
+                    {t('composer.profileGroupCustom')}
+                  </div>
+                  <ul className="space-y-0.5">
+                    {/* Active Profile File Row if chosen */}
+                    {choice.profile_file !== undefined ? (
+                      <li>
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected
+                          data-menu-row
+                          data-execution-file-row={choice.profile_file}
+                          onClick={() => { close(true); }}
+                          className={`${MENU_ROW_CLASS} items-start ${MENU_ROW_SELECTED_CLASS}`}
+                        >
+                          <Check on />
+                          <span className="min-w-0 flex-1">
+                            <span className="block min-w-0 truncate font-medium text-ink">
+                              {resolvedFile.path === choice.profile_file && resolvedFile.name !== undefined
+                                ? resolvedFile.name
+                                : profileFileLabel(choice.profile_file)}
+                            </span>
+                            <span className="mt-0.5 block min-w-0 truncate font-mono text-[11px] text-ink-faint">{choice.profile_file}</span>
+                            {resolvedFile.path === choice.profile_file && resolvedFile.description !== undefined && resolvedFile.description !== '' ? (
+                              <span className="mt-0.5 block text-[11.5px] leading-snug text-ink-faint">{resolvedFile.description}</span>
+                            ) : null}
+                            {resolvedFile.path === choice.profile_file && resolvedFile.name === undefined ? (
+                              <span data-execution-file-unread className="mt-0.5 block text-[11.5px] leading-snug text-danger">
+                                {t('composer.execution.fileUnread')}
+                              </span>
+                            ) : null}
+                          </span>
+                        </button>
+                      </li>
+                    ) : null}
+
+                    {/* Retained built-in profile from previous session / read-only */}
+                    {(() => {
+                      const retainedProfile = (boundExecution?.profile !== undefined && boundExecution.profile_file === undefined && !candidateProfiles.some((p) => p.name === boundExecution.profile))
+                        ? boundExecution.profile
+                        : undefined;
+                      if (!retainedProfile) return null;
+                      const isSelected = choice.profile === retainedProfile && choice.profile_file === undefined;
+                      return (
+                        <li key={retainedProfile} data-profile-retained={retainedProfile}>
+                          <button
+                            type="button"
+                            role="option"
+                            aria-selected={isSelected ? 'true' : 'false'}
+                            data-execution-profile={retainedProfile}
+                            onClick={() => {
+                              onChange({
+                                ...choice,
+                                executor: boundExecution?.executor ?? choice.executor,
+                                profile: retainedProfile,
+                                profile_file: undefined,
+                                external_connection_id: undefined,
+                                external_connection_name: undefined,
+                              });
+                              close(true);
+                            }}
+                            className={`${MENU_ROW_CLASS} items-start ${isSelected ? MENU_ROW_SELECTED_CLASS : ''}`}
+                          >
+                            <Check on={isSelected} />
+                            <span className="min-w-0 flex-1">
+                              <span className="block min-w-0 truncate font-medium text-ink">
+                                {retainedProfile === 'agent' && isNativeExecutor(boundExecution?.executor ?? choice.executor) ? nativeLabel : retainedProfile}
+                              </span>
+                              <span className="mt-0.5 block text-[11px] text-ink-faint">
+                                {t('composer.profile.retained')}
+                              </span>
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })()}
+
+                    {/* Filtered Main Profiles */}
+                    {filteredMainProfiles.map(renderProfileRow)}
+
+                    {/* Filtered Other Profiles */}
+                    {filteredOtherProfiles.map(renderProfileRow)}
+
+                    {filteredMainProfiles.length === 0 && filteredOtherProfiles.length === 0 && query.trim() !== '' ? (
+                      <li className="px-3 py-4 text-center text-[12px] text-ink-faint">
+                        {t('composer.execution.noMatch', { query: query.trim() })}
+                      </li>
+                    ) : null}
+
+                    {/* Pick from file button */}
+                    <li className="mt-1 border-t border-hairline pt-1">
+                      <button
+                        type="button"
+                        data-execution-file-open
+                        data-execution-file-picker={nativePathPicker ? 'native' : 'path'}
+                        disabled={picking}
+                        onClick={() => { void openFileChooser(); }}
+                        className={`${MENU_ROW_CLASS} text-ink-soft hover:text-ink disabled:opacity-50`}
+                      >
+                        <span aria-hidden className="flex h-[19px] w-3 shrink-0 items-center text-ink-soft">
+                          <Icon name="file" size={12} />
+                        </span>
+                        <span className="min-w-0 truncate font-medium">{t('composer.execution.fileOpen')}</span>
+                      </button>
                     </li>
-                  ) : null}
-
-                  {/* Pick from file button */}
-                  <li className="mt-1 border-t border-hairline pt-1">
-                    <button
-                      type="button"
-                      data-execution-file-open
-                      data-execution-file-picker={nativePathPicker ? 'native' : 'path'}
-                      disabled={picking}
-                      onClick={() => { void openFileChooser(); }}
-                      className={`${MENU_ROW_CLASS} text-ink-soft hover:text-ink disabled:opacity-50`}
-                    >
-                      <span aria-hidden className="flex h-[19px] w-3 shrink-0 items-center text-ink-soft">
-                        <Icon name="file" size={12} />
-                      </span>
-                      <span className="min-w-0 truncate font-medium">{t('composer.execution.fileOpen')}</span>
-                    </button>
-                  </li>
-                </ul>
+                  </ul>
+                </div>
               </div>
             </>
           )}

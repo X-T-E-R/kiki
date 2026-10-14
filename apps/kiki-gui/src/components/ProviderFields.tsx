@@ -491,12 +491,14 @@ export function ImagePolicyEditor({
 export function AdvancedDisclosure({
   id,
   summary,
+  label,
   children,
   defaultOpen = false,
 }: {
   id: string;
   /** Short list of what is inside, e.g. "Capabilities · image policy". */
   summary?: string;
+  label?: string;
   children: React.ReactNode;
   defaultOpen?: boolean;
 }) {
@@ -512,7 +514,7 @@ export function AdvancedDisclosure({
         className="-ml-1 flex min-h-7 w-full items-center gap-1.5 rounded-md px-1 text-left outline-none transition-colors hover:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40"
       >
         <DisclosureChevron open={open} className="text-ink-soft" />
-        <span className="text-[12px] font-medium text-ink-soft">{t('st.advanced.disclosure')}</span>
+        <span className="text-[12px] font-medium text-ink-soft">{label ?? t('st.advanced.disclosure')}</span>
         {summary !== undefined && !open ? (
           <span className="min-w-0 truncate text-[12px] text-ink-faint">{summary}</span>
         ) : null}
@@ -985,38 +987,21 @@ export function ProviderFields({
           the test belong here. A key connection keeps the whole field set. */}
       {managed ? null : (
         <>
-          <div className="grid gap-3 sm:grid-cols-2">
-            {/* A stored connection is named in its row header; its id is fixed. */}
-            {idLocked ? null : (
-              <div className="min-w-0">
-                <label htmlFor="provider-field-id" className={FORM_LABEL}>{t('st.providers.idLabel')}</label>
-                <input
-                  id="provider-field-id"
-                  className={`${INPUT} mt-1 ${idIssue !== null ? 'border-danger/60' : ''}`}
-                  value={draft.id}
-                  aria-invalid={idIssue !== null || undefined}
-                  aria-describedby={idIssue !== null ? 'provider-field-id-issue' : undefined}
-                  placeholder="my-provider"
-                  onChange={(event) => { onChange({ ...draft, id: event.target.value }); }}
-                />
-                <FieldIssue id="provider-field-id-issue" text={idIssue} />
-              </div>
-            )}
+          {idLocked ? null : (
             <div className="min-w-0">
-              <span className={FORM_LABEL}>{t('st.providers.protocol')}</span>
-              <div className="mt-1">
-                <SearchableSelect
-                  id={idLocked ? `${scope}-protocol` : 'provider-field-protocol'}
-                  ariaLabel={t('st.providers.protocol')}
-                  value={draft.type}
-                  hideFilter
-                  options={protocols.map((type) => ({ value: type, label: protocolLabel(type), hint: type }))}
-                  onChange={(next) => { onChange({ ...draft, type: next as ProviderDraft['type'] }); }}
-                  buttonClassName={FORM_SELECT_TRIGGER}
-                />
-              </div>
+              <label htmlFor="provider-field-id" className={FORM_LABEL}>{t('st.providers.idLabel')}</label>
+              <input
+                id="provider-field-id"
+                className={`${INPUT} mt-1 ${idIssue !== null ? 'border-danger/60' : ''}`}
+                value={draft.id}
+                aria-invalid={idIssue !== null || undefined}
+                aria-describedby={idIssue !== null ? 'provider-field-id-issue' : undefined}
+                placeholder="my-provider"
+                onChange={(event) => { onChange({ ...draft, id: event.target.value }); }}
+              />
+              <FieldIssue id="provider-field-id-issue" text={idIssue} />
             </div>
-          </div>
+          )}
           <div>
             <label htmlFor={baseUrlId} className={FORM_LABEL}>{t('st.providers.baseUrl')}</label>
             <input
@@ -1125,7 +1110,27 @@ export function ProviderFields({
           />
         ))}
       </div>
-      <AdvancedDisclosure id={`provider-${draft.id || 'new'}`} summary={t('st.providers.advancedSummary')}>
+      <AdvancedDisclosure
+        id={`provider-${draft.id || 'new'}`}
+        label={t('st.providers.advancedProtocol')}
+        summary={t('st.providers.advancedSummary')}
+      >
+        {managed ? null : (
+          <div className="space-y-1">
+            <span className={FORM_LABEL}>{t('st.providers.protocol')}</span>
+            <div className="mt-1">
+              <SearchableSelect
+                id={idLocked ? `${scope}-protocol` : 'provider-field-protocol'}
+                ariaLabel={t('st.providers.protocol')}
+                value={draft.type}
+                hideFilter
+                options={protocols.map((type) => ({ value: type, label: protocolLabel(type), hint: type }))}
+                onChange={(next) => { onChange({ ...draft, type: next as ProviderDraft['type'] }); }}
+                buttonClassName={FORM_SELECT_TRIGGER}
+              />
+            </div>
+          </div>
+        )}
         <RequestIdentityLayerEditor
           value={draft}
           onChange={(identity) => { onChange({ ...draft, ...identity }); }}

@@ -767,7 +767,7 @@ function ThinkingKeepField({ stored }: { stored: string | undefined }) {
  * An explicit list, including an empty one, is never widened.
  */
 function defaultCapabilitiesFor(discovered: readonly string[] | undefined): string[] {
-  return [...(discovered ?? DEFAULT_MODEL_CAPABILITIES)];
+  return [...new Set(discovered ?? DEFAULT_MODEL_CAPABILITIES)];
 }
 
 /**
@@ -1326,6 +1326,7 @@ function ModelCatalogRowEditor({
   const [steerSourcesBaseline, setSteerSourcesBaseline] = useState<ModelSteerSourcesDraft | null>(null);
   const [steerIssue, setSteerIssue] = useState<ModelSteeringSource | undefined>(undefined);
   const steerSourcesDirty = steerSources !== null && steerSourcesBaseline !== null && !steerSourcesEqual(steerSources, steerSourcesBaseline);
+  const [activeEditorTab, setActiveEditorTab] = useState<'basics' | 'advanced'>('basics');
 
   useEffect(() => {
     if (entity === undefined || steerSourcesDirty) return;
@@ -1816,28 +1817,45 @@ function ModelCatalogRowEditor({
 
   return (
     <div className="min-w-0 space-y-7" data-model-editor-layout>
-      {/*
-        One bar of section names, pinned while the long form scrolls. It is a
-        table of contents, not tabs: every section stays mounted and in the
-        reading order, so search, focus order and unsaved edits work the same
-        whether or not anyone uses the bar.
-      */}
-      <nav
-        aria-label={t('st.modelEditor.navAria')}
-        className="sticky -top-4 z-10 -mx-5 -mt-4 flex gap-1 overflow-x-auto border-b border-hairline bg-panel px-5 py-2"
-      >
-        {EDITOR_SECTIONS.map((section) => (
+      <div className="sticky -top-4 z-10 -mx-5 -mt-4 flex flex-wrap items-center justify-between gap-3 border-b border-hairline bg-panel px-5 py-2.5">
+        <div role="tablist" aria-label={t('st.modelEditor.navAria')} className="flex items-center gap-1">
           <button
-            key={section}
             type="button"
-            data-model-editor-jump={section}
-            onClick={() => { jumpTo(section); }}
-            className="h-7 shrink-0 rounded-md px-2.5 text-[12.5px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+            role="tab"
+            aria-selected={activeEditorTab === 'basics'}
+            data-model-editor-tab="basics"
+            onClick={() => { setActiveEditorTab('basics'); }}
+            className={`h-7 shrink-0 rounded-md px-3 text-[12.5px] transition-colors ${
+              activeEditorTab === 'basics'
+                ? 'bg-ink/[0.08] font-medium text-ink'
+                : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
+            }`}
           >
-            {t(EDITOR_SECTION_LABEL[section])}
+            {t('st.modelEditor.tab.basics')}
           </button>
-        ))}
-      </nav>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeEditorTab === 'advanced'}
+            data-model-editor-tab="advanced"
+            onClick={() => { setActiveEditorTab('advanced'); }}
+            className={`h-7 shrink-0 rounded-md px-3 text-[12.5px] transition-colors ${
+              activeEditorTab === 'advanced'
+                ? 'bg-ink/[0.08] font-medium text-ink'
+                : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
+            }`}
+          >
+            {t('st.modelEditor.tab.advanced')}
+          </button>
+        </div>
+        <ModelEditScopeSwitch
+          scope={editScope}
+          summary={scopeSummary}
+          differences={scopeDifferences}
+          onScopeChange={(next) => { setEditScope(next); setUsageScope(next); }}
+        />
+      </div>
+      <div hidden={activeEditorTab !== 'basics'} className="space-y-6">
       <EditorSection id={sectionId('basics')} title={t('st.modelEditor.nav.basics')} note={t('st.modelEditor.basicsNote')}>
         {entity.issues.length > 0 ? (
           <p role="status" className="rounded-md bg-amber-card px-3 py-1.5 text-[12px] leading-4 text-amber-ink">
@@ -1866,6 +1884,13 @@ function ModelCatalogRowEditor({
               emptyText={t('st.providers.catalogEmpty')}
               disabled={saving}
               buttonClassName={`${INPUT} flex items-center justify-between gap-2 text-left font-mono`}
+            />
+            <input
+              type="text"
+              className="sr-only"
+              aria-label={t('st.models.remoteIdAria', { model: entity.id })}
+              value={draft.remoteId}
+              onChange={(event) => { setDraft({ ...draft, remoteId: event.target.value }); }}
             />
             <p className="truncate font-mono text-[11px] text-ink-faint" title={entity.id}>{t('st.models.aliasLine', { alias: entity.id })}</p>
           </div>
@@ -1950,18 +1975,9 @@ function ModelCatalogRowEditor({
           <Hint>{t('st.models.capabilitiesHint')}</Hint>
         </div>
       </EditorSection>
+      </div>
+      <div hidden={activeEditorTab !== 'advanced'} className="space-y-6">
       <EditorSection id={sectionId('identity')} title={t('st.modelEditor.nav.identity')} note={t('st.modelEditor.identityNote')}>
-        {/*
-          One scope for the section. It heads the three groups that have a real
-          per-identity layer on the wire, so switching it re-points those rows
-          instead of showing a second copy of the form.
-        */}
-        <ModelEditScopeSwitch
-          scope={editScope}
-          summary={scopeSummary}
-          differences={scopeDifferences}
-          onScopeChange={(next) => { setEditScope(next); setUsageScope(next); }}
-        />
         {/*
           The prompt prose, always open and right under the scope switch. What a
           model is told is the reason to open this section. Editing a readable
@@ -2095,6 +2111,7 @@ function ModelCatalogRowEditor({
           </div>
         </AdvancedDisclosure>
       </EditorSection>
+      </div>
       {/*
         The actions stay pinned to the bottom of the panel: on a form this long
         the save button used to be a scroll away from the field just edited.

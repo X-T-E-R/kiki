@@ -23,6 +23,8 @@ import { AppearanceSection } from './settings/AppearanceSection';
 import { Icon } from './icons';
 import { AgentsSection } from './settings/AgentsSection';
 import { AiSection } from './settings/AiSection';
+import { ProvidersSection } from './settings/ProvidersSection';
+import { DefaultsTab, ModelsTab } from './settings/ModelsSection';
 import { HooksSection } from './settings/hooks/HooksSection';
 import { ConnectionSection } from './settings/ConnectionSection';
 import { DeveloperSection } from './settings/DeveloperSection';
@@ -159,12 +161,14 @@ function SpaceBand() {
  */
 function MobileSettingsDrawer({
   active,
+  activeTab,
   activePluginId,
   open,
   onClose,
   onNavigate,
 }: {
   active: SectionId;
+  activeTab?: string | null;
   activePluginId: string | null;
   open: boolean;
   onClose: () => void;
@@ -192,7 +196,7 @@ function MobileSettingsDrawer({
             <Icon name="close" size={16} />
           </button>
         </div>
-        <SettingsNavTree active={active} activePluginId={activePluginId} onNavigate={onNavigate} onAfterNavigate={onClose} />
+        <SettingsNavTree active={active} activeTab={activeTab} activePluginId={activePluginId} onNavigate={onNavigate} onAfterNavigate={onClose} />
       </div>
     </div>
   );
@@ -381,6 +385,10 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     ? workspaceSettingsIdFromQuery(search)
     : null;
 
+  const currentTab = new URLSearchParams(search).get('tab')
+    ?? (active === 'ai' ? AI_SETTINGS_DEFAULT_TAB : active === 'search' ? 'overview' : null);
+  const fromOnboarding = new URLSearchParams(search).get('from') === 'onboarding';
+
   // Import history is a built-in session surface, not a plugin sub-view. It
   // answers `/settings/sessions/import` directly; the legacy plugin address is
   // redirected there above, so it has exactly one home.
@@ -391,6 +399,8 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'shortcuts' ? <ShortcutsSection />
     : active === 'connection' ? <ConnectionSection />
     : active === 'ai' ? <AiSection />
+    : active === 'providers' ? <ProvidersSection />
+    : active === 'models' ? <div className="space-y-6"><DefaultsTab /><ModelsTab /></div>
     : active === 'connection-services' ? <ExternalClientsSection />
     : active === 'identity' ? <IdentitySection />
     : active === 'agents' ? <><UnifiedAgentManager /><AgentsSection /></>
@@ -413,13 +423,25 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'ssh' ? <SshSection />
     : active === 'developer' ? <DeveloperSection />
     : active === 'labs' ? <LabsSection />
+    : active === 'extensions' ? (
+        currentTab === 'skills' ? <SkillsSection />
+        : currentTab === 'mcp' ? <McpSection />
+        : currentTab === 'plugins' ? <PluginsSection pluginId={activePluginId} />
+        : <div className="space-y-6"><SkillsSection /><McpSection /><PluginsSection pluginId={activePluginId} /></div>
+      )
+    : active === 'environment-tools' ? (
+        currentTab === 'search' ? <NbSearchSection />
+        : currentTab === 'browser-control' ? <BrowserControlSection />
+        : currentTab === 'computer-control' ? <ComputerControlSection />
+        : <div className="space-y-6"><NbSearchSection /><BrowserControlSection /><ComputerControlSection /></div>
+      )
+    : active === 'remote' ? <div className="space-y-6"><ConnectionSection /><SshSection /><ExternalClientsSection /></div>
+    : active === 'system' ? <div className="space-y-6"><DeveloperSection /><LabsSection /><AboutSection /><DesktopLogCard /></div>
     : <><AboutSection /><DesktopLogCard /></>;
 
   // A feature page ends with the experimental flags that change it; tabbed
   // pages show them on one tab only, so a hit on the rows lands where they are.
   const experimentalTab = active === null ? undefined : experimentalTabForSection(active);
-  const currentTab = new URLSearchParams(search).get('tab')
-    ?? (active === 'ai' ? AI_SETTINGS_DEFAULT_TAB : active === 'search' ? 'overview' : null);
   const showExperimental = active !== null && active !== 'labs'
     && (experimentalTab === undefined || currentTab === experimentalTab);
 
@@ -445,7 +467,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
         </h1>
       </header>
       <main className="flex min-h-0 flex-1 border-t border-hairline">
-        <div className="hidden shrink-0 border-r border-hairline lg:block"><SettingsNav active={active} activePluginId={activePluginId} searchFocusToken={searchFocusToken} onNavigate={guardedNavigate} onSearchHit={onSearchHit} /></div>
+        <div className="hidden shrink-0 border-r border-hairline lg:block"><SettingsNav active={active} activeTab={currentTab} activePluginId={activePluginId} searchFocusToken={searchFocusToken} onNavigate={guardedNavigate} onSearchHit={onSearchHit} /></div>
         <div className="flex min-w-0 flex-1 flex-col">
           {active !== null ? (
             <div className="border-b border-hairline px-4 py-2 lg:hidden">
@@ -471,6 +493,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
               />
               <MobileSettingsDrawer
                 active={active}
+                activeTab={currentTab}
                 activePluginId={activePluginId}
                 open={drawerOpen}
                 onClose={() => { setDrawerOpen(false); }}
@@ -485,6 +508,22 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
           ) : (
             <div ref={scrollRef} data-settings-scroll className="relative min-h-0 flex-1 overflow-y-auto px-4 pb-16 pt-6 lg:px-10 lg:pt-8">
               <div className="mx-auto max-w-[720px]">
+                {fromOnboarding ? (
+                  <div
+                    className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-card)] border border-accent/30 bg-accent/10 px-4 py-3 text-[13px] text-ink"
+                    data-settings-onboarding-return
+                  >
+                    <span>{t('onboarding.returnBanner.text')}</span>
+                    <button
+                      type="button"
+                      className="btn-primary px-3 py-1.5 text-[12px] font-medium"
+                      data-settings-onboarding-return-action
+                      onClick={() => navigate('/new')}
+                    >
+                      {t('onboarding.returnBanner.action')}
+                    </button>
+                  </div>
+                ) : null}
                 <SpaceBand />
                 <SectionIntro section={active} workspaceName={workspaceScopeName} remoteAddress={remoteAddress} dirty={dirty} hidePurpose={activePluginId !== null} />
                 <SettingsPageScopeContext.Provider value={pageScope}>

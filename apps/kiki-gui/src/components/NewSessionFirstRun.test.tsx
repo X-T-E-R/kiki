@@ -225,14 +225,19 @@ describe('WorkspacePickerFields first-run affordances', () => {
     expect(browser.querySelector('input[type="text"]')).not.toBeNull();
   });
 
-  it('routes the browse button to the native picker', async () => {
+  it('routes the browse button to the native picker with localized aria-label', async () => {
     const browseForWorkspace = vi.fn(async () => {});
     const container = await mount(
       draftState({ canBrowseForWorkspace: true, browseForWorkspace }),
     );
 
+    const browseBtn = container.querySelector<HTMLButtonElement>('[data-new-browse]');
+    expect(browseBtn).not.toBeNull();
+    expect(browseBtn?.getAttribute('aria-label')).toBe('Browse folder…');
+    expect(browseBtn?.getAttribute('title')).toBe('Browse folder…');
+
     await act(async () => {
-      container.querySelector<HTMLButtonElement>('[data-new-browse]')?.click();
+      browseBtn?.click();
     });
     expect(browseForWorkspace).toHaveBeenCalledTimes(1);
   });

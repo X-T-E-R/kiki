@@ -83,21 +83,16 @@ describe('SettingsNav grouped tree', () => {
     expect(container.textContent).not.toMatch(/This device|All sessions|127\.0\.0\.1/);
     const groups = [...container.querySelectorAll('[data-settings-nav-group]')];
     expect(groups.map((group) => group.getAttribute('data-settings-nav-group')))
-      .toEqual(['device', 'connection', 'models-agents', 'work', 'capabilities', 'advanced']);
+      .toEqual(['preferences', 'models-agents', 'workspaces-memory', 'capabilities', 'system-connection']);
     expect(groups.map((group) => group.querySelector('p')?.textContent))
-      .toEqual(['App', 'Connection & remote', 'Models & agents', 'How work runs', 'Capabilities', 'Advanced']);
+      .toEqual(['Preferences & appearance', 'Models & agents', 'Workspaces & memory', 'Capabilities & safety', 'System & connection']);
     for (const group of groups) expect(group.querySelector(':scope > button')).toBeNull();
     const leaves = (index: number) => [...groups[index]!.querySelectorAll('[data-settings-nav-leaf]')].map((leaf) => leaf.getAttribute('data-settings-nav-leaf'));
-    expect(leaves(0)).toEqual(['general', 'appearance', 'shortcuts']);
-    // Spaces sit with the ways of reaching a server; workspaces with the
-    // sessions that run in them.
-    expect(leaves(1)).toEqual(['connection', 'ssh', 'spaces']);
-    expect(leaves(2)).toEqual(['ai', 'identity', 'agents', 'subagents']);
-    expect(leaves(3)).toEqual(['sessions', 'workspaces', 'notifications', 'memory', 'permissions', 'tasks']);
-    // External clients sit with MCP: both answer "what else can reach this
-    // server", in opposite directions.
-    expect(leaves(4)).toEqual(['skills', 'mcp', 'external-clients', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks']);
-    expect(leaves(5)).toEqual(['developer', 'labs', 'about']);
+    expect(leaves(0)).toEqual(['general', 'shortcuts']);
+    expect(leaves(1)).toEqual(['providers', 'models', 'agents']);
+    expect(leaves(2)).toEqual(['workspaces', 'memory']);
+    expect(leaves(3)).toEqual(['permissions', 'extensions', 'environment-tools']);
+    expect(leaves(4)).toEqual(['remote', 'system']);
   });
 
   it('highlights only the active leaf and navigates on click', async () => {
@@ -106,14 +101,14 @@ describe('SettingsNav grouped tree', () => {
       <SettingsNav active="skills" searchFocusToken={null} onNavigate={(id) => { visited.push(id); }} onSearchHit={noop} />,
     );
     const active = [...container.querySelectorAll('[aria-current="page"]')];
-    expect(active.map((button) => button.textContent)).toEqual(['Skills']);
+    expect(active.map((button) => button.textContent)).toEqual(['Skills, MCP & plugins']);
     // Selection is the shared row rule (a paper sheet + inset mark from
     // .row-interactive[aria-current]), not an accent fill.
     expect(active[0]!.classList.contains('row-interactive')).toBe(true);
     expect(container.querySelector('nav')!.innerHTML).not.toContain('accent');
-    const models = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Models & providers')!;
+    const models = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Model catalog & defaults')!;
     await click(models);
-    expect(visited).toEqual(['ai']);
+    expect(visited).toEqual(['models']);
   });
 
   it('shows group › section › card breadcrumbs in search hits', async () => {
@@ -125,7 +120,7 @@ describe('SettingsNav grouped tree', () => {
     const hits = [...container.querySelectorAll('[role="option"]')];
     expect(hits.length).toBeGreaterThan(0);
     // The group › section separator is the drawn chevron, not a typed glyph.
-    expect(hits[0]!.textContent).toBe('Theme & colorAppAppearance');
+    expect(hits[0]!.textContent).toBe('LanguagePreferences & appearanceGeneral & appearance');
     expect(hits[0]!.querySelector('[data-icon="chevron"]')).not.toBeNull();
   });
 

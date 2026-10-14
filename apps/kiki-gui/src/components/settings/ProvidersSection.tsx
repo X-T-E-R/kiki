@@ -6,7 +6,7 @@ import type { ProviderCatalogItem } from '@kiki/protocol';
 
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
-import { OAUTH_METHODS_QUERY_KEY } from '../AccountSignIn';
+import { AccountSignIn, OAUTH_METHODS_QUERY_KEY } from '../AccountSignIn';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { Icon } from '../icons';
 import { NewProviderWizard, PROVIDER_HEALTH_QUERY_KEY, ProviderEditor } from '../ProviderFields';
@@ -32,7 +32,38 @@ const KIND_ORDER: readonly ConnectionKind[] = ['account', 'api', 'local'];
  * server has and the protocols you can bring a key to, and it is what an empty
  * page shows instead of an empty table.
  */
-export function ConnectionsTab() {
+export function OAuthAccountCard({
+  configuredProviderIds,
+  onAccountChanged,
+}: {
+  configuredProviderIds: ReadonlySet<string>;
+  onAccountChanged: () => Promise<void> | void;
+}) {
+  const { t } = useI18n();
+  return (
+    <SectionCard id="st-card-auth" title={t('st.providers.zone1.title')}>
+      <div className="space-y-3">
+        <p className="max-w-[62ch] text-[13px] leading-5 text-ink-soft">
+          {t('st.providers.zone1.hint')}
+        </p>
+        <AccountSignIn
+          configuredProviderIds={configuredProviderIds}
+          onChanged={onAccountChanged}
+        />
+      </div>
+    </SectionCard>
+  );
+}
+
+/**
+ * Connections tab / Providers section: one list, and one way to add to it.
+ *
+ * Divided into three clear access zones:
+ * ① Account sign-in (OAuth / subscription)
+ * ② Local CLI harnesses
+ * ③ API key providers
+ */
+export function ProvidersSection() {
   const { client } = useConnection();
   const { t } = useI18n();
   const { hash } = useLocation();
@@ -58,9 +89,7 @@ export function ConnectionsTab() {
   const providerItems = providersQuery.data?.items ?? [];
   const methods = methodsQuery.data ?? [];
   const accountProviders = useMemo(() => new Set(methods.map((method) => method.provider)), [methods]);
-  // A sign-in method that has no connection yet is offered inside "Add
-  // connection" rather than as a row of its own; the list holds connections
-  // that exist, including one whose credential has gone stale.
+
   const methodFor = (providerId: string) => methods.find((method) => method.provider === providerId);
   const modelCount = (providerId: string) =>
     (modelsQuery.data?.items ?? []).filter((model) => model.provider_id === providerId).length;
@@ -95,11 +124,7 @@ export function ConnectionsTab() {
   ], [t, accountProviders]);
   const view = useListView({ listId: 'connections', items: providerItems, keyOf, textOf, filters, sorts });
 
-  // Both deep links open the one entry point: `#st-card-auth` asked for a
-  // sign-in and `#st-card-providers-add` for the form, and a person who
-  // arrived from either wants the same thing — add a connection.
   const [adding, setAdding] = useState(false);
-  // A deep link opens it once; closing it stays closed.
   const [linkClosed, setLinkClosed] = useState<string | null>(null);
   const wanted = hash === '#st-card-auth' || hash === '#st-card-providers-add';
   const linked = wanted && linkClosed !== hash;
@@ -107,10 +132,6 @@ export function ConnectionsTab() {
   const closeAdd = () => { setAdding(false); setLinkClosed(hash); };
   const openAdd = () => { setAdding(true); setFeedback(null); };
 
-  // `#st-card-auth` no longer names a card of its own — sign-in is the account
-  // lane of the one add flow. The page only scrolls and flashes a card that
-  // announces itself, so this anchor answers the locate request itself, and
-  // only while the flow is actually on screen to receive the arrival.
   const onCardMount = useContext(SettingsCardMountContext);
   useEffect(() => {
     if (addOpen && hash === '#st-card-auth') onCardMount?.('st-card-auth');
@@ -127,80 +148,93 @@ export function ConnectionsTab() {
 
   return (
     <div className="space-y-6">
-      <SectionCard id="st-card-providers" title={t('st.providers.title')}>
-        <div className="space-y-3">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-            <p className="mr-auto max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t('st.connections.intro')}</p>
-          </div>
-          {providerItems.length > 0 ? (
-            <>
-              <ListToolbar view={view} total={providerItems.length} filters={filters} sorts={sorts}
-                searchLabel={t('st.connections.search')} searchPlaceholder={t('st.connections.searchPlaceholder')}
-                actions={addOpen ? undefined : addButton} />
-              {view.visible.length === 0 ? (
-                <ListEmpty kind="no-match" title={t('st.connections.noMatchTitle')}
-                  body={view.query.trim() !== '' ? t('st.connections.noMatches', { query: view.query.trim() }) : undefined}
-                  onClear={view.clear} />
-              ) : (
-                <div data-connection-list>
-                  <ListBody items={view.visible} keyOf={keyOf} density={view.density} label={t('st.providers.title')}
-                    virtualizeAfter={Number.POSITIVE_INFINITY}
-                    renderRow={(provider) => {
-                      const method = methodFor(provider.id);
-                      return (
-                        <ProviderEditor
-                          provider={provider}
-                          models={modelsQuery.data?.items ?? []}
-                          managed={accountProviders.has(provider.id)}
-                          modelCount={modelCount(provider.id)}
-                          onSaved={refreshProviderData}
-                          accountLabel={method?.label}
-                          accountMethod={method}
-                          density={view.density}
-                        />
-                      );
-                    }} />
-                </div>
-              )}
-            </>
-          ) : null}
-          {empty ? (
-            <div data-connections-empty>
-              <ListEmpty kind="none" title={t('st.connections.emptyTitle')} body={t('st.connections.emptyBody')} />
-            </div>
-          ) : null}
-          {providersQuery.isLoading ? <Hint>{t('st.providers.loading')}</Hint> : null}
-          {providersQuery.isError ? <InlineError error={providersQuery.error} /> : null}
-          <FeedbackLine feedback={feedback} />
-        </div>
-      </SectionCard>
+      {/* Zone 1: Account sign-in (OAuth / direct subscription) */}
+      <div data-providers-zone="oauth">
+        <OAuthAccountCard
+          configuredProviderIds={new Set(providerItems.map((p) => p.id))}
+          onAccountChanged={refreshProviderData}
+        />
+      </div>
 
-      <SectionCard id="st-card-engines" title={t('st.engines.title')}>
-        <ExternalEnginesList />
-        {/* The other direction, one line away. The engines above are agents
-            Kiki drives; this is who drives Kiki, and it lives on its own page.
-            A link is enough — the form is not repeated here. */}
-        <div className="mt-4 border-t border-hairline pt-3">
-          <Link
-            to="/settings/external-clients"
-            data-external-clients-entry
-            className="-ml-1.5 flex min-h-8 min-w-0 items-center gap-1.5 rounded-md px-1.5 text-[12.5px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
-          >
-            <Icon name="external" size={12} className="shrink-0 text-ink-faint" />
-            <span className="min-w-0 truncate">{t('st.engines.externalClientsEntry')}</span>
-            <Icon name="chevron" size={12} className="shrink-0 text-ink-faint" />
-          </Link>
-          <p className="mt-0.5 max-w-[62ch] pl-1.5 text-[12px] leading-4 text-ink-faint">
-            {t('st.engines.externalClientsEntryHint')}
+      {/* Zone 2: Local CLI harnesses */}
+      <div data-providers-zone="harnesses">
+        <SectionCard id="st-card-engines" title={t('st.providers.zone2.title')}>
+          <p className="mb-3 max-w-[62ch] text-[13px] leading-5 text-ink-soft">
+            {t('st.providers.zone2.hint')}
           </p>
-        </div>
-      </SectionCard>
+          <ExternalEnginesList />
+          <div className="mt-4 border-t border-hairline pt-3">
+            <Link
+              to="/settings/external-clients"
+              data-external-clients-entry
+              className="-ml-1.5 flex min-h-8 min-w-0 items-center gap-1.5 rounded-md px-1.5 text-[12.5px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+            >
+              <Icon name="external" size={12} className="shrink-0 text-ink-faint" />
+              <span className="min-w-0 truncate">{t('st.engines.externalClientsEntry')}</span>
+              <Icon name="chevron" size={12} className="shrink-0 text-ink-faint" />
+            </Link>
+            <p className="mt-0.5 max-w-[62ch] pl-1.5 text-[12px] leading-4 text-ink-faint">
+              {t('st.engines.externalClientsEntryHint')}
+            </p>
+          </div>
+        </SectionCard>
+      </div>
+
+      {/* Zone 3: API key providers */}
+      <div data-providers-zone="apikey">
+        <SectionCard id="st-card-providers" title={t('st.providers.zone3.title')}>
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+              <p className="mr-auto max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t('st.providers.zone3.hint')}</p>
+            </div>
+            {providerItems.length > 0 ? (
+              <>
+                <ListToolbar view={view} total={providerItems.length} filters={filters} sorts={sorts}
+                  searchLabel={t('st.connections.search')} searchPlaceholder={t('st.connections.searchPlaceholder')}
+                  actions={addOpen ? undefined : addButton} />
+                {view.visible.length === 0 ? (
+                  <ListEmpty kind="no-match" title={t('st.connections.noMatchTitle')}
+                    body={view.query.trim() !== '' ? t('st.connections.noMatches', { query: view.query.trim() }) : undefined}
+                    onClear={view.clear} />
+                ) : (
+                  <div data-connection-list>
+                    <ListBody items={view.visible} keyOf={keyOf} density={view.density} label={t('st.providers.title')}
+                      virtualizeAfter={Number.POSITIVE_INFINITY}
+                      renderRow={(provider) => {
+                        const method = methodFor(provider.id);
+                        return (
+                          <ProviderEditor
+                            provider={provider}
+                            models={modelsQuery.data?.items ?? []}
+                            managed={accountProviders.has(provider.id)}
+                            modelCount={modelCount(provider.id)}
+                            onSaved={refreshProviderData}
+                            accountLabel={method?.label}
+                            accountMethod={method}
+                            density={view.density}
+                          />
+                        );
+                      }} />
+                  </div>
+                )}
+              </>
+            ) : null}
+            {empty ? (
+              <div data-connections-empty>
+                <ListEmpty kind="none" title={t('st.connections.emptyTitle')} body={t('st.connections.emptyBody')} />
+              </div>
+            ) : null}
+            {providersQuery.isLoading ? <Hint>{t('st.providers.loading')}</Hint> : null}
+            {providersQuery.isError ? <InlineError error={providersQuery.error} /> : null}
+            <FeedbackLine feedback={feedback} />
+          </div>
+        </SectionCard>
+      </div>
 
       {/* With no connection yet the add flow is the page itself; otherwise it
           opens beside the list in a side panel, so the list stays in view. */}
       {addOpen && empty ? (
         <SectionCard id="st-card-providers-add" title={t('st.connections.addTitle')}>
-          <span id="st-card-auth" className="scroll-mt-4" />
           <NewProviderWizard
             key={hash === '#st-card-auth' ? 'account' : 'api'}
             initialMethod={hash === '#st-card-auth' ? 'account' : 'api'}
@@ -219,7 +253,6 @@ export function ConnectionsTab() {
           data={{ 'data-add-connection-panel': '' }}
         >
           <div id="st-card-providers-add">
-            <span id="st-card-auth" className="scroll-mt-4" />
             <NewProviderWizard
               key={hash === '#st-card-auth' ? 'account' : 'api'}
               initialMethod={hash === '#st-card-auth' ? 'account' : 'api'}
@@ -233,3 +266,5 @@ export function ConnectionsTab() {
     </div>
   );
 }
+
+export { ProvidersSection as ConnectionsTab };

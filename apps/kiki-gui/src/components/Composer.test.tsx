@@ -701,7 +701,7 @@ describe('Composer execution control', () => {
     listExecutors.mockResolvedValue({ items: EXECUTOR_ITEMS.map(item => item.id === 'native' ? item : { ...item, connection: { login_status: 'unknown', default_args: [] } }) });
     getConfig.mockResolvedValue({ raw: { agent_executor_overrides: { 'claude-acp': { bin_path: '/opt/claude', defaults: { model_alias: 'fixture/kiki-pro' } } } } });
     const { container } = await renderComposer({ sessionId, execution: NATIVE_AGENT, onChangeExecution: () => {} });
-    await click(container.querySelector('#composer-execution-select')!);
+    await click(container.querySelector('#composer-profile-select')!);
     expect(container.querySelector('[data-execution-bare="claude-acp"]')).toBeNull();
   });
 
@@ -716,7 +716,7 @@ describe('Composer execution control', () => {
       execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
       onChangeExecution,
     });
-    await click(await waitForTrigger(container));
+    await click(await waitForProfileTrigger(container));
     expect(container.querySelector('[data-execution-bare="claude-acp"]')).toBeNull();
     expect(container.querySelector('[data-execution-profile="reviewer"]')).toBeNull();
     const retained = container.querySelector('[data-execution-restore="claude-acp"]');
@@ -730,7 +730,7 @@ describe('Composer execution control', () => {
     listExecutors.mockResolvedValue({ items: EXECUTOR_ITEMS.map(item => item.id === 'native' ? item : { ...item, status: 'unavailable' }) });
     const onChangeExecution = vi.fn();
     const { container } = await renderComposer({ sessionId: 'saved-session', execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined }, onChangeExecution });
-    const trigger = container.querySelector('#composer-execution-select')!;
+    const trigger = container.querySelector('#composer-profile-select')!;
     expect(trigger.textContent).toContain('Claude Code');
     await click(trigger);
     expect(container.querySelector('[data-execution-bare="claude-acp"]')).toBeNull();
@@ -757,7 +757,7 @@ describe('Composer execution control', () => {
     expect(chip?.innerHTML).not.toContain('sr-only');
     const clear = container.querySelector('[data-composer-persona-clear]');
     expect(clear?.getAttribute('aria-label')).toBe('Remove persona 林岚');
-    await click(container.querySelector('#composer-execution-select')!);
+    await click(container.querySelector('#composer-profile-select')!);
     expect(container.querySelector('[data-execution-bare="claude-acp"]')).not.toBeNull();
   });
 
@@ -770,7 +770,7 @@ describe('Composer execution control', () => {
       onChangeExecution: () => {},
       personaPick: { value: { id: 'lin-lan', name: '林岚' }, onChange: () => {} },
     });
-    const trigger = await waitForTrigger(container);
+    const trigger = await waitForProfileTrigger(container);
     expect(trigger.disabled).toBe(false);
   });
 
@@ -781,15 +781,12 @@ describe('Composer execution control', () => {
       execution: NATIVE_AGENT,
       onChangeExecution: () => {},
     });
-    const trigger = await waitForTrigger(container);
-    expect(trigger.textContent).toContain('Kiki');
-    expect(trigger.textContent).not.toContain('main');
-
-    await click(trigger);
-    expect(container.querySelectorAll('[data-execution-bare]').length).toBe(EXECUTOR_ITEMS.length);
-
     const profileTrigger = await waitForProfileTrigger(container);
+    expect(profileTrigger.textContent).toContain('Kiki');
+    expect(profileTrigger.textContent).not.toContain('main');
+
     await click(profileTrigger);
+    expect(container.querySelectorAll('[data-execution-bare]').length).toBe(EXECUTOR_ITEMS.length);
     const options = [...container.querySelectorAll('[role="option"]')].map(
       (row) => row.textContent ?? '',
     );
@@ -814,7 +811,7 @@ describe('Composer execution control', () => {
       execution: NATIVE_AGENT,
       onChangeExecution,
     });
-    const trigger = await waitForTrigger(container);
+    const trigger = await waitForProfileTrigger(container);
     await click(trigger);
     // The bare row is the first entry of each engine: it runs the harness as it
     // is, with no Kiki profile invented for it.
@@ -858,7 +855,7 @@ describe('Composer execution control', () => {
       personaPick: { value: { id: 'lin-lan', name: '林岚' }, onChange: onPersona },
     });
     // The chip is the persona branch; the engine choice is behind it.
-    await click(await waitForTrigger(container));
+    await click(await waitForProfileTrigger(container));
     const bare = [...container.querySelectorAll<HTMLElement>('[data-execution-bare]')]
       .find((row) => row.getAttribute('data-execution-bare') === 'claude-acp');
     await click(bare!);
@@ -948,7 +945,7 @@ describe('Composer execution control', () => {
   it('hides without a handler but preserves the choice and offers retry when the catalog fails', async () => {
     const { container } = await renderComposer({ agentProfile: 'agent' });
     for (let index = 0; index < 5; index += 1) await settle();
-    expect(container.querySelector('#composer-execution-select')).toBeNull();
+    expect(container.querySelector('#composer-profile-select')).toBeNull();
 
     listNamedAgentProfiles.mockRejectedValue(new Error('catalog offline'));
     const second = await renderComposer({
@@ -958,7 +955,7 @@ describe('Composer execution control', () => {
       onChangeExecution: () => {},
     });
     for (let index = 0; index < 5; index += 1) await settle();
-    expect(second.container.querySelector('#composer-execution-select')?.textContent).toContain('Kiki');
+    expect(second.container.querySelector('#composer-profile-select')?.textContent).toContain('Kiki');
     expect(second.container.querySelector('[data-selection-diagnostic][role="status"]')?.textContent).toContain('catalog offline');
     expect(second.container.querySelector('[data-selection-diagnostic] button')?.textContent).toBe('Retry');
   });
@@ -976,7 +973,7 @@ describe('Composer execution control', () => {
       execution: NATIVE_AGENT,
       onChangeExecution: () => {},
     });
-    const trigger = await waitForTrigger(container);
+    const trigger = await waitForProfileTrigger(container);
     await click(trigger);
     // The installed harness remains independently selectable without a profile.
     expect([...container.querySelectorAll('[data-execution-bare]')].map((row) =>
@@ -999,7 +996,7 @@ describe('Composer execution control', () => {
       execution: NATIVE_AGENT,
       onChangeExecution: () => {},
     });
-    const trigger = await waitForTrigger(container);
+    const trigger = await waitForProfileTrigger(container);
     for (let index = 0; index < 3; index += 1) await settle();
     await click(trigger);
     expect([...container.querySelectorAll('[data-execution-bare]')].map((row) =>
@@ -1023,7 +1020,7 @@ describe('Composer execution control', () => {
       execution: { executor: 'native', profile: 'alpha-main', profile_file: undefined, overrides: undefined },
       onChangeExecution: () => {},
     });
-    const trigger = await waitForTrigger(container);
+    const trigger = await waitForProfileTrigger(container);
     expect(listNamedAgentProfiles).toHaveBeenCalledWith('wd_alpha');
     await click(trigger);
     const options = [...container.querySelectorAll('[role="option"]')].map(
@@ -3434,12 +3431,11 @@ describe('Composer restored selection diagnostics', () => {
     const { container } = await renderComposer({ execution: choice, onChangeExecution });
     await click((container.querySelector('#composer-engine-model-select') ?? container.querySelector('#composer-execution-select'))!);
     await click(container.querySelector('[data-option-value="vendor/model-id"]')!);
-    await click(container.querySelector('[data-execution-apply]')!);
     expect(onChangeExecution).toHaveBeenCalledWith({ ...choice, overrides: { model: 'vendor/model-id', thinking: undefined } });
     expect(container.querySelector('[data-option-value="vendor/model-id"]')).toBeNull();
   });
 
-  it('keeps selections in draft state and does not apply them when closing via Escape without clicking apply', async () => {
+  it('closes without changing selection when Escape is pressed, and applies immediately on click', async () => {
     listModels.mockResolvedValue({ items: [] });
     const onChangeExecution = vi.fn();
     getExecutorModels.mockResolvedValue({ executor_id: 'claude-acp', source: 'cli_probe', provenance: 'read_only_cli_probe', revision: '1', apply_state: 'ready', observed_at: Date.now(), effective: {
@@ -3448,17 +3444,16 @@ describe('Composer restored selection diagnostics', () => {
     } });
     const choice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined };
     const { container } = await renderComposer({ execution: choice, onChangeExecution });
-    // Open panel
+    // Open panel and press Escape to close without changing selection
     const trigger = (container.querySelector('#composer-engine-model-select') ?? container.querySelector('#composer-execution-select'))!;
     await click(trigger);
-    // Click option - this updates draft state only
-    await click(container.querySelector('[data-option-value="vendor/model-id"]')!);
-    expect(onChangeExecution).not.toHaveBeenCalled();
-    // Press Escape to cancel/close panel
     container.querySelector('[data-execution-select]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     await settle();
-    // Assert onChangeExecution was NOT called
     expect(onChangeExecution).not.toHaveBeenCalled();
+    // Re-open and click an option to apply immediately
+    await click(trigger);
+    await click(container.querySelector('[data-option-value="vendor/model-id"]')!);
+    expect(onChangeExecution).toHaveBeenCalledWith({ ...choice, overrides: { model: 'vendor/model-id', thinking: undefined } });
   });
 
   it('offers only the external engine models, never native catalog aliases', async () => {
@@ -3794,7 +3789,6 @@ describe('Composer restored selection diagnostics', () => {
     const { container } = await renderComposer({ execution: choice, onChangeExecution });
     await click((container.querySelector('#composer-engine-model-select') ?? container.querySelector('#composer-execution-select'))!);
     await click(container.querySelector('[data-option-value=""]')!);
-    await click(container.querySelector('[data-execution-apply]')!);
     expect(onChangeExecution).toHaveBeenCalledWith({ ...choice, overrides: { model: null, thinking: null } });
   });
   it.each([
@@ -4757,6 +4751,50 @@ describe('Composer explicit profile file recovery', () => {
     await settle();
     await settle();
     expect(container.querySelector('[data-selection-diagnostic]')).toBeNull();
+  });
+
+  it('clears external_connection_id and external_connection_name when picking default from external client', async () => {
+    const onChangeExecution = vi.fn();
+    const externalChoice = {
+      executor: 'claude-acp',
+      profile: undefined,
+      profile_file: undefined,
+      overrides: undefined,
+      external_connection_id: 'conn_test_123',
+      external_connection_name: 'Test Client',
+    };
+    const { container } = await renderComposer({ execution: externalChoice, onChangeExecution });
+    const trigger = (container.querySelector('[data-profile-trigger]') ?? container.querySelector('[data-execution-trigger]'))!;
+    await click(trigger);
+    const unspecified = container.querySelector<HTMLElement>('[data-profile-unspecified]');
+    if (unspecified) {
+      await click(unspecified);
+    } else {
+      const bare = container.querySelector('[data-execution-bare="native"]')!;
+      await click(bare);
+    }
+    expect(onChangeExecution).toHaveBeenCalledWith({
+      executor: 'native',
+      profile: undefined,
+      profile_file: undefined,
+      overrides: undefined,
+      external_connection_id: undefined,
+      external_connection_name: undefined,
+    });
+  });
+
+  it('falls back to defaultModelOption instead of hardcoded K3 when model and effectiveModel are missing', async () => {
+    const { container } = await renderComposer({
+      model: undefined,
+      defaultModel: undefined,
+      serverDefaultModel: undefined,
+      modelSource: 'server-default',
+      execution: { executor: 'native', profile: undefined, overrides: undefined },
+      onChangeExecution: vi.fn(),
+    });
+    const trigger = (container.querySelector('#composer-engine-model-select') ?? container.querySelector('#composer-execution-select'))!;
+    expect(trigger.textContent).toContain('Default model');
+    expect(trigger.textContent).not.toContain('K3');
   });
 });
 

@@ -287,7 +287,7 @@ describe('SettingsPage panel scopes', () => {
     expect(title()).toBe('Alpha');
     await click(container.querySelector('[data-workspace-detail-back]')!);
     await flush();
-    expect(title()).toBe('Workspaces');
+    expect(title()).toBe('Workspaces & sessions');
     await click(container.querySelector('[data-workspace-open="ws-beta"]')!);
     await flush();
     expect(title()).toBe('Beta');
@@ -384,7 +384,7 @@ describe('SettingsPage panel scopes', () => {
 
   it('shows memory beside sessions and edits global and workspace settings independently', async () => {
     const container = await renderSettings('/settings/memory?workspace=ws-beta');
-    expect(container.querySelector('[data-settings-page-title]')?.textContent).toBe('Memory');
+    expect(container.querySelector('[data-settings-page-title]')?.textContent).toBe('Memory & knowledge');
     expect(container.querySelector('#st-card-memory')).not.toBeNull();
     expect(container.querySelector('#st-card-memory-workspaces')).not.toBeNull();
     expect(container.querySelector('[data-memory-workspace-select]')?.getAttribute('data-memory-workspace-select')).toBe('ws-beta');
@@ -616,7 +616,7 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(container.querySelector('#st-card-hooks')).toBeNull();
     const hooks = await renderSettings('/settings/hooks');
     expect(hooks.querySelector('#st-card-hooks')).not.toBeNull();
-    expect(hooks.querySelector('[data-settings-intro]')?.textContent).toContain('Declarative text injection');
+    expect(hooks.querySelector('[data-settings-intro]')?.textContent).toContain('Rules that run when an event happens.');
   });
 
   it('redirects the retired runtime leaf to the tasks page', async () => {
@@ -1146,15 +1146,16 @@ describe('SettingsPage search locating', () => {
     client.meta.mockReturnValueOnce(gate.promise);
     const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
     try {
-      const container = await renderSettings('/settings/developer#st-card-exp-developer', { guarded: true });
-      expect(container.querySelector('#st-card-exp-developer')).toBeNull();
+      const container = await renderSettings('/settings/agents#st-card-exp-agents', { guarded: true });
+      expect(container.querySelector('#st-card-exp-agents')).toBeNull();
       const visitKey = container.querySelector('[data-test-location]')?.getAttribute('data-test-location-key');
-      await click(container.querySelector('[data-settings-nav-leaf="developer"]')!);
-      expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/developer');
+      await click(container.querySelector('[data-settings-nav-leaf="agents"]')!);
+      expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/agents');
       expect(container.querySelector('[data-test-location]')?.getAttribute('data-test-location-key')).not.toBe(visitKey);
-      gate.resolve({ experimental_flags: { native_browser: false } });
+      gate.resolve({ experimental_flags: { 'agent-profile-routes': false } });
       await flush();
-      expect(container.querySelector('#st-card-exp-developer')).not.toBeNull();
+      await flush();
+      expect(container.querySelector('#st-card-exp-agents')).not.toBeNull();
       expect(scrollIntoView).not.toHaveBeenCalled();
     } finally {
       scrollIntoView.mockRestore();
@@ -1166,14 +1167,14 @@ describe('SettingsPage search locating', () => {
     client.meta.mockReturnValueOnce(gate.promise);
     const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
     try {
-      const container = await renderSettings('/settings/developer#st-card-exp-developer');
-      expect(container.querySelector('#st-card-exp-developer')).toBeNull();
+      const container = await renderSettings('/settings/agents#st-card-exp-agents');
+      expect(container.querySelector('#st-card-exp-agents')).toBeNull();
       await click(container.querySelector('[data-settings-nav-leaf="general"]')!);
-      gate.resolve({ experimental_flags: { native_browser: false } });
+      gate.resolve({ experimental_flags: { 'agent-profile-routes': false } });
       await flush();
-      await click(container.querySelector('[data-settings-nav-leaf="developer"]')!);
+      await click(container.querySelector('[data-settings-nav-leaf="agents"]')!);
       await flush();
-      expect(container.querySelector('#st-card-exp-developer')).not.toBeNull();
+      expect(container.querySelector('#st-card-exp-agents')).not.toBeNull();
       expect(scrollIntoView).not.toHaveBeenCalled();
     } finally {
       scrollIntoView.mockRestore();

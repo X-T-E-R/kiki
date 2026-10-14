@@ -7623,6 +7623,28 @@ describe('Kiki hook injections', () => {
   });
 });
 
+describe('injected context reading [m_20261002_4e0a323584]', () => {
+  it('displays injected context directly readable without secondary toggle, and allows manual toggle', async () => {
+    const injectedBlock: Block = {
+      kind: 'system',
+      id: 'sys-inject-1',
+      variant: 'injection',
+      text: 'Injected prompt context text for agent run.',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    const container = await renderTranscript([injectedBlock]);
+    const row = container.querySelector('[data-system="injection"]')!;
+    expect(row).not.toBeNull();
+    expect(row.textContent).toContain('Injected context');
+    // Directly readable without secondary toggle
+    expect(row.textContent).toContain('Injected prompt context text for agent run.');
+
+    // Manual toggle collapses it
+    await act(async () => { click(row.querySelector('button')!); });
+    expect(row.textContent).not.toContain('Injected prompt context text for agent run.');
+  });
+});
+
 
 it('keeps a legacy SSH host block as stored text and draws no per-message host row', async () => {
   const stored = 'Inspect the host\n\n<ssh_host_refs>\n[{"id":"example-host","name":"Example host"}]\n</ssh_host_refs>';

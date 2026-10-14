@@ -5,6 +5,7 @@ import {
   PLUGIN_SETTINGS_QUERY_KEY,
   SETTINGS_NAV_TREE,
   buildSettingsSearchIndex,
+  canonicalNavSection,
   searchSettings,
   settingsSectionLabels,
   type SettingsNavGroupSpec,
@@ -106,12 +107,14 @@ export function SettingsSearch({
  */
 export function SettingsNavTree({
   active,
+  activeTab,
   activePluginId,
   onNavigate,
   onAfterNavigate,
 }: {
   /** Null on the unknown-section page: tree stays visible, nothing highlighted. */
   active: SectionId | null;
+  activeTab?: string | null;
   /**
    * The installed plugin whose own settings page is open, when one is. The
    * Plugins group expands to name it, so the reader can see where they are
@@ -130,18 +133,21 @@ export function SettingsNavTree({
   const installed = useOptionalInstalledPlugins();
   const plugins = installed.plugins;
   const labelFor = (id: string) => SECTIONS.find((section) => section.id === id)?.labelKey;
+  const activeCanonical = active !== null ? canonicalNavSection(active, activeTab) : null;
+
   const leafButton = (id: string) => {
     const labelKey = labelFor(id);
     if (labelKey === undefined) return null;
+    const isCurrent = id === activeCanonical && !(id === 'extensions' && activePluginId !== null && activePluginId !== undefined);
     return (
       <button
         key={id}
         type="button"
         data-settings-nav-leaf={id}
-        aria-current={active === id ? 'page' : undefined}
+        aria-current={isCurrent ? 'page' : undefined}
         onClick={() => { onNavigate(id as SectionId); onAfterNavigate?.(); }}
         className={`row-interactive flex h-8 items-center px-3 text-left text-[13px] ${
-          active === id ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
+          isCurrent ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
         }`}
       >
         {t(labelKey)}
@@ -172,7 +178,7 @@ export function SettingsNavTree({
             {node.sections.map((id) => (
               <div key={id} className="flex flex-col">
                 {leafButton(id)}
-                {id === 'search' && active === 'search' ? (
+                {(id === 'search' || id === 'environment-tools') && (active === 'search' || activeCanonical === 'environment-tools') ? (
                   <div className="mt-0.5 flex flex-col gap-0.5" data-settings-nav-subtabs="search">
                     {nbSearchSubtabs.map((sub) => (
                       <button
@@ -180,7 +186,7 @@ export function SettingsNavTree({
                         type="button"
                         data-settings-nav-subtab={sub.tab}
                         onClick={() => {
-                          onNavigate(`search?tab=${sub.tab}` as unknown as SectionId);
+                          onNavigate(`${active === 'search' ? 'search' : 'environment-tools'}?tab=${sub.tab}` as unknown as SectionId);
                           onAfterNavigate?.();
                         }}
                         className="row-interactive flex h-7 items-center pl-5 pr-2 text-left text-[12px] text-ink-soft hover:text-ink"
@@ -190,7 +196,7 @@ export function SettingsNavTree({
                     ))}
                   </div>
                 ) : null}
-                {id === 'plugins' && active === 'plugins' && plugins.length > 0 ? (
+                {(id === 'plugins' || id === 'extensions') && (active === 'plugins' || activeCanonical === 'extensions') && plugins.length > 0 ? (
                   <div className="mt-0.5 flex flex-col gap-0.5" data-settings-nav-subtabs="plugins">
                     {plugins.map((plugin) => (
                       <button
@@ -199,7 +205,7 @@ export function SettingsNavTree({
                         data-settings-nav-plugin={plugin.id}
                         aria-current={activePluginId === plugin.id ? 'page' : undefined}
                         onClick={() => {
-                          onNavigate(`plugins?${PLUGIN_SETTINGS_QUERY_KEY}=${encodeURIComponent(plugin.id)}` as unknown as SectionId);
+                          onNavigate(`${active === 'extensions' ? 'extensions' : 'plugins'}?${PLUGIN_SETTINGS_QUERY_KEY}=${encodeURIComponent(plugin.id)}` as unknown as SectionId);
                           onAfterNavigate?.();
                         }}
                         className={`row-interactive flex min-h-7 items-center gap-1.5 truncate py-1 pl-5 pr-2 text-left text-[12px] ${
@@ -227,12 +233,14 @@ export function SettingsNavTree({
 
 export function SettingsNav({
   active,
+  activeTab,
   activePluginId,
   searchFocusToken,
   onNavigate,
   onSearchHit,
 }: {
   active: SectionId | null;
+  activeTab?: string | null;
   activePluginId?: string | null;
   searchFocusToken: string | null;
   onNavigate: (section: SectionId) => void;
@@ -244,7 +252,7 @@ export function SettingsNav({
       <SettingsSearch
         focusToken={searchFocusToken}
         onSearchHit={onSearchHit}
-        idle={<SettingsNavTree active={active} activePluginId={activePluginId} onNavigate={onNavigate} />}
+        idle={<SettingsNavTree active={active} activeTab={activeTab} activePluginId={activePluginId} onNavigate={onNavigate} />}
       />
     </nav>
   );

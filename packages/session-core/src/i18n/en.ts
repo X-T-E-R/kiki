@@ -11419,102 +11419,58 @@ export const en = {
 
 
   'st.modelPrompt.keepAsModelBody': 'Keep this text on the model',
-
-
-
   'st.modelPrompt.promptWords': 'Prompt words',
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+  'composer.profileGroupPassthrough': 'Built-in passthrough (default)',
+  'composer.profileGroupCustom': 'Custom profiles',
+  'composer.profilePassthroughBadge': 'passthrough',
+  'composer.execution.effortHeading': 'Thinking effort',
+  'composer.execution.defaultModelOption': 'Default model',
+  'onboarding.step.appearance': 'Appearance & theme',
+  'onboarding.depart.model.readyBadge': 'Model service ready',
+  'onboarding.depart.model.notReadyBadge': 'Model service not connected',
+  'onboarding.depart.model.configureCta': 'Configure model service in Settings →',
+  'onboarding.depart.model.startChatCta': 'Start your first conversation',
+  'onboarding.depart.tour.title': '1-minute interactive spotlight tour',
+  'onboarding.depart.tour.subtitle': 'Walk through the core workflow right on the live interface — no model connection required.',
+  'onboarding.depart.tour.startBtn': 'Start spotlight tour →',
+  'onboarding.returnBanner.text': 'Once your model service is configured, head back to start chatting',
+  'onboarding.returnBanner.action': 'Return to start your first conversation →',
+  'discovery.tour.stepBadge': '{current} / {total}',
+  'discovery.tour.nextShort': 'Next →',
+  'discovery.tour.exitEsc': 'Exit Esc',
+  'st.group.preferences': 'Preferences & appearance',
+  'st.group.workspacesMemory': 'Workspaces & memory',
+  'st.group.capabilitiesSafety': 'Capabilities & safety',
+  'st.group.systemConnection': 'System & connection',
+  'st.section.generalMerged': 'General & appearance',
+  'st.section.providers': 'Model providers',
+  'st.purpose.providers': 'Connect model services via account sign-in, local CLI harnesses, or API keys.',
+  'st.section.models': 'Model catalog & defaults',
+  'st.purpose.models': 'Configure default models and thinking effort for new sessions, and manage the model catalog.',
+  'st.section.agentsMerged': 'Profiles & subagents',
+  'st.section.workspacesMerged': 'Workspaces & sessions',
+  'st.section.memoryMerged': 'Memory & knowledge',
+  'st.section.permissionsMerged': 'Permissions, tasks & hooks',
+  'st.section.extensions': 'Skills, MCP & plugins',
+  'st.purpose.extensions': 'Manage skills, MCP tool servers, and installed plugins.',
+  'st.section.environmentTools': 'Web, browser & computer control',
+  'st.purpose.environmentTools': 'Configure web search and fetching, browser automation, and desktop computer control.',
+  'st.section.remote': 'Remote daemon & SSH',
+  'st.purpose.remote': 'Manage the server connection, SSH hosts, and external client access.',
+  'st.section.system': 'Developer, labs & about',
+  'st.purpose.system': 'Engine diagnostics, experimental feature index, logs, and updates.',
+  'st.providers.zone1.title': '① Account sign-in (subscription)',
+  'st.providers.zone1.hint': 'Sign in directly with your existing Codex, Grok, Claude, or Kimi subscription account.',
+  'st.providers.zone2.title': '② Local CLI harnesses',
+  'st.providers.zone2.hint': 'Detect local AGY CLI, Codex, and Claude Code harnesses; enabled harnesses appear directly in the Profile selector.',
+  'st.providers.zone3.title': '③ API key providers',
+  'st.providers.zone3.hint': 'Connect with vendor templates or custom endpoints using an API key, then test and fetch models.',
+  'st.providers.advancedProtocol': 'Advanced protocol settings (protocol override, request identity & image policy)',
+  'st.modelEditor.tab.basics': 'Basic settings',
+  'st.modelEditor.tab.advanced': 'Advanced protocol & capabilities',
+  'composer.profile.retained': 'Read-only retained identity',
+  'composer.profile.searchPlaceholder': 'Search profiles…',
+  'composer.model.searchPlaceholder': 'Search models…',
+  'composer.execution.defaultEffort': 'Default',
+  'composer.model.useCustomId': 'Use model ID "{id}"',
 } as const;

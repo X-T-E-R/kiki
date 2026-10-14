@@ -2098,51 +2098,43 @@ export interface SettingsSearchSpecEntry {
 /** Settings section order. Lives here, not in the page, so the quick switcher
  * can label settings hits without importing the whole settings tree. */
 export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
-  { id: 'general', labelKey: 'st.section.general' },
+  { id: 'general', labelKey: 'st.section.generalMerged' },
   { id: 'appearance', labelKey: 'st.section.appearance' },
   { id: 'shortcuts', labelKey: 'st.section.shortcuts' },
-  { id: 'connection', labelKey: 'st.section.connection' },
-  { id: 'ssh', labelKey: 'st.section.ssh' },
+  { id: 'providers', labelKey: 'st.section.providers' },
+  { id: 'models', labelKey: 'st.section.models' },
   { id: 'ai', labelKey: 'st.section.ai' },
-  { id: 'connection-services', labelKey: 'st.section.connectionServices' },
-  { id: 'identity', labelKey: 'st.section.identity' },
-  { id: 'agents', labelKey: 'st.section.agents' },
+  { id: 'agents', labelKey: 'st.section.agentsMerged' },
   { id: 'subagents', labelKey: 'st.section.subagents' },
+  { id: 'workspaces', labelKey: 'st.section.workspacesMerged' },
   { id: 'sessions', labelKey: 'st.section.sessions' },
-  { id: 'notifications', labelKey: 'st.section.notifications' },
-  { id: 'memory', labelKey: 'st.section.memory' },
-  { id: 'permissions', labelKey: 'st.section.permissions' },
+  { id: 'spaces', labelKey: 'st.section.spaces' },
+  { id: 'memory', labelKey: 'st.section.memoryMerged' },
+  { id: 'permissions', labelKey: 'st.section.permissionsMerged' },
   { id: 'tasks', labelKey: 'st.section.tasks' },
+  { id: 'hooks', labelKey: 'st.section.hooks' },
+  { id: 'extensions', labelKey: 'st.section.extensions' },
   { id: 'skills', labelKey: 'st.section.skills' },
   { id: 'mcp', labelKey: 'st.section.mcp' },
   { id: 'plugins', labelKey: 'st.section.plugins' },
+  { id: 'environment-tools', labelKey: 'st.section.environmentTools' },
   { id: 'search', labelKey: 'st.section.search' },
   { id: 'browser-control', labelKey: 'st.section.browserControl' },
   { id: 'computer-control', labelKey: 'st.section.computerControl' },
-  { id: 'hooks', labelKey: 'st.section.hooks' },
-  { id: 'workspaces', labelKey: 'st.section.workspaces' },
-  { id: 'spaces', labelKey: 'st.section.spaces' },
+  { id: 'remote', labelKey: 'st.section.remote' },
+  { id: 'connection', labelKey: 'st.section.connection' },
+  { id: 'ssh', labelKey: 'st.section.ssh' },
+  { id: 'connection-services', labelKey: 'st.section.connectionServices' },
+  { id: 'identity', labelKey: 'st.section.identity' },
+  { id: 'notifications', labelKey: 'st.section.notifications' },
+  { id: 'system', labelKey: 'st.section.system' },
   { id: 'developer', labelKey: 'st.section.developer' },
   { id: 'labs', labelKey: 'st.section.labs' },
   { id: 'about', labelKey: 'st.section.about' },
 ];
 
-// ---- grouped navigation (settings IA v2) ----
+// ---- grouped navigation (settings IA v3: 5 groups, 12 cohesive pages) ----
 
-/**
- * Six intent groups in one list, ordered by what a person came to do: set up
- * the app itself, reach a server (this one, a remote host over SSH, or a
- * space), pick the brain (models, agents), decide how work runs and where it
- * lives (sessions, workspaces, permissions, tasks), extend what it can reach
- * (capabilities), and, last, the advanced pages (developer tools, the Labs
- * index, about). Experimental flags are switched on their feature's own page;
- * Labs only lists them.
- *
- * A group earns its place by answering one question. "Where work happens"
- * (workspaces) belongs beside the sessions that run in it, and "where Kiki
- * runs" (spaces, remote connections, inbound access) belongs beside the ways
- * of reaching a server, so neither needed a group of its own.
- */
 export interface SettingsNavGroupSpec {
   readonly kind: 'group';
   readonly id: string;
@@ -2158,13 +2150,55 @@ export interface SettingsNavLeafSpec {
 export type SettingsNavNode = SettingsNavGroupSpec | SettingsNavLeafSpec;
 
 export const SETTINGS_NAV_TREE: readonly SettingsNavNode[] = [
-  { kind: 'group', id: 'device', labelKey: 'st.group.device', sections: ['general', 'appearance', 'shortcuts'] },
-  { kind: 'group', id: 'connection', labelKey: 'st.group.connection', sections: ['connection', 'ssh', 'spaces'] },
-  { kind: 'group', id: 'models-agents', labelKey: 'st.group.modelsAgents', sections: ['ai', 'connection-services', 'identity', 'agents', 'subagents'] },
-  { kind: 'group', id: 'work', labelKey: 'st.group.work', sections: ['sessions', 'workspaces', 'notifications', 'memory', 'permissions', 'tasks'] },
-  { kind: 'group', id: 'capabilities', labelKey: 'st.group.capabilities', sections: ['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks'] },
-  { kind: 'group', id: 'advanced', labelKey: 'st.group.advanced', sections: ['developer', 'labs', 'about'] },
+  { kind: 'group', id: 'preferences', labelKey: 'st.group.preferences', sections: ['general', 'shortcuts'] },
+  { kind: 'group', id: 'models-agents', labelKey: 'st.group.modelsAgents', sections: ['providers', 'models', 'agents'] },
+  { kind: 'group', id: 'workspaces-memory', labelKey: 'st.group.workspacesMemory', sections: ['workspaces', 'memory'] },
+  { kind: 'group', id: 'capabilities', labelKey: 'st.group.capabilitiesSafety', sections: ['permissions', 'extensions', 'environment-tools'] },
+  { kind: 'group', id: 'system-connection', labelKey: 'st.group.systemConnection', sections: ['remote', 'system'] },
 ];
+
+/** Maps any leaf or legacy/sub-section id to one of the 12 primary navigation leaves. */
+export const SETTINGS_NAV_SECTION_MAP: Readonly<Record<string, string>> = {
+  general: 'general',
+  appearance: 'general',
+  identity: 'general',
+  notifications: 'general',
+  shortcuts: 'shortcuts',
+  providers: 'providers',
+  models: 'models',
+  ai: 'models',
+  agents: 'agents',
+  subagents: 'agents',
+  workspaces: 'workspaces',
+  sessions: 'workspaces',
+  spaces: 'workspaces',
+  memory: 'memory',
+  permissions: 'permissions',
+  tasks: 'permissions',
+  hooks: 'permissions',
+  extensions: 'extensions',
+  skills: 'extensions',
+  mcp: 'extensions',
+  plugins: 'extensions',
+  'environment-tools': 'environment-tools',
+  search: 'environment-tools',
+  'browser-control': 'environment-tools',
+  'computer-control': 'environment-tools',
+  remote: 'remote',
+  connection: 'remote',
+  ssh: 'remote',
+  'connection-services': 'remote',
+  'external-clients': 'remote',
+  system: 'system',
+  developer: 'system',
+  labs: 'system',
+  about: 'system',
+};
+
+export function canonicalNavSection(sectionId: string, tab?: string | null): string {
+  if (sectionId === 'ai' && tab === 'providers') return 'providers';
+  return SETTINGS_NAV_SECTION_MAP[sectionId] ?? sectionId;
+}
 
 /** Whether a section writes only to this device (its primary scope is the app). */
 export function settingsSectionIsDeviceOnly(sectionId: string): boolean {
@@ -2176,8 +2210,11 @@ export function settingsSectionSupportsSpace(sectionId: string): boolean {
 }
 
 export function settingsGroupForSection(sectionId: string): SettingsNavGroupSpec | undefined {
+  if (!SETTINGS_SECTIONS.some((s) => s.id === sectionId)) return undefined;
+  const canonical = SETTINGS_NAV_SECTION_MAP[sectionId] ?? sectionId;
   return SETTINGS_NAV_TREE.find(
-    (node): node is SettingsNavGroupSpec => node.kind === 'group' && node.sections.includes(sectionId),
+    (node): node is SettingsNavGroupSpec =>
+      node.kind === 'group' && (node.sections.includes(sectionId) || node.sections.includes(canonical)),
   );
 }
 
@@ -2196,9 +2233,11 @@ export interface SettingsSectionMeta {
 }
 
 export const SETTINGS_SECTION_META: Readonly<Record<string, SettingsSectionMeta>> = {
-  general: { scopes: ['app'], purposeKey: 'st.purpose.general' },
+  general: { scopes: ['app', 'space', 'server'], purposeKey: 'st.purpose.general' },
   appearance: { scopes: ['app', 'space'], purposeKey: 'st.purpose.appearance' },
   shortcuts: { scopes: ['app', 'server'], purposeKey: 'st.purpose.shortcuts' },
+  providers: { scopes: ['server'], purposeKey: 'st.purpose.providers' },
+  models: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.models' },
   connection: { scopes: ['app'], purposeKey: 'st.purpose.connection' },
   ai: { scopes: ['server'], purposeKey: 'st.purpose.ai' },
   'connection-services': { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.connectionServices' },
@@ -2210,17 +2249,19 @@ export const SETTINGS_SECTION_META: Readonly<Record<string, SettingsSectionMeta>
   memory: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.memory' },
   permissions: { scopes: ['server'], purposeKey: 'st.purpose.permissions' },
   tasks: { scopes: ['server'] },
+  extensions: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.extensions' },
   skills: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.skills' },
   mcp: { scopes: ['server', 'workspace'] },
-  // No purpose line: the card's own heading and the list under it already say
-  // what this page is, and a second orientation sentence only repeats them.
   plugins: { scopes: ['server'] },
+  'environment-tools': { scopes: ['server'], purposeKey: 'st.purpose.environmentTools' },
   search: { scopes: ['server'], purposeKey: 'st.purpose.search' },
   'browser-control': { scopes: ['server'] },
   'computer-control': { scopes: ['server'], purposeKey: 'st.purpose.computerControl' },
   hooks: { scopes: ['server'], purposeKey: 'st.purpose.hooks' },
   workspaces: { scopes: ['server'], purposeKey: 'st.purpose.workspaces' },
+  remote: { scopes: ['app', 'server', 'workspace'], purposeKey: 'st.purpose.remote' },
   ssh: { scopes: ['server'], purposeKey: 'st.purpose.ssh' },
+  system: { scopes: ['server', 'app'], purposeKey: 'st.purpose.system' },
   developer: { scopes: ['server'], purposeKey: 'st.purpose.developer' },
   labs: { scopes: ['server'], purposeKey: 'st.purpose.labs' },
   about: { scopes: ['server', 'app'], purposeKey: 'st.purpose.about' },

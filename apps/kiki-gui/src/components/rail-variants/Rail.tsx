@@ -371,7 +371,7 @@ export function Rail({
   onClose,
   className,
 }: RailProps) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const navigate = useNavigate();
   const [mode, chooseMode] = useRailMode();
   const preview = useMediaPreview();
@@ -803,7 +803,9 @@ export function Rail({
           standard reads one agent, so its checklist leads; the cockpit reads
           the session, so the execution graph does. Nothing is duplicated and
           nothing is dropped. */}
-      {orderedSections.map(([key, section]) => <Fragment key={key}>{section}</Fragment>)}
+      {orderedSections.map(([key, section]) => (
+        <Fragment key={key}>{section}</Fragment>
+      ))}
 
       {/* 7 · Reference, folded: what it can use, what happened. */}
       <div data-inspector-tail className={`space-y-1 ${SECTION}`}>

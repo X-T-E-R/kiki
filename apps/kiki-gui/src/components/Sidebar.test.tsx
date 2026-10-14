@@ -2610,9 +2610,10 @@ it('keeps time-group headings in nonshrinking normal flow instead of overlaying 
 });
 
 describe('sidebar secondary navigation', () => {
-  it('keeps secondary navigation compact and folded by default while pinned items stay visible', async () => {
+  it('keeps secondary navigation compact and folded by default (when preference unset) while pinned items stay visible', async () => {
     await act(async () => {
-      writeLayoutPreferences({ sidebarCollapsed: false, sidebarNavSectionCollapsed: true });
+      // Preference unset: layoutPrefs.sidebarNavSectionCollapsed defaults to true
+      writeLayoutPreferences({ sidebarCollapsed: false });
     });
     const { container } = await mount();
 
@@ -2628,6 +2629,21 @@ describe('sidebar secondary navigation', () => {
     expect(toggle).not.toBeNull();
     expect(toggle?.getAttribute('aria-expanded')).toBe('false');
     expect(toggle?.textContent).toMatch(/More tools|更多工具/);
+  });
+
+  it('honors explicit false for sidebarNavSectionCollapsed', async () => {
+    await act(async () => {
+      writeLayoutPreferences({ sidebarCollapsed: false, sidebarNavSectionCollapsed: false });
+    });
+    const { container } = await mount();
+
+    for (const hook of ['memory', 'personas', 'usage', 'cron', 'capabilities', 'discover']) {
+      expect(container.querySelector(`[data-primary-nav] [data-nav-${hook}]`)).not.toBeNull();
+    }
+
+    const toggle = container.querySelector<HTMLButtonElement>('[data-sidebar-secondary-toggle="collapse"]');
+    expect(toggle).not.toBeNull();
+    expect(toggle?.getAttribute('aria-expanded')).toBe('true');
   });
 
   it('expands and collapses secondary items and persists choice to layoutPrefs', async () => {

@@ -837,10 +837,11 @@ describe('ModelCatalogCard list and detail hierarchy', () => {
     const advanced = editor.querySelector<HTMLElement>('[data-advanced="model-kimi-code/kimi-k2"]')!;
     const body = advanced.querySelector<HTMLElement>('[id^="advanced-"]')!;
     expect(body.hidden).toBe(true);
-    expect(body.querySelector('input[aria-label="Remote ID for kimi-code/kimi-k2"]')).not.toBeNull();
+    expect(body.querySelector('[data-model-engine-fields="kimi-code/kimi-k2"]')).not.toBeNull();
     // Common fields sit outside the disclosure — capabilities included. What a
     // model can do is one of the things a person opens this panel to decide, so
     // it is on the ordinary surface where the value being saved can be read.
+    expect(advanced.contains(editor.querySelector('input[aria-label="Remote ID for kimi-code/kimi-k2"]'))).toBe(false);
     expect(advanced.contains(editor.querySelector('input[aria-label="Display name for kimi-code/kimi-k2"]'))).toBe(false);
     expect(advanced.contains(editor.querySelector('[data-model-context-fields]'))).toBe(false);
     expect(advanced.contains(editor.querySelector('[role="group"][aria-label="Effort levels for kimi-code/kimi-k2"]'))).toBe(false);

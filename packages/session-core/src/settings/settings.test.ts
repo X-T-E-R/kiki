@@ -1357,41 +1357,35 @@ describe('settings search index', () => {
   });
 });
 
-describe('settings nav groups (IA v2)', () => {
-  it('lists six intent groups in one tree and knows which pages stay on this device', () => {
+describe('settings nav groups (IA v3)', () => {
+  it('lists five intent groups and 12 cohesive pages in one tree and knows which pages stay on this device', () => {
     const groups = SETTINGS_NAV_TREE.filter((node) => node.kind === 'group');
     expect(groups.map((group) => group.id))
-      .toEqual(['device', 'connection', 'models-agents', 'work', 'capabilities', 'advanced']);
+      .toEqual(['preferences', 'models-agents', 'workspaces-memory', 'capabilities', 'system-connection']);
     expect(groups.every((group) => group.sections.length > 0)).toBe(true);
     expect(SETTINGS_NAV_TREE.every((node) => node.kind === 'group')).toBe(true);
     expect(settingsSectionIsDeviceOnly('appearance')).toBe(true);
     expect(settingsSectionSupportsSpace('appearance')).toBe(true);
-    expect(settingsSectionSupportsSpace('general')).toBe(false);
+    expect(settingsSectionSupportsSpace('general')).toBe(true);
     expect(settingsSectionIsDeviceOnly('permissions')).toBe(false);
     expect(settingsSectionIsDeviceOnly('nope')).toBe(false);
   });
 
-  it('places every section exactly once under the group a person would look in', () => {
+  it('places all 12 primary leaves across the 5 groups and maps every legacy section to its group', () => {
     const placed = SETTINGS_NAV_TREE.flatMap((node) => node.kind === 'group' ? node.sections : [node.section]);
-    expect([...placed].toSorted()).toEqual(SETTINGS_SECTIONS.map((section) => section.id).toSorted());
-    expect(new Set(placed).size).toBe(placed.length);
+    expect(placed).toHaveLength(12);
+    expect(new Set(placed).size).toBe(12);
     const sectionsOf = (id: string) => (SETTINGS_NAV_TREE.find((node) => node.kind === 'group' && node.id === id) as { sections: readonly string[] }).sections;
-    expect(sectionsOf('device')).toEqual(['general', 'appearance', 'shortcuts']);
-    // Spaces sit with the ways of reaching a server: where Kiki runs.
-    expect(sectionsOf('connection')).toEqual(['connection', 'ssh', 'spaces']);
-    expect(sectionsOf('models-agents')).toEqual(['ai', 'connection-services', 'identity', 'agents', 'subagents']);
-    // Workspaces sit with the sessions that run in them: where work happens.
-    expect(sectionsOf('work')).toEqual(['sessions', 'workspaces', 'notifications', 'memory', 'permissions', 'tasks']);
-    expect(sectionsOf('capabilities')).toEqual(['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks']);
+    expect(sectionsOf('preferences')).toEqual(['general', 'shortcuts']);
+    expect(sectionsOf('models-agents')).toEqual(['providers', 'models', 'agents']);
+    expect(sectionsOf('workspaces-memory')).toEqual(['workspaces', 'memory']);
+    expect(sectionsOf('capabilities')).toEqual(['permissions', 'extensions', 'environment-tools']);
+    expect(sectionsOf('system-connection')).toEqual(['remote', 'system']);
     expect(resolveSettingsRoute('external-clients', '')).toMatchObject({ section: 'connection-services' });
     expect(settingsGroupForSection('external-clients')).toBeUndefined();
-    // The group that only held workspaces and spaces no longer exists: each
-    // page joined the group that answers its own question.
-    expect(settingsGroupForSection('workspaces')?.id).toBe('work');
-    expect(settingsGroupForSection('spaces')?.id).toBe('connection');
-    // About closes the list.
-    expect(sectionsOf('advanced')).toEqual(['developer', 'labs', 'about']);
-    expect(placed.at(-1)).toBe('about');
+    expect(settingsGroupForSection('workspaces')?.id).toBe('workspaces-memory');
+    expect(settingsGroupForSection('spaces')?.id).toBe('workspaces-memory');
+    expect(placed.at(-1)).toBe('system');
     for (const retired of ['runtime', 'experimental', 'capabilities', 'advanced', 'automation', 'communication']) {
       expect(settingsGroupForSection(retired), retired).toBeUndefined();
     }
@@ -1420,11 +1414,8 @@ describe('settings nav groups (IA v2)', () => {
       const meta = SETTINGS_SECTION_META[section.id];
       expect(meta, section.id).toBeDefined();
       expect(meta!.scopes.length).toBeGreaterThan(0);
-      // Only the App group's pages and this app's own connection are device-only.
-      expect(settingsSectionIsDeviceOnly(section.id), section.id)
-        .toBe(settingsGroupForSection(section.id)?.id === 'device' || section.id === 'connection');
     }
-    expect(SETTINGS_SECTION_META['general']?.scopes).toEqual(['app']);
+    expect(SETTINGS_SECTION_META['general']?.scopes).toEqual(['app', 'space', 'server']);
     expect(SETTINGS_SECTION_META['appearance']?.scopes).toEqual(['app', 'space']);
     expect(SETTINGS_SECTION_META['skills']?.scopes).toEqual(['server', 'workspace']);
     expect(SETTINGS_SECTION_META['mcp']?.scopes).toEqual(['server', 'workspace']);
@@ -1512,7 +1503,7 @@ describe('settings search breadcrumbs and synonyms', () => {
     const models = index.find((entry) => entry.cardId === 'st-card-models');
     expect(models?.groupLabel).toBe('Models & agents');
     const about = index.find((entry) => entry.cardId === 'st-card-about');
-    expect(about?.groupLabel).toBe('Advanced');
+    expect(about?.groupLabel).toBe('System & connection');
     expect(index.every((entry) => entry.groupLabel !== '')).toBe(true);
     expect(searchSettings(index, 'Models & agents').some((hit) => hit.section === 'ai')).toBe(true);
   });

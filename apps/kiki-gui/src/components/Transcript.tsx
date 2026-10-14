@@ -969,7 +969,7 @@ const SystemMessage = memo(function SystemMessage({ block }: { block: SystemBloc
 
 function PlainSystemMessage({ block }: { block: SystemBlock }) {
   const { t, time } = useI18n();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(block.variant === 'injection');
   useFindReveal(block.id, open, setOpen);
   const failed = block.variant === 'task' && isFailedTaskNotificationText(block.text);
   return (
