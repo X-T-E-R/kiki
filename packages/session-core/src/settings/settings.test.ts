@@ -2,7 +2,8 @@ import { globSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { computerControlPreference, computerControlPreferencePatch } from './computerControl';
+import { computerControlPreference, computerControlPreferencePatch, isComputerControlEnabled, computerControlEnabledPatch, isComputerToolPolicyDenied, isComputerToolPolicyPartiallyDenied } from './computerControl';
+import { isBrowserControlEnabled, browserControlEnabledPatch, isBrowserToolPolicyDenied, isBrowserToolPolicyPartiallyDenied, isBrowserConnectionEffectiveAllowed, effectiveAllowedBrowserCount } from './browserControl';
 import { patchConfigRequestSchema } from '@kiki/protocol';
 
 import {
@@ -1357,11 +1358,11 @@ describe('settings search index', () => {
   });
 });
 
-describe('settings nav groups (IA v3)', () => {
-  it('lists five intent groups and 12 cohesive pages in one tree and knows which pages stay on this device', () => {
+describe('settings nav groups (IA v2)', () => {
+  it('lists six intent groups with dedicated pages and knows which pages stay on this device', () => {
     const groups = SETTINGS_NAV_TREE.filter((node) => node.kind === 'group');
     expect(groups.map((group) => group.id))
-      .toEqual(['preferences', 'models-agents', 'workspaces-memory', 'capabilities', 'system-connection']);
+      .toEqual(['device', 'connection', 'models-agents', 'work', 'capabilities', 'advanced']);
     expect(groups.every((group) => group.sections.length > 0)).toBe(true);
     expect(SETTINGS_NAV_TREE.every((node) => node.kind === 'group')).toBe(true);
     expect(settingsSectionIsDeviceOnly('appearance')).toBe(true);
@@ -1371,21 +1372,23 @@ describe('settings nav groups (IA v3)', () => {
     expect(settingsSectionIsDeviceOnly('nope')).toBe(false);
   });
 
-  it('places all 12 primary leaves across the 5 groups and maps every legacy section to its group', () => {
+  it('places each of the 27 dedicated leaves once across the six groups', () => {
     const placed = SETTINGS_NAV_TREE.flatMap((node) => node.kind === 'group' ? node.sections : [node.section]);
-    expect(placed).toHaveLength(12);
-    expect(new Set(placed).size).toBe(12);
+    expect(placed).toHaveLength(27);
+    expect(new Set(placed).size).toBe(27);
+    expect(new Set(placed)).toEqual(new Set(SETTINGS_SECTIONS.map((section) => section.id)));
     const sectionsOf = (id: string) => (SETTINGS_NAV_TREE.find((node) => node.kind === 'group' && node.id === id) as { sections: readonly string[] }).sections;
-    expect(sectionsOf('preferences')).toEqual(['general', 'shortcuts']);
-    expect(sectionsOf('models-agents')).toEqual(['providers', 'models', 'agents']);
-    expect(sectionsOf('workspaces-memory')).toEqual(['workspaces', 'memory']);
-    expect(sectionsOf('capabilities')).toEqual(['permissions', 'extensions', 'environment-tools']);
-    expect(sectionsOf('system-connection')).toEqual(['remote', 'system']);
+    expect(sectionsOf('device')).toEqual(['general', 'appearance', 'shortcuts']);
+    expect(sectionsOf('connection')).toEqual(['connection', 'ssh', 'spaces']);
+    expect(sectionsOf('models-agents')).toEqual(['ai', 'connection-services', 'identity', 'agents', 'subagents']);
+    expect(sectionsOf('work')).toEqual(['sessions', 'workspaces', 'notifications', 'memory', 'permissions', 'tasks']);
+    expect(sectionsOf('capabilities')).toEqual(['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks']);
+    expect(sectionsOf('advanced')).toEqual(['developer', 'labs', 'about']);
     expect(resolveSettingsRoute('external-clients', '')).toMatchObject({ section: 'connection-services' });
     expect(settingsGroupForSection('external-clients')).toBeUndefined();
-    expect(settingsGroupForSection('workspaces')?.id).toBe('workspaces-memory');
-    expect(settingsGroupForSection('spaces')?.id).toBe('workspaces-memory');
-    expect(placed.at(-1)).toBe('system');
+    expect(settingsGroupForSection('workspaces')?.id).toBe('work');
+    expect(settingsGroupForSection('spaces')?.id).toBe('connection');
+    expect(placed.at(-1)).toBe('about');
     for (const retired of ['runtime', 'experimental', 'capabilities', 'advanced', 'automation', 'communication']) {
       expect(settingsGroupForSection(retired), retired).toBeUndefined();
     }
@@ -2198,5 +2201,79 @@ describe('computer-use preference settings', () => {
       const patch = computerControlPreferencePatch(preference);
       expect(patchConfigRequestSchema.parse(patch)).toEqual({ computer_control: { usage_preference: preference } });
     }
+  });
+
+  it('determines computer control enabled and tool policy denial correctly', () => {
+    expect(isComputerControlEnabled({})).toBe(true);
+    expect(isComputerControlEnabled({ computer_control: { enabled: true } })).toBe(true);
+    expect(isComputerControlEnabled({ computer_control: { enabled: false } })).toBe(false);
+    expect(computerControlEnabledPatch(true)).toEqual({ computer_control: { enabled: true } });
+    expect(computerControlEnabledPatch(null)).toEqual({ computer_control: { enabled: null } });
+    expect(isComputerToolPolicyDenied({})).toBe(false);
+    expect(isComputerToolPolicyDenied({ tools: { disabled: ['mcp__kiki-computer__*'] } })).toBe(true);
+    expect(isComputerToolPolicyDenied({ tools: { disallowed_tools: ['kiki-computer'] } })).toBe(true);
+    expect(isComputerToolPolicyDenied({ tools: { disabled: ['Bash'] } })).toBe(false);
+    expect(isComputerToolPolicyPartiallyDenied({ tools: { disabled: ['mcp__kiki-computer__click'] } })).toBe(true);
+    expect(isComputerToolPolicyDenied({ tools: { disabled: ['mcp__kiki-computer__click'] } })).toBe(false);
+  });
+});
+
+describe('browser-control settings helpers', () => {
+  it('reads browser control enabled state from config or experimental flag and creates patch', () => {
+    expect(isBrowserControlEnabled({})).toBe(true);
+    expect(isBrowserControlEnabled({ browser_control: { enabled: true } })).toBe(true);
+    expect(isBrowserControlEnabled({ browser_control: { enabled: false } })).toBe(false);
+    expect(isBrowserControlEnabled({ experimental: { native_browser: true } })).toBe(true);
+    expect(isBrowserControlEnabled({ experimental: { native_browser: false } })).toBe(false);
+    expect(browserControlEnabledPatch(true)).toEqual({
+      browser_control: { enabled: true },
+    });
+    expect(browserControlEnabledPatch(null)).toEqual({
+      browser_control: { enabled: null },
+    });
+  });
+
+  it('detects when browser tools are explicitly denied and distinguishes partial denials', () => {
+    expect(isBrowserToolPolicyDenied({})).toBe(false);
+    expect(isBrowserToolPolicyPartiallyDenied({})).toBe(false);
+
+    // Partial deny: only BrowserConnections disabled
+    expect(isBrowserToolPolicyDenied({ tools: { disabled: ['BrowserConnections'] } })).toBe(false);
+    expect(isBrowserToolPolicyPartiallyDenied({ tools: { disabled: ['BrowserConnections'] } })).toBe(true);
+
+    // Partial deny: only BrowserTabs disabled in disallowed_tools (second list merged)
+    expect(isBrowserToolPolicyDenied({ tools: { disabled: [], disallowed_tools: ['BrowserTabs'] } })).toBe(false);
+    expect(isBrowserToolPolicyPartiallyDenied({ tools: { disabled: [], disallowed_tools: ['BrowserTabs'] } })).toBe(true);
+
+    // Full group deny: both BrowserConnections and BrowserTabs disabled
+    expect(isBrowserToolPolicyDenied({ tools: { disabled: ['BrowserConnections', 'BrowserTabs'] } })).toBe(true);
+    expect(isBrowserToolPolicyPartiallyDenied({ tools: { disabled: ['BrowserConnections', 'BrowserTabs'] } })).toBe(false);
+
+    // Full group deny: browser wildcard or group
+    expect(isBrowserToolPolicyDenied({ tools: { disallowed_tools: ['browser'] } })).toBe(true);
+    expect(isBrowserToolPolicyDenied({ tools: { disabled: ['browser__*'] } })).toBe(true);
+
+    expect(isBrowserToolPolicyDenied({ tools: { disabled: ['Bash'] } })).toBe(false);
+    expect(isBrowserToolPolicyPartiallyDenied({ tools: { disabled: ['Bash'] } })).toBe(false);
+  });
+
+  it('calculates effective allowed browser count considering allowlist and enabled flag', () => {
+    const connections = [
+      { id: 'b1', enabled: true },
+      { id: 'b2', enabled: true },
+      { id: 'b3', enabled: false },
+    ];
+
+    // Unconfigured: follows enabled !== false
+    expect(effectiveAllowedBrowserCount(connections, false, undefined)).toBe(2);
+
+    // Configured empty set: 0 allowed
+    expect(effectiveAllowedBrowserCount(connections, true, [])).toBe(0);
+
+    // Configured with allowed list: intersection with enabled
+    expect(effectiveAllowedBrowserCount(connections, true, ['b1', 'b3'])).toBe(1);
+    expect(isBrowserConnectionEffectiveAllowed(connections[0]!, true, ['b1'])).toBe(true);
+    expect(isBrowserConnectionEffectiveAllowed(connections[1]!, true, ['b1'])).toBe(false);
+    expect(isBrowserConnectionEffectiveAllowed(connections[2]!, true, ['b3'])).toBe(false);
   });
 });

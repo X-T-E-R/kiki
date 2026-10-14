@@ -2098,42 +2098,36 @@ export interface SettingsSearchSpecEntry {
 /** Settings section order. Lives here, not in the page, so the quick switcher
  * can label settings hits without importing the whole settings tree. */
 export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
-  { id: 'general', labelKey: 'st.section.generalMerged' },
+  { id: 'general', labelKey: 'st.section.general' },
   { id: 'appearance', labelKey: 'st.section.appearance' },
   { id: 'shortcuts', labelKey: 'st.section.shortcuts' },
-  { id: 'providers', labelKey: 'st.section.providers' },
-  { id: 'models', labelKey: 'st.section.models' },
-  { id: 'ai', labelKey: 'st.section.ai' },
-  { id: 'agents', labelKey: 'st.section.agentsMerged' },
-  { id: 'subagents', labelKey: 'st.section.subagents' },
-  { id: 'workspaces', labelKey: 'st.section.workspacesMerged' },
-  { id: 'sessions', labelKey: 'st.section.sessions' },
+  { id: 'connection', labelKey: 'st.section.connection' },
+  { id: 'ssh', labelKey: 'st.section.ssh' },
   { id: 'spaces', labelKey: 'st.section.spaces' },
-  { id: 'memory', labelKey: 'st.section.memoryMerged' },
-  { id: 'permissions', labelKey: 'st.section.permissionsMerged' },
+  { id: 'ai', labelKey: 'st.section.ai' },
+  { id: 'connection-services', labelKey: 'st.section.connectionServices' },
+  { id: 'identity', labelKey: 'st.section.identity' },
+  { id: 'agents', labelKey: 'st.section.agents' },
+  { id: 'subagents', labelKey: 'st.section.subagents' },
+  { id: 'sessions', labelKey: 'st.section.sessions' },
+  { id: 'workspaces', labelKey: 'st.section.workspaces' },
+  { id: 'notifications', labelKey: 'st.section.notifications' },
+  { id: 'memory', labelKey: 'st.section.memory' },
+  { id: 'permissions', labelKey: 'st.section.permissions' },
   { id: 'tasks', labelKey: 'st.section.tasks' },
-  { id: 'hooks', labelKey: 'st.section.hooks' },
-  { id: 'extensions', labelKey: 'st.section.extensions' },
   { id: 'skills', labelKey: 'st.section.skills' },
   { id: 'mcp', labelKey: 'st.section.mcp' },
   { id: 'plugins', labelKey: 'st.section.plugins' },
-  { id: 'environment-tools', labelKey: 'st.section.environmentTools' },
   { id: 'search', labelKey: 'st.section.search' },
   { id: 'browser-control', labelKey: 'st.section.browserControl' },
   { id: 'computer-control', labelKey: 'st.section.computerControl' },
-  { id: 'remote', labelKey: 'st.section.remote' },
-  { id: 'connection', labelKey: 'st.section.connection' },
-  { id: 'ssh', labelKey: 'st.section.ssh' },
-  { id: 'connection-services', labelKey: 'st.section.connectionServices' },
-  { id: 'identity', labelKey: 'st.section.identity' },
-  { id: 'notifications', labelKey: 'st.section.notifications' },
-  { id: 'system', labelKey: 'st.section.system' },
+  { id: 'hooks', labelKey: 'st.section.hooks' },
   { id: 'developer', labelKey: 'st.section.developer' },
   { id: 'labs', labelKey: 'st.section.labs' },
   { id: 'about', labelKey: 'st.section.about' },
 ];
 
-// ---- grouped navigation (settings IA v3: 5 groups, 12 cohesive pages) ----
+// ---- grouped navigation (settings IA v2: six intent groups) ----
 
 export interface SettingsNavGroupSpec {
   readonly kind: 'group';
@@ -2150,53 +2144,26 @@ export interface SettingsNavLeafSpec {
 export type SettingsNavNode = SettingsNavGroupSpec | SettingsNavLeafSpec;
 
 export const SETTINGS_NAV_TREE: readonly SettingsNavNode[] = [
-  { kind: 'group', id: 'preferences', labelKey: 'st.group.preferences', sections: ['general', 'shortcuts'] },
-  { kind: 'group', id: 'models-agents', labelKey: 'st.group.modelsAgents', sections: ['providers', 'models', 'agents'] },
-  { kind: 'group', id: 'workspaces-memory', labelKey: 'st.group.workspacesMemory', sections: ['workspaces', 'memory'] },
-  { kind: 'group', id: 'capabilities', labelKey: 'st.group.capabilitiesSafety', sections: ['permissions', 'extensions', 'environment-tools'] },
-  { kind: 'group', id: 'system-connection', labelKey: 'st.group.systemConnection', sections: ['remote', 'system'] },
+  { kind: 'group', id: 'device', labelKey: 'st.group.device', sections: ['general', 'appearance', 'shortcuts'] },
+  { kind: 'group', id: 'connection', labelKey: 'st.group.connection', sections: ['connection', 'ssh', 'spaces'] },
+  { kind: 'group', id: 'models-agents', labelKey: 'st.group.modelsAgents', sections: ['ai', 'connection-services', 'identity', 'agents', 'subagents'] },
+  { kind: 'group', id: 'work', labelKey: 'st.group.work', sections: ['sessions', 'workspaces', 'notifications', 'memory', 'permissions', 'tasks'] },
+  { kind: 'group', id: 'capabilities', labelKey: 'st.group.capabilities', sections: ['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks'] },
+  { kind: 'group', id: 'advanced', labelKey: 'st.group.advanced', sections: ['developer', 'labs', 'about'] },
 ];
 
-/** Maps any leaf or legacy/sub-section id to one of the 12 primary navigation leaves. */
+/** Legacy combined pages keep their URLs while navigation points to their first dedicated page. */
 export const SETTINGS_NAV_SECTION_MAP: Readonly<Record<string, string>> = {
-  general: 'general',
-  appearance: 'general',
-  identity: 'general',
-  notifications: 'general',
-  shortcuts: 'shortcuts',
-  providers: 'providers',
-  models: 'models',
-  ai: 'models',
-  agents: 'agents',
-  subagents: 'agents',
-  workspaces: 'workspaces',
-  sessions: 'workspaces',
-  spaces: 'workspaces',
-  memory: 'memory',
-  permissions: 'permissions',
-  tasks: 'permissions',
-  hooks: 'permissions',
-  extensions: 'extensions',
-  skills: 'extensions',
-  mcp: 'extensions',
-  plugins: 'extensions',
-  'environment-tools': 'environment-tools',
-  search: 'environment-tools',
-  'browser-control': 'environment-tools',
-  'computer-control': 'environment-tools',
-  remote: 'remote',
-  connection: 'remote',
-  ssh: 'remote',
-  'connection-services': 'remote',
-  'external-clients': 'remote',
-  system: 'system',
-  developer: 'system',
-  labs: 'system',
-  about: 'system',
+  providers: 'ai',
+  models: 'ai',
+  extensions: 'skills',
+  'environment-tools': 'search',
+  remote: 'connection',
+  'external-clients': 'connection-services',
+  system: 'developer',
 };
 
-export function canonicalNavSection(sectionId: string, tab?: string | null): string {
-  if (sectionId === 'ai' && tab === 'providers') return 'providers';
+export function canonicalNavSection(sectionId: string, _tab?: string | null): string {
   return SETTINGS_NAV_SECTION_MAP[sectionId] ?? sectionId;
 }
 
@@ -2453,6 +2420,8 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   // lives on the browser page with the rest of that answer. Its old bookmark
   // follows the card there (LEGACY_CARD_ALIASES).
   { section: 'browser-control', cardId: 'st-card-webbridge', titleKey: 'st.plugins.runtimeTitle', keywordKeys: ['st.plugins.browserExtension'], synonyms: ['webbridge', '浏览器扩展', 'browser daemon'] },
+  { section: 'browser-control', cardId: 'st-card-browser-enabled', titleKey: 'st.browser.title', keywordKeys: ['st.browser.enabledLabel', 'st.browser.enabledHint'], synonyms: ['browser switch', '浏览器开关', '允许浏览器'] },
+  { section: 'computer-control', cardId: 'st-card-computer-enabled', titleKey: 'st.computer.title', keywordKeys: ['st.computer.enabledLabel', 'st.computer.enabledHint'], synonyms: ['computer switch', '电脑开关', '允许电脑控制'] },
   { section: 'browser-control', cardId: 'st-card-browser-default', titleKey: 'st.browser.defaultTitle', keywordKeys: ['st.browser.defaultLabel', 'st.browser.defaultHint'], synonyms: ['默认浏览器', 'default browser', '浏览器', 'browser'] },
   { section: 'browser-control', cardId: 'st-card-browser-setup', titleKey: 'st.browser.setup.title', keywordKeys: ['st.browser.setup.host', 'st.browser.route.blurb.kimi-webbridge', 'st.browser.route.blurb.independent-browser'], synonyms: ['浏览器组件', 'browser components', '安装浏览器', 'install browser', '驱动', 'driver', 'kimi', 'codex', '扩展', 'extension'] },
   { section: 'browser-control', cardId: 'st-card-browser-connections', titleKey: 'st.browser.connectionsTitle', keywordKeys: ['st.browser.add', 'st.browser.fieldType', 'st.browser.fieldEndpoint', 'st.browser.disconnect'], synonyms: ['browser control', '浏览器控制', 'cdp', 'profile', 'chromium', 'chrome', 'agent-browser', '浏览器连接', '调试端口'] },

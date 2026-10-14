@@ -1,4 +1,5 @@
 export * from './agentSettings';
+export * from './browserControl';
 export * from './computerControl';
 export * from './layoutPrefs';
 export * from './mcp';
