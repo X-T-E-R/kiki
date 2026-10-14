@@ -184,10 +184,25 @@ The executor catalog lists registered engines without waiting for executable dis
 | `GET /api/executors` | Registered engines and the latest check for each. This request does not probe. A result older than 60 seconds has `check_stale: true` |
 | `GET /api/executors/{id}` | One engine's capabilities, connection settings, and latest check. This request does not probe |
 | `POST /api/executors/{id}/check` | Check only that engine's executable sources and its declared authentication hints |
+| `GET /api/executors/installations` | Pinned adapter releases and any selected source-owned adapter. This request does not install. An item with no installation omits `active` |
+| `POST /api/executors/{id}/install` | Explicitly update one selected adapter. The request has no body fields |
+| `POST /api/executors/{id}/rollback` | Restore that adapter's previous installation. The request has no body fields |
 
 Catalog `status` is `ready`, `unavailable`, or `unknown`. Native is always `ready`. An external engine with no check yet is `unknown`. `check_status` keeps the latest explicit check as `ready`, `warning`, or `unavailable`, and `checked_at` is that time. While the launch configuration is unchanged, `check_stale` is false for 60 seconds and true after that. The list still returns the previous `check_status` instead of falling back to `unknown`. After the engine revision changes, both fields disappear and that engine is unchecked again. `POST` updates only the named engine. The others keep the results they already have. One engine timing out or failing does not mark the rest ready. `GET` does not start a probe.
 
 Binary readiness and authentication are stored separately. `connection.login_status: "unknown"` means the login state has not been read. Catalog `status: "ready"` means the program requirement passed. When preflight is `warning` and the program requirement passed, catalog `status` is `ready` and `check_status` stays `warning`. New profile choices and bare execution entries include an external engine only when `show_in_profile_list` is `true`. A missing field leaves it on the settings page. `false` stays off after refresh, another check, and another import. `externals_visible = false` blocks every external engine from new choices. A bare execution entry also needs a ready program and either a confirmed login or the engine's declared API-key environment. A profile or session already bound to a hidden or unavailable engine keeps that identity. Settings still lists every engine. Sending a prompt still runs the real program, source, and authentication checks. The previous check in the display catalog does not replace the launch check.
+
+`POST /api/executors/{id}/install` and `POST /api/executors/{id}/rollback` use the executor id you select. That id is not a fixed value. An id that is not an installable adapter, including a path lookup, returns not found and does not change files.
+
+A source-owned update runs only when that executor's selected source is one `node-script` whose file name is `agy-cli-acp.mjs`, and the path is absolute after `~` and `${KIKI_HOME}` expand. More than one selected script is not this update.
+
+Install replaces three files beside that script: `agy-cli-acp.mjs`, `agy-hook-registration.mjs`, and `agy-permission-hook.mjs`. Other files there stay, including custom scripts and `audit/` records. The call does not rewrite the executor's env, model, permissions, or `supports_mcp`. `supports_mcp` keeps its existing value. The status JSON has `id`, `release`, `active`, `previous`, and `phase`. It does not include `supports_mcp`. For this bundle, `release.source` is `bundled:external-harness`, `release.entry` is `agy-cli-acp.mjs`, and `active.version` is `0.4.1`.
+
+The replaced files are read the next time that executor process starts. This request does not restart a process that is already running.
+
+Rollback restores the previous copy of those three files when one was saved, and leaves custom files in place. A second rollback swaps those two copies again. Install saves a snapshot of the current three files before it replaces them. A failed write puts the original bytes back, deletes a file that was not there before, and the call fails. If the installation record cannot be saved, install restores that earlier copy and the call fails. If the rollback record cannot be saved, rollback restores the active copy and the call fails. When that restore fails too, the response is validation code `40001` with the restore diagnosis, the stored installation record is left as it was, and the call does not report success.
+
+`GET /api/executors/installations` can also list pinned releases such as `claude-acp` and `codex-acp` with `phase: idle` and no `active` field. Listing them does not install them.
 
 ### Local executor sessions
 

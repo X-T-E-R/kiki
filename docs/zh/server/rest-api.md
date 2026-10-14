@@ -184,10 +184,25 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 | `GET /api/executors` | 已注册引擎及其最近一次检查。此请求不探测。超过 60 秒的结果带 `check_stale: true` |
 | `GET /api/executors/{id}` | 单个引擎的能力、连接设置及最近一次检查。此请求不探测 |
 | `POST /api/executors/{id}/check` | 只检查该引擎的可执行程序来源和它声明的认证信息 |
+| `GET /api/executors/installations` | 固定版本的适配器，以及已选中的源码自有适配器。此请求不安装。没有安装记录的条目省略 `active` |
+| `POST /api/executors/{id}/install` | 显式更新一个选中的适配器。请求没有正文字段 |
+| `POST /api/executors/{id}/rollback` | 恢复该适配器的上一份安装。请求没有正文字段 |
 
 目录 `status` 取 `ready`、`unavailable` 或 `unknown`。原生引擎始终为 `ready`。外部引擎还没有检查结果时为 `unknown`。`check_status` 保留最近一次显式检查的 `ready`、`warning` 或 `unavailable`，`checked_at` 是该次时间。启动配置未变时，60 秒内 `check_stale` 为 false；超过 60 秒后变为 true，列表仍返回上一次的 `check_status`，而不是回到 `unknown`。引擎修订变化后，这两项消失，该引擎重新成为尚未检查。`POST` 只更新被点名的引擎。其他引擎保持各自已有的结果，一个引擎超时或失败时，其余引擎不会被写成就绪。`GET` 不启动探测。
 
 程序就绪与认证分开存放。`connection.login_status: "unknown"` 表示登录态还没有读到。目录 `status: "ready"` 只表示程序要求通过。预检为 `warning` 且程序要求通过时，目录 `status` 为 `ready`，`check_status` 仍为 `warning`。新的 profile 选择和裸执行入口只包含 `show_in_profile_list` 为 `true` 的外部引擎。字段不存在时留在设置页。`false` 在刷新、重查和再次导入之后仍然关闭。`externals_visible = false` 挡住全部外部新选择。裸执行入口还要求程序就绪，并且已确认登录或已配置该引擎声明的 API 密钥环境变量。已经绑定隐藏或不可用引擎的 profile 与会话保留该身份。设置页仍列出全部引擎。发送提示词仍执行真实的程序、来源及认证校验；显示目录里的上一次检查不能代替启动检查。
+
+`POST /api/executors/{id}/install` 和 `POST /api/executors/{id}/rollback` 使用你选中的执行器 id，这个 id 不是固定值。不是可安装适配器的 id，包括路径查找，返回未找到，并且不改文件。
+
+源码自有更新只在同时满足这些条件时写入：该执行器选中的来源是唯一一条 `node-script`，文件名是 `agy-cli-acp.mjs`，并且路径在展开 `~` 和 `${KIKI_HOME}` 之后是绝对路径。选中的脚本多于一条时，不是这次更新。
+
+安装只替换该脚本旁边的三个文件：`agy-cli-acp.mjs`、`agy-hook-registration.mjs` 和 `agy-permission-hook.mjs`。同目录里的其它文件保留，包括自定义脚本和 `audit/` 记录。这次调用不改写执行器的 env、模型、权限或 `supports_mcp`。`supports_mcp` 保持原值。状态 JSON 含有 `id`、`release`、`active`、`previous` 和 `phase`，不包含 `supports_mcp`。对这个 bundle，`release.source` 是 `bundled:external-harness`，`release.entry` 是 `agy-cli-acp.mjs`，`active.version` 是 `0.4.1`。
+
+替换后的文件在该执行器进程下一次启动时被读取。这次请求不重启已经在运行的进程。
+
+存在上一份安装时，rollback 恢复这三个文件的上一份副本，自定义文件留在原地。再 rollback 一次会把这两份副本对调。安装在替换这三个文件之前先保存它们的当前快照。写入失败时写回原字节，删除原先不存在的新文件，并且调用失败。安装记录保存失败时，安装恢复那份更早的副本，并且调用失败。rollback 记录保存失败时，rollback 恢复当前生效的副本，并且调用失败。若这次恢复也失败，响应是校验码 `40001` 和具体的恢复诊断，已保存的安装记录保持原样，调用不会报成功。
+
+`GET /api/executors/installations` 也可以列出 `claude-acp`、`codex-acp` 这类固定版本，其 `phase` 为 `idle`，且没有 `active`。列出它们不会安装。
 
 ### 本机执行器会话
 
