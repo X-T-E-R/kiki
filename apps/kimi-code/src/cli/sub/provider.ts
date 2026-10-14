@@ -16,6 +16,8 @@ import {
   applyCustomRegistryProvider,
   CustomRegistryApiError,
   fetchCustomRegistry,
+  sanitizeProviderHeaders,
+  sanitizeProviderUrl,
   type CustomRegistrySource,
   type ManagedKimiConfigShape,
 } from '@kiki/oauth';
@@ -25,6 +27,7 @@ import {
   CatalogFetchError,
   createKimiHarness,
   DEFAULT_CATALOG_URL,
+  redact,
   resolveCatalogImport,
   type Catalog,
   type CatalogProviderEntry,
@@ -172,8 +175,12 @@ export async function handleProviderList(
   const config = await harness.getConfig();
 
   if (opts.json) {
+    const providers = Object.fromEntries(Object.entries(config.providers).map(([id, provider]) => [id, {
+      ...redact(provider),
+      headers: provider.headers === undefined ? undefined : sanitizeProviderHeaders(provider.headers),
+    }]));
     deps.stdout.write(
-      `${JSON.stringify({ providers: config.providers, models: config.models ?? {} }, null, 2)}\n`,
+      `${JSON.stringify(redact({ providers, models: config.models ?? {} }), (_key, value: unknown) => typeof value === 'string' ? sanitizeProviderUrl(value) : value, 2)}\n`,
     );
     return;
   }
@@ -492,7 +499,7 @@ export function registerProviderCommand(parent: Command, deps?: Partial<Provider
   provider
     .command('list')
     .description('Show configured providers and their model counts.')
-    .option('--json', 'Emit the raw providers/models config as JSON.', false)
+    .option('--json', 'Emit providers/models config as JSON with credentials redacted.', false)
     .action(async (options: { json?: boolean }) => {
       const resolved = resolveDeps(deps);
       await runAction(resolved, () => handleProviderList(resolved, { json: options.json === true }));
@@ -591,7 +598,7 @@ function providerSourceLabel(provider: KimiConfig['providers'][string]): string 
   const source = provider.source;
   if (source !== undefined) {
     if (source['kind'] === 'apiJson' && typeof source['url'] === 'string') {
-      return `apiJson(${source['url']})`;
+      return `apiJson(${sanitizeProviderUrl(source['url'])})`;
     }
   }
   if (provider.oauth !== undefined) return 'oauth';
