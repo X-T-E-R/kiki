@@ -164,4 +164,49 @@ describe('desktop-managed shared lifecycle', () => {
       expect(restored).toMatchObject({ goalId: before.goalId, objective: 'keep the example goal', status: 'paused', terminalReason: 'Paused after agent resume' });
     } finally { for (const server of servers.toReversed()) await server.close(); await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
   });
+
+  it('refuses a non-interrupt restart while a finished task result is awaiting delivery', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-lifecycle-delivery-'));
+    let server: RunningServer | undefined;
+    const delivery = new AbortController();
+    try {
+      server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: root, env: { ...process.env, KIKI_DESKTOP_BUNDLED: '1' }, logLevel: 'silent' });
+      const created = await call(server, '/api/sessions', { metadata: { cwd: root } });
+      expect(created.code).toBe(0);
+      const session = server.core.accessor.get(ISessionManager).get((created.data as { id: string }).id)!;
+      const agent = await session.accessor.get(IAgentLifecycleService).create({ agentId: 'main' });
+      const tasks = agent.accessor.get(IAgentTaskService);
+      const taskId = tasks.registerTask({
+        idPrefix: 'lifecycle', kind: 'process', description: 'Finished task awaiting result delivery',
+        start: sink => { void sink.settle({ status: 'completed' }); },
+        toInfo: base => ({ ...base, kind: 'process', command: 'synthetic-no-shell', pid: 0, exitCode: 0 }),
+      }, { detached: false });
+      let completed = false;
+      for (let attempt = 0; attempt < 50 && !completed; attempt += 1) {
+        completed = tasks.getTask(taskId)?.status === 'completed';
+        if (!completed) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(completed).toBe(true);
+      expect(tasks.list(true).some((task) => task.lifetime !== 'service')).toBe(false);
+      expect(tasks.hasUnfinishedWork()).toBe(false);
+      const loop = agent.accessor.get(IAgentLoopService).status();
+      expect(loop.state).toBe('idle');
+      expect(loop.hasPendingRequests).toBe(false);
+      expect(loop.pendingTurnIds).toEqual([]);
+      const idle = desktopLifecycleStateSchema.parse((await call(server, '/api/desktop-lifecycle')).data);
+      expect(idle.work_pending).not.toContain(session.id);
+      tasks.markTasksDeliveredViaWait([{ taskId, status: 'completed' }], 'tool-call-example', delivery.signal);
+      expect(tasks.hasUnfinishedWork()).toBe(true);
+      expect(tasks.getTask(taskId)?.status).toBe('completed');
+      expect(agent.accessor.get(IAgentLoopService).status()).toMatchObject({ state: 'idle', hasPendingRequests: false, pendingTurnIds: [] });
+      const state = desktopLifecycleStateSchema.parse((await call(server, '/api/desktop-lifecycle')).data);
+      expect(state.work_pending).toContain(session.id);
+      expect((await call(server, '/api/desktop-lifecycle', { action: 'restart', server_id: state.server_id, consent: true, interrupt_work: false })).code).not.toBe(0);
+      expect((await call(server, '/api/meta')).code).toBe(0);
+    } finally {
+      delivery.abort();
+      await server?.close();
+      await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
 });

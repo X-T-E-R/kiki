@@ -19,7 +19,7 @@ export function desktopPendingWork(core: Scope): string[] {
       if (execution.state === 'starting' || execution.state === 'running' || execution.state === 'cancelling' ||
         loop.state === 'running' || loop.finalizing || loop.persistenceFailure || loop.hasPendingRequests || loop.pendingTurnIds.length > 0 ||
         prompt.hasReadyPending() || queue.active !== undefined || queue.launching !== undefined || queue.pending.length > 0 ||
-        agent.accessor.get(IAgentTaskService).list(true).some((task) => task.lifetime !== 'service')) return true;
+        agent.accessor.get(IAgentTaskService).hasUnfinishedWork()) return true;
     }
     return false;
   }).map(session => session.id);
