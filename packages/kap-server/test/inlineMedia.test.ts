@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'node:http';
 import * as sessionOperation from '../src/lib/sessionOperationLease';
+import * as imageValidation from '@kiki/agent-core-v2/agent/media/image-compress';
 import { installErrorHandler } from '../src/error-handler';
 import Fastify from 'fastify';
 import { createKlient } from '@kiki/klient/http';
@@ -53,7 +54,7 @@ describe('canonical inline media original', () => {
     ]);
     const agentServices = new Map<unknown, unknown>([
       [IAgentPromptService, {}], [IAgentSkillService, { activate }],
-      [IAgentProfileService, { getModelProviderType: () => 'kimi' }],
+      [IAgentProfileService, { data: () => ({ executorId: 'native', executorProtocol: 'native' }), getModelProviderType: () => 'kimi' }],
     ]);
     const coreServices = new Map<unknown, unknown>([
       [IFileService, {}], [IBootstrapService, { cacheDir: 'unused' }],
@@ -123,6 +124,45 @@ describe('canonical inline media original', () => {
     await expect(resolvePromptSessionMediaRefs(draft, store)).rejects.toMatchObject({ code: 'file.not_found' });
     expect(store.open).not.toHaveBeenCalled();
   });
+  it('cancels canonical inline preview lookup before decoding and leaves the next original readable', async () => {
+    const original = bitmap();
+    const attachment: TranscriptAttachment = { attachmentId: 'cancelled.lookup', name: 'cancel.bmp', mediaType: 'image/bmp', source: { kind: 'url', url: `data:image/bmp;base64,${original.toString('base64')}` } };
+    const transcript = new AgentTranscript('main');
+    transcript.apply([{ op: 'attachment.upsert', attachment }]);
+    const source = boundedTranscriptSnapshot(transcript.snapshot(), 'main').attachments[0]!.source!;
+    if (source.kind !== 'session_media') throw new Error('Expected canonical media handle');
+    let started!: () => void;
+    const reading = new Promise<void>((resolve) => { started = resolve; });
+    let aborted!: () => void;
+    const cancelled = new Promise<void>((resolve) => { aborted = resolve; });
+    let slow = true;
+    const service = { forSessionLive: () => undefined, readColdSnapshot: async (_session: string, _agent: string, _project: unknown, signal?: AbortSignal) => {
+      if (!slow) return transcript.snapshot();
+      started();
+      return new Promise((_resolve, reject) => {
+        signal?.addEventListener('abort', () => { aborted(); reject(signal.reason); }, { once: true });
+      });
+    } } as unknown as TranscriptService;
+    const app = Fastify(); servers.push(app);
+    installErrorHandler(app);
+    registerSessionMediaRoutes(app as unknown as Parameters<typeof registerSessionMediaRoutes>[0], {} as Scope, service);
+    const base = await app.listen({ host: '127.0.0.1', port: 0 });
+    const url = `${base}/sessions/fixture/media/${encodeURIComponent(source.fileId)}`;
+    const request = get(`${url}/preview`);
+    request.on('error', () => {});
+    const validate = vi.spyOn(imageValidation, 'validateImageDataUrl');
+    try {
+      await reading;
+      request.destroy();
+      await cancelled;
+      expect(validate).not.toHaveBeenCalled();
+      slow = false;
+      const next = await fetch(url);
+      expect(next.status).toBe(200);
+      expect(Buffer.compare(Buffer.from(await next.arrayBuffer()), original)).toBe(0);
+    } finally { request.destroy(); validate.mockRestore(); }
+  });
+
   it('closes a cancelled session preview source and releases its operation without affecting the next download', async () => {
     const app = Fastify(); servers.push(app);
     installErrorHandler(app);
@@ -337,10 +377,16 @@ describe('canonical inline media original', () => {
     await app.register(async (router) => { registerSessionMediaRoutes(router as unknown as Parameters<typeof registerSessionMediaRoutes>[0], {} as Scope, service); }, { prefix: '/api' });
     const address = await app.listen({ host: '127.0.0.1', port: 0 });
     const client = createKlient({ endpoint: address });
+    const validate = vi.spyOn(imageValidation, 'validateImageDataUrl');
     try {
       const preview = await client.rest!.sessions.mediaPreview('fixture-session', source.fileId);
       expect(preview.mime).toBe('image/jpeg');
       expect(preview.bytes.byteLength).toBeLessThan(64 * 1024);
+      expect(validate).toHaveBeenCalledTimes(1);
+      const revalidated = await client.rest!.sessions.mediaPreview('fixture-session', source.fileId, { ifNoneMatch: preview.etag });
+      expect(revalidated.notModified).toBe(true);
+      expect(revalidated.bytes.byteLength).toBe(0);
+      expect(validate).toHaveBeenCalledTimes(1);
       const bytes: Uint8Array[] = [];
       const receipt = await client.rest!.sessions.downloadMedia('fixture-session', source.fileId, (chunk) => { bytes.push(chunk.slice()); });
       expect(receipt.bytes).toBe(original.byteLength);
@@ -351,7 +397,28 @@ describe('canonical inline media original', () => {
       const changed = { ...attachment, source: { kind: 'url' as const, url: 'data:image/bmp;base64,AAAA' } };
       transcript.apply([{ op: 'attachment.upsert', attachment: changed }]);
       await expect(client.rest!.sessions.media('fixture-session', source.fileId)).rejects.toThrow();
-    } finally { await client.close(); }
+      await expect(client.rest!.sessions.mediaPreview('fixture-session', source.fileId, { ifNoneMatch: preview.etag })).rejects.toThrow();
+    } finally { validate.mockRestore(); await client.close(); }
+  });
+
+  it('streams the already-validated inline image buffer without decoding its base64 again', async () => {
+    const fixture = new URL('../../../apps/kiki-gui/fixtures/sent-images.scenario.mjs', import.meta.url).href;
+    const { pictures } = await import(fixture);
+    const original: Buffer = pictures[1].bytes;
+    const url = `data:image/png;base64,${original.toString('base64').replace(/=+$/u, '')}`;
+    const validate = vi.spyOn(imageValidation, 'validateImageDataUrl');
+    try {
+      const file = await inlineMediaFile({ attachmentId: 'isolated', mediaType: 'image/png', source: { kind: 'url', url } });
+      expect(file).toBeDefined();
+      expect(validate).toHaveBeenCalledExactlyOnceWith(url);
+      const validated = await validate.mock.results[0]!.value;
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of file!.stream({ start: 10, end: 31 })) chunks.push(chunk);
+      expect(chunks).toHaveLength(1);
+      expect(chunks[0]!.buffer).toBe(validated!.bytes.buffer);
+      expect(Buffer.compare(Buffer.from(chunks[0]!), original.subarray(10, 32))).toBe(0);
+      expect(file!.size).toBe(original.byteLength);
+    } finally { validate.mockRestore(); }
   });
 
   it('preserves percent-encoded binary data, UTF-8 text, whitespace/unpadded base64, and malformed-source failure', async () => {

@@ -51,22 +51,52 @@ export function parseInlineMediaIdentity(fileId: string): InlineMediaIdentity | 
   return { kind: 'content', agentId, ...parsed.data, revision };
 }
 
+const INLINE_MEDIA_CACHE_BYTES = 16 * 1024 * 1024;
+const inlineMediaCache = new Map<string, SessionMediaFile>();
+let inlineMediaCacheBytes = 0;
+
 export async function openPublishedInlineMedia(fileId: string, readEntity: PublishedMediaEntityReader): Promise<SessionMediaFile | undefined> {
   const identity = parseInlineMediaIdentity(fileId);
   if (identity === undefined) return undefined;
+  let url: string;
+  let name: string;
   if (identity.kind === 'attachment') {
     const attachment = await readEntity(identity.agentId, { kind: 'attachment', id: identity.attachmentId }) as TranscriptAttachment | undefined;
-    return attachment === undefined || inlineMediaId(attachment, identity.agentId) !== fileId ? undefined : inlineMediaFile(attachment);
+    if (attachment === undefined || inlineMediaId(attachment, identity.agentId) !== fileId || attachment.source?.kind !== 'url') return undefined;
+    url = attachment.source.url;
+    name = attachment.name ?? attachment.attachmentId;
+  } else {
+    let selected = await readEntity(identity.agentId, identity.source);
+    for (const key of identity.path) {
+      if (selected === null || typeof selected !== 'object' || !Object.hasOwn(selected, key)) return undefined;
+      selected = (selected as Record<string | number, unknown>)[key];
+    }
+    const media = inlineToolMedia(selected);
+    if (media === undefined || contentRevision(media.url) !== identity.revision) return undefined;
+    const selectedName = (selected as { name?: unknown }).name;
+    url = media.url;
+    name = typeof selectedName === 'string' && selectedName.length > 0 ? selectedName : `${identity.source.id}.${media.kind}`;
   }
-  let selected = await readEntity(identity.agentId, identity.source);
-  for (const key of identity.path) {
-    if (selected === null || typeof selected !== 'object' || !Object.hasOwn(selected, key)) return undefined;
-    selected = (selected as Record<string | number, unknown>)[key];
+  const cached = inlineMediaCache.get(fileId);
+  if (cached !== undefined) {
+    inlineMediaCache.delete(fileId);
+    inlineMediaCache.set(fileId, cached);
+    return { ...cached, name };
   }
-  const media = inlineToolMedia(selected);
-  if (media === undefined || contentRevision(media.url) !== identity.revision) return undefined;
-  const name = (selected as { name?: unknown }).name;
-  return inlineDataMediaFile(media.url, typeof name === 'string' && name.length > 0 ? name : `${identity.source.id}.${media.kind}`);
+  const file = await inlineDataMediaFile(url, name);
+  if (file !== undefined && file.mediaType.startsWith('image/') && file.size <= INLINE_MEDIA_CACHE_BYTES) {
+    const previous = inlineMediaCache.get(fileId);
+    if (previous !== undefined) inlineMediaCacheBytes -= previous.size;
+    inlineMediaCache.delete(fileId);
+    inlineMediaCache.set(fileId, file);
+    inlineMediaCacheBytes += file.size;
+    while (inlineMediaCacheBytes > INLINE_MEDIA_CACHE_BYTES || inlineMediaCache.size > 128) {
+      const oldest = inlineMediaCache.keys().next().value!;
+      inlineMediaCacheBytes -= inlineMediaCache.get(oldest)!.size;
+      inlineMediaCache.delete(oldest);
+    }
+  }
+  return file;
 }
 
 export function projectInlineToolMedia(value: unknown, path: ContentRef['path'], source: ContentSource, entity: object, agentId: string): object | undefined {
@@ -107,18 +137,29 @@ export async function inlineDataMediaFile(url: string, name: string): Promise<Se
   const mime = (parsed?.mimeType ?? header.split(';')[0]) || 'text/plain';
   const base64 = /;base64\s*$/iu.test(header);
   const payload = url.slice(comma + 1);
-  let size = 0;
-  const imageChunks: Uint8Array[] | undefined = mime.startsWith('image/') ? [] : undefined;
-  try {
-    for (const chunk of decodePayload(payload, base64)) {
-      size += chunk.byteLength;
-      imageChunks?.push(chunk);
+  if (mime.startsWith('image/')) {
+    let validationUrl = url;
+    if (parsed === null || /[%\s]/u.test(payload)) {
+      try {
+        validationUrl = `data:${mime};base64,${Buffer.concat([...decodePayload(payload, base64)]).toString('base64')}`;
+      } catch { return undefined; }
     }
-  } catch { return undefined; }
-  if (imageChunks !== undefined) {
-    const bytes = Buffer.concat(imageChunks);
-    if (await validateImageDataUrl(`data:${mime};base64,${bytes.toString('base64')}`) === null) return undefined;
+    const validated = await validateImageDataUrl(validationUrl);
+    if (validated === null) return undefined;
+    const bytes = validated.bytes;
+    return {
+      name, mediaType: mime, size: bytes.byteLength,
+      stream: async function* (range) {
+        const start = Math.max(0, range?.start ?? 0);
+        const end = Math.min(bytes.byteLength - 1, range?.end ?? bytes.byteLength - 1);
+        if (start <= end) yield bytes.subarray(start, end + 1);
+      },
+    };
   }
+  let size = 0;
+  try {
+    for (const chunk of decodePayload(payload, base64)) size += chunk.byteLength;
+  } catch { return undefined; }
   return {
     name, mediaType: mime, size,
     stream: async function* (range) {

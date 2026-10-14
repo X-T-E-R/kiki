@@ -170,29 +170,34 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
   }, async (req, reply) => {
     const r = reply as unknown as SessionMediaReply;
     const { session_id, file_id } = req.params;
-    const opened = await openSessionMedia(core, session_id, file_id, transcriptService);
-    try {
-      if (!opened.sessionExists) return r.code(404).send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'session not found', req.id)) as void;
-      const file = opened.file;
-      if (file === undefined) return r.code(404).send(errEnvelope(ErrorCode.FILE_NOT_FOUND, 'file not found', req.id)) as void;
-      const etag = `"preview-v2-${session_id}-${file_id}-${file.size}-${req.query.media_type ?? file.mediaType}"`;
-      r.header('etag', etag).header('accept-ranges', 'bytes');
-      if (pickHeader(req.headers, 'range') === undefined && pickHeader(req.headers, 'if-none-match') === etag) return r.code(304).send(undefined) as void;
-      const result = await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], (signal) => createMediaPreview(file, req.query.media_type, signal));
-      if (r.raw.destroyed) return;
-      r.type(result.mime).header('content-disposition', buildContentDisposition(file.name, result.mime));
-      const range = parseRangeHeader(pickHeader(req.headers, 'range'), result.bytes.byteLength);
-      const bytes = range === null ? result.bytes : result.bytes.subarray(range.start, range.end + 1);
-      if (range !== null) r.code(206).header('content-range', `bytes ${range.start}-${range.end}/${result.bytes.byteLength}`);
-      else r.code(200);
-      return r.header('content-length', bytes.byteLength).send(Buffer.from(bytes)) as void;
-    } catch (error) {
-      if (r.raw.destroyed) return;
-      if (!(error instanceof MediaPreviewUnavailableError)) throw error;
-      return r.type('application/json').code(415).send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id)) as void;
-    } finally {
-      await opened.operation?.dispose();
-    }
+    return withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], async (signal) => {
+      let operation: SessionOperationLease | undefined;
+      try {
+        const opened = await openSessionMedia(core, session_id, file_id, transcriptService, signal);
+        operation = opened.operation;
+        signal.throwIfAborted();
+        if (!opened.sessionExists) return r.code(404).send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'session not found', req.id)) as void;
+        const file = opened.file;
+        if (file === undefined) return r.code(404).send(errEnvelope(ErrorCode.FILE_NOT_FOUND, 'file not found', req.id)) as void;
+        const etag = `"preview-v2-${session_id}-${file_id}-${file.size}-${req.query.media_type ?? file.mediaType}"`;
+        r.header('etag', etag).header('accept-ranges', 'bytes');
+        if (pickHeader(req.headers, 'range') === undefined && pickHeader(req.headers, 'if-none-match') === etag) return r.code(304).send(undefined) as void;
+        const result = await createMediaPreview(file, req.query.media_type, signal);
+        if (r.raw.destroyed) return;
+        r.type(result.mime).header('content-disposition', buildContentDisposition(file.name, result.mime));
+        const range = parseRangeHeader(pickHeader(req.headers, 'range'), result.bytes.byteLength);
+        const bytes = range === null ? result.bytes : result.bytes.subarray(range.start, range.end + 1);
+        if (range !== null) r.code(206).header('content-range', `bytes ${range.start}-${range.end}/${result.bytes.byteLength}`);
+        else r.code(200);
+        return r.header('content-length', bytes.byteLength).send(Buffer.from(bytes)) as void;
+      } catch (error) {
+        if (r.raw.destroyed) return;
+        if (!(error instanceof MediaPreviewUnavailableError)) throw error;
+        return r.type('application/json').code(415).send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id)) as void;
+      } finally {
+        await operation?.dispose();
+      }
+    });
   });
   app.get(preview.path, preview.options, preview.handler as unknown as Parameters<SessionMediaRouteHost['get']>[2]);
   const canonicalIdRoute = defineRoute({
@@ -217,10 +222,10 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
   app.get(canonicalIdRoute.path, canonicalIdRoute.options, canonicalIdRoute.handler as unknown as Parameters<SessionMediaRouteHost['get']>[2]);
 }
 
-async function openSessionMedia(core: Scope, sessionId: string, fileId: string, service?: TranscriptService): Promise<{ readonly sessionExists: boolean; readonly file?: SessionMediaFile; readonly operation?: SessionOperationLease }> {
+async function openSessionMedia(core: Scope, sessionId: string, fileId: string, service?: TranscriptService, signal?: AbortSignal): Promise<{ readonly sessionExists: boolean; readonly file?: SessionMediaFile; readonly operation?: SessionOperationLease }> {
   if (fileId.startsWith('raw:')) return { sessionExists: true, file: service === undefined ? undefined : await openContentOriginal(service, sessionId, fileId) };
   if (fileId.startsWith('inline-content:') || fileId.startsWith('inline:')) {
-    return { sessionExists: true, file: service === undefined ? undefined : await publishedInlineMediaReader(service, sessionId)(fileId) };
+    return { sessionExists: true, file: service === undefined ? undefined : await publishedInlineMediaReader(service, sessionId, signal)(fileId) };
   }
   if (fileId.startsWith('blobref:')) {
     const summary = await core.accessor.get(ISessionIndex).get(sessionId);
