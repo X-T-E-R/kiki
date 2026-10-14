@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { IAgentMemorySnapshot } from '@kiki/agent-core-v2/app/memory/memorySnapshot';
 import { IAgentContextMemoryService } from '@kiki/agent-core-v2/agent/contextMemory/contextMemory';
 import { IAgentContextInjectorService } from '@kiki/agent-core-v2/agent/contextInjector/contextInjector';
-import { externalBoundaryHookEvent, externalHintAlreadyRecorded, externalPromptHints, externalStateHints } from '@kiki/agent-core-v2/agent/execution/externalPromptHints';
+import { externalBoundaryHookEvent, externalHintAlreadyRecorded, externalPromptHints, externalStateHints, externalTurnHasModelContent } from '@kiki/agent-core-v2/agent/execution/externalPromptHints';
 import { IAgentExecutionService } from '@kiki/agent-core-v2/agent/execution/execution';
 import { newDeliveryId } from '@kiki/agent-core-v2/agent/contextMemory/messageDelivery';
 import { newMessageId } from '@kiki/agent-core-v2/agent/contextMemory/messageId';
@@ -79,6 +79,7 @@ export class ContextProcedureHost {
       if (content.length > 0) {
         const text = preparing ? `[Handoff prepared; not injected by this hook]\n${content}` : content;
         const origin = { kind: 'hook_result' as const, event: `kiki:${input.harness}:${input.event}`, blocked: false };
+        const beforeModel = runningTurnId !== undefined && !externalTurnHasModelContent(history, runningTurnId);
         if (!preparing && boundary && runningTurnId !== undefined) {
           const messageId = newMessageId();
           memory.appendManaged({
@@ -89,7 +90,7 @@ export class ContextProcedureHost {
             turnId: runningTurnId,
             deliveredAt: new Date().toISOString(),
             origin: 'queue',
-            placement: 'safety_boundary',
+            ...(beforeModel ? { placement: 'safety_boundary' as const } : {}),
           });
         } else {
           memory.appendObservable({ role: 'user', content: [{ type: 'text', text }], toolCalls: [], origin });

@@ -15,6 +15,17 @@ export function externalBoundaryHookEvent(event: string): boolean {
   return BOUNDARY_HOOK_EVENTS.has(event.slice(event.lastIndexOf(':') + 1));
 }
 
+export function externalTurnHasModelContent(history: readonly ContextMessage[], turnId: number): boolean {
+  return history.some((message) => {
+    if (message.source?.turnId !== turnId) return false;
+    if (message.role === 'tool') return true;
+    if (message.role !== 'assistant') return false;
+    return message.toolCalls.length > 0 || message.content.some((part) =>
+      part.type === 'think' || part.type === 'image_url' || part.type === 'audio_url' || part.type === 'video_url'
+      || (part.type === 'text' && part.text.length > 0));
+  });
+}
+
 export function externalHintAlreadyRecorded(
   history: readonly ContextMessage[],
   text: string,

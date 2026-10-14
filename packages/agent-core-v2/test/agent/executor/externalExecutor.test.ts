@@ -90,6 +90,7 @@ import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IHarnessMcpService } from '#/app/agentExecutor/harnessMcp';
 import { IRequestGovernance } from '#/app/requestGovernance/requestGovernance';
+import { createTestAgent } from '../../harness';
 
 const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 
@@ -147,7 +148,7 @@ function asyncEvents(events: readonly NormalizedExecutorEvent[]): AsyncIterable<
   };
 }
 
-function configOptions(permissionSurface = true): AcpSessionConfigOption[] {
+function configOptions(permissionSurface = true, autoApprove = true): AcpSessionConfigOption[] {
   const options: AcpSessionConfigOption[] = [
     {
       id: 'model-id',
@@ -178,7 +179,7 @@ function configOptions(permissionSurface = true): AcpSessionConfigOption[] {
       name: 'Auto approve',
       category: 'mode',
       type: 'boolean',
-      currentValue: true,
+      currentValue: autoApprove,
     });
   }
   return options;
@@ -1070,34 +1071,40 @@ describe('ACP external executor', () => {
     expect(observed.filter((event) => event.type === 'tool.result')).toHaveLength(1);
   });
 
-  it('places a pinned argv model before the harness subcommand', () => {
-    const context = {
-      agent: {} as AgentExecutorContext['agent'],
-      descriptor: {
-        id: 'cursor-acp',
-        protocol: 'acp-v1',
-        command: 'cursor-agent',
-        args: ['acp'],
-        modelBinding: 'argv',
-        modelArgs: ['--model', '{model}'],
-        revision: 'r1',
-      },
-      binding: {
-        modelAlias: 'cursor-model',
-        thinkingLevel: 'off',
-        systemPrompt: 'prompt',
-      },
-    } satisfies AgentExecutorContext;
+  it('places a pinned argv model before the harness subcommand', async () => {
+    const fixture = createTestAgent();
+    try {
+      await fixture.ready;
+      const context = {
+        agent: { id: 'main', accessor: { get: <T>(id: Parameters<AgentExecutorContext['agent']['accessor']['get']>[0]) => fixture.get(id) as T } },
+        descriptor: {
+          id: 'cursor-acp',
+          protocol: 'acp-v1' as const,
+          command: 'cursor-agent',
+          args: ['acp'],
+          modelBinding: 'argv' as const,
+          modelArgs: ['--model', '{model}'],
+          revision: 'r1',
+        },
+        binding: {
+          modelAlias: 'cursor-model',
+          thinkingLevel: 'off',
+          systemPrompt: 'prompt',
+        },
+      } satisfies AgentExecutorContext;
 
-    expect(resolveAcpProcessArgs(context)).toEqual([
-      '--model',
-      'cursor-model',
-      'acp',
-    ]);
-    expect(resolveAcpProcessArgs({
-      ...context,
-      binding: { ...context.binding, modelAlias: undefined },
-    })).toEqual(['acp']);
+      expect(resolveAcpProcessArgs(context)).toEqual([
+        '--model',
+        'cursor-model',
+        'acp',
+      ]);
+      expect(resolveAcpProcessArgs({
+        ...context,
+        binding: { ...context.binding, modelAlias: undefined },
+      })).toEqual(['acp']);
+    } finally {
+      await fixture.dispose();
+    }
   });
 
   it('suppresses an exact outbound prompt echo from external user frames', async () => {
@@ -1381,6 +1388,47 @@ describe('ACP external executor', () => {
     expect(managed.every((entry) => entry.delivery.stepId === recorder.stepId)).toBe(true);
     expect(JSON.stringify(managed)).not.toContain('external-executor:');
     expect(JSON.stringify(managed)).not.toContain('system_trigger');
+  });
+
+  it('keeps the remainder of one user message when a thought arrives between its deltas', async () => {
+    const managed: { message: ContextMessage; delivery: { placement?: string } }[] = [];
+    const timeline: string[] = [];
+    const services = new Map<unknown, unknown>([
+      [IEventDispatcher, { dispatch: async () => {}, flush: async () => {} }],
+      [IWireService, { _serviceBrand: undefined, flush: async () => {} }],
+      [IAgentContextMemoryService, {
+        _serviceBrand: undefined,
+        appendManaged: (message: ContextMessage, delivery: { placement?: string }) => {
+          timeline.push(`user:${message.id}:${message.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('')}`);
+          managed.push({ message, delivery });
+        },
+        appendLoopEvent: (event: { type?: string }) => timeline.push(event.type ?? 'loop'),
+      }],
+      [IAgentUsageService, { _serviceBrand: undefined, record: () => {}, status: () => ({}), onDidRecord: () => ({ dispose: () => {} }) }],
+    ]);
+    const recorder = new ExternalTurnRecorder(
+      { id: 'continue-agent', accessor: { get: (id: unknown) => services.get(id) as never } },
+      8,
+      'continue-session',
+      { executorId: 'example-acp', protocol: 'acp-v1', model: 'model', resumeMode: 'new', profileDelivery: 'native', outboundPrompt: 'work' },
+    );
+    await recorder.begin('work', { kind: 'user' }, [], 'prompt-1');
+    await recorder.record({ type: 'message.delta', role: 'user', messageId: 'same-user', content: { type: 'text', text: 'hello ' } });
+    await recorder.record({ type: 'thought.delta', messageId: 'think-1', content: { type: 'text', text: 'planning' } });
+    await recorder.record({ type: 'tool.call', toolCallId: 'read-1', title: 'Read', status: 'pending' });
+    await recorder.record({ type: 'message.delta', role: 'user', messageId: 'same-user', content: { type: 'text', text: 'world' } });
+    await recorder.complete('end_turn');
+
+    const same = managed.filter((entry) => entry.message.id === 'same-user');
+    expect(same.map((entry) => entry.message.content)).toEqual([
+      [{ type: 'text', text: 'hello ' }],
+      [{ type: 'text', text: 'hello world' }],
+    ]);
+    expect(new Set(same.map((entry) => entry.message.id)).size).toBe(1);
+    expect(same.every((entry) => entry.message.origin?.kind === 'unknown' && entry.delivery.placement === undefined)).toBe(true);
+    expect(timeline).toEqual([
+      'step.begin', 'user:same-user:hello ', 'content.part', 'tool.call', 'user:same-user:hello world', 'tool.result', 'step.end',
+    ]);
   });
 
   it('preserves unkeyed external user frames with an attribution loss', async () => {
@@ -2349,7 +2397,8 @@ describe('ACP external executor', () => {
   });
 
   it.each([false, true])('restores vendor permission value after clearing a runtime override (cold=%s)', async (cold) => {
-    const harness = createHarness({ permissionMode: 'yolo', vendorDefaultOption: true, mode: 'resume' });
+    const harness = createHarness({ permissionMode: 'yolo', vendorDefaultOption: true, mode: 'resume',
+      sessionConfigOptions: configOptions(true, false) });
     const first = await harness.session.run({ kind: 'prompt', prompt: 'first' }, { signal: new AbortController().signal });
     await first.completion;
     await harness.session.settled();
@@ -2373,7 +2422,8 @@ describe('ACP external executor', () => {
 
   it('persists the vendor baseline before permission configuration can fail', async () => {
     const options: FakeHarnessOptions = { permissionMode: 'yolo', vendorDefaultOption: true,
-      mode: 'resume', configureFailureId: 'auto_approve' };
+      mode: 'resume', configureFailureId: 'auto_approve',
+      sessionConfigOptions: configOptions(true, false) };
     const harness = createHarness(options);
     try {
       await expect(harness.session.run({ kind: 'prompt', prompt: 'first' }, { signal: new AbortController().signal })).rejects.toThrow('set_config_option failed');

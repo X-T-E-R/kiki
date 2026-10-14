@@ -1579,7 +1579,7 @@ export class TranscriptWireAdapter {
     canonical?: Readonly<Record<string, unknown>>,
   ): TranscriptOperation[] {
     const messageId = stringOf(canonical?.['messageId']) ?? stringOf(message['id']) ?? `legacy:v1:r${ordinal}:message`;
-    if (this.#deliveries.has(messageId)) return [];
+    if (this.#deliveries.has(messageId)) return this.reviseDeliveredUserFrame(messageId, message);
     const origin = objectOf(message['origin']);
     const current = this.#currentTurnId === undefined ? undefined : this.#turnHeaders.get(this.#currentTurnId);
     const inferredTurn = current?.state === 'running' ? current.turnId : undefined;
@@ -1691,6 +1691,31 @@ export class TranscriptWireAdapter {
       },
     });
     return operations;
+  }
+
+  private reviseDeliveredUserFrame(
+    messageId: string,
+    message: Readonly<Record<string, unknown>>,
+  ): TranscriptOperation[] {
+    const delivery = this.#deliveries.get(messageId);
+    const turnId = delivery?.turnId;
+    const stepId = delivery?.stepId;
+    if (turnId === undefined || stepId === undefined) return [];
+    const key = `${turnId}\0${stepId}\0${messageId}`;
+    const previous = this.#frameRecords.get(key)?.operation.frame;
+    if (previous === undefined || previous.kind !== 'text' || previous.role !== 'user') return [];
+    const incoming = arrayOf(message['content']).map(textOfPart).join('');
+    const text = previous.text.length > 0 && !incoming.startsWith(previous.text) ? `${previous.text}${incoming}` : incoming;
+    const revision = (previous.part?.revision ?? 0) + 1;
+    return [{
+      op: 'frame.upsert', turnId, stepId,
+      frame: {
+        ...previous,
+        text,
+        part: previous.part === undefined ? undefined : { ...previous.part, revision },
+        origin: projectTranscriptUserOrigin(message['origin']) ?? message['origin'] ?? previous.origin,
+      },
+    }];
   }
 
   private legacyAssistant(

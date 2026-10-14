@@ -150,7 +150,7 @@ export class ExternalTurnRecorder {
   #outboundEchoSuppressed = false;
   #promptEchoSuppressed = false;
   readonly #userSegments: UserSegment[] = [];
-  readonly #committedUserMessageIds = new Set<string>();
+  readonly #committedUsers = new Map<string, { text: string; origin: PromptOrigin }>();
   readonly #tools = new Map<string, RecordedTool>();
   readonly #toolInputs = new Map<number, { toolCallId: string; name?: string; inputText: string }>();
   #partOrdinal = 0;
@@ -912,32 +912,42 @@ export class ExternalTurnRecorder {
     const segments = this.#userSegments.splice(0);
     for (const segment of segments) {
       if (segment.text.length === 0 || this.#suppressEcho(segment.text)) continue;
-      if (segment.messageId !== undefined && this.#committedUserMessageIds.has(segment.messageId)) continue;
+      const committed = segment.messageId === undefined ? undefined : this.#committedUsers.get(segment.messageId);
+      if (committed !== undefined && segment.messageId !== undefined) {
+        const text = committed.text + segment.text;
+        this.#committedUsers.set(segment.messageId, { text, origin: committed.origin });
+        this.#appendUserMessage(segment.messageId, text, committed.origin, false, segment.messageId);
+        continue;
+      }
       const variant = preambleVariant(segment.text, this.metadata.outboundPrompt, this.#prompt);
       const origin: PromptOrigin = variant === undefined
         ? { kind: 'unknown' }
         : { kind: 'injection', variant, ...(this.#promptId === undefined ? {} : { ownerPromptId: this.#promptId }) };
       const messageId = segment.messageId ?? newMessageId();
-      if (segment.messageId !== undefined) this.#committedUserMessageIds.add(segment.messageId);
-      const delivery: MessageDelivery = {
-        deliveryId: newDeliveryId(),
-        messageId,
-        turnId: this.turnId,
-        stepId: this.stepId,
-        step: 1,
-        deliveredAt: new Date().toISOString(),
-        origin: deliveryOriginOf(origin),
-        ...(variant === undefined ? {} : { placement: 'safety_boundary' as const }),
-      };
-      this.#context.appendManaged({
-        role: 'user',
-        content: [{ type: 'text', text: segment.text }],
-        toolCalls: [],
-        id: messageId,
-        providerMessageId: segment.messageId,
-        origin,
-      }, delivery);
+      if (segment.messageId !== undefined) this.#committedUsers.set(segment.messageId, { text: segment.text, origin });
+      this.#appendUserMessage(messageId, segment.text, origin, variant !== undefined, segment.messageId);
     }
+  }
+
+  #appendUserMessage(messageId: string, text: string, origin: PromptOrigin, place: boolean, providerMessageId?: string): void {
+    const delivery: MessageDelivery = {
+      deliveryId: newDeliveryId(),
+      messageId,
+      turnId: this.turnId,
+      stepId: this.stepId,
+      step: 1,
+      deliveredAt: new Date().toISOString(),
+      origin: deliveryOriginOf(origin),
+      ...(place ? { placement: 'safety_boundary' as const } : {}),
+    };
+    this.#context.appendManaged({
+      role: 'user',
+      content: [{ type: 'text', text }],
+      toolCalls: [],
+      id: messageId,
+      providerMessageId,
+      origin,
+    }, delivery);
   }
 
   #suppressEcho(text: string): boolean {

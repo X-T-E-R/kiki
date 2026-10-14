@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AgentTranscript, TranscriptFactReducer, TranscriptWireAdapter, type TranscriptWireRecord } from '@kiki/transcript';
+import { AgentTranscript, AgentTranscriptDraft, TranscriptFactReducer, TranscriptWireAdapter, type TranscriptWireRecord } from '@kiki/transcript';
 import { createViewState, projectAgentTranscriptView } from './transcript';
 import { foldHistory, groupBlocks } from './grouping';
 import { agentTranscriptToBlocks } from './transcript/project';
@@ -246,13 +246,14 @@ describe('external injection boundary', () => {
     { type: 'context.append_loop_event', event: { type: 'content.part', turnId: 7, stepUuid: 'external-step', uuid: 'reply', part: { type: 'text', text: 'doing it' } }, time: 2_300 },
     { type: 'context.append_loop_event', event: { type: 'tool.call', turnId: 7, stepUuid: 'external-step', uuid: 'read-1', toolCallId: 'read-1', name: 'Read', args: {} }, time: 2_400 },
     { type: 'context.append_message', message: message('follow-up', 'remote follow-up', { kind: 'unknown' }), delivery: { messageId: 'follow-up', turnId: 7, stepId: 'external-step', step: 1, origin: 'queue' }, time: 2_500 },
-    { type: 'context.append_message', message: message('late', '[Kiki goal_state]\nGoal (active): land', { kind: 'injection', variant: 'goal_state', ownerPromptId: 'request' }), delivery: delivery('late', { placement: 'safety_boundary' }), time: 2_600 },
+    { type: 'context.append_message', message: message('echo', '[Kiki goal_state]\nGoal (active): land', { kind: 'injection', variant: 'goal_state', ownerPromptId: 'request' }), delivery: delivery('echo', { placement: 'safety_boundary' }), time: 2_600 },
+    { type: 'context.append_message', message: message('goal-now', '[Kiki goal_state]\nGoal (active): revise after the tool', { kind: 'injection', variant: 'goal_state', ownerPromptId: 'request' }), delivery: delivery('goal-now', { origin: 'queue' }), time: 2_650 },
     { type: 'context.append_loop_event', event: { type: 'step.end', turnId: 7, step: 1, uuid: 'external-step' }, time: 2_700 },
     { type: 'turn.ended', turnId: 7, reason: 'completed', time: 2_800 },
     { type: 'context.append_message', message: message('orphan', 'unanchored old record', { kind: 'unknown' }), time: 2_900 },
     { type: 'executor.prompt.delivery', method: 'native_steer', status: 'delivered', origin: 'steer', turnId: 7, time: 3_000 },
   ];
-  const conversational = ['user-previous', 'user-request', 'system-preamble', 'system-late', 'agent-frame-reply', 'tool-read-1', 'user-follow-up', 'user-orphan'];
+  const conversational = ['user-previous', 'user-request', 'system-preamble', 'system-echo', 'agent-frame-reply', 'tool-read-1', 'user-follow-up', 'system-goal-now', 'user-orphan'];
 
   const replay = (input: readonly TranscriptWireRecord[]) => {
     const transcript = new AgentTranscript('main');
@@ -282,7 +283,7 @@ describe('external injection boundary', () => {
     expect(JSON.stringify(live.blocks)).not.toContain('external-executor:');
     const turn = transcript.snapshot().items.find((item) => item.kind === 'turn' && item.turnId === 't7');
     expect(turn?.kind === 'turn' ? turn.steps[0]?.frames.map((frame) => frame.frameId) : []).toEqual([
-      'preamble', 'late', 'reply', 'external-step.read-1', 'follow-up',
+      'preamble', 'echo', 'reply', 'external-step.read-1', 'follow-up', 'goal-now',
     ]);
 
     const snapshot = transcript.snapshot();
@@ -292,14 +293,15 @@ describe('external injection boundary', () => {
     const newerBlocks = agentTranscriptToBlocks({ agent_id: 'main', ...newer });
     const newerIds = newerBlocks.map((block) => block.id);
     expect(newerIds.indexOf('user-request')).toBeLessThan(newerIds.indexOf('system-preamble'));
-    expect(newerIds.indexOf('system-preamble')).toBeLessThan(newerIds.indexOf('system-late'));
-    expect(newerIds.indexOf('system-late')).toBeLessThan(newerIds.indexOf('agent-frame-reply'));
+    expect(newerIds.indexOf('system-preamble')).toBeLessThan(newerIds.indexOf('system-echo'));
+    expect(newerIds.indexOf('system-echo')).toBeLessThan(newerIds.indexOf('agent-frame-reply'));
     expect(newerIds.indexOf('tool-read-1')).toBeLessThan(newerIds.indexOf('user-follow-up'));
+    expect(newerIds.indexOf('user-follow-up')).toBeLessThan(newerIds.indexOf('system-goal-now'));
     expect(agentTranscriptToBlocks({ agent_id: 'main', ...snapshot }, newerBlocks).map((block) => block.id)).toEqual(live.blocks.map((block) => block.id));
   });
 
   it('restores the boundary index after an adapter checkpoint', () => {
-    const lateAt = records.findIndex((record) => record.type === 'context.append_message' && (record['message'] as { id?: string }).id === 'late');
+    const lateAt = records.findIndex((record) => record.type === 'context.append_message' && (record['message'] as { id?: string }).id === 'echo');
     const { adapter } = replay(records.slice(0, lateAt));
     const resumed = new TranscriptWireAdapter('main');
     resumed.restore(adapter.checkpoint());
@@ -311,6 +313,59 @@ describe('external injection boundary', () => {
     for (const record of records.slice(0, lateAt)) reducer.apply(direct.add(record));
     const fresh = direct.add(records[lateAt]!).flatMap((fact) => fact.operations).find((operation) => operation.op === 'frame.upsert');
     expect(fresh).toMatchObject({ place: 'safety_boundary', frameIndex: 1 });
+  });
+
+  it('revises one user frame when the same message continues after a tool', () => {
+    const continued: TranscriptWireRecord[] = [
+      { type: 'turn.prompt', turnId: 9, promptId: 'continue', origin: { kind: 'user' }, input: [{ type: 'text', text: 'work' }], time: 9_000 },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 9, step: 1, uuid: 'cont-step' }, time: 9_100 },
+      { type: 'context.append_message', message: message('same-user', 'hello ', { kind: 'unknown' }), delivery: { messageId: 'same-user', turnId: 9, stepId: 'cont-step', step: 1, origin: 'queue' }, time: 9_200 },
+      { type: 'context.append_loop_event', event: { type: 'tool.call', turnId: 9, stepUuid: 'cont-step', uuid: 'cont-tool', toolCallId: 'cont-tool', name: 'Read', args: {} }, time: 9_300 },
+      { type: 'context.append_message', message: message('same-user', 'hello world', { kind: 'unknown' }), delivery: { messageId: 'same-user', turnId: 9, stepId: 'cont-step', step: 1, origin: 'queue' }, time: 9_400 },
+    ];
+    const { transcript, live } = replay(continued);
+    const turn = transcript.snapshot().items.find((item) => item.kind === 'turn' && item.turnId === 't9');
+    const frames = turn?.kind === 'turn' ? turn.steps[0]?.frames ?? [] : [];
+    expect(frames.map((frame) => frame.frameId)).toEqual(['same-user', 'cont-step.cont-tool']);
+    expect(frames[0]).toMatchObject({ kind: 'text', role: 'user', text: 'hello world', origin: { kind: 'unknown' } });
+    expect(live.blocks.filter((block) => block.id === 'user-same-user')).toHaveLength(1);
+  });
+
+  it('restores an unplaced format-13 checkpoint and appends a new tail like a fresh replay', () => {
+    const prefix: TranscriptWireRecord[] = [
+      { type: 'turn.prompt', turnId: 3, promptId: 'old-user', origin: { kind: 'user' }, input: [{ type: 'text', text: 'old request' }], time: 3_000 },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 3, step: 1, uuid: 'old-step' }, time: 3_100 },
+      { type: 'context.append_loop_event', event: { type: 'content.part', turnId: 3, stepUuid: 'old-step', uuid: 'old-reply', part: { type: 'text', text: 'old reply' } }, time: 3_200 },
+      { type: 'context.append_loop_event', event: { type: 'tool.call', turnId: 3, stepUuid: 'old-step', uuid: 'old-tool', toolCallId: 'old-tool', name: 'Read', args: {} }, time: 3_300 },
+      { type: 'context.append_message', message: message('old-unknown', 'unowned canonical text', { kind: 'unknown' }), delivery: { messageId: 'old-unknown', turnId: 3, stepId: 'old-step', step: 1, origin: 'queue' }, time: 3_400 },
+    ];
+    const tail: TranscriptWireRecord[] = [
+      { type: 'context.append_message', message: message('new-echo', '[Kiki memory]\nremember this', { kind: 'injection', variant: 'memory' }), delivery: { messageId: 'new-echo', turnId: 3, stepId: 'old-step', step: 1, origin: 'injection', placement: 'safety_boundary' }, time: 3_500 },
+      { type: 'context.append_message', message: message('new-goal', 'Goal (active): after the tool', { kind: 'injection', variant: 'goal_state' }), delivery: { messageId: 'new-goal', turnId: 3, stepId: 'old-step', step: 1, origin: 'queue' }, time: 3_600 },
+    ];
+    const fresh = replay([...prefix, ...tail]);
+    const stored = replay(prefix);
+    const saved = stored.adapter.checkpoint();
+    expect(saved.messageProjection?.frames.every(([, record]) => record.operation.place === undefined)).toBe(true);
+    const resumedTranscript = new AgentTranscriptDraft('main');
+    resumedTranscript.seed(stored.transcript.snapshot());
+    const resumed = new TranscriptWireAdapter('main', { turn: (id) => resumedTranscript.getTurn(id) });
+    resumed.restore(saved);
+    const reducer = new TranscriptFactReducer(resumedTranscript);
+    for (const record of tail) reducer.apply(resumed.add(record));
+    const frameIds = (snapshot: ReturnType<AgentTranscript['snapshot']>) => {
+      const turn = snapshot.items.find((item) => item.kind === 'turn' && item.turnId === 't3');
+      const frames = turn?.kind === 'turn' ? turn.steps[0]?.frames : undefined;
+      return (frames ?? []).map((frame) => ({ id: frame.frameId, text: frame.kind === 'text' ? frame.text : frame.kind, origin: frame.kind === 'text' ? frame.origin : undefined }));
+    };
+    expect(frameIds(resumedTranscript.snapshot())).toEqual(frameIds(fresh.transcript.snapshot()));
+    const ids = frameIds(resumedTranscript.snapshot()).map((frame) => frame.id);
+    expect(ids.indexOf('new-echo')).toBeLessThan(ids.indexOf('old-reply'));
+    expect(ids.indexOf('old-unknown')).toBeGreaterThan(ids.indexOf('old-reply'));
+    expect(ids.at(-1)).toBe('new-goal');
+    const unknown = frameIds(resumedTranscript.snapshot()).find((frame) => frame.id === 'old-unknown');
+    expect(unknown?.origin).toEqual({ kind: 'unknown' });
+    expect(JSON.stringify(unknown)).not.toContain('ownerPromptId');
   });
 
   it('parks an unanchored boundary hook after the first user and leaves a mid-turn hook and a stop hook in place', () => {
