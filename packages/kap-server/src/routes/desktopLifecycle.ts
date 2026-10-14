@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { IBootstrapService, ISessionManager, ISessionActivityView, IAgentLifecycleService, IAgentLoopService, IAgentPromptService, IAgentExecutionService, IAgentTaskService, type Scope } from '@kiki/agent-core-v2';
+import { IBootstrapService, ISessionManager, ISessionActivityView, IAgentLifecycleService, IAgentActivityView, IAgentLoopService, IAgentPromptService, IAgentExecutionService, IAgentTaskService, type Scope } from '@kiki/agent-core-v2';
 import { desktopLifecycleRequestSchema, desktopLifecycleStateSchema, type DesktopLifecycleState } from '@kiki/protocol';
 import { defineRoute } from '../middleware/defineRoute';
 import { errEnvelope, okEnvelope } from '../envelope';
@@ -8,9 +8,10 @@ import { ErrorCode } from '../protocol/error-codes';
 export function desktopPendingWork(core: Scope): string[] {
   const sessions = core.accessor.get(ISessionManager);
   return [...new Set([...sessions.list(), ...sessions.listEphemeral()])].filter(session => {
-    const activity = session.accessor.get(ISessionActivityView).state();
-    if (activity.busy || activity.pendingInteraction !== 'none') return true;
+    if (session.accessor.get(ISessionActivityView).state().pendingInteraction !== 'none') return true;
     for (const agent of session.accessor.get(IAgentLifecycleService).list()) {
+      const observed = agent.accessor.get(IAgentActivityView)?.state();
+      if (observed?.turn !== undefined || observed?.background.some((item) => item.kind === 'compaction') === true) return true;
       const loop = agent.accessor.get(IAgentLoopService).status();
       const prompt = agent.accessor.get(IAgentPromptService);
       const queue = prompt.list();
@@ -18,7 +19,7 @@ export function desktopPendingWork(core: Scope): string[] {
       if (execution.state === 'starting' || execution.state === 'running' || execution.state === 'cancelling' ||
         loop.state === 'running' || loop.finalizing || loop.persistenceFailure || loop.hasPendingRequests || loop.pendingTurnIds.length > 0 ||
         prompt.hasReadyPending() || queue.active !== undefined || queue.launching !== undefined || queue.pending.length > 0 ||
-        agent.accessor.get(IAgentTaskService).hasUnfinishedWork()) return true;
+        agent.accessor.get(IAgentTaskService).list(true).some((task) => task.lifetime !== 'service')) return true;
     }
     return false;
   }).map(session => session.id);

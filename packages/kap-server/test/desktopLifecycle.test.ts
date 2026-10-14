@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { IAgentLifecycleService, IAgentTaskService, ISessionManager } from '@kiki/agent-core-v2';
+import { IAgentExecutionService, IAgentLifecycleService, IAgentLoopService, IAgentTaskService, ISessionActivityView, ISessionManager } from '@kiki/agent-core-v2';
 import { desktopLifecycleStateSchema, metaResponseSchema } from '@kiki/protocol';
 import {
   cleanupServerSessions,
@@ -119,6 +119,49 @@ describe('desktop-managed shared lifecycle', () => {
       await Promise.race([task.cancelled, new Promise((_, reject) => setTimeout(() => { reject(new Error('graceful cancellation did not drain')); }, 20_000))]);
       await a.closed;
       expect(cancelled).toBe(true); expect((await call(b, '/api/meta')).code).toBe(0);
+    } finally { for (const server of servers.toReversed()) await server.close(); await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+  });
+
+  it('restarts without interrupting an idle active goal and leaves that goal durable', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-lifecycle-goal-'));
+    const servers: RunningServer[] = [];
+    try {
+      const open = () => startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: root, env: { ...process.env, KIKI_DESKTOP_BUNDLED: '1' }, logLevel: 'silent' });
+      servers.push(await open());
+      const server = servers[0]!;
+      const created = await call(server, '/api/sessions', { metadata: { cwd: root } });
+      expect(created.code).toBe(0);
+      const sessionId = (created.data as { id: string }).id;
+      expect((await call(server, `/api/sessions/${sessionId}/profile`, { agent_config: { goal_objective: 'keep the example goal' } })).code).toBe(0);
+      const before = (await call(server, `/api/sessions/${sessionId}/goal`)).data as { goalId: string; status: string; objective: string };
+      expect(before).toMatchObject({ status: 'active', objective: 'keep the example goal' });
+      const live = server.core.accessor.get(ISessionManager).get(sessionId)!;
+      const activity = live.accessor.get(ISessionActivityView).state();
+      expect(activity.busy).toBe(true);
+      expect(activity.pendingInteraction).toBe('none');
+      expect(activity.mainTurnActive).toBe(false);
+      for (const agent of live.accessor.get(IAgentLifecycleService).list()) {
+        const loop = agent.accessor.get(IAgentLoopService).status();
+        const execution = agent.accessor.get(IAgentExecutionService).status();
+        expect(loop.state).toBe('idle');
+        expect(loop.finalizing).toBeFalsy();
+        expect(loop.persistenceFailure).toBeUndefined();
+        expect(loop.hasPendingRequests).toBe(false);
+        expect(loop.pendingTurnIds).toEqual([]);
+        expect(['starting', 'running', 'cancelling']).not.toContain(execution.state);
+        expect(agent.accessor.get(IAgentTaskService).list(true).some((task) => task.lifetime !== 'service')).toBe(false);
+      }
+      const listed = (await call(server, '/api/sessions')).data as { busy_count: number };
+      expect(listed.busy_count).toBeGreaterThan(0);
+      const state = desktopLifecycleStateSchema.parse((await call(server, '/api/desktop-lifecycle')).data);
+      expect(state.managed).toBe(true);
+      expect(state.draining).toBe(false);
+      expect(state.work_pending).not.toContain(sessionId);
+      expect((await call(server, '/api/desktop-lifecycle', { action: 'restart', server_id: state.server_id, consent: true, interrupt_work: false })).code).toBe(0);
+      await server.closed;
+      servers.push(await open());
+      const restored = (await call(servers[1]!, `/api/sessions/${sessionId}/goal`)).data as { goalId: string; status: string; objective: string; terminalReason?: string } | null;
+      expect(restored).toMatchObject({ goalId: before.goalId, objective: 'keep the example goal', status: 'paused', terminalReason: 'Paused after agent resume' });
     } finally { for (const server of servers.toReversed()) await server.close(); await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
   });
 });

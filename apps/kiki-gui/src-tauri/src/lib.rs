@@ -1361,11 +1361,15 @@ impl SpaceBackendManager {
             }
             let connection = backend.hot_connection().ok_or("The space backend is still starting")?;
             let port = connection_port(&connection)?;
-            let response = http_get_body(port, "/api/sessions?include_ephemeral=true", &connection.token, MAX_SESSIONS_RESPONSE_BYTES)
+            let work_pending = desktop_lifecycle_work_pending(port, &connection.token)
                 .map_err(|error| format!("Cannot check space sessions before restart: {error}"))?;
-            let (pending, busy) = parse_attention_response(&response)
-                .map_err(|error| format!("Cannot check space sessions before restart: {error}"))?;
-            restart_space_readiness(busy, pending.len())?;
+            if work_pending > 0 {
+                let response = http_get_body(port, "/api/sessions?include_ephemeral=true", &connection.token, MAX_SESSIONS_RESPONSE_BYTES)
+                    .map_err(|error| format!("Cannot check space sessions before restart: {error}"))?;
+                let (pending, busy) = parse_attention_response(&response)
+                    .map_err(|error| format!("Cannot check space sessions before restart: {error}"))?;
+                idle_exit_blocked(work_pending, busy, pending.len())?;
+            }
             backend.restart(app).map(|_| ()).map_err(|error| error.message)
         })();
         if let Ok(mut state) = self.inner.lock() { state.restarting.remove(id); }
@@ -1380,9 +1384,7 @@ impl SpaceBackendManager {
             if backend.ownership()? != BackendOwnership::Owned { continue; }
             let Some(connection) = backend.hot_connection() else { continue; };
             let port = connection_port(&connection)?;
-            let response = http_get_body(port, "/api/sessions?include_ephemeral=true", &connection.token, MAX_SESSIONS_RESPONSE_BYTES)?;
-            let (pending, busy) = parse_attention_response(&response)?;
-            if busy > 0 || !pending.is_empty() { names.push(space.name); }
+            if desktop_lifecycle_work_pending(port, &connection.token)? > 0 { names.push(space.name); }
         }
         Ok(names)
     }
@@ -1434,6 +1436,16 @@ fn restart_space_readiness(busy: usize, pending: usize) -> Result<(), String> {
     } else {
         Ok(())
     }
+}
+
+fn idle_exit_blocked(work_pending: usize, attention_busy: usize, attention_pending: usize) -> Result<(), String> {
+    if work_pending == 0 {
+        return Ok(());
+    }
+    if attention_busy == 0 && attention_pending == 0 {
+        return restart_space_readiness(work_pending, 0);
+    }
+    restart_space_readiness(attention_busy, attention_pending)
 }
 
 // This is called off the UI thread: the native dialog must never block the event loop.
@@ -3216,6 +3228,29 @@ fn http_body(port: u16, method: &str, path: &str, token: &str, body: &str, max_b
     Ok(response)
 }
 
+fn desktop_lifecycle_work_pending(port: u16, token: &str) -> Result<usize, String> {
+    let response = http_get_body(port, "/api/desktop-lifecycle", token, MAX_SESSIONS_RESPONSE_BYTES)?;
+    parse_desktop_lifecycle_work_pending(&response)
+}
+
+fn parse_desktop_lifecycle_work_pending(response: &[u8]) -> Result<usize, String> {
+    let status_end = response.iter().position(|byte| *byte == b'\n')
+        .ok_or("Kiki backend returned an incomplete lifecycle status line")?;
+    if !matches!(parse_http_status_line(&response[..=status_end]), StatusLineParse::Complete(200)) {
+        return Err("Kiki backend rejected the lifecycle request".to_string());
+    }
+    let header_end = response.windows(4).position(|part| part == b"\r\n\r\n")
+        .ok_or("Kiki backend returned incomplete lifecycle headers")?;
+    let envelope: serde_json::Value = serde_json::from_slice(&response[header_end + 4..])
+        .map_err(|error| format!("Invalid lifecycle JSON: {error}"))?;
+    if envelope.get("code").and_then(serde_json::Value::as_i64) != Some(0) {
+        return Err("Kiki backend lifecycle request failed".to_string());
+    }
+    envelope.get("data").and_then(|data| data.get("work_pending")).and_then(|value| value.as_array())
+        .map(|items| items.len())
+        .ok_or_else(|| "Kiki backend lifecycle work is missing".to_string())
+}
+
 fn parse_attention_response(response: &[u8]) -> Result<(HashSet<String>, usize), String> {
     let status_end = response.iter().position(|byte| *byte == b'\n')
         .ok_or("Kiki backend returned an incomplete sessions status line")?;
@@ -4022,6 +4057,21 @@ mod tests {
         assert_eq!(pending, HashSet::from(["a".to_string(), "b".to_string()]));
         assert_eq!(busy, 2);
         assert!(parse_attention_response(b"HTTP/1.1 401 Unauthorized\r\n\r\n{}").is_err());
+    }
+
+    #[test]
+    fn idle_exit_uses_lifecycle_work_and_leaves_attention_busy_unchanged() {
+        let idle = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"code\":0,\"data\":{\"work_pending\":[]}}";
+        let running = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"code\":0,\"data\":{\"work_pending\":[\"session-a\"]}}";
+        assert_eq!(parse_desktop_lifecycle_work_pending(idle).unwrap(), 0);
+        assert_eq!(parse_desktop_lifecycle_work_pending(running).unwrap(), 1);
+        assert!(parse_desktop_lifecycle_work_pending(b"HTTP/1.1 401 Unauthorized\r\n\r\n{}").is_err());
+        assert!(idle_exit_blocked(0, 1, 0).is_ok());
+        assert!(idle_exit_blocked(1, 1, 0).unwrap_err().contains("1 running"));
+        assert!(idle_exit_blocked(1, 0, 1).unwrap_err().contains("1 pending"));
+        assert!(idle_exit_blocked(2, 0, 0).unwrap_err().contains("2 running"));
+        let attention = b"HTTP/1.1 200 OK\r\n\r\n{\"code\":0,\"data\":{\"items\":[{\"id\":\"goal\",\"busy\":true,\"pending_interaction\":\"none\"}]}}";
+        assert_eq!(parse_attention_response(attention).unwrap().1, 1);
     }
 
     #[test]
