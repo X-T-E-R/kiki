@@ -606,16 +606,34 @@ export function useNewSessionDraft({
     const executor = targetExecutor ?? (selected?.executor || NATIVE_EXECUTOR);
     const isTargetExecutor = (selected?.executor || NATIVE_EXECUTOR) === executor;
     const defaults = isTargetExecutor ? composerDefaultsForProfile(items, name) : {};
+    const sameExecutor = executor === execution.executor;
     setExecutionState({ executor, profile: name, profile_file: undefined, overrides: undefined });
     setAgentProfileState(name);
     modelOverrideFromPersona.current = false;
     effortOverrideFromPersona.current = false;
-    modelOverrideFromProfile.current = isTargetExecutor && defaults.model !== undefined;
-    effortOverrideFromProfile.current = isTargetExecutor && defaults.thinking !== undefined;
-    setModelOverrideState(defaults.model);
-    setEffortOverrideState(defaults.thinking);
+    // A pin replaces the selection. The same engine with no pin keeps the model
+    // already chosen, including one taken from the previous profile. Crossing
+    // engines drops that raw id instead of carrying it.
+    if (isTargetExecutor && defaults.model !== undefined) {
+      modelOverrideFromProfile.current = true;
+      setModelOverrideState(defaults.model);
+    } else if (!sameExecutor) {
+      modelOverrideFromProfile.current = false;
+      setModelOverrideState(undefined);
+    } else {
+      modelOverrideFromProfile.current = false;
+    }
+    if (isTargetExecutor && defaults.thinking !== undefined) {
+      effortOverrideFromProfile.current = true;
+      setEffortOverrideState(defaults.thinking);
+    } else if (!sameExecutor) {
+      effortOverrideFromProfile.current = false;
+      setEffortOverrideState(undefined);
+    } else {
+      effortOverrideFromProfile.current = false;
+    }
     setSelectionRevision((value) => value + 1);
-  }, []);
+  }, [execution.executor]);
 
   useEffect(() => {
     const fromFile = execution.profile_file !== undefined;
@@ -634,8 +652,8 @@ export function useNewSessionDraft({
     if (query.isSuccess && selected !== undefined) {
       const isTargetExecutor = profileExecutor(selected) === execution.executor;
       const defaults = isTargetExecutor ? composerDefaultsForProfile([selected], selected.name) : {};
-      if (modelOverrideFromProfile.current) setModelOverrideState(defaults.model);
-      if (effortOverrideFromProfile.current) setEffortOverrideState(defaults.thinking);
+      if (modelOverrideFromProfile.current && defaults.model !== undefined) setModelOverrideState(defaults.model);
+      if (effortOverrideFromProfile.current && defaults.thinking !== undefined) setEffortOverrideState(defaults.thinking);
       if (fromFile && selected.source_file !== undefined) {
         setExecutionState((current) => current.profile_file === selected.source_file
           ? current : { ...current, executor: profileExecutor(selected), profile: undefined, profile_file: selected.source_file });
@@ -1009,8 +1027,10 @@ export function useNewSessionDraft({
       setSelectedPersonaId(undefined);
       setPersonaState(undefined);
       setPersonaPending(false);
-      setModelOverrideState(undefined);
-      setEffortOverrideState(undefined);
+      if (next.executor !== execution.executor) {
+        setModelOverrideState(undefined);
+        setEffortOverrideState(undefined);
+      }
       modelOverrideFromPersona.current = false;
       effortOverrideFromPersona.current = false;
       modelOverrideFromProfile.current = next.profile_file !== undefined;
@@ -1034,7 +1054,7 @@ export function useNewSessionDraft({
     }
     setAgentProfileState(next.profile ?? DEFAULT_AGENT_PROFILE);
     setSelectionRevision((value) => value + 1);
-  }, [agentProfilesQuery.data, agentProfile, applyAgentProfile]);
+  }, [agentProfilesQuery.data, agentProfile, applyAgentProfile, execution.executor]);
 
   /**
    * Bind (or clear) a persona. Its profile becomes the draft's profile so the
@@ -1222,56 +1242,63 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
       {firstRun ? (
         <p className="text-[11.5px] leading-relaxed text-ink-soft">{t('new.firstRunHint')}</p>
       ) : null}
-      <div className="flex flex-wrap items-center gap-3">
-        <label className="text-[11px] font-medium text-ink-soft">{t('new.workspace')}</label>
-        <SearchableSelect
-          id="new-workspace-select"
-          options={workspaceOptions}
-          value={state.workspaceId !== '' ? state.workspaceId : (state.effectiveWorkspace?.id ?? (state.autoWorkspace ? AUTO_WORKSPACE_ID : ''))}
-          emptyText={t('hero.chooseWorkspace')}
-          onChange={(nextId) => { state.selectWorkspace(nextId); }}
-          disabled={state.workspacesLoading}
-          ariaLabel={t('new.workspace')}
-          buttonClassName="flex w-64 max-w-full items-center gap-1.5 rounded-md border border-hairline bg-paper px-2 py-1 text-[12px] text-ink outline-none transition-colors hover:border-hairline-strong focus:border-selected-ink disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint"
-        />
-        <span className="text-[11px] text-ink-faint">{t('new.or')}</span>
-        {state.canBrowseForWorkspace ? (
-          <button
-            type="button"
-            data-new-browse
-            onClick={() => { void state.browseForWorkspace(); }}
-            className="flex shrink-0 items-center gap-1.5 rounded-md border border-hairline bg-paper px-2 py-1 text-[12px] text-ink transition-colors hover:border-hairline-strong hover:text-ink focus-visible:border-selected-ink"
-          >
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden className="shrink-0 text-ink-soft">
-              <path
-                d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.6a1.5 1.5 0 0 1 1.2.6l1 1.33a1.5 1.5 0 0 0 1.2.6h3A1.5 1.5 0 0 1 14 7v4.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5v-7Z"
-                stroke="currentColor"
-                strokeWidth="1.2"
-                strokeLinejoin="round"
-              />
-            </svg>
-            {t('new.browse')}
-          </button>
-        ) : null}
-        <div className="min-w-0 flex-1">
-          <input
-            type="text"
-            value={state.cwd}
-            onChange={(event) => { state.setCwd(event.target.value); }}
-            onBlur={() => { setCwdBlurred(true); }}
-            aria-label={t('new.cwdAria')}
-            aria-invalid={cwdBlurred && cwdInvalid ? true : undefined}
-            placeholder={state.sshLabel === null ? t('new.cwdPlaceholder') : '/home/dev/project'}
-            className={`min-w-0 flex-1 rounded-md border bg-paper px-2 py-1 font-mono text-[11.5px] text-ink outline-none placeholder:text-ink-faint focus:border-selected-ink ${
-              cwdBlurred && cwdInvalid ? 'border-danger' : 'border-hairline'
-            }`}
-          />
-          {cwdBlurred && cwdInvalid ? (
-            <p role="alert" className="mt-1 text-[10.5px] text-danger">
-              {t(state.sshLabel === null ? 'new.cwdInvalid' : 'connect.sshCwdInvalid')}
-            </p>
-          ) : null}
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-2">
+          <label htmlFor="new-workspace-select" className="shrink-0 text-[11px] font-medium text-ink-soft">{t('new.workspace')}</label>
+          <div className="min-w-0 flex-1">
+            <SearchableSelect
+              id="new-workspace-select"
+              options={workspaceOptions}
+              value={state.workspaceId !== '' ? state.workspaceId : (state.effectiveWorkspace?.id ?? (state.autoWorkspace ? AUTO_WORKSPACE_ID : ''))}
+              emptyText={t('hero.chooseWorkspace')}
+              onChange={(nextId) => { state.selectWorkspace(nextId); }}
+              disabled={state.workspacesLoading}
+              ariaLabel={t('new.workspace')}
+              buttonClassName="flex w-full min-w-0 items-center justify-between gap-1.5 rounded-md border border-hairline bg-paper px-2 py-1 text-[12px] text-ink outline-none transition-colors hover:border-hairline-strong focus:border-selected-ink disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint"
+            />
+          </div>
         </div>
+        <div className="flex items-center gap-2">
+          <span className="shrink-0 text-[11px] text-ink-faint">{t('new.or')}</span>
+          <div className="flex min-w-0 flex-1 items-center gap-1.5">
+            <input
+              type="text"
+              value={state.cwd}
+              onChange={(event) => { state.setCwd(event.target.value); }}
+              onBlur={() => { setCwdBlurred(true); }}
+              aria-label={t('new.cwdAria')}
+              aria-invalid={cwdBlurred && cwdInvalid ? true : undefined}
+              placeholder={state.sshLabel === null ? t('new.cwdPlaceholder') : '/home/dev/project'}
+              className={`min-w-0 w-full flex-1 rounded-md border bg-paper px-2 py-1 font-mono text-[11.5px] text-ink outline-none placeholder:text-ink-faint focus:border-selected-ink ${
+                cwdBlurred && cwdInvalid ? 'border-danger' : 'border-hairline'
+              }`}
+            />
+            {state.canBrowseForWorkspace ? (
+              <button
+                type="button"
+                data-new-browse
+                aria-label={t('new.browse')}
+                title={t('new.browse')}
+                onClick={() => { void state.browseForWorkspace(); }}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-hairline bg-paper text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:border-selected-ink focus-visible:outline-none"
+              >
+                <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden className="shrink-0 text-current">
+                  <path
+                    d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.6a1.5 1.5 0 0 1 1.2.6l1 1.33a1.5 1.5 0 0 0 1.2.6h3A1.5 1.5 0 0 1 14 7v4.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5v-7Z"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+            ) : null}
+          </div>
+        </div>
+        {cwdBlurred && cwdInvalid ? (
+          <p role="alert" className="text-[10.5px] text-danger">
+            {t(state.sshLabel === null ? 'new.cwdInvalid' : 'connect.sshCwdInvalid')}
+          </p>
+        ) : null}
       </div>
       {state.workspacesError !== null ? (
         <div role="alert" className="text-[12px] text-danger">

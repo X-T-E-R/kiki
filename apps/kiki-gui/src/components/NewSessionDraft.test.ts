@@ -1635,10 +1635,13 @@ describe('useNewSessionDraft agent profile scope', () => {
     expect(state.agentProfile).toBe('workspace-choice');
     expect(client.listNamedAgentProfiles.mock.calls.at(-1)).toEqual([{ unscoped: true }]);
     await act(async () => { state.setAgentProfile('agent'); });
-    state = await settleDraft((value) => value.agentProfile === 'agent' && value.modelOverride === undefined);
+    state = await settleDraft((value) => value.agentProfile === 'agent');
+    expect(state.modelOverride).toBe('provider/alpha');
+    expect(state.effectiveEffort).toBe('low');
     const body = await sentBody(state);
     expect(body.workspace_id).toBeUndefined();
     expect(body.metadata).toBeUndefined();
+    expect(body.agent_config).toMatchObject({ profile: 'agent', model: 'provider/alpha', thinking: 'low' });
   });
 
   it('keeps a deleted workspace id after remount instead of falling back to another workspace', async () => {
@@ -1744,6 +1747,133 @@ describe('useNewSessionDraft agent profile scope', () => {
       void state.send('Must not send with failed persona or impersonate old persona', []);
     });
     expect(client.createSession).not.toHaveBeenCalled();
+  });
+
+  it('retains current model selection when switching to a profile without pinned model, but adopts pin when profile has one', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({
+      items: [
+        profile('agent'),
+        { ...profile('no-pin-profile'), pinned_model_alias: undefined, thinking_effort: undefined },
+        { ...profile('pinned-profile'), pinned_model_alias: 'fixture/pinned-model', thinking_effort: 'high' },
+        { ...profile('foreign-profile'), executor: 'example-acp', pinned_model_alias: undefined, thinking_effort: undefined },
+      ],
+    });
+    client.listModels.mockResolvedValue({
+      items: [
+        model('fixture/custom-model', 'low'),
+        {
+          id: 'fixture/pinned-model',
+          provider_id: 'fixture',
+          remote_id: 'pinned-model',
+          max_context_size: 128000,
+          support_efforts: ['low', 'high'],
+          default_effort: 'low',
+        },
+      ],
+    });
+    await renderDraft();
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending);
+
+    await act(async () => {
+      state.setModelOverride('fixture/custom-model');
+    });
+    state = latestDraftState!;
+    expect(state.modelOverride).toBe('fixture/custom-model');
+
+    await act(async () => {
+      state.setAgentProfile('no-pin-profile');
+    });
+    state = latestDraftState!;
+    expect(state.agentProfile).toBe('no-pin-profile');
+    expect(state.modelOverride).toBe('fixture/custom-model');
+
+    await act(async () => {
+      state.setAgentProfile('pinned-profile');
+    });
+    state = await settleDraft((value) => value.agentProfile === 'pinned-profile' && value.modelOverride === 'fixture/pinned-model');
+    expect(state.effectiveEffort).toBe('high');
+
+    await act(async () => {
+      state.setAgentProfile('no-pin-profile');
+    });
+    state = latestDraftState!;
+    expect(state.agentProfile).toBe('no-pin-profile');
+    expect(state.modelOverride).toBe('fixture/pinned-model');
+    expect(state.effectiveEffort).toBe('high');
+    await act(async () => {
+      await state.send('Keep the model the previous pin left selected', []);
+    });
+    const kept = client.createSession.mock.calls[0]![0] as SessionCreate;
+    expect(kept.agent_config).toMatchObject({
+      profile: 'no-pin-profile',
+      model: 'fixture/pinned-model',
+      thinking: 'high',
+    });
+
+    await act(async () => {
+      state.setAgentProfile('foreign-profile');
+    });
+    state = latestDraftState!;
+    expect(state.execution.executor).toBe('example-acp');
+    expect(state.modelOverride).toBeUndefined();
+    expect(state.effectiveEffort).toBeUndefined();
+  });
+
+  it('retains custom model when switching to a profile file without pin after preview resolves', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({
+      items: [profile('agent')],
+    });
+    client.listModels.mockResolvedValue({
+      items: [model('fixture/custom-model', 'low')],
+    });
+    const previewDeferred = deferred<{ profile: NamedAgentProfile }>();
+    client.klient.rest.agents.previewFile.mockReturnValue(previewDeferred.promise);
+
+    await renderDraft();
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending);
+
+    await act(async () => {
+      state.setModelOverride('fixture/custom-model');
+    });
+    state = latestDraftState!;
+    expect(state.modelOverride).toBe('fixture/custom-model');
+
+    await act(async () => {
+      state.setExecution({
+        executor: 'native',
+        profile: undefined,
+        profile_file: '/path/to/custom-profile.md',
+        overrides: undefined,
+      });
+    });
+    state = latestDraftState!;
+    expect(state.execution.profile_file).toBe('/path/to/custom-profile.md');
+    expect(state.modelOverride).toBe('fixture/custom-model');
+
+    previewDeferred.resolve({
+      profile: {
+        ...profile('custom-file-profile'),
+        source_file: '/path/to/custom-profile.md',
+        pinned_model_alias: undefined,
+        thinking_effort: undefined,
+      },
+    });
+    state = await settleDraft((value) =>
+      value.execution.profile_file === '/path/to/custom-profile.md'
+      && value.selectionReady
+      && !value.agentProfileCatalogPending
+    );
+    expect(state.modelOverride).toBe('fixture/custom-model');
+
+    await act(async () => {
+      await state.send('Test message', []);
+    });
+    const body = client.createSession.mock.calls[0]![0] as SessionCreate;
+    expect(body.agent_config).toMatchObject({
+      execution: { executor: 'native', profile_file: '/path/to/custom-profile.md' },
+      model: 'fixture/custom-model',
+    });
+    expect(body.agent_config?.model).toBe(state.modelOverride);
   });
 });
 

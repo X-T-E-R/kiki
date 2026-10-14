@@ -25,14 +25,15 @@ import { clearToasts, getToasts } from '../lib/toasts';
 import { ConversationShell } from './ConversationShell';
 import { SessionRouteView } from './SessionView';
 
-const { listNamedAgentProfiles, sendPrompt, steerQueued, sendPromptNow, promptResult, fixture, abort } = vi.hoisted(() => ({
+const { listNamedAgentProfiles, listModels, sendPrompt, steerQueued, sendPromptNow, promptResult, fixture, abort } = vi.hoisted(() => ({
   listNamedAgentProfiles: vi.fn(),
+  listModels: vi.fn(),
   sendPrompt: vi.fn(),
   steerQueued: vi.fn(),
   sendPromptNow: vi.fn(),
   promptResult: { current: { status: 'started' as 'started' | 'queued', prompt_id: 'prompt-1' } },
   abort: vi.fn(),
-  fixture: { session: undefined as Session | undefined, busy: false, profile: 'agent' },
+  fixture: { session: undefined as Session | undefined, busy: false, profile: 'agent', model: undefined as string | undefined },
 }));
 
 vi.mock('../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
@@ -43,7 +44,7 @@ vi.mock('../state/connection', () => {
     listNamedAgentProfiles,
     getSessionGoal: () => Promise.resolve(null),
     getAgentCapabilities: () => Promise.resolve({ context: 'live', available: false, targets: [] }),
-    listModels: () => Promise.resolve({ items: [] }),
+    listModels,
     listAgentModelSwitches: () => Promise.resolve([]),
     subscribeAgentModelSwitches: () => ({ ready: Promise.resolve(), dispose: () => {} }),
     klient: {
@@ -94,6 +95,7 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
       busy: fixture.busy,
       abortablePromptId: fixture.busy ? 'prompt-active' : undefined,
       profile: fixture.profile,
+      model: fixture.model,
     };
     readonly getState = () => this.state;
     readonly getAgentState = () => this.state;
@@ -271,9 +273,11 @@ beforeEach(() => {
   steerQueued.mockReset().mockResolvedValue(undefined);
   sendPromptNow.mockReset().mockResolvedValue({ outcome: 'sent' });
   abort.mockReset().mockResolvedValue(undefined);
+  listModels.mockReset().mockResolvedValue({ items: [] });
   profileCatalog();
   fixture.busy = true;
   fixture.profile = 'agent';
+  fixture.model = undefined;
   // A workspace_id is what puts the profile catalog in scope; without it the
   // picker is deliberately empty.
   fixture.session = {
@@ -434,5 +438,107 @@ describe('switching profile while a turn is running', () => {
 
     await sendNextMessage(container);
     expect((sendPrompt.mock.calls[0]?.[0] as { profile?: string }).profile).toBeUndefined();
+  });
+});
+
+function catalogModel(id: string, displayName: string) {
+  return { id, provider_id: 'fixture', remote_id: id, display_name: displayName, max_context_size: 128000 };
+}
+
+function workspaceProfile(name: string, extras: { readonly pinned_model_alias?: string } = {}) {
+  return {
+    name,
+    source: 'workspace' as const,
+    source_file: `/workspace/.kiki/profiles/${name}.md`,
+    main: true,
+    disabled: false,
+    routes: [],
+    ...extras,
+  };
+}
+
+async function waitForElement(container: HTMLElement, selector: string): Promise<Element> {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const found = container.querySelector(selector);
+    if (found !== null) return found;
+    await settle();
+  }
+  throw new Error(`missing ${selector}`);
+}
+
+describe('same-executor model selection across a profile switch', () => {
+  const liveModel = 'fixture/live-model';
+
+  beforeEach(() => {
+    fixture.model = liveModel;
+    listModels.mockResolvedValue({
+      items: [catalogModel(liveModel, 'Live'), catalogModel('fixture/pinned-model', 'Pinned')],
+    });
+    listNamedAgentProfiles.mockResolvedValue({
+      items: [
+        { name: 'agent', source: 'builtin', main: true, disabled: false, routes: [] },
+        workspaceProfile('open'),
+        workspaceProfile('pinned', { pinned_model_alias: 'fixture/pinned-model' }),
+      ],
+    });
+  });
+
+  async function chooseLiveModel(container: HTMLElement): Promise<void> {
+    await click(await waitForElement(container, '#composer-execution-select'));
+    await click(await waitForElement(container, `[data-execution-model="${liveModel}"]`));
+    await settle();
+  }
+
+  async function chooseProfile(container: HTMLElement, name: string): Promise<void> {
+    await click(profileTrigger(container));
+    await settle();
+    await click(profileRow(container, name));
+    await settle();
+    await click(dialogButton(container, 'Switch engine'));
+    await settle();
+  }
+
+  it('sends the model the user selected on this executor when the next profile has no pin', async () => {
+    const { container } = await mount();
+    await chooseLiveModel(container);
+    expect(container.querySelector('[role="alertdialog"]')).toBeNull();
+    await chooseProfile(container, 'open');
+
+    const modelTrigger = container.querySelector('#composer-execution-select');
+    expect(modelTrigger?.textContent).toContain('Live');
+    await sendNextMessage(container);
+
+    expect(sendPrompt).toHaveBeenCalledTimes(1);
+    const submission = sendPrompt.mock.calls[0]?.[0] as {
+      execution?: { executor?: string; profile?: string; overrides?: { model?: string | null } };
+      model?: string;
+      thinking?: string;
+    };
+    expect(submission.execution).toMatchObject({ executor: 'native', profile: 'open' });
+    expect(submission.execution?.overrides).toBeUndefined();
+    expect(submission.model).toBe(liveModel);
+    expect(submission.thinking).toBeUndefined();
+  });
+
+  it('adopts a profile pin instead of sending the previously selected model', async () => {
+    const { container } = await mount();
+    await chooseLiveModel(container);
+    await chooseProfile(container, 'pinned');
+
+    const modelTrigger = container.querySelector('#composer-execution-select');
+    expect(modelTrigger?.textContent).toContain('Pinned');
+    expect(modelTrigger?.textContent).not.toContain('Live');
+    await sendNextMessage(container);
+
+    expect(sendPrompt).toHaveBeenCalledTimes(1);
+    const submission = sendPrompt.mock.calls[0]?.[0] as {
+      execution?: { executor?: string; profile?: string; overrides?: { model?: string | null } };
+      model?: string;
+      thinking?: string;
+    };
+    expect(submission.execution).toMatchObject({ executor: 'native', profile: 'pinned' });
+    expect(submission.execution?.overrides?.model).toBeUndefined();
+    expect(submission.model).toBeUndefined();
+    expect(submission.thinking).toBeUndefined();
   });
 });

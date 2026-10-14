@@ -106,6 +106,7 @@ import {
   namesLegacyControl,
   executionSelectionOf,
   sameExecutionChoice,
+  isNativeExecutor,
   profileExecutor,
   type ExecutionChoice,
 } from '@kiki/session-core/composer';
@@ -1289,6 +1290,13 @@ export function executionSwitchName(
   if (choice === undefined) return '';
   if (choice.executor === 'native') return labels['__native'] ?? 'Kiki';
   return labels[choice.executor] ?? choice.executor;
+}
+
+/** Executor and profile identity, ignoring model/effort overrides. */
+function sameExecutionIdentity(left: ExecutionChoice | undefined, right: ExecutionChoice | undefined): boolean {
+  if (left === undefined || right === undefined) return false;
+  return left.executor === right.executor && left.profile === right.profile
+    && left.profile_file === right.profile_file && left.external_connection_id === right.external_connection_id;
 }
 
 function PromptRecordsRemainder({ continuation }: { readonly continuation: NonNullable<Parameters<typeof QueueStrip>[0]['promptContinuation']> }): ReactNode {
@@ -2497,6 +2505,7 @@ export function SessionView({
   // along with the display value it is withholding.
   const handleModelChange = useCallback((model: string | undefined) => {
     if (model === undefined) {
+      // Explicit clear. A later unpinned profile switch must not put a model back.
       setModelOverride(undefined);
       setModelChoice(undefined);
       setModelTouched(false);
@@ -2504,14 +2513,18 @@ export function SessionView({
       return;
     }
     const target = canonicalModel(model);
-    if (target === undefined || (target === currentBoundModel && pendingProfile === undefined && !executionPending)) {
+    if (target === undefined) {
       setModelOverride(undefined);
       setModelChoice(undefined);
       setModelTouched(false);
       setModelSwitchMode(undefined);
       return;
     }
-    if (pendingProfile !== undefined || executionPending || (state.loaded && !sessionHasStartedConversation(state.blocks))) {
+    // The bound model is still the model the user chose. Dropping it here left
+    // modelTouched false, so a same-executor switch onto a profile with no pin
+    // omitted it from the send while the composer kept showing it.
+    const selectsBoundModel = target === currentBoundModel && pendingProfile === undefined && !executionPending;
+    if (selectsBoundModel || pendingProfile !== undefined || executionPending || (state.loaded && !sessionHasStartedConversation(state.blocks))) {
       setModelOverride(model);
       setModelChoice({ model: sessionModel, thinking: state.thinkingEffort });
       setModelTouched(true);
@@ -2619,10 +2632,18 @@ export function SessionView({
   const applyPendingProfile = useCallback((name: string) => {
     const defaults = composerDefaultsForProfile(agentProfilesQuery.data?.items ?? [], name);
     setPendingProfile(name);
-    setModelOverride(defaults.model);
-    setEffortOverride(defaults.thinking);
-    clearTouchedControls();
-  }, [agentProfilesQuery.data, clearTouchedControls]);
+    if (defaults.model !== undefined) {
+      setModelOverride(defaults.model);
+      setModelTouched(false);
+      setModelChoice(undefined);
+      setModelSwitchMode(undefined);
+    }
+    if (defaults.thinking !== undefined) {
+      setEffortOverride(defaults.thinking);
+      setEffortTouched(false);
+      setEffortChoice(undefined);
+    }
+  }, [agentProfilesQuery.data]);
   const handleAgentProfileChange = useCallback(
     (name: string) => {
       if (name === (pendingProfile ?? boundProfile)) return;
@@ -2658,13 +2679,31 @@ export function SessionView({
     const defaults = profile === undefined || !isTargetExecutor
       ? {}
       : composerDefaultsForProfile(agentProfilesQuery.data?.items ?? [], profile);
+    const sameExecutor = next.executor === (pendingExecution?.executor ?? boundExecution?.executor ?? 'native');
     setPendingExecution(next);
     if (options?.modelTouched !== true) {
-      setModelOverride(defaults.model);
-      setEffortOverride(defaults.thinking);
-      clearTouchedControls();
+      if (defaults.model !== undefined) {
+        setModelOverride(defaults.model);
+        setModelTouched(false);
+        setModelChoice(undefined);
+        setModelSwitchMode(undefined);
+      } else if (!sameExecutor) {
+        setModelOverride(undefined);
+        setModelTouched(false);
+        setModelChoice(undefined);
+        setModelSwitchMode(undefined);
+      }
+      if (defaults.thinking !== undefined) {
+        setEffortOverride(defaults.thinking);
+        setEffortTouched(false);
+        setEffortChoice(undefined);
+      } else if (!sameExecutor) {
+        setEffortOverride(undefined);
+        setEffortTouched(false);
+        setEffortChoice(undefined);
+      }
     }
-  }, [agentProfilesQuery.data, clearTouchedControls]);
+  }, [agentProfilesQuery.data, boundExecution?.executor, clearTouchedControls, pendingExecution?.executor]);
   // Drops a switch that is still waiting. Re-selecting the bound engine in the
   // panel has always done this; the chip's cancel button is the same action,
   // reachable without reopening the panel.
@@ -2678,12 +2717,23 @@ export function SessionView({
       cancelPendingExecution();
       return;
     }
+    // Re-selecting the live model on this same native engine is the composer
+    // control above, not an engine switch. Storing it as an execution override
+    // makes the next profile row (which sends no overrides) drop the model.
+    const liveModel = next.overrides?.model;
+    if (isNativeExecutor(next.executor)
+      && sameExecutionIdentity(next, boundExecution)
+      && (pendingExecution === undefined || sameExecutionIdentity(next, pendingExecution))
+      && typeof liveModel === 'string'
+      && canonicalModel(liveModel) === currentBoundModel) {
+      return;
+    }
     if (state.loaded && !sessionHasStartedConversation(state.blocks)) {
       applyPendingExecution(next);
       return;
     }
     setExecutionSwitchConfirm(next);
-  }, [applyPendingExecution, boundExecution, cancelPendingExecution, pendingExecution, state.blocks, state.loaded]);
+  }, [applyPendingExecution, boundExecution, cancelPendingExecution, canonicalModel, currentBoundModel, pendingExecution, state.blocks, state.loaded]);
   const confirmExecutionSwitchRun = useCallback(() => {
     if (executionSwitchConfirm === undefined) return;
     applyPendingExecution(executionSwitchConfirm);
