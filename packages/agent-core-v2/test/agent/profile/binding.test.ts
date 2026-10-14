@@ -544,18 +544,18 @@ describe('AgentProfileService.bind', () => {
     const open = normalizeAgentProfile({ name: 'open', systemPrompt: () => 'open' });
     const kept = resolveExecutionBinding({ executor: 'native', profile: 'open' }, undefined, open, previous);
     expect(kept.effective.model).toBe('old-native');
-    expect(kept.sources.model).toBe('session');
+    expect(kept.sources['model']).toBe('session');
     expect(kept.selection.overrides).toEqual({ model: 'old-native' });
     const pinnedProfile = normalizeAgentProfile({ name: 'pinned', modelAlias: 'native-pin', systemPrompt: () => 'pin' });
     const adopted = resolveExecutionBinding({ executor: 'native', profile: 'pinned' }, undefined, pinnedProfile, kept);
     expect(adopted.effective.model).toBe('native-pin');
-    expect(adopted.sources.model).toBe('profile');
+    expect(adopted.sources['model']).toBe('profile');
     expect(adopted.selection.overrides?.model).toBeUndefined();
     const clearedPin = resolveExecutionBinding({ executor: 'native', profile: 'open', overrides: { model: null } }, {
       model_alias: 'settings-model',
     }, open, adopted);
     expect(clearedPin.effective.model).toBe('settings-model');
-    expect(clearedPin.sources.model).toBe('harness-settings');
+    expect(clearedPin.sources['model']).toBe('harness-settings');
     expect(resolveExecutionBinding({ executor: 'native', profile: 'open' }, undefined, open, undefined).effective.model).toBeUndefined();
     expect(resolveExecutionBinding({ executor: 'native', profile: 'open' }, undefined, open, undefined, undefined, 'live-model').effective)
       .toMatchObject({ model: 'live-model' });
