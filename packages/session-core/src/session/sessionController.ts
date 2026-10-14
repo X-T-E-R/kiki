@@ -2197,15 +2197,24 @@ export class SessionController {
           try {
             const fresh = await this.refreshTurnStructurePreview(agentId, ref, controller.signal);
             if (fresh !== undefined && !this.closed && !controller.signal.aborted) {
-              const continued = await this.loadContentSegment(agentId, fresh);
-              if (continued) return true;
-              const view = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId);
-              const freshDetail = view?.detailLoads[`content:${JSON.stringify(fresh)}`];
-              if (!this.closed && !controller.signal.aborted) this.setDetailLoad(agentId, key, {
-                status: 'error',
-                message: freshDetail?.status === 'error' ? freshDetail.message : errorMessage(error, 'Could not load the next content segment'),
-              });
-              return false;
+              // The replacement read registers its own controller. The older gesture only knows the stale ref, so cancel that read when this preview is aborted.
+              const continuedPromise = this.loadContentSegment(agentId, fresh);
+              const abortContinued = () => { this.cancelContentSegment(agentId, fresh); };
+              controller.signal.addEventListener('abort', abortContinued, { once: true });
+              try {
+                const continued = await continuedPromise;
+                if (this.closed || controller.signal.aborted) return false;
+                if (continued) return true;
+                const view = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId);
+                const freshDetail = view?.detailLoads[`content:${JSON.stringify(fresh)}`];
+                if (!this.closed && !controller.signal.aborted) this.setDetailLoad(agentId, key, {
+                  status: 'error',
+                  message: freshDetail?.status === 'error' ? freshDetail.message : errorMessage(error, 'Could not load the next content segment'),
+                });
+                return false;
+              } finally {
+                controller.signal.removeEventListener('abort', abortContinued);
+              }
             }
           } catch (refreshError) {
             if (this.closed || controller.signal.aborted) return false;

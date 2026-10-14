@@ -1860,4 +1860,108 @@ describe('hidden prefix turn preview', () => {
       expect(view.snapshot).toHaveBeenCalledTimes(1);
     } finally { controller.close(); }
   });
+
+  it('cancels a pending replacement read when the older gesture aborts', async () => {
+    const fixture = hiddenPrefixFixture();
+    const read = segmentRead(fixture.inserted);
+    let releaseContent: (() => void) | undefined;
+    let replacementSignal: AbortSignal | undefined;
+    const content = vi.fn<NonNullable<SessionViewFacade['transcript']['content']>>(async (input, options) => {
+      if (replacementSignal === undefined && content.mock.calls.length > 1) {
+        replacementSignal = options?.signal;
+        return await new Promise((resolve, reject) => {
+          releaseContent = () => { void read(input, options).then(resolve, reject); };
+        });
+      }
+      return read(input, options);
+    });
+    const { controller, deliver, view } = harness(undefined, content);
+    vi.mocked(view.transcript.page).mockImplementation(previewPage(fixture.inserted, fixture.maxBytes));
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ items: [fixture.client] }), 2));
+    const source = { kind: 'turn' as const, id: 't1' };
+    const request = new AbortController();
+    try {
+      const pending = controller.loadOlderMessages('main', request.signal);
+      await vi.waitFor(() => { expect(content).toHaveBeenCalledTimes(2); });
+      const fresh = controller.contentRefsFor('main', source).find((candidate) => candidate.direction === 'backward' && candidate.path.length === 3);
+      expect(fresh?.revision).not.toBe(fixture.ref.revision);
+      if (fresh === undefined) throw new Error('missing fresh ref');
+      const shared = controller.loadContentSegment('main', fresh);
+      expect(content).toHaveBeenCalledTimes(2);
+      request.abort();
+      expect(replacementSignal?.aborted).toBe(true);
+      expect(await pending).toBe(false);
+      releaseContent?.();
+      expect(await shared).toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(blockText(controller, 'hidden-injection')).toBe(false);
+      expect(blockText(controller, 'LOADED-LATER')).toBe(true);
+      expect(blockText(controller, 'owned-prompt')).toBe(true);
+      expect(controller.getState().olderError).toBeUndefined();
+      expect(await controller.loadOlderMessages()).toBe(true);
+      expect(view.transcript.page).toHaveBeenCalledTimes(1);
+      expect(view.snapshot).toHaveBeenCalledTimes(1);
+      expect(view.transcript.catchUp).not.toHaveBeenCalled();
+      expect(content).toHaveBeenCalledTimes(3);
+      expect(content.mock.calls[2]?.[0].ref.revision).toBe(fresh.revision);
+      expect(content.mock.calls[2]?.[1]?.signal?.aborted).toBe(false);
+      expect(content.mock.calls[2]?.[1]?.signal).not.toBe(replacementSignal);
+      expect(blockText(controller, 'hidden-injection')).toBe(true);
+      expect(blockText(controller, 'OMITTED-PREFIX')).toBe(true);
+      expect(blockText(controller, 'LOADED-LATER')).toBe(true);
+      expect(blockText(controller, 'owned-prompt')).toBe(true);
+    } finally { controller.close(); }
+  });
+
+  it('drops a late turn preview after a same-agent epoch reset', async () => {
+    const fixture = hiddenPrefixFixture();
+    const content = vi.fn(segmentRead(fixture.inserted));
+    let releasePage!: (page: Awaited<ReturnType<NonNullable<SessionViewFacade['transcript']['page']>>>) => void;
+    const { controller, deliver, view } = harness(undefined, content);
+    vi.mocked(view.transcript.page).mockImplementation(() => new Promise((resolve) => { releasePage = resolve; }));
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ items: [fixture.client] }), 2));
+    const resetTurn = turnOf(reduce([
+      { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't1', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'RESET-IDENTITY', promptId: 'prompt-reset' } },
+      { op: 'step.upsert', turnId: 't1', step: { kind: 'step', stepId: 's-reset', turnId: 't1', ordinal: 0, state: 'completed' } },
+      { op: 'frame.upsert', turnId: 't1', stepId: 's-reset', frame: { kind: 'text', frameId: 'reset-tail', role: 'assistant', text: 'RESET-TAIL' } },
+    ]));
+    const source = { kind: 'turn' as const, id: 't1' };
+    const revisionOf = () => controller.contentRefsFor('main', source).find((candidate) => candidate.direction === 'backward' && candidate.path.length === 3)?.revision;
+    try {
+      const pending = controller.loadOlderMessages();
+      await vi.waitFor(() => { expect(view.transcript.page).toHaveBeenCalledTimes(1); });
+      const pageSignal = vi.mocked(view.transcript.page).mock.calls[0]?.[1]?.signal;
+      const opened = resetEvent('main', emptySnapshot({ items: [resetTurn] }), 3);
+      deliver({ ...opened, cursor: { seq: 3, epoch: 'epoch-reset' } });
+      expect(pageSignal?.aborted).toBe(true);
+      expect(blockText(controller, 'RESET-IDENTITY')).toBe(true);
+      expect(blockText(controller, 'RESET-TAIL')).toBe(true);
+      expect(blockText(controller, 'LOADED-LATER')).toBe(false);
+      const late = await previewPage(fixture.inserted, fixture.maxBytes)({ agentId: 'main' });
+      const lateTurn = late.items.find((item) => item.kind === 'turn');
+      const lateRevision = lateTurn?.kind === 'turn'
+        ? lateTurn.contentRefs?.find((candidate) => candidate.direction === 'backward' && candidate.path.length === 3)?.revision
+        : undefined;
+      expect(lateRevision).toBeDefined();
+      releasePage(late);
+      expect(await pending).toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(revisionOf()).not.toBe(lateRevision);
+      expect(blockText(controller, 'RESET-IDENTITY')).toBe(true);
+      expect(blockText(controller, 'RESET-TAIL')).toBe(true);
+      expect(blockText(controller, 'hidden-injection')).toBe(false);
+      expect(blockText(controller, 'LOADED-LATER')).toBe(false);
+      expect(controller.getState().blocks.find((block) => block.kind === 'user' && block.text === 'RESET-IDENTITY')).toMatchObject({
+        turnId: 't1', promptId: 'prompt-reset',
+      });
+      expect(controller.getAgentTranscriptCursor('main')).toEqual({ seq: 3, epoch: 'epoch-reset' });
+      expect(view.transcript.page).toHaveBeenCalledTimes(1);
+      expect(content).toHaveBeenCalledTimes(1);
+      expect(view.snapshot).toHaveBeenCalledTimes(1);
+      expect(view.transcript.catchUp).not.toHaveBeenCalled();
+      expect(controller.getState().olderError).toBeUndefined();
+    } finally { controller.close(); }
+  });
 });
