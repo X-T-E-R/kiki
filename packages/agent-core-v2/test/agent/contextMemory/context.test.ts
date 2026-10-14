@@ -1,18 +1,21 @@
 import type { Message } from '#/kosong/contract/message';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { estimateTokens, estimateTokensForMessages } from '#/kosong/contract/tokens';
+import { estimateTokens, estimateTokensForMessage, estimateTokensForMessages, MEDIA_TOKEN_ESTIMATE } from '#/kosong/contract/tokens';
 import { IEventBus } from '#/app/event/eventBus';
 import { ContextAppendMessage } from '#/agent/contextMemory/contextEvents';
 import { buildImageCompressionCaption } from '#/agent/media/image-compress';
 import {
   buildContextCompactionShape,
+  COMPACT_CARRIED_MEDIA_MAX_TOKENS,
   COMPACT_USER_MESSAGE_HEAD_TOKENS,
   COMPACT_USER_MESSAGE_MAX_TOKENS,
+  createCompactionSummaryMessage,
   selectCompactionUserMessages,
   type TokenEstimate,
 } from '#/agent/contextMemory/compactionHandoff';
 import type { ContextMessage } from '#/agent/contextMemory/types';
+import { applyContextCompactionRecord, computeUndoCut } from '#/agent/contextMemory/contextOps';
 import { IWireService } from '#/wire/wire';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import {
@@ -985,6 +988,134 @@ describe('Agent context', () => {
 
       expect(withOverhead.tokensAfter).toBe(withoutOverhead.tokensAfter + 3_000);
       expect(withOverhead.messages).toEqual(withoutOverhead.messages);
+    });
+
+    it('reattaches only the newest removed media that fits the handoff budget', () => {
+      const removed = Array.from({ length: 12 }, (_, index) => ({
+        role: 'tool' as const,
+        content: [
+          { type: 'text' as const, text: `result ${String(index)}` },
+          { type: 'image_url' as const, imageUrl: { url: `kimi-file://shot-${String(index)}`, id: `shot-${String(index)}` } },
+        ],
+        toolCalls: [],
+        toolCallId: `call_${String(index)}`,
+      } satisfies ContextMessage));
+      const keptShot = { type: 'image_url' as const, imageUrl: { url: 'kimi-file://kept', id: 'kept' } };
+      const kept = {
+        role: 'user' as const,
+        origin: { kind: 'user' as const },
+        content: [{ type: 'text' as const, text: 'keep this shot' }, keptShot],
+        toolCalls: [],
+      } satisfies ContextMessage;
+      const history = [...removed, kept];
+      const shape = buildContextCompactionShape(history, {
+        summary: 'notes',
+        compactedCount: history.length,
+        tokensBefore: 100,
+      });
+      const summary = shape.messages.find((message) => message.origin?.kind === 'compaction_summary');
+      const carried = summary?.content.filter((part) => part.type === 'image_url') ?? [];
+      const keptCount = COMPACT_CARRIED_MEDIA_MAX_TOKENS / MEDIA_TOKEN_ESTIMATE;
+      expect(carried).toHaveLength(keptCount);
+      expect(carried.map((part) => part.type === 'image_url' ? part.imageUrl.id : '')).toEqual(
+        Array.from({ length: keptCount }, (_, index) => `shot-${String(12 - keptCount + index)}`),
+      );
+      expect(shape.messages.some((message) => message.content.includes(keptShot))).toBe(true);
+      expect(summary?.content.includes(keptShot)).toBe(false);
+      const bare = estimateTokensForMessage(createCompactionSummaryMessage('notes'));
+      expect(estimateTokensForMessage(summary!) - bare).toBe(COMPACT_CARRIED_MEDIA_MAX_TOKENS);
+      const elision = shape.messages.find((message) => message.origin?.kind === 'injection' && message.origin.variant === 'compaction_elision');
+      expect(textOf(elision!)).toContain('not reattached');
+      expect(textOf(elision!)).toContain('files themselves are unchanged');
+      expect(textOf(elision!)).not.toContain('Some earlier user messages were omitted');
+    });
+
+    it('does not accumulate removed media, injections, or user text across a second compaction or cold replay', () => {
+      const removed = Array.from({ length: 12 }, (_, index) => ({
+        role: 'tool' as const,
+        content: [
+          { type: 'text' as const, text: `old result ${String(index)}` },
+          { type: 'image_url' as const, imageUrl: { url: `kimi-file://shot-${String(index)}`, id: `shot-${String(index)}` } },
+        ],
+        toolCalls: [],
+        toolCallId: `call_${String(index)}`,
+      } satisfies ContextMessage));
+      const keptShot = { type: 'image_url' as const, imageUrl: { url: 'kimi-file://kept', id: 'kept' } };
+      const kept = {
+        role: 'user' as const,
+        origin: { kind: 'user' as const },
+        content: [{ type: 'text' as const, text: 'keep this shot and this wording' }, keptShot],
+        toolCalls: [],
+      } satisfies ContextMessage;
+      const injected = {
+        role: 'user' as const,
+        origin: { kind: 'injection' as const, variant: 'runtime_snapshot' },
+        content: [{ type: 'text' as const, text: 'runtime snapshot that must not be copied forward' }],
+        toolCalls: [],
+      } satisfies ContextMessage;
+      const history = [...removed, injected, kept];
+      const first = buildContextCompactionShape(history, {
+        summary: 'handoff one',
+        compactedCount: history.length,
+        tokensBefore: 100,
+      });
+      const newer = Array.from({ length: 3 }, (_, index) => ({
+        role: 'tool' as const,
+        content: [
+          { type: 'text' as const, text: `new result ${String(index)}` },
+          { type: 'image_url' as const, imageUrl: { url: `kimi-file://new-${String(index)}`, id: `new-${String(index)}` } },
+        ],
+        toolCalls: [],
+        toolCallId: `call_new_${String(index)}`,
+      } satisfies ContextMessage));
+      const secondHistory = [...first.messages, ...newer];
+      const second = buildContextCompactionShape(secondHistory, {
+        summary: 'handoff two',
+        compactedCount: secondHistory.length,
+        tokensBefore: first.tokensAfter,
+      });
+      const carriedIds = (shape: ReturnType<typeof buildContextCompactionShape>) => {
+        const summary = shape.messages.find((message) => message.origin?.kind === 'compaction_summary');
+        return summary?.content.flatMap((part) => part.type === 'image_url' ? [part.imageUrl.id] : []) ?? [];
+      };
+      const keptCount = COMPACT_CARRIED_MEDIA_MAX_TOKENS / MEDIA_TOKEN_ESTIMATE;
+      expect(carriedIds(first)).toHaveLength(keptCount);
+      expect(carriedIds(second)).toHaveLength(keptCount);
+      expect(carriedIds(second).slice(-3)).toEqual(['new-0', 'new-1', 'new-2']);
+      expect(carriedIds(second)).not.toContain('shot-2');
+      expect(second.messages.filter((message) => message.origin?.kind === 'compaction_summary')).toHaveLength(1);
+      expect(textOf(second.messages.find((message) => message.origin?.kind === 'compaction_summary')!)).toBe('handoff two');
+      expect(second.messages.filter((message) => message.origin?.kind === 'injection')).toHaveLength(1);
+      expect(second.messages.some((message) => message.content.some((part) => part.type === 'text' && part.text.includes('runtime snapshot')))).toBe(false);
+      expect(second.messages.filter((message) => message.content.includes(keptShot))).toHaveLength(1);
+      expect(second.messages.find((message) => message.content.includes(keptShot))?.origin?.kind).toBe('user');
+      const bare = estimateTokensForMessage(createCompactionSummaryMessage('handoff two'));
+      const summary = second.messages.find((message) => message.origin?.kind === 'compaction_summary')!;
+      expect(estimateTokensForMessage(summary) - bare).toBe(COMPACT_CARRIED_MEDIA_MAX_TOKENS);
+      expect(second.tokensAfter).toBeLessThan(first.tokensAfter + 3 * MEDIA_TOKEN_ESTIMATE);
+
+      const replayed = applyContextCompactionRecord(history, {
+        summary: 'handoff one',
+        contextSummary: 'handoff one',
+        compactedCount: history.length,
+        tokensBefore: 100,
+        tokensAfter: 444334,
+        shapeVersion: 1,
+        keptUserMessageCount: 1,
+      });
+      const replayedSummary = replayed.find((message) => message.origin?.kind === 'compaction_summary');
+      expect(replayedSummary?.content.filter((part) => part.type === 'image_url')).toHaveLength(keptCount);
+      expect(replayed.filter((message) => message.content.includes(keptShot))).toHaveLength(1);
+
+      const later = {
+        role: 'user' as const,
+        origin: { kind: 'user' as const },
+        content: [{ type: 'text' as const, text: 'after the handoff' }],
+        toolCalls: [],
+      } satisfies ContextMessage;
+      const undo = computeUndoCut([...second.messages, later], 2);
+      expect(undo.stoppedAtCompaction).toBe(true);
+      expect(undo.removedCount).toBe(1);
     });
   });
 

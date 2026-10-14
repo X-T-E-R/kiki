@@ -7,6 +7,8 @@ import type { ContextMessage, PromptOrigin } from './types';
 export const COMPACTION_SUMMARY_PREFIX = summaryPrefixTemplate.trimEnd();
 export const COMPACT_USER_MESSAGE_MAX_TOKENS = 20_000;
 export const COMPACT_USER_MESSAGE_HEAD_TOKENS = 2_000;
+/** Media copied off removed messages onto the handoff, separate from images that already sit on kept input. */
+export const COMPACT_CARRIED_MEDIA_MAX_TOKENS = COMPACT_USER_MESSAGE_MAX_TOKENS;
 export const COMPACTION_ELISION_VARIANT = 'compaction_elision';
 
 type MessageLike = ContextMessage;
@@ -92,14 +94,17 @@ export function buildContextCompactionShape(
     input.userBudget?.head ?? COMPACT_USER_MESSAGE_HEAD_TOKENS,
     estimate.message,
   );
-  const elisionMessage = selection.elided
-    ? createCompactionElisionMessage(selection.omittedTokens)
+  const keptUserMessages = [...selection.head, ...selection.tail];
+  const contextSummary = input.contextSummary ?? input.summary;
+  const carriedAll = retainedContinuableMedia(history, input.compactedCount, [...keptUserMessages, ...tail]);
+  const carriedMedia = limitCarriedMedia(carriedAll, COMPACT_CARRIED_MEDIA_MAX_TOKENS, estimate);
+  const mediaOmitted = carriedAll.length - carriedMedia.length;
+  const elisionMessage = selection.elided || mediaOmitted > 0
+    ? createCompactionElisionMessage(selection.omittedTokens, mediaOmitted)
     : undefined;
   const keptMessages = elisionMessage === undefined
-    ? [...selection.head, ...selection.tail]
+    ? keptUserMessages
     : [...selection.head, elisionMessage, ...selection.tail];
-  const contextSummary = input.contextSummary ?? input.summary;
-  const carriedMedia = retainedContinuableMedia(history, input.compactedCount, [...keptMessages, ...tail]);
   const summaryMessage = createCompactionSummaryMessage(contextSummary, carriedMedia);
   const messages = [...keptMessages, summaryMessage, ...tail];
   const carriedMediaTokens = carriedMedia.length === 0
@@ -169,19 +174,53 @@ export function retainedContinuableMedia(
   return parts;
 }
 
-export function createCompactionElisionMessage(omittedTokens: number): ContextMessage {
+export function limitCarriedMedia(
+  parts: readonly ContentPart[],
+  maxTokens: number,
+  estimate: TokenEstimate = defaultTokenEstimate,
+): ContentPart[] {
+  const kept: ContentPart[] = [];
+  let used = 0;
+  for (let index = parts.length - 1; index >= 0; index--) {
+    const part = parts[index]!;
+    const cost = mediaPartTokens(part, estimate);
+    if (cost > maxTokens - used) {
+      if (cost > maxTokens) continue;
+      break;
+    }
+    kept.push(part);
+    used += cost;
+  }
+  kept.reverse();
+  return kept;
+}
+
+function mediaPartTokens(part: ContentPart, estimate: TokenEstimate): number {
+  return Math.max(0, estimate.message(createCompactionSummaryMessage('', [part])) - estimate.message(createCompactionSummaryMessage('')));
+}
+
+export function createCompactionElisionMessage(omittedTokens: number, mediaOmitted = 0): ContextMessage {
   return {
     role: 'user',
-    content: [{ type: 'text', text: buildCompactionElisionText(omittedTokens) }],
+    content: [{ type: 'text', text: buildCompactionElisionText(omittedTokens, mediaOmitted) }],
     toolCalls: [],
     origin: { kind: 'injection', variant: COMPACTION_ELISION_VARIANT },
   };
 }
 
-export function buildCompactionElisionText(_omittedTokens: number): string {
-  return wrapSystemReminder(
-    'Some earlier user messages were omitted here during compaction. Messages above this note are the oldest retained input; messages below it are the most recent. Consult the handoff for carried context and use available history tools for any missing original wording that changes the next action. The summary is not a substitute for an omitted instruction\'s source.',
-  );
+export function buildCompactionElisionText(omittedTokens: number, mediaOmitted = 0): string {
+  const notes: string[] = [];
+  if (omittedTokens > 0 || mediaOmitted <= 0) {
+    notes.push(
+      'Some earlier user messages were omitted here during compaction. Messages above this note are the oldest retained input; messages below it are the most recent. Consult the handoff for carried context and use available history tools for any missing original wording that changes the next action. The summary is not a substitute for an omitted instruction\'s source.',
+    );
+  }
+  if (mediaOmitted > 0) {
+    notes.push(
+      'Older media from removed messages was not reattached. The most recent media that fits stays with the handoff; the files themselves are unchanged.',
+    );
+  }
+  return wrapSystemReminder(notes.join(' '));
 }
 
 export function collectCompactableUserMessages<T extends MessageLike>(messages: readonly T[]): T[] {
