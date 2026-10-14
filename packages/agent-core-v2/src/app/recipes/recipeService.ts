@@ -4,6 +4,7 @@ import type { RecipeExport, RecipeDetail, RecipeForkInput, RecipeInstallInput, R
 import { recipeCatalogSchema, resolvedRecipeSchema } from '@kiki/protocol';
 import { IRecipeService, IRecipeSourceReader, type RecipePackageReader } from './recipes';
 import { mergeRecipe, parseRecipe, recipeDigest, recipeFailure, resolveRecipe, validateRecipePath, type RecipeSnapshot } from './recipeParser';
+import { isRecipeFileReference, recipePackageDirectory, resolveRecipeFileLocator } from './recipePrimitives';
 import { RECIPES_SECTION, type RecipesConfig } from './configSection';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IBlobStore } from '#/persistence/interface/blobStore';
@@ -65,12 +66,22 @@ export class RecipeService extends Disposable implements IRecipeService {
   private consentFailure(): never {
     throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Confirm installation to authorize new Recipe scripts', { details: { code: 'recipe-hook-consent-required', path: 'hooks' } });
   }
-  async resolve(id: string): Promise<ResolvedRecipe> {
-    this.enabled(); const record = await this.record(id);
+  async resolve(id: string, baseDir?: string): Promise<ResolvedRecipe> {
+    this.enabled();
+    const raw = id.trim();
+    if (isRecipeFileReference(raw)) return this.resolveFile(raw, baseDir);
+    const record = await this.record(raw.replace(/^installation:/u, ''));
     const resolved = structuredClone((await this.snapshot(record.summary.revision)).resolved);
     const fingerprint = recipeHookFingerprint(resolved.hooks);
     if (fingerprint !== undefined && !record.trustedHooks?.includes(fingerprint)) this.consentFailure();
     return { ...resolved, hooks_fingerprint: fingerprint };
+  }
+  private async resolveFile(locator: string, baseDir?: string): Promise<ResolvedRecipe> {
+    const absolute = resolveRecipeFileLocator(locator, baseDir);
+    const snapshot = await this.prepare({ locator: absolute }, [], undefined, undefined, recipePackageDirectory(absolute), false);
+    const fingerprint = recipeHookFingerprint(snapshot.resolved.hooks);
+    if (fingerprint !== undefined) this.consentFailure();
+    return { ...structuredClone(snapshot.resolved), hooks_fingerprint: fingerprint };
   }
   async scriptHooks(recipe: ResolvedRecipe): Promise<readonly import('#/features/externalHooks/internal/types').HookDef[]> {
     this.enabled(); const hooks: NonNullable<ResolvedRecipe['hooks']> = [];
@@ -81,7 +92,7 @@ export class RecipeService extends Disposable implements IRecipeService {
     }
     return hooks.length === 0 ? [] : this.sources.materializeHooks(hooks);
   }
-  private async prepare(source: RecipeSource, chain: string[] = [], files?: Record<string, string>, forkParent?: RecipeSnapshot): Promise<RecipeSnapshot> {
+  private async prepare(source: RecipeSource, chain: string[] = [], files?: Record<string, string>, forkParent?: RecipeSnapshot, baseDir?: string, persist = true): Promise<RecipeSnapshot> {
     let reader: RecipePackageReader;
     if (files !== undefined) reader = this.fileReader(source, files);
     else if (source.locator.startsWith('installation:')) {
@@ -89,7 +100,7 @@ export class RecipeService extends Disposable implements IRecipeService {
       const snapshot = await this.snapshot(parent.summary.revision);
       if (!parent.editable) return snapshot;
       reader = this.fileReader(source, snapshot.files);
-    } else reader = await this.sources.open(source);
+    } else reader = await this.sources.open(source, baseDir);
     const locator = reader.source.locator;
     if (chain.includes(locator) || chain.length >= 16) recipeFailure(`Recipe inheritance cycle or depth limit: ${[...chain, locator].join(' → ')}`, locator);
     const parsed = await parseRecipe(reader, this.fields);
@@ -98,7 +109,7 @@ export class RecipeService extends Disposable implements IRecipeService {
       const parentSource = { locator: parsed.manifest.extends.source, sha256: parsed.manifest.extends.sha256 };
       if (locator.startsWith('https:') && !parentSource.locator.startsWith('https:') && !parentSource.locator.startsWith('installation:')) recipeFailure('Remote Recipe cannot inherit a local path', locator, 'extends.source');
       const parent = forkParent ?? (parsed.manifest.extends.revision === undefined
-        ? await this.prepare(parentSource, [...chain, locator]) : await this.snapshot(parsed.manifest.extends.revision));
+        ? await this.prepare(parentSource, [...chain, locator], undefined, undefined, recipePackageDirectory(locator) ?? baseDir, persist) : await this.snapshot(parsed.manifest.extends.revision));
       if (parsed.manifest.extends.revision !== undefined && parent.source.locator !== parentSource.locator && parent.requestedSource.locator !== parentSource.locator) recipeFailure('Pinned parent source does not match revision', locator, 'extends');
       declaration = mergeRecipe(parent.declaration, declaration);
       dependencies.push(...parent.resolved.dependencies, { source: parent.source, manifest_id: parent.manifest.id, version: parent.manifest.version, revision: parent.resolved.revision });
@@ -106,7 +117,7 @@ export class RecipeService extends Disposable implements IRecipeService {
     const resolved = resolveRecipe(declaration, dependencies);
     const snapshot = { ...parsed, source: reader.source, requestedSource: source, declaration, resolved };
     resolved.revision = this.snapshotDigest(snapshot);
-    await this.persistSnapshot(snapshot);
+    if (persist) await this.persistSnapshot(snapshot);
     return snapshot;
   }
   private snapshotDigest(snapshot: RecipeSnapshot): string {

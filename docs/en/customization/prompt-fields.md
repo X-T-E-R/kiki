@@ -83,7 +83,9 @@ await klient.global.kosong.updateModel("example-model", {
 });
 ```
 
-A profile can reference the same installed package without changing the global model. Add `recipe: installation:<installed-id>` (or just the installation id) to its Markdown frontmatter; the id is returned by `install`. Save through the existing profile Markdown editor or edit the profile file. A URL or local path is a package source to preview and install first, not an implicit download during binding.
+A profile can reference the same installed package, or a local Recipe file, without changing the global model. Add `recipe: installation:<installed-id>` (or just the installation id) to its Markdown frontmatter; the id is returned by `install`. A local file or package directory also works: `recipe: ./focus/recipe.toml`, or an absolute path. A relative path resolves from the profile file and is read at bind time.
+
+The file is not installed, and binding does not download a URL. Save through the existing profile Markdown editor or edit the profile file. Script hooks in a directly referenced file still require the existing installation consent; `hooks = "off"` contributes no scripts.
 
 ```markdown
 ---

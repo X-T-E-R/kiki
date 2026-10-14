@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { assertUrlIsSafeToFetch, guardedFetch } from 'guarded-fetch';
 import { fromBuffer } from 'yauzl';
 import { IRecipeSourceReader, type RecipePackageReader } from '#/app/recipes/recipes';
-import { recipeDigest, recipeFailure, validateRecipePath } from '#/app/recipes/recipePrimitives';
+import { isRecipeFileReference, recipeDigest, recipeFailure, resolveRecipeFileLocator, validateRecipePath } from '#/app/recipes/recipePrimitives';
 import { resolveInstallSource } from '#/app/plugin/source';
 import { resolveGithubCommitSha, resolveGithubSource } from '#/app/plugin/github-resolver';
 import { LifecycleScope } from '#/app/scopes';
@@ -55,24 +55,12 @@ export class RecipeSourceReader implements IRecipeSourceReader {
     return result;
   }
   async catalog(url: string): Promise<unknown> { return JSON.parse((await download(url)).toString('utf8')); }
-  async open(source: RecipeSource): Promise<RecipePackageReader> {
-    if (/^https?:/u.test(source.locator)) await publicUrl(source.locator);
-    const parsed = resolveInstallSource(source.locator);
-    if (parsed.kind === 'local-path') {
-      const input = await realpath(parsed.path);
-      const root = (await stat(input)).isDirectory() ? input : path.dirname(input);
-      const manifest = (await stat(input)).isDirectory() ? 'recipe.toml' : path.basename(input);
-      let bytes = 0;
-      return { source: { ...source, locator: path.join(root, manifest).replaceAll('\\', '/') }, read: async (file) => {
-        validateRecipePath(file);
-        const target = await realpath(path.join(root, file === 'recipe.toml' ? manifest : file));
-        if (!target.startsWith(root + path.sep)) recipeFailure('Recipe file escapes package root', source.locator, file);
-        const size = (await stat(target)).size;
-        if (size > MAX_FILE_BYTES || bytes + size > MAX_BYTES) recipeFailure('Recipe exceeds text budget', source.locator, file);
-        bytes += size;
-        return decode(await readFile(target));
-      } };
-    }
+  async open(source: RecipeSource, baseDir?: string): Promise<RecipePackageReader> {
+    const locator = source.locator.trim();
+    if (isRecipeFileReference(locator)) return this.readLocal(source, resolveRecipeFileLocator(locator, baseDir));
+    if (/^https?:/u.test(locator)) await publicUrl(locator);
+    const parsed = resolveInstallSource(locator);
+    if (parsed.kind === 'local-path') return this.readLocal(source, parsed.path);
     if (parsed.kind === 'github') {
       const resolution = await resolveGithubSource(parsed);
       const sha = await resolveGithubCommitSha(parsed.owner, parsed.repo, resolution.ref.value);
@@ -96,6 +84,22 @@ export class RecipeSourceReader implements IRecipeSourceReader {
     const buffer = await download(url.href);
     if (createHash('sha256').update(buffer).digest('hex') !== source.sha256) recipeFailure('Recipe ZIP checksum mismatch', source.locator);
     return zipReader(source, buffer);
+  }
+  private async readLocal(source: RecipeSource, absolute: string): Promise<RecipePackageReader> {
+    const input = await realpath(absolute);
+    const info = await stat(input);
+    const root = info.isDirectory() ? input : path.dirname(input);
+    const manifest = info.isDirectory() ? 'recipe.toml' : path.basename(input);
+    let bytes = 0;
+    return { source: { ...source, locator: path.join(root, manifest).replaceAll('\\', '/') }, read: async (file) => {
+      validateRecipePath(file);
+      const target = await realpath(path.join(root, file === 'recipe.toml' ? manifest : file));
+      if (!target.startsWith(root + path.sep)) recipeFailure('Recipe file escapes package root', source.locator, file);
+      const size = (await stat(target)).size;
+      if (size > MAX_FILE_BYTES || bytes + size > MAX_BYTES) recipeFailure('Recipe exceeds text budget', source.locator, file);
+      bytes += size;
+      return decode(await readFile(target));
+    } };
   }
 }
 function decode(bytes: Uint8Array): string { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); }

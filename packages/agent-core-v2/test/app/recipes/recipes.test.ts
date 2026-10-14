@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { access, mkdtemp, writeFile, readFile, rm, symlink } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, writeFile, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -508,5 +508,65 @@ describe('Recipe package boundaries', () => {
     await expect(packageReader.read('body.md')).rejects.toThrow('text budget');
     fetchMock.mockResolvedValueOnce(new Response('x'.repeat(4 * 1024 * 1024 + 1)));
     await expect(reader.catalog('https://93.184.216.34/catalog.json')).rejects.toThrow('download exceeds budget');
+  });
+});
+
+describe('Recipe file references', () => {
+  let root: string;
+  let disposables: DisposableStore;
+  let service: IRecipeService;
+  beforeEach(async () => {
+    root = await mkdtemp(path.join(tmpdir(), 'recipe-file-ref-'));
+    disposables = new DisposableStore();
+    const ix = createServices(disposables, { additionalServices: (reg) => {
+      reg.defineInstance(IFileSystemStorageService, new InMemoryStorageService());
+      reg.define(IAtomicDocumentStore, JsonAtomicDocumentStore);
+      reg.define(IBlobStore, BlobStoreService);
+      reg.definePartialInstance(IBootstrapService, { scope: () => 'store', homeDir: root, getEnv: () => undefined });
+      reg.definePartialInstance(IConfigService, {
+        ready: new Promise<void>(() => {}),
+        get: <T>(domain: string) => (domain === 'experimental' ? {} : { markets: [] }) as T,
+        onDidChangeConfiguration: Event.None as IConfigService['onDidChangeConfiguration'],
+        replaceSections: async () => undefined,
+      });
+      reg.definePartialInstance(IFlagService, { enabled: () => true });
+      reg.definePartialInstance(IModelService, { list: () => ({}) });
+      reg.definePartialInstance(IPromptFieldRegistry, { get: () => ({ readonly: false }) as PromptFieldDefinition, validate: () => ({ values: {}, fields: [] }) });
+      reg.define(IRecipeSourceReader, RecipeSourceReader);
+      reg.define(IRecipeService, RecipeService);
+    } });
+    service = ix.get(IRecipeService);
+  });
+  afterEach(async () => { await disposables.dispose(); await rm(root, { recursive: true, force: true }); });
+  it('reads relative and absolute Recipe files without installing them, and still resolves an installation id', async () => {
+    const parentDir = path.join(root, 'parent');
+    const childDir = path.join(root, 'roles', 'child');
+    const absoluteDir = path.join(root, 'absolute');
+    await mkdir(parentDir, { recursive: true });
+    await mkdir(childDir, { recursive: true });
+    await mkdir(absoluteDir, { recursive: true });
+    await writeFile(path.join(parentDir, 'body.md'), 'PARENT FILE');
+    await writeFile(path.join(parentDir, 'recipe.toml'), stringify({ schema_version: 1, id: 'parent', name: 'Parent', version: '1.0.0', model: { parameters: { temperature: 0.2 } }, prompts: { system: { file: 'body.md' } } }));
+    await writeFile(path.join(childDir, 'recipe.toml'), stringify({ schema_version: 1, id: 'child', name: 'Child', version: '1.0.0', extends: { source: '../../parent/recipe.toml' }, prompts: { steering: { text: 'CHILD STEERING' } } }));
+    await writeFile(path.join(absoluteDir, 'body.md'), 'ABSOLUTE FILE');
+    await writeFile(path.join(absoluteDir, 'focus.toml'), stringify({ schema_version: 1, id: 'absolute', name: 'Absolute', version: '1.0.0', hooks: 'off', model: { parameters: { temperature: 0.4 } }, prompts: { system: { file: 'body.md' } } }));
+    await writeFile(path.join(absoluteDir, 'hook.js'), 'console.log("no")');
+    await writeFile(path.join(absoluteDir, 'hooks.toml'), stringify({ schema_version: 1, id: 'hooks', name: 'Hooks', version: '1.0.0', hooks: [{ event: 'Stop', command: 'node hook.js', files: ['hook.js'] }], prompts: {} }));
+    const relative = await service.resolve('./roles/child/recipe.toml', root);
+    expect(relative.branches.main.system).toBe('PARENT FILE');
+    expect(relative.branches.main.steering).toBe('CHILD STEERING');
+    expect(relative.model).toMatchObject({ parameters: { temperature: 0.2 } });
+    expect(await service.list()).toEqual([]);
+    const resolvedAbsolute = await service.resolve(path.join(absoluteDir, 'focus.toml'));
+    expect(resolvedAbsolute.branches.main.system).toBe('ABSOLUTE FILE');
+    expect(resolvedAbsolute.hooks).toBeUndefined();
+    await expect(service.resolve('./missing.toml')).rejects.toThrow('profile directory');
+    await expect(service.resolve(path.join(root, 'missing.toml'))).rejects.toThrow(/ENOENT/);
+    await expect(service.resolve(path.join(absoluteDir, 'hooks.toml'))).rejects.toMatchObject({ details: { code: 'recipe-hook-consent-required' } });
+    expect(await service.list()).toEqual([]);
+    const installed = await service.install({ preview_id: (await service.preview({ source: { locator: parentDir } })).preview_id });
+    expect((await service.resolve(installed.installation_id)).branches.main.system).toBe('PARENT FILE');
+    expect((await service.resolve(`installation:${installed.installation_id}`)).branches.main.system).toBe('PARENT FILE');
+    expect(await service.list()).toHaveLength(1);
   });
 });

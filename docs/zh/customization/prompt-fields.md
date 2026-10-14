@@ -83,7 +83,9 @@ await klient.global.kosong.updateModel("example-model", {
 });
 ```
 
-Profile 可引用同一已安装包，不改变全局模型。在 Markdown Frontmatter 中写 `recipe: installation:<已安装 id>`（也可直接写安装 id）；id 来自 `install` 返回值。沿现有 profile Markdown 编辑入口保存，或编辑 profile 文件。URL 和本地路径是先预览、安装的包来源，不会在绑定时隐式下载。
+Profile 可引用同一已安装包，或一份本地 Recipe 文件，且不改变全局模型。在 Markdown Frontmatter 中写 `recipe: installation:<已安装 id>`（也可直接写安装 id）；id 来自 `install` 返回值。本地文件或包目录同样可用：`recipe: ./focus/recipe.toml`，或绝对路径。相对路径按 profile 文件所在目录解析，并在绑定时直接读取。
+
+这不会安装该文件，绑定也不会下载 URL。沿现有 profile Markdown 编辑入口保存，或编辑 profile 文件。直接引用的文件若带脚本 hooks，仍须走现有安装确认；`hooks = "off"` 不贡献脚本。
 
 ```markdown
 ---

@@ -294,7 +294,7 @@ disallowedTools:
 | `discouraged_models` | 否 | **软**的不建议模型。选中时继续执行并记录 `model_discouraged` advisory；需要拒绝时用 `deny_models` |
 | `preferred_efforts` | 否 | **软**档位推荐。偏离时继续执行并记录 `effort_not_preferred` advisory；需要拒绝时用 `allowed_efforts` |
 | `model_profiles` | 否 | 按模型定义跑法，只支持 YAML mapping 列表。必填 `alias`；可选 `when`、`thinking_effort`、上述六个硬 / 软模型列表字段、`prompt_mode`（`prepend` / `append` / `wrap`）、`prompt`、`prompt_overrides`、`service_tier`、`request_params`、`context_budget`、`auto_compact` 与 `max_completion_tokens`。`when` 只出现在派发方工具说明里。Prompt 增量在模型 cognition 之前与角色正文组合；`wrap` 要求 `${parent_prompt}` 或 `${base_prompt}` 恰好一次。原生模型解析不到的 alias 不生效，也不出现在工具说明里。默认值取首个匹配条目；所有匹配条目的硬列表均生效，包括默认值已被 lease 替换的原条目 |
-| `recipe` | 否 | 已安装 Recipe 的 id，可加 `installation:` 前缀。只为该 profile 的原生绑定贡献提示和模型设置，位于模型 Recipe 之后、profile 显式值之前；`off` 撤回本 profile 的贡献。先安装来源，绑定时不下载包。见 [Recipe 模型配方](./prompt-fields.md#recipe-模型配方) |
+| `recipe` | 否 | 已安装 Recipe 的 id（可加 `installation:` 前缀），或本地 Recipe 文件 / 包目录。相对路径按本 profile 文件所在目录解析。只为该 profile 的原生绑定贡献提示和模型设置，位于模型 Recipe 之后、profile 显式值之前；`off` 撤回本 profile 的贡献。本地路径在绑定时直接读取，不安装。URL 包仍先预览并安装；绑定时不下载。直接引用的文件若带脚本 hooks，仍须安装确认。见 [Recipe 模型配方](./prompt-fields.md#recipe-模型配方) |
 | `prompt_overrides` | 否 | 该 profile 的提示词字段覆写，可含 `files` 与 `fields`。此层覆盖全局与模型值；匹配的 `model_profiles[].prompt_overrides` 条目再覆盖它。详见 [`prompt`](../configuration/config-files.md#prompt) |
 | `system_prompt_mode` | 否 | 提示词正文模式：`replace`（默认）、`prepend`、`append` 或 `inherit`。`inherit` 要求正文为空且 `prompt_overrides` 非空；它保留下层同名 profile 定义，并应用本文件的字段覆写 |
 | `service_tier` | 否 | Profile 默认服务档位：`auto`、`default`、`flex` 或 `priority`。匹配的 `model_profiles` 显式值优先于本 profile 默认值，后者优先于模型与 Recipe 默认值。目前只有 `openai_responses` 协议会把它编码进请求体，其他协议静默忽略 |

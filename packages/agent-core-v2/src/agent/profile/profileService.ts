@@ -1,6 +1,8 @@
 import { captureProfileModelMenu } from '@kiki/agent-profiles/agentProfile';
 import { loadSteeringSources } from '#/agent/cognition/steeringBinding';
+import { dirname } from 'node:path';
 import { composeRecipeLayers, recipeReferences } from '#/app/recipes/recipeOverlay';
+import { isRecipeFileReference, resolveRecipeFileLocator } from '#/app/recipes/recipePrimitives';
 import { snapshotRecipeModelSettings } from '#/app/recipes/recipeModelSettings';
 import type { AgentPromptDiagnostics, ExecutionSelection } from '@kiki/protocol';
 import { AGENT_EXECUTOR_OVERRIDES_SECTION, type AgentExecutorOverridesConfig } from '#/app/agentExecutor/executorOverrides';
@@ -2168,9 +2170,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const references = [{ surface: 'model' as const, id: model?.recipe }, { surface: 'profile' as const, id: profile?.recipe }].filter((entry) => entry.id !== undefined && entry.id !== 'off');
     if (references.length === 0) return undefined;
     if (this.recipes === undefined) throw new ProfileError(ProfileErrors.codes.MODEL_CONFIG_INVALID, 'Recipe service is unavailable');
+    const profileBase = profile?.sourcePath === undefined ? undefined : dirname(profile.sourcePath);
     const layers: import('@kiki/protocol').RecipeResolvedLayer[] = [];
     for (const reference of references) {
-      const installation_id = reference.id!.replace(/^installation:/u, '');
+      const raw = reference.id!;
+      const file = isRecipeFileReference(raw);
+      const installation_id = file ? resolveRecipeFileLocator(raw, reference.surface === 'profile' ? profileBase : undefined) : raw.replace(/^installation:/u, '');
       layers.push({ surface: reference.surface, installation_id, resolved: await this.recipes.resolve(installation_id) });
     }
     return composeRecipeLayers(layers, model?.overrides);
