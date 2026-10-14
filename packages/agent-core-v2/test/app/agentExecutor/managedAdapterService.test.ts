@@ -18,6 +18,8 @@ import type { IHostProcessService } from '#/os/interface/hostProcess';
 import type { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { TomlAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
+import { ErrorCodes, isError2 } from '#/errors';
+import { HostFsError } from '#/os/interface/hostFsErrors';
 
 const installation = { version: '0.84.0', integrity: MANAGED_ADAPTER_RELEASES['claude-acp']!.integrity,
   source: MANAGED_ADAPTER_RELEASES['claude-acp']!.source, installId: '11111111-1111-4111-8111-111111111111' };
@@ -201,15 +203,33 @@ function ownedRegistry(items: readonly AgentExecutorDescriptor[]): IAgentExecuto
   } as IAgentExecutorRegistry;
 }
 
-async function ownedInstaller(items: readonly AgentExecutorDescriptor[], env?: Record<string, string>, home?: string) {
+function gatedDocuments(home: string, fail: () => boolean) {
+  const real = new TomlAtomicDocumentStore(new FileStorageService(home));
+  const store = {
+    get: (scope: string, key: string) => real.get(scope, key),
+    update: async (scope: string, key: string,
+      updater: (current: ManagedAdapterState | undefined) => ManagedAdapterState | undefined) => {
+      if (fail()) throw new Error('document persist failed');
+      return real.update(scope, key, updater);
+    },
+  } as unknown as IAtomicTomlDocumentStore;
+  return { real, store };
+}
+
+async function ownedInstaller(
+  items: readonly AgentExecutorDescriptor[],
+  env?: Record<string, string>,
+  home?: string,
+  documents?: IAtomicTomlDocumentStore,
+) {
   const root = home ?? await mkdtemp(join(tmpdir(), 'source-owned-adapter-'));
   const fs = new HostFileSystem();
-  const documents = new TomlAtomicDocumentStore(new FileStorageService(root));
+  const store = documents ?? new TomlAtomicDocumentStore(new FileStorageService(root));
   const service = new ManagedAdapterService({
     homeDir: root, osHomeDir: root, platform: 'linux',
     getEnv: (name: string) => env?.[name],
-  } as IBootstrapService, fs, {} as IHostProcessService, documents, ownedRegistry(items));
-  return { home: root, fs, documents, service, async remove() { if (home === undefined) await rm(root, { recursive: true, force: true }); } };
+  } as IBootstrapService, fs, {} as IHostProcessService, store, ownedRegistry(items));
+  return { home: root, fs, documents: store, service, async remove() { if (home === undefined) await rm(root, { recursive: true, force: true }); } };
 }
 
 describe('source-owned adapter installation', () => {
@@ -315,16 +335,17 @@ describe('source-owned adapter installation', () => {
 
     const flaky = await ownedInstaller([descriptor]);
     const realWrite = flaky.fs.writeBytes.bind(flaky.fs);
-    let productionWrites = 0;
+    let truncated = false;
     flaky.fs.writeBytes = async (path: string, data: Uint8Array) => {
-      if (SOURCE_OWNED_ADAPTER_FILES.some((name) => path.endsWith(name)) && !path.includes('managed-executors')) {
-        productionWrites += 1;
-        if (productionWrites === 2) throw new Error('injected write failure');
+      if (!truncated && path.endsWith(SOURCE_OWNED_ADAPTER_ENTRY) && !path.includes('managed-executors')) {
+        truncated = true;
+        await realWrite(path, Buffer.from('TRUNCATED'));
+        throw new Error('truncated write');
       }
       await realWrite(path, data);
     };
     try {
-      await expect(flaky.service.install('agy-cli-909')).rejects.toThrow(/injected write failure/);
+      await expect(flaky.service.install('agy-cli-909')).rejects.toThrow(/truncated write/);
       expect(await readFile(script, 'utf8')).toBe(OLD_ADAPTER);
       expect(await readFile(join(dir, 'agy-file-admission.mjs'), 'utf8')).toBe(CUSTOM_FILE);
       await expect(readFile(join(dir, 'agy-hook-registration.mjs'))).rejects.toThrow();
@@ -332,6 +353,210 @@ describe('source-owned adapter installation', () => {
     } finally {
       await flaky.remove();
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a failed restore when a truncated production write cannot be undone', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'source-owned-stuck-'));
+    const script = join(dir, SOURCE_OWNED_ADAPTER_ENTRY);
+    await writeFile(script, OLD_ADAPTER);
+    await writeFile(join(dir, 'agy-file-admission.mjs'), CUSTOM_FILE);
+    const descriptor = ownedDescriptor('agy-cli-909', 'local-adapter', script, 'local-adapter');
+    const flaky = await ownedInstaller([descriptor]);
+    const realWrite = flaky.fs.writeBytes.bind(flaky.fs);
+    let entryWrites = 0;
+    flaky.fs.writeBytes = async (path: string, data: Uint8Array) => {
+      if (path.endsWith(SOURCE_OWNED_ADAPTER_ENTRY) && !path.includes('managed-executors')) {
+        entryWrites += 1;
+        if (entryWrites === 1) {
+          await realWrite(path, Buffer.from('TRUNCATED'));
+          throw new Error('truncated write');
+        }
+        await realWrite(path, Buffer.from('STUCK'));
+        throw new Error('restore write failed');
+      }
+      await realWrite(path, data);
+    };
+    try {
+      await expect(flaky.service.install('agy-cli-909')).rejects.toThrow(/Source-owned adapter restore failed after a partial write/);
+      expect(await readFile(script, 'utf8')).toBe('STUCK');
+      expect(await readFile(join(dir, 'agy-file-admission.mjs'), 'utf8')).toBe(CUSTOM_FILE);
+      expect(await flaky.documents.get('managed-executors', 'agy-cli-909')).toBeUndefined();
+      const status = await flaky.service.status('agy-cli-909');
+      expect(status.phase).toBe('failed');
+      expect(status.error).toContain('Source-owned adapter restore failed after a partial write');
+    } finally {
+      await flaky.remove();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the previous script when the installation record cannot be stored', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'source-owned-record-'));
+    const dir = join(home, 'adapter');
+    await mkdir(dir, { recursive: true });
+    const script = join(dir, SOURCE_OWNED_ADAPTER_ENTRY);
+    await writeFile(script, OLD_ADAPTER);
+    await writeFile(join(dir, 'agy-file-admission.mjs'), CUSTOM_FILE);
+    const descriptor = ownedDescriptor('agy-cli-909', 'local-adapter', script, 'local-adapter');
+    let failUpdate = true;
+    const { real, store } = gatedDocuments(home, () => failUpdate);
+    const { service, remove } = await ownedInstaller([descriptor], undefined, home, store);
+    try {
+      await expect(service.install('agy-cli-909')).rejects.toThrow(/document persist failed/);
+      expect(await readFile(script, 'utf8')).toBe(OLD_ADAPTER);
+      expect(await readFile(join(dir, 'agy-file-admission.mjs'), 'utf8')).toBe(CUSTOM_FILE);
+      await expect(readFile(join(dir, 'agy-hook-registration.mjs'))).rejects.toThrow();
+      expect(await real.get('managed-executors', 'agy-cli-909')).toBeUndefined();
+      failUpdate = false;
+      const installed = await service.install('agy-cli-909');
+      expect(await readFile(script, 'utf8')).toContain('registerMcpAgent');
+      expect(installed.active?.version).toBe(SOURCE_OWNED_ADAPTER_VERSION);
+    } finally {
+      await remove();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('puts the active files back when saving the rollback record fails', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'source-owned-rollback-record-'));
+    const dir = join(home, 'adapter');
+    await mkdir(dir, { recursive: true });
+    const script = join(dir, SOURCE_OWNED_ADAPTER_ENTRY);
+    await writeFile(script, OLD_ADAPTER);
+    await writeFile(join(dir, 'agy-file-admission.mjs'), CUSTOM_FILE);
+    const descriptor = ownedDescriptor('agy-cli-909', 'local-adapter', script, 'local-adapter');
+    let failUpdate = false;
+    const { real, store } = gatedDocuments(home, () => failUpdate);
+    const { service, remove } = await ownedInstaller([descriptor], undefined, home, store);
+    try {
+      const installed = await service.install('agy-cli-909');
+      const bundled = await readFile(script, 'utf8');
+      const hook = await readFile(join(dir, 'agy-hook-registration.mjs'), 'utf8');
+      expect(bundled).toContain('registerMcpAgent');
+      failUpdate = true;
+      await expect(service.rollback('agy-cli-909')).rejects.toThrow(/document persist failed/);
+      expect(await readFile(script, 'utf8')).toBe(bundled);
+      expect(await readFile(join(dir, 'agy-hook-registration.mjs'), 'utf8')).toBe(hook);
+      expect(await readFile(join(dir, 'agy-file-admission.mjs'), 'utf8')).toBe(CUSTOM_FILE);
+      const stored = await real.get<ManagedAdapterState>('managed-executors', 'agy-cli-909');
+      expect(stored?.active.version).toBe(SOURCE_OWNED_ADAPTER_VERSION);
+      expect(stored?.active.installId).toBe(installed.active?.installId);
+      expect(stored?.previous?.version).toBe('0.0.0');
+      failUpdate = false;
+      const rolled = await service.rollback('agy-cli-909');
+      expect(await readFile(script, 'utf8')).toBe(OLD_ADAPTER);
+      expect(rolled.active?.version).toBe('0.0.0');
+      expect(await readFile(join(dir, 'agy-file-admission.mjs'), 'utf8')).toBe(CUSTOM_FILE);
+    } finally {
+      await remove();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a failed restore when the active files cannot be put back', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'source-owned-rollback-stuck-'));
+    const dir = join(home, 'adapter');
+    await mkdir(dir, { recursive: true });
+    const script = join(dir, SOURCE_OWNED_ADAPTER_ENTRY);
+    await writeFile(script, OLD_ADAPTER);
+    const descriptor = ownedDescriptor('agy-cli-909', 'local-adapter', script, 'local-adapter');
+    let failUpdate = false;
+    const { real, store } = gatedDocuments(home, () => failUpdate);
+    const { fs, service, remove } = await ownedInstaller([descriptor], undefined, home, store);
+    const installed = await service.install('agy-cli-909');
+    const realWrite = fs.writeBytes.bind(fs);
+    let entryWrites = 0;
+    fs.writeBytes = async (path: string, data: Uint8Array) => {
+      if (path.endsWith(SOURCE_OWNED_ADAPTER_ENTRY) && !path.includes('managed-executors')) {
+        entryWrites += 1;
+        if (entryWrites >= 2) {
+          await realWrite(path, Buffer.from('STUCK'));
+          throw new Error('restore write failed');
+        }
+      }
+      await realWrite(path, data);
+    };
+    failUpdate = true;
+    try {
+      const caught = await service.rollback('agy-cli-909').then(() => undefined, (error: unknown) => error);
+      expect(isError2(caught)).toBe(true);
+      expect(isError2(caught) ? caught.code : undefined).toBe(ErrorCodes.CONFIG_INVALID);
+      expect(caught instanceof Error ? caught.message : '').toContain('Source-owned adapter restore failed after the installation record update failed');
+      expect(await readFile(script, 'utf8')).toBe('STUCK');
+      await expect(readFile(join(dir, 'agy-hook-registration.mjs'))).rejects.toThrow();
+      const stored = await real.get<ManagedAdapterState>('managed-executors', 'agy-cli-909');
+      expect(stored?.active.version).toBe(SOURCE_OWNED_ADAPTER_VERSION);
+      expect(stored?.active.installId).toBe(installed.active?.installId);
+    } finally {
+      await remove();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the old hook when a production read fails for a reason other than not-found', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'source-owned-read-'));
+    const script = join(dir, SOURCE_OWNED_ADAPTER_ENTRY);
+    const hook = join(dir, 'agy-hook-registration.mjs');
+    await writeFile(script, OLD_ADAPTER);
+    await writeFile(hook, 'keep-hook\n');
+    const descriptor = ownedDescriptor('agy-cli-909', 'local-adapter', script, 'local-adapter');
+    const installed = await ownedInstaller([descriptor]);
+    const realRead = installed.fs.readBytes.bind(installed.fs);
+    const slash = (value: string) => value.replaceAll('\\', '/');
+    const targetHook = slash(hook);
+    installed.fs.readBytes = async (path: string, n?: number, offset?: number) => {
+      if (slash(path) === targetHook) {
+        throw new HostFsError(ErrorCodes.OS_FS_PERMISSION_DENIED, 'read failed: permission denied');
+      }
+      return realRead(path, n, offset);
+    };
+    try {
+      const caught = await installed.service.install('agy-cli-909').then(() => undefined, (error: unknown) => error);
+      expect(isError2(caught)).toBe(true);
+      expect(isError2(caught) ? caught.code : undefined).toBe(ErrorCodes.OS_FS_PERMISSION_DENIED);
+      expect(await readFile(hook, 'utf8')).toBe('keep-hook\n');
+      expect(await readFile(script, 'utf8')).toBe(OLD_ADAPTER);
+      expect(await installed.documents.get('managed-executors', 'agy-cli-909')).toBeUndefined();
+    } finally {
+      await installed.remove();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the installed hook when the previous snapshot cannot be read', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'source-owned-snapshot-read-'));
+    const dir = join(home, 'adapter');
+    await mkdir(dir, { recursive: true });
+    const script = join(dir, SOURCE_OWNED_ADAPTER_ENTRY);
+    const hook = join(dir, 'agy-hook-registration.mjs');
+    await writeFile(script, OLD_ADAPTER);
+    await writeFile(hook, 'keep-hook\n');
+    const descriptor = ownedDescriptor('agy-cli-909', 'local-adapter', script, 'local-adapter');
+    const { fs, service, documents, remove } = await ownedInstaller([descriptor], undefined, home);
+    const installed = await service.install('agy-cli-909');
+    const bundledHook = await readFile(hook, 'utf8');
+    const previousId = installed.previous?.installId;
+    expect(previousId).toBeDefined();
+    const realRead = fs.readBytes.bind(fs);
+    fs.readBytes = async (path: string, n?: number, offset?: number) => {
+      if (path.includes(`0.0.0-${previousId}`) && path.endsWith('agy-hook-registration.mjs')) {
+        throw new HostFsError(ErrorCodes.OS_FS_PERMISSION_DENIED, 'read failed: permission denied');
+      }
+      return realRead(path, n, offset);
+    };
+    try {
+      const caught = await service.rollback('agy-cli-909').then(() => undefined, (error: unknown) => error);
+      expect(isError2(caught)).toBe(true);
+      expect(isError2(caught) ? caught.code : undefined).toBe(ErrorCodes.OS_FS_PERMISSION_DENIED);
+      expect(await readFile(hook, 'utf8')).toBe(bundledHook);
+      expect(await readFile(script, 'utf8')).toContain('registerMcpAgent');
+      const stored = await documents.get<ManagedAdapterState>('managed-executors', 'agy-cli-909');
+      expect(stored?.active.version).toBe(SOURCE_OWNED_ADAPTER_VERSION);
+      expect(stored?.active.installId).toBe(installed.active?.installId);
+    } finally {
+      await remove();
+      await rm(home, { recursive: true, force: true });
     }
   });
 

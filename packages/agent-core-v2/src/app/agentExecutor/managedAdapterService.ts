@@ -6,7 +6,7 @@ import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiatio
 import { registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { LifecycleScope } from '#/app/scopes';
-import { Error2, ErrorCodes } from '#/errors';
+import { Error2, ErrorCodes, isError2 } from '#/errors';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService } from '#/os/interface/hostProcess';
 import { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
@@ -165,20 +165,27 @@ export class ManagedAdapterService implements IManagedAdapterService {
       if (current?.previous === undefined || current.active === undefined) {
         throw new Error2(ErrorCodes.CONFIG_INVALID, `No previous managed adapter installation for "${id}"`);
       }
-      if (current.previous.targetDir !== undefined) {
+      const moved = current.previous.targetDir !== undefined;
+      if (moved) {
         try {
           await this.restoreOwned(id, current.previous);
         } catch (error) {
-          if (current.active.targetDir !== undefined) await this.restoreOwned(id, current.active).catch(() => undefined);
+          await this.restoreRecordedFiles(id, current.active);
           throw error;
         }
       }
-      const updated = await this.documents.update<ManagedAdapterState>(MANAGED_ADAPTER_SCOPE, id, (state) => {
-        if (state?.previous === undefined || state.active === undefined) return state;
-        return { active: state.previous, previous: state.active };
-      });
+      let updated: ManagedAdapterState | undefined;
+      try {
+        updated = await this.documents.update<ManagedAdapterState>(MANAGED_ADAPTER_SCOPE, id, (state) => {
+          if (state?.previous === undefined || state.active === undefined) return state;
+          return { active: state.previous, previous: state.active };
+        });
+      } catch (error) {
+        if (moved) await this.restoreRecordedFiles(id, current.active);
+        throw error;
+      }
       if (updated?.active === undefined || updated.previous === undefined) {
-        if (current.previous.targetDir !== undefined) await this.restoreOwned(id, current.active).catch(() => undefined);
+        if (moved) await this.restoreRecordedFiles(id, current.active);
         throw new Error2(ErrorCodes.CONFIG_INVALID, `No previous managed adapter installation for "${id}"`);
       }
       this.progress.delete(id);
@@ -232,7 +239,7 @@ export class ManagedAdapterService implements IManagedAdapterService {
             : current?.active === undefined ? { active: installation }
               : { active: installation, previous: current.active });
       } catch (error) {
-        if (!matches) await this.restoreProduction(targetDir, existing, SOURCE_OWNED_ADAPTER_FILES);
+        if (!matches) await this.restoreProductionFiles(targetDir, existing, SOURCE_OWNED_ADAPTER_FILES);
         throw error;
       }
       this.progress.delete(id);
@@ -312,15 +319,40 @@ export class ManagedAdapterService implements IManagedAdapterService {
     files: readonly OwnedAdapterFile[],
   ): Promise<void> {
     await this.fs.mkdir(targetDir, { recursive: true });
-    const written: string[] = [];
+    const attempted: string[] = [];
     try {
       for (const file of writeOrder(files)) {
+        attempted.push(file.name);
         await this.fs.writeBytes(join(targetDir, file.name), file.bytes);
-        written.push(file.name);
       }
     } catch (error) {
-      await this.restoreProduction(targetDir, before, written);
+      await this.restoreProductionFiles(targetDir, before, attempted);
       throw error;
+    }
+  }
+
+  private async restoreRecordedFiles(id: string, installation: ManagedAdapterInstallation): Promise<void> {
+    if (installation.targetDir === undefined) return;
+    try {
+      await this.restoreOwned(id, installation);
+    } catch (error) {
+      throw new Error2(ErrorCodes.CONFIG_INVALID,
+        `Source-owned adapter restore failed after the installation record update failed: ${errorText(error)}`,
+        { cause: error });
+    }
+  }
+
+  private async restoreProductionFiles(
+    targetDir: string,
+    before: ReadonlyMap<string, Uint8Array>,
+    names: readonly string[],
+  ): Promise<void> {
+    try {
+      await this.restoreProduction(targetDir, before, names);
+    } catch (error) {
+      throw new Error2(ErrorCodes.CONFIG_INVALID,
+        `Source-owned adapter restore failed after a partial write: ${errorText(error)}`,
+        { cause: error });
     }
   }
 
@@ -343,7 +375,8 @@ export class ManagedAdapterService implements IManagedAdapterService {
     let stat: { isDirectory: boolean };
     try {
       stat = await this.fs.stat(root);
-    } catch {
+    } catch (error) {
+      if (!absentOwnedFile(error)) throw error;
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'Source-owned adapter snapshot is unavailable');
     }
     if (!stat.isDirectory) throw new Error2(ErrorCodes.CONFIG_INVALID, 'Source-owned adapter snapshot is unavailable');
@@ -351,8 +384,8 @@ export class ManagedAdapterService implements IManagedAdapterService {
     for (const name of SOURCE_OWNED_ADAPTER_FILES) {
       try {
         files.push({ name, bytes: await this.fs.readBytes(join(root, name)) });
-      } catch {
-        continue;
+      } catch (error) {
+        if (!absentOwnedFile(error)) throw error;
       }
     }
     if (files.length === 0) throw new Error2(ErrorCodes.CONFIG_INVALID, 'Source-owned adapter snapshot is unavailable');
@@ -368,8 +401,8 @@ export class ManagedAdapterService implements IManagedAdapterService {
     for (const name of SOURCE_OWNED_ADAPTER_FILES) {
       try {
         found.set(name, await this.fs.readBytes(join(dir, name)));
-      } catch {
-        continue;
+      } catch (error) {
+        if (!absentOwnedFile(error)) throw error;
       }
     }
     return found;
@@ -472,6 +505,14 @@ export class ManagedAdapterService implements IManagedAdapterService {
       await child.dispose();
     }
   }
+}
+
+function absentOwnedFile(error: unknown): boolean {
+  return isError2(error) && error.code === ErrorCodes.OS_FS_NOT_FOUND;
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function ownedRelease(files: readonly OwnedAdapterFile[] | undefined): ManagedAdapterRelease {
