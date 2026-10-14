@@ -571,6 +571,25 @@ it('saves an explicit Codex pipe and does not treat that as a connection or an a
   } finally { await rm(home, { recursive: true, force: true }); }
 });
 
+it('reports a ready Codex driver without a saved selection when the release lands during pipe discovery', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'kiki-codex-status-race-'));
+  const pipe = 'codex-browser-use-11111111-2222-4333-8444-555555555555';
+  try {
+    const spawn = vi.fn(async () => {
+      await seedCodexBridge(home);
+      return { stdout: Readable.from([`${pipe}\r\n`]), stderr: Readable.from(['']), wait: () => Promise.resolve(0), dispose: () => undefined };
+    });
+    const f = fixture({ home, hostProcess: { spawn } as never });
+    const status = browserSetupStatusSchema.parse(await f.setup.status('codex-browser'));
+    expect(status.steps.find((step) => step.id === 'driver')).toMatchObject({ state: 'ready' });
+    expect(status).toMatchObject({ state: 'needs_user_action', reason: 'choose_connection', candidates: [{ browserId: pipe }] });
+    expect(status.connectionId).toBeUndefined();
+    expect(status.browserId).toBeUndefined();
+    expect(f.upsert).not.toHaveBeenCalled();
+    expect(f.connect).not.toHaveBeenCalled();
+  } finally { await rm(home, { recursive: true, force: true }); }
+});
+
 it('prepares the pinned Codex files without marking the extension connected', async () => {
   const home = await mkdtemp(join(tmpdir(), 'kiki-codex-prepare-'));
   try {

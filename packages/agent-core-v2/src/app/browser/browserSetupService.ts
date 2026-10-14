@@ -379,14 +379,14 @@ export class BrowserSetupService implements IBrowserSetupService {
 
   private async codexStatus(): Promise<BrowserSetupStatus> {
     const paths = codexBridgeResourcePaths(this.bootstrap.homeDir);
+    const pipes = await this.discoverCodexPipes();
     const install = await codexBridgeInstallState(this.bootstrap.homeDir);
     const installed = install === 'installed';
-    const pipes = await this.discoverCodexPipes();
+    const installing = this.preparing.has('codex-browser');
+    const error = this.errors.get('codex-browser');
     const saved = await this.savedCodex(installed ? paths.binary : undefined, pipes.names);
     const feature = this.flags.enabled('native_browser');
     const blocked = feature ? undefined : this.featureBlock();
-    const installing = this.preparing.has('codex-browser');
-    const error = this.errors.get('codex-browser');
     const steps: BrowserSetupStep[] = [{
       id: 'driver', state: installed ? 'ready' : 'missing', reason: installed ? undefined : install === 'mismatch' ? 'artifact_mismatch' : 'artifact_missing',
       detail: installed
