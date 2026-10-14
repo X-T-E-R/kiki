@@ -1808,6 +1808,7 @@ const TRANSCRIPT_ONLY_STATE_EVENT_TYPES: ReadonlySet<string> = new Set([
   'context.clear',
   'context.apply_compaction',
   'context.undo',
+  'tools.update_store',
 ]);
 
 function isVolatileSignal(type: string): boolean {

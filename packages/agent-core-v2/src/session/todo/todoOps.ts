@@ -25,6 +25,7 @@ const toolsUpdateStoreSchema = z.object({ key: z.string(), value: z.unknown() })
 export class ToolsUpdateStore extends Event2<z.infer<typeof toolsUpdateStoreSchema>> {
   static override readonly type = 'tools.update_store';
   static override readonly durable = true;
+  static override readonly observable = true;
   static override readonly schema = toolsUpdateStoreSchema;
 }
 export interface ToolsUpdateStore extends z.infer<typeof toolsUpdateStoreSchema> {}

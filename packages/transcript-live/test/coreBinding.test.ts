@@ -33,7 +33,8 @@ import { retainedAttachmentsFromContent, buildPromptContent } from '@kiki/sessio
 import { projectPromptContentParts } from '../src/promptProjection';
 import { MessageStepRequest } from '@kiki/agent-core-v2/agent/loop/stepRequest';
 import { ExternalTurnRecorder } from '@kiki/agent-core-v2/agent/execution/externalTurnRecorder';
-import { IAgentContextMemoryService, IAgentUsageService, IEventDispatcher, IWireService } from '@kiki/agent-core-v2';
+import { IAgentContextMemoryService, IAgentStateService, IAgentUsageService, IEventDispatcher, IWireService } from '@kiki/agent-core-v2';
+import { ToolsUpdateStore, todoKey } from '@kiki/agent-core-v2/session/todo/todoOps';
 import type { AgentExecutorAgentContext } from '@kiki/agent-core-v2/app/agentExecutor/agentExecutor';
 import { mapAcpSessionNotification } from '../../acp-client/src/events';
 import { DisposableStore } from '@kiki/agent-core-v2/_base/di/lifecycle';
@@ -2265,6 +2266,50 @@ describe('bindSessionTranscript', () => {
     })]);
     expect(store.getAgent('main')?.getPrompt('target')).toMatchObject({ status, queuePosition: undefined });
     expect(store.getAgent('main')?.getPrompt('adjacent')).toMatchObject({ status: 'queued', queuePosition: 1 });
+  });
+
+  it('projects a durable tool-store update through the live bus, the resident snapshot, and a cold replay of that wire', async () => {
+    const disposables = new DisposableStore();
+    onTestFinished(() => disposables.dispose());
+    const journal: TranscriptWireRecord[] = [];
+    const wire = stubWire();
+    vi.spyOn(wire, 'appendRecord').mockImplementation((record) => {
+      journal.push(record as TranscriptWireRecord);
+    });
+    const ix = createServices(disposables, {
+      strict: true,
+      base: [registerStateServices],
+      additionalServices: (reg) => {
+        reg.defineInstance(IWireService, wire);
+        reg.definePartialInstance(IAgentBlobService, { offloadParts: async (parts) => parts });
+        reg.define(IEventBus, EventBusService);
+        reg.define(IEventDispatcher, EventDispatcherService);
+      },
+    });
+    ix.get(IAgentStateService).contributeState(todoKey);
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    disposables.add(ix.get(IEventBus).subscribe((event) => main.bus.emit(event)));
+    const store = new TranscriptStore('session_ecfe4970');
+    const binding = bindSessionTranscript(
+      store,
+      fakeSession(new SessionInteractionService(new TestSessionStateService()), agents),
+    );
+    onTestFinished(() => binding.dispose());
+    const items = [{ title: 'RUNTIME-TODO-IDENTITY', status: 'in_progress' as const }];
+    await ix.get(IEventDispatcher).dispatch(new ToolsUpdateStore({ key: 'todo', value: items }));
+
+    expect(store.getAgent('main')?.getTodo('todo')?.items).toEqual(items);
+    const project = (snapshot: AgentTranscriptSnapshot) =>
+      projectAgentTranscriptView(createViewState('session_ecfe4970'), 'main', snapshot);
+    expect(project(store.getAgent('main')!.snapshot()).todos).toEqual(items);
+
+    const coldTranscript = new AgentTranscript('main');
+    const coldReducer = new TranscriptFactReducer(coldTranscript);
+    const coldAdapter = new TranscriptWireAdapter('main');
+    for (const record of journal) coldReducer.apply(coldAdapter.add(record));
+    expect(project(coldTranscript.snapshot()).todos).toEqual(items);
+    expect(journal).toEqual([expect.objectContaining({ type: 'tools.update_store', key: 'todo', value: items })]);
   });
 
   it('projects a scheduled enqueue before the runtime list owns it, then moves and settles it', async () => {
