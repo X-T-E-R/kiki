@@ -4,6 +4,9 @@ import { join } from 'node:path';
 import { afterEach,beforeEach,describe,it,expect,vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { createRequire } from 'node:module';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ISessionManager, ISessionMetadata, ISessionInteractionService, IModelCatalogMutationService, IAgentLifecycleService, IAgentProfileService, IAgentLoopService, IAgentContextMemoryService } from '@kiki/agent-core-v2';
 import { createServer } from 'node:http';
 import { ISessionApprovalService } from '@kiki/agent-core-v2/session/approval/approval';
@@ -33,6 +36,40 @@ async function terminal(client:Client,result:any){for(let attempt=0;attempt<100&
 async function waiting(client:Client,result:any){for(let attempt=0;attempt<100&&['accepted','running'].includes(result.state);attempt++){
   await new Promise(resolve=>setTimeout(resolve,20));result=await call(client,'kiki_operation',{operation_id:result.operation_id});}return result;}
 describe('native external clients',()=>{
+  it('boots the actual CLI from the generated home-scoped stdio config without copying credentials', { timeout: 60_000 }, async () => {
+    const created = await owner('', { name: 'Stdio client', workspace, mode: 'yolo', tools: ['Read'] });
+    const config = await owner(`/${created.connection.id}/stdio`, {});
+    expect(config).toEqual({ command: 'kiki', args: ['mcp', '--client', created.connection.id, '--tools', '--home', home] });
+    expect(created.stdio).toEqual(config);
+    expect(config).not.toHaveProperty('env');
+    const require = createRequire(import.meta.url);
+    const cli = fileURLToPath(new URL('../../../apps/kimi-code/src/main.ts', import.meta.url));
+    const loader = new URL('../../../build/register-raw-text-loader.mjs', import.meta.url).href;
+    const client = new Client({ name: 'manual-stdio-fixture', version: '1' });
+    clients.push(client);
+    await client.connect(new StdioClientTransport({ command: process.execPath,
+      args: ['--import', pathToFileURL(require.resolve('tsx/esm')).href, '--import', loader, cli, ...config.args],
+      env: { ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)),
+        TSX_TSCONFIG_PATH: fileURLToPath(new URL('../../../apps/kimi-code/tsconfig.dev.json', import.meta.url)) }, cwd: workspace,
+    }));
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toContain('kiki_session');
+    expect((await owner(`/${created.connection.id}/sessions`)).sessions).toEqual([]);
+    const selected = await call(client, 'kiki_session', { action: 'new', _kiki: { idempotency_key: 'stdio-session' } });
+    const result = await terminal(client, await call(client, 'Read', { path: join(workspace, 'source.txt'), _kiki: { session_ref: selected.session_ref } }));
+    expect(result.state).toBe('completed');
+    expect(result.result.isError).not.toBe(true);
+    expect(JSON.stringify(result.result.output)).toContain('native source');
+    const sessions = (await owner(`/${created.connection.id}/sessions`)).sessions;
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({ connectionId: created.connection.id, sessionRef: selected.session_ref });
+    await owner(`/${created.connection.id}`, { enabled: false }, 'PATCH');
+    await expect(client.listTools()).rejects.toThrow();
+    await owner(`/${created.connection.id}`, { enabled: true }, 'PATCH');
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toContain('Read');
+    await owner(`/${created.connection.id}`, undefined, 'DELETE');
+    await expect(client.listTools()).rejects.toThrow();
+  });
+
   it('runs model-free native tools, splits conversations, persists records and retries without duplicate side effects',async()=>{
     const {connection}=await owner('',{name:'Example client',workspace,mode:'yolo'});
     const {client,mcpUrl,token}=await connect(connection.id);

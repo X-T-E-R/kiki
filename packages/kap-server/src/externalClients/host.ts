@@ -136,7 +136,7 @@ export class ExternalClientHost {
     }
     return {connection:next};
   }
-  stdio(id:string){return {command:'kiki',args:['mcp','--client',id,'--tools']};}
+  stdio(id:string){return {command:'kiki',args:['mcp','--client',id,'--tools','--home',this.core.accessor.get(IBootstrapService).homeDir]};}
   async resolveGrant(id:string):Promise<ExternalClientGrant|null>{
     const connection=await this.store.active(id).catch(()=>undefined);
     return connection===undefined?null:{id:connection.id,resource:'kiki',audience:'kiki',scopes:['tools'],metadata:{name:connection.name}};
