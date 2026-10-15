@@ -97,9 +97,10 @@ export function UsageSessionPanel({
 
   const query = useInfiniteQuery({
     queryKey: ['usage-v2', 'trace', filters, timezoneOffsetMinutes],
-    queryFn: ({ pageParam }) =>
+    queryFn: ({ pageParam, signal }) =>
       client.getUsage(
         buildUsageApiQuery(filters, { timezoneOffsetMinutes, pageSize: PAGE_SIZE, pageToken: pageParam }),
+        { signal },
       ),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) =>

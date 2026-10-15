@@ -77,7 +77,7 @@ vi.mock('../../state/connection', () => {
       patchConfig: harness.patchConfig,
       klient: { rest: { executors: { getModels: harness.getExecutorModels } } },
   };
-  return { useConnection: () => ({ scopeId: harness.scopeId, client,
+  const connection = () => ({ scopeId: harness.scopeId, client,
     klient: {
       session: () => ({ getAgentExecutor: harness.getAgentExecutor }),
       global: {
@@ -87,7 +87,8 @@ vi.mock('../../state/connection', () => {
         },
       },
     },
-  }) };
+  });
+  return { useConnection: connection, useOptionalConnection: connection };
 });
 
 vi.mock('../ConversationShell', () => ({

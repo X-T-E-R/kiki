@@ -129,9 +129,23 @@ interface SessionLoadResult {
   readonly persisted: PersistentSessionRecords;
   readonly scannedRecordCount: number;
   readonly incompleteReason: UsageResponse['reliability']['incomplete_reason'];
+  readonly targetedAgentIds?: readonly string[];
+}
+
+export interface AgentUsageProjection {
+  readonly records: readonly NormalizedUsageRecord[];
+  readonly complete: boolean;
+}
+
+export interface AgentUsageReadOptions {
+  readonly signal?: AbortSignal;
+  readonly maxRecords?: number;
+  readonly maxBytes?: number;
+  readonly deadlineAt?: number;
 }
 
 interface ScanBudget {
+  readonly signal?: AbortSignal;
   remainingRecords: number;
   readonly deadlineAt: number;
   sourcesComplete: boolean;
@@ -213,6 +227,9 @@ export class UsagePageTokenMismatchError extends Error {}
 export class UsageAggregationService {
   private readonly cache = new Map<string, SessionCacheEntry>();
   private readonly sessionFlights = new Map<string, Promise<SessionLoadResult>>();
+  private readonly queryFlights = new Map<string, {
+    controller: AbortController; promise: Promise<UsageResponse>; waiters: number; settled: boolean;
+  }>();
   private readonly limits: UsageAggregationLimits;
   private cachedRecordCount = 0;
   private cachedBytes = 0;
@@ -304,10 +321,12 @@ export class UsageAggregationService {
   ) {
     this.limits = { ...DEFAULT_LIMITS, ...limits };
     this.sourceSubscription = sourceChanges?.onDidChange((key) => {
-      this.sourceRevision++;
-      if (key === undefined) {
+      if (key === undefined || this.sourceRevisions.size >= 4096) {
+        this.sourceRevision++;
+        this.sourceRevisions.clear();
         for (const entry of this.cache.values()) entry.verifiedAt = undefined;
       } else {
+        this.sourceRevisions.set(key, (this.sourceRevisions.get(key) ?? 0) + 1);
         const entry = this.cache.get(key);
         if (entry !== undefined) entry.verifiedAt = undefined;
       }
@@ -315,15 +334,22 @@ export class UsageAggregationService {
   }
 
   private sourceRevision = 0;
+  private readonly sourceRevisions = new Map<string, number>();
   private readonly sourceSubscription?: { dispose(): void };
 
   dispose(): void {
     this.sourceSubscription?.dispose();
+    for (const flight of this.queryFlights.values()) flight.controller.abort();
+    this.queryFlights.clear();
   }
 
-  private rememberVerified(key: string, persisted: PersistentSessionRecords, revision: number): void {
+  private revisionOf(key: string): string {
+    return `${this.sourceRevision}:${this.sourceRevisions.get(key) ?? 0}`;
+  }
+
+  private rememberVerified(key: string, persisted: PersistentSessionRecords, revision: string): void {
     const entry = this.cache.get(key);
-    if (entry?.complete && entry.persisted.agents === persisted.agents && revision === this.sourceRevision &&
+    if (entry?.complete && entry.persisted.agents === persisted.agents && revision === this.revisionOf(key) &&
       (entry.verifiedAt === undefined || this.now() - entry.verifiedAt >= SOURCE_RECHECK_MS)) {
       entry.verifiedAt = this.now();
     }
@@ -331,6 +357,49 @@ export class UsageAggregationService {
 
   cacheStatus(): { readonly entries: number; readonly records: number } {
     return { entries: this.cache.size, records: this.cachedRecordCount };
+  }
+
+  async readAgentUsage(
+    workspaceId: string,
+    sessionId: string,
+    agentIds: readonly string[],
+    options: AgentUsageReadOptions = {},
+  ): Promise<Readonly<Record<string, AgentUsageProjection>>> {
+    const summary: SessionSummary = { id: sessionId, workspaceId, createdAt: 0, updatedAt: 0, archived: false };
+    const key = sessionKey(summary);
+    options.signal?.throwIfAborted();
+    for (;;) {
+      const pending = this.sessionFlights.get(key);
+      if (pending === undefined) break;
+      try {
+        await waitForSource(pending, options.signal);
+      } catch (error) {
+        options.signal?.throwIfAborted();
+        if (!(error instanceof Error) || error.name !== 'AbortError') throw error;
+      }
+    }
+    options.signal?.throwIfAborted();
+    const ids = [...new Set(agentIds)];
+    const flight = this.loadSessionIncremental(
+      summary, options.maxRecords ?? Infinity, options.deadlineAt ?? Infinity,
+      undefined, false, undefined, ids, options,
+    );
+    this.sessionFlights.set(key, flight);
+    try {
+      const result = await flight;
+      this.cacheSession(key, result.persisted, false);
+      const rows: Record<string, AgentUsageProjection> = {};
+      for (const id of ids) {
+        const checkpoint = result.persisted.agents[id];
+        rows[id] = {
+          records: result.session.records.filter((record) => record.sourceAgentId === id),
+          complete: result.session.complete && checkpoint?.valid === true && checkpoint.offset === checkpoint.size,
+        };
+      }
+      return rows;
+    } finally {
+      if (this.sessionFlights.get(key) === flight) this.sessionFlights.delete(key);
+    }
   }
 
   async resetExportRead(): Promise<void> {
@@ -414,15 +483,38 @@ export class UsageAggregationService {
     return { complete, reason: complete ? null : 'retained-incomplete', sources };
   }
 
-  async query(raw: UsageQuery): Promise<UsageResponse> {
-    await this.core.accessor.get(IModelPricingService).ready;
-    await this.prepareInventory();
+  async query(raw: UsageQuery, signal?: AbortSignal): Promise<UsageResponse> {
+    signal?.throwIfAborted();
+    const key = JSON.stringify(Object.entries(raw).sort(([left], [right]) => left.localeCompare(right)));
+    let flight = this.queryFlights.get(key);
+    if (flight === undefined || flight.controller.signal.aborted) {
+      const controller = new AbortController();
+      const created = { controller, promise: Promise.resolve(undefined as unknown as UsageResponse), waiters: 0, settled: false };
+      created.promise = this.querySources(raw, controller.signal).finally(() => {
+        created.settled = true;
+        if (this.queryFlights.get(key) === created) this.queryFlights.delete(key);
+      });
+      flight = created;
+      this.queryFlights.set(key, flight);
+    }
+    flight.waiters++;
+    try { return await waitForSource(flight.promise, signal); }
+    finally {
+      flight.waiters--;
+      if (flight.waiters === 0 && !flight.settled) flight.controller.abort();
+    }
+  }
+
+  private async querySources(raw: UsageQuery, signal: AbortSignal): Promise<UsageResponse> {
+    await waitForSource(this.core.accessor.get(IModelPricingService).ready, signal);
+    await waitForSource(this.prepareInventory(), signal);
     const now = this.now();
     this.pruneExpired(now);
     const query = normalizeQuery(raw, now);
     const fingerprint = queryFingerprint(query);
     const cursor = raw.page_token === undefined ? undefined : decodePageToken(raw.page_token, fingerprint);
     const budget: ScanBudget = {
+      signal,
       remainingRecords: this.limits.wireRecordBudget,
       deadlineAt: now + this.limits.deadlineMs,
       sourcesComplete: true,
@@ -431,6 +523,7 @@ export class UsageAggregationService {
     const listed = await this.listSessions(query, budget);
     const sessions: SessionRecords[] = [];
     sessionLoop: for (let offset = 0; offset < listed.items.length; offset += CHECKPOINT_READ_CONCURRENCY) {
+      signal.throwIfAborted();
       if (this.now() >= budget.deadlineAt) {
         budget.incompleteReason = 'deadline';
         break;
@@ -442,7 +535,7 @@ export class UsageAggregationService {
         const persisted = cached?.persisted ?? await this.readPersistentSession(
           this.core.accessor.get(IFileSystemStorageService), key,
         );
-        const revision = this.sourceRevision;
+        const revision = this.revisionOf(key);
         const current = await this.cacheIsCurrent(summary, persisted, this.rescan.state !== 'running');
         if (current && !cached?.view && this.rescan.state !== 'running') {
           this.cacheSessionRange(key, persisted, true, query.range);
@@ -501,6 +594,7 @@ export class UsageAggregationService {
     let before: string | undefined;
     let uncachedSessions = 0;
     for (;;) {
+      budget.signal?.throwIfAborted();
       const page = await index.listRecent({
         workspaceIds: query.workspaceIds.length === 0 ? undefined : query.workspaceIds,
         includeArchived: true,
@@ -537,6 +631,7 @@ export class UsageAggregationService {
     prepared?: PreparedSession,
     range?: RangeBounds,
   ): Promise<SessionRecords | undefined> {
+    budget.signal?.throwIfAborted();
     const cacheKey = sessionKey(summary);
     const cached = prepared === undefined ? this.readCachedSession(cacheKey, range) : undefined;
     if (this.rescan.state === 'running') {
@@ -553,17 +648,29 @@ export class UsageAggregationService {
     if (prepared === undefined && cached?.complete && await this.cacheIsCurrent(summary, cached.persisted, !preserveMissingSources)) {
       return { summary, records: cached.persisted.records, complete: true, deleted: false };
     }
-    const revision = this.sessionFlights.has(cacheKey) ? undefined : this.sourceRevision;
+    const revision = this.sessionFlights.has(cacheKey) ? undefined : this.revisionOf(cacheKey);
     let flight = this.sessionFlights.get(cacheKey);
     if (flight === undefined) {
-      flight = this.loadSessionIncremental(summary, budget.remainingRecords, budget.deadlineAt, undefined, preserveMissingSources, prepared?.view ? undefined : prepared?.persisted);
+      flight = this.loadSessionIncremental(summary, budget.remainingRecords, budget.deadlineAt, undefined, preserveMissingSources, prepared?.view ? undefined : prepared?.persisted, undefined, { signal: budget.signal });
       this.sessionFlights.set(cacheKey, flight);
       const clearFlight = (): void => {
         if (this.sessionFlights.get(cacheKey) === flight) this.sessionFlights.delete(cacheKey);
       };
       void flight.then(clearFlight, clearFlight);
     }
-    const result = await flight;
+    let result: SessionLoadResult;
+    try {
+      result = await waitForSource(flight, budget.signal);
+    } catch (error) {
+      budget.signal?.throwIfAborted();
+      if (!(error instanceof Error) || error.name !== 'AbortError') throw error;
+      if (this.sessionFlights.get(cacheKey) === flight) this.sessionFlights.delete(cacheKey);
+      return this.readSession(summary, budget, preserveMissingSources, undefined, range);
+    }
+    if (result.targetedAgentIds !== undefined) {
+      if (this.sessionFlights.get(cacheKey) === flight) this.sessionFlights.delete(cacheKey);
+      return this.readSession(summary, budget, preserveMissingSources, undefined, range);
+    }
     if (result.scannedRecordCount > budget.remainingRecords) {
       budget.incompleteReason = 'record_budget';
       return undefined;
@@ -610,25 +717,30 @@ export class UsageAggregationService {
     onScannedRecord?: () => void,
     preserveMissingSources = false,
     prepared?: PersistentSessionRecords,
+    targetedAgentIds?: readonly string[],
+    options: AgentUsageReadOptions = {},
   ): Promise<SessionLoadResult> {
     const storage = this.core.accessor.get(IFileSystemStorageService);
     const cacheKey = sessionKey(summary);
     const persisted = this.readCachedSession(cacheKey)?.persisted ?? prepared ?? await this.readPersistentSession(storage, cacheKey);
     const workspaceScope = workspacePersistenceScope('sessions', summary.workspaceId);
     const sessionScope = sessionScopeOf(workspaceScope, summary.id);
-    const agentIds = await storage.list(`${sessionScope}/agents`);
+    options.signal?.throwIfAborted();
+    const agentIds = targetedAgentIds ?? await storage.list(`${sessionScope}/agents`);
     const agentSet = new Set(agentIds);
     if (preserveMissingSources && Object.keys(persisted.agents).some((agent) => !agentSet.has(agent))) return { session: { summary, records: persisted.records, complete: false, deleted: false }, persisted, scannedRecordCount: 0, incompleteReason: null };
-    let records = [...persisted.records].filter(
+    let records = targetedAgentIds === undefined ? persisted.records.filter(
       (record) => record.sourceAgentId === undefined || agentSet.has(record.sourceAgentId),
-    );
-    const agents: Record<string, WireCheckpoint> = {};
+    ) : [...persisted.records];
+    const agents: Record<string, WireCheckpoint> = targetedAgentIds === undefined ? {} : { ...persisted.agents };
     let scannedRecordCount = 0;
     let incompleteReason: UsageResponse['reliability']['incomplete_reason'] = null;
     let complete = true;
+    let remainingBytes = options.maxBytes ?? Infinity;
 
     for (const agentId of agentIds) {
-      if (this.now() >= deadlineAt) {
+      options.signal?.throwIfAborted();
+      if (this.now() >= deadlineAt || remainingBytes <= 0) {
         incompleteReason = 'deadline';
         complete = false;
         break;
@@ -672,13 +784,16 @@ export class UsageAggregationService {
         storage,
         wireScope,
         offset,
-        size,
+        Math.min(size, offset + remainingBytes),
         recordLimit - scannedRecordCount,
         deadlineAt,
         this.now,
         onScannedRecord,
         agentId,
+        options.signal,
       );
+      remainingBytes -= Math.min(size - offset, remainingBytes);
+      if (tail.offset < size) complete = false;
       scannedRecordCount += tail.scannedRecordCount;
       for (const record of tail.records) records.push(record);
       const nextOffset = tail.offset;
@@ -717,6 +832,7 @@ export class UsageAggregationService {
           current.offset !== previous.offset || current.size !== previous.size ||
           current.mtimeMs !== previous.mtimeMs || current.boundaryHash !== previous.boundaryHash);
       });
+    options.signal?.throwIfAborted();
     let stored = !changed;
     if (changed) {
       try {
@@ -736,6 +852,7 @@ export class UsageAggregationService {
       persisted: stored ? next : persisted,
       scannedRecordCount,
       incompleteReason,
+      targetedAgentIds,
     };
   }
 
@@ -957,7 +1074,8 @@ export class UsageAggregationService {
           break sessionLoop;
         }
         processedRecords += 1;
-        if (processedRecords % 1024 === 0) await yieldToEventLoop();
+        if (processedRecords % 1024 === 0) await yieldToEventLoop(undefined, { signal: budget.signal });
+        budget.signal?.throwIfAborted();
         if (!inRange(record.time, query.range) || !matchesFilters(record, query)) continue;
         const cost = pricing.calculate(record.model, record.usage);
         addAggregate(total, record, cost);
@@ -1207,6 +1325,18 @@ interface WireTailResult {
   readonly incompleteReason: UsageResponse['reliability']['incomplete_reason'];
 }
 
+async function waitForSource<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  signal?.throwIfAborted();
+  if (signal === undefined) return promise;
+  let abort!: () => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    abort = () => { reject(signal.reason ?? new DOMException('The request was aborted', 'AbortError')); };
+    signal.addEventListener('abort', abort, { once: true });
+  });
+  try { return await Promise.race([promise, aborted]); }
+  finally { signal.removeEventListener('abort', abort); }
+}
+
 async function readWireTail(
   storage: IFileSystemStorageService,
   scope: string,
@@ -1217,6 +1347,7 @@ async function readWireTail(
   now: () => number,
   onScannedRecord?: () => void,
   sourceAgentId?: string,
+  signal?: AbortSignal,
 ): Promise<WireTailResult> {
   if (startOffset >= size) {
     return {
@@ -1233,14 +1364,20 @@ async function readWireTail(
   let scannedRecordCount = 0;
   let valid = true;
   let readFailed = false;
+  let yieldAt = performance.now() + 8;
   let incompleteReason: UsageResponse['reliability']['incomplete_reason'] = null;
   const records: NormalizedUsageRecord[] = [];
+  const deadline = new AbortController();
+  const timer = Number.isFinite(deadlineAt) ? setTimeout(() => { deadline.abort(); }, Math.max(0, deadlineAt - now())) : undefined;
+  const readSignal = signal === undefined ? deadline.signal : AbortSignal.any([signal, deadline.signal]);
   try {
     for await (const chunkValue of storage.readStream(
       scope,
       AGENT_WIRE_RECORD_KEY,
       { start: startOffset, end: size - 1 },
+      { signal: readSignal, chunkBytes: 64 << 10 },
     )) {
+      signal?.throwIfAborted();
       const chunk = Buffer.from(chunkValue);
       pending = pending.length === 0 ? chunk : Buffer.concat([pending, chunk]);
       for (;;) {
@@ -1255,29 +1392,37 @@ async function readWireTail(
           break;
         }
         const line = pending.subarray(0, newline);
+        if (line.length > 0) {
+          try {
+            const raw = JSON.parse(line.toString('utf8')) as WireRecord;
+            if (raw.type === 'usage.record') {
+              const record = normalizeRecord(raw, sourceAgentId);
+              if (record === undefined) valid = false;
+              else records.push(record);
+            }
+          } catch {
+            valid = false;
+          }
+        }
         pending = pending.subarray(newline + 1);
         offset += newline + 1;
         scannedRecordCount += 1;
         onScannedRecord?.();
-        if (scannedRecordCount % 1024 === 0) await yieldToEventLoop();
-        if (line.length === 0) continue;
-        let raw: WireRecord;
-        try {
-          raw = JSON.parse(line.toString('utf8')) as WireRecord;
-        } catch {
-          valid = false;
-          continue;
+        if (scannedRecordCount % 1024 === 0 || (scannedRecordCount % 128 === 0 && performance.now() >= yieldAt)) {
+          await yieldToEventLoop(undefined, { signal: readSignal });
+          yieldAt = performance.now() + 8;
         }
-        if (raw.type !== 'usage.record') continue;
-        const record = normalizeRecord(raw, sourceAgentId);
-        if (record === undefined) valid = false;
-        else records.push(record);
       }
       if (incompleteReason !== null) break;
     }
   } catch {
+    signal?.throwIfAborted();
     readFailed = true;
+    if (deadline.signal.aborted) incompleteReason = 'deadline';
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
+  signal?.throwIfAborted();
   return {
     records,
     offset,
@@ -1571,10 +1716,12 @@ function addAggregate(target: AggregateAccumulator, record: NormalizedUsageRecor
   if (usageKnown === false) target.missingRecords += 1;
   else if (legacyZero) target.legacyZeroRecords += 1;
   else target.knownRecords += 1;
-  target.usage.inputOther += usage.inputOther;
-  target.usage.output += usage.output;
-  target.usage.inputCacheRead += usage.inputCacheRead;
-  target.usage.inputCacheCreation += usage.inputCacheCreation;
+  if (!tokensUnknown) {
+    target.usage.inputOther += usage.inputOther;
+    target.usage.output += usage.output;
+    target.usage.inputCacheRead += usage.inputCacheRead;
+    target.usage.inputCacheCreation += usage.inputCacheCreation;
+  }
   if (cost === undefined || tokensUnknown) {
     target.costUnknown = true;
   } else {

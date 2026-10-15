@@ -44,7 +44,7 @@ const harness = vi.hoisted(() => {
     getState: () => agents['main'],
     getAgentState: (agentId: string) => agents[agentId],
     subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
-    subscribeAgent: (_agentId: string, listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+    subscribeAgent: vi.fn((_agentId: string, listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; }),
   };
   const registry = {
     add: () => undefined,
@@ -62,6 +62,7 @@ const harness = vi.hoisted(() => {
     loadTranscriptEntities,
     retryOpen,
     resync,
+    subscribeAgent: controller.subscribeAgent,
     /** What the mocked `useOptionalControllerRegistry` hands back per render. */
     holder: { value: registry as unknown },
     emit: () => { for (const listener of listeners) listener(); },
@@ -123,6 +124,7 @@ beforeEach(() => {
   harness.loadTranscriptEntities.mockReset();
   harness.retryOpen.mockClear();
   harness.resync.mockClear();
+  harness.subscribeAgent.mockClear();
   for (const agentId of Object.keys(harness.agents)) delete harness.agents[agentId];
   harness.agents['main'] = viewState();
   harness.holder.value = harness.registry;
@@ -167,6 +169,15 @@ function todosStatus(): string | undefined {
   return element.querySelector<HTMLElement>('[data-agent-todos-status]')?.dataset['agentTodosStatus'];
 }
 
+it('observes tree metric revisions without subscribing every historical agent transcript', async () => {
+  getAgentCapabilities.mockResolvedValue({
+    context: 'live', owner: { agent_id: 'main' }, available: true,
+    targets: [], tools: [], skills: [], metrics: { main: UNKNOWN_AGENT_PANEL_METRICS },
+  });
+  await render('main', { part: 'overview', forest: forestOf(['main', 'child-a', 'child-b', 'child-c']) });
+  expect(harness.subscribeAgent).not.toHaveBeenCalled();
+});
+
 it('defers agent panel reads until visible and stops reads while hidden', async () => {
   getAgentCapabilities.mockResolvedValue({
     context: 'live', owner: { agent_id: 'child' }, available: false,
@@ -177,7 +188,7 @@ it('defers agent panel reads until visible and stops reads while hidden', async 
   await render('child', { visible: true });
   expect(getAgentCapabilities.mock.calls.map((call) => call[0])).toEqual([
     { session_id: 'session', agent_id: 'child' },
-    { session_id: 'session', agent_id: 'child', metrics_settle: true, metrics_agent_ids: ['child'] },
+    { session_id: 'session', agent_id: 'child', metrics_settle: true, metrics_only: true, metrics_agent_ids: ['child'] },
   ]);
   await render('child', { visible: false });
   expect(getAgentCapabilities).toHaveBeenCalledTimes(2);
@@ -637,9 +648,9 @@ it('paints the overview before a cold settle and then shows the completed tokens
   expect(element.querySelector('[data-overview-fact="cost"]')).toBeNull();
   expect(element.querySelector('[data-overview-fact="tokens"]')).toBeNull();
   expect(getAgentCapabilities).toHaveBeenCalledTimes(2);
-  expect(getAgentCapabilities.mock.calls[0]?.[0]).toEqual({ session_id: 'session', agent_id: 'main' });
+  expect(getAgentCapabilities.mock.calls[0]?.[0]).toEqual({ session_id: 'session', agent_id: 'main', metrics_only: true });
   expect(getAgentCapabilities.mock.calls[1]?.[0]).toEqual({
-    session_id: 'session', agent_id: 'main', metrics_settle: true, metrics_agent_ids: ['main'],
+    session_id: 'session', agent_id: 'main', metrics_settle: true, metrics_only: true, metrics_agent_ids: ['main'],
   });
   await act(async () => {
     resolveSettle?.({
@@ -665,7 +676,7 @@ it('settles only the missing tree agents once, then keeps the total on a local s
   await render('main', { part: 'overview', forest: forestOf(['main', 'child']), renderOverview: renderOverviewLayout });
   expect(element.querySelector('[data-usage-scope-incomplete]')).not.toBeNull();
   expect(getAgentCapabilities.mock.calls[1]?.[0]).toEqual({
-    session_id: 'session', agent_id: 'main', metrics_settle: true, metrics_agent_ids: ['child', 'main'],
+    session_id: 'session', agent_id: 'main', metrics_settle: true, metrics_only: true, metrics_agent_ids: ['child', 'main'],
   });
   const readsBeforeSwitch = getAgentCapabilities.mock.calls.length;
   await act(async () => { element.querySelector<HTMLButtonElement>('[data-usage-scope="tree"]')?.click(); });
@@ -687,7 +698,7 @@ it('settles only the missing tree agents once, then keeps the total on a local s
   expect(getAgentCapabilities).toHaveBeenCalledTimes(readsBeforeSwitch);
 });
 
-it('aborts a cold settle when the panel hides and does not start another', async () => {
+it('aborts a cold settle while hidden and resumes the missing projection on reopen', async () => {
   let settleSignal: AbortSignal | undefined;
   getAgentCapabilities.mockImplementation((query: { metrics_settle?: boolean }, signal: AbortSignal) => {
     if (query.metrics_settle === true) {
@@ -707,7 +718,8 @@ it('aborts a cold settle when the panel hides and does not start another', async
   expect(getAgentCapabilities).toHaveBeenCalledTimes(reads);
   await render('main', { part: 'overview', visible: true });
   await flushRender();
-  expect(getAgentCapabilities.mock.calls.filter((call) => call[0].metrics_settle === true)).toHaveLength(1);
+  expect(getAgentCapabilities.mock.calls.filter((call) => call[0].metrics_settle === true)).toHaveLength(2);
+  expect(settleSignal?.aborted).toBe(false);
 });
 
 it('reads the completed cache when an idle panel reopens before the header becomes stale', async () => {
@@ -918,7 +930,7 @@ it('updates a settled agent when its usage grows and does not scan an unchanged 
   });
   await render('main', { part: 'overview', forest: forestOf(['main']) });
   expect(settleCalls()).toEqual([
-    { session_id: 'session', agent_id: 'main', metrics_settle: true, metrics_agent_ids: ['main'] },
+    { session_id: 'session', agent_id: 'main', metrics_settle: true, metrics_only: true, metrics_agent_ids: ['main'] },
   ]);
   pending[0]?.({
     context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
@@ -934,8 +946,8 @@ it('updates a settled agent when its usage grows and does not scan an unchanged 
   await act(async () => { harness.emit(); });
   await flushRender();
   expect(settleCalls()).toEqual([
-    { session_id: 'session', agent_id: 'main', metrics_settle: true, metrics_agent_ids: ['main'] },
-    { session_id: 'session', agent_id: 'main', metrics_settle: true, metrics_agent_ids: ['main'] },
+    { session_id: 'session', agent_id: 'main', metrics_settle: true, metrics_only: true, metrics_agent_ids: ['main'] },
+    { session_id: 'session', agent_id: 'main', metrics_settle: true, metrics_only: true, metrics_agent_ids: ['main'] },
   ]);
   pending[1]?.({
     context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],

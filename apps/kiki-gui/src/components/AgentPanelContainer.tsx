@@ -97,10 +97,12 @@ function usePanelSourceRevisions(
   idsRef.current = ids;
   const subscribe = useCallback((listener: () => void) => {
     if (controller === undefined) return () => {};
-    const unsubs = idsRef.current.map((id) => id === MAIN_AGENT_ID
-      ? controller.subscribe(listener)
-      : controller.subscribeAgent(id, listener));
-    return () => { for (const unsub of unsubs) unsub(); };
+    // The forest and each agent's panel revision are already read from the
+    // controller snapshot below. Subscribing every historical agent here would
+    // turn metrics observation into transcript turn demand, causing one full
+    // ordered-view reattach per roster row. The main publication is the stable
+    // invalidation point; it also keeps this observer read-only for child rows.
+    return controller.subscribe(listener);
   }, [controller, idsKey]);
   const read = useCallback(
     () => idsRef.current.map((id) => sourceRevisionFor(controller, forestRef.current, id)).join('\n'),
@@ -207,7 +209,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   const retainedNotesRef = useRef<Map<string, { notes?: TranscriptTodoNotes; meta?: TranscriptTodoNotesMeta }>>(new Map());
   const { t } = useI18n();
   const navigate = useNavigate();
-  const query = { session_id: state.sessionId, agent_id: agentId };
+  const query = { session_id: state.sessionId, agent_id: agentId, metrics_only: part === 'overview' || part === 'usage' ? true : undefined };
   const node = forest.byId[agentId];
   const { controller, agentState } = useAgentViewState(state.sessionId, agentId);
 
@@ -427,6 +429,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
         session_id: state.sessionId,
         agent_id: agentId,
         metrics_settle: true,
+        metrics_only: true,
         metrics_agent_ids: ids,
       }, { signal: abortController.signal });
       void request.catch(() => {});
@@ -507,15 +510,18 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     setSettleBlock({ identity: metricsIdentity, token: requestToken });
   }, [visible, requestToken, requestIds.length, metricsIdentity]);
 
-  // When an idle panel reopens under a settleBlock without active wire scan,
-  // re-read the capabilities header once so completed server cache is observed
-  // without triggering a full metrics_settle scan.
+  // A hidden panel releases its scan. Reopening first checks shared completed
+  // facts, then resumes the incremental read only if those facts are still missing.
   useEffect(() => {
     if (!visible || !settleBlocked || part === 'work' || !state.loaded || state.resyncing || capabilities.isFetching) return;
     if (reopenRefetch.current === requestToken) return;
     reopenRefetch.current = requestToken;
-    void capabilities.refetch({ cancelRefetch: false });
-  }, [visible, settleBlocked, part, state.loaded, state.resyncing, capabilities.isFetching, capabilities.refetch, requestToken]);
+    let current = true;
+    void capabilities.refetch({ cancelRefetch: false }).then(() => {
+      if (current) setSettleBlock(undefined);
+    });
+    return () => { current = false; };
+  }, [visible, settleBlocked, part, state.loaded, state.resyncing, capabilities.refetch, requestToken]);
 
   useEffect(() => () => { settleReadAbort.current?.abort(); }, []);
   const settledView = useMemo(() => {
@@ -534,7 +540,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   });
   const usage = metrics[agentId] ?? UNKNOWN_AGENT_PANEL_METRICS;
   const ids = [...new Set([MAIN_AGENT_ID, ...Object.keys(forest.byId), ...Object.keys(metrics)])];
-  const treeComplete = ids.every((id) => !isUnsettledPanelMetrics(metrics[id]));
+  const treeComplete = ids.every((id) => !isUnsettledPanelMetrics(metrics[id]) && metrics[id]?.usagePartial !== true && metrics[id]?.costPartial !== true);
   // Sums the agents the server has actually reported, and `null` only when
   // none are known. Callers label an incomplete sum as such rather than
   // passing it off as the whole tree.
@@ -892,22 +898,6 @@ function figuresFrom(usage: AgentTokenUsage, t: Translate): OverviewFigures {
   };
 }
 
-/** Session-record usage (main only): the fallback when the panel read has no row. */
-function figuresFromSession(state: SessionViewState): OverviewFigures | undefined {
-  const usage = state.session?.usage as typeof state.session extends undefined ? never : NonNullable<typeof state.session>['usage'] | undefined;
-  if (usage === null || usage === undefined) return undefined;
-  const input = usage.input_tokens + usage.cache_read_tokens + usage.cache_creation_tokens;
-  const total = input + usage.output_tokens;
-  if (total === 0 && usage.total_cost_usd === 0) return undefined;
-  return {
-    costUsd: usage.total_cost_usd,
-    totalTokens: total,
-    inputTokens: input,
-    outputTokens: usage.output_tokens,
-    cacheRate: input > 0 ? Math.round((usage.cache_read_tokens / input) * 100) : undefined,
-  };
-}
-
 /**
  * Everything the overview shows, derived once. Only known values are returned;
  * each consumer drops what is missing.
@@ -928,12 +918,11 @@ function overviewFacts(input: {
   const { t, agentId, state, agentState, forest, usage, metrics, ids, treeComplete, tree } = input;
   const isMain = agentId === MAIN_AGENT_ID;
   const node = forest.byId[agentId];
-  const contextUsed = known(usage.contextTokens) ? usage.contextTokens
-    : agentState?.contextTokens ?? (isMain ? state.contextTokens ?? state.session?.usage?.context_tokens : node?.contextTokens);
-  const contextLimit = known(usage.contextLimit) && usage.contextLimit > 0 ? usage.contextLimit
-    : agentState?.maxContextTokens ?? (isMain ? state.maxContextTokens ?? (state.session?.usage?.context_limit || undefined) : node?.maxContextTokens);
-  const hasPanelUsage = known(usage.totalTokens) || known(usage.totalCostUsd);
-  const figures = hasPanelUsage ? figuresFrom(usage, t) : (isMain ? figuresFromSession(state) : undefined) ?? figuresFrom(usage, t);
+  const contextUsed = agentState?.contextTokens ?? (isMain ? state.contextTokens ?? state.session?.usage?.context_tokens : node?.contextTokens)
+    ?? (known(usage.contextTokens) ? usage.contextTokens : undefined);
+  const contextLimit = agentState?.maxContextTokens ?? (isMain ? state.maxContextTokens ?? (state.session?.usage?.context_limit || undefined) : node?.maxContextTokens)
+    ?? (known(usage.contextLimit) && usage.contextLimit > 0 ? usage.contextLimit : undefined);
+  const figures = figuresFrom(usage, t);
   // The standard inspector's own tree scope. It stays main-only on purpose:
   // the inspector offers a reader a switch between "this agent" and "the
   // tree", and widening that switch to every child page is a product change

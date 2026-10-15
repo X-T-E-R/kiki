@@ -24,7 +24,7 @@
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 
 import type { Session, WorkspaceCatalogEntry } from '@kiki/protocol';
@@ -41,7 +41,6 @@ import { ThreadTitle } from './ThreadTitle';
 import { Icon } from './icons';
 import { getCurrentVisit, getUiSnapshot, saveScrollPosition, saveUiSnapshot } from '../lib/navHistory';
 import {
-  aggregateDimensionGroups,
   bucketLabel,
   browserTimezoneOffsetMinutes,
   buildUsageApiQuery,
@@ -63,7 +62,6 @@ import {
   usageTokenTotalIsUnknown,
   usageWindowLabel,
   writeStoredUsageFilters,
-  USAGE_GRANULARITIES,
   USAGE_RANGE_PRESETS,
   USAGE_SOURCE_KEY_UNKNOWN,
   type UsageDetailView,
@@ -77,7 +75,7 @@ import {
 } from '../lib/usageV2';
 import { useConnection } from '../state/connection';
 import { Toggle } from './controls';
-import { PageHeader } from './PageChrome';
+import { PAGE_WIDTH, PageHeader } from './PageChrome';
 import { PricingPanel } from './usage/PricingPanel';
 import { UsageRescanControl } from './usage/UsageRescanControl';
 import { UsageReliabilityDetails } from './usage/UsageReliabilityDetails';
@@ -91,20 +89,10 @@ import {
   bucketTokens,
   formatPercent,
   KnownSubtotalMarker,
-  UsageCard,
 } from './usage/usageShared';
 
 const SESSION_PAGE_SIZE = 25;
 const DAY_MS = 24 * 3600_000;
-
-const METRIC_TO_SEARCH: Record<UsageMetric, string> = {
-  cost: 'metric=cost',
-  tokens: 'metric=tokens',
-  cache: 'metric=cache',
-};
-
-/** Reading axes: one at a time, never mixed in one list. */
-const GROUP_BY_OPTIONS: readonly UsageGroupBy[] = ['model', 'provider', 'profile', 'workspace'];
 
 type DetailTab = 'sources' | 'sessions' | 'breakdown' | 'fiveHour';
 
@@ -158,21 +146,24 @@ function LiveStrip({ todayResponse, enabled }: { todayResponse?: UsageResponseWi
   const [open, setOpen] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
+    if (!open) return;
     const timer = window.setInterval(() => { setNowMs(Date.now()); }, 60_000);
     return () => { window.clearInterval(timer); };
-  }, []);
+  }, [open]);
 
   const todayQuery = useQuery({
     queryKey: ['usage-v2-strip', localDateKey(nowMs), browserTimezoneOffsetMinutes()],
-    enabled: enabled && todayResponse === undefined,
-    queryFn: () =>
+    enabled: enabled && open && todayResponse === undefined,
+    queryFn: ({ signal }) =>
       client.getUsage(
         buildUsageApiQuery(
           { ...USAGE_FILTER_DEFAULTS_SCOPED, range: 'today', includeArchived: true },
           { timezoneOffsetMinutes: browserTimezoneOffsetMinutes(), pageSize: 1 },
         ),
+        { signal },
       ),
-    refetchInterval: 60_000,
+    refetchInterval: enabled && open ? 60_000 : false,
+    staleTime: 30_000,
   });
   const lastSessionId = useMemo(() => readLastSessionId(), []);
   const sessionQuery = useQuery({
@@ -198,7 +189,7 @@ function LiveStrip({ todayResponse, enabled }: { todayResponse?: UsageResponseWi
   );
 
   return (
-    <div data-usage-strip className="border-t border-hairline pt-3">
+    <div data-usage-strip>
       <button
         type="button"
         data-usage-strip-toggle
@@ -301,25 +292,6 @@ function FilterBar({
   // 40001 and the page would degrade to a load failure).
   const [rangeInvalid, setRangeInvalid] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const filterRef = useRef<HTMLDivElement>(null);
-  const rangeRef = useRef<HTMLDivElement>(null);
-  const actionsRef = useRef<HTMLDivElement>(null);
-  const [actionsOnRangeRow, setActionsOnRangeRow] = useState(false);
-  useLayoutEffect(() => {
-    const filter = filterRef.current;
-    const range = rangeRef.current;
-    const actions = actionsRef.current;
-    if (filter === null || range === null || actions === null) return;
-    const measure = () => {
-      const gap = Number.parseFloat(getComputedStyle(filter).columnGap) || 0;
-      const needed = range.getBoundingClientRect().width + actions.getBoundingClientRect().width + gap;
-      setActionsOnRangeRow(needed > 0 && needed <= filter.clientWidth);
-    };
-    measure();
-    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(measure);
-    for (const element of [filter, range, actions]) observer?.observe(element);
-    return () => { observer?.disconnect(); };
-  }, []);
   const dateInput = 'h-9 rounded-md border border-hairline bg-paper px-2 font-mono text-[12px] text-ink outline-none focus:border-selected-ink aria-[invalid=true]:border-danger pointer-coarse:min-h-11';
 
   const chips: { key: string; label: string; clear: () => void }[] = [];
@@ -336,108 +308,96 @@ function FilterBar({
   const selectClass = `h-8 max-w-44 appearance-none truncate rounded-md border border-hairline bg-paper pr-7 pl-3 text-[13px] cursor-pointer pointer-coarse:h-11`;
 
   return (
-    <div ref={filterRef} data-usage-filters data-actions-row={actionsOnRangeRow ? 'range' : 'secondary'} className="flex flex-wrap items-start gap-x-5 gap-y-3 border-b border-hairline pt-1 pb-3">
-      <div className={actionsOnRangeRow ? 'max-w-full shrink-0' : 'w-full'}>
-        <div ref={rangeRef} className="flex w-max max-w-full flex-wrap items-center gap-x-5 gap-y-2">
-          <AxisGroup
-            label={t('usage.axis.range')}
-            dataAxis="range"
-            options={USAGE_RANGE_PRESETS}
-            value={filters.range}
-            onChange={(range) => {
-              setRangeInvalid(false);
-              if (range === 'custom') {
-                const today = new Date();
-                today.setHours(0, 0, 0, 0);
-                onChange({
-                  ...filters,
-                  range,
-                  startAt: filters.startAt ?? today.getTime() - 6 * DAY_MS,
-                  endAt: filters.endAt ?? today.getTime() + DAY_MS,
-                });
-              } else {
-                onChange({ ...filters, range, startAt: undefined, endAt: undefined });
+    <div data-usage-filters className="flex flex-wrap items-center gap-x-5 gap-y-2.5 border-b border-hairline pt-1 pb-3">
+      <AxisGroup
+        label={t('usage.axis.range')}
+        dataAxis="range"
+        options={USAGE_RANGE_PRESETS}
+        value={filters.range}
+        onChange={(range) => {
+          setRangeInvalid(false);
+          if (range === 'custom') {
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            onChange({
+              ...filters,
+              range,
+              startAt: filters.startAt ?? today.getTime() - 6 * DAY_MS,
+              endAt: filters.endAt ?? today.getTime() + DAY_MS,
+            });
+          } else {
+            onChange({ ...filters, range, startAt: undefined, endAt: undefined });
+          }
+        }}
+        labelFor={(option) => t(`usage.range.${option}`)}
+      />
+      {filters.range === 'custom' ? (
+        <div className="flex flex-wrap items-center gap-1.5" data-usage-custom-range>
+          <input
+            type="date"
+            aria-label={t('usage.customRange.start')}
+            aria-invalid={rangeInvalid}
+            value={toDateInputValue(filters.startAt)}
+            max={toDateInputValue(filters.endAt !== undefined ? filters.endAt - DAY_MS : undefined)}
+            onChange={(event) => {
+              const startAt = fromDateInputValue(event.target.value);
+              if (startAt === undefined) return;
+              if (filters.endAt !== undefined && startAt >= filters.endAt) {
+                setRangeInvalid(true);
+                return;
               }
+              setRangeInvalid(false);
+              onChange({ ...filters, startAt });
             }}
-            labelFor={(option) => t(`usage.range.${option}`)}
+            className={dateInput}
           />
-          {filters.range === 'custom' ? (
-            <div className="flex flex-wrap items-center gap-1.5" data-usage-custom-range>
-              <input
-                type="date"
-                aria-label={t('usage.customRange.start')}
-                aria-invalid={rangeInvalid}
-                value={toDateInputValue(filters.startAt)}
-                max={toDateInputValue(filters.endAt !== undefined ? filters.endAt - DAY_MS : undefined)}
-                onChange={(event) => {
-                  const startAt = fromDateInputValue(event.target.value);
-                  if (startAt === undefined) return;
-                  if (filters.endAt !== undefined && startAt >= filters.endAt) {
-                    setRangeInvalid(true);
-                    return;
-                  }
-                  setRangeInvalid(false);
-                  onChange({ ...filters, startAt });
-                }}
-                className={dateInput}
-              />
-              <Icon name="arrowRight" size={12} className="text-ink-faint" />
-              <input
-                type="date"
-                aria-label={t('usage.customRange.end')}
-                aria-invalid={rangeInvalid}
-                value={toDateInputValue(filters.endAt !== undefined ? filters.endAt - DAY_MS : undefined)}
-                min={toDateInputValue(filters.startAt)}
-                onChange={(event) => {
-                  const day = fromDateInputValue(event.target.value);
-                  if (day === undefined) return;
-                  const endAt = day + DAY_MS;
-                  if (filters.startAt !== undefined && endAt <= filters.startAt) {
-                    setRangeInvalid(true);
-                    return;
-                  }
-                  setRangeInvalid(false);
-                  onChange({ ...filters, endAt });
-                }}
-                className={dateInput}
-              />
-              {rangeInvalid ? (
-                <p role="alert" data-usage-range-error className="text-[12px] text-danger">
-                  {t('usage.customRange.invalid')}
-                </p>
-              ) : null}
-            </div>
+          <Icon name="arrowRight" size={12} className="text-ink-faint" />
+          <input
+            type="date"
+            aria-label={t('usage.customRange.end')}
+            aria-invalid={rangeInvalid}
+            value={toDateInputValue(filters.endAt !== undefined ? filters.endAt - DAY_MS : undefined)}
+            min={toDateInputValue(filters.startAt)}
+            onChange={(event) => {
+              const day = fromDateInputValue(event.target.value);
+              if (day === undefined) return;
+              const endAt = day + DAY_MS;
+              if (filters.startAt !== undefined && endAt <= filters.startAt) {
+                setRangeInvalid(true);
+                return;
+              }
+              setRangeInvalid(false);
+              onChange({ ...filters, endAt });
+            }}
+            className={dateInput}
+          />
+          {rangeInvalid ? (
+            <p role="alert" data-usage-range-error className="text-[12px] text-danger">
+              {t('usage.customRange.invalid')}
+            </p>
           ) : null}
         </div>
-      </div>
-      <div className={`flex max-w-full shrink-0 flex-wrap items-center gap-x-5 gap-y-2 ${actionsOnRangeRow ? 'order-2 w-full' : ''}`}>
-        <label className="flex min-w-0 items-center gap-2">
-          <span className="shrink-0 text-[12px] text-ink-faint">{t('usage.workspace.label')}</span>
-          <span className="relative min-w-0">
-            <select
-              data-usage-workspace
-              value={filters.workspaceId ?? ''}
-              onChange={(event) => {
-                onChange({ ...filters, workspaceId: event.target.value === '' ? undefined : event.target.value });
-              }}
-              className={`${selectClass} ${filters.workspaceId !== undefined ? 'border-selected-ink text-ink' : 'text-ink-soft'}`}
-            >
-              <option value="">{t('usage.workspace.all')}</option>
-              {workspaces.map((workspace) => (
-                <option key={workspace.id} value={workspace.id}>{workspace.name}</option>
-              ))}
-            </select>
-            <Icon name="chevron" size={12} className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 rotate-90 text-ink-faint" />
-          </span>
-        </label>
-        <AxisGroup
-          label={t('usage.axis.granularity')}
-          dataAxis="granularity"
-          options={USAGE_GRANULARITIES}
-          value={filters.granularity}
-          onChange={(granularity) => { onChange({ ...filters, granularity }); }}
-          labelFor={(option) => t(`usage.granularity.${option}`)}
-        />
+      ) : null}
+      <label className="flex min-w-0 items-center gap-2">
+        <span className="shrink-0 text-[12px] text-ink-faint">{t('usage.workspace.label')}</span>
+        <span className="relative min-w-0">
+          <select
+            data-usage-workspace
+            value={filters.workspaceId ?? ''}
+            onChange={(event) => {
+              onChange({ ...filters, workspaceId: event.target.value === '' ? undefined : event.target.value });
+            }}
+            className={`${selectClass} ${filters.workspaceId !== undefined ? 'border-selected-ink text-ink' : 'text-ink-soft'}`}
+          >
+            <option value="">{t('usage.workspace.all')}</option>
+            {workspaces.map((workspace) => (
+              <option key={workspace.id} value={workspace.id}>{workspace.name}</option>
+            ))}
+          </select>
+          <Icon name="chevron" size={12} className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 rotate-90 text-ink-faint" />
+        </span>
+      </label>
+      <div className="ml-auto flex max-w-full shrink-0 flex-wrap items-center gap-4">
         <button
           type="button"
           data-usage-filters-toggle
@@ -450,8 +410,6 @@ function FilterBar({
           {t('usage.filter.open')}
           {chips.length > 0 ? <span className="text-[12px] tabular-nums">{chips.length}</span> : null}
         </button>
-      </div>
-      <div ref={actionsRef} className="ml-auto flex max-w-full shrink-0 flex-wrap items-center gap-4">
         <label className="flex min-h-8 items-center gap-2 text-[12.5px] text-ink-soft pointer-coarse:min-h-11">
           <input
             type="checkbox"
@@ -463,79 +421,84 @@ function FilterBar({
           />
           {compareAvailable ? t('usage.compare.enable') : t('usage.compare.unavailable')}
         </label>
-        <UsageRescanControl>
-          <Toggle
-            label={t('usage.includeArchived')}
-            checked={filters.includeArchived}
-            onChange={(includeArchived) => { onChange({ ...filters, includeArchived }); }}
-          />
-        </UsageRescanControl>
       </div>
-      {filtersOpen || chips.length > 0 ? (
-        <div data-usage-filters-panel className="w-full">
-          <div className="flex flex-wrap items-center gap-x-5 gap-y-2 pt-1">
-            <label className="flex min-w-0 items-center gap-2">
-              <span className="shrink-0 text-[12px] text-ink-faint">{t('usage.filter.model')}</span>
-              <select
-                data-usage-filter-model
-                value={filters.model ?? ''}
-                onChange={(event) => { onChange({ ...filters, model: event.target.value === '' ? undefined : event.target.value }); }}
-                className={selectClass}
-              >
-                <option value="">{t('usage.filter.any')}</option>
-                {models.map((model) => (
-                  <option key={model.id} value={model.id}>{model.display_name ?? model.id}</option>
-                ))}
-              </select>
-            </label>
-            <label className="flex min-w-0 items-center gap-2">
-              <span className="shrink-0 text-[12px] text-ink-faint">{t('usage.filter.provider')}</span>
-              <select
-                data-usage-filter-provider
-                value={filters.provider ?? ''}
-                onChange={(event) => { onChange({ ...filters, provider: event.target.value === '' ? undefined : event.target.value }); }}
-                className={selectClass}
-              >
-                <option value="">{t('usage.filter.any')}</option>
-                {providers.map((provider) => (
-                  <option key={provider.id} value={provider.id}>{provider.id}</option>
-                ))}
-              </select>
-            </label>
-            <label className="flex min-w-0 flex-1 items-center gap-2">
-              <span className="shrink-0 text-[12px] text-ink-faint">{t('usage.filter.profile')}</span>
-              <input
-                type="text"
-                data-usage-filter-profile
-                value={filters.profiles[0] ?? ''}
-                placeholder={t('usage.filter.profilePlaceholder')}
-                onChange={(event) => {
-                  const value = event.target.value.trim();
-                  onChange({ ...filters, profiles: value === '' ? [] : [value] });
-                }}
-                className="h-8 max-w-44 min-w-0 flex-1 rounded-md border border-hairline bg-paper px-2 text-[13px] text-ink outline-none placeholder:text-ink-faint focus:border-selected-ink pointer-coarse:min-h-11"
-              />
-            </label>
-          </div>
-          {chips.length > 0 ? (
-            <ul data-usage-filter-chips className="flex flex-wrap items-center gap-1.5 pt-2">
-              {chips.map((chip) => (
-                <li key={chip.key}>
-                  <button
-                    type="button"
-                    data-usage-filter-chip={chip.key}
-                    onClick={chip.clear}
-                    className="inline-flex min-h-8 items-center gap-1.5 rounded-full border border-selected-ink/40 bg-panel px-2.5 text-[12px] text-ink transition-colors hover:border-selected-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
-                  >
-                    <span className="max-w-56 truncate font-mono">{chip.label}</span>
-                    <Icon name="close" size={12} />
-                  </button>
-                </li>
+      <div
+        data-usage-filters-panel
+        className={
+          filtersOpen || chips.length > 0
+            ? 'w-full'
+            : 'hidden w-full has-[[data-usage-rescan]_[role=status]]:block has-[[data-usage-rescan]_[role=alert]]:block'
+        }
+      >
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 pt-1">
+          <label className="flex min-w-0 items-center gap-2">
+            <span className="shrink-0 text-[12px] text-ink-faint">{t('usage.filter.model')}</span>
+            <select
+              data-usage-filter-model
+              value={filters.model ?? ''}
+              onChange={(event) => { onChange({ ...filters, model: event.target.value === '' ? undefined : event.target.value }); }}
+              className={selectClass}
+            >
+              <option value="">{t('usage.filter.any')}</option>
+              {models.map((model) => (
+                <option key={model.id} value={model.id}>{model.display_name ?? model.id}</option>
               ))}
-            </ul>
-          ) : null}
+            </select>
+          </label>
+          <label className="flex min-w-0 items-center gap-2">
+            <span className="shrink-0 text-[12px] text-ink-faint">{t('usage.filter.provider')}</span>
+            <select
+              data-usage-filter-provider
+              value={filters.provider ?? ''}
+              onChange={(event) => { onChange({ ...filters, provider: event.target.value === '' ? undefined : event.target.value }); }}
+              className={selectClass}
+            >
+              <option value="">{t('usage.filter.any')}</option>
+              {providers.map((provider) => (
+                <option key={provider.id} value={provider.id}>{provider.id}</option>
+              ))}
+            </select>
+          </label>
+          <label className="flex min-w-0 flex-1 items-center gap-2">
+            <span className="shrink-0 text-[12px] text-ink-faint">{t('usage.filter.profile')}</span>
+            <input
+              type="text"
+              data-usage-filter-profile
+              value={filters.profiles[0] ?? ''}
+              placeholder={t('usage.filter.profilePlaceholder')}
+              onChange={(event) => {
+                const value = event.target.value.trim();
+                onChange({ ...filters, profiles: value === '' ? [] : [value] });
+              }}
+              className="h-8 max-w-44 min-w-0 flex-1 rounded-md border border-hairline bg-paper px-2 text-[13px] text-ink outline-none placeholder:text-ink-faint focus:border-selected-ink pointer-coarse:min-h-11"
+            />
+          </label>
+          <UsageRescanControl>
+            <Toggle
+              label={t('usage.includeArchived')}
+              checked={filters.includeArchived}
+              onChange={(includeArchived) => { onChange({ ...filters, includeArchived }); }}
+            />
+          </UsageRescanControl>
         </div>
-      ) : null}
+        {chips.length > 0 ? (
+          <ul data-usage-filter-chips className="flex flex-wrap items-center gap-1.5 pt-2">
+            {chips.map((chip) => (
+              <li key={chip.key}>
+                <button
+                  type="button"
+                  data-usage-filter-chip={chip.key}
+                  onClick={chip.clear}
+                  className="inline-flex min-h-8 items-center gap-1.5 rounded-full border border-selected-ink/40 bg-panel px-2.5 text-[12px] text-ink transition-colors hover:border-selected-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+                >
+                  <span className="max-w-56 truncate font-mono">{chip.label}</span>
+                  <Icon name="close" size={12} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -566,16 +529,18 @@ function Kpi({ label, value, hint, dataValue, children }: {
 
 function KpiRow({
   summary,
+  incomplete,
   comparing,
   prior,
 }: {
   readonly summary: UsageResponseWire['summary'];
+  readonly incomplete: boolean;
   readonly comparing: boolean;
   readonly prior: UsageResponseWire['summary'] | undefined;
 }) {
   const { t, time } = useI18n();
-  const costUnknown = summary.cost_unknown;
-  const tokensUnknown = usageTokenTotalIsUnknown(summary);
+  const costUnknown = summary.cost_unknown || incomplete;
+  const tokensUnknown = usageTokenTotalIsUnknown(summary) || (incomplete && totalTokensOf(summary) === 0);
   const cacheHit = cacheHitRateOf(summary);
   const input = summary.tokens.input_other + summary.tokens.input_cache_read + summary.tokens.input_cache_creation;
   const composition = [
@@ -589,7 +554,7 @@ function KpiRow({
         label={costUnknown ? t('usage.kpi.recordedCost') : t('usage.kpi.estimatedCost')}
         dataValue="data-usage-summary-cost"
         value={costUnknown && tokensUnknown && summary.cost_usd_estimated === 0 ? '—' : formatCostUsd(summary.cost_usd_estimated)}
-        hint={costUnknown ? (
+        hint={summary.cost_unknown ? (
           <span className="text-ink-faint">{t('usage.kpi.costPartiallyUnknown')}</span>
         ) : undefined}
       />
@@ -710,7 +675,7 @@ function SessionsTab({
                   type="button"
                   data-usage-session={item.id}
                   onClick={() => void navigate(`/s/${item.id}`)}
-                  className={`${grid} w-full rounded-md px-2 py-2.5 text-left transition-colors hover:bg-paper focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11`}
+                  className={`${grid} w-full rounded-md px-2 py-2.5 text-left transition-colors hover:bg-ink/[0.03] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11`}
                 >
                   <span className={`text-right font-mono text-[12px] tabular-nums ${rank <= 3 ? 'font-semibold text-ink' : 'text-ink-faint'}`}>
                     {rank}
@@ -852,9 +817,9 @@ function FiveHourTab({
 
 export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) {
   const { client } = useConnection();
+  const queryClient = useQueryClient();
   const { t, locale } = useI18n();
   const location = useLocation();
-  const navigate = useNavigate();
   const [, setSearchParams] = useSearchParams();
   const panel = usagePanelFromSearch(location.search);
   const selectPanel = (next: UsagePanel) => {
@@ -898,7 +863,9 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   const [trace, setTrace] = useState<UsageSessionTraceRequest | undefined>(undefined);
   const sessionParam = searchParams.get('session') ?? undefined;
   const [dismissedLocator, setDismissedLocator] = useState<string | null>(null);
-  const sessionLocator = sessionParam !== undefined && sessionParam !== dismissedLocator ? sessionParam : undefined;
+  const sessionLocator = panel === 'history' && sessionParam !== undefined && sessionParam !== dismissedLocator
+    ? sessionParam
+    : undefined;
 
   // The detail tab rides the URL (`view=`); the default is the source table,
   // and a session locator without an explicit view pins the sessions tab.
@@ -985,11 +952,12 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   const reuseTodaySummary = filters.range === 'today' && filters.includeArchived && !usageFiltersHaveScope(filters);
   const usageQuery = useInfiniteQuery({
     queryKey: ['usage-v2', filters, localUsageDate, timezoneOffsetMinutes],
-    refetchInterval: reuseTodaySummary ? 60_000 : false,
+    refetchInterval: panel === 'history' && reuseTodaySummary ? 60_000 : false,
     enabled: panel === 'history',
-    queryFn: ({ pageParam }) =>
+    queryFn: ({ pageParam, signal }) =>
       client.getUsage(
         buildUsageApiQuery(filters, { timezoneOffsetMinutes, pageSize: SESSION_PAGE_SIZE, pageToken: pageParam }),
+        { signal },
       ),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) =>
@@ -1045,15 +1013,22 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     queryKey: ['usage-v2', 'compare', filters, compareWindow, localUsageDate, timezoneOffsetMinutes],
     enabled: panel === 'history' && compareWindow !== null,
     retry: false,
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       client.getUsage(
         buildUsageApiQuery(filters, {
           timezoneOffsetMinutes,
           pageSize: 1,
           window: compareWindow ?? undefined,
         }),
+        { signal },
       ),
   });
+  useEffect(() => {
+    if (panel === 'history') return;
+    void queryClient.cancelQueries({ queryKey: ['usage-v2'] });
+    void queryClient.cancelQueries({ queryKey: ['usage-v2-strip'] });
+    void queryClient.cancelQueries({ queryKey: ['usage-v2-strip-session'] });
+  }, [panel, queryClient]);
   const priorSource: UsageSourcePrior | undefined = comparing
     ? {
         priorByKey: new Map(aggregateSourceRows(compareQuery.data?.trend ?? [], filters.groupBy).map((row) => [row.key, row])),
@@ -1065,10 +1040,21 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     queryKey: ['workspaces', 'catalog'],
     queryFn: () => client.listWorkspaceCatalog(),
     staleTime: 30_000,
+    enabled: panel === 'history',
   });
   const workspaces = useMemo(() => workspacesQuery.data?.items ?? [], [workspacesQuery.data]);
-  const modelsQuery = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 30_000 });
-  const providersQuery = useQuery({ queryKey: ['providers'], queryFn: () => client.listProviders(), staleTime: 30_000 });
+  const modelsQuery = useQuery({
+    queryKey: ['models'],
+    queryFn: () => client.listModels(),
+    staleTime: 30_000,
+    enabled: panel === 'history',
+  });
+  const providersQuery = useQuery({
+    queryKey: ['providers'],
+    queryFn: () => client.listProviders(),
+    staleTime: 30_000,
+    enabled: panel === 'history',
+  });
   const models = useMemo(() => modelsQuery.data?.items ?? [], [modelsQuery.data]);
   const providers = useMemo(() => providersQuery.data?.items ?? [], [providersQuery.data]);
 
@@ -1131,7 +1117,8 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
-      <PageHeader title={t('usage.title')} onToggleSidebar={onToggleSidebar}>
+      <PageHeader title={t('usage.title')} onToggleSidebar={onToggleSidebar} width="dashboard">
+        <UsageNavigation panel={panel} onChange={selectPanel} />
         <button
           type="button"
           data-usage-pricing-open
@@ -1148,8 +1135,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
         <PricingPanel models={reliability?.unknown_price_models ?? []} onClose={() => { setPricingOpen(false); }} />
       ) : null}
       <main ref={scrollRef} onScroll={handleScroll} data-usage-scroll style={{ overflowAnchor: 'none' }} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 pt-4 pb-10 lg:px-8">
-        <div className="mx-auto max-w-[1120px] space-y-4" data-usage-page>
-          <UsageNavigation panel={panel} onChange={selectPanel} />
+        <div className={`mx-auto ${PAGE_WIDTH.dashboard} space-y-4`} data-usage-page>
           {panel === 'export' ? (
             <UsageExportPanel />
           ) : panel === 'quota' ? (
@@ -1167,49 +1153,57 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
             onCompareChange={applyCompare}
             onChange={applyFilters}
           />
-          {usageQuery.isPending ? (
-            <div role="status" className="flex items-center justify-center gap-2 rounded-xl border border-hairline bg-panel px-4 py-12 text-[13px] text-ink-faint">
+          {usageQuery.isPending && firstPage === undefined ? (
+            <div role="status" className="flex items-center gap-2 py-6 text-[13px] text-ink-faint">
               <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
               {t('usage.loading')}
             </div>
-          ) : usageQuery.isError ? (
-            <div className="rounded-xl border border-danger/30 bg-danger/5 p-5">
-              <p className="text-[13px] font-medium text-danger">{t('usage.loadFailedKeep')}</p>
+          ) : null}
+          {usageQuery.isError ? (
+            <div role="alert" className="flex flex-wrap items-center gap-x-3 gap-y-2 py-2 text-[13px] text-danger">
+              <p className="font-medium">{t('usage.loadFailedKeep')}</p>
               <button
                 type="button"
                 onClick={() => void usageQuery.refetch()}
-                className="mt-3 h-9 rounded-md border border-danger/40 px-3 text-[13px] font-medium text-danger hover:bg-danger/5 pointer-coarse:min-h-11"
+                className="h-8 rounded-md border border-danger/40 px-3 text-[12.5px] font-medium text-danger hover:bg-danger/5 pointer-coarse:min-h-11"
               >
                 {t('common.reload')}
               </button>
             </div>
-          ) : firstPage !== undefined ? (
+          ) : null}
+          {usageQuery.data !== undefined && firstPage !== undefined ? (
             <>
-              <div className="flex flex-wrap items-start gap-x-4 gap-y-1">
-                <div className="min-w-0 flex-1">
-                  <UsageReliabilityDetails summary={firstPage.summary} reliability={firstPage.reliability} />
+              {!firstPage.reliability.complete ? (
+                <div data-usage-scan-pending role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-rule/30 bg-amber-card/40 px-3 py-2 text-[12px] text-amber-ink">
+                  <p>{t('usage.scanIncomplete')}</p>
+                  <button type="button" data-usage-continue-scan disabled={usageQuery.isFetching} onClick={() => void usageQuery.refetch()} className="rounded-md border border-amber-rule/40 px-3 py-1.5 font-medium disabled:opacity-50">
+                    {t(usageQuery.isFetching ? 'usage.loading' : 'usage.continueScan')}
+                  </button>
                 </div>
+              ) : null}
+              {summary !== undefined ? <KpiRow summary={summary} incomplete={!firstPage.reliability.complete} comparing={comparing} prior={compareQuery.data?.summary} /> : null}
+
+              <div data-usage-secondary-meta className="flex flex-wrap items-start gap-x-5 gap-y-1 text-[12px] text-ink-soft">
+                <LiveStrip todayResponse={reuseTodaySummary ? firstPage : undefined} enabled={!reuseTodaySummary && !usageQuery.isPending} />
+                <UsageReliabilityDetails summary={firstPage.summary} reliability={firstPage.reliability} />
                 {showAllHistoryChip ? (
-                  <span data-usage-all-history className="py-2 text-[11.5px] text-ink-faint">
+                  <span data-usage-all-history className="inline-flex min-h-8 items-center text-[11.5px] text-ink-faint">
                     {t('usage.allHistoryChip')}
                   </span>
                 ) : null}
+                {rangeWindow !== null ? (
+                  <p data-usage-range-note className="ml-auto flex min-h-8 flex-wrap items-center gap-x-3 text-[11.5px] text-ink-faint">
+                    <span>{usageWindowLabel(rangeWindow, locale)}</span>
+                    <span>{t('usage.timezoneNote', { offset: formatOffset(timezoneOffsetMinutes) })}</span>
+                  </p>
+                ) : null}
               </div>
 
-              {summary !== undefined ? <KpiRow summary={summary} comparing={comparing} prior={compareQuery.data?.summary} /> : null}
-
-              {rangeWindow !== null ? (
-                <p data-usage-range-note className="flex flex-wrap items-baseline gap-x-3 text-[11.5px] text-ink-faint">
-                  <span>{usageWindowLabel(rangeWindow, locale)}</span>
-                  <span>{t('usage.timezoneNote', { offset: formatOffset(timezoneOffsetMinutes) })}</span>
-                </p>
-              ) : null}
-
-              {trend.length === 0 ? (
-                <p className="rounded-xl border border-hairline bg-panel px-4 py-12 text-center text-[13px] text-ink-faint">
+              {trend.length === 0 ? (firstPage.reliability.complete ? (
+                <p className="py-8 text-center text-[13px] text-ink-faint">
                   {t('usage.empty')}
                 </p>
-              ) : (
+              ) : null) : (
                 <div className="border-t border-hairline pt-3">
                   <TrendChart
                     trend={trend}
@@ -1217,6 +1211,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                     groupBy={groupBy}
                     metric={metric}
                     onMetricChange={applyMetric}
+                    onGranularityChange={(granularity) => { applyFilters({ ...filters, granularity }); }}
                     selectedKey={selectedBucketKey}
                     onSelect={selectBucketKeyWithSnapshot}
                     labelForKey={(key) => sourceKeyToLabel(key, groupBy, trend, sourceLookups)}
@@ -1224,16 +1219,37 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                 </div>
               )}
 
-              <section className="border-t border-hairline pt-4">
-                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                  <h2 className="font-display text-[20px] leading-tight font-semibold text-ink">{t('usage.sources.title')}</h2>
-                  <span data-usage-source-scope className="text-[12.5px] text-ink-soft">{sourceScopeLabel}</span>
-                  {selectedBucket !== undefined ? (
+              {firstPage.reliability.complete || trend.length > 0 ? <section data-usage-detail className="border-t border-hairline pt-4">
+                {/* One chapter, one switcher: the views are the chapter's own
+                    titles, so the content always sits directly under the tab
+                    that chose it and no view leaves an empty shell behind. */}
+                <div className="flex flex-wrap items-baseline gap-x-5 gap-y-2">
+                  <div role="tablist" aria-label={t('usage.sources.title')} className="flex flex-wrap items-baseline gap-x-5 gap-y-1" data-usage-tabs>
+                    {tabs.map(([id, label]) => (
+                      <button
+                        key={id}
+                        type="button"
+                        role="tab"
+                        aria-selected={tab === id}
+                        data-usage-tab={id}
+                        onClick={() => { selectTab(id); }}
+                        className={`min-h-9 border-b-2 pb-1 text-[15px] leading-tight transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
+                          tab === id ? 'border-ink font-medium text-ink' : 'border-transparent text-ink-faint hover:text-ink-soft'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  {tab === 'sources' ? (
+                    <span data-usage-source-scope className="text-[12.5px] text-ink-soft">{sourceScopeLabel}</span>
+                  ) : null}
+                  {tab === 'sources' && selectedBucket !== undefined ? (
                     <span data-usage-source-subtotal className="ml-auto font-mono text-[15px] font-semibold text-ink tabular-nums">
                       {formatCostUsd(sourceSubtotal)}
                     </span>
                   ) : null}
-                  {selectedBucket !== undefined ? (
+                  {tab === 'sources' && selectedBucket !== undefined ? (
                     <button
                       type="button"
                       data-usage-clear-bucket
@@ -1242,6 +1258,16 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                     >
                       {t('usage.sources.viewWholeRange')}
                     </button>
+                  ) : null}
+                  {tab === 'sessions' && sessionLocator !== undefined ? (
+                    <p className="ml-auto flex items-center gap-2 text-[12px] text-ink-soft">
+                      <span className="rounded-md bg-ink/[0.05] px-2 py-0.5 font-medium text-ink-soft">
+                        {t('usage.sessions.deepLinkChip')}
+                      </span>
+                      <button type="button" className="text-ink-faint underline hover:text-ink" onClick={() => { setDismissedLocator(sessionLocator); }}>
+                        {t('common.close')}
+                      </button>
+                    </p>
                   ) : null}
                 </div>
                 {compareQuery.isError ? (
@@ -1282,68 +1308,39 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                       </button>
                     </div>
                   </div>
-                ) : null}
-              </section>
-
-              <UsageCard>
-                <div className="-mt-1 mb-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-hairline">
-                  <div role="tablist" aria-label={t('usage.title')} className="flex flex-wrap gap-1" data-usage-tabs>
-                    {tabs.map(([id, label]) => (
-                      <button
-                        key={id}
-                        type="button"
-                        role="tab"
-                        aria-selected={tab === id}
-                        data-usage-tab={id}
-                        onClick={() => { selectTab(id); }}
-                        className={`-mb-px min-h-10 border-b-2 px-3 text-[13.5px] transition-colors pointer-coarse:min-h-11 ${
-                          tab === id ? 'border-selected-ink font-semibold text-ink' : 'border-transparent text-ink-soft hover:text-ink'
-                        }`}
-                      >
-                        {label}
-                      </button>
-                    ))}
+                ) : tab === 'sessions' ? (
+                  <div className="mt-3">
+                    <SessionsTab
+                      data={{ pages: usageQuery.data.pages }}
+                      fetchNextPage={() => void usageQuery.fetchNextPage()}
+                      hasNextPage={usageQuery.hasNextPage}
+                      isFetchingNextPage={usageQuery.isFetchingNextPage}
+                      isFetchNextPageError={usageQuery.isFetchNextPageError}
+                      sessionLocator={sessionLocator}
+                      locatorSearching={locatorSearching}
+                      workspaceName={(id) => workspaceName(id) ?? id}
+                      summaryCost={summary?.cost_usd_estimated ?? 0}
+                    />
                   </div>
-                  {tab === 'sessions' && sessionLocator !== undefined ? (
-                    <p className="ml-auto flex items-center gap-2 pb-1 text-[12px] text-ink-soft">
-                      <span className="rounded-md bg-ink/[0.05] px-2 py-0.5 font-medium text-ink-soft">
-                        {t('usage.sessions.deepLinkChip')}
-                      </span>
-                      <button type="button" className="text-ink-faint underline hover:text-ink" onClick={() => { setDismissedLocator(sessionLocator); }}>
-                        {t('common.close')}
-                      </button>
-                    </p>
-                  ) : null}
-                </div>
-                {tab === 'sessions' ? (
-                  <SessionsTab
-                    data={{ pages: usageQuery.data.pages }}
-                    fetchNextPage={() => void usageQuery.fetchNextPage()}
-                    hasNextPage={usageQuery.hasNextPage}
-                    isFetchingNextPage={usageQuery.isFetchingNextPage}
-                    isFetchNextPageError={usageQuery.isFetchNextPageError}
-                    sessionLocator={sessionLocator}
-                    locatorSearching={locatorSearching}
-                    workspaceName={(id) => workspaceName(id) ?? id}
-                    summaryCost={summary?.cost_usd_estimated ?? 0}
-                  />
                 ) : tab === 'breakdown' && legacyDimension !== undefined ? (
-                  <DimensionBreakdown
-                    trend={trend}
-                    dimension={legacyDimension}
-                    labelFor={(row) => dimensionKeyLabelLegacy(row, legacyDimension, sourceLookups, sessionTitle)}
-                  />
+                  <div className="mt-3">
+                    <DimensionBreakdown
+                      trend={trend}
+                      dimension={legacyDimension}
+                      labelFor={(row) => dimensionKeyLabelLegacy(row, legacyDimension, sourceLookups, sessionTitle)}
+                    />
+                  </div>
                 ) : tab === 'fiveHour' ? (
-                  <FiveHourTab
-                    trend={trend}
-                    filters={filters}
-                    sessionTitle={sessionTitle}
-                    onSwitchGranularity={() => { applyFilters({ ...filters, granularity: 'five_hour' }); }}
-                  />
+                  <div className="mt-3">
+                    <FiveHourTab
+                      trend={trend}
+                      filters={filters}
+                      sessionTitle={sessionTitle}
+                      onSwitchGranularity={() => { applyFilters({ ...filters, granularity: 'five_hour' }); }}
+                    />
+                  </div>
                 ) : null}
-              </UsageCard>
-
-              <LiveStrip todayResponse={reuseTodaySummary ? firstPage : undefined} enabled={!reuseTodaySummary && !usageQuery.isPending} />
+              </section> : null}
             </>
           ) : null}
           {trace !== undefined ? (

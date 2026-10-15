@@ -168,9 +168,6 @@ function isGranularity(value: string): value is UsageGranularity {
 function isRangePreset(value: string): value is UsageRangePreset {
   return (USAGE_RANGE_PRESETS as readonly string[]).includes(value);
 }
-function isDimension(value: string): value is UsageDimension {
-  return (USAGE_DIMENSIONS as readonly string[]).includes(value);
-}
 function isGroupBy(value: string): value is UsageGroupBy {
   return (USAGE_GROUPINGS as readonly string[]).includes(value);
 }
@@ -243,6 +240,13 @@ export function searchHasUsageParams(search: string): boolean {
   ].some((key) => params.has(key));
 }
 
+/** True when a URL carries state that belongs to the historical usage view. */
+export function searchHasUsageHistoryParams(search: string): boolean {
+  const params = new URLSearchParams(search);
+  return searchHasUsageParams(search) || ['metric', 'compare', 'bucket', 'session', 'view']
+    .some((key) => params.has(key));
+}
+
 // ---------------------------------------------------------------------------
 // Detail view — which detail tab the page shows; URL-carried like the filters
 // so a shared link (e.g. ?view=breakdown&dimension=agent) restores the tab.
@@ -269,26 +273,28 @@ export function parseUsageDetailView(search: string): UsageDetailView {
 
 /**
  * Detail view → URL query, preserving unrelated params (server/token keys,
- * the session locator, the filter axes). The default source table is omitted so
- * the canonical URL stays clean.
+ * the session locator, the filter axes). Historical links carry their panel
+ * explicitly because bare `/usage` is the live view.
  */
 export function usageDetailViewToSearch(view: UsageDetailView, existing?: string): string {
   const params = new URLSearchParams(existing ?? '');
+  params.set('panel', 'history');
   params.delete('view');
   if (view !== USAGE_DETAIL_VIEW_DEFAULT) params.set('view', view);
   const query = params.toString();
-  return query === '' ? '' : `?${query}`;
+  return `?${query}`;
 }
 
 /**
- * Filters → URL query. Defaults are omitted so the no-query URL stays the
- * canonical local-today state; non-default axes are always explicit so the
- * link is shareable and refresh-stable. Preserves unrelated params (server /
- * token deep-link keys, the session locator). The reading axis rides as
- * `group_by`; legacy `dimension=` links are read, not written.
+ * Filters → URL query. Filter defaults are omitted while the history panel
+ * stays explicit; non-default axes are always explicit so the link is
+ * shareable and refresh-stable. Preserves unrelated params (server / token
+ * deep-link keys, the session locator). The reading axis rides as `group_by`;
+ * legacy `dimension=` links are read, not written.
  */
 export function usageFiltersToSearch(filters: UsageFilters, existing?: string): string {
   const params = new URLSearchParams(existing ?? '');
+  params.set('panel', 'history');
   for (const key of [
     'granularity',
     'range',
@@ -903,7 +909,7 @@ export function burnRatePerHour(tokensToday: number, nowMs: number): number {
 
 /** Deep link target for "view this session in /usage" (ContextMeter §9.5). */
 export function usageSessionDeepLink(sessionId: string): string {
-  return `/usage?dimension=session&session=${encodeURIComponent(sessionId)}`;
+  return `/usage?panel=history&dimension=session&session=${encodeURIComponent(sessionId)}`;
 }
 
 // ---------------------------------------------------------------------------

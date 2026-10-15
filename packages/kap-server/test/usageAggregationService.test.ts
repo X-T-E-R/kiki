@@ -19,7 +19,7 @@ import {
 } from '@kiki/agent-core-v2';
 import { Emitter, Event } from '@kiki/agent-core-v2/_base/event';
 import type { UsageQuery } from '@kiki/protocol';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { IModelPricingService } from '../src/pricing/modelPricingService';
 import { UsageAggregationService } from '../src/usage/usageAggregationService';
@@ -29,12 +29,14 @@ interface Fixture {
   readonly service: UsageAggregationService;
   readonly reads: Map<string, number>;
   readonly readBytes: Map<string, number>;
+  readonly readOffsets: number[];
   readonly checkpointReads: Map<string, number>;
   readonly retainedQueries: readonly RetainedUsageListQuery[];
   setWire(scope: string, records: readonly WireRecord[]): void;
   restart(): UsageAggregationService;
   setAgentIds(ids: string[]): void;
   setPrice(price: number | undefined): void;
+  onPrice(observer: () => void): void;
   persistedRecordCounts(): number[];
 }
 
@@ -115,6 +117,7 @@ function fixture(
 ): Fixture {
   const reads = new Map<string, number>();
   const readBytes = new Map<string, number>();
+  const readOffsets: number[] = [];
   const checkpointReads = new Map<string, number>();
   const retainedQueries: RetainedUsageListQuery[] = [];
   const wires = new Map<string, Buffer>();
@@ -167,6 +170,7 @@ function fixture(
     },
     readStream: (wireScope: string, _key: string, range?: { start: number; end: number }) => {
       reads.set(wireScope, (reads.get(wireScope) ?? 0) + 1);
+      readOffsets.push(range?.start ?? 0);
       return (async function* () {
         await beforeWireRead();
         const bytes = wires.get(wireScope) ?? Buffer.alloc(0);
@@ -192,13 +196,14 @@ function fixture(
     }),
   };
   let price: number | undefined = 1;
+  let priceObserver = () => {};
   const pricing: IModelPricingService = {
     _serviceBrand: undefined,
     ready: Promise.resolve(),
     getPricing: async () => ({ items: [], overrides: {} }),
     setPricing: async () => ({ items: [], overrides: {} }),
     resolve: () => undefined,
-    calculate: () => price,
+    calculate: () => { priceObserver(); return price; },
     refreshNow: async () => false,
     status: () => ({ source: 'empty', keys: 0 }),
   };
@@ -217,12 +222,14 @@ function fixture(
     service: new UsageAggregationService(core, now, limits, sourceChanges),
     reads,
     readBytes,
+    readOffsets,
     checkpointReads,
     retainedQueries,
     setWire,
     restart: () => new UsageAggregationService(core, now, limits, sourceChanges),
     setAgentIds: (ids) => { agentIds = ids; },
     setPrice: (value) => { price = value; },
+    onPrice: (observer) => { priceObserver = observer; },
     persistedRecordCounts: () => [...persisted.values()].flatMap((bytes) => {
       const document = JSON.parse(Buffer.from(bytes).toString('utf8')) as { records?: unknown[] };
       return document.records === undefined ? [] : [document.records.length];
@@ -800,7 +807,7 @@ describe('UsageAggregationService cache budgets', () => {
   it('continues a budget-limited scan from its persisted offset', async () => {
     const session = summary('session-a', 'workspace-a');
     const wireScope = scope('workspace-a', 'session-a');
-    const { service, reads } = fixture(
+    const { service, reads, readOffsets } = fixture(
       [session],
       { [wireScope]: [usageRecord(10, 1), usageRecord(11, 2)] },
       () => 0,
@@ -808,7 +815,9 @@ describe('UsageAggregationService cache budgets', () => {
     );
 
     const first = await query(service);
+    readOffsets.length = 0;
     const second = await query(service);
+    expect(readOffsets[0]).toBe(Buffer.byteLength(`${JSON.stringify(usageRecord(10, 1))}\n`));
 
     expect(first.reliability).toMatchObject({
       complete: false,
@@ -825,17 +834,74 @@ describe('UsageAggregationService cache budgets', () => {
     expect(reads.get(wireScope)).toBeGreaterThanOrEqual(2);
   });
 
-  it('checks the deadline again while aggregating cached or replayed records', async () => {
-    let calls = 0;
+  it.each([128, 1024])('does not skip usage when the deadline aborts the %i-record yield', async (boundary) => {
     const session = summary('session-a', 'workspace-a');
-    const { service } = fixture(
+    const wireScope = scope('workspace-a', 'session-a');
+    const records = Array.from({ length: boundary + 3 }, (_, index) => usageRecord(10 + index, index + 1));
+    const f = fixture([session], { [wireScope]: records }, () => 0, { deadlineMs: 50 });
+    const baseline = await query(fixture([session], { [wireScope]: records }, () => 0).service);
+    let clockChecks = 0;
+    let abortedAtYield = false;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => {
+      clockChecks++;
+      if (clockChecks === (boundary === 128 ? 2 : 8)) {
+        queueMicrotask(() => { abortedAtYield = true; vi.advanceTimersByTime(50); });
+      }
+      return boundary === 128 && clockChecks > 1 ? 9 : 0;
+    });
+    let first: Awaited<ReturnType<typeof query>>;
+    try {
+      first = await query(f.service);
+    } finally {
+      clock.mockRestore();
+      vi.useRealTimers();
+    }
+    expect(abortedAtYield).toBe(true);
+    expect(first.reliability).toMatchObject({ complete: false, incomplete_reason: 'deadline' });
+    const consumedOffset = Buffer.byteLength(records.slice(0, boundary).map((record) => `${JSON.stringify(record)}\n`).join(''));
+    f.readOffsets.length = 0;
+    const resumed = await query(f.restart());
+    expect(f.readOffsets[0]).toBe(consumedOffset);
+    expect(resumed.reliability.complete).toBe(true);
+    expect(resumed.summary).toEqual(baseline.summary);
+    expect(resumed.reliability.usage_coverage).toEqual(baseline.reliability.usage_coverage);
+    expect(f.persistedRecordCounts()).toEqual([records.length]);
+    expect(first.reliability.usage_coverage?.known_records).toBe(boundary);
+  });
+
+  it('throws an external cancellation at the wire yield instead of publishing a deadline checkpoint', async () => {
+    const session = summary('session-a', 'workspace-a');
+    const wireScope = scope('workspace-a', 'session-a');
+    const records = Array.from({ length: 131 }, (_, index) => usageRecord(10 + index, index + 1));
+    const f = fixture([session], { [wireScope]: records }, () => 0);
+    const controller = new AbortController();
+    const reason = new DOMException('cancelled at yield', 'AbortError');
+    let clockChecks = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => {
+      clockChecks++;
+      if (clockChecks === 2) queueMicrotask(() => { controller.abort(reason); });
+      return clockChecks > 1 ? 9 : 0;
+    });
+    try {
+      await expect(f.service.query({}, controller.signal)).rejects.toBe(reason);
+      expect(f.persistedRecordCounts()).toEqual([]);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('checks the deadline again while aggregating cached or replayed records', async () => {
+    let time = 0;
+    const session = summary('session-a', 'workspace-a');
+    const f = fixture(
       [session],
       { [scope('workspace-a', 'session-a')]: [usageRecord(10, 1)] },
-      () => calls++ < 4 ? 0 : 100,
+      () => time,
       { deadlineMs: 50 },
     );
-
-    const result = await query(service);
+    f.onPrice(() => { time = 100; });
+    const result = await query(f.service);
     expect(result.summary.session_count).toBe(1);
     expect(result.summary.tokens.output).toBe(1);
     expect(result.reliability).toMatchObject({
@@ -1358,7 +1424,7 @@ describe('UsageSourceTracker', () => {
     tracker.dispose();
     expect(tracker.ready).toBe(false);
     await logs.close();
-    logs.dispose();
+    await logs.dispose();
   });
 
   it('leaves source validation enabled after unsupported watches and in-memory storage', async () => {
@@ -1378,5 +1444,70 @@ describe('UsageSourceTracker', () => {
       tracker.dispose();
     }
     writes.dispose();
+  });
+});
+
+
+describe('shared agent and history usage projection', () => {
+  it('reuses one durable projection across agent reads, range views, appends, rewrites and restart', async () => {
+    const main = scope('w', 's');
+    const child = main.replace('/main', '/child');
+    const f = fixture([summary('s', 'w')], {
+      [main]: [usageRecord(1), usageRecord(100)],
+      [child]: [usageRecord(100)],
+    }, () => 200);
+    f.setAgentIds(['main', 'child']);
+    const childOnly = await f.service.readAgentUsage('w', 's', ['child']);
+    expect(childOnly['child']).toMatchObject({ complete: true, records: [expect.objectContaining({ sourceAgentId: 'child' })] });
+    expect(f.reads.has(main)).toBe(false);
+    const history = await f.service.query({});
+    expect(history.reliability.complete).toBe(true);
+    expect(history.summary.tokens.input_other).toBe(3);
+    const before = new Map(f.readBytes);
+    await f.service.query({ range: 'custom', start_at: 50, end_at: 150 });
+    const agent = await f.service.readAgentUsage('w', 's', ['main', 'child']);
+    expect(agent['main']?.records).toHaveLength(2);
+    expect(agent['child']?.records).toHaveLength(1);
+    expect(f.readBytes).toEqual(before);
+    const restarted = f.restart();
+    expect((await restarted.readAgentUsage('w', 's', ['main']))['main']?.records).toHaveLength(2);
+    expect(f.readBytes).toEqual(before);
+    f.setWire(main, [usageRecord(1), usageRecord(100), usageRecord(150)]);
+    expect((await restarted.readAgentUsage('w', 's', ['main']))['main']?.records).toHaveLength(3);
+    expect((await restarted.query({})).summary.tokens.input_other).toBe(4);
+    f.setWire(main, [usageRecord(175)]);
+    expect((await restarted.readAgentUsage('w', 's', ['main']))['main']?.records).toHaveLength(1);
+    expect((await restarted.query({})).summary.tokens.input_other).toBe(2);
+  });
+
+  it('does not add explicitly unknown nonzero tokens to the known subtotal', async () => {
+    const f = fixture([summary('s', 'w')], { [scope('w', 's')]: [
+      usageRecord(10), { ...usageRecord(11), usageKnown: false },
+    ] }, () => 100);
+    const result = await f.service.query({});
+    expect(result.summary.tokens).toEqual({ input_other: 1, output: 1, input_cache_read: 1, input_cache_creation: 1 });
+    expect(result.summary.tokens_unknown).toBe(true);
+    expect(result.reliability.usage_coverage).toMatchObject({ known_records: 1, missing_records: 1 });
+    expect((await f.service.readAgentUsage('w', 's', ['main']))['main']?.records).toHaveLength(2);
+  });
+
+  it('coalesces the same host query and isolates a cancelled waiter', async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const f = fixture([summary('s', 'w')], { [scope('w', 's')]: [usageRecord(10)] }, () => 100,
+      {}, undefined, undefined, undefined, async () => { entered(); await gate; });
+    const abort = new AbortController();
+    const left = f.service.query({}, abort.signal);
+    const right = f.service.query({});
+    await started;
+    abort.abort();
+    await expect(left).rejects.toMatchObject({ name: 'AbortError' });
+    release();
+    const response = await right;
+    expect(response.summary.tokens.input_other).toBe(1);
+    expect(response.reliability.complete).toBe(true);
+    expect(f.reads.get(scope('w', 's'))).toBe(2);
   });
 });

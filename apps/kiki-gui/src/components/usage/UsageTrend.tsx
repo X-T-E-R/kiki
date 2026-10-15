@@ -21,15 +21,18 @@ import {
   totalTokensOf,
   usageSeriesKeys,
   usageSourceKey,
+  USAGE_GRANULARITIES,
   USAGE_SOURCE_KEY_UNKNOWN,
   type UsageDrilldownSessionWire,
   type UsageFilters,
+  type UsageGranularity,
   type UsageGroupBy,
   type UsageMetric,
   type UsageTrendBucketWire,
 } from '../../lib/usageV2';
 import { segmentClass } from '../WorkspaceScopeControl';
 import {
+  AxisGroup,
   bucketCacheHit,
   bucketCost,
   bucketTokens,
@@ -53,6 +56,7 @@ export function TrendChart({
   groupBy,
   metric,
   onMetricChange,
+  onGranularityChange,
   selectedKey,
   onSelect,
   labelForKey,
@@ -62,6 +66,7 @@ export function TrendChart({
   readonly groupBy: UsageGroupBy;
   readonly metric: UsageMetric;
   readonly onMetricChange: (metric: UsageMetric) => void;
+  readonly onGranularityChange?: (granularity: UsageGranularity) => void;
   readonly selectedKey: string | null;
   readonly onSelect: (key: string | null) => void;
   readonly labelForKey: (key: string) => string;
@@ -94,7 +99,7 @@ export function TrendChart({
 
   return (
     <section data-usage-trend-card aria-label={t('usage.trend.title')}>
-      <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+      <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2">
         <div
           role="group"
           aria-label={t('usage.trend.title')}
@@ -113,6 +118,16 @@ export function TrendChart({
             </button>
           ))}
         </div>
+        {onGranularityChange !== undefined ? (
+          <AxisGroup
+            label={t('usage.axis.granularity')}
+            dataAxis="granularity"
+            options={USAGE_GRANULARITIES}
+            value={filters.granularity}
+            onChange={onGranularityChange}
+            labelFor={(option) => t(`usage.granularity.${option}`)}
+          />
+        ) : null}
         <span className="ml-auto text-[12px] text-ink-faint">{t('usage.trend.clickHint')}</span>
       </div>
       <div className="overflow-x-auto">

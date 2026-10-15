@@ -152,7 +152,7 @@ export function DimensionBreakdown({
               aria-expanded={open}
               aria-label={t('usage.agent.subagents', { count: children.length })}
               onClick={() => { toggle(row.key); }}
-              className="flex h-6 w-5 shrink-0 items-center justify-center rounded text-ink-faint hover:bg-paper hover:text-ink"
+              className="flex h-6 w-5 shrink-0 items-center justify-center rounded text-ink-faint hover:bg-ink/[0.05] hover:text-ink"
             >
               <DisclosureChevron open={open} className="text-current" />
             </button>
@@ -172,7 +172,7 @@ export function DimensionBreakdown({
                   </span>
                 </button>
               ) : null}
-              {open ? <ul className="border-t border-dashed border-hairline bg-paper/40">{children.map((child) => renderRow(child, 1))}</ul> : null}
+              {open ? <ul className="border-t border-dashed border-hairline bg-ink/[0.02]">{children.map((child) => renderRow(child, 1))}</ul> : null}
             </li>
           );
         })}

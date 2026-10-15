@@ -13,6 +13,7 @@ import {
   parseUsageDetailView,
   parseUsageFilters,
   readStoredUsageFilters,
+  searchHasUsageHistoryParams,
   searchHasUsageParams,
   totalTokensOf,
   USAGE_FILTER_DEFAULTS,
@@ -127,6 +128,16 @@ describe('parseUsageFilters', () => {
   });
 });
 
+describe('history deep-link detection', () => {
+  it('recognizes old filter/session/view links but not unrelated query state', () => {
+    expect(searchHasUsageHistoryParams('?range=last_7_days')).toBe(true);
+    expect(searchHasUsageHistoryParams('?session=s_1')).toBe(true);
+    expect(searchHasUsageHistoryParams('?view=sessions')).toBe(true);
+    expect(searchHasUsageHistoryParams('?metric=tokens&bucket=b_1')).toBe(true);
+    expect(searchHasUsageHistoryParams('?server=http%3A%2F%2Fexample.com')).toBe(false);
+  });
+});
+
 describe('detail view deep links', () => {
   it('defaults to the source table and degrades unknown values', () => {
     expect(parseUsageDetailView('')).toBe('sources');
@@ -142,19 +153,20 @@ describe('detail view deep links', () => {
       '?dimension=agent&session=s_1&server=http%3A%2F%2Fexample.com',
     );
     const params = new URLSearchParams(search);
+    expect(params.get('panel')).toBe('history');
     expect(params.get('view')).toBe('breakdown');
     expect(params.get('dimension')).toBe('agent');
     expect(params.get('session')).toBe('s_1');
     expect(params.get('server')).toBe('http://example.com');
-    // The default view is omitted so the canonical URL stays clean.
-    expect(usageDetailViewToSearch('sessions', '?view=breakdown')).toBe('?view=sessions');
-    expect(usageDetailViewToSearch('sources', '?view=breakdown')).toBe('');
+    // The default view is omitted, but the historical panel remains explicit.
+    expect(usageDetailViewToSearch('sessions', '?view=breakdown')).toBe('?panel=history&view=sessions');
+    expect(usageDetailViewToSearch('sources', '?view=breakdown')).toBe('?panel=history');
   });
 });
 
 describe('usageFiltersToSearch', () => {
-  it('omits defaults so the canonical local-today URL has no query', () => {
-    expect(usageFiltersToSearch(USAGE_FILTER_DEFAULTS)).toBe('');
+  it('keeps the history panel explicit while omitting filter defaults', () => {
+    expect(usageFiltersToSearch(USAGE_FILTER_DEFAULTS)).toBe('?panel=history');
   });
 
   it('round-trips a fully specified selection', () => {
@@ -186,6 +198,7 @@ describe('usageFiltersToSearch', () => {
     expect(params.get('server')).toBe('http://example.com');
     expect(params.get('token')).toBe('abc');
     expect(params.get('session')).toBe('s_1');
+    expect(params.get('panel')).toBe('history');
     expect(params.get('range')).toBe('last_7_days');
   });
 });
@@ -439,7 +452,7 @@ describe('rates and labels', () => {
   });
 
   it('builds the prefiltered session deep link', () => {
-    expect(usageSessionDeepLink('s 1')).toBe('/usage?dimension=session&session=s%201');
+    expect(usageSessionDeepLink('s 1')).toBe('/usage?panel=history&dimension=session&session=s%201');
   });
 });
 

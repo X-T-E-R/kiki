@@ -9,6 +9,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { I18nProvider } from '../i18n';
 import { USAGE_FILTERS_STORAGE_KEY, type UsageResponseWire } from '../lib/usageV2';
 import { UsagePage } from './UsagePage';
+import { usagePanelFromSearch } from './UsageNavigation';
 import { subscribeUsageFreshness } from '../lib/usageFreshness';
 import { writeLastSessionId } from '@kiki/session-core/settings';
 import type { Klient } from '@kiki/klient';
@@ -240,6 +241,9 @@ beforeEach(() => {
   getSession.mockReset();
   listWorkspaces.mockReset();
   listWorkspaceCatalog.mockReset();
+  getRequestGovernance.mockClear();
+  listModels.mockClear();
+  listProviders.mockClear();
   getUsage.mockImplementation(async (query: Record<string, unknown>) =>
     usageResponse({ defaulted: query['range'] === undefined }),
   );
@@ -252,9 +256,10 @@ describe('UsagePage (V2)', () => {
   it('opens today with one request and shares its real summary with the strip', async () => {
     let complete!: (response: UsageResponseWire) => void;
     getUsage.mockImplementation(() => new Promise<UsageResponseWire>((resolve) => { complete = resolve; }));
-    const { container, root, queryClient } = await renderPage('/usage', { flush: false });
+    const { container, root, queryClient } = await renderPage('/usage?panel=history', { flush: false });
     expect(getUsage).toHaveBeenCalledTimes(1);
     expect(getUsage.mock.calls[0]?.[0]).toMatchObject({ range: 'today', page_size: 25 });
+    expect(getUsage.mock.calls[0]?.[1]).toEqual({ signal: expect.any(AbortSignal) });
     expect(container.querySelector('[data-usage-summary-cost]')).toBeNull();
     await act(async () => { complete(usageResponse({ summaryCost: 8.75 })); });
     for (let i = 0; i < 5; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
@@ -274,20 +279,28 @@ describe('UsagePage (V2)', () => {
     const { container, root, queryClient } = await renderPage('/usage?range=last_7_days', { flush: false });
     expect(getUsage).toHaveBeenCalledTimes(1);
     expect(getUsage.mock.calls[0]?.[0]).toMatchObject({ range: 'last_7_days' });
+    expect(getUsage.mock.calls[0]?.[1]).toEqual({ signal: expect.any(AbortSignal) });
     await act(async () => { complete(usageResponse({ summaryCost: 12 })); });
+    for (let i = 0; i < 5; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(getUsage).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-usage-summary-cost]')?.textContent).toContain('12.00');
+    await openLiveStrip(container);
     for (let i = 0; i < 5; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(getUsage).toHaveBeenCalledTimes(2);
     expect(getUsage.mock.calls[1]?.[0]).toMatchObject({ range: 'today', page_size: 1 });
-    expect(container.querySelector('[data-usage-summary-cost]')?.textContent).toContain('12.00');
-    await openLiveStrip(container);
+    expect(getUsage.mock.calls[1]?.[1]).toEqual({ signal: expect.any(AbortSignal) });
     expect(container.querySelector('[data-usage-strip-tokens]')?.textContent).toContain('4.50');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-strip-toggle]')!.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-strip-toggle]')!.click(); });
+    for (let i = 0; i < 2; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(getUsage).toHaveBeenCalledTimes(2);
     await act(async () => { root.unmount(); });
     queryClient.clear();
   });
 
   it('recovers an initial failure without starting a competing today request', async () => {
     getUsage.mockRejectedValueOnce(new Error('usage read unavailable')).mockResolvedValue(usageResponse({ summaryCost: 2.5 }));
-    const { container, root, queryClient } = await renderPage('/usage');
+    const { container, root, queryClient } = await renderPage('/usage?panel=history');
     expect(getUsage).toHaveBeenCalledTimes(1);
     const retry = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Reload')!;
     expect(container.textContent).toContain('Your time range and filters are kept');
@@ -336,19 +349,91 @@ describe('UsagePage (V2)', () => {
     await act(async () => { root.unmount(); });
     queryClient.clear();
   });
-  it('opens history by default and offers History, the combined Live tab and Export', async () => {
+  it('opens realtime by default and keeps historical reads out of the first screen', async () => {
     const { container, root } = await renderPage('/usage');
-    expect([...container.querySelectorAll<HTMLElement>('[data-usage-panel]')].map((node) => node.dataset['usagePanel'])).toEqual(['history', 'realtime', 'quota', 'export']);
-    expect(container.querySelector('[data-usage-panel="history"]')?.getAttribute('aria-current')).toBe('page');
-    expect(mainCalls().length).toBeGreaterThan(0);
-    expect(container.querySelector('[data-governance-active]')).toBeNull();
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-panel="realtime"]')!.click(); });
-    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect([...container.querySelectorAll<HTMLElement>('[data-usage-panel]')].map((node) => node.dataset['usagePanel'])).toEqual(['realtime', 'history', 'quota', 'export']);
+    expect(container.querySelector('[data-usage-panel="realtime"]')?.getAttribute('aria-current')).toBe('page');
     expect(container.querySelector('[data-governance-active]')?.textContent).toBe('3');
     expect(container.querySelector('[data-governance-empty]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-filters]')).toBeNull();
+    expect(mainCalls()).toHaveLength(0);
+    expect(listWorkspaces).not.toHaveBeenCalled();
+    expect(listWorkspaceCatalog).not.toHaveBeenCalled();
+    // RequestGovernanceView owns the live rule catalogs; the historical filter
+    // observers are disabled on this panel and must not add another read.
+    expect(listModels).toHaveBeenCalledTimes(1);
+    expect(listProviders).toHaveBeenCalledTimes(1);
+    expect(getSession).not.toHaveBeenCalled();
     expect(container.querySelector('[data-usage-rescan]')).toBeNull();
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-panel="history"]')!.click(); });
+    expect(container.querySelector('[data-location-probe]')?.textContent).toBe('/usage?panel=history');
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(mainCalls().length).toBeGreaterThan(0);
     await openReliability(container);
+    await act(async () => { root.unmount(); });
+  });
+
+  it.each([
+    ['/usage?panel=history', 'history'],
+    ['/usage?panel=realtime', 'realtime'],
+    ['/usage?panel=limits', 'realtime'],
+    ['/usage?panel=quota', 'quota'],
+    ['/usage?panel=export', 'export'],
+    ['/usage?range=last_7_days', 'history'],
+    ['/usage?session=s_1', 'history'],
+    ['/usage?view=sessions', 'history'],
+    ['/usage?metric=tokens', 'history'],
+    ['/usage?unrelated=state', 'realtime'],
+  ] as const)('resolves %s to the %s panel', (search, expected) => {
+    expect(usagePanelFromSearch(search.slice('/usage'.length))).toBe(expected);
+  });
+
+  it('does not start historical queries or locator paging on an explicit realtime link', async () => {
+    getUsage.mockImplementation(async () => usageResponse({ hasMore: true, nextPageToken: 'tok_2' }));
+    const { container, root } = await renderPage('/usage?panel=realtime&range=all&view=sessions&session=s_later');
+    expect(container.querySelector('[data-usage-panel="realtime"]')?.getAttribute('aria-current')).toBe('page');
+    expect(mainCalls()).toHaveLength(0);
+    expect(getUsage).not.toHaveBeenCalled();
+    expect(getSession).not.toHaveBeenCalled();
+    expect(listWorkspaceCatalog).not.toHaveBeenCalled();
+    // The live governance view owns one catalog read for its rule editor; the
+    // disabled historical filter observers must not add another request.
+    expect(listModels).toHaveBeenCalledTimes(1);
+    expect(listProviders).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-usage-locating]')).toBeNull();
+    await act(async () => { root.unmount(); });
+  });
+
+  it('aborts an in-flight history read when leaving the history panel', async () => {
+    const signals: AbortSignal[] = [];
+    getUsage.mockImplementation((_query: Record<string, unknown>, options?: { signal?: AbortSignal }) => {
+      if (options?.signal !== undefined) signals.push(options.signal);
+      return new Promise<UsageResponseWire>(() => {});
+    });
+    const { container, root } = await renderPage('/usage?panel=history', { flush: false });
+    expect(signals).toHaveLength(1);
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-usage-panel="realtime"]')!.click();
+      await Promise.resolve();
+    });
+    expect(signals[0]?.aborted).toBe(true);
+    await act(async () => { root.unmount(); });
+  });
+
+  it('aborts the superseded history read when filters change', async () => {
+    const signals: AbortSignal[] = [];
+    getUsage.mockImplementation((_query: Record<string, unknown>, options?: { signal?: AbortSignal }) => {
+      if (options?.signal !== undefined) signals.push(options.signal);
+      return new Promise<UsageResponseWire>(() => {});
+    });
+    const { container, root } = await renderPage('/usage?panel=history&range=last_7_days', { flush: false });
+    expect(signals).toHaveLength(1);
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-axis="range"] [data-axis-value="this_month"]')!.click();
+      await Promise.resolve();
+    });
+    expect(signals).toHaveLength(2);
+    expect(signals[0]?.aborted).toBe(true);
     await act(async () => { root.unmount(); });
   });
 
@@ -685,6 +770,26 @@ describe('UsagePage (V2)', () => {
     expect(container.querySelector('[data-usage-incomplete]')?.textContent).toContain('4 sessions');
   });
 
+  it('does not present an unfinished zero scan as empty usage and resumes counting on demand', async () => {
+    const partial = usageResponse({ summaryTokens: tokens(0), summaryCost: 0, incompleteReason: 'deadline', incompleteSessions: 1 });
+    getUsage.mockResolvedValue({ ...partial, trend: [] });
+    const { container, root } = await renderPage();
+    expect(container.querySelector('[data-usage-scan-pending]')?.textContent).toContain('Counting is not complete');
+    expect(container.querySelector('[data-usage-summary-cost]')?.textContent).toBe('—');
+    expect(container.querySelector('[data-usage-summary-tokens]')?.textContent).toBe('—');
+    expect(container.querySelector('[data-usage-summary-cache]')?.textContent).toBe('—');
+    expect(container.textContent).not.toContain('No usage in this range yet.');
+    const before = getUsage.mock.calls.length;
+    getUsage.mockResolvedValue(usageResponse());
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-continue-scan]')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(getUsage.mock.calls.length).toBeGreaterThan(before);
+    expect(startUsageRescan).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-usage-scan-pending]')).toBeNull();
+    expect(container.querySelector('[data-usage-summary-tokens]')?.textContent).not.toBe('—');
+    await act(async () => { root.unmount(); });
+  });
+
   it('locates a deep-linked session in the sessions tab', async () => {
     getUsage.mockImplementation(async () =>
       usageResponse({
@@ -790,6 +895,7 @@ describe('UsagePage (V2)', () => {
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const priorCall = getUsage.mock.calls.find(([query]) => (query as Record<string, unknown>)['start_at'] !== undefined);
     expect(priorCall).toBeDefined();
+    expect(priorCall![1]).toEqual({ signal: expect.any(AbortSignal) });
     const query = priorCall![0] as Record<string, unknown>;
     const DAY = 86_400_000;
     // The prior window is the same seven-day span moved back by its own length,
@@ -1071,6 +1177,7 @@ describe('UsagePage (V2)', () => {
     // The trace opens as a side sheet, which portals outside the page tree.
     expect(document.body.querySelectorAll('[data-usage-session-panel]')).toHaveLength(panelsBefore + 1);
     const traceCall = getUsage.mock.calls.at(-1)![0] as Record<string, unknown>;
+    expect(getUsage.mock.calls.at(-1)?.[1]).toEqual({ signal: expect.any(AbortSignal) });
     // An explicit [A,B) custom window, so the sessions behind the number are
     // the ones that produced it rather than a whole preset re-read.
     expect(traceCall['range']).toBe('custom');
@@ -1179,6 +1286,21 @@ describe('UsagePage (V2)', () => {
     expect(probe()).toContain('dimension=agent');
   });
 
+  it('heads the detail chapter with its view switcher, so each view sits under the tab that chose it', async () => {
+    const { container } = await renderPage();
+    expect(container.querySelectorAll('[data-usage-tabs]')).toHaveLength(1);
+    const chapter = container.querySelector('[data-usage-detail]')!;
+    const tabs = chapter.querySelector('[data-usage-tabs]')!;
+    const sources = chapter.querySelector('[data-usage-sources]')!;
+    expect(tabs.compareDocumentPosition(sources) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-tab="sessions"]')!.click(); });
+    // The sessions view replaces the sources view in place; the sources-only
+    // scope line goes with it instead of heading a list it no longer scopes.
+    expect(chapter.querySelector('[data-usage-sessions]')).not.toBeNull();
+    expect(chapter.querySelector('[data-usage-sources]')).toBeNull();
+    expect(chapter.querySelector('[data-usage-source-scope]')).toBeNull();
+  });
+
   it('renders the 5h rhythm tab with per-window session and turn detail', async () => {
     const { container } = await renderPage('/usage?view=five_hour&granularity=five_hour');
     expect(
@@ -1279,48 +1401,31 @@ describe('UsagePage (V2)', () => {
 });
 
 describe('UsagePage manual full rescan', () => {
-  it('moves the same rescan control between rows based on available space without squeezing the range', async () => {
-    let width = 1104;
-    let rangeWidth = 520;
-    let measure = () => {};
-    const originalObserver = globalThis.ResizeObserver;
-    const disconnect = vi.fn();
-    const clientWidth = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(() => width);
-    const bounds = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
-      return new DOMRect(0, 0, this.querySelector('[data-axis="range"]') ? rangeWidth : 220, 32);
+  it('places panel navigation in PageHeader, KPIs before secondary metadata, granularity in TrendChart, and rescan in the filter panel', async () => {
+    const { container, root } = await renderPage();
+    const header = container.querySelector('[data-page-header-inner="dashboard"]')!;
+    expect(header).not.toBeNull();
+    expect(header.querySelector('[data-usage-panel="history"]')).not.toBeNull();
+
+    const kpiCost = container.querySelector('[data-usage-summary-cost]')!;
+    const secondaryMeta = container.querySelector('[data-usage-secondary-meta]')!;
+    expect(kpiCost.compareDocumentPosition(secondaryMeta) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(secondaryMeta.querySelector('[data-usage-strip]')).not.toBeNull();
+    expect(secondaryMeta.querySelector('[data-usage-reliability-toggle]')).not.toBeNull();
+
+    expect(container.querySelector('[data-usage-filters] [data-axis="granularity"]')).toBeNull();
+    expect(container.querySelector('[data-usage-trend-card] [data-axis="granularity"]')).not.toBeNull();
+
+    const panel = container.querySelector<HTMLElement>('[data-usage-filters-panel]')!;
+    expect(panel.className).toContain('hidden');
+    expect(panel.querySelector('[data-usage-rescan] [role="switch"]')).not.toBeNull();
+    expect(panel.querySelector('[data-usage-rescan-start]')).not.toBeNull();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-usage-filters-toggle]')!.click();
     });
-    vi.stubGlobal('ResizeObserver', class {
-      constructor(callback: () => void) { measure = callback; }
-      observe() {}
-      disconnect = disconnect;
-    });
-    try {
-      getUsageRescan.mockResolvedValue({ state: 'running', scanned_sessions: 3, total_sessions: 10, scanned_records: 900, started_at: 1, finished_at: null, error: null });
-      const { container, root } = await renderPage();
-      const filter = container.querySelector<HTMLElement>('[data-usage-filters]')!;
-      const button = container.querySelector('[data-usage-rescan-start]');
-      const progress = container.querySelector('progress');
-      expect(filter.dataset['actionsRow']).toBe('range');
-      width = 700;
-      await act(async () => { measure(); });
-      expect(filter.dataset['actionsRow']).toBe('secondary');
-      width = 1104;
-      rangeWidth = 940;
-      await act(async () => { measure(); });
-      expect(filter.dataset['actionsRow']).toBe('secondary');
-      rangeWidth = 520;
-      await act(async () => { measure(); });
-      expect(filter.dataset['actionsRow']).toBe('range');
-      expect(container.querySelector('[data-usage-rescan-start]')).toBe(button);
-      expect(container.querySelector('progress')).toBe(progress);
-      expect(getUsageRescan).toHaveBeenCalledTimes(1);
-      await act(async () => { root.unmount(); });
-      expect(disconnect).toHaveBeenCalledTimes(1);
-    } finally {
-      clientWidth.mockRestore();
-      bounds.mockRestore();
-      vi.stubGlobal('ResizeObserver', originalObserver);
-    }
+    expect(panel.className).not.toContain('hidden');
+    await act(async () => { root.unmount(); });
   });
 
   it('places the action beside archived sessions without a standalone hint', async () => {

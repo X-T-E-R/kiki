@@ -6,6 +6,7 @@ import {
   IAppendLogStore,
   IFileSystemStorageService,
   ILogService,
+  IInstantiationService,
   type IAgentScopeHandle,
   type Scope,
   type TokenUsage,
@@ -107,28 +108,41 @@ function persistedFixture(
   } = {},
 ) {
   let records = [...initial];
+  let mtime = 1;
   let reads = 0;
   let lists = 0;
   const scopes: string[] = [];
+  const documents = new Map<string, Uint8Array>();
+  const serialize = () => Buffer.from(records.map((item) => JSON.stringify({ time: 1, ...item })).join('\n') + (records.length > 0 ? '\n' : ''));
+  let wire = serialize();
+  const bytes = () => wire;
   const storage = {
+    pathFor: () => undefined,
     list: async () => {
       lists += 1;
       return config.agentIds ?? ['main'];
     },
-  } as unknown as IFileSystemStorageService;
-  const appendLog = {
-    read: <R>(scope: string, _key: string, options?: Parameters<IAppendLogStore['read']>[2]): AsyncIterable<R> => {
-      reads += 1;
-      scopes.push(scope);
+    size: async () => bytes().length,
+    mtime: async () => mtime,
+    read: async (scope: string, key: string) => documents.get(`${scope}/${key}`),
+    write: async (scope: string, key: string, value: Uint8Array) => { documents.set(`${scope}/${key}`, value); },
+    readStream: (scope: string, _key: string, range: { start: number; end: number }, options?: { signal?: AbortSignal }): AsyncIterable<Uint8Array> => {
+      const scanning = options !== undefined;
+      if (scanning) { reads += 1; scopes.push(scope); }
       return (async function* () {
-        await config.beforeRead?.(scope, options?.signal);
-        for (const [index, item] of records.entries()) {
-          options?.signal?.throwIfAborted();
-          options?.onRecordBytes?.(config.recordBytes ?? Buffer.byteLength(JSON.stringify(item)) + 1);
-          yield item as R;
-          if (throwAfter !== undefined && index >= throwAfter) throw new Error('fixture append-log failure');
-        }
+        if (scanning) await config.beforeRead?.(scope, options?.signal);
+        options?.signal?.throwIfAborted();
+        const source = bytes().subarray(range.start, range.end + 1);
+        if (source.length > 0) yield source;
+        if (scanning && throwAfter !== undefined) throw new Error('fixture storage failure');
       })();
+    },
+  } as unknown as IFileSystemStorageService;
+  const listeners = new Set<(event: { scope: string; key: string }) => void>();
+  const appendLog = {
+    onDidWrite: (listener: (event: { scope: string; key: string }) => void) => {
+      listeners.add(listener);
+      return { dispose: () => { listeners.delete(listener); } };
     },
   } as unknown as IAppendLogStore;
   const log = {
@@ -143,6 +157,7 @@ function persistedFixture(
         if (identifier === IFileSystemStorageService) return storage;
         if (identifier === IAppendLogStore) return appendLog;
         if (identifier === ILogService) return log;
+        if (identifier === IInstantiationService) return { onWillDispose: () => ({ dispose() {} }) };
         throw new Error(`unexpected service ${String(identifier)}`);
       },
     },
@@ -152,7 +167,13 @@ function persistedFixture(
     log,
     setRecords(next: readonly WireRecord[]) {
       records = [...next];
+      wire = serialize();
+      mtime += 1;
     },
+    notify(scope: string) {
+      for (const listener of listeners) listener({ scope, key: 'wire.jsonl' });
+    },
+    projectionText: () => [...documents.values()].map((value) => Buffer.from(value).toString('utf8')).join('\n'),
     reads: () => reads,
     lists: () => lists,
     scopes: () => scopes,
@@ -320,7 +341,7 @@ describe('persisted agent panel metrics provenance', () => {
     expect(fixture.reads()).toBe(0);
   });
 
-  it('observes a detached complete scan from the next ordinary header read', async () => {
+  it('cancels a complete scan without publishing and can resume on the next explicit read', async () => {
     const gate = deferred();
     const fixture = persistedFixture([
       record('known-model', usage(2, 3), true),
@@ -339,11 +360,12 @@ describe('persisted agent panel metrics provenance', () => {
     const during = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'refresh', { settle: false });
     expect(during['main']).toMatchObject({ totalTokens: null, usagePartial: true });
     gate.resolve();
-    await vi.waitFor(async () => {
-      const observed = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'refresh', { settle: false });
-      expect(observed['main']).toMatchObject({ totalTokens: 14, usagePartial: false, usageSource: 'persisted' });
-    });
-    expect(fixture.reads()).toBe(1);
+    await new Promise((resolve) => { setImmediate(resolve); });
+    const header = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'refresh', { settle: false });
+    expect(header['main']).toMatchObject({ totalTokens: null, usagePartial: true });
+    const resumed = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'refresh', { settle: true, complete: true });
+    expect(resumed['main']).toMatchObject({ totalTokens: 14, usagePartial: false });
+    expect(fixture.reads()).toBe(2);
   });
 
   it('does not cache a capped usage prefix for a later header read', async () => {
@@ -364,8 +386,10 @@ describe('persisted agent panel metrics provenance', () => {
       settle: true,
       limits: { maxRecords: 1 },
     });
-    expect(again['main']).toMatchObject({ totalTokens: 5, usagePartial: true });
+    expect(again['main']).toMatchObject({ totalTokens: 14, usagePartial: false });
     expect(fixture.reads()).toBe(2);
+    const completeHeader = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'capped', { settle: false });
+    expect(completeHeader['main']).toMatchObject({ totalTokens: 14, usagePartial: false });
   });
 
   it('projects explicitly known zero usage and zero cost as complete', async () => {
@@ -479,17 +503,17 @@ describe('persisted agent panel metrics provenance', () => {
 });
 
 describe('persisted agent panel metrics cache scope', () => {
-  it('accounts source bytes without serializing non-usage tool bodies again', async () => {
-    const toJSON = vi.fn(() => { throw new Error('tool bodies must not be serialized for accounting'); });
+  it('persists only usage projection records, never historical tool bodies', async () => {
     const fixture = persistedFixture([
-      { type: 'context.append_loop_event', event: { type: 'tool.result', output: { toJSON } } } as unknown as WireRecord,
+      { type: 'context.append_loop_event', event: { type: 'tool.result', output: 'example tool body'.repeat(8192) } } as unknown as WireRecord,
       record('model', usage(2, 3), true),
-    ], undefined, { recordBytes: 1024 });
+    ]);
     const metrics = (await persisted(fixture.core, pricing({ model: 1 }), 'source-bytes', { complete: true }))['main'];
     expect(metrics).toMatchObject({ totalTokens: 5, usagePartial: false });
-    expect(toJSON).not.toHaveBeenCalled();
-    expect(fixture.log.info).toHaveBeenCalledWith('agent panel persisted metrics scan completed',
-      expect.objectContaining({ records_count: 2, bytes_count: 2048 }));
+    expect(fixture.projectionText()).not.toContain('example tool body');
+    expect(fixture.projectionText()).toContain('inputOther');
+    expect(fixture.log.info).toHaveBeenCalledWith('agent panel usage projection read',
+      expect.objectContaining({ agents_count: 1, partial: false }));
   });
 
   it('lets unrelated event-loop work run during a complete scan without losing usage', async () => {
@@ -583,7 +607,8 @@ describe('persisted agent panel metrics cache scope', () => {
       await vi.advanceTimersByTimeAsync(600_000);
       const third = await persisted(fixture.core, modelPricing, 'ttl-split', mutable);
       expect(third['child-1']?.totalTokens).toBe(2);
-      expect(fixture.reads()).toBe(5);
+      expect(third['main']?.totalTokens).toBe(2);
+      expect(fixture.reads()).toBe(4);
     } finally {
       vi.useRealTimers();
     }
@@ -627,9 +652,10 @@ describe('persisted agent panel metrics cache scope', () => {
     const second = persisted(fixture.core, modelPricing, 'selection-flight', {
       agentIds: ['child-2'],
     });
-    await vi.waitFor(() => { expect(fixture.reads()).toBe(2); });
+    expect(fixture.reads()).toBe(1);
     release.resolve();
     const [firstMetrics, secondMetrics] = await Promise.all([first, second]);
+    expect(fixture.reads()).toBe(2);
     expect(firstMetrics['child-1']?.totalTokens).toBe(1);
     expect(secondMetrics['child-2']?.totalTokens).toBe(1);
   });
@@ -657,9 +683,10 @@ describe('persisted agent panel metrics cache scope', () => {
     const second = persisted(fixture.core, modelPricing, 'limits-flight', {
       limits: { maxRecords: 2 },
     });
-    await vi.waitFor(() => { expect(fixture.reads()).toBe(2); });
+    expect(fixture.reads()).toBe(1);
     release.resolve();
     const [firstMetrics, secondMetrics] = await Promise.all([first, second]);
+    expect(fixture.reads()).toBe(2);
     expect(firstMetrics['main']).toMatchObject({ totalTokens: 1, usagePartial: true });
     expect(secondMetrics['main']).toMatchObject({ totalTokens: 3, usagePartial: false });
   });
@@ -702,9 +729,8 @@ describe('persisted agent panel metrics cache scope', () => {
       limits: { maxRecords: 2 },
     }))['main'];
     expect(metrics).toMatchObject({ totalTokens: 3, usagePartial: true, costPartial: true });
-    expect(fixture.log.warn).toHaveBeenCalledWith(
-      'agent panel persisted metrics scan budget reached',
-      expect.objectContaining({ records_count: 2, cancellation_reason: 'record_budget' }),
+    expect(fixture.log.info).toHaveBeenCalledWith(
+      'agent panel usage projection read', expect.objectContaining({ partial: true }),
     );
   });
 
@@ -714,9 +740,8 @@ describe('persisted agent panel metrics cache scope', () => {
       limits: { maxBytes: 1 },
     }))['main'];
     expect(metrics).toMatchObject({ totalTokens: null, usagePartial: true, costPartial: true });
-    expect(fixture.log.warn).toHaveBeenCalledWith(
-      'agent panel persisted metrics scan budget reached',
-      expect.objectContaining({ cancellation_reason: 'byte_budget' }),
+    expect(fixture.log.info).toHaveBeenCalledWith(
+      'agent panel usage projection read', expect.objectContaining({ partial: true }),
     );
   });
 
@@ -724,7 +749,7 @@ describe('persisted agent panel metrics cache scope', () => {
     vi.useFakeTimers({ now: 0 });
     try {
       const entered = deferred();
-      const fixture = persistedFixture([], undefined, {
+      const fixture = persistedFixture([record('model', usage(1, 0), true)], undefined, {
         beforeRead: async (_scope, signal) => {
           entered.resolve();
           await new Promise<void>((_resolve, reject) => {
@@ -739,9 +764,8 @@ describe('persisted agent panel metrics cache scope', () => {
       await vi.advanceTimersByTimeAsync(11);
       const metrics = (await call)['main'];
       expect(metrics).toMatchObject({ totalTokens: null, usagePartial: true, costPartial: true });
-      expect(fixture.log.warn).toHaveBeenCalledWith(
-        'agent panel persisted metrics scan budget reached',
-        expect.objectContaining({ cancellation_reason: 'wall_time_budget' }),
+      expect(fixture.log.info).toHaveBeenCalledWith(
+        'agent panel usage projection read', expect.objectContaining({ partial: true }),
       );
     } finally {
       vi.useRealTimers();
@@ -775,7 +799,7 @@ describe('persisted agent panel metrics cache scope', () => {
   it('cancels the underlying scan when its last waiter aborts', async () => {
     const entered = deferred();
     let scanSignal: AbortSignal | undefined;
-    const fixture = persistedFixture([], undefined, {
+    const fixture = persistedFixture([record('model', usage(1, 0), true)], undefined, {
       beforeRead: async (_scope, signal) => {
         scanSignal = signal;
         entered.resolve();
@@ -807,8 +831,8 @@ describe('persisted agent panel metrics cache scope', () => {
     expect(fixture.reads()).toBe(1);
     expect(fixture.scopes()[0]).toContain(agentId);
     expect(fixture.log.info).toHaveBeenCalledWith(
-      'agent panel persisted metrics scan completed',
-      expect.objectContaining({ targeted: true, files_count: 1 }),
+      'agent panel usage projection read',
+      expect.objectContaining({ targeted: true, agents_count: 1, partial: false }),
     );
   });
 
@@ -849,5 +873,41 @@ describe('persisted agent panel metrics cache scope', () => {
     fixture.setRecords([record('model', usage(2, 0), true)]);
     expect((await persisted(fixture.core, modelPricing, 'capacity-0'))['main']?.totalTokens).toBe(2);
     expect(fixture.reads()).toBe(1026);
+  });
+});
+
+
+describe('usage projection maintenance', () => {
+  it('separates completed unknown usage from a source still waiting to be read', async () => {
+    const fixture = persistedFixture([record('model', ZERO_USAGE, false)]);
+    const empty = await persisted(fixture.core, pricing({ model: 1 }), 'knowledge', { settle: false });
+    expect(empty['main']).toMatchObject({ totalTokens: null, usageComplete: false, usagePartial: true });
+    const counted = await persisted(fixture.core, pricing({ model: 1 }), 'knowledge');
+    expect(counted['main']).toMatchObject({ totalTokens: null, usageComplete: true, usagePartial: true });
+    const live = readAgentPanelMetrics(liveAgent({ model: ZERO_USAGE }, {
+      records: 1, knownRecords: 0, knownByModel: {}, incomplete: true,
+    }), pricing({ model: 1 }));
+    expect(live).toMatchObject({ totalTokens: null, usageComplete: true, usagePartial: true });
+  });
+
+  it('reprices the same cached facts without rereading wire', async () => {
+    const fixture = persistedFixture([record('model', usage(4, 3), true)]);
+    expect((await persisted(fixture.core, pricing({ model: 1 }), 'price'))['main']?.totalCostUsd).toBe(1);
+    expect((await persisted(fixture.core, pricing({ model: 5 }), 'price'))['main']?.totalCostUsd).toBe(5);
+    expect((await persisted(fixture.core, pricing({ model: undefined }), 'price'))['main']).toMatchObject({ totalTokens: 7, totalCostUsd: null, costPartial: true });
+    expect(fixture.reads()).toBe(1);
+  });
+
+  it('invalidates targeted cached facts on append and rewrite events without waiting for ttl', async () => {
+    const fixture = persistedFixture([record('model', usage(1, 0), true)]);
+    const modelPricing = pricing({ model: 1 });
+    expect((await persisted(fixture.core, modelPricing, 'events'))['main']?.totalTokens).toBe(1);
+    fixture.setRecords([record('model', usage(1, 0), true), record('model', usage(4, 0), true)]);
+    fixture.notify('sessions/workspace-events/session-events/agents/main');
+    expect((await persisted(fixture.core, modelPricing, 'events'))['main']?.totalTokens).toBe(5);
+    fixture.setRecords([record('model', usage(2, 0), true)]);
+    fixture.notify('sessions/workspace-events/session-events/agents/main');
+    expect((await persisted(fixture.core, modelPricing, 'events'))['main']?.totalTokens).toBe(2);
+    expect(fixture.reads()).toBe(3);
   });
 });

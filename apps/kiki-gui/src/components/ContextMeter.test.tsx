@@ -3,8 +3,10 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { AgentCapabilitiesResponse } from '@kiki/protocol';
 import { I18nProvider } from '../i18n';
 import type { KikiClient } from '../lib/client';
 import { applyCompactionProgress, useCompactionProgress, type CompactionProgress, type CompactionProgressEvent } from './useCompactionProgress';
@@ -17,6 +19,16 @@ import {
   contextUsageLevel,
   contextUsageWarns,
 } from './ContextMeter';
+import { mapCanonicalAgentUsage } from './agent-panel/useCanonicalAgentUsage';
+
+const canonicalMocks = vi.hoisted(() => ({
+  connection: null as unknown,
+  read: vi.fn(),
+}));
+
+vi.mock('../state/connection', () => ({
+  useOptionalConnection: () => canonicalMocks.connection,
+}));
 
 const containers: HTMLDivElement[] = [];
 const reactActEnvironment = globalThis as typeof globalThis & {
@@ -30,6 +42,11 @@ beforeAll(() => {
 
 afterEach(() => {
   for (const container of containers.splice(0)) container.remove();
+});
+
+beforeEach(() => {
+  canonicalMocks.connection = null;
+  canonicalMocks.read.mockReset();
 });
 
 afterAll(() => {
@@ -48,6 +65,376 @@ describe('context usage thresholds', () => {
     expect(contextUsageLevel(49, 100)).toBe('ok');
     expect(contextUsageLevel(50, 100)).toBe('warn');
     expect(contextUsageLevel(80, 100)).toBe('danger');
+  });
+});
+
+function canonicalResponse(agentId: string, metrics: NonNullable<AgentCapabilitiesResponse['metrics']>[string]): AgentCapabilitiesResponse {
+  return {
+    context: 'live',
+    live: true,
+    owner: { agent_id: agentId },
+    available: true,
+    targets: [],
+    metrics: { [agentId]: metrics },
+  };
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => { resolve = next; });
+  return { promise, resolve };
+}
+
+describe('canonical current-agent cumulative usage', () => {
+  it('subtracts cache buckets from input and preserves unknown fields', () => {
+    expect(mapCanonicalAgentUsage({
+      inputTokens: 100,
+      outputTokens: 7,
+      cacheReadTokens: 60,
+      cacheWriteTokens: 10,
+      totalTokens: 107,
+      totalCostUsd: 0.04,
+      contextTokens: null,
+      contextLimit: null,
+      compactionCount: null,
+    })).toEqual({
+      input_tokens: 30,
+      output_tokens: 7,
+      cache_read_tokens: 60,
+      cache_creation_tokens: 10,
+      total_cost_usd: 0.04,
+    });
+    expect(mapCanonicalAgentUsage(undefined)).toEqual({
+      input_tokens: null,
+      output_tokens: null,
+      cache_read_tokens: null,
+      cache_creation_tokens: null,
+      total_cost_usd: null,
+    });
+  });
+
+  it('waits for details to open, scopes settle to the current agent, and reuses the fresh result on reopen', async () => {
+    const pending = deferred<AgentCapabilitiesResponse>();
+    const signals: AbortSignal[] = [];
+    canonicalMocks.connection = {
+      spaceKey: 'main',
+      scopeId: 'local',
+      meta: { server_id: 'server-1' },
+      klient: { global: { agentPanel: { read: canonicalMocks.read } } },
+    };
+    canonicalMocks.read.mockImplementation((query: unknown, options: { signal: AbortSignal }) => {
+      signals.push(options.signal);
+      expect(query).toEqual({
+        session_id: 'session_abc',
+        agent_id: 'child_7',
+        metrics_settle: true,
+        metrics_only: true,
+        metrics_agent_ids: ['child_7'],
+      });
+      return pending.promise;
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    const queryClient = new QueryClient();
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <MemoryRouter>
+              <ContextMeter
+                used={80_000}
+                limit={200_000}
+                agentId="child_7"
+                sessionId="session_abc"
+                usage={{ input_tokens: 900, output_tokens: 800, cache_read_tokens: 700, cache_creation_tokens: 600, total_cost_usd: 9 }}
+              />
+            </MemoryRouter>
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    expect(canonicalMocks.read).not.toHaveBeenCalled();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); });
+    expect(canonicalMocks.read).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-context-usage-loading]')).not.toBeNull();
+    pending.resolve(canonicalResponse('child_7', {
+      inputTokens: 100,
+      outputTokens: 5,
+      cacheReadTokens: 60,
+      cacheWriteTokens: 10,
+      totalTokens: 105,
+      totalCostUsd: 0.012,
+      contextTokens: null,
+      contextLimit: null,
+      compactionCount: null,
+    }));
+    await act(async () => { await pending.promise; });
+    const usage = container.querySelector('[data-context-usage]');
+    expect(usage?.textContent).toContain('Agent cumulative');
+    expect(usage?.textContent).toContain('Input30');
+    expect(usage?.textContent).toContain('Output5');
+    expect(usage?.textContent).toContain('$0.012');
+    expect(usage?.textContent).not.toContain('900');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); });
+    expect(signals[0]?.aborted).toBe(false);
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); });
+    expect(canonicalMocks.read).toHaveBeenCalledTimes(1);
+    await act(async () => { root.unmount(); });
+  });
+
+  it('keeps refreshing live numbers through the own header after settle coverage completes', async () => {
+    vi.useFakeTimers();
+    let root: Root | undefined;
+    try {
+      const settled = deferred<AgentCapabilitiesResponse>();
+      const live = deferred<AgentCapabilitiesResponse>();
+      canonicalMocks.connection = {
+        spaceKey: 'main',
+        scopeId: 'local',
+        meta: { server_id: 'server-1' },
+        klient: { global: { agentPanel: { read: canonicalMocks.read } } },
+      };
+      let calls = 0;
+      canonicalMocks.read.mockImplementation((query: unknown) => {
+        calls += 1;
+        if (calls === 1) {
+          expect(query).toEqual({
+            session_id: 'session_abc',
+            agent_id: 'child_7',
+            metrics_settle: true,
+            metrics_only: true,
+            metrics_agent_ids: ['child_7'],
+          });
+          return settled.promise;
+        }
+        expect(query).toEqual({
+          session_id: 'session_abc',
+          agent_id: 'child_7',
+          metrics_settle: false,
+          metrics_only: true,
+        });
+        return live.promise;
+      });
+      const container = document.createElement('div');
+      document.body.append(container);
+      containers.push(container);
+      root = createRoot(container);
+      const queryClient = new QueryClient();
+      await act(async () => {
+        root!.render(
+          <QueryClientProvider client={queryClient}>
+            <I18nProvider>
+              <MemoryRouter>
+                <ContextMeter used={40_000} limit={200_000} agentId="child_7" sessionId="session_abc" />
+              </MemoryRouter>
+            </I18nProvider>
+          </QueryClientProvider>,
+        );
+      });
+      await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); });
+      expect(calls).toBe(1);
+      settled.resolve(canonicalResponse('child_7', {
+        inputTokens: 100,
+        outputTokens: 5,
+        cacheReadTokens: 60,
+        cacheWriteTokens: 10,
+        totalTokens: 105,
+        totalCostUsd: 0.012,
+        contextTokens: null,
+        contextLimit: null,
+        compactionCount: null,
+        usageComplete: true,
+      }));
+      await act(async () => { await settled.promise; });
+      expect(container.querySelector('[data-context-usage]')?.textContent).toContain('Input30');
+      await act(async () => { vi.advanceTimersByTime(15_000); });
+      expect(calls).toBe(2);
+      live.resolve(canonicalResponse('child_7', {
+        inputTokens: 220,
+        outputTokens: 8,
+        cacheReadTokens: 100,
+        cacheWriteTokens: 20,
+        totalTokens: 228,
+        totalCostUsd: 0.02,
+        contextTokens: null,
+        contextLimit: null,
+        compactionCount: null,
+        usageComplete: true,
+      }));
+      await act(async () => { await live.promise; });
+      const usage = container.querySelector('[data-context-usage]');
+      expect(usage?.textContent).toContain('Input100');
+      expect(usage?.textContent).toContain('Output8');
+      await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); });
+      await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); });
+      expect(calls).toBe(2);
+    } finally {
+      if (root !== undefined) await act(async () => { root!.unmount(); });
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([false, true])('settles again after a newer header loses source coverage (reopen: %s)', async (reopen) => {
+    vi.useFakeTimers();
+    let root: Root | undefined;
+    try {
+      const row = {
+        inputTokens: 100, outputTokens: 5, cacheReadTokens: 60, cacheWriteTokens: 10,
+        totalTokens: 105, totalCostUsd: 0.012, contextTokens: null, contextLimit: null,
+        compactionCount: null, usageComplete: true, usagePartial: false, costPartial: false,
+        usageSource: 'persisted' as const,
+      };
+      const updated = { ...row, inputTokens: 220, outputTokens: 8, totalTokens: 228,
+        cacheReadTokens: 100, cacheWriteTokens: 20, usagePartial: true, costPartial: true };
+      canonicalMocks.connection = {
+        spaceKey: 'main', scopeId: 'local', meta: { server_id: 'server-1' },
+        klient: { global: { agentPanel: { read: canonicalMocks.read } } },
+      };
+      canonicalMocks.read
+        .mockResolvedValueOnce(canonicalResponse('child_7', row))
+        .mockResolvedValueOnce(canonicalResponse('child_7', {
+          ...row, inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null,
+          totalTokens: null, totalCostUsd: null, usageComplete: false, usagePartial: true, costPartial: true,
+        }))
+        .mockResolvedValue(canonicalResponse('child_7', updated));
+      const container = document.createElement('div');
+      document.body.append(container);
+      containers.push(container);
+      root = createRoot(container);
+      const queryClient = new QueryClient();
+      await act(async () => {
+        root!.render(
+          <QueryClientProvider client={queryClient}>
+            <I18nProvider><MemoryRouter>
+              <ContextMeter used={40_000} limit={200_000} agentId="child_7" sessionId="session_abc" />
+            </MemoryRouter></I18nProvider>
+          </QueryClientProvider>,
+        );
+      });
+      const toggle = () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); };
+      await act(async () => { toggle(); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+      expect(container.querySelector('[data-context-usage]')?.textContent).toContain('Not reported');
+      if (reopen) {
+        await act(async () => { toggle(); });
+        await act(async () => { toggle(); });
+      } else {
+        await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+      }
+      expect(canonicalMocks.read).toHaveBeenNthCalledWith(3, {
+        session_id: 'session_abc', agent_id: 'child_7', metrics_settle: true,
+        metrics_only: true, metrics_agent_ids: ['child_7'],
+      }, { signal: expect.any(AbortSignal) });
+      expect(container.querySelector('[data-context-usage]')?.textContent).toContain('Input100');
+      expect(container.querySelector('[data-context-usage-error]')?.textContent).toContain('incomplete');
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+      expect(canonicalMocks.read).toHaveBeenNthCalledWith(4, {
+        session_id: 'session_abc', agent_id: 'child_7', metrics_settle: false, metrics_only: true,
+      }, { signal: expect.any(AbortSignal) });
+    } finally {
+      if (root !== undefined) await act(async () => { root!.unmount(); });
+      vi.useRealTimers();
+    }
+  });
+
+  it('aborts the bounded waiter when details close before the settle returns', async () => {
+    const pending = deferred<AgentCapabilitiesResponse>();
+    let signal: AbortSignal | undefined;
+    canonicalMocks.connection = {
+      spaceKey: 'main',
+      scopeId: 'local',
+      meta: { server_id: 'server-1' },
+      klient: { global: { agentPanel: { read: canonicalMocks.read } } },
+    };
+    canonicalMocks.read.mockImplementation((_query: unknown, options: { signal: AbortSignal }) => {
+      signal = options.signal;
+      return pending.promise;
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    const queryClient = new QueryClient();
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <MemoryRouter>
+              <ContextMeter used={40_000} limit={200_000} agentId="child_7" sessionId="session_abc" />
+            </MemoryRouter>
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); });
+    expect(signal?.aborted).toBe(false);
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); });
+    expect(signal?.aborted).toBe(true);
+    pending.resolve(canonicalResponse('child_7', {
+      inputTokens: 1,
+      outputTokens: 1,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 2,
+      totalCostUsd: null,
+      contextTokens: null,
+      contextLimit: null,
+      compactionCount: null,
+    }));
+    await act(async () => { await pending.promise; });
+    await act(async () => { root.unmount(); });
+  });
+
+  it('renders partial and unknown canonical fields without inventing zero cost', async () => {
+    const pending = deferred<AgentCapabilitiesResponse>();
+    canonicalMocks.connection = {
+      spaceKey: 'main',
+      scopeId: 'local',
+      meta: { server_id: 'server-1' },
+      klient: { global: { agentPanel: { read: canonicalMocks.read } } },
+    };
+    canonicalMocks.read.mockReturnValue(pending.promise);
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    const queryClient = new QueryClient();
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <MemoryRouter>
+              <ContextMeter used={40_000} limit={200_000} agentId="main" sessionId="session_abc" />
+            </MemoryRouter>
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); });
+    pending.resolve(canonicalResponse('main', {
+      inputTokens: null,
+      outputTokens: 4,
+      cacheReadTokens: null,
+      cacheWriteTokens: 2,
+      totalTokens: null,
+      totalCostUsd: null,
+      contextTokens: null,
+      contextLimit: null,
+      compactionCount: null,
+      usagePartial: true,
+      usageComplete: true,
+      costPartial: true,
+    }));
+    await act(async () => { await pending.promise; });
+    const usage = container.querySelector('[data-context-usage]');
+    expect(usage?.textContent).toContain('Agent cumulative');
+    expect(usage?.textContent).toContain('incomplete');
+    expect(usage?.textContent).toContain('Not reported');
+    expect(usage?.textContent).not.toContain('$0.00');
+    expect(usage?.textContent).not.toContain('Session cumulative');
+    await act(async () => { root.unmount(); });
   });
 });
 
@@ -395,7 +782,7 @@ describe('ContextMeter interaction', () => {
     const link = container.querySelector<HTMLAnchorElement>('[data-context-usage-link]');
     expect(link).not.toBeNull();
     expect(link?.getAttribute('href')).toBe(
-      '/usage?dimension=session&session=session_abc',
+      '/usage?panel=history&dimension=session&session=session_abc',
     );
     expect(link?.textContent).toContain('Usage');
     await act(async () => { root.unmount(); });

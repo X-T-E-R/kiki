@@ -4,6 +4,7 @@ type SettleMetricRow = {
   readonly inputTokens: number | null;
   readonly outputTokens: number | null;
   readonly usagePartial?: boolean;
+  readonly usageComplete?: boolean;
   readonly usageSource?: 'live' | 'persisted';
 };
 
@@ -30,17 +31,20 @@ export type PanelMetricsSource = {
 /** A cold settle:false row: the server has not counted this agent yet. */
 export function isUnsettledPanelMetrics(row: SettleMetricRow | undefined): boolean {
   if (row === undefined) return true;
+  if (row.usageComplete !== undefined) return !row.usageComplete;
   if (row.usagePartial !== true) return false;
-  return row.totalTokens == null && row.totalCostUsd == null
-    && row.inputTokens == null && row.outputTokens == null;
+  return [row.totalTokens, row.totalCostUsd, row.inputTokens, row.outputTokens]
+    .every((value) => value === null || value === undefined);
 }
 
 /** A measured row. A cold placeholder and an unreported unknown are not one. */
 export function isCompletePanelMetrics(row: SettleMetricRow | undefined): boolean {
-  if (row === undefined || row.usagePartial === true) return false;
+  if (row === undefined) return false;
+  if (row.usageComplete !== undefined) return row.usageComplete;
+  if (row.usagePartial === true) return false;
   if (row.usageSource === 'live' || row.usageSource === 'persisted') return true;
-  return row.totalTokens != null || row.totalCostUsd != null
-    || row.inputTokens != null || row.outputTokens != null;
+  return [row.totalTokens, row.totalCostUsd, row.inputTokens, row.outputTokens]
+    .some((value) => value !== null && value !== undefined);
 }
 
 function packUsage(usage: UsageRevision | undefined): string {
@@ -48,7 +52,7 @@ function packUsage(usage: UsageRevision | undefined): string {
   const pack = (slice: UsageSlice | undefined) => slice === undefined
     ? ''
     : [slice.inputOther ?? 0, slice.output ?? 0, slice.inputCacheRead ?? 0, slice.inputCacheCreation ?? 0].join(',');
-  return `${pack(usage.total)}:${pack(usage.currentTurn)}`;
+  return pack(usage.total);
 }
 
 /**
@@ -61,7 +65,7 @@ export function panelMetricsSourceRevision(source: PanelMetricsSource | undefine
   const roster = packUsage(source.rosterUsage);
   const hasCursor = source.cursorSeq !== undefined || source.cursorEpoch !== undefined || source.transcriptResetVersion !== undefined;
   if (!hasCursor && usage === '' && roster === '') return '';
-  return `${source.transcriptResetVersion ?? ''}:${source.cursorEpoch ?? ''}:${source.cursorSeq ?? ''}:${usage}:${roster}`;
+  return `${source.transcriptResetVersion ?? ''}:${source.cursorEpoch ?? ''}:${usage}:${roster}`;
 }
 
 /**

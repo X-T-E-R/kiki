@@ -90,8 +90,18 @@ describe('panel metrics settle merge', () => {
     expect(panelMetricsSourceRevision(undefined)).toBe('');
     const stable = { cursorSeq: 4, cursorEpoch: 'e', transcriptResetVersion: 1, usage: { total: { inputOther: 1, output: 1, inputCacheRead: 0, inputCacheCreation: 0 } } };
     expect(panelMetricsSourceRevision(stable)).toBe(panelMetricsSourceRevision({ ...stable }));
+    expect(panelMetricsSourceRevision({ ...stable, cursorSeq: 99, usage: { ...stable.usage, currentTurn: { output: 9 } } })).toBe(panelMetricsSourceRevision(stable));
     expect(panelMetricsSourceRevision({ ...stable, usage: { total: { inputOther: 2, output: 1, inputCacheRead: 0, inputCacheCreation: 0 } } })).not.toBe(panelMetricsSourceRevision(stable));
     expect(panelMetricsSourceRevision({ ...stable, cursorEpoch: 'rewritten' })).not.toBe(panelMetricsSourceRevision(stable));
     expect(panelMetricsSourceRevision({ rosterUsage: { total: { inputOther: 0, output: 3, inputCacheRead: 0, inputCacheCreation: 0 } } })).not.toBe('');
   });
+});
+
+
+it('does not retry a fully read unknown record but keeps an interrupted known prefix unsettled', () => {
+  const unknown = { ...cold, usageComplete: true };
+  expect(isUnsettledPanelMetrics(unknown)).toBe(false);
+  expect(isCompletePanelMetrics(unknown)).toBe(true);
+  expect(mergePanelMetrics({ main: unknown }, { main: counted })['main']).toEqual(unknown);
+  expect(isUnsettledPanelMetrics({ ...counted, usageComplete: false, usagePartial: true })).toBe(true);
 });
