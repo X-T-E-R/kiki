@@ -88,9 +88,11 @@
   # defaults: object
     # model_alias: string
     # thinking_effort: string
+    # native_agent: string
     # permission_mode: "manual" | "auto" | "review" | "yolo"
     # kiki_context: "memory" | "board" | "cron" | "threads" | "history" | "hooks"[]
     # allow_kiki_subagents: boolean
+    # inject_kiki_mcp: boolean
     # executor_prompt: object
       # delivery: "append" | "replace" | "preamble"
       # include: "agents_md" | "memory_snapshot" | "skill_catalog" | "workspace_info" | "system.*" | "delegation.*" | string[]
@@ -124,7 +126,7 @@
   # model_probe: object
     # command: string
     # args: string[]
-    # format: "lines" | "tab" | "json" (default: "lines")
+    # format: "lines" | "tab" | "columns" | "json" (default: "lines")
     # json_path: string[]
     # version_probe: object
       # args: string[]
@@ -230,6 +232,7 @@ room_budget = 12
 [browser_control]
 connections = {  }
 # default_browser: string
+# allowed_browsers: string[]
 
 # ##########################################################################
 # builtinProductSkills (config.toml: builtin_product_skills)
@@ -250,6 +253,7 @@ builtin_product_skills = true
 
 [computer_control]
 usage_preference = "avoid"
+# enabled: boolean
 
 # ##########################################################################
 # cron
@@ -863,6 +867,7 @@ min_idle_ms = 60000
 sweep_interval_ms = 30000
 max_concurrent_restores = 1
 max_queued_restores = 8
+max_resident_heap_bytes = 1610612736
 
 # ##########################################################################
 # sessionTitle (config.toml: session_title)

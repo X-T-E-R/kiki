@@ -575,9 +575,11 @@ export interface SessionStateSnapshot {
           overrides?: {
             model?: string | null;
             thinking?: string | null;
+            native_agent?: string | null;
             permission_mode?: 'manual' | 'auto' | 'review' | 'yolo' | null;
             kiki_context?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[] | null;
             allow_kiki_subagents?: boolean | null;
+            inject_kiki_mcp?: boolean | null;
           };
         };
         effective: {
@@ -585,7 +587,9 @@ export interface SessionStateSnapshot {
           allow_kiki_subagents: boolean;
           model?: string;
           thinking?: string;
+          native_agent?: string;
           permission_mode?: 'manual' | 'auto' | 'review' | 'yolo';
+          inject_kiki_mcp?: boolean;
         };
         sources: Record<string, 'profile' | 'session' | 'harness-settings' | 'harness-default'>;
         generation: number;
@@ -620,6 +624,7 @@ export interface SessionStateSnapshot {
         readonly planApproval?: boolean;
         readonly models?: readonly string[];
         readonly thinkingLevels?: readonly string[];
+        readonly nativeAgents?: readonly string[];
         readonly contextWindow?: number;
         readonly maxInputTokens?: number;
         readonly maxOutputTokens?: number;
@@ -3612,9 +3617,11 @@ export interface AgentStateSnapshot {
         overrides?: {
           model?: string | null;
           thinking?: string | null;
+          native_agent?: string | null;
           permission_mode?: 'manual' | 'auto' | 'review' | 'yolo' | null;
           kiki_context?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[] | null;
           allow_kiki_subagents?: boolean | null;
+          inject_kiki_mcp?: boolean | null;
         };
       };
       effective: {
@@ -3622,7 +3629,9 @@ export interface AgentStateSnapshot {
         allow_kiki_subagents: boolean;
         model?: string;
         thinking?: string;
+        native_agent?: string;
         permission_mode?: 'manual' | 'auto' | 'review' | 'yolo';
+        inject_kiki_mcp?: boolean;
       };
       sources: Record<string, 'profile' | 'session' | 'harness-settings' | 'harness-default'>;
       generation: number;
@@ -3643,6 +3652,7 @@ export interface AgentStateSnapshot {
       }>;
     };
     readonly allowKikiSubagents?: boolean;
+    readonly injectKikiMcp?: boolean;
     readonly kikiContext?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[];
     readonly executorDescriptorRevision?: string;
     readonly thinkingLevel: string;
@@ -4265,6 +4275,7 @@ export interface AgentStateSnapshot {
         };
         readonly allowKikiSubagents?: boolean;
         readonly kikiContext?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[];
+        readonly injectKikiMcp?: boolean;
         readonly modelAlias?: string;
         readonly restrictModelsToMenu?: boolean;
         readonly thinkingEffort?: string;
@@ -4540,6 +4551,7 @@ export interface AgentStateSnapshot {
       };
       readonly allowKikiSubagents?: boolean;
       readonly kikiContext?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[];
+      readonly injectKikiMcp?: boolean;
       readonly modelAlias?: string;
       readonly thinkingEffort?: string;
       readonly allowedModels?: readonly string[];
@@ -4956,6 +4968,7 @@ export interface AgentStateSnapshot {
           };
           readonly allowKikiSubagents?: boolean;
           readonly kikiContext?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[];
+          readonly injectKikiMcp?: boolean;
           readonly modelAlias?: string;
           readonly restrictModelsToMenu?: boolean;
           readonly thinkingEffort?: string;
@@ -5101,9 +5114,11 @@ export interface AgentStateSnapshot {
               overrides?: {
                 model?: string | null;
                 thinking?: string | null;
+                native_agent?: string | null;
                 permission_mode?: 'manual' | 'auto' | 'review' | 'yolo' | null;
                 kiki_context?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[] | null;
                 allow_kiki_subagents?: boolean | null;
+                inject_kiki_mcp?: boolean | null;
               };
             };
             effective: {
@@ -5111,7 +5126,9 @@ export interface AgentStateSnapshot {
               allow_kiki_subagents: boolean;
               model?: string;
               thinking?: string;
+              native_agent?: string;
               permission_mode?: 'manual' | 'auto' | 'review' | 'yolo';
+              inject_kiki_mcp?: boolean;
             };
             sources: Record<string, 'profile' | 'session' | 'harness-settings' | 'harness-default'>;
             generation: number;
@@ -5132,6 +5149,7 @@ export interface AgentStateSnapshot {
             }>;
           };
           readonly allowKikiSubagents?: boolean;
+          readonly injectKikiMcp?: boolean;
           readonly kikiContext?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[];
           readonly executorDescriptorRevision?: string;
           readonly agentsMdPaths?: readonly string[];
@@ -5747,6 +5765,7 @@ export interface AgentStateSnapshot {
             };
             readonly allowKikiSubagents?: boolean;
             readonly kikiContext?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[];
+            readonly injectKikiMcp?: boolean;
             readonly modelAlias?: string;
             readonly restrictModelsToMenu?: boolean;
             readonly thinkingEffort?: string;
@@ -6014,6 +6033,7 @@ export interface AgentStateSnapshot {
           };
           readonly allowKikiSubagents?: boolean;
           readonly kikiContext?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[];
+          readonly injectKikiMcp?: boolean;
           readonly modelAlias?: string;
           readonly restrictModelsToMenu?: boolean;
           readonly thinkingEffort?: string;
@@ -7581,9 +7601,11 @@ export interface AgentStateSnapshot {
           overrides?: {
             model?: string | null;
             thinking?: string | null;
+            native_agent?: string | null;
             permission_mode?: 'manual' | 'auto' | 'review' | 'yolo' | null;
             kiki_context?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[] | null;
             allow_kiki_subagents?: boolean | null;
+            inject_kiki_mcp?: boolean | null;
           };
         };
         readonly afterModelSwitch?: string;
@@ -7591,7 +7613,7 @@ export interface AgentStateSnapshot {
         readonly personaGreetingReply?: boolean;
         readonly profile?: string;
         readonly model?: string;
-        readonly thinking?: string;
+        readonly thinking?: string | null;
         readonly permissionMode?: 'manual' | 'auto' | 'review' | 'yolo';
         readonly planGate?: 'free' | 'gated';
         readonly planMode?: boolean;
@@ -7601,6 +7623,11 @@ export interface AgentStateSnapshot {
         readonly goalControl?: 'resume' | 'pause' | 'cancel';
       };
       deferredDisabledTools?: string[];
+      contentRanges?: {
+        index: number;
+        start: number;
+        end: number;
+      }[];
     };
   }>;
   // src/agent/prompt/promptService.ts

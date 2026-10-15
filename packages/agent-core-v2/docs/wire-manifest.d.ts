@@ -803,6 +803,7 @@ interface ProfileBindPayload {
   executorOptions?: Record<string, string | number | boolean>;
   executorPrompt?: import('@kiki/agent-profiles/executorPrompt').ExecutorPrompt;
   allowKikiSubagents?: boolean;
+  injectKikiMcp?: boolean;
   kikiContext?: 'memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks'[];
   executorDescriptorRevision?: string;
   /** ThinkingEffort */
@@ -971,7 +972,7 @@ interface PromptEnqueuedPayload {
     personaGreetingReply?: boolean;
     profile?: string;
     model?: string;
-    thinking?: string;
+    thinking?: string | null;
     permissionMode?: 'manual' | 'auto' | 'review' | 'yolo';
     planGate?: z.infer<typeof PlanGateSchema>;
     goalObjective?: string;
@@ -986,6 +987,11 @@ interface PromptEnqueuedPayload {
   queueIndex: number;
   retryFingerprint?: string;
   retryStatus?: 'running' | 'queued';
+  retryContentRanges?: {
+    index: number;
+    start: number;
+    end: number;
+  }[];
 }
 
 /**
@@ -1144,7 +1150,7 @@ interface PromptReplacedPayload {
     personaGreetingReply?: boolean;
     profile?: string;
     model?: string;
-    thinking?: string;
+    thinking?: string | null;
     permissionMode?: 'manual' | 'auto' | 'review' | 'yolo';
     planGate?: z.infer<typeof PlanGateSchema>;
     goalObjective?: string;
@@ -1172,6 +1178,7 @@ interface PromptRetryCommittedPayload {
     message?: ContextMessage;
     execution?: import('./prompt').PromptExecutionBinding;
     deferredDisabledTools?: string[];
+    contentRanges?: object[];
   };
 }
 
