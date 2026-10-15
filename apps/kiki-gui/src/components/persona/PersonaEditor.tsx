@@ -21,7 +21,7 @@
  * the masthead's overflow menu.
  */
 
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { PersonaSnapshot, PersonaSummary, WorkspaceCatalogEntry } from '@kiki/protocol';
@@ -41,7 +41,7 @@ import { useGuardedNavigate } from '../dirtyGuard';
 import { Icon } from '../icons';
 import { SearchableSelect, POPOVER_SURFACE_CLASS, type SearchableSelectOption } from '../SearchableSelect';
 import { AdvancedDetails, SettingField } from '../settings/fields';
-import { SectionCard } from '../settings/SectionCard';
+import { ScopeTag, SettingsPageScopeContext } from '../settings/SectionCard';
 import { SettingHelp } from '../settings/SettingHelp';
 import { FieldIssue, FORM_LABEL, FORM_SELECT_TRIGGER, SettingsDraftFooter, SettingsSegmented, SettingsSelect } from '../settings/SettingsPrimitives';
 import { useSavedTick } from '../settings/useSavedTick';
@@ -68,6 +68,34 @@ import { downloadBlob, invalidatePersonas, personaQueryKey } from './usePersonas
 const TEXTAREA = `${INPUT} resize-y leading-relaxed`;
 /** Stable stand-in while the workspace list is on its way. */
 const NO_WORKSPACES: readonly WorkspaceCatalogEntry[] = [];
+
+function PersonaSection({
+  id,
+  title,
+  children,
+}: {
+  readonly id: string;
+  readonly title: string;
+  readonly children: React.ReactNode;
+}) {
+  const pageScope = useContext(SettingsPageScopeContext);
+  return (
+    <section
+      id={id}
+      data-settings-card={id}
+      aria-labelledby={`${id}-title`}
+      className="border-t border-hairline pt-5"
+    >
+      <div className="mb-3 flex items-baseline gap-2">
+        <h3 id={`${id}-title`} className="text-[12px] font-medium text-section-ink">
+          {title}
+        </h3>
+        <ScopeTag scope="server" hidden={pageScope === 'server'} />
+      </div>
+      {children}
+    </section>
+  );
+}
 
 export function PersonaEditor({
   personaId,
@@ -322,7 +350,7 @@ function PersonaForm({
       </div>
 
       {/* ① 身份 */}
-      <SectionCard id="persona-card-identity" title={t('persona.section.identity')}>
+      <PersonaSection id="persona-card-identity" title={t('persona.section.identity')}>
         <div className="grid min-w-0 gap-3 sm:grid-cols-2">
           <div className="min-w-0 space-y-1.5">
             <label htmlFor={fieldId('name')} className={FORM_LABEL}>{t('persona.name')}</label>
@@ -391,10 +419,10 @@ function PersonaForm({
             </div>
           </AdvancedDetails>
         </div>
-      </SectionCard>
+      </PersonaSection>
 
       {/* ② 默认工作 */}
-      <SectionCard id="persona-card-work" title={t('persona.section.work')}>
+      <PersonaSection id="persona-card-work" title={t('persona.section.work')}>
         <div className="grid min-w-0 gap-3 sm:grid-cols-3">
           <div className="min-w-0 space-y-1.5">
             <span className={FORM_LABEL} id={fieldId('profile')}>{t('persona.profile')}</span>
@@ -438,18 +466,22 @@ function PersonaForm({
             />
           </SettingField>
         </div>
-      </SectionCard>
+      </PersonaSection>
 
       {/* ③ 可见性 — its own resource, so it saves itself. */}
       {snapshot !== undefined && summary !== undefined ? (
-        <SectionCard id="persona-card-visibility" title={t('persona.section.visibility')}>
+        <PersonaSection id="persona-card-visibility" title={t('persona.section.visibility')}>
           <PersonaVisibilitySection persona={summary} />
-        </SectionCard>
+        </PersonaSection>
       ) : null}
 
       {/* ④ 记忆 */}
-      <SectionCard id="persona-card-memory" title={t('persona.section.memory')}>
-        <SettingField label={t('persona.memory')} layout="row" help={t('persona.memoryHint')}>
+      <PersonaSection id="persona-card-memory" title={t('persona.section.memory')}>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <span className="inline-flex items-center gap-1.5 text-[13px] font-medium text-ink">
+            {t('persona.memory')}
+            <SettingHelp>{t('persona.memoryHint')}</SettingHelp>
+          </span>
           <div className="flex items-center gap-4">
             {DEFAULT_MEMORY_SHARED.map((scope) => (
               <Toggle
@@ -461,30 +493,28 @@ function PersonaForm({
               />
             ))}
           </div>
-        </SettingField>
-        {snapshot !== undefined ? (
-          <div className="pt-3">
+          {snapshot !== undefined ? (
             <button
               type="button"
               data-persona-memory-open
               onClick={() => { navigate(`/memory?persona=${encodeURIComponent(snapshot.definition.id)}`); }}
-              className="inline-flex items-center gap-1 text-[12px] font-medium text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
+              className="ml-auto inline-flex items-center gap-1 text-[12px] font-medium text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
             >
               {t('persona.memoryOpen')}
               <Icon name="arrowRight" size={12} />
             </button>
-          </div>
-        ) : null}
-      </SectionCard>
+          ) : null}
+        </div>
+      </PersonaSection>
 
       {/* ⑤ 任务与连接 — reads and writes the persona's own server state. */}
       {snapshot !== undefined && summary !== undefined ? (
-        <SectionCard id="persona-card-tasks" title={t('persona.section.tasks')}>
+        <PersonaSection id="persona-card-tasks" title={t('persona.section.tasks')}>
           <PersonaTasksSection persona={summary} />
-        </SectionCard>
+        </PersonaSection>
       ) : null}
 
-      <div className="space-y-2 border-t border-hairline pt-4">
+      <div data-persona-save-bar className="sticky bottom-0 z-10 space-y-2 border-t border-hairline bg-paper pt-3 pb-2">
         {!creating ? (
           <p data-persona-frozen-notice className="flex items-start gap-2 text-[12px] leading-relaxed text-ink-soft">
             <Icon name="clock" size={14} className="mt-0.5 shrink-0 text-ink-faint" />

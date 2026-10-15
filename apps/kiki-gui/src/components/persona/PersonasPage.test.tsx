@@ -133,13 +133,26 @@ describe('the personas page scope', () => {
     expect(visible).toEqual([]);
   });
 
-  it('leaves the new-persona draft with the same page scope', async () => {
+  it('leaves the new-persona draft with the same page scope and a sticky save bar', async () => {
     listPersonas.mockResolvedValue([LIN_LAN]);
     const container = await render('/personas?new=1');
 
     const identity = container.querySelector('[data-settings-card="persona-card-identity"]')!;
     expect(identity.querySelector('[data-settings-panel-scope="server"]')!.className).toContain('sr-only');
+    expect(identity.querySelector('h3')?.className).toContain('text-[12px]');
+    expect(identity.querySelector('h3')?.className).toContain('text-section-ink');
     expect(container.querySelector('[data-persona-editor="new"]')).not.toBeNull();
+    expect(container.querySelector('[data-persona-save-bar]')?.className).toContain('sticky');
+  });
+
+  it('shows the lede only in the empty state and hides it once personas exist', async () => {
+    listPersonas.mockResolvedValueOnce([]);
+    const emptyContainer = await render('/personas');
+    expect(emptyContainer.querySelector('[data-persona-empty]')?.textContent).toContain('角色决定「谁」来和你说话');
+
+    listPersonas.mockResolvedValueOnce([LIN_LAN]);
+    const filledContainer = await render('/personas');
+    expect(filledContainer.textContent).not.toContain('角色决定「谁」来和你说话');
   });
 });
 
@@ -151,7 +164,7 @@ describe('handing a new persona to Kiki', () => {
     listWorkspaceCatalog.mockResolvedValue({ items: [{ id: 'wd_recent_000000000000', name: 'Recent', root: '/recent' }] });
   });
 
-  it('sits beside New persona as a short secondary action, and carries the full intent for assistive tech', async () => {
+  it('sits beside New persona in Ask Kiki -> Import -> New order, and carries the full intent for assistive tech', async () => {
     listPersonas.mockResolvedValue([LIN_LAN]);
     const container = await render('/personas');
 
@@ -162,6 +175,10 @@ describe('handing a new persona to Kiki', () => {
     // It is the same second-level weight as Import, never the primary verb.
     const primary = container.querySelector<HTMLButtonElement>('[data-persona-new]')!;
     const importButton = container.querySelector<HTMLButtonElement>('[data-persona-import]')!;
+    const headerButtons = [...container.querySelectorAll('header button')].filter((button) =>
+      button.hasAttribute('data-persona-ask-kiki') || button.hasAttribute('data-persona-import') || button.hasAttribute('data-persona-new'));
+    expect(headerButtons.map((button) => button.getAttribute('data-persona-ask-kiki') !== null ? 'ask' : button.getAttribute('data-persona-import') !== null ? 'import' : 'new'))
+      .toEqual(['ask', 'import', 'new']);
     // The only addition is shrink-0, so a wrapped header never squeezes the
     // label into an ellipsis; the border, type and colour roles are identical.
     expect([...ask.classList].filter((name) => name !== 'shrink-0').sort())

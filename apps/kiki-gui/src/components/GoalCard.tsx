@@ -140,6 +140,7 @@ export function GoalCard({
   const [armedResume, setArmedResume] = useState(false);
   const [armedCancel, setArmedCancel] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [criterionExpanded, setCriterionExpanded] = useState(false);
   const errorRef = useRef<HTMLParagraphElement | null>(null);
   const resumeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cancelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -311,100 +312,152 @@ export function GoalCard({
       data-goal-card
       data-goal-status={goal.status}
       aria-label={t('goal.cardAria')}
-      className="px-1.5 pt-1.5"
+      className="px-3 py-2.5 sm:px-3.5 sm:py-3 space-y-2.5"
     >
-      <div className="flex flex-wrap items-start gap-x-2 gap-y-1">
-        {/* The row below already carries the status mark; the detail aligns
-            its full objective with the row's title instead of repeating it. */}
-        <span aria-hidden className="w-[7px] shrink-0" />
-        <div className="min-w-0 flex-1 basis-56">
-          <p className="text-[13px] leading-5 break-words text-ink">{goal.objective}</p>
-          <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[12px] text-ink-faint">
-            <span className={statusTone}>{t(`composer.goalStatus.${goal.status}`)}</span>
-            {followUp !== undefined ? <span>{followUp}</span> : null}
-            {goal.completionCriterion !== undefined && goal.completionCriterion !== '' ? (
-              <span className="min-w-0 truncate" title={goal.completionCriterion}>
-                {t('goal.doneWhen', { criterion: goal.completionCriterion })}
-              </span>
-            ) : null}
+      <div className="flex items-start justify-between gap-2.5">
+        <div className="flex min-w-0 flex-1 items-start gap-2">
+          <span aria-hidden className="w-[7px] shrink-0" />
+          <p data-goal-objective className="min-w-0 flex-1 text-[13.5px] leading-5 font-medium break-words text-ink">
+            {goal.objective}
           </p>
-          <div data-goal-budgets className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[12px] tabular-nums text-ink-soft">
-            {([
-              ['turns', goal.turnsUsed, goal.budget.turnBudget, goal.budget.turnBudgetReached],
-              ['tokens', goal.tokensUsed, goal.budget.tokenBudget, goal.budget.tokenBudgetReached],
-              ['seconds', Math.floor(goal.wallClockMs / 1_000), goal.budget.wallClockBudgetMs === null ? null : goal.budget.wallClockBudgetMs / 1_000, goal.budget.wallClockBudgetReached],
-            ] as const).map(([unit, used, limit, reached]) => (
-              <span key={unit} data-goal-budget={unit} className={reached ? 'text-amber-ink' : undefined}>
-                {t(`goal.budget.${unit}`)} · {used.toLocaleString()}{limit === null ? ` · ${t('goal.noLimit')}` : `/${limit.toLocaleString()}`}
-                {reached ? ` · ${t('goal.limitReached')}` : ''}
-              </span>
-            ))}
-          </div>
-          {goal.status === 'blocked' && goal.budget.overBudget ? (
-            <p className="mt-1 text-[12px] text-amber-ink">{t('goal.budgetBlocked')}</p>
-          ) : null}
         </div>
-        {(
-          <span data-goal-actions className="ml-auto flex shrink-0 items-center gap-0.5">
-            <button
-              type="button"
-              hidden={editing}
-              disabled={busy}
-              onClick={openEditor}
-              title={t('goal.editTitle')}
-              className={actionClass}
-            >
-              {t('goal.edit')}
-            </button>
-            {goal.status === 'active' ? <GoalPauseButton onPause={onPause} /> : null}
-            {goal.status === 'paused' || goal.status === 'blocked' ? (
-              <button
-                type="button"
-                disabled={busy}
-                onClick={clickResume}
-                onKeyDown={(event) => {
-                  if (event.key === 'Escape' && armedResume) {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    setArmedResume(false);
-                  }
-                }}
-                title={
-                  armedResume
-                    ? t('goal.resumeConfirm')
-                    : goal.status === 'blocked'
-                      ? t('goal.resumeBlockedTitle')
-                      : t('goal.resumeTitle')
-                }
-                className={armedResume ? `${actionClass} bg-ink/[0.05] text-ink` : actionClass}
-              >
-                {armedResume ? t('goal.resumeConfirm') : t('goal.resume')}
-              </button>
-            ) : null}
+        <span data-goal-actions className="flex shrink-0 items-center gap-0.5 ml-1">
+          <button
+            type="button"
+            hidden={editing}
+            disabled={busy}
+            onClick={openEditor}
+            title={t('goal.editTitle')}
+            className={actionClass}
+          >
+            {t('goal.edit')}
+          </button>
+          {goal.status === 'active' ? <GoalPauseButton onPause={onPause} /> : null}
+          {goal.status === 'paused' || goal.status === 'blocked' ? (
             <button
               type="button"
               disabled={busy}
-              onClick={clickCancel}
+              onClick={clickResume}
               onKeyDown={(event) => {
-                if (event.key === 'Escape' && armedCancel) {
+                if (event.key === 'Escape' && armedResume) {
                   event.preventDefault();
                   event.stopPropagation();
-                  setArmedCancel(false);
+                  setArmedResume(false);
                 }
               }}
-              title={armedCancel ? t('goal.cancelConfirm') : t('goal.cancelTitle')}
-              className={`h-6 rounded-md px-1.5 text-[12px] font-medium transition-colors duration-[var(--kiki-motion-quick)] disabled:opacity-50 focus-visible:ring-2 focus-visible:outline-none ${
-                armedCancel
-                  ? 'bg-danger/10 text-danger hover:bg-danger/15 focus-visible:ring-danger/50'
-                  : 'text-ink-soft hover:bg-danger/10 hover:text-danger focus-visible:ring-selected-ink/50'
-              }`}
+              title={
+                armedResume
+                  ? t('goal.resumeConfirm')
+                  : goal.status === 'blocked'
+                    ? t('goal.resumeBlockedTitle')
+                    : t('goal.resumeTitle')
+              }
+              className={armedResume ? `${actionClass} bg-ink/[0.05] text-ink` : actionClass}
             >
-              {armedCancel ? t('goal.cancelConfirm') : t('goal.cancel')}
+              {armedResume ? t('goal.resumeConfirm') : t('goal.resume')}
             </button>
-          </span>
-        )}
+          ) : null}
+          <button
+            type="button"
+            disabled={busy}
+            onClick={clickCancel}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape' && armedCancel) {
+                event.preventDefault();
+                event.stopPropagation();
+                setArmedCancel(false);
+              }
+            }}
+            title={armedCancel ? t('goal.cancelConfirm') : t('goal.cancelTitle')}
+            className={`h-6 rounded-md px-1.5 text-[12px] font-medium transition-colors duration-[var(--kiki-motion-quick)] disabled:opacity-50 focus-visible:ring-2 focus-visible:outline-none ${
+              armedCancel
+                ? 'bg-danger/10 text-danger hover:bg-danger/15 focus-visible:ring-danger/50'
+                : 'text-ink-soft hover:bg-danger/10 hover:text-danger focus-visible:ring-selected-ink/50'
+            }`}
+          >
+            {armedCancel ? t('goal.cancelConfirm') : t('goal.cancel')}
+          </button>
+        </span>
       </div>
-        <InlineEditor open={editing} lazy className="mt-2 mb-1 ml-4 space-y-3">
+
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 pl-[15px] text-[12px] text-ink-faint">
+        <span data-goal-status-word className={statusTone}>
+          {t(`composer.goalStatus.${goal.status}`)}
+        </span>
+        {followUp !== undefined ? <span>·</span> : null}
+        {followUp !== undefined ? <span data-goal-followup>{followUp}</span> : null}
+      </div>
+
+      {goal.completionCriterion !== undefined && goal.completionCriterion !== '' ? (
+        <div
+          data-goal-criterion
+          className="ml-[15px] rounded-lg bg-ink/[0.025] border border-hairline/60 px-3 py-2 text-[12px] text-ink-soft"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-medium text-ink-faint text-[11.5px]">
+              {t('goal.criterionLabel')}
+            </span>
+            {goal.completionCriterion.length > 50 ? (
+              <button
+                type="button"
+                data-goal-criterion-toggle
+                onClick={() => { setCriterionExpanded((open) => !open); }}
+                aria-expanded={criterionExpanded}
+                className="cursor-pointer text-[11px] font-medium text-ink-faint transition-colors hover:text-ink underline-offset-2 hover:underline"
+              >
+                {criterionExpanded ? t('transcript.showLess') : t('transcript.showMore')}
+              </button>
+            ) : null}
+          </div>
+          <p
+            data-goal-criterion-text
+            className={`mt-1 break-words whitespace-pre-wrap text-ink leading-relaxed ${
+              !criterionExpanded && goal.completionCriterion.length > 50 ? 'line-clamp-2' : ''
+            }`}
+            title={t('goal.doneWhen', { criterion: goal.completionCriterion })}
+          >
+            {goal.completionCriterion}
+          </p>
+        </div>
+      ) : null}
+
+      <div
+        data-goal-budgets
+        className="ml-[15px] grid grid-cols-1 sm:grid-cols-3 gap-2 pt-0.5 text-[12px] tabular-nums"
+      >
+        {([
+          ['turns', goal.turnsUsed, goal.budget.turnBudget, goal.budget.turnBudgetReached],
+          ['tokens', goal.tokensUsed, goal.budget.tokenBudget, goal.budget.tokenBudgetReached],
+          ['seconds', Math.floor(goal.wallClockMs / 1_000), goal.budget.wallClockBudgetMs === null ? null : goal.budget.wallClockBudgetMs / 1_000, goal.budget.wallClockBudgetReached],
+        ] as const).map(([unit, used, limit, reached]) => (
+          <div
+            key={unit}
+            data-goal-budget={unit}
+            className={`flex flex-col gap-0.5 rounded-lg bg-ink/[0.025] px-2.5 py-1.5 border border-hairline/60 ${
+              reached ? 'border-amber/40 bg-amber/[0.04]' : ''
+            }`}
+          >
+            <span className="text-[11px] text-ink-faint font-normal">
+              {t(`goal.budget.${unit}`)}
+            </span>
+            <span className="flex items-baseline gap-1 text-[13px] font-medium leading-none mt-0.5">
+              <span className={reached ? 'text-amber-ink' : 'text-ink'}>
+                {used.toLocaleString()}
+              </span>
+              <span className="text-[11px] text-ink-faint font-normal">
+                {limit === null ? ` · ${t('goal.noLimit')}` : `/${limit.toLocaleString()}`}
+                {reached ? ` · ${t('goal.limitReached')}` : ''}
+              </span>
+            </span>
+          </div>
+        ))}
+      </div>
+
+      {goal.status === 'blocked' && goal.budget.overBudget ? (
+        <p className="ml-[15px] mt-1 text-[12px] text-amber-ink">{t('goal.budgetBlocked')}</p>
+      ) : null}
+
+      <InlineEditor open={editing} lazy className="mt-2 mb-1 ml-[15px] space-y-3">
           <div className="space-y-3" data-goal-editor>
             <label className="block">
               <span className="mb-1 block text-[12px] font-medium text-ink-soft">

@@ -123,6 +123,37 @@ describe('GoalCard', () => {
     expect(card.textContent).toContain('follow-up · Subagents done');
   });
 
+  it('renders completion criterion and provides readable expand toggle for long criteria', async () => {
+    const shortCriterion = 'Verify build succeeds';
+    const { container: shortCard } = await renderCard({
+      goal: goalFixture({ completionCriterion: shortCriterion }),
+    });
+    expect(shortCard.querySelector('[data-goal-criterion]')).not.toBeNull();
+    expect(shortCard.querySelector('[data-goal-criterion-text]')?.textContent).toBe(shortCriterion);
+    expect(shortCard.querySelector('[data-goal-criterion-toggle]')).toBeNull();
+
+    const longCriterion = 'Ensure all integration endpoints return 200 OK and all artifacts are saved with sha256 checksums across all environments';
+    const { container: longCard } = await renderCard({
+      goal: goalFixture({ completionCriterion: longCriterion }),
+    });
+    const criterionBox = longCard.querySelector('[data-goal-criterion]')!;
+    expect(criterionBox).not.toBeNull();
+    const toggle = longCard.querySelector<HTMLButtonElement>('[data-goal-criterion-toggle]')!;
+    expect(toggle).not.toBeNull();
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.textContent).toBe('Show more');
+    expect(longCard.querySelector('[data-goal-criterion-text]')?.className).toContain('line-clamp-2');
+
+    await click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(toggle.textContent).toBe('Show less');
+    expect(longCard.querySelector('[data-goal-criterion-text]')?.className).not.toContain('line-clamp-2');
+
+    await click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.textContent).toBe('Show more');
+  });
+
   it('shows no default limits and displays each configured budget with reached feedback', async () => {
     const unlimited = await renderCard();
     expect(unlimited.container.querySelector('[data-goal-budgets]')?.textContent).toContain('No limit');
@@ -143,9 +174,9 @@ describe('GoalCard', () => {
     const { container } = await renderCard({ goal: goalFixture({
       turnsUsed: 4, tokensUsed: 24_000, wallClockMs: 125_000,
     }) });
-    expect(container.querySelector('[data-goal-budget="turns"]')?.textContent).toBe('Goal turns · 4 · No limit');
-    expect(container.querySelector('[data-goal-budget="tokens"]')?.textContent).toBe('Output tokens · 24,000 · No limit');
-    expect(container.querySelector('[data-goal-budget="seconds"]')?.textContent).toBe('Active time (seconds) · 125 · No limit');
+    expect(container.querySelector('[data-goal-budget="turns"]')?.textContent).toBe('Goal turns4 · No limit');
+    expect(container.querySelector('[data-goal-budget="tokens"]')?.textContent).toBe('Output tokens24,000 · No limit');
+    expect(container.querySelector('[data-goal-budget="seconds"]')?.textContent).toBe('Active time (seconds)125 · No limit');
   });
 
   it('edits and clears all budgets in one save without resuming', async () => {

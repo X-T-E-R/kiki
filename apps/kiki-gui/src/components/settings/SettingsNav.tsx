@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 
 import type { I18nKey } from '@kiki/session-core/i18n';
 import {
@@ -15,6 +16,17 @@ import { useI18n } from '../../i18n';
 import { Icon } from '../icons';
 import { useOptionalInstalledPlugins } from '../capabilities/usePlugins';
 import { SECTIONS, type SectionId } from './sections';
+
+const LEAF_QUERY_PREFIXES: Readonly<Record<string, readonly unknown[]>> = {
+  ai: ['config'],
+  workspaces: ['workspaces', 'catalog'],
+  memory: ['memory-settings'],
+  skills: ['workspace-skills'],
+  mcp: ['mcp-managed-servers'],
+  plugins: ['plugins'],
+  'browser-control': ['browser'],
+  'computer-control': ['capability', 'kiki-computer'],
+};
 
 /**
  * Settings search field plus its hit list. Both the wide nav column and the
@@ -126,6 +138,7 @@ export function SettingsNavTree({
   onAfterNavigate?: () => void;
 }) {
   const { t } = useI18n();
+  const queryClient = useQueryClient();
   // The Plugins group lists what is installed, so the reader can jump straight
   // to one plugin's settings without going back through the list first. It
   // reads the query the list reads, so it costs nothing extra and never shows
@@ -135,10 +148,22 @@ export function SettingsNavTree({
   const labelFor = (id: string) => SECTIONS.find((section) => section.id === id)?.labelKey;
   const activeCanonical = active !== null ? canonicalNavSection(active, activeTab) : null;
 
+  const subscribeErrors = useCallback((listener: () => void) => queryClient.getQueryCache().subscribe(listener), [queryClient]);
+  const readErrors = useCallback(() => Object.entries(LEAF_QUERY_PREFIXES).filter(([id, queryKey]) => {
+    const cached = queryClient.getQueryCache().findAll({ queryKey });
+    return cached.some((query) => query.state.status === 'error' || id === 'plugins' &&
+      (query.state.data as { plugins?: { state?: string; hasErrors?: boolean }[] } | undefined)?.plugins?.some(
+        (plugin) => plugin.state === 'error' || plugin.hasErrors === true,
+      ));
+  }).map(([id]) => id).join('\0'), [queryClient]);
+  const errorKeys = useSyncExternalStore(subscribeErrors, readErrors, readErrors);
+  const errorLeaves = useMemo(() => new Set(errorKeys.split('\0')), [errorKeys]);
+
   const leafButton = (id: string) => {
     const labelKey = labelFor(id);
     if (labelKey === undefined) return null;
     const isCurrent = (id === active || id === activeCanonical) && !(id === 'plugins' && activePluginId !== null && activePluginId !== undefined);
+    const errored = errorLeaves.has(id) || id === 'plugins' && plugins.some((plugin) => plugin.state === 'error' || plugin.hasErrors);
     return (
       <button
         key={id}
@@ -146,11 +171,14 @@ export function SettingsNavTree({
         data-settings-nav-leaf={id}
         aria-current={isCurrent ? 'page' : undefined}
         onClick={() => { onNavigate(id as SectionId); onAfterNavigate?.(); }}
-        className={`row-interactive flex h-8 items-center px-3 text-left text-[13px] ${
+        className={`row-interactive flex h-8 items-center gap-2 px-3 text-left text-[13px] ${
           isCurrent ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
         }`}
       >
-        {t(labelKey)}
+        <span className="min-w-0 flex-1 truncate">{t(labelKey)}</span>
+        {errored ? (
+          <span aria-hidden data-settings-nav-error={id} className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-danger" />
+        ) : null}
       </button>
     );
   };

@@ -35,7 +35,7 @@ afterAll(() => {
   vi.unstubAllGlobals();
 });
 
-async function render(node: React.ReactNode): Promise<HTMLDivElement> {
+async function render(node: React.ReactNode, queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })): Promise<HTMLDivElement> {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
@@ -46,10 +46,13 @@ async function render(node: React.ReactNode): Promise<HTMLDivElement> {
       // The navigation reads the installed-plugin cache to name what can be
       // opened. A harness with no server gives it an empty cache rather than a
       // missing provider, which is the state it renders in before a connection.
-      <QueryClientProvider client={new QueryClient()}>
+      <QueryClientProvider client={queryClient}>
         <I18nProvider>{node}</I18nProvider>
       </QueryClientProvider>,
     );
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
   return container;
 }
@@ -83,16 +86,19 @@ describe('SettingsNav grouped tree', () => {
     expect(container.textContent).not.toMatch(/This device|All sessions|127\.0\.0\.1/);
     const groups = [...container.querySelectorAll('[data-settings-nav-group]')];
     expect(groups.map((group) => group.getAttribute('data-settings-nav-group')))
-      .toEqual(['preferences', 'models-agents', 'workspaces-memory', 'capabilities', 'system-connection']);
+      .toEqual(['device', 'models-agents', 'work', 'capabilities', 'connection', 'advanced']);
     expect(groups.map((group) => group.querySelector('p')?.textContent))
-      .toEqual(['Preferences & appearance', 'Models & agents', 'Workspaces & memory', 'Capabilities & safety', 'System & connection']);
+      .toEqual(['App', 'Models & agents', 'How work runs', 'Capabilities', 'Connection & remote', 'Advanced']);
     for (const group of groups) expect(group.querySelector(':scope > button')).toBeNull();
     const leaves = (index: number) => [...groups[index]!.querySelectorAll('[data-settings-nav-leaf]')].map((leaf) => leaf.getAttribute('data-settings-nav-leaf'));
-    expect(leaves(0)).toEqual(['general', 'shortcuts']);
-    expect(leaves(1)).toEqual(['providers', 'models', 'agents']);
-    expect(leaves(2)).toEqual(['workspaces', 'memory']);
-    expect(leaves(3)).toEqual(['permissions', 'extensions', 'environment-tools']);
-    expect(leaves(4)).toEqual(['remote', 'system']);
+    expect(leaves(0)).toEqual(['general', 'appearance', 'shortcuts']);
+    expect(leaves(1)).toEqual(['ai', 'identity', 'agents', 'subagents']);
+    expect(leaves(2)).toEqual(['sessions', 'workspaces', 'notifications', 'memory', 'permissions', 'tasks']);
+    expect(leaves(3)).toEqual(['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks']);
+    // Spaces and external services sit with the ways of reaching a server;
+    // workspaces with the sessions that run in them.
+    expect(leaves(4)).toEqual(['connection', 'ssh', 'connection-services', 'spaces']);
+    expect(leaves(5)).toEqual(['developer', 'labs', 'about']);
   });
 
   it('highlights only the active leaf and navigates on click', async () => {
@@ -101,14 +107,14 @@ describe('SettingsNav grouped tree', () => {
       <SettingsNav active="skills" searchFocusToken={null} onNavigate={(id) => { visited.push(id); }} onSearchHit={noop} />,
     );
     const active = [...container.querySelectorAll('[aria-current="page"]')];
-    expect(active.map((button) => button.textContent)).toEqual(['Skills, MCP & plugins']);
+    expect(active.map((button) => button.textContent)).toEqual(['Skills']);
     // Selection is the shared row rule (a paper sheet + inset mark from
     // .row-interactive[aria-current]), not an accent fill.
     expect(active[0]!.classList.contains('row-interactive')).toBe(true);
     expect(container.querySelector('nav')!.innerHTML).not.toContain('accent');
-    const models = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Model catalog & defaults')!;
+    const models = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Models & providers')!;
     await click(models);
-    expect(visited).toEqual(['models']);
+    expect(visited).toEqual(['ai']);
   });
 
   it('shows group › section › card breadcrumbs in search hits', async () => {
@@ -120,7 +126,7 @@ describe('SettingsNav grouped tree', () => {
     const hits = [...container.querySelectorAll('[role="option"]')];
     expect(hits.length).toBeGreaterThan(0);
     // The group › section separator is the drawn chevron, not a typed glyph.
-    expect(hits[0]!.textContent).toBe('LanguagePreferences & appearanceGeneral & appearance');
+    expect(hits[0]!.textContent).toBe('Theme & colorAppAppearance');
     expect(hits[0]!.querySelector('[data-icon="chevron"]')).not.toBeNull();
   });
 
@@ -155,6 +161,50 @@ describe('SettingsNav grouped tree', () => {
 
     await click(subtabButtons[2]!);
     expect(visited).toEqual(['search?tab=fetch']);
+  });
+
+  it('updates nav error indicators after a background failure, recovery and removal without navigation', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const container = await render(
+      <SettingsNav active="general" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />,
+      queryClient,
+    );
+    expect(container.querySelector('[data-settings-nav-error="ai"]')).toBeNull();
+    const fail = async () => {
+      await queryClient.fetchQuery({ queryKey: ['config'], queryFn: async () => { throw new Error('connection unavailable'); } }).catch(() => undefined);
+    };
+    await act(fail);
+    expect(container.querySelector('[data-settings-nav-error="ai"]')).not.toBeNull();
+    await act(async () => { queryClient.setQueryData(['config'], { raw: {} }); });
+    expect(container.querySelector('[data-settings-nav-error="ai"]')).toBeNull();
+    await act(fail);
+    expect(container.querySelector('[data-settings-nav-error="ai"]')).not.toBeNull();
+    await act(async () => { queryClient.removeQueries({ queryKey: ['config'] }); });
+    expect(container.querySelector('[data-settings-nav-error="ai"]')).toBeNull();
+    expect(container.querySelector('[aria-current="page"]')?.getAttribute('data-settings-nav-leaf')).toBe('general');
+  });
+
+  it('marks a nav leaf with data-settings-nav-error when its cached query or installed plugin has an error', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(['plugins', 'local'], {
+      plugins: [{ id: 'broken-plugin', displayName: 'Broken', state: 'error', enabled: true }],
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <SettingsNav active="general" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    expect(container.querySelector('[data-settings-nav-error="plugins"]')).not.toBeNull();
+    expect(container.querySelector('[data-settings-nav-error="general"]')).toBeNull();
   });
 });
 

@@ -16,19 +16,29 @@ import { useI18n } from '../i18n';
 import { Icon } from './icons';
 import { NavBackButton } from './NavBackButton';
 
+export const PAGE_WIDTH = {
+  reading: 'max-w-[720px]',
+  split: 'max-w-[1040px]',
+  dashboard: 'max-w-[1120px]',
+} as const;
+
+export type PageWidth = keyof typeof PAGE_WIDTH;
+
 export function PageHeader({
   title,
   onToggleSidebar,
+  width,
   children,
 }: {
   title: string;
   onToggleSidebar: () => void;
+  width?: PageWidth;
   /** Right-aligned controls (refresh, primary action). */
   children?: ReactNode;
 }) {
   const { t } = useI18n();
-  return (
-    <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-x-2 gap-y-2 bg-paper px-4 py-2 lg:px-6">
+  const content = (
+    <>
       <button
         type="button"
         onClick={onToggleSidebar}
@@ -42,6 +52,23 @@ export function PageHeader({
         {title}
       </h1>
       {children}
+    </>
+  );
+  if (width === undefined) {
+    return (
+      <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-x-2 gap-y-2 bg-paper px-4 py-2 lg:px-6">
+        {content}
+      </header>
+    );
+  }
+  return (
+    <header className="flex min-h-12 shrink-0 items-center bg-paper px-4 py-2 lg:px-6">
+      <div
+        data-page-header-inner={width}
+        className={`mx-auto flex w-full ${PAGE_WIDTH[width]} flex-wrap items-center gap-x-2 gap-y-2`}
+      >
+        {content}
+      </div>
     </header>
   );
 }

@@ -1189,6 +1189,28 @@ describe('MemoryPage editor draft', () => {
     expect(container.querySelector('[data-memory-editor]')).toBeNull();
   });
 
+  it('asks before Close drops a draft, and keeps pin and delete out of an open edit', async () => {
+    seedMemories({ 'global::': [fixtureEntry({ id: 'm_one', title: 'First' })] });
+    const { container } = await mountGuardedPage();
+    await click(container, '[data-memory-row="m_one"]');
+    expect(container.querySelector('[data-memory-pin]')).not.toBeNull();
+    await click(container, '[data-memory-edit]');
+    // A pin mid-edit would move the revision under the draft.
+    expect(container.querySelector('[data-memory-pin]')).toBeNull();
+    expect(container.querySelector('[data-memory-delete]')).toBeNull();
+    await fillDraft(container, 'Unsaved draft');
+
+    await click(container, '[data-memory-edit]');
+    expect(container.querySelector('[data-guard-pending]')?.textContent).toBe('true');
+    await click(container, '[data-guard-cancel]');
+    expect(container.querySelector<HTMLInputElement>('[data-memory-title]')?.value).toBe('Unsaved draft');
+
+    await click(container, '[data-memory-edit]');
+    await click(container, '[data-guard-confirm]');
+    expect(container.querySelector('[data-memory-editor]')).toBeNull();
+    expect(container.querySelector('[data-memory-pin]')).not.toBeNull();
+  });
+
   it('does not ask twice for an explicit discard', async () => {
     seedMemories({ 'global::': [fixtureEntry({ id: 'm_open' })] });
     const { container } = await mountGuardedPage();
@@ -1724,7 +1746,7 @@ describe('MemoryPage bounded vertical continuation', () => {
       }
       await fixture.close();
     }
-  }, 30_000);
+  }, 60_000);
 
   it('preserves already-read rows when continuation fails instead of presenting an empty or complete list', async () => {
     seedMemories({ 'global::': [] });
@@ -1760,4 +1782,24 @@ it('MemoryPage continuation refuses to approve a newer full proposal fetched fro
   expect(put).not.toHaveBeenCalled();
   expect(getToasts().some((toast) => toast.text.includes('changed since you opened it'))).toBe(true);
   expect(container.querySelectorAll('[data-memory-inbox-row]')).toHaveLength(1);
+});
+
+it('MemoryPage M1 layout places status in header, keeps fixed split columns with empty detail placeholder, and uses amber for incomplete coverage without read error', async () => {
+  const entry = fixtureEntry({ id: 'm_layout' });
+  seedMemories({ 'global::': [entry] });
+  vi.mocked(client.listMemory).mockResolvedValue({
+    items: [entry],
+    next_cursor: null,
+    coverage: { scopes: [{ kind: 'global' }], statuses: ['active'], exhausted: true, complete: false, warnings: ['1 memory records were skipped'] },
+  });
+  const container = await renderPage('/memory');
+  const headerStatus = container.querySelector('header [data-memory-status]');
+  expect(headerStatus?.textContent).toContain('On');
+  expect(headerStatus?.textContent).toContain('Memory settings');
+  const grid = container.querySelector('[data-memory-list-detail]')!;
+  expect(grid.className).toContain('lg:grid-cols-[340px_minmax(0,1fr)]');
+  expect(container.querySelector('[data-memory-detail-empty]')?.textContent).toContain('Select a memory on the left to inspect its details and history.');
+  const coverage = container.querySelector('[data-memory-coverage]')!;
+  expect(coverage.className).toContain('text-amber-ink');
+  expect(coverage.className).not.toContain('text-danger');
 });

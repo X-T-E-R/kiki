@@ -75,6 +75,7 @@ export function SectionCard({
   effect,
   aside,
   scope,
+  actions,
 }: {
   id?: string;
   title: string;
@@ -88,6 +89,8 @@ export function SectionCard({
   /** Quiet note under the heading — the browser signpost for desktop-only
    * groups, so they cost one line instead of a page of disabled controls. */
   aside?: string;
+  /** A section-wide control on the heading line (one switch or add button). */
+  actions?: React.ReactNode;
 }) {
   const { t } = useI18n();
   const flashId = useContext(SettingsFlashContext);
@@ -116,6 +119,9 @@ export function SectionCard({
           <span data-settings-effect={note} className={`text-[12px] ${note === 'restart' ? 'font-medium text-amber-ink' : 'text-ink-faint'}`}>
             {t(EFFECT_KEY[note])}
           </span>
+        ) : null}
+        {actions !== undefined && actions !== null ? (
+          <div data-settings-card-actions className="flex shrink-0 items-center gap-2 self-center">{actions}</div>
         ) : null}
         {aside !== undefined ? (
           <span className="basis-full text-[12px] text-ink-faint">{aside}</span>
