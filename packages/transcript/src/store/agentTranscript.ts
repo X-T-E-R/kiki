@@ -309,7 +309,7 @@ export class AgentTranscript {
     const newest = this.#state.items.findLast((item) => item.kind === 'turn');
     for (const item of this.#state.items) {
       if (turns <= limits.tailTurns && bytes <= limits.maxBytes) break;
-      if (item.kind !== 'turn' || item.state === 'running' || item === newest) continue;
+      if (item.kind !== 'turn' || item.state === 'running' || (item === newest && limits.tailTurns > 0)) continue;
       const persisted = durableTurns.get(item.turnId);
       if (persisted === undefined || !sameResidentEntity(item, persisted)) continue;
       released.push(item.turnId);

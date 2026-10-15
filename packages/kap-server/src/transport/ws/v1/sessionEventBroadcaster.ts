@@ -218,7 +218,7 @@ export class SessionEventBroadcaster {
    * per-chunk `AABBCC` stream while every seq and offset still looks valid.
    */
   private readonly pendingStates = new Map<string, Promise<SessionState | undefined>>();
-  private readonly pendingSubscriptions = new Map<string, Map<BroadcastTarget, symbol>>();
+  private readonly pendingSubscriptions = new Map<string, Map<BroadcastTarget, AbortController>>();
   /** Session ids whose closing state is being drained and disposed. */
   private readonly evictions = new Map<string, Promise<void>>();
   private readonly maxBufferSize: number;
@@ -321,9 +321,10 @@ export class SessionEventBroadcaster {
     opts?: { deferTranscriptReset?: boolean; transcriptSince?: TranscriptSince },
   ): Promise<boolean> {
     if (this.closed) return false;
-    const pending = this.pendingSubscriptions.get(sessionId) ?? new Map<BroadcastTarget, symbol>();
+    const pending = this.pendingSubscriptions.get(sessionId) ?? new Map<BroadcastTarget, AbortController>();
     this.pendingSubscriptions.set(sessionId, pending);
-    const token = Symbol();
+    pending.get(target)?.abort();
+    const token = new AbortController();
     pending.set(target, token);
     let acquiredLease: SessionLease | undefined;
     let attached: { state: SessionState; generation: number } | undefined;
@@ -332,7 +333,7 @@ export class SessionEventBroadcaster {
       const existingLease = pinnedState?.targets.get(target)?.residencyLease;
       const manager = this.opts.core.accessor.get(ISessionManager);
       if (existingLease === undefined) {
-        acquiredLease = await manager.acquire?.(sessionId, 'ws-subscription');
+        acquiredLease = await manager.acquire?.(sessionId, 'ws-subscription', undefined, token.signal);
         if (manager.acquire !== undefined && acquiredLease === undefined) return false;
       }
       if (this.closed || pending.get(target) !== token) return false;
@@ -390,6 +391,7 @@ export class SessionEventBroadcaster {
       if (!deferred) await this.runTranscriptSeed(state, target, seed);
       return true;
     } catch (error) {
+      if (token.signal.aborted && (this.closed || pending.get(target) !== token)) return false;
       if (attached !== undefined && pending.get(target) === token &&
           this.sessions.get(sessionId) === attached.state &&
           attached.state.targets.get(target)?.transcriptGeneration === attached.generation) {
@@ -471,6 +473,7 @@ export class SessionEventBroadcaster {
 
   unsubscribe(sessionId: string, target: BroadcastTarget): void {
     const pending = this.pendingSubscriptions.get(sessionId);
+    pending?.get(target)?.abort();
     pending?.delete(target);
     if (pending?.size === 0) this.pendingSubscriptions.delete(sessionId);
     const state = this.sessions.get(sessionId);
@@ -1098,6 +1101,7 @@ export class SessionEventBroadcaster {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    for (const pending of this.pendingSubscriptions.values()) for (const controller of pending.values()) controller.abort();
     this.pendingSubscriptions.clear();
     await this.coreEventSubscription.dispose();
     await this.sessionLifecycleSubscription.dispose();

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { AgentTranscript, applyContentSegment, jsonBytes, transcriptDetailListResponseSchema, type AgentTranscriptSnapshot, type TranscriptTask, type TranscriptTurn } from '@kiki/transcript';
+import { AgentTranscript, applyContentSegment, jsonBytes, transcriptDetailListResponseSchema, type AgentTranscriptSnapshot, type TranscriptStep, type TranscriptTask, type TranscriptTurn } from '@kiki/transcript';
 import type { TranscriptService } from '../src/services/transcript/transcriptService';
-import { boundedEntity } from '../src/transport/klient/boundedContent';
+import { boundedEntity, readContentSegment } from '../src/transport/klient/boundedContent';
 import { boundedTranscriptSnapshot } from '../src/transport/klient/boundedTranscript';
 import { readColdSessionViewBaseline, readSessionViewTranscriptCatchUp, readSessionViewTranscriptContent, readSessionViewTranscriptDetails, readSessionViewTranscriptPage } from '../src/transport/klient/sessionViewReads';
 
@@ -309,5 +309,92 @@ describe('bounded session-view canonical reads', () => {
     expect(newerTurn.turnId).toBe('t1');
     expect(newerTurn.steps.map((step) => step.stepId)).toEqual(Array.from({ length: 8 }, (_, index) => `t1-s${index}`));
     expect(newerTurn.steps[0]?.frames.map((frame) => frame.frameId)).toEqual(Array.from({ length: 8 }, (_, index) => `t1-f0-${index}`));
+  });
+
+  it('reloads one tail preview for a single before-turn page from the canonical turn and keeps history pages head-first', async () => {
+    const step = (turnId: string, ordinal: number, stepId = `${turnId}-s${ordinal}`): TranscriptStep => ({
+      kind: 'step' as const, turnId, stepId, ordinal, state: 'completed' as const,
+      frames: [{ kind: 'text' as const, frameId: `${stepId}-f`, role: 'assistant' as const, text: `saved ${stepId}` }],
+    });
+    const turnFor = (turnId: string, ordinal: number, steps = Array.from({ length: 18 }, (_, index) => step(turnId, index))): TranscriptTurn => ({
+      kind: 'turn', turnId, ordinal, state: 'completed', origin: { kind: 'user' }, prompt: `${turnId} prompt`, steps,
+    });
+    const stale = turnFor('t1', 1);
+    const echoed = boundedEntity(stale, { kind: 'turn', id: 't1' }, undefined, 'main', 'tail');
+    const staleRef = echoed.contentRefs?.find((ref) => ref.direction === 'backward' && ref.path.length === 1 && ref.path[0] === 'steps');
+    if (staleRef === undefined) throw new Error('Expected stale backward steps ref');
+    expect(staleRef.total - staleRef.offset).toBe(8);
+    expect(staleRef.total).toBe(18);
+    const canonical = turnFor('t1', 1, [step('t1', 0, 't1-replaced'), ...stale.steps.slice(1)]);
+    expect(() => readContentSegment(canonical, staleRef)).toThrow('Content changed');
+    const source: AgentTranscriptSnapshot = {
+      ...empty(), hasMoreOlder: true, items: [turnFor('t0', 0), echoed, turnFor('t2', 2, [])],
+    };
+    const cold = {
+      forSessionLive: () => undefined,
+      readColdSnapshot: async () => source,
+      readColdPageSnapshot: async (_sessionId: string, _agentId: string, project: (snapshot: AgentTranscriptSnapshot) => AgentTranscriptSnapshot) => project(source),
+      readColdRoster: async () => [],
+      reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value,
+      readCanonicalEntity: async (_sessionId: string, _agentId: string, source: { kind: string; id: string }) => {
+        if (source.kind !== 'turn') return undefined;
+        if (source.id === 't1') return canonical;
+        if (source.id === 't0') return turnFor('t0', 0);
+        return undefined;
+      },
+    } as unknown as TranscriptService;
+    const page = await readSessionViewTranscriptPage(cold, 'fixture-session', { agentId: 'main', beforeTurn: 't2', pageSize: 1 });
+    const turn = page?.items.find((item) => item.kind === 'turn');
+    if (turn?.kind !== 'turn') throw new Error('Expected canonical preview');
+    expect(turn.turnId).toBe('t1');
+    expect(turn.prompt).toBe('t1 prompt');
+    const fresh = turn.contentRefs?.find((ref) => ref.direction === 'backward' && ref.path.length === 1 && ref.path[0] === 'steps');
+    if (fresh === undefined) throw new Error('Expected fresh backward steps ref');
+    expect(fresh.revision).not.toBe(staleRef.revision);
+    expect(fresh.total).toBe(18);
+    expect(fresh.total - fresh.offset).toBeLessThanOrEqual(8);
+    expect(() => readContentSegment(canonical, fresh)).not.toThrow();
+    expect(page?.has_more).toBe(true);
+    expect(page?.coverage.kind).toBe('unknown');
+    expect(page?.read?.stale).toBeUndefined();
+    const eof = await readSessionViewTranscriptPage(cold, 'fixture-session', { agentId: 'main', beforeTurn: 't1', pageSize: 1 });
+    expect(eof?.items.find((item) => item.kind === 'turn')).toMatchObject({ turnId: 't0' });
+    expect(eof?.has_more).toBe(false);
+    expect(eof?.next_cursor).toBeUndefined();
+    expect(eof?.coverage.kind).not.toBe('full');
+    const history = await readSessionViewTranscriptPage(cold, 'fixture-session', { agentId: 'main', beforeTurn: 't2' });
+    const historyTurn = history?.items.find((item) => item.kind === 'turn' && item.turnId === 't0');
+    if (historyTurn?.kind !== 'turn') throw new Error('Expected history turn');
+    expect(historyTurn.steps.map((entry) => entry.stepId).slice(0, 2)).toEqual(['t0-s0', 't0-s1']);
+    expect(historyTurn.contentRefs?.find((ref) => ref.path.length === 1 && ref.path[0] === 'steps')?.direction).not.toBe('backward');
+  });
+
+  it('still opens a legal oversized turn header on the single before-turn preview', async () => {
+    const turn: TranscriptTurn = {
+      kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'H'.repeat(180_000),
+      steps: Array.from({ length: 18 }, (_, ordinal) => ({
+        kind: 'step', turnId: 't0', stepId: `s${ordinal}`, ordinal, state: 'completed',
+        frames: [{ kind: 'text', frameId: `f${ordinal}`, role: 'assistant', text: `saved ${ordinal}` }],
+      })),
+    };
+    const next: TranscriptTurn = { kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, steps: [] };
+    const source: AgentTranscriptSnapshot = { ...empty(), items: [turn, next] };
+    const cold = {
+      forSessionLive: () => undefined,
+      readColdSnapshot: async () => source,
+      readColdPageSnapshot: async (_sessionId: string, _agentId: string, project: (snapshot: AgentTranscriptSnapshot) => AgentTranscriptSnapshot) => project(source),
+      readColdRoster: async () => [],
+      reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value,
+      readCanonicalEntity: async () => turn,
+    } as unknown as TranscriptService;
+    const page = await readSessionViewTranscriptPage(cold, 'fixture-session', { agentId: 'main', beforeTurn: 't1', pageSize: 1 });
+    const preview = page?.items.find((item) => item.kind === 'turn' && item.turnId === 't0');
+    if (preview?.kind !== 'turn') throw new Error('Expected oversized header preview');
+    expect(jsonBytes(preview)).toBeLessThan(160 * 1024);
+    expect(preview.prompt?.length).toBeLessThan(turn.prompt!.length);
+    const ref = preview.contentRefs?.find((entry) => entry.direction === 'backward' && entry.path[0] === 'steps');
+    if (ref === undefined) throw new Error('Expected steps continuation');
+    expect(() => readContentSegment(turn, ref)).not.toThrow();
+    expect(page?.coverage.kind).not.toBe('full');
   });
 });

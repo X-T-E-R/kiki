@@ -356,7 +356,7 @@ export class HistoryCanonicalReader {
     let flight = this.flights.get(flightKey);
     if (flight === undefined || flight.controller.signal.aborted) {
       const controller = new AbortController();
-      const promise = this.replay(input, agent, turnId, controller.signal).then((turn) => {
+      const promise = this.transcript.scheduleHistoryRead(controller.signal, signal => this.replay(input, agent, turnId, signal)).then((turn) => {
         controller.signal.throwIfAborted();
         if (turn !== undefined && input.db.readManifest(scope)?.generation === manifest.generation &&
             input.db.readManifest(scope)?.offset === manifest.offset) this.admit(key, fingerprint, turn);

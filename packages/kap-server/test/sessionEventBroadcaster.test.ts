@@ -379,6 +379,7 @@ function makeCore(
     sessionId: string,
     reason: string,
     getHandle: (sessionId: string) => ISessionScopeHandle | undefined,
+    signal?: AbortSignal,
   ) => Promise<{ handle: ISessionScopeHandle; dispose(): void } | undefined>,
 ): Scope {
   const handles = new WeakMap<FakeLifecycle, ISessionScopeHandle>();
@@ -425,8 +426,8 @@ function makeCore(
       if (token === ISessionManager) {
         return {
           get: sessionFor,
-          acquire: acquire === undefined ? undefined : (sessionId: string, reason: string) =>
-            acquire(sessionId, reason, sessionFor),
+          acquire: acquire === undefined ? undefined : (sessionId: string, reason: string, _options?: unknown, signal?: AbortSignal) =>
+            acquire(sessionId, reason, sessionFor, signal),
           list: () => [...sessions.keys()].map((sessionId) => sessionFor(sessionId)),
           onDidCloseSession: (handler: (event: { sessionId: string }) => void) =>
             lifecycleEvents.onDidCloseSession(handler),
@@ -1023,6 +1024,26 @@ describe('SessionEventBroadcaster', () => {
     bc.unsubscribe('s1', target);
     await bc.getCursor('s1');
     expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('cancels 220 abandoned subscription acquisitions without waiting for cold replay', async () => {
+    let pins = 0;
+    const signals: AbortSignal[] = [];
+    bc = new SessionEventBroadcaster({ eventsDir: dir, core: makeCore(sessions, eventBus, {}, lifecycleEvents,
+      async (_sessionId, _reason, _getHandle, signal) => {
+        expect(signal).toBeDefined();
+        signals.push(signal!);
+        pins += 1;
+        try { return await new Promise<never>((_resolve, reject) => signal!.addEventListener('abort', () => reject(signal!.reason), { once: true })); }
+        finally { pins -= 1; }
+      }) });
+    const targets = Array.from({ length: 220 }, () => collectingTarget().target);
+    const requests = targets.map(target => bc!.subscribe('s1', target));
+    expect(pins).toBe(220);
+    for (const target of targets) bc.unsubscribe('s1', target);
+    expect(await Promise.all(requests)).toEqual(Array(220).fill(false));
+    expect(pins).toBe(0);
+    expect(signals.every(signal => signal.aborted)).toBe(true);
   });
 
   it('blocks idle eviction while a warm session subscription is pending', async () => {

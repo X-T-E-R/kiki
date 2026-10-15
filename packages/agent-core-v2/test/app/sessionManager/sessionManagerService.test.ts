@@ -569,9 +569,19 @@ describe('SessionManager', () => {
     const first = manager.resume('session-1');
     const second = manager.resume('session-1');
     expect(first).toBe(second);
+    const controllers = Array.from({ length: 220 }, () => new AbortController());
+    const cancelled = controllers.map(controller => manager.acquire('session-1', 'cancelled-view', undefined, controller.signal).catch(error => error));
+    const retained = manager.acquire('session-1', 'active-view');
+    for (const controller of controllers) controller.abort();
+    await Promise.all(cancelled);
+    expect(manager.residencyReport().pinnedSessions).toBe(1);
     release();
     await expect(first).resolves.toBe(fake.handle);
+    const lease = await retained;
+    expect(lease?.handle).toBe(fake.handle);
     expect(resume).toHaveBeenCalledTimes(1);
+    lease?.dispose();
+    expect(manager.residencyReport().pinnedSessions).toBe(0);
     await manager.dispose();
   });
 
@@ -751,6 +761,281 @@ describe('SessionManager', () => {
 
     await lease?.dispose();
     await expect(manager.evictIfIdle('session-1')).resolves.toBe(true);
+    await manager.dispose();
+  });
+
+  it('keeps idle sessions when a third resume is inside maxLiveSessions and under the heap budget', async () => {
+    const didCreate = new Emitter<SessionCreatedEvent>();
+    const didClose = new Emitter<SessionClosedEvent>();
+    const unloaded: string[] = [];
+    let next = 0;
+    const service = {
+      onWillCreateSession: Event.None,
+      onDidCreateSession: didCreate.event,
+      onWillCloseSession: Event.None,
+      onDidCloseSession: didClose.event,
+      onDidArchiveSession: Event.None,
+      onDidForkSession: Event.None,
+      create: async () => {
+        next += 1;
+        const sessionId = `session-${next}`;
+        const handle = { id: sessionId } as unknown as ISessionScopeHandle;
+        didCreate.fire({ sessionId, handle, source: 'startup' });
+        return handle;
+      },
+      resume: async (sessionId: string) => {
+        const handle = { id: sessionId } as unknown as ISessionScopeHandle;
+        didCreate.fire({ sessionId, handle, source: 'startup' });
+        return handle;
+      },
+      unload: async (sessionId: string, canCommit?: () => boolean) => {
+        if (canCommit?.() === false) return false;
+        unloaded.push(sessionId);
+        didClose.fire({ sessionId, reason: 'evict' });
+        return true;
+      },
+      get: () => undefined,
+      list: () => [],
+      close: async () => {},
+      archive: async () => {},
+      restore: async () => undefined,
+      delete: async () => {},
+      fork: async () => undefined,
+      createChild: async () => undefined,
+      dispose: () => {},
+    } as unknown as SessionLifecycleService;
+    const workspace = {
+      id: 'workspace-1',
+      program: { sessionControllerGeneration: 'generation-1', createSessionController: () => service },
+    } as unknown as WorkspaceInstance;
+    const manager = new SessionManager(
+      {
+        acquire: async () => ({ instance: workspace, dispose: () => {} }),
+        get: () => workspace,
+      } as unknown as IWorkspaceInstanceManager,
+      { get: async () => ({ workspaceId: workspace.id, cwd: '/workspace' }) } as unknown as ISessionIndex,
+      {
+        ready: Promise.resolve(),
+        get: () => ({ idleTtlMs: 600_000, minIdleMs: 60_000, maxLiveSessions: 8, maxResidentHeapBytes: Number.MAX_SAFE_INTEGER }),
+      } as never,
+      { enabled: () => true } as never,
+    );
+
+    await manager.create({ workDir: '/workspace' });
+    await manager.create({ workDir: '/workspace' });
+    await manager.resume('old-session');
+
+    expect(unloaded).toEqual([]);
+    expect(manager.get('session-1')).toBeDefined();
+    expect(manager.get('session-2')).toBeDefined();
+    expect(manager.get('old-session')).toBeDefined();
+    expect(manager.residencyReport().liveSessions).toBe(3);
+    await manager.dispose();
+  });
+
+  it('unloads an idle session past maxLiveSessions only after minIdleMs, and a zero heap budget does not force it', async () => {
+    const didCreate = new Emitter<SessionCreatedEvent>();
+    const didClose = new Emitter<SessionClosedEvent>();
+    const unloaded: string[] = [];
+    let next = 0;
+    const service = {
+      onWillCreateSession: Event.None,
+      onDidCreateSession: didCreate.event,
+      onWillCloseSession: Event.None,
+      onDidCloseSession: didClose.event,
+      onDidArchiveSession: Event.None,
+      onDidForkSession: Event.None,
+      create: async () => {
+        next += 1;
+        const sessionId = `session-${next}`;
+        const handle = { id: sessionId } as unknown as ISessionScopeHandle;
+        didCreate.fire({ sessionId, handle, source: 'startup' });
+        return handle;
+      },
+      resume: async (sessionId: string) => {
+        const handle = { id: sessionId } as unknown as ISessionScopeHandle;
+        didCreate.fire({ sessionId, handle, source: 'startup' });
+        return handle;
+      },
+      unload: async (sessionId: string, canCommit?: () => boolean) => {
+        if (canCommit?.() === false) return false;
+        unloaded.push(sessionId);
+        didClose.fire({ sessionId, reason: 'evict' });
+        return true;
+      },
+      dispose: () => {},
+    } as unknown as SessionLifecycleService;
+    const workspace = {
+      id: 'workspace-1',
+      program: { sessionControllerGeneration: 'generation-1', createSessionController: () => service },
+    } as unknown as WorkspaceInstance;
+    const fresh = new SessionManager(
+      {
+        acquire: async () => ({ instance: workspace, dispose: () => {} }),
+        get: () => workspace,
+      } as unknown as IWorkspaceInstanceManager,
+      { get: async () => ({ workspaceId: workspace.id, cwd: '/workspace' }) } as unknown as ISessionIndex,
+      {
+        ready: Promise.resolve(),
+        get: () => ({ idleTtlMs: 600_000, minIdleMs: 60_000, maxLiveSessions: 1, maxResidentHeapBytes: 0 }),
+      } as never,
+      { enabled: () => true } as never,
+    );
+    await fresh.create({ workDir: '/workspace' });
+    await fresh.create({ workDir: '/workspace' });
+    await fresh.resume('held');
+    expect(unloaded).toEqual([]);
+    expect(fresh.residencyReport().liveSessions).toBe(3);
+    await fresh.dispose();
+
+    next = 0;
+    const aged = new SessionManager(
+      {
+        acquire: async () => ({ instance: workspace, dispose: () => {} }),
+        get: () => workspace,
+      } as unknown as IWorkspaceInstanceManager,
+      { get: async () => ({ workspaceId: workspace.id, cwd: '/workspace' }) } as unknown as ISessionIndex,
+      {
+        ready: Promise.resolve(),
+        get: () => ({ idleTtlMs: 600_000, minIdleMs: 0, maxLiveSessions: 1, maxResidentHeapBytes: 0 }),
+      } as never,
+      { enabled: () => true } as never,
+    );
+    await aged.create({ workDir: '/workspace' });
+    await aged.create({ workDir: '/workspace' });
+    await aged.resume('next');
+    expect(unloaded).toEqual(['session-1', 'session-2']);
+    expect(aged.get('next')).toBeDefined();
+    expect(aged.residencyReport().liveSessions).toBe(1);
+    await aged.dispose();
+  });
+
+  it('drops every idle session before a new resume once resident heap is over budget, and keeps a pin', async () => {
+    const didCreate = new Emitter<SessionCreatedEvent>();
+    const didClose = new Emitter<SessionClosedEvent>();
+    const unloaded: string[] = [];
+    const service = {
+      onWillCreateSession: Event.None,
+      onDidCreateSession: didCreate.event,
+      onWillCloseSession: Event.None,
+      onDidCloseSession: didClose.event,
+      onDidArchiveSession: Event.None,
+      onDidForkSession: Event.None,
+      create: async () => {
+        const handle = { id: 'warm' } as unknown as ISessionScopeHandle;
+        didCreate.fire({ sessionId: 'warm', handle, source: 'startup' });
+        return handle;
+      },
+      resume: async (sessionId: string) => {
+        const handle = { id: sessionId } as unknown as ISessionScopeHandle;
+        didCreate.fire({ sessionId, handle, source: 'startup' });
+        return handle;
+      },
+      unload: async (sessionId: string, canCommit?: () => boolean) => {
+        if (canCommit?.() === false) return false;
+        unloaded.push(sessionId);
+        didClose.fire({ sessionId, reason: 'evict' });
+        return true;
+      },
+      dispose: () => {},
+    } as unknown as SessionLifecycleService;
+    const workspace = {
+      id: 'workspace-1',
+      program: { sessionControllerGeneration: 'generation-1', createSessionController: () => service },
+    } as unknown as WorkspaceInstance;
+    const manager = new SessionManager(
+      {
+        acquire: async () => ({ instance: workspace, dispose: () => {} }),
+        get: () => workspace,
+      } as unknown as IWorkspaceInstanceManager,
+      { get: async () => ({ workspaceId: workspace.id, cwd: '/workspace' }) } as unknown as ISessionIndex,
+      {
+        ready: Promise.resolve(),
+        get: () => ({ idleTtlMs: 600_000, minIdleMs: 60_000, maxLiveSessions: 8, maxResidentHeapBytes: 1 }),
+      } as never,
+      { enabled: () => true } as never,
+    );
+
+    await manager.create({ workDir: '/workspace' });
+    const pin = await manager.acquire('warm', 'open');
+    await manager.resume('old-session');
+    expect(unloaded).toEqual([]);
+    expect(manager.get('warm')).toBeDefined();
+    await pin?.dispose();
+    await manager.resume('older-session');
+    expect(unloaded).toContain('warm');
+    expect(manager.get('warm')).toBeUndefined();
+    expect(manager.get('older-session')).toBeDefined();
+    await manager.dispose();
+  });
+
+  it('finishes two cold resumes together when four restores may run', async () => {
+    const didCreate = new Emitter<SessionCreatedEvent>();
+    const didClose = new Emitter<SessionClosedEvent>();
+    const unloaded: string[] = [];
+    let entered = 0;
+    let releaseBoth!: () => void;
+    const bothEntered = new Promise<void>((resolve) => { releaseBoth = resolve; });
+    const service = {
+      onWillCreateSession: Event.None,
+      onDidCreateSession: didCreate.event,
+      onWillCloseSession: Event.None,
+      onDidCloseSession: didClose.event,
+      onDidArchiveSession: Event.None,
+      onDidForkSession: Event.None,
+      create: async () => {
+        const handle = { id: 'warm' } as unknown as ISessionScopeHandle;
+        didCreate.fire({ sessionId: 'warm', handle, source: 'startup' });
+        return handle;
+      },
+      resume: async (sessionId: string) => {
+        entered += 1;
+        if (entered === 2) releaseBoth();
+        await bothEntered;
+        const handle = { id: sessionId } as unknown as ISessionScopeHandle;
+        didCreate.fire({ sessionId, handle, source: 'startup' });
+        return handle;
+      },
+      unload: async (sessionId: string, canCommit?: () => boolean) => {
+        if (canCommit?.() === false) return false;
+        unloaded.push(sessionId);
+        didClose.fire({ sessionId, reason: 'evict' });
+        return true;
+      },
+      dispose: () => {},
+    } as unknown as SessionLifecycleService;
+    const workspace = {
+      id: 'workspace-1',
+      program: { sessionControllerGeneration: 'generation-1', createSessionController: () => service },
+    } as unknown as WorkspaceInstance;
+    const manager = new SessionManager(
+      {
+        acquire: async () => ({ instance: workspace, dispose: () => {} }),
+        get: () => workspace,
+      } as unknown as IWorkspaceInstanceManager,
+      { get: async () => ({ workspaceId: workspace.id, cwd: '/workspace' }) } as unknown as ISessionIndex,
+      {
+        ready: Promise.resolve(),
+        get: () => ({
+          idleTtlMs: 600_000, minIdleMs: 60_000, maxLiveSessions: 8,
+          maxConcurrentRestores: 4, maxResidentHeapBytes: 1,
+        }),
+      } as never,
+      { enabled: () => true } as never,
+    );
+    await manager.create({ workDir: '/workspace' });
+    const finished = Promise.all([manager.resume('cold-a'), manager.resume('cold-b')]);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('concurrent resumes did not finish')), 1_000);
+    });
+    await expect(Promise.race([finished, timeout])).resolves.toHaveLength(2);
+    clearTimeout(timer);
+    expect(unloaded).toEqual(['warm']);
+    expect(unloaded).not.toContain('cold-a');
+    expect(unloaded).not.toContain('cold-b');
+    expect(manager.get('cold-a')).toBeDefined();
+    expect(manager.get('cold-b')).toBeDefined();
     await manager.dispose();
   });
 });

@@ -1,6 +1,7 @@
 import { MAIN_AGENT_ID } from '@kiki/agent-core-v2';
 import {
   AgentTranscript,
+  compareTurnIds,
   filterOpsForGrade,
   paginateTurns as paginateCanonicalTurns,
   redactSnapshotForGrade,
@@ -15,10 +16,12 @@ import {
   transcriptReadForCoverage,
   type TranscriptRead,
   jsonBytes,
+  rebindTurnContentRefs,
   type ContentRef,
   type ContentSegment,
   type AgentTranscriptSnapshot,
   type TranscriptItem,
+  type TranscriptTurn,
 } from '@kiki/transcript';
 
 import type { TranscriptService } from '../../services/transcript/transcriptService';
@@ -82,8 +85,9 @@ export async function readSessionViewTranscriptPage(
     const response = await readSessionViewTranscriptPageRaw(...args);
     if (response === undefined) return undefined;
     const bounded = boundedTranscriptResponse(response, args[2].afterTurn !== undefined || args[2].afterItem !== undefined ? 'head' : 'tail', 64 * 1024);
-    return { ...bounded, next_cursor: bounded.next_cursor === undefined || response.read === undefined ? bounded.next_cursor
-      : encodePageCursor(bounded.next_cursor, response.agent_id, response.read.source, response.cursor?.epoch) };
+    const aligned = await alignSingleBeforeTurn(args[0], args[1], args[2], bounded);
+    return { ...aligned, next_cursor: aligned.next_cursor === undefined || response.read === undefined ? aligned.next_cursor
+      : encodePageCursor(aligned.next_cursor, response.agent_id, response.read.source, response.cursor?.epoch) };
   } catch (error) {
     if (!(error instanceof TranscriptSourceChangedError)) throw error;
     return {
@@ -92,6 +96,36 @@ export async function readSessionViewTranscriptPage(
       coverage: { kind: 'unknown', hasMoreOlder: true }, read: staleRead(error.source),
     };
   }
+}
+
+async function alignSingleBeforeTurn(
+  service: TranscriptService,
+  sessionId: string,
+  input: { readonly agentId: string; readonly beforeTurn?: string; readonly pageSize?: number; readonly signal?: AbortSignal },
+  response: TranscriptResponse,
+): Promise<TranscriptResponse> {
+  if (input.beforeTurn === undefined || input.pageSize !== 1 || typeof service.readCanonicalEntity !== 'function') return response;
+  const items: TranscriptResponse['items'] = [];
+  let replaced = false;
+  for (const item of response.items) {
+    if (item.kind !== 'turn') { items.push(item); continue; }
+    let entity: object | undefined;
+    try {
+      entity = await service.readCanonicalEntity(sessionId, input.agentId, { kind: 'turn', id: item.turnId }, input.signal);
+    } catch (error) {
+      if (input.signal?.aborted === true || (error instanceof Error && error.name === 'AbortError')) throw error;
+      items.push(item);
+      continue;
+    }
+    const canonical = entity as TranscriptTurn | undefined;
+    if (canonical?.kind !== 'turn' || !Array.isArray(canonical.steps) || (canonical.steps.length === 0 && item.steps.length > 0)) {
+      items.push(item);
+      continue;
+    }
+    items.push(rebindTurnContentRefs(boundedEntity(canonical, { kind: 'turn', id: item.turnId }, undefined, input.agentId, 'tail')));
+    replaced = true;
+  }
+  return replaced ? { ...response, items } : response;
 }
 
 export async function readSessionViewTranscriptDetail(
@@ -193,31 +227,37 @@ async function readSessionViewTranscriptPageRaw(
   },
 ): Promise<TranscriptResponse | undefined> {
   const pageQueryInput = { agentId: input.agentId, beforeTurn: input.beforeTurn, beforeItem: input.beforeItem, afterTurn: input.afterTurn, afterItem: input.afterItem, pageSize: input.pageSize ?? 20 };
-  const sourceDirection: 'head' | 'tail' = input.beforeTurn !== undefined || input.beforeItem !== undefined || input.afterTurn !== undefined || input.afterItem !== undefined ? 'head' : 'tail';
+  const anchored = input.beforeTurn !== undefined || input.beforeItem !== undefined || input.afterTurn !== undefined || input.afterItem !== undefined;
+  const singleBeforeTurn = input.beforeTurn !== undefined && input.pageSize === 1;
+  const sourceDirection: 'head' | 'tail' = input.afterTurn !== undefined || input.afterItem !== undefined || (anchored && !singleBeforeTurn) ? 'head' : 'tail';
   const store = transcriptService.forSessionLive(sessionId);
   if (store !== undefined) {
     const transcript = await transcriptService.ensureAgentHistory(sessionId, input.agentId);
     if (transcript === undefined) return undefined;
     const liveVerified = await transcriptService.verifyTranscriptLiveCoverage(sessionId, input.agentId);
-    if (transcript.hasMoreOlder && (input.beforeTurn !== undefined || input.beforeItem !== undefined || input.afterTurn !== undefined || input.afterItem !== undefined)) {
+    if (transcript.hasMoreOlder && (anchored || !transcript.getItems().some(item => item.kind === 'turn'))) {
       const query = pageQueryFor(pageQueryInput, 'derived');
       await readColdTranscriptPage(transcriptService, sessionId, { ...input, ...query }, sourceDirection);
       const cold = await transcriptService.readFullAgentSnapshot(sessionId, input.agentId, transcript, input.signal,
-        (source) => boundedTranscriptPageSource(source, input.agentId, sourceDirection));
+        (source) => boundedTranscriptPageSource(source, input.agentId, sourceDirection), query.beforeTurn);
       if (cold === undefined) return undefined;
       const page = paginateTurns(cold.items, query);
+      const anchorState = typeof transcriptService.anchorReadState === 'function' ? transcriptService.anchorReadState(cold) : undefined;
+      const hasMore = page.hasMore || anchorState === 'continues' || anchorState === 'pending';
       const verified = liveVerified && transcriptService.isTranscriptLiveCoverageVerified(sessionId, input.agentId) &&
         cold.toolCallCountKnown === true;
       const cursor = transcriptService.getTranscriptCursor(sessionId, input.agentId);
-      const coverage = coverageForItems(page.items, page.hasMore, verified);
+      const coverage = coverageForItems(page.items, hasMore, verified);
+      const anchorCursor = anchorState === 'pending' && query.beforeTurn !== undefined ? `turn:${query.beforeTurn}` : undefined;
       return {
         session_id: sessionId, agent_id: input.agentId,
-        items: page.items, has_more: page.hasMore, tool_call_count: verified ? cold.toolCallCount : undefined,
+        items: page.items, has_more: hasMore, tool_call_count: verified ? cold.toolCallCount : undefined,
         tasks: cold.tasks, interactions: [...transcript.getInteractions().values()], attachments: cold.attachments,
         todos: cold.todos, prompts: cold.prompts, meta: cold.meta, agents: store.agents(),
         pending_interactions: transcript.listPendingInteractions(), cursor, coverage,
         read: readFor('derived', coverage, cursor),
-        next_cursor: page.hasMore ? encodePageCursor(itemKey(page.items[0]!), input.agentId, 'derived', cursor?.epoch) : undefined,
+        next_cursor: hasMore && page.items.length > 0 ? encodePageCursor(itemKey(page.items[0]!), input.agentId, 'derived', cursor?.epoch)
+          : anchorCursor === undefined ? undefined : encodePageCursor(anchorCursor, input.agentId, 'derived', cursor?.epoch),
       } as unknown as TranscriptResponse;
     }
     const snapshot = transcript.snapshot();
@@ -245,8 +285,10 @@ async function readSessionViewTranscriptPageRaw(
   if (loaded === undefined) return undefined;
   const snapshot = loaded.snapshot;
   const page = loaded.page;
-  const truncated = !page.hasMore && typeof transcriptService.coldHistoryTruncated === 'function'
-    ? await transcriptService.coldHistoryTruncated(sessionId, input.agentId) : false;
+  const anchorState = typeof transcriptService.anchorReadState === 'function' ? transcriptService.anchorReadState(snapshot) : undefined;
+  const truncated = anchorState !== undefined ? anchorState === 'continues' || anchorState === 'pending'
+    : !page.hasMore && typeof transcriptService.coldHistoryTruncated === 'function'
+      ? await transcriptService.coldHistoryTruncated(sessionId, input.agentId) : false;
   const hasMore = page.hasMore || truncated;
   const continuationAnchor = page.items.length > 0 ? undefined : requestedAnchor(input);
   const roster = (await transcriptService.readColdRoster(sessionId)) ?? [];
@@ -497,21 +539,45 @@ async function readColdTranscriptPage(
 ): Promise<{ snapshot: AgentTranscriptSnapshot; page: ReturnType<typeof paginateTurns> } | undefined> {
   const query = pageQueryFor({ ...input, pageSize: input.pageSize ?? 20 }, 'cold');
   const project = (source: AgentTranscriptSnapshot) => boundedTranscriptPageSource(source, input.agentId, sourceDirection);
-  let snapshot = await transcriptService.readColdPageSnapshot(sessionId, input.agentId, project, input.signal);
+  const anchored = input.beforeTurn !== undefined || input.beforeItem !== undefined;
+  let snapshot = await transcriptService.readColdPageSnapshot(sessionId, input.agentId, project, input.signal, false, undefined, anchored);
   if (snapshot === undefined) return undefined;
   let located = locateColdPage(snapshot.items, query);
   const anchor = requestedAnchor(input);
   const orphan = snapshot.items.find(item => item.kind === 'turn' && itemKey(item) === anchor &&
     item.origin.kind === 'other' && item.message === undefined && item.promptId === undefined && item.startedAt === undefined);
-  const anchored = input.beforeTurn !== undefined || input.beforeItem !== undefined;
+  const turnAnchor = input.beforeTurn ?? (query.beforeItem?.startsWith('turn:') === true ? query.beforeItem.slice(5) : undefined);
   const needsOlderItem = located.missing || located.page.items.length === 0;
-  if (anchored && needsOlderItem && snapshot.hasMoreOlder === true) {
+  const anchorInWindow = turnAnchor !== undefined && snapshot.items.some((item) => item.kind === 'turn' && item.turnId === turnAnchor);
+  let anchorPending: AgentTranscriptSnapshot | undefined;
+  if (turnAnchor !== undefined && !anchorInWindow && !coldWindowCovers(snapshot.items, turnAnchor) && snapshot.hasMoreOlder === true &&
+      typeof transcriptService.readAnchoredColdSnapshot === 'function') {
+    const anchoredSnapshot = await transcriptService.readAnchoredColdSnapshot(sessionId, input.agentId, turnAnchor, input.signal);
+    const anchorState = anchoredSnapshot === undefined || typeof transcriptService.anchorReadState !== 'function'
+      ? undefined : transcriptService.anchorReadState(anchoredSnapshot);
+    if (anchoredSnapshot !== undefined && anchorState !== 'pending' && (anchoredSnapshot.items.length > 0 || anchorState === 'window')) {
+      snapshot = anchoredSnapshot;
+      located = locateColdPage(snapshot.items, turnAnchor === input.beforeTurn ? query : { ...query, beforeTurn: turnAnchor, beforeItem: undefined });
+    } else if (anchorState === 'pending' && anchoredSnapshot !== undefined) anchorPending = anchoredSnapshot;
+  }
+  if (anchorPending === undefined && anchored && needsOlderItem && snapshot.hasMoreOlder === true && !coldWindowCovers(snapshot.items, turnAnchor ?? '')) {
     const next = await extendColdPage(transcriptService, sessionId, input.agentId, project, input.signal, snapshot, true);
     if (next !== undefined) {
       snapshot = next.snapshot;
       located = locateColdPage(snapshot.items, query);
     }
-  } else if (anchored && !located.missing && located.page.items.length > 0 && !located.page.hasMore && snapshot.hasMoreOlder === true) {
+  }
+  if (anchorPending !== undefined && turnAnchor !== undefined && !coldWindowCovers(snapshot.items, turnAnchor) && anchored && needsOlderItem && snapshot.hasMoreOlder === true) {
+    const next = await extendColdPage(transcriptService, sessionId, input.agentId, project, input.signal, snapshot, true);
+    if (next !== undefined) {
+      snapshot = next.snapshot;
+      located = locateColdPage(snapshot.items, query);
+    }
+  }
+  if (anchorPending !== undefined && turnAnchor !== undefined && !coldWindowCovers(snapshot.items, turnAnchor)) {
+    snapshot = anchorPending;
+    located = locateColdPage(snapshot.items, { ...query, beforeTurn: turnAnchor, beforeItem: undefined });
+  } else if ((typeof transcriptService.anchorReadState !== 'function' || transcriptService.anchorReadState(snapshot) === undefined) && anchored && !located.missing && located.page.items.length > 0 && !located.page.hasMore && snapshot.hasMoreOlder === true) {
     const truncated = typeof transcriptService.coldHistoryTruncated === 'function'
       ? await transcriptService.coldHistoryTruncated(sessionId, input.agentId) : false;
     if (truncated) {
@@ -554,6 +620,10 @@ async function extendColdPage(
     snapshot: next,
     progressed: next.items.length !== snapshot.items.length || next.hasMoreOlder !== snapshot.hasMoreOlder || nextRecords !== records,
   };
+}
+
+function coldWindowCovers(items: readonly TranscriptItem[], beforeTurn: string): boolean {
+  return items.some((item) => item.kind === 'turn' && compareTurnIds(item.turnId, beforeTurn) < 0);
 }
 
 function requestedAnchor(input: {

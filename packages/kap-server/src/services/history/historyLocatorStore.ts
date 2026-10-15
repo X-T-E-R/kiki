@@ -11,7 +11,7 @@ import { streamWireRecordsAwaited, type AwaitedWireRecordsStreamOptions, type Wi
 
 import { decodeHistoryRef, encodeHistoryRef, hashHistoryRecord, historySourceIncarnation, verifyHistorySource,
   type HistorySourceAnchor, type HistoryRefKind } from './historySource';
-import type { LazyHistoryNavigationDb } from './historyNavigationDb';
+import type { HistoryNavManifest, LazyHistoryNavigationDb } from './historyNavigationDb';
 import { historyNavigationProof, matchesNavigationProof } from './historyNavigationProof';
 import { matchHistoryText, planHistoryQuery, type HistoryMode } from './historyQuery';
 import { makeSnippet } from '../../search/snippet';
@@ -101,6 +101,12 @@ export interface HistoryNavBlocksPage {
   readonly next?: { readonly position: number; readonly offset: number; readonly watermark: number;
     readonly asOfBytes: number };
   readonly complete?: boolean;
+}
+
+interface IndexedNavigationDb {
+  hasCanonicalSources(scope: string): boolean;
+  readManifest(scope: string): HistoryNavManifest | undefined;
+  canonicalSources(scope: string, turnId: string, afterOrdinal: number, limit: number): ReadonlyArray<{ readonly start: number; readonly end: number }>;
 }
 
 interface Scanner {
@@ -221,6 +227,30 @@ export class HistoryLocatorStore {
 
   readCanonicalTurnHeader(session: string, agent: string, turnId: string, signal?: AbortSignal): ReturnType<HistoryCanonicalReader['readTurnHeader']> {
     return this.canonical().readTurnHeader(session, agent, turnId, signal);
+  }
+
+  async indexedTurnByte(session: string, agent: string, turnId: string): Promise<number | undefined> {
+    const ready = (this.store as { ready?: () => Promise<IndexedNavigationDb> }).ready;
+    if (ready === undefined) return undefined;
+    const location = await this.transcript.historyWireLocation(session, agent);
+    if (location === undefined) return undefined;
+    const db = await ready.call(this.store);
+    const scope = `${location.workspaceId}\0${session}\0${agent}`;
+    const manifest = db.readManifest(scope);
+    if (manifest === undefined || !db.hasCanonicalSources(scope)) return undefined;
+    const span = db.canonicalSources(scope, turnId, -1, 1)[0];
+    if (span === undefined || !Number.isSafeInteger(span.start) || span.start < 0 ||
+        !Number.isSafeInteger(span.end) || span.end <= span.start || span.end > manifest.offset) return undefined;
+    let proof;
+    try { proof = await historyNavigationProof(location.wirePath, manifest.offset); }
+    catch (error) {
+      if (error instanceof Error && error.message === 'history_source_changed' ||
+          (error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      throw error;
+    }
+    const current = db.readManifest(scope);
+    return current?.generation === manifest.generation && current.offset === manifest.offset &&
+      matchesNavigationProof(manifest.source, proof) ? span.start : undefined;
   }
 
   invalidateCanonical(): void { this.canonicalReader?.invalidate(); }

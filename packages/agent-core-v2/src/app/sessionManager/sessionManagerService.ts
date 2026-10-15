@@ -137,6 +137,7 @@ export class SessionManager implements ISessionManager {
     const promise = this.serializeLifecycle(sessionId, async () => {
       const releaseRestore = await this.reserveRestoreSlot(sessionId);
       try {
+        if (!this.sessions.has(sessionId)) await this.reclaimIdleResidency(sessionId);
         const target = await this.controllerForSession(sessionId);
         if (target === undefined) return undefined;
         return await this.runWorkspaceOperation(
@@ -168,29 +169,37 @@ export class SessionManager implements ISessionManager {
     sessionId: string,
     _reason: string,
     options?: ResumeSessionOptions,
+    signal?: AbortSignal,
   ): Promise<SessionLease | undefined> {
+    signal?.throwIfAborted();
     const entry = this.ensureResidency(sessionId);
     entry.pins += 1;
     entry.generation += 1;
     entry.idleSince = undefined;
     let released = false;
-    try {
-      const handle = await this.resume(sessionId, options);
-      if (handle === undefined) {
-        this.releasePin(sessionId, entry);
-        return undefined;
-      }
-      return {
-        handle,
-        dispose: () => {
-          if (released) return;
-          released = true;
-          this.releasePin(sessionId, entry);
-        },
-      };
-    } catch (error) {
+    const release = (): void => {
+      if (released) return;
+      released = true;
       this.releasePin(sessionId, entry);
+    };
+    let detach: (() => void) | undefined;
+    try {
+      const restore = this.resume(sessionId, options);
+      const handle = signal === undefined ? await restore : await new Promise<ISessionScopeHandle | undefined>((resolve, reject) => {
+        const aborted = (): void => { release(); reject(signal.reason); };
+        detach = () => signal.removeEventListener('abort', aborted);
+        signal.addEventListener('abort', aborted, { once: true });
+        restore.then(resolve, reject);
+        if (signal.aborted) aborted();
+      });
+      signal?.throwIfAborted();
+      if (handle === undefined) { release(); return undefined; }
+      return { handle, dispose: release };
+    } catch (error) {
+      release();
       throw error;
+    } finally {
+      detach?.();
     }
   }
 
@@ -239,7 +248,7 @@ export class SessionManager implements ISessionManager {
     };
   }
 
-  async evictIfIdle(sessionId: string): Promise<boolean> {
+  async evictIfIdle(sessionId: string, options?: { readonly ignoreIdleTtl?: boolean }): Promise<boolean> {
     if (!this.evictionEnabled() || this.isEphemeral(sessionId)) return false;
     return this.serializeLifecycle(sessionId, async () => {
       const entry = this.residency.get(sessionId);
@@ -250,7 +259,7 @@ export class SessionManager implements ISessionManager {
       const config = this.residencyConfig();
       const capacityPressure = this.sessions.size > config.maxLiveSessions;
       const minimum = capacityPressure ? config.minIdleMs : config.idleTtlMs;
-      if (Date.now() - idleSince < minimum) return false;
+      if (options?.ignoreIdleTtl !== true && Date.now() - idleSince < minimum) return false;
       const generation = entry.generation;
       this.evictionAttempts += 1;
       try {
@@ -607,6 +616,26 @@ export class SessionManager implements ISessionManager {
 
   private evictionEnabled(): boolean {
     return this.flags?.enabled(SESSION_IDLE_EVICTION_FLAG_ID) === true;
+  }
+
+  private async reclaimIdleResidency(openingSessionId: string): Promise<void> {
+    if (!this.evictionEnabled()) return;
+    const config = this.residencyConfig();
+    const skipped = new Set<string>();
+    for (;;) {
+      const overHeap = config.maxResidentHeapBytes > 0 && process.memoryUsage().heapUsed >= config.maxResidentHeapBytes;
+      const overCapacity = this.sessions.size >= config.maxLiveSessions;
+      if (!overHeap && !overCapacity) return;
+      const now = Date.now();
+      const candidate = [...this.residency.entries()]
+        .filter(([id, entry]) => id !== openingSessionId && !skipped.has(id) && entry.pins === 0 &&
+          entry.idleSince !== undefined && this.sessions.has(id) && !this.isEphemeral(id) &&
+          (overHeap || now - entry.idleSince >= config.minIdleMs))
+        .sort((left, right) => left[1].lastAccess - right[1].lastAccess)[0];
+      if (candidate === undefined) return;
+      const unloaded = await this.evictIfIdle(candidate[0], { ignoreIdleTtl: true });
+      if (!unloaded) skipped.add(candidate[0]);
+    }
   }
 
   private async startEvictionScheduler(): Promise<void> {
