@@ -27,6 +27,8 @@ import type {
   PageResponse,
   PatchConfigRequest,
   ProbeProviderRequest,
+  PromptItem,
+  PromptSubmission,
   ProbeProviderResponse,
   PromptListResponse,
   RestoreSessionResponse,
@@ -345,7 +347,7 @@ export interface HttpRestFacade {
     readonly lease_id: string;
     readonly expires_at: number;
   } | undefined>;
-  usage(query: Record<string, string | readonly string[] | number | boolean | undefined>): Promise<UsageResponse>;
+  usage(query: Record<string, string | readonly string[] | number | boolean | undefined>, options?: HttpRestRequestOptions): Promise<UsageResponse>;
   requestGovernance(): Promise<import('@kiki/protocol').RequestGovernanceSnapshot>;
   agentActivity(): Promise<import('@kiki/protocol').AgentActivitySnapshot>;
   readonly usageRescan: {
@@ -373,6 +375,8 @@ export interface HttpRestFacade {
     createShortcut(preset: import('@kiki/protocol').BrowserPresetId, input?: import('@kiki/protocol').BrowserSetupShortcutInput): Promise<import('@kiki/protocol').BrowserSetupStatus>;
     cancelSetup(preset: import('@kiki/protocol').BrowserPresetId): Promise<import('@kiki/protocol').BrowserSetupStatus>;
     list(): Promise<import('@kiki/protocol').BrowserControlList>;
+    /** Writes `browser_control` through POST /config. `enabled` is the existing native_browser flag. */
+    saveSettings(patch: import('@kiki/protocol').BrowserControlSettingsPatch): Promise<import('@kiki/protocol').ConfigResponse>;
     upsert(id: string, input: import('@kiki/protocol').BrowserConnectionInput): Promise<{ readonly connection: import('@kiki/protocol').BrowserConnection }>;
     remove(id: string): Promise<{ readonly removed: true }>;
     setDefault(browser?: string): Promise<{ readonly browser?: string }>;
@@ -435,7 +439,9 @@ export interface HttpRestFacade {
       sessionId: string,
       query?: { readonly before_id?: string; readonly page_size?: number },
     ): Promise<PageResponse<Message>>;
-    listPrompts(sessionId: string): Promise<PromptListResponse>;
+    listPrompts(sessionId: string, query?: { readonly admission?: 'durable'; readonly agent_id?: string; readonly cursor?: string }): Promise<PromptListResponse>;
+    getPrompt(sessionId: string, promptId: string, query?: { readonly admission?: 'durable'; readonly agent_id?: string }): Promise<PromptItem>;
+    resumePrompt(sessionId: string, promptId: string, body: PromptSubmission, query?: { readonly agent_id?: string }): Promise<PromptItem>;
     listApprovals(sessionId: string): Promise<ApprovalRequest[]>;
     listQuestions(sessionId: string): Promise<import('@kiki/protocol').QuestionRequest[]>;
     listTasks(sessionId: string, query?: { readonly status?: import('@kiki/protocol').TaskStatus; readonly page_size?: number; readonly offset?: number }): Promise<ListTasksResponse>;

@@ -34,7 +34,9 @@ import type {
   MetaResponse,
   NamedAgentProfile,
   PageResponse,
+  PromptItem,
   PromptListResponse,
+  PromptSubmission,
   QuestionRequest,
   Session,
   SessionCreate,
@@ -105,7 +107,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       allowMissingRoute: true,
     }),
 
-    usage: (query) => transport.json('/usage', { query }),
+    usage: (query, options) => transport.json('/usage', { query, signal: options?.signal }),
     requestGovernance: () => transport.json('/usage/realtime'),
     agentActivity: () => transport.json('/usage/realtime/agents'),
     usageRescan: {
@@ -133,6 +135,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       createShortcut: (preset, input = {}) => transport.json(`/browser/setup/${encodeURIComponent(preset)}:shortcut`, { method: 'POST', body: input }),
       cancelSetup: (preset) => transport.json(`/browser/setup/${encodeURIComponent(preset)}:cancel`, { method: 'POST', body: {} }),
       list: () => transport.json('/browser/connections'),
+      saveSettings: (patch) => transport.json('/config', { method: 'POST', body: { browser_control: patch } }),
       upsert: (id, input) => transport.json(`/browser/connections/${encodeURIComponent(id)}`, { method: 'PUT', body: input }),
       remove: (id) => transport.json(`/browser/connections/${encodeURIComponent(id)}`, { method: 'DELETE' }),
       setDefault: (browser) => transport.json('/browser/default', { method: 'PUT', body: { browser } }),
@@ -256,8 +259,17 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         `/sessions/${encodeURIComponent(sessionId)}/messages`,
         { query: { before_id: query.before_id, page_size: query.page_size ?? 50 } },
       ),
-      listPrompts: (sessionId: string) => transport.json<PromptListResponse>(
+      listPrompts: (sessionId: string, query = {}) => transport.json<PromptListResponse>(
         `/sessions/${encodeURIComponent(sessionId)}/prompts`,
+        { query: { admission: query.admission, agent_id: query.agent_id, cursor: query.cursor } },
+      ),
+      getPrompt: (sessionId: string, promptId: string, query = {}) => transport.json<PromptItem>(
+        `/sessions/${encodeURIComponent(sessionId)}/prompts/${encodeURIComponent(promptId)}`,
+        { query: { admission: query.admission, agent_id: query.agent_id } },
+      ),
+      resumePrompt: (sessionId: string, promptId: string, body: PromptSubmission, query = {}) => transport.json<PromptItem>(
+        `/sessions/${encodeURIComponent(sessionId)}/prompts/${encodeURIComponent(promptId)}:resume`,
+        { method: 'POST', body, query: { agent_id: query.agent_id } },
       ),
       listApprovals: async (sessionId: string) => {
         const result = await transport.json<{ readonly items: import('@kiki/protocol').ApprovalRequest[] }>(

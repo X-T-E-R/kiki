@@ -1477,6 +1477,8 @@ describe('guided browser setup HTTP facade', () => {
         { path: '/api/browser/setup/independent-browser:shortcut', method: 'POST', body: { connectionId: 'work', name: 'Work' } },
         { path: '/api/browser/setup/independent-browser:cancel', method: 'POST', body: {} },
       ]);
+      await channel.rest.browser.saveSettings({ enabled: true, allowed_browsers: ['alpha', 'beta'] });
+      expect(calls.at(-1)).toEqual({ path: '/api/config', method: 'POST', body: { browser_control: { enabled: true, allowed_browsers: ['alpha', 'beta'] } } });
     } finally { await channel.close(); }
   });
 });

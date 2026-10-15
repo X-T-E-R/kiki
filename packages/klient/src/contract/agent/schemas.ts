@@ -46,7 +46,7 @@ export const promptExecutionBindingSchema = z.object({
   personaGreetingReply: z.boolean().optional(),
   profile: z.string().optional(),
   model: z.string().optional(),
-  thinking: z.string().optional(),
+  thinking: z.string().min(1).nullable().optional(),
   planMode: z.boolean().optional(),
   goalObjective: z.string().optional(),
   goalFollowUpTiming: z.enum(['subagents_done', 'tasks_done']).optional(),
