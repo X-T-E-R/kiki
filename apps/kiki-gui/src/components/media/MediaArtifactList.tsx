@@ -81,14 +81,24 @@ export function artifactFacts(artifact: MediaArtifact): string {
 
 /**
  * A preview is the same media as an original only when both name the same
- * session-media `file_id` and that original is complete. A shared stem,
+ * session-media `file_id` or the artifact metadata explicitly links their
+ * identities, and that original is complete. A shared stem,
  * `preview`/`thumb` filename, or any other label is not an association the
- * protocol records. An incomplete original does not hide its preview.
+ * provider recorded. An incomplete original does not hide its preview.
  */
 export function isProvenPreviewOf(preview: MediaArtifact, original: MediaArtifact): boolean {
   if (preview.role !== 'preview') return false;
   if (original.role !== 'original' || original.complete !== true) return false;
-  return preview.file_id !== '' && preview.file_id === original.file_id;
+  if (preview.file_id !== '' && preview.file_id === original.file_id) return true;
+  return metadataMatches(preview.metadata, ['original_id', 'originalId', 'parent_id', 'parentId'], original.id)
+    || metadataMatches(preview.metadata, ['original_file_id', 'originalFileId'], original.file_id)
+    || metadataMatches(original.metadata, ['preview_id', 'previewId'], preview.id)
+    || metadataMatches(original.metadata, ['preview_file_id', 'previewFileId'], preview.file_id);
+}
+
+function metadataMatches(metadata: MediaArtifact['metadata'], keys: readonly string[], expected: string): boolean {
+  if (metadata === undefined) return false;
+  return keys.some((key) => metadata[key] === expected);
 }
 
 export function visibleArtifacts(artifacts: readonly MediaArtifact[]): readonly MediaArtifact[] {

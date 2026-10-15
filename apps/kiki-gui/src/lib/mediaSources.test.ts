@@ -505,6 +505,29 @@ describe('visibleArtifacts deduplication', () => {
     expect(visibleArtifacts([original, sameName, thumb, prefixed, small])).toEqual([original, sameName, thumb, prefixed, small]);
   });
 
+  it('omits a distinct-file preview when artifact metadata links it to the complete original', () => {
+    const original = {
+      id: 'art-primary', file_id: 'f-primary', name: 'image.png', mime: 'image/png', bytes: 1024,
+      kind: 'image' as const, role: 'original' as const, complete: true,
+      metadata: { preview_file_id: 'f-thumb' },
+    };
+    const preview = {
+      id: 'art-thumb', file_id: 'f-thumb', name: 'image_thumb.png', mime: 'image/png', bytes: 256,
+      kind: 'image' as const, role: 'preview' as const, complete: true,
+    };
+    expect(visibleArtifacts([original, preview])).toEqual([original]);
+  });
+
+  it('keeps a same-name preview when metadata does not identify this original', () => {
+    const original = { id: 'art-primary', file_id: 'f-primary', name: 'image.png', mime: 'image/png', bytes: 1024, kind: 'image' as const, role: 'original' as const, complete: true };
+    const preview = {
+      id: 'art-thumb', file_id: 'f-thumb', name: 'image_thumb.png', mime: 'image/png', bytes: 256,
+      kind: 'image' as const, role: 'preview' as const, complete: true,
+      metadata: { original_file_id: 'f-other' },
+    };
+    expect(visibleArtifacts([original, preview])).toEqual([original, preview]);
+  });
+
   it('keeps preview artifact if no original is available', () => {
     const preview = { id: 'art-2', file_id: 'f-2', name: 'preview.png', mime: 'image/png', bytes: 256, kind: 'image' as const, role: 'preview' as const, complete: true };
     const result = visibleArtifacts([preview]);
