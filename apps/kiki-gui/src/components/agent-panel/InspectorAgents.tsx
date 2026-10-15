@@ -365,18 +365,22 @@ const RosterAgent = memo(function RosterAgent({
 });
 
 function RosterGroup({ row, onToggle }: { row: Extract<RosterRow, { kind: 'group' }>; onToggle: () => void }) {
-  const { tp } = useI18n();
+  const { t, tp } = useI18n();
+  const unknown = row.bucket === 'unknown';
   return (
     <button
       type="button"
-      data-roster-done-group=""
+      data-roster-unknown-group={unknown ? '' : undefined}
+      data-roster-done-group={unknown ? undefined : ''}
       aria-expanded={row.open}
       onClick={onToggle}
       className="row-interactive flex h-8 w-full items-center pr-2 text-left text-[12.5px] text-ink-soft hover:text-ink"
     >
       <span className="flex w-6 shrink-0 justify-center"><DisclosureChevron open={row.open} /></span>
-      <span className={RAIL_MARK}><LifeMark markId="roster-ended-group" life="done" still /></span>
-      {tp('inspector.endedGroup', row.count)}
+      <span className={RAIL_MARK}>
+        <LifeMark markId={unknown ? 'roster-unknown-group' : 'roster-ended-group'} life={unknown ? BUCKET_LIFE.unknown : 'done'} still />
+      </span>
+      {unknown ? t('inspector.filter.unknown', { count: row.count }) : tp('inspector.endedGroup', row.count)}
     </button>
   );
 }
@@ -384,9 +388,11 @@ function RosterGroup({ row, onToggle }: { row: Extract<RosterRow, { kind: 'group
 /**
  * The agent roster: a status summary that doubles as the filter, a search
  * field once the team is large, then the tree. Agents that need the user
- * and running agents lead; settled ones fold into "N completed". Every branch
- * below the first level starts folded. A long list windows inside its own
- * scroller, so a session with hundreds of agents mounts a screenful of rows.
+ * and running agents lead. A large historical-unknown set folds into its own
+ * group, and settled agents fold into "N completed". The two groups open
+ * separately. Every branch below the first level starts folded. A long list
+ * windows inside its own scroller, so a session with hundreds of agents
+ * mounts a screenful of rows.
  */
 export const AgentRoster = memo(function AgentRoster({
   forest,
@@ -410,10 +416,11 @@ export const AgentRoster = memo(function AgentRoster({
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   const [filter, setFilter] = useState<RosterBucket | 'all'>('all');
   const [query, setQuery] = useState('');
+  const [unknownOpen, setUnknownOpen] = useState(false);
   const [doneOpen, setDoneOpen] = useState(false);
   const model = useMemo(
-    () => buildRoster({ forest, rootId, waiting: waitingAgentIds, expanded, filter, query, doneOpen }),
-    [forest, rootId, waitingAgentIds, expanded, filter, query, doneOpen],
+    () => buildRoster({ forest, rootId, waiting: waitingAgentIds, expanded, filter, query, unknownOpen, doneOpen }),
+    [forest, rootId, waitingAgentIds, expanded, filter, query, unknownOpen, doneOpen],
   );
   // A filter whose bucket emptied out falls back to everything.
   const activeFilter = filter !== 'all' && model.counts[filter] === 0 ? 'all' : filter;
@@ -459,7 +466,10 @@ export const AgentRoster = memo(function AgentRoster({
   if (model.total === 0) return null;
   const renderRow = (row: RosterRow) =>
     row.kind === 'group'
-      ? <RosterGroup row={row} onToggle={() => { setDoneOpen((open) => !open); }} />
+      ? <RosterGroup row={row} onToggle={() => {
+          if (row.bucket === 'unknown') setUnknownOpen((open) => !open);
+          else setDoneOpen((open) => !open);
+        }} />
       : <RosterAgent row={row} now={now} onSelect={onSelect} onToggle={toggle} />;
   return (
     <div data-agent-roster className="space-y-1.5">

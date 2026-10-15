@@ -598,6 +598,40 @@ describe('RightRail shared chapters', () => {
     expect(running.every((row) => row.dataset['rosterBucket'] === 'running')).toBe(true);
   });
 
+  it('folds historical unknown agents without hiding an unknown parent that still has a running child', async () => {
+    const historical = buildAgentForest([], [
+      { agentId: 'main', name: 'Main' },
+      { agentId: 'parent', parentAgentId: 'main', name: 'Parent', status: 'unknown' },
+      { agentId: 'child', parentAgentId: 'parent', name: 'Child', status: 'running' },
+      ...Array.from({ length: 4 }, (_, index) => ({
+        agentId: `old-${index}`, parentAgentId: 'main', name: `Old ${index}`, status: 'unknown' as const,
+      })),
+      ...Array.from({ length: 4 }, (_, index) => ({
+        agentId: `done-${index}`, parentAgentId: 'main', name: `Done ${index}`, status: 'completed' as const,
+      })),
+    ]);
+    const rail = await renderRail({ agentForest: historical });
+    expect(rail.querySelector('[data-agent-id="parent"]')?.getAttribute('data-roster-bucket')).toBe('unknown');
+    expect(rail.querySelector('[data-agent-id="old-0"]')).toBeNull();
+    const unknown = rail.querySelector<HTMLButtonElement>('[data-roster-unknown-group]');
+    expect(unknown?.textContent).toContain('4 status unknown');
+    expect(unknown?.textContent).not.toContain('Idle');
+    expect(unknown?.textContent).not.toContain('finished');
+    expect(unknown?.getAttribute('aria-expanded')).toBe('false');
+    expect(rail.querySelector('[data-roster-done-group]')?.getAttribute('aria-expanded')).toBe('false');
+    await act(async () => { unknown?.click(); });
+    expect(rail.querySelector('[data-agent-id="old-0"]')?.querySelector('[data-agent-status]')?.textContent).toBe('Status unknown');
+    expect(rail.querySelector('[data-roster-done-group]')?.getAttribute('aria-expanded')).toBe('false');
+    expect(rail.querySelector('[data-agent-id="done-0"]')).toBeNull();
+    await act(async () => { rail.querySelector<HTMLButtonElement>('[data-roster-toggle="parent"]')?.click(); });
+    expect(rail.querySelector('[data-agent-id="child"]')?.getAttribute('data-roster-bucket')).toBe('running');
+    await act(async () => { rail.querySelector<HTMLButtonElement>('[data-roster-filter="unknown"]')?.click(); });
+    expect(rail.querySelector('[data-roster-unknown-group]')).toBeNull();
+    expect(rail.querySelector('[data-agent-id="old-0"]')).not.toBeNull();
+    expect(rail.querySelector('[data-agent-id="parent"]')?.getAttribute('data-roster-bucket')).toBe('unknown');
+    expect(rail.querySelector('[data-agent-id="child"]')).toBeNull();
+  });
+
   it('bubbles nested approvals to the top with their trail and decides them in place', async () => {
     const deep = buildAgentForest([], [
       { agentId: 'main', name: 'Main' },

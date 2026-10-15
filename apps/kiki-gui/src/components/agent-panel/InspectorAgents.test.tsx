@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { AgentTranscript, type AgentTranscriptSnapshot, type TranscriptOperation } from '@kiki/transcript';
-import { sessionAgentForestFromAgentSnapshots, type AgentForest } from '@kiki/session-core/session';
+import { buildAgentForest, sessionAgentForestFromAgentSnapshots, type AgentForest } from '@kiki/session-core/session';
 
 import { I18nProvider } from '../../i18n';
 import { AgentRoster } from './InspectorAgents';
@@ -151,4 +151,55 @@ it('keeps historical duration fixed, omits missing execution timing and only tic
   expect(state('done')?.textContent).toBe(fixed);
   expect(state('untimed')?.textContent).toBe('Completed');
   expect(state('live')?.textContent).toBe('72h 1m');
+});
+
+it('folds a large unknown history, names it unknown, and keeps an active unknown parent', async () => {
+  const forest = buildAgentForest([], [
+    { agentId: 'main', name: 'Main' },
+    { agentId: 'parent', parentAgentId: 'main', name: 'Parent', status: 'unknown' },
+    { agentId: 'child', parentAgentId: 'parent', name: 'Child', status: 'running' },
+    ...Array.from({ length: 4 }, (_, index) => ({
+      agentId: `old-${index}`, parentAgentId: 'main', name: `Old ${index}`, status: 'unknown' as const,
+    })),
+    ...Array.from({ length: 4 }, (_, index) => ({
+      agentId: `done-${index}`, parentAgentId: 'main', name: `Done ${index}`, status: 'completed' as const,
+    })),
+  ]);
+  const container = await renderRoster(forest);
+  expect(container.querySelector('[data-agent-id="parent"]')?.getAttribute('data-roster-bucket')).toBe('unknown');
+  expect(container.querySelector('[data-agent-id="old-0"]')).toBeNull();
+  expect(container.querySelector('[data-agent-id="done-0"]')).toBeNull();
+  const unknown = container.querySelector<HTMLButtonElement>('[data-roster-unknown-group]');
+  const done = container.querySelector<HTMLButtonElement>('[data-roster-done-group]');
+  expect(unknown?.textContent).toContain('4 status unknown');
+  expect(unknown?.textContent).not.toContain('Idle');
+  expect(unknown?.textContent).not.toContain('finished');
+  expect(unknown?.querySelector('[data-life]')).toBeNull();
+  expect(unknown?.getAttribute('aria-expanded')).toBe('false');
+  expect(done?.textContent).toContain('finished');
+  expect(done?.getAttribute('aria-expanded')).toBe('false');
+
+  await act(async () => { unknown?.click(); });
+  const old = container.querySelector('[data-agent-id="old-0"]');
+  expect(old?.getAttribute('data-roster-bucket')).toBe('unknown');
+  expect(old?.querySelector('[data-agent-status]')?.textContent).toBe('Status unknown');
+  expect(old?.textContent).not.toContain('Idle');
+  expect(old?.querySelector('[data-life]')).toBeNull();
+  expect(container.querySelector('[data-roster-done-group]')?.getAttribute('aria-expanded')).toBe('false');
+  expect(container.querySelector('[data-agent-id="done-0"]')).toBeNull();
+
+  await act(async () => { container.querySelector<HTMLButtonElement>('[data-roster-toggle="parent"]')?.click(); });
+  expect(container.querySelector('[data-agent-id="child"]')?.getAttribute('data-roster-bucket')).toBe('running');
+
+  await act(async () => { container.querySelector<HTMLButtonElement>('[data-roster-done-group]')?.click(); });
+  expect(container.querySelector('[data-agent-id="done-0"]')).not.toBeNull();
+  expect(container.querySelector('[data-agent-id="old-0"]')).not.toBeNull();
+  expect(container.querySelector('[data-roster-unknown-group]')?.getAttribute('aria-expanded')).toBe('true');
+
+  await act(async () => { container.querySelector<HTMLButtonElement>('[data-roster-filter="unknown"]')?.click(); });
+  expect(container.querySelector('[data-roster-unknown-group]')).toBeNull();
+  expect(container.querySelector('[data-agent-id="old-0"]')?.getAttribute('data-roster-bucket')).toBe('unknown');
+  expect(container.querySelector('[data-agent-id="parent"]')?.getAttribute('data-roster-bucket')).toBe('unknown');
+  expect(container.querySelector('[data-agent-id="child"]')).toBeNull();
+  expect(container.querySelector('[data-agent-id="done-0"]')).toBeNull();
 });
