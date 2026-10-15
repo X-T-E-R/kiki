@@ -51,6 +51,7 @@ reports/
 .tmp/
 /candidate.tmp/
 /scratch.tmp/
+/source.tmp/
 /.tmp-search-s3-*/
 /packages/kap-server/.tmp-search-s3-*/
 HANDOVER*.md
