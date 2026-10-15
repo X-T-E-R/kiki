@@ -42,7 +42,7 @@ import {
   stripRecencyField,
   type SessionWorkspaceCounts,
 } from './sessionIndexModel';
-import { SessionIndexBuildingError } from './errors';
+import { SessionIndexBuildingError, SessionIndexReconcilePendingError } from './errors';
 import { readSessionArchiveFamily } from './sessionArchiveFamily';
 import { SessionIndexProjector } from './sessionIndexProjector';
 import {
@@ -54,6 +54,9 @@ import {
 
 const READ_MODEL_FLAG = 'persistence_minidb_readmodel';
 const RECONCILE_INTERVAL_MS = 10 * 60_000;
+const RECONCILE_MAX_ATTEMPTS = 2;
+const RECONCILE_RETRY_BASE_MS = 5_000;
+const RECONCILE_RETRY_MAX_MS = 60_000;
 const DEGRADED_RETRY_MS = 5_000;
 const UNBOUNDED = Number.MAX_SAFE_INTEGER;
 
@@ -95,6 +98,12 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   private prepareFlight: Promise<SessionIndexStatus> | undefined;
   private projectFlight: Promise<boolean> | undefined;
   private catchUpFlight: Promise<boolean> | undefined;
+  private reconcileFlight: Promise<void> | undefined;
+  private reconcileRequest = 0;
+  private reuseReconcileFingerprints = true;
+  private nextReconcileRetryAt = 0;
+  private reconcileRetryDelayMs = RECONCILE_RETRY_BASE_MS;
+  private readonly reconcileRetryTimer = this._register(new TimeoutTimer());
   private readonly authoritativeFlights = new Map<string, Promise<readonly SessionSummary[]>>();
   private readonly authoritativePointFlights = new Map<string, Promise<SessionSummary | undefined>>();
   private readonly statusEmitter = this._register(new Emitter<SessionIndexStatus>());
@@ -322,15 +331,69 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     return this.mirror.dirtyEpoch() === undefined;
   }
 
-  /** Test/ops hook: reconcile the published generation against disk now. */
-  async reconcileNow(options?: { reuseFingerprints?: boolean }): Promise<void> {
-    if (!this.readModelEnabled()) return;
-    await this.mirror.runExclusive(async () => {
-      const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
-      if (manifest === undefined) return;
-      this.generation = manifest.seq;
-      await this.projector.reconcile(manifest.seq, options);
+  /** Reconciles a stable authoritative snapshot. Rejects with a retryable
+   *  session.index_building error while concurrent changes require a deferred pass. */
+  reconcileNow(options?: { reuseFingerprints?: boolean }): Promise<void> {
+    if (this._store.isDisposed) return Promise.reject(new SessionIndexReconcilePendingError('disposed', 0));
+    if (!this.readModelEnabled()) return Promise.resolve();
+    this.reconcileRequest += 1;
+    this.reuseReconcileFingerprints &&= options?.reuseFingerprints === true;
+    if (this.reconcileFlight !== undefined) return this.reconcileFlight;
+    const retryAfterMs = this.nextReconcileRetryAt - Date.now();
+    if (retryAfterMs > 0) return Promise.reject(new SessionIndexReconcilePendingError('concurrent_changes', 0, retryAfterMs));
+    this.reconcileFlight = this.runReconcile().finally(() => {
+      this.reconcileFlight = undefined;
     });
+    return this.reconcileFlight;
+  }
+
+  private checkReconcileActive(attempts: number): void {
+    if (this._store.isDisposed) throw new SessionIndexReconcilePendingError('disposed', attempts);
+    if (!this.readModelEnabled()) throw new SessionIndexReconcilePendingError('disabled', attempts);
+  }
+
+  private async runReconcile(): Promise<void> {
+    for (let attempt = 0; attempt < RECONCILE_MAX_ATTEMPTS; attempt++) {
+      this.checkReconcileActive(attempt);
+      const request = this.reconcileRequest;
+      const reuseFingerprints = this.reuseReconcileFingerprints;
+      this.reuseReconcileFingerprints = true;
+      const baseline = await this.mirror.runExclusive(async () => ({
+        epoch: this.mirror.epoch(),
+        generation: (await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST))?.seq,
+        revision: (await this.queryStore.getCheckpoint(SESSION_INDEX_REVISION))?.seq,
+      }));
+      this.checkReconcileActive(attempt);
+      if (baseline.generation === undefined) throw new SessionIndexReconcilePendingError('uninitialized', attempt);
+      const commit = await this.projector.planReconcile(baseline.generation, { reuseFingerprints });
+      this.checkReconcileActive(attempt + 1);
+      const committed = await this.mirror.runExclusive(async () => {
+        this.checkReconcileActive(attempt + 1);
+        const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
+        const revision = await this.queryStore.getCheckpoint(SESSION_INDEX_REVISION);
+        if (this.mirror.epoch() !== baseline.epoch || manifest?.seq !== baseline.generation || revision?.seq !== baseline.revision) return false;
+        await commit();
+        this.generation = baseline.generation;
+        return true;
+      });
+      if (committed && request === this.reconcileRequest) {
+        this.nextReconcileRetryAt = 0;
+        this.reconcileRetryDelayMs = RECONCILE_RETRY_BASE_MS;
+        this.reconcileRetryTimer.cancel();
+        return;
+      }
+      this.projector.invalidateFingerprint();
+      this.reuseReconcileFingerprints = false;
+    }
+    const delay = this.reconcileRetryDelayMs;
+    this.nextReconcileRetryAt = Date.now() + delay;
+    this.reconcileRetryDelayMs = Math.min(delay * 2, RECONCILE_RETRY_MAX_MS);
+    this.reconcileRetryTimer.cancelAndSet(() => {
+      void this.reconcileNow().catch((error: unknown) => {
+        this.log.warn('session index deferred reconciliation incomplete', { error: String(error) });
+      });
+    }, delay);
+    throw new SessionIndexReconcilePendingError('concurrent_changes', RECONCILE_MAX_ATTEMPTS, delay);
   }
 
   /** Test/ops hook: project a fresh generation now (single-flight). */
@@ -353,16 +416,13 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     }
     if (this.state !== 'ready') return;
     try {
-      await this.mirror.runExclusive(async () => {
-        const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
-        if (manifest === undefined) {
-          this.markDegraded('published generation lost');
-          void this.prepare();
-          return;
-        }
-        this.generation = manifest.seq;
-        await this.projector.reconcile(manifest.seq, { reuseFingerprints: true });
-      });
+      const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
+      if (manifest === undefined) {
+        this.markDegraded('published generation lost');
+        void this.prepare();
+        return;
+      }
+      await this.reconcileNow({ reuseFingerprints: true });
     } catch (error) {
       this.log.warn('session index reconciliation failed', { error: String(error) });
     }

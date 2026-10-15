@@ -15,6 +15,7 @@ import { createScopedTestHost, stubPair } from '#/_base/di/test';
 import { Emitter } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
 import { encodeWorkDirKey } from '#/_base/utils/workdir-slug';
+import { TimeoutTimer } from '#/_base/utils/timer';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IFlagService } from '#/app/flag/flag';
 import { IHostFsWatchService, type HostFsChange, type HostFsWatchOptions } from '#/os/interface/hostFsWatch';
@@ -65,6 +66,7 @@ import { stubBootstrap } from '../bootstrap/stubs';
 import { stubFlag } from '../flag/stubs';
 import { stubLog } from '../../_base/log/stubs';
 import { stubQueryStore } from '../../persistence/interface/stubs';
+import { deferred } from '../../deferred';
 
 const WORK_DIR = '/home/user/repo';
 const sourceChanges = new Emitter<HostFsChange>();
@@ -2195,6 +2197,196 @@ describe('FileSessionIndex (read model)', () => {
     const warm = await second.listRecent({ workspaceIds: [workspaceId] });
     expect(warm.items.map((s) => s.id)).toEqual(['a', 'b']);
     expect(await second.count({ workspaceIds: [workspaceId] })).toBe(2);
+  });
+
+  it('serves published list and count while reconciliation scans the authoritative tree', async () => {
+    await seedSession('existing', { createdAt: 1, updatedAt: 2 });
+    const store = build();
+    await store.prepare();
+    const entered = deferred<void>();
+    const gate = deferred<void>();
+    const original = SessionIndexProjector.prototype.planReconcile;
+    const scan = vi.spyOn(SessionIndexProjector.prototype, 'planReconcile').mockImplementation(async function (this: SessionIndexProjector, ...args) {
+      entered.resolve();
+      await gate.promise;
+      return original.apply(this, args);
+    });
+    const reconciliation = store.reconcileNow();
+    let reads: Promise<unknown> | undefined;
+    try {
+      await entered.promise;
+      reads = Promise.all([
+        store.listRecent({ workspaceIds: [workspaceId], limit: 10 }),
+        store.count({ workspaceIds: [workspaceId] }),
+      ]);
+      const result = await Promise.race([
+        reads,
+        new Promise<string>((resolve) => setTimeout(() => resolve('blocked by reconciliation'), 300)),
+      ]);
+      expect(result).toEqual([expect.objectContaining({ items: [expect.objectContaining({ id: 'existing' })] }), 1]);
+    } finally {
+      gate.resolve();
+      await reconciliation;
+      await reads;
+      scan.mockRestore();
+    }
+  });
+
+  it.each(['writer', 'requests'] as const)('bounds repeated reconciliation invalidation from continuous %s and retains a scheduled repair', async (activity) => {
+    await Promise.all(Array.from({ length: 452 }, (_, i) => seedSession(`s${i}`, { createdAt: 1, updatedAt: i + 1 })));
+    const store = build();
+    await store.prepare();
+    await seedSession('s0', { title: 'external drift', createdAt: 1, updatedAt: 1 });
+    let scheduled: (() => void) | undefined;
+    let delay = 0;
+    const schedule = vi.spyOn(TimeoutTimer.prototype, 'cancelAndSet').mockImplementation((runner, timeout) => {
+      scheduled = runner;
+      delay = timeout;
+    });
+    const original = SessionIndexProjector.prototype.planReconcile;
+    let continuous = true;
+    let scans = 0;
+    const waiters: Promise<unknown>[] = [];
+    const scan = vi.spyOn(SessionIndexProjector.prototype, 'planReconcile').mockImplementation(async function (this: SessionIndexProjector, ...args) {
+      if (++scans > 2 && continuous) throw new Error('reconciliation exceeded the scan budget');
+      const commit = await original.apply(this, args);
+      if (continuous) {
+        const read = Promise.all([
+          store.listRecent({ workspaceIds: [workspaceId], limit: 10 }),
+          store.count({ workspaceIds: [workspaceId] }),
+        ]);
+        expect(await Promise.race([
+          read,
+          new Promise<string>((resolve) => setTimeout(() => resolve('read blocked'), 1_000)),
+        ])).toEqual([expect.objectContaining({ items: expect.any(Array) }), 452]);
+        if (activity === 'writer') {
+          const value = { title: `managed ${scans}`, createdAt: 1, updatedAt: 500 + scans };
+          await seedSession('s451', value);
+          mirror.record(summary('s451', value));
+          await mirror.drain();
+        } else {
+          waiters.push(store.reconcileNow().catch((error: unknown) => error));
+        }
+      }
+      return commit;
+    });
+    let clock: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      const outcome = await store.reconcileNow().catch((error: unknown) => error);
+      expect(outcome).toMatchObject({ code: 'session.index_building', details: { operation: 'reconcile', reason: 'concurrent_changes', attempts: 2 } });
+      expect(scans).toBe(2);
+      expect(scheduled).toBeTypeOf('function');
+      expect(delay).toBeGreaterThanOrEqual(5_000);
+      await expect(store.reconcileNow()).rejects.toMatchObject({ code: 'session.index_building' });
+      expect(scans).toBe(2);
+      await Promise.all(waiters);
+      continuous = false;
+      clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + delay);
+      const retry = vi.spyOn(store, 'reconcileNow');
+      try {
+        scheduled!();
+        await retry.mock.results[0]!.value;
+      } finally {
+        retry.mockRestore();
+      }
+      expect(scans).toBe(3);
+      expect(await store.get('s0', workspaceId)).toMatchObject({ title: 'external drift' });
+      expect(await store.count({ workspaceIds: [workspaceId] })).toBe(452);
+    } finally {
+      continuous = false;
+      await Promise.all(waiters);
+      clock?.mockRestore();
+      scan.mockRestore();
+      schedule.mockRestore();
+    }
+  }, 30_000);
+
+  it.each(['local', 'peer'] as const)('coalesces reconciliation and discards a plan superseded by a %s mirror write', async (writer) => {
+    await seedSession('existing', { title: 'initial', createdAt: 1, updatedAt: 2 });
+    const store = build();
+    await store.prepare();
+    const peer = writer === 'peer' ? createScopedTestHost([
+      stubPair(IBootstrapService, stubBootstrap(homeDir)),
+      stubPair(ILogService, stubLog()),
+      stubPair(IFlagService, stubFlag(true)),
+    ]) : undefined;
+    const writingMirror = peer?.app.accessor.get(ISessionIndexMirror) ?? mirror;
+    await seedSession('existing', { title: 'external', createdAt: 1, updatedAt: 3 });
+    const entered = deferred<void>();
+    const gate = deferred<void>();
+    const original = SessionIndexProjector.prototype.planReconcile;
+    let plans = 0;
+    const obsoleteCommit = vi.fn<() => void>();
+    const scan = vi.spyOn(SessionIndexProjector.prototype, 'planReconcile').mockImplementation(async function (this: SessionIndexProjector, ...args) {
+      const commit = await original.apply(this, args);
+      if (++plans === 1) {
+        entered.resolve();
+        await gate.promise;
+        return async () => {
+          obsoleteCommit();
+          return commit();
+        };
+      }
+      return commit;
+    });
+    const reconciliation = store.reconcileNow();
+    let queued: Promise<void>[] = [];
+    try {
+      await entered.promise;
+      queued = Array.from({ length: 10 }, () => store.reconcileNow({ reuseFingerprints: true }));
+      await seedSession('existing', { title: 'managed', createdAt: 1, updatedAt: 4 });
+      writingMirror.record(summary('existing', { title: 'managed', updatedAt: 4 }));
+      await writingMirror.drain();
+      gate.resolve();
+      await Promise.all([reconciliation, ...queued]);
+      expect(obsoleteCommit).not.toHaveBeenCalled();
+      expect(plans).toBe(2);
+      expect(await store.get('existing', workspaceId)).toMatchObject({ title: 'managed', updatedAt: 4 });
+      expect(await store.count({ workspaceIds: [workspaceId] })).toBe(1);
+    } finally {
+      gate.resolve();
+      await Promise.all([reconciliation, ...queued]);
+      scan.mockRestore();
+      await peer?.dispose();
+    }
+  }, 30_000);
+
+  it.each(['dispose', 'disable'] as const)('abandons an unpublished reconciliation plan after %s', async (stop) => {
+    await seedSession('existing', { title: 'published', createdAt: 1, updatedAt: 2 });
+    let enabled = true;
+    const store = build(undefined, () => enabled);
+    await store.prepare();
+    await seedSession('existing', { title: 'unpublished', createdAt: 1, updatedAt: 3 });
+    const entered = deferred<void>();
+    const gate = deferred<void>();
+    const original = SessionIndexProjector.prototype.planReconcile;
+    const commitCalls = vi.fn<() => void>();
+    const scan = vi.spyOn(SessionIndexProjector.prototype, 'planReconcile').mockImplementation(async function (this: SessionIndexProjector, ...args) {
+      const commit = await original.apply(this, args);
+      entered.resolve();
+      await gate.promise;
+      return async () => {
+        commitCalls();
+        return commit();
+      };
+    });
+    const reconciliation = store.reconcileNow().catch((error: unknown) => error);
+    try {
+      await entered.promise;
+      if (stop === 'dispose') await store.dispose();
+      else enabled = false;
+      gate.resolve();
+      expect(await reconciliation).toMatchObject({
+        code: 'session.index_building',
+        details: { operation: 'reconcile', reason: stop === 'dispose' ? 'disposed' : 'disabled' },
+      });
+      expect(commitCalls).not.toHaveBeenCalled();
+      expect(await queryStore.get(sessionCollection(1), 'existing')).toMatchObject({ title: 'published' });
+    } finally {
+      gate.resolve();
+      await reconciliation;
+      scan.mockRestore();
+    }
   });
 
   it('reconciliation repairs external edits and deletions of state.json', async () => {

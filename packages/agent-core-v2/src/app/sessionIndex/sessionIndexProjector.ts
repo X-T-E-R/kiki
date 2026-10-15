@@ -195,7 +195,10 @@ export class SessionIndexProjector {
     return { generation, sessions: summaries.length };
   }
 
-  async reconcile(generation: number, options?: { reuseFingerprints?: boolean }): Promise<ReconcileResult> {
+  async planReconcile(
+    generation: number,
+    options?: { reuseFingerprints?: boolean },
+  ): Promise<() => Promise<ReconcileResult>> {
     const { storage, docs, queryStore, log, sessionsScope } = this.deps;
     if (this.fingerprintGeneration !== generation) {
       this.fingerprintCache.clear();
@@ -387,26 +390,28 @@ export class SessionIndexProjector {
       });
     }
 
-    if (ops.length > 0) await advanceSessionIndexRevision(queryStore);
-    await this.batchChunks(ops);
-    const manifest = await queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
-    if (
-      manifest?.seq === generation &&
-      sourceMaxMtimeMs > (manifest.sourceMaxMtimeMs ?? 0)
-    ) {
-      await queryStore.setCheckpoint(SESSION_INDEX_MANIFEST, {
-        seq: generation,
-        sourceMaxMtimeMs,
-      });
-    }
-    this.fingerprintCache = invalidationEpoch === this.fingerprintInvalidationEpoch
-      ? nextFingerprintCache
-      : new Map();
-    const result = { sessions, upserted, removed };
-    if (upserted > 0 || removed > 0) {
-      log.info('session index reconciliation repaired drift', { generation, ...result });
-    }
-    return result;
+    return async () => {
+      if (ops.length > 0) await advanceSessionIndexRevision(queryStore);
+      await this.batchChunks(ops);
+      const manifest = await queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
+      if (
+        manifest?.seq === generation &&
+        sourceMaxMtimeMs > (manifest.sourceMaxMtimeMs ?? 0)
+      ) {
+        await queryStore.setCheckpoint(SESSION_INDEX_MANIFEST, {
+          seq: generation,
+          sourceMaxMtimeMs,
+        });
+      }
+      this.fingerprintCache = invalidationEpoch === this.fingerprintInvalidationEpoch
+        ? nextFingerprintCache
+        : new Map();
+      const result = { sessions, upserted, removed };
+      if (upserted > 0 || removed > 0) {
+        log.info('session index reconciliation repaired drift', { generation, ...result });
+      }
+      return result;
+    };
   }
 
   private async scanAuthoritative(): Promise<AuthoritativeScan> {

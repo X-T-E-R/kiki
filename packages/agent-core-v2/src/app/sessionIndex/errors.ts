@@ -16,3 +16,12 @@ export class SessionIndexBuildingError extends Error2 {
     this.name = 'SessionIndexBuildingError';
   }
 }
+
+export class SessionIndexReconcilePendingError extends Error2 {
+  constructor(reason: 'concurrent_changes' | 'disabled' | 'disposed' | 'uninitialized', attempts: number, retryAfterMs = 0) {
+    super(SessionIndexErrors.codes.SESSION_INDEX_BUILDING, 'session index reconciliation is incomplete', {
+      details: { operation: 'reconcile', reason, attempts, retryAfterMs },
+    });
+    this.name = 'SessionIndexReconcilePendingError';
+  }
+}

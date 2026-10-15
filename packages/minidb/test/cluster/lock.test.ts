@@ -475,3 +475,115 @@ test('closeAll() waits for the lockHold timer’s in-flight writer close', async
     await rmrf(dir);
   }
 });
+
+
+test('a timer-retired writer finishes closing before the same pool reopens the shard', async () => {
+  const dir = await tmpDir('minidb-cluster-');
+  const pool = new ShardLockPool({
+    writerOpts: { valueCodec: 'json' }, readerOpts: { valueCodec: 'json' },
+    lockRenewMs: 0, lockAcquireTimeoutMs: 80, lockHoldMs: 40,
+    maxWriters: 4, maxReaders: 4, readOnly: false, applyDefs: async () => {},
+  });
+  const shardDir = path.join(dir, shardDirName(0, 4));
+  const closeStarted = deferred<void>();
+  const closeGate = deferred<void>();
+  const origClose = ShardHandle.prototype.close;
+  let pending: Promise<void> | undefined;
+  try {
+    await pool.withWriter(0, shardDir, (db) => db.set('k', { v: 1 }));
+    ShardHandle.prototype.close = async function () {
+      closeStarted.resolve();
+      await closeGate.promise;
+      await origClose.call(this);
+    };
+    await closeStarted.promise;
+    pending = pool.withWriter(0, shardDir, (db) => db.set('k', { v: 2 }));
+    void pending.catch(() => {});
+    await sleep(150);
+    assert.equal(pool.stats.lockWaits, 0, 'a local closing handle is awaited, not treated as a foreign lock holder');
+    closeGate.resolve();
+    await pending;
+    assert.deepEqual(await pool.withReader(0, shardDir, (db) => db.get('k')), { v: 2 });
+  } finally {
+    closeGate.resolve();
+    await pending?.catch(() => {});
+    ShardHandle.prototype.close = origClose;
+    await pool.closeAll();
+    await rmrf(dir);
+  }
+});
+
+test('the last reader releases a writer whose hold window expired while it was busy', async () => {
+  const dir = await tmpDir('minidb-cluster-');
+  const pool = new ShardLockPool({
+    writerOpts: { valueCodec: 'json' }, readerOpts: { valueCodec: 'json' },
+    lockRenewMs: 0, lockAcquireTimeoutMs: 80, lockHoldMs: 40,
+    maxWriters: 4, maxReaders: 4, readOnly: false, applyDefs: async () => {},
+  });
+  const shardDir = path.join(dir, shardDirName(0, 4));
+  const entered = deferred<void>();
+  const gate = deferred<void>();
+  let pending: Promise<unknown> | undefined;
+  try {
+    await pool.withWriter(0, shardDir, (db) => db.set('k', { v: 1 }));
+    pending = pool.withReader(0, shardDir, async (db) => {
+      entered.resolve();
+      await gate.promise;
+      return db.get('k');
+    });
+    await entered.promise;
+    await sleep(100);
+    gate.resolve();
+    assert.deepEqual(await pending, { v: 1 });
+    assert.equal(pool.writersCached, 0, 'the retired writer is released when its final user is a reader');
+    const peer = await MiniDb.open({ dir: shardDir, valueCodec: 'json' });
+    await peer.close();
+  } finally {
+    gate.resolve();
+    await pending?.catch(() => {});
+    await pool.closeAll();
+    await rmrf(dir);
+  }
+});
+
+
+test.each(['timer', 'close'] as const)('a failed %s writer close remains tracked for cleanup retry', async (mode) => {
+  const dir = await tmpDir('minidb-cluster-');
+  const pool = new ShardLockPool({
+    writerOpts: { valueCodec: 'json' }, readerOpts: { valueCodec: 'json' },
+    lockRenewMs: 0, lockAcquireTimeoutMs: 80, lockHoldMs: mode === 'timer' ? 40 : 0,
+    maxWriters: 4, maxReaders: 4, readOnly: false, applyDefs: async () => {},
+  });
+  const shardDir = path.join(dir, shardDirName(0, 4));
+  const failed = deferred<void>();
+  const origClose = ShardHandle.prototype.close;
+  let injected = false;
+  try {
+    await pool.withWriter(0, shardDir, (db) => db.set('k', { v: 1 }));
+    ShardHandle.prototype.close = async function () {
+      if (!injected) {
+        injected = true;
+        failed.resolve();
+        throw new Error('neutral close failure');
+      }
+      await origClose.call(this);
+    };
+    if (mode === 'timer') {
+      await failed.promise;
+      await new Promise((resolve) => setImmediate(resolve));
+      await pool.withWriter(0, shardDir, (db) => db.set('k', { v: 2 }));
+      assert.equal(pool.stats.lockWaits, 0, 'retry cleans the held local handle before reopening');
+    } else {
+      await assert.rejects(pool.closeAll(), /neutral close failure/);
+      await assert.rejects(MiniDb.open({ dir: shardDir, valueCodec: 'json' }), LockError);
+    }
+    await pool.closeAll();
+    const next = await MiniDb.open({ dir: shardDir, valueCodec: 'json' });
+    assert.deepEqual(next.get('k'), { v: mode === 'timer' ? 2 : 1 });
+    await next.close();
+  } finally {
+    ShardHandle.prototype.close = origClose;
+    await pool.closeAll();
+    await rmrf(dir);
+  }
+});

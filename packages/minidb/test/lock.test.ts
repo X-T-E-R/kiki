@@ -1,5 +1,5 @@
 // test/lock.test.js
-import { test } from 'vitest';
+import { test, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -116,6 +116,74 @@ test('a racing renew() never re-publishes a released lock (100 iterations)', { t
       );
     }
   } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('a failed release retains ownership so cleanup can retry instead of orphaning a live-pid lock', async () => {
+  const dir = await tmpDir();
+  const lockPath = path.join(dir, 'db.lock');
+  const lock = new LockFile(lockPath);
+  try {
+    assert.equal(await lock.acquire(), true);
+    const denied = Object.assign(new Error('neutral unlink denial'), { code: 'EACCES' });
+    const unlink = vi.spyOn(fs, 'unlink').mockRejectedValueOnce(denied);
+    try {
+      await assert.rejects(lock.release(), denied);
+      assert.equal(lock.held, true);
+    } finally {
+      unlink.mockRestore();
+    }
+    await lock.release();
+    const next = new LockFile(lockPath);
+    assert.equal(await next.acquire(), true);
+    await next.release();
+  } finally {
+    await lock.release();
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('failed renewal cleans its sidecar and a subsequent release still frees the lock', async () => {
+  const dir = await tmpDir();
+  const lockPath = path.join(dir, 'db.lock');
+  const lock = new LockFile(lockPath);
+  const denied = Object.assign(new Error('neutral renewal denial'), { code: 'EACCES' });
+  const rename = vi.spyOn(fs, 'rename').mockRejectedValue(denied);
+  try {
+    assert.equal(await lock.acquire(), true);
+    await assert.rejects(lock.renew(), denied);
+    assert.deepEqual(await fs.readdir(dir), ['db.lock']);
+    await lock.release();
+    const next = new LockFile(lockPath);
+    assert.equal(await next.acquire(), true);
+    await next.release();
+  } finally {
+    rename.mockRestore();
+    await lock.release();
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('renewal stops after ownership changes and never replaces the new holder', async () => {
+  const dir = await tmpDir();
+  const lockPath = path.join(dir, 'db.lock');
+  const original = new LockFile(lockPath);
+  const replacement = new LockFile(lockPath);
+  try {
+    assert.equal(await original.acquire(), true);
+    await fs.unlink(lockPath);
+    assert.equal(await replacement.acquire(), true);
+    const token = replacement.heldToken;
+    await original.renew();
+    assert.equal(original.held, false);
+    assert.equal(JSON.parse(await fs.readFile(lockPath, 'utf8')).token, token);
+    await original.release();
+    const contender = new LockFile(lockPath);
+    assert.equal(await contender.acquire(), false, 'the real live holder remains exclusive');
+  } finally {
+    await original.release();
+    await replacement.release();
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });

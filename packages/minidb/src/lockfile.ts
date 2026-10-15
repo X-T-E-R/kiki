@@ -20,7 +20,7 @@ import fsSync from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
-import { renameReplace } from './rename-replace.js';
+import { renameReplace, withWindowsEpermRetry } from './rename-replace.js';
 import { createSerializer } from './serialize.js';
 
 export class LockError extends Error {
@@ -120,6 +120,7 @@ export class LockFile {
    *  one starts, so a renew already in flight finishes before a release
    *  unlinks. */
   private readonly serialized = createSerializer();
+  private pendingReleases = 0;
 
   constructor(path: string) {
     this.path = path;
@@ -360,16 +361,25 @@ export class LockFile {
    *  lock file). No-op when the lock is not held. Uses write-tmp-then-rename
    *  so a crash mid-renew cannot leave a truncated, "stale-looking" lock file
    *  behind for a lock that is actually still owned. Serialized with
-   *  acquire/release: `held` is re-checked inside the chain, and a release
-   *  queued behind this renew unlinks only after the rename landed. */
+   *  acquire/release; a pending release supersedes an unpublished heartbeat,
+   *  and a replaced ownership token stops renewal. */
   async renew(): Promise<void> {
     return this.serialized(async () => {
-      if (!this.held) return;
+      if (!this.held || this.pendingReleases > 0) return;
+      const current = await this.inspect();
+      if (!current?.mine) {
+        this.held = false;
+        HELD.delete(this);
+        return;
+      }
       const tmp = `${this.path}.tmp-${process.pid}-${nextSidecarSeq()}`;
-      await fs.writeFile(tmp, this.payload());
-      // Windows: replacing our own lock can still clash with a co-process's
-      // readFile/stat of it (EPERM) — the helper rides out such transients.
-      await renameReplace(tmp, this.path, { retries: 20 });
+      try {
+        await fs.writeFile(tmp, this.payload());
+        if (this.pendingReleases > 0) return;
+        await renameReplace(tmp, this.path, { retries: 20 });
+      } finally {
+        await fs.unlink(tmp).catch(() => {});
+      }
     });
   }
 
@@ -380,17 +390,26 @@ export class LockFile {
   }
 
   async release(): Promise<void> {
-    return this.serialized(async () => {
-      if (!this.held) return;
-      // Unlink ONLY the file this instance actually owns. The content at this
-      // path may have been replaced since we acquired it (a supervisor re-plant a
-      // dead-man's marker, a concurrent takeover…), and deleting such a file
-      // would drop a lock that no longer belongs to us.
-      const cur = await this.inspect();
-      if (cur?.mine) await fs.unlink(this.path).catch(() => {});
-      this.held = false;
-      HELD.delete(this);
-    });
+    this.pendingReleases++;
+    try {
+      await this.serialized(async () => {
+        if (!this.held) return;
+        // Unlink ONLY the file this instance actually owns. The content at this
+        // path may have been replaced since we acquired it (a supervisor re-plant a
+        // dead-man's marker, a concurrent takeover…), and deleting such a file
+        // would drop a lock that no longer belongs to us.
+        const cur = await this.inspect();
+        if (cur?.mine) {
+          await withWindowsEpermRetry(() => fs.unlink(this.path)).catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== 'ENOENT') throw error;
+          });
+        }
+        this.held = false;
+        HELD.delete(this);
+      });
+    } finally {
+      this.pendingReleases--;
+    }
   }
 
   /** Best-effort sync release for the exit hook. */
