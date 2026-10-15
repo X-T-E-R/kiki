@@ -100,6 +100,7 @@ export interface ProfileData extends AgentConfigData {
   readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
   readonly executorPrompt?: import('@kiki/agent-profiles/executorPrompt').ExecutorPrompt;
   readonly allowKikiSubagents?: boolean;
+  readonly injectKikiMcp?: boolean;
   readonly kikiContext?: AgentProfile['kikiContext'];
   readonly executorDescriptorRevision?: string;
   readonly agentsMdPaths?: readonly string[];
@@ -170,6 +171,7 @@ export interface ProfileBindingSnapshot {
   readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
   readonly executorPrompt?: import('@kiki/agent-profiles/executorPrompt').ExecutorPrompt;
   readonly allowKikiSubagents?: boolean;
+  readonly injectKikiMcp?: boolean;
   readonly kikiContext?: AgentProfile['kikiContext'];
   readonly executorDescriptorRevision?: string;
   readonly thinkingLevel: string;
@@ -273,7 +275,7 @@ export interface BindAgentInput {
   readonly resolvedProfile?: AgentProfile;
   readonly resolvedRoute?: ResolvedAgentProfileRoute;
   readonly model?: string;
-  readonly thinking?: string;
+  readonly thinking?: string | null;
   readonly bindingSelection?: BindingSelectionInput;
   readonly strictThinking?: boolean;
   readonly inheritedUserToolNames?: readonly string[];
@@ -300,6 +302,8 @@ export interface IAgentProfileService {
   prepareModelSwitchBinding(model: string, thinking?: string): Promise<PreparedModelSwitchBinding>;
   setEffort(level: string): ProfileSetEffortResult;
   setThinking(level: string): void;
+  /** Drops a user effort pin and stores the profile or model default. An execution binding clears through that binding instead. */
+  restoreDefaultThinking(): void;
   validateBinding(binding: ExecutorBinding): ExecutorValidationResult;
   prepareResumeBinding(input: {
     readonly toolOverride?: ToolBindingOverride;

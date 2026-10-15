@@ -19,7 +19,9 @@ import {
 } from '#/app/agentExecutor/agentExecutorRegistryService';
 import { compareExecutorBinaryCandidates, parseModelProbeOutput, probeExecutorModelCatalog } from '#/app/agentExecutor/binaryDiscovery';
 import { BUILTIN_AGENT_EXECUTORS } from '#/app/agentExecutor/builtinDescriptorData';
-import { resolvePromptDelivery } from '#/app/agentExecutor/capabilities';
+import { executorModelProbe } from '#/app/agentExecutor/managedAdapterRegistry';
+import type { AgentExecutorDescriptor } from '#/app/agentExecutor/agentExecutor';
+import { executorControlCapabilities, modelSelectionPass, resolvePromptDelivery } from '#/app/agentExecutor/capabilities';
 import {
   AGENT_EXECUTORS_SECTION,
   AgentExecutorsConfigSchema,
@@ -147,6 +149,14 @@ describe('AgentExecutorRegistryService', () => {
       sources: expect.arrayContaining([{ id: 'env', kind: 'env', name: 'ANTIGRAVITY_ACP_PATH' }]),
     });
     expect(BUILTIN_AGENT_EXECUTORS['antigravity-acp']?.sources).not.toContainEqual(expect.objectContaining({ command: 'antigravity' }));
+    expect(BUILTIN_AGENT_EXECUTORS['antigravity-acp']?.modelProbe).toBeUndefined();
+    expect(BUILTIN_AGENT_EXECUTORS['agy-cli']).toMatchObject({
+      label: 'AGY CLI',
+      modelProbe: { command: 'agy', args: ['models'], format: 'columns' },
+      modelBinding: 'argv',
+      modelArgs: ['--model', '{model}'],
+    });
+    expect(BUILTIN_AGENT_EXECUTORS['agy-cli']?.command).toBeUndefined();
   });
 
   it('rejects unknown executor ids instead of falling back to native', () => {
@@ -185,7 +195,7 @@ describe('AgentExecutorRegistryService', () => {
     expect(JSON.stringify({ revision: first.revision })).not.toContain(secret);
   });
 
-  it('exposes negotiated capabilities only for the matching executor revision and binary version', () => {
+  it('exposes negotiated capabilities only for the matching executor revision and binary version', async () => {
     let command = 'test-acp';
     const config = { ...configWith({}), get: <T>(domain: string) => domain === AGENT_EXECUTORS_SECTION ? ({ test: {
       protocol: 'acp-v1', command, args: [],
@@ -198,6 +208,14 @@ describe('AgentExecutorRegistryService', () => {
     command = 'replacement-acp';
     expect(registry.negotiated('test', '1.0')).toBeUndefined();
     expect(registry.lastNegotiated('test')).toBeUndefined();
+    registry.recordNegotiated('test', '1.0', { image: true });
+    expect(registry.negotiated('test', '1.0')).toEqual({ image: true });
+    expect(registry.getExecutorCapabilityCatalog('test', { version: '1.0' })?.models.state).toBe('unknown');
+    command = 'third-acp';
+    const refreshed = await registry.refreshExecutorCapabilityCatalog('test');
+    expect(refreshed.descriptorRevision).toBe(registry.get('test')?.revision);
+    expect(refreshed.context.state).toBe('unknown');
+    expect(registry.lastNegotiated('test')).toEqual({});
   });
 
   it('projects typed capability catalog state without treating an unverified version as ready', () => {
@@ -301,6 +319,21 @@ describe('AgentExecutorRegistryService', () => {
     const jsonPath = ['command', 'data', 'models'];
     const output = JSON.stringify({ conversation_id: '', num_turns: 0, usage: { total_tokens: 0 },
       command: { name: 'models', data: { models: [{ id: 'vendor-opus-high', label: 'Opus high' }, { id: 'vendor-opus-high' }, 'vendor-flash-medium'] } } });
+    const columns = 'model                         label\nfixture-alpha-high       Fixture Alpha (High)\nfixture-beta-medium     Fixture Beta (Medium)\n';
+    expect(parseModelProbeOutput(columns, 'columns')).toEqual(['fixture-alpha-high', 'fixture-beta-medium']);
+    expect(parseModelProbeOutput(columns, 'columns')).not.toContain('not-a-vendor-model');
+    const agy134 = [
+      'gemini-3.8-flash-high\tGemini 3.8 Flash (High)',
+      'claude-opus-5-5-low\tClaude Opus 5.5 (Low)',
+      'claude-opus-5-5-medium\tClaude Opus 5.5 (Medium)',
+      'claude-opus-5-5-high\tClaude Opus 5.5 (High)',
+    ].join('\n');
+    expect(parseModelProbeOutput(agy134, 'columns')).toEqual([
+      'gemini-3.8-flash-high', 'claude-opus-5-5-low', 'claude-opus-5-5-medium', 'claude-opus-5-5-high',
+    ]);
+    expect(parseModelProbeOutput(agy134, 'columns')).not.toContain('anthropic/claude-opus-5-5');
+    expect(parseModelProbeOutput(columns, 'lines')).toEqual([]);
+    expect(parseModelProbeOutput('fixture-alpha-high\tmedium\n', 'tab')).toEqual(['fixture-alpha-high']);
     expect(parseModelProbeOutput(output, 'json', jsonPath)).toEqual(['vendor-opus-high', 'vendor-flash-medium']);
     expect(parseModelProbeOutput('["model","#local"]', 'json')).toEqual(['model', '#local']);
     expect(parseModelProbeOutput('{invalid', 'json', jsonPath)).toEqual([]);
@@ -310,6 +343,131 @@ describe('AgentExecutorRegistryService', () => {
     const parsed = agentExecutorsFromToml(toml);
     expect(agentExecutorsToToml(parsed)).toEqual(toml);
     expect(AgentExecutorsConfigSchema.parse(parsed)['example']?.modelProbe).toMatchObject({ format: 'json', jsonPath });
+  });
+
+  it('keeps a ready vendor catalog when negotiation omits models and records an empty advertisement', () => {
+    const registry = new AgentExecutorRegistryService(configWith({
+      'agy-cli-909': { protocol: 'acp-v1', command: 'agy-cli-acp', args: [] },
+    }), processService, fs, bootstrap);
+    const revision = registry.get('agy-cli-909')!.revision;
+    const controls = {
+      modelSwitch: { applicability: 'unknown' as const, applyState: 'unknown' as const },
+      thinkingSwitch: { applicability: 'unknown' as const, applyState: 'unknown' as const },
+      manualCompact: { applicability: 'unknown' as const, applyState: 'unknown' as const },
+    };
+    registry.recordNegotiated('agy-cli-909', '1', { resume: true });
+    expect(registry.getExecutorCapabilityCatalog?.('agy-cli-909', { version: '1' })?.models).toEqual({ state: 'unknown' });
+    registry.recordExecutorCapabilityCatalog?.({
+      executorId: 'agy-cli-909', descriptorRevision: revision, version: '0.4.1',
+      catalogProgramVersion: '1.3.1', catalogCommand: 'agy',
+      source: 'cli_probe', provenance: 'read_only_cli_probe', observedAt: Date.now(),
+      models: { state: 'ready', values: ['fixture-alpha-high'] },
+      thinkingLevels: { state: 'unknown' }, context: { state: 'unknown' }, controls,
+    });
+    registry.recordNegotiated('agy-cli-909', 'script-0.1.0', { resume: true });
+    expect(registry.getExecutorCapabilityCatalog?.('agy-cli-909', { version: '0.4.1' })).toMatchObject({
+      source: 'cli_probe', provenance: 'read_only_cli_probe', catalogProgramVersion: '1.3.1',
+      models: { state: 'ready', values: ['fixture-alpha-high'] },
+    });
+    registry.recordNegotiated('agy-cli-909', 'script-0.1.0', { models: [] });
+    expect(registry.getExecutorCapabilityCatalog?.('agy-cli-909', { version: 'script-0.1.0' })?.models).toEqual({
+      state: 'unknown', diagnostic: 'Executor did not advertise any values',
+    });
+    registry.recordNegotiated('agy-cli-909', 'script-0.1.0', { models: ['fixture-alpha-high', 'fixture-beta-medium'] });
+    expect(registry.getExecutorCapabilityCatalog?.('agy-cli-909', { version: 'script-0.1.0' })).toMatchObject({
+      source: 'negotiated', catalogProgramVersion: '1.3.1',
+      models: { state: 'ready', values: ['fixture-alpha-high', 'fixture-beta-medium'] },
+    });
+  });
+
+  it('refreshes a source-owned adapter from agy models without storing the probe on the descriptor', async () => {
+    const calls: string[][] = [];
+    const process = {
+      spawn: async (command: string, args: readonly string[]) => {
+        calls.push([command, ...args]);
+        const text = args.includes('models')
+          ? 'fixture-alpha-high       Fixture Alpha (High)\nfixture-beta-medium     Fixture Beta (Medium)\n'
+          : args.at(-1) === '--version' && command.toLowerCase().includes('agy')
+            ? 'agy 1.3.1\n'
+            : 'agy-cli-acp 0.1.0\n';
+        return {
+          _serviceBrand: undefined, pid: 1, exitCode: 0,
+          stdin: new Writable({ write(_chunk, _encoding, done) { done(); } }),
+          stdout: Readable.from([text]), stderr: Readable.from(['secret-token-must-not-escape']),
+          wait: async () => { await new Promise<void>((resolve) => setImmediate(resolve)); return 0; },
+          kill: async () => {}, dispose: async () => {},
+        };
+      },
+    } as unknown as IHostProcessService;
+    const registry = new AgentExecutorRegistryService(configWith({
+      'agy-cli-909': {
+        protocol: 'acp-v1', args: [], source: 'local-adapter',
+        sources: [{ id: 'local-adapter', kind: 'node-script', path: 'C:/adapters/agy-cli-acp.mjs' }],
+      },
+    }), process, { stat: async () => ({ isFile: true, isDirectory: false, size: 1 }) } as unknown as IHostFileSystem,
+    { platform: 'win32', osHomeDir: 'C:/Users/example', homeDir: 'C:/kiki',
+      getEnv: (name: string) => name === 'PATH' ? 'C:/bin' : name === 'PATHEXT' ? '.EXE' : undefined } as IBootstrapService);
+    const before = registry.get('agy-cli-909')!;
+    expect(before.modelProbe).toBeUndefined();
+    expect(executorModelProbe(before as AgentExecutorDescriptor)?.command).toBe('agy');
+    const catalog = await registry.refreshExecutorCapabilityCatalog?.('agy-cli-909');
+    expect(registry.get('agy-cli-909')?.revision).toBe(before.revision);
+    expect(registry.get('agy-cli-909')?.modelProbe).toBeUndefined();
+    expect(catalog).toMatchObject({
+      version: 'agy-cli-acp 0.1.0', catalogProgramVersion: 'agy 1.3.1', source: 'cli_probe',
+      models: { state: 'ready', values: ['fixture-alpha-high', 'fixture-beta-medium'] },
+    });
+    expect(calls.some((call) => call.includes('models'))).toBe(true);
+    expect(JSON.stringify(catalog)).not.toContain('secret-token');
+    expect(catalog?.models.values).not.toContain('not-a-vendor-model');
+    expect(catalog?.controls.modelSwitch).toEqual({
+      advertised: true, applicability: 'fresh_binding', applyState: 'unknown',
+    });
+    expect(registry.get('agy-cli-909')?.modelBinding).toBeUndefined();
+    expect(registry.get('agy-cli-909')?.revision).toBe(before.revision);
+  });
+
+  it('advertises a model switch only when a real pass has catalog ids', () => {
+    const acp = { id: 'agy-cli-909', protocol: 'acp-v1' as const, args: [], revision: 'r' };
+    const ids = { state: 'ready' as const, values: ['gemini-4-argon-medium'] };
+    expect(modelSelectionPass(acp)).toBe('session_config');
+    expect(executorControlCapabilities(acp, ids).modelSwitch).toEqual({
+      advertised: true, applicability: 'fresh_binding', applyState: 'unknown',
+    });
+    expect(executorControlCapabilities(acp, { state: 'partial', values: [] }).modelSwitch)
+      .toEqual({ applicability: 'unknown', applyState: 'unknown' });
+    expect(executorControlCapabilities(acp, { state: 'unavailable' }).modelSwitch)
+      .toEqual({ applicability: 'unknown', applyState: 'unknown' });
+    expect(executorControlCapabilities({
+      ...acp, controlCapabilities: { modelSwitch: 'unknown' },
+    }, ids).modelSwitch).toEqual({ applicability: 'unknown', applyState: 'unknown' });
+    expect(executorControlCapabilities({
+      ...acp, controlCapabilities: { modelSwitch: 'unsupported' },
+    }, ids).modelSwitch).toEqual({ advertised: false, applicability: 'unsupported', applyState: 'unsupported' });
+    expect(executorControlCapabilities({ ...acp, protocol: 'codex-app-server' }, ids).modelSwitch)
+      .toEqual({ applicability: 'unknown', applyState: 'unknown' });
+    expect(modelSelectionPass({ ...acp, modelBinding: 'argv', modelArgs: ['--model', '{model}'] })).toBe('argv');
+    expect(modelSelectionPass({ ...acp, modelBinding: 'argv', modelArgs: ['--model'] })).toBeUndefined();
+    expect(executorControlCapabilities({ ...acp, modelBinding: 'argv', modelArgs: ['--model', '{model}'] }).modelSwitch)
+      .toEqual({ advertised: true, applicability: 'fresh_binding', applyState: 'unknown' });
+
+    const registry = new AgentExecutorRegistryService(configWith({
+      'agy-cli-909': { protocol: 'acp-v1', command: 'agy-cli-acp', args: [] },
+    }), processService, fs, bootstrap);
+    const revision = registry.get('agy-cli-909')!.revision;
+    registry.recordExecutorCapabilityCatalog?.({
+      executorId: 'agy-cli-909', descriptorRevision: revision, version: '0.4.1',
+      source: 'cli_probe', provenance: 'read_only_cli_probe', observedAt: Date.now(),
+      models: { state: 'ready', values: ['gemini-4-argon-medium'] },
+      thinkingLevels: { state: 'unknown' }, context: { state: 'unknown' },
+      controls: executorControlCapabilities(registry.get('agy-cli-909')!, { state: 'ready', values: ['gemini-4-argon-medium'] }),
+    });
+    registry.recordNegotiated('agy-cli-909', 'script-0.1.0', { resume: true });
+    expect(registry.getExecutorCapabilityCatalog?.('agy-cli-909', { version: '0.4.1' })?.controls.modelSwitch)
+      .toEqual({ advertised: true, applicability: 'fresh_binding', applyState: 'unknown' });
+    registry.recordNegotiated('agy-cli-909', 'script-0.1.0', { models: [] });
+    expect(registry.getExecutorCapabilityCatalog?.('agy-cli-909', { version: 'script-0.1.0' })?.controls.modelSwitch)
+      .toEqual({ applicability: 'unknown', applyState: 'unknown' });
   });
 
   it('treats a declared revision as a salt instead of replacing the descriptor digest', () => {
@@ -627,6 +785,13 @@ describe('AgentExecutorRegistryService', () => {
       expect(merged).toEqual({ 'example-acp': { binPath: 'fixture', defaults: { kiki_context: [], allow_kiki_subagents: false } } });
       expect(registry.validate(AGENT_EXECUTOR_OVERRIDES_SECTION, registry.merge(AGENT_EXECUTOR_OVERRIDES_SECTION, merged,
         { 'example-acp': { defaults: null } }))).toEqual({ 'example-acp': { binPath: 'fixture' } });
+      const preserved = { 'agy-cli': { defaults: { model_alias: 'fixture-model', thinking_effort: 'high', permission_mode: 'manual' as const,
+        kiki_context: ['memory' as const], allow_kiki_subagents: true, executor_prompt: { include: ['memory_snapshot' as const] } } } };
+      const injected = registry.validate(AGENT_EXECUTOR_OVERRIDES_SECTION, registry.merge(AGENT_EXECUTOR_OVERRIDES_SECTION, preserved,
+        { 'agy-cli': { defaults: { inject_kiki_mcp: false } } }));
+      expect(injected).toEqual({ 'agy-cli': { defaults: { ...preserved['agy-cli'].defaults, inject_kiki_mcp: false } } });
+      expect(registry.validate(AGENT_EXECUTOR_OVERRIDES_SECTION, registry.merge(AGENT_EXECUTOR_OVERRIDES_SECTION, injected,
+        { 'agy-cli': { defaults: { inject_kiki_mcp: null } } }))).toEqual(preserved);
     } finally { await registry.dispose(); }
   });
 

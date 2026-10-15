@@ -53,7 +53,7 @@ export interface AgentExecutorVersionProbe {
 export interface AgentExecutorModelProbe {
   readonly command?: string;
   readonly args: readonly string[];
-  readonly format: 'lines' | 'tab' | 'json';
+  readonly format: 'lines' | 'tab' | 'columns' | 'json';
   readonly jsonPath?: readonly string[];
   readonly versionProbe?: AgentExecutorVersionProbe;
   readonly timeoutMs?: number;
@@ -273,6 +273,7 @@ export function agentExecutorBindingFingerprint(binding: ProfileBindingSnapshot,
       systemPrompt: binding.systemPrompt,
       executorPrompt: binding.executorPrompt,
       allowKikiSubagents: binding.allowKikiSubagents === true ? true : undefined,
+      injectKikiMcp: binding.injectKikiMcp,
       kikiContext: binding.kikiContext?.length ? [...new Set(binding.kikiContext)].sort() : undefined,
       renderGeneration: binding.renderGeneration,
     }))

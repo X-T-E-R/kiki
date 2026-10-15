@@ -6,7 +6,7 @@ import type { BrowserRequestContext } from './codexBrowser';
 
 export interface BrowserFailure {
   readonly code: BrowserErrorCode;
-  readonly reason?: 'feature_disabled' | 'connection_disabled' | 'outcome_unknown';
+  readonly reason?: 'feature_disabled' | 'connection_disabled' | 'not_allowed' | 'outcome_unknown';
 }
 
 export interface BrowserStatus {
@@ -40,6 +40,7 @@ export interface BrowserInvocation {
   readonly frame?: string;
   readonly caller: BrowserCaller;
   readonly requestContext?: BrowserRequestContext;
+  readonly assertToolAllowed?: () => void;
   readonly generation?: number;
 }
 export interface BrowserInvocationResult {
@@ -53,7 +54,7 @@ export interface BrowserInvocationResult {
 }
 export interface IBrowserControlService {
   readonly _serviceBrand: undefined;
-  list(): Promise<{ readonly connections: readonly (BrowserConnectionRecord & { readonly status: BrowserStatus })[]; readonly defaultBrowser?: string }>;
+  list(): Promise<{ readonly connections: readonly (BrowserConnectionRecord & { readonly status: BrowserStatus })[]; readonly defaultBrowser?: string; readonly allowedBrowsers?: readonly string[] }>;
   upsert(id: string, input: BrowserConnectionInput): Promise<BrowserConnectionRecord>;
   remove(id: string): Promise<void>;
   status(id: string): Promise<BrowserStatus>;

@@ -1,10 +1,14 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
+import { createKlient } from '@kiki/klient/http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { IHarnessMcpService, IAgentProfileService, ensureMainAgent, resumeSessionById } from '@kiki/agent-core-v2';
+import { IHarnessMcpService, IAgentProfileService, IAgentExecutorRegistry, IAgentProfileRegistry, normalizeAgentProfile,
+  ensureMainAgent, resumeSessionById, type IAgentScopeHandle } from '@kiki/agent-core-v2';
+import { acquireHarnessMcp } from '@kiki/agent-core-v2/agent/execution/harnessMcpLease';
+import { executionBindingSchema, type ExecutionSelection } from '@kiki/protocol';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -334,6 +338,137 @@ describe('native harness tool parity', () => {
   });
 });
 
+
+it('applies engine profile and session injection choices to the real HTTP tool bridge for main and child bindings', { timeout: 60_000 }, async () => {
+  const home = await mkdtemp(join(tmpdir(), 'kiki-injection-defaults-'));
+  await writeFile(join(home, 'config.toml'), `[search]\nenabled = false\n[agent_executors.bridge-fixture]\nprotocol = "acp-v1"\ncommand = ${JSON.stringify(process.execPath)}\nsupports_mcp = true\n[agent_executor_overrides.bridge-fixture.env]\nFIXTURE_CREDENTIAL = "credential-sentinel"\n[agent_executor_overrides.bridge-fixture.defaults]\ninject_kiki_mcp = false\n`);
+  const server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+  const leases: Awaited<ReturnType<IHarnessMcpService['acquire']>>[] = [];
+  try {
+    const endpoint = `http://127.0.0.1:${server.port}`;
+    const post = async (path: string, value: unknown) => {
+      const response = await fetch(`${endpoint}/api${path}`, { method: 'POST', headers: authHeaders(server, { 'content-type': 'application/json' }), body: JSON.stringify(value) });
+      const body = await response.json() as { code: number; msg: string; data: { id: string; agent_config?: { execution?: unknown } } };
+      expect(body.code, body.msg).toBe(0);
+      return body.data;
+    };
+    server.core.accessor.get(IAgentProfileRegistry).register({ sourceId: 'bridge-defaults-fixture', priority: 50, contribution: {
+      profiles: [undefined, false, true].map((injectKikiMcp) => normalizeAgentProfile({
+        name: `bridge-${String(injectKikiMcp)}`, definitionId: `bridge:${String(injectKikiMcp)}`, executor: 'bridge-fixture',
+        modelAlias: 'vendor-model', injectKikiMcp, kikiContext: ['memory'], systemPrompt: () => 'Bridge fixture',
+      })),
+    } });
+    const selection: ExecutionSelection = { executor: 'bridge-fixture', profile: 'bridge-true', overrides: { inject_kiki_mcp: false } };
+    const created = await post('/sessions', { metadata: { cwd: home }, agent_config: { execution: selection } });
+    const session = (await resumeSessionById(server.core.accessor, created.id))!;
+    const main = await ensureMainAgent(session);
+    const registry = server.core.accessor.get(IAgentExecutorRegistry);
+    const acquire = async (agent: IAgentScopeHandle) => {
+      const lease = await acquireHarnessMcp({ agent, descriptor: registry.get('bridge-fixture')!, binding: agent.accessor.get(IAgentProfileService).data() }, home);
+      if (lease !== undefined) leases.push(lease);
+      return lease;
+    };
+    expect(await acquire(main)).toBeUndefined();
+    const cleared = await post(`/sessions/${created.id}/profile`, { agent_config: { execution: { ...selection, overrides: { inject_kiki_mcp: null } } } });
+    const binding = executionBindingSchema.parse(cleared.agent_config?.execution);
+    expect(binding.effective.inject_kiki_mcp).toBe(true);
+    expect(binding.sources['inject_kiki_mcp']).toBe('profile');
+    const lease = await acquire(main);
+    if (lease === undefined || !('command' in lease.server)) throw new Error('Expected injected stdio bridge');
+    const env = Object.fromEntries(lease.server.env.map(({ name, value }) => [name, value]));
+    const context = createContextKlient({ endpoint, token: env['KIKI_DELEGATION_TOKEN']! });
+    main.accessor.get(IAgentPermissionModeService).setMode('yolo');
+    expect((await context.catalog()).tools.map((tool) => tool.name)).toContain('MemoryRead');
+    expect((await context.call({ name: 'MemoryRead', arguments: { id: 'm_missing' } })).isError).not.toBe(true);
+    await post(`/sessions/${created.id}/profile`, { agent_config: { execution: { ...selection, overrides: { inject_kiki_mcp: true, kiki_context: [] } } } });
+    expect((await context.catalog()).tools.map((tool) => tool.name)).not.toContain('MemoryRead');
+    await post(`/sessions/${created.id}/profile`, { agent_config: { execution: { ...selection, overrides: { inject_kiki_mcp: null, kiki_context: null } } } });
+    expect((await context.catalog()).tools.map((tool) => tool.name)).toContain('MemoryRead');
+    await post(`/sessions/${created.id}/profile`, { agent_config: { execution: { ...selection, overrides: { inject_kiki_mcp: false } } } });
+    await expect(context.catalog()).rejects.toThrow('Kiki context request is not admitted or its arguments are invalid.');
+    await expect(context.call({ name: 'MemoryRead', arguments: { id: 'm_missing' } })).rejects.toThrow('Kiki context request is not admitted or its arguments are invalid.');
+    lease.dispose();
+    await expect(context.catalog()).rejects.toThrow('Unauthorized');
+
+    const child = await session.accessor.get(IAgentLifecycleService).create({ agentId: 'bridge-child', delegator: { kind: 'agent', agentId: 'main' } });
+    const profile = child.accessor.get(IAgentProfileService);
+    await profile.bind({ profile: 'bridge-undefined', delegationPosition: 'sub' });
+    expect(profile.data().injectKikiMcp).toBe(false);
+    expect(await acquire(child)).toBeUndefined();
+    await post('/config', { agent_executor_overrides: { 'bridge-fixture': { defaults: { inject_kiki_mcp: true } } } });
+    expect(profile.data().injectKikiMcp).toBe(false);
+    await profile.bind({ profile: 'bridge-undefined', delegationPosition: 'sub' });
+    expect(profile.data().injectKikiMcp).toBe(true);
+    const childLease = await acquire(child);
+    if (childLease === undefined || !('command' in childLease.server)) throw new Error('Expected child stdio bridge');
+    const childContext = createContextKlient({ endpoint, token: childLease.server.env.find((entry) => entry.name === 'KIKI_DELEGATION_TOKEN')!.value });
+    expect((await childContext.catalog()).tools.map((tool) => tool.name)).toContain('MemoryRead');
+    await profile.bind({ profile: 'bridge-false', delegationPosition: 'sub' });
+    expect(profile.data().injectKikiMcp).toBe(false);
+    expect(await acquire(child)).toBeUndefined();
+    await expect(childContext.catalog()).rejects.toThrow('Kiki context request is not admitted or its arguments are invalid.');
+    await expect(childContext.call({ name: 'MemoryRead', arguments: { id: 'm_missing' } })).rejects.toThrow('Kiki context request is not admitted or its arguments are invalid.');
+    childLease.dispose();
+    await post('/config', { agent_executor_overrides: { 'bridge-fixture': { defaults: { inject_kiki_mcp: false } } } });
+    await profile.bind({ profile: 'bridge-true', delegationPosition: 'sub' });
+    expect(profile.data().injectKikiMcp).toBe(true);
+    expect(await acquire(child)).toBeDefined();
+    expect(profile.data().execution).toBeUndefined();
+    expect(JSON.stringify(profile.data())).not.toContain('credential-sentinel');
+    expect(registry.get('bridge-fixture')?.env?.['FIXTURE_CREDENTIAL']).toBe('credential-sentinel');
+    await post('/config', { agent_executor_overrides: { 'bridge-fixture': { defaults: { inject_kiki_mcp: null } } } });
+    await profile.bind({ profile: 'bridge-undefined', delegationPosition: 'sub' });
+    expect(profile.data().injectKikiMcp).toBeUndefined();
+    expect(await acquire(child)).toBeDefined();
+  } finally {
+    for (const lease of leases) lease.dispose();
+    await server.close();
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+it('launches advertised native agents from the public generic caller without a profile file', { timeout: 60_000 }, async () => {
+  const home = await mkdtemp(join(tmpdir(), 'native-agent-caller-'));
+  const fixture = join(home, 'neutral-acp.mjs');
+  const audit = join(home, 'launches.ndjson');
+  await writeFile(fixture, `import {agent,ndJsonStream,PROTOCOL_VERSION} from ${JSON.stringify(pathToFileURL(require.resolve('@agentclientprotocol/sdk')).href)};
+import {Readable,Writable} from 'node:stream'; import {appendFile} from 'node:fs/promises'; import {randomUUID} from 'node:crypto';
+const sessions=new Map(); const config=s=>[{id:'agent-choice',name:'Native agent',category:'native_agent',type:'select',currentValue:s.agent,options:[{value:'specialist',name:'Specialist'}]}];
+const conn=agent({name:'neutral-acp',version:'1'}).onRequest('initialize',()=>({protocolVersion:PROTOCOL_VERSION,agentCapabilities:{}}))
+.onRequest('session/new',ctx=>{const s={id:randomUUID(),agent:'factory-main',cwd:ctx.params.cwd};sessions.set(s.id,s);return {sessionId:s.id,configOptions:config(s)};})
+.onRequest('session/set_config_option',ctx=>{const s=sessions.get(ctx.params.sessionId);if(ctx.params.configId!=='agent-choice'||ctx.params.value!=='specialist')throw Error('unsupported agent');s.agent=ctx.params.value;return {configOptions:config(s)};})
+.onRequest('session/prompt',async ctx=>{const s=sessions.get(ctx.params.sessionId);await appendFile(${JSON.stringify(audit)},JSON.stringify({...s,pid:process.pid,prompt:ctx.params.prompt})+'\\n');return {stopReason:'end_turn'};})
+.connect(ndJsonStream(Writable.toWeb(process.stdout),Readable.toWeb(process.stdin))); await conn.closed;
+`);
+  await writeFile(join(home, 'config.toml'), `[search]\nenabled = false\n[agent_executors.neutral-fixture]\nprotocol = "acp-v1"\ncommand = ${JSON.stringify(process.execPath)}\nargs = [${JSON.stringify(fixture)}]\nsupports_mcp = false\n`);
+  const server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+  const client = createKlient({ endpoint: `http://127.0.0.1:${server.port}`, token: server.localOwnerToken });
+  try {
+    const created = await client.global.sessions.create({ workDir: home });
+    const target = client.session(created.id).agent('main');
+    const submit = (nativeAgent: string | null | undefined) => target.prompt({ input: [{ type: 'text', text: 'Neutral fixture input' }],
+      execution: { execution: { executor: 'neutral-fixture', overrides: { native_agent: nativeAgent, inject_kiki_mcp: false } } } }, { waitFor: 'terminal' });
+    expect(await submit(undefined)).toMatchObject({ state: 'completed' });
+    expect(await submit('engine-default')).toMatchObject({ state: 'completed' });
+    expect(await submit('specialist')).toMatchObject({ state: 'completed' });
+    const session = (await resumeSessionById(server.core.accessor, created.id))!;
+    const main = await ensureMainAgent(session);
+    const binding = main.accessor.get(IAgentProfileService).data().execution;
+    expect(binding?.effective.native_agent).toBe('specialist');
+    expect(await submit('unadvertised')).toMatchObject({ state: 'failed' });
+    expect(main.accessor.get(IAgentProfileService).data().execution).toEqual(binding);
+    expect(await submit(null)).toMatchObject({ state: 'completed' });
+    const launches = (await readFile(audit, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as { id: string; agent: string; pid: number });
+    expect(launches.map(row => row.agent)).toEqual(['factory-main', 'factory-main', 'specialist', 'factory-main']);
+    expect(new Set(launches.map(row => row.id)).size).toBe(4);
+    expect(new Set(launches.map(row => row.pid)).size).toBe(4);
+    expect(main.accessor.get(IAgentProfileService).data().execution?.effective.native_agent).toBeUndefined();
+  } finally {
+    await client.close();
+    await server.close();
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
 
 it.skipIf(!process.env['KIKI_AGY_LIVE_SMOKE'])('live AGY session uses the source native child bridge and returns complete tool receipts', { timeout: 180_000 }, async () => {
   const workspace = fileURLToPath(new URL('../../../.tmp/agent68-live-agy/vertical/', import.meta.url));

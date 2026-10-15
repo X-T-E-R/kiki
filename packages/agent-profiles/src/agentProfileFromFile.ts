@@ -43,6 +43,7 @@ export function agentProfileFromFile(
     executorPrompt: definition.executorPrompt,
     allowKikiSubagents: definition.allowKikiSubagents,
     kikiContext: definition.kikiContext,
+    injectKikiMcp: definition.injectKikiMcp,
     recipe: definition.recipe,
     modelAlias: definition.modelAlias,
     restrictModelsToMenu: definition.restrictModelsToMenu ?? false,

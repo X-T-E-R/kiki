@@ -426,12 +426,12 @@ function createAgentLifecycleStub(options: AgentLifecycleStubOptions = {}): Agen
       profileByAgentId.set(agentId, {
         profileName,
         modelAlias: input.binding?.model,
-        thinkingLevel: input.binding?.thinking ?? 'off',
+        thinkingLevel: typeof input.binding?.thinking === 'string' ? input.binding.thinking : 'off',
         allowParentNotify: input.binding?.allowParentNotify,
         bindingAdvisories: roleBindingAdvisories({
           model: input.binding?.model ?? '',
           requestedModel: input.binding?.bindingSelection?.model?.requestedValue,
-          thinking: input.binding?.thinking,
+          thinking: typeof input.binding?.thinking === 'string' ? input.binding.thinking : undefined,
           requestedThinking: input.binding?.bindingSelection?.thinking?.requestedValue,
           constraints: input.binding?.resolvedProfile,
           ruleSource: `profile:${profileName}`,

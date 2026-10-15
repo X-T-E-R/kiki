@@ -7,7 +7,7 @@ import type { MCPToolDefinition, MCPToolResult } from '#/mcpCore/types';
 import { IBrowserControlService, type BrowserCaller, type BrowserInvocation, type BrowserInvocationResult, type BrowserStatus, type BrowserTab } from './browser';
 import { IBrowserBackendFactory, type BrowserBackend } from './browserBackend';
 import { IBrowserConnectionStore } from './browserConnectionStore';
-import type { BrowserConnectionInput, BrowserResolvedConnection } from './browserConfig';
+import { browserOperationAllowed, type BrowserConnectionInput, type BrowserResolvedConnection } from './browserConfig';
 import { BrowserError } from './errors';
 import { IFlagService } from '#/app/flag/flag';
 import { NATIVE_BROWSER_FLAG_ID } from './flag';
@@ -24,6 +24,12 @@ interface LiveBrowser {
   observation?: { binding: string; refs: Set<string> };
   target?: { tab: string; frame: string };
   captures?: Map<string, string>;
+}
+
+function sameBrowserTarget(left: BrowserResolvedConnection, right: BrowserResolvedConnection): boolean {
+  const { name: _leftName, enabled: _leftEnabled, ...leftTarget } = left;
+  const { name: _rightName, enabled: _rightEnabled, ...rightTarget } = right;
+  return JSON.stringify(leftTarget) === JSON.stringify(rightTarget);
 }
 
 function elementRefs(value: unknown): string[] {
@@ -72,7 +78,7 @@ export class BrowserControlService implements IBrowserControlService {
   async list() {
     const configured = await this.store.list();
     return { connections: await Promise.all(configured.connections.map(async (entry) => ({ ...entry, status: await this.status(entry.id) }))),
-      defaultBrowser: configured.defaultBrowser };
+      defaultBrowser: configured.defaultBrowser, ...(configured.allowedBrowsers !== undefined ? { allowedBrowsers: configured.allowedBrowsers } : {}) };
   }
 
   async upsert(id: string, input: BrowserConnectionInput) {
@@ -81,7 +87,6 @@ export class BrowserControlService implements IBrowserControlService {
       if (status.state === 'unconfirmed') throw new BrowserError('browser.busy', 'The old browser execution session has not ended; configuration was not changed');
     }
     const record = await this.store.upsert(id, input);
-    this.connections.delete(id);
     return record;
   }
 
@@ -90,7 +95,6 @@ export class BrowserControlService implements IBrowserControlService {
       throw new BrowserError('browser.busy', 'Browser execution is not confirmed stopped; the connection and profile were retained');
     }
     await this.store.remove(id);
-    this.connections.delete(id);
   }
 
   async status(id: string): Promise<BrowserStatus> {
@@ -104,8 +108,10 @@ export class BrowserControlService implements IBrowserControlService {
     const live = await this.live(id);
     return this.enqueue(live, async () => {
       if (live.status.state === 'unconfirmed') return this.confirmStopped(live);
+      await this.assertAdmission(live);
       try {
         const backend = await this.backend(live);
+        await this.assertAdmission(live);
         signal?.throwIfAborted();
         if (backend.official !== undefined) {
           await backend.official.connect(context, signal);
@@ -143,13 +149,13 @@ export class BrowserControlService implements IBrowserControlService {
   }
 
   async connect(id: string, signal?: AbortSignal, context?: BrowserRequestContext): Promise<BrowserStatus> {
-    if (!this.flags.enabled(NATIVE_BROWSER_FLAG_ID)) throw new BrowserError('browser.disabled', 'Native browser execution is experimental; enable native_browser in the existing experimental settings', { details: { reason: 'feature_disabled' } });
     const live = await this.live(id);
-    if (!live.connection.enabled) throw new BrowserError('browser.disabled', `Browser connection "${id}" is disabled`, { details: { reason: 'connection_disabled' } });
-    if (live.status.state === 'unconfirmed' || live.status.state === 'stopping') {
-      throw new BrowserError('browser.busy', 'The old daemon has not been confirmed stopped; check or disconnect it before reconnecting');
-    }
+    await this.assertAdmission(live);
     return this.enqueue(live, async () => {
+      await this.assertAdmission(live);
+      if (live.status.state === 'unconfirmed' || live.status.state === 'stopping') {
+        throw new BrowserError('browser.busy', 'The old daemon has not been confirmed stopped; check or disconnect it before reconnecting');
+      }
       if (live.status.state === 'ready') return { ...live.status };
       const previous = live.status;
       live.status = { ...live.status, state: 'connecting' };
@@ -162,6 +168,7 @@ export class BrowserControlService implements IBrowserControlService {
           }
         }
         const backend = await this.backend(live);
+        await this.assertAdmission(live);
         if (backend.official !== undefined) {
           await backend.official.connect(context, signal);
           await backend.official.tabs(context, signal);
@@ -226,18 +233,37 @@ export class BrowserControlService implements IBrowserControlService {
     }, signal);
   }
 
+  private async assertAdmission(live: LiveBrowser): Promise<void> {
+    const current = await this.store.resolve(live.connection.id);
+    if (!this.flags.enabled(NATIVE_BROWSER_FLAG_ID)) throw new BrowserError('browser.disabled', 'Browser control is disabled', { details: { reason: 'feature_disabled' } });
+    if (!current.enabled) throw new BrowserError('browser.disabled', 'This browser connection is disabled', { details: { reason: 'connection_disabled' } });
+    if (!sameBrowserTarget(current, live.connection)) throw new BrowserError('browser.busy', 'Browser configuration changed; disconnect the old session before using the new endpoint');
+    live.connection = current;
+    await this.assertAllowed(current.id);
+  }
+
+  private async assertAllowed(id: string): Promise<void> {
+    const listed = await this.store.list();
+    if (browserOperationAllowed(listed.allowedBrowsers, id)) return;
+    const visible = listed.connections.map((connection) => ({ id: connection.id, type: connection.type, enabled: connection.enabled, allowed: browserOperationAllowed(listed.allowedBrowsers, connection.id) }));
+    throw new BrowserError('browser.disabled', `Browser "${id}" is not in the allowed set. List and discover stay available. Connections: ${JSON.stringify(visible)}`, { details: { reason: 'not_allowed' } });
+  }
+
   async tabs(id: string, signal?: AbortSignal, context?: BrowserRequestContext): Promise<readonly BrowserTab[]> {
     const live = await this.live(id);
-    return this.enqueue(live, () => {
+    return this.enqueue(live, async () => {
+      await this.assertAdmission(live);
       this.assertReady(live);
       return live.backend?.official?.tabs(context, signal) ?? this.readTabs(live, signal);
     }, signal);
   }
 
   async invoke(input: BrowserInvocation, signal?: AbortSignal): Promise<BrowserInvocationResult> {
-    if (!this.flags.enabled(NATIVE_BROWSER_FLAG_ID)) throw new BrowserError('browser.disabled', 'Native browser execution is experimental and is currently disabled', { details: { reason: 'feature_disabled' } });
     const live = await this.live(input.browser);
+    await this.assertAdmission(live);
     return this.enqueue(live, async () => {
+      await this.assertAdmission(live);
+      input.assertToolAllowed?.();
       this.assertReady(live);
       if (input.generation !== undefined && input.generation !== live.status.generation) {
         throw new BrowserError('browser.target', 'Browser connection was reconnected; select a tab and observe it again');
@@ -245,6 +271,8 @@ export class BrowserControlService implements IBrowserControlService {
       if (live.backend?.official !== undefined) {
         if (input.frame !== undefined && input.frame !== 'main') throw new BrowserError('browser.unsupported', 'Use the official runtime documentation for frame operations');
         if (input.tool !== 'codex_browser_js_reset' && input.tab !== undefined && !(await live.backend.official.tabs(input.requestContext, signal)).some((tab) => tab.targetId === input.tab)) throw new BrowserError('browser.target', 'The selected official tab is no longer available');
+        await this.assertAdmission(live);
+        input.assertToolAllowed?.();
         signal?.throwIfAborted();
         live.status = { ...live.status, state: 'running', currentCall: { ...input.caller, tool: input.tool, tab: input.tab } };
         try {
@@ -268,6 +296,8 @@ export class BrowserControlService implements IBrowserControlService {
       if (live.observation?.binding !== binding) live.observation = undefined;
       if (input.tab !== undefined) {
         const tabs = await this.readTabs(live, signal);
+        await this.assertAdmission(live);
+        input.assertToolAllowed?.();
         signal?.throwIfAborted();
         const selected = tabs.find((tab) => tab.targetId === input.tab);
         if (selected === undefined) throw new BrowserError('browser.target', `Browser tab "${input.tab}" is gone; select a current targetId`);
@@ -286,6 +316,8 @@ export class BrowserControlService implements IBrowserControlService {
           }
         }
       }
+      await this.assertAdmission(live);
+      input.assertToolAllowed?.();
       signal?.throwIfAborted();
       live.status = { ...live.status, state: 'running', currentCall: { ...input.caller, tool: input.tool, tab: input.tab } };
       try {
@@ -321,9 +353,16 @@ export class BrowserControlService implements IBrowserControlService {
   private async live(id: string): Promise<LiveBrowser> {
     const connection = await this.store.resolve(id);
     let live = this.connections.get(id);
-    if (live !== undefined && JSON.stringify(live.connection) !== JSON.stringify(connection)) {
-      live.admitting = false;
-      throw new BrowserError('browser.busy', 'Browser configuration changed outside this control service; disconnect the old session before using the new endpoint');
+    if (live !== undefined) {
+      if (!sameBrowserTarget(live.connection, connection)) {
+        live.admitting = false;
+        if (live.backend !== undefined || !['idle', 'disconnected', 'failed'].includes(live.status.state)) {
+          throw new BrowserError('browser.busy', 'Browser configuration changed outside this control service; disconnect the old session before using the new endpoint');
+        }
+        live.status = { browser: id, state: 'idle', executionHost: hostname(), generation: live.status.generation,
+          ownership: connection.type === 'agent-browser-profile' ? 'managed-profile' : 'external-browser' };
+      }
+      live.connection = connection;
     }
     if (live === undefined) {
       live = { connection, status: { browser: id, state: 'idle', executionHost: hostname(), generation: 0,

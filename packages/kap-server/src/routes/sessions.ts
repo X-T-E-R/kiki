@@ -2,9 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { canonicalWorkspaceRoot } from '@kiki/agent-core-v2/_base/utils/paths';
 import { IBotService } from '@kiki/agent-core-v2/app/bot/bot';
 import { IPersonaStore } from '@kiki/agent-core-v2/app/persona/personaStore';
-import type { AgentMeta } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
+import type { AgentMeta, SessionMeta } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
 import type { NegotiatedExecutorCapabilities } from '@kiki/agent-core-v2/app/agentExecutor/capabilities';
-import { readPersistedAgentProfileSnapshot } from '@kiki/agent-core-v2/session/agentProfileSnapshot';
+import { PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET, readPersistedAgentProfileSnapshot } from '@kiki/agent-core-v2/session/agentProfileSnapshot';
+import { IAtomicDocumentStore } from '@kiki/agent-core-v2';
 import { ISessionDeliveryService } from '@kiki/agent-core-v2/session/delivery/delivery';
 import { rmdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -1651,7 +1652,11 @@ export async function resolveSessionBindingFacts(
 ): Promise<SessionFacts> {
   const facts = resolveSessionFacts(core, sessionId, persistedUsage);
   if (facts.live) return facts;
-  const profile = await readPersistedAgentProfileSnapshot(core, workspaceId, sessionId, MAIN_AGENT_ID, metadata);
+  const mainMetadata = metadata ?? (await core.accessor.get(IAtomicDocumentStore).get<SessionMeta>(
+    `sessions/${workspaceId}/${sessionId}`, 'state.json',
+  ))?.agents?.[MAIN_AGENT_ID];
+  const profile = await readPersistedAgentProfileSnapshot(core, workspaceId, sessionId, MAIN_AGENT_ID, mainMetadata, undefined,
+    { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET });
   if (profile === undefined) return facts;
   const persona = profile.persona?.definition;
   return { ...facts, executorId: profile.executorId ?? 'native', agentConfig: {

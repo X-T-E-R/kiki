@@ -256,6 +256,7 @@ export const agentCapabilitiesQuerySchema = z.union([
     agent_id: z.string().trim().min(1),
     check_all_prompt_files: z.union([z.boolean(), z.enum(['true', 'false']).transform((value) => value === 'true')]).optional(),
     metrics_settle: z.union([z.boolean(), z.enum(['true', 'false']).transform((value) => value === 'true')]).optional(),
+    metrics_only: z.union([z.boolean(), z.enum(['true', 'false']).transform((value) => value === 'true')]).optional(),
     metrics_agent_ids: z.union([
       z.array(z.string().trim().min(1)).min(1),
       z.string().trim().min(1).transform((value) => value.split(',').map((item) => item.trim()).filter((item) => item.length > 0)).pipe(z.array(z.string().min(1)).min(1)),
@@ -454,6 +455,7 @@ export const agentPanelMetricsSchema = z.object({
   contextLimit: z.number().nonnegative().nullable(),
   compactionCount: z.number().int().nonnegative().nullable(),
   usagePartial: z.boolean().optional(),
+  usageComplete: z.boolean().optional(),
   costPartial: z.boolean().optional(),
   usageSource: z.enum(['live', 'persisted']).optional(),
 });

@@ -6,7 +6,7 @@ import { ConfigChanged, IConfigService, IEventService } from '@kiki/agent-core-v
 import { HooksConfigSchema } from '@kiki/agent-core-v2/features/externalHooks/configSection';
 import { DEFAULT_SESSION_TITLE_PROMPT } from '@kiki/agent-core-v2/session/sessionTitle/defaultPrompt';
 import { ExternalHooksRunnerService } from '@kiki/agent-core-v2/features/externalHooks/app/externalHooksRunnerService';
-import { configResponseSchema as sharedConfigResponseSchema, patchConfigRequestSchema as sharedPatchConfigRequestSchema, hooksConfigSchema } from '@kiki/protocol';
+import { configResponseSchema as sharedConfigResponseSchema, patchConfigRequestSchema as sharedPatchConfigRequestSchema, hooksConfigSchema, listExecutorsResponseSchema } from '@kiki/protocol';
 import { IRequestGovernance } from '@kiki/agent-core-v2/app/requestGovernance/requestGovernance';
 import type { RequestAttempt } from '@kiki/agent-core-v2/kosong/model/requestAdmission';
 import { configResponseSchema, patchConfigRequestSchema, type ConfigResponse } from '../src/protocol/rest-config';
@@ -241,22 +241,68 @@ describe('server-v2 /api/config', () => {
 
   it('round trips computer preference and removes the override without changing permissions or installing MCP', async () => {
     await boot('default_permission_mode="manual"\n[search]\nenabled=false\n');
-    expect((await getConfig()).computer_control).toEqual({ usagePreference: 'avoid', usagePreferenceSource: 'default', appliesOn: 'next-model-request' });
+    const computerBase = { enabled: true, enabledSource: 'default', usagePreference: 'avoid', usagePreferenceSource: 'default', appliesOn: 'next-model-request', toolsApplyOn: 'next-step' };
+    expect((await getConfig()).computer_control).toEqual(computerBase);
     const patch = { computer_control: { usage_preference: 'prefer' } };
     expect(sharedPatchConfigRequestSchema.parse(patch).computer_control).toEqual(patch.computer_control);
     const edited = await patchConfig(patch);
-    expect(edited.computer_control).toEqual({ usagePreference: 'prefer', usagePreferenceSource: 'home', appliesOn: 'next-model-request' });
+    expect(edited.computer_control).toEqual({ ...computerBase, usagePreference: 'prefer', usagePreferenceSource: 'home' });
     expect(sharedConfigResponseSchema.parse(edited).computer_control).toEqual(edited.computer_control);
     expect(await readFile(join(home as string, 'config.toml'), 'utf-8')).toContain('usage_preference = "prefer"');
     await server!.close(); server = undefined; await boot();
     expect((await getConfig()).computer_control).toEqual(edited.computer_control);
     const reset = await patchConfig({ computer_control: { usage_preference: null } });
-    expect(reset.computer_control).toEqual({ usagePreference: 'avoid', usagePreferenceSource: 'default', appliesOn: 'next-model-request' });
+    expect(reset.computer_control).toEqual(computerBase);
     expect(reset.permission).toEqual(edited.permission);
     expect(reset.default_permission_mode).toBe(edited.default_permission_mode);
     expect(await readFile(join(home as string, 'config.toml'), 'utf-8')).not.toContain('usage_preference');
     expect(await readFile(join(home as string, 'mcp.json'), 'utf-8').catch(() => undefined)).toBeUndefined();
     expect(sharedPatchConfigRequestSchema.safeParse({ computer_control: { usage_preference: false } }).success).toBe(false);
+  });
+
+  it('saves browser allow-set and computer enabled through POST /config and hot configuration, without installing MCP', async () => {
+    vi.stubEnv('KIKI_EXPERIMENTAL_NATIVE_BROWSER', undefined);
+    vi.stubEnv('KIKI_EXPERIMENTAL_FLAG', undefined);
+    await boot('default_permission_mode="manual"\n');
+    const before = await getConfig();
+    expect(before.browser_control).toEqual({ enabled: true, enabledSource: 'default', allowedBrowsers: [], allowedBrowsersConfigured: false, allowedBrowsersSource: 'default' });
+    expect(before.computer_control).toMatchObject({ enabled: true, enabledSource: 'default', toolsApplyOn: 'next-step' });
+    const alpha = join(home as string, 'alpha-bridge.exe');
+    const beta = join(home as string, 'beta-bridge.exe');
+    for (const [id, runtimeRoot] of [['alpha', alpha], ['beta', beta]] as const) {
+      const saved = await authedFetch(server as RunningServer, base, `/api/browser/connections/${id}`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'codex-extension', name: id, enabled: true, runtimeRoot, browserId: `pipe-${id}` }),
+      });
+      expect(saved.status).toBe(200);
+    }
+    const allowed = await patchConfig({ browser_control: { allowed_browsers: ['beta', 'alpha'] }, computer_control: { enabled: false } });
+    expect(allowed.browser_control).toMatchObject({ enabled: true, allowedBrowsers: ['beta', 'alpha'], allowedBrowsersConfigured: true, allowedBrowsersSource: 'home' });
+    expect(allowed.computer_control).toMatchObject({ enabled: false, enabledSource: 'home', toolsApplyOn: 'next-step', usagePreference: 'avoid' });
+    expect(allowed.permission).toEqual(before.permission);
+    expect(allowed.default_permission_mode).toBe('manual');
+    const toml = await readFile(join(home as string, 'config.toml'), 'utf-8');
+    expect(toml).toContain('allowed_browsers');
+    expect(toml).toContain('enabled = false');
+    expect(await readFile(join(home as string, 'mcp.json'), 'utf-8').catch(() => undefined)).toBeUndefined();
+    const cleared = await patchConfig({ browser_control: { allowed_browsers: [] }, computer_control: { enabled: null } });
+    expect(cleared.browser_control).toMatchObject({ allowedBrowsers: [], allowedBrowsersConfigured: true });
+    expect(cleared.computer_control).toMatchObject({ enabled: true, enabledSource: 'default' });
+    const off = await patchConfig({ browser_control: { enabled: false } });
+    expect(off.browser_control).toMatchObject({ enabled: false, enabledSource: 'home' });
+    expect(off.experimental).toMatchObject({ native_browser: false });
+    await server!.close(); await boot();
+    expect((await getConfig()).browser_control).toMatchObject({ enabled: false, enabledSource: 'home', allowedBrowsers: [], allowedBrowsersConfigured: true });
+    vi.stubEnv('KIKI_EXPERIMENTAL_NATIVE_BROWSER', 'false');
+    await server!.close(); await boot();
+    const forced = await authedFetch(server!, base, '/api/config', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ browser_control: { enabled: true } }),
+    });
+    const forcedBody = await forced.json() as Envelope<ConfigResponse>;
+    expect(forcedBody.code).not.toBe(0);
+    expect(forcedBody.msg).toContain('KIKI_EXPERIMENTAL_NATIVE_BROWSER');
+    expect((await getConfig()).browser_control?.enabled).toBe(false);
   });
 
   it('round trips question frequency guard through global REST and cold config reload', async () => {
@@ -1154,6 +1200,53 @@ timeout = 600
     expect(body.code).toBe(ErrorCode.VALIDATION_FAILED);
     expect(await readFile(configPath, 'utf-8')).toBe(before);
     expect((await getConfig()).retry).toEqual({ maxAttempts: 2 });
+  });
+
+  it('stores a Kiki MCP injection default without rewriting the other executor defaults', async () => {
+    await boot(`[agent_executor_overrides.agy-cli.defaults]
+model_alias = "fixture-model"
+thinking_effort = "high"
+permission_mode = "manual"
+kiki_context = ["memory"]
+allow_kiki_subagents = true
+[agent_executor_overrides.agy-cli.defaults.executor_prompt]
+include = ["memory_snapshot"]
+`);
+    const patched = await patchConfig({ agent_executor_overrides: { 'agy-cli': { defaults: { inject_kiki_mcp: false } } } });
+    expect(patched.raw?.['agent_executor_overrides']).toEqual({
+      'agy-cli': { defaults: {
+        model_alias: 'fixture-model', thinking_effort: 'high', permission_mode: 'manual',
+        kiki_context: ['memory'], allow_kiki_subagents: true, inject_kiki_mcp: false,
+        executor_prompt: { include: ['memory_snapshot'] },
+      } },
+    });
+    const listed = await authedFetch(server as RunningServer, base, '/api/executors');
+    expect(listed.status).toBe(200);
+    const executors = listExecutorsResponseSchema.parse(((await listed.json()) as Envelope<unknown>).data);
+    const item = (id: string) => executors.items.find((entry) => entry.id === id);
+    expect(item('agy-cli')?.kiki_mcp).toMatchObject({
+      effective: false, source: 'harness-settings', applies: 'next_binding',
+      precedence: ['session', 'profile', 'harness-settings', 'harness-default'],
+      support: { state: 'supported' },
+    });
+    expect(item('agy-cli')?.kiki_mcp?.support.fact).toContain('supports_mcp is true');
+    expect(item('agy-cli')?.kiki_mcp?.support.fact).not.toMatch(/token|api[_-]?key|secret|bearer/i);
+    expect(item('openclaw-acp')?.kiki_mcp).toMatchObject({ effective: null, source: 'harness-default', support: { state: 'unsupported' } });
+    expect(item('openclaw-acp')?.kiki_mcp?.support.fact).toContain('mcpServers');
+    expect(item('claude-acp')?.kiki_mcp?.support.state).toBe('undeclared');
+    expect(item('codex-app-server')?.kiki_mcp?.support).toMatchObject({ state: 'supported' });
+    const cleared = await patchConfig({ agent_executor_overrides: { 'agy-cli': { defaults: { inject_kiki_mcp: null } } } });
+    expect(cleared.raw?.['agent_executor_overrides']).toEqual({
+      'agy-cli': { defaults: {
+        model_alias: 'fixture-model', thinking_effort: 'high', permission_mode: 'manual',
+        kiki_context: ['memory'], allow_kiki_subagents: true,
+        executor_prompt: { include: ['memory_snapshot'] },
+      } },
+    });
+    const again = listExecutorsResponseSchema.parse(((await (await authedFetch(server as RunningServer, base, '/api/executors')).json()) as Envelope<unknown>).data);
+    expect(again.items.find((entry) => entry.id === 'agy-cli')?.kiki_mcp).toMatchObject({
+      effective: null, source: 'harness-default', support: { state: 'supported' },
+    });
   });
 
   it('persists display-only executor preferences through HTTP and cold restart without changing execution', async () => {

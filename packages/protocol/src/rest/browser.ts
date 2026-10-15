@@ -24,6 +24,29 @@ export const browserConnectionSchema = z.object({
   endpointDisplay: z.string().optional(), endpointConfigured: z.boolean().optional(),
 }).strict();
 export type BrowserConnection = z.infer<typeof browserConnectionSchema>;
+export const controlSettingSourceSchema = z.enum(['default', 'preset', 'base', 'home', 'env', 'memory']);
+export type ControlSettingSource = z.infer<typeof controlSettingSourceSchema>;
+/**
+ * Stable browser-control save/read contract.
+ * `enabled` maps the existing `native_browser` flag. `allowedBrowsers` is the
+ * multi-select allow set and is never derived from `defaultBrowser`.
+ * `allowedBrowsersConfigured: false` means the set was never saved (operations
+ * follow each connection's own `enabled`). An explicit empty array allows
+ * list/discover only.
+ */
+export const browserControlSettingsSchema = z.object({
+  enabled: z.boolean(),
+  enabledSource: controlSettingSourceSchema,
+  allowedBrowsers: z.array(browserIdSchema),
+  allowedBrowsersConfigured: z.boolean(),
+  allowedBrowsersSource: controlSettingSourceSchema,
+}).strict();
+export type BrowserControlSettings = z.infer<typeof browserControlSettingsSchema>;
+export const browserControlSettingsPatchSchema = z.object({
+  enabled: z.boolean().nullable().optional(),
+  allowed_browsers: z.array(browserIdSchema).nullable().optional(),
+}).strict();
+export type BrowserControlSettingsPatch = z.infer<typeof browserControlSettingsPatchSchema>;
 export const browserConnectionsSchema = z.object({ connections: z.array(browserConnectionSchema), defaultBrowser: browserIdSchema.optional() });
 export type BrowserConnections = z.infer<typeof browserConnectionsSchema>;
 export const browserConnectionResponseSchema = z.object({ connection: browserConnectionSchema });
@@ -31,7 +54,7 @@ export const browserDefaultInputSchema = z.object({ browser: browserIdSchema.opt
 
 export const browserFailureSchema = z.object({
   code: z.enum(['browser.invalid', 'browser.not_found', 'browser.disabled', 'browser.disconnected', 'browser.execution_failed', 'browser.busy', 'browser.version', 'browser.target', 'browser.requires_action', 'browser.unsupported']),
-  reason: z.enum(['feature_disabled', 'connection_disabled', 'outcome_unknown']).optional(),
+  reason: z.enum(['feature_disabled', 'connection_disabled', 'not_allowed', 'outcome_unknown']).optional(),
 }).strict();
 export type BrowserFailure = z.infer<typeof browserFailureSchema>;
 export const browserStatusSchema = z.object({
@@ -44,7 +67,7 @@ export const browserStatusSchema = z.object({
   ownership: z.enum(['managed-profile', 'external-browser']).optional(), profilePath: z.string().optional(),
 }).strict();
 export type BrowserStatus = z.infer<typeof browserStatusSchema>;
-export const browserControlListSchema = z.object({
+export const browserControlListSchema = browserControlSettingsSchema.extend({
   connections: z.array(browserConnectionSchema.extend({ status: browserStatusSchema })), defaultBrowser: browserIdSchema.optional(),
 });
 export type BrowserControlList = z.infer<typeof browserControlListSchema>;

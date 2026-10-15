@@ -18,6 +18,10 @@ import {
   EXECUTOR_OVERRIDE_SOURCE_ID,
   executorCapabilities,
   expandExecutorText,
+  AGENT_EXECUTORS_SECTION,
+  AGENT_EXECUTOR_OVERRIDES_SECTION,
+  BUILTIN_AGENT_EXECUTORS,
+  kikiMcpDefaultView,
   IConfigService,
   IInstantiationService,
   ISessionAgentProfileCatalog,
@@ -30,6 +34,7 @@ import {
   type AgentProfile,
   type AgentProfileCatalogSnapshot,
   type AgentExecutorDescriptor,
+  type AgentExecutorOverridesConfig,
   type AgentProfileRegistration,
   type AgentProfileRouteDefinition,
   type DisabledNamedProfilesConfig,
@@ -49,6 +54,7 @@ import {
   executorCheckResponseSchema,
   getExecutorModelsResponseSchema,
   refreshExecutorModelsResponseSchema,
+  removeExecutorRegistrationResponseSchema,
   executorPromptPreviewRequestSchema,
   executorPromptPreviewResponseSchema,
   localSessionDirectorySchema,
@@ -202,7 +208,8 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
     const registry = core.accessor.get(IAgentExecutorRegistry);
     const preflight = core.accessor.get(IAgentExecutorPreflightService);
     const items = registry.list().map((descriptor) =>
-      projectExecutor(descriptor, registry, preflight.rememberedCheck(descriptor.id), core.accessor.get(IBootstrapService)));
+      projectExecutor(descriptor, registry, preflight.rememberedCheck(descriptor.id), core.accessor.get(IBootstrapService),
+        savedKikiMcpInjection(config, descriptor.id)));
 
     reply.send(okEnvelope({ items }, req.id));
   });
@@ -216,7 +223,8 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
     errors: { [ErrorCode.AGENT_PROFILE_NOT_FOUND]: {} },
     description: 'Inspect execution engine capability and connection settings', tags: ['agents'],
   }, async (req, reply) => {
-    await core.accessor.get(IConfigService).ready;
+    const config = core.accessor.get(IConfigService);
+    await config.ready;
     const registry = core.accessor.get(IAgentExecutorRegistry);
     const descriptor = registry.get(req.params.id);
     if (descriptor === undefined) {
@@ -224,7 +232,8 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
       return;
     }
     const check = core.accessor.get(IAgentExecutorPreflightService).rememberedCheck(descriptor.id);
-    reply.send(okEnvelope(projectExecutor(descriptor, registry, check, core.accessor.get(IBootstrapService)), req.id));
+    reply.send(okEnvelope(projectExecutor(descriptor, registry, check, core.accessor.get(IBootstrapService),
+      savedKikiMcpInjection(config, descriptor.id)), req.id));
   });
   app.get(executorDetailRoute.path, executorDetailRoute.options,
     executorDetailRoute.handler as Parameters<AgentProfilesRouteHost['get']>[2]);
@@ -345,6 +354,32 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
   });
   app.post(rollbackRoute.path, rollbackRoute.options,
     rollbackRoute.handler as Parameters<AgentProfilesRouteHost['post']>[2]);
+
+  const removeRegistrationRoute = defineRoute({
+    method: 'POST', path: '/executors/{id}/registration:remove', params: executorParams,
+    success: { data: removeExecutorRegistrationResponseSchema },
+    description: 'Drop a user executor registration. Owned adapter files are removed only when no live or recoverable binding remains',
+    tags: ['agents'],
+  }, async (req, reply) => {
+    const config = core.accessor.get(IConfigService);
+    await config.ready;
+    const id = req.params.id;
+    const userValue = config.inspect<Record<string, unknown> | undefined>(AGENT_EXECUTORS_SECTION).userValue;
+    const registrationRemoved = userValue !== undefined && userValue !== null && typeof userValue === 'object'
+      && Object.hasOwn(userValue, id);
+    const descriptor = core.accessor.get(IAgentExecutorRegistry).get(id);
+    await config.removeOverride(AGENT_EXECUTORS_SECTION, [id]);
+    const removal = await core.accessor.get(IManagedAdapterService).removeOwnedResources(id, descriptor);
+    reply.send(okEnvelope({
+      id,
+      registration_removed: registrationRemoved,
+      builtin_retained: Object.hasOwn(BUILTIN_AGENT_EXECUTORS, id),
+      resources: removal.resources,
+      ...(removal.reason === undefined ? {} : { reason: removal.reason }),
+    }, req.id));
+  });
+  app.post(removeRegistrationRoute.path, removeRegistrationRoute.options,
+    removeRegistrationRoute.handler as Parameters<AgentProfilesRouteHost['post']>[2]);
 
   const localSessionsRoute = defineRoute({
     method: 'GET', path: '/executors/{id}/local-sessions', params: executorParams,
@@ -1328,8 +1363,13 @@ function catalogApplyState(catalog: ExecutorCapabilityCatalog) {
   return 'unknown' as const;
 }
 
+function savedKikiMcpInjection(config: IConfigService, executorId: string): boolean | undefined {
+  return config.get<AgentExecutorOverridesConfig>(AGENT_EXECUTOR_OVERRIDES_SECTION)?.[executorId]?.defaults?.inject_kiki_mcp;
+}
+
 function projectExecutor(descriptor: AgentExecutorDescriptor, registry: IAgentExecutorRegistry,
-  remembered: ReturnType<IAgentExecutorPreflightService['rememberedCheck']>, bootstrap: IBootstrapService) {
+  remembered: ReturnType<IAgentExecutorPreflightService['rememberedCheck']>, bootstrap: IBootstrapService,
+  injectKikiMcp: boolean | undefined) {
   const check = remembered?.result;
   const selected = check?.sources?.find((probe) => probe.id === check.selectedSource && probe.available);
   const program = check?.requirements.find((requirement) => requirement.role === 'program');
@@ -1356,7 +1396,7 @@ function projectExecutor(descriptor: AgentExecutorDescriptor, registry: IAgentEx
       thinking_binding: capabilities.thinkingBinding,
       negotiated: registry.negotiated?.(descriptor.id, check?.version) === undefined ? undefined : (() => {
         const observed = registry.negotiated!(descriptor.id, check?.version)!;
-        return { models: observed.models, thinking_levels: observed.thinkingLevels,
+        return { models: observed.models, thinking_levels: observed.thinkingLevels, native_agents: observed.nativeAgents,
           auth_methods: observed.authMethods, resume: observed.resume, load: observed.load,
           permission_modes: observed.permissionModes, agent_version: observed.agentVersion,
           image: observed.image, audio: observed.audio, fork: observed.fork,
@@ -1378,6 +1418,7 @@ function projectExecutor(descriptor: AgentExecutorDescriptor, registry: IAgentEx
       default_args: [...descriptor.args],
     },
     default_profile: descriptor.defaultProfile === true,
+    kiki_mcp: kikiMcpDefaultView(injectKikiMcp, descriptor),
     check_status: check?.status,
     checked_at: remembered === undefined ? undefined : new Date(remembered.checkedAt).toISOString(),
     check_stale: remembered === undefined ? undefined : !remembered.fresh,

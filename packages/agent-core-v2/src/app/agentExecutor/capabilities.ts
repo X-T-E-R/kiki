@@ -23,6 +23,7 @@ export interface NegotiatedExecutorCapabilities {
   readonly planApproval?: boolean;
   readonly models?: readonly string[];
   readonly thinkingLevels?: readonly string[];
+  readonly nativeAgents?: readonly string[];
   readonly contextWindow?: number;
   readonly maxInputTokens?: number;
   readonly maxOutputTokens?: number;
@@ -38,7 +39,29 @@ export interface NegotiatedExecutorCapabilities {
   readonly permissionModes?: readonly string[];
 }
 
-export function executorControlCapabilities(descriptor: AgentExecutorDescriptor): ExecutorCapabilityControls {
+/**
+ * A model id can be delivered when the descriptor's pass matches the session
+ * that will receive it. `argv` needs exactly one `{model}` launch placeholder.
+ * ACP with no binding, or an explicit `session_config` binding, uses
+ * `session/set_config` before the child is launched. Any other binding, or an
+ * argv template that does not carry the placeholder, is not evidence.
+ */
+export function modelSelectionPass(descriptor: AgentExecutorDescriptor): 'argv' | 'session_config' | undefined {
+  if (descriptor.modelBinding === 'argv') {
+    let placeholders = 0;
+    for (const value of descriptor.modelArgs ?? []) placeholders += value.split('{model}').length - 1;
+    return placeholders === 1 ? 'argv' : undefined;
+  }
+  const acp = descriptor.protocol === 'acp-v1' || descriptor.protocol === 'acp';
+  if (!acp) return undefined;
+  if (descriptor.modelBinding === undefined || descriptor.modelBinding === 'session_config') return 'session_config';
+  return undefined;
+}
+
+export function executorControlCapabilities(
+  descriptor: AgentExecutorDescriptor,
+  models?: { readonly state?: string; readonly values?: readonly string[] },
+): ExecutorCapabilityControls {
   const declared = descriptor.controlCapabilities;
   const control = (applicability: ExecutorControlApplicability | undefined, argvFallback = false) => {
     const effective = applicability ?? (argvFallback ? 'fresh_binding' : undefined);
@@ -50,8 +73,13 @@ export function executorControlCapabilities(descriptor: AgentExecutorDescriptor)
     }
     return { advertised: true, applicability: effective, applyState: 'unknown' as const };
   };
+  const listed = (models?.state === 'ready' || models?.state === 'partial') && (models.values?.length ?? 0) > 0;
+  const declaredModel = declared?.modelSwitch;
+  const modelSwitch = declaredModel === undefined && listed && modelSelectionPass(descriptor) !== undefined
+    ? { advertised: true as const, applicability: 'fresh_binding' as const, applyState: 'unknown' as const }
+    : control(declaredModel, descriptor.modelBinding === 'argv');
   return {
-    modelSwitch: control(declared?.modelSwitch, descriptor.modelBinding === 'argv'),
+    modelSwitch,
     thinkingSwitch: control(declared?.thinkingSwitch),
     manualCompact: control(declared?.manualCompact),
   };

@@ -146,7 +146,7 @@ async function probeProgramVersion(
   return result.available && result.code === 0 ? firstLine(result.output) : undefined;
 }
 
-export function parseModelProbeOutput(output: string, format: 'lines' | 'tab' | 'json', jsonPath: readonly string[] = []): readonly string[] {
+export function parseModelProbeOutput(output: string, format: 'lines' | 'tab' | 'columns' | 'json', jsonPath: readonly string[] = []): readonly string[] {
   const values = new Set<string>();
   let lines: readonly string[];
   if (format === 'json') {
@@ -164,7 +164,10 @@ export function parseModelProbeOutput(output: string, format: 'lines' | 'tab' | 
     });
   } else lines = output.split(/\r?\n/u);
   for (const line of lines) {
-    const first = (format === 'tab' ? line.split('\t', 1)[0] ?? '' : line).trim();
+    const field = format === 'tab' ? line.split('\t', 1)[0] ?? ''
+      : format === 'columns' ? line.trim().split(/\s+/u)[0] ?? ''
+        : line;
+    const first = field.trim();
     if (first === '' || (format !== 'json' && (first.startsWith('#') || /^(?:id|model|models|name)$/iu.test(first)))) continue;
     if (first.length > 256 || /\s/u.test(first)) continue;
     values.add(first);

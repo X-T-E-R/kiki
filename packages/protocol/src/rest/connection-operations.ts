@@ -21,6 +21,8 @@ export const CONNECTION_OPERATIONS = {
   transcriptOps: ['GET', '/sessions/{sessionId}/transcript/ops'], transcriptPlan: ['GET', '/sessions/{sessionId}/transcript/plan'],
   procedure: ['POST', '/klient/call'],
   prompts: ['GET', '/sessions/{sessionId}/prompts'], prompt: ['POST', '/sessions/{sessionId}/prompts'],
+  promptRead: ['GET', '/sessions/{sessionId}/prompts/{promptId}'],
+  promptResume: ['POST', '/sessions/{sessionId}/prompts/{promptId}:resume'], promptAbort: ['POST', '/sessions/{sessionId}/prompts/{promptId}:abort'],
   steer: ['POST', '/sessions/{sessionId}/prompts/steer'], abort: ['POST', '/sessions/{sessionId}/abort'],
   approvals: ['GET', '/sessions/{sessionId}/approvals'], approval: ['POST', '/sessions/{sessionId}/approvals/{interactionId}'],
   questions: ['GET', '/sessions/{sessionId}/questions'], question: ['POST', '/sessions/{sessionId}/questions/{interactionId}'],

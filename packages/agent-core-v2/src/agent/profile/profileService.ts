@@ -522,6 +522,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         executorOptions: snapshot.executorOptions,
         executorPrompt: snapshot.executorPrompt,
         allowKikiSubagents: snapshot.allowKikiSubagents,
+        injectKikiMcp: snapshot.injectKikiMcp,
         kikiContext: snapshot.kikiContext,
         executorDescriptorRevision: snapshot.executorDescriptorRevision,
         thinkingEffort: snapshot.thinkingLevel,
@@ -699,8 +700,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       );
     }
 
-    if (input.thinking !== undefined) {
-      this.assertThinkingEffortSupported(input.thinking, model, alias);
+    const requestedInputThinking = typeof input.thinking === 'string' ? input.thinking : undefined;
+    if (requestedInputThinking !== undefined) {
+      this.assertThinkingEffortSupported(requestedInputThinking, model, alias);
     }
 
     await this.sessionToolPolicy.ready;
@@ -708,7 +710,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const context = await this.buildSystemPromptContext(renderProfile, undefined, persona ?? null);
     this.assertRouteBindable(selection.route?.id);
     const requestedThinking = resolveMainThinkingCandidate({
-      inputThinking: input.thinking,
+      inputThinking: requestedInputThinking,
       personaThinking: persona?.definition.thinkingEffort,
       routeLockedThinking: selection.route?.lockedThinkingEffort,
       profileThinking: resolveProfileThinkingDefault(profile, alias, (id) => this.models.resolveId(id)),
@@ -736,7 +738,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       (id) => this.models.resolveId(id),
     )?.thinkingEffort;
     const baseThinkingSelection = input.bindingSelection?.thinking ?? {
-      source: input.thinking !== undefined ? 'dispatch-explicit'
+      source: requestedInputThinking !== undefined ? 'dispatch-explicit'
         : selection.route?.lockedThinkingEffort !== undefined ? 'route-default'
           : profileModelThinking !== undefined ? 'model-profile-default'
             : requestedThinking !== undefined ? 'profile-default' : 'model-default',
@@ -775,7 +777,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       personaId: persona?.definition.id,
       personaRevision: persona?.revision,
       personaOverrides: persona === undefined ? undefined : input.personaOverrides ?? {
-        profile: input.profile ?? input.route, model: input.model, thinking: input.thinking,
+        profile: input.profile ?? input.route, model: input.model, thinking: requestedInputThinking,
       },
       persona,
       roomPrompt: input.roomPrompt ?? this.profileState.roomPrompt,
@@ -864,24 +866,31 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (this.profileState.execution === undefined) execution.generation = this.profileState.renderGeneration + 1;
     const role = profile === undefined ? undefined : executionSelectionProfile(profile, requested.executor, execution.effective);
     if (requested.executor === 'native') {
+      if (execution.effective.native_agent !== undefined && execution.effective.native_agent !== 'engine-default') {
+        throw new Error2(ErrorCodes.CONFIG_INVALID, 'Native Kiki execution does not support vendor agent selection');
+      }
+      const clearedThinking = input.thinking === null;
+      const resolvedSelection = {
+        model: {
+          source: execution.sources['model'] === 'session' ? 'dispatch-explicit' as const
+            : execution.sources['model'] === 'profile' ? 'profile-default' as const : 'config-default' as const,
+          requestedValue: execution.effective.model,
+        },
+        thinking: {
+          source: execution.sources['thinking'] === 'session' ? 'dispatch-explicit' as const
+            : execution.sources['thinking'] === 'harness-default' ? 'model-default' as const
+              : execution.sources['thinking'] === 'profile' ? 'profile-default' as const : 'config-default' as const,
+          requestedValue: execution.effective.thinking,
+        },
+      };
       await this.bind({ ...input, execution: undefined, profile: requested.profile,
         resolvedProfile: sameGroup || profile === undefined
           ? requested.profile_file === undefined ? input.resolvedProfile : profile
           : role,
-        model: execution.effective.model, thinking: execution.effective.thinking,
-        bindingSelection: sameGroup || profile === undefined ? input.bindingSelection : {
-          model: {
-            source: execution.sources['model'] === 'session' ? 'dispatch-explicit'
-              : execution.sources['model'] === 'profile' ? 'profile-default' : 'config-default',
-            requestedValue: execution.effective.model,
-          },
-          thinking: {
-            source: execution.sources['thinking'] === 'session' ? 'dispatch-explicit'
-              : execution.sources['thinking'] === 'harness-default' ? 'model-default'
-                : execution.sources['thinking'] === 'profile' ? 'profile-default' : 'config-default',
-            requestedValue: execution.effective.thinking,
-          },
-        } }, assertCurrent);
+        model: execution.effective.model,
+        thinking: execution.effective.thinking,
+        bindingSelection: clearedThinking || !(sameGroup || profile === undefined) ? resolvedSelection : input.bindingSelection,
+      }, assertCurrent);
       this.applyBindingSnapshot({ ...this.data(), execution });
       await this.syncBindingMetadata();
       return;
@@ -892,6 +901,22 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       throw new Error2(ErrorCodes.CONFIG_INVALID, `External executor profile "${profile.name}" cannot declare service_tier, request_params, context_budget, or max_completion_tokens; these parameters require native execution`);
     }
     const executor = await this.executors.resolveExecutable(requested.executor, role?.executorOptions);
+    const nativeAgent = execution.effective.native_agent;
+    if (nativeAgent !== undefined && nativeAgent !== 'engine-default') {
+      if (!['acp', 'acp-v1'].includes(executor.descriptor.protocol)) {
+        throw new Error2(ErrorCodes.CONFIG_INVALID, `Executor "${requested.executor}" does not support native agent selection`);
+      }
+      const discovered = this.executors.lastNegotiated?.(requested.executor);
+      const retained = this.profileState.execution?.selection.executor === requested.executor
+        && this.profileState.execution.effective.native_agent === nativeAgent
+        && this.profileState.executorDescriptorRevision === executor.descriptor.revision;
+      if (discovered === undefined && !retained) {
+        throw new Error2(ErrorCodes.CONFIG_INVALID, `Executor "${requested.executor}" native agents have not been discovered; keep the current binding and initialize the executor before selecting an agent`);
+      }
+      if (discovered !== undefined && !discovered.nativeAgents?.includes(nativeAgent)) {
+        throw new Error2(ErrorCodes.CONFIG_INVALID, `Executor "${requested.executor}" does not advertise native agent "${nativeAgent}"`);
+      }
+    }
     const validated = this.requireValidBinding(this.executors.validateBinding(requested.executor, executor.options, {
       modelAlias: execution.effective.model, thinkingEffort: execution.effective.thinking,
     }));
@@ -956,6 +981,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       thinkingEffortExplicit: execution.effective.thinking !== undefined,
       executorPrompt, kikiContext: execution.effective.kiki_context,
       allowKikiSubagents: execution.effective.allow_kiki_subagents,
+      injectKikiMcp: execution.effective.inject_kiki_mcp,
       systemPrompt, agentsMdPaths: [], disallowedTools: role?.disallowedTools ?? [],
       executionRestriction: this.profileState.executionRestriction ?? input.executionRestriction,
       canSpawnSubagents: role?.canSpawnSubagents === false ? false : execution.effective.allow_kiki_subagents,
@@ -1083,7 +1109,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       personaOverrides: persona === undefined ? undefined : input.personaOverrides ?? {
         profile: input.profile ?? input.route,
         model: input.model,
-        thinking: input.thinking,
+        thinking: typeof input.thinking === 'string' ? input.thinking : undefined,
       },
       persona,
       roomPrompt: input.roomPrompt ?? this.profileState.roomPrompt,
@@ -1158,8 +1184,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       throw new ProfileError(ProfileErrors.codes.MODEL_NOT_CONFIGURED,
         `model is required to bind external executor profile "${selection.baseProfile.name}"`);
     }
+    const requestedInputThinking = typeof input.thinking === 'string' ? input.thinking : undefined;
     const requestedThinking = resolveMainThinkingCandidate({
-      inputThinking: input.thinking,
+      inputThinking: requestedInputThinking,
       personaThinking: persona?.definition.thinkingEffort,
       routeLockedThinking: selection.route?.lockedThinkingEffort,
       profileThinking: resolveProfileThinkingDefault(profile, requestedAlias ?? '', (id) => id),
@@ -1170,7 +1197,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       explicitFields: [
         ...(profile.tools === undefined ? [] : ['tools']),
         ...(profile.disallowedTools === undefined ? [] : ['disallowed_tools']),
-        ...(profile.thinkingEffort === undefined && input.thinking === undefined ? [] : ['thinking_effort']),
+        ...(profile.thinkingEffort === undefined && requestedInputThinking === undefined ? [] : ['thinking_effort']),
         ...(profile.serviceTier === undefined ? [] : ['service_tier']),
         ...(profile.requestParams === undefined ? [] : ['request_params']),
         ...(profile.contextBudget === undefined ? [] : ['context_budget']),
@@ -1209,7 +1236,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       requestedValue: requestedAlias,
     };
     const baseThinkingSelection = input.bindingSelection?.thinking ?? {
-      source: input.thinking !== undefined ? 'dispatch-explicit'
+      source: requestedInputThinking !== undefined ? 'dispatch-explicit'
         : selection.route?.lockedThinkingEffort !== undefined ? 'route-default'
           : profileModelThinking !== undefined ? 'model-profile-default'
             : requestedThinking !== undefined ? 'profile-default' : 'model-default',
@@ -1243,7 +1270,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       personaId: persona?.definition.id,
       personaRevision: persona?.revision,
       personaOverrides: persona === undefined ? undefined : input.personaOverrides ?? {
-        profile: input.profile ?? input.route, model: input.model, thinking: input.thinking,
+        profile: input.profile ?? input.route, model: input.model, thinking: requestedInputThinking,
       },
       persona,
       roomPrompt: input.roomPrompt ?? this.profileState.roomPrompt,
@@ -1263,6 +1290,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       executorOptions: { ...executor.options },
       executorPrompt: profile.executorPrompt,
       allowKikiSubagents: profile.allowKikiSubagents,
+      injectKikiMcp: profile.injectKikiMcp ?? this.config.get<AgentExecutorOverridesConfig>(AGENT_EXECUTOR_OVERRIDES_SECTION)?.[executor.descriptor.id]?.defaults?.inject_kiki_mcp,
       kikiContext: profile.kikiContext,
       executorDescriptorRevision: executor.descriptor.revision,
       thinkingEffort: effectiveThinkingLevel,
@@ -1665,6 +1693,53 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     this.refreshCurrentBindingAdvisories(
       { source: 'resume-existing', requestedValue: modelAlias },
       { source: external && effort !== requestedEffort ? 'executor-normalized' : 'runtime-explicit', requestedValue: level },
+    );
+    if (effort !== previousEffort) {
+      this.telemetry.track2('thinking_toggle', {
+        enabled: effort !== 'off',
+        effort,
+        from: previousEffort,
+      });
+    }
+  }
+
+  restoreDefaultThinking(): void {
+    if (this.profileState.execution !== undefined) return;
+    const external = this.isExternalExecutor;
+    const modelAlias = this.modelAlias;
+    if (!external && modelAlias === undefined) return;
+    const profile = this.profileState.boundProfile ?? this.activeProfile;
+    const resolveId = external ? (id: string) => id : (id: string) => this.models.resolveId(id);
+    const profileModelThinking = !external && modelAlias !== undefined
+      ? resolveModelProfileEntry(profile?.modelProfiles, modelAlias, resolveId)?.thinkingEffort
+      : undefined;
+    const requestedThinking = resolveMainThinkingCandidate({
+      personaThinking: this.currentPersona?.definition.thinkingEffort,
+      routeLockedThinking: this.profileState.lockedThinkingEffort,
+      profileThinking: resolveProfileThinkingDefault(profile, modelAlias ?? '', resolveId),
+    });
+    const effort = external
+      ? requestedThinking ?? 'off'
+      : this.resolveThinkingEffort(requestedThinking, this.tryResolveRawModel(), true);
+    const thinkingSource = this.profileState.lockedThinkingEffort !== undefined ? 'route-default' as const
+      : profileModelThinking !== undefined ? 'model-profile-default' as const
+        : requestedThinking !== undefined ? 'profile-default' as const
+          : 'model-default' as const;
+    const explicit = external ? requestedThinking !== undefined : thinkingSource !== 'model-default';
+    const previousEffort = this.thinkingLevel;
+    const personaOverrides = this.profileState.personaId === undefined
+      ? undefined
+      : { ...this.profileState.personaOverrides };
+    if (personaOverrides !== undefined) delete personaOverrides.thinking;
+    this.update({
+      thinkingLevel: effort,
+      thinkingEffortExplicit: explicit,
+      thinkingEffortAdjusted: false,
+      personaOverrides,
+    });
+    this.refreshCurrentBindingAdvisories(
+      { source: 'resume-existing', requestedValue: modelAlias },
+      { source: external ? (explicit ? 'profile-default' : 'model-default') : thinkingSource, requestedValue: effort },
     );
     if (effort !== previousEffort) {
       this.telemetry.track2('thinking_toggle', {
@@ -2556,6 +2631,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
           : { ...this.profileState.executorOptions },
       executorPrompt: this.profileState.executorPrompt,
       allowKikiSubagents: this.profileState.allowKikiSubagents,
+      injectKikiMcp: this.profileState.injectKikiMcp,
       kikiContext: this.profileState.kikiContext,
       executorDescriptorRevision: this.profileState.executorDescriptorRevision,
       thinkingLevel: this.thinkingLevel,

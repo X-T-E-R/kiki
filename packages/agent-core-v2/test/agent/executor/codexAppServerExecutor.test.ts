@@ -1363,6 +1363,29 @@ describe('Codex Kiki MCP approval under YOLO', () => {
     } finally { await harness.session.shutdown(); }
   });
 
+  it('drops Codex MCP flags when injection is off and adds them without the delegation token when it is on', async () => {
+    const off = createHarness({ permissionMode: { mode: 'yolo' } });
+    const offExecution = resolveExecutionBinding({ executor: 'codex-app-server', overrides: {
+      kiki_context: ['memory'], allow_kiki_subagents: true,
+    } }, { inject_kiki_mcp: false }, undefined, undefined);
+    Object.assign(off.context.binding, { execution: offExecution, allowKikiSubagents: true });
+    try {
+      await (await off.session.run({ kind: 'prompt', prompt: 'off' }, { signal: new AbortController().signal })).completion;
+      expect(off.spawns[0]).toEqual(['app-server']);
+      expect(offExecution.effective).toMatchObject({ kiki_context: ['memory'], allow_kiki_subagents: true, inject_kiki_mcp: false });
+    } finally { await off.session.shutdown(); }
+
+    const on = createHarness();
+    const onExecution = resolveExecutionBinding({ executor: 'codex-app-server' }, { inject_kiki_mcp: true }, undefined, undefined);
+    Object.assign(on.context.binding, { execution: onExecution, allowKikiSubagents: false, kikiContext: [] });
+    try {
+      await (await on.session.run({ kind: 'prompt', prompt: 'on' }, { signal: new AbortController().signal })).completion;
+      const flags = on.spawns[0]!.join(' ');
+      expect(flags).toContain('mcp_servers.kiki-harness.command="kiki"');
+      expect(flags).not.toContain('fixture-token');
+    } finally { await on.session.shutdown(); }
+  });
+
   it('restarts Codex and resumes the same thread when the mode crosses YOLO between turns', async () => {
     const mode: { mode: 'manual' | 'auto' | 'yolo' } = { mode: 'manual' };
     const harness = createHarness({ kikiSubagents: true, permissionMode: mode });

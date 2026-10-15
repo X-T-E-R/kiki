@@ -23,9 +23,6 @@ export function resolveExecutionBinding(
     else if (value !== undefined) Object.assign(overrides, { [key]: value });
   }
   const sameGroup = profile !== undefined && (profile.executor ?? 'native') === requested.executor;
-  // A profile change drops every prior override. On the same executor, an unpinned
-  // profile keeps the model already in effect; a pin, an explicit model, null, a
-  // different executor, or a first bind with no live model does not.
   if (requested.overrides?.model === undefined && sameGroup && profile?.modelAlias === undefined && overrides.model === undefined) {
     const carried = previous === undefined
       ? liveModel
@@ -58,12 +55,15 @@ export function resolveExecutionBinding(
       sources['thinking'] = 'harness-default';
     }
   }
+  const injectKikiMcp = pick('inject_kiki_mcp', profile?.injectKikiMcp, defaults?.inject_kiki_mcp);
   const effective: ExecutionBinding['effective'] = {
     model,
     thinking,
+    native_agent: pick('native_agent', undefined, defaults?.native_agent),
     permission_mode: pick('permission_mode', profile?.permissionMode, defaults?.permission_mode),
     kiki_context: [...pick('kiki_context', profile?.kikiContext, defaults?.kiki_context) ?? []],
     allow_kiki_subagents: pick('allow_kiki_subagents', profile?.allowKikiSubagents, defaults?.allow_kiki_subagents) ?? false,
+    inject_kiki_mcp: injectKikiMcp,
   };
   const changed = JSON.stringify(executionContextIdentity({ selection, effective })) !== JSON.stringify(previous === undefined ? undefined : executionContextIdentity(previous));
   return { version: 1, selection, effective, sources, generation: previous === undefined ? 1 : previous.generation + (changed ? 1 : 0) };
@@ -87,7 +87,7 @@ export function resolveSelectedExecutionBinding(
     overrides: {
       ...requested.overrides,
       model: prompt.model ?? requested.overrides?.model,
-      thinking: prompt.thinking ?? requested.overrides?.thinking,
+      thinking: prompt.thinking === null ? null : prompt.thinking ?? requested.overrides?.thinking,
     },
   }, defaults, profile, previous, profile !== undefined && !sameGroup && requested.executor === 'native' ? nativeEngine : undefined, liveModel);
 }

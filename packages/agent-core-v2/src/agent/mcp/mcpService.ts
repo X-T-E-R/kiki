@@ -43,7 +43,7 @@ import { IAgentMcpService } from './mcp';
 import { qualifyMcpToolName } from '#/mcpCore/tool-naming';
 import { isComputerMcpConfig } from '#/mcpCore/computer';
 import { IConfigService } from '#/app/config/config';
-import { COMPUTER_CONFIG_SECTION, type ComputerConfig } from '#/app/computer/configSection';
+import { COMPUTER_CONFIG_SECTION, computerToolsEnabled, type ComputerConfig } from '#/app/computer/configSection';
 import type { MCPClient, MCPToolDefinition } from '#/mcpCore/types';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import {
@@ -58,6 +58,13 @@ interface McpToolRegistration {
   readonly serverName: string;
 }
 
+interface ComputerToolSession {
+  readonly client: MCPClient;
+  readonly tools: readonly KosongTool[];
+  readonly enabledNames: ReadonlySet<string>;
+  readonly admitCall?: () => Promise<{ release(): void } | undefined>;
+}
+
 export const mcpMcpToolsByServerKey = defineState<Map<string, string[]>>(
   'mcp.mcpToolsByServer',
   () => new Map(),
@@ -70,6 +77,7 @@ export const mcpDiscoveryWritesReadyKey = defineState<boolean>(
 export class AgentMcpService extends Service implements IAgentMcpService {
   declare readonly _serviceBrand: undefined;
   private readonly mcpTools = new Map<string, McpToolRegistration>();
+  private readonly computerSessions = new Map<string, ComputerToolSession>();
   private readonly pendingDiscoveries: Array<() => void> = [];
   private readonly refreshErrors = new Map<string, string>();
   private readonly sessionOverrides: Map<string, Exclude<McpSessionOverrideValue, 'inherit'>>;
@@ -106,6 +114,18 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     this.states.contributeState(mcpMcpToolsByServerKey);
     this.states.contributeState(mcpDiscoveryWritesReadyKey);
     this.attachMcpTools();
+    if (this.configService.onDidSectionChange !== undefined) {
+      this._register(this.configService.onDidSectionChange((event) => {
+        if (event.domain !== COMPUTER_CONFIG_SECTION) return;
+        for (const [serverName, session] of this.computerSessions) {
+          const registered = this.registerMcpServer(serverName, session.client, session.tools, session.enabledNames, session.admitCall);
+          void this.dispatcher.dispatch(new ToolListUpdated({
+            reason: registered.registered.length > 0 ? 'mcp.connected' : 'mcp.disconnected',
+            serverName,
+          }));
+        }
+      }));
+    }
     loop.hooks.onWillBeginStep.register('mcp', async (ctx, next) => {
       await this.waitForInitialLoad(ctx.signal);
       await next();
@@ -451,6 +471,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
       this.registerConnectedMcpServer(entry);
       return;
     }
+    this.computerSessions.delete(entry.name);
     if (entry.status === 'needs-auth') {
       this.registerNeedsAuthMcpServer(entry);
       return;
@@ -481,6 +502,10 @@ export class AgentMcpService extends Service implements IAgentMcpService {
       resolved.enabledNames,
       resolved.admitCall,
     );
+    if (isComputerMcpConfig(this.mcpHandle.connectionManager.configOf(entry.name)) && !computerToolsEnabled(this.configService.get<ComputerConfig>(COMPUTER_CONFIG_SECTION))) {
+      void this.dispatcher.dispatch(new ToolListUpdated({ reason: 'mcp.disconnected', serverName: entry.name }));
+      return;
+    }
     this.emitMcpToolCollisions(entry.name, result.collisions);
     this.recordDiscovery(entry.name, resolved.rawTools, resolved.enabledNames, result.collisions);
     void this.dispatcher.dispatch(
@@ -523,7 +548,12 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     readonly registered: readonly string[];
     readonly collisions: readonly McpToolCollision[];
   } {
+    const computer = isComputerMcpConfig(this.mcpHandle.connectionManager.configOf(serverName));
+    if (computer) this.computerSessions.set(serverName, { client, tools, enabledNames: enabledTools, admitCall });
     this.unregisterMcpServer(serverName);
+    if (computer && !computerToolsEnabled(this.configService.get<ComputerConfig>(COMPUTER_CONFIG_SECTION))) {
+      return { registered: [], collisions: [] };
+    }
     const qualifiedNames: string[] = [];
     const collisions: McpToolCollision[] = [];
     const seenInThisCall = new Map<string, string>();

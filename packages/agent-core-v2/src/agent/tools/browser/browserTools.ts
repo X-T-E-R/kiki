@@ -14,7 +14,7 @@ import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceCo
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { IBrowserControlService, type BrowserInvocationResult } from '#/app/browser/browser';
 import { IBrowserConnectionStore } from '#/app/browser/browserConnectionStore';
-import { BrowserIdSchema } from '#/app/browser/browserConfig';
+import { BROWSER_CONFIG_SECTION, BrowserIdSchema, browserOperationAllowed, type BrowserConfig } from '#/app/browser/browserConfig';
 import { BROWSER_OWNED_FIELDS, browserManagedLifecycle, browserResponse, browserToolGroup, isBrowserOperation } from '#/app/browser/browserControlService';
 import { BrowserError } from '#/app/browser/errors';
 import { LifecycleScope } from '#/app/scopes';
@@ -31,6 +31,8 @@ import { mcpResultToExecutableOutput } from '#/agent/mcp/output';
 import { assertMcpInputSchema, type MCPToolDefinition } from '#/mcpCore/types';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import { IFlagService } from '#/app/flag/flag';
+import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
+import { IConfigService } from '#/app/config/config';
 import { NATIVE_BROWSER_FLAG_ID } from '#/app/browser/flag';
 import { resolveRealPathAccess, resolveRealPathAccessPath, type WorkspaceConfig } from '#/tool/path-access';
 import { ToolAccesses, type AgentTool, type ExecutableToolContext, type ExecutableToolResult, type ToolExecution, type ToolFileAccess } from '#/tool/toolContract';
@@ -97,7 +99,7 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
   private initialized = false;
   private readonly selections = new Map<string, Selection>();
   private readonly registrations = new Map<string, { dispose(): void }>();
-  private readonly providers = new Map<string, ReturnType<typeof catalogBackend>>();
+  private readonly loadedCatalog = new Map<string, { backend: ReturnType<typeof catalogBackend>; tools: MCPToolDefinition[] }>();
   private readonly recordings = new Map<string, string>();
   constructor(
     @IBrowserControlService private readonly control: IBrowserControlService,
@@ -111,6 +113,9 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
     @ISessionWorkspaceContext private readonly workspace: ISessionWorkspaceContext,
     @ISessionInteractionService private readonly approvals: ISessionInteractionService,
     @IEventBus eventBus: IEventBus,
+    @IFlagService private readonly flags: IFlagService,
+    @IConfigService private readonly config: IConfigService,
+    @IAgentToolPolicyService private readonly policy: IAgentToolPolicyService,
   ) {
     super();
     const caller = { sessionId: this.session.sessionId, agentId: this.agent.agentId };
@@ -118,6 +123,40 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
     this._register(eventBus.subscribe(TurnEnded, (event) => {
       void this.control.endTurn(caller, event.turnId).catch(onUnexpectedError);
     }));
+    if (config.onDidSectionChange !== undefined) {
+      this._register(config.onDidSectionChange(() => this.refreshLoaded()));
+    }
+  }
+
+  private refreshLoaded(): void {
+    const config = this.config.get<BrowserConfig>(BROWSER_CONFIG_SECTION);
+    const wanted = new Map<string, MCPToolDefinition>();
+    if (this.flags.enabled(NATIVE_BROWSER_FLAG_ID)) {
+      for (const [browser, entry] of this.loadedCatalog) {
+        if (!browserOperationAllowed(config?.allowedBrowsers, browser)) continue;
+        if (config?.connections !== undefined && config.connections[browser]?.enabled !== true) continue;
+        for (const tool of entry.tools) {
+          const name = this.modelName(tool.name);
+          if (this.policy.isToolActiveForDisclosure(name, 'builtin')) wanted.set(name, tool);
+        }
+      }
+    }
+    for (const [name, registration] of this.registrations) {
+      if (wanted.has(name)) continue;
+      registration.dispose();
+      this.registrations.delete(name);
+    }
+    for (const tool of wanted.values()) this.register(tool);
+  }
+
+  private loadedTool(browser: string, name: string): { backend: ReturnType<typeof catalogBackend>; tool: MCPToolDefinition } {
+    if (this._store.isDisposed || !this.flags.enabled(NATIVE_BROWSER_FLAG_ID) || !this.policy.isToolActiveForDisclosure(this.modelName(name), 'builtin')) {
+      throw new BrowserError('browser.disabled', 'This browser tool is disabled by the current control settings or tool policy');
+    }
+    const entry = this.loadedCatalog.get(browser);
+    const tool = entry?.tools.find((item) => item.name === name);
+    if (entry === undefined || tool === undefined) throw new BrowserError('browser.unsupported', `Load ${name} for browser "${browser}" through BrowserConnections before using it`);
+    return { backend: entry.backend, tool };
   }
 
   private requestContext(ctx?: ExecutableToolContext): BrowserRequestContext | undefined {
@@ -131,19 +170,24 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
     try {
       signal?.throwIfAborted();
       if (input.action === 'list') return this.json({ ...(await this.control.list()), selectedBrowser: this.selected });
-      const browser = await this.choose(input.browser);
+      const browser = await this.choose(input.browser, input.action === 'status' || input.action === 'disconnect' || input.action === 'tools' ? 'read' : 'operate');
       signal?.throwIfAborted();
       if (input.action === 'select') return this.json({ selectedBrowser: browser, status: await this.control.status(browser), selectedTab: this.selections.get(browser) });
       if (input.action === 'tools') {
-        for (const tool of input.unload ?? []) {
-          const name = this.modelName(tool); this.registrations.get(name)?.dispose(); this.registrations.delete(name);
-        }
         const tools = await this.control.catalog(browser, signal);
+        const listed = await this.store.list();
+        signal?.throwIfAborted();
+        if (this._store.isDisposed) throw new BrowserError('browser.disconnected', 'This agent browser scope has closed');
         const backend = catalogBackend(tools);
-        this.providers.set(browser, backend);
+        const retained = new Map((this.loadedCatalog.get(browser)?.tools ?? []).map((tool) => [tool.name, tool]));
+        for (const name of input.unload ?? []) retained.delete(name);
         const operations = tools.filter((tool) => isBrowserOperation(tool.name));
         const requested = operations.filter((tool) => input.groups?.includes(browserToolGroup(tool.name) as 'page') || input.tools?.includes(tool.name));
-        for (const tool of requested) this.register(tool);
+        const allowed = browserOperationAllowed(listed.allowedBrowsers, browser);
+        if (allowed) for (const tool of requested) retained.set(tool.name, tool);
+        if (retained.size === 0) this.loadedCatalog.delete(browser);
+        else this.loadedCatalog.set(browser, { backend, tools: [...retained.values()] });
+        this.refreshLoaded();
         return this.json({ browser, backend, namespace: backend, backendToolCount: tools.length,
           contextIsolation: backend === 'official-cua-repl'
             ? 'Official extension browser/tab ids are preserved. Use codex_browser_js and its runtime documentation; window/frame emulation is unsupported.'
@@ -154,7 +198,11 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
           managedLifecycle: tools.filter((tool) => browserManagedLifecycle(tool.name)).map((tool) => ({ name: tool.name, surface: /connect|close$|finalize$/.test(tool.name) && !/tab_close/.test(tool.name) ? 'BrowserConnections' : 'BrowserTabs' })),
           administrativeCapabilities: tools.filter((tool) => !isBrowserOperation(tool.name) && !browserManagedLifecycle(tool.name)).map((tool) => ({ name: tool.name, availableAsPageTool: false,
             reason: 'Donor-wide installation, plugins, credential or cross-session administration is outside a selected page execution lease.' })),
-          loaded: [...this.registrations.keys()], note: 'Use groups or tools to load only the typed operations needed for this task. Tab/frame lifecycle uses BrowserTabs. Browser installation and cross-session management are not page operations.' });
+          loaded: allowed && listed.connections.some((entry) => entry.id === browser && entry.enabled)
+            ? [...retained.keys()].map((name) => this.modelName(name)).filter((name) => this.registrations.has(name)) : [], allowed, status: await this.control.status(browser),
+          note: allowed
+            ? 'Use groups or tools to load only the typed operations needed for this task. Tab/frame lifecycle uses BrowserTabs. Browser installation and cross-session management are not page operations.'
+            : 'This connection is visible but not in the allowed set, so its operation tools were not registered. List and discover stay available.' });
       }
       if (input.action === 'connect') return this.json(await this.control.connect(browser, signal, this.requestContext(ctx)));
       if (input.action === 'disconnect') { const status = await this.control.disconnect(browser, signal); this.selections.delete(browser); return this.json(status); }
@@ -165,7 +213,7 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
   async tabs(input: BrowserTabsInput, signal?: AbortSignal, ctx?: ExecutableToolContext): Promise<ExecutableToolResult> {
     try {
       signal?.throwIfAborted();
-      const browser = await this.choose(input.browser);
+      const browser = await this.choose(input.browser, input.action === 'list' ? 'read' : 'operate');
       const requestContext = this.requestContext(ctx);
       if (input.action === 'list') return this.json({ browser, status: await this.control.status(browser), selected: this.selections.get(browser), tabs: await this.control.tabs(browser, signal, requestContext) });
       const current = this.selections.get(browser);
@@ -200,12 +248,19 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
     } catch (error) { return this.error(error); }
   }
 
-  private async choose(explicit?: string): Promise<string> {
+  private async choose(explicit: string | undefined, intent: 'read' | 'operate'): Promise<string> {
     if (!this.initialized) { this.selected = await this.defaults.ready; this.initialized = true; }
-    const browser = explicit ?? this.selected;
-    if (browser === undefined) throw new BrowserError('browser.not_found', `No browser selected. Available connections: ${JSON.stringify((await this.store.list()).connections)}`);
+    const listed = await this.store.list();
+    const fallback = this.selected !== undefined && browserOperationAllowed(listed.allowedBrowsers, this.selected) ? this.selected : undefined;
+    const browser = explicit ?? (intent === 'operate' ? fallback : this.selected);
+    if (browser === undefined) throw new BrowserError('browser.not_found', `No browser selected. List and discover stay available. Connections: ${JSON.stringify(listed.connections.map((connection) => ({ id: connection.id, type: connection.type, enabled: connection.enabled, allowed: browserOperationAllowed(listed.allowedBrowsers, connection.id) })))}`);
     const connection = await this.store.resolve(browser);
-    if (!connection.enabled) throw new BrowserError('browser.disabled', `Browser "${browser}" is disabled; select another configured connection explicitly`);
+    if (intent === 'read') {
+      if (explicit !== undefined) this.selected = explicit;
+      return browser;
+    }
+    if (!connection.enabled) throw new BrowserError('browser.disabled', `Browser "${browser}" is disabled; select another configured connection explicitly`, { details: { reason: 'connection_disabled' } });
+    if (!browserOperationAllowed(listed.allowedBrowsers, browser)) throw new BrowserError('browser.disabled', `Browser "${browser}" is not in the allowed set. List and discover stay available.`, { details: { reason: 'not_allowed' } });
     if (explicit !== undefined) this.selected = explicit;
     return browser;
   }
@@ -224,8 +279,9 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
           if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) throw new BrowserError('browser.invalid', 'Expected typed browser tool arguments');
           const input = raw as Record<string, unknown>;
           const { browser: requested, browserTab: requestedTab, ...args } = input;
-          const browser = await this.choose(typeof requested === 'string' ? requested : undefined);
-          const provider = this.providers.get(browser) ?? 'agent-browser';
+          const browser = await this.choose(typeof requested === 'string' ? requested : undefined, 'operate');
+          const loaded = this.loadedTool(browser, tool.name);
+          const provider = loaded.backend;
           const jsTool = /^codex_browser_js(?:_reset)?$/.test(tool.name);
           if (provider === 'agent-browser' && tool.name.startsWith('codex_') || provider === 'official-cua-repl' && !jsTool || provider === 'codex-browser-bridge' && (!tool.name.startsWith('codex_') || jsTool)) {
             throw new BrowserError('browser.unsupported', 'Load the typed tools for the selected browser provider; agent-browser, the official runtime, and codex-browser-bridge are not interchangeable');
@@ -235,7 +291,7 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
             for (const key of Object.keys(args)) if (BROWSER_OWNED_FIELDS.has(key)) throw new BrowserError('browser.invalid', `Browser identity field "${key}" is managed by Kiki`);
           }
           const selection = this.selections.get(browser);
-          const properties = schemaProperties(tool.inputSchema);
+          const properties = schemaProperties(loaded.tool.inputSchema);
           const claim = tool.name === 'codex_claim_tab';
           const tabScoped = provider === 'codex-browser-bridge' && !claim && properties !== undefined && 'tab_id' in properties;
           const tab = tool.name === 'codex_browser_js_reset' || claim ? undefined : typeof requestedTab === 'string' ? requestedTab : selection?.tab;
@@ -246,8 +302,10 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
             const status = await this.control.status(browser);
             return { approvalRule: name, accesses: ToolAccesses.all(), execute: async (ctx) => {
               try {
+                ctx.signal.throwIfAborted();
+                this.loadedTool(browser, tool.name);
                 const result = await this.control.invoke({ browser, caller: { sessionId: this.session.sessionId, agentId: this.agent.agentId },
-                  requestContext: this.requestContext(ctx), tool: tool.name, args: forwarded, tab, generation: selection?.generation ?? status.generation }, ctx.signal);
+                  requestContext: this.requestContext(ctx), assertToolAllowed: () => { this.loadedTool(browser, tool.name); }, tool: tool.name, args: forwarded, tab, generation: selection?.generation ?? status.generation }, ctx.signal);
                 return await this.output(result, ctx);
               } catch (error) { return this.error(error); }
             } };
@@ -261,8 +319,9 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
             try {
               ctx.signal.throwIfAborted();
               await prepared.verify();
+              this.loadedTool(browser, tool.name);
               const result = await this.control.invoke({ browser, caller: { sessionId: this.session.sessionId, agentId: this.agent.agentId },
-                requestContext: this.requestContext(ctx), tool: tool.name, args: prepared.args, tab, frame: bound.frame, generation: bound.generation }, ctx.signal);
+                requestContext: this.requestContext(ctx), assertToolAllowed: () => { this.loadedTool(browser, tool.name); }, tool: tool.name, args: prepared.args, tab, frame: bound.frame, generation: bound.generation }, ctx.signal);
               const ok = browserResponse(result.result).success === true;
               this.selections.set(browser, { ...bound, observed: ok && tool.name === 'agent_browser_snapshot' ? true : bound.observed });
               const captureKey = JSON.stringify([browser, tab, bound.frame, bound.generation]);

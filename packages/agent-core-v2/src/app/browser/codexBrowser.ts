@@ -64,8 +64,8 @@ export async function openCodexBrowser(input: { runtimeRoot: string; browserId: 
   } catch (cause) {
     throw new BrowserError('browser.requires_action', 'Select an installed Codex cua_node runtime containing @oai/cua-repl. Install or update Codex yourself; Kiki does not download or configure Chrome.', { cause });
   }
-  if (runtime.environment.osKind !== 'Windows' || manifest['platform'] !== 'windows' || pkg['name'] !== '@oai/cua-repl' || pkg['version'] !== '0.1.0' || typeof manifest['runtime_archive_version'] !== 'string') {
-    throw new BrowserError('browser.unsupported', 'This installed runtime does not match the supported Windows @oai/cua-repl 0.1.0 launch contract');
+  if (runtime.environment.osKind !== 'Windows' || manifest['platform'] !== 'windows' || pkg['name'] !== '@oai/cua-repl' || typeof pkg['version'] !== 'string' || pkg['version'].length === 0 || typeof manifest['runtime_archive_version'] !== 'string') {
+    throw new BrowserError('browser.unsupported', 'This installed runtime does not match the Windows @oai/cua-repl launch contract');
   }
   const bin = runtime.path.join(root, 'bin');
   const env = {
@@ -106,7 +106,7 @@ export const CODEX_BRIDGE_ADOPTION = {
 export const CODEX_BRIDGE_PIN: Readonly<Record<string, string>> = CODEX_BRIDGE_FILE_SHA256;
 const CODEX_BRIDGE_BINARY = /^(?:codex-browser-bridge)(?:\.exe)?$/i;
 const CODEX_BRIDGE_PIPE = /^codex-browser-use(?:-|\\)[A-Za-z0-9][A-Za-z0-9-]{7,80}$/;
-const CODEX_BRIDGE_RECOVERY = 'Start Codex or ChatGPT desktop and connect its Chrome or Edge extension. Browser setup lists each codex-browser-use pipe it can see. Choose one of those names there. Kiki does not approve the extension, register a native host, restart the browser, or dial an unselected pipe.';
+const CODEX_BRIDGE_RECOVERY = 'Start Codex or ChatGPT desktop so its extension publishes a codex-browser-use pipe. Browser setup lists those names. Choose one explicit pipe. Kiki does not register a native host, restart the browser, dial an unselected pipe, or substitute another CDP browser.';
 const CODEX_BRIDGE_FLOOR = ['codex_list_tabs', 'codex_create_tab', 'codex_close_tab', 'codex_navigate', 'codex_name_session', 'codex_finalize', 'codex_get_info'];
 
 export function codexBridgePipeName(value: string): boolean {
@@ -246,6 +246,7 @@ export class BridgeCodexBrowser implements CodexBrowserBackend {
   private readonly byName: ReadonlyMap<string, MCPToolDefinition>;
   private readonly projected: MCPToolDefinition[];
   private readonly turns = new Map<string, BrowserRequestContext>();
+  private sentAny = false;
   private readonly lifetime = new AbortController();
   private sentWork?: Promise<MCPToolResult>;
   private uncertain = false;
@@ -272,7 +273,7 @@ export class BridgeCodexBrowser implements CodexBrowserBackend {
     this.closeWork = (async () => {
       try {
         await this.sentWork;
-        if (this.uncertain) return;
+        if (this.uncertain || !this.sentAny) return;
         const result = await this.transport.callTool('codex_finalize', {}, undefined, { elicit: async () => ({ action: 'cancel' }) });
         if (result.isError || bridgeOutcomeUnknown(result)) this.uncertain = true;
       } catch { this.uncertain = true; }
@@ -281,7 +282,7 @@ export class BridgeCodexBrowser implements CodexBrowserBackend {
   }
 
   async connect(context?: BrowserRequestContext, signal?: AbortSignal): Promise<void> {
-    if (context === undefined) throw new BrowserError('browser.requires_action', 'Connect from BrowserConnections in a Kiki conversation. This settings probe cannot approve the extension.');
+    if (context === undefined) throw new BrowserError('browser.requires_action', 'BridgeCodexBrowser.connect needs a Kiki caller. This settings probe has no permission consumer and will not forge an approval.');
     const names = await this.discover();
     signal?.throwIfAborted();
     if (!names.includes(this.pipe)) {
@@ -362,15 +363,16 @@ export class BridgeCodexBrowser implements CodexBrowserBackend {
   }
 
   private send(tool: string, args: Record<string, unknown>, context?: BrowserRequestContext, signal?: AbortSignal): Promise<MCPToolResult> {
-    if (context === undefined) throw new BrowserError('browser.requires_action', 'Connect from BrowserConnections in a Kiki conversation so the extension can request your approval. This settings probe cannot approve browser access.');
+    if (context === undefined) throw new BrowserError('browser.requires_action', 'BridgeCodexBrowser.send delivers a real protocol elicitation to browserElicitation. This settings probe has no permission consumer and will not forge an approval.');
     signal?.throwIfAborted();
     if (this.closing || this.uncertain) throw new BrowserError('browser.disconnected', 'The bridge outcome is unknown or it is disconnecting. Kiki did not send the action again.');
     if (this.sentWork !== undefined) throw new BrowserError('browser.busy', 'The bridge is draining a sent call; it was not replayed');
     const key = JSON.stringify([context.caller.sessionId, context.caller.agentId, context.turnId]);
     this.turns.set(key, context);
     const cancellation = signal === undefined ? this.lifetime.signal : AbortSignal.any([signal, this.lifetime.signal]);
+    this.sentAny = true;
     const work: Promise<MCPToolResult> = this.transport.callTool(tool, args, undefined, { meta: codexTurnMetadata(context),
-      elicit: (request, requestSignal) => context.elicit(request, AbortSignal.any([requestSignal, cancellation])) })
+      elicit: (request, requestSignal) => context.elicit({ ...request, _meta: { ...request._meta, kiki_elicit_source: 'BridgeCodexBrowser.send' } }, AbortSignal.any([requestSignal, cancellation])) })
       .then((result) => {
         if (bridgeOutcomeUnknown(result)) {
           this.uncertain = true;
@@ -525,7 +527,7 @@ export class OfficialCodexBrowser implements CodexBrowserBackend {
   }
 
   private send(args: Record<string, unknown>, context?: BrowserRequestContext, signal?: AbortSignal, tool = this.js.name): Promise<MCPToolResult> {
-    if (context === undefined) throw new BrowserError('browser.requires_action', 'Connect from BrowserConnections in a Kiki conversation so the official service can request your approval. This settings probe cannot approve browser access.');
+    if (context === undefined) throw new BrowserError('browser.requires_action', 'OfficialCodexBrowser.send delivers a real protocol elicitation to browserElicitation. This settings probe has no permission consumer and will not forge an approval.');
     signal?.throwIfAborted();
     if (this.closing || this.uncertain) throw new BrowserError('browser.disconnected', 'The official runtime must finish disconnecting before another call');
     const key = this.turnKey(context);
@@ -534,7 +536,7 @@ export class OfficialCodexBrowser implements CodexBrowserBackend {
     this.turns.set(key, context);
     const cancellation = signal === undefined ? this.lifetime.signal : AbortSignal.any([signal, this.lifetime.signal]);
     const work: Promise<MCPToolResult> = this.transport.callTool(tool, args, undefined, { meta: codexTurnMetadata(context),
-      elicit: (request, requestSignal) => context.elicit(request, AbortSignal.any([requestSignal, cancellation])) })
+      elicit: (request, requestSignal) => context.elicit({ ...request, _meta: { ...request._meta, kiki_elicit_source: 'OfficialCodexBrowser.send' } }, AbortSignal.any([requestSignal, cancellation])) })
       .catch((error: unknown) => { this.uncertain = true; throw error; })
       .finally(() => { if (this.sentWork === work) this.sentWork = undefined; });
     this.sentWork = work;

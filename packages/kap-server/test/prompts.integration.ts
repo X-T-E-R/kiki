@@ -1,5 +1,6 @@
 import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { createServer as createHttpServer } from 'node:http';
+import { Readable } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { paddedPng, pngDimensions, solidPng } from './helpers/png';
@@ -29,6 +30,8 @@ import {
   IBootstrapService,
   PromptEnqueued,
   PromptRetryCommitted,
+  promptRetryFor,
+  IAtomicDocumentStore,
   IWireService,
   IFileService,
   IModelCatalogMutationService,
@@ -127,6 +130,13 @@ const PROMPT_TOML = [
   'manualTick = true',
   '',
 ].join('\n');
+
+function promiseGate<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
 
 async function readFileEventually(path: string): Promise<Buffer> {
   return vi.waitFor(() => readFile(path));
@@ -1403,6 +1413,175 @@ describe('server-v2 /api prompts', () => {
     }
   });
 
+  it('durable ingress saves and cancels while cold restore is stalled, then holds across restart', async () => {
+    const id = await createSession(home!);
+    await closeSessionById(server!.core.accessor, id);
+    const manager = server!.core.accessor.get(ISessionManager);
+    const restoreGate = promiseGate<undefined>();
+    const resume = vi.spyOn(manager, 'resume').mockReturnValue(restoreGate.promise);
+    const root = `/api/sessions/${id}/prompts`;
+    const body = { admission: 'durable', prompt_id: 'saved-before-restore', content: [{ type: 'text', text: 'A saved draft '.repeat(200) }] };
+    try {
+      const saved = await call<{ admission: string; prompt_id: string }>('POST', `${root}?receipt=true`, body);
+      expect(saved.body).toMatchObject({ code: 0, data: { admission: 'restoring', status: 'queued', prompt_id: body.prompt_id } });
+      await vi.waitFor(() => expect(resume).toHaveBeenCalled());
+      const page = await call<{ ingress: { content: { text: string }[]; admission_content_truncated?: boolean }[] }>('GET', `${root}?admission=durable`);
+      expect(page.body.data.ingress[0]).toMatchObject({ admission_content_truncated: true });
+      expect(page.body.data.ingress[0]!.content[0]!.text.length).toBeLessThanOrEqual(1024);
+      const full = await call<{ content: unknown }>('GET', `${root}/${body.prompt_id}?admission=durable`);
+      expect(full.body.data.content).toEqual(body.content);
+      expect((await call('POST', `${root}?receipt=true`, body)).body).toMatchObject({ code: 0, data: { prompt_id: body.prompt_id } });
+      expect((await call('POST', root, { ...body, content: [{ type: 'text', text: 'different' }] })).body.code).toBe(40938);
+      expect((await call('POST', `${root}/${body.prompt_id}:abort`)).body).toMatchObject({ code: 0, data: { aborted: true } });
+      await vi.waitFor(() => expect(manager.residencyReport!().pinnedSessions).toBe(0));
+      expect((await call('GET', `${root}/${body.prompt_id}?admission=durable`)).body).toMatchObject({ data: { admission: 'cancelled' } });
+      expect((await call('POST', root, { ...body, prompt_id: 'restart-hold' })).body.code).toBe(0);
+      for (let n = 0; n < 64; n += 1) expect((await call('POST', root, { ...body, prompt_id: `page-${n}` })).body.code).toBe(0);
+      const first = await call<{ ingress: { prompt_id: string }[]; ingress_next_cursor?: string }>('GET', `${root}?admission=durable`);
+      expect(first.body.data.ingress).toHaveLength(64);
+      expect(first.body.data.ingress_next_cursor).toBeDefined();
+      const second = await call<{ ingress: { prompt_id: string }[]; ingress_next_cursor?: string }>('GET', `${root}?admission=durable&cursor=${first.body.data.ingress_next_cursor}`);
+      expect(second.body.data.ingress).toHaveLength(2);
+      expect(second.body.data.ingress_next_cursor).toBeUndefined();
+      expect(new Set([...first.body.data.ingress, ...second.body.data.ingress].map(item => item.prompt_id)).size).toBe(66);
+      await server!.close();
+      server = undefined;
+      restoreGate.resolve(undefined);
+      resume.mockRestore();
+      server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home!, logLevel: 'silent' });
+      base = `http://127.0.0.1:${server.port}`;
+      const restarted = server.core.accessor.get(ISessionManager);
+      const cold = vi.spyOn(restarted, 'resume');
+      expect((await call('GET', `${root}/restart-hold?admission=durable`)).body).toMatchObject({ code: 0, data: { admission: 'held' } });
+      expect((await call('GET', `${root}?admission=durable`)).body.code).toBe(0);
+      expect(cold).not.toHaveBeenCalled();
+      cold.mockRestore();
+    } finally { restoreGate.resolve(undefined); resume.mockRestore(); }
+  }, 30_000);
+
+  it('durable ingress migrates the original ID and media once after a held restore', async () => {
+    const id = await createSession(home!);
+    await createHeldMainAgent(id);
+    const manager = server!.core.accessor.get(ISessionManager);
+    const original = manager.resume.bind(manager);
+    const gate = promiseGate<void>();
+    const resume = vi.spyOn(manager, 'resume').mockImplementation(async (...args) => { await gate.promise; return original(...args); });
+    const bytes = solidPng(2, 2);
+    const uploaded = await server!.core.accessor.get(IFileService).save(Readable.from(bytes), 'original.png', { mimeType: 'image/png' });
+    const note = await server!.core.accessor.get(IFileService).save(Readable.from('Fixture attachment'), 'notes.txt', { mimeType: 'text/plain' });
+    const body: import('@kiki/protocol').PromptSubmission = { admission: 'durable', prompt_id: 'media-ingress-once', content: [
+      { type: 'text', text: 'Describe the retained image.' }, { type: 'image', source: { kind: 'file', file_id: uploaded.id } },
+      { type: 'file', file_id: note.id, name: note.name, media_type: note.media_type, size: note.size },
+    ] };
+    const root = `/api/sessions/${id}/prompts`;
+    const client = createHttpKlient({ endpoint: base, token: bearerToken(server!) });
+    try {
+      const ack = await client.session(id).commands.submit(body);
+      expect(ack).toMatchObject({ admission: 'restoring' });
+      await server!.core.accessor.get(IFileService).delete(uploaded.id);
+      gate.resolve();
+      let accepted: Awaited<ReturnType<typeof call>>;
+      await vi.waitFor(async () => {
+        accepted = await call('GET', `${root}/${body.prompt_id}?admission=durable`);
+        expect(accepted.body).toMatchObject({ code: 0, data: { admission: 'admitted', prompt_id: body.prompt_id } });
+      }, { timeout: 5000 });
+      const retry = await client.session(id).commands.submit(body);
+      expect(retry).toEqual(accepted!.body.data);
+      expect(retry.content[2]).toMatchObject({ type: 'text', text: expect.stringContaining('notes.txt') });
+      const session = getLiveSessionById(server!.core.accessor, id)!;
+      const wire = (await readFile(join(session.accessor.get(ISessionContext).sessionDir, 'agents/main/wire.jsonl'), 'utf8'))
+        .split('\n').filter(Boolean).map(line => JSON.parse(line) as { type: string; promptId?: string });
+      expect(wire.filter(record => record.type === 'prompt.enqueued' && record.promptId === body.prompt_id)).toHaveLength(1);
+      const media = await fetch(`${base}/api/sessions/${id}/media/${uploaded.id}`, { headers: authHeaders(server!) });
+      expect(media.status).toBe(200);
+      expect(Buffer.from(await media.arrayBuffer())).toEqual(bytes);
+      expect((await call('POST', `${root}/${body.prompt_id}:abort`)).body.code).toBe(0);
+    } finally { gate.resolve(); resume.mockRestore(); await client.close(); }
+  }, 20_000);
+
+  it('durable ingress reconciles an uncertain submission strictly before retrying', async () => {
+    const id = await createSession(home!);
+    await createHeldMainAgent(id);
+    const docs = server!.core.accessor.get(IAtomicDocumentStore);
+    const set = docs.set.bind(docs);
+    let fail = true;
+    const persistence = vi.spyOn(docs, 'set').mockImplementation(async (...args) => {
+      if (args[0].endsWith('/prompt-ingress/results') && fail) { fail = false; throw new Error('Interrupted receipt publication'); }
+      return set(...args);
+    });
+    const root = `/api/sessions/${id}/prompts`;
+    const body = { admission: 'durable', prompt_id: 'uncertain-ingress', content: [{ type: 'text', text: 'Run once' }] };
+    const session = getLiveSessionById(server!.core.accessor, id)!;
+    const prompt = session.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentPromptService);
+    try {
+      expect((await call('POST', root, body)).body.code).toBe(0);
+      await vi.waitFor(async () => expect((await call('GET', `${root}/${body.prompt_id}?admission=durable`)).body).toMatchObject({ data: { admission: 'held' } }));
+      const lookup = vi.spyOn(promptRetryFor(prompt), 'lookup').mockRejectedValueOnce(new Error('Receipt lookup timed out'));
+      expect((await call('POST', `${root}/${body.prompt_id}:resume?admission=durable`)).body.code).toBe(0);
+      await vi.waitFor(async () => expect((await call('GET', `${root}/${body.prompt_id}?admission=durable`)).body).toMatchObject({ data: { admission: 'held', admission_error: { message: expect.stringContaining('Receipt lookup timed out') } } }));
+      lookup.mockRestore();
+      expect((await call('POST', `${root}/${body.prompt_id}:resume?admission=durable`)).body.code).toBe(0);
+      await vi.waitFor(async () => expect((await call('GET', `${root}/${body.prompt_id}?admission=durable`)).body).toMatchObject({ data: { admission: 'admitted' } }));
+      const records = (await readFile(join(session.accessor.get(ISessionContext).sessionDir, 'agents/main/wire.jsonl'), 'utf8'))
+        .split('\n').filter(Boolean).map(line => JSON.parse(line) as { type: string; promptId?: string });
+      expect(records.filter(record => record.type === 'prompt.enqueued' && record.promptId === body.prompt_id)).toHaveLength(1);
+    } finally { persistence.mockRestore(); prompt.abort(body.prompt_id); }
+  });
+
+  it('durable ingress exposes failed validation and rejects missing targets without launching', async () => {
+    const id = await createSession(home!);
+    const root = `/api/sessions/${id}/prompts`;
+    const body = { admission: 'durable', prompt_id: 'failed-ingress', model: 'missing-model', content: [{ type: 'text', text: 'Saved request' }] };
+    expect((await call('POST', root, { ...body, content: [{ type: 'text', text: ' ' }] })).body.code).toBe(40001);
+    expect((await call('POST', root, { ...body, agent_id: 'unknown-agent' })).body.code).toBe(40401);
+    expect((await call('POST', root, body)).body).toMatchObject({ code: 0, data: { admission: 'restoring' } });
+    await vi.waitFor(async () => {
+      const item = await call('GET', `${root}/${body.prompt_id}?admission=durable`);
+      expect(item.body).toMatchObject({ code: 0, data: { admission: 'failed', admission_error: { message: expect.any(String) }, content: body.content } });
+    });
+    expect((await call('POST', `${root}/${body.prompt_id}:resume?admission=durable`)).body).toMatchObject({ code: 0, data: { admission: 'restoring' } });
+    expect((await call('POST', `${root}/${body.prompt_id}:abort?admission=durable`)).body.code).toBe(0);
+  });
+
+  it.each([false, true])('durably acknowledges compact receipts before launch preparation finishes, skills=%s', async (skills) => {
+    const id = await createSession(home as string);
+    await createHeldMainAgent(id);
+    const session = getLiveSessionById(server!.core.accessor, id)!;
+    const main = session.accessor.get(IAgentLifecycleService).get('main')!;
+    const prompt = main.accessor.get(IAgentPromptService);
+    const gate = promiseGate<void>();
+    const entered = promiseGate<void>();
+    const hook = prompt.hooks.onBeforeSubmitPrompt.register('hold-admission-test', async (_ctx, next) => {
+      entered.resolve();
+      await gate.promise;
+      await next();
+    });
+    const payload = { prompt_id: 'held-launch-receipt', content: [{ type: 'text', text: 'Keep this request while preparing the agent.' }],
+      skills: skills ? [{ name: 'kiki-ops' }] : undefined };
+    const request = call<{ prompt_id: string; status: string }>('POST', `/api/sessions/${id}/prompts?receipt=true`, payload);
+    let receipt: Awaited<typeof request> | undefined;
+    void request.then(value => { receipt = value; });
+    try {
+      await entered.promise;
+      await vi.waitFor(() => expect(receipt?.body.code).toBe(0), { timeout: 2000 });
+      const records = (await readFile(join(session.accessor.get(ISessionContext).sessionDir, 'agents', 'main', 'wire.jsonl'), 'utf8'))
+        .split('\n').filter(Boolean).map(line => JSON.parse(line) as { type: string; promptId?: string });
+      expect(records.filter(record => record.type === 'prompt.enqueued' && record.promptId === payload.prompt_id)).toHaveLength(1);
+      expect(receipt?.body.data).toMatchObject({ prompt_id: payload.prompt_id, status: 'queued' });
+      const replay = await call('POST', `/api/sessions/${id}/prompts?receipt=true`, payload);
+      expect(replay.body.data).toEqual(receipt?.body.data);
+      const conflict = await call('POST', `/api/sessions/${id}/prompts?receipt=true`, { ...payload, content: [{ type: 'text', text: 'Changed request.' }] });
+      expect(conflict.body.code).toBe(40938);
+      const cancel = await call('POST', `/api/sessions/${id}/prompts/${payload.prompt_id}:abort`);
+      expect(cancel.body).toMatchObject({ code: 0, data: { aborted: true } });
+    } finally {
+      gate.resolve();
+      await request;
+      prompt.abort(payload.prompt_id);
+      await hook.dispose();
+    }
+  });
+
   it.each([false, true])('does not apply runtime controls when the submit hook blocks, skills=%s', async (skills) => {
     const id = await createSession(home as string);
     await createHeldMainAgent(id);
@@ -1906,14 +2085,15 @@ describe('server-v2 /api prompts', () => {
       return response;
     } });
     try {
-      const accepted = await client.session(id).commands.submit({
+      const payload: import('@kiki/protocol').PromptSubmission = {
         agent_id: child.id, prompt_id: 'mixed-media-receipt', content: [
           { type: 'text', text: 'before' },
           { type: 'image', source: { kind: 'file', file_id: image.id } },
           { type: 'file', file_id: file.id, name: 'notes.txt', media_type: 'text/plain', size: file.size },
           { type: 'text', text: 'after' },
         ],
-      });
+      };
+      const accepted = await client.session(id).commands.submit(payload);
       expect(accepted.prompt_id).toBe('mixed-media-receipt');
       expect(enqueue).toHaveBeenCalledTimes(1);
       expect(receipts).toHaveLength(1);
@@ -1925,7 +2105,13 @@ describe('server-v2 /api prompts', () => {
       expect(accepted.content[2]).toMatchObject({ type: 'image', source: { kind: 'session_media' } });
       expect(accepted.content[3]).toMatchObject({ type: 'text', text: expect.stringContaining('Attached file "notes.txt"') });
       expect(accepted.content[4]).toEqual({ type: 'text', text: 'after' });
-      expect(prompt.list().active?.id).toBe(accepted.prompt_id);
+      expect(await client.session(id).commands.submit(payload)).toEqual(accepted);
+      expect(enqueue).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => expect(prompt.list().active?.id).toBe(accepted.prompt_id));
+      prompt.abort(accepted.prompt_id);
+      await child.accessor.get(IAgentLoopService).settled();
+      await closeSessionById(server!.core.accessor, id);
+      expect(await client.session(id).commands.submit(payload)).toEqual(accepted);
     } finally { await client.close(); }
   });
 

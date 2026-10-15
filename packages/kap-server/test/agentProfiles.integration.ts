@@ -14,6 +14,7 @@ import {
   IAgentPromptService,
   IAgentUsageService,
   IAppendLogStore,
+  IFileSystemStorageService,
   IConfigService,
   IManagedAdapterService,
   ILogService,
@@ -1514,6 +1515,15 @@ describe('GET /api/agents', () => {
       usage.record('unpriced-fixture-model', { inputOther: 10, inputCacheRead: 3, inputCacheCreation: 2, output: 5 }, undefined, { usageKnown: true });
       expect((await read()).metrics?.['main']).toMatchObject({ inputTokens: 15, totalTokens: 20, totalCostUsd: null });
       usage.record('unpriced-fixture-model', { inputOther: 0, inputCacheRead: 0, inputCacheCreation: 0, output: 0 }, undefined, { usageKnown: false });
+      const sourceRead = vi.spyOn(server.core.accessor.get(IFileSystemStorageService), 'readStream');
+      const narrow = await read(`session_id=${created.data.id}&agent_id=main&metrics_only=true&metrics_settle=true&metrics_agent_ids=main`);
+      expect(narrow.metrics?.['main']).toMatchObject({ totalTokens: 20, usageComplete: true, usagePartial: true, costPartial: true });
+      expect(narrow.profile).toBeUndefined();
+      expect(narrow.prompt).toBeUndefined();
+      expect(narrow.tools).toBeUndefined();
+      expect(narrow.targets).toEqual([]);
+      expect(sourceRead).not.toHaveBeenCalled();
+      sourceRead.mockRestore();
       const plan = agent.accessor.get(IAgentPlanService);
       await plan.enter();
       const launch = vi.spyOn(dispatch, 'launch');

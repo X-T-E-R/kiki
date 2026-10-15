@@ -81,7 +81,7 @@ export function createKimiWebbridgeEntry(ctx: CapabilityEntryContext): Capabilit
       { id: 'daemon', state: running ? 'ok' : 'missing',
         reason: running ? 'daemon_loopback_unauthenticated' : undefined,
         detail: running ? `Loopback status reports running (${daemon.version}); responding process identity is not authenticated` : undefined },
-      { id: 'skill', state: pluginEnabled ? 'ok' : 'missing',
+      { id: 'skill', state: pluginEnabled ? 'ok' : 'missing', optional: true,
         reason: plugin === undefined ? 'plugin_not_installed'
           : !plugin.enabled ? 'plugin_disabled'
           : plugin.state !== 'ok' || plugin.hasErrors === true ? 'plugin_error'

@@ -39,7 +39,7 @@ export interface PromptExecutionBinding {
   readonly personaGreetingReply?: boolean;
   readonly profile?: string;
   readonly model?: string;
-  readonly thinking?: string;
+  readonly thinking?: string | null;
   readonly permissionMode?: PermissionMode;
   readonly planGate?: PlanGate;
   /** Applied at prompt launch, after media intake and submit hooks; never while queued. */
@@ -51,10 +51,17 @@ export interface PromptExecutionBinding {
   readonly goalControl?: 'pause' | 'resume' | 'cancel';
 }
 
+export interface PromptContentRange {
+  readonly index: number;
+  readonly start: number;
+  readonly end: number;
+}
+
 export interface PromptInput {
   readonly id?: string;
   readonly userMessageId?: string;
   readonly retryFingerprint?: string;
+  readonly retryContentRanges?: readonly PromptContentRange[];
   readonly message: ContextMessage;
   /** Commits an admitted history rewrite after prompt preparation, before queue publication. */
   readonly commitHistoryRewrite?: (prompt: import('./promptService').PromptEnqueuedPayload) => Promise<void>;
@@ -180,12 +187,17 @@ export interface PromptReservation extends IDisposable {
 
 export const promptAdmission = Symbol('promptAdmission');
 
-type PromptAdmissionHook = (promptId?: string, durableAcceptance?: boolean, retryFingerprint?: string) => PromptReservation;
+export interface PromptAdmissionOptions {
+  readonly waitForLaunch?: boolean;
+  readonly contentRanges?: readonly PromptContentRange[];
+}
 
-export function reservePrompt(service: IAgentPromptService, promptId?: string, durableAcceptance = false, retryFingerprint?: string): PromptReservation {
+type PromptAdmissionHook = (promptId?: string, durableAcceptance?: boolean, retryFingerprint?: string, options?: PromptAdmissionOptions) => PromptReservation;
+
+export function reservePrompt(service: IAgentPromptService, promptId?: string, durableAcceptance = false, retryFingerprint?: string, options?: PromptAdmissionOptions): PromptReservation {
   return (service as IAgentPromptService & { [promptAdmission]: PromptAdmissionHook })[
     promptAdmission
-  ](promptId, durableAcceptance, retryFingerprint);
+  ](promptId, durableAcceptance, retryFingerprint, options);
 }
 
 export const promptRetry = Symbol('promptRetry');

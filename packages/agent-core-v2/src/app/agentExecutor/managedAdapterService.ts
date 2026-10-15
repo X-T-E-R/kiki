@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { basename, dirname, isAbsolute, join } from 'pathe';
+import { basename, dirname, isAbsolute, join, normalize, relative } from 'pathe';
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { registerScopedService, ScopeActivation } from '#/_base/di/scope';
@@ -49,6 +49,11 @@ interface OwnedAdapterFile {
   readonly bytes: Uint8Array;
 }
 
+export interface ManagedAdapterRemoval {
+  readonly resources: 'removed' | 'retained' | 'not_owned';
+  readonly reason?: string;
+}
+
 export interface IManagedAdapterService {
   readonly _serviceBrand: undefined;
   list(): Promise<readonly ManagedAdapterStatus[]>;
@@ -56,6 +61,7 @@ export interface IManagedAdapterService {
   installable(id: string): Promise<boolean>;
   install(id: string): Promise<ManagedAdapterStatus>;
   rollback(id: string): Promise<ManagedAdapterStatus>;
+  removeOwnedResources(id: string, descriptor: AgentExecutorDescriptor | undefined): Promise<ManagedAdapterRemoval>;
 }
 
 export const IManagedAdapterService: ServiceIdentifier<IManagedAdapterService> =
@@ -455,6 +461,150 @@ export class ManagedAdapterService implements IManagedAdapterService {
     return true;
   }
 
+  removeOwnedResources(id: string, descriptor: AgentExecutorDescriptor | undefined): Promise<ManagedAdapterRemoval> {
+    return this.serialize(id, () => this.removeOwned(id, descriptor));
+  }
+
+  private async removeOwned(id: string, descriptor: AgentExecutorDescriptor | undefined): Promise<ManagedAdapterRemoval> {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(id)) {
+      return { resources: 'not_owned', reason: 'executor id is not a managed install key' };
+    }
+    const home = await this.canonical(this.bootstrap.homeDir);
+    if (home === undefined) return { resources: 'retained', reason: 'kiki home could not be read' };
+    const state = await this.documents.get<ManagedAdapterState>(MANAGED_ADAPTER_SCOPE, id);
+    const recorded = state?.active.targetDir;
+    if (recorded === undefined || !isAbsolute(recorded)) {
+      return { resources: 'not_owned', reason: 'no recorded managed installation' };
+    }
+    const target = await this.canonical(recorded);
+    if (target === undefined) return { resources: 'retained', reason: 'owned installation could not be read' };
+    if (!pathInside(home, target)) return { resources: 'not_owned', reason: 'managed installation is outside the kiki home' };
+    let bundleRoot: string | undefined;
+    try {
+      bundleRoot = await this.canonical(await this.ownedBundleRoot());
+    } catch {
+      bundleRoot = undefined;
+    }
+    if (bundleRoot !== undefined && pathOverlaps(bundleRoot, target)) {
+      return { resources: 'not_owned', reason: 'source tree is not a managed install' };
+    }
+    let ownedBytes = false;
+    try {
+      const bundle = await this.readOwnedBundle(false);
+      const production = await this.readProduction(target);
+      ownedBytes = bundle !== undefined && sameProduction(production, bundle);
+      const active = state?.active;
+      if (!ownedBytes && active !== undefined) {
+        const snapshot = await this.snapshotFiles(id, active);
+        ownedBytes = snapshot !== undefined && sameProduction(production, snapshot);
+      }
+    } catch {
+      return { resources: 'retained', reason: 'owned installation could not be read' };
+    }
+    const audits = [join(target, 'audit')];
+    const configured = descriptor?.env?.['AGY_BRIDGE_AUDIT_DIR']?.trim();
+    if (configured !== undefined && configured.length > 0 && isAbsolute(configured)) audits.push(configured);
+    if (await this.bindingRetained(audits)) {
+      return { resources: 'retained', reason: 'a live or recoverable binding is still present' };
+    }
+    if (!ownedBytes) {
+      await this.deleteSnapshotTree(id, home, bundleRoot);
+      await this.documents.delete(MANAGED_ADAPTER_SCOPE, id);
+      return { resources: 'not_owned', reason: 'production files are not the owned adapter' };
+    }
+    const removed = await this.deleteProductionFiles(target);
+    if (!removed) return { resources: 'retained', reason: 'owned files could not be removed' };
+    await this.deleteSnapshotTree(id, home, bundleRoot);
+    await this.documents.delete(MANAGED_ADAPTER_SCOPE, id);
+    return { resources: 'removed' };
+  }
+
+  private async canonical(path: string): Promise<string | undefined> {
+    try {
+      return normalize(await this.fs.realpath(path));
+    } catch (error) {
+      if (absentOwnedFile(error)) return normalize(path);
+      return undefined;
+    }
+  }
+
+  private async snapshotFiles(id: string, installation: ManagedAdapterInstallation): Promise<readonly OwnedAdapterFile[] | undefined> {
+    const root = this.snapshotDir(id, installation);
+    const files: OwnedAdapterFile[] = [];
+    for (const name of SOURCE_OWNED_ADAPTER_FILES) {
+      try {
+        files.push({ name, bytes: await this.fs.readBytes(join(root, name)) });
+      } catch (error) {
+        if (!absentOwnedFile(error)) throw error;
+      }
+    }
+    return files.length === SOURCE_OWNED_ADAPTER_FILES.length ? files : undefined;
+  }
+
+  private async bindingRetained(dirs: readonly string[]): Promise<boolean> {
+    for (const dir of dirs) {
+      if (!isAbsolute(dir)) continue;
+      let entries;
+      try {
+        entries = await this.fs.readdir(dir);
+      } catch (error) {
+        if (absentOwnedFile(error)) continue;
+        return true;
+      }
+      for (const entry of entries) {
+        const watched = entry.name.endsWith('.resume-lock') || entry.name.endsWith('.ndjson');
+        if (!watched) continue;
+        if (entry.isSymbolicLink === true || !entry.isFile) return true;
+        const path = join(dir, entry.name);
+        const bytes = await this.readBounded(path, entry.name.endsWith('.resume-lock') ? 4_096 : 1_048_576);
+        if (bytes === 'oversize' || bytes === 'unreadable') return true;
+        if (entry.name.endsWith('.resume-lock')) {
+          if (resumeLockState(bytes) !== 'dead') return true;
+        } else if (auditRecovers(new TextDecoder('utf8', { fatal: false }).decode(bytes))) return true;
+      }
+    }
+    return false;
+  }
+
+  private async readBounded(path: string, maxBytes: number): Promise<Uint8Array | 'oversize' | 'unreadable'> {
+    try {
+      const stat = await this.fs.stat(path);
+      if (!stat.isFile || stat.size > maxBytes) return 'oversize';
+      return await this.fs.readBytes(path);
+    } catch {
+      return 'unreadable';
+    }
+  }
+
+  private async deleteProductionFiles(target: string): Promise<boolean> {
+    const paths: string[] = [];
+    for (const name of SOURCE_OWNED_ADAPTER_FILES) {
+      const path = join(target, name);
+      if (basename(path) !== name) return false;
+      try {
+        const stat = await this.fs.lstat(path);
+        if (stat.isSymbolicLink === true) return false;
+        paths.push(path);
+      } catch (error) {
+        if (!absentOwnedFile(error)) return false;
+      }
+    }
+    try {
+      for (const path of paths) await this.fs.remove(path);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async deleteSnapshotTree(id: string, home: string, bundleRoot: string | undefined): Promise<void> {
+    const snapshotRoot = join(this.bootstrap.homeDir, 'tools', 'managed-executors', id);
+    const canonical = await this.canonical(snapshotRoot);
+    if (canonical === undefined || !pathInside(home, canonical)) return;
+    if (bundleRoot !== undefined && pathOverlaps(bundleRoot, canonical)) return;
+    await this.fs.remove(canonical);
+  }
+
   private serialize<T>(id: string, action: () => Promise<T>): Promise<T> {
     const previous = this.tails.get(id) ?? Promise.resolve();
     const work = previous.catch(() => undefined).then(action);
@@ -505,6 +655,38 @@ export class ManagedAdapterService implements IManagedAdapterService {
       await child.dispose();
     }
   }
+}
+
+function pathInside(root: string, candidate: string): boolean {
+  const rel = relative(normalize(root), normalize(candidate));
+  return rel !== '' && rel !== '.' && !rel.startsWith('..') && !isAbsolute(rel);
+}
+
+function pathOverlaps(left: string, right: string): boolean {
+  const a = normalize(left);
+  const b = normalize(right);
+  return a === b || pathInside(a, b) || pathInside(b, a);
+}
+
+function resumeLockState(bytes: Uint8Array): 'alive' | 'dead' | 'uncertain' {
+  try {
+    const parsed = JSON.parse(new TextDecoder('utf8', { fatal: false }).decode(bytes)) as { pid?: unknown };
+    const pid = parsed.pid;
+    if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0) return 'uncertain';
+    try {
+      process.kill(pid, 0);
+      return 'alive';
+    } catch (error) {
+      const code = error instanceof Error && 'code' in error ? (error as NodeJS.ErrnoException).code : undefined;
+      return code === 'ESRCH' ? 'dead' : 'uncertain';
+    }
+  } catch {
+    return 'uncertain';
+  }
+}
+
+function auditRecovers(text: string): boolean {
+  return /"type"\s*:\s*"(?:session_new|launch|agy_init)"/u.test(text);
 }
 
 function absentOwnedFile(error: unknown): boolean {

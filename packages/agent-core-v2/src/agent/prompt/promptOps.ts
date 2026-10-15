@@ -35,6 +35,7 @@ export const promptRetryReceiptSchema = z.object({
   message: z.custom<ContextMessage>().optional(),
   execution: z.custom<import('./prompt').PromptExecutionBinding>().optional(),
   deferredDisabledTools: z.array(z.string()).optional(),
+  contentRanges: z.array(z.object({ index: z.number().int().nonnegative(), start: z.number().int().nonnegative(), end: z.number().int().nonnegative() })).optional(),
 });
 
 export type PromptRetryReceipt = z.infer<typeof promptRetryReceiptSchema>;
@@ -94,5 +95,6 @@ export const promptRetryReceiptKey = defineState('promptRetryReceipt', (): Map<s
       status: 'queued', createdAt: prompt.createdAt, appendTiming: prompt.appendTiming, revision: prompt.revision,
       userMessageId: prompt.userMessageId, message: castDraft(prompt.message),
       execution: castDraft(prompt.execution), deferredDisabledTools: castDraft(prompt.deferredDisabledTools),
+      contentRanges: castDraft(prompt.retryContentRanges),
     } });
   });

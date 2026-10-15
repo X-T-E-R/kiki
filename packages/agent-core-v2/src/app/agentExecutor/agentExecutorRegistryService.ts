@@ -49,7 +49,7 @@ import {
   type AgentExecutorConfig,
   type AgentExecutorsConfig,
 } from './configSection';
-import { MANAGED_ADAPTER_SCOPE, withManagedAdapterSource, type ManagedAdapterState } from './managedAdapterRegistry';
+import { executorModelProbe, MANAGED_ADAPTER_SCOPE, withManagedAdapterSource, type ManagedAdapterState } from './managedAdapterRegistry';
 import { wrapWindowsNodeShims } from './windowsNodeShim';
 import { ANTIGRAVITY_CACHE_SCOPE, type AntigravityCacheState } from './antigravityService';
 import { antigravityCacheRoot, antigravityRelease } from './antigravityDistribution';
@@ -117,21 +117,31 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
   recordNegotiated(id: string, version: string | undefined, capabilities: NegotiatedExecutorCapabilities): void {
     const descriptor = this.get(id);
     if (descriptor === undefined) return;
+    const cached = this.negotiatedById.get(id);
+    const previous = cached?.revision === descriptor.revision ? cached : undefined;
+    const previousCatalog = previous?.catalog;
+    const models = advertisedDimension(capabilities.models, previousCatalog?.models);
+    const thinkingLevels = advertisedDimension(capabilities.thinkingLevels, previousCatalog?.thinkingLevels);
+    const keptProbeModels = capabilities.models === undefined
+      && previousCatalog?.source === 'cli_probe'
+      && (previousCatalog.models.state === 'ready' || previousCatalog.models.state === 'partial');
     this.negotiatedById.set(id, {
       revision: descriptor.revision,
-      version,
-      capabilities,
+      version: keptProbeModels ? previous?.version : version,
+      capabilities: { ...previous?.capabilities, ...definedCapabilities(capabilities) },
       catalog: {
         executorId: id,
         descriptorRevision: descriptor.revision,
-        version,
-        source: 'negotiated',
-        provenance: 'acp_negotiation',
+        version: keptProbeModels ? previousCatalog?.version : version,
+        catalogProgramVersion: previousCatalog?.catalogProgramVersion,
+        catalogCommand: previousCatalog?.catalogCommand,
+        source: keptProbeModels ? 'cli_probe' : 'negotiated',
+        provenance: keptProbeModels ? 'read_only_cli_probe' : 'acp_negotiation',
         observedAt: Date.now(),
-        models: capabilityDimension(capabilities.models),
-        thinkingLevels: capabilityDimension(capabilities.thinkingLevels),
-        context: contextCapabilities(capabilities),
-        controls: executorControlCapabilities(descriptor),
+        models,
+        thinkingLevels,
+        context: contextCapabilities({ ...previous?.capabilities, ...definedCapabilities(capabilities) }),
+        controls: executorControlCapabilities(descriptor, models),
       },
     });
   }
@@ -139,9 +149,11 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
   async refreshExecutorCapabilityCatalog(id: string): Promise<ExecutorCapabilityCatalog> {
     const descriptor = this.get(id);
     if (descriptor === undefined) throw new Error2(ErrorCodes.CONFIG_INVALID, `Unknown agent executor "${id}"`);
-    if (descriptor.modelProbe === undefined) {
+    const modelProbe = executorModelProbe(descriptor);
+    const probing = modelProbe === descriptor.modelProbe ? descriptor : { ...descriptor, modelProbe };
+    if (probing.modelProbe === undefined) {
       const existing = this.negotiatedById.get(id)?.catalog;
-      if (existing !== undefined) return existing;
+      if (existing?.descriptorRevision === descriptor.revision) return existing;
       const unknown = {
         executorId: id,
         descriptorRevision: descriptor.revision,
@@ -169,7 +181,7 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
       controls: executorControlCapabilities(descriptor),
     });
     try {
-      const managed = await this.#withManagedSource(descriptor);
+      const managed = await this.#withManagedSource(probing);
       const probes = await resolveExecutorSource(
         managed,
         this.#probeProcessService(),
@@ -196,7 +208,7 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
         models: catalog.models,
         thinkingLevels: { state: 'unknown', diagnostic: 'Thinking levels require executor negotiation' },
         context: unknownContextCapabilities(),
-        controls: executorControlCapabilities(descriptor),
+        controls: executorControlCapabilities(descriptor, catalog.models),
       };
       this.recordExecutorCapabilityCatalog(snapshot);
       return snapshot;
@@ -225,7 +237,7 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
     this.negotiatedById.set(catalog.executorId, {
       revision: catalog.descriptorRevision,
       version: catalog.version,
-      capabilities: current?.capabilities ?? {},
+      capabilities: current?.revision === catalog.descriptorRevision ? current.capabilities : {},
       catalog,
     });
   }
@@ -566,6 +578,22 @@ export function descriptorRevisionFromConfig(config: AgentExecutorConfig): strin
     declaredRevision: config.revision,
   });
   return createHash('sha256').update(canonical).digest('hex');
+}
+
+function definedCapabilities(capabilities: NegotiatedExecutorCapabilities): NegotiatedExecutorCapabilities {
+  return Object.fromEntries(Object.entries(capabilities).filter(([, value]) => value !== undefined)) as NegotiatedExecutorCapabilities;
+}
+
+function advertisedDimension(
+  advertised: readonly string[] | undefined,
+  previous: ExecutorCapabilityDimension | undefined,
+): ExecutorCapabilityDimension {
+  if (advertised === undefined) {
+    return previous?.state === 'ready' || previous?.state === 'partial'
+      ? previous
+      : { state: 'unknown' };
+  }
+  return capabilityDimension(advertised);
 }
 
 function capabilityDimension(values: readonly string[] | undefined): ExecutorCapabilityDimension {

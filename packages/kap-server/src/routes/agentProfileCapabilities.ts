@@ -251,7 +251,7 @@ export async function agentCapabilities(
     const mutableUsageRecords: Record<string, number> = Object.create(null);
     for (const handle of lifecycle?.list() ?? []) {
       const accounting = handle.accessor.get(IAgentStateService).get(panelAccountingKey);
-      if (accounting.incomplete) {
+      if (accounting.incomplete && (accounting.knownRecords === undefined || accounting.knownByModel === undefined)) {
         mutableAgentIds.push(handle.id);
         mutableUsageRecords[handle.id] = accounting.records;
       }
@@ -273,6 +273,17 @@ export async function agentCapabilities(
         complete: query.metrics_settle === true,
       },
     );
+    if (query.metrics_only === true) {
+      const metrics = { ...persisted };
+      for (const handle of lifecycle?.list() ?? []) {
+        if (!metricAgentIds.includes(handle.id)) continue;
+        metrics[handle.id] = mergeAgentPanelMetrics(persisted[handle.id], readAgentPanelMetrics(handle, pricing));
+      }
+      return {
+        context: 'live', live: agent !== undefined, owner: { agent_id: query.agent_id },
+        available: false, targets: [], metrics,
+      };
+    }
     if (agent === undefined) {
       if (session === undefined || workspaceId === undefined) {
         const snapshot = workspaceId === undefined ? undefined : await readPersistedAgentProfileSnapshot(

@@ -23,7 +23,7 @@ export const contentRefSchema = z.object({
 });
 
 export const contentWindowSchema = z.object({
-  contentRefs: z.array(contentRefSchema).optional(),
+  contentRefs: z.array(contentRefSchema).readonly().optional(),
 });
 
 /** Backward pages carry their canonical start; next.offset equals start and disappears at zero. Values remain in source order. */

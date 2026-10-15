@@ -16,6 +16,12 @@ import {
 } from '../rest/prompt';
 
 describe('promptSubmissionSchema', () => {
+  it.each(['engine-default', 'specialist', null])('carries native agent %s through the public executor selection without a role file', (nativeAgent) => {
+    const input = { content: [{ type: 'text', text: 'Neutral task' }], execution: { executor: 'neutral-harness', overrides: { native_agent: nativeAgent, inject_kiki_mcp: false } } };
+    expect(promptSubmissionSchema.parse(input)).toEqual(input);
+    expect(promptSubmissionSchema.safeParse({ ...input, execution: { executor: 'neutral-harness', overrides: { native_agent: ' ' } } }).success).toBe(false);
+  });
+
   it('accepts a minimal text-only submission with no controls', () => {
     const parsed = promptSubmissionSchema.parse({
       content: [{ type: 'text', text: 'hi' }],
@@ -200,6 +206,17 @@ describe('promptSubmissionSchema', () => {
         thinking: '' as unknown,
       }).success,
     ).toBe(false);
+  });
+
+  it('accepts null thinking as restore-default and leaves an omission undefined', () => {
+    const cleared = promptSubmissionSchema.safeParse({
+      content: [{ type: 'text', text: 'hi' }],
+      thinking: null,
+    });
+    expect(cleared.success).toBe(true);
+    if (cleared.success) expect(cleared.data.thinking).toBeNull();
+    const kept = promptSubmissionSchema.parse({ content: [{ type: 'text', text: 'hi' }] });
+    expect(kept.thinking).toBeUndefined();
   });
 
   it('rejects unknown permission_mode', () => {

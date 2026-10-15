@@ -65,15 +65,18 @@ describe('browser REST persisted configuration and explicit secret access', () =
     const listed = status.candidates ?? [];
     if (listed.length > 0) {
       const chosen = listed[0]!.browserId;
-      expect(await read('POST', '/browser/setup/codex-browser:connect', { connectionId: 'codex-browser', browserId: chosen })).toMatchObject({
-        state: 'ready', reason: 'approval_unproven', connectionId: 'codex-browser', browserId: chosen,
-      });
-      expect(browserControlListSchema.parse((await request('GET', '/browser/connections')).data).connections).toEqual([
+      const saved = await read('POST', '/browser/setup/codex-browser:connect', { connectionId: 'codex-browser', browserId: chosen });
+      expect(saved.reason).toBeUndefined();
+      expect(saved).toMatchObject({ state: 'ready', connectionId: 'codex-browser', browserId: chosen });
+      const control = browserControlListSchema.parse((await request('GET', '/browser/connections')).data);
+      expect(control.enabled).toBe(true);
+      expect(control.allowedBrowsersConfigured).toBe(false);
+      expect(control.connections).toEqual([
         expect.objectContaining({ id: 'codex-browser', type: 'codex-extension', browserId: chosen, status: expect.objectContaining({ state: 'idle' }) }),
       ]);
-      expect(await read('POST', '/browser/setup/codex-browser:connect', { connectionId: 'codex-browser' })).toMatchObject({
-        state: 'ready', reason: 'approval_unproven', browserId: chosen,
-      });
+      const again = await read('POST', '/browser/setup/codex-browser:connect', { connectionId: 'codex-browser' });
+      expect(again.reason).toBeUndefined();
+      expect(again).toMatchObject({ state: 'ready', browserId: chosen });
     }
     const prepared = await read('POST', '/browser/setup/codex-browser:prepare', { consent: true });
     if (prepared.state === 'preparing') {

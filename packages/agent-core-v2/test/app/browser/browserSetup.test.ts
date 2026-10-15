@@ -547,7 +547,7 @@ it('saves an explicit Codex pipe and does not treat that as a connection or an a
     const hyphen = 'codex-browser-use-11111111-2222-4333-8444-555555555555';
     const slash = 'codex-browser-use\\11111111-2222-4333-8444-555555555555';
     const spawn = vi.fn(async () => ({ stdout: Readable.from([`${hyphen}\r\n${slash}\r\nfirst-pipe\r\n`]), stderr: Readable.from(['']), wait: () => Promise.resolve(0), dispose: () => undefined }));
-    const f = fixture({ home, hostProcess: { spawn } as never });
+    const f = fixture({ home, hostProcess: { spawn } as never, hostFs: new HostFileSystem() });
     const status = browserSetupStatusSchema.parse(await f.setup.status('codex-browser'));
     expect(status.steps.find((step) => step.id === 'driver')?.state).toBe('ready');
     expect(status.candidates).toEqual([{ browserId: hyphen }, { browserId: slash }]);
@@ -559,14 +559,21 @@ it('saves an explicit Codex pipe and does not treat that as a connection or an a
     expect(await f.setup.connect('codex-browser', { connectionId: 'codex-browser', browserId: 'codex-browser-use-99999999-2222-4333-8444-555555555555' })).toMatchObject({ reason: 'choose_connection' });
     expect(f.upsert).not.toHaveBeenCalled();
     const saved = browserSetupStatusSchema.parse(await f.setup.connect('codex-browser', { connectionId: 'codex-browser', browserId: slash, name: 'Desk' }));
-    expect(saved).toMatchObject({ state: 'ready', reason: 'approval_unproven', connectionId: 'codex-browser', browserId: slash });
+    expect(saved.reason).toBeUndefined();
+    expect(saved).toMatchObject({ state: 'ready', connectionId: 'codex-browser', browserId: slash });
+    expect(saved.steps.find((step) => step.id === 'desktop-app')).toMatchObject({ state: 'warning', reason: 'external_pipe' });
     expect(saved.state).not.toBe('connected');
     expect(f.connect).not.toHaveBeenCalled();
     expect(f.upsert).toHaveBeenCalledWith('codex-browser', expect.objectContaining({ type: 'codex-extension', browserId: slash, name: 'Desk', runtimeRoot: codexBridgeResourcePaths(home).binary }));
-    expect(await f.setup.connect('codex-browser', { connectionId: 'codex-browser' })).toMatchObject({ state: 'ready', reason: 'approval_unproven', browserId: slash });
+    const again = await f.setup.connect('codex-browser', { connectionId: 'codex-browser' });
+    expect(again.reason).toBeUndefined();
+    expect(again).toMatchObject({ state: 'ready', browserId: slash });
     expect(f.connect).not.toHaveBeenCalled();
     await writeFile(codexBridgeResourcePaths(home).binary, 'damaged');
-    expect(await f.setup.status('codex-browser')).toMatchObject({ state: 'not_prepared', reason: 'artifact_mismatch' });
+    const damaged = await f.setup.status('codex-browser');
+    expect(damaged.reason).toBeUndefined();
+    expect(damaged.state).toBe('ready');
+    expect(damaged.steps.find((step) => step.id === 'driver')).toMatchObject({ state: 'warning', reason: 'artifact_unverified' });
     expect(f.connect).not.toHaveBeenCalled();
   } finally { await rm(home, { recursive: true, force: true }); }
 });

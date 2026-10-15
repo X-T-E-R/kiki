@@ -33,6 +33,7 @@ export const goalInitialStatusSchema = z.enum(['active', 'paused']);
 export type GoalInitialStatus = z.infer<typeof goalInitialStatusSchema>;
 
 export const promptSubmissionSchema = z.object({
+  admission: z.literal('durable').optional(),
   execution: executionSelectionSchema.optional(),
   after_model_switch: z.string().min(1).optional(),
   model_switch_mode: z.enum(['direct', 'compact', 'fresh']).optional(),
@@ -74,6 +75,9 @@ export const promptStatusSchema = z.enum(['running', 'queued', 'blocked']);
 export type PromptStatus = z.infer<typeof promptStatusSchema>;
 
 export const promptItemSchema = z.object({
+  admission: z.enum(['restoring', 'admitted', 'failed', 'cancelled', 'held']).optional(),
+  admission_error: z.object({ code: z.number().int(), message: z.string() }).optional(),
+  admission_content_truncated: z.boolean().optional(),
   runtime_controls: transcriptPromptRuntimeControlsSchema.optional(),
   prompt_id: z.string().min(1),
   user_message_id: z.string().min(1),
@@ -93,6 +97,8 @@ export type PromptItem = z.infer<typeof promptItemSchema>;
 export const promptListResponseSchema = z.object({
   active: promptItemSchema.nullable(),
   queued: z.array(promptItemSchema),
+  ingress: z.array(promptItemSchema).optional(),
+  ingress_next_cursor: z.string().optional(),
 });
 export type PromptListResponse = z.infer<typeof promptListResponseSchema>;
 

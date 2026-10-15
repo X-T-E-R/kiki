@@ -217,6 +217,7 @@ export interface PromptEnqueuedPayload {
   readonly queueIndex: number;
   readonly retryFingerprint?: string;
   readonly retryStatus?: 'running' | 'queued';
+  readonly retryContentRanges?: readonly import('./prompt').PromptContentRange[];
 }
 
 const promptEnqueuedSchema = z.object({
@@ -234,6 +235,7 @@ const promptEnqueuedSchema = z.object({
   queueIndex: z.number().int().nonnegative(),
   retryFingerprint: z.string().optional(),
   retryStatus: z.enum(['running', 'queued']).optional(),
+  retryContentRanges: z.array(z.object({ index: z.number().int().nonnegative(), start: z.number().int().nonnegative(), end: z.number().int().nonnegative() })).optional(),
 });
 
 export class PromptEnqueued extends Event2<PromptEnqueuedPayload> {
@@ -253,6 +255,7 @@ promptRetryReceiptKey.on(PromptEnqueued, (state, event) => {
     status: event.retryStatus ?? 'queued', createdAt: event.createdAt, appendTiming: event.appendTiming,
     revision: event.revision, userMessageId: event.userMessageId, message: castDraft(event.message),
     execution: castDraft(event.execution), deferredDisabledTools: castDraft(event.deferredDisabledTools),
+    contentRanges: castDraft(event.retryContentRanges),
   } });
 });
 
@@ -745,6 +748,7 @@ export class AgentPromptService implements IAgentPromptService {
   private active: (Record & { turn: Turn }) | undefined;
   private readonly pending: Record[] = [];
   private readonly immediatePromptIds = new Set<string>();
+  private readonly appliedThinkingClears = new Set<string>();
   private readonly queuedExternalSteerIds = new Set<string>();
   private readonly steered = new Map<string, Record[]>();
   private readonly steeredTurnIds = new Map<string, number>();
@@ -805,9 +809,10 @@ export class AgentPromptService implements IAgentPromptService {
       await this.restorePendingQueue();
       await next();
     });
-    eventBus.subscribe(TaskSettlementReady, () => {
+    const taskSettlementSubscription = eventBus.subscribe(TaskSettlementReady, () => {
       void this.startNext();
     });
+    instantiation.onWillDispose(() => taskSettlementSubscription.dispose());
     toolExecutor.hooks.onDidExecuteTool.register('prompt-service-delivery', async (ctx, next) => {
       await this.deliverToolResult(ctx);
       await next();
@@ -1096,7 +1101,7 @@ export class AgentPromptService implements IAgentPromptService {
     },
   };
 
-  [promptAdmission](promptId?: string, durableAcceptance = false, retryFingerprint?: string): PromptReservation {
+  [promptAdmission](promptId?: string, durableAcceptance = false, retryFingerprint?: string, options?: import('./prompt').PromptAdmissionOptions): PromptReservation {
     if (promptId !== undefined && promptId.length === 0) {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'prompt_id must not be empty');
     }
@@ -1137,7 +1142,10 @@ export class AgentPromptService implements IAgentPromptService {
           if (durableAcceptance) await this.wire.flush();
         }
         if (signal?.aborted) throw submissionCancelled(id);
-        return this.enqueue({ id, message, execution, appendTiming, deferredDisabledTools, signal, retryFingerprint });
+        const handle = await this.enqueue({ id, message, execution, appendTiming, deferredDisabledTools, signal, retryFingerprint,
+          waitForLaunch: options?.waitForLaunch, retryContentRanges: options?.contentRanges });
+        if (durableAcceptance) await this.wire.flush();
+        return handle;
       },
       dispose: () => {
         reservation.release();
@@ -1281,7 +1289,8 @@ export class AgentPromptService implements IAgentPromptService {
       revision: record.revision,
       queueIndex: this.queueOrder.length,
       retryFingerprint: input.retryFingerprint,
-      retryStatus: queued ? 'queued' : 'running',
+      retryStatus: queued || input.waitForLaunch === false ? 'queued' : 'running',
+      retryContentRanges: input.retryContentRanges,
     };
     if (input.commitHistoryRewrite === undefined) {
       await this.dispatcher.dispatch(new PromptEnqueued(enqueued));
@@ -1675,7 +1684,6 @@ export class AgentPromptService implements IAgentPromptService {
     const hasQueuedModelSwitch = persisted.order.some((id) => this.isQueuedModelSwitch(id));
     if (recovered > 0 || hasQueuedModelSwitch) this.recoveryHold = true;
     else if (this.recoveryQueueCount() === 0) this.recoveryHold = false;
-    if (this.recoveryHold) this.publishQueueHoldChanged();
   }
 
   private async rememberOriginalPromptMessage(
@@ -2423,18 +2431,24 @@ export class AgentPromptService implements IAgentPromptService {
     if (execution.modelSwitchMode !== undefined && (promptId === undefined || this.switchEngine.get(`prompt:${promptId}`)?.state !== 'completed')) return true;
     if (execution.afterModelSwitch !== undefined && this.isDependencyReady(execution)) execution = this.resolveExecutionBinding(execution)!;
     const profile = this.profile.data();
+    const thinkingChanged = execution.thinking === null
+      ? promptId === undefined || !this.appliedThinkingClears.has(promptId)
+      : execution.thinking !== undefined && execution.thinking !== profile.thinkingLevel;
     return execution.execution !== undefined || (execution.profile !== undefined && execution.profile !== profile.profileName) ||
       (execution.model !== undefined && execution.model !== profile.modelAlias) ||
-      (execution.thinking !== undefined && execution.thinking !== profile.thinkingLevel) ||
+      thinkingChanged ||
       (execution.permissionMode !== undefined && execution.permissionMode !== this.permissionMode.mode) ||
       (execution.planGate !== undefined && execution.planGate !== this.plan.planGate);
   }
 
   private async applyPromptExecutionBinding(item: Record, execution: PromptExecutionBinding | undefined, shared: RefCountedDisposable, assertCurrent: () => void, signal?: AbortSignal): Promise<void> {
-    if (execution?.modelSwitchMode === undefined) return this.applyExecutionBinding(execution, assertCurrent);
-    if ((this.profile.data().executorId ?? 'native') !== 'native') {
-      if (execution.modelSwitchMode !== 'direct') throw new Error2(ErrorCodes.REQUEST_INVALID, 'This executor does not support rebuilding a prompt-bound model switch context window.');
-      return this.applyExecutionBinding(execution, assertCurrent);
+    if (execution?.modelSwitchMode === undefined || (this.profile.data().executorId ?? 'native') !== 'native') {
+      if (execution?.modelSwitchMode !== undefined && execution.modelSwitchMode !== 'direct') {
+        throw new Error2(ErrorCodes.REQUEST_INVALID, 'This executor does not support rebuilding a prompt-bound model switch context window.');
+      }
+      await this.applyExecutionBinding(execution, assertCurrent);
+      if (execution?.thinking === null) this.appliedThinkingClears.add(item.id);
+      return;
     }
     const controller = new AbortController();
     const abort = () => controller.abort(signal?.reason);
@@ -2443,8 +2457,9 @@ export class AgentPromptService implements IAgentPromptService {
     this.promptSwitchControllers.set(item.id, controller);
     try {
       controller.signal.throwIfAborted();
-      const prepared = await this.profile.prepareModelSwitchBinding(execution.model!, execution.thinking);
-      const receipt = await this.switchEngine.execute({ operationId: `prompt:${item.id}`, model: execution.model!, thinking: execution.thinking, mode: execution.modelSwitchMode }, {
+      const switchThinking = typeof execution.thinking === 'string' ? execution.thinking : undefined;
+      const prepared = await this.profile.prepareModelSwitchBinding(execution.model!, switchThinking);
+      const receipt = await this.switchEngine.execute({ operationId: `prompt:${item.id}`, model: execution.model!, thinking: switchThinking, mode: execution.modelSwitchMode }, {
         signal: controller.signal,
         binding: { ...prepared, assertCurrent: () => { prepared.assertCurrent(); controller.signal.throwIfAborted(); assertCurrent(); } },
         quiescence: () => { shared.acquire(); return toDisposable(async () => { await shared.release(); }); },
@@ -2458,6 +2473,7 @@ export class AgentPromptService implements IAgentPromptService {
 
   private async applyExecutionBinding(execution: PromptExecutionBinding | undefined, assertCurrent?: () => void): Promise<void> {
     const binding = this.profile.data();
+    const concreteThinking = typeof execution?.thinking === 'string' ? execution.thinking : undefined;
     if (
       execution?.execution === undefined &&
       binding.driver !== 'external' &&
@@ -2469,13 +2485,32 @@ export class AgentPromptService implements IAgentPromptService {
       await this.profile.bind({
         profile: execution?.profile,
         model: execution?.model,
-        thinking: execution?.thinking,
-        strictThinking: execution?.thinking !== undefined,
+        thinking: concreteThinking,
+        strictThinking: concreteThinking !== undefined,
       }, assertCurrent);
       await this.syncProfileBindingMetadata();
       return;
     }
     if (execution === undefined) return;
+    if (execution.thinking === null && execution.execution === undefined && execution.profile === undefined) {
+      const currentExecution = this.profile.data().execution;
+      if (currentExecution !== undefined) {
+        await this.profile.bind({
+          execution: {
+            ...currentExecution.selection,
+            overrides: { ...currentExecution.selection.overrides, thinking: null },
+          },
+          model: execution.model,
+          thinking: null,
+        }, assertCurrent);
+      } else {
+        if (execution.model !== undefined) await this.profile.setModel(execution.model, assertCurrent);
+        assertCurrent?.();
+        this.profile.restoreDefaultThinking();
+      }
+      await this.syncProfileBindingMetadata();
+      return;
+    }
     if (execution.execution !== undefined) {
       await this.profile.bind({ execution: { ...execution.execution, overrides: {
         ...execution.execution.overrides,
@@ -2487,8 +2522,8 @@ export class AgentPromptService implements IAgentPromptService {
       return;
     }
     const currentExecution = this.profile.data().execution;
-    if (currentExecution !== undefined && execution.profile === undefined && (execution.model !== undefined || execution.thinking !== undefined)) {
-      await this.profile.bind({ execution: currentExecution.selection, model: execution.model, thinking: execution.thinking }, assertCurrent);
+    if (currentExecution !== undefined && execution.profile === undefined && (execution.model !== undefined || concreteThinking !== undefined)) {
+      await this.profile.bind({ execution: currentExecution.selection, model: execution.model, thinking: concreteThinking }, assertCurrent);
       await this.syncProfileBindingMetadata();
       return;
     }
@@ -2501,16 +2536,19 @@ export class AgentPromptService implements IAgentPromptService {
       await this.profile.bind({
         profile: execution.profile,
         model: execution.model,
-        thinking: execution.thinking,
-        strictThinking: execution.thinking !== undefined,
+        thinking: concreteThinking,
+        strictThinking: concreteThinking !== undefined,
       }, assertCurrent);
       profileChanged = true;
       thinkingConsumed = execution.thinking !== undefined;
     }
     if (execution.model !== undefined) await this.profile.setModel(execution.model, assertCurrent);
-    if (execution.thinking !== undefined && !thinkingConsumed) {
+    if (concreteThinking !== undefined && !thinkingConsumed) {
       assertCurrent?.();
-      this.profile.setThinking(execution.thinking);
+      this.profile.setThinking(concreteThinking);
+    } else if (execution.thinking === null && !thinkingConsumed) {
+      assertCurrent?.();
+      this.profile.restoreDefaultThinking();
     }
     if (profileChanged || execution.thinking !== undefined) await this.syncProfileBindingMetadata();
   }

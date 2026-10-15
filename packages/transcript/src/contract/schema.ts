@@ -140,7 +140,7 @@ export const textFrameSchema = z.object({
   role: z.enum(['assistant', 'user']),
   text: z.string(),
   presentation: textPresentationSchema.optional(),
-  attachmentIds: z.array(z.string()).optional(),
+  attachmentIds: z.array(z.string()).readonly().optional(),
   resourceLink: z.object({
     uri: z.string(), name: z.string().optional(), mimeType: z.string().optional(), size: z.number().optional(),
     title: z.string().optional(), description: z.string().optional(),
@@ -194,7 +194,7 @@ export const toolCallFrameSchema = z.object({
   taskId: taskIdSchema.optional(),
   approvalId: z.string().optional(),
   todoId: z.string().optional(),
-  agentRefs: z.array(agentRefSchema).optional(),
+  agentRefs: z.array(agentRefSchema).readonly().optional(),
 });
 
 export const interactionSchema = z.object({
@@ -262,7 +262,7 @@ export const transcriptTurnSchema = z.object({
   delivery: messageDeliverySchema.optional(),
   prompt: z.string().optional(),
   presentation: textPresentationSchema.optional(),
-  attachmentIds: z.array(z.string()).optional(),
+  attachmentIds: z.array(z.string()).readonly().optional(),
   steps: z.array(transcriptStepSchema),
   startedAt: z.string().optional(),
   endedAt: z.string().optional(),
@@ -585,7 +585,7 @@ export const transcriptPromptRuntimeControlsSchema = z.object({
   profile: z.string().min(1).optional(),
   model: z.string().min(1).optional(),
   modelSwitchMode: z.enum(['direct', 'compact', 'fresh']).optional(),
-  thinking: z.string().min(1).optional(),
+  thinking: z.string().min(1).nullable().optional(),
   permissionMode: z.enum(['manual', 'auto', 'review', 'yolo']).optional(),
   planGate: z.enum(['free', 'gated']).optional(),
   planMode: z.boolean().optional(),

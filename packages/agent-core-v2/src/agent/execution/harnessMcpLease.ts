@@ -4,16 +4,25 @@ import { Error2, ErrorCodes } from '#/errors';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 
+function explicitKikiMcpInjection(binding: AgentExecutorContext['binding']): boolean | undefined {
+  if (binding.execution === undefined) return binding.injectKikiMcp;
+  const value = binding.execution.effective.inject_kiki_mcp;
+  if (value === undefined || binding.execution?.sources['inject_kiki_mcp'] === 'harness-default') return undefined;
+  return value;
+}
+
 export async function acquireHarnessMcp(context: AgentExecutorContext, cwd: string): Promise<HarnessMcpLease | undefined> {
   const capabilities = harnessCapabilities(context.binding);
   const requested = capabilities.delegation === true || Boolean(capabilities.context?.length);
+  const injection = explicitKikiMcpInjection(context.binding);
   const compatible = context.descriptor.supportsMcp !== false &&
     (context.descriptor.mcpTransports === undefined || context.descriptor.mcpTransports.includes('stdio'));
+  if (injection === false) return undefined;
   if (!compatible) {
-    if (requested) throw new Error2(ErrorCodes.CONFIG_INVALID, 'This harness cannot receive the Kiki stdio MCP bridge');
+    if (injection === true || requested) throw new Error2(ErrorCodes.CONFIG_INVALID, 'This harness cannot receive the Kiki stdio MCP bridge');
     return undefined;
   }
-  if (!requested && (context.descriptor.supportsMcp !== true ||
+  if (injection !== true && !requested && (context.descriptor.supportsMcp !== true ||
     context.agent.accessor.get(IAgentScopeContext).parentAgentId === undefined)) return undefined;
   const session = context.agent.accessor.get(ISessionContext);
   return context.agent.accessor.get(IHarnessMcpService).acquire({

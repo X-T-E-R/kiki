@@ -84,7 +84,8 @@ describe('WebBridge pinned supply chain and readiness', () => {
     const status = await service.getCapability('kimi-webbridge');
     expect(status.state).toBe('ready');
     expect(status.steps.filter((step) => !step.optional).map((step) => [step.id, step.state]))
-      .toEqual([['daemon', 'ok'], ['skill', 'ok'], ['extension', 'ok']]);
+      .toEqual([['daemon', 'ok'], ['extension', 'ok']]);
+    expect(status.steps.find((step) => step.id === 'skill')).toMatchObject({ state: 'ok', optional: true });
     expect(status.steps.find((step) => step.id === 'daemon-binary'))
       .toMatchObject({ state: 'missing', optional: true });
     expect(status.steps.find((step) => step.id === 'daemon-identity'))
@@ -156,14 +157,14 @@ describe('WebBridge pinned supply chain and readiness', () => {
     { enabled: true, state: 'error', enabledMcpServerCount: 1, mcpServerCount: 1 },
     { enabled: true, state: 'ok', enabledMcpServerCount: 0, mcpServerCount: 1 },
     { enabled: true, state: 'ok', hasErrors: true, enabledMcpServerCount: 1, mcpServerCount: 1 },
-  ])('does not treat an unavailable plugin as functional: %o', async (pluginState) => {
+  ])('keeps a running connected daemon ready when the plugin skill is unavailable: %o', async (pluginState) => {
     const { entry, plugins } = fixture(root, { status: { running: true, version: 'v2.0.22', extension_connected: true } });
     plugins.listPlugins = vi.fn(async () => [{ id: 'kimi-webbridge', ...pluginState }]) as never;
     const service = new CapabilityService(undefined as never, undefined as never, undefined as never,
       stubLog(), undefined as never, undefined as never, [entry]);
     const status = await service.getCapability('kimi-webbridge');
-    expect(status.state).toBe('partial');
-    expect(status.steps.find((step) => step.id === 'skill')?.state).toBe('missing');
+    expect(status.state).toBe('ready');
+    expect(status.steps.find((step) => step.id === 'skill')).toMatchObject({ state: 'missing', optional: true });
   });
 
   it('reports an already present binary as unverified when its bytes differ from the pinned release', async () => {

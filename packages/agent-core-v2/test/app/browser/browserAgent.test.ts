@@ -7,6 +7,8 @@ import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
 import { AgentBrowserService, IAgentBrowserService, IBrowserConnectionsTool, BrowserConnectionsTool, IBrowserTabsTool, BrowserTabsTool } from '#/agent/tools/browser/browserTools';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
+import { isToolActive } from '#/agent/toolPolicy/evaluate';
 import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
@@ -19,6 +21,10 @@ import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceCo
 import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { IBrowserControlService, type BrowserInvocation, type BrowserInvocationResult } from '#/app/browser/browser';
 import { IBrowserConnectionStore } from '#/app/browser/browserConnectionStore';
+import { IConfigService, type ConfigSectionChangedEvent } from '#/app/config/config';
+import { BROWSER_CONFIG_SECTION } from '#/app/browser/browserConfig';
+import { EXPERIMENTAL_SECTION, IFlagService } from '#/app/flag/flag';
+import { Emitter } from '#/_base/event';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import type { ExecutableToolResult, ToolExecution } from '#/tool/toolContract';
@@ -69,6 +75,9 @@ describe('native browser agent selection, schema and local file channel', () => 
     ix.stub(IAgentRuntimeService, { inspect: () => runtime, prepareFor: async (host) => { expect(host).toBe('local'); return runtime; } });
     ix.stub(ISessionMediaStore, { materialize });
     ix.stub(ISessionInteractionService, { hasConsumer: () => false });
+    ix.stub(IFlagService, { enabled: () => true });
+    ix.stub(IConfigService, { get: <T>() => undefined as T });
+    ix.stub(IAgentToolPolicyService, { isToolActiveForDisclosure: () => true });
     ix.set(IAgentToolRegistryService, new SyncDescriptor(AgentToolRegistryService));
     ix.set(IEventBus, new SyncDescriptor(EventBusService));
     ix.stub(IBrowserControlService, {
@@ -132,6 +141,9 @@ describe('native browser agent selection, schema and local file channel', () => 
     ix.stub(IAgentRuntimeService, {});
     ix.stub(ISessionMediaStore, {});
     ix.stub(ISessionInteractionService, { hasConsumer: () => false });
+    ix.stub(IFlagService, { enabled: () => true });
+    ix.stub(IConfigService, { get: <T>() => undefined as T });
+    ix.stub(IAgentToolPolicyService, { isToolActiveForDisclosure: () => true });
     ix.set(IAgentToolRegistryService, new SyncDescriptor(AgentToolRegistryService));
     const endTurn = vi.fn(async () => undefined);
     const reset = { name: 'codex_browser_js_reset', description: 'Reset bindings, not browser tabs', inputSchema: { type: 'object', properties: {} } };
@@ -197,6 +209,9 @@ describe('native browser agent selection, schema and local file channel', () => 
     ix.stub(IAgentRuntimeService, {});
     ix.stub(ISessionMediaStore, {});
     ix.stub(ISessionInteractionService, { hasConsumer: () => false });
+    ix.stub(IFlagService, { enabled: () => true });
+    ix.stub(IConfigService, { get: <T>() => undefined as T });
+    ix.stub(IAgentToolPolicyService, { isToolActiveForDisclosure: () => true });
     ix.set(IAgentToolRegistryService, new SyncDescriptor(AgentToolRegistryService));
     ix.set(IEventBus, new SyncDescriptor(EventBusService));
     const connect = vi.fn(async () => ({ browser: 'bridge', state: 'ready' as const, executionHost: 'fixture-host', generation: 1 }));
@@ -235,6 +250,154 @@ describe('native browser agent selection, schema and local file channel', () => 
       await service.connections({ action: 'tools', unload: ['codex_dom_snapshot', 'codex_fill', 'codex_click', 'codex_screenshot', 'codex_claim_tab'] });
       expect(registry.resolve('browser__codex_click')).toBeUndefined();
       expect(registry.resolve('browser__codex_screenshot')).toBeUndefined();
+    } finally { ix.dispose(); }
+  });
+
+  it('keeps two same-source browsers distinct, leaves list available for an empty allow set, and restores SDK tools on the same scope', async () => {
+    const ix = new TestInstantiationService();
+    const root = 'C:/components/codex-browser-bridge.exe';
+    const alpha = { id: 'alpha', type: 'codex-extension' as const, name: 'Alpha', enabled: true, runtimeRoot: root, browserId: 'codex-browser-use-alpha' };
+    const beta = { id: 'beta', type: 'codex-extension' as const, name: 'Beta', enabled: true, runtimeRoot: root, browserId: 'codex-browser-use-beta' };
+    const connections = [alpha, beta];
+    let allowed: readonly string[] | undefined = ['alpha', 'beta'];
+    let nativeBrowser = true;
+    const sections = new Emitter<ConfigSectionChangedEvent>();
+    const schema = { type: 'object', properties: { tab_id: { type: 'string' }, url: { type: 'string' } }, required: ['tab_id'] };
+    const catalog = ['codex_navigate', 'codex_dom_snapshot', 'codex_screenshot'].map((name) => ({ name, description: name, inputSchema: schema }));
+    const invoke = vi.fn(async (input: BrowserInvocation): Promise<BrowserInvocationResult> => ({
+      browser: input.browser, executionHost: 'fixture-host', runtimeSession: input.browser, generation: 1, tab: input.tab,
+      result: { isError: false, content: [{ type: 'text', text: `${input.browser}:${input.tool}` }], structuredContent: { response: { success: true, data: {} } } },
+    }));
+    ix.stub(IBrowserConnectionStore, {
+      list: async () => ({ connections, ...(allowed === undefined ? {} : { allowedBrowsers: allowed }) }),
+      resolve: async (id: string) => {
+        const found = connections.find((item) => item.id === id);
+        if (found === undefined) throw new Error('Unknown id');
+        return found;
+      },
+    });
+    ix.stub(defaults, { ready: Promise.resolve(undefined) });
+    ix.stub(IAgentScopeContext, { agentId: 'main' });
+    ix.stub(ISessionContext, { sessionId: 'fixture-session', sessionDir: '/fixture/session' });
+    ix.stub(ISessionWorkspaceContext, { workDir: '/fixture', additionalDirs: [] });
+    ix.stub(IAgentRuntimeService, {});
+    ix.stub(ISessionMediaStore, {});
+    ix.stub(ISessionInteractionService, { hasConsumer: () => false });
+    ix.stub(IFlagService, { enabled: () => nativeBrowser });
+    ix.stub(IConfigService, { onDidSectionChange: sections.event, get: <T>() => ({ allowedBrowsers: allowed, connections: Object.fromEntries(connections.map((entry) => [entry.id, entry])) }) as T });
+    const denied: string[] = [];
+    ix.stub(IAgentToolPolicyService, { isToolActiveForDisclosure: (name) => isToolActive({ disallowedTools: denied }, name) });
+    ix.set(IAgentToolRegistryService, new SyncDescriptor(AgentToolRegistryService));
+    ix.set(IEventBus, new SyncDescriptor(EventBusService));
+    const readCatalog = vi.fn(async (id: string) => { expect(['alpha', 'beta']).toContain(id); return catalog; });
+    ix.stub(IBrowserControlService, {
+      catalog: readCatalog,
+      status: async (id: string) => ({ browser: id, state: 'ready' as const, executionHost: 'fixture-host', generation: 1 }),
+      tabs: async () => [{ tabId: '7', targetId: '7' }],
+      invoke, endTurn: async () => undefined, connect: async (id: string) => ({ browser: id, state: 'ready' as const, executionHost: 'fixture-host', generation: 1 }),
+      list: async () => ({ connections: connections.map((item) => ({ ...item, status: { browser: item.id, state: 'idle' as const, executionHost: 'fixture-host', generation: 0 } })), allowedBrowsers: allowed }),
+    });
+    ix.set(IAgentBrowserService, new SyncDescriptor(AgentBrowserService));
+    try {
+      const service = ix.get(IAgentBrowserService);
+      const registry = ix.get(IAgentToolRegistryService);
+      const listed = JSON.parse(String((await service.connections({ action: 'list' })).output)) as { connections: { id: string }[]; defaultBrowser?: string };
+      expect(listed.connections.map((item) => item.id)).toEqual(['alpha', 'beta']);
+      expect(listed.defaultBrowser).toBeUndefined();
+      await service.connections({ action: 'tools', browser: 'alpha', tools: ['codex_navigate', 'codex_dom_snapshot', 'codex_screenshot'] });
+      expect((await execute(registry.resolve('browser__codex_navigate')!.resolveExecution({ browser: 'beta', browserTab: '7', url: 'http://127.0.0.1/' }))).isError).toBe(true);
+      expect(invoke).not.toHaveBeenCalled();
+      await service.connections({ action: 'tools', browser: 'beta', tools: ['codex_navigate', 'codex_dom_snapshot', 'codex_screenshot'] });
+      await service.tabs({ action: 'select', browser: 'alpha', target: '7' });
+      await service.tabs({ action: 'select', browser: 'beta', target: '7' });
+      for (const browser of ['alpha', 'beta'] as const) {
+        for (const tool of ['codex_navigate', 'codex_dom_snapshot', 'codex_screenshot']) {
+          const result = await execute(registry.resolve(`browser__${tool}`)!.resolveExecution({ browser, url: 'http://127.0.0.1/' }));
+          expect(result.isError, JSON.stringify(result.output)).not.toBe(true);
+        }
+      }
+      const seen = invoke.mock.calls.map(([call]) => `${call.browser}:${call.tool}`).filter((item) => !item.endsWith(':agent_browser_tab_switch'));
+      expect(seen.filter((item) => item.startsWith('alpha:'))).toEqual(['alpha:codex_navigate', 'alpha:codex_dom_snapshot', 'alpha:codex_screenshot']);
+      expect(seen.filter((item) => item.startsWith('beta:'))).toEqual(['beta:codex_navigate', 'beta:codex_dom_snapshot', 'beta:codex_screenshot']);
+      const pendingAlpha = await registry.resolve('browser__codex_navigate')!.resolveExecution({ browser: 'alpha', url: 'http://127.0.0.1/' });
+      const unloaded = await service.connections({ action: 'tools', browser: 'alpha', unload: ['codex_navigate'] });
+      expect(JSON.parse(String(unloaded.output)).loaded).not.toContain('browser__codex_navigate');
+      expect(registry.resolve('browser__codex_navigate')).toBeDefined();
+      expect((await execute(pendingAlpha)).isError).toBe(true);
+      expect((await execute(registry.resolve('browser__codex_navigate')!.resolveExecution({ browser: 'alpha', url: 'http://127.0.0.1/' }))).isError).toBe(true);
+      expect((await execute(registry.resolve('browser__codex_navigate')!.resolveExecution({ browser: 'beta', url: 'http://127.0.0.1/' }))).isError).not.toBe(true);
+      allowed = [];
+      expect(JSON.parse(String((await service.connections({ action: 'list' })).output)).connections).toHaveLength(2);
+      expect((await service.connections({ action: 'status', browser: 'alpha' })).isError).not.toBe(true);
+      expect(String((await service.connections({ action: 'connect', browser: 'alpha' })).output)).toContain('not in the allowed set');
+      expect((await execute(registry.resolve('browser__codex_dom_snapshot')!.resolveExecution({ browser: 'beta' }))).isError).toBe(true);
+      expect(invoke.mock.calls.filter(([call]) => call.tool === 'codex_dom_snapshot')).toHaveLength(2);
+      sections.fire({ domain: BROWSER_CONFIG_SECTION, source: 'set', value: { allowedBrowsers: [] }, previousValue: {} });
+      expect(registry.list()).toHaveLength(0);
+      nativeBrowser = false;
+      sections.fire({ domain: EXPERIMENTAL_SECTION, source: 'set', value: { native_browser: false }, previousValue: {} });
+      expect(registry.resolve('browser__codex_navigate')).toBeUndefined();
+      expect(registry.resolve('browser__codex_dom_snapshot')).toBeUndefined();
+      expect(registry.resolve('browser__codex_screenshot')).toBeUndefined();
+      nativeBrowser = true;
+      sections.fire({ domain: EXPERIMENTAL_SECTION, source: 'set', value: { native_browser: true }, previousValue: { native_browser: false } });
+      expect(registry.resolve('browser__codex_navigate')).toBeUndefined();
+      allowed = ['alpha', 'beta'];
+      sections.fire({ domain: BROWSER_CONFIG_SECTION, source: 'set', value: { allowedBrowsers: allowed }, previousValue: { allowedBrowsers: [] } });
+      expect(registry.resolve('browser__codex_navigate')).toBeDefined();
+      expect(registry.resolve('browser__codex_dom_snapshot')).toBeDefined();
+      expect(registry.resolve('browser__codex_screenshot')).toBeDefined();
+      const restored = await execute(registry.resolve('browser__codex_dom_snapshot')!.resolveExecution({ browser: 'beta' }));
+      expect(restored.isError, JSON.stringify(restored.output)).not.toBe(true);
+      expect(invoke.mock.calls.filter(([call]) => call.tool === 'codex_dom_snapshot').at(-1)?.[0].browser).toBe('beta');
+      const pendingBeta = await registry.resolve('browser__codex_navigate')!.resolveExecution({ browser: 'beta', url: 'http://127.0.0.1/' });
+      denied.push('browser__codex_navigate');
+      sections.fire({ domain: 'tools', source: 'set', value: {}, previousValue: {} });
+      expect(registry.resolve('browser__codex_navigate')).toBeUndefined();
+      expect(registry.resolve('browser__codex_dom_snapshot')).toBeDefined();
+      expect((await execute(pendingBeta)).isError).toBe(true);
+      const queuedGuard = invoke.mock.calls.find(([call]) => call.browser === 'beta' && call.tool === 'codex_navigate')![0].assertToolAllowed;
+      expect(queuedGuard).toBeTypeOf('function');
+      expect(() => queuedGuard!()).toThrow('disabled');
+      denied.length = 0;
+      sections.fire({ domain: 'tools', source: 'set', value: {}, previousValue: {} });
+      expect(registry.resolve('browser__codex_navigate')).toBeDefined();
+      beta.enabled = false;
+      sections.fire({ domain: BROWSER_CONFIG_SECTION, source: 'set', value: {}, previousValue: {} });
+      expect(registry.resolve('browser__codex_navigate')).toBeUndefined();
+      expect(registry.resolve('browser__codex_dom_snapshot')).toBeDefined();
+      beta.enabled = true;
+      let release!: () => void;
+      readCatalog.mockImplementationOnce(async () => { await new Promise<void>((resolve) => { release = resolve; }); return catalog; });
+      const late = service.connections({ action: 'tools', browser: 'beta', tools: ['codex_navigate'] });
+      await vi.waitFor(() => expect(release).toBeDefined());
+      nativeBrowser = false;
+      sections.fire({ domain: EXPERIMENTAL_SECTION, source: 'set', value: {}, previousValue: {} });
+      release();
+      await late;
+      expect(registry.list()).toHaveLength(0);
+      nativeBrowser = true;
+      sections.fire({ domain: EXPERIMENTAL_SECTION, source: 'set', value: {}, previousValue: {} });
+      await service.connections({ action: 'tools', browser: 'alpha', unload: ['codex_screenshot'] });
+      await service.connections({ action: 'tools', browser: 'beta', unload: ['codex_screenshot'] });
+      expect(registry.resolve('browser__codex_screenshot')).toBeUndefined();
+      let releaseCancelled!: () => void;
+      readCatalog.mockImplementationOnce(async () => { await new Promise<void>((resolve) => { releaseCancelled = resolve; }); return catalog; });
+      const abort = new AbortController();
+      const cancelled = service.connections({ action: 'tools', browser: 'alpha', tools: ['codex_screenshot'] }, abort.signal);
+      await vi.waitFor(() => expect(releaseCancelled).toBeDefined());
+      abort.abort(new Error('catalog cancelled'));
+      releaseCancelled();
+      expect((await cancelled).isError).toBe(true);
+      expect(registry.resolve('browser__codex_screenshot')).toBeUndefined();
+      let releaseClosed!: () => void;
+      readCatalog.mockImplementationOnce(async () => { await new Promise<void>((resolve) => { releaseClosed = resolve; }); return catalog; });
+      const closed = service.connections({ action: 'tools', browser: 'alpha', tools: ['codex_screenshot'] });
+      await vi.waitFor(() => expect(releaseClosed).toBeDefined());
+      (service as AgentBrowserService).dispose();
+      releaseClosed();
+      expect((await closed).isError).toBe(true);
+      expect(registry.list()).toHaveLength(0);
     } finally { ix.dispose(); }
   });
 });

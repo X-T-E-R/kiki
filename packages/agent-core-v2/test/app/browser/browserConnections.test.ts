@@ -61,6 +61,22 @@ describe('browser connection configuration', () => {
     expect(await open(home).list()).toMatchObject({ connections: [{ id: 'a' }], defaultBrowser: undefined });
   });
 
+  it('stores an allow set separately from the default and preserves it across reload', async () => {
+    const { home, store } = await fixture();
+    await store.upsert('a', { type: 'agent-browser-profile', name: 'A', enabled: true, profilePath: join(home, 'a') });
+    await store.upsert('b', { type: 'agent-browser-profile', name: 'B', enabled: true, profilePath: join(home, 'b') });
+    await store.setAllowed(['b', 'a', 'a']);
+    expect(await store.list()).toMatchObject({ allowedBrowsers: ['b', 'a'], defaultBrowser: undefined });
+    expect((await open(home).list()).allowedBrowsers).toEqual(['b', 'a']);
+    await store.remove('b');
+    expect((await open(home).list()).allowedBrowsers).toEqual(['a']);
+    await store.setAllowed([]);
+    expect((await open(home).list()).allowedBrowsers).toEqual([]);
+    await store.setAllowed(undefined);
+    expect(await open(home).list()).not.toHaveProperty('allowedBrowsers');
+    await expect(store.setAllowed(['missing'])).rejects.toMatchObject({ code: 'browser.not_found' });
+  });
+
   it('stores CDP URL only in existing credentials and supports explicit keep/reveal/delete', async () => {
     const { home, store } = await fixture();
     const value = 'wss://user:YOUR_API_KEY@browser.example.test/devtools/private-path?token=YOUR_API_KEY';

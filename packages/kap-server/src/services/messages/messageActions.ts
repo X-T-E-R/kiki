@@ -325,20 +325,21 @@ function undoCountFrom(agent: IAgentScopeHandle, target: ContextMessage): number
   return history.slice(index).filter(isUndoAnchor).length;
 }
 
-async function prepareExecutionOverrides(
+export async function prepareExecutionOverrides(
   agent: IAgentScopeHandle,
   overrides: PromptExecutionOverrides,
 ): Promise<import('@kiki/agent-core-v2').PromptExecutionBinding | undefined> {
   const profile = agent.accessor.get(IAgentProfileService);
-  if (overrides.model !== undefined || overrides.thinking !== undefined) {
+  const concreteThinking = typeof overrides.thinking === 'string' ? overrides.thinking : undefined;
+  if (overrides.model !== undefined || concreteThinking !== undefined) {
     const binding = profile.data();
     if ((binding.executorId ?? 'native') === 'native') {
       if (binding.modelAlias !== undefined && (overrides.profile === undefined || overrides.profile === binding.profileName)) {
-        const prepared = await profile.prepareModelSwitchBinding(overrides.model ?? binding.modelAlias, overrides.thinking);
+        const prepared = await profile.prepareModelSwitchBinding(overrides.model ?? binding.modelAlias, concreteThinking);
         prepared.assertCurrent();
       }
     } else {
-      const validation = profile.validateBinding({ modelAlias: overrides.model, thinkingEffort: overrides.thinking });
+      const validation = profile.validateBinding({ modelAlias: overrides.model, thinkingEffort: concreteThinking });
       if (!validation.ok) throw new Error2(ErrorCodes.REQUEST_INVALID, validation.diagnostic);
     }
   }

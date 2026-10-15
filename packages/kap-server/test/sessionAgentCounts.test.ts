@@ -12,7 +12,7 @@ const row = (id: string, status: SnapshotSubagent['status'], live = true): Snaps
 });
 
 describe('session agent metadata counts', () => {
-  it('retains 300 cold agents without loading child bodies and restores the main binding', async () => {
+  it.each([0, 400 * 1024 * 1024])('retains 300 cold agents and restores the main binding with %s bytes of wire', async (wireBytes) => {
     const execution = { version: 1 as const, selection: { executor: 'native' }, effective: { kiki_context: [], allow_kiki_subagents: true }, sources: {}, generation: 1 };
     const agents: Record<string, AgentMeta> = { main: { type: 'main', model: 'example/model', thinkingEffort: 'max', labels: { profileName: 'example-profile' }, execution } };
     for (let i = 0; i < 300; i += 1) agents[`child-${i}`] = {
@@ -24,7 +24,7 @@ describe('session agent metadata counts', () => {
     const manager = { get: vi.fn(() => undefined), acquire: vi.fn() };
     const bindingReads: string[] = [];
     const services = new Map<unknown, unknown>([
-      [IFileSystemStorageService, { size: async () => 0, mtime: async () => 0 }],
+      [IFileSystemStorageService, { size: async () => wireBytes, mtime: async () => 0 }],
       [IAppendLogStore, { read: async function* (scope: string) { bindingReads.push(scope); yield* []; } }],
       [ISessionManager, manager], [ISessionIndex, { get: async () => ({ ...meta, workspaceId: 'wd_fixture_000000000000' }) }],
       [IAtomicDocumentStore, { get: readMetadata }], [IWorkspaceService, { get: async () => ({ root: 'C:/fixture' }) }],
@@ -41,7 +41,7 @@ describe('session agent metadata counts', () => {
     expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
     expect(readMetadata).toHaveBeenCalledTimes(1);
     expect(parsed.data?.session.agent_config).toMatchObject({ model: 'example/model', profile: 'example-profile', execution });
-    expect(bindingReads).toEqual([expect.stringMatching(/agents\/main$/)]);
+    expect(bindingReads).toEqual(wireBytes === 0 ? [expect.stringMatching(/agents\/main$/)] : []);
     expect(manager.acquire).not.toHaveBeenCalled();
     expect(snapshot.messages.items).toEqual([]);
   });

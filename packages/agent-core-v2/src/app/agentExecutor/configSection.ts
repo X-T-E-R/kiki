@@ -81,7 +81,7 @@ export const AgentExecutorConfigSchema = z
     modelProbe: z.object({
       command: z.string().trim().min(1).optional(),
       args: z.array(z.string()).min(1),
-      format: z.enum(['lines', 'tab', 'json']).default('lines'),
+      format: z.enum(['lines', 'tab', 'columns', 'json']).default('lines'),
       jsonPath: z.array(z.string().min(1)).max(16).optional(),
       versionProbe: z.object({ args: z.array(z.string()).min(1) }).strict().optional(),
       timeoutMs: z.number().int().positive().max(90_000).optional(),

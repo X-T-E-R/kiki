@@ -12,11 +12,13 @@ import {
 
 export interface IBrowserConnectionStore {
   readonly _serviceBrand: undefined;
-  list(): Promise<{ readonly connections: readonly BrowserConnectionRecord[]; readonly defaultBrowser?: string }>;
+  list(): Promise<{ readonly connections: readonly BrowserConnectionRecord[]; readonly defaultBrowser?: string; readonly allowedBrowsers?: readonly string[] }>;
   resolve(id: string): Promise<BrowserResolvedConnection>;
   upsert(id: string, input: BrowserConnectionInput): Promise<BrowserConnectionRecord>;
   remove(id: string): Promise<void>;
   setDefault(browser?: string): Promise<void>;
+  /** `undefined` clears a saved allow set. An array, including empty, is explicit. */
+  setAllowed(browsers: readonly string[] | undefined): Promise<void>;
   revealEndpoint(id: string): Promise<string | undefined>;
 }
 export const IBrowserConnectionStore = createDecorator<IBrowserConnectionStore>('browserConnectionStore');
@@ -27,10 +29,11 @@ export class BrowserConnectionStore implements IBrowserConnectionStore {
 
   constructor(@IConfigService private readonly config: IConfigService) {}
 
-  async list(): Promise<{ readonly connections: readonly BrowserConnectionRecord[]; readonly defaultBrowser?: string }> {
+  async list(): Promise<{ readonly connections: readonly BrowserConnectionRecord[]; readonly defaultBrowser?: string; readonly allowedBrowsers?: readonly string[] }> {
     const current = await this.read();
     return { connections: Object.entries(current.connections).map(([id, entry]) => browserConnectionRecord({ ...entry, id }))
-      .sort((a, b) => a.id.localeCompare(b.id)), defaultBrowser: current.defaultBrowser };
+      .sort((a, b) => a.id.localeCompare(b.id)), defaultBrowser: current.defaultBrowser,
+      ...(current.allowedBrowsers !== undefined ? { allowedBrowsers: current.allowedBrowsers } : {}) };
   }
 
   async resolve(id: string): Promise<BrowserResolvedConnection> {
@@ -66,7 +69,24 @@ export class BrowserConnectionStore implements IBrowserConnectionStore {
     await this.change((current) => {
       const connections = { ...current.connections };
       delete connections[id];
-      return { connections, defaultBrowser: current.defaultBrowser === id ? undefined : current.defaultBrowser };
+      const allowedBrowsers = current.allowedBrowsers?.filter((browser) => browser !== id);
+      return { connections, defaultBrowser: current.defaultBrowser === id ? undefined : current.defaultBrowser,
+        ...(allowedBrowsers !== undefined ? { allowedBrowsers } : {}) };
+    });
+  }
+
+  async setAllowed(browsers: readonly string[] | undefined): Promise<void> {
+    await this.change((current) => {
+      if (browsers === undefined) {
+        const { allowedBrowsers: _omit, ...rest } = current;
+        return rest;
+      }
+      const unique = [...new Set(browsers)];
+      for (const browser of unique) {
+        if (!BrowserIdSchema.safeParse(browser).success) throw new BrowserError('browser.invalid', 'Invalid browser connection id');
+        if (!Object.hasOwn(current.connections, browser)) throw new BrowserError('browser.not_found', `Unknown browser connection "${browser}"`);
+      }
+      return { ...current, allowedBrowsers: unique };
     });
   }
 

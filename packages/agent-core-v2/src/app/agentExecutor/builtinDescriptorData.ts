@@ -18,6 +18,26 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     diagnostics: [{ kind: 'message', severity: 'info', message: 'Antigravity ACP uses its own settings.json and Google sign-in; use the executor login flow before starting a session.' }],
     revision: '2026-09-30.1',
   },
+  'agy-cli': {
+    label: 'AGY CLI', protocol: 'acp-v1', args: [],
+    sources: [
+      { id: 'kiki-managed', kind: 'node-script', path: '${KIKI_HOME}/tools/agy-cli/agy-cli-acp.mjs' },
+    ],
+    source: 'kiki-managed',
+    programLabel: 'agy-cli-acp',
+    modelProbe: {
+      command: 'agy', args: ['models'], format: 'columns',
+      versionProbe: { args: ['--version'] }, timeoutMs: 20_000, maxOutputBytes: 65_536,
+    },
+    modelBinding: 'argv', modelArgs: ['--model', '{model}'],
+    modelConfigCategory: 'model', thoughtConfigCategory: 'thought_level',
+    controlCapabilities: { modelSwitch: 'fresh_binding', thinkingSwitch: 'fresh_binding', manualCompact: 'unsupported' },
+    supportsMcp: true, mcpTransports: ['stdio'],
+    startupTimeoutMs: 150_000, shutdownGraceMs: 3_000,
+    installHint: 'Install the Antigravity CLI (agy). Kiki bridges it with the bundled source-owned adapter; the CLI does not advertise an ACP server.',
+    diagnostics: [{ kind: 'message', severity: 'info', message: 'AGY CLI model ids come from `agy models`. The official ACP server remains the separate antigravity-acp executor.' }],
+    revision: '2026-10-14.1',
+  },
   'grok-acp': {
     label: 'Grok Build',
     protocol: 'acp-v1',

@@ -18,7 +18,10 @@ import { IRequestIdentityCatalog } from '@kiki/agent-core-v2/app/requestIdentity
 import { providerCredentialFields } from '@kiki/agent-core-v2/kosong/model/catalog';
 import type { ProviderConfig } from '@kiki/agent-core-v2/kosong/provider/provider';
 import { TASK_BOARD_SECTION } from '@kiki/agent-core-v2/app/taskBoard/configSection';
-import { COMPUTER_CONFIG_SECTION, DEFAULT_COMPUTER_USAGE_PREFERENCE, type ComputerConfig } from '@kiki/agent-core-v2/app/computer/configSection';
+import { COMPUTER_CONFIG_SECTION, DEFAULT_COMPUTER_USAGE_PREFERENCE, computerToolsEnabled, type ComputerConfig } from '@kiki/agent-core-v2/app/computer/configSection';
+import { BROWSER_CONFIG_SECTION, readBrowserControlSettings, type BrowserConfig, type BrowserControlSettings } from '@kiki/agent-core-v2/app/browser/browserConfig';
+import { IBrowserConnectionStore } from '@kiki/agent-core-v2/app/browser/browserConnectionStore';
+import { EXPERIMENTAL_SECTION, IFlagService } from '@kiki/agent-core-v2/app/flag/flag';
 import type { ConfigOrigin } from '@kiki/agent-core-v2/app/config/config';
 import { SUBAGENT_SECTION } from '@kiki/agent-core-v2/session/subagent/configSection';
 import { SESSION_TITLE_SECTION, type SessionTitleConfig } from '@kiki/agent-core-v2/session/sessionTitle/configSection';
@@ -85,7 +88,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
     async (req, reply) => {
       const config = core.accessor.get(IConfigService);
       await config.ready;
-      reply.send(okEnvelope(toConfigResponse(config.getAll(), core.accessor.get(IBootstrapService).spaceId === undefined ? undefined : config, config.origins(COMPUTER_CONFIG_SECTION)['usagePreference']), req.id));
+      reply.send(okEnvelope(toConfigResponse(config.getAll(), core.accessor.get(IBootstrapService).spaceId === undefined ? undefined : config, config.origins(COMPUTER_CONFIG_SECTION)['usagePreference'], controlProjection(core)), req.id));
     },
   );
   app.get(getRoute.path, getRoute.options, getRoute.handler as Parameters<ConfigRouteHost['get']>[2]);
@@ -138,6 +141,22 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
         }
         delete camelPatch['yolo'];
         await clearReviewerApiKey(config, camelPatch);
+        if (isPlainObject(camelPatch['browserControl'])) {
+          const patch = camelPatch['browserControl'] as Record<string, unknown>;
+          if ('allowedBrowsers' in patch) {
+            const allowed = patch['allowedBrowsers'];
+            await core.accessor.get(IBrowserConnectionStore).setAllowed(allowed === null ? undefined : allowed as string[]);
+          }
+          if ('enabled' in patch) {
+            const explained = core.accessor.get(IFlagService).explain('native_browser');
+            if (explained?.source === 'env' && patch['enabled'] !== explained.enabled) {
+              throw new Error('KIKI_EXPERIMENTAL_NATIVE_BROWSER fixes browser control on this host');
+            }
+            if (patch['enabled'] === null) await config.removeOverride(EXPERIMENTAL_SECTION, ['native_browser']);
+            else if (typeof patch['enabled'] === 'boolean') await config.set(EXPERIMENTAL_SECTION, { native_browser: patch['enabled'] }, ConfigTarget.User);
+          }
+          delete camelPatch['browserControl'];
+        }
         if (camelPatch[NB_SEARCH_SECTION] !== undefined || camelPatch[NB_SEARCH_SOURCE_SECTION] !== undefined) {
           const write = nbSearchWrites.then(async () => {
             const nbSections: Record<string, unknown> = {};
@@ -167,8 +186,17 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
         for (const domain of Object.keys(camelPatch)) {
           if (domain === TASK_BOARD_SECTION) {
             await config.replaceSections({ [TASK_BOARD_SECTION]: camelPatch[domain] }, ConfigTarget.User);
-          } else if (domain === COMPUTER_CONFIG_SECTION && isPlainObject(camelPatch[domain]) && camelPatch[domain]['usagePreference'] === null) {
-            await config.removeOverride(COMPUTER_CONFIG_SECTION, ['usagePreference']);
+          } else if (domain === COMPUTER_CONFIG_SECTION && isPlainObject(camelPatch[domain]) && (camelPatch[domain]['usagePreference'] === null || camelPatch[domain]['enabled'] === null)) {
+            const patch = { ...camelPatch[domain] };
+            if (patch['usagePreference'] === null) {
+              await config.removeOverride(COMPUTER_CONFIG_SECTION, ['usagePreference']);
+              delete patch['usagePreference'];
+            }
+            if (patch['enabled'] === null) {
+              await config.removeOverride(COMPUTER_CONFIG_SECTION, ['enabled']);
+              delete patch['enabled'];
+            }
+            if (Object.keys(patch).length > 0) await config.set(domain, patch);
           } else if (domain === SUBAGENT_SECTION && isSubagentDefaultModelClear(camelPatch[domain])) {
             await clearSubagentDefaultModel(config, camelPatch[domain] as Record<string, unknown>);
           } else if (domain === FAST_MODEL_SECTION && camelPatch[domain] === null) {
@@ -189,7 +217,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
             ConfigTarget.User,
           );
         }
-        const response = toConfigResponse(config.getAll(), core.accessor.get(IBootstrapService).spaceId === undefined ? undefined : config, config.origins(COMPUTER_CONFIG_SECTION)['usagePreference']);
+        const response = toConfigResponse(config.getAll(), core.accessor.get(IBootstrapService).spaceId === undefined ? undefined : config, config.origins(COMPUTER_CONFIG_SECTION)['usagePreference'], controlProjection(core));
         const changedFields = Object.keys(req.body as Record<string, unknown>).filter(
           (field) => field !== 'replace_domains',
         );
@@ -224,7 +252,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
       const config = core.accessor.get(IConfigService);
       const domain = snakeToCamel(req.body.domain);
       await config.removeOverride(domain, req.body.key_path);
-      const response = toConfigResponse(config.getAll(), config, config.origins(COMPUTER_CONFIG_SECTION)['usagePreference']);
+      const response = toConfigResponse(config.getAll(), config, config.origins(COMPUTER_CONFIG_SECTION)['usagePreference'], controlProjection(core));
       core.accessor.get(IEventService).publish(new ConfigChanged({ payload: { changedFields: [req.body.domain], config: response } }));
       reply.send(okEnvelope(response, req.id));
     } catch (error) {
@@ -343,7 +371,19 @@ async function clearSubagentDefaultModel(config: IConfigService, patch: Record<s
   }
 }
 
-function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigService, computerPreferenceSource: ConfigOrigin = 'default'): ConfigResponse {
+function controlProjection(core: Scope): { browser: BrowserControlSettings; computerEnabledSource: ConfigOrigin } {
+  const config = core.accessor.get(IConfigService);
+  const browser = config.get<BrowserConfig>(BROWSER_CONFIG_SECTION);
+  return {
+    browser: readBrowserControlSettings(core.accessor.get(IFlagService), {
+      experimental: config.origins(EXPERIMENTAL_SECTION)['native_browser'],
+      allowed: config.origins(BROWSER_CONFIG_SECTION)['allowedBrowsers'],
+    }, browser?.allowedBrowsers),
+    computerEnabledSource: config.origins(COMPUTER_CONFIG_SECTION)['enabled'] ?? 'default',
+  };
+}
+
+function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigService, computerPreferenceSource: ConfigOrigin = 'default', projection?: { browser: BrowserControlSettings; computerEnabledSource: ConfigOrigin }): ConfigResponse {
   const wire: Record<string, unknown> = {};
   if (config !== undefined) {
     wire['origins'] = Object.fromEntries(Object.keys(resolved).filter((domain) => domain !== 'services' && domain !== 'telemetry')
@@ -408,10 +448,14 @@ function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigSer
     wire['providers'] = {};
   }
   const computer = resolved[COMPUTER_CONFIG_SECTION] as ComputerConfig | undefined;
+  wire['browser_control'] = projection?.browser ?? { enabled: true, enabledSource: 'default', allowedBrowsers: [], allowedBrowsersConfigured: false, allowedBrowsersSource: 'default' };
   wire['computer_control'] = {
+    enabled: computerToolsEnabled(computer),
+    enabledSource: projection?.computerEnabledSource ?? 'default',
     usagePreference: computer?.usagePreference ?? DEFAULT_COMPUTER_USAGE_PREFERENCE,
     usagePreferenceSource: computerPreferenceSource,
     appliesOn: 'next-model-request',
+    toolsApplyOn: 'next-step',
   };
   return configResponseWireSchema.parse(wire);
 }

@@ -175,6 +175,9 @@ export class ContextProcedureHost {
       if (agent === undefined || seat.nativeTools === true && agent !== seat.harnessAgentInstance) {
         throw new Error('Harness agent is not available');
       }
+      const binding = agent.accessor.get(IAgentProfileService).data();
+      const injection = binding.execution === undefined ? binding.injectKikiMcp : binding.execution.effective.inject_kiki_mcp;
+      if (injection === false) throw new Error('Kiki MCP injection is disabled for this agent binding');
       return operation(agent);
     });
   }

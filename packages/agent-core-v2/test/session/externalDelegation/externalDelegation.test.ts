@@ -412,7 +412,7 @@ describe('SessionExternalDelegationService', () => {
           agentId,
           opts?.binding?.profile ?? 'coder',
           opts?.binding?.model,
-          opts?.binding?.thinking,
+          typeof opts?.binding?.thinking === 'string' ? opts.binding.thinking : undefined,
           opts?.binding?.resolvedProfile?.definitionId,
           opts?.binding?.resolvedProfile?.executor,
         );

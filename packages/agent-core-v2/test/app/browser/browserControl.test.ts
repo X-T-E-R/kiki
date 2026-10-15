@@ -50,17 +50,18 @@ function fixture() {
   })) };
   const ix = new TestInstantiationService();
   const flags = { enabled: () => true };
+  const allowed: { browsers?: readonly string[] } = {};
   ix.stub(IFlagService, flags);
   ix.stub(IBrowserConnectionStore, {
     _serviceBrand: undefined,
-    list: async () => ({ connections: [...configs.values()].map(({ id, name, type, enabled }) => ({ id, name, type, enabled })) }),
+    list: async () => ({ connections: [...configs.values()].map(({ id, name, type, enabled }) => ({ id, name, type, enabled })), allowedBrowsers: allowed.browsers }),
     resolve: async (id) => { const config = configs.get(id); if (config === undefined) throw new Error('Unknown browser'); return config; },
     upsert: async () => { throw new Error('not used'); }, remove: async (id) => { configs.delete(id); },
     setDefault: async () => undefined, revealEndpoint: async () => undefined,
   });
   ix.stub(IBrowserBackendFactory, factory);
   ix.set(IBrowserControlService, new SyncDescriptor(BrowserControlService));
-  return { ix, control: ix.get(IBrowserControlService), factory, calls, handlers, tabs, flags, configs };
+  return { ix, control: ix.get(IBrowserControlService), factory, calls, handlers, tabs, flags, configs, allowed };
 }
 const caller = { sessionId: 'fixture-session', agentId: 'main' };
 
@@ -111,6 +112,25 @@ describe('browser connection execution ownership', () => {
     } finally { await f.ix.dispose(); }
   });
 
+  it('does not launch a browser when its allow set changes during driver startup', async () => {
+    const f = fixture();
+    let release!: () => void;
+    try {
+      const original = f.factory.open.getMockImplementation()!;
+      f.factory.open.mockImplementationOnce(async (config) => {
+        await new Promise<void>((resolve) => { release = resolve; });
+        return original(config);
+      });
+      const connecting = f.control.connect('a');
+      await vi.waitFor(() => expect(release).toBeDefined());
+      f.allowed.browsers = [];
+      release();
+      expect(await connecting).toMatchObject({ failure: { code: 'browser.disabled' } });
+      expect(f.calls).toHaveLength(0);
+      expect((await f.control.disconnect('a')).state).toBe('disconnected');
+    } finally { release?.(); await f.ix.dispose(); }
+  });
+
   it('drains a queued connect before deciding whether disconnect must close its daemon', async () => {
     const f = fixture();
     try {
@@ -156,6 +176,56 @@ describe('browser connection execution ownership', () => {
       await f.control.invoke({ browser: 'a', caller, tool: 'agent_browser_click', args: {} });
       expect(f.calls.filter((call) => call.name === 'agent_browser_click')).toHaveLength(1);
     } finally { await f.control.disconnect('a'); await f.ix.dispose(); }
+  });
+
+  it.each(['allow-set', 'master-off', 'connection-off', 'tool-deny'] as const)('rejects queued browser work after %s while retaining disconnect recovery', async (revocation) => {
+    const f = fixture();
+    let release!: () => void;
+    let toolAllowed = true;
+    try {
+      await f.control.connect('a');
+      f.handlers.set('a:agent_browser_fill', async () => { await new Promise<void>((resolve) => { release = resolve; }); return response({ done: true }); });
+      const first = f.control.invoke({ browser: 'a', caller, tool: 'agent_browser_fill', args: {} });
+      await vi.waitFor(() => expect(release).toBeDefined());
+      const queued: Promise<unknown>[] = [f.control.invoke({ browser: 'a', caller, tool: 'agent_browser_click', args: {},
+        assertToolAllowed: () => { if (!toolAllowed) throw new BrowserError('browser.disabled', 'Tool was denied'); } })];
+      if (revocation !== 'tool-deny') queued.push(f.control.connect('a'), f.control.tabs('a'), f.control.check('a'));
+      if (revocation === 'allow-set') f.allowed.browsers = ['b'];
+      else if (revocation === 'master-off') f.flags.enabled = () => false;
+      else if (revocation === 'connection-off') f.configs.set('a', { ...f.configs.get('a')!, enabled: false });
+      else toolAllowed = false;
+      const rejected = Promise.all(queued.map((work) => expect(work).rejects.toMatchObject({ code: 'browser.disabled' })));
+      release();
+      await first;
+      await rejected;
+      expect(f.calls.filter((call) => call.name === 'agent_browser_click')).toHaveLength(0);
+      expect((await f.control.list()).connections).toHaveLength(2);
+      expect((await f.control.disconnect('a')).state).toBe('disconnected');
+    } finally { release?.(); await f.ix.dispose(); }
+  });
+
+  it('reconnects changed or recreated configuration only after disconnect, with a fresh generation', async () => {
+    const f = fixture();
+    try {
+      const original = await f.control.connect('b');
+      f.configs.set('b', { ...f.configs.get('b')!, name: 'Renamed', enabled: false });
+      await expect(f.control.tabs('b')).rejects.toMatchObject({ code: 'browser.disabled' });
+      f.configs.set('b', { ...f.configs.get('b')!, enabled: true });
+      expect((await f.control.connect('b')).generation).toBe(original.generation);
+      f.configs.set('b', { id: 'b', type: 'agent-browser-cdp', name: 'Changed', enabled: true, endpointSecret: 'http://other.example.test' });
+      await expect(f.control.connect('b')).rejects.toMatchObject({ code: 'browser.busy' });
+      expect((await f.control.disconnect('b')).state).toBe('disconnected');
+      const changed = await f.control.connect('b');
+      expect(changed.state).toBe('ready');
+      expect(changed.generation).toBeGreaterThan(original.generation);
+      await expect(f.control.invoke({ browser: 'b', caller, tool: 'agent_browser_click', args: {}, generation: original.generation })).rejects.toMatchObject({ code: 'browser.target' });
+      const saved = f.configs.get('b')!;
+      await f.control.remove('b');
+      f.configs.set('b', saved);
+      const recreated = await f.control.connect('b');
+      expect(recreated.generation).toBeGreaterThan(changed.generation);
+      await expect(f.control.invoke({ browser: 'b', caller, tool: 'agent_browser_click', args: {}, generation: changed.generation })).rejects.toMatchObject({ code: 'browser.target' });
+    } finally { await f.ix.dispose(); }
   });
 
   it('checks cancellation after target discovery and drains already-sent work without replay', async () => {
@@ -494,11 +564,35 @@ describe('Codex extension bridge adapter', () => {
     await lost.endTurn(caller, 7);
     expect(lostCalls.mock.calls.map(([name]) => name)).toEqual(['codex_fill']);
     const clean = vi.fn(async (_name: string): Promise<MCPToolResult> => ({ content: [{ type: 'text', text: 'Tabs finalized' }], isError: false }));
+    const discoveryOnly = bridgeAdapter(clean);
+    await discoveryOnly.client.listTools();
+    await discoveryOnly.prepareClose();
+    expect(clean).not.toHaveBeenCalled();
     const confirmed = bridgeAdapter(clean);
+    await confirmed.invoke('codex_get_title', {}, '7', context);
     await confirmed.endTurn(caller, 7);
     await confirmed.prepareClose();
     await confirmed.prepareClose();
-    expect(clean.mock.calls.map(([name]) => name)).toEqual(['codex_finalize']);
+    expect(clean.mock.calls.map(([name]) => name)).toEqual(['codex_get_title', 'codex_finalize']);
+  });
+
+  it('drains a cancelled bridge action before finalizing once and does not replay late success', async () => {
+    let release!: () => void;
+    const pending = new Promise<MCPToolResult>((resolve) => { release = () => resolve({ content: [], isError: false }); });
+    const callTool = vi.fn(async (name: string) => name === 'codex_click' ? pending : { content: [], isError: false });
+    const adapter = bridgeAdapter(callTool);
+    const abort = new AbortController();
+    const action = adapter.invoke('codex_click', { selector: '#go' }, '7', context, abort.signal);
+    abort.abort(new Error('cancelled after send'));
+    await expect(action).rejects.toThrow('cancelled after send');
+    await expect(adapter.invoke('codex_click', { selector: '#go' }, '7', context)).rejects.toMatchObject({ code: 'browser.busy' });
+    const closing = adapter.prepareClose();
+    expect(callTool.mock.calls.map(([name]) => name)).toEqual(['codex_click']);
+    release();
+    await closing;
+    await adapter.prepareClose();
+    expect(callTool.mock.calls.map(([name]) => name)).toEqual(['codex_click', 'codex_finalize']);
+    await expect(adapter.invoke('codex_click', { selector: '#go' }, '7', context)).rejects.toMatchObject({ code: 'browser.disconnected' });
   });
 
   it('keeps caller and tab ownership while a lost bridge click stays unconfirmed', async () => {

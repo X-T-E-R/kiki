@@ -76,6 +76,17 @@ describe('parseAgentFileText', () => {
     }
     expect(() => parse('---\nname: solo\ndescription: d\nallow_kiki_subagents: "true"\n---\nbody\n')).toThrow(/boolean/);
   });
+  it('keeps Kiki MCP injection opt-in and preserves an explicit false beside context groups', () => {
+    expect(parse('---\nname: solo\ndescription: d\nkiki_context: [memory]\n---\nbody\n').injectKikiMcp).toBeUndefined();
+    for (const flag of [true, false]) {
+      const definition = parse(`---\nname: solo\ndescription: d\ninject_kiki_mcp: ${flag}\nkiki_context: [memory]\nexecutor_prompt:\n  include: [memory_snapshot]\n---\nbody\n`);
+      expect(definition.injectKikiMcp).toBe(flag);
+      expect(definition.kikiContext).toEqual(['memory']);
+      expect(definition.executorPrompt).toMatchObject({ include: ['memory_snapshot'] });
+      expect(agentProfileFromFile(definition, () => ({ text: 'base', environment: { cwd: '', date: { disclosed: false } } })).injectKikiMcp).toBe(flag);
+    }
+    expect(() => parse('---\nname: solo\ndescription: d\ninject_kiki_mcp: "false"\n---\nbody\n')).toThrow(/boolean/);
+  });
   it('accepts token-only profile and model-profile auto_compact values', () => {
     const def = parse('---\nname: solo\ndescription: d\nauto_compact: 400000\nmodel_profiles:\n  - alias: opus\n    auto_compact: 300000\n---\nbody\n');
     expect(def.autoCompact).toBe(400_000);

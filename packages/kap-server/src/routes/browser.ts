@@ -1,4 +1,6 @@
-import { IBrowserConnectionStore, IBrowserControlService, IBrowserSetupService, BrowserError, isError2, isBrowserOperation, browserToolGroup, type Scope } from '@kiki/agent-core-v2';
+import { IBrowserConnectionStore, IBrowserControlService, IBrowserSetupService, IConfigService, IFlagService, BrowserError, isError2, isBrowserOperation, browserToolGroup, type Scope } from '@kiki/agent-core-v2';
+import { BROWSER_CONFIG_SECTION, readBrowserControlSettings } from '@kiki/agent-core-v2/app/browser/browserConfig';
+import { EXPERIMENTAL_SECTION } from '@kiki/agent-core-v2/app/flag/flag';
 import { ErrorCode, browserIdSchema, browserConnectionInputSchema, browserConnectionResponseSchema,
   browserDefaultInputSchema, browserControlListSchema, browserStatusSchema, browserFailureSchema,
   browserTabsResponseSchema, browserCatalogResponseSchema, browserCatalogQuerySchema,
@@ -75,7 +77,13 @@ export function registerBrowserRoutes(app: BrowserRouteHost, core: Scope): void 
   app.post(setupAction.path, setupAction.options, protect(setupAction.handler as Handler));
   const params = z.object({ id: browserIdSchema });
   const list = defineRoute({ method: 'GET', path: '/browser/connections', success: { data: browserControlListSchema }, errors: browserRouteErrors, tags: ['browser'] }, async (req, reply) => {
-    reply.send(okEnvelope(await control().list(), req.id));
+    const listed = await control().list();
+    const config = core.accessor.get(IConfigService);
+    const settings = readBrowserControlSettings(core.accessor.get(IFlagService), {
+      experimental: config.origins(EXPERIMENTAL_SECTION)['native_browser'],
+      allowed: config.origins(BROWSER_CONFIG_SECTION)['allowedBrowsers'],
+    }, listed.allowedBrowsers);
+    reply.send(okEnvelope({ ...listed, ...settings }, req.id));
   });
   app.get(list.path, list.options, protect(list.handler as Handler));
   const defaults = defineRoute({ method: 'PUT', path: '/browser/default', body: browserDefaultInputSchema,

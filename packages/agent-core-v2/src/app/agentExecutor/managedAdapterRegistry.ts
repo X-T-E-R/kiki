@@ -2,7 +2,7 @@ import { basename, join, normalize } from 'pathe';
 
 import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
 
-import type { AgentExecutorDescriptor } from './agentExecutor';
+import type { AgentExecutorDescriptor, AgentExecutorModelProbe } from './agentExecutor';
 
 export interface ManagedAdapterRelease {
   readonly packageName: string;
@@ -35,6 +35,7 @@ export const SOURCE_OWNED_ADAPTER_FILES = Object.freeze([
   'agy-cli-acp.mjs',
   'agy-hook-registration.mjs',
   'agy-permission-hook.mjs',
+  'agy-mcp-plugin.mjs',
 ]);
 
 export const SOURCE_OWNED_ADAPTER_ENTRY = 'agy-cli-acp.mjs';
@@ -73,6 +74,30 @@ export function managedAdapterEntry(
       !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/.test(installation.version)) return undefined;
   return join(homeDir, 'tools', 'managed-executors', id,
     `${installation.version}-${installation.installId}`, 'node_modules', release.packageName, release.entry);
+}
+
+/** Vendor `agy models` columns. Not an ACP advertisement and not a stand-in list. */
+export const AGY_CLI_MODEL_PROBE: AgentExecutorModelProbe = {
+  command: 'agy',
+  args: ['models'],
+  format: 'columns',
+  versionProbe: { args: ['--version'] },
+  timeoutMs: 20_000,
+  maxOutputBytes: 65_536,
+};
+
+/**
+ * The descriptor probe when one is configured. A source-owned AGY adapter with
+ * no probe still reads `agy models` at refresh time. That default is not part
+ * of the descriptor revision, so it does not invalidate a resumable session.
+ */
+export function executorModelProbe(descriptor: AgentExecutorDescriptor): AgentExecutorModelProbe | undefined {
+  if (descriptor.modelProbe !== undefined) return descriptor.modelProbe;
+  if (sourceOwnedAdapterScript(descriptor) === undefined) return undefined;
+  const configured = descriptor.env?.['AGY_CLI_PATH']?.trim();
+  return configured === undefined || configured.length === 0
+    ? AGY_CLI_MODEL_PROBE
+    : { ...AGY_CLI_MODEL_PROBE, command: configured };
 }
 
 export function sourceOwnedAdapterScript(descriptor: AgentExecutorDescriptor): string | undefined {

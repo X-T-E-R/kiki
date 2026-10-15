@@ -260,8 +260,9 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     const prior = externalStateForGeneration(this.#states.get(externalExecutorKey), this.context.binding.execution?.generation);
     const configured = await this.#configure(opened, options.signal, losses);
     const negotiated: NegotiatedExecutorCapabilities = {
-      models: configured.configOptions.filter((option) => option.category === 'model').flatMap(selectValues),
-      thinkingLevels: configured.configOptions.filter((option) => option.category === 'thought_level').flatMap(selectValues),
+      models: advertisedSelectValues(configured.configOptions, 'model'),
+      thinkingLevels: advertisedSelectValues(configured.configOptions, 'thought_level'),
+      nativeAgents: advertisedSelectValues(configured.configOptions, 'native_agent') ?? [],
       authMethods: opened.initialize.authMethods?.map((method) => method.id),
       agentVersion: opened.initialize.agentInfo?.version,
       image: opened.capabilities.promptCapabilities?.image === true || this.context.descriptor.id === 'grok-acp',
@@ -658,6 +659,16 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       );
     }
     let configured = opened;
+    const nativeAgent = this.context.binding.execution?.effective.native_agent;
+    if (nativeAgent !== undefined && nativeAgent !== 'engine-default') {
+      const choices = configured.configOptions.filter((option) => option.category === 'native_agent');
+      if (choices.length !== 1) {
+        throw new Error2(ErrorCodes.CONFIG_INVALID, 'External ACP native agent selection is unsupported or ambiguous');
+      }
+      const agent = selectConfig(choices, choices[0]!.id, 'native_agent', nativeAgent, 'native agent');
+      configured = await this.#client.configureSession({ configOptions: [agent.selection], signal });
+      assertConfigured(configured.configOptions, agent.selection, 'native agent');
+    }
     if (modelBinding === 'session_config' && this.context.binding.modelAlias !== undefined) {
       const model = selectConfig(
         configured.configOptions,
@@ -1110,6 +1121,12 @@ function resolveSelectConfig(
 
 function uncategorizedSelectOptions(option: AcpSessionConfigOption): boolean {
   return option.category === null || option.category === undefined;
+}
+
+function advertisedSelectValues(options: readonly AcpSessionConfigOption[], category: string): readonly string[] | undefined {
+  const matched = options.filter((option) => option.category === category);
+  if (matched.length === 0) return undefined;
+  return matched.flatMap(selectValues);
 }
 
 function selectValues(option: AcpSessionConfigOption): string[] {

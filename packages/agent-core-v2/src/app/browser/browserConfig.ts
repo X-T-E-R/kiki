@@ -2,6 +2,9 @@ import { isAbsolute } from 'pathe';
 import { z } from 'zod';
 
 import { registerConfigSection } from '#/app/config/configSectionContributions';
+import type { ConfigOrigin } from '#/app/config/config';
+import { NATIVE_BROWSER_FLAG_ID } from './flag';
+import type { IFlagService } from '#/app/flag/flag';
 
 export const BROWSER_CONFIG_SECTION = 'browserControl';
 export const BrowserIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
@@ -35,8 +38,44 @@ export type BrowserConnectionInput = z.infer<typeof BrowserConnectionInputSchema
 export const BrowserConfigSchema = z.object({
   connections: z.record(BrowserIdSchema, BrowserStoredConnectionSchema).default({}),
   defaultBrowser: BrowserIdSchema.optional(),
+  allowedBrowsers: z.array(BrowserIdSchema).max(64).optional(),
 }).strict();
 export type BrowserConfig = z.infer<typeof BrowserConfigSchema>;
+
+/**
+ * Browser-control save/read projection for settings.
+ * `enabled` is the existing `native_browser` flag, not a second gate.
+ * `allowedBrowsers` is the checkbox allow set. An unconfigured set does not
+ * copy `defaultBrowser`. An explicit empty set allows list/discover only.
+ */
+export interface BrowserControlSettings {
+  readonly enabled: boolean;
+  readonly enabledSource: ConfigOrigin;
+  readonly allowedBrowsers: readonly string[];
+  readonly allowedBrowsersConfigured: boolean;
+  readonly allowedBrowsersSource: ConfigOrigin;
+}
+
+export function readBrowserControlSettings(
+  flags: IFlagService,
+  origins: { readonly experimental?: ConfigOrigin; readonly allowed?: ConfigOrigin },
+  allowedBrowsers: readonly string[] | undefined,
+): BrowserControlSettings {
+  const explained = flags.explain(NATIVE_BROWSER_FLAG_ID);
+  const enabled = explained?.enabled ?? true;
+  const enabledSource: ConfigOrigin = explained?.source === 'env' || explained?.source === 'master-env'
+    ? 'env' : explained?.source === 'config' ? origins.experimental ?? 'home' : 'default';
+  return {
+    enabled, enabledSource,
+    allowedBrowsers: allowedBrowsers === undefined ? [] : [...allowedBrowsers],
+    allowedBrowsersConfigured: allowedBrowsers !== undefined,
+    allowedBrowsersSource: allowedBrowsers === undefined ? 'default' : origins.allowed ?? 'home',
+  };
+}
+
+export function browserOperationAllowed(allowedBrowsers: readonly string[] | undefined, id: string): boolean {
+  return allowedBrowsers === undefined || allowedBrowsers.includes(id);
+}
 
 registerConfigSection(BROWSER_CONFIG_SECTION, BrowserConfigSchema, { defaultValue: { connections: {} } });
 

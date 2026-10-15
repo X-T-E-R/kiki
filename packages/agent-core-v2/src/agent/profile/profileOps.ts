@@ -50,6 +50,7 @@ export interface ProfileModelState {
   readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
   readonly executorPrompt?: import('@kiki/agent-profiles/executorPrompt').ExecutorPrompt;
   readonly allowKikiSubagents?: boolean;
+  readonly injectKikiMcp?: boolean;
   readonly kikiContext?: import('@kiki/agent-profiles/agentProfile').AgentProfile['kikiContext'];
   readonly executorDescriptorRevision?: string;
   readonly thinkingLevel: string;
@@ -107,6 +108,7 @@ const profileBindSchema = z.object({
   executorOptions: ExecutorOptionsSchema.readonly().optional(),
   executorPrompt: z.custom<import('@kiki/agent-profiles/executorPrompt').ExecutorPrompt>().optional(),
   allowKikiSubagents: z.boolean().optional(),
+  injectKikiMcp: z.boolean().optional(),
   kikiContext: z.array(z.enum(['memory', 'board', 'cron', 'threads', 'history', 'hooks'])).readonly().optional(),
   executorDescriptorRevision: z.string().optional(),
   thinkingEffort: z.custom<ThinkingEffort>(),
@@ -236,6 +238,7 @@ export const profileKey = defineState(
     executorOptions: e.executorOptions,
     executorPrompt: e.executorPrompt,
     allowKikiSubagents: e.allowKikiSubagents,
+    injectKikiMcp: e.injectKikiMcp,
     kikiContext: e.kikiContext,
     executorDescriptorRevision: e.executorDescriptorRevision,
     thinkingLevel: e.thinkingEffort,

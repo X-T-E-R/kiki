@@ -1,6 +1,6 @@
 import { fork } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
+import { copyFile, mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -274,7 +274,7 @@ describe('source-owned adapter installation', () => {
       expect(alias.supportsMcp).toBe(false);
       expect(alias.env).toEqual({ KEEP_ME: 'retain-adapter-env' });
       const bundled = await readFile(join(aliasDir, SOURCE_OWNED_ADAPTER_ENTRY), 'utf8');
-      expect(bundled).toContain('registerMcpAgent');
+      expect(bundled).toContain('registerMcpPlugin');
       expect(bundled).toContain('--mcp-stdio');
       expect(await readFile(join(aliasDir, 'notes.txt'), 'utf8')).toBe('keep-notes');
       await expect(service.rollback('desk-alias')).rejects.toThrow(/No previous managed adapter installation/);
@@ -287,7 +287,7 @@ describe('source-owned adapter installation', () => {
       const upgraded = await service.install('agy-cli-909');
       expect(upgraded.supportsMcp).toBe(true);
       expect(upgraded.previous?.version).toBe('0.0.0');
-      expect(await readFile(join(namedDir, SOURCE_OWNED_ADAPTER_ENTRY), 'utf8')).toContain('registerMcpAgent');
+      expect(await readFile(join(namedDir, SOURCE_OWNED_ADAPTER_ENTRY), 'utf8')).toContain('registerMcpPlugin');
       expect(await readFile(join(namedDir, 'agy-file-admission.mjs'), 'utf8')).toBe(CUSTOM_FILE);
       expect(await readFile(join(namedDir, 'agy-cli-audit-acp.mjs'), 'utf8')).toBe('audit-copy');
       expect(await readFile(join(namedDir, 'audit', 'session.ndjson'), 'utf8')).toBe(AUDIT_DATA);
@@ -302,7 +302,7 @@ describe('source-owned adapter installation', () => {
       expect(await readFile(join(namedDir, SOURCE_OWNED_ADAPTER_ENTRY), 'utf8')).toBe(edited);
       expect(rolled.supportsMcp).toBe(false);
       const restored = await service.rollback('agy-cli-909');
-      expect(await readFile(join(namedDir, SOURCE_OWNED_ADAPTER_ENTRY), 'utf8')).toContain('registerMcpAgent');
+      expect(await readFile(join(namedDir, SOURCE_OWNED_ADAPTER_ENTRY), 'utf8')).toContain('registerMcpPlugin');
       expect(restored.supportsMcp).toBe(true);
       expect(await readFile(join(namedDir, 'agy-file-admission.mjs'), 'utf8')).toBe(CUSTOM_FILE);
       expect(await readFile(join(namedDir, 'audit', 'session.ndjson'), 'utf8')).toBe(AUDIT_DATA);
@@ -410,7 +410,7 @@ describe('source-owned adapter installation', () => {
       expect(await real.get('managed-executors', 'agy-cli-909')).toBeUndefined();
       failUpdate = false;
       const installed = await service.install('agy-cli-909');
-      expect(await readFile(script, 'utf8')).toContain('registerMcpAgent');
+      expect(await readFile(script, 'utf8')).toContain('registerMcpPlugin');
       expect(installed.active?.version).toBe(SOURCE_OWNED_ADAPTER_VERSION);
     } finally {
       await remove();
@@ -433,7 +433,7 @@ describe('source-owned adapter installation', () => {
       const installed = await service.install('agy-cli-909');
       const bundled = await readFile(script, 'utf8');
       const hook = await readFile(join(dir, 'agy-hook-registration.mjs'), 'utf8');
-      expect(bundled).toContain('registerMcpAgent');
+      expect(bundled).toContain('registerMcpPlugin');
       failUpdate = true;
       await expect(service.rollback('agy-cli-909')).rejects.toThrow(/document persist failed/);
       expect(await readFile(script, 'utf8')).toBe(bundled);
@@ -550,7 +550,7 @@ describe('source-owned adapter installation', () => {
       expect(isError2(caught)).toBe(true);
       expect(isError2(caught) ? caught.code : undefined).toBe(ErrorCodes.OS_FS_PERMISSION_DENIED);
       expect(await readFile(hook, 'utf8')).toBe(bundledHook);
-      expect(await readFile(script, 'utf8')).toContain('registerMcpAgent');
+      expect(await readFile(script, 'utf8')).toContain('registerMcpPlugin');
       const stored = await documents.get<ManagedAdapterState>('managed-executors', 'agy-cli-909');
       expect(stored?.active.version).toBe(SOURCE_OWNED_ADAPTER_VERSION);
       expect(stored?.active.installId).toBe(installed.active?.installId);
@@ -582,5 +582,138 @@ describe('source-owned adapter installation', () => {
     expect(listed).not.toContain('fixture-cli.mjs');
     expect(listed).not.toContain('agy-cli-audit-acp.mjs');
     expect(listed).not.toContain('audit/');
+  });
+});
+
+describe('source-owned adapter removal', () => {
+  async function installed(id = 'agy-cli-909') {
+    const home = await mkdtemp(join(tmpdir(), 'agy-remove-'));
+    const dir = join(home, 'agy-cli-adapter-909');
+    await mkdir(join(dir, 'audit'), { recursive: true });
+    await writeFile(join(dir, 'agy-file-admission.mjs'), CUSTOM_FILE);
+    await writeFile(join(dir, 'agy-cli-audit-acp.mjs'), 'audit-copy\n');
+    await writeFile(join(dir, 'audit', 'session.ndjson'), AUDIT_DATA);
+    const descriptor = ownedDescriptor(id, 'local-adapter', join(dir, SOURCE_OWNED_ADAPTER_ENTRY), 'local-adapter');
+    const installedService = await ownedInstaller([descriptor], undefined, home);
+    await installedService.service.install(id);
+    return { ...installedService, dir, descriptor, id };
+  }
+
+  it('removes the owned adapter files and keeps user scripts, audit, and the directory', async () => {
+    const { home, dir, descriptor, service, documents, fs, id } = await installed();
+    try {
+      expect((await service.removeOwnedResources('../agy', descriptor)).resources).toBe('not_owned');
+      expect(await readFile(join(dir, SOURCE_OWNED_ADAPTER_ENTRY), 'utf8')).toContain('registerMcpPlugin');
+      const result = await service.removeOwnedResources(id, descriptor);
+      expect(result).toEqual({ resources: 'removed' });
+      expect(JSON.stringify(result)).not.toContain(home);
+      await expect(readFile(join(dir, SOURCE_OWNED_ADAPTER_ENTRY))).rejects.toThrow();
+      await expect(readFile(join(dir, 'agy-hook-registration.mjs'))).rejects.toThrow();
+      await expect(readFile(join(dir, 'agy-permission-hook.mjs'))).rejects.toThrow();
+      expect(await readFile(join(dir, 'agy-file-admission.mjs'), 'utf8')).toBe(CUSTOM_FILE);
+      expect(await readFile(join(dir, 'agy-cli-audit-acp.mjs'), 'utf8')).toBe('audit-copy\n');
+      expect(await readFile(join(dir, 'audit', 'session.ndjson'), 'utf8')).toBe(AUDIT_DATA);
+      expect(await documents.get('managed-executors', id)).toBeUndefined();
+      await expect(fs.stat(join(home, 'tools', 'managed-executors', id))).rejects.toThrow();
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('drops no production files while a recoverable or live binding remains', async () => {
+    const recoverable = await installed();
+    try {
+      await writeFile(join(recoverable.dir, 'audit', 'bound.ndjson'), `${JSON.stringify({ type: 'session_new', cwd: recoverable.dir })}\n`);
+      const result = await recoverable.service.removeOwnedResources(recoverable.id, recoverable.descriptor);
+      expect(result).toMatchObject({ resources: 'retained', reason: 'a live or recoverable binding is still present' });
+      expect(JSON.stringify(result)).not.toContain(recoverable.dir);
+      expect(await readFile(join(recoverable.dir, SOURCE_OWNED_ADAPTER_ENTRY), 'utf8')).toContain('registerMcpPlugin');
+      expect(await readFile(join(recoverable.dir, 'agy-file-admission.mjs'), 'utf8')).toBe(CUSTOM_FILE);
+      expect(await recoverable.documents.get('managed-executors', recoverable.id)).toBeDefined();
+    } finally {
+      await rm(recoverable.home, { recursive: true, force: true });
+    }
+
+    const live = await installed('agy-live');
+    try {
+      await writeFile(join(live.dir, 'audit', 'owner.resume-lock'), JSON.stringify({ pid: process.pid }));
+      expect((await live.service.removeOwnedResources(live.id, live.descriptor)).resources).toBe('retained');
+      expect(await readFile(join(live.dir, SOURCE_OWNED_ADAPTER_ENTRY), 'utf8')).toContain('registerMcpPlugin');
+    } finally {
+      await rm(live.home, { recursive: true, force: true });
+    }
+
+    let dead = 2_147_483_646;
+    try { process.kill(dead, 0); dead = 0; } catch (error) {
+      if (!(error instanceof Error) || !('code' in error) || error.code !== 'ESRCH') dead = 0;
+    }
+    expect(dead).not.toBe(0);
+    const stale = await installed('agy-stale');
+    try {
+      await writeFile(join(stale.dir, 'audit', 'old.resume-lock'), JSON.stringify({ pid: dead }));
+      expect((await stale.service.removeOwnedResources(stale.id, stale.descriptor)).resources).toBe('removed');
+      await expect(readFile(join(stale.dir, SOURCE_OWNED_ADAPTER_ENTRY))).rejects.toThrow();
+      expect(await readFile(join(stale.dir, 'audit', 'session.ndjson'), 'utf8')).toBe(AUDIT_DATA);
+      expect(await readFile(join(stale.dir, 'agy-file-admission.mjs'), 'utf8')).toBe(CUSTOM_FILE);
+    } finally {
+      await rm(stale.home, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps edited production files and anything outside the recorded home install', async () => {
+    const edited = await installed();
+    try {
+      await writeFile(join(edited.dir, SOURCE_OWNED_ADAPTER_ENTRY), 'user original\n');
+      const result = await edited.service.removeOwnedResources(edited.id, edited.descriptor);
+      expect(result).toMatchObject({ resources: 'not_owned', reason: 'production files are not the owned adapter' });
+      expect(await readFile(join(edited.dir, SOURCE_OWNED_ADAPTER_ENTRY), 'utf8')).toBe('user original\n');
+      expect(await readFile(join(edited.dir, 'agy-hook-registration.mjs'), 'utf8')).toContain('registerProjectHook');
+      expect(await readFile(join(edited.dir, 'agy-file-admission.mjs'), 'utf8')).toBe(CUSTOM_FILE);
+      expect(await edited.documents.get('managed-executors', edited.id)).toBeUndefined();
+    } finally {
+      await rm(edited.home, { recursive: true, force: true });
+    }
+
+    const home = await mkdtemp(join(tmpdir(), 'agy-remove-home-'));
+    const outside = await mkdtemp(join(tmpdir(), 'agy-remove-outside-'));
+    try {
+      await writeFile(join(outside, SOURCE_OWNED_ADAPTER_ENTRY), 'keep outside\n');
+      const descriptor = ownedDescriptor('agy-cli-909', 'local-adapter', join(outside, SOURCE_OWNED_ADAPTER_ENTRY), 'local-adapter');
+      const { service, documents } = await ownedInstaller([descriptor], undefined, home);
+      await documents.set('managed-executors', 'agy-cli-909', {
+        active: { version: '0.4.1', integrity: 'x', source: 'bundled:external-harness',
+          installId: '11111111-1111-4111-8111-111111111111', targetDir: outside },
+      });
+      expect((await service.removeOwnedResources('agy-cli-909', descriptor)).resources).toBe('not_owned');
+      expect(await readFile(join(outside, SOURCE_OWNED_ADAPTER_ENTRY), 'utf8')).toBe('keep outside\n');
+    } finally {
+      await rm(home, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('does not delete the source bundle even when it is recorded inside the home', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'agy-source-home-'));
+    const bundle = join(home, 'scripts', 'external-harness');
+    await mkdir(bundle, { recursive: true });
+    const repo = fileURLToPath(new URL('../../../../../scripts/external-harness/', import.meta.url));
+    for (const name of SOURCE_OWNED_ADAPTER_FILES) await copyFile(join(repo, name), join(bundle, name));
+    await writeFile(join(bundle, 'agy-file-admission.mjs'), CUSTOM_FILE);
+    const descriptor = ownedDescriptor('agy-cli', 'kiki-managed', join(bundle, SOURCE_OWNED_ADAPTER_ENTRY), 'kiki-managed');
+    const { service, documents } = await ownedInstaller([descriptor], { [SOURCE_OWNED_ADAPTER_ROOT_ENV]: bundle }, home);
+    const before = await readFile(join(bundle, SOURCE_OWNED_ADAPTER_ENTRY));
+    try {
+      await documents.set('managed-executors', 'agy-cli', {
+        active: { version: SOURCE_OWNED_ADAPTER_VERSION, integrity: 'recorded', source: SOURCE_OWNED_ADAPTER_SOURCE,
+          installId: '33333333-3333-4333-8333-333333333333', targetDir: bundle },
+      });
+      const result = await service.removeOwnedResources('agy-cli', descriptor);
+      expect(result).toMatchObject({ resources: 'not_owned', reason: 'source tree is not a managed install' });
+      expect(await readFile(join(bundle, SOURCE_OWNED_ADAPTER_ENTRY))).toEqual(before);
+      expect(await readFile(join(repo, SOURCE_OWNED_ADAPTER_ENTRY))).toEqual(before);
+      expect(await readFile(join(bundle, 'agy-file-admission.mjs'), 'utf8')).toBe(CUSTOM_FILE);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
   });
 });

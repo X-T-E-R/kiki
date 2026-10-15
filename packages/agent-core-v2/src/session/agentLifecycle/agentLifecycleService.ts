@@ -286,7 +286,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         ? undefined
         : profile.validateBinding({
             modelAlias: opts.binding.model,
-            thinkingEffort: opts.binding.thinking,
+            thinkingEffort: typeof opts.binding.thinking === 'string' ? opts.binding.thinking : undefined,
           });
     if (validation !== undefined && !validation.ok) {
       throw new Error2(ErrorCodes.CONFIG_INVALID, validation.diagnostic);
@@ -687,7 +687,8 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     if (overrideBinding === undefined) {
       childProfile.applyBindingSnapshot(sourceData);
       if (override?.model !== undefined) await childProfile.setModel(override.model);
-      if (override?.thinking !== undefined) childProfile.setThinking(override.thinking);
+      if (typeof override?.thinking === 'string') childProfile.setThinking(override.thinking);
+      else if (override?.thinking === null) childProfile.restoreDefaultThinking();
     }
 
     const sourceMessages = source.accessor.get(IAgentContextMemoryService)?.get();

@@ -21,6 +21,7 @@ export const executorCapabilitiesSchema = z.object({
     plan_approval: z.boolean().optional(),
     models: z.array(z.string()).optional(),
     thinking_levels: z.array(z.string()).optional(),
+    native_agents: z.array(z.string()).optional(),
     auth_methods: z.array(z.string()).optional(),
     resume: z.boolean().optional(),
     load: z.boolean().optional(),
@@ -73,6 +74,22 @@ export const executorCatalogItemSchema = z.object({
     default_args: z.array(z.string()),
   }).optional(),
   default_profile: z.boolean().optional(),
+  /** Defaults-layer Kiki MCP injection. Profile and session choices stay on the execution binding. */
+  kiki_mcp: z.object({
+    effective: z.boolean().nullable(),
+    source: z.enum(['harness-settings', 'harness-default']),
+    applies: z.literal('next_binding'),
+    precedence: z.tuple([
+      z.literal('session'),
+      z.literal('profile'),
+      z.literal('harness-settings'),
+      z.literal('harness-default'),
+    ]),
+    support: z.object({
+      state: z.enum(['supported', 'unsupported', 'undeclared']),
+      fact: z.string().min(1),
+    }),
+  }).optional(),
 });
 
 export const executorRequirementSchema = z.object({
@@ -145,6 +162,15 @@ export const getExecutorModelsResponseSchema = executorModelCatalogResponseSchem
 export type GetExecutorModelsResponse = ExecutorModelCatalogResponse;
 export const refreshExecutorModelsResponseSchema = executorModelCatalogResponseSchema;
 export type RefreshExecutorModelsResponse = ExecutorModelCatalogResponse;
+
+export const removeExecutorRegistrationResponseSchema = z.object({
+  id: z.string().min(1),
+  registration_removed: z.boolean(),
+  builtin_retained: z.boolean(),
+  resources: z.enum(['removed', 'retained', 'not_owned']),
+  reason: z.string().min(1).optional(),
+});
+export type RemoveExecutorRegistrationResponse = z.infer<typeof removeExecutorRegistrationResponseSchema>;
 
 export const listExecutorsResponseSchema = z.object({
   items: z.array(executorCatalogItemSchema),

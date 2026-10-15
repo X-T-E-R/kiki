@@ -192,7 +192,7 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
       profileState = boundProfileData(input.profile ?? profileState.profileName ?? 'initial');
       if (input.profile === 'external-profile') profileState = { ...profileState, executorId: 'grok-acp' };
       if (input.model !== undefined) profileState = { ...profileState, modelAlias: input.model };
-      if (input.thinking !== undefined) {
+      if (typeof input.thinking === 'string') {
         profileState = { ...profileState, thinkingLevel: input.thinking };
       }
     }),
@@ -202,6 +202,9 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
     }),
     setThinking: vi.fn((thinking: string) => {
       profileState = { ...profileState, thinkingLevel: thinking };
+    }),
+    restoreDefaultThinking: vi.fn(() => {
+      profileState = { ...profileState, thinkingLevel: 'restored-default', thinkingEffortExplicit: false };
     }),
     isRunnable: vi.fn(() =>
       profileState.profileName !== undefined && profileState.modelAlias !== undefined,
@@ -327,6 +330,9 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
     },
     setExecutor: (executorId: string | undefined) => {
       profileState = { ...profileState, executorId };
+    },
+    setExecution: (execution: ProfileData['execution']) => {
+      profileState = { ...profileState, execution };
     },
   };
 }
@@ -789,6 +795,80 @@ describe('AgentPromptService', () => {
     await vi.waitFor(() => expect(queued.state).toBe('steered'));
     expect(profile.data()).toMatchObject({ modelAlias: 'example/new', thinkingLevel: 'max' });
     expect(loop.launches).toHaveLength(1);
+  });
+
+  it('restores default thinking on the safe step without an execution selection', async () => {
+    const { prompt, profile, loop } = harness({ manualTurnResult: true });
+    await prompt.enqueue({ message: message('active') });
+    const queued = await prompt.enqueue({ id: 'clear-thinking', message: message('continue'), execution: { thinking: null } });
+    const boundary = deferred<void>();
+    const original = loop.atStepBoundary.bind(loop);
+    vi.spyOn(loop, 'atStepBoundary').mockImplementation(async run => { await boundary.promise; return original(run); });
+    await expect(prompt.steer([queued.id])).resolves.toEqual([queued]);
+    expect(profile.restoreDefaultThinking).not.toHaveBeenCalled();
+    expect(profile.bind).not.toHaveBeenCalled();
+    expect(profile.setThinking).not.toHaveBeenCalled();
+    expect(loop.launches).toHaveLength(1);
+    boundary.resolve();
+    await vi.waitFor(() => expect(queued.state).toBe('steered'));
+    expect(profile.restoreDefaultThinking).toHaveBeenCalledTimes(1);
+    expect(profile.setThinking).not.toHaveBeenCalled();
+    expect(profile.bind).not.toHaveBeenCalled();
+    expect(loop.launches).toHaveLength(1);
+  });
+
+  it('applies a new model before restoring default thinking without an execution selection', async () => {
+    const { prompt, profile, loop } = harness({ manualTurnResult: true });
+    await prompt.enqueue({ message: message('active') });
+    const queued = await prompt.enqueue({ id: 'model-and-clear-thinking', message: message('continue'),
+      execution: { model: 'example/new', thinking: null } });
+    await expect(prompt.steer([queued.id])).resolves.toEqual([queued]);
+    await vi.waitFor(() => expect(queued.state).toBe('steered'));
+    expect(profile.data()).toMatchObject({ modelAlias: 'example/new', thinkingLevel: 'restored-default', thinkingEffortExplicit: false });
+    expect(profile.setModel).toHaveBeenCalledWith('example/new', expect.any(Function));
+    expect(profile.restoreDefaultThinking).toHaveBeenCalledTimes(1);
+    expect(profile.setModel.mock.invocationCallOrder[0]).toBeLessThan(profile.restoreDefaultThinking.mock.invocationCallOrder[0]!);
+    expect(loop.launches).toHaveLength(1);
+  });
+
+  it('clears a bound thinking override through the current selection on the safe step', async () => {
+    const { prompt, profile, loop, setExecution } = harness({ manualTurnResult: true });
+    const selection = { executor: 'native', overrides: { model: 'initial-model', thinking: 'max' } };
+    setExecution({
+      version: 1,
+      selection,
+      effective: { model: 'initial-model', thinking: 'max', kiki_context: [], allow_kiki_subagents: false },
+      sources: { thinking: 'session' },
+      generation: 1,
+    });
+    await prompt.enqueue({ message: message('active') });
+    const queued = await prompt.enqueue({ id: 'clear-bound-thinking', message: message('continue'), execution: { thinking: null } });
+    const boundary = deferred<void>();
+    const original = loop.atStepBoundary.bind(loop);
+    vi.spyOn(loop, 'atStepBoundary').mockImplementation(async run => { await boundary.promise; return original(run); });
+    await expect(prompt.steer([queued.id])).resolves.toEqual([queued]);
+    expect(profile.bind).not.toHaveBeenCalled();
+    boundary.resolve();
+    await vi.waitFor(() => expect(queued.state).toBe('steered'));
+    expect(profile.bind).toHaveBeenCalledWith({
+      execution: { ...selection, overrides: { model: 'initial-model', thinking: null } },
+      model: undefined,
+      thinking: null,
+    }, expect.any(Function));
+    expect(profile.setThinking).not.toHaveBeenCalled();
+    expect(profile.restoreDefaultThinking).not.toHaveBeenCalled();
+    expect(loop.launches).toHaveLength(1);
+  });
+
+  it('keeps the current thinking when the prompt omits it', async () => {
+    const { prompt, profile } = harness({ manualTurnResult: true });
+    await prompt.enqueue({ message: message('active') });
+    const queued = await prompt.enqueue({ message: message('keep'), execution: { model: 'initial-model' } });
+    await expect(prompt.steer([queued.id])).resolves.toHaveLength(1);
+    expect(queued.state).toBe('steered');
+    expect(profile.bind).not.toHaveBeenCalled();
+    expect(profile.setThinking).not.toHaveBeenCalled();
+    expect(profile.restoreDefaultThinking).not.toHaveBeenCalled();
   });
 
   it('steers a queued prompt whose model, profile, thinking and policy already match the active turn', async () => {
@@ -1606,9 +1686,9 @@ describe('AgentPromptService', () => {
     }));
     expect((states.get(promptQueueKey).entries.get('restored-bad') as { originalMessage: ContextMessage }).originalMessage.content[0]).toMatchObject({ type: 'image_url', imageUrl: { url: `blobref:main/${hash}` } });
     await (prompt as unknown as { restorePendingQueue(): Promise<void> }).restorePendingQueue();
-    const restored = (prompt as unknown as { pending: Array<{ message: ContextMessage; launched: Promise<unknown> }> }).pending[0]!;
+    const restored = (prompt as unknown as { pending: Array<{ message: ContextMessage; handle: { launched: Promise<unknown> } }> }).pending[0]!;
     prompt.resumeRecoveredQueue();
-    await restored.launched;
+    await restored.handle.launched;
     expect(restored.message.content).toEqual([{ type: 'image_url', imageUrl: { url: full } }]);
     loop.settleActive();
   });

@@ -7,11 +7,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore, toDisposable } from '#/_base/di/lifecycle';
 import { TestInstantiationService } from '#/_base/di/test';
-import { Event } from '#/_base/event';
+import { Emitter, Event } from '#/_base/event';
 import { abortError } from '#/_base/utils/abort';
 import type { Event2 } from '#/app/event/event2';
 import { IEventBus } from '#/app/event/eventBus';
-import { IConfigService } from '#/app/config/config';
+import { IConfigService, type ConfigSectionChangedEvent } from '#/app/config/config';
 import { COMPUTER_CONFIG_SECTION, type ComputerUsagePreference } from '#/app/computer/configSection';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { AgentToolPolicyService } from '#/agent/toolPolicy/toolPolicyService';
@@ -238,6 +238,7 @@ describe('AgentMcpService', () => {
   let wireRecordListeners: Set<(record: WireRecord) => void>;
   let profileProviderType: string | undefined;
   let computerPreference: ComputerUsagePreference | undefined;
+  let computerEnabled: boolean | undefined;
   let attachmentStore: { materialize: (input: SessionMediaMaterializeInput) => Promise<string | undefined> };
 
   beforeEach(() => {
@@ -248,7 +249,11 @@ describe('AgentMcpService', () => {
     wireRecordListeners = new Set();
     profileProviderType = undefined;
     computerPreference = undefined;
-    ix.stub(IConfigService, { get: <T>(domain: string) => (domain === COMPUTER_CONFIG_SECTION ? { usagePreference: computerPreference } : undefined) as T });
+    computerEnabled = undefined;
+    ix.stub(IConfigService, {
+      get: <T>(domain: string) => (domain === COMPUTER_CONFIG_SECTION ? { usagePreference: computerPreference, ...(computerEnabled === undefined ? {} : { enabled: computerEnabled }) } : undefined) as T,
+      onDidSectionChange: Event.None as Event<ConfigSectionChangedEvent>,
+    });
     attachmentStore = { materialize: async () => undefined };
     ix.stub(IEventBus, {
       publish: (event) => {
@@ -881,6 +886,37 @@ describe('AgentMcpService', () => {
     expect(browser.description).toBe(originalBrowser);
     computerPreference = undefined;
     expect(computer.description).toContain('generally avoid');
+  });
+
+  it('withholds computer tools while enabled is false and restores them on the same session without resurrecting a disconnected server', async () => {
+    const manager = new FakeMcpManager();
+    const client = fakeMcpClient();
+    manager.setResolved('kiki-computer', client, await discoverTools(client));
+    const sections = new Emitter<ConfigSectionChangedEvent>();
+    computerEnabled = false;
+    ix.stub(IConfigService, {
+      get: <T>(domain: string) => (domain === COMPUTER_CONFIG_SECTION ? { usagePreference: computerPreference, enabled: computerEnabled } : undefined) as T,
+      onDidSectionChange: sections.event,
+    });
+    createService(manager);
+    manager.connect('kiki-computer');
+    const registry = ix.get(IAgentToolRegistryService);
+    expect(registry.resolve('mcp__kiki-computer__echo')).toBeUndefined();
+    computerEnabled = true;
+    sections.fire({ domain: COMPUTER_CONFIG_SECTION, source: 'set', value: { enabled: true }, previousValue: { enabled: false } });
+    const restored = registry.resolve('mcp__kiki-computer__echo');
+    expect(restored?.parameters).toBeDefined();
+    expect(restored?.subagentDefault).toBe('opt-in');
+    computerEnabled = false;
+    sections.fire({ domain: COMPUTER_CONFIG_SECTION, source: 'set', value: { enabled: false }, previousValue: { enabled: true } });
+    expect(registry.resolve('mcp__kiki-computer__echo')).toBeUndefined();
+    computerEnabled = true;
+    sections.fire({ domain: COMPUTER_CONFIG_SECTION, source: 'set', value: { enabled: true }, previousValue: { enabled: false } });
+    expect(registry.resolve('mcp__kiki-computer__echo')).toBeDefined();
+    manager.disconnect('kiki-computer');
+    expect(registry.resolve('mcp__kiki-computer__echo')).toBeUndefined();
+    sections.fire({ domain: COMPUTER_CONFIG_SECTION, source: 'set', value: { enabled: true }, previousValue: { enabled: true } });
+    expect(registry.resolve('mcp__kiki-computer__echo')).toBeUndefined();
   });
 
   it.each([

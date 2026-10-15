@@ -752,6 +752,35 @@ describe('ACP external executor', () => {
     } finally { await session.shutdown(); }
   });
 
+  it.each([undefined, 'engine-default', 'specialist'])('negotiates native agent %s independently of the executor name', async (nativeAgent) => {
+    const choices: AcpSessionConfigOption[] = [{ id: 'native-choice', name: 'Native agent', category: 'native_agent', type: 'select',
+      currentValue: 'vendor-main', options: [{ value: 'specialist', name: 'Specialist' }] }];
+    const harness = createHarness({ executorId: 'neutral-harness', inheritPermission: true, unpinModel: true, thinkingEffort: 'off', sessionConfigOptions: choices });
+    const initial = resolveExecutionBinding({ executor: 'neutral-harness' }, undefined, undefined, undefined);
+    const execution = resolveExecutionBinding({ executor: 'neutral-harness', overrides: { native_agent: nativeAgent } }, undefined, undefined, initial);
+    harness.state.set(externalExecutorKey, { executionGeneration: initial.generation, executorId: 'neutral-harness', descriptorRevision: harness.executorContext.descriptor.revision,
+      sessionRef: { executorId: 'neutral-harness', version: 1, ref: { sessionId: 'previous-native-agent' } } });
+    const session = harness.createSession({ ...harness.executorContext, binding: { ...harness.executorContext.binding, execution, systemPrompt: '' } });
+    try {
+      const handle = await session.run({ kind: 'prompt', prompt: 'Neutral user input' }, { signal: new AbortController().signal });
+      await handle.completion;
+      expect(harness.selections).toEqual(nativeAgent === 'specialist' ? [{ configId: 'native-choice', value: nativeAgent }] : []);
+      if (nativeAgent !== undefined) expect(harness.opens[0]?.sessionRef).toBeUndefined();
+      expect(harness.starts[0]?.prompt).toBe('Neutral user input');
+    } finally { await session.shutdown(); }
+  });
+
+  it('rejects a native agent absent from exact negotiation before delivering a user turn', async () => {
+    const harness = createHarness({ inheritPermission: true, unpinModel: true, thinkingEffort: 'off', sessionConfigOptions: [] });
+    const execution = resolveExecutionBinding({ executor: 'example-acp', overrides: { native_agent: 'specialist' } }, undefined, undefined, undefined);
+    const session = harness.createSession({ ...harness.executorContext, binding: { ...harness.executorContext.binding, execution } });
+    try {
+      await expect(session.run({ kind: 'prompt', prompt: 'must not launch' }, { signal: new AbortController().signal })).rejects.toThrow('native agent selection is unsupported');
+      expect(harness.starts).toEqual([]);
+      expect(harness.selections).toEqual([]);
+    } finally { await session.shutdown(); }
+  });
+
   it.each(['0.37.0', '0.39.0', undefined])('forwards MCP to Kimi independently of its probed version %s', async (executorVersion) => {
     const harness = createHarness({
       executorId: 'kimi-acp', executorVersion, parentAgentId: 'parent-fixture',
@@ -779,6 +808,32 @@ describe('ACP external executor', () => {
     await optedOut.session.run({ kind: 'prompt', prompt: 'Hello' }, { signal: new AbortController().signal });
     expect(optedOut.opens[0]?.mcpServers).toEqual([]);
     await optedOut.session.shutdown();
+  });
+
+  it('opens ACP mcpServers with the Kiki bridge only when injection is on', async () => {
+    const offExecution = resolveExecutionBinding({ executor: 'example-acp', overrides: {
+      kiki_context: ['memory'], allow_kiki_subagents: true,
+    } }, { inject_kiki_mcp: false, executor_prompt: { include: ['memory_snapshot'] } }, undefined, undefined);
+    const off = createHarness({ supportsMcp: true, thinkingEffort: 'off', unpinModel: true });
+    const offSession = off.createSession({ ...off.executorContext, binding: {
+      ...off.executorContext.binding, execution: offExecution, systemPrompt: '',
+    } });
+    try {
+      await (await offSession.run({ kind: 'prompt', prompt: 'OFF' }, { signal: new AbortController().signal })).completion;
+      expect(off.opens[0]?.mcpServers).toEqual([]);
+      expect(offExecution.effective).toMatchObject({ kiki_context: ['memory'], allow_kiki_subagents: true, inject_kiki_mcp: false });
+    } finally { await offSession.shutdown(); }
+
+    const onExecution = resolveExecutionBinding({ executor: 'example-acp' }, { inject_kiki_mcp: true }, undefined, undefined);
+    const on = createHarness({ supportsMcp: true, thinkingEffort: 'off', unpinModel: true });
+    const onSession = on.createSession({ ...on.executorContext, binding: {
+      ...on.executorContext.binding, execution: onExecution, systemPrompt: '', kikiContext: [], allowKikiSubagents: false,
+    } });
+    try {
+      await (await onSession.run({ kind: 'prompt', prompt: 'ON' }, { signal: new AbortController().signal })).completion;
+      expect(on.opens[0]?.mcpServers).toEqual([{ name: 'kiki-harness', command: 'fixture-kiki', args: [], env: [] }]);
+      expect(onExecution.effective.kiki_context).toEqual([]);
+    } finally { await onSession.shutdown(); }
   });
 
   it.each([
@@ -1709,6 +1764,47 @@ describe('ACP external executor', () => {
       { configId: 'thought-id', value: 'high' },
       { configId: 'auto_approve', value: false },
     ]);
+  });
+
+  it('rejects an unadvertised AGY effort and selects the effort the session menu embeds', async () => {
+    const effortMenu = (values: readonly string[]): AcpSessionConfigOption => ({
+      id: 'effort', name: 'AGY effort', category: 'thought_level', type: 'select', currentValue: 'engine-default',
+      options: values.map((value) => ({ value, name: value })),
+    });
+    const bare = createHarness({
+      modelBinding: 'argv', modelArgs: ['--model', '{model}'], modelAlias: 'anthropic/claude-opus-5-5',
+      thinkingEffort: 'high', thoughtConfigId: 'effort', permissionMapping: null,
+      sessionConfigOptions: [effortMenu(['engine-default'])],
+    });
+    await expect(bare.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal })).rejects.toMatchObject({
+      code: 'model.not_found',
+      details: {
+        reason_code: 'executor_thought_level_unavailable', config_id: 'effort', requested_value: 'high',
+        available_values: ['engine-default'],
+      },
+    });
+    expect(bare.starts).toHaveLength(0);
+    expect(bare.selections).toEqual([]);
+
+    const embedded = createHarness({
+      modelBinding: 'argv', modelArgs: ['--model', '{model}'], modelAlias: 'claude-opus-5-5-high',
+      thinkingEffort: 'high', thoughtConfigId: 'effort', permissionMapping: null,
+      sessionConfigOptions: [effortMenu(['engine-default', 'high'])],
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+    const run = await embedded.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+    await run.completion;
+    expect(embedded.selections).toEqual([{ configId: 'effort', value: 'high' }]);
+
+    const off = createHarness({
+      modelBinding: 'argv', modelArgs: ['--model', '{model}'], modelAlias: 'claude-opus-5-5-high',
+      thinkingEffort: 'off', thoughtConfigId: 'effort', permissionMapping: null,
+      sessionConfigOptions: [effortMenu(['engine-default', 'high'])],
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+    const skipped = await off.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+    await skipped.completion;
+    expect(off.selections).toEqual([]);
   });
 
   it('keeps unpinned external models ambient and diagnoses explicit unadvertised aliases', async () => {

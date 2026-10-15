@@ -1,13 +1,15 @@
 import { createHash } from 'node:crypto';
 
 import type { AcpElicitationRequest } from '@kiki/acp-client';
+import type { AgentProfile } from '@kiki/agent-profiles/agentProfile';
 import type { HostProcessServiceLike } from '@kiki/codex-client';
 import { describe, expect, it, vi } from 'vitest';
 
 import { acpFormFields, acpFormResponse } from '#/agent/execution/acpElicitation';
 import { acquireHarnessMcp, codexHarnessMcpProcess } from '#/agent/execution/harnessMcpLease';
-import { nativeHarnessToolAllowed, type HarnessMcpLease } from '#/app/agentExecutor/harnessMcp';
 import { resolveExecutionBinding } from '#/agent/profile/executionBinding';
+import { BUILTIN_AGENT_EXECUTORS } from '#/app/agentExecutor/builtinDescriptorData';
+import { kikiMcpDefaultView, kikiMcpSupport, nativeHarnessToolAllowed, type HarnessMcpLease } from '#/app/agentExecutor/harnessMcp';
 import { externalAcpForkRecords } from '#/workspace/sessionLifecycle/internal/externalFork';
 import { antigravityRelease } from '#/app/agentExecutor/antigravityDistribution';
 import { agentExecutorBindingFingerprint, type AgentExecutorContext } from '#/app/agentExecutor/agentExecutor';
@@ -198,5 +200,104 @@ describe('external native harness adapters', () => {
     });
     expect(() => antigravityRelease('1.107.0-IDE', 'win32', 'ia32')).toThrow('platform');
     expect(() => antigravityRelease('2.0.0', 'win32', 'x64')).toThrow('1.x');
+  });
+});
+
+describe('Kiki MCP injection switch', () => {
+  const profile = { injectKikiMcp: true, kikiContext: ['memory'], executorPrompt: { delivery: 'preamble', include: ['memory_snapshot'] } } as unknown as AgentProfile;
+
+  it('keeps session over profile over executor defaults, and an absent value on the current decision', () => {
+    const absent = resolveExecutionBinding({ executor: 'fixture' }, undefined, undefined, undefined);
+    expect(absent.effective.inject_kiki_mcp).toBeUndefined();
+    expect(absent.sources['inject_kiki_mcp']).toBe('harness-default');
+    expect(absent.effective.kiki_context).toEqual([]);
+    const defaultsOff = resolveExecutionBinding({ executor: 'fixture' }, {
+      inject_kiki_mcp: false, model_alias: 'fixture-model', thinking_effort: 'high', permission_mode: 'manual',
+      kiki_context: ['memory'], executor_prompt: { include: ['memory_snapshot'] },
+    }, undefined, undefined);
+    expect(defaultsOff.effective).toMatchObject({
+      inject_kiki_mcp: false, model: 'fixture-model', thinking: 'high', permission_mode: 'manual', kiki_context: ['memory'],
+    });
+    expect(defaultsOff.sources['inject_kiki_mcp']).toBe('harness-settings');
+    const fromProfile = resolveExecutionBinding({ executor: 'fixture' }, { inject_kiki_mcp: false }, profile, defaultsOff);
+    expect(fromProfile.effective.inject_kiki_mcp).toBe(true);
+    expect(fromProfile.sources['inject_kiki_mcp']).toBe('profile');
+    expect(fromProfile.effective.kiki_context).toEqual(['memory']);
+    const fromSession = resolveExecutionBinding({ executor: 'fixture', overrides: { inject_kiki_mcp: false } },
+      { inject_kiki_mcp: true }, profile, fromProfile);
+    expect(fromSession.effective.inject_kiki_mcp).toBe(false);
+    expect(fromSession.sources['inject_kiki_mcp']).toBe('session');
+    expect(fromSession.effective.kiki_context).toEqual(['memory']);
+    expect(fromSession.effective.allow_kiki_subagents).toBe(false);
+    const cleared = resolveExecutionBinding({ executor: 'fixture', overrides: { inject_kiki_mcp: null } },
+      { inject_kiki_mcp: false }, profile, fromSession);
+    expect(cleared.effective.inject_kiki_mcp).toBe(true);
+    expect(cleared.sources['inject_kiki_mcp']).toBe('profile');
+    expect(cleared.effective.kiki_context).toEqual(['memory']);
+  });
+
+  it('snapshots a defaults change onto the next binding and leaves the held binding in place', () => {
+    const held = resolveExecutionBinding({ executor: 'fixture' }, { inject_kiki_mcp: false, kiki_context: ['memory'] }, undefined, undefined);
+    const next = resolveExecutionBinding({ executor: 'fixture' }, { inject_kiki_mcp: true, kiki_context: ['memory'] }, undefined, held);
+    expect(held.effective.inject_kiki_mcp).toBe(false);
+    expect(held.effective.kiki_context).toEqual(['memory']);
+    expect(next.effective.inject_kiki_mcp).toBe(true);
+    expect(next.generation).toBe(held.generation + 1);
+  });
+
+  it('does not lease when injection is explicitly off, and leases an explicit on through the existing tool gate', async () => {
+    const acquire = vi.fn(async () => ({ server: { name: 'kiki-harness' }, dispose() {} }));
+    const services = (parentAgentId: string | undefined) => (id: unknown) =>
+      String(id) === 'agentScopeContext' ? { parentAgentId }
+        : String(id) === 'sessionContext' ? { sessionId: 'session-fixture' } : { acquire };
+    const off = resolveExecutionBinding({ executor: 'fixture', overrides: {
+      inject_kiki_mcp: false, kiki_context: ['memory'], allow_kiki_subagents: true,
+    } }, undefined, undefined, undefined);
+    const offContext = { agent: { id: 'child', accessor: { get: services('parent-fixture') } },
+      binding: { execution: off }, descriptor: { id: 'fixture', supportsMcp: true } } as unknown as AgentExecutorContext;
+    expect(off.effective.kiki_context).toEqual(['memory']);
+    expect(await acquireHarnessMcp(offContext, '/workspace')).toBeUndefined();
+    expect(acquire).not.toHaveBeenCalled();
+    expect(nativeHarnessToolAllowed({ execution: off }, 'parent-fixture', 'MemoryRead', 'builtin')).toBe(true);
+    const on = resolveExecutionBinding({ executor: 'fixture' }, { inject_kiki_mcp: true }, undefined, undefined);
+    const onContext = { agent: { id: 'main', accessor: { get: services(undefined) } },
+      binding: { execution: on }, descriptor: { id: 'fixture', supportsMcp: true } } as unknown as AgentExecutorContext;
+    expect(await acquireHarnessMcp(onContext, '/workspace')).toBeDefined();
+    expect(acquire).toHaveBeenCalledWith(expect.objectContaining({ nativeTools: true, hooks: undefined, agentId: 'main' }));
+    expect(nativeHarnessToolAllowed({ execution: on }, undefined, 'MemoryRead', 'builtin')).toBe(false);
+    expect(nativeHarnessToolAllowed({ execution: on }, undefined, 'AgentRun', 'builtin')).toBe(false);
+    const refused = { agent: { id: 'main', accessor: { get: () => { throw new Error('unexpected service'); } } },
+      binding: { execution: on }, descriptor: { id: 'openclaw-acp', supportsMcp: false } } as unknown as AgentExecutorContext;
+    await expect(acquireHarnessMcp(refused, '/workspace')).rejects.toThrow('stdio MCP');
+    const selectedOff = { ...refused, binding: { execution: off } } as unknown as AgentExecutorContext;
+    expect(await acquireHarnessMcp(selectedOff, '/workspace')).toBeUndefined();
+  });
+
+  it('reports builtin bridge support from descriptor facts and does not treat an undeclared vendor as available', () => {
+    const supportOf = (id: keyof typeof BUILTIN_AGENT_EXECUTORS) => kikiMcpSupport({ id, ...BUILTIN_AGENT_EXECUTORS[id]! });
+    const supported = Object.keys(BUILTIN_AGENT_EXECUTORS).filter((id) => supportOf(id as keyof typeof BUILTIN_AGENT_EXECUTORS).state === 'supported').sort();
+    expect(supported).toEqual(['agy-cli', 'antigravity-acp', 'codex-app-server', 'kimi-acp']);
+    expect(supportOf('agy-cli').fact).toContain('supports_mcp is true');
+    expect(supportOf('agy-cli').fact).toContain('stdio');
+    expect(supportOf('codex-app-server').fact).toContain('process flags');
+    expect(supportOf('openclaw-acp')).toMatchObject({ state: 'unsupported' });
+    expect(supportOf('openclaw-acp').fact).toContain('mcpServers');
+    expect(supportOf('pi-acp').fact).toContain('does not forward Kiki MCP servers');
+    expect(supportOf('claude-acp').state).toBe('undeclared');
+    expect(supportOf('gemini-acp').state).toBe('undeclared');
+    expect(supportOf('deepseek-acp').state).toBe('undeclared');
+    expect(kikiMcpSupport({ id: 'http-only', protocol: 'acp-v1', supportsMcp: true, mcpTransports: ['http'] })).toEqual({
+      state: 'unsupported', fact: 'http-only mcp_transports is http; the Kiki bridge needs stdio.',
+    });
+    for (const id of Object.keys(BUILTIN_AGENT_EXECUTORS)) {
+      const view = kikiMcpDefaultView(undefined, { id, ...BUILTIN_AGENT_EXECUTORS[id as keyof typeof BUILTIN_AGENT_EXECUTORS]! });
+      expect(view.effective).toBeNull();
+      expect(view).toMatchObject({ source: 'harness-default', applies: 'next_binding',
+        precedence: ['session', 'profile', 'harness-settings', 'harness-default'] });
+      expect(view.support.fact).not.toMatch(/token|api[_-]?key|secret|bearer/i);
+    }
+    expect(kikiMcpDefaultView(false, { id: 'agy-cli', ...BUILTIN_AGENT_EXECUTORS['agy-cli']! })).toMatchObject({
+      effective: false, source: 'harness-settings', support: { state: 'supported' },
+    });
   });
 });

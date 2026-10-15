@@ -259,6 +259,12 @@ describe('sessionUpdateSchema', () => {
     ).toBe(true);
   });
 
+  it('accepts null thinking on agent_config and rejects an empty effort', () => {
+    expect(sessionAgentConfigPartialSchema.parse({ thinking: null }).thinking).toBeNull();
+    expect(sessionAgentConfigPartialSchema.safeParse({ thinking: '' }).success).toBe(false);
+    expect(sessionAgentConfigPartialSchema.parse({}).thinking).toBeUndefined();
+  });
+
   it('rejects an unknown permission_mode in agent_config', () => {
     expect(
       sessionUpdateSchema.safeParse({

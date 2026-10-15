@@ -27,7 +27,7 @@ import { modelSwitchConfigSchema, modelSwitchConfigPatchSchema, agentExecutorDis
 import { worktreeConfigSchema } from '@kiki/agent-core-v2/app/git/worktreeConfig';
 import { SessionResidencyConfigSchema } from '@kiki/agent-core-v2/app/sessionManager/configSection';
 import { z } from 'zod';
-import { computerControlConfigResponseSchema, computerControlConfigPatchSchema } from '@kiki/protocol';
+import { browserControlSettingsPatchSchema, browserControlSettingsSchema, computerControlConfigResponseSchema, computerControlConfigPatchSchema } from '@kiki/protocol';
 export { interactionConfigResponseSchema, interactionConfigPatchSchema } from '@kiki/protocol';
 
 const tokenCountingConfigSchema = TokenCountingConfigSchema as z.ZodType<TokenCountingConfig>;
@@ -91,6 +91,7 @@ const sessionResidencyConfigRequestSchema = z.object({
   sweep_interval_ms: SessionResidencyConfigSchema.shape.sweepIntervalMs,
   max_concurrent_restores: SessionResidencyConfigSchema.shape.maxConcurrentRestores,
   max_queued_restores: SessionResidencyConfigSchema.shape.maxQueuedRestores,
+  max_resident_heap_bytes: SessionResidencyConfigSchema.shape.maxResidentHeapBytes,
 }).strict();
 
 const agentsDelegationConfigSchema = z.object({
@@ -205,6 +206,7 @@ export const configResponseSchema = z.object({
   default_plan_mode: z.boolean().optional(),
   permission: permissionConfigResponseSchema.optional(),
   interaction: interactionConfigResponseSchema.optional(),
+  browser_control: browserControlSettingsSchema.optional(),
   computer_control: computerControlConfigResponseSchema.optional(),
   hooks: HooksConfigSchema.optional(),
   nb_search: nbSearchConfigPatchSchema.optional(),
@@ -257,6 +259,7 @@ export const patchConfigRequestSchema = z.object({
   default_plan_mode: z.boolean().optional(),
   permission: permissionConfigPatchSchema.optional(),
   interaction: interactionConfigPatchSchema.optional(),
+  browser_control: browserControlSettingsPatchSchema.optional(),
   computer_control: computerControlConfigPatchSchema.optional(),
   hooks: HooksConfigSchema.optional(),
   nb_search: nbSearchConfigPatchSchema.optional(),

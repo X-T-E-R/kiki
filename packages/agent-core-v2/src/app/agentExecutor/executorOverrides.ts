@@ -21,9 +21,11 @@ export const EXECUTOR_OVERRIDE_SOURCE_ID = 'override';
 export const AgentExecutorDefaultsSchema = z.strictObject({
   model_alias: z.string().min(1).optional(),
   thinking_effort: z.string().min(1).optional(),
+  native_agent: z.string().trim().min(1).optional(),
   permission_mode: executionPermissionSchema.optional(),
   kiki_context: z.array(executionContextSchema).optional(),
   allow_kiki_subagents: z.boolean().optional(),
+  inject_kiki_mcp: z.boolean().optional(),
   executor_prompt: executorPromptSchema.optional(),
 });
 export type AgentExecutorDefaults = z.infer<typeof AgentExecutorDefaultsSchema>;

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { requestIdentityPolicySchema } from '../modelCatalog';
+import { browserControlSettingsPatchSchema, browserControlSettingsSchema } from './browser';
 import { interactionConfigSchema, askUserQuestionGuardWireSchema } from '../questionGuard';
 import { hooksConfigSchema } from './hooksConfig';
 import { nbSearchConfigPatchSchema, nbSearchSourceConfigSchema } from './nbSearch';
@@ -10,11 +11,15 @@ import { spaceUiConfigSchema, spaceUiConfigPatchSchema } from './space';
 export const computerUsagePreferenceSchema = z.enum(['avoid', 'prefer']);
 export type ComputerUsagePreference = z.infer<typeof computerUsagePreferenceSchema>;
 export const computerControlConfigResponseSchema = z.object({
+  enabled: z.boolean().optional(),
+  enabledSource: z.enum(['default', 'preset', 'base', 'home', 'env', 'memory']).optional(),
   usagePreference: computerUsagePreferenceSchema,
   usagePreferenceSource: z.enum(['default', 'preset', 'base', 'home', 'env', 'memory']),
   appliesOn: z.literal('next-model-request'),
+  toolsApplyOn: z.literal('next-step').optional(),
 }).strict();
 export const computerControlConfigPatchSchema = z.object({
+  enabled: z.boolean().nullable().optional(),
   usage_preference: computerUsagePreferenceSchema.nullable().optional(),
 }).strict();
 
@@ -208,6 +213,7 @@ export const sessionResidencyConfigResponseSchema = z.object({
   sweepIntervalMs: z.number().int().optional(),
   maxConcurrentRestores: z.number().int().optional(),
   maxQueuedRestores: z.number().int().optional(),
+  maxResidentHeapBytes: z.number().int().optional(),
 });
 
 export const sessionResidencyConfigPatchSchema = z.object({
@@ -217,6 +223,7 @@ export const sessionResidencyConfigPatchSchema = z.object({
   sweep_interval_ms: z.number().int().min(1_000).max(300_000).optional(),
   max_concurrent_restores: z.number().int().min(1).max(4).optional(),
   max_queued_restores: z.number().int().min(0).max(64).optional(),
+  max_resident_heap_bytes: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
 }).strict();
 
 export const interactionConfigResponseSchema = interactionConfigSchema;
@@ -237,6 +244,7 @@ export const agentExecutorDisplayConfigPatchSchema = z.object({
 }).strict();
 
 export const configResponseSchema = z.object({
+  browser_control: browserControlSettingsSchema.optional(),
   computer_control: computerControlConfigResponseSchema.optional(),
   agent_executor_display: agentExecutorDisplayConfigSchema.optional(),
   model_switch: modelSwitchConfigSchema.optional(),
@@ -280,6 +288,7 @@ export const configResponseSchema = z.object({
 export type ConfigResponse = z.infer<typeof configResponseSchema>;
 
 export const patchConfigRequestSchema = z.object({
+  browser_control: browserControlSettingsPatchSchema.optional(),
   computer_control: computerControlConfigPatchSchema.optional(),
   agent_executor_display: agentExecutorDisplayConfigPatchSchema.optional(),
   model_switch: modelSwitchConfigPatchSchema.optional(),

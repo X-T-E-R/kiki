@@ -18,9 +18,10 @@ export async function browserElicitation(
   const origin = { agentId: caller.agentId, turnId };
   if (!interaction.hasConsumer(origin)) return { action: 'cancel' };
   const id = `browser_approval_${randomUUID()}`;
+  const source = typeof request._meta?.['kiki_elicit_source'] === 'string' ? request._meta['kiki_elicit_source'] : 'browserElicitation';
   const payload: ApprovalRequest = { id, ...caller, turnId, toolCallId, toolName: 'Codex browser', action: request.message,
     display: { kind: 'external_permission', summary: request.message,
-      detail: { source: 'Official Codex browser service', request: request._meta },
+      detail: { source, cause: 'browserElicitation keeps the current permission consumer and does not forge an approval', request: request._meta },
       options: [{ id: 'accept', label: 'Allow once', kind: 'allow_once' }, { id: 'decline', label: 'Decline', kind: 'reject_once' }] } };
   const pending = interaction.request<ApprovalRequest, ApprovalResponse | InteractionCancellation>({ id, kind: 'approval', payload, origin });
   try {
