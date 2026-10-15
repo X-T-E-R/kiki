@@ -13,7 +13,7 @@ Kiki 是一个跑在你机器上的开源 AI 智能体工作台。这一组页�
 | 页面 | 讲什么 |
 | --- | --- |
 | [一个工作台，好几条线](/zh/features/workbench) | 主会话、派发的子智能体、按智能体绑模型、后台任务 |
-| [Agent Profiles](/zh/features/agents) | 把配置当作可复用的智能体：模型与思考档位、指令、工具与派发 |
+| [Agent Profiles](/zh/features/agent-workflows) | 把配置当作可复用的智能体：模型与思考档位、指令、工具与派发 |
 | [每一层都归你](/zh/features/freedom) | 提示词覆写、连接与 OAuth、权限模式、Hooks |
 | [长时间的活](/zh/features/long-work) | 目标、消息队列、定时任务、任务看板、上下文窗口、记忆 |
 | [能一起干活的人](/zh/features/people) | 角色、固定日常对话入口、角色记忆、房间 |

@@ -252,4 +252,4 @@ process.stdin.on('end', () => {
 ## 下一步
 
 - [Legacy 规则字段](#legacy-规则字段) — `[[hooks]]` 的完整字段说明
-- [Agent 与 subagent](./agents.md) — 用 `SubagentStop` 事件在 subagent 完成后触发通知
+- [Agent 与 subagent](./agents-and-subagents.md) — 用 `SubagentStop` 事件在 subagent 完成后触发通知

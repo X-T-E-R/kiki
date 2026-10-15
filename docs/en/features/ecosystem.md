@@ -44,7 +44,7 @@ The picker carries one status line for the catalog read: empty when it is curren
 
 A seat is a fixed place external tools call into; an external executor is a place Kiki dispatches out to. When the external harness is the main agent instead, `allow_kiki_subagents: true` lets it dispatch Kiki subagents back, and `kiki_context` can expose Kiki's own native context — memory, board, cron, threads, history, hooks — to it over the same bridge, with child completions queued back to the main agent. The profile's tool policy, dispatch policy, model constraints, and notification policy still apply across that bridge.
 
-See [External main-agent delegation](/en/customization/agents#external-main-agent-delegation) and [Kiki context in external main agents](/en/customization/agents#kiki-context-in-external-main-agents).
+See [External main-agent delegation](/en/customization/agents-and-subagents#external-main-agent-delegation) and [Kiki context in external main agents](/en/customization/agents-and-subagents#kiki-context-in-external-main-agents).
 
 ## Next steps
 

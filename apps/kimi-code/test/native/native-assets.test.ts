@@ -693,6 +693,43 @@ describe('text-only bundled documentation', () => {
     );
   });
 
+  it('ships renamed product references and removes reserved filenames on a docs upgrade', async () => {
+    const repository = resolve(import.meta.dirname, '../../../..');
+    const scratch = join(repository, '.tmp');
+    mkdirSync(scratch, { recursive: true });
+    const root = mkdtempSync(join(scratch, 'renamed-docs-'));
+    const packageRoot = join(root, 'package');
+    const home = join(root, 'home');
+    const previous: Record<string, string> = {};
+    for (const locale of ['en', 'zh']) {
+      for (const section of ['customization', 'features']) {
+        previous[`${locale}/${section}/agents.md`] = '# Previous product reference\n';
+      }
+    }
+    try {
+      const copied = await copyKikiDocs({ sourceDir: join(repository, 'docs'), targetDir: join(packageRoot, 'dist', 'docs') });
+      expect(copied.some(({ relativePath }) => /(?:^|\/)agents\.md$/i.test(relativePath))).toBe(false);
+      const old = fakeDocsSource(previous);
+      expect(installKikiDocs({ ...old, kikiHome: home })).toMatchObject({ status: 'installed', fileCount: 4 });
+      const edited = join(home, 'docs', 'en', 'customization', 'agents.md');
+      writeFileSync(edited, '# User notes\n');
+      expect(installKikiDocs({ source: null, packageRoot, runtimeDir: join(packageRoot, 'dist'), kikiHome: home }))
+        .toMatchObject({ status: 'installed', source: 'package', removedFiles: 4, backedUpFiles: 1 });
+      expect(readFileSync(`${edited}.bak`, 'utf8')).toBe('# User notes\n');
+      for (const locale of ['en', 'zh']) {
+        for (const [section, name] of [['customization', 'agents-and-subagents'], ['features', 'agent-workflows']]) {
+          const relativePath = `${locale}/${section}/${name}.md`;
+          const file = copied.find((entry) => entry.relativePath === relativePath);
+          expect(file).toBeDefined();
+          expect(readFileSync(join(home, 'docs', relativePath))).toEqual(file?.bytes);
+          expect(existsSync(join(home, 'docs', locale, section!, 'agents.md'))).toBe(false);
+        }
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
   it('prepares matching SEA/npm/workspace text and hashes without modifying sources, and preserves edits on upgrade', async () => {
     const scratch = resolve(import.meta.dirname, '../../../../.tmp');
     mkdirSync(scratch, { recursive: true });

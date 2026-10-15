@@ -252,4 +252,4 @@ This example shows how blocking works; matching on a substring is not a security
 ## Next steps
 
 - [Legacy rule fields](#legacy-rule-fields) — the full `[[hooks]]` field reference
-- [Agents and sub-agents](./agents.md) — use the `SubagentStop` event to notify when a sub-agent finishes
+- [Agents and sub-agents](./agents-and-subagents.md) — use the `SubagentStop` event to notify when a sub-agent finishes

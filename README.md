@@ -76,7 +76,7 @@ The lead agent splits your task and dispatches subagents, and each one can run a
 
 Agents themselves are Markdown files you own: the frontmatter sets tools, model, effort, and which agents it may dispatch, and the body is the system prompt. Kiki watches those folders and reloads edits in about 200 ms. You can build one by copying an existing profile, from a shipped template, or blank — no need to hand-write a file first.
 
-Open any dispatched subagent to read its own transcript, and message it from its own composer. While the agent works, what you type joins a queue rather than cutting in, and each queued message can go out when the agent is idle, after its subagents finish, or after its background tasks finish. Long commands move to the background and notify the agent when they finish, so it never has to poll. See [One workbench, many lines](https://x-t-e-r.github.io/kiki/en/features/workbench) and [Agents and Sub-Agents](https://x-t-e-r.github.io/kiki/en/customization/agents).
+Open any dispatched subagent to read its own transcript, and message it from its own composer. While the agent works, what you type joins a queue rather than cutting in, and each queued message can go out when the agent is idle, after its subagents finish, or after its background tasks finish. Long commands move to the background and notify the agent when they finish, so it never has to poll. See [One workbench, many lines](https://x-t-e-r.github.io/kiki/en/features/workbench) and [Agents and Sub-Agents](https://x-t-e-r.github.io/kiki/en/customization/agents-and-subagents).
 
 ### Work in the window you have open
 

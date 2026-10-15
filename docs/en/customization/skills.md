@@ -151,4 +151,4 @@ Save this as `$KIKI_HOME/skills/review-pr/SKILL.md` (`~/.kiki/skills/review-pr/S
 ## Next steps
 
 - [Plugins](./plugins.md) — Package Skills into installable units to share with your team
-- [Agents and sub-agents](./agents.md) — How Skills influence sub-agent behavior
+- [Agents and sub-agents](./agents-and-subagents.md) — How Skills influence sub-agent behavior

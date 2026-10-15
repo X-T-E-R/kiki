@@ -1,6 +1,6 @@
 # Plugins
 
-A plugin packages reusable Kiki capabilities into one installable unit. A plugin can add [Agent Skills](./skills.md), custom [agents](./agents.md), a Skill loaded automatically at session start, system-prompt instructions, MCP servers that provide real tool capabilities, and another tool's conversation history — as a [Kiki session you can keep working in](#session-history-import) or as a read-only archive. That makes plugins the way to share a workflow with a team, connect to an external service, or install from the [official list](#official-plugins).
+A plugin packages reusable Kiki capabilities into one installable unit. A plugin can add [Agent Skills](./skills.md), custom [agents](./agents-and-subagents.md), a Skill loaded automatically at session start, system-prompt instructions, MCP servers that provide real tool capabilities, and another tool's conversation history — as a [Kiki session you can keep working in](#session-history-import) or as a read-only archive. That makes plugins the way to share a workflow with a team, connect to an external service, or install from the [official list](#official-plugins).
 
 ## Install and manage
 
@@ -431,7 +431,7 @@ Supported fields:
 | `interface` | Fields shown in `/plugins`: `displayName`, `shortDescription`, `longDescription`, `developerName`, `websiteURL` |
 | `icon` | A `./` path to an `.svg` or `.png` file inside the plugin (64 KB max). `GET /api/plugins` returns it as an inert `data:` URI, for a GUI to draw next to the plugin |
 | `skills` | One or more `./` paths; must be within the plugin root directory. When omitted, the `SKILL.md` in the root directory is treated as a single Skill root |
-| `agents` | One or more `./` paths; must be within the plugin root directory and point to directories containing [agent files](./agents.md#custom-agents). When omitted, the `agents/` directory under the plugin root (if present) is picked up automatically |
+| `agents` | One or more `./` paths; must be within the plugin root directory and point to directories containing [agent files](./agents-and-subagents.md#custom-agents). When omitted, the `agents/` directory under the plugin root (if present) is picked up automatically |
 | `sessionStart.skill` | Loads the specified plugin Skill into the main Agent when a new or resumed session starts |
 | `skillInstructions` | Additional instructions appended whenever a Skill from this plugin is loaded |
 | `systemPrompt` | Inline instructions contributed to the agent's system prompt while the plugin is enabled |
@@ -465,7 +465,7 @@ Each source is capped at 32 KB (UTF-8 bytes); larger content is ignored and repo
 
 A new session or agent reads the contributions of the plugins enabled in its scope, while a request already in flight keeps the system prompt it started with. Changing plugin use updates catalogs immediately and reconciles prompt contributions at the next safe step. Turning a plugin off hides its instructions; turning it back on restores that session's frozen content. `/plugins reload` refreshes the affected plugin's content without replacing unrelated prompt snapshots. A resumed session preserves its persisted prompt content and applies its effective plugin selection. Toggling a plugin's MCP server does not change prompt sections.
 
-The built-in agent prompt includes enabled plugins' instructions automatically. A custom `SYSTEM.md` or agent file owns its own template, so put `${plugin_sections}` where those instructions belong — and if it already includes `${base_prompt}`, which expands to a prompt containing that block, do not add `${plugin_sections}` again. [Custom agents and SYSTEM.md](./agents.md#overriding-the-main-agent-s-system-prompt-with-system-md) has the full variable table.
+The built-in agent prompt includes enabled plugins' instructions automatically. A custom `SYSTEM.md` or agent file owns its own template, so put `${plugin_sections}` where those instructions belong — and if it already includes `${base_prompt}`, which expands to a prompt containing that block, do not add `${plugin_sections}` again. [Custom agents and SYSTEM.md](./agents-and-subagents.md#overriding-the-main-agent-s-system-prompt-with-system-md) has the full variable table.
 
 ## Plugin slash commands
 
@@ -547,7 +547,7 @@ However the Skill is loaded — `sessionStart.skill`, `/skill:<name>`, or automa
 
 ## Plugin agents
 
-A plugin can ship agents: declare one or more `./` directories in the manifest's `agents` field, or simply have an `agents/` directory under the plugin root. The files use the same format as [custom agents](./agents.md#custom-agents) and, while the plugin is enabled, are discovered automatically and can be dispatched as sub-agents.
+A plugin can ship agents: declare one or more `./` directories in the manifest's `agents` field, or simply have an `agents/` directory under the plugin root. The files use the same format as [custom agents](./agents-and-subagents.md#custom-agents) and, while the plugin is enabled, are discovered automatically and can be dispatched as sub-agents.
 
 ```text
 my-plugin/

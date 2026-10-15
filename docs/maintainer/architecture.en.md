@@ -44,7 +44,7 @@ All surfaces use `agent-core-v2`; the historical v1 engine is not an alternative
 
 Explicit model and effort binding and the direct-child tools are separate from experimental feature selection. Use the owning feature's switch when you need an experiment; the master switch enables all registered experiments and is broader than a single opt-in.
 
-[Agents and subagents](../en/customization/agents.md) documents binding precedence and lifecycle. [Configuration files](../en/configuration/config-files.md#subagent) documents subagent timeout and denylist settings.
+[Agents and subagents](../en/customization/agents-and-subagents.md) documents binding precedence and lifecycle. [Configuration files](../en/configuration/config-files.md#subagent) documents subagent timeout and denylist settings.
 
 ## Integrate peer-thread communication
 
@@ -110,6 +110,6 @@ The upstream baseline is `MoonshotAI/kimi-code`; Kiki's own repository is `X-T-E
 ## Next steps
 
 - [Getting started](../en/getting-started/first-launch.md) — choose a release or local source build.
-- [Agents and subagents](../en/customization/agents.md) — configure bindings and child-agent tools.
+- [Agents and subagents](../en/customization/agents-and-subagents.md) — configure bindings and child-agent tools.
 - [Environment variables](../en/configuration/env-vars.md#runtime-switches) — configure runtime settings and experiments.
 - [`kiki` command reference](../en/reference/command.md) — daemon, inbound integration, and explicit migration.

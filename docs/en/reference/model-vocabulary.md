@@ -61,5 +61,5 @@ This convenience resolution does not create a second selection vocabulary: the p
 
 ## Next steps
 
-- [Agents and Sub-Agents](../customization/agents.md#agent-file-format) — agent file fields and subagent binding behavior.
+- [Agents and Sub-Agents](../customization/agents-and-subagents.md#agent-file-format) — agent file fields and subagent binding behavior.
 - [Configuration files](../configuration/config-files.md#subagent) — the model registry and subagent settings.

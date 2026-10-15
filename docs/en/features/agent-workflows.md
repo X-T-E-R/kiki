@@ -6,7 +6,7 @@ title: Agent Profiles
 
 An **agent** is the thing that actually does the work: it reads files, runs commands, calls tools, and answers. Every agent in Kiki is defined by a **profile** — one Markdown file that says which model and thinking effort it runs on, how it is instructed, which tools it may call, and which agents it can hand work to. Write a profile once and every dispatch of that kind of agent reuses it.
 
-This page explains what an agent is, how the main agent and subagents differ, and how to choose and combine profiles. The full field reference lives in [Agents and Sub-Agents](/en/customization/agents) and [Agent profiles: concepts and design](/en/customization/agent-profiles).
+This page explains what an agent is, how the main agent and subagents differ, and how to choose and combine profiles. The full field reference lives in [Agents and Sub-Agents](/en/customization/agents-and-subagents) and [Agent profiles: concepts and design](/en/customization/agent-profiles).
 
 ## The main agent and its subagents
 
@@ -69,7 +69,7 @@ You rarely pick a profile by hand. The main agent dispatches on the `description
 
 Where a role runs is also yours to fix. Bind the main agent, each subagent, and the reviewer to different models or vendors so a strong model plans while cheaper ones do routine work. Set a hard allowlist when a role must not run an expensive model, and a model menu with `restrict_models_to_menu: true` when the profile already maintains a complete permitted set. See [Providers and models](/en/configuration/providers) and [Model menus and hard boundaries](/en/customization/agent-profiles#model-menus-and-hard-boundaries).
 
-Edits reload in about 200 ms and newly dispatched agents pick them up immediately. A session already in flight keeps the profile snapshot it started with, so use **Rebuild context** in that session to apply the change without losing the conversation. See [Profile reloads and live sessions](/en/customization/agents#profile-reloads-and-live-sessions).
+Edits reload in about 200 ms and newly dispatched agents pick them up immediately. A session already in flight keeps the profile snapshot it started with, so use **Rebuild context** in that session to apply the change without losing the conversation. See [Profile reloads and live sessions](/en/customization/agents-and-subagents#profile-reloads-and-live-sessions).
 
 ## A profile is not a persona
 
@@ -77,7 +77,7 @@ A profile is execution configuration: tools, permissions, model, effort, and the
 
 ## Next steps
 
-- [Agents and Sub-Agents](/en/customization/agents) — the field reference and dispatch contract
+- [Agents and Sub-Agents](/en/customization/agents-and-subagents) — the field reference and dispatch contract
 - [Agent profiles: concepts and design](/en/customization/agent-profiles) — where profiles live and when changes take effect
 - [One workbench, many lines](/en/features/workbench) — what the main session does with a dispatched tree
 - [Every layer is yours](/en/features/freedom) — prompt overrides, connections, permission modes, and hooks

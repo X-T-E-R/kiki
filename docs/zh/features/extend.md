@@ -28,7 +28,7 @@ MCP 工具到达智能体时与内置工具完全一样，走同一套审批模�
 
 ## 搜索与抓取
 
-`WebSearch` 和 `FetchURL` 由一个可查看的搜索与抓取模块支撑。**设置 → 搜索与抓取 → 概览与来源**显示当前生效的是哪个配置来源、服务端是否复用了你本机的搜索配置；具名通道的就绪状态也能在那里看到。搜索跑在具名通道上——其中一些（比如 GitHub 仓库搜索）不需要密钥，同一供应商配了多个密钥时会在调用之间轮换。抓取走一条带回退的链路，你能看出是哪个提取器产出了文本。等价配置在 `config.toml` 的 `nb_search` 下。见[搜索与抓取](/zh/guides/settings#搜索与抓取)和[配置文件 `nb_search`](/zh/configuration/config-files#nb-search)。
+`WebSearch` 和 `FetchURL` 由一个可查看的搜索与抓取模块支撑。**设置 → 搜索与抓取 → 概览与配置来源**显示当前生效的是哪个配置来源、服务端是否复用了你本机的搜索配置；具名通道的就绪状态也能在那里看到。搜索跑在具名通道上——其中一些（比如 GitHub 仓库搜索）不需要密钥，同一供应商配了多个密钥时会在调用之间轮换。抓取走一条带回退的链路，你能看出是哪个提取器产出了文本。等价配置在 `config.toml` 的 `nb_search` 下。见[搜索与抓取](/zh/guides/settings#搜索与抓取)和[配置文件 `nb_search`](/zh/configuration/config-files#nb-search)。
 
 ![搜索通道页签：默认通道、已固定的通道，以及其余每条通道的结果与凭据来自哪里。](/shots/extend/ce-20261005-extend-search-lanes.zh.png)
 

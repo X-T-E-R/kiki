@@ -56,13 +56,13 @@ The wizard hands off model setup rather than writing provider credentials itself
 
 The welcome message uses the model and thinking effort you select when you send it. If none is configured, use the composer's model selector to choose one or connect a provider; your draft stays in place. Then resend the same welcome request. Neither a tour nor closing setup sends a prompt, and starter chips only prepare a draft.
 
-The wizard does not ask which folder to work in. The new session page defaults to your most recent workspace, or a new folder under Kiki Home if you have none. You can ask for later setup with `/kiki-ops`; [Agents and sub-agents](../customization/agents.md#built-in-sub-agents) covers how profiles pick their model.
+The wizard does not ask which folder to work in. The new session page defaults to your most recent workspace, or a new folder under Kiki Home if you have none. You can ask for later setup with `/kiki-ops`; [Agents and sub-agents](../customization/agents-and-subagents.md#built-in-sub-agents) covers how profiles pick their model.
 
 The guided routes also remain available from **Discover Kiki** in the sidebar. Each stop offers an action on the real page or a labelled local example. Leaving keeps your place, and **Continue exploring** takes you back. The tour itself makes no model calls and creates no demo session; a suggested prompt is only a draft until you send it.
 
 To get help with a real task, start a new conversation and ask `/kiki-ops` to help you get started. Kiki's bundled guidance asks what you most want to get done, then takes you through doing it once — setting up what that step needs and leaving what already works alone. You review the draft and press Send yourself.
 
-A default model and thinking effort for a subagent like the read-only Explore come up only when the task requires examining material first — the project's files or the outside sources a claim depends on. A first agent profile is offered only when the work is missing that role, with the reason attached; research, writing and office work get a role shaped to that job rather than the engineering pair. You can ask for that setup later with `/kiki-ops`; [Agents and sub-agents](../customization/agents.md#built-in-sub-agents) explains how profiles pick their model.
+A default model and thinking effort for a subagent like the read-only Explore come up only when the task requires examining material first — the project's files or the outside sources a claim depends on. A first agent profile is offered only when the work is missing that role, with the reason attached; research, writing and office work get a role shaped to that job rather than the engineering pair. You can ask for that setup later with `/kiki-ops`; [Agents and sub-agents](../customization/agents-and-subagents.md#built-in-sub-agents) explains how profiles pick their model.
 
 ## Your first conversation
 

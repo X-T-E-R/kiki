@@ -14,13 +14,13 @@ Kiki discovers profiles by scope, and more specific scopes win: **explicit (`--a
 
 You do not have to write one from scratch. In the app, a new profile starts by copying an existing one, from one of the shipped templates (`implementer`, `reviewer`), or blank. `$KIKI_HOME/SYSTEM.md` permanently overrides the default main agent's prompt.
 
-See [Agent profiles: concepts and design](/en/customization/agent-profiles) and [Agent file format](/en/customization/agents#agent-file-format).
+See [Agent profiles: concepts and design](/en/customization/agent-profiles) and [Agent file format](/en/customization/agents-and-subagents#agent-file-format).
 
 ## Prompts down to one tool description
 
 You do not need a fork of a profile to change a sentence. **Prompt field overrides** replace named text units in the built-in prompt — the system sections, a tool description, a delegation notice — globally, per model, or per agent. A useful field id is as small as `tool.web-search.description`. Field values replace; they do not append or wrap.
 
-`kiki prompt-fields` is the read-only surface for this: `list` shows the registry, `show` the current value, `explain` where each layer's value came from. In the desktop app, **Settings → Agents → Prompt** edits the same thing in `config.toml`. See [Prompt field overrides](/en/customization/prompt-fields).
+`kiki prompt-fields` is the read-only surface for this: `list` shows the registry, `show` the current value, `explain` where each layer's value came from. In the desktop app, **Settings → Agents → Prompt fields** edits the same thing in `config.toml`. See [Prompt field overrides](/en/customization/prompt-fields).
 
 ![Prompt field overrides, down to one tools description, beside a live preview of the resulting prompt.](/shots/freedom/ce-20261005-freedom-prompt-overrides.en.png)
 
@@ -58,7 +58,7 @@ Plan mode is a separate axis: the agent produces a plan and waits for your appro
 
 A **hook** runs your script on a lifecycle event — a tool call, a session event, a subagent completion. You can use one to block a dangerous shell command, to add context when a message is submitted, or to get a notification when a task finishes. Hooks are declarative rules in configuration, and `Inspecting effective rules` shows what is actually in force.
 
-Hooks also run for external harnesses that act as a main agent, where Kiki's native context groups are exposed over MCP; see [Kiki context in external main agents](/en/customization/agents#kiki-context-in-external-main-agents). See [Hooks](/en/customization/hooks).
+Hooks also run for external harnesses that act as a main agent, where Kiki's native context groups are exposed over MCP; see [Kiki context in external main agents](/en/customization/agents-and-subagents#kiki-context-in-external-main-agents). See [Hooks](/en/customization/hooks).
 
 ## Next steps
 

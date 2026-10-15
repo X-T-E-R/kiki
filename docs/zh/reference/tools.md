@@ -263,9 +263,9 @@ Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`TaskStop`�
 
 `ThreadCreate` 默认启用，设置页的「权限 → 工具」可单独关闭，不影响另外 4 个线程工具。Peer 通信受 [`[thread_communication] enabled`](../configuration/config-files.md#thread-communication) 与持久化 workspace 覆盖控制。Bridge 入站另行默认关闭，由目标 owner 明确批准；关闭目标通信或入站会停止 bridge 投递，不删除会话。
 
-只有来源 thread 的主 Agent 调用 `ThreadSend` 才会记录 peer 归属；REST 与 Klient 发送属于只指定目标的外部客户端输入。详见 [Agent 与子 Agent](../customization/agents.md#peer-thread-通信)。
+只有来源 thread 的主 Agent 调用 `ThreadSend` 才会记录 peer 归属；REST 与 Klient 发送属于只指定目标的外部客户端输入。详见 [Agent 与子 Agent](../customization/agents-and-subagents.md#peer-thread-通信)。
 
-Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRun`、`AgentList` 和 `AgentSend`。这些工具只管理调用方的直属子 Agent——用 `AgentRun` 里可选的 `name`，或用 agent id。它们不需要实验开关。内置的 [`coder` 与 `explore` profile](../customization/agents.md) 没有这组工具。
+Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRun`、`AgentList` 和 `AgentSend`。这些工具只管理调用方的直属子 Agent——用 `AgentRun` 里可选的 `name`，或用 agent id。它们不需要实验开关。内置的 [`coder` 与 `explore` profile](../customization/agents-and-subagents.md) 没有这组工具。
 
 `AgentList` 返回这些直属子 Agent，不会列出孙级。`AgentSend` 把消息排进某个直属子 Agent 的邮箱，之后发生什么取决于该子 Agent 的状态——细节见本页下方 `AgentSend` 条目。
 协作类工具负责 Agent 间协作、用户交互和 Skill 调用。
@@ -295,13 +295,13 @@ Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRu
 
 `tools` 和 `disallowed_tools` 都省略时，新建子 Agent 使用配置默认，`resume` 保留已保存的覆盖。两者都要求原生 executor；不支持它们的外部 executor 会在子 Agent 启动前报错。
 
-**模型与档位。** 新派生项按此顺序选模型：`model_alias` 参数 → 生效 profile、route 或 caller lease 上的 pin → 显式配置的 `[subagent].default_model`。这些来源都不存在时以 `model.not_configured` 失败，不会创建子 Agent——调用方模型与主 Agent 的 `default_model` 都不是静默回退来源。`AgentRun` 拒绝 `model_alias: "inherit"`，请写具体的已配置模型名或省略该参数；subagent profile、route、caller lease 里仍可写 `model_alias: inherit` 跟随调用方。其他情况下，思考强度按工具 `effort` → route 上锁定的 effort（route 未锁定时改用 caller lease 的）→ 匹配的 `model_profiles` 档位 → 所绑定模型与 profile pin 匹配时的 `thinking_effort` → 所绑定模型自身的默认档位解析。未声明档位时，能力明确不支持思考的模型使用 `off`；思考模型没有可解析默认档位时仍需显式选择。未知能力不视为 `off`。完整规则见[绑定解析](../customization/agents.md#具名-profile-route-实验功能)。
+**模型与档位。** 新派生项按此顺序选模型：`model_alias` 参数 → 生效 profile、route 或 caller lease 上的 pin → 显式配置的 `[subagent].default_model`。这些来源都不存在时以 `model.not_configured` 失败，不会创建子 Agent——调用方模型与主 Agent 的 `default_model` 都不是静默回退来源。`AgentRun` 拒绝 `model_alias: "inherit"`，请写具体的已配置模型名或省略该参数；subagent profile、route、caller lease 里仍可写 `model_alias: inherit` 跟随调用方。其他情况下，思考强度按工具 `effort` → route 上锁定的 effort（route 未锁定时改用 caller lease 的）→ 匹配的 `model_profiles` 档位 → 所绑定模型与 profile pin 匹配时的 `thinking_effort` → 所绑定模型自身的默认档位解析。未声明档位时，能力明确不支持思考的模型使用 `off`；思考模型没有可解析默认档位时仍需显式选择。未知能力不视为 `off`。完整规则见[绑定解析](../customization/agents-and-subagents.md#具名-profile-route-实验功能)。
 
 `preferred_models`、`discouraged_models`、`preferred_efforts` 是建议，选到列表之外的模型仍然能跑。`allowed_models`、`deny_models`、`allowed_efforts` 是硬限制：绑定、人工切换与恢复都会拒绝违规，机器级 deny 与不可用能力同样如此。
 
 **恢复。** `resume` 按名称或 agent id 继续已有直属子 Agent，与 `name`、`profile`、`profile_file`、`route` 互斥。同时省略 `model_alias` 和 `effort` 会保留已保存的绑定，也可以传 `effort` 让下一次空闲运行使用。恢复时同样拒绝 `model_alias: "inherit"`——显式换模请写具体模型名，解析到不同模型时再加 `allow_model_change: true`。外部 executor 无法修改已恢复 thread 的绑定时会报错，不会重建 thread。
 
-**超时与模式。** Agent 任务默认 2 小时超时，通过 `[subagent] timeout_ms` 或 `KIKI_SUBAGENT_TIMEOUT_MS` 配置全局限制（`0` 表示禁用），print 模式默认无超时；不提供单次调用 timeout。前台模式下父 Agent 等待结果；后台模式立即返回任务 ID，结果会通过之后的合成 User 消息送达。TUI 会把同一步中的多个前台调用合并展示，并显示状态与耗时。完整 profile 与生命周期契约见 [Agent 与子 Agent](../customization/agents.md)。
+**超时与模式。** Agent 任务默认 2 小时超时，通过 `[subagent] timeout_ms` 或 `KIKI_SUBAGENT_TIMEOUT_MS` 配置全局限制（`0` 表示禁用），print 模式默认无超时；不提供单次调用 timeout。前台模式下父 Agent 等待结果；后台模式立即返回任务 ID，结果会通过之后的合成 User 消息送达。TUI 会把同一步中的多个前台调用合并展示，并显示状态与耗时。完整 profile 与生命周期契约见 [Agent 与子 Agent](../customization/agents-and-subagents.md)。
 
 `AgentRun` 的默认值按调用方的运行时身份决定，不取决于目标 profile；每次 `resume` 重新应用同一规则，goal mode 也不改变默认值。Main 省略 `background` 或显式传 `true` 时，要求 `TaskList`、`TaskOutput`、`TaskStop` 可用；不可用则在启动前报错，提示启用这些工具或显式用 `background:false` 同步重试，不会静默回退到前台。Main 前台调用遇到 steer / Send now 时，等待会转入后台而不停止子 Agent；下一安全步骤读取新输入，子 Agent 完成后仍自动通知。普通排队消息不会触发转后台。停止当前 main 轮次不等于停止已脱离等待的子 Agent；需要停止某个跟踪任务时，显式调用 `TaskStop`。
 
@@ -382,6 +382,6 @@ Root 不应为了等待该结果，使用 `TaskWait`、`TaskOutput` 或 `AgentLi
 
 ## 下一步
 
-- [Agent 与 subagent](../customization/agents.md) — `AgentRun` 工具的调度机制与上下文隔离
+- [Agent 与 subagent](../customization/agents-and-subagents.md) — `AgentRun` 工具的调度机制与上下文隔离
 - [Hooks](../customization/hooks.md) — 在工具调用前后触发本地脚本
 - [斜杠命令](./slash-commands.md) — TUI 内置控制命令速查

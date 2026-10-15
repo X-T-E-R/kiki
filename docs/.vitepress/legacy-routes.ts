@@ -1,5 +1,7 @@
 // Source pages use their canonical IA paths. Only redirect pages are rewritten.
 export const legacyMoves = {
+  'customization/agents': 'customization/agents-and-subagents',
+  'features/agents': 'features/agent-workflows',
   'configuration/model-vocabulary': 'reference/model-vocabulary',
   'getting-started/model-vocabulary': 'reference/model-vocabulary',
   'desktop/interface': 'guides/interface',

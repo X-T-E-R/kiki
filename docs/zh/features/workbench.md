@@ -22,7 +22,7 @@ title: 一个工作台，好几条线
 
 新装的实例带两个 subagent profile：`general` 是通用助手，`explore` 只读探索。什么时候派谁由主智能体自己判断——看任务复杂度、上下文消耗、子任务之间是否独立，你不用指定。当然你也可以指定：直接跟主智能体说一声；权限模式是 `manual` 时，每次派发还会停下来等你批准。
 
-完整的派发合同、上下文隔离和权限继承见 [Agent 与 subagent](/zh/customization/agents)。
+完整的派发合同、上下文隔离和权限继承见 [Agent 与 subagent](/zh/customization/agents-and-subagents)。
 
 ## 每个角色可以跑不同的模型
 
@@ -40,7 +40,7 @@ title: 一个工作台，好几条线
 
 点开任何一个被派出去的子智能体，就能在主会话旁边读它自己的记录：它被要求做什么、做了什么、结论是什么——不用把主智能体的对话一起载入。同一个右栏会跟着你进到子智能体里，所以查看它的上下文和花费用的是同一套方式。
 
-你也可以在它自己的输入框里给它发消息；之后用 `AgentRun` 把它接回来继续同一个任务，而不是从头再来。见 [具名子 Agent](/zh/customization/agents#具名子-agent)和[右侧栏](/zh/guides/interface#右侧栏)。
+你也可以在它自己的输入框里给它发消息；之后用 `AgentRun` 把它接回来继续同一个任务，而不是从头再来。见 [具名子 Agent](/zh/customization/agents-and-subagents#具名子-agent)和[右侧栏](/zh/guides/interface#右侧栏)。
 
 ![子智能体自己的会话：它独立的记录、它自己的输入框，以及标明这条消息在回复谁的输入行。](/shots/workbench/wl-20261005-workbench-subagent.zh.png)
 
@@ -59,5 +59,5 @@ title: 一个工作台，好几条线
 ## 下一步
 
 - [长时间的活](/zh/features/long-work)——目标、队列、定时任务、看板与记忆
-- [Agent 与 subagent](/zh/customization/agents)——完整的派发与模型绑定参考
+- [Agent 与 subagent](/zh/customization/agents-and-subagents)——完整的派发与模型绑定参考
 - [界面导览](/zh/guides/interface)——工作台窗口的布局

@@ -11,8 +11,8 @@
 
 ## 每个智能体各用各的模型
 
-- **子智能体，各用各的模型。** 主智能体自己派子智能体，每个智能体可以绑不同供应商的模型，强模型负责规划，便宜的模型跑日常。每个子智能体有独立上下文，对话记录随时点开看。[具名子 Agent →](https://x-t-e-r.github.io/kiki/zh/customization/agents#具名子-agent)
-- **智能体就是你自己的文件。** 每个智能体一份 Markdown：frontmatter 写工具、模型、思考强度和能派发谁，正文就是系统提示词。可以从现有 profile 复制、从内置模板起，或者从空白开始。[Agent 文件格式 →](https://x-t-e-r.github.io/kiki/zh/customization/agents#agent-文件格式)
+- **子智能体，各用各的模型。** 主智能体自己派子智能体，每个智能体可以绑不同供应商的模型，强模型负责规划，便宜的模型跑日常。每个子智能体有独立上下文，对话记录随时点开看。[具名子 Agent →](https://x-t-e-r.github.io/kiki/zh/customization/agents-and-subagents#具名子-agent)
+- **智能体就是你自己的文件。** 每个智能体一份 Markdown：frontmatter 写工具、模型、思考强度和能派发谁，正文就是系统提示词。可以从现有 profile 复制、从内置模板起，或者从空白开始。[Agent 文件格式 →](https://x-t-e-r.github.io/kiki/zh/customization/agents-and-subagents#agent-文件格式)
 - **把别的智能体当引擎用。** 一个 profile 可以通过 ACP 或 Codex app-server 跑在 Claude Code、Codex、Cursor、Gemini CLI、Kimi CLI、OpenCode 或 Grok Build 上。[派遣能力 →](https://x-t-e-r.github.io/kiki/zh/guides/settings#派遣能力)
 - **后台任务。** 耗时的命令和子智能体丢到后台跑，跑完结果自动回到智能体手里。[后台任务 →](https://x-t-e-r.github.io/kiki/zh/reference/tools#后台任务)
 

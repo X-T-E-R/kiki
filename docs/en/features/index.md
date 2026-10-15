@@ -13,7 +13,7 @@ New to Kiki? Start with [Installation](/en/getting-started/installation), then c
 | Page | What it covers |
 | --- | --- |
 | [One workbench, many lines](/en/features/workbench) | The lead session, its dispatched subagents, per-agent models, and background tasks |
-| [Agent Profiles](/en/features/agents) | Profiles as reusable agents: model and effort, instructions, tools, and dispatch |
+| [Agent Profiles](/en/features/agent-workflows) | Profiles as reusable agents: model and effort, instructions, tools, and dispatch |
 | [Every layer is yours](/en/features/freedom) | Prompt overrides, connections and OAuth, permission modes, and hooks |
 | [Work that runs long](/en/features/long-work) | Goals, the message queue, scheduled tasks, the task board, the context window, and memory |
 | [Roles you can talk to](/en/features/people) | Personas, their daily conversation entry, their memory, and rooms |

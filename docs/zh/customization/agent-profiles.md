@@ -1,12 +1,12 @@
 # Agent profile 概念与设计
 
-Kiki 里每个 agent（包括 main agent 和每个 subagent）都由一份 **profile** 定义。本页解释 profile 是什么、文件放在哪里、什么时候生效，以及它和其他定制机制（Skill、prompt 字段覆写、plugin、hook、主题）的分工。具体字段与用法见 [Agent 与 subagent](./agents.md)。
+Kiki 里每个 agent（包括 main agent 和每个 subagent）都由一份 **profile** 定义。本页解释 profile 是什么、文件放在哪里、什么时候生效，以及它和其他定制机制（Skill、prompt 字段覆写、plugin、hook、主题）的分工。具体字段与用法见 [Agent 与 subagent](./agents-and-subagents.md)。
 
 ## Profile 是什么
 
 一份 profile 就是一个 Markdown 文件：顶部的 **Frontmatter**（YAML 元数据块）声明名字、描述、工具白名单、模型绑定等，正文就是这个 agent 的**系统提示词**。
 
-在输入区直接选中的 profile 文件是只作用于本次会话的来源，不会进入发现目录；控件与恢复方式见[选择引擎与它的 profile](./agents.md#选择引擎与它的-profile)。
+在输入区直接选中的 profile 文件是只作用于本次会话的来源，不会进入发现目录；控件与恢复方式见[选择引擎与它的 profile](./agents-and-subagents.md#选择引擎与它的-profile)。
 
 Kiki 内置了几份 profile：驱动会话的 main `agent`、默认 subagent `general`、只读探索用的 `explore`。自定义 agent 不需要写代码——照这个样子写一份 Markdown 文件，就会被自动发现，与内置 profile 并列。
 
@@ -26,11 +26,11 @@ Kiki 按作用域发现 profile 文件，作用域越具体，优先级越高：
 项目级 profile 来自仓库本身——包括你刚 clone、还不信任的仓库。一份名为 `agent.md` 的项目文件可以替换默认 main agent 的整个系统提示词。在陌生仓库里运行 Kiki 前，像审查脚本一样检查它的 `.kiki/agents/` 目录。
 :::
 
-完整的作用域规则与目录列表见 [Agent 目录](./agents.md#agent-目录)。
+完整的作用域规则与目录列表见 [Agent 目录](./agents-and-subagents.md#agent-目录)。
 
 ## 修改什么时候生效
 
-用户级、项目级和额外目录根下的 profile 文件，以及 `$KIKI_HOME/SYSTEM.md`，都被监听：新增、修改、删除后约 200 ms 自动重载，之后新派发的 subagent 立即用上新版本。已有会话的 main agent 仍绑定创建时的快照，改完文件后在会话里执行「重建上下文」即可换上新版本，对话记录保留。详见 [重建会话上下文](./agents.md#重建会话上下文)。
+用户级、项目级和额外目录根下的 profile 文件，以及 `$KIKI_HOME/SYSTEM.md`，都被监听：新增、修改、删除后约 200 ms 自动重载，之后新派发的 subagent 立即用上新版本。已有会话的 main agent 仍绑定创建时的快照，改完文件后在会话里执行「重建上下文」即可换上新版本，对话记录保留。详见 [重建会话上下文](./agents-and-subagents.md#重建会话上下文)。
 
 ## Main agent 与 subagent
 
@@ -68,7 +68,7 @@ tools: ["*", ThreadRead]
 
 只写 `*` 不会开放任何 opt-in，也不会穿过任何 deny；有限名单仍然有限，`tools: [Read, Grep, ThreadRead]` 就只选这三个。服务端 `subagent.allowed_tools` 与在这里点名是「或」的关系，但档案仍需自己选中该工具才会开放——这就是上面 `["*", ThreadRead]` 写法的用途。没写名单（或写了 `*`）的档案对这一项放行的工具都开放，本档案自己的 `disallowedTools` 仍能禁用。主对话不受这些 opt-in 限制，能选哪些工具仍由同一档案的名单决定。完整清单见 [subagent 默认限制](../configuration/config-files.md#subagent)。
 
-想让默认 main agent 永久换成自己的配置，用这一个特例文件：`$KIKI_HOME/SYSTEM.md`（默认 `~/.kiki/SYSTEM.md`）。纯正文的 `SYSTEM.md` 只替换默认 main agent 的系统提示词；以 `---` Frontmatter 开头的还能同时改 `tools`、`subagents`、模型绑定等 profile 字段。见 [用 SYSTEM.md 覆盖 main agent 的系统提示词](./agents.md#用-system-md-覆盖-main-agent-的系统提示词)。
+想让默认 main agent 永久换成自己的配置，用这一个特例文件：`$KIKI_HOME/SYSTEM.md`（默认 `~/.kiki/SYSTEM.md`）。纯正文的 `SYSTEM.md` 只替换默认 main agent 的系统提示词；以 `---` Frontmatter 开头的还能同时改 `tools`、`subagents`、模型绑定等 profile 字段。见 [用 SYSTEM.md 覆盖 main agent 的系统提示词](./agents-and-subagents.md#用-system-md-覆盖-main-agent-的系统提示词)。
 
 ## 模型菜单与硬边界
 
@@ -113,7 +113,7 @@ Subagent 被硬拒绝时，选一个同时满足其他硬规则的菜单项，�
 | 只是成本、速度或经验上的建议，希望用户仍能试菜单外的模型 | 保持关闭，使用 `preferred_models`、`preferred_efforts` 或 `discouraged_models` |
 | 真正边界来自预算、合规、部署或下级树策略，与菜单无关 | 单独使用 `allowed_models` / `deny_models`；确实还要约束菜单时再叠加开关 |
 
-字段参考与更多示例见 [Agent 文件格式](./agents.md#agent-文件格式)。
+字段参考与更多示例见 [Agent 文件格式](./agents-and-subagents.md#agent-文件格式)。
 
 ## 定制机制地图
 
@@ -122,7 +122,7 @@ Subagent 被硬拒绝时，选一个同时满足其他硬规则的菜单项，�
 | 想改什么 | 用什么 |
 | --- | --- |
 | 跨会话复用的身份与私有记忆 | [角色、Bot 与房间](./personas.md) |
-| Agent 的执行指令、可用工具、权限、模型 | **Profile 文件**（本页与 [Agent 与 subagent](./agents.md)） |
+| Agent 的执行指令、可用工具、权限、模型 | **Profile 文件**（本页与 [Agent 与 subagent](./agents-and-subagents.md)） |
 | 内置提示词里的一段具名文本（语言要求、工具描述） | [Prompt 字段覆写](./prompt-fields.md) |
 | Agent 在需要时自动调用的专业知识或工作流 | [Agent Skills](./skills.md) |
 | 自己用 `/名字` 触发的提示片段 | [提示命令](./skills.md#自定义提示命令) |
@@ -132,5 +132,5 @@ Subagent 被硬拒绝时，选一个同时满足其他硬规则的菜单项，�
 
 ## 下一步
 
-- [Agent 与 subagent](./agents.md) — profile 字段参考、派发方式、SYSTEM.md 与运行时行为
+- [Agent 与 subagent](./agents-and-subagents.md) — profile 字段参考、派发方式、SYSTEM.md 与运行时行为
 - [Agent Skills](./skills.md) — 给 agent 注入可复用的工作流

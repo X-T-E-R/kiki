@@ -1,6 +1,6 @@
 # Plugins
 
-Plugin 把可复用的 Kiki 能力打包成一个可安装单元：可以添加 [Agent Skills](./skills.md)、自定义 [Agent](./agents.md)、在会话启动时自动加载的 Skill、系统提示词指令、带来真实工具能力的 MCP servers，也可以把另一个工具的对话历史作为[可以接着聊的 Kiki 会话](#会话历史导入)或只读归档导入。适合把工作流共享给团队、连接外部服务，或从[官方列表](#官方插件)安装扩展。
+Plugin 把可复用的 Kiki 能力打包成一个可安装单元：可以添加 [Agent Skills](./skills.md)、自定义 [Agent](./agents-and-subagents.md)、在会话启动时自动加载的 Skill、系统提示词指令、带来真实工具能力的 MCP servers，也可以把另一个工具的对话历史作为[可以接着聊的 Kiki 会话](#会话历史导入)或只读归档导入。适合把工作流共享给团队、连接外部服务，或从[官方列表](#官方插件)安装扩展。
 
 ## 安装与管理
 
@@ -432,7 +432,7 @@ Plugin 是一个带 manifest 的目录或 zip 文件，manifest 放在以下任�
 | `interface` | 在 `/plugins` 中展示的字段：`displayName`、`shortDescription`、`longDescription`、`developerName`、`websiteURL` |
 | `icon` | 插件包内 `.svg` 或 `.png` 文件的 `./` 路径（上限 64 KB）。`GET /api/plugins` 以惰性的 `data:` URI 返回，供 GUI 画在插件旁边 |
 | `skills` | 一个或多个 `./` 路径，必须位于 plugin 根目录内。省略时根目录的 `SKILL.md` 被当作单个 Skill root |
-| `agents` | 一个或多个 `./` 路径，必须位于 plugin 根目录内，指向含有 [Agent 文件](./agents.md#自定义-agent)的目录。省略时根下的 `agents/` 目录（若存在）被自动采用 |
+| `agents` | 一个或多个 `./` 路径，必须位于 plugin 根目录内，指向含有 [Agent 文件](./agents-and-subagents.md#自定义-agent)的目录。省略时根下的 `agents/` 目录（若存在）被自动采用 |
 | `sessionStart.skill` | 在新会话或恢复会话开始时，把指定 plugin Skill 加载到 main agent |
 | `skillInstructions` | 每次加载此 plugin 的 Skill 时一并附带的额外说明 |
 | `systemPrompt` | plugin 启用期间提供给 Agent 系统提示词的内联指令 |
@@ -466,7 +466,7 @@ Plugin 是一个带 manifest 的目录或 zip 文件，manifest 放在以下任�
 
 新会话和新 Agent 读取其使用范围内已启用 plugin 的指令，已经在跑的请求继续用它启动时的系统提示词。改变插件使用选择会立即更新目录，并在下一安全步骤协调提示词贡献。关闭插件会隐藏其指令，重新开启会恢复该会话冻结的内容；`/plugins reload` 刷新受影响插件的内容，不替换无关的提示词快照。恢复的会话保留持久化的提示词内容，并应用其有效插件选择。切换 plugin 的 MCP server 不影响提示词指令。
 
-内置 Agent 提示词会自动包含已启用 plugin 的指令；自定义 `SYSTEM.md` 或 Agent 文件完全拥有自己的模板，因此要在合适的位置放 `${plugin_sections}`——如果它已经包含 `${base_prompt}`（而该默认提示词里已有 plugin 块），就不要再加一次。完整变量表见 [自定义 Agent 与 SYSTEM.md](./agents.md#用-system-md-覆盖-main-agent-的系统提示词)。
+内置 Agent 提示词会自动包含已启用 plugin 的指令；自定义 `SYSTEM.md` 或 Agent 文件完全拥有自己的模板，因此要在合适的位置放 `${plugin_sections}`——如果它已经包含 `${base_prompt}`（而该默认提示词里已有 plugin 块），就不要再加一次。完整变量表见 [自定义 Agent 与 SYSTEM.md](./agents-and-subagents.md#用-system-md-覆盖-main-agent-的系统提示词)。
 
 ## 插件斜杠命令
 
@@ -548,7 +548,7 @@ my-plugin/
 
 ## 插件 Agent
 
-Plugin 可以携带 Agent：在 manifest 的 `agents` 字段里声明一个或多个 `./` 目录，或直接在 plugin 根下放一个 `agents/` 目录。里面的文件与[自定义 Agent](./agents.md#自定义-agent)格式相同，plugin 启用期间会被自动发现，并可作为 subagent 被委派。
+Plugin 可以携带 Agent：在 manifest 的 `agents` 字段里声明一个或多个 `./` 目录，或直接在 plugin 根下放一个 `agents/` 目录。里面的文件与[自定义 Agent](./agents-and-subagents.md#自定义-agent)格式相同，plugin 启用期间会被自动发现，并可作为 subagent 被委派。
 
 ```text
 my-plugin/

@@ -113,7 +113,7 @@ kiki --agent reviewer
 kiki -p --agent reviewer "Review the changes on this branch"
 ```
 
-`--agent-file` registers a single agent file at the highest priority (for this launch only) and selects it; this flag cannot be repeated, and `--agent` and `--agent-file` are mutually exclusive. Both flags only apply when creating a new session — neither can be combined with `--session`/`--continue`, because the agent is bound at session creation and restored automatically when resuming. The selection is fixed once bound; in the TUI, these flags only bind the startup session, and new sessions created later within the same process (such as via `/new`) use the default agent. For agent file format and discovery directories, see [Agents and Subagents](../customization/agents.md#custom-agents).
+`--agent-file` registers a single agent file at the highest priority (for this launch only) and selects it; this flag cannot be repeated, and `--agent` and `--agent-file` are mutually exclusive. Both flags only apply when creating a new session — neither can be combined with `--session`/`--continue`, because the agent is bound at session creation and restored automatically when resuming. The selection is fixed once bound; in the TUI, these flags only bind the startup session, and new sessions created later within the same process (such as via `/new`) use the default agent. For agent file format and discovery directories, see [Agents and Subagents](../customization/agents-and-subagents.md#custom-agents).
 
 ## Non-Interactive Execution
 
@@ -540,4 +540,4 @@ kiki provider catalog add anthropic --api-key sk-ant-... --default-model claude-
 - [Configuration files](../configuration/config-files.md) — Persistent configuration for `default_model`, permission modes, and startup options
 - [Using in IDEs](../server/ide.md) — Editor and IDE integration
 - [Agent Skills](../customization/skills.md) — Format of Skill files loaded by `--skills-dir`
-- [Agents and Subagents](../customization/agents.md) — Built-in subagents, custom agent files, and selecting the main agent with `--agent`
+- [Agents and Subagents](../customization/agents-and-subagents.md) — Built-in subagents, custom agent files, and selecting the main agent with `--agent`

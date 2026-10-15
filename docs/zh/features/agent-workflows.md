@@ -6,7 +6,7 @@ title: Agent Profiles
 
 **Agent（智能体）**是真正干活的那个东西：读文件、跑命令、调工具、给答案。Kiki 里每个 agent 都由一份 **profile** 定义——一份 Markdown，写明它跑在哪个模型和思考档位上、被怎么指示、可以调用哪些工具、能把手上的活交给谁。写一次，之后每次派发这类 agent 都复用它。
 
-这一页讲 agent 是什么、主 agent 与 subagent 有什么区别，以及怎么选、怎么组合 profile。完整字段参考在 [Agent 与 subagent](/zh/customization/agents)和 [Agent profile 概念与设计](/zh/customization/agent-profiles)。
+这一页讲 agent 是什么、主 agent 与 subagent 有什么区别，以及怎么选、怎么组合 profile。完整字段参考在 [Agent 与 subagent](/zh/customization/agents-and-subagents)和 [Agent profile 概念与设计](/zh/customization/agent-profiles)。
 
 ## 主 agent 和它的 subagent
 
@@ -69,7 +69,7 @@ frontmatter 里的 `main: true` 只是把某个 profile 标记为会话主 agent
 
 角色跑在哪儿也由你定。把主 agent、各个子智能体和审查者绑到不同模型或不同厂商，强模型做规划，便宜的跑日常。需要硬性限制时，用 allowlist 锁住某个角色不许用贵的模型；profile 已经维护了一份完整的许可清单时，用 `restrict_models_to_menu: true` 把菜单变成上限。见[平台与模型](/zh/configuration/providers)和[模型菜单与硬边界](/zh/customization/agent-profiles#模型菜单与硬边界)。
 
-改动约 200 毫秒生效，新派发的 agent 立刻用上。已经在跑的会话仍然绑定它启动时的快照，所以在那个会话里用**重建上下文**即可应用改动而不丢掉对话。见[Profile 热刷新与进行中的会话](/zh/customization/agents#profile-热刷新与进行中的会话)。
+改动约 200 毫秒生效，新派发的 agent 立刻用上。已经在跑的会话仍然绑定它启动时的快照，所以在那个会话里用**重建上下文**即可应用改动而不丢掉对话。见[Profile 热刷新与进行中的会话](/zh/customization/agents-and-subagents#profile-热刷新与进行中的会话)。
 
 ## Profile 不是角色
 
@@ -77,7 +77,7 @@ profile 是执行配置：工具、权限、模型、思考档位，以及角色
 
 ## 下一步
 
-- [Agent 与 subagent](/zh/customization/agents)——字段参考与派发合同
+- [Agent 与 subagent](/zh/customization/agents-and-subagents)——字段参考与派发合同
 - [Agent profile 概念与设计](/zh/customization/agent-profiles)——profile 放在哪里、什么时候生效
 - [一个工作台，好几条线](/zh/features/workbench)——主会话拿派发树做什么
 - [每一层都归你](/zh/features/freedom)——提示词覆写、连接、权限模式与 hooks

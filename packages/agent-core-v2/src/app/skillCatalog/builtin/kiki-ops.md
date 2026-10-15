@@ -25,7 +25,7 @@ Docs matching this version live in `<KIKI_HOME>/docs/{en,zh}/` (`KIKI_HOME`, els
 | Goals; sessions, fork, export, requirements board | `guides/goals.md`, `guides/sessions.md` |
 | Request concurrency, model/provider targets, queue errors, config hot reload | Read `configuration/config-files.md` → `[request_governance]` and Applying configuration changes; read `guides/settings.md` → Usage for GUI controls |
 | Memory maintenance reminders | Read `configuration/config-files.md` → Continuity reminder settings before choosing `memory_maintenance` |
-| Effective prompts, Check all branches, cockpit/preview controls | Read `guides/settings.md` → Session controls; use `customization/agents.md` → Rebuilding a session context / Instruction Files for reload and scoped rules |
+| Effective prompts, Check all branches, cockpit/preview controls | Read `guides/settings.md` → Session controls; use `customization/agents-and-subagents.md` → Rebuilding a session context / Instruction Files for reload and scoped rules |
 | Every other `config.toml` key; providers, env vars, data paths | `configuration/*.md` |
 | Subagents, profiles, peer threads; skills, plugins, hooks, themes | `customization/*.md` |
 | Slash commands, CLI, tools (incl. cron); MCP, server token | `reference/*.md`, `server/{mcp,local-server}.md` |

@@ -24,7 +24,7 @@ src/runtime 下的 event loop 是怎么工作的？事件从哪里产生、又�
 这个项目里「权限审批」是怎么实现的？涉及哪些文件，关键类型是什么？
 ```
 
-调研规模较大时，可以让 main agent（直接与你对话的那个）把任务拆给多个 subagent 并行处理。写法见 [Agent 与 subagent](../customization/agents.md)。
+调研规模较大时，可以让 main agent（直接与你对话的那个）把任务拆给多个 subagent 并行处理。写法见 [Agent 与 subagent](../customization/agents-and-subagents.md)。
 
 ## 实现新功能
 
@@ -141,6 +141,6 @@ src/api 下所有公开函数里，凡是没有 docstring 的都补上文档注�
 
 ## 下一步
 
-- [Agent 与 subagent](../customization/agents.md) — 如何让 Agent 派发子任务并行处理
+- [Agent 与 subagent](../customization/agents-and-subagents.md) — 如何让 Agent 派发子任务并行处理
 - [Hooks](../customization/hooks.md) — 在任务完成等节点触发本地脚本
 - [内置工具](../reference/tools.md) — Agent 可调用的全部工具参考

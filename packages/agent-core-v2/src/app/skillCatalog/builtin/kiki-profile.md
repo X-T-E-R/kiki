@@ -5,7 +5,7 @@ description: Create, modify, or repair Kiki main/subagent profiles or SYSTEM.md 
 
 # Kiki profile authoring (kiki-profile)
 
-An agent profile is one Markdown file: a YAML frontmatter block declares the role's name and description and can select its model and tool access, and the Markdown body is the role's system prompt. Choose the loading scope, frontmatter fields, and prompt mode deliberately; consult the complete field-by-field reference in the installed docs at `<KIKI_HOME>/docs/<locale>/customization/agents.md`.
+An agent profile is one Markdown file: a YAML frontmatter block declares the role's name and description and can select its model and tool access, and the Markdown body is the role's system prompt. Choose the loading scope, frontmatter fields, and prompt mode deliberately; consult the complete field-by-field reference in the installed docs at `<KIKI_HOME>/docs/<locale>/customization/agents-and-subagents.md`.
 
 For a character's identity, voice, greetings, dialogue examples or avatar, load `kiki-persona` instead. A persona can reference an existing execution profile; create a new profile here only when the task needs different execution behavior.
 
@@ -198,5 +198,5 @@ Never claim a profile "works" from file existence alone.
 
 ## Ground truth
 
-- Full field reference (installed with Kiki): `<KIKI_HOME>/docs/<locale>/customization/agents.md`; prompt-override field ids: `<KIKI_HOME>/docs/<locale>/configuration/config-files.md#prompt`.
+- Full field reference (installed with Kiki): `<KIKI_HOME>/docs/<locale>/customization/agents-and-subagents.md`; prompt-override field ids: `<KIKI_HOME>/docs/<locale>/configuration/config-files.md#prompt`.
 - Kiki repository development only — the parser is the source of truth when docs and behavior disagree: `packages/agent-profiles/src/agentFile.ts` (closed key set, validation), `agentFileDiscovery.ts` + `packages/agent-core-v2/src/workspace/workspaceAgentProfileLoader/internal/agentRoots.ts` (scan roots), `profileShared.ts` (template variables), `system.md` (built-in default prompt).

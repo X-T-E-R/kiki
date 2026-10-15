@@ -29,7 +29,7 @@ features:
     link: ./features/long-work
   - title: Agent Profiles
     details: 一份 Markdown 描述一类智能体：跑哪个模型、怎么指示、能用哪些工具、能派发谁，写一次到处复用。
-    link: ./features/agents
+    link: ./features/agent-workflows
   - title: 能一起干活的人
     details: 角色是长期身份：有自己的记忆、固定的日常对话入口，还能进房间和别的角色一起讨论同一个话题。
     link: ./features/people

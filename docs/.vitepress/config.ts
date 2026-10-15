@@ -85,7 +85,7 @@ const config = withMermaid(defineConfig({
               items: [
                 { text: '总览', link: '/zh/features/index' },
                 { text: '一个工作台，好几条线', link: '/zh/features/workbench' },
-                { text: 'Agent Profiles', link: '/zh/features/agents' },
+                { text: 'Agent Profiles', link: '/zh/features/agent-workflows' },
                 { text: '每一层都归你', link: '/zh/features/freedom' },
                 { text: '长时间的活', link: '/zh/features/long-work' },
                 { text: '能一起干活的人', link: '/zh/features/people' },
@@ -139,7 +139,7 @@ const config = withMermaid(defineConfig({
               items: [
                 { text: 'Agent profile 概念与设计', link: '/zh/customization/agent-profiles' },
                 { text: '角色、Bot 与房间', link: '/zh/customization/personas' },
-                { text: 'Agent 与 subagent', link: '/zh/customization/agents' },
+                { text: 'Agent 与 subagent', link: '/zh/customization/agents-and-subagents' },
                 { text: 'Agent Skills', link: '/zh/customization/skills' },
                 { text: 'Plugins', link: '/zh/customization/plugins' },
                 { text: 'Hooks', link: '/zh/customization/hooks' },
@@ -216,7 +216,7 @@ const config = withMermaid(defineConfig({
               items: [
                 { text: 'Overview', link: '/en/features/index' },
                 { text: 'One workbench, many lines', link: '/en/features/workbench' },
-                { text: 'Agent Profiles', link: '/en/features/agents' },
+                { text: 'Agent Profiles', link: '/en/features/agent-workflows' },
                 { text: 'Every layer is yours', link: '/en/features/freedom' },
                 { text: 'Work that runs long', link: '/en/features/long-work' },
                 { text: 'Roles you can talk to', link: '/en/features/people' },
@@ -270,7 +270,7 @@ const config = withMermaid(defineConfig({
               items: [
                 { text: 'Agent profiles: concepts', link: '/en/customization/agent-profiles' },
                 { text: 'Personas, Bots, and rooms', link: '/en/customization/personas' },
-                { text: 'Agents and Subagents', link: '/en/customization/agents' },
+                { text: 'Agents and Subagents', link: '/en/customization/agents-and-subagents' },
                 { text: 'Agent Skills', link: '/en/customization/skills' },
                 { text: 'Plugins', link: '/en/customization/plugins' },
                 { text: 'Hooks', link: '/en/customization/hooks' },

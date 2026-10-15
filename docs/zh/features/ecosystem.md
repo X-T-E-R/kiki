@@ -44,7 +44,7 @@ Kiki 内置的历史导入把另一个工具的文本对话变成**你能接着�
 
 席位是外部工具调用进来的固定地点；外部执行器是 Kiki 派发出去的地方。当外部 harness 充当主智能体时，`allow_kiki_subagents: true` 允许它反过来派发 Kiki 子智能体，而 `kiki_context` 可以把 Kiki 自己的原生上下文——记忆、看板、cron、线程、历史、hooks——通过同一座桥暴露给它，子智能体完成后再排队回到主智能体。这座桥上 profile 的工具策略、派发策略、模型约束和通知策略依然生效。
 
-见[外部 main agent 的委派](/zh/customization/agents#外部-main-agent-的委派)和[外部 main agent 的 Kiki 上下文](/zh/customization/agents#外部-main-agent-的-kiki-上下文)。
+见[外部 main agent 的委派](/zh/customization/agents-and-subagents#外部-main-agent-的委派)和[外部 main agent 的 Kiki 上下文](/zh/customization/agents-and-subagents#外部-main-agent-的-kiki-上下文)。
 
 ## 下一步
 

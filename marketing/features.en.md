@@ -11,8 +11,8 @@ What each capability does for you, and where to read the details. The online **F
 
 ## Give every agent its own model
 
-- **Subagents, each on its own model.** The main agent dispatches subagents itself, and each agent can run a different provider's model, so a strong model can plan while cheaper models do the routine work. Each subagent has its own context, and you can open its transcript. [Named child agents →](https://x-t-e-r.github.io/kiki/en/customization/agents#named-child-agents)
-- **Agents are files you own.** One Markdown file per agent: the frontmatter sets tools, model, effort, and which subagents it may dispatch, and the body is the system prompt. Create one by copying a profile, from a shipped template, or blank. [Agent file format →](https://x-t-e-r.github.io/kiki/en/customization/agents#agent-file-format)
+- **Subagents, each on its own model.** The main agent dispatches subagents itself, and each agent can run a different provider's model, so a strong model can plan while cheaper models do the routine work. Each subagent has its own context, and you can open its transcript. [Named child agents →](https://x-t-e-r.github.io/kiki/en/customization/agents-and-subagents#named-child-agents)
+- **Agents are files you own.** One Markdown file per agent: the frontmatter sets tools, model, effort, and which subagents it may dispatch, and the body is the system prompt. Create one by copying a profile, from a shipped template, or blank. [Agent file format →](https://x-t-e-r.github.io/kiki/en/customization/agents-and-subagents#agent-file-format)
 - **Other agents as engines.** A profile can run on Claude Code, Codex, Cursor, Gemini CLI, Kimi CLI, OpenCode, or Grok Build through ACP or the Codex app-server. [Dispatch capabilities →](https://x-t-e-r.github.io/kiki/en/guides/settings#dispatch-capabilities)
 - **Background tasks.** Long commands and subagents run in the background; when one finishes its result goes back to the agent automatically. [Background tasks →](https://x-t-e-r.github.io/kiki/en/reference/tools#background-tasks)
 

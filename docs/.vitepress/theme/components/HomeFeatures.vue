@@ -31,7 +31,7 @@ const capabilities = computed<Capability[]>(() => isZh.value
         badge: '能复用的智能体',
         title: 'Agent Profiles',
         desc: '一份 Markdown 描述一类智能体：跑哪个模型、怎么指示、能用哪些工具、能派发谁，写一次到处复用。',
-        href: '/zh/features/agents',
+        href: '/zh/features/agent-workflows',
       },
       {
         badge: '长时间的活',
@@ -75,7 +75,7 @@ const capabilities = computed<Capability[]>(() => isZh.value
         badge: 'Reusable agents',
         title: 'Agent Profiles',
         desc: 'One Markdown file describes a kind of agent: the model it runs on, how it is instructed, which tools it may call, and what it can dispatch.',
-        href: '/en/features/agents',
+        href: '/en/features/agent-workflows',
       },
       {
         badge: 'Long work',

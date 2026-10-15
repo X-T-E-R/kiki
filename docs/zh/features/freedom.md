@@ -14,13 +14,13 @@ Kiki 按范围发现 profile，范围越具体越优先：**显式指定（`--ag
 
 你不一定要从零写一个。在应用里新建 profile 时，可以从现有的复制、从内置模板（`implementer`、`reviewer`）起，或者从空白开始。`$KIKI_HOME/SYSTEM.md` 永久覆盖默认主智能体的提示词。
 
-见 [Agent profile 概念与设计](/zh/customization/agent-profiles)和 [Agent 文件格式](/zh/customization/agents#agent-文件格式)。
+见 [Agent profile 概念与设计](/zh/customization/agent-profiles)和 [Agent 文件格式](/zh/customization/agents-and-subagents#agent-文件格式)。
 
 ## 提示词细到单个工具描述
 
 改一句话不需要 fork 一个 profile。**提示词字段覆写**替换内置提示词里具名的文本单元——系统段落、某个工具的描述、某条委派提示——可以全局设、按模型设，也可以按智能体设。实用的字段 id 小到 `tool.web-search.description`。字段值是替换，不做追加或包裹。
 
-`kiki prompt-fields` 是这件事的只读入口：`list` 列出字段表，`show` 看当前值，`explain` 说明每一层的值来自哪里。桌面版里，**设置 → 智能体 → 提示词**改的是 `config.toml` 里的同一处。见[提示词字段与覆写](/zh/customization/prompt-fields)。
+`kiki prompt-fields` 是这件事的只读入口：`list` 列出字段表，`show` 看当前值，`explain` 说明每一层的值来自哪里。桌面版里，**设置 → 智能体 → 提示词字段**改的是 `config.toml` 里的同一处。见[提示词字段与覆写](/zh/customization/prompt-fields)。
 
 ![提示词字段覆写，细到单个工具的描述，旁边是模型实际会收到的内容的实时预览。](/shots/freedom/ce-20261005-freedom-prompt-overrides.zh.png)
 
@@ -58,7 +58,7 @@ Plan 模式是另一根轴：智能体先给出计划，等你确认后才改文
 
 **Hook** 在生命周期事件上跑你的脚本——一次工具调用、一个会话事件、一次子智能体结束。你可以拿它拦下危险的 shell 命令、在消息提交时补充上下文，或者任务跑完时弹通知。Hooks 是配置里的声明式规则，「查看有效规则」能看到当前实际生效的是哪些。
 
-当外部 harness 充当主智能体时，Hooks 同样会运行：此时 Kiki 自己的原生上下文分组通过 MCP 暴露给它，见[外部 main agent 的 Kiki 上下文](/zh/customization/agents#外部-main-agent-的-kiki-上下文)。见 [Hooks](/zh/customization/hooks)。
+当外部 harness 充当主智能体时，Hooks 同样会运行：此时 Kiki 自己的原生上下文分组通过 MCP 暴露给它，见[外部 main agent 的 Kiki 上下文](/zh/customization/agents-and-subagents#外部-main-agent-的-kiki-上下文)。见 [Hooks](/zh/customization/hooks)。
 
 ## 下一步
 

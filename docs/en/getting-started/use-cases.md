@@ -24,7 +24,7 @@ How does the event loop in src/runtime work? Where do events originate, and what
 How is "permission approval" implemented in this project? Which files are involved, and what are the key types?
 ```
 
-For a large investigation, ask the main agent (the one you are talking to) to split the work across sub-agents, which work in parallel on pieces of it. [Agents and sub-agents](../customization/agents.md) covers how to prompt for that.
+For a large investigation, ask the main agent (the one you are talking to) to split the work across sub-agents, which work in parallel on pieces of it. [Agents and sub-agents](../customization/agents-and-subagents.md) covers how to prompt for that.
 
 ## Implementing a new feature
 
@@ -143,6 +143,6 @@ To keep a record or do a retrospective, `kiki export <sessionId>` packages a ses
 
 ## Next steps
 
-- [Agents and sub-agents](../customization/agents.md) — how to have the agent dispatch sub-tasks for parallel execution
+- [Agents and sub-agents](../customization/agents-and-subagents.md) — how to have the agent dispatch sub-tasks for parallel execution
 - [Hooks](../customization/hooks.md) — trigger local scripts at task-completion and other lifecycle points
 - [Built-in tools](../reference/tools.md) — full reference of all tools the agent can call

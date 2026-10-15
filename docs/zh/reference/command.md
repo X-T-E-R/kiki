@@ -113,7 +113,7 @@ kiki --agent reviewer
 kiki -p --agent reviewer "审查这个分支上的改动"
 ```
 
-`--agent-file` 以最高优先级注册单个 Agent 文件（仅本次启动）并选中它；该 flag 不可重复传入，`--agent` 与 `--agent-file` 互斥。两个 flag 都仅在新建会话时有效——都不能与 `--session`/`--continue` 组合，因为 Agent 在会话创建时绑定，恢复会话时会自动还原已绑定的 Agent。选择在会话首次绑定后即固定，之后不可切换；在 TUI 中，这些 flag 只绑定启动时的会话，之后在同一进程内新建的会话（例如通过 `/new`）使用默认 Agent。Agent 文件格式与发现目录详见 [Agent 与 subagent](../customization/agents.md#自定义-agent)。
+`--agent-file` 以最高优先级注册单个 Agent 文件（仅本次启动）并选中它；该 flag 不可重复传入，`--agent` 与 `--agent-file` 互斥。两个 flag 都仅在新建会话时有效——都不能与 `--session`/`--continue` 组合，因为 Agent 在会话创建时绑定，恢复会话时会自动还原已绑定的 Agent。选择在会话首次绑定后即固定，之后不可切换；在 TUI 中，这些 flag 只绑定启动时的会话，之后在同一进程内新建的会话（例如通过 `/new`）使用默认 Agent。Agent 文件格式与发现目录详见 [Agent 与 subagent](../customization/agents-and-subagents.md#自定义-agent)。
 
 ## 非交互执行
 
@@ -540,4 +540,4 @@ kiki provider catalog add anthropic --api-key sk-ant-... --default-model claude-
 - [配置文件](../configuration/config-files.md) — `default_model`、权限模式等启动参数的持久化配置
 - [在 IDE 中使用](../server/ide.md) — 编辑器与 IDE 集成
 - [Agent Skills](../customization/skills.md) — `--skills-dir` 加载的 Skill 文件格式
-- [Agent 与 subagent](../customization/agents.md) — 内置 subagent、自定义 Agent 文件与通过 `--agent` 选择 main agent
+- [Agent 与 subagent](../customization/agents-and-subagents.md) — 内置 subagent、自定义 Agent 文件与通过 `--agent` 选择 main agent

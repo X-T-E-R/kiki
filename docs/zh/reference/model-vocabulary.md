@@ -61,5 +61,5 @@ Kiki 按以下顺序把请求值解析为规范已配置 key：
 
 ## 下一步
 
-- [Agent 与 subagent](../customization/agents.md#agent-文件格式) — Agent 文件字段与 subagent 绑定行为。
+- [Agent 与 subagent](../customization/agents-and-subagents.md#agent-文件格式) — Agent 文件字段与 subagent 绑定行为。
 - [配置文件](../configuration/config-files.md#subagent) — 模型注册表与 subagent 配置。

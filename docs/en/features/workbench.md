@@ -22,7 +22,7 @@ A subagent receives a task description and works in its own isolated context, th
 
 Fresh installs ship two subagent profiles: `general`, a general-purpose assistant, and `explore`, a read-only explorer. Dispatch is scheduled by the main agent, based on task complexity, context consumption, and whether the sub-tasks are independent — you do not have to name one. You can, though: tell the main agent directly, and under the `manual` permission mode each dispatch also stops for your approval.
 
-See [Agents and Sub-Agents](/en/customization/agents) for the full dispatch contract, context isolation, and permission inheritance.
+See [Agents and Sub-Agents](/en/customization/agents-and-subagents) for the full dispatch contract, context isolation, and permission inheritance.
 
 ## Each role can run a different model
 
@@ -40,7 +40,7 @@ Model selection, hard model boundaries, and the model menu are covered in [Provi
 
 Open any dispatched subagent to read its own transcript: what it was asked, what it did, and what it concluded — next to the main session, without loading the main agent's conversation. The same right rail follows you into the subagent, so you can inspect its context and cost the same way.
 
-You can also message a running subagent from its own composer, and pick it back up later with `AgentRun` to continue the same task instead of starting over. See [Agents and Sub-Agents](/en/customization/agents#named-child-agents) and the [right rail](/en/guides/interface#right-rail).
+You can also message a running subagent from its own composer, and pick it back up later with `AgentRun` to continue the same task instead of starting over. See [Agents and Sub-Agents](/en/customization/agents-and-subagents#named-child-agents) and the [right rail](/en/guides/interface#right-rail).
 
 ![A subagent's own session: its separate transcript, its own composer, and a composer row that shows which agent a message is replying to.](/shots/workbench/wl-20261005-workbench-subagent.en.png)
 
@@ -59,5 +59,5 @@ The main `agent` profile uses `TaskList`, `TaskOutput`, and `TaskStop` for backg
 ## Next steps
 
 - [Work that runs long](/en/features/long-work) — goals, the queue, scheduled tasks, the board, and memory
-- [Agents and Sub-Agents](/en/customization/agents) — the full dispatch and model-binding reference
+- [Agents and Sub-Agents](/en/customization/agents-and-subagents) — the full dispatch and model-binding reference
 - [Interface overview](/en/guides/interface) — how the workbench window is arranged

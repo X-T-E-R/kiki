@@ -342,6 +342,19 @@ describe('BuiltinSkillSource product-skill switch', () => {
     expect(ops?.content).toContain('Copy the template with its `model_alias: inherit` frontmatter unchanged');
   });
 
+  it('points built-in operations and profile skills at the current bilingual reference files', () => {
+    const path = 'customization/agents-and-subagents.md';
+    for (const name of ['kiki-ops', 'kiki-profile']) {
+      const content = BUILTIN_SKILLS.find((skill) => skill.name === name)!.content;
+      expect(content).toContain(path);
+      expect(content).not.toContain('customization/agents.md');
+    }
+    for (const locale of ['en', 'zh']) {
+      const text = readFileSync(new URL(`../../../../../docs/${locale}/${path}`, import.meta.url), 'utf8');
+      expect(text).toContain(locale === 'en' ? '## Instruction Files' : '## 指令文件');
+    }
+  });
+
   it('keeps the primary kiki-ops triggers visible in the rendered model listing', () => {
     const catalog = new InMemorySkillCatalog();
     const ops = BUILTIN_SKILLS.find((skill) => skill.name === 'kiki-ops');

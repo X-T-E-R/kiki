@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, normalize, basename, dirname } from 'pathe';
 
@@ -452,6 +452,61 @@ describe('agentsMdReminder path-carrying tools', () => {
     expect(h.reminders).toHaveLength(0);
     await fire(h, didCtx('Read', { path: join(subDir, 'src', 'index.ts') }));
     expect(h.reminders).toHaveLength(0);
+  });
+
+  it.each(['AGENTS.md', 'agents.md', 'AgEnTs.Md'])('discloses all prose in a reserved instruction filename %s without inferring intent from its title', async (name) => {
+    const directory = join(workDir, 'guides', 'example');
+    await mkdir(directory, { recursive: true });
+    const path = join(directory, name);
+    const content = ['# Product reference', ...Array.from({ length: 500 }, (_, index) => `Reference paragraph ${index + 1}.`)].join('\n');
+    await writeFile(path, content);
+    const h = createHarness();
+
+    await fire(h, didCtx('Read', { path, line_offset: 497, n_lines: 5 }));
+
+    expect(h.reminders).toHaveLength(1);
+    expect(h.reminders[0]?.content).toContain(content);
+    expect(h.reminders[0]?.origin).toMatchObject({ kind: 'injection', variant: 'agents_md', disclosure: { files: [{ path, scope: directory, runtimeId: 'local', version: instructionVersion(content) }] } });
+  });
+
+  it('does not discover reference prose under a non-instruction filename while keeping parent rules', async () => {
+    const directory = join(workDir, 'guides', 'example');
+    await mkdir(directory, { recursive: true });
+    const path = join(directory, 'agents-and-subagents.md');
+    await writeFile(path, '# Product reference\nFull reference text.');
+    await writeAgentsMd(workDir, 'Keep workspace rules.');
+    const h = createHarness();
+
+    await fire(h, didCtx('Read', { path, line_offset: 1, n_lines: 1 }));
+
+    expect(h.reminders).toHaveLength(1);
+    expect(reminderText(h)).toContain('Keep workspace rules.');
+    expect(reminderText(h)).not.toContain('Full reference text.');
+  });
+
+  it.each([
+    ['en', 'customization', 'agents-and-subagents.md'],
+    ['zh', 'customization', 'agents-and-subagents.md'],
+    ['en', 'features', 'agent-workflows.md'],
+    ['zh', 'features', 'agent-workflows.md'],
+  ])('keeps the repository product page %s/%s/%s out of directory instructions', async (locale, section, name) => {
+    const repository = join(import.meta.dirname, '../../../../..');
+    const directory = join(repository, 'docs', locale, section);
+    const path = join(directory, name);
+    await access(path);
+    await expect(access(join(directory, 'agents.md'))).rejects.toMatchObject({ code: 'ENOENT' });
+    const h = createHarness({ cwd: repository });
+
+    await fire(h, didCtx('Read', { path, line_offset: 1, n_lines: 1 }));
+
+    expect(h.reminders).toHaveLength(1);
+    expect(h.reminders[0]?.origin).toMatchObject({ disclosure: { files: [
+      { path: join(repository, 'AGENTS.md') },
+      { path: join(repository, 'docs', 'AGENTS.md') },
+    ] } });
+    expect(reminderText(h)).not.toContain('# Agents and Sub-Agents');
+    expect(reminderText(h)).not.toContain('# Agent 与 subagent');
+    expect(reminderText(h)).not.toContain('# Agent Profiles');
   });
 
   it('discovers the .kiki/AGENTS.md variant alongside the plain one', async () => {

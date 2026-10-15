@@ -29,7 +29,7 @@ features:
     link: ./features/long-work
   - title: "Agent Profiles"
     details: "One Markdown file describes a kind of agent: the model it runs on, how it is instructed, which tools it may call, and what it can dispatch."
-    link: ./features/agents
+    link: ./features/agent-workflows
   - title: "Roles you can talk to"
     details: A persona is a long-term identity with its own memory, a fixed daily conversation, and a seat in a room where several of them discuss one topic.
     link: ./features/people
