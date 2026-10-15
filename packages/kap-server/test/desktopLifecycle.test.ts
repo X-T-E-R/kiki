@@ -1,5 +1,11 @@
-import { describe, expect, it } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { describe, expect, it, vi } from 'vitest';
+import { execFile } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { ProcessTask } from '@kiki/agent-core-v2/agent/tools/os/bash/process-task';
+import { IHostProcessService, type IHostProcess } from '@kiki/agent-core-v2/os/interface/hostProcess';
+import { ISessionMcpHandle } from '@kiki/agent-core-v2/session/mcp/sessionMcpHandle';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { IAgentExecutionService, IAgentLifecycleService, IAgentLoopService, IAgentTaskService, ISessionActivityView, ISessionManager } from '@kiki/agent-core-v2';
@@ -84,6 +90,66 @@ describe('server cleanup collection', () => {
 });
 
 describe('desktop-managed shared lifecycle', () => {
+  it.skipIf(process.platform !== 'win32')('confirmed quit awaits real MCP and Bash owner-tree cleanup while another backend keeps its own tree', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-owned-quit-'));
+    const helper = join(root, 'helper.exe');
+    const source = fileURLToPath(new URL('../../agent-core-v2/src/os/backends/node-local/windowsProcessHelper.cs', import.meta.url));
+    const fixture = fileURLToPath(new URL('../../agent-core-v2/test/mcpCore/fixtures/tree-stdio-server.mjs', import.meta.url));
+    const servers: RunningServer[] = [];
+    const processes: IHostProcess[] = [];
+    const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    try {
+      await promisify(execFile)(join(process.env['SystemRoot'] ?? 'C:\\Windows', 'Microsoft.NET/Framework/v4.0.30319/csc.exe'), ['/nologo', '/target:exe', '/platform:anycpu', `/out:${helper}`, source], { timeout: 30_000, windowsHide: true });
+      vi.stubEnv('KIKI_WINDOWS_PROCESS_HELPER', helper);
+      vi.stubEnv('KIKI_SEARCH_DISABLED', '1');
+      for (const name of ['a', 'b']) servers.push(await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: join(root, name), env: { ...process.env, KIKI_DESKTOP_BUNDLED: '1' }, logLevel: 'silent' }));
+      const a = servers[0]!, b = servers[1]!;
+      const created = await call(a, '/api/sessions', { metadata: { cwd: root } });
+      expect(created.code).toBe(0);
+      const session = a.core.accessor.get(ISessionManager).get((created.data as { id: string }).id)!;
+      const mcp = session.accessor.get(ISessionMcpHandle);
+      await mcp.ready;
+      await mcp.enableConfiguredServer!('owned-fixture', { transport: 'stdio', command: process.execPath, args: [fixture], runtime_id: 'local' }, 'caller');
+      await mcp.connectionManager.reconnect('owned-fixture');
+      const result = await mcp.connectionManager.resolved('owned-fixture')!.client.callTool('lifecycle', { action: 'keep' });
+      const mcpPids = result.structuredContent as { root: number; leaf: number };
+      const owner = a.core.accessor.get(IHostProcessService);
+      const residentFile = join(root, 'resident.txt');
+      const script = `const {spawn}=require('node:child_process');const child=spawn(process.execPath,['-e','setTimeout(()=>{},15000)'],{stdio:'ignore',detached:true});require('node:fs').writeFileSync(${JSON.stringify(residentFile)},String(child.pid));child.unref();`;
+      const bash = await owner.spawn(process.execPath, ['-e', script], { ownedProcessTree: true, ownedProcessLifetime: 'owner' });
+      processes.push(bash);
+      bash.stdin.end();
+      const agent = await session.accessor.get(IAgentLifecycleService).create({ agentId: 'main' });
+      const tasks = agent.accessor.get(IAgentTaskService);
+      const taskId = tasks.registerTask(new ProcessTask(bash, 'resident fixture', 'completed resident fixture'), { detached: true });
+      expect((await tasks.wait(taskId, 2_000))?.status).toBe('completed');
+      const resident = Number(await readFile(residentFile, 'utf8'));
+      const active = await owner.spawn(process.execPath, ['-e', 'setTimeout(()=>{},15000)'], { ownedProcessTree: true, ownedProcessLifetime: 'owner' });
+      processes.push(active);
+      tasks.registerTask(new ProcessTask(active, 'active fixture', 'active fixture'), { detached: true });
+      const sentinel = await b.core.accessor.get(IHostProcessService).spawn(process.execPath, ['-e', 'setTimeout(()=>{},15000)'], { ownedProcessTree: true, ownedProcessLifetime: 'owner' });
+      processes.push(sentinel);
+      const pids = [mcpPids.root, mcpPids.leaf, resident, active.pid];
+      expect(pids.every(alive)).toBe(true);
+      const state = desktopLifecycleStateSchema.parse((await call(a, '/api/desktop-lifecycle')).data);
+      const request = { action: 'quit', server_id: state.server_id, consent: true, interrupt_work: true };
+      expect((await call(a, '/api/desktop-lifecycle', { ...request, consent: false })).code).not.toBe(0);
+      expect((await call(a, '/api/desktop-lifecycle', { ...request, interrupt_work: false })).code).not.toBe(0);
+      expect(pids.every(alive)).toBe(true);
+      expect((await call(a, '/api/desktop-lifecycle', request)).code).toBe(0);
+      await a.closed;
+      await expect(a.exitReceipt).resolves.toMatchObject({ callerOutcome: 'resolved', cleanupOutcome: 'closed', resourcesAfter: 0 });
+      expect(pids.filter(alive)).toEqual([]);
+      expect(alive(sentinel.pid)).toBe(true);
+      expect((await call(b, '/api/meta')).code).toBe(0);
+    } finally {
+      for (const server of servers.toReversed()) await server.close();
+      for (const proc of processes) { try { await proc.kill(); } catch { } await proc.dispose(); }
+      vi.unstubAllEnvs();
+      await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  }, 30_000);
+
   it('exposes a typed flag map and refuses external services and stale instance consent', async () => {
     const root = await mkdtemp(join(tmpdir(), 'kiki-lifecycle-'));
     let server: RunningServer | undefined;
@@ -91,8 +157,10 @@ describe('desktop-managed shared lifecycle', () => {
       server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: root, env: { ...process.env, KIKI_DESKTOP_BUNDLED: '0', KIKI_EXPERIMENTAL_WORK_PRESETS: 'true' }, logLevel: 'silent' });
       const meta = metaResponseSchema.parse((await call(server, '/api/meta')).data);
       expect(meta.experimental_flags?.['work_presets']).toBe(true); expect(meta.desktop_managed).toBe(false);
-      const result = await call(server, '/api/desktop-lifecycle', { action: 'restart', server_id: meta.server_id, consent: true, interrupt_work: true });
-      expect(result.code).not.toBe(0); expect((await call(server, '/api/meta')).code).toBe(0);
+      for (const action of ['restart', 'quit']) {
+        const result = await call(server, '/api/desktop-lifecycle', { action, server_id: meta.server_id, consent: true, interrupt_work: true });
+        expect(result.code).not.toBe(0); expect((await call(server, '/api/meta')).code).toBe(0);
+      }
     } finally {
       await server?.close();
       if (server !== undefined) await expect(server.exitReceipt).resolves.toMatchObject({
@@ -101,7 +169,7 @@ describe('desktop-managed shared lifecycle', () => {
       await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
-  it('retains unconfirmed work, drains confirmed cancellation, and leaves another home running', async () => {
+  it.each(['restart', 'quit'])('%s retains unconfirmed work, drains confirmed cancellation, and leaves another home running', async (action) => {
     const root = await mkdtemp(join(tmpdir(), 'kiki-lifecycle-pair-'));
     const servers: RunningServer[] = [];
     let cancelled = false;
@@ -111,7 +179,8 @@ describe('desktop-managed shared lifecycle', () => {
       const task = await createTask(a, root, () => { cancelled = true; });
       const state = desktopLifecycleStateSchema.parse((await call(a, '/api/desktop-lifecycle')).data);
       expect(state.work_pending).toContain(task.session.id); expect(state.managed).toBe(true);
-      const request = { action: 'restart', server_id: state.server_id, consent: true, interrupt_work: true };
+      const request = { action, server_id: state.server_id, consent: true, interrupt_work: true };
+      expect((await call(a, '/api/desktop-lifecycle', { ...request, consent: false })).code).not.toBe(0);
       expect((await call(a, '/api/desktop-lifecycle', { ...request, server_id: 'stale-example' })).code).not.toBe(0);
       expect((await call(a, '/api/desktop-lifecycle', { ...request, interrupt_work: false })).code).not.toBe(0);
       expect(cancelled).toBe(false);

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 export const desktopLifecycleRequestSchema = z.object({
-  action: z.enum(['restart', 'update']),
+  action: z.enum(['restart', 'update', 'quit']),
   server_id: z.string().min(1),
   consent: z.literal(true),
   interrupt_work: z.boolean().default(false),

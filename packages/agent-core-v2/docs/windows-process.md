@@ -1,16 +1,21 @@
 # Windows Bash process ownership
 
-Windows Bash opts into `HostProcessOptions.ownedProcessTree`; ordinary host process spawns retain their existing path. `windowsProcessTree.ts` and `windowsProcessHelper.cs` own the opted-in process tree through one Windows Job Object, not a PID/parent-PID scan.
+Local Windows Bash opts into `HostProcessOptions.ownedProcessTree` with `ownedProcessLifetime: 'owner'`. Its resident descendants may outlive the command, but belong to the backend until that backend stops. Other host process spawns retain their existing path. `windowsProcessTree.ts` and `windowsProcessHelper.cs` own each opted-in tree through one Windows Job Object, not a PID/parent-PID scan.
 
 ## Launch and cleanup
 
 The precompiled helper starts the root suspended, assigns it to the Job, then resumes it. Launch arguments travel over a private named pipe rather than the helper command line. Separate pipes preserve stdin EOF and binary stdout/stderr. Pipe access is limited to the current Windows identity.
 
-Cancellation and timeout terminate the Job even if its root already exited. Cleanup succeeds only after the helper confirms `active:0`. Normal completion instead removes kill-on-close and releases ownership, preserving resident descendants deliberately started by the command. A failed normal release keeps the control channel and Job available for a later stop attempt.
+Cancellation and timeout terminate the Job even if its root already exited. Cleanup succeeds only after the helper confirms `active:0`. Normal completion depends on the selected lifetime:
 
-`ProcessTask` waits for cancellation cleanup and disposal before settlement. `os.process.kill_failed` carries `cleanupComplete:false`, `pid`, a `phase` (`terminate`, `verify`, `control`, `deadline`, or `release`), and optional `remainingProcessCount` or `win32Error`. The task consumer retains the diagnostic and does not claim a terminal cleanup result; stopping the same task can retry. A lost helper/control channel reports an unconfirmed failure. Kernel kill-on-close handles that abnormal loss; it does not promise to preserve residents in that case.
+- `process` (the default): dispose removes kill-on-close and releases the Job without stopping resident descendants.
+- `owner`: dispose closes the command's streams and returns promptly. If descendants remain, the App-scoped `HostProcessService` retains their helper and Job. The helper reuses its root-wait thread to query that Job every 250 ms after retention; when the Job empties, an `empty` notification triggers the existing cleanup handshake, exits the helper, and removes the App's ownership entry. App disposal closes launch admission, waits for pending launches, terminates retained Jobs, and awaits helper release. Repeated disposal shares the same result; a failed cleanup remains available for retry.
 
-A missing helper or a launch failure produces `os.process.spawn_failed`. Rebuild or reinstall the matching artifact; do not fall back to taskkill for owned-tree cleanup or compile on the user's runtime machine.
+Owner lifetime requires Windows and `ownedProcessTree:true`; unsupported combinations fail explicitly. The launch request adds `owner-v1`, and the helper must confirm that capability in its ready response. Older helpers reject the extended launch rather than starting an unowned command. Ordinary four-field launches remain compatible.
+
+`ProcessTask` waits for cancellation cleanup and disposal before settlement. `os.process.kill_failed` carries `cleanupComplete:false`, `pid`, a `phase` (`terminate`, `verify`, `control`, `deadline`, `retain`, `watch`, or `release`), and optional `remainingProcessCount` or `win32Error`. Failed cleanup keeps its diagnostic and does not claim success. A lost helper/control channel reports an unconfirmed failure; kernel kill-on-close terminates the Job when the helper dies or its backend closes the control pipe, including after the root has exited.
+
+A missing or incompatible helper, or a launch failure, produces `os.process.spawn_failed`. Rebuild or reinstall the matching artifact; do not fall back to taskkill for owned-tree cleanup or compile on the user's runtime machine. Remote SSH processes and externally managed services do not opt into local owner lifetime.
 
 ## Build and packaging
 
@@ -22,6 +27,6 @@ For npm publishing on Linux, the Windows x64 native lane stages its compiled hel
 
 ## Verification boundary
 
-`test/os/backends/node-local/hostProcessService.test.ts` covers binary streams, long arguments, timeout, stop, root-first exit, unrelated processes, normal residents, and injected termination/release failures followed by retry through the real task consumer. CLI native asset tests cover extraction/repair, concurrent build consumers, missing compiler, precompiled cross-host staging, and both npm distributions.
+`test/os/backends/node-local/hostProcessService.test.ts` covers binary streams, long arguments, timeout, stop, root-first exit, default resident release, owner-lifetime task completion, natural empty-Job helper reclamation, App shutdown, concurrent launch/shutdown, backend crash, helper compatibility, unrelated processes, and injected termination/release failures followed by retry. `kap-server/test/desktopLifecycle.test.ts` exercises confirmed quit with real MCP and resident Bash trees while another backend's tree stays alive. CLI native asset tests cover extraction/repair, concurrent build consumers, missing compiler, precompiled cross-host staging, and both npm distributions.
 
 The current candidate has Windows 11 x64 fixture evidence and ordinary CLI/SDK layout evidence. Windows 10, ARM64, missing-CLR machines and a complete installer remain separate release/runtime checks; successful local fixtures do not establish those outcomes.

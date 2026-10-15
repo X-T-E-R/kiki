@@ -310,7 +310,7 @@ describe('McpConnectionManager', () => {
 
       await cm.connect('alpha', { ...stdioConfig(), startupTimeoutMs: 5_000 });
       expect(cm.get('alpha')?.status).toBe('connected');
-      expect(statuses).toEqual(['alpha:pending', 'alpha:connected']);
+      expect(statuses).toEqual(['alpha:removed', 'alpha:pending', 'alpha:connected']);
     } finally {
       await cm.shutdown();
     }
@@ -569,6 +569,23 @@ describe('McpConnectionManager', () => {
     } finally {
       await cm.shutdown();
     }
+  });
+
+  it('reports failed shutdown, retains its owner for retry and joins concurrent shutdowns', async () => {
+    const cm = createManager();
+    await cm.connectAll({ alpha: stdioConfig() });
+    const client = cm.resolved('alpha')!.client as StdioMcpClient;
+    const close = vi.spyOn(client, 'close').mockRejectedValueOnce(new Error('fixture cleanup failure'));
+    try {
+      const first = cm.shutdown();
+      expect(cm.shutdown()).toBe(first);
+      await expect(first).rejects.toThrow('MCP process cleanup failed');
+      expect(cm.get('alpha')?.status).toBe('failed');
+      await expect(cm.connect('late', stdioConfig())).rejects.toMatchObject({ code: 'mcp.server_disabled' });
+      close.mockRestore();
+      await cm.shutdown();
+      expect(cm.list()).toEqual([]);
+    } finally { close.mockRestore(); await cm.shutdown(); }
   });
 
   it('shutdown clears entries and is idempotent', async () => {

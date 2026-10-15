@@ -55,12 +55,14 @@ class WindowsProcessTree implements IHostProcess {
   private killPromise: Promise<void> | undefined;
   private cleanupFailure: unknown;
   private disposePromise: Promise<void> | undefined;
+  private ownerShutdownPromise: Promise<void> | undefined;
+  private releaseListener: (() => void) | undefined;
   private buffer = '';
   private disposed = false;
   private code: number | null = null;
   private rootPid = -1;
 
-  constructor(private readonly child: ChildProcess, private readonly control: Socket, input: Socket, output: Socket, error: Socket, mergeStderr: boolean) {
+  constructor(private readonly child: ChildProcess, private readonly control: Socket, input: Socket, output: Socket, error: Socket, mergeStderr: boolean, private readonly ownerLifetime: boolean) {
     this.stdin = new Writable({
       write(chunk: Buffer, _encoding, done) { input.write(chunk, done); },
       final(done) { input.end(() => { input.destroy(); done(); }); },
@@ -118,28 +120,64 @@ class WindowsProcessTree implements IHostProcess {
     throw this.decodeError(response);
   }
 
+  onRelease(listener: () => void): void { this.releaseListener = listener; }
+
   dispose(): Promise<void> {
     if (this.disposePromise === undefined) {
-      this.disposePromise = this.releaseOwnership();
+      this.disposePromise = this.finishProcess();
       void this.disposePromise.catch(() => { this.disposePromise = undefined; });
     }
     return this.disposePromise;
   }
 
-  private async releaseOwnership(): Promise<void> {
+  shutdownOwner(): Promise<void> {
+    if (this.ownerShutdownPromise === undefined) {
+      this.ownerShutdownPromise = (async () => {
+        await this.disposePromise;
+        if (!this.disposed) await this.kill();
+        await this.releaseOwnership();
+      })();
+      void this.ownerShutdownPromise.catch(() => { this.ownerShutdownPromise = undefined; });
+    }
+    return this.ownerShutdownPromise;
+  }
+
+  private async finishProcess(): Promise<void> {
+    if (this.disposed) return this.releaseOwnership();
     await this.killPromise;
     if (this.cleanupFailure !== undefined) throw this.cleanupFailure;
-    const response = await this.request('release');
-    if (response !== 'released') throw this.decodeError(response);
-    this.disposed = true;
-    this.control.destroy();
+    if (this.ownerLifetime && this.killPromise === undefined) {
+      const response = await this.request('retain');
+      if (!/^active:\d+$/.test(response)) throw this.decodeError(response);
+      if (response !== 'active:0') {
+        this.closeStreams();
+        return;
+      }
+    }
+    await this.releaseOwnership();
+  }
+
+  private closeStreams(): void {
     this.stdin.destroy();
     this.stdout.destroy();
     if (this.stderr !== this.stdout) this.stderr.destroy();
-    await this.withDeadline(this.helperExited.promise, 'deadline');
   }
 
-  private async request(command: 'kill' | 'release'): Promise<string> {
+  private async releaseOwnership(): Promise<void> {
+    if (!this.disposed) {
+      await this.killPromise;
+      if (this.cleanupFailure !== undefined) throw this.cleanupFailure;
+      const response = await this.request('release');
+      if (response !== 'released') throw this.decodeError(response);
+      this.disposed = true;
+      this.control.destroy();
+      this.closeStreams();
+    }
+    await this.withDeadline(this.helperExited.promise, 'deadline');
+    this.releaseListener?.();
+  }
+
+  private async request(command: 'kill' | 'release' | 'retain'): Promise<string> {
     if (this.response !== undefined) throw this.killError('control', 'Windows process ownership operation is already in progress. Retry TaskStop.');
     const response = deferred<string>();
     this.response = response;
@@ -152,10 +190,18 @@ class WindowsProcessTree implements IHostProcess {
   }
 
   private receive(line: string): void {
-    if (line.startsWith('ready:')) this.ready.resolve(Number(line.slice(6)));
-    else if (line.startsWith('exit:')) {
+    if (line.startsWith('ready:')) {
+      const [, pid, capability] = line.split(':');
+      if (this.ownerLifetime && capability !== 'owner-v1') {
+        this.ready.reject(new Error('Windows process helper does not support owner lifetime. Rebuild or reinstall Kiki with its matching native assets.'));
+      } else this.ready.resolve(Number(pid));
+    } else if (line.startsWith('exit:')) {
       this.code = Number(line.slice(5));
       this.exited.resolve(this.code);
+    } else if (line === 'empty' && this.ownerLifetime) {
+      void this.shutdownOwner().catch((error: unknown) => { this.cleanupFailure = error; });
+    } else if (line.startsWith('error:watch:')) {
+      this.cleanupFailure = this.decodeError(line);
     } else if (line.startsWith('error:launch:')) {
       const error = this.decodeError(line);
       this.ready.reject(error);
@@ -194,7 +240,7 @@ class WindowsProcessTree implements IHostProcess {
   }
 }
 
-export async function spawnWindowsProcessTree(command: string, args: readonly string[], options: SpawnOptions, mergeStderr: boolean): Promise<IHostProcess> {
+export async function spawnWindowsProcessTree(command: string, args: readonly string[], options: SpawnOptions, mergeStderr: boolean, ownerLifetime = false): Promise<WindowsProcessTree> {
   const helper = process.env['KIKI_WINDOWS_PROCESS_HELPER'] ?? [
     './windows-process-helper.exe',
     './native/windows-process-helper.exe',
@@ -231,8 +277,10 @@ export async function spawnWindowsProcessTree(command: string, args: readonly st
       sockets.push(socket);
       return socket;
     }));
-    processTree = new WindowsProcessTree(child, control, input!, output!, error!, mergeStderr);
-    control.write(`${[...encoded, mergeStderr ? 'merge' : 'separate'].join(':')}\n`);
+    processTree = new WindowsProcessTree(child, control, input!, output!, error!, mergeStderr, ownerLifetime);
+    const launch = [...encoded, mergeStderr ? 'merge' : 'separate'];
+    if (ownerLifetime) launch.push('owner-v1');
+    control.write(`${launch.join(':')}\n`);
     await processTree.initialize();
     return processTree;
   } catch (error) {

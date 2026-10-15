@@ -255,6 +255,7 @@ describe.skipIf(process.platform !== 'win32')('Windows owned process tree', () =
   let helper: string;
   let failingKillHelper: string;
   let failingReleaseHelper: string;
+  let legacyHelper: string;
   let tasks: IAgentTaskService;
   let svc: IHostProcessService;
   let disposables: DisposableStore;
@@ -290,6 +291,19 @@ describe.skipIf(process.platform !== 'win32')('Windows owned process tree', () =
       if (name === 'fail-kill') failingKillHelper = fixtureHelper;
       else failingReleaseHelper = fixtureHelper;
     }
+    const legacySource = join(directory, 'legacy.cs');
+    legacyHelper = join(directory, 'legacy.exe');
+    await writeFile(legacySource, canonical.replace('if (launch.Length != 4 && !ownerLifetime)', 'if (launch.Length != 4)'));
+    await promisify(execFile)(join(process.env['SystemRoot'] ?? 'C:\\Windows', 'Microsoft.NET/Framework/v4.0.30319/csc.exe'),
+      ['/nologo', '/target:exe', '/platform:anycpu', `/out:${legacyHelper}`, legacySource], { timeout: 30_000, windowsHide: true });
+    await writeFile(join(directory, 'owner.mjs'), `
+      import { HostProcessService } from ${JSON.stringify(new URL('../../../../src/os/backends/node-local/hostProcessService.ts', import.meta.url).href)};
+      const service = new HostProcessService();
+      const proc = await service.spawn(process.execPath, ['-e', process.argv[2]], { ownedProcessTree: true, ownedProcessLifetime: 'owner' });
+      proc.stdin.end(); await proc.wait(); await proc.dispose();
+      console.log(JSON.stringify({ helper: proc.child.pid, root: proc.pid }));
+      setInterval(()=>{}, 1000);
+    `);
     await writeFile(join(directory, 'tree.cjs'), `
       const {spawn}=require('node:child_process'); const fs=require('node:fs');
       const file=process.argv[2]; fs.appendFileSync(file,process.pid+'\\n');
@@ -418,6 +432,117 @@ describe.skipIf(process.platform !== 'win32')('Windows owned process tree', () =
     expect(alive(sentinel.pid)).toBe(true);
     console.log(JSON.stringify({ rootExited: proc.pid, descendants: pids, allGone: true, unrelatedAlive: sentinel.pid }));
   });
+
+  it('settles completed owner-lifetime tasks promptly, then App disposal reaps residents and active trees only', async () => {
+    const file = join(directory, 'owner-residents.txt');
+    const sentinel = await svc.spawn(process.execPath, ['-e', 'setTimeout(()=>{},15000)']);
+    owned.push(sentinel);
+    const command = `${quote(process.execPath.replaceAll('\\', '/'))} ${quote(join(directory, 'tree.cjs').replaceAll('\\', '/'))} ${quote(file.replaceAll('\\', '/'))} >/dev/null 2>&1 & sleep 0.4`;
+    const proc = await spawnOwned('C:/Program Files/Git/bin/bash.exe', ['-c', command], { ownedProcessLifetime: 'owner' });
+    proc.stdin.end();
+    const taskId = tasks.registerTask(new ProcessTask(proc, command, 'owner resident'), { detached: true });
+    const result = await tasks.wait(taskId, 2_000);
+    expect(result?.status).toBe('completed');
+    expect(proc.exitCode).toBe(0);
+    const pids = await readPids(file);
+    expect(pids.filter(alive).length).toBe(3);
+    await Promise.all([proc.dispose(), proc.dispose()]);
+    const active = await spawnOwned(process.execPath, ['-e', 'setTimeout(()=>{},15000)'], { ownedProcessLifetime: 'owner' });
+    await disposables.dispose();
+    expect(pids.filter(alive)).toEqual([]);
+    expect(alive(active.pid)).toBe(false);
+    expect(alive(sentinel.pid)).toBe(true);
+    await proc.dispose();
+    await expect(proc.kill()).resolves.toBeUndefined();
+    await expect(svc.spawn(process.execPath)).rejects.toMatchObject({ code: 'os.process.spawn_failed', details: { phase: 'owner' } });
+  });
+
+  it('reclaims the helper and owner entry when retained descendants naturally empty their Job', async () => {
+    const completed = join(directory, 'short-resident-completed.txt');
+    const leafScript = `process.stdout.write('ready');setTimeout(()=>{require('node:fs').writeFileSync(${JSON.stringify(completed)},'natural exit');},800);`;
+    const rootScript = `const child=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(leafScript)}],{stdio:['ignore','pipe','ignore'],detached:true});child.stdout.once('data',()=>{process.stdout.write(String(child.pid));process.exit(0);});`;
+    const sentinel = await svc.spawn(process.execPath, ['-e', 'setTimeout(()=>{},15000)']);
+    owned.push(sentinel);
+    const proc = await spawnOwned(process.execPath, ['-e', rootScript], { ownedProcessLifetime: 'owner' });
+    const leaf = Number(await collect(proc.stdout));
+    const helperPid = (proc as unknown as { child: { pid: number } }).child.pid;
+    const retained = (svc as unknown as { ownedTrees: ReadonlySet<unknown> }).ownedTrees;
+    expect(await proc.wait()).toBe(0);
+    await proc.dispose();
+    expect(alive(leaf)).toBe(true);
+    expect(alive(helperPid)).toBe(true);
+    expect(retained.has(proc)).toBe(true);
+    await vi.waitFor(async () => { expect(await readFile(completed, 'utf8')).toBe('natural exit'); }, { timeout: 2_000 });
+    await vi.waitFor(() => {
+      expect(alive(leaf)).toBe(false);
+      expect(alive(helperPid)).toBe(false);
+      expect(retained.has(proc)).toBe(false);
+    }, { timeout: 2_000 });
+    expect(alive(sentinel.pid)).toBe(true);
+    await Promise.all([proc.dispose(), proc.kill(), proc.kill()]);
+  });
+
+  it('preserves owner shutdown failure diagnostics and retries all retained Jobs', async () => {
+    vi.stubEnv('KIKI_WINDOWS_PROCESS_HELPER', failingKillHelper);
+    const proc = await spawnOwned(process.execPath, ['-e', 'setTimeout(()=>{},15000)'], { ownedProcessLifetime: 'owner' });
+    const service = svc as HostProcessService;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await expect(service.dispose()).rejects.toMatchObject({ code: 'os.process.kill_failed', details: { phase: 'terminate', cleanupComplete: false, win32Error: 5 } });
+      expect(alive(proc.pid)).toBe(true);
+    }
+    await Promise.all([service.dispose(), service.dispose()]);
+    expect(alive(proc.pid)).toBe(false);
+    await proc.dispose();
+  });
+
+  it('retains a failed owner release for retry after successful tree termination', async () => {
+    vi.stubEnv('KIKI_WINDOWS_PROCESS_HELPER', failingReleaseHelper);
+    const proc = await spawnOwned(process.execPath, ['-e', 'setTimeout(()=>{},15000)'], { ownedProcessLifetime: 'owner' });
+    const service = svc as HostProcessService;
+    await expect(service.dispose()).rejects.toMatchObject({ code: 'os.process.kill_failed', details: { phase: 'release', cleanupComplete: false, win32Error: 5 } });
+    expect(alive(proc.pid)).toBe(false);
+    await service.dispose();
+    await proc.dispose();
+  });
+
+  it('closes launch admission and reaps an owner tree launched concurrently with App disposal', async () => {
+    const pending = spawnOwned(process.execPath, ['-e', 'setTimeout(()=>{},15000)'], { ownedProcessLifetime: 'owner' });
+    const rejected = expect(pending).rejects.toMatchObject({ code: 'os.process.spawn_failed', details: { phase: 'owner' } });
+    await (svc as HostProcessService).dispose();
+    await rejected;
+  });
+
+  it('rejects owner lifetime without a Job and with an old helper while preserving legacy process mode', async () => {
+    await expect(svc.spawn(process.execPath, [], { ownedProcessLifetime: 'owner' })).rejects.toMatchObject({ code: 'os.process.spawn_failed', details: { phase: 'owner' } });
+    vi.stubEnv('KIKI_WINDOWS_PROCESS_HELPER', legacyHelper);
+    await expect(spawnOwned(process.execPath, [], { ownedProcessLifetime: 'owner' })).rejects.toMatchObject({ code: 'os.process.spawn_failed', details: { phase: 'launch' } });
+    const proc = await spawnOwned(process.execPath, ['-e', 'process.exit(0)']);
+    expect(await proc.wait()).toBe(0);
+    await proc.dispose();
+  });
+
+  it('reaps retained residents and the helper when their backend owner crashes and closes its control pipe', async () => {
+    const file = join(directory, 'crash-residents.txt');
+    const script = `const {spawn}=require('node:child_process');spawn(process.execPath,[${JSON.stringify(join(directory, 'tree.cjs'))},${JSON.stringify(file)}],{detached:true,stdio:'ignore'}).unref();setTimeout(()=>process.exit(0),400);`;
+    const parent = await svc.spawn(process.execPath, ['--import', import.meta.resolve('tsx'), join(directory, 'owner.mjs'), script]);
+    owned.push(parent);
+    const diagnostic = collect(parent.stderr);
+    let output = '';
+    parent.stdout.on('data', (chunk) => { output += String(chunk); });
+    await vi.waitFor(() => { expect(output, 'owner should report ready; parent exit=' + parent.exitCode).toContain('helper'); }, { timeout: 5_000 });
+    const identities = JSON.parse(output.trim()) as { helper: number; root: number };
+    const pids = await readPids(file);
+    expect(alive(identities.root)).toBe(false);
+    expect(alive(identities.helper)).toBe(true);
+    expect(pids.filter(alive).length).toBe(3);
+    process.kill(parent.pid, 'SIGKILL');
+    await parent.wait();
+    expect(await diagnostic).toBe('');
+    await vi.waitFor(() => {
+      expect(alive(identities.helper)).toBe(false);
+      expect(pids.filter(alive)).toEqual([]);
+    }, { timeout: 3_000 });
+  }, 10_000);
 
   it('normal completion releases the job without killing resident descendants', async () => {
     const file = join(directory, 'resident-pids.txt');

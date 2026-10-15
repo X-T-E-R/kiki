@@ -14,6 +14,7 @@ export interface HostProcessOptions {
   readonly mergeStderr?: boolean;
   readonly timeout?: number;
   readonly ownedProcessTree?: boolean;
+  readonly ownedProcessLifetime?: 'process' | 'owner';
 }
 
 export interface IHostProcess {

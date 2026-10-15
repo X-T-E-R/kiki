@@ -640,9 +640,10 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   });
   let closeReason: ServerExitReceipt['exitReason'] = 'requested';
   let closeFailureDomain: ServerExitReceipt['failureDomain'];
+  const lifecycleSessionManager = core.accessor.get(ISessionManager);
   const resourceCount = (): number | undefined => {
     try {
-      return core.accessor.get(ISessionManager).list().length + admission.activeCount() +
+      return lifecycleSessionManager.list().length + admission.activeCount() +
         remoteConnections.activeCount() + connectionRegistry.size() + Number(!shutdownController.signal.aborted);
     } catch {
       return undefined;

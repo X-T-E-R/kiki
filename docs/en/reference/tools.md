@@ -58,6 +58,10 @@ A foreground command that hits its timeout is not killed by default: it keeps ru
 
 stdin is always closed, so an interactive command receives EOF immediately. A stopped or timed-out task is terminated with SIGTERM, then SIGKILL after the 5-second grace period. On Windows, Git Bash is used by default.
 
+On Windows, a local `Bash` command can leave processes running after the command itself exits. Those processes belong to the Kiki backend that started them. They keep running if you [close only the desktop](../getting-started/desktop-app.md#windows-tray-and-opening-files). Stopping that backend, or an unexpected exit, stops each of those command trees and leaves other programs on the machine alone.
+
+`TaskStop`, or a foreground timeout that kills the command instead of moving it to the background, still ends the tree. A command on a remote SSH host is not tied to the local backend's lifetime; closing or stopping local Kiki does not use this cleanup for that remote command. If `Bash` reports that the Windows Bash process helper is missing, or that the Windows process helper does not support "owner lifetime" (keeping the command's processes with the Kiki backend), reinstall Kiki from the matching release so the helper and the app are the same build.
+
 ## Dynamic tools
 
 MCP and plugin tools are announced by name and a short description. Use `SelectTools` with an announced name; its schema reaches the model on the next step. Ordinary tools already in the tool list need no selection. On Kimi providers selected schemas travel in message-level tool declarations; on OpenAI chat, OpenAI Responses, and Anthropic providers they travel in system text, with `CallTool` available as a stable bridge while deferred tools are active. The model can also call an already-loaded tool directly by its real name. Approval, access checks, and the UI tool card use that real name. The `tool-select` flag is enabled by default for these providers when the model supports tool calling; `dynamically_loaded_tools` does not need to be declared. Turning the flag off restores inline tool availability.

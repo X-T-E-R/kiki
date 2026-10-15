@@ -85,7 +85,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
       resolveDefaultTimeouts: () => this.mcpConfig.tunables(),
       resolveClientName: this.resolveClientName,
     });
-    this._register({ dispose: () => void this.manager.shutdown() });
+    this._register({ dispose: () => this.manager.shutdown() });
     this._register(
       this.mcpConfig.onDidChange((change) => {
         change.waitUntil(this.scheduleApply(change));
@@ -145,7 +145,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
         event.contributeSeed(ISessionMcpHandle, overlay.handle);
         event.onSessionDispose(() => {
           this.sessionOverlays.delete(sessionId);
-          void overlay.shutdown();
+          return overlay.shutdown();
         });
       }),
     );

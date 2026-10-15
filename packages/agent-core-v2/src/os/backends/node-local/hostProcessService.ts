@@ -178,15 +178,50 @@ class HostProcess implements IHostProcess {
 
 export class HostProcessService implements IHostProcessService {
   declare readonly _serviceBrand: undefined;
+  private readonly ownedTrees = new Set<Awaited<ReturnType<typeof spawnWindowsProcessTree>>>();
+  private readonly pendingTrees = new Set<ReturnType<typeof spawnWindowsProcessTree>>();
+  private closing = false;
+  private disposePromise: Promise<void> | undefined;
+
+  dispose(): Promise<void> {
+    this.closing = true;
+    if (this.disposePromise === undefined) {
+      this.disposePromise = this.shutdownOwnedTrees();
+      void this.disposePromise.catch(() => { this.disposePromise = undefined; });
+    }
+    return this.disposePromise;
+  }
+
+  private async shutdownOwnedTrees(): Promise<void> {
+    await Promise.allSettled(this.pendingTrees);
+    const outcomes = await Promise.allSettled([...this.ownedTrees].map((tree) => tree.shutdownOwner()));
+    const failures = outcomes.filter((outcome) => outcome.status === 'rejected').map((outcome) => outcome.reason as unknown);
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, 'Failed to stop owned Windows process trees.');
+  }
 
   async spawn(
     command: string,
     args: readonly string[] = [],
     options: HostProcessOptions = {},
   ): Promise<IHostProcess> {
+    if (this.closing) throw new HostProcessError(HostProcessErrorCode.SpawnFailed, 'Host process service is shutting down.', { details: { command, phase: 'owner' } });
+    const ownerLifetime = options.ownedProcessLifetime === 'owner';
+    if (ownerLifetime && (!isWindows || options.ownedProcessTree !== true)) {
+      throw new HostProcessError(HostProcessErrorCode.SpawnFailed, 'Owner lifetime requires an owned Windows process tree.', { details: { command, phase: 'owner' } });
+    }
     const spawnOptions = buildSpawnOptions(options);
     if (isWindows && options.ownedProcessTree === true) {
-      return spawnWindowsProcessTree(command, args, spawnOptions, options.mergeStderr ?? false);
+      const pending = spawnWindowsProcessTree(command, args, spawnOptions, options.mergeStderr ?? false, ownerLifetime);
+      if (!ownerLifetime) return pending;
+      this.pendingTrees.add(pending);
+      try {
+        const tree = await pending;
+        this.ownedTrees.add(tree);
+        tree.onRelease(() => { this.ownedTrees.delete(tree); });
+        if (this.closing) throw new HostProcessError(HostProcessErrorCode.SpawnFailed, 'Host process service shut down during launch.', { details: { command, phase: 'owner' } });
+        return tree;
+      } finally { this.pendingTrees.delete(pending); }
     }
     const child = spawn(command, args as string[], spawnOptions);
     try {

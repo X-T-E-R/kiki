@@ -760,6 +760,7 @@ function bashTool(
     onDidChange: () => ({ dispose: () => {} }),
     isAvailable: () => true,
     inspect: () => backend,
+    prepareFor: async () => backend,
     acquire: () => ({
       runtime: backend,
       track: (resource) => resource,
@@ -1077,10 +1078,21 @@ describe('BashTool', () => {
     expect(args).toEqual(['-c', "cd '/c/Users/me/project' && echo ok 2>/dev/null"]);
     expect(execOptions?.env).toMatchObject({ SHELL: 'C:\\Program Files\\Git\\bin\\bash.exe' });
     expect(execOptions?.ownedProcessTree).toBe(true);
+    expect(execOptions?.ownedProcessLifetime).toBe('owner');
     expect(result).toMatchObject({
       output: 'ok\n',
       isError: false,
     });
+  });
+
+  it('does not attach remote Windows commands to the local backend owner lifetime', async () => {
+    const { runner, exec } = createTestRunner(processWithOutput({ stdout: 'remote\n' }));
+    const runtime = Object.assign(new FakeRuntime({ workspaceId: 'test', runtimeId: 'ssh:example', generation: 'test' }, {
+      capabilities: ['process'], pathClass: 'win32', environment: windowsBashEnv,
+    }), { process: runner });
+    const tool = bashTool(runner, windowsBashEnv, createTestCtx('C:\\workspace'), undefined, undefined, undefined, { runtime });
+    expect(await executeTool(tool, context({ command: 'echo remote' }))).toMatchObject({ isError: false });
+    expect(exec.mock.calls[0]?.[2]?.ownedProcessLifetime).toBeUndefined();
   });
 
   it('returns stderr and marks non-zero exit codes as tool errors', async () => {
@@ -1920,6 +1932,7 @@ describe('BashTool background mode', () => {
     expect(args).toEqual(['-c', "cd '/c/Users/me/project' && echo ok 2>/dev/null"]);
     expect(execOptions?.env).toMatchObject({ SHELL: 'C:\\Program Files\\Git\\bin\\bash.exe' });
     expect(execOptions?.ownedProcessTree).toBe(true);
+    expect(execOptions?.ownedProcessLifetime).toBe('owner');
     expect(secondProc.kill).toHaveBeenCalledWith('SIGTERM');
     expect(results).toContainEqual(expect.objectContaining({ isError: false }));
     expect(results).toContainEqual(

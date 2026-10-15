@@ -162,6 +162,24 @@ describe('WorkspaceMcpService', () => {
     return ix.get(IWorkspaceMcpService);
   }
 
+  it('keeps workspace disposal pending until its MCP manager confirms cleanup', async () => {
+    const service = createService();
+    manager = service.connectionManager();
+    await service.ready;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const shutdown = vi.spyOn(manager, 'shutdown').mockReturnValue(gate);
+    let disposed = false;
+    const closing = Promise.resolve(disposables.dispose()).then(() => { disposed = true; });
+    try {
+      await vi.waitFor(() => expect(shutdown).toHaveBeenCalledOnce());
+      expect(disposed).toBe(false);
+      release();
+      await closing;
+      expect(disposed).toBe(true);
+    } finally { release(); await closing; }
+  });
+
   it('connects the config snapshot in the initial load', async () => {
     current = { alpha: stdioServer(), beta: stdioServer() };
     const connectAll = vi
@@ -450,7 +468,7 @@ describe('WorkspaceMcpService', () => {
         tools: [],
         rawTools: [],
         enabledNames: new Set<string>(),
-        client: fakeMcpClient(),
+        client: { ...fakeMcpClient(), close: async () => {} },
       });
     }
 
@@ -487,7 +505,7 @@ describe('WorkspaceMcpService', () => {
     const entries = (overlayManager as unknown as { entries: Map<string, unknown> }).entries;
     entries.set(name, {
       name, config, attemptId: 0, accepting: true, calls: new Set<Promise<void>>(), status: 'connected',
-      tools: [], rawTools: [], enabledNames: new Set<string>(), client: fakeMcpClient(),
+      tools: [], rawTools: [], enabledNames: new Set<string>(), client: { ...fakeMcpClient(), close: async () => {} },
     });
     const admission = await overlay.handle.connectionManager.resolved(name)?.admitCall?.();
     expect(admission).toBeDefined();
@@ -608,7 +626,7 @@ describe('WorkspaceMcpService', () => {
         ],
       ]);
       const contributed = new Map<unknown, unknown>();
-      const disposers: Array<() => void> = [];
+      const disposers: Array<() => void | Promise<void>> = [];
       const event: SessionWillCreateEvent = {
         sessionId: 's1',
         readSeed: <T>(id: ServiceIdentifier<T>): T => seeds.get(id) as T,
@@ -641,9 +659,10 @@ describe('WorkspaceMcpService', () => {
 
       const shutdown = vi.spyOn(overlay, 'shutdown');
       expect(disposers).toHaveLength(1);
-      disposers[0]!();
+      const closing = disposers[0]!();
       expect(shutdown).toHaveBeenCalledTimes(1);
-      await shutdown.mock.results[0]?.value;
+      expect(closing).toBe(shutdown.mock.results[0]?.value);
+      await closing;
       await rm(sessionCwd, { recursive: true, force: true });
     }, 20000);
 

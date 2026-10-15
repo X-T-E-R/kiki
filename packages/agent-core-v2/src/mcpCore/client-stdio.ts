@@ -4,7 +4,7 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { ElicitRequestSchema, type JSONRPCMessage, type ServerCapabilities } from '@modelcontextprotocol/sdk/types.js';
 
 import { ErrorCodes, Error2 } from '#/errors';
-import type { IHostProcess } from '#/os/interface/hostProcess';
+import { HostProcessError, HostProcessErrorCode, type IHostProcess } from '#/os/interface/hostProcess';
 import type { IRuntimeResolver } from '#/workspace/workspaceInstance/workspaceInstanceManager';
 import { proxyEnvForChild, reconcileChildNoProxy } from '#/_base/utils/proxy';
 import { abortable } from '#/_base/utils/abort';
@@ -114,7 +114,7 @@ export class StdioMcpClient implements MCPClient {
     this.computerConfigKey = computerKey(options.serverName ?? '', config);
     if (this.computerControl) computerClients.set(this, { key: this.computerConfigKey, cwd: options.defaultCwd });
     this.transport = new RuntimeStdioTransport(config, options, this.stderrBuffer, this.computerControl,
-      () => {
+      !this.computerControl || this.directlyOwned, () => {
         if (!this.computerControl || this.directlyOwned) {
           if (computerOwner?.client === this) computerOwner = undefined;
           computerClients.delete(this);
@@ -176,6 +176,7 @@ export class StdioMcpClient implements MCPClient {
     if (this.closeWork !== undefined) return this.closeWork;
     this.blockCalls();
     this.closeWork = this.closeStartedClient();
+    void this.closeWork.catch(() => { this.closeWork = undefined; });
     return this.closeWork;
   }
 
@@ -244,7 +245,7 @@ export class StdioMcpClient implements MCPClient {
       computerClients.delete(this);
       return;
     }
-    this.started = false;
+    await this.transport.close();
     await this.client.close();
     if (this.computerControl && !this.directlyOwned) {
       throw new Error2(ErrorCodes.MCP_COMPUTER_STOP_UNCONFIRMED,
@@ -287,12 +288,15 @@ class RuntimeStdioTransport implements Transport {
   private lease: ReturnType<IRuntimeResolver['acquire']> | undefined;
   private started = false;
   private closed = false;
+  private closeNotified = false;
+  private closeWork: Promise<void> | undefined;
 
   constructor(
     private readonly config: McpServerStdioConfig,
     private readonly options: StdioMcpClientOptions,
     private readonly stderr: BoundedTail,
     private readonly computerControl: boolean,
+    private readonly ownedProcessTree: boolean,
     private readonly confirmedExit: () => void,
   ) {}
 
@@ -308,14 +312,14 @@ class RuntimeStdioTransport implements Transport {
     try {
       const base = lease.runtime.path.resolve(this.options.defaultCwd ?? lease.runtime.environment.homeDir);
       const cwd = this.config.cwd === undefined ? base : lease.runtime.path.resolve(base, this.config.cwd);
+      lease.track(this);
       this.spawnWork = lease.runtime.process!.spawn(
         this.config.command,
         this.config.args,
-        { cwd, env: mergeStdioEnv(this.config.env) },
+        { cwd, env: mergeStdioEnv(this.config.env), ownedProcessTree: this.ownedProcessTree },
       );
-      const process = lease.track(await this.spawnWork);
+      const process = await this.spawnWork;
       this.process = process;
-      lease.track(this);
       process.stdin.on('error', (error: Error) => this.onerror?.(error));
       process.stdout.on('data', (chunk: Buffer | string) => this.onData(chunk));
       process.stdout.on('end', () => { if (!this.computerControl) this.finish(); });
@@ -325,7 +329,7 @@ class RuntimeStdioTransport implements Transport {
       });
       process.stderr.on('error', (error: Error) => this.onerror?.(error));
       void process.wait().then(
-        () => { this.confirmedExit(); this.finish(); },
+        () => { this.finish(); },
         (error: unknown) => {
           this.onerror?.(error instanceof Error ? error : new Error(String(error)));
           if (!this.computerControl) this.finish();
@@ -354,42 +358,50 @@ class RuntimeStdioTransport implements Transport {
     return this.close();
   }
 
-  async close(): Promise<void> {
-    if (this.closed && this.process === undefined) return;
+  close(): Promise<void> {
+    if (this.closeWork !== undefined) return this.closeWork;
     this.closed = true;
-    if (this.computerControl && this.process === undefined && this.spawnWork !== undefined) {
-      await this.spawnWork.catch(() => undefined);
-    }
-    const process = this.process;
-    if (process !== undefined) {
+    this.closeWork = this.closeProcess();
+    void this.closeWork.catch(() => { this.closeWork = undefined; });
+    return this.closeWork;
+  }
+
+  private async closeProcess(): Promise<void> {
+    await this.spawnWork?.catch(() => undefined);
+    const child = this.process;
+    if (child !== undefined) {
       if (this.computerControl) {
-        process.stdin.end();
-        if (!(await exitedWithin(process, this.options.drainTimeoutMs ?? 5_000))) {
+        child.stdin.end();
+        const exited = await exitedWithin(child, this.options.drainTimeoutMs ?? 5_000);
+        if (!exited || (this.ownedProcessTree && process.platform === 'win32')) {
           try {
-            await process.kill();
+            await child.kill();
           } catch (cause) {
             throw new Error2(ErrorCodes.MCP_COMPUTER_STOP_UNCONFIRMED,
-              'Computer driver did not exit after EOF and could not be terminated; occupancy is retained', { cause });
+              'Computer driver cleanup failed; occupancy is retained', { cause });
           }
-          if (!(await exitedWithin(process, 2_000))) {
+          if (!(await exitedWithin(child, 2_000))) {
             throw new Error2(ErrorCodes.MCP_COMPUTER_STOP_UNCONFIRMED,
               'Computer driver termination is unconfirmed; occupancy is retained');
           }
         }
-        this.confirmedExit();
       } else {
-        try { await process.kill(); } catch {}
+        await child.kill();
+        if (!(await exitedWithin(child, 2_000))) {
+          throw new HostProcessError(HostProcessErrorCode.KillFailed, 'MCP process termination is unconfirmed.', {
+            details: { cleanupComplete: false, phase: 'verify', pid: child.pid },
+          });
+        }
       }
-      void process.dispose();
-    } else if (this.computerControl) {
-      this.confirmedExit();
+      await child.dispose();
     }
+    this.confirmedExit();
     this.process = undefined;
     this.readBuffer.clear();
     const lease = this.lease;
     this.lease = undefined;
     lease?.dispose();
-    this.onclose?.();
+    this.notifyClose();
   }
 
   private onData(chunk: Buffer | string): void {
@@ -406,14 +418,16 @@ class RuntimeStdioTransport implements Transport {
   }
 
   private finish(): void {
-    const wasClosed = this.closed;
-    this.closed = true;
-    this.process = undefined;
-    this.readBuffer.clear();
-    const lease = this.lease;
-    this.lease = undefined;
-    lease?.dispose();
-    if (!wasClosed) this.onclose?.();
+    this.notifyClose();
+    void this.close().catch((error: unknown) => {
+      this.onerror?.(error instanceof Error ? error : new Error(String(error)));
+    });
+  }
+
+  private notifyClose(): void {
+    if (this.closeNotified) return;
+    this.closeNotified = true;
+    this.onclose?.();
   }
 }
 

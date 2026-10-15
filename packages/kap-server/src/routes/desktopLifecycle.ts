@@ -34,14 +34,14 @@ export function registerDesktopLifecycleRoutes(app: {
   let draining = false;
   const state = (): DesktopLifecycleState => ({ server_id: opts.serverId, home_id: bootstrap.spaceId ?? 'main', managed: bootstrap.getEnv('KIKI_DESKTOP_BUNDLED') === '1', draining, work_pending: desktopPendingWork(core), impact: 'all-windows-in-this-space' });
   app.addHook('onRequest', ((req: { id: string; method: string }, reply: { send: (value: unknown) => unknown }, done: () => void) => {
-    if (draining && req.method !== 'GET') { reply.send(errEnvelope(ErrorCode.CAPABILITY_UNSUPPORTED, 'This space is draining for a desktop restart or update; reconnect when it is ready', req.id)); return; }
+    if (draining && req.method !== 'GET') { reply.send(errEnvelope(ErrorCode.CAPABILITY_UNSUPPORTED, 'This space is draining for a desktop restart, update or quit; wait for cleanup before reconnecting', req.id)); return; }
     done();
   }) as never);
-  const read = defineRoute({ method: 'GET', path: '/desktop-lifecycle', success: { data: desktopLifecycleStateSchema }, description: 'Read desktop service ownership and the scope of an explicit restart or update', tags: ['meta'] }, (req, reply) => { reply.send(okEnvelope(state(), req.id)); });
+  const read = defineRoute({ method: 'GET', path: '/desktop-lifecycle', success: { data: desktopLifecycleStateSchema }, description: 'Read desktop service ownership and the scope of an explicit restart, update or quit', tags: ['meta'] }, (req, reply) => { reply.send(okEnvelope(state(), req.id)); });
   app.get(read.path, read.options, read.handler as never);
   const mutate = defineRoute({ method: 'POST', path: '/desktop-lifecycle', body: desktopLifecycleRequestSchema, success: { data: z.object({ ok: z.literal(true) }) }, errors: { [ErrorCode.CAPABILITY_UNSUPPORTED]: {}, [ErrorCode.VALIDATION_FAILED]: {} }, description: 'Consent to drain and stop exactly this desktop-managed service', tags: ['meta'] }, (req, reply) => {
     const current = state();
-    if (!current.managed) { reply.send(errEnvelope(ErrorCode.CAPABILITY_UNSUPPORTED, 'This service is externally managed; stop it through its owner before updating', req.id)); return; }
+    if (!current.managed) { reply.send(errEnvelope(ErrorCode.CAPABILITY_UNSUPPORTED, 'This service is externally managed; stop it through its owner', req.id)); return; }
     if (req.body.server_id !== opts.serverId) { reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'The service changed; review the affected space again', req.id)); return; }
     if (current.work_pending.length > 0 && !req.body.interrupt_work) { reply.send(errEnvelope(ErrorCode.CAPABILITY_UNSUPPORTED, 'Unfinished work will be cancelled and drained; confirm this impact before continuing', req.id)); return; }
     draining = true;

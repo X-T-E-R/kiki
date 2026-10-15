@@ -105,6 +105,8 @@ public static class WindowsProcessHelper
         IntPtr job = IntPtr.Zero;
         ProcessInfo child = new ProcessInfo();
         Thread waiter = null;
+        var retained = new ManualResetEvent(false);
+        var stopWatching = new ManualResetEvent(false);
         try
         {
             var security = new PipeSecurity();
@@ -129,7 +131,8 @@ public static class WindowsProcessHelper
                     try
                     {
                         var launch = (reader.ReadLine() ?? "").Split(':');
-                        if (launch.Length != 4) throw new FormatException("Invalid process launch request.");
+                        bool ownerLifetime = launch.Length == 5 && launch[4] == "owner-v1";
+                        if (launch.Length != 4 && !ownerLifetime) throw new FormatException("Invalid process launch request.");
                         job = CreateJobObject(IntPtr.Zero, null);
                         Check(job != IntPtr.Zero, "CreateJobObject");
                         var limits = new ExtendedLimits();
@@ -147,7 +150,7 @@ public static class WindowsProcessHelper
                         output.Dispose();
                         errorPipe.Dispose();
                         Check(ResumeThread(child.thread) != 0xffffffff, "ResumeThread");
-                        Send(writer, "ready:" + child.pid);
+                        Send(writer, "ready:" + child.pid + (ownerLifetime ? ":owner-v1" : ""));
                         waiter = new Thread(() =>
                         {
                             WaitForSingleObject(child.process, 0xffffffff);
@@ -156,6 +159,19 @@ public static class WindowsProcessHelper
                             {
                                 Check(GetExitCodeProcess(child.process, out code), "GetExitCodeProcess");
                                 Send(writer, "exit:" + code);
+                                if (ownerLifetime && WaitHandle.WaitAny(new WaitHandle[] { retained, stopWatching }) == 0)
+                                {
+                                    while (!stopWatching.WaitOne(250))
+                                    {
+                                        Accounting stats;
+                                        if (!QueryInformationJobObject(job, 1, out stats, Marshal.SizeOf(typeof(Accounting)), IntPtr.Zero))
+                                        {
+                                            Failure(writer, "watch", new Win32Exception(Marshal.GetLastWin32Error(), "QueryInformationJobObject"));
+                                            break;
+                                        }
+                                        if (stats.active == 0) { Send(writer, "empty"); break; }
+                                    }
+                                }
                             }
                             catch (IOException) { }
                             catch (ObjectDisposedException) { }
@@ -184,6 +200,17 @@ public static class WindowsProcessHelper
                                 }
                                 catch (Exception error) { Failure(writer, phase, error); }
                             }
+                            else if (request == "retain" && ownerLifetime)
+                            {
+                                try
+                                {
+                                    Accounting stats;
+                                    Check(QueryInformationJobObject(job, 1, out stats, Marshal.SizeOf(typeof(Accounting)), IntPtr.Zero), "QueryInformationJobObject");
+                                    Send(writer, "active:" + stats.active);
+                                    if (stats.active != 0) retained.Set();
+                                }
+                                catch (Exception error) { Failure(writer, "retain", error); }
+                            }
                             else if (request == "release")
                             {
                                 try
@@ -205,9 +232,13 @@ public static class WindowsProcessHelper
         catch { return 4; }
         finally
         {
+            stopWatching.Set();
             if (child.process != IntPtr.Zero && waiter == null) TerminateProcess(child.process, 1);
+            if (waiter != null && WaitForSingleObject(child.process, 0) == 0) waiter.Join(1000);
             if (job != IntPtr.Zero) CloseHandle(job);
             if (waiter != null) waiter.Join(1000);
+            retained.Dispose();
+            stopWatching.Dispose();
             if (child.thread != IntPtr.Zero) CloseHandle(child.thread);
             if (child.process != IntPtr.Zero) CloseHandle(child.process);
         }

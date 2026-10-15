@@ -173,6 +173,7 @@ export class BashTool implements IBashTool {
     env: HostEnvironmentInfo,
     effectiveCwd: string,
     command: string,
+    local: boolean,
   ): Promise<IHostProcess> {
     const shellCwd = getShellPathBridge(env).toShellPath(effectiveCwd);
     const shellCommand = `cd ${shellQuote(shellCwd)} && ${command}`;
@@ -186,6 +187,7 @@ export class BashTool implements IBashTool {
     return processService.spawn(env.shellPath, ['-c', shellCommand], {
       env: noninteractiveEnv,
       ownedProcessTree: env.osKind === 'Windows',
+      ownedProcessLifetime: local && env.osKind === 'Windows' ? 'owner' : undefined,
     });
   }
 
@@ -218,7 +220,7 @@ export class BashTool implements IBashTool {
       const env = lease.runtime.environment;
       command = env.osKind === 'Windows' ? rewriteWindowsNullRedirect(args.command) : args.command;
       const effectiveCwd = view.resolve(args.cwd ?? view.workDir, view.workDir, this.permissionMode.mode === 'yolo');
-      proc = lease.track(await this.spawn(lease.runtime.process!, env, effectiveCwd, command));
+      proc = lease.track(await this.spawn(lease.runtime.process!, env, effectiveCwd, command, lease.runtime.identity.runtimeId === 'local'));
     } catch (error) {
       lease.dispose();
       return {

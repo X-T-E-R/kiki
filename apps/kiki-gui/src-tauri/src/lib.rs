@@ -6,8 +6,9 @@
  * process lifecycle at 00a2c6fc43754f40022b0703459824559bee73ea (MIT).
  * Kiki deliberately keeps only the single-child subset needed here and relies
  * on kap-server's own registry, token, and authenticated shutdown contracts.
- * Registry peers are attached only when their exact build identity matches;
- * every attached peer remains externally owned and is never stopped by Kiki.
+ * Registry peers are attached only when their exact build identity matches.
+ * Managed shared services stop only with explicit all-client-impact consent;
+ * externally managed peers remain under their owner's control.
  */
 mod ssh_remote;
 mod ssh_tunnel;
@@ -51,7 +52,7 @@ use tauri::{
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, RunEvent, State, Url, WebviewWindowBuilder, WindowEvent, Wry,
 };
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogResult};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_shell::{
     process::{CommandChild, CommandEvent, TerminatedPayload},
@@ -60,8 +61,8 @@ use tauri_plugin_shell::{
 use tauri_plugin_updater::UpdaterExt;
 #[cfg(windows)]
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, WAIT_OBJECT_0},
-    System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE},
+    Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, FILETIME, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
+    System::Threading::{GetExitCodeProcess, GetProcessTimes, OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE},
 };
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
@@ -1066,9 +1067,14 @@ impl BackendManager {
     }
 
     fn shared_identity(&self) -> Result<Option<(DesktopConnection, BackendIdentity)>, String> {
+        self.shared_identity_for("update")
+    }
+
+    fn shared_identity_for(&self, action: &str) -> Result<Option<(DesktopConnection, BackendIdentity)>, String> {
         if !self.shared_service { return Ok(None); }
         let Some(connection) = self.hot_connection() else { return Ok(None); };
         let identity = authenticated_backend_identity(connection_port(&connection)?, &connection.token)?;
+        if action == "quit" && !identity.desktop_managed { return Ok(None); }
         if !backend_identity_matches(&identity) || !identity.desktop_managed || identity.server_id.is_empty() {
             return Err("This service is externally managed or belongs to another build; stop it through its owner before restarting or updating".to_string());
         }
@@ -1076,12 +1082,28 @@ impl BackendManager {
     }
 
     fn stop_shared(&self, app: &AppHandle, action: &str, confirmed: bool) -> Result<(), String> {
-        let Some((connection, identity)) = self.shared_identity()? else { return Ok(()); };
+        let Some((connection, identity)) = self.shared_identity_for(action)? else { return Ok(()); };
         if !confirmed && !app.dialog().message("Restarting affects every window connected to this space. Unfinished sessions and tasks will be cancelled and drained before the service restarts. Other spaces keep running. Continue?")
             .title("Kiki · Restart shared service")
             .buttons(MessageDialogButtons::OkCancelCustom("Restart space".into(), "Keep running".into())).blocking_show() {
             return Err("Restart cancelled; running work continues".to_string());
         }
+        self.stop_shared_target(&connection, &identity, action)
+    }
+
+    fn stop_shared_target(&self, connection: &DesktopConnection, identity: &BackendIdentity, action: &str) -> Result<(), String> {
+        let current = authenticated_backend_identity(connection_port(connection)?, &connection.token)?;
+        if current.server_id != identity.server_id || !current.desktop_managed || !backend_identity_matches(&current) {
+            return Err("The service changed after confirmation; review the affected space again".to_string());
+        }
+        let home = self.home.as_ref().ok_or("The shared service home is unavailable")?;
+        #[cfg(windows)]
+        let exit_probe = {
+            let records = read_instance_records(home)?;
+            let record = records.iter().find(|record| record.server_id.as_deref() == Some(&identity.server_id))
+                .ok_or("The confirmed service registration is unavailable; no stop request was sent")?;
+            BackendExitProbe::open(record.pid, record.started_at)?
+        };
         let body = serde_json::json!({"action": action, "server_id": identity.server_id, "consent": true, "interrupt_work": true}).to_string();
         let response = http_json_body(connection_port(&connection)?, "/api/desktop-lifecycle", &connection.token, &body, 64 * 1024)?;
         let boundary = response.windows(4).position(|part| part == b"\r\n\r\n").ok_or("The lifecycle response is incomplete")?;
@@ -1089,11 +1111,15 @@ impl BackendManager {
         if envelope.get("code").and_then(serde_json::Value::as_i64) != Some(0) {
             return Err(envelope.get("msg").and_then(serde_json::Value::as_str).unwrap_or("The service refused the lifecycle request").to_string());
         }
-        let home = self.home.as_ref().ok_or("The shared service home is unavailable")?;
-        let deadline = Instant::now() + Duration::from_secs(90);
-        while read_instance_records(home)?.iter().any(|record| record.server_id.as_deref() == Some(&identity.server_id) && pid_alive(record.pid)) {
-            if Instant::now() >= deadline { return Err("The space is still draining. Keep its windows open and retry after work settles; no process was forcibly stopped".to_string()); }
-            thread::sleep(Duration::from_millis(100));
+        #[cfg(windows)]
+        exit_probe.wait_for_shutdown(Duration::from_secs(90))?;
+        #[cfg(not(windows))]
+        {
+            let deadline = Instant::now() + Duration::from_secs(90);
+            while read_instance_records(home)?.iter().any(|record| record.server_id.as_deref() == Some(&identity.server_id) && pid_alive(record.pid)) {
+                if Instant::now() >= deadline { return Err("The space is still draining. Keep its windows open and retry after work settles; no process was forcibly stopped".to_string()); }
+                thread::sleep(Duration::from_millis(100));
+            }
         }
         self.clear_attached(&connection);
         Ok(())
@@ -1236,6 +1262,7 @@ impl SpaceBackendManager {
 
     fn backend_for(&self, space: DesktopSpace) -> Result<BackendManager, String> {
         let mut state = self.inner.lock().map_err(|_| "Space manager lock was poisoned")?;
+        if state.stopping { return Err("The desktop window is closing".to_string()); }
         let id = space.home_id.clone();
         let switch_mode = state.mode == WindowMode::Switch;
         Ok(state.slots.entry(id).or_insert_with(|| {
@@ -1398,18 +1425,65 @@ impl SpaceBackendManager {
     }
 
     fn shutdown_for_update(&self, app: &AppHandle) -> Result<(), String> {
+        self.shutdown_shared_services(app, "update")
+    }
+
+    fn shared_shutdown_targets(&self, action: &str) -> Result<Vec<(BackendManager, DesktopConnection, BackendIdentity)>, String> {
         let slots = self.inner.lock().map_err(|_| "Space manager lock was poisoned")?.slots.values()
             .map(|(_, backend)| backend.clone()).collect::<Vec<_>>();
-        let mut locks = Vec::new();
-        for backend in &slots {
-            if backend.shared_identity()?.is_some() {
-                let home = backend.home.as_ref().ok_or("The managed service home is unavailable")?;
-                locks.push((backend.clone(), SharedUpdateLock::acquire(home)?));
+        let mut targets = Vec::new();
+        for backend in slots {
+            if let Some((connection, identity)) = backend.shared_identity_for(action)? {
+                targets.push((backend, connection, identity));
             }
         }
-        for backend in &slots {
-            if backend.shared_service { backend.stop_shared(app, "update", true)?; }
-            else { backend.shutdown(); }
+        Ok(targets)
+    }
+
+    fn shutdown_for_quit(&self, targets: Vec<(BackendManager, DesktopConnection, BackendIdentity)>) -> Result<(), String> {
+        let slots = {
+            let mut state = self.inner.lock().map_err(|_| "Space manager lock was poisoned")?;
+            state.stopping = true;
+            state.slots.values().map(|(_, backend)| backend.clone()).collect::<Vec<_>>()
+        };
+        let result = (|| {
+            let mut starting = false;
+            for backend in &slots {
+                let mut state = backend.inner.lock().map_err(|_| "Service lifecycle lock was poisoned")?;
+                state.stopping = true;
+                starting |= state.discovery.is_some();
+            }
+            if starting { return Err("A service connection is still starting. Wait for it to finish, then confirm quit again".to_string()); }
+            let current = self.shared_shutdown_targets("quit")?;
+            if current.len() != targets.len() || current.iter().any(|(backend, _, identity)|
+                !targets.iter().any(|(confirmed, _, expected)| backend.home == confirmed.home && identity.server_id == expected.server_id)) {
+                return Err("The connected services changed after confirmation; review the affected spaces again".to_string());
+            }
+            self.stop_shared_targets(targets, "quit")
+        })();
+        if result.is_err() {
+            for backend in slots { backend.inner.lock().map_err(|_| "Service lifecycle lock was poisoned")?.stopping = false; }
+            self.inner.lock().map_err(|_| "Space manager lock was poisoned")?.stopping = false;
+        }
+        result
+    }
+
+    fn shutdown_shared_services(&self, _app: &AppHandle, action: &str) -> Result<(), String> {
+        self.stop_shared_targets(self.shared_shutdown_targets(action)?, action)?;
+        let slots = self.inner.lock().map_err(|_| "Space manager lock was poisoned")?.slots.values()
+            .map(|(_, backend)| backend.clone()).collect::<Vec<_>>();
+        for backend in slots { if !backend.shared_service { backend.shutdown(); } }
+        Ok(())
+    }
+
+    fn stop_shared_targets(&self, targets: Vec<(BackendManager, DesktopConnection, BackendIdentity)>, action: &str) -> Result<(), String> {
+        let mut locks = Vec::new();
+        for (backend, _, _) in &targets {
+            let home = backend.home.as_ref().ok_or("The managed service home is unavailable")?;
+            locks.push((backend.clone(), SharedUpdateLock::acquire(home)?));
+        }
+        for (backend, connection, identity) in targets {
+            backend.stop_shared_target(&connection, &identity, action)?;
         }
         for (backend, lock) in locks { backend.inner.lock().map_err(|_| "Service lifecycle lock was poisoned")?.update_lock = Some(lock); }
         Ok(())
@@ -3107,6 +3181,62 @@ fn normalized_workspace(path: &str) -> String {
 }
 
 #[cfg(windows)]
+struct BackendExitProbe(HANDLE);
+
+#[cfg(windows)]
+impl BackendExitProbe {
+    fn open(pid: u32, registered_at_ms: u64) -> Result<Self, String> {
+        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() { return Err(format!("Cannot observe backend {pid} exit: {}", io::Error::last_os_error())); }
+        let probe = Self(handle);
+        let mut creation = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let mut exit = creation;
+        let mut kernel = creation;
+        let mut user = creation;
+        if unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) } == 0 {
+            return Err(format!("Cannot verify backend {pid} identity: {}", io::Error::last_os_error()));
+        }
+        let ticks = ((creation.dwHighDateTime as u64) << 32) | creation.dwLowDateTime as u64;
+        let created_at_ms = ticks / 10_000 - 11_644_473_600_000;
+        if created_at_ms > registered_at_ms {
+            return Err("The registered process identity changed; review the service again".to_string());
+        }
+        Ok(probe)
+    }
+
+    fn wait_for_shutdown(&self, timeout: Duration) -> Result<(), String> {
+        let deadline = Instant::now() + timeout;
+        while !self.exited_successfully()? {
+            if Instant::now() >= deadline {
+                return Err("The space is still draining. Keep its windows open and retry after work settles; no process was forcibly stopped".to_string());
+            }
+            thread::sleep(Duration::from_millis(100).min(deadline.saturating_duration_since(Instant::now())));
+        }
+        Ok(())
+    }
+
+    fn exited_successfully(&self) -> Result<bool, String> {
+        match unsafe { WaitForSingleObject(self.0, 0) } {
+            WAIT_TIMEOUT => Ok(false),
+            WAIT_OBJECT_0 => {
+                let mut code = 0;
+                if unsafe { GetExitCodeProcess(self.0, &mut code) } == 0 {
+                    return Err(format!("Cannot read backend exit status: {}", io::Error::last_os_error()));
+                }
+                if code != 0 { return Err(format!("The backend exited with code {code}; cleanup was not confirmed successful")); }
+                Ok(true)
+            }
+            _ => Err(format!("Cannot wait for backend exit: {}", io::Error::last_os_error())),
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for BackendExitProbe {
+    fn drop(&mut self) { unsafe { CloseHandle(self.0) }; }
+}
+
+#[cfg(windows)]
 fn pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
@@ -3588,7 +3718,27 @@ fn request_confirmed_exit(
 ) {
     if prompting.swap(true, Ordering::SeqCst) { return; }
     thread::spawn(move || {
-        let proceed = confirm_backend_shutdown(&app, &manager, "Exiting Kiki");
+        let targets = manager.shared_shutdown_targets("quit");
+        let zh = read_desktop_prefs_file().locale.as_deref() == Some("zh");
+        let (message, stop, keep, cancel) = if zh {
+            ("停止本桌面连接的本机共享服务，会断开使用这些空间的所有窗口、CLI 和外部客户端，并取消未完成任务、等待 MCP 和 Bash 清理。其他空间和外部管理的服务不受影响。也可以只退出桌面，让后台任务继续运行。", "停止服务并退出", "仅退出桌面", "取消")
+        } else {
+            ("Stopping the local shared services connected to this desktop disconnects every window, CLI and external client using those spaces, cancels unfinished work, and waits for MCP and Bash cleanup. Other spaces and externally managed services are not stopped. You can instead close only the desktop and keep background work running.", "Stop services and quit", "Close desktop only", "Cancel")
+        };
+        let choice = app.dialog().message(message).title("Kiki")
+            .buttons(MessageDialogButtons::YesNoCancelCustom(stop.into(), keep.into(), cancel.into()))
+            .blocking_show_with_result();
+        let stopping = matches!(&choice, MessageDialogResult::Yes) || matches!(&choice, MessageDialogResult::Custom(label) if label == stop);
+        let keeping = matches!(&choice, MessageDialogResult::No) || matches!(&choice, MessageDialogResult::Custom(label) if label == keep);
+        let proceed = if stopping {
+            match targets.and_then(|targets| manager.shutdown_for_quit(targets)) {
+                Ok(()) => true,
+                Err(error) => {
+                    app.dialog().message(error).title(if zh { "Kiki · 服务尚未确认停止" } else { "Kiki · Service shutdown not confirmed" }).blocking_show();
+                    false
+                }
+            }
+        } else { keeping && confirm_backend_shutdown(&app, &manager, "Closing the desktop") };
         if proceed { confirmed.store(true, Ordering::SeqCst); }
         prompting.store(false, Ordering::SeqCst);
         if proceed { app.exit(0); }
@@ -4479,6 +4629,73 @@ mod tests {
         let (retry, admitted) = manager.begin_discovery().unwrap();
         assert!(admitted);
         manager.finish_discovery(&retry, Err(DesktopStartupFailure::plain("finished".into()))).unwrap_err();
+    }
+
+    #[test]
+    fn quit_blocks_reconnection_and_reopens_admission_after_an_inflight_startup() {
+        let home = env::temp_dir().join(format!("kiki-quit-admission-{}-{}", std::process::id(), unix_epoch_millis().unwrap()));
+        let manager = SpaceBackendManager::new(&home, WindowMode::Switch).unwrap();
+        let backend = manager.active_backend().unwrap();
+        let (flight, _) = backend.begin_discovery().unwrap();
+        assert!(manager.shutdown_for_quit(Vec::new()).unwrap_err().contains("still starting"));
+        assert!(!manager.inner.lock().unwrap().stopping);
+        assert!(!backend.inner.lock().unwrap().stopping);
+        backend.finish_discovery(&flight, Err(DesktopStartupFailure::plain("fixture finished".into()))).unwrap_err();
+        manager.shutdown_for_quit(Vec::new()).unwrap();
+        assert!(backend.begin_discovery().is_err());
+        assert!(manager.backend_for(manager.active_space().unwrap()).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn quit_exit_probe_requires_real_success_and_does_not_kill_on_timeout_or_stale_identity() {
+        for code in [0, 23] {
+            let mut child = std::process::Command::new("cmd.exe")
+                .args(["/d", "/c", &format!("set /p hold= >nul & exit /b {code}")])
+                .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+                .spawn().unwrap();
+            let probe = BackendExitProbe::open(child.id(), unix_epoch_millis().unwrap()).unwrap();
+            assert!(BackendExitProbe::open(child.id(), 1).err().unwrap().contains("identity changed"));
+            assert!(!probe.exited_successfully().unwrap());
+            assert!(probe.wait_for_shutdown(Duration::from_millis(20)).unwrap_err().contains("still draining"));
+            assert!(child.try_wait().unwrap().is_none());
+            child.stdin.take().unwrap().write_all(b"continue\r\n").unwrap();
+            assert_eq!(child.wait().unwrap().code(), Some(code));
+            if code == 0 {
+                probe.wait_for_shutdown(Duration::from_millis(20)).unwrap();
+            } else {
+                assert!(probe.wait_for_shutdown(Duration::from_millis(20)).unwrap_err().contains("code 23"));
+            }
+        }
+    }
+
+    #[test]
+    fn quit_rejects_changed_confirmation_identity_before_sending_a_stop() {
+        let body = serde_json::json!({ "data": {
+            "server_id": "replacement", "desktop_managed": true,
+            "server_version": EXPECTED_SIDECAR_SERVER_VERSION,
+            "build_id": EXPECTED_SIDECAR_BUILD_ID, "build_channel": EXPECTED_SIDECAR_BUILD_CHANNEL,
+        }}).to_string();
+        let port = spawn_stub_server("200 OK", body, 1);
+        let backend = BackendManager::for_home(env::temp_dir(), false);
+        let connection = DesktopConnection { url: format!("http://127.0.0.1:{port}"), token: "fixture-token".into() };
+        let identity = BackendIdentity { server_id: "confirmed".into(), desktop_managed: true,
+            server_version: EXPECTED_SIDECAR_SERVER_VERSION.into(), build_id: Some(EXPECTED_SIDECAR_BUILD_ID.into()), build_channel: Some(EXPECTED_SIDECAR_BUILD_CHANNEL.into()) };
+        assert!(backend.stop_shared_target(&connection, &identity, "quit").unwrap_err().contains("changed after confirmation"));
+    }
+
+    #[test]
+    fn quit_leaves_unmanaged_service_with_its_owner() {
+        let body = serde_json::json!({ "data": {
+            "server_id": "external", "desktop_managed": false,
+            "server_version": EXPECTED_SIDECAR_SERVER_VERSION,
+            "build_id": EXPECTED_SIDECAR_BUILD_ID, "build_channel": EXPECTED_SIDECAR_BUILD_CHANNEL,
+        }}).to_string();
+        let port = spawn_stub_server("200 OK", body, 1);
+        let backend = BackendManager::for_home(env::temp_dir(), false);
+        backend.inner.lock().unwrap().attached = Some(DesktopConnection { url: format!("http://127.0.0.1:{port}"), token: "fixture-token".into() });
+        assert!(backend.shared_identity_for("quit").unwrap().is_none());
+        assert!(backend.hot_connection().is_some());
     }
 
     #[test]

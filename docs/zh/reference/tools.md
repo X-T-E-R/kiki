@@ -50,6 +50,10 @@
 
 前台模式会阻塞当前轮次，直到命令结束或超时；命令运行期间，TUI 会把 stdout 和 stderr 流式显示在正在运行的 `Bash` 工具卡片中。前台命令超时后默认不会被终止，而是转为后台任务继续运行（受 600 秒默认后台超时约束，即超时转入后台的命令会重新获得最多 600 秒的运行时间）；如需恢复超时即终止的行为，将 `[background]` 的 [`bash_auto_background_on_timeout`](../configuration/config-files.md#background) 设为 `false`。600 秒的默认后台超时可通过 [`bash_task_timeout_s`](../configuration/config-files.md#background) 配置（`0` = 无超时），且在 print 模式（`kiki -p`）下默认无超时。后台模式立即返回任务 ID，任务结束时自动通知 Agent。stdin 始终被关闭，交互式命令会立即收到 EOF。任务被停止或后台超时时采用两阶段终止策略（SIGTERM → 5 秒宽限期 → SIGKILL），确保进程可靠结束。Windows 平台默认使用 Git Bash。
 
+在 Windows 上，本地 `Bash` 命令结束后，它拉起的进程还可以继续跑。这些进程归启动它们的那个 Kiki 后端。[仅退出桌面](../getting-started/desktop-app.md#窗口、托盘与打开文件)时它们继续运行。该后端停止或异常退出时，会清掉这些命令各自的进程树，机器上的其他程序留在原地。
+
+`TaskStop`，或把前台超时设为终止而不是转入后台，仍会立刻结束这棵进程树。远端 SSH 上的命令不跟随本机后端一起结束；关掉或停止本机 Kiki，不会用这套清理去处理那条远端命令。如果 `Bash` 报告 Windows Bash process helper（随 Kiki 安装的 Windows 进程组件）缺失，或报告 Windows process helper 不支持 "owner lifetime"（命令结束后仍由 Kiki 后端托管这些进程），请用同一 Release 重装 Kiki，让该组件和应用来自同一次安装。
+
 ## 动态工具
 
 MCP 和插件工具会以名称和简短说明公告。需要调用时，先用 `SelectTools` 选择公告中的名称；模型会在下一步收到该工具的 schema。已列在工具列表中的普通工具可直接调用。Kimi provider 在消息内携带所选工具的 schema；OpenAI chat、OpenAI Responses 和 Anthropic provider 在 system 文本中携带 schema，只要还有延迟工具可用，就在顶层工具列表提供稳定的 `CallTool` 桥接工具。模型也可以直接用真实名称调用已加载工具。审批、访问检查和界面工具卡片都使用真实工具名。模型具备工具调用能力时，这些 provider 默认启用 `tool-select`；不要求声明 `dynamically_loaded_tools`。关闭该 flag 会恢复内联工具提供方式。

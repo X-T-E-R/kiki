@@ -131,7 +131,7 @@ export interface SessionWillCreateEvent {
   readonly sessionId: string;
   readSeed<T>(id: ServiceIdentifier<T>): T;
   contributeSeed<T>(id: ServiceIdentifier<T>, value: T): void;
-  onSessionDispose(dispose: () => void): void;
+  onSessionDispose(dispose: () => void | Promise<void>): void;
 }
 
 export interface ISessionLifecycleService {

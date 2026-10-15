@@ -110,6 +110,9 @@ export class McpConnectionManager implements McpConnectionView {
   private readonly listeners = new Set<McpStatusListener>();
   private readonly inFlightReconnects = new Map<string, Promise<void>>();
   private readonly closingClients = new WeakMap<RuntimeMcpClient, Promise<void>>();
+  private readonly connecting = new Set<Promise<void>>();
+  private stopping = false;
+  private shutdownWork: Promise<void> | undefined;
   private initialLoad: Promise<void> = Promise.resolve();
   private initialLoadAttemptId = 0;
   private initialLoadStartedAt: number | undefined;
@@ -204,6 +207,7 @@ export class McpConnectionManager implements McpConnectionView {
   }
 
   async connect(name: string, config: McpServerConfig): Promise<void> {
+    if (this.stopping) throw new Error2(ErrorCodes.MCP_SERVER_DISABLED, 'MCP connection manager is shutting down');
     const previous = this.entries.get(name);
     if (previous !== undefined) {
       if (
@@ -271,6 +275,7 @@ export class McpConnectionManager implements McpConnectionView {
   }
 
   private async connectAllNow(configs: Record<string, McpServerConfig>): Promise<void> {
+    if (this.stopping) throw new Error2(ErrorCodes.MCP_SERVER_DISABLED, 'MCP connection manager is shutting down');
     const tasks: Promise<unknown>[] = [];
     for (const [name, config] of Object.entries(configs)) {
       const disabled = config.enabled === false;
@@ -376,14 +381,35 @@ export class McpConnectionManager implements McpConnectionView {
     entry.rawTools = undefined;
   }
 
-  async shutdown(): Promise<void> {
-    const entries = Array.from(this.entries.values());
-    this.entries.clear();
-    const tasks = entries.map((entry) => this.closeClient(entry));
-    await Promise.allSettled(tasks);
+  shutdown(): Promise<void> {
+    if (this.shutdownWork !== undefined) return this.shutdownWork;
+    this.stopping = true;
+    for (const entry of this.entries.values()) entry.accepting = false;
+    this.shutdownWork = this.closeAll();
+    void this.shutdownWork.then(() => {
+      this.shutdownWork = undefined;
+      this.stopping = false;
+    }, () => { this.shutdownWork = undefined; });
+    return this.shutdownWork;
   }
 
-  private async connectOne(entry: InternalEntry, attemptId: number): Promise<void> {
+  private async closeAll(): Promise<void> {
+    const results = await Promise.allSettled([
+      ...Array.from(this.entries.values(), (entry) => this.closeClient(entry)),
+      ...this.connecting,
+    ]);
+    const failures = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : []);
+    if (failures.length > 0) throw new AggregateError(failures, 'MCP process cleanup failed');
+    this.entries.clear();
+  }
+
+  private connectOne(entry: InternalEntry, attemptId: number): Promise<void> {
+    const work = this.connectOneNow(entry, attemptId).finally(() => { this.connecting.delete(work); });
+    this.connecting.add(work);
+    return work;
+  }
+
+  private async connectOneNow(entry: InternalEntry, attemptId: number): Promise<void> {
     const timeoutMs =
       entry.config.startupTimeoutMs ??
       this.options.resolveDefaultTimeouts?.().startupTimeoutMs ??
@@ -395,6 +421,10 @@ export class McpConnectionManager implements McpConnectionView {
       const startupClient = await this.createClient(entry.config, entry.name, timeoutMs);
       client = startupClient;
       entry.client = startupClient;
+      if (!this.isCurrent(entry, attemptId)) {
+        await this.closeClient(entry);
+        return;
+      }
       const discovered = await withTimeout(
         this.connectAndDiscoverTools(startupClient, entry.name),
         timeoutMs,
@@ -454,8 +484,7 @@ export class McpConnectionManager implements McpConnectionView {
       entry.tools = undefined;
       entry.enabledNames = undefined;
       entry.rawTools = undefined;
-      entry.client = undefined;
-      void this.closeRuntimeClient(client);
+      void this.closeClient(entry).catch(() => undefined);
       this.emit(entry);
     });
   }
@@ -636,15 +665,14 @@ export class McpConnectionManager implements McpConnectionView {
   private closeRuntimeClient(client: RuntimeMcpClient): Promise<void> {
     const existing = this.closingClients.get(client);
     if (existing !== undefined) return existing;
-    const closing = client.close().catch((error: unknown) => {
-      if (error instanceof Error2 && error.code === ErrorCodes.MCP_COMPUTER_STOP_UNCONFIRMED) throw error;
-    });
+    const closing = client.close();
     this.closingClients.set(client, closing);
+    void closing.catch(() => { this.closingClients.delete(client); });
     return closing;
   }
 
   private isCurrent(entry: InternalEntry, attemptId: number): boolean {
-    return this.entries.get(entry.name) === entry && entry.attemptId === attemptId;
+    return !this.stopping && this.entries.get(entry.name) === entry && entry.attemptId === attemptId;
   }
 
   private emit(entry: InternalEntry): void {
