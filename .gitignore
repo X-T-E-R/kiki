@@ -49,6 +49,8 @@ reports/
 .controller-ledger/
 /apps/kiki-gui/.tmp-settings-tests.txt
 .tmp/
+/candidate.tmp/
+/scratch.tmp/
 /.tmp-search-s3-*/
 /packages/kap-server/.tmp-search-s3-*/
 HANDOVER*.md
