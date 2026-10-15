@@ -2001,13 +2001,13 @@ export class TranscriptService {
     for (const wirePath of this.retainedColdTurns.keys()) {
       if (wirePath.split(/[/\\]/).includes(sessionId)) this.retainedColdTurns.delete(wirePath);
     }
-    for (const wirePath of [...this.coldWireWindows.keys()]) {
+    for (const wirePath of this.coldWireWindows.keys()) {
       if (wirePath.split(/[/\\]/).includes(sessionId)) this.forgetColdWindow(wirePath);
     }
-    for (const wirePath of [...this.anchorWindows.keys()]) {
+    for (const wirePath of this.anchorWindows.keys()) {
       if (wirePath.split(/[/\\]/).includes(sessionId)) this.anchorWindows.delete(wirePath);
     }
-    for (const key of [...this.anchorSeeks.keys()]) {
+    for (const key of this.anchorSeeks.keys()) {
       if (key.split(/[/\\]/).includes(sessionId)) this.anchorSeeks.delete(key);
     }
   }
@@ -2733,12 +2733,13 @@ export class TranscriptService {
 
   /** Recover evicted history into a request-local projection and overlay current live facts. */
   async readFullAgentSnapshot(sessionId: string, agentId: string, transcript: AgentTranscript, signal?: AbortSignal,
-    pageProject?: (snapshot: AgentTranscriptSnapshot) => AgentTranscriptSnapshot, beforeTurn?: string): Promise<AgentTranscriptSnapshot | undefined> {
+    pageProject?: (snapshot: AgentTranscriptSnapshot) => AgentTranscriptSnapshot, beforeTurn?: string,
+    pageSource?: AgentTranscriptSnapshot): Promise<AgentTranscriptSnapshot | undefined> {
     if (!transcript.hasMoreOlder) return transcript.snapshot();
-    let cold = pageProject === undefined ? await this.readColdSnapshot(sessionId, agentId, undefined, signal)
-      : await this.readColdPageSnapshot(sessionId, agentId, pageProject, signal);
+    let cold = pageSource ?? (pageProject === undefined ? await this.readColdSnapshot(sessionId, agentId, undefined, signal)
+      : await this.readColdPageSnapshot(sessionId, agentId, pageProject, signal));
     if (cold === undefined) return undefined;
-    if (beforeTurn !== undefined && !coldWindowCovers(cold.items, beforeTurn)) {
+    if (pageSource === undefined && beforeTurn !== undefined && !coldWindowCovers(cold.items, beforeTurn)) {
       const anchored = await this.readAnchoredColdSnapshot(sessionId, agentId, beforeTurn, signal);
       if (anchored !== undefined) cold = pageProject === undefined ? anchored : this.projectAnchored(anchored, pageProject);
     }
@@ -2831,7 +2832,7 @@ export class TranscriptService {
       const remember = (at: number): AnchorSeek => ({ fingerprint, offset: at, at, monotonic, lastOrdinal, gteAt });
       if (foundAt !== undefined) {
         this.rememberAnchorSeek(key, remember(foundAt));
-        return this.readAnchorWindow(sessionId, agentId, location.wirePath, info.size, foundAt, fingerprint, signal);
+        return await this.readAnchorWindow(sessionId, agentId, location.wirePath, info.size, foundAt, fingerprint, signal);
       }
       if (next <= offset) {
         this.anchorSeeks.delete(key);
@@ -2840,7 +2841,7 @@ export class TranscriptService {
       if (next >= info.size) {
         if (monotonic && gteAt !== undefined) {
           this.rememberAnchorSeek(key, remember(gteAt));
-          return this.readAnchorWindow(sessionId, agentId, location.wirePath, info.size, gteAt, fingerprint, signal);
+          return await this.readAnchorWindow(sessionId, agentId, location.wirePath, info.size, gteAt, fingerprint, signal);
         }
         this.anchorSeeks.delete(key);
         return undefined;
@@ -2867,7 +2868,9 @@ export class TranscriptService {
     this.assertReadableAgent(sessionId, agentId);
     const end = Math.min(fileSize, Math.max(0, at));
     const cached = this.anchorWindows.get(wirePath);
-    if (cached !== undefined && cached.fingerprint === fingerprint && cached.at === end) return cached.snapshot;
+    const current = this.coldWireWindows.get(wirePath);
+    if (cached !== undefined && cached.fingerprint === fingerprint && cached.at === end &&
+        current?.fingerprint === fingerprint && current.end === end && current.payloadEvicted !== true) return cached.snapshot;
     if (end === 0) {
       const snapshot = this.projectColdRecords(agentId, [], true);
       this.anchorReads.set(snapshot, 'window');
@@ -2880,6 +2883,9 @@ export class TranscriptService {
     const snapshot = this.projectColdRecords(agentId, read.records, start === 0);
     this.anchorReads.set(snapshot, start === 0 ? 'window' : 'continues');
     this.rememberAnchorWindow(wirePath, fingerprint, end, snapshot);
+    this.rememberColdWindow(wirePath, { fingerprint, start, end, entire: false, records: read.records,
+      snapshot, bytes: this.coldWindowBytes(snapshot, read.records), droppedTail: end < fileSize });
+    this.deleteColdSnapshotCache(wirePath);
     return snapshot;
   }
 

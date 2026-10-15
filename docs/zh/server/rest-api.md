@@ -311,6 +311,8 @@ Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的�
 
 转录分页与批次补漏请求都须携带 `transcript_coverage_version=2`。成功响应在 `data.transcript_coverage_version` 回显数字 `2`；缺少或使用不受支持的版本时，服务端以信封错误码 `40001` 提示升级，不返回转录。新版客户端读取未确认历史完整性的旧服务端时，会将历史标为未验证，而不是误判为完整。
 
+向前翻页时，如果服务端仍在已保存的历史中定位锚点，可能返回空 `items`、`has_more: true` 和 `read.readiness: "preparing"`，此时 `read.source` 为 `cold` 或 `derived`。把返回的 `next_cursor` 作为 `before_item` 继续请求，即使游标与上次相同。空页或重复游标都不表示已经读到开头。返回正文后，沿新游标继续；读到正文也不代表历史已完整验证，应保留响应中的 `coverage` 与 `read` 状态。
+
 `GET /api/sessions/{session_id}/transcript/detail` 读取一条实体。查询参数 `agent_id` 是普通 Agent id，`kind` 取 `task`、`attachment`、`prompt` 或 `tool`，`id` 是该实体的 id。`kind=tool` 时，`lookup.status` 为 `found`、`preparing` 或 `not_found`。`found` 带有 `turnId`、`stepId` 和 `frame`。返回的 `frame`，以及 task、attachment、prompt 正文，可能带 `contentRefs`；用下面的 POST 续读。`preparing` 表示这次调用尚未在会话的源历史中定位到，用同一请求重试。此时 `read.source` 为 `derived`，`read.readiness` 为 `preparing`。`not_found` 表示已经定位的历史里没有这次调用。
 
 已在内存中覆盖完整的会话直接返回实时工具调用，`read.source` 为 `live`，`readiness` 为 `ready`。已定位的冷会话返回 `cold` 和 `ready`，正文从这份源历史回放。
