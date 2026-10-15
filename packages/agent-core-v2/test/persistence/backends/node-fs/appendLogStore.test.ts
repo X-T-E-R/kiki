@@ -64,6 +64,28 @@ describe('AppendLogStore', () => {
     return out;
   }
 
+  it('reports exact source record bytes including whitespace, CRLF and unterminated Unicode', async () => {
+    const first = ' {"text":"你好"} \r\n';
+    const last = '{"text":"𠮷"}';
+    await storage.write(SCOPE, KEY, enc.encode(`\n${first}\n${last}`));
+    const bytes: number[] = [];
+    const values: unknown[] = [];
+    for await (const value of record.read(SCOPE, KEY, { onRecordBytes: (size) => { bytes.push(size); }, chunkBytes: 3 })) {
+      values.push(value);
+    }
+    expect(values).toEqual([{ text: '你好' }, { text: '𠮷' }]);
+    expect(bytes).toEqual([Buffer.byteLength(first), Buffer.byteLength(last)]);
+  });
+
+  it('stops within an already buffered chunk when its reader aborts', async () => {
+    await storage.write(SCOPE, KEY, enc.encode('{"n":1}\n{"n":2}\n'));
+    const controller = new AbortController();
+    const reader = record.read<Rec>(SCOPE, KEY, { signal: controller.signal })[Symbol.asyncIterator]();
+    expect(await reader.next()).toMatchObject({ value: { n: 1 }, done: false });
+    controller.abort();
+    await expect(reader.next()).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
   it('reads nothing from an empty log', async () => {
     expect(await collect<Rec>(SCOPE, KEY)).toEqual([]);
   });

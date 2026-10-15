@@ -95,7 +95,11 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
           onTruncate({ lineNumber, reason: 'corrupted', cause: error });
           return;
         }
-        if (record !== undefined) yield record;
+        if (record !== undefined) {
+          options?.signal?.throwIfAborted();
+          options?.onRecordBytes?.(Buffer.byteLength(raw, 'utf8') + 1);
+          yield record;
+        }
         newlineIndex = pending.indexOf('\n');
       }
     }
@@ -104,6 +108,8 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
       lineNumber++;
       const record = this.parseLine<R>(pending, scope, key, lineNumber, true);
       if (record !== undefined) {
+        options?.signal?.throwIfAborted();
+        options?.onRecordBytes?.(Buffer.byteLength(pending, 'utf8'));
         yield record;
       } else if (onTruncate !== undefined) {
         const line = pending.endsWith('\r') ? pending.slice(0, -1) : pending;

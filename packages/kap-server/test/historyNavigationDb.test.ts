@@ -4,13 +4,46 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { HISTORY_NAV_COLLECTION } from '../src/services/history/historyLocatorStore';
 import { HistoryNavigationDb } from '../src/services/history/historyNavigationDb';
 import { SqliteNavigationMap, SqliteNavigationSet } from '../src/services/history/historyNavigationState';
 
 describe('history navigation SQLite repository', () => {
+  it('reuses hot SQL across records while preserving rollback and independent iterators', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'history-navigation-statements-'));
+    const db = await HistoryNavigationDb.open(join(home, 'navigation.sqlite'));
+    const prepare = vi.spyOn(db.db, 'prepare');
+    try {
+      const first = db.scalarState('first');
+      const second = db.scalarState('second');
+      db.beginSlice();
+      for (let n = 0; n < 200; n++) {
+        first.turnStart.set(`t${n}`, n);
+        second.turnStart.set(`t${n}`, n + 1);
+        expect(first.turnStart.get(`t${n}`)).toBe(n);
+        expect(second.turnStart.has(`t${n}`)).toBe(true);
+        db.addCanonicalSource('first', { turnId: `t${n}`, start: n, end: n + 1, ordinal: n, digest: 'fixture' }, { legacyTurn: n, ordinal: n });
+      }
+      expect(prepare).toHaveBeenCalledTimes(5);
+      const a = first.turnStart.entries();
+      const b = second.turnStart.entries();
+      expect(a.next().value).toEqual(['t0', 0]);
+      expect(b.next().value).toEqual(['t0', 1]);
+      expect(a.next().value).toEqual(['t1', 1]);
+      a.return?.();
+      b.return?.();
+      db.rollbackSlice();
+      expect(first.turnStart.get('t0')).toBeUndefined();
+      expect(second.turnStart.has('t0')).toBe(false);
+    } finally {
+      prepare.mockRestore();
+      db.close();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it('persists source-backed rows and advances bounded indexed pages after reopen', async () => {
     const home = await mkdtemp(join(tmpdir(), 'history-navigation-db-'));
     const path = join(home, 'index', 'navigation.sqlite');

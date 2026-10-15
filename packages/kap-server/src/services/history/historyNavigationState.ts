@@ -1,5 +1,22 @@
-import type { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync, StatementSync } from 'node:sqlite';
 import type { NavigationAnchor, NavigationAnchorSequence, NavigationTurnSequence } from '@kiki/transcript/navigationSequence';
+
+const statementCaches = new WeakMap<DatabaseSync, Map<string, StatementSync>>();
+const MAX_CACHED_STATEMENTS = 128;
+
+export function navigationStatement(db: DatabaseSync, sql: string): StatementSync {
+  let statements = statementCaches.get(db);
+  if (statements === undefined) {
+    statements = new Map();
+    statementCaches.set(db, statements);
+  }
+  const existing = statements.get(sql);
+  if (existing !== undefined) return existing;
+  const statement = db.prepare(sql);
+  if (statements.size >= MAX_CACHED_STATEMENTS) statements.delete(statements.keys().next().value!);
+  statements.set(sql, statement);
+  return statement;
+}
 
 /** A Map-compatible scalar store backed by the navigation sidecar's keyed state table. */
 export class SqliteNavigationMap<V> extends Map<string, V> {
@@ -7,34 +24,34 @@ export class SqliteNavigationMap<V> extends Map<string, V> {
     private readonly bucket: string) { super(); }
 
   override get(key: string): V | undefined {
-    const row = this.db.prepare('SELECT value FROM state WHERE scope=? AND bucket=? AND key=?')
+    const row = navigationStatement(this.db, 'SELECT value FROM state WHERE scope=? AND bucket=? AND key=?')
       .get(this.scope, this.bucket, key) as { value: string } | undefined;
     return row === undefined ? undefined : JSON.parse(row.value) as V;
   }
 
   override has(key: string): boolean {
-    return this.db.prepare('SELECT 1 FROM state WHERE scope=? AND bucket=? AND key=?')
+    return navigationStatement(this.db, 'SELECT 1 FROM state WHERE scope=? AND bucket=? AND key=?')
       .get(this.scope, this.bucket, key) !== undefined;
   }
 
   override set(key: string, value: V): this {
-    this.db.prepare(`INSERT INTO state(scope,bucket,key,value) VALUES(?,?,?,?)
+    navigationStatement(this.db, `INSERT INTO state(scope,bucket,key,value) VALUES(?,?,?,?)
       ON CONFLICT(scope,bucket,key) DO UPDATE SET value=excluded.value`)
       .run(this.scope, this.bucket, key, JSON.stringify(value));
     return this;
   }
 
   override delete(key: string): boolean {
-    return this.db.prepare('DELETE FROM state WHERE scope=? AND bucket=? AND key=?')
+    return navigationStatement(this.db, 'DELETE FROM state WHERE scope=? AND bucket=? AND key=?')
       .run(this.scope, this.bucket, key).changes > 0;
   }
 
   override clear(): void {
-    this.db.prepare('DELETE FROM state WHERE scope=? AND bucket=?').run(this.scope, this.bucket);
+    navigationStatement(this.db, 'DELETE FROM state WHERE scope=? AND bucket=?').run(this.scope, this.bucket);
   }
 
   override get size(): number {
-    const row = this.db.prepare('SELECT COUNT(*) AS count FROM state WHERE scope=? AND bucket=?')
+    const row = navigationStatement(this.db, 'SELECT COUNT(*) AS count FROM state WHERE scope=? AND bucket=?')
       .get(this.scope, this.bucket) as { count: number };
     return row.count;
   }
@@ -86,37 +103,37 @@ export class SqliteNavigationSet extends Set<string> {
 export class SqliteNavigationTurnSequence implements NavigationTurnSequence {
   constructor(private readonly db: DatabaseSync, private readonly scope: string) {}
   get length(): number {
-    return (this.db.prepare('SELECT COUNT(*) AS n FROM turn_sequence WHERE scope=? AND active=1')
+    return (navigationStatement(this.db, 'SELECT COUNT(*) AS n FROM turn_sequence WHERE scope=? AND active=1')
       .get(this.scope) as { n: number }).n;
   }
   push(id: string, startOrdinal: number): void {
-    this.db.prepare(`INSERT INTO turn_sequence(scope,seq,id,start_ordinal,active)
+    navigationStatement(this.db, `INSERT INTO turn_sequence(scope,seq,id,start_ordinal,active)
       VALUES(?,(SELECT COALESCE(MAX(seq),0)+1 FROM turn_sequence WHERE scope=?),?,?,1)`)
       .run(this.scope, this.scope, id, startOrdinal);
   }
   at(_index: -1): string | undefined {
-    return (this.db.prepare('SELECT id FROM turn_sequence WHERE scope=? AND active=1 ORDER BY seq DESC LIMIT 1')
+    return (navigationStatement(this.db, 'SELECT id FROM turn_sequence WHERE scope=? AND active=1 ORDER BY seq DESC LIMIT 1')
       .get(this.scope) as { id: string } | undefined)?.id;
   }
   indexOf(id: string): number {
-    const row = this.db.prepare('SELECT seq FROM turn_sequence WHERE scope=? AND active=1 AND id=? ORDER BY seq DESC LIMIT 1')
+    const row = navigationStatement(this.db, 'SELECT seq FROM turn_sequence WHERE scope=? AND active=1 AND id=? ORDER BY seq DESC LIMIT 1')
       .get(this.scope, id) as { seq: number } | undefined;
-    return row === undefined ? -1 : (this.db.prepare('SELECT COUNT(*) AS n FROM turn_sequence WHERE scope=? AND active=1 AND seq<?')
+    return row === undefined ? -1 : (navigationStatement(this.db, 'SELECT COUNT(*) AS n FROM turn_sequence WHERE scope=? AND active=1 AND seq<?')
       .get(this.scope, row.seq) as { n: number }).n;
   }
   findFromOrdinal(ordinal: number): number {
-    const row = this.db.prepare(`SELECT seq FROM turn_sequence WHERE scope=? AND active=1 AND start_ordinal>=?
+    const row = navigationStatement(this.db, `SELECT seq FROM turn_sequence WHERE scope=? AND active=1 AND start_ordinal>=?
       ORDER BY seq LIMIT 1`).get(this.scope, ordinal) as { seq: number } | undefined;
-    return row === undefined ? -1 : (this.db.prepare('SELECT COUNT(*) AS n FROM turn_sequence WHERE scope=? AND active=1 AND seq<?')
+    return row === undefined ? -1 : (navigationStatement(this.db, 'SELECT COUNT(*) AS n FROM turn_sequence WHERE scope=? AND active=1 AND seq<?')
       .get(this.scope, row.seq) as { n: number }).n;
   }
   removeFrom(index: number): { sequenceRange?: readonly [number, number] } {
-    const first = this.db.prepare(`SELECT seq FROM turn_sequence WHERE scope=? AND active=1 ORDER BY seq LIMIT 1 OFFSET ?`)
+    const first = navigationStatement(this.db, `SELECT seq FROM turn_sequence WHERE scope=? AND active=1 ORDER BY seq LIMIT 1 OFFSET ?`)
       .get(this.scope, index) as { seq: number } | undefined;
     if (first === undefined) return {};
-    const last = this.db.prepare('SELECT MAX(seq) AS seq FROM turn_sequence WHERE scope=? AND active=1')
+    const last = navigationStatement(this.db, 'SELECT MAX(seq) AS seq FROM turn_sequence WHERE scope=? AND active=1')
       .get(this.scope) as { seq: number };
-    this.db.prepare('UPDATE turn_sequence SET active=0 WHERE scope=? AND active=1 AND seq>=? AND seq<=?')
+    navigationStatement(this.db, 'UPDATE turn_sequence SET active=0 WHERE scope=? AND active=1 AND seq>=? AND seq<=?')
       .run(this.scope, first.seq, last.seq);
     return { sequenceRange: [first.seq, last.seq] };
   }
@@ -125,32 +142,32 @@ export class SqliteNavigationTurnSequence implements NavigationTurnSequence {
 export class SqliteNavigationAnchorSequence implements NavigationAnchorSequence {
   constructor(private readonly db: DatabaseSync, private readonly scope: string) {}
   push(anchor: NavigationAnchor): void {
-    this.db.prepare(`INSERT INTO anchor_sequence(scope,seq,ordinal,turn_id,message_id,active)
+    navigationStatement(this.db, `INSERT INTO anchor_sequence(scope,seq,ordinal,turn_id,message_id,active)
       VALUES(?,(SELECT COALESCE(MAX(seq),0)+1 FROM anchor_sequence WHERE scope=?),?,?,?,1)`)
       .run(this.scope, this.scope, anchor.ordinal, anchor.turnId ?? null, anchor.messageId ?? null);
   }
   nthFromLast(count: number): NavigationAnchor | undefined {
-    const row = this.db.prepare(`SELECT ordinal,turn_id,message_id FROM anchor_sequence
+    const row = navigationStatement(this.db, `SELECT ordinal,turn_id,message_id FROM anchor_sequence
       WHERE scope=? AND active=1 ORDER BY ordinal DESC,seq ASC LIMIT 1 OFFSET ?`)
       .get(this.scope, count - 1) as { ordinal: number; turn_id: string | null; message_id: string | null } | undefined;
     return row === undefined ? undefined : { ordinal: row.ordinal,
       turnId: row.turn_id ?? undefined, messageId: row.message_id ?? undefined };
   }
   hasTurn(turnId: string): boolean {
-    return this.db.prepare('SELECT 1 FROM anchor_sequence WHERE scope=? AND active=1 AND turn_id=? LIMIT 1')
+    return navigationStatement(this.db, 'SELECT 1 FROM anchor_sequence WHERE scope=? AND active=1 AND turn_id=? LIMIT 1')
       .get(this.scope, turnId) !== undefined;
   }
   discardFromOrdinal(ordinal: number): void {
-    this.db.prepare('UPDATE anchor_sequence SET active=0 WHERE scope=? AND active=1 AND ordinal>=?')
+    navigationStatement(this.db, 'UPDATE anchor_sequence SET active=0 WHERE scope=? AND active=1 AND ordinal>=?')
       .run(this.scope, ordinal);
   }
   discardRemovedTurns(range: readonly [number, number] | undefined, ids: readonly string[] | undefined): void {
     if (range !== undefined) {
-      this.db.prepare(`UPDATE anchor_sequence SET active=0 WHERE scope=? AND active=1 AND turn_id IN
+      navigationStatement(this.db, `UPDATE anchor_sequence SET active=0 WHERE scope=? AND active=1 AND turn_id IN
         (SELECT id FROM turn_sequence WHERE scope=? AND seq>=? AND seq<=?)`)
         .run(this.scope, this.scope, range[0], range[1]);
     } else if (ids !== undefined) {
-      for (const id of ids) this.db.prepare('UPDATE anchor_sequence SET active=0 WHERE scope=? AND turn_id=?')
+      for (const id of ids) navigationStatement(this.db, 'UPDATE anchor_sequence SET active=0 WHERE scope=? AND turn_id=?')
         .run(this.scope, id);
     }
   }

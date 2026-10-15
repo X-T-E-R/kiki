@@ -1,3 +1,5 @@
+import { setImmediate } from 'node:timers/promises';
+
 import {
   AGENT_WIRE_RECORD_KEY,
   IAgentStateService,
@@ -314,15 +316,23 @@ async function scanPersistedAgentPanelMetrics(
       const usageState = emptyPersistedUsage();
       files += 1;
       try {
+        let recordBytes = 0;
+        let yieldAt = performance.now() + 8;
         for await (const raw of appendLog.read<WireRecord>(
-          agentScopeOf(sessionScope, agentId), AGENT_WIRE_RECORD_KEY, { signal: combinedSignal },
+          agentScopeOf(sessionScope, agentId), AGENT_WIRE_RECORD_KEY, {
+            signal: combinedSignal, chunkBytes: 64 << 10,
+            onRecordBytes: (value) => { recordBytes = value; },
+          },
         )) {
+          if (records % 128 === 0 && performance.now() >= yieldAt) {
+            await setImmediate(undefined, { signal: combinedSignal });
+            yieldAt = performance.now() + 8;
+          }
           if (limits !== undefined && records >= limits.maxRecords) {
             markPersistedUsagePartial(usageState);
             partialReason = 'record_budget';
             break;
           }
-          const recordBytes = Buffer.byteLength(JSON.stringify(raw), 'utf8') + 1;
           if (limits !== undefined && bytes + recordBytes > limits.maxBytes) {
             markPersistedUsagePartial(usageState);
             partialReason = 'byte_budget';

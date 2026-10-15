@@ -52,6 +52,7 @@ import { IEventBus } from '#/app/event/eventBus';
 import type { LLMRequestTrace } from '#/kosong/contract/requestTrace';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { ILogService } from '#/_base/log/log';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { registerLogServices } from '../../_base/log/stubs';
@@ -114,6 +115,62 @@ afterEach(async () => {
 });
 
 describe('AgentToolExecutorService', () => {
+  it('separates slow resolve, admission, execution and finalization without logging arguments or outputs', async () => {
+    let clock = 0;
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const warn = vi.spyOn(ix.get(ILogService), 'warn');
+    const tool = new TestTool('phase-fixture', {
+      execute: async () => { clock += 1400; return { output: 'private result' }; },
+    });
+    registry.register(tool);
+    executor.registerBeforeResolveTool(async () => { clock += 1100; return undefined; });
+    const admission = executor.onBeforeExecuteTool(() => { clock += 1200; });
+    const beforeExecute = executor.onWillExecuteTool(() => { clock += 1300; });
+    truncateForModel = async (input) => { clock += 1500; return input.result; };
+    try {
+      const results = await execute([toolCall('phase-call', 'phase-fixture', { text: 'private argument' })]);
+      expect(results[0]?.output).toBe('private result');
+      const phases = warn.mock.calls.filter(([message]) => message === 'slow tool phase').map(([, data]) => data);
+      expect(phases).toEqual([
+        { tool_name: 'phase-fixture', tool_call_id: 'phase-call', phase: 'resolve', duration_ms: 1100 },
+        { tool_name: 'phase-fixture', tool_call_id: 'phase-call', phase: 'admission', duration_ms: 1200 },
+        { tool_name: 'phase-fixture', tool_call_id: 'phase-call', phase: 'before_execute', duration_ms: 1300 },
+        { tool_name: 'phase-fixture', tool_call_id: 'phase-call', phase: 'execute', duration_ms: 1400 },
+        { tool_name: 'phase-fixture', tool_call_id: 'phase-call', phase: 'finalize', duration_ms: 1500 },
+      ]);
+    } finally {
+      admission.dispose();
+      beforeExecute.dispose();
+      warn.mockRestore();
+      now.mockRestore();
+    }
+  });
+
+  it('includes the batch admission barrier in a prepared tool schedule delay', async () => {
+    let clock = 0;
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const warn = vi.spyOn(ix.get(ILogService), 'warn');
+    registry.register(new TestTool('ready-fixture'));
+    registry.register(new TestTool('slow-admission-fixture'));
+    executor.registerBeforeResolveTool(async (context) => {
+      if (context.tool.name === 'slow-admission-fixture') clock += 1300;
+      return undefined;
+    });
+    try {
+      const results = await execute([
+        toolCall('ready-call', 'ready-fixture', {}),
+        toolCall('slow-call', 'slow-admission-fixture', {}),
+      ]);
+      expect(results).toHaveLength(2);
+      expect(warn).toHaveBeenCalledWith('slow tool phase', {
+        tool_name: 'ready-fixture', tool_call_id: 'ready-call', phase: 'schedule', duration_ms: 1300,
+      });
+    } finally {
+      warn.mockRestore();
+      now.mockRestore();
+    }
+  });
+
   it('runs the connection gate before resolving a tool execution', async () => {
     const tool = new TestTool('echo');
     registry.register(tool);

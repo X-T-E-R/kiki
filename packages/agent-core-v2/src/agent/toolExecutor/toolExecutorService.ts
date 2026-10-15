@@ -206,6 +206,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
     const preparedTasks: Array<{
       task: ToolExecutionTask;
       call: PreflightedToolCall;
+      readyAt: number;
       resolvedAccesses?: ToolAccesses;
       stopBatchAfterThis?: boolean;
     }> = [];
@@ -214,7 +215,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
     for (const call of preflighted) {
       if (stopBatch) {
         const skipped = this.prepareSkippedToolCall(call, options);
-        preparedTasks.push({ ...skipped, call });
+        preparedTasks.push({ ...skipped, call, readyAt: Date.now() });
         continue;
       }
 
@@ -222,6 +223,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       preparedTasks.push({
         task: prepared.task,
         call,
+        readyAt: Date.now(),
         resolvedAccesses: prepared.resolvedAccesses,
         stopBatchAfterThis: prepared.stopBatchAfterThis,
       });
@@ -230,10 +232,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       }
     }
 
-    const timedResults = this.executeBatch(
-      preparedTasks.map(({ task }) => task),
-      options.signal,
-    )[Symbol.asyncIterator]();
+    const timedResults = this.executeBatch(preparedTasks, options.signal)[Symbol.asyncIterator]();
     let nextTimed: Promise<IteratorResult<TimedToolResult>> | undefined = timedResults.next();
     const finalizations = new Set<ToolExecutionResultPromise>();
 
@@ -301,6 +300,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
   ): Promise<ToolExecutionResult> {
     const { call } = prepared;
     const rawResult = timedResult.result;
+    const finalizeStartedAt = Date.now();
     const finalized = await this.finalizeToolResult(
       call,
       rawResult,
@@ -308,8 +308,11 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       timedResult.outcome,
       prepared.resolvedAccesses,
     );
+    this.logSlowToolPhase(call, 'finalize', finalizeStartedAt);
 
+    const dispatchStartedAt = Date.now();
     this.dispatchToolResult(call, finalized, options);
+    this.logSlowToolPhase(call, 'result_dispatch', dispatchStartedAt);
     this.trackToolCall(call, finalized, timedResult.durationMs, options);
 
     return {
@@ -340,6 +343,14 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
     };
     if (result.isError === true) properties['error_type'] = toolTelemetryErrorType(outcome);
     this.telemetry.track2('tool_call', properties);
+  }
+
+  private logSlowToolPhase(call: PreflightedToolCall, phase: string, startedAt: number): void {
+    const durationMs = Date.now() - startedAt;
+    if (durationMs < 1000) return;
+    this.log?.warn('slow tool phase', {
+      tool_name: call.toolName, tool_call_id: call.toolCall.id, phase, duration_ms: durationMs,
+    });
   }
 
   private async prepareToolCall(
@@ -394,6 +405,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
     }
 
     let execution: ToolExecution;
+    const resolveStartedAt = Date.now();
     try {
       for (const handler of this.beforeResolveHandlers) {
         const reason = await handler({
@@ -415,6 +427,8 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
           ? error.message
           : `Tool "${call.toolName}" failed to resolve execution: ${errorMessage(error)}`;
       return settleError(call.args, output, 'resolution-failed');
+    } finally {
+      this.logSlowToolPhase(call, 'resolve', resolveStartedAt);
     }
 
     const displayFields = toolCallDisplayFieldsFromExecution(execution);
@@ -433,7 +447,9 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
     }
 
     const beforeContext = buildBeforeExecuteContext(call, execution, allCalls, options);
+    const admissionStartedAt = Date.now();
     const decision = await this.beforeExecuteEmitter.fireBeforeExecute(beforeContext);
+    this.logSlowToolPhase(call, 'admission', admissionStartedAt);
 
     if (decision?.veto !== undefined) {
       return settleSynthetic(call.args, decision.veto, 'vetoed', displayFields);
@@ -442,6 +458,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
     const executionMetadata = decision?.executionMetadata;
 
     let executionVeto: ExecutableToolResult | undefined;
+    const beforeExecuteStartedAt = Date.now();
     await this.willExecuteEmitter.fireAsync(
       {
         turnId: options.turnId,
@@ -452,6 +469,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       },
       options.signal,
     );
+    this.logSlowToolPhase(call, 'before_execute', beforeExecuteStartedAt);
     if (executionVeto !== undefined) return settleSynthetic(call.args, executionVeto, 'vetoed', displayFields);
 
     this.dispatchToolCall(call, call.args, options, displayFields);
@@ -479,7 +497,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
   }
 
   private async *executeBatch(
-    tasks: ToolExecutionTask[],
+    tasks: readonly { task: ToolExecutionTask; call: PreflightedToolCall; readyAt: number }[],
     signal: AbortSignal,
   ): AsyncIterable<TimedToolResult> {
     const scheduler = new ToolScheduler<TimedToolResult>();
@@ -487,18 +505,17 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
     const pendingResults = new Map<number, Promise<SettledTimedToolResult>>();
 
     for (let index = 0; index < tasks.length; index += 1) {
-      const task = tasks[index]!;
+      const { task, call, readyAt } = tasks[index]!;
       const pendingResult = scheduler.add({
         accesses: task.accesses,
         start: async () => {
+          this.logSlowToolPhase(call, 'schedule', readyAt);
           const startedAt = Date.now();
           return {
-            result: task.execute(signal).then(({ result, outcome }) => ({
-              index,
-              result,
-              outcome,
-              durationMs: Math.max(0, Date.now() - startedAt),
-            })),
+            result: task.execute(signal).then(({ result, outcome }) => {
+              this.logSlowToolPhase(call, 'execute', startedAt);
+              return { index, result, outcome, durationMs: Math.max(0, Date.now() - startedAt) };
+            }),
           };
         },
       });

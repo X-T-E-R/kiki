@@ -103,6 +103,7 @@ function persistedFixture(
   config: {
     readonly agentIds?: readonly string[];
     readonly beforeRead?: (scope: string, signal: AbortSignal | undefined) => Promise<void>;
+    readonly recordBytes?: number;
   } = {},
 ) {
   let records = [...initial];
@@ -116,13 +117,14 @@ function persistedFixture(
     },
   } as unknown as IFileSystemStorageService;
   const appendLog = {
-    read: <R>(scope: string, _key: string, options?: { signal?: AbortSignal }): AsyncIterable<R> => {
+    read: <R>(scope: string, _key: string, options?: Parameters<IAppendLogStore['read']>[2]): AsyncIterable<R> => {
       reads += 1;
       scopes.push(scope);
       return (async function* () {
         await config.beforeRead?.(scope, options?.signal);
         for (const [index, item] of records.entries()) {
           options?.signal?.throwIfAborted();
+          options?.onRecordBytes?.(config.recordBytes ?? Buffer.byteLength(JSON.stringify(item)) + 1);
           yield item as R;
           if (throwAfter !== undefined && index >= throwAfter) throw new Error('fixture append-log failure');
         }
@@ -477,6 +479,35 @@ describe('persisted agent panel metrics provenance', () => {
 });
 
 describe('persisted agent panel metrics cache scope', () => {
+  it('accounts source bytes without serializing non-usage tool bodies again', async () => {
+    const toJSON = vi.fn(() => { throw new Error('tool bodies must not be serialized for accounting'); });
+    const fixture = persistedFixture([
+      { type: 'context.append_loop_event', event: { type: 'tool.result', output: { toJSON } } } as unknown as WireRecord,
+      record('model', usage(2, 3), true),
+    ], undefined, { recordBytes: 1024 });
+    const metrics = (await persisted(fixture.core, pricing({ model: 1 }), 'source-bytes', { complete: true }))['main'];
+    expect(metrics).toMatchObject({ totalTokens: 5, usagePartial: false });
+    expect(toJSON).not.toHaveBeenCalled();
+    expect(fixture.log.info).toHaveBeenCalledWith('agent panel persisted metrics scan completed',
+      expect.objectContaining({ records_count: 2, bytes_count: 2048 }));
+  });
+
+  it('lets unrelated event-loop work run during a complete scan without losing usage', async () => {
+    let clock = 0;
+    const now = vi.spyOn(performance, 'now').mockImplementation(() => { clock += 1; return clock; });
+    let unrelatedRan = false;
+    const scheduled = setImmediate(() => { unrelatedRan = true; });
+    try {
+      const fixture = persistedFixture(Array.from({ length: 1024 }, () => record('model', usage(1, 0), true)));
+      const metrics = (await persisted(fixture.core, pricing({ model: 1 }), 'cooperative', { complete: true }))['main'];
+      expect(unrelatedRan).toBe(true);
+      expect(metrics).toMatchObject({ totalTokens: 1024, usagePartial: false });
+    } finally {
+      clearImmediate(scheduled);
+      now.mockRestore();
+    }
+  });
+
   it('does not share entries between core scopes', async () => {
     const first = persistedFixture([record('model', usage(1, 0), true)]);
     const second = persistedFixture([record('model', usage(9, 0), true)]);
