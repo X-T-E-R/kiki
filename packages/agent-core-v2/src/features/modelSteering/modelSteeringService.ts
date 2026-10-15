@@ -4,7 +4,8 @@ import { IAgentContextInjectorService, type ContextInjectionContent, type Contex
 import { readCognitionContent } from '#/agent/cognition/cognitionFiles';
 import { loadSteeringSources } from '#/agent/cognition/steeringBinding';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
-import type { ContextMessage } from '#/agent/contextMemory/types';
+import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
+import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { TurnStarted } from '#/agent/loop/turnEvents';
@@ -17,7 +18,7 @@ import { steeringInputSources, type SteeringInputSource } from './modelSteeringS
 
 const MODEL_STEERING_INJECTION_VARIANT = 'model_steering';
 
-/** Frozen per-source steering at safe request boundaries. Unconfigured and unknown sources stay off, including turn, interval and compaction triggers. */
+/** Frozen per-source steering at safe request boundaries. Verified child completions inherit steering; other non-user sources require configuration. */
 export class AgentModelSteeringService extends Disposable implements IAgentModelSteeringService {
   declare readonly _serviceBrand: undefined;
   private lastStepId: string | undefined;
@@ -26,6 +27,7 @@ export class AgentModelSteeringService extends Disposable implements IAgentModel
   private stepOrdinal = 0;
   private readonly cadence = new Map<SteeringInputSource, { steps: number; lastInjection: number; countedStep?: number }>();
   private activeSources = new Set<SteeringInputSource>();
+  private completedSubagentInput = false;
   private observedTail: ContextMessage | undefined;
   private turnSources: Set<SteeringInputSource> | undefined;
   private turnId: number | undefined;
@@ -39,6 +41,7 @@ export class AgentModelSteeringService extends Disposable implements IAgentModel
     @IAgentContextMemoryService private readonly context: IAgentContextMemoryService,
     @IAgentLoopService loop: IAgentLoopService,
     @IEventBus events: IEventBus,
+    @IAgentTaskService private readonly tasks: IAgentTaskService,
   ) {
     super();
     this._register(events.subscribe(TurnStarted, (event) => {
@@ -47,10 +50,12 @@ export class AgentModelSteeringService extends Disposable implements IAgentModel
         if (this.activeSources.size === 0) {
           const lastInput = this.context.get().findLast((message) => message.role === 'user' && message.origin?.kind !== 'injection' && message.origin?.kind !== 'compaction_summary' && message.origin?.kind !== 'shell_command');
           this.activeSources = steeringInputSources(lastInput?.origin);
+          this.completedSubagentInput = this.isCompletedSubagentInput(lastInput?.origin);
         }
         return;
       }
       this.turnSources = steeringInputSources(event.origin);
+      this.completedSubagentInput = this.isCompletedSubagentInput(event.origin);
     }));
     this._register(loop.hooks.onWillBeginStep.register('model-steering.cadence', async ({ stepId, signal }, next) => {
       signal.throwIfAborted();
@@ -81,8 +86,9 @@ export class AgentModelSteeringService extends Disposable implements IAgentModel
     for (const source of ['user', ...modelSteeringSourceIds] as const) {
       if (!this.activeSources.has(source)) continue;
       const setting = source === 'user' ? undefined : frozen?.[source];
-      if (source !== 'user' && (setting === undefined || setting.mode === 'off')) continue;
-      const inherited = source === 'user' || setting?.mode === 'inherit';
+      const inheritCompletion = source === 'task' && setting === undefined && this.completedSubagentInput;
+      if (source !== 'user' && !inheritCompletion && (setting === undefined || setting.mode === 'off')) continue;
+      const inherited = source === 'user' || inheritCompletion || setting?.mode === 'inherit';
       const onTurn = inherited ? binding.config?.steeringOnTurn ?? true : setting?.custom?.steering_on_turn ?? true;
       const onInput = inherited ? binding.config?.steeringOnInput ?? true : setting?.custom?.steering_on_input ?? true;
       const interval = inherited ? binding.config?.steeringIntervalSteps ?? 0 : setting?.custom?.steering_interval_steps ?? 0;
@@ -105,15 +111,25 @@ export class AgentModelSteeringService extends Disposable implements IAgentModel
     const floor = Math.max(tailIndex, lastInjectedAt ?? -1);
     const sources = new Set<SteeringInputSource>();
     let hasInput = false;
+    let completedSubagentInput = false;
     for (let index = history.length - 1; index > floor; index--) {
       const message = history[index]!;
       if (message.role === 'assistant' && tailIndex < 0) break;
       if (message.role !== 'user' || message.origin?.kind === 'injection' || message.origin?.kind === 'compaction_summary' || message.origin?.kind === 'persona_greeting' || message.origin?.kind === 'shell_command') continue;
       if (this.turnId !== undefined && message.source?.turnId !== undefined && message.source.turnId !== this.turnId) continue;
       hasInput = true;
+      completedSubagentInput ||= this.isCompletedSubagentInput(message.origin);
       for (const source of steeringInputSources(message.origin)) sources.add(source);
     }
+    if (hasInput) this.completedSubagentInput = completedSubagentInput;
     this.observedTail = history.at(-1);
     return { sources, hasInput };
+  }
+
+  private isCompletedSubagentInput(origin: PromptOrigin | undefined): boolean {
+    if (origin?.kind === 'merged') return origin.origins.some((item) => this.isCompletedSubagentInput(item));
+    if (origin?.kind !== 'task' || origin.status !== 'completed') return false;
+    const task = this.tasks.getTask(origin.taskId);
+    return task?.kind === 'agent' && task.status === 'completed' && task.receiptVerification === 'verified';
   }
 }

@@ -3,6 +3,8 @@ import { PassThrough, Readable, type Writable } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { DisposableStore } from '#/_base/di/lifecycle';
+import { OrderedHookSlot } from '#/hooks';
+import type { AgentTaskNotificationDeliveryContext } from '#/agent/task/task';
 import { createServices, createScopedTestHost, stubPair } from '#/_base/di/test';
 import { _clearScopedRegistryForTests, registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
@@ -484,6 +486,7 @@ function createFakeTaskService(
 
   const service: IAgentTaskService = {
     _serviceBrand: undefined,
+    hooks: { onWillConsumeNotification: new OrderedHookSlot<AgentTaskNotificationDeliveryContext>() },
     hasUnfinishedWork: () => service.list().some((info) => info.lifetime !== 'service'),
     track(): never {
       throw new Error('fake IAgentTaskService.track is not implemented');

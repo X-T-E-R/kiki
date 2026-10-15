@@ -50,6 +50,8 @@ import { ISessionMetadata, isExternalClientMain } from '#/session/sessionMetadat
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
+import { OrderedHookSlot } from '#/hooks';
+import type { AgentTaskNotificationDeliveryContext } from './task';
 import {
   IAgentTaskService,
   type AgentTaskLoadOptions,
@@ -270,6 +272,7 @@ export const taskActiveTaskReminderPendingKey = defineState<boolean>(
 
 export class AgentTaskService extends Disposable implements IAgentTaskService {
   declare readonly _serviceBrand: undefined;
+  readonly hooks = { onWillConsumeNotification: new OrderedHookSlot<AgentTaskNotificationDeliveryContext>() };
 
   private readonly tasks = new Map<string, ManagedTask>();
   private readonly localTaskIds = new Set<string>();
@@ -354,11 +357,11 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     );
     this._register(this.loop.hooks.onWillBeginStep.register('task.notificationDelivery', async ({ signal, firstStepOfTurn }, next) => {
       signal.throwIfAborted();
-      await this.commitMaterializedNotifications();
+      await this.commitMaterializedNotifications(signal);
       if (firstStepOfTurn) await this.restoreAgentTaskNotifications();
       signal.throwIfAborted();
       await next();
-    }));
+    }, { before: 'context-injector' }));
     this._register(this.loop.hooks.onDidAppendToolResult.register('task.waitDelivery', async ({ toolCallId, isError }, next) => {
       const pending = this.pendingWaitDeliveries.get(toolCallId);
       if (pending !== undefined) {
@@ -1586,14 +1589,14 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     const generation = this.notificationUndoGeneration;
     const context = await this.buildAgentTaskNotificationContext(info);
     if (generation !== this.notificationUndoGeneration || context === undefined) return;
-    if (this.isTerminalNotificationSuppressed(info.taskId)) return;
+    const externalMain = await this.isExternalClientMain();
+    if (generation !== this.notificationUndoGeneration) return;
     const key = notificationKey(context.origin);
-    if (this.deliveredNotificationKeys.has(key)) return;
-    if (this.isTerminalNotificationSuppressed(info.taskId)) {
+    if (this.deliveredNotificationKeys.has(key) || this.isTerminalNotificationSuppressed(info.taskId)) {
       this.scheduledNotificationKeys.delete(key);
       return;
     }
-    if (await this.isExternalClientMain()) {
+    if (externalMain) {
       this.markDeliveredNotification(context.origin);
       this.fireNotificationHook(context.notification);
       return;
@@ -1651,12 +1654,17 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     return goal !== null || info.goalId !== undefined ? 'activeOrNextTurn' : 'activeOrNewTurn';
   }
 
-  private async commitMaterializedNotifications(): Promise<void> {
+  private async commitMaterializedNotifications(signal: AbortSignal): Promise<void> {
     const materialized = [...this.pendingNotificationRequests].filter(([, request]) => request.state === 'materialized');
     if (materialized.length === 0) return;
     await this.dispatcher.flush();
     for (const [key, request] of materialized) {
       if (this.pendingNotificationRequests.get(key) !== request) continue;
+      signal.throwIfAborted();
+      const origin = request.turnSeed.origin;
+      if (origin.kind === 'task') await this.hooks.onWillConsumeNotification.run({ origin, signal });
+      signal.throwIfAborted();
+      await this.dispatcher.flush();
       this.pendingNotificationRequests.delete(key);
       this.scheduledNotificationKeys.delete(key);
       this.deliveredNotificationKeys.add(key);
@@ -1704,6 +1712,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
         toolCalls: [],
         origin: context.origin,
       });
+      await this.hooks.onWillConsumeNotification.run({ origin: context.origin });
       await this.dispatcher.flush();
       this.markDeliveredNotification(context.origin);
       this.fireNotificationHook(context.notification);

@@ -140,7 +140,9 @@ describe('AgentTaskService', () => {
     ix.stub(IAgentToolRegistryService, {
       register: () => toDisposable(() => {}),
     });
-    ix.stub(IAgentLoopService, stubLoopWithHooks());
+    const loop = stubLoopWithHooks();
+    loop.hooks.onWillBeginStep.register('context-injector', async (_ctx, next) => next());
+    ix.stub(IAgentLoopService, loop);
     ix.stub(IConfigRegistry, { registerSection: () => {} });
     ix.stub(IConfigService, {
       get: (() => undefined) as IConfigService['get'],
@@ -1559,7 +1561,9 @@ describe('AgentTaskService', () => {
     });
     ix.stub(IAgentContextMemoryService, stubContextMemory());
     ix.stub(ITelemetryService, { track: () => {}, track2: () => {} });
-    ix.stub(IAgentLoopService, stubLoopWithHooks());
+    const loop = stubLoopWithHooks();
+    loop.hooks.onWillBeginStep.register('context-injector', async (_ctx, next) => next());
+    ix.stub(IAgentLoopService, loop);
     ix.stub(IConfigService, {
       get: (() => undefined) as IConfigService['get'],
     });
@@ -1619,7 +1623,9 @@ describe('AgentTaskService', () => {
     });
     ix.stub(IAgentContextMemoryService, context);
     ix.stub(ITelemetryService, { track: () => {}, track2: () => {} });
-    ix.stub(IAgentLoopService, stubLoopWithHooks());
+    const loop = stubLoopWithHooks();
+    loop.hooks.onWillBeginStep.register('context-injector', async (_ctx, next) => next());
+    ix.stub(IAgentLoopService, loop);
     ix.stub(IConfigService, {
       get: (() => undefined) as IConfigService['get'],
     });

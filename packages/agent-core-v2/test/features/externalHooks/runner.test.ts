@@ -350,6 +350,34 @@ describe('runHook process runner', () => {
     expect(spawn).toHaveBeenCalledTimes(1);
     expect(spawn.mock.calls[0]?.[0]).toBe(command);
     expect(spawn.mock.calls[0]?.[1]).toEqual([]);
+    expect(spawn.mock.calls[0]?.[2]).toMatchObject({ shell: true, ownedProcessTree: true });
+  });
+
+  it.each(['completed', 'timeout', 'cancelled'] as const)('reports %s cleanup failure with its code and details instead of an unhandled rejection', async (outcome) => {
+    const controller = new AbortController();
+    if (outcome === 'cancelled') controller.abort();
+    const failure = Object.assign(new Error('owned tree cleanup failed'), { code: 'os.process.kill_failed', details: { cleanupComplete: false, phase: 'verify', remainingProcessCount: 1 } });
+    const kill = vi.fn(async () => { throw failure; });
+    const dispose = vi.fn(async () => { if (outcome === 'completed') throw failure; });
+    const host: IHostProcessService = { _serviceBrand: undefined, spawn: async () => ({
+      _serviceBrand: undefined, pid: 1, exitCode: outcome === 'completed' ? 0 : null,
+      stdin: new Writable({ write(_chunk, _encoding, callback) { callback(); } }),
+      stdout: Readable.from(['partial output']), stderr: Readable.from(['']),
+      wait: () => outcome === 'completed' ? Promise.resolve(0) : new Promise(() => {}), kill, dispose,
+    }) };
+    const result = await runHook(host, 'example hook', {}, { timeout: outcome === 'timeout' ? 0.01 : 5, signal: controller.signal });
+    expect(result.action).toBe('block');
+    expect(result.reason).toContain('os.process.kill_failed');
+    expect(result.stderr).toContain('"cleanupComplete":false');
+    expect(result.stderr).toContain('"remainingProcessCount":1');
+    expect(dispose).toHaveBeenCalledOnce();
+    if (outcome === 'completed') {
+      expect(result.exitCode).toBe(0);
+      expect(kill).not.toHaveBeenCalled();
+    } else {
+      expect(kill.mock.calls).toEqual([['SIGTERM'], ['SIGKILL']]);
+      expect(result.timedOut === true).toBe(outcome === 'timeout');
+    }
   });
 });
 

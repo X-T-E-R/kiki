@@ -12,6 +12,8 @@ import { IAgentLoopService, type BeforeStepContext } from '#/agent/loop/loop';
 import { TurnEnded } from '#/agent/loop/turnOps';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
+import type { ContextMessage } from '#/agent/contextMemory/types';
+import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
@@ -85,20 +87,15 @@ export class AgentHookRules extends Service implements IAgentHookRules {
         promptId, source: human ? 'user' : origin?.kind === 'task' ? 'task' : mailbox ? 'mailbox' : undefined,
         delivery: ctx.isSteer ? 'steering' : undefined,
       });
-      this.configure(snapshot);
-      for (const rule of snapshot.rules) {
-        const receipt = this.receipt(rule, event);
-        if (receipt === undefined) continue;
-        if (rule.rule.action.type === 'observe') this.observeRule(rule, event, receipt);
-        else {
-          try {
-            const origin = { kind: 'injection' as const, variant: `hook_rule/${rule.id}`, ownerPromptId: promptId, disclosure: receipt };
-            if (ctx.appendMessage !== undefined) ctx.appendMessage({ role: 'user', content: [{ type: 'text', text: wrapSystemReminder(renderHookInjection(rule)) }], toolCalls: [], origin });
-            else this.reminders.appendSystemReminder(renderHookInjection(rule), origin);
-          }
-          catch (error) { this.log.error('hook prompt injection failed; skipping it', { hookId: rule.id, error }); }
-        }
-      }
+      this.applyInputRules(event, snapshot, promptId, ctx.appendMessage);
+    }));
+    const tasks = instantiation.invokeFunction((accessor) => accessor.get(IAgentTaskService));
+    this._register(tasks.hooks.onWillConsumeNotification.register('hook-rules', async ({ origin, signal }, next) => {
+      signal?.throwIfAborted();
+      const { event, snapshot } = await this.event('prompt.submit', `task/${origin.notificationId}`, { source: 'task' });
+      signal?.throwIfAborted();
+      this.applyInputRules(event, snapshot);
+      await next();
     }));
     const tools = instantiation.invokeFunction((accessor) => accessor.get(IAgentToolExecutorService));
     this._register(tools.onBeforeExecuteTool(async (ctx) => {
@@ -111,6 +108,23 @@ export class AgentHookRules extends Service implements IAgentHookRules {
       this.observe(event, snapshot);
       await next();
     }));
+  }
+
+  private applyInputRules(event: HookEvent, snapshot: HookRulesSnapshot, ownerPromptId?: string, appendMessage?: (message: ContextMessage) => void): void {
+    this.configure(snapshot);
+    for (const rule of snapshot.rules) {
+      const receipt = this.receipt(rule, event);
+      if (receipt === undefined) continue;
+      if (rule.rule.action.type === 'observe') this.observeRule(rule, event, receipt);
+      else {
+        try {
+          const origin = { kind: 'injection' as const, variant: `hook_rule/${rule.id}`, ownerPromptId, disclosure: receipt };
+          if (appendMessage !== undefined) appendMessage({ role: 'user', content: [{ type: 'text', text: wrapSystemReminder(renderHookInjection(rule)) }], toolCalls: [], origin });
+          else this.reminders.appendSystemReminder(renderHookInjection(rule), origin);
+        }
+        catch (error) { this.log.error('hook prompt injection failed; skipping it', { hookId: rule.id, error }); }
+      }
+    }
   }
 
   private binding(): HookBinding {

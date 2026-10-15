@@ -3,6 +3,7 @@ import { type SpawnOptionsWithoutStdio } from 'node:child_process';
 import { z } from 'zod';
 
 import { type IHostProcess, IHostProcessService } from '#/os/interface/hostProcess';
+import { toErrorPayload } from '#/_base/errors/serialize';
 
 import type { HookResult } from './types';
 
@@ -56,6 +57,7 @@ export async function runHook(
   try {
     proc = await hostProcess.spawn(command, [], {
       shell: true,
+      ownedProcessTree: true,
       cwd: options.cwd,
       env: options.env,
     });
@@ -75,11 +77,17 @@ export async function runHook(
       options.signal?.removeEventListener('abort', onAbort);
     };
 
-    const settle = (result: HookResult): void => {
+    const settle = async (result: HookResult, terminate = false): Promise<void> => {
       if (settled) return;
       settled = true;
       cleanup();
-      resolve(result);
+      const errors = terminate ? await killProcess(proc) : [];
+      try { await proc.dispose(); }
+      catch (error) { errors.push(error); }
+      if (errors.length > 0) {
+        const diagnostic = `Hook process cleanup failed: ${errors.map((error) => JSON.stringify(toErrorPayload(error))).join('; ')}`;
+        resolve({ ...result, action: 'block', reason: diagnostic, message: diagnostic, stderr: [result.stderr, diagnostic].filter(Boolean).join('\n') });
+      } else resolve(result);
     };
 
     proc.stdout.setEncoding('utf8');
@@ -94,25 +102,19 @@ export async function runHook(
     const stdoutDone = new Promise<void>((done) => proc.stdout.once('end', done));
     const stderrDone = new Promise<void>((done) => proc.stderr.once('end', done));
     void Promise.all([proc.wait(), stdoutDone, stderrDone]).then(
-      ([code]) => {
-        void proc.dispose();
-        settle(resultFromExitCode(code, stdout, stderr));
-      },
+      ([code]) => settle(resultFromExitCode(code, stdout, stderr)),
       (error) => {
-        void proc.dispose();
         const message = errorMessage(error);
-        settle(blockResult({ message, reason: message, stdout, stderr: stderr + message }));
+        return settle(blockResult({ message, reason: message, stdout, stderr: stderr + message }), true);
       },
     );
 
     const timeout = setTimeout(() => {
-      killProcess(proc);
-      settle(blockResult({ stdout, stderr, timedOut: true }));
+      void settle(blockResult({ stdout, stderr, timedOut: true }), true);
     }, timeoutMs);
 
     const onAbort = (): void => {
-      killProcess(proc);
-      settle(blockResult({ stdout, stderr }));
+      void settle(blockResult({ stdout, stderr }), true);
     };
 
     options.signal?.addEventListener('abort', onAbort, { once: true });
@@ -339,12 +341,12 @@ function blockResult(input: {
   };
 }
 
-function killProcess(proc: IHostProcess): void {
-  void proc.kill('SIGTERM');
-  const killTimer = setTimeout(() => {
-    void proc.kill('SIGKILL');
-  }, KILL_GRACE_MS);
-  killTimer.unref();
+async function killProcess(proc: IHostProcess): Promise<unknown[]> {
+  const attempts = await Promise.allSettled([
+    Promise.resolve().then(() => proc.kill('SIGTERM')),
+    new Promise<void>((resolve) => setTimeout(resolve, KILL_GRACE_MS)).then(() => proc.kill('SIGKILL')),
+  ]);
+  return attempts.flatMap((attempt) => attempt.status === 'rejected' ? [attempt.reason] : []);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

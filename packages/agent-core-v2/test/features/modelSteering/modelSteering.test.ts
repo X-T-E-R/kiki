@@ -2,7 +2,9 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { IAgentTaskService } from '#/agent/task/task';
+import { SubagentTask } from '#/agent/tools/agent/subagent-task';
 
 import { createControlledPromise } from '@antfu/utils';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
@@ -19,14 +21,17 @@ import { IAgentModelSteeringService } from '#/features/modelSteering/modelSteeri
 import type { CognitionContent } from '#/kosong/model/model';
 import '#/features/modelSteering/modelSteeringFeature';
 
+import { IAgentCollaborationMessageStore } from '#/session/agentCollaboration/messageMailbox';
 import {
   createTestAgent,
+  appServices,
   homeDirServices,
   permissionModeServices,
   type TestAgentContext,
 } from '../../harness';
 import { createScriptedGenerate } from '../../harness/scripted-generate';
 import { runWillBeginStepHooks } from '../../agent/loop/stubs';
+import { createAgentTaskPersistence, type TaskServiceTestManager } from '../../agent/task/stubs';
 
 const MOCK_MODEL = 'mock-model';
 
@@ -66,6 +71,75 @@ describe('AgentModelSteeringService', () => {
     }
     await agent.get(IAgentProfileService).bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
   }
+
+  it.each([
+    { mode: 'default', outcome: 'completed', inject: true },
+    { mode: 'off', outcome: 'completed', inject: false },
+    { mode: 'default', outcome: 'failed', inject: false },
+    { mode: 'inherit', outcome: 'failed', inject: true },
+  ] as const)('consumes a real child $outcome with Recipe task source $mode at the next model request', async ({ mode, outcome, inject }) => {
+    const recipe = join(homeDir, 'recipe.toml');
+    await writeFile(recipe, `schema_version = 1\nid = "example"\nname = "Example"\nversion = "1.0.0"\n[prompts]\nsteering = { text = "RECIPE COMPLETION CUE" }\n${mode === 'default' ? '' : `[prompts.steering_sources.task]\nmode = "${mode}"\n`}`);
+    ctx = createTestAgent(homeDirServices(homeDir), appServices((reg) => {
+      reg.definePartialInstance(IAgentCollaborationMessageStore, { listPendingAgents: async () => [], nextQueued: async () => undefined });
+    }));
+    ctx.kimiConfig = { ...ctx.kimiConfig, models: { ...ctx.kimiConfig.models, [MOCK_MODEL]: { ...ctx.kimiConfig.models![MOCK_MODEL]!, recipe } } };
+    await ctx.get(IAgentProfileService).bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
+    expect((await ctx.get(IAgentProfileService).getCognitionBinding()).slots?.steering).toBe('RECIPE COMPLETION CUE');
+    const tasks = ctx.get(IAgentTaskService);
+    const completion = createControlledPromise<{ result: string }>();
+    const id = tasks.registerTask(new SubagentTask({ agentId: 'example-child', profileName: 'worker', completion }, 'neutral child', new AbortController()));
+    expect(steeringMessages(ctx.context)).toHaveLength(0);
+    ctx.mockNextResponse({ type: 'text', text: 'Consumed the receipt' });
+    const ended = ctx.untilTurnEnd();
+    if (outcome === 'completed') completion.resolve({ result: 'VERIFIED CHILD RESULT' });
+    else completion.reject(new Error('child failed before producing a result'));
+    await ended;
+    await ctx.get(IAgentLoopService).settled();
+    expect(tasks.getTask(id)).toMatchObject({ kind: 'agent', status: outcome, receiptVerification: 'verified' });
+    expect(ctx.llmCalls).toHaveLength(1);
+    const request = ctx.llmCalls[0]!.history;
+    const text = JSON.stringify(request);
+    expect(text).toContain(id);
+    expect(text.includes('RECIPE COMPLETION CUE')).toBe(inject);
+    if (inject) expect(request.at(-1)).toMatchObject({ role: 'user', content: [{ type: 'text', text: 'RECIPE COMPLETION CUE' }] });
+    expect(ctx.context.get().filter((message) => message.origin?.kind === 'task')).toHaveLength(1);
+    expect(steeringMessages(ctx.context)).toHaveLength(inject ? 1 : 0);
+    await ctx.expectResumeMatches();
+    expect(ctx.llmCalls).toHaveLength(1);
+  });
+
+  it.each(['agent', 'process'] as const)('restores a verified %s receipt without replay and inherits steering only for the child', async (kind) => {
+    const persistence = createAgentTaskPersistence(homeDir);
+    const taskId = 'agent-example1';
+    await persistence.commitTerminalTask(kind === 'agent' ? {
+      taskId, kind, agentId: 'example-child', description: 'completed work', status: 'completed', detached: true, startedAt: 1, endedAt: 2,
+    } : {
+      taskId, kind, command: 'example', pid: 1, exitCode: 0, description: 'completed work', status: 'completed', detached: true, startedAt: 1, endedAt: 2,
+    }, 'RESTORED OUTPUT');
+    ctx = createTestAgent(homeDirServices(homeDir), appServices((reg) => {
+      reg.definePartialInstance(IAgentCollaborationMessageStore, { listPendingAgents: async () => [], nextQueued: async () => undefined });
+    }));
+    await bindModel();
+    const tasks = ctx.get(IAgentTaskService) as TaskServiceTestManager;
+    await tasks.loadFromDisk();
+    expect(tasks.getTask(taskId)).toMatchObject({ kind, receiptVerification: 'verified' });
+    expect(ctx.llmCalls).toHaveLength(0);
+    ctx.mockNextResponse({ type: 'text', text: 'Read restored result' });
+    const prompt = await ctx.get(IAgentPromptService).enqueue({ message: {
+      role: 'user', toolCalls: [], content: [{ type: 'text', text: 'Inspect pending receipts' }], origin: { kind: 'external_thread', messageId: 'example-input', acceptedAt: 1 },
+    } });
+    await prompt.completion;
+    await ctx.get(IAgentLoopService).settled();
+    expect(ctx.llmCalls).toHaveLength(1);
+    const text = JSON.stringify(ctx.llmCalls[0]!.history);
+    expect(text).toContain('RESTORED OUTPUT');
+    expect(text.includes('CLASSIFY THEN ACT')).toBe(kind === 'agent');
+    await tasks.reconcile();
+    await ctx.expectResumeMatches();
+    expect(ctx.context.get().filter((message) => message.origin?.kind === 'task')).toHaveLength(1);
+    expect(steeringMessages(ctx.context)).toHaveLength(kind === 'agent' ? 1 : 0);
+  });
 
   it('preserves interval-only cadence when a legacy binding reads a native multiline body', async () => {
     ctx = createTestAgent(homeDirServices(homeDir));

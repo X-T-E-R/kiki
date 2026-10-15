@@ -1,4 +1,6 @@
 import { createDecorator } from '#/_base/di/instantiation';
+import type { Hooks } from '#/hooks';
+import type { TaskOrigin } from '#/agent/contextMemory/types';
 import type { ITaskHandle } from '#/app/task/task';
 import type { IDisposable } from '#/_base/di/lifecycle';
 import type { MediaTaskInfo } from './types';
@@ -90,8 +92,14 @@ export interface AgentTaskWaitDelivery {
   readonly status: AgentTaskStatus;
 }
 
+export interface AgentTaskNotificationDeliveryContext {
+  readonly origin: TaskOrigin;
+  readonly signal?: AbortSignal;
+}
+
 export interface IAgentTaskService {
   readonly _serviceBrand: undefined;
+  readonly hooks: Hooks<{ onWillConsumeNotification: AgentTaskNotificationDeliveryContext }>;
 
   track(handle: ITaskHandle, options: AgentTaskTrackOptions): IAgentTaskEntry;
   allocateTaskId?(idPrefix: string): string;

@@ -78,6 +78,9 @@ import {
 } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { IModelService } from '#/kosong/model/model';
+import { IAgentProfileService } from '#/agent/profile/profile';
+import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 
 import { stubBootstrap } from '../../app/bootstrap/stubs';
 import { stubLoopWithHooks, stubToolExecutor } from '../../agent/loop/stubs';
@@ -382,6 +385,7 @@ describe('IExternalHooksRunnerService integration', () => {
             hooks: createHooks(['onWillCompact']),
           });
           reg.definePartialInstance(IAgentTaskService, {});
+          reg.definePartialInstance(IAgentProfileService, { getRecipeScriptHooks: async () => [] });
         },
       });
       ix.set(IExternalHooksRunnerService, stubHookRunner(hookEngine));
@@ -495,6 +499,7 @@ describe('IExternalHooksRunnerService integration', () => {
             hooks: createHooks(['onWillCompact']),
           });
           reg.definePartialInstance(IAgentTaskService, {});
+          reg.definePartialInstance(IAgentProfileService, { getRecipeScriptHooks: async () => [] });
         },
       });
       ix.set(IExternalHooksRunnerService, stubHookRunner(hookEngine));
@@ -701,7 +706,10 @@ describe('IExternalHooksRunnerService integration', () => {
             hooks: createHooks(['onWillCompact']),
           });
           reg.definePartialInstance(IAgentTaskService, {});
+          reg.definePartialInstance(IAgentProfileService, { getRecipeScriptHooks: async () => [] });
           reg.define(IHostProcessService, HostProcessService);
+          reg.definePartialInstance(ISessionIndex, { get: async () => undefined });
+          reg.definePartialInstance(IPluginUsageService, { enabled: () => false });
           reg.defineInstance(IEventDispatcher, {
             _serviceBrand: undefined,
             hooks: { onDidRestore: new OrderedHookSlot() },
@@ -980,6 +988,8 @@ describe('IExternalHooksRunnerService integration', () => {
           });
           reg.defineInstance(IBootstrapService, stubBootstrap());
           reg.define(IHostProcessService, HostProcessService);
+          reg.definePartialInstance(ISessionIndex, { get: async () => undefined });
+          reg.definePartialInstance(IPluginUsageService, { enabled: () => false });
         },
       });
       ix.set(IExternalHooksRunnerService, new SyncDescriptor(ExternalHooksRunnerService));
@@ -1178,6 +1188,8 @@ describe('IExternalHooksRunnerService integration', () => {
           });
           reg.defineInstance(IBootstrapService, stubBootstrap());
           reg.define(IHostProcessService, HostProcessService);
+          reg.definePartialInstance(ISessionIndex, { get: async () => undefined });
+          reg.definePartialInstance(IPluginUsageService, { enabled: () => false });
         },
       });
       ix.set(IExternalHooksRunnerService, new SyncDescriptor(ExternalHooksRunnerService));
@@ -1249,6 +1261,7 @@ describe('IExternalHooksRunnerService integration', () => {
             hooks: createHooks(['onWillCompact']),
           });
           reg.definePartialInstance(IAgentTaskService, {});
+          reg.definePartialInstance(IAgentProfileService, { getRecipeScriptHooks: async () => [] });
         },
       });
       ix.set(IExternalHooksRunnerService, stubHookRunner(hookEngine));
@@ -1507,6 +1520,7 @@ describe('IExternalHooksRunnerService integration', () => {
             hooks: createHooks(['onWillCompact']),
           });
           reg.definePartialInstance(IAgentTaskService, {});
+          reg.definePartialInstance(IAgentProfileService, { getRecipeScriptHooks: async () => [] });
         },
       });
       ix.set(IExternalHooksRunnerService, stubHookRunner(hookEngine));

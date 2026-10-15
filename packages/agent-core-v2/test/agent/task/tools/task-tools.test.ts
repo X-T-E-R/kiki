@@ -3,6 +3,8 @@ import { PassThrough, Readable, type Writable } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { DisposableStore } from '#/_base/di/lifecycle';
+import { OrderedHookSlot } from '#/hooks';
+import type { AgentTaskNotificationDeliveryContext } from '#/agent/task/task';
 import { createServices } from '#/_base/di/test';
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentGoalService } from '#/agent/goal/goal';
@@ -148,6 +150,7 @@ interface FakeTaskEntry {
 
 class FakeTaskService implements IAgentTaskService {
   declare readonly _serviceBrand: undefined;
+  readonly hooks = { onWillConsumeNotification: new OrderedHookSlot<AgentTaskNotificationDeliveryContext>() };
 
   readonly stopCalls: Array<{ taskId: string; reason: string | undefined }> = [];
   readonly suppressCalls: string[] = [];
