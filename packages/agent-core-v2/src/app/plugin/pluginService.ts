@@ -127,6 +127,9 @@ export class PluginService extends Service implements IPluginService {
         const notification = await this.reloadAndNotify({
           mutation: { kind: 'install', id: record.id },
         });
+        const release = finish;
+        finish = undefined;
+        void notification.delivery.then(() => release?.(), () => release?.());
         return { result: info, notification };
       } finally { finish?.(); }
     }));
@@ -234,10 +237,20 @@ export class PluginService extends Service implements IPluginService {
     };
   }
 
-  private async withPluginChange<T>(affected: readonly string[] | undefined, operation: () => Promise<T>): Promise<T> {
+  private async withPluginChange<T>(
+    affected: readonly string[] | undefined,
+    operation: () => Promise<PluginMutationOutcome<T>>,
+  ): Promise<PluginMutationOutcome<T>> {
     const finish = await this.beginPluginChange(affected);
-    try { return await operation(); }
-    finally { finish(); }
+    let releaseAfterDelivery = false;
+    try {
+      const outcome = await operation();
+      releaseAfterDelivery = true;
+      void outcome.notification.delivery.then(finish, finish);
+      return outcome;
+    } finally {
+      if (!releaseAfterDelivery) finish();
+    }
   }
 
   private async awaitReloadDelivery<T>(operation: Promise<PluginMutationOutcome<T>>): Promise<T> {

@@ -1,7 +1,42 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { Jimp } from 'jimp';
+import { deflateSync } from 'node:zlib';
+
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length, 0);
+  const checksum = Buffer.alloc(4);
+  checksum.writeUInt32BE(crc32(Buffer.concat([Buffer.from(type, 'ascii'), data])), 0);
+  return Buffer.concat([length, Buffer.from(type, 'ascii'), data, checksum]);
+}
+
+function encodePng(width, height, rgba) {
+  const rowBytes = width * 4;
+  const raw = Buffer.alloc(height * (rowBytes + 1));
+  for (let y = 0; y < height; y += 1) {
+    const row = y * (rowBytes + 1);
+    raw[row] = 0;
+    rgba.copy(raw, row + 1, y * rowBytes, (y + 1) * rowBytes);
+  }
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = 6;
+  return Buffer.concat([PNG_SIGNATURE, pngChunk('IHDR', header), pngChunk('IDAT', deflateSync(raw)), pngChunk('IEND', Buffer.alloc(0))]);
+}
 
 export async function installPrerequisite({ consent, destination }) {
   if (consent !== true) throw new Error('Consent required');
@@ -40,7 +75,7 @@ export function register(api) {
         state ^= state << 5;
         data[i] = state & 255;
       }
-      const png = await new Jimp({ width: 1536, height: 1536, data }).getBuffer('image/png');
+      const png = encodePng(1536, 1536, data);
       return { output: [{ type: 'text', text: `original_sha256: ${createHash('sha256').update(png).digest('hex')}` },
         { type: 'image_url', imageUrl: { url: `data:image/png;base64,${png.toString('base64')}` } }] };
     }
