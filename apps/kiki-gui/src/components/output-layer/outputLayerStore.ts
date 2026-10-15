@@ -345,7 +345,7 @@ export function useOutputLayer(sessionId?: string) {
   const serverId = connection?.meta?.server_id ?? '';
   const contextKey = `${scopeKey}:${serverId}:${sessionId ?? '__all__'}`;
 
-  const snapshot = useSyncExternalStore(outputLayerStore.subscribe, outputLayerStore.getSnapshot);
+  const snapshot = useSyncExternalStore(outputLayerStore.subscribe, outputLayerStore.getSnapshot, outputLayerStore.getSnapshot);
   const sessionKey = connection ? contextKey : sessionId;
   const sessionState = outputLayerStore.getSessionState(sessionKey);
 
