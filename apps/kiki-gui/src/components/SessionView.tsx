@@ -1015,7 +1015,7 @@ export function resolveSessionSendReady(input: {
   return input.controllerAvailable;
 }
 
-/** Session-operation reads start only after the snapshot operation lease settles. */
+/** Session-operation reads start once the mounted controller can serve them. */
 export function sessionIdForSendReadyRead(sessionId: string | undefined, sendReady: boolean): string | undefined {
   return sendReady ? sessionId : undefined;
 }
@@ -5008,9 +5008,8 @@ boundExecution,
               />
             ) : null}
           </>,
-          // The inspector's session-operation reads wait until the first
-          // snapshot lease settles; after that, resyncs keep the mounted rail
-          // and its drafts instead of tearing the surface down.
+          // The inspector's session-operation reads use the mounted
+          // controller; resyncs keep the rail and its drafts mounted.
           rail: controller !== null ? <RightRail
             className={`app-rail ${railOpen ? 'open' : ''}`}
             state={focusState} forest={forest} selectedAgentId={panelFocusAgent}

@@ -1799,22 +1799,23 @@ describe('SessionController transcript authority', () => {
     return { controller, client, socket, flushAll };
   }
 
-  it('accepts a repaired orphan at the same cursor after an empty partial page and then reaches earlier turns', async () => {
+  it('accepts a repaired orphan at the same cursor after an empty preparing page and then reaches earlier turns', async () => {
     const { controller, client } = await openTranscriptController();
     const orphan: import('@kiki/transcript').TranscriptTurn = { kind: 'turn', turnId: 't7', ordinal: 7, state: 'completed', origin: { kind: 'other' },
       steps: [{ kind: 'step', stepId: 's7', turnId: 't7', ordinal: 1, state: 'completed', frames: [{ kind: 'text', frameId: 'a7', role: 'assistant', text: 'Retained response' }] }] };
     controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [orphan], olderCursor: 'bound-t7' }), 1, true));
     const recovered = { ...orphan, origin: { kind: 'user' as const }, prompt: 'Recovered opening', promptId: 'p7', startedAt: '2026-01-01T00:00:00Z', steps: [] };
     client.getAgentTranscript
-      .mockResolvedValueOnce({ agent_id: 'main', items: [], has_more: true, next_cursor: 'bound-t7', read: { source: 'cold', readiness: 'partial' } })
+      .mockResolvedValueOnce({ agent_id: 'main', items: [], has_more: true, next_cursor: 'bound-t7', read: { source: 'cold', readiness: 'preparing' } })
       .mockResolvedValueOnce({ agent_id: 'main', items: [recovered], has_more: true, next_cursor: 'bound-t7', read: { source: 'cold', readiness: 'partial' } })
       .mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(6)], has_more: false, coverage: { kind: 'unknown', hasMoreOlder: true } });
     try {
-      expect(await controller.loadOlderMessages()).toBe(false);
-      expect(controller.getState().olderError).toBeUndefined();
       expect(await controller.loadOlderMessages()).toBe(true);
       expect(controller.getState().olderError).toBeUndefined();
+      expect(controller.getState().hasMoreHistory).toBe(true);
+      expect(historyTexts(controller)).toEqual(['Recovered opening']);
       expect(await controller.loadOlderMessages()).toBe(true);
+      expect(controller.getState().olderError).toBeUndefined();
       expect(historyTexts(controller)).toEqual(['History 6', 'Recovered opening']);
       expect(controller.getState().blocks).toContainEqual(expect.objectContaining({ kind: 'assistant', text: 'Retained response' }));
       expect(controller.getState()).toMatchObject({ hasMoreHistory: false, historyCoverageKind: 'unknown' });
@@ -2328,6 +2329,52 @@ describe('SessionController transcript authority', () => {
       expect(errors).toEqual([]);
       expect(client.getAgentTranscript).toHaveBeenCalledTimes(2);
     } finally { unsubscribe(); controller.close(); }
+  });
+
+  it('continues across preparing batches until one user load reaches an earlier page', async () => {
+    const { controller, client } = await openTranscriptController();
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(1)] }), 1, true));
+    for (let index = 0; index < 10; index += 1) {
+      client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [], has_more: true, next_cursor: index === 0 ? 'prep-cursor' : undefined,
+        read: { source: 'cold', readiness: 'preparing' } });
+    }
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(0)], has_more: false, coverage: { kind: 'full', hasMoreOlder: false } });
+    try {
+      await expect(controller.loadOlderHistory()).resolves.toEqual({ kind: 'exhausted', changed: true });
+      expect(client.getAgentTranscript).toHaveBeenCalledTimes(11);
+      expect(historyTexts(controller)).toEqual(['History 0', 'History 1']);
+      expect(controller.getState()).toMatchObject({ loadingOlder: false, hasMoreHistory: false, olderError: undefined });
+      expect(client.getAgentTranscript.mock.calls[1]?.[2]).toMatchObject({ beforeItem: 'prep-cursor', beforeTurn: undefined });
+    } finally { controller.close(); }
+  });
+
+  it('persists an advanced partial cursor for the next retry', async () => {
+    const { controller, client } = await openTranscriptController();
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(2)], olderCursor: 'initial-cursor' }), 1, true));
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [], has_more: true, next_cursor: 'partial-cursor',
+      read: { source: 'cold', readiness: 'partial' } });
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(1)], has_more: false,
+      coverage: { kind: 'full', hasMoreOlder: false } });
+    try {
+      await expect(controller.loadOlderHistory()).resolves.toEqual({ kind: 'preparing', changed: false });
+      expect(controller.getState()).toMatchObject({ hasMoreHistory: true, olderError: undefined });
+      await expect(controller.loadOlderHistory()).resolves.toEqual({ kind: 'exhausted', changed: true });
+      expect(client.getAgentTranscript.mock.calls[1]?.[2]).toMatchObject({ beforeItem: 'partial-cursor', beforeTurn: undefined });
+      expect(historyTexts(controller)).toEqual(['History 1', 'History 2']);
+    } finally { controller.close(); }
+  });
+
+  it('cancels a preparing batch before issuing its next page after suspend', async () => {
+    const { controller, client } = await openTranscriptController();
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(1)] }), 1, true));
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [], has_more: true, next_cursor: undefined,
+      read: { source: 'cold', readiness: 'preparing' } });
+    const loading = controller.loadOlderHistory();
+    await vi.waitFor(() => expect(client.getAgentTranscript).toHaveBeenCalledTimes(1));
+    controller.suspend();
+    await expect(loading).resolves.toEqual({ kind: 'cancelled', changed: false });
+    expect(client.getAgentTranscript).toHaveBeenCalledTimes(1);
+    controller.close();
   });
 
   it('keeps a failed page idle until retry demand, then clears its error before continuing', async () => {

@@ -530,7 +530,7 @@ export class SessionController {
     try {
       const snapshot = await this.readSnapshot();
       if (this.closed || this.isSuspended) return;
-      this.setState(applyTranscriptShell(this.sessionId, snapshot, this.state));
+      this.setState(this.applyTranscriptShellSnapshot(snapshot));
       this.transcriptGrades = this.requestedTranscriptGrades();
       this.attachView({ seq: snapshot.as_of_seq, epoch: snapshot.epoch });
       void this.refreshDurableIngress();
@@ -623,7 +623,7 @@ export class SessionController {
         void this.resync();
         return;
       }
-      this.setState(applyTranscriptShell(this.sessionId, snapshot, this.state), false);
+      this.setState(this.applyTranscriptShellSnapshot(snapshot), false);
       this.publishForest();
       this.notifyMain();
     } catch (error) {
@@ -975,6 +975,10 @@ export class SessionController {
     return merged;
   }
 
+  private applyTranscriptShellSnapshot(snapshot: SessionSnapshotResponse): SessionViewState {
+    return { ...applyTranscriptShell(this.sessionId, snapshot, this.state), snapshotSubagents: this.mergeRosterRows(snapshot) };
+  }
+
   private async refreshRoster(cursor: SessionCursor): Promise<void> {
     if (this.closed || this.isSuspended || this.resyncInFlight) return;
     if (this.rosterRefreshInFlight) {
@@ -1132,7 +1136,7 @@ export class SessionController {
       this.setState(
         setResyncing(
           {
-            ...applyTranscriptShell(this.sessionId, snapshot, this.state),
+            ...this.applyTranscriptShellSnapshot(snapshot),
             transcriptReady,
             loadingOlder: false,
             olderError: undefined,
@@ -1541,76 +1545,108 @@ export class SessionController {
     const loadingView = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
     this.publishAgentView(agentId, setLoadingOlder(loadingView, true));
     try {
-      const read = () => this.readPreparedContent(() => this.view.transcript.page({ agentId, beforeTurn, beforeItem, pageSize: 20 }, { signal }), signal);
-      let page = await read();
-      if (obsolete()) return { kind: 'cancelled', changed: false };
-      if (page.agent_id !== agentId) throw new Error('History page returned a different agent');
-      if (page.read?.stale !== undefined) {
-        this.historyReads.set(agentId, page.read);
-        this.olderPageCursors.delete(agentId);
-        this.publishProjectedAgent(agentId, store, { historyCoverageKind: 'unknown' });
-        beforeItem = undefined;
-        beforeTurn = currentSnapshot.items.find((item) => item.kind === 'turn')?.turnId;
-        if (page.read.stale.retry === 'resync' || beforeTurn === undefined) {
-          this.publishProjectedAgent(agentId, store, { loadingOlder: false, historyCoverageKind: 'unknown' });
-          void this.resync();
-          return { kind: 'preparing', changed: false };
-        }
-        page = await this.readAuthoritativeTranscriptContinuation(read, 'History continuation is still stale', signal);
+      const rememberContinuationCursor = (nextCursor: string | undefined): void => {
+        if (nextCursor === undefined) return;
+        beforeItem = nextCursor;
+        beforeTurn = undefined;
+        this.olderPageCursors.set(agentId, nextCursor);
+        this.olderPageTurns.delete(agentId);
+      };
+      for (;;) {
+        const read = () => this.readPreparedContent(() => this.view.transcript.page({ agentId, beforeTurn, beforeItem, pageSize: 20 }, { signal }), signal);
+        let page = await read();
         if (obsolete()) return { kind: 'cancelled', changed: false };
         if (page.agent_id !== agentId) throw new Error('History page returned a different agent');
+        if (page.read?.stale !== undefined) {
+          this.historyReads.set(agentId, page.read);
+          this.olderPageCursors.delete(agentId);
+          this.publishProjectedAgent(agentId, store, { historyCoverageKind: 'unknown' });
+          beforeItem = undefined;
+          beforeTurn = currentSnapshot.items.find((item) => item.kind === 'turn')?.turnId;
+          if (page.read.stale.retry === 'resync' || beforeTurn === undefined) {
+            this.publishProjectedAgent(agentId, store, { loadingOlder: false, historyCoverageKind: 'unknown' });
+            void this.resync();
+            return { kind: 'preparing', changed: false };
+          }
+          page = await this.readAuthoritativeTranscriptContinuation(read, 'History continuation is still stale', signal);
+          if (obsolete()) return { kind: 'cancelled', changed: false };
+          if (page.agent_id !== agentId) throw new Error('History page returned a different agent');
+        }
+        const nextTurn = page.items.find((item) => item.kind === 'turn')?.turnId;
+        const pageReadiness = page.read?.readiness;
+        const emptyContinuation = page.has_more && page.items.length === 0;
+        const readIsPreparing = emptyContinuation && pageReadiness === 'preparing';
+        const readIsPartial = emptyContinuation && pageReadiness === 'partial';
+        const recoveredHeaders: TranscriptOperation[] = [];
+        for (const item of page.items) {
+          if (item.kind !== 'turn' || item.startedAt === undefined) continue;
+          const current = store.getTurn(item.turnId);
+          if (current?.origin.kind !== 'other' || current.message !== undefined || current.promptId !== undefined || current.startedAt !== undefined) continue;
+          const { steps: _steps, ...header } = item;
+          recoveredHeaders.push({ op: 'turn.upsert', turn: { ...header, state: current.state, endedAt: current.endedAt } });
+        }
+        const knownItems = new Set(currentSnapshot.items.map(item => item.kind === 'turn' ? `turn:${item.turnId}` : item.kind === 'marker' ? `marker:${item.markerId}` : `taskref:${item.refId}`));
+        const addedItems = page.items.some(item => !knownItems.has(item.kind === 'turn' ? `turn:${item.turnId}` : item.kind === 'marker' ? `marker:${item.markerId}` : `taskref:${item.refId}`));
+        if (page.has_more && !readIsPreparing && !readIsPartial && !addedItems && recoveredHeaders.length === 0 &&
+            (page.next_cursor !== undefined ? page.next_cursor === beforeItem : nextTurn === undefined || nextTurn === beforeTurn)) {
+          throw new Error('History page did not advance its cursor');
+        }
+        if (page.read !== undefined) this.historyReads.set(agentId, page.read);
+        if (this.flushPendingTranscriptBatch(agentId)) this.observeToolCount(agentId, page);
+        if (readIsPartial) {
+          rememberContinuationCursor(page.next_cursor);
+          this.publishProjectedAgent(agentId, store, {
+            loadingOlder: false,
+            fetchedOlder: true,
+            olderError: undefined,
+            historyCoverageKind: 'unknown',
+          });
+          return { kind: 'preparing', changed: false };
+        }
+        if (readIsPreparing) {
+          rememberContinuationCursor(page.next_cursor);
+          this.publishProjectedAgent(agentId, store, {
+            loadingOlder: true,
+            fetchedOlder: true,
+            olderError: undefined,
+            historyCoverageKind: 'unknown',
+          });
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          if (obsolete()) return { kind: 'cancelled', changed: false };
+          continue;
+        }
+        const older: AgentTranscriptSnapshot = {
+          items: page.items as AgentTranscriptSnapshot['items'],
+          tasks: currentSnapshot.tasks,
+          interactions: currentSnapshot.interactions,
+          attachments: page.attachments ?? [],
+          todos: currentSnapshot.todos,
+          prompts: currentSnapshot.prompts,
+          meta: currentSnapshot.meta,
+          hasMoreOlder: page.has_more,
+        };
+        if (recoveredHeaders.length > 0) store.apply(recoveredHeaders);
+        const merged = prependOlderTranscriptSnapshot(this.olderPages.get(agentId) ?? emptyOlderSnapshot(), older);
+        this.olderPages.set(agentId, merged);
+        for (const item of older.items) if (item.kind === 'turn' && !this.historyPreviewPages.has(`${agentId}/${item.turnId}`))
+          this.historyPreviewPages.set(`${agentId}/${item.turnId}`, { agentId, beforeItem, beforeTurn, unloaded: false });
+        this.trimHistoryPreviews(agentId);
+        if (page.next_cursor !== undefined) this.olderPageCursors.set(agentId, page.next_cursor);
+        else this.olderPageCursors.delete(agentId);
+        if (nextTurn !== undefined) this.olderPageTurns.set(agentId, nextTurn);
+        else this.olderPageTurns.delete(agentId);
+        this.forestDirtyAgents.add(agentId);
+        this.publishProjectedAgent(agentId, store, {
+          loadingOlder: false,
+          fetchedOlder: true,
+          olderError: undefined,
+          historyCoverageKind: page.coverage?.kind === 'unknown' ? 'unknown'
+            : !page.has_more && page.coverage !== undefined ? 'full' : undefined,
+        });
+        const changed = older.items.length > 0 || page.next_cursor !== beforeItem;
+        if (!page.has_more) return { kind: 'exhausted', changed };
+        return { kind: 'advanced', changed: true };
       }
-      const nextTurn = page.items.find((item) => item.kind === 'turn')?.turnId;
-      const pageReadiness = page.read?.readiness;
-      const readIsPreparing = page.has_more && page.items.length === 0 && (pageReadiness === 'preparing' || pageReadiness === 'partial');
-      const recoveredHeaders: TranscriptOperation[] = [];
-      for (const item of page.items) {
-        if (item.kind !== 'turn' || item.startedAt === undefined) continue;
-        const current = store.getTurn(item.turnId);
-        if (current?.origin.kind !== 'other' || current.message !== undefined || current.promptId !== undefined || current.startedAt !== undefined) continue;
-        const { steps: _steps, ...header } = item;
-        recoveredHeaders.push({ op: 'turn.upsert', turn: { ...header, state: current.state, endedAt: current.endedAt } });
-      }
-      const knownItems = new Set(currentSnapshot.items.map(item => item.kind === 'turn' ? `turn:${item.turnId}` : item.kind === 'marker' ? `marker:${item.markerId}` : `taskref:${item.refId}`));
-      const addedItems = page.items.some(item => !knownItems.has(item.kind === 'turn' ? `turn:${item.turnId}` : item.kind === 'marker' ? `marker:${item.markerId}` : `taskref:${item.refId}`));
-      if (page.has_more && !readIsPreparing && !addedItems && recoveredHeaders.length === 0 &&
-          (page.next_cursor !== undefined ? page.next_cursor === beforeItem : nextTurn === undefined || nextTurn === beforeTurn)) {
-        throw new Error('History page did not advance its cursor');
-      }
-      if (page.read !== undefined) this.historyReads.set(agentId, page.read);
-      if (this.flushPendingTranscriptBatch(agentId)) this.observeToolCount(agentId, page);
-      const older: AgentTranscriptSnapshot = {
-        items: page.items as AgentTranscriptSnapshot['items'],
-        tasks: currentSnapshot.tasks,
-        interactions: currentSnapshot.interactions,
-        attachments: page.attachments ?? [],
-        todos: currentSnapshot.todos,
-        prompts: currentSnapshot.prompts,
-        meta: currentSnapshot.meta,
-        hasMoreOlder: page.has_more,
-      };
-      if (recoveredHeaders.length > 0) store.apply(recoveredHeaders);
-      const merged = prependOlderTranscriptSnapshot(this.olderPages.get(agentId) ?? emptyOlderSnapshot(), older);
-      this.olderPages.set(agentId, merged);
-      for (const item of older.items) if (item.kind === 'turn' && !this.historyPreviewPages.has(`${agentId}/${item.turnId}`))
-        this.historyPreviewPages.set(`${agentId}/${item.turnId}`, { agentId, beforeItem, beforeTurn, unloaded: false });
-      this.trimHistoryPreviews(agentId);
-      if (page.next_cursor !== undefined) this.olderPageCursors.set(agentId, page.next_cursor);
-      else this.olderPageCursors.delete(agentId);
-      if (nextTurn !== undefined) this.olderPageTurns.set(agentId, nextTurn);
-      else this.olderPageTurns.delete(agentId);
-      this.forestDirtyAgents.add(agentId);
-      this.publishProjectedAgent(agentId, store, {
-        loadingOlder: false,
-        fetchedOlder: true,
-        olderError: undefined,
-        historyCoverageKind: page.coverage?.kind === 'unknown' ? 'unknown'
-          : !page.has_more && page.coverage !== undefined ? 'full' : undefined,
-      });
-      const changed = older.items.length > 0 || page.next_cursor !== beforeItem;
-      if (!page.has_more) return { kind: 'exhausted', changed };
-      if (readIsPreparing) return { kind: 'preparing', changed };
-      return { kind: 'advanced', changed: true };
     } catch (error) {
       if (obsolete()) return { kind: 'cancelled', changed: false };
       const code = error instanceof ApiError || error instanceof RPCError ? error.code : undefined;
@@ -2272,7 +2308,7 @@ export class SessionController {
           const contentRefs = [...collectTranscriptContentRefs(this.composeAgentSnapshot(MAIN_AGENT_ID)), ...(patched.contentRefs ?? [])];
           this.setState(rosterRead
             ? { ...this.state, version: this.state.version + 1, snapshotSubagents: this.mergeRosterRows(patched), contentRefs }
-            : { ...applyTranscriptShell(this.sessionId, patched, this.state), contentRefs });
+            : { ...this.applyTranscriptShellSnapshot(patched), contentRefs });
           this.publishForest();
         } else {
           const store = this.ensureAgentTranscript(agentId);

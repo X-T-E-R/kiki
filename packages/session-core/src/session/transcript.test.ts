@@ -1084,6 +1084,26 @@ describe('transcript authority projection', () => {
     });
   });
 
+  it('projects snapshot roster rows without a live transcript block', () => {
+    const state = {
+      ...createViewState('session_test'),
+      snapshotSubagents: [compactSnapshotSubagent({
+        id: CHILD_AGENT_ID,
+        parent_agent_id: 'main',
+        status: 'completed',
+        activity_status: 'completed',
+        status_source: 'metadata',
+        live: false,
+        created_at: FIXED_AT,
+      })],
+    };
+    expect(sessionAgentForest(state).byId[CHILD_AGENT_ID]).toMatchObject({
+      agentId: CHILD_AGENT_ID,
+      parentAgentId: 'main',
+      status: 'completed',
+    });
+  });
+
   it('stops a retained snapshot row from claiming a live run in the forest', () => {
     const retained = [
       compactSnapshotSubagent({

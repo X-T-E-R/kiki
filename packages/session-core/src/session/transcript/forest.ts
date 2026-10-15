@@ -360,8 +360,9 @@ export function sessionAgentForest(
     liveSourcesFromSubagentBlocks(subagentBlocksFromState(state)),
     state.snapshotSubagents,
   );
+  const snapshotRoster = rosterFromSnapshotSubagents(state.snapshotSubagents);
   return overlayForestDisplayFields(
-    buildAgentForest(live, roster, [...taskItemsFromSessionTasks(state.tasks), ...(extraTasks ?? [])]),
+    buildAgentForest(live, [...snapshotRoster, ...(roster ?? [])], [...taskItemsFromSessionTasks(state.tasks), ...(extraTasks ?? [])]),
     live,
   );
 }

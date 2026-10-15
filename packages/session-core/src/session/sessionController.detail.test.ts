@@ -788,6 +788,25 @@ describe('visible snapshot and attachment continuation', () => {
     controller.close();
   });
 
+  it('retains hydrated roster rows when a later cold shell snapshot only carries the first preview page', async () => {
+    const ref: import('@kiki/transcript').ContentRef = { source: { kind: 'snapshot', id: '' }, revision: 'subagents', path: ['subagents'], kind: 'array', offset: 4, total: 6 };
+    const children = Array.from({ length: 6 }, (_, index) => ({ id: `child${index}`, agent_id: `child${index}`, session_id: session.id, kind: 'subagent', description: `child${index}`, status: 'completed', activity_status: 'completed', status_source: 'metadata', live: false, created_at: FIXED_AT }));
+    const content = vi.fn(async () => ({ ref, value: children.slice(4), contentRefs: [] }));
+    const { controller, view, deliver } = harness(undefined, content);
+    const preview = { as_of_seq: 1, epoch: 'e', session, in_flight_turn: null, subagents: children.slice(0, 4), contentRefs: [ref] } as unknown as SessionSnapshotResponse;
+    vi.mocked(view.snapshot).mockResolvedValue(preview);
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot(), 2));
+    await vi.waitFor(() => expect(controller.getState().snapshotSubagents).toHaveLength(6));
+    expect(controller.getForest()?.byId['child5']).toBeDefined();
+    vi.mocked(view.snapshot).mockResolvedValue({ ...preview, as_of_seq: 3 });
+    controller.suspend();
+    await controller.resume();
+    await vi.waitFor(() => expect(controller.getState().snapshotSubagents).toHaveLength(6));
+    expect(controller.getForest()?.byId['child5']).toBeDefined();
+    controller.close();
+  });
+
   it('loads a missing attachment referenced by a visible turn through the existing by-ID action', async () => {
     const detail = vi.fn(async () => ({ session_id: session.id, agent_id: 'main', kind: 'attachment', attachment: { attachmentId: 'att0', mediaType: 'image/png', source: { kind: 'session_media', fileId: 'file0' } } }) as SessionViewTranscriptDetail);
     const { controller, deliver } = harness(detail);
