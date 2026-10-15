@@ -43,6 +43,7 @@ import { BrowserControlSection } from './settings/BrowserControlSection';
 import { ComputerControlSection } from './settings/ComputerControlSection';
 import { SECTIONS, type SectionId } from './settings/sections';
 import { SettingsCardMountContext, SettingsFlashContext, SettingsPageScopeContext } from './settings/SectionCard';
+import { SettingsPaneBoundary } from './settings/SettingsPaneBoundary';
 import { SessionsSection } from './settings/SessionsSection';
 import { SessionsImportPage } from './settings/SessionsImportPage';
 import { ShortcutsSection } from './settings/ShortcutsSection';
@@ -527,7 +528,9 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
                 <SpaceBand />
                 <SectionIntro section={active} workspaceName={workspaceScopeName} remoteAddress={remoteAddress} dirty={dirty} hidePurpose={activePluginId !== null} />
                 <SettingsPageScopeContext.Provider value={pageScope}>
-                  <div className="space-y-6">{pane}{showExperimental ? <ExperimentalRows section={active} /> : null}</div>
+                  <SettingsPaneBoundary resetKey={`${active}\u0000${search}\u0000${key}`}>
+                    <div className="space-y-6">{pane}{showExperimental ? <ExperimentalRows section={active} /> : null}</div>
+                  </SettingsPaneBoundary>
                 </SettingsPageScopeContext.Provider>
               </div>
             </div>

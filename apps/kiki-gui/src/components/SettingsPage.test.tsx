@@ -19,9 +19,11 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { SETTINGS_SEARCH_SPEC } from '@kiki/session-core/settings';
 import { I18nProvider } from '../i18n';
+import * as clipboard from '../lib/clipboard';
 import { SettingsPage } from './SettingsPage';
 import { DirtyGuardContext, useDirtyGuardState, type GuardedNavigate } from './dirtyGuard';
 import { SectionCard, SettingsCardMountContext } from './settings/SectionCard';
+import { SettingsPaneBoundary } from './settings/SettingsPaneBoundary';
 import { clearNavHistory, getUiSnapshot, recordNavigation, saveUiSnapshot } from '../lib/navHistory';
 import { commitText, pickOption } from './settings/testControls';
 
@@ -287,7 +289,7 @@ describe('SettingsPage panel scopes', () => {
     expect(title()).toBe('Alpha');
     await click(container.querySelector('[data-workspace-detail-back]')!);
     await flush();
-    expect(title()).toBe('Workspaces & sessions');
+    expect(title()).toBe('Workspaces');
     await click(container.querySelector('[data-workspace-open="ws-beta"]')!);
     await flush();
     expect(title()).toBe('Beta');
@@ -384,7 +386,7 @@ describe('SettingsPage panel scopes', () => {
 
   it('shows memory beside sessions and edits global and workspace settings independently', async () => {
     const container = await renderSettings('/settings/memory?workspace=ws-beta');
-    expect(container.querySelector('[data-settings-page-title]')?.textContent).toBe('Memory & knowledge');
+    expect(container.querySelector('[data-settings-page-title]')?.textContent).toBe('Memory');
     expect(container.querySelector('#st-card-memory')).not.toBeNull();
     expect(container.querySelector('#st-card-memory-workspaces')).not.toBeNull();
     expect(container.querySelector('[data-memory-workspace-select]')?.getAttribute('data-memory-workspace-select')).toBe('ws-beta');
@@ -1256,5 +1258,65 @@ describe('SettingsPage search locating', () => {
     // screen is asked again instead of being missed.
     await act(async () => { root.render(tree((id) => { seen.push(`${id}:again`); })); });
     expect(seen).toEqual(['st-card-fixture', 'st-card-fixture:again']);
+  });
+
+  it('contains a pane render error inside SettingsPaneBoundary and recovers on retry or resetKey navigation', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      let shouldThrow = true;
+      function FragilePane() {
+        if (shouldThrow) throw new Error('boom in settings pane');
+        return <div data-healthy-pane>Recovered section</div>;
+      }
+      const container = document.createElement('div');
+      document.body.append(container);
+      containers.push(container);
+      const root = createRoot(container);
+      roots.push(root);
+      const renderBoundary = (resetKey: string) => (
+        <I18nProvider>
+          <div data-nav-shell>Nav stays mounted</div>
+          <SettingsPaneBoundary resetKey={resetKey}>
+            <FragilePane />
+          </SettingsPaneBoundary>
+        </I18nProvider>
+      );
+
+      await act(async () => { root.render(renderBoundary('ai')); });
+      expect(container.querySelector('[data-nav-shell]')).not.toBeNull();
+      const alert = container.querySelector('[data-settings-pane-error]');
+      expect(alert).not.toBeNull();
+      expect(alert?.textContent).toContain('boom in settings pane');
+      const copy = container.querySelector<HTMLButtonElement>('[data-settings-pane-copy]')!;
+      expect(copy).not.toBeNull();
+      const copySpy = vi.spyOn(clipboard, 'copyTextToClipboard')
+        .mockRejectedValueOnce(new Error('clipboard denied'))
+        .mockResolvedValue(undefined);
+      try {
+        await click(copy);
+        expect(copySpy).toHaveBeenCalledWith('boom in settings pane');
+        expect(copy.getAttribute('data-copied')).toBeNull();
+        expect(container.querySelector('[data-settings-pane-copy-error]')?.textContent).toContain('clipboard denied');
+        await click(copy);
+        expect(copy.getAttribute('data-copied')).toBe('true');
+        expect(container.querySelector('[data-settings-pane-copy-error]')).toBeNull();
+      } finally { copySpy.mockRestore(); }
+
+      shouldThrow = false;
+      await click(container.querySelector('[data-settings-pane-retry]')!);
+      expect(container.querySelector('[data-settings-pane-error]')).toBeNull();
+      expect(container.querySelector('[data-healthy-pane]')?.textContent).toBe('Recovered section');
+
+      shouldThrow = true;
+      await act(async () => { root.render(renderBoundary('ai')); });
+      expect(container.querySelector('[data-settings-pane-error]')).not.toBeNull();
+
+      shouldThrow = false;
+      await act(async () => { root.render(renderBoundary('general')); });
+      expect(container.querySelector('[data-settings-pane-error]')).toBeNull();
+      expect(container.querySelector('[data-healthy-pane]')?.textContent).toBe('Recovered section');
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });
