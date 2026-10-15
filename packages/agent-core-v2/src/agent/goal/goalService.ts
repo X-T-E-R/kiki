@@ -1103,6 +1103,10 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
         }
         return turn.result;
       })
+      .catch(async (error: unknown) => {
+        if (this.pendingContinuation !== pending) return;
+        await this.settleGoalAfterContinuationFailure(error, pending.goalId);
+      })
       .finally(() => {
         if (pending.turnId !== undefined) this.pendingContinuationGoals.delete(pending.turnId);
         if (this.pendingContinuation === pending) this.pendingContinuation = undefined;

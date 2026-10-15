@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { createKimiDeviceId } from '@kiki/oauth';
 
 import { Disposable, DisposableStore, toDisposable } from '#/_base/di/lifecycle';
@@ -206,6 +208,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   private recovery: Promise<void> | undefined;
   private readonly detached = new Set<Promise<void>>();
   private readonly targetDrains = new Map<string, TargetDrainState>();
+  private readonly claimRequestIds = new Map<string, string>();
   private readonly roomDeliveryTargets = new Map<string, RoomDeliveryTarget>();
   private readonly roomDeliveryReceipts = new Map<string, RoomDeliveryReceipt>();
   private readonly mailboxController = new AbortController();
@@ -799,13 +802,18 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     let observed: SendThreadMessageResult['delivery'] = 'pending';
     for (;;) {
       if (this.closing) return observed;
+      const key = threadIdentity(target);
+      const requestId = this.claimRequestIds.get(key) ?? randomUUID();
+      this.claimRequestIds.set(key, requestId);
       const claim = await this.mailbox.claimNext({
         target,
         consumerId: `thread-communication/${this.hostId}`,
         leaseMs: DELIVERY_LEASE_MS,
       }, {
+        requestId,
         signal: this.mailboxController.signal,
       });
+      this.claimRequestIds.delete(key);
       if (claim === undefined || this.closing) return observed;
       const delivery = await this.deliverClaim(claim);
       if (claim.message.messageId === observedMessageId) observed = delivery;

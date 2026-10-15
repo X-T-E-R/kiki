@@ -1002,6 +1002,41 @@ describe('AgentGoalService core workflow hooks', () => {
     return abort;
   }
 
+  it('settles a rejected continuation assignment instead of leaving a phantom active goal', async () => {
+    let reject!: (reason: Error) => void;
+    const assigned = new Promise<Awaited<EnqueueReceipt['assigned']>>((_resolve, rejectPromise) => { reject = rejectPromise; });
+    vi.spyOn(loopService, 'enqueue').mockReturnValue({ assigned, abort: () => true });
+    await goals.createGoal({ objective: 'finish the task' });
+    await goals.markBlocked({ reason: 'waiting' });
+    await goals.resumeGoal({ continueIfBlocked: true });
+    reject(new Error('continuation admission failed'));
+    await vi.waitFor(() => expect(goals.getGoal().goal).toMatchObject({
+      status: 'paused',
+      terminalReason: 'Paused after goal continuation failure: continuation admission failed',
+    }));
+  });
+
+  it.each(['paused', 'resumed', 'replaced', 'cancelled'] as const)(
+    'keeps %s user control authoritative over a late rejected continuation', async (control) => {
+      let reject!: (reason: Error) => void;
+      const assigned = new Promise<Awaited<EnqueueReceipt['assigned']>>((_resolve, rejectPromise) => { reject = rejectPromise; });
+      vi.spyOn(loopService, 'enqueue').mockReturnValue({ assigned, abort: () => true });
+      await goals.createGoal({ objective: 'finish the task' });
+      await goals.markBlocked({ reason: 'waiting' });
+      await goals.resumeGoal({ continueIfBlocked: true });
+      if (control === 'cancelled') await goals.cancelGoal();
+      else {
+        await goals.pauseGoal({ reason: 'user paused' });
+        if (control === 'resumed') await goals.resumeGoal();
+        if (control === 'replaced') await goals.createGoal({ objective: 'replacement', replace: true });
+      }
+      const expected = goals.getGoal().goal;
+      reject(new Error('obsolete assignment failed'));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(goals.getGoal().goal).toEqual(expected);
+    },
+  );
+
   it('starts a continuation when a user resumes an idle blocked goal', async () => {
     await goals.createGoal({ objective: 'finish the task' });
     await goals.markBlocked({ reason: 'need credentials' });

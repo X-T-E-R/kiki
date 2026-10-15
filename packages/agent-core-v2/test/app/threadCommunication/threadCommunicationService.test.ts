@@ -436,6 +436,46 @@ describe('ThreadCommunicationService', () => {
     }
   }, 60_000);
 
+  it('recovers a timed-out committed claim with the same request identity before its lease expires', async () => {
+    ix.stub(IBootstrapService, { homeDir, storeDir: join(homeDir, 'store'), platform: process.platform,
+      getEnv: () => undefined, scope: (name: string) => name });
+    ix.set(IHomeRuntimeService, new SyncDescriptor(HomeRuntimeHostService));
+    ix.set(IHostFileSystem, new HostFileSystem());
+    ix.set(IThreadMailboxStore, new SyncDescriptor(RuntimeThreadMailboxStore));
+    const mailbox = ix.get(IThreadMailboxStore);
+    const runtime = ix.get(IHomeRuntimeService);
+    const service = ix.get(IThreadCommunicationService);
+    const source = ref(service.hostId, 'workspace-a', 'source');
+    const target = ref(service.hostId, 'workspace-b', 'target');
+    const claimNext = mailbox.claimNext.bind(mailbox);
+    const claims = vi.spyOn(mailbox, 'claimNext');
+    claims.mockImplementationOnce(async (input, options) => {
+      expect(await claimNext(input, options)).toBeDefined();
+      throw new HomeRuntimeError('runtime.timeout', 'claim reply lost after commit');
+    });
+    const input = { source, target, content: 'consume exactly once', idempotencyKey: 'claim-recovery' };
+    try {
+      await expect(peerSendCapability(service)[SEND_PEER_THREAD_MESSAGE](input)).rejects.toMatchObject({ code: 'runtime.timeout' });
+      expect((await service.listMessages({ sessionId: 'source' })).items).toMatchObject([
+        { delivery: 'pending', content: input.content },
+      ]);
+      expect(promptEnqueue).not.toHaveBeenCalled();
+      const recovered = await peerSendCapability(service)[SEND_PEER_THREAD_MESSAGE](input);
+      expect(recovered).toMatchObject({ deduplicated: true, delivery: 'delivered' });
+      expect(claims.mock.calls[0]?.[1]?.requestId).toEqual(expect.any(String));
+      expect(claims.mock.calls[1]?.[1]?.requestId).toBe(claims.mock.calls[0]?.[1]?.requestId);
+      expect(claims.mock.calls[2]?.[1]?.requestId).not.toBe(claims.mock.calls[1]?.[1]?.requestId);
+      expect(promptEnqueue).toHaveBeenCalledOnce();
+      expect((await service.listMessages({ sessionId: 'source' })).items).toMatchObject([
+        { messageId: recovered.messageId, delivery: 'delivered' },
+      ]);
+    } finally {
+      await service.shutdown();
+      await mailbox.close();
+      await runtime.close();
+    }
+  }, 30_000);
+
   it('projects real durable peer sends, failures, pair pages, archive and deletion without cross-workspace leakage', async () => {
     ix.stub(IBootstrapService, { homeDir, storeDir: join(homeDir, 'store'), platform: process.platform,
       getEnv: () => undefined, scope: (name: string) => name });
