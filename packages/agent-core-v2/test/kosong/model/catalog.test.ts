@@ -1399,6 +1399,7 @@ describe('wire projection (pure)', () => {
     try {
       const record = (catalogSections['models'] as Record<string, ModelRecord>)['k2']!;
       expect(toProtocolModel(catalog.get('k2'), record, 'kimi')).toEqual({
+        effective_protocol: 'openai',
         id: 'k2',
         provider_id: 'kimi',
         remote_id: 'kimi-k2',
@@ -1496,6 +1497,7 @@ describe('ModelCatalog enumeration', () => {
       await expect(catalog.listModels()).resolves.toEqual([
         {
           id: 'k2',
+          effective_protocol: 'openai',
           provider_id: 'kimi',
           remote_id: 'kimi-k2',
           display_name: 'Kimi K2',
@@ -1505,6 +1507,7 @@ describe('ModelCatalog enumeration', () => {
         },
         {
           id: 'turbo',
+          effective_protocol: 'openai',
           provider_id: 'kimi',
           remote_id: 'kimi-turbo',
           display_name: 'Kimi Turbo',
@@ -1512,6 +1515,7 @@ describe('ModelCatalog enumeration', () => {
         },
         {
           id: 'gpt4o',
+          effective_protocol: 'openai',
           provider_id: 'openai',
           remote_id: 'gpt-4o',
           display_name: 'gpt-4o',
@@ -1923,6 +1927,7 @@ describe('ModelCatalog setDefaultModel', () => {
         default_model: 'turbo',
         model: {
           id: 'turbo',
+          effective_protocol: 'openai',
           provider_id: 'kimi',
           remote_id: 'kimi-turbo',
           display_name: 'Kimi Turbo',
@@ -1964,5 +1969,22 @@ describe('ModelCatalog setDefaultModel', () => {
     } finally {
       await host.dispose();
     }
+  });
+});
+
+
+describe('transient models on configured connections', () => {
+  it('uses a connection with no catalog models and preserves its credentials and model registry', async () => {
+    const { host, catalog, models } = createHost({ providers: {
+      edge: { type: 'openai', apiKey: 'fixture-secret', baseUrl: 'https://example.test/v1' },
+    }, models: {} });
+    try {
+      const requester = catalog.getConnectionRequester('edge', 'remote/custom-model', 65536);
+      expect(requester.model).toMatchObject({ name: 'remote/custom-model', providerName: 'edge', protocol: 'openai', maxContextSize: 65536, baseUrl: 'https://example.test/v1' });
+      expect(await requester.model.authProvider.getAuth()).toMatchObject({ apiKey: 'fixture-secret' });
+      expect(models.list()).toEqual({});
+      expect(models.getDefaultModel()).toBeUndefined();
+      expect(() => catalog.getConnectionRequester('missing', 'remote/custom-model', 65536)).toThrow('does not exist');
+    } finally { host.dispose(); }
   });
 });

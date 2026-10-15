@@ -127,6 +127,7 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
           };
         },
       }),
+      getConnectionRequester: () => { throw new Error('not exercised'); },
       inspect: () => {
         throw new Error('modelCatalog.inspect not exercised in this test');
       },

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 
 import type { ContentRef } from '@kiki/transcript';
@@ -10,6 +10,10 @@ import type { ExternalTextNote } from '@kiki/session-core/session';
 import { I18nProvider } from '../../i18n';
 import { TranscriptDetailProvider } from '../transcriptDetail';
 import { ExternalTextRow } from './ExternalTextRow';
+import { MessageViewContext } from '../message/messageViewContext';
+import { outputLayerStore } from '../output-layer/outputLayerStore';
+import { OutputLayerClient } from '../../lib/outputLayerClient';
+import { setActiveOutputLayerClient } from '../output-layer/useOutputLayerClient';
 
 const source = {
   driver: 'external' as const,
@@ -145,6 +149,31 @@ describe('ExternalTextRow', () => {
     expect(continuations).toHaveLength(1);
     // Only this record's own unread part is offered.
     expect(continuations[0]?.getAttribute('data-content-continuation')).not.toBe('loading');
+  });
+
+  it('uses the real session for external Assistant excerpts and keeps copy original with zero blank-model requests', async () => {
+    const sessionId = 'external-output-session';
+    const preset = { id: 'external-empty', label: '外部未选模型', instruction: '翻译', contextWindow: 32768 };
+    outputLayerStore.setConfiguration({ enabled: true, presets: [preset], settings: { groupChars: 600, preloadBefore: 1, preloadAfter: 1, historyTokens: 16384 } }, `local::${sessionId}`);
+    outputLayerStore.setActivePreset(sessionId, preset.id);
+    const stream = vi.fn();
+    const client = new OutputLayerClient({ configuration: vi.fn(), configure: vi.fn(), stream });
+    const process = vi.spyOn(client, 'process'); setActiveOutputLayerClient(client);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    const original = 'External Assistant original';
+    const row = render(note({ kind: 'assistant_excerpt', text: original }), child => <MessageViewContext.Provider value={{ sessionId, internalProse: false }}>{child}</MessageViewContext.Provider>);
+    open(row);
+    expect(row?.querySelector('[data-output-layer-unconfigured]')).not.toBeNull();
+    expect(row?.textContent).toContain(preset.label);
+    expect(row?.textContent).toContain(original);
+    const copy = Array.from(row!.querySelectorAll('button')).find(button => button.textContent?.includes('复制原文'))!;
+    await act(async () => copy.click());
+    expect(writeText).toHaveBeenCalledWith(original);
+    expect(process).not.toHaveBeenCalled(); expect(stream).not.toHaveBeenCalled();
+    setActiveOutputLayerClient(null);
+    outputLayerStore.setActivePreset(sessionId, null);
+    outputLayerStore.setConfiguration(null, `local::${sessionId}`);
   });
 
   it('falls back to the kind when the client sent no title', () => {

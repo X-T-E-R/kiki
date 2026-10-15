@@ -84,6 +84,41 @@ describe('HTTP REST domains', () => {
       ]);
     } finally { await channel.close(); }
   });
+  it('forwards optional session identity for output-layer configuration without changing global reads', async () => {
+    const urls: URL[] = [];
+    const fetchMock = vi.fn(async (input: string | URL) => {
+      urls.push(new URL(String(input)));
+      return envelope({ enabled: true, presets: [], settings: { groupChars: 600, preloadBefore: 1, preloadAfter: 1, historyTokens: 16384 } });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'fixture-token', fetch: fetchMock as typeof fetch });
+    try {
+      await channel.rest.outputLayer.configuration();
+      await channel.rest.outputLayer.configuration({ sessionId: 'session/example' });
+      expect(urls[0]!.search).toBe('');
+      expect(urls[1]!.searchParams.get('session_id')).toBe('session/example');
+    } finally { await channel.close(); }
+  });
+
+  it('streams output-layer Unicode events through authenticated REST with no prompt submission', async () => {
+    const encoder = new TextEncoder();
+    const bytes = encoder.encode('{"type":"delta","text":"译文😀"}\n{"type":"completed","text":"译文😀"}\n');
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      expect(new URL(String(url)).pathname).toBe('/api/output-layer/stream');
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer fixture-token' });
+      expect(jsonRequestBody(init?.body)).toMatchObject({ sessionId: 'example-session', text: 'Visible Assistant text', history: [] });
+      return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(bytes.slice(0, 27)); controller.enqueue(bytes.slice(27)); controller.close();
+      } }), { headers: { 'content-type': 'application/x-ndjson' } });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'fixture-token', fetch: fetchMock as typeof fetch });
+    try {
+      const events: unknown[] = [];
+      await channel.rest.outputLayer.stream({ sessionId: 'example-session', sourceId: 'frame:0', sourceRevision: '1', text: 'Visible Assistant text',
+        preset: { id: 'translate', label: 'Translate', instruction: 'Translate into Chinese', contextWindow: 32768, maxOutputTokens: 2048 }, history: [], historyTokens: 16384, cycleId: 'cycle' }, (event) => events.push(event));
+      expect(events).toEqual([{ type: 'delta', text: '译文😀' }, { type: 'completed', text: '译文😀' }]);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally { await channel.close(); }
+  });
   it('reads validated owner-aware metadata pages through authenticated REST without opening an agent', async () => {
     const page = { items: [{ id: 'test-00000001', session_id: 'session/example', owner_agent_id: 'owner', agent_id: 'target',
       source: 'live', kind: 'subagent', description: 'example dispatch', status: 'running', created_at: '2026-06-04T10:00:00.000Z' }],

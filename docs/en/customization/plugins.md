@@ -131,6 +131,25 @@ Each extraction writes a new output directory with `document.md`, an `extraction
 
 Auto processing stays local: nothing is uploaded and no OCR runs. An empty or image-only scan fails rather than being reported as readable, and a partly scanned document can still omit its image-only pages. For cloud OCR, authorize uploading the file to MinerU, set its token in the plugin settings, and select `engine=mineru` with `allowUpload=true`; the service's terms and charges apply, and stopping local waiting does not cancel the remote task. A missing dependency, an unsupported format or a file over the limit returns an error rather than a partial extraction. Input is capped at 50 MiB with a 600-second deadline.
 
+## Output translation and rewriting
+
+**Kiki Output Layer** (`kiki-output-layer`) streams translations or rewrites of Assistant text while you read, leaving the original conversation and main model context unchanged. It uses your existing Kiki models and connections, without another copy of your API key.
+
+To try the local package, install and enable it from a Kiki session at the root of the [Kiki Plugins repository](https://github.com/X-T-E-R/kiki-plugins):
+
+```sh
+/plugins install --trust ./plugins/official/kiki-output-layer
+/plugins enable kiki-output-layer
+```
+
+Output presets are available when the installed plugin is selected for the current conversation: a conversation choice overrides its workspace choice, which overrides global usage. The package includes Chinese translation, English translation, Plain language, Catgirl, Tsundere and Custom presets. In the GUI composer's output preset menu, edit a preset's instruction and choose a model before selecting it; a blank model leaves processing off instead of using Kiki's default model. For a custom model on an existing connection, choose the connection and enter the model ID and context window. Leave the per-group output limit blank for no extra cap, or enter a positive token limit; the model's own capacity still applies.
+
+Use the same menu to add a preset from a built-in template without replacing saved presets or their edited instructions. To update the installed package, run `/plugins install ./plugins/official/kiki-output-layer` again from the plugin repository. Installation, enabling and updates take effect in the current conversation. Preset edits apply to new requests; a request already in flight keeps its starting configuration.
+
+Text is grouped at roughly 600 Unicode characters by default. Visible groups run first, with one group preloaded in each direction; all three values are configurable. Unvisited history is not processed in bulk. You can switch back to the original at any time, copy the current reading version, or copy the original separately. Cancelling or failing an output-layer request does not stop the main model, and the original stays readable.
+
+Reading results and output-layer model history are stored separately. The default history budget is 16,384 tokens; set it to `0` to disable history. At the budget or model-window limit, the whole history cycle restarts from the current group. Clearing model history keeps generated reading results, while clearing reading results allows them to be generated again. Undoing or retrying the source text invalidates old results.
+
 ## Media Sources
 
 Install and enable **Kiki Media** (`kiki-media`) once, then open **Capabilities → Plugins → Media sources**. Version 0.2.0 includes OpenAI, Google, Ark, xAI, MiniMax, StepFun, Novita, Agnes, NewAPI and ComfyUI sources for images, video and speech; you do not need a separate package for each vendor. Your own local commands can join the same list as script sources.

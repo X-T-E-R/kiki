@@ -134,6 +134,7 @@ import {
   STATUS_SEGMENT_ICON_CLASS,
   STATUS_SEGMENT_SET,
   usePopover,
+  OutputLayerSelect,
   type RunMode,
   type RunModeControls,
   type SendTimingChoice,
@@ -2541,6 +2542,12 @@ export function Composer({
         />
       ),
     });
+    if (sessionId !== undefined) {
+      statusSegments.push({
+        key: 'output-layer',
+        node: <OutputLayerSelect sessionId={sessionId} />,
+      });
+    }
   }
 
   return (
@@ -3188,6 +3195,8 @@ export function Composer({
                   className={`flex min-w-0 items-center [&>div]:flex [&>div]:min-w-0 ${
                     segment.key === 'permission'
                       ? 'ml-auto shrink-0 pl-1'
+                      : segment.key === 'output-layer'
+                        ? 'shrink-0 pl-1'
                       : segment.key === 'run-mode'
                         ? 'mr-1 shrink-0'
                         : segment.key === 'agent'

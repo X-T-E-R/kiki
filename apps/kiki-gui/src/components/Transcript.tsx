@@ -143,6 +143,7 @@ import {
 import { ApprovalCard, InteractionRecord, QuestionCard, useInteractionPlacement } from './Interactions';
 import { ExecutorNoteRow, TurnExecutionBadge } from './timeline/ExecutorNotes';
 import { ExternalTextRow } from './timeline/ExternalTextRow';
+import { AssistantOutputContent, useOutputLayer } from './output-layer';
 import { MediaRunRow, SubagentEndedRow, SubagentGroupRow } from './timeline/FoldRows';
 import { FindBar } from './timeline/FindBar';
 import { buildFindItems } from './timeline/findItems';
@@ -729,6 +730,14 @@ const AssistantMessage = memo(function AssistantMessage({
   const tapActions = useMessageRowTapActions<HTMLDivElement>();
   const source = frameContentSource(block);
   const incomplete = useContentContinuation(source, MESSAGE_TEXT_ROOTS).pending.length > 0;
+  const { sessionId } = useMessageViewContext();
+  const { isOutputLayerActive } = useOutputLayer(sessionId);
+  const [readingText, setReadingText] = useState(block.text);
+  useEffect(() => {
+    if (!isOutputLayerActive) {
+      setReadingText(block.text);
+    }
+  }, [isOutputLayerActive, block.text]);
   const internalProse = useMessageViewContext().internalProse && block.text !== '';
   const streaming = block.streaming && block.text !== '';
   const { prefix, tail } = useMemo(
@@ -761,7 +770,16 @@ const AssistantMessage = memo(function AssistantMessage({
           the turn boundary, so the answer sits on the page as prose. */}
       <div data-assistant-prose className="kiki-prose min-w-0">
         <RenderedImageScope>
-        {streaming ? (
+        {isOutputLayerActive && block.text !== '' ? (
+          <AssistantOutputContent
+            messageId={block.id}
+            sessionId={sessionId}
+            sourceText={block.text}
+            isStreamingSource={streaming}
+            annotations={annotations}
+            onReadingTextChange={setReadingText}
+          />
+        ) : streaming ? (
           <>
             {segments.length > 0 ? (
               <div className="kiki-md-segments">
@@ -776,13 +794,13 @@ const AssistantMessage = memo(function AssistantMessage({
             </div>
           </>
         ) : (
-          <>
-            {/* Marks ride the settled render only: a streaming block's text
-                still moves under the quote, and a quote split across the
-                memoized prefix chunks would silently lose its mark anyway. */}
-            {block.text !== '' ? <Markdown text={block.text} mode="static" sourceBlockId={block.id} annotationTargets={annotations} /> : null}
-            {block.streaming ? <span className="stream-caret font-mono">▍</span> : null}
-          </>
+          block.text !== '' ? (
+            <Markdown
+              text={block.text}
+              sourceBlockId={block.id}
+              annotationTargets={annotations}
+            />
+          ) : null
         )}
         <DedupedAssistantMedia media={block.media} />
         </RenderedImageScope>
@@ -799,7 +817,7 @@ const AssistantMessage = memo(function AssistantMessage({
       {showActions ? (
         <MessageRowActions
           align="left"
-          copyText={incomplete ? undefined : block.text}
+          copyText={incomplete ? undefined : (isOutputLayerActive ? readingText : block.text)}
           linkHref={messageLink?.(block.id)}
           canRegenerate={rowActions !== undefined && isLatestFinal}
           canFork={rowActions !== undefined && rowActions.canFork !== false && isLatestFinal}

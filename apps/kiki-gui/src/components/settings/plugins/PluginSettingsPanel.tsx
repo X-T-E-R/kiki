@@ -25,7 +25,7 @@ import { useI18n, type Locale } from '../../../i18n';
 import { prefersDark, type ResolvedTheme } from '../../../lib/theme';
 import { useConnection } from '../../../state/connection';
 import { PluginSettingsForm } from '../../capabilities/PluginSettingsForm';
-import { bridgeBody, isPanelRequest, PANEL_CHANNEL as CHANNEL, type PanelRequest } from '../../capabilities/pluginPanelBridge';
+import { bridgeBody, isPanelRequest, patchValues, PANEL_CHANNEL as CHANNEL, type PanelRequest } from '../../capabilities/pluginPanelBridge';
 import { InlineError } from '../../controls';
 import { useDirtyReporter } from '../../dirtyGuard';
 import { Spinner } from '../../icons';
@@ -115,7 +115,7 @@ interface SettingsFrameRequest {
   readonly channel: typeof CHANNEL;
   readonly kind: 'request';
   readonly id: number;
-  readonly method: PanelRequest['method'] | 'plugin.settings.get' | 'plugin.settings.patch' | 'plugin.dirty';
+  readonly method: PanelRequest['method'] | 'plugin.dirty';
   readonly text?: unknown;
   readonly action?: unknown;
   readonly args?: unknown;
@@ -131,17 +131,7 @@ function isSettingsRequest(data: unknown): data is SettingsFrameRequest {
   if (data === null || typeof data !== 'object') return false;
   const record = data as Record<string, unknown>;
   return record['channel'] === CHANNEL && record['kind'] === 'request' && Number.isSafeInteger(record['id'])
-    && (record['method'] === 'plugin.settings.get' || record['method'] === 'plugin.settings.patch' || record['method'] === 'plugin.dirty');
-}
-
-function patchValues(value: unknown): Record<string, string | number | boolean | null> | undefined {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const values: Record<string, string | number | boolean | null> = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (typeof item !== 'string' && typeof item !== 'number' && typeof item !== 'boolean' && item !== null) return undefined;
-    values[key] = item;
-  }
-  return values;
+    && record['method'] === 'plugin.dirty';
 }
 
 export function PluginSettingsPanel({

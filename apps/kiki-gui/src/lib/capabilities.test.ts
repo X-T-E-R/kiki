@@ -283,6 +283,18 @@ describe('plugin panel bridge', () => {
     expect(typeof bridgeBody({ ...base, method: 'plugin.call', action: '../x' }, 's1')).toBe('string');
     expect(bridgeBody({ ...base, method: 'plugin.call', action: 'save', args: { a: 1 } }, 's1'))
       .toEqual({ method: 'plugin.call', session_id: 's1', action: 'save', args: { a: 1 } });
+    expect(bridgeBody({ ...base, method: 'plugin.call', action: 'save', args: {} }, undefined))
+      .toEqual({ method: 'plugin.call', session_id: undefined, action: 'save', args: {} });
+    expect(bridgeBody({ ...base, method: 'plugin.models.list' }, undefined))
+      .toEqual({ method: 'plugin.models.list' });
+    expect(bridgeBody({ ...base, method: 'plugin.settings.get' }, undefined))
+      .toEqual({ method: 'plugin.settings.get' });
+    expect(bridgeBody({ ...base, method: 'plugin.settings.patch', values: { k: 'v', n: 1, b: true, nil: null } }, undefined))
+      .toEqual({ method: 'plugin.settings.patch', values: { k: 'v', n: 1, b: true, nil: null } });
+    expect(bridgeBody({ ...base, method: 'plugin.settings.patch', values: 'invalid' }, undefined))
+      .toBe('invalid settings');
+    expect(bridgeBody({ ...base, method: 'session.summary' }, undefined))
+      .toBe('no session');
   });
 });
 

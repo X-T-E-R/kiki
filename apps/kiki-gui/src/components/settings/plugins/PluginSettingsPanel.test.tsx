@@ -22,13 +22,14 @@ const setPluginSettings = vi.hoisted(() => vi.fn());
 const listPlugins = vi.hoisted(() => vi.fn());
 const listPluginMarketplace = vi.hoisted(() => vi.fn());
 const getPlugin = vi.hoisted(() => vi.fn());
+const callPluginPanelBridge = vi.hoisted(() => vi.fn());
 const connectionBag = vi.hoisted(() => ({ scopeId: 'scope-a', serverId: 'server-a' }));
 
 vi.mock('../../../state/connection', () => ({
   useConnection: () => ({
     scopeId: connectionBag.scopeId,
     meta: { server_id: connectionBag.serverId },
-    client: { getPluginPanelDocument, getPluginSettings, setPluginSettings, listPlugins, listPluginMarketplace, getPlugin },
+    client: { getPluginPanelDocument, getPluginSettings, setPluginSettings, listPlugins, listPluginMarketplace, getPlugin, callPluginPanelBridge },
   }),
 }));
 
@@ -80,6 +81,7 @@ beforeEach(() => {
   listPlugins.mockReset();
   listPluginMarketplace.mockReset().mockResolvedValue({ configured: false, entries: [] });
   getPlugin.mockReset();
+  callPluginPanelBridge.mockReset().mockResolvedValue({ result: { catalog: ['m1'] } });
   connectionBag.scopeId = 'scope-a';
   connectionBag.serverId = 'server-a';
 });
@@ -175,6 +177,67 @@ describe('the settings slot reads and saves the media document', () => {
       ok: true,
       result: { values: { openai__imageModel: 'gpt-image-2' }, revision: 2 },
     });
+  });
+
+  it('relays plugin.models.list and plugin.call through the panel bridge without session', async () => {
+    const { frame, posted } = await renderPanel();
+
+    await act(async () => {
+      request(frame, { channel: 'kiki.panel.v1', kind: 'request', id: 10, method: 'plugin.models.list' });
+      await new Promise((done) => setTimeout(done, 0));
+    });
+    expect(callPluginPanelBridge).toHaveBeenCalledWith('kiki-media', 'settings', { method: 'plugin.models.list' });
+    expect(posted.at(-1)).toMatchObject({ channel: 'kiki.panel.v1', kind: 'response', id: 10, ok: true, result: { catalog: ['m1'] } });
+
+    await act(async () => {
+      request(frame, { channel: 'kiki.panel.v1', kind: 'request', id: 11, method: 'plugin.call', action: 'configuration', args: {} });
+      await new Promise((done) => setTimeout(done, 0));
+    });
+    expect(callPluginPanelBridge).toHaveBeenCalledWith('kiki-media', 'settings', { method: 'plugin.call', session_id: undefined, action: 'configuration', args: {} });
+    expect(posted.at(-1)).toMatchObject({ channel: 'kiki.panel.v1', kind: 'response', id: 11, ok: true });
+  });
+
+  it('supports kiki-output-layer settings.html protocol flow: configuration call, models list, and settings patch', async () => {
+    const { frame, posted } = await renderPanel();
+
+    await act(async () => {
+      request(frame, { channel: 'kiki.panel.v1', kind: 'request', id: 1, method: 'plugin.call', action: 'configuration', args: {} });
+      request(frame, { channel: 'kiki.panel.v1', kind: 'request', id: 2, method: 'plugin.models.list' });
+      await new Promise((done) => setTimeout(done, 0));
+    });
+
+    expect(callPluginPanelBridge).toHaveBeenCalledWith('kiki-media', 'settings', {
+      method: 'plugin.call',
+      session_id: undefined,
+      action: 'configuration',
+      args: {},
+    });
+    expect(callPluginPanelBridge).toHaveBeenCalledWith('kiki-media', 'settings', {
+      method: 'plugin.models.list',
+    });
+    expect(posted.find((m: any) => m.id === 1)).toMatchObject({ ok: true });
+    expect(posted.find((m: any) => m.id === 2)).toMatchObject({ ok: true, result: { catalog: ['m1'] } });
+
+    const patchPayload = {
+      presets: JSON.stringify([{ id: 'p1', label: '新预设', instruction: '测试' }]),
+      groupChars: 600,
+      historyTokens: 16384,
+    };
+    await act(async () => {
+      request(frame, { channel: 'kiki.panel.v1', kind: 'request', id: 3, method: 'plugin.settings.patch', values: patchPayload });
+      await new Promise((done) => setTimeout(done, 0));
+    });
+
+    expect(setPluginSettings).toHaveBeenCalledWith('kiki-media', patchPayload);
+    expect(posted.find((m: any) => m.id === 3)).toMatchObject({ ok: true });
+
+    await act(async () => {
+      request(frame, { channel: 'kiki.panel.v1', kind: 'request', id: 4, method: 'plugin.settings.get' });
+      await new Promise((done) => setTimeout(done, 0));
+    });
+
+    expect(getPluginSettings).toHaveBeenCalledWith('kiki-media');
+    expect(posted.find((m: any) => m.id === 4)).toMatchObject({ ok: true });
   });
 
   it('offers the presentation context on init and pushes theme flips without a re-init', async () => {

@@ -11,6 +11,12 @@ import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
 import { IOAuthService } from '#/app/auth/auth';
 import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import { PluginUsageService } from '#/app/pluginUsage/pluginUsageService';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
+import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { PluginService } from '#/app/plugin/pluginService';
 import { IPluginHostService, PluginHostService } from '#/app/plugin/pluginHostService';
 import { IPluginSettingsService, PluginSettingsService } from '#/app/plugin/pluginSettingsService';
@@ -120,7 +126,11 @@ async function install(plugins: IPluginService, source: string, consent?: boolea
 }
 
 function liveAgent(media?: IAgentPluginMediaService) {
-  const session = host.child(LifecycleScope.Session, 'continuing-session');
+  const session = host.child(LifecycleScope.Session, 'continuing-session', [
+    stubPair(ISessionContext, makeSessionContext({ sessionId: 'continuing-session', workspaceId: 'fixture', sessionDir: root, sessionScope: 'fixture/continuing-session', cwd: root })),
+    stubPair(ISessionMediaStore, { _serviceBrand: undefined, pathFor: () => undefined, resolveDisplayPath: async () => undefined,
+      read: async () => undefined, open: async () => undefined, materialize: async () => undefined }),
+  ]);
   const agent = host.childOf(session, LifecycleScope.Agent, 'continuing-agent', media === undefined ? [] : [stubPair(IAgentPluginMediaService, media)]);
   return {
     registry: agent.accessor.get(IAgentToolRegistryService),
@@ -146,6 +156,7 @@ beforeEach(async () => {
   pluginSettingsListeners.length = 0;
   _clearScopedRegistryForTests();
   registerScopedService(LifecycleScope.App, IPluginService, PluginService, ScopeActivation.OnDemand, 'plugin');
+  registerScopedService(LifecycleScope.App, IPluginUsageService, PluginUsageService, ScopeActivation.OnDemand, 'pluginUsage');
   registerScopedService(LifecycleScope.App, IPluginSettingsService, PluginSettingsService, ScopeActivation.OnDemand, 'plugin');
   registerScopedService(LifecycleScope.App, IPluginHostService, PluginHostService, ScopeActivation.OnDemand, 'plugin');
   registerScopedService(LifecycleScope.Agent, IAgentToolRegistryService, AgentToolRegistryService, ScopeActivation.OnDemand, 'toolRegistry');
@@ -155,9 +166,13 @@ beforeEach(async () => {
   const runtime = new FakeRuntime({ workspaceId: 'fixture', runtimeId: 'local', generation: '1' },
     { pathClass: process.platform === 'win32' ? 'win32' : 'posix' });
   Object.assign(runtime, { fs: new HostFileSystem() });
+  const documents = new Map<string, unknown>();
   host = createScopedTestHost([
+    stubPair(IAtomicDocumentStore, { get: async <T>(scope: string, key: string) => documents.get(`${scope}:${key}`) as T | undefined,
+      set: async <T>(scope: string, key: string, value: T) => { documents.set(`${scope}:${key}`, value); } } as IAtomicDocumentStore),
     stubPair(IBootstrapService, stubBootstrap(path.join(root, 'home'))),
     stubPair(IProviderService, stubProviderService()),
+    stubPair(ISessionManager, { list: () => [], get: () => undefined } as unknown as ISessionManager),
     stubPair(IOAuthService, {} as IOAuthService),
     stubPair(IRequestIdentityCatalog, {} as IRequestIdentityCatalog),
     stubPair(IAgentPluginMediaService, { api: () => undefined } as unknown as IAgentPluginMediaService),
@@ -369,3 +384,31 @@ describe('plugin changes in an existing live agent', () => {
     await vi.waitFor(() => expect(hosts.running('resident-tool')).toBe(true), { timeout: 15_000 });
   });
 });
+
+
+it('hot-enables and updates a display-only panel backend beside the same live conversation', async () => {
+  const plugins = host.app.accessor.get(IPluginService);
+  const hosts = host.app.accessor.get(IPluginHostService);
+  const { registry, pluginTools } = liveAgent();
+  await pluginTools.ready();
+  const source = path.join(root, 'output-source');
+  await mkdir(source, { recursive: true });
+  const writeVersion = async (version: string, instruction: string) => {
+    await writeFile(path.join(source, 'kimi.plugin.json'), JSON.stringify({ name: 'kiki-output-layer', version,
+      'x-kiki': { engines: { kiki: '^0.4.1' }, entry: './entry.mjs', permissions: { uiPanel: true },
+        panels: [{ schemaVersion: 1, id: 'settings', label: 'Output', slot: 'settings', path: './settings.html' }] } }));
+    await writeFile(path.join(source, 'settings.html'), '<p>Output settings</p>');
+    await writeFile(path.join(source, 'entry.mjs'), `export function register() {}\nexport function handlePanelRequest() { return { instruction: ${JSON.stringify(instruction)}, version: ${JSON.stringify(version)} }; }`);
+  };
+  await writeVersion('0.1.0', 'Translate');
+  await install(plugins, source, true);
+  await plugins.setPluginEnabled({ id: 'kiki-output-layer', enabled: true });
+  expect(await hosts.requestPanel('kiki-output-layer', 'settings', 'configuration', {})).toEqual({ instruction: 'Translate', version: '0.1.0' });
+  expect(registry.list()).toEqual([]);
+  await writeVersion('0.1.1', 'Rewrite');
+  await install(plugins, source);
+  expect(await hosts.requestPanel('kiki-output-layer', 'settings', 'configuration', {})).toEqual({ instruction: 'Rewrite', version: '0.1.1' });
+  expect(registry.list()).toEqual([]);
+  await plugins.setPluginEnabled({ id: 'kiki-output-layer', enabled: false });
+  await expect(hosts.requestPanel('kiki-output-layer', 'settings', 'configuration', {})).rejects.toThrow('enabled backend');
+}, 30_000);

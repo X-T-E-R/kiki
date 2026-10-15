@@ -1676,3 +1676,5 @@ export function PermissionSelect({
     </div>
   );
 }
+
+export { OutputLayerSelect } from './output-layer';

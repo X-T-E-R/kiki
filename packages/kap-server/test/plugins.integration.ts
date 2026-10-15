@@ -189,6 +189,29 @@ describe('server-v2 /api plugins', () => {
     return dir;
   }
 
+  it('supports sessionless settings panels with own settings, credential-free model choices and no conversation actions', async () => {
+    const source = await makePluginDir('display-settings', '0.1.0');
+    await writeFile(join(source, 'settings.html'), '<main>Display settings</main>');
+    await writeFile(join(source, 'kimi.plugin.json'), JSON.stringify({ name: 'display-settings', version: '0.1.0', 'x-kiki': {
+      engines: { kiki: '^0.4.1' }, permissions: { uiPanel: true, secrets: true },
+      panels: [{ schemaVersion: 1, id: 'settings', label: 'Display', slot: 'settings', path: './settings.html' }],
+      settings: { schemaVersion: 1, schema: { type: 'object', properties: { instruction: { type: 'string' }, token: { type: 'string', secret: true } } } },
+    } }));
+    expect((await install(source)).body.code).toBe(0);
+    expect((await call('POST', '/api/plugins/display-settings:enable')).body.code).toBe(0);
+    const path = '/api/plugins/display-settings/panels/settings/bridge';
+    const patched = await call<{ result: { values: Record<string, unknown>; secretsConfigured: string[] } }>('POST', path, {
+      method: 'plugin.settings.patch', values: { instruction: 'Translate', token: 'fixture-private-token' },
+    });
+    expect(patched.body.data.result.values).toEqual({ instruction: 'Translate' });
+    expect(patched.body.data.result.secretsConfigured).toEqual(['token']);
+    const read = await call('POST', path, { method: 'plugin.settings.get' });
+    expect(JSON.stringify(read)).not.toContain('fixture-private-token');
+    expect((await call<{ result: { models: unknown[]; connections: unknown[] } }>('POST', path, { method: 'plugin.models.list' })).body.data.result).toMatchObject({ models: expect.any(Array), connections: expect.any(Array) });
+    expect((await call('POST', path, { method: 'session.summary', session_id: 'missing' })).body.code).toBe(40001);
+    expect((await call('POST', path, { method: 'session.sendMessage', session_id: 'missing', text: 'not submitted' })).body.code).toBe(40001);
+  });
+
   it('serves an enabled writing panel as CSP-protected srcdoc and lists its command', async () => {
     const source = await officialPluginFixture('kiki-writing', join(home!, 'writing-package'));
     expect((await install(source)).body.code).toBe(0);
@@ -274,23 +297,25 @@ describe('server-v2 /api plugins', () => {
     expect(empty.body.data.plugins).toEqual([]);
 
     const source = await makePluginDir('demo-plugin', '1.0.0');
-    const installed = await install<{ id: string; version: string; enabled: boolean }>(source);
+    const installed = await install<{ id: string; version: string; enabled: boolean; globalEnabled: boolean }>(source);
     expect(installed.body.code).toBe(0);
-    expect(installed.body.data).toMatchObject({ id: 'demo-plugin', version: '1.0.0', enabled: false });
+    expect(installed.body.data).toMatchObject({ id: 'demo-plugin', version: '1.0.0', enabled: true, globalEnabled: false });
 
-    const list = await call<{ plugins: { id: string; enabled: boolean }[] }>(
+    const list = await call<{ plugins: { id: string; enabled: boolean; globalEnabled: boolean }[] }>(
       'GET',
       '/api/plugins',
     );
-    expect(list.body.data.plugins.map((p) => [p.id, p.enabled])).toEqual([['demo-plugin', false]]);
+    expect(list.body.data.plugins.map((p) => [p.id, p.enabled, p.globalEnabled])).toEqual([['demo-plugin', true, false]]);
 
     const disabled = await call<{ ok: true }>('POST', '/api/plugins/demo-plugin:disable');
     expect(disabled.body.code).toBe(0);
-    const afterDisable = await call<{ plugins: { enabled: boolean }[] }>('GET', '/api/plugins');
-    expect(afterDisable.body.data.plugins[0]?.enabled).toBe(false);
+    const afterDisable = await call<{ plugins: { enabled: boolean; globalEnabled: boolean }[] }>('GET', '/api/plugins');
+    expect(afterDisable.body.data.plugins[0]).toMatchObject({ enabled: false, globalEnabled: false });
 
     const enabled = await call<{ ok: true }>('POST', '/api/plugins/demo-plugin:enable');
     expect(enabled.body.code).toBe(0);
+    expect((await call<{ plugins: { enabled: boolean; globalEnabled: boolean }[] }>('GET', '/api/plugins')).body.data.plugins[0])
+      .toMatchObject({ enabled: true, globalEnabled: true });
 
     const removed = await call<{ ok: true }>('POST', '/api/plugins/demo-plugin:remove');
     expect(removed.body.code).toBe(0);
@@ -749,7 +774,8 @@ describe('server-v2 /api plugins', () => {
     expect(office).toMatchObject(pinnedOffice);
     const matched = await call<{ entries: { id: string; source: string }[] }>('POST', '/api/plugins/recommendations/match', { files: ['draft.docx'] });
     expect(matched.body.data.entries).toContainEqual(expect.objectContaining({ id: office.id, source: office.source }));
-    expect((await install<{ id: string; enabled: boolean }>(office.source, office.sha256)).body.data).toMatchObject({ id: 'kiki-office', enabled: false });
+    expect((await install<{ id: string; enabled: boolean; globalEnabled: boolean }>(office.source, office.sha256)).body.data)
+      .toMatchObject({ id: 'kiki-office', enabled: true, globalEnabled: false });
     const installed = await call<{ root: string; state: string }>('GET', '/api/plugins/kiki-office');
     expect(installed.body.data).toMatchObject({ root: join(home, 'plugins/managed/kiki-office'), state: 'ok' });
     const externalRequests = fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => !url.startsWith(base));

@@ -121,6 +121,16 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     return this.entry(id, recipeSettings).requester;
   }
 
+  getConnectionRequester(providerId: string, modelName: string, maxContextSize: number): ModelRequester {
+    if (this.providers.get(providerId) === undefined) {
+      throw new Error2(CONFIG_INVALID_ERROR_CODE, `Connection "${providerId}" does not exist`);
+    }
+    const built = this.buildModel(`connection:${providerId}/${modelName}`, new ResolutionTraceCollector(), undefined, {
+      provider: providerId, name: modelName, maxContextSize,
+    });
+    return new ModelRequesterImpl(built.model, this.protocolRegistry, this.admission);
+  }
+
   findByName(name: string): readonly string[] {
     const out: string[] = [];
     for (const [id, m] of Object.entries(this.models.list())) {
@@ -330,8 +340,9 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     id: string,
     trace: ResolutionTraceCollector,
     recipeSettings?: Record<string, unknown>,
+    transientRecord?: ModelRecord,
   ): { model: Model; credentials: readonly string[] } {
-    const savedModel = this.models.get(id);
+    const savedModel = transientRecord ?? this.models.get(id);
     if (savedModel === undefined) {
       throw new Error2(
         CONFIG_INVALID_ERROR_CODE,

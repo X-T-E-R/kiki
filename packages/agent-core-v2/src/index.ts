@@ -1,3 +1,4 @@
+export * from './app/outputLayer/index';
 export * from './app/recipes/recipes';
 import './app/recipes/recipeService';
 import './app/recipes/configSection';

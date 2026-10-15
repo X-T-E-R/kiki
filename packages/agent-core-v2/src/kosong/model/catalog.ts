@@ -299,6 +299,7 @@ export interface IModelCatalog {
 
   get(id: string, recipeSettings?: Record<string, unknown>): Model;
   getRequester(id: string, recipeSettings?: Record<string, unknown>): ModelRequester;
+  getConnectionRequester(providerId: string, modelName: string, maxContextSize: number): ModelRequester;
   inspect(id: string): ModelInspection;
   ping(id: string): Promise<ModelPingResult>;
   findByName(name: string): readonly string[];

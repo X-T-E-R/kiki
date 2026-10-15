@@ -611,6 +611,7 @@ describe('server-v2 /api model/provider catalog', () => {
       getRequester: () => {
         throw new Error('unused');
       },
+      getConnectionRequester: () => { throw new Error('unused'); },
       inspect: () => {
         throw new Error('unused');
       },

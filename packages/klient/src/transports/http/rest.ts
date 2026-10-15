@@ -8,6 +8,7 @@ import type {
   HttpRestRequestOptions,
 } from '../../core/facade/http-rest.js';
 import { personaAvatarForm, personaCardForm } from './persona-form.js';
+import { createOutputLayerFacade } from './output-layer.js';
 import { createConnectionsFacade } from './connections.js';
 import { createWebAccessFacade } from './web-access.js';
 import { createThreadBridgesFacade } from './thread-bridges.js';
@@ -73,6 +74,7 @@ export interface HttpRestTransport {
 
 export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFacade {
   return {
+    outputLayer: createOutputLayerFacade(transport),
     externalClients: createExternalClientsFacade(transport),
     webAccess: createWebAccessFacade(transport),
     connections: createConnectionsFacade(transport),

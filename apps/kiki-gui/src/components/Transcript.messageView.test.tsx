@@ -21,6 +21,9 @@ import { I18nProvider } from '../i18n';
 import { MessageViewContext, type MessageViewContextValue } from './message/messageViewContext';
 import { readTimelineView, type TimelineView } from './message/messageViewMode';
 import { Transcript } from './Transcript';
+import { outputLayerStore } from './output-layer';
+import { OutputLayerClient } from '../lib/outputLayerClient';
+import { setActiveOutputLayerClient } from './output-layer/useOutputLayerClient';
 
 vi.mock('./markdown/streamdown-plugins', async (importOriginal) => {
   const original = await importOriginal<typeof import('./markdown/streamdown-plugins')>();
@@ -299,5 +302,152 @@ describe('message view (Bot mode)', () => {
       { agentId: 'main', order: 1, blockId: 'u1' },
       { agentId: 'main', order: 2, blockId: 's1' },
     ]);
+  });
+
+  it('keeps native Assistant prose and row copy original with a selected blank-model preset and zero generation', async () => {
+    const sessionId = 'session_bot';
+    const preset = { id: 'native-empty', label: '未选模型预设', instruction: '翻译', modelId: '   ', contextWindow: 32768 };
+    outputLayerStore.setConfiguration({ enabled: true, presets: [preset], settings: { groupChars: 600, preloadBefore: 1, preloadAfter: 1, historyTokens: 16384 } }, `local::${sessionId}`);
+    outputLayerStore.setActivePreset(sessionId, preset.id);
+    const stream = vi.fn();
+    const client = new OutputLayerClient({ configuration: vi.fn(), configure: vi.fn(), stream });
+    const process = vi.spyOn(client, 'process');
+    setActiveOutputLayerClient(client);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    const original = 'Native Assistant original';
+    const { container } = await render(timeline([assistant('native-empty-answer', original, 't1')], 'process'));
+    expect(container.querySelector('[data-output-layer-unconfigured]')).not.toBeNull();
+    expect(container.querySelector('[data-assistant-prose]')?.textContent).toContain(original);
+    await act(async () => (container.querySelector('[data-row-action="copy"]') as HTMLElement).click());
+    expect(writeText).toHaveBeenCalledWith(original);
+    expect(process).not.toHaveBeenCalled(); expect(stream).not.toHaveBeenCalled();
+    setActiveOutputLayerClient(null);
+    outputLayerStore.setActivePreset(sessionId, null);
+    outputLayerStore.setConfiguration(null, `local::${sessionId}`);
+  });
+
+  it('copies the current streamed reading version after the source stops and isolates preset/source changes', async () => {
+    const sessionId = 'reading-copy-session';
+    const context = { ...BOT_CONTEXT, sessionId };
+    const preset = { id: 'reading-first', label: '翻译', instruction: 'Translate', modelId: 'explicit', contextWindow: 32768 };
+    const secondPreset = { ...preset, id: 'reading-second', instruction: 'Rewrite' };
+    const emptyPreset = { ...preset, id: 'reading-empty', modelId: '' };
+    const configuration = { enabled: true, presets: [preset, secondPreset, emptyPreset], settings: { groupChars: 600, preloadBefore: 1, preloadAfter: 1, historyTokens: 16384 } };
+    const requests: { emit: Parameters<ConstructorParameters<typeof OutputLayerClient>[0]['stream']>[1]; finish: () => void; signal?: AbortSignal }[] = [];
+    const stream = vi.fn<ConstructorParameters<typeof OutputLayerClient>[0]['stream']>(async (_input, emit, options) => {
+      emit({ type: 'started', cycleId: 'reading-cycle', historyReset: false, contextWindow: 32768, inputTokensEstimate: 10 });
+      await new Promise<void>(finish => requests.push({ emit, finish, signal: options?.signal }));
+    });
+    const client = new OutputLayerClient({ configuration: vi.fn().mockResolvedValue(configuration), configure: vi.fn(), stream });
+    const process = vi.spyOn(client, 'process');
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    outputLayerStore.setConfiguration(configuration, `local::${sessionId}`);
+    outputLayerStore.setActivePreset(sessionId, preset.id);
+    setActiveOutputLayerClient(client);
+    const original = 'Stopped source original';
+    const blockId = 'reading-copy-answer';
+    const { container, rerender } = await render(timeline([assistant(blockId, original, 't1')], 'process', {}, context));
+    const copy = async (expected: string) => {
+      await act(async () => (container.querySelector('[data-row-action="copy"]') as HTMLElement).click());
+      expect(writeText).toHaveBeenLastCalledWith(expected);
+    };
+    const switchView = async (label: string) => {
+      const button = Array.from(container.querySelectorAll('button')).find(item => item.textContent === label)!;
+      await act(async () => button.click());
+    };
+    try {
+      expect(requests).toHaveLength(1);
+      await act(async () => requests[0]!.emit({ type: 'delta', text: '译文一半' }));
+      expect(container.querySelector('[data-assistant-prose]')?.textContent).toContain('译文一半');
+      await copy('译文一半');
+      await act(async () => { requests[0]!.emit({ type: 'completed', text: '译文完成' }); requests[0]!.finish(); });
+      await copy('译文完成');
+      await switchView('查看原文'); await copy(original);
+      await switchView('查看处理版'); await copy('译文完成');
+      const copyOriginal = Array.from(container.querySelectorAll('button')).find(item => item.textContent === '复制原文')!;
+      await act(async () => copyOriginal.click());
+      expect(writeText).toHaveBeenLastCalledWith(original);
+      await copy('译文完成');
+
+      await act(async () => outputLayerStore.setActivePreset(sessionId, secondPreset.id));
+      await copy(original);
+      expect(requests).toHaveLength(2);
+      await act(async () => requests[1]!.emit({ type: 'delta', text: '改写一半' }));
+      await copy('改写一半');
+      const replacement = 'Replacement source';
+      await rerender(timeline([assistant(blockId, replacement, 't1')], 'process', {}, context));
+      await copy(replacement);
+      expect(requests[1]!.signal?.aborted).toBe(true);
+      await act(async () => { requests[1]!.emit({ type: 'completed', text: '旧源迟到文本' }); requests[1]!.finish(); });
+      expect(requests).toHaveLength(3);
+      await copy(replacement);
+      await act(async () => requests[2]!.emit({ type: 'delta', text: '新源处理一半' }));
+      await copy('新源处理一半');
+      await act(async () => outputLayerStore.setActivePreset(sessionId, preset.id));
+      await copy(replacement);
+      expect(requests[2]!.signal?.aborted).toBe(true);
+      await act(async () => { requests[2]!.emit({ type: 'completed', text: '旧预设迟到文本' }); requests[2]!.finish(); });
+      expect(requests).toHaveLength(4);
+      await copy(replacement);
+      await act(async () => { requests[3]!.emit({ type: 'completed', text: '新预设完成' }); requests[3]!.finish(); });
+      await copy('新预设完成');
+      await act(async () => outputLayerStore.setActivePreset(sessionId, null));
+      await copy(replacement);
+      const processingCount = process.mock.calls.length;
+      await act(async () => outputLayerStore.setActivePreset(sessionId, emptyPreset.id));
+      await copy(replacement);
+      expect(process).toHaveBeenCalledTimes(processingCount);
+      expect(stream).toHaveBeenCalledTimes(4);
+    } finally {
+      await act(async () => { outputLayerStore.setActivePreset(sessionId, null); client.cancel(sessionId); for (const request of requests) request.finish(); });
+      setActiveOutputLayerClient(null);
+      outputLayerStore.setConfiguration(null, `local::${sessionId}`);
+    }
+  });
+
+  it('immediately restores original block.text for prose and copyText when output layer is turned off', async () => {
+    const sessionId = 'session_bot';
+    const contextKey = `local::${sessionId}`;
+    outputLayerStore.setConfiguration(
+      {
+        enabled: true,
+        presets: [{ id: 'translate', label: '翻译', instruction: '翻译', contextWindow: 32768, maxOutputTokens: 2048 }],
+        settings: { groupChars: 600, preloadBefore: 1, preloadAfter: 1, historyTokens: 16384 },
+      },
+      contextKey,
+    );
+
+    const originalText = '这是原始的回复，不应被处理版覆盖。';
+    const blocks: Block[] = [assistant('a-out-1', originalText, 't1')];
+
+    // 1. Initial state: Output layer enabled and preset active
+    outputLayerStore.setActivePreset(sessionId, 'translate');
+
+    const { container, rerender } = await render(timeline(blocks, 'process'));
+    // AssistantOutputContent is mounted
+    expect(container.querySelector('[data-assistant-prose]')?.textContent).toContain('复制原文');
+
+    // 2. User turns off output layer preset
+    await act(async () => {
+      outputLayerStore.setActivePreset(sessionId, null);
+    });
+
+    await rerender(timeline(blocks, 'process'));
+
+    // Output layer specific controls unmount
+    expect(container.querySelector('[data-assistant-prose]')?.textContent).not.toContain('复制原文');
+    // Original block.text is rendered directly
+    const prose = container.querySelector('[data-assistant-prose]');
+    expect(prose?.textContent).toContain(originalText);
+
+    // Row action copy button is present
+    const copyButton = container.querySelector('[data-row-action="copy"]');
+    expect(copyButton).not.toBeNull();
+
+    // Reset store
+    outputLayerStore.setActivePreset(sessionId, null);
+    outputLayerStore.setConfiguration(null);
   });
 });

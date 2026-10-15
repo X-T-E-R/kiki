@@ -1,3 +1,4 @@
+export * from './outputLayer';
 export * from './agentName';
 export * from './envelope';
 export * from './error-codes';

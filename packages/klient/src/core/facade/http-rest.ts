@@ -332,6 +332,7 @@ export type HttpRestConfigPatch = PatchConfigRequest & {
  * arbitrary URL or untyped request escape hatch.
  */
 export interface HttpRestFacade {
+  readonly outputLayer: import('./output-layer.js').OutputLayerFacade;
   readonly externalClients: import('./external-clients.js').ExternalClientsFacade;
   readonly webAccess: import('./web-access.js').WebAccessFacade;
   readonly connections: import('./connections.js').ConnectionsFacade;

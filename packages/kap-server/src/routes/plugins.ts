@@ -9,6 +9,7 @@ import {
   IPluginUsageService,
   IPluginHostService,
   IPluginSettingsService,
+  IModelCatalog,
   ISessionIndex,
   IAtomicDocumentStore,
   IWorkspaceInstanceManager,
@@ -414,9 +415,14 @@ export function registerPluginsRoutes(
           reply.send(errEnvelope(ErrorCode.PLUGIN_NOT_FOUND, 'Panel is not enabled', req.id));
           return;
         }
-        if (!(panel.slot === 'settings' && req.body.method === 'plugin.call') && core.accessor.get(IPluginUsageService).enabled()) {
-          const workspaceId = await pluginContextWorkspace(core, { session_id: req.body.session_id });
-          if (!await core.accessor.get(IPluginUsageService).allows(workspaceId, info.id, req.body.session_id)) {
+        const sessionId = 'session_id' in req.body ? req.body.session_id : undefined;
+        if (panel.slot !== 'settings' && sessionId !== undefined && await core.accessor.get(ISessionIndex).get(sessionId) === undefined) {
+          reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'Session not found', req.id));
+          return;
+        }
+        if (panel.slot !== 'settings' && core.accessor.get(IPluginUsageService).enabled()) {
+          const workspaceId = await pluginContextWorkspace(core, { session_id: sessionId });
+          if (!await core.accessor.get(IPluginUsageService).allows(workspaceId, info.id, sessionId)) {
             reply.send(errEnvelope(ErrorCode.PLUGIN_NOT_FOUND, 'Panel is not enabled in this workspace', req.id));
             return;
           }
@@ -424,6 +430,24 @@ export function registerPluginsRoutes(
         if (req.body.method === 'plugin.call') {
           const result = await core.accessor.get(IPluginHostService).requestPanel(info.id, req.params.panel_id, req.body.action, req.body.args);
           reply.send(okEnvelope({ result }, req.id));
+          return;
+        }
+        if (req.body.method === 'plugin.settings.get') {
+          reply.send(okEnvelope({ result: await core.accessor.get(IPluginSettingsService).inspect(info.id) }, req.id));
+          return;
+        }
+        if (req.body.method === 'plugin.settings.patch') {
+          reply.send(okEnvelope({ result: await core.accessor.get(IPluginSettingsService).update({ pluginId: info.id, values: req.body.values }) }, req.id));
+          return;
+        }
+        if (req.body.method === 'plugin.models.list') {
+          const catalog = core.accessor.get(IModelCatalog);
+          const [models, providers] = await Promise.all([catalog.listModels(), catalog.listProviders()]);
+          reply.send(okEnvelope({ result: { models, connections: providers.map((provider) => ({ id: provider.id, type: provider.type, status: provider.status })) } }, req.id));
+          return;
+        }
+        if (info.manifest?.kiki?.panels?.find((item) => item.id === req.params.panel_id)?.slot === 'settings') {
+          reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Settings panels cannot read or submit conversation messages', req.id));
           return;
         }
         const summary = await core.accessor.get(ISessionIndex).get(req.body.session_id);

@@ -24,6 +24,7 @@ import type { ExternalTextNote } from '@kiki/session-core/session';
 import { useI18n } from '../../i18n';
 import { ContentContinuation } from '../ContentContinuation';
 import { Markdown } from '../Markdown';
+import { AssistantOutputContent } from '../output-layer';
 import { Icon } from '../icons';
 import { ActivityRow, ACTIVITY_GUTTER } from './ActivityRow';
 import { RelativeTime } from '../RelativeTime';
@@ -76,7 +77,11 @@ export const ExternalTextRow = memo(function ExternalTextRow({
             )}
           </p>
           <div className="text-[13px] leading-6 text-ink-soft">
-            <Markdown text={note.text} />
+            {note.kind === 'assistant_excerpt' ? (
+              <AssistantOutputContent messageId={note.markerId} sourceText={note.text} />
+            ) : (
+              <Markdown text={note.text} />
+            )}
           </div>
           <ContentContinuation source={source} roots={ROOTS} label={kind} />
         </div>
