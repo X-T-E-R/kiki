@@ -225,6 +225,10 @@ export class HistoryLocatorStore {
     return this.canonical().readEntity(session, agent, source, signal);
   }
 
+  readDurableTurn(session: string, agent: string, turnId: string, signal: AbortSignal): ReturnType<HistoryCanonicalReader['readDurableTurn']> {
+    return this.canonical().readDurableTurn(session, agent, turnId, signal);
+  }
+
   readCanonicalTurnHeader(session: string, agent: string, turnId: string, signal?: AbortSignal): ReturnType<HistoryCanonicalReader['readTurnHeader']> {
     return this.canonical().readTurnHeader(session, agent, turnId, signal);
   }

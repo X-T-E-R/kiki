@@ -1248,6 +1248,179 @@ describe('TranscriptService live integration', () => {
     }
   });
 
+  it('releases individually proven completed main turns beyond the tail window without trusting missing live facts', async () => {
+    const home = await seedWireHome(undefined, true);
+    const path = join(home, 'sessions/ws/s1/agents/main/wire.jsonl');
+    let releaseFlush!: () => void;
+    const flushing = new Promise<void>(resolve => { releaseFlush = resolve; });
+    const agents = new FakeAgents();
+    const main = agents.add('main', { wire: { ...stubAgentWire(), flush: async () => flushing,
+      verifyTranscriptLiveEpoch: async () => false, isTranscriptLiveEpochVerified: () => false } });
+    const service = new TranscriptService({ homeDir: home,
+      core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
+      residentLimits: { tailTurns: 1, maxBytes: 1 << 20 }, opsJournalLimits: { maxAgentBytes: 64 << 10, maxTotalBytes: 64 << 10 } });
+    const database = HistoryNavigationDb.lazy(join(home, 'navigation.sqlite'));
+    const navigation = new HistoryLocatorStore(database, service);
+    service.setHistoryLocatorReader(() => navigation);
+    let store: TranscriptStore | undefined;
+    const heap: Record<string, number> = {};
+    try {
+      store = service.forSessionLive('s1')!;
+      await service.whenReady('s1');
+      globalThis.gc?.(); heap['before'] = process.memoryUsage().heapUsed;
+      for (let turnId = 1; turnId <= 24; turnId++) {
+        const records = [
+          { type: 'turn.prompt', turnId, promptId: `p${turnId}`, input: [{ type: 'text', text: `${turnId}:` + 'x'.repeat(512 << 10) }], origin: { kind: 'user' }, time: turnId * 2000 },
+          { type: 'turn.ended', turnId, reason: 'completed', time: turnId * 2000 + 1000 },
+        ];
+        await appendFixtureFile(path, records.map(record => JSON.stringify(record)).join('\n') + '\n');
+        for (const record of records) main.bus.emit(ev(record));
+      }
+      const mismatch = [
+        { type: 'turn.prompt', turnId: 25, promptId: 'different', input: [{ type: 'text', text: 'persisted version' }], origin: { kind: 'user' }, time: 58_000 },
+        { type: 'turn.ended', turnId: 25, reason: 'completed', time: 59_000 },
+      ];
+      await appendFixtureFile(path, mismatch.map(record => JSON.stringify(record)).join('\n') + '\n');
+      main.bus.emit(ev({ ...mismatch[0], input: [{ type: 'text', text: 'unmatched live version' }] }));
+      main.bus.emit(ev(mismatch[1]!));
+      for (const record of [
+        { type: 'turn.prompt', turnId: 26, promptId: 'missing', input: [{ type: 'text', text: 'not persisted' }], origin: { kind: 'user' }, time: 60_000 },
+        { type: 'turn.ended', turnId: 26, reason: 'completed', time: 61_000 },
+        { type: 'turn.prompt', turnId: 27, promptId: 'active', input: [{ type: 'text', text: 'active survives' }], origin: { kind: 'user' }, time: 62_000 },
+      ]) main.bus.emit(ev(record));
+      const old = new WeakRef(store.getAgent('main')!.getTurn('t1')!);
+      const resident = new WeakRef(store);
+      globalThis.gc?.(); heap['loaded'] = process.memoryUsage().heapUsed;
+      console.log('segmented-loaded', { heap: heap['loaded'], residentBytes: service.memoryReport().residentBytes });
+      releaseFlush();
+      await vi.waitFor(() => expect(store?.getAgent('main')?.getTurn('t1') === undefined).toBe(true), { timeout: 15_000 });
+      await vi.waitFor(() => expect(service.memoryReport().residentBytes).toBeLessThan(2 << 20), { timeout: 15_000 });
+      expect(store.getAgent('main')?.getTurn('t25')).toMatchObject({ prompt: 'unmatched live version', state: 'completed' });
+      expect(store.getAgent('main')?.getTurn('t26')).toMatchObject({ prompt: 'not persisted', state: 'completed' });
+      expect(store.getAgent('main')?.getTurn('t27')).toMatchObject({ prompt: 'active survives', state: 'running' });
+      expect(service.isTranscriptLiveCoverageVerified('s1', 'main')).toBe(false);
+      if (globalThis.gc !== undefined) {
+        for (let pass = 0; pass < 4; pass++) { await new Promise<void>(resolve => setImmediate(resolve)); globalThis.gc(); }
+        expect(old.deref()).toBeUndefined();
+      }
+      heap['released'] = process.memoryUsage().heapUsed;
+      const reread = await service.readCanonicalEntity('s1', 'main', { kind: 'turn', id: 't1' }, new AbortController().signal);
+      expect((reread as TranscriptTurn)?.prompt).toBe('1:' + 'x'.repeat(512 << 10));
+      service.dropSession('s1'); store = undefined;
+      await vi.waitFor(() => expect(service.memoryReport().readLane).toMatchObject({ active: 0, queued: 0 }));
+      if (globalThis.gc !== undefined) {
+        for (let pass = 0; pass < 4; pass++) { await new Promise<void>(resolve => setImmediate(resolve)); globalThis.gc(); }
+        expect(resident.deref()).toBeUndefined();
+      }
+      heap['closed'] = process.memoryUsage().heapUsed;
+      console.log('segmented-durability-release', { heap, maxRss: process.resourceUsage().maxRSS * 1024, gc: globalThis.gc !== undefined });
+    } finally { releaseFlush(); service.dispose(); await database.close(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+  }, 40_000);
+
+  it('bounds cumulative multi-record durable proof while public canonical reads retain the complete turn', async () => {
+    const home = await seedWireHome(undefined, true);
+    const path = join(home, 'sessions/ws/s1/agents/main/wire.jsonl');
+    let releaseFlush!: () => void;
+    const flushing = new Promise<void>(resolve => { releaseFlush = resolve; });
+    const agents = new FakeAgents();
+    const main = agents.add('main', { wire: { ...stubAgentWire(), flush: async () => flushing,
+      verifyTranscriptLiveEpoch: async () => false, isTranscriptLiveEpochVerified: () => false } });
+    const warn = vi.fn();
+    const service = new TranscriptService({ homeDir: home, logger: { warn },
+      core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
+      residentLimits: { tailTurns: 0, maxBytes: 1 << 20 }, opsJournalLimits: { maxAgentBytes: 64 << 10, maxTotalBytes: 64 << 10 } });
+    const database = HistoryNavigationDb.lazy(join(home, 'navigation.sqlite'));
+    const navigation = new HistoryLocatorStore(database, service);
+    service.setHistoryLocatorReader(() => navigation);
+    try {
+      const store = service.forSessionLive('s1')!;
+      await service.whenReady('s1');
+      const append = async (records: Record<string, unknown>[]) => {
+        await appendFixtureFile(path, records.map(record => JSON.stringify(record)).join('\n') + '\n');
+        for (const record of records) main.bus.emit(ev(record));
+      };
+      await append([
+        { type: 'turn.prompt', turnId: 1, promptId: 'p1', input: [{ type: 'text', text: 'read all parts' }], origin: { kind: 'user' }, time: 3_000 },
+        { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 1, step: 1, uuid: 's1' } },
+      ]);
+      const output = (index: number) => `${index}:` + 'x'.repeat(32 << 10);
+      for (let index = 0; index < 288; index++) await append([
+        { type: 'context.append_loop_event', event: { type: 'tool.call', turnId: 1, stepUuid: 's1', uuid: `f${index}`, toolCallId: `c${index}`, name: 'Read', args: {} } },
+        { type: 'context.append_loop_event', event: { type: 'tool.result', toolCallId: `c${index}`, result: { output: output(index), isError: false } } },
+      ]);
+      await append([{ type: 'turn.ended', turnId: 1, reason: 'completed', time: 4_000 }]);
+      expect((await fsPromises.stat(path)).size).toBeGreaterThan(8 << 20);
+      const before = navigation.canonicalReadReport();
+      const signal = new AbortController().signal;
+      let result;
+      do {
+        result = await navigation.readDurableTurn('s1', 'main', 't1', signal);
+        await new Promise<void>(resolve => setImmediate(resolve));
+      } while (result.status === 'preparing');
+      expect(result).toEqual({ status: 'over_budget' });
+      const proof = navigation.canonicalReadReport();
+      expect(proof.replayBytes - before.replayBytes).toBeLessThanOrEqual(8 << 20);
+      expect(proof.replayRecords - before.replayRecords).toBeGreaterThan(128);
+      releaseFlush();
+      await vi.waitFor(() => expect(warn).toHaveBeenCalledWith(expect.objectContaining({ overBudget: 1 }),
+        'transcript: retaining turns without matching bounded durable proof'), { timeout: 15_000 });
+      expect(store.getAgent('main')?.getTurn('t1')).toMatchObject({ state: 'completed', prompt: 'read all parts' });
+      const beforePublic = navigation.canonicalReadReport();
+      const reread = await service.readCanonicalEntity('s1', 'main', { kind: 'turn', id: 't1' }, new AbortController().signal) as TranscriptTurn;
+      const frames = reread.steps.flatMap(step => step.frames);
+      expect(frames).toHaveLength(288);
+      for (const [index, frame] of frames.entries()) expect(frame).toMatchObject({ kind: 'tool', toolCallId: `c${index}`, output: output(index) });
+      expect(navigation.canonicalReadReport().replayBytes - beforePublic.replayBytes).toBeGreaterThan(8 << 20);
+      console.log('cumulative-proof-budget', { proofBytes: proof.replayBytes - before.replayBytes,
+        proofRecords: proof.replayRecords - before.replayRecords, publicFrames: frames.length,
+        maxRss: process.resourceUsage().maxRSS * 1024 });
+    } finally { releaseFlush(); service.dispose(); await database.close(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+  }, 40_000);
+
+  it.each(['flush', 'proof'] as const)('cancels residency maintenance at %s and releases the closed main store', async (phase) => {
+    const home = await seedWireHome(undefined, true);
+    const agents = new FakeAgents();
+    let started = false;
+    let finishFlush!: () => void;
+    const flushGate = new Promise<void>(resolve => { finishFlush = resolve; });
+    const main = agents.add('main', { wire: { ...stubAgentWire(), flush: async () => {
+      if (phase === 'flush') { started = true; await flushGate; }
+    } } });
+    const service = new TranscriptService({ homeDir: home, residentLimits: { tailTurns: 0, maxBytes: 1 },
+      core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents) });
+    const database = HistoryNavigationDb.lazy(join(home, 'navigation.sqlite'));
+    const navigation = new HistoryLocatorStore(database, service);
+    service.setHistoryLocatorReader(() => navigation);
+    let proofSignal: AbortSignal | undefined;
+    if (phase === 'proof') vi.spyOn(navigation, 'scan').mockImplementation(async (_session, _agent, signal) => {
+      proofSignal = signal;
+      started = true;
+      await new Promise<void>((_resolve, reject) => {
+        signal!.throwIfAborted();
+        signal!.addEventListener('abort', () => reject(signal!.reason), { once: true });
+      });
+      return undefined;
+    });
+    let store: TranscriptStore | undefined;
+    try {
+      store = service.forSessionLive('s1')!;
+      await service.whenReady('s1');
+      main.bus.emit(ev({ type: 'turn.prompt', turnId: 1, promptId: 'pending', input: [{ type: 'text', text: 'pending persistence' }], origin: { kind: 'user' }, time: 3000 }));
+      main.bus.emit(ev({ type: 'turn.ended', turnId: 1, reason: 'completed', time: 4000 }));
+      await vi.waitFor(() => expect(started).toBe(true));
+      const resident = new WeakRef(store);
+      service.dropSession('s1'); store = undefined;
+      await vi.waitFor(() => expect(service.memoryReport().readLane).toMatchObject({ active: 0, queued: 0 }));
+      if (phase === 'proof') expect(proofSignal?.aborted).toBe(true);
+      if (globalThis.gc !== undefined) {
+        for (let pass = 0; pass < 4; pass++) { await new Promise<void>(resolve => setImmediate(resolve)); globalThis.gc(); }
+        expect(resident.deref()).toBeUndefined();
+      }
+      expect(service.memoryReport()).toMatchObject({ liveSessions: 0, residentBytes: 0 });
+      console.log('cancelled-residency-release', { phase, heapAfterDrop: process.memoryUsage().heapUsed, maxRss: process.resourceUsage().maxRSS * 1024 });
+    } finally { finishFlush(); service.dispose(); await database.close(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+  });
+
   it('does not repeatedly replay an unverified wire for background residency maintenance', async () => {
     const home = await seedWireHome(undefined, true);
     const path = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
@@ -4553,4 +4726,41 @@ it('rejects stale indexed turn bytes after a wire rewrite and uses bounded ancho
     expect(page?.items.find(item => item.kind === 'turn')).toMatchObject({ turnId: 't1', prompt: rewritten });
     expect(service.anchorReadState(page!)).toBe('window');
   } finally { service.dispose(); await database.close(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+}, 30_000);
+
+
+it('does not retain an oversized sole cold window and still advances to older records', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'transcript-oversized-window-'));
+  const path = join(home, 'sessions/ws/s1/agents/main/wire.jsonl');
+  const prompt = (turnId: number) => JSON.stringify({ type: 'turn.prompt', turnId, promptId: `p${turnId}`, input: [{ type: 'text', text: `turn-${turnId}` }], origin: { kind: 'user' } }) + '\n';
+  let raw: WeakRef<object> | undefined;
+  const service = new TranscriptService({ homeDir: home, core: coldCore(), wireRecordReader: (file, options) => streamWireRecords(file, {
+    ...options, onRecord: (record, span) => {
+      if (record.type === 'fixture.large') raw = new WeakRef(record);
+      return options.onRecord(record, span);
+    },
+  }) });
+  try {
+    await mkdir(dirname(path), { recursive: true });
+    await writeFixtureFile(path, prompt(1));
+    await appendFixtureFile(path, '{"type":"fixture.large","padding":"');
+    for (let chunk = 0; chunk < 34; chunk++) await appendFixtureFile(path, 'x'.repeat(1 << 20));
+    await appendFixtureFile(path, '"}\n' + prompt(2));
+    const initial = await service.readColdPageSnapshot('s1', 'main', source => source);
+    expect(initial?.items.find(item => item.kind === 'turn')).toMatchObject({ turnId: 't2' });
+    expect(service.memoryReport().coldWindowBytes).toBeLessThanOrEqual(32 << 20);
+    if (globalThis.gc !== undefined) {
+      for (let pass = 0; pass < 4; pass++) { await new Promise<void>(resolve => setImmediate(resolve)); globalThis.gc(); }
+      expect(raw?.deref()).toBeUndefined();
+    }
+    const older = await service.readColdPageSnapshot('s1', 'main', source => source, undefined, true);
+    expect(older?.items.find(item => item.kind === 'turn')).toMatchObject({ turnId: 't1', prompt: 'turn-1' });
+    let originalLength = 0;
+    await streamWireRecords(path, { onRecord: record => { if (record.type === 'fixture.large') originalLength = (record['padding'] as string).length; } });
+    expect(originalLength).toBe(34 << 20);
+    service.dropSession('s1');
+    if (globalThis.gc !== undefined) { await new Promise<void>(resolve => setImmediate(resolve)); globalThis.gc(); }
+    expect(service.memoryReport()).toMatchObject({ coldWindowBytes: 0, coldWindowEntries: 0 });
+    console.log('oversized-window-release', { heapAfterDrop: process.memoryUsage().heapUsed, maxRss: process.resourceUsage().maxRSS * 1024, gc: globalThis.gc !== undefined });
+  } finally { service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
 }, 30_000);

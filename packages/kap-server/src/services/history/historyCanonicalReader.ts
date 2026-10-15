@@ -1,7 +1,7 @@
 import { open, stat } from 'node:fs/promises';
 
 import { AgentTranscriptDraft, TranscriptFactReducer, TranscriptWireAdapter,
-  type ContentSource, type ToolCallFrame, type TranscriptFrame, type TranscriptTurn } from '@kiki/transcript';
+  type AgentTranscriptSnapshot, type ContentSource, type ToolCallFrame, type TranscriptFrame, type TranscriptTurn } from '@kiki/transcript';
 import type { HistoryNavManifest, HistoryNavigationDb, LazyHistoryNavigationDb } from './historyNavigationDb';
 import { historyNavigationProof, matchesNavigationProof, type HistoryNavigationProof } from './historyNavigationProof';
 import { hashHistoryRecord } from './historySource';
@@ -194,6 +194,15 @@ export class HistoryCanonicalReader {
     const entity = source.kind === 'turn' ? await this.readTurn(prepared, agent, turnId, signal, true) :
       await this.readFrame(prepared, agent, turnId, source.stepId, source.id, signal);
     return entity === undefined ? { status: 'not_found' } : { status: 'found', entity };
+  }
+
+  async readDurableTurn(session: string, agent: string, turnId: string, signal: AbortSignal): Promise<
+    { status: 'found'; snapshot: AgentTranscriptSnapshot } | { status: 'preparing' | 'not_found' | 'over_budget' }> {
+    const input = await this.transcript.scheduleHistoryRead(signal, owned => this.prepare(session, agent, owned));
+    if (input === undefined) return { status: 'preparing' };
+    if (input.db.canonicalSeed(input.scope, turnId) === undefined) return { status: 'not_found' };
+    const snapshot = await this.transcript.scheduleHistoryRead(signal, owned => this.replaySnapshot(input, agent, turnId, owned, 8 << 20));
+    return snapshot === undefined ? { status: 'over_budget' } : { status: 'found', snapshot };
   }
 
   private async prepare(session: string, agent: string, signal?: AbortSignal): Promise<Prepared | undefined> {
@@ -399,6 +408,11 @@ export class HistoryCanonicalReader {
   }
 
   private async replay(input: Prepared, agent: string, turnId: string, signal: AbortSignal): Promise<TranscriptTurn | undefined> {
+    return (await this.replaySnapshot(input, agent, turnId, signal))?.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === turnId);
+  }
+
+  private async replaySnapshot(input: Prepared, agent: string, turnId: string, signal: AbortSignal,
+    maxBytes?: number): Promise<AgentTranscriptSnapshot | undefined> {
     const seed = input.db.canonicalSeed(input.scope, turnId);
     if (seed === undefined) return undefined;
     const draft = new AgentTranscriptDraft(agent);
@@ -409,6 +423,8 @@ export class HistoryCanonicalReader {
     const handle = await open(input.wirePath, 'r');
     let sliceBytes = 0;
     let sliceRecords = 0;
+    let totalBytes = 0;
+    let totalRecords = 0;
     let ordinal = -1;
     let expectedOrdinal = seed.ordinal;
     this.replays += 1;
@@ -421,6 +437,7 @@ export class HistoryCanonicalReader {
           signal.throwIfAborted();
           const size = span.end - span.start;
           if (!Number.isSafeInteger(size) || size <= 0) throw new Error('history_canonical_invalid_span');
+          if (maxBytes !== undefined && (totalBytes + size > maxBytes || totalRecords >= 50_000)) return undefined;
           if (sliceBytes >= TARGET_BYTES || sliceRecords >= TARGET_RECORDS) {
             await new Promise<void>((resolve) => { setImmediate(resolve); });
             signal.throwIfAborted();
@@ -434,6 +451,7 @@ export class HistoryCanonicalReader {
             const read = await handle.read(bytes, offset, size - offset, span.start + offset);
             this.replayBytes += read.bytesRead;
             sliceBytes += read.bytesRead;
+            totalBytes += read.bytesRead;
             if (read.bytesRead === 0) throw new Error('history_source_changed');
             offset += read.bytesRead;
           }
@@ -444,6 +462,7 @@ export class HistoryCanonicalReader {
           expectedOrdinal = span.ordinal + 1;
           ordinal = span.ordinal;
           sliceRecords += 1;
+          totalRecords += 1;
           this.replayRecords += 1;
         }
         if (page.length < 128) break;
@@ -455,7 +474,7 @@ export class HistoryCanonicalReader {
           input.db.readManifest(input.scope)?.offset !== input.manifest.offset) throw new Error('history_source_changed');
       const turn = draft.getTurn(turnId);
       if (turn === undefined) throw new Error('history_canonical_locator_incomplete');
-      return turn;
+      return { ...draft.snapshot(), items: [turn] };
     } finally { await handle.close(); }
   }
 

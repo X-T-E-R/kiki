@@ -3,6 +3,7 @@ import { createReadStream } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { open, readFile, stat } from 'node:fs/promises';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { abortable } from '@kiki/agent-core-v2/_base/utils/abort';
 
 import {
   IAgentActivityView,
@@ -348,6 +349,7 @@ interface ColdWireWindow {
   snapshot: AgentTranscriptSnapshot;
   bytes: number;
   droppedTail?: boolean;
+  payloadEvicted?: boolean;
   headers?: readonly TranscriptTurn[];
   headerAttachments?: AgentTranscriptSnapshot['attachments'];
 }
@@ -403,7 +405,7 @@ export class TranscriptService {
   private readonly opsJournalLimits: Required<TranscriptOpsJournalLimits>;
   private readonly wireRecordReader: NonNullable<TranscriptServiceDeps['wireRecordReader']>;
   private readonly coldSnapshotFlights = new Map<string, ColdSnapshotFlight>();
-  private readonly residencyMaintenance = new Map<string, Promise<void>>();
+  private readonly residencyMaintenance = new Map<string, { controller: AbortController; again: boolean }>();
   private readonly coldSnapshotCache = new Map<string, ColdSnapshotCacheEntry>();
   private readonly retainedColdTurns = new Map<string, { fingerprint: string; turns: ReadonlyMap<string, TranscriptTurn>; bytes: number }>();
   private readonly coldWireWindows = new Map<string, ColdWireWindow>();
@@ -538,6 +540,8 @@ export class TranscriptService {
     const session = getLiveSessionById(this.deps.core.accessor, sessionId);
     if (session?.accessor.get(IAgentLifecycleService).get(agentId) !== undefined) return;
     this.setResidentWeight(`${sessionId}\0${agentId}`, 0);
+    this.residencyMaintenance.get(`${sessionId}\0${agentId}`)?.controller.abort(new DOMException('Transcript agent closed', 'AbortError'));
+    this.residencyMaintenance.delete(`${sessionId}\0${agentId}`);
     const wire = entry.agentWires.get(agentId);
     entry.agentWires.delete(agentId);
     entry.agentBackfills.delete(agentId);
@@ -935,22 +939,58 @@ export class TranscriptService {
     const transcript = entry.store.getAgent(agentId);
     const limits = this.resolveResidentLimits();
     const wire = entry.agentWires.get(agentId);
-    if (transcript === undefined || limits === undefined || wire === undefined || this.residencyMaintenance.has(key)) return;
+    if (transcript === undefined || limits === undefined || wire === undefined) return;
+    const pending = this.residencyMaintenance.get(key);
+    if (pending !== undefined) { pending.again = true; return; }
     const report = transcript.residentReport();
     const effective = this.aggregateResidentLimits(key, report.estimatedBytes, limits);
     if (report.turns <= effective.tailTurns && report.estimatedBytes <= effective.maxBytes) return;
-    let maintenance!: Promise<void>;
-    maintenance = Promise.resolve().then(async () => {
-      await wire.flush();
-      if (!await this.verifyTranscriptLiveCoverage(sessionId, agentId)) return;
-      const snapshot = await this.readScreenSnapshot(sessionId, agentId, () => this.liveActiveTurnIds(sessionId, agentId, undefined));
-      if (snapshot !== undefined && this.live.get(sessionId) === entry && entry.agentWires.get(agentId) === wire) this.releaseDurableHistory(entry, agentId, snapshot);
-    }).catch((error: unknown) => {
-      this.deps.logger?.warn({ sessionId, agentId, error }, 'transcript: durability clearance failed; keeping resident history');
-    }).finally(() => {
-      if (this.residencyMaintenance.get(key) === maintenance) this.residencyMaintenance.delete(key);
-    });
+    const controller = new AbortController();
+    const signal = controller.signal;
+    const current = () => !signal.aborted && this.live.get(sessionId) === entry && entry.agentWires.get(agentId) === wire;
+    const maintenance = { controller, again: false };
     this.residencyMaintenance.set(key, maintenance);
+    void Promise.resolve().then(async () => {
+      await abortable(wire.flush(), signal);
+      if (!current()) return;
+      maintenance.again = false;
+      if (this.historyLocatorReader === undefined) {
+        if (!await this.verifyTranscriptLiveCoverage(sessionId, agentId)) return;
+        const snapshot = await this.readScreenSnapshot(sessionId, agentId, () => this.liveActiveTurnIds(sessionId, agentId, undefined), signal);
+        if (snapshot !== undefined && current()) this.releaseDurableHistory(entry, agentId, snapshot);
+        return;
+      }
+      const turns = transcript.getItems().flatMap(item => item.kind === 'turn' && item.state !== 'running' ? [item.turnId] : []);
+      const retained = { notFound: 0, overBudget: 0, mismatch: 0 };
+      for (const turnId of turns) {
+        signal.throwIfAborted();
+        if (!current()) return;
+        const report = transcript.residentReport();
+        const effective = this.aggregateResidentLimits(key, report.estimatedBytes, limits);
+        if (report.turns <= effective.tailTurns && report.estimatedBytes <= effective.maxBytes) break;
+        const newest = transcript.getItems().findLast(item => item.kind === 'turn');
+        if (effective.tailTurns > 0 && newest?.kind === 'turn' && newest.turnId === turnId) continue;
+        let result;
+        do {
+          result = await this.detailLocator().readDurableTurn(sessionId, agentId, turnId, signal);
+          await new Promise<void>(resolve => setImmediate(resolve));
+          if (!current()) return;
+        } while (result.status === 'preparing');
+        if (result.status === 'found') {
+          this.releaseDurableHistory(entry, agentId, result.snapshot);
+          if (transcript.getTurn(turnId) !== undefined) retained.mismatch += 1;
+        } else if (result.status === 'not_found') retained.notFound += 1;
+        else retained.overBudget += 1;
+      }
+      if (retained.notFound + retained.overBudget + retained.mismatch > 0) this.deps.logger?.warn(
+        { sessionId, agentId, ...retained }, 'transcript: retaining turns without matching bounded durable proof');
+    }).catch((error: unknown) => {
+      if (!signal.aborted) this.deps.logger?.warn({ sessionId, agentId, error }, 'transcript: durability clearance failed; keeping resident history');
+    }).finally(() => {
+      if (this.residencyMaintenance.get(key) !== maintenance) return;
+      this.residencyMaintenance.delete(key);
+      if (maintenance.again && current()) this.scheduleResidencyMaintenance(sessionId, agentId, entry);
+    });
   }
 
   onSessionOps(sessionId: string, listener: TranscriptOpsListener): IDisposable | undefined {
@@ -1801,7 +1841,7 @@ export class TranscriptService {
     captureReplayState?: (state: TranscriptReplayState) => void,
   ): Promise<ColdWireWindow | undefined> {
     const existing = this.coldWireWindows.get(wirePath);
-    if (existing !== undefined && existing.fingerprint === fingerprint) {
+    if (existing !== undefined && existing.fingerprint === fingerprint && existing.payloadEvicted !== true) {
       if (preserveOpenTurnIds !== undefined || captureReplayState !== undefined) {
         existing.snapshot = this.projectColdRecords(agentId, existing.records, existing.entire, preserveOpenTurnIds, captureReplayState, existing);
       }
@@ -1854,7 +1894,9 @@ export class TranscriptService {
     fingerprint: string, signal: AbortSignal, preserveOpenTurnIds?: () => readonly string[],
     captureReplayState?: (state: TranscriptReplayState) => void, spanBytes = FIRST_SCREEN_WINDOW_BYTES,
   ): Promise<ColdWireWindow | undefined> {
-    const window = await this.ensureColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, signal, preserveOpenTurnIds, captureReplayState);
+    const retained = this.coldWireWindows.get(wirePath);
+    const window = retained?.fingerprint === fingerprint && retained.payloadEvicted === true ? retained :
+      await this.ensureColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, signal, preserveOpenTurnIds, captureReplayState);
     if (window === undefined || window.start === 0) return window;
     const next = await this.tailRecordStart(wirePath, window.start, signal, spanBytes);
     if (next >= window.start) return window;
@@ -1874,6 +1916,7 @@ export class TranscriptService {
     } else {
       extended = { ...window, start: next, entire, records: merged, snapshot, bytes };
     }
+    extended.payloadEvicted = false;
     this.rememberColdWindow(wirePath, extended);
     this.deleteColdSnapshotCache(wirePath);
     return extended;
@@ -1926,9 +1969,13 @@ export class TranscriptService {
 
   private rememberColdWindow(wirePath: string, window: ColdWireWindow): void {
     this.forgetColdWindow(wirePath);
-    this.coldWireWindows.set(wirePath, window);
-    this.coldWireWindowBytes += window.bytes;
-    this.trimColdWindows(wirePath);
+    const retained: ColdWireWindow = window.bytes > COLD_WIRE_WINDOWS_MAX_TOTAL_BYTES ? {
+      fingerprint: window.fingerprint, start: window.start, end: window.end, entire: false,
+      records: [], snapshot: { ...unknownSnapshot(), hasMoreOlder: window.start > 0 }, bytes: 0, droppedTail: true, payloadEvicted: true,
+    } : window;
+    this.coldWireWindows.set(wirePath, retained);
+    this.coldWireWindowBytes += retained.bytes;
+    this.trimColdWindows();
   }
 
   private forgetColdWindow(wirePath: string): void {
@@ -1938,10 +1985,10 @@ export class TranscriptService {
     this.coldWireWindowBytes -= existing.bytes;
   }
 
-  private trimColdWindows(keep: string): void {
+  private trimColdWindows(): void {
     while (this.coldWireWindows.size > COLD_WIRE_WINDOWS_MAX_ENTRIES ||
-      (this.coldWireWindowBytes > COLD_WIRE_WINDOWS_MAX_TOTAL_BYTES && this.coldWireWindows.size > 1)) {
-      const oldest = [...this.coldWireWindows.keys()].find((key) => key !== keep);
+      this.coldWireWindowBytes > COLD_WIRE_WINDOWS_MAX_TOTAL_BYTES) {
+      const oldest = this.coldWireWindows.keys().next().value;
       if (oldest === undefined) break;
       this.forgetColdWindow(oldest);
     }
@@ -2968,6 +3015,11 @@ export class TranscriptService {
 
   /** Dispose the live store + binding for a session (session closed / server shutdown). */
   dropSession(sessionId: string): void {
+    for (const [key, maintenance] of this.residencyMaintenance) {
+      if (!key.startsWith(`${sessionId}\0`)) continue;
+      maintenance.controller.abort(new DOMException('Transcript session closed', 'AbortError'));
+      this.residencyMaintenance.delete(key);
+    }
     for (const key of this.residentWeights.keys()) {
       if (key.startsWith(`${sessionId}\0`)) this.setResidentWeight(key, 0);
     }
