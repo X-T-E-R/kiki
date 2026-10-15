@@ -140,6 +140,7 @@ describe('HostProcessService', () => {
 describe('HostProcessService Windows taskkill settlement', () => {
   let platform: NodeJS.Platform;
   let killer: EventEmitter & { kill: ReturnType<typeof vi.fn>; unref: ReturnType<typeof vi.fn> };
+  let root: EventEmitter;
   let disposables: DisposableStore;
   let service: IHostProcessService;
   let commands: string[];
@@ -157,7 +158,10 @@ describe('HostProcessService Windows taskkill settlement', () => {
           kill: vi.fn(() => true), unref: vi.fn(),
         });
         if (command === 'taskkill') killer = child;
-        else queueMicrotask(() => child.emit('spawn'));
+        else {
+          root = child;
+          queueMicrotask(() => child.emit('spawn'));
+        }
         return child;
       },
     }));
@@ -194,6 +198,39 @@ describe('HostProcessService Windows taskkill settlement', () => {
     expect(killer.unref).toHaveBeenCalledOnce();
     expect(await pending).toMatchObject({ code: 'os.process.kill_failed', details: { cleanupComplete: false, phase: 'deadline', pid: 4242 } });
     await process.dispose();
+  });
+
+  it.each([false, true])('preserves taskkill 128 when root exit was observed=%s because descendants may survive', async (exited) => {
+    const proc = await service.spawn('node', ['-e', 'owned-test']);
+    const pending = proc.kill();
+    const check = expect(pending).rejects.toMatchObject({
+      code: 'os.process.kill_failed',
+      details: { cleanupComplete: false, phase: 'terminate', pid: proc.pid, exitCode: 128 },
+    });
+    if (exited) {
+      root.emit('exit', 0);
+      expect(await proc.wait()).toBe(0);
+    }
+    killer.emit('close', 128);
+    await check;
+    expect(vi.getTimerCount()).toBe(0);
+    await proc.dispose();
+  });
+
+  it('preserves taskkill EPERM even if the root exits during cleanup', async () => {
+    const proc = await service.spawn('node', ['-e', 'owned-test']);
+    const denied = Object.assign(new Error('access denied'), { code: 'EPERM' });
+    const pending = proc.kill();
+    const check = expect(pending).rejects.toMatchObject({
+      code: 'os.process.kill_failed',
+      details: { cleanupComplete: false, phase: 'control', pid: proc.pid },
+      cause: denied,
+    });
+    root.emit('exit', 0);
+    killer.emit('error', denied);
+    await check;
+    expect(vi.getTimerCount()).toBe(0);
+    await proc.dispose();
   });
 
   it.each(['close', 'error'])('settles an early taskkill %s without killing it or leaving a deadline', async (event) => {
@@ -267,13 +304,15 @@ describe.skipIf(process.platform !== 'win32')('Windows owned process tree', () =
 
   beforeEach(() => {
     disposables = new DisposableStore();
+    const loop = stubLoopWithHooks();
+    loop.hooks.onWillBeginStep.register('context-injector', async (_ctx, next) => next());
     const ix = createServices(disposables, {
       base: [registerTestAgentWireServices],
       additionalServices: (reg) => {
         reg.define(IHostProcessService, HostProcessService);
         reg.define(IAgentTaskService, AgentTaskService);
         reg.defineInstance(IAgentContextMemoryService, stubContextMemory());
-        reg.defineInstance(IAgentLoopService, stubLoopWithHooks());
+        reg.defineInstance(IAgentLoopService, loop);
         reg.definePartialInstance(IAgentLifecycleService, { get: () => undefined });
         reg.definePartialInstance(IAgentConversationUndoParticipantRegistry, { register: () => toDisposable(() => {}) });
         reg.definePartialInstance(IAgentContextInjectorService, { register: () => toDisposable(() => {}) });
@@ -312,6 +351,35 @@ describe.skipIf(process.platform !== 'win32')('Windows owned process tree', () =
     expect(output.subarray(0, 5)).toEqual(Buffer.from([0, 255, 128, 13, 10]));
     expect(output.subarray(5).toString('utf8')).toBe(JSON.stringify([directory, 'owned env', undefined, 'space "quoted" trailing\\', 26_000]));
     expect(await stderr).toEqual(Buffer.from([0, 255, 128, 13, 10]));
+    await proc.dispose();
+  });
+
+  it.each([true, 'C:/Program Files/Git/bin/bash.exe'])('preserves shell syntax, quoted paths, argv, env and stdin with owned shell=%s', async (shell) => {
+    const script = join(directory, 'shell fixture.cjs');
+    await writeFile(script, 'let input="";process.stdin.on("data",chunk=>input+=chunk);process.stdin.on("end",()=>{process.stdout.write(JSON.stringify([process.cwd(),process.env.TREE_TEST,process.argv.slice(2),input]));process.stderr.write("shell stderr");process.exitCode=23;});');
+    const command = `"${process.execPath.replaceAll('\\', '/')}" "${script.replaceAll('\\', '/')}"`;
+    const proc = await spawnOwned(command, ['"two words"'], { shell, cwd: directory, env: { TREE_TEST: 'owned shell' } });
+    const stdout = collect(proc.stdout);
+    const stderr = collect(proc.stderr);
+    proc.stdin.end('input');
+    expect(await proc.wait()).toBe(23);
+    expect(await stdout).toBe(JSON.stringify([directory, 'owned shell', ['two words'], 'input']));
+    expect(await stderr).toBe('shell stderr');
+    await proc.dispose();
+  });
+
+  it.each(['racing', 'exited'])('settles concurrent and repeated Job kills for a %s shell root', async (state) => {
+    const script = join(directory, 'exit fixture.cjs');
+    await writeFile(script, 'process.stdin.once("data",()=>process.exit(0));process.stdout.write("ready");');
+    const proc = await spawnOwned(`"${process.execPath}" "${script}"`, [], { shell: true });
+    await new Promise<void>((resolve) => proc.stdout.once('data', () => resolve()));
+    proc.stdin.end('exit');
+    if (state === 'exited') expect(await proc.wait()).toBe(0);
+    else expect(proc.exitCode).toBeNull();
+    await Promise.all([proc.kill(), proc.kill()]);
+    expect([0, 1]).toContain(await proc.wait());
+    expect(alive(proc.pid)).toBe(false);
+    await expect(proc.kill()).resolves.toBeUndefined();
     await proc.dispose();
   });
 

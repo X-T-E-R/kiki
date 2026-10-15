@@ -205,8 +205,17 @@ export async function spawnWindowsProcessTree(command: string, args: readonly st
       details: { command, phase: 'helper', helperMissing: true },
     });
   }
+  let executable = command;
+  let commandLine = [command, ...args].map(quoteArgument).join(' ');
+  if (options.shell) {
+    const shellCommand = [command, ...args].join(' ');
+    executable = typeof options.shell === 'string' ? options.shell : process.env['ComSpec'] || 'cmd.exe';
+    commandLine = /^(?:.*[\\/])?cmd(?:\.exe)?$/i.test(executable)
+      ? `${quoteArgument(executable)} /d /s /c "${shellCommand}"`
+      : [executable, '-c', shellCommand].map(quoteArgument).join(' ');
+  }
   const name = `kiki-owned-${randomUUID()}`;
-  const encoded = [command, [command, ...args].map(quoteArgument).join(' '), resolve(options.cwd?.toString() ?? process.cwd())]
+  const encoded = [executable, commandLine, resolve(options.cwd?.toString() ?? process.cwd())]
     .map((value) => Buffer.from(value).toString('base64'));
   const child = spawn(helper, [name], { ...options, stdio: 'ignore', shell: false });
   let processTree: WindowsProcessTree | undefined;
