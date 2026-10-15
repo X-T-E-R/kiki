@@ -96,6 +96,22 @@ describe('LiveControllerRegistry view cache', () => {
     again.release();
   });
 
+  it('keeps a parked view retained for its connection after it leaves the live roster', () => {
+    const registry = new LiveControllerRegistry();
+    const scope = {};
+    const other = {};
+    const view = fake('a');
+    registry.acquire('a', scope, () => view.controller).release();
+    expect([...registry]).toEqual([]);
+    expect(registry.hasRetained('a', scope)).toBe(true);
+    expect(registry.hasRetained('a', other)).toBe(false);
+    expect(registry.hasRetained('missing', scope)).toBe(false);
+    expect(registry.hasRetained('', scope)).toBe(false);
+    registry.evictScope(scope);
+    expect(registry.hasRetained('a', scope)).toBe(false);
+    expect(view.close).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps a cache-hit lease pending until resume refreshes the shell', async () => {
     const registry = new LiveControllerRegistry();
     const scope = {};

@@ -301,7 +301,7 @@ export function buildNewSessionCreate(input: {
       ? input.execution?.profile_file === undefined ? {} : { execution: { executor: NATIVE_EXECUTOR, profile_file: input.execution.profile_file } }
       : named ? { execution: executionSelectionOf(input.execution!) } : {}),
     ...(!external && keep('model', input.modelTouched) && input.model !== undefined ? { model: input.model } : {}),
-    ...(!external && keep('thinking', input.effortTouched) && input.thinking !== undefined ? { thinking: input.thinking } : {}),
+    ...(!external && keep('thinking', input.effortTouched) && typeof input.thinking === 'string' && input.thinking !== '' ? { thinking: input.thinking } : {}),
     ...(external || keep('permission_mode', input.permissionTouched) ? { permission_mode: input.permissionMode } : {}),
     plan_mode: input.planMode,
   };
@@ -915,10 +915,12 @@ export function useNewSessionDraft({
               // default re-sent here would re-introduce the very override the
               // create body just declined to send.
               model: sendsLegacyControl(context.execution, 'model', modelTouched.current) ? context.modelOverride : undefined,
-              thinking: sendsLegacyControl(context.execution, 'thinking', effortTouched.current) ? context.effectiveEffort : undefined,
+              thinking: sendsLegacyControl(context.execution, 'thinking', effortTouched.current) && context.effectiveEffort !== ''
+                ? context.effectiveEffort : undefined,
               permissionMode: sendsLegacyControl(context.execution, 'permission_mode', permissionTouched.current) ? context.permissionMode : undefined,
               planMode: context.planMode,
               goalObjective: handoff.goalObjectiveOverride ?? context.goalObjective,
+              ephemeral: context.ephemeral,
               // The greeting was the last thing on screen and this is the first
               // message: the engine materializes it as history from the frozen
               // persona (the client never sends the greeting text itself).

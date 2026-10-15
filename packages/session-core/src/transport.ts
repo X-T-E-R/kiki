@@ -10,6 +10,8 @@ import type {
   PatchConfigRequest,
   PermissionMode,
   PromptAbortResponse,
+  PromptItem,
+  PromptListResponse,
   TurnAbortResponse,
   PromptMoveRequest,
   PromptMoveResult,
@@ -104,7 +106,7 @@ export interface SessionCursor {
 
 export interface MessageRunOverrides {
   readonly model?: string;
-  readonly thinking?: string;
+  readonly thinking?: string | null;
   readonly permission_mode?: PermissionMode;
   readonly plan_gate?: PromptPlanGate;
   readonly plan_mode?: boolean;
@@ -500,6 +502,10 @@ export interface AgentTranscriptResponse {
 export interface SessionTransport {
   getSession(sessionId: string): Promise<Session>;
   submitPrompt(sessionId: string, body: PromptSubmission): Promise<PromptSubmitResult>;
+  /** HTTP-only durable ingress reconciliation; absent on memory/legacy transports. */
+  listDurableIngress?(sessionId: string, options?: { readonly agentId?: string; readonly cursor?: string }): Promise<PromptListResponse>;
+  getDurableIngress?(sessionId: string, promptId: string, agentId?: string): Promise<PromptItem>;
+  resumeDurableIngress?(sessionId: string, promptId: string, body: PromptSubmission, agentId?: string): Promise<PromptItem>;
   editMessage(sessionId: string, messageId: string, body: EditMessageRequest): Promise<PromptSubmitResult>;
   regenerateMessage(sessionId: string, messageId: string, body: RegenerateMessageRequest): Promise<PromptSubmitResult>;
   forkSession(sessionId: string, body: KikiForkSessionRequest): Promise<Session>;

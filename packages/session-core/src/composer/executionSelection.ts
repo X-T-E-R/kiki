@@ -65,8 +65,22 @@ export function namesLegacyControl(choice: ExecutionChoice | undefined, control:
   return overrides !== undefined && Object.hasOwn(overrides, control);
 }
 
+/**
+ * Native with a registered profile does not serialize `execution`. The model
+ * picker still parks the chosen model and effort on `overrides`, and those
+ * keys must not swallow the legacy fields — nothing else carries them.
+ * A named permission stays withheld. Every published selection keeps ownership.
+ */
+function unpublishedNativeProfile(choice: ExecutionChoice | undefined): boolean {
+  return choice !== undefined
+    && choice.external_connection_id === undefined
+    && isNativeExecutor(choice.executor)
+    && choice.profile !== undefined;
+}
+
 export function sendsLegacyControl(choice: ExecutionChoice | undefined, control: 'model' | 'thinking' | 'permission_mode', touched: boolean): boolean {
-  if (namesLegacyControl(choice, control)) return false;
+  const parkedOnUnpublishedProfile = unpublishedNativeProfile(choice) && control !== 'permission_mode';
+  if (namesLegacyControl(choice, control) && !parkedOnUnpublishedProfile) return false;
   if (touched) return true;
   return choice === undefined || isNativeExecutor(choice.executor) || choice.profile !== undefined;
 }
@@ -80,6 +94,27 @@ export function sameExecutionChoice(left: ExecutionChoice | undefined, right: Ex
   if (left === undefined || right === undefined) return left === right;
   return left.executor === right.executor && left.profile === right.profile && left.profile_file === right.profile_file
     && left.external_connection_id === right.external_connection_id && sameOverrides(left.overrides, right.overrides);
+}
+
+function overridesExceptThinking(value: ExecutionOverrides | undefined): ExecutionOverrides | undefined {
+  if (value === undefined || !Object.hasOwn(value, 'thinking')) return value;
+  const rest: ExecutionOverrides = { ...value };
+  delete rest.thinking;
+  return rest;
+}
+
+/**
+ * An effort capsule is not an engine switch. True only when executor, profile,
+ * profile file, connection, and every override except thinking stay the same.
+ * Equal choices and a missing current choice are not a change.
+ */
+export function isEffortOnlyExecutionChange(next: ExecutionChoice, current: ExecutionChoice | undefined): boolean {
+  if (current === undefined) return false;
+  if (next.executor !== current.executor || next.profile !== current.profile
+    || next.profile_file !== current.profile_file
+    || next.external_connection_id !== current.external_connection_id) return false;
+  if (sameExecutionChoice(next, current)) return false;
+  return sameOverrides(overridesExceptThinking(next.overrides), overridesExceptThinking(current.overrides));
 }
 
 function sameOverrides(left: ExecutionOverrides | undefined, right: ExecutionOverrides | undefined): boolean {

@@ -1048,6 +1048,17 @@ export function Composer({
   ];
   const executorModelWritable = isExecutorActionAvailable(executorCapabilities.controls.model_switch)
     && (executorCapabilities.models.kind === 'ready' || executorCapabilities.models.kind === 'partial');
+  const writeExecutorModel = (next: string | undefined) => {
+    if (!executorModelWritable) return;
+    if (onChangeExecution !== undefined && selectedExecution !== undefined) {
+      onChangeExecution({
+        ...selectedExecution,
+        overrides: { ...selectedExecution.overrides, model: next ?? null },
+      });
+      return;
+    }
+    return onChangeModel(next);
+  };
   const executorEfforts = isExecutorActionAvailable(executorCapabilities.controls.thinking_switch)
     && (executorCapabilities.thinking_levels.kind === 'ready' || executorCapabilities.thinking_levels.kind === 'partial')
     ? executorCapabilities.thinking_levels.values : undefined;
@@ -2415,10 +2426,7 @@ export function Composer({
             currentEffort={effort}
             efforts={externalExecution ? executorEfforts : efforts}
             onChangeModel={(next) => {
-              if (externalExecution) {
-                if (!executorModelWritable) return;
-                return onChangeModel(next);
-              }
+              if (externalExecution) return writeExecutorModel(next);
               const state = projectedProfileModelState(modelProjection, models, next ?? selectionDefaultModel ?? serverDefaultModel, modelSelectionPosition);
               if (state === 'blocked' || state === 'unknown') return;
               return onChangeModel(next);
@@ -2465,10 +2473,7 @@ export function Composer({
           modelSource={modelSource}
           disabled={variant === 'subagent' && disabled}
           onChangeModel={(next) => {
-            if (externalExecution) {
-              if (!executorModelWritable) return;
-              return onChangeModel(next);
-            }
+            if (externalExecution) return writeExecutorModel(next);
             const state = projectedProfileModelState(modelProjection, models, next ?? selectionDefaultModel ?? serverDefaultModel, modelSelectionPosition);
             if (state === 'blocked' || state === 'unknown') return;
             return onChangeModel(next);
@@ -3217,6 +3222,7 @@ export function Composer({
                   usageError={sessionUsageError}
                   usageScope={variant === 'subagent' ? 'agent' : 'session'}
                   sessionId={sessionId}
+                  agentId={agentId}
                   onCompact={onCompactContext}
                   autoCompact={contextAutoCompact}
                   compactAvailability={compactAvailability}

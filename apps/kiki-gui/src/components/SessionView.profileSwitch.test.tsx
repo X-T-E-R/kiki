@@ -13,6 +13,9 @@
 
 import { act, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -25,7 +28,7 @@ import { clearToasts, getToasts } from '../lib/toasts';
 import { ConversationShell } from './ConversationShell';
 import { SessionRouteView } from './SessionView';
 
-const { listNamedAgentProfiles, listModels, sendPrompt, steerQueued, sendPromptNow, promptResult, fixture, abort } = vi.hoisted(() => ({
+const { listNamedAgentProfiles, listModels, sendPrompt, steerQueued, sendPromptNow, promptResult, fixture, abort, getExecutorModels } = vi.hoisted(() => ({
   listNamedAgentProfiles: vi.fn(),
   listModels: vi.fn(),
   sendPrompt: vi.fn(),
@@ -33,6 +36,7 @@ const { listNamedAgentProfiles, listModels, sendPrompt, steerQueued, sendPromptN
   sendPromptNow: vi.fn(),
   promptResult: { current: { status: 'started' as 'started' | 'queued', prompt_id: 'prompt-1' } },
   abort: vi.fn(),
+  getExecutorModels: vi.fn(),
   fixture: { session: undefined as Session | undefined, busy: false, profile: 'agent', model: undefined as string | undefined },
 }));
 
@@ -53,6 +57,7 @@ vi.mock('../state/connection', () => {
           events: { on: () => ({ ready: Promise.resolve(), dispose: () => {} }) },
         }),
       }),
+      rest: { executors: { getModels: getExecutorModels } },
     },
   };
   const registry = {
@@ -274,6 +279,19 @@ beforeEach(() => {
   sendPromptNow.mockReset().mockResolvedValue({ outcome: 'sent' });
   abort.mockReset().mockResolvedValue(undefined);
   listModels.mockReset().mockResolvedValue({ items: [] });
+  getExecutorModels.mockReset().mockResolvedValue({
+    executor_id: 'claude-acp', source: 'negotiated', provenance: 'acp_negotiation', revision: '1', apply_state: 'ready', observed_at: Date.now(),
+    effective: {
+      models: { state: 'ready', values: ['vendor/sonnet'] },
+      thinking_levels: { state: 'ready', values: ['low', 'medium', 'high'] },
+      context: { state: 'unknown' },
+      controls: {
+        model_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
+        thinking_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
+        manual_compact: { applicability: 'unsupported', apply_state: 'unsupported' },
+      },
+    },
+  });
   profileCatalog();
   fixture.busy = true;
   fixture.profile = 'agent';
@@ -466,6 +484,35 @@ async function waitForElement(container: HTMLElement, selector: string): Promise
   throw new Error(`missing ${selector}`);
 }
 
+describe('a model switch waiting for the next message', () => {
+  it('keeps the next-message hint on the profile chip and the model confirm', async () => {
+    fixture.model = 'fixture/live-model';
+    listModels.mockResolvedValue({
+      items: [catalogModel('fixture/live-model', 'Live'), catalogModel('fixture/other-model', 'Other')],
+    });
+    const { container } = await mount();
+    await click(await waitForElement(container, '#composer-execution-select'));
+    await click(await waitForElement(container, '[data-execution-model="fixture/other-model"]'));
+    await settle();
+
+    // A started conversation still asks before an engine binding changes, and
+    // the model switch keeps its own confirm.
+    expect(dialogButton(container, 'Switch engine')).toBeDefined();
+    expect(container.querySelector('[data-model-switch-mode]')).not.toBeNull();
+
+    await click(dialogButton(container, 'Switch engine'));
+    await settle();
+
+    const profile = profileTrigger(container);
+    const model = container.querySelector('#composer-execution-select');
+    expect(profile?.textContent).toContain('next message');
+    expect(model?.textContent).not.toContain('next message');
+    expect(model?.textContent).toContain('fixture/live-model');
+    expect(model?.getAttribute('data-execution-pending')).toBe('true');
+    expect(container.querySelector('[data-model-switch-mode]')).not.toBeNull();
+  });
+});
+
 describe('same-executor model selection across a profile switch', () => {
   const liveModel = 'fixture/live-model';
 
@@ -541,4 +588,223 @@ describe('same-executor model selection across a profile switch', () => {
     expect(submission.model).toBeUndefined();
     expect(submission.thinking).toBeUndefined();
   });
+});
+
+const EFFORT_SHOT_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..', '.tmp', 'effort-switch-185');
+
+function submissionOf(call: unknown): {
+  execution?: { executor?: string; profile?: string; overrides?: { model?: string | null; thinking?: string | null } };
+  model?: string;
+  thinking?: string | null;
+  profile?: string;
+} {
+  return call as {
+    execution?: { executor?: string; profile?: string; overrides?: { model?: string | null; thinking?: string | null } };
+    model?: string;
+    thinking?: string | null;
+    profile?: string;
+  };
+}
+
+describe('effort-only changes stay on the current engine', () => {
+  const liveModel = 'fixture/live-model';
+
+  function liveCatalog() {
+    listModels.mockResolvedValue({
+      items: [{
+        id: liveModel,
+        provider_id: 'fixture',
+        remote_id: liveModel,
+        display_name: 'Live',
+        max_context_size: 128000,
+        support_efforts: ['low', 'medium', 'high'],
+        default_effort: 'medium',
+      }],
+    });
+  }
+
+  it('changes native effort without an engine confirmation and keeps executor and model off the payload', async () => {
+    fixture.model = liveModel;
+    liveCatalog();
+    const { container } = await mount();
+    await click(await waitForElement(container, '#composer-execution-select'));
+    const high = await waitForElement(container, '[data-execution-effort="high"]');
+    await click(high);
+    await settle();
+
+    expect(container.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(container.textContent).not.toContain('Switch to Kiki?');
+    expect(container.textContent).not.toContain('This engine did not report its models.');
+    expect(container.textContent).not.toContain('Could not validate choices');
+    const trigger = container.querySelector('#composer-execution-select');
+    expect(trigger?.textContent).toContain(liveModel);
+    expect(trigger?.textContent).toContain('high');
+    expect(high.getAttribute('aria-checked')).toBe('true');
+    expect(high.className).toContain('bg-panel');
+    expect(high.className).not.toContain('text-paper');
+
+    await sendNextMessage(container);
+    expect(sendPrompt).toHaveBeenCalledTimes(1);
+    const submission = submissionOf(sendPrompt.mock.calls[0]?.[0]);
+    expect(submission.thinking).toBe('high');
+    expect(submission.execution).toBeUndefined();
+    expect(submission.model).toBeUndefined();
+    expect(submission.profile).toBeUndefined();
+  }, 60_000);
+
+  it('renders the selected native effort capsule in the historical panel color', async () => {
+    fixture.model = liveModel;
+    liveCatalog();
+    const { container } = await mount();
+    await click(await waitForElement(container, '#composer-execution-select'));
+    await click(await waitForElement(container, '[data-execution-effort="high"]'));
+    await settle();
+    const selectedButton = container.querySelector<HTMLButtonElement>('[data-execution-effort="high"]');
+    expect(selectedButton?.getAttribute('aria-checked')).toBe('true');
+    expect(selectedButton?.className ?? '').toContain('bg-panel');
+    const track = selectedButton?.parentElement;
+    if (track === null || track === undefined) throw new Error('effort track is missing');
+
+    const { existsSync } = await import('node:fs');
+    const { readdir } = await import('node:fs/promises');
+    const assets = [join(process.cwd(), 'dist', 'assets'), join(process.cwd(), 'apps', 'kiki-gui', 'dist', 'assets')]
+      .find((dir) => existsSync(dir));
+    if (assets === undefined) throw new Error('compiled gui stylesheet is missing');
+    const cssName = (await readdir(assets)).find((name) => name.startsWith('index-') && name.endsWith('.css'));
+    if (cssName === undefined) throw new Error(`no compiled stylesheet in ${assets}`);
+
+    await mkdir(EFFORT_SHOT_DIR, { recursive: true });
+    await writeFile(join(EFFORT_SHOT_DIR, 'selected-effort.html'), track.outerHTML);
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch({ args: ['--no-proxy-server'] });
+    try {
+      const page = await browser.newPage({ viewport: { width: 520, height: 160 }, deviceScaleFactor: 2 });
+      await page.setContent(
+        '<!doctype html><html data-theme="light"><head><meta charset="utf-8"></head>'
+        + '<body class="bg-canvas text-ink"><div class="bg-surface p-6">' + track.outerHTML + '</div></body></html>',
+      );
+      await page.addStyleTag({ path: join(assets, cssName) });
+      // The capsules exist before the stylesheet, so transition-colors starts
+      // on the unstyled button face. Settle on the token the class actually sets.
+      await page.evaluate(() => { for (const animation of document.getAnimations()) animation.finish(); });
+      const selected = page.locator('[data-execution-effort="high"]');
+      const idle = page.locator('[data-execution-effort="medium"]');
+      const color = await selected.evaluate((el) => {
+        const style = getComputedStyle(el);
+        return { backgroundColor: style.backgroundColor, color: style.color, className: el.className };
+      });
+      const idleColor = await idle.evaluate((el) => getComputedStyle(el).backgroundColor);
+      expect(color.backgroundColor).toBe('rgb(255, 253, 250)');
+      expect(color.color).toBe('rgb(27, 26, 23)');
+      expect(color.backgroundColor).not.toBe('rgb(27, 26, 23)');
+      expect(color.className).toContain('bg-panel');
+      expect(color.className).not.toContain('text-paper');
+      expect(idleColor).not.toBe('rgb(27, 26, 23)');
+      const shot = join(EFFORT_SHOT_DIR, 'selected-effort.png');
+      await page.locator('body > div').screenshot({ path: shot });
+      await writeFile(join(EFFORT_SHOT_DIR, 'selected-effort-color.json'), JSON.stringify({
+        selected: color,
+        idleBackground: idleColor,
+        stylesheet: join(assets, cssName),
+        shot,
+      }, null, 2));
+    } finally {
+      await browser.close();
+    }
+  }, 60_000);
+
+  it('changes external effort without an engine confirmation and keeps the bound model', async () => {
+    fixture.model = undefined;
+    listModels.mockResolvedValue({
+      items: [{
+        id: 'fixture/kiki-pro',
+        provider_id: 'fixture',
+        remote_id: 'kiki-pro',
+        display_name: 'Kiki Pro',
+        max_context_size: 128000,
+        support_efforts: ['low', 'medium', 'high'],
+        default_effort: 'medium',
+      }],
+    });
+    fixture.session = {
+      workspace_id: 'wd_alpha',
+      title: 'Release prep',
+      executor_id: 'claude-acp',
+      agent_config: {
+        profile: 'agent',
+        execution: {
+          version: 1,
+          selection: { executor: 'claude-acp', overrides: { model: 'vendor/sonnet', thinking: 'medium' } },
+          effective: { model: 'vendor/sonnet', thinking: 'medium', kiki_context: [], allow_kiki_subagents: false },
+          sources: {},
+          generation: 1,
+        },
+      },
+      metadata: {},
+    } as unknown as Session;
+
+    const { container } = await mount();
+    const trigger = await waitForElement(container, '#composer-execution-select');
+    expect(trigger.textContent).toContain('vendor/sonnet');
+    await click(trigger);
+    const high = await waitForElement(container, '[data-execution-effort="high"]');
+    await click(high);
+    await settle();
+
+    expect(getExecutorModels).toHaveBeenCalled();
+    expect(listModels).toHaveBeenCalled();
+    expect(container.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(container.textContent).not.toContain('Switch to');
+    expect(container.textContent).not.toContain('This engine did not report its models.');
+    expect(container.textContent).not.toContain('Could not validate choices');
+    const titles = [...container.querySelectorAll<HTMLElement>('[title]')].map((el) => el.title).join('\n');
+    expect(titles).not.toContain('This engine did not report its models.');
+    expect(trigger.textContent).toContain('vendor/sonnet');
+    expect(trigger.textContent).toContain('high');
+    expect(trigger.textContent).not.toContain('medium');
+
+    await sendNextMessage(container);
+    expect(sendPrompt).toHaveBeenCalledTimes(1);
+    const submission = submissionOf(sendPrompt.mock.calls[0]?.[0]);
+    expect(submission.thinking).toBe('high');
+    expect(submission.execution).toBeUndefined();
+    expect(submission.model).toBeUndefined();
+    expect(submission.profile).toBeUndefined();
+  }, 60_000);
+
+  it('sends null when Default clears an external thinking override', async () => {
+    fixture.model = undefined;
+    listModels.mockResolvedValue({ items: [] });
+    fixture.session = {
+      workspace_id: 'wd_alpha',
+      title: 'Release prep',
+      executor_id: 'claude-acp',
+      agent_config: {
+        profile: 'agent',
+        execution: {
+          version: 1,
+          selection: { executor: 'claude-acp', overrides: { model: 'vendor/sonnet', thinking: 'medium' } },
+          effective: { model: 'vendor/sonnet', thinking: 'medium', kiki_context: [], allow_kiki_subagents: false },
+          sources: {},
+          generation: 1,
+        },
+      },
+      metadata: {},
+    } as unknown as Session;
+
+    const { container } = await mount();
+    await click(await waitForElement(container, '#composer-execution-select'));
+    await click(await waitForElement(container, '[data-execution-effort=""]'));
+    await settle();
+
+    expect(container.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(container.textContent).not.toContain('Switch to');
+    await sendNextMessage(container);
+    expect(sendPrompt).toHaveBeenCalledTimes(1);
+    const submission = submissionOf(sendPrompt.mock.calls[0]?.[0]);
+    expect(submission.thinking).toBeNull();
+    expect(submission.execution).toBeUndefined();
+    expect(submission.model).toBeUndefined();
+    expect(submission.profile).toBeUndefined();
+  }, 60_000);
 });

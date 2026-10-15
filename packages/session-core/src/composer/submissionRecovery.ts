@@ -35,8 +35,9 @@ export interface SubmissionPreservation {
 }
 
 /** Best-effort backup before transport submission; a failed backup must retain the composition until acknowledgement. */
-export function preserveSubmission(input: UnconfirmedSubmission): SubmissionPreservation {
-  const storage = spaceStorage.capture();
+export function preserveSubmission(input: UnconfirmedSubmission, options: { readonly persist?: boolean } = {}): SubmissionPreservation {
+  const storage = options.persist === false ? undefined : spaceStorage.capture();
+  if (storage === undefined) return { persisted: false, acknowledge: () => {} };
   let persisted = false;
   try {
     const previous = read(storage).filter(item => item.sessionId !== input.sessionId || item.agentId !== input.agentId || item.promptId !== input.promptId);

@@ -3431,7 +3431,8 @@ describe('Composer restored selection diagnostics', () => {
     const { container } = await renderComposer({ execution: choice, onChangeExecution });
     await click((container.querySelector('#composer-engine-model-select') ?? container.querySelector('#composer-execution-select'))!);
     await click(container.querySelector('[data-option-value="vendor/model-id"]')!);
-    expect(onChangeExecution).toHaveBeenCalledWith({ ...choice, overrides: { model: 'vendor/model-id', thinking: undefined } });
+    expect(onChangeExecution).toHaveBeenCalledWith({ ...choice, overrides: { model: 'vendor/model-id' } });
+    expect(onChangeExecution.mock.calls[0]?.[0].overrides).not.toHaveProperty('thinking');
     expect(container.querySelector('[data-option-value="vendor/model-id"]')).toBeNull();
   });
 
@@ -3453,7 +3454,8 @@ describe('Composer restored selection diagnostics', () => {
     // Re-open and click an option to apply immediately
     await click(trigger);
     await click(container.querySelector('[data-option-value="vendor/model-id"]')!);
-    expect(onChangeExecution).toHaveBeenCalledWith({ ...choice, overrides: { model: 'vendor/model-id', thinking: undefined } });
+    expect(onChangeExecution).toHaveBeenCalledWith({ ...choice, overrides: { model: 'vendor/model-id' } });
+    expect(onChangeExecution.mock.calls[0]?.[0].overrides).not.toHaveProperty('thinking');
   });
 
   it('offers only the external engine models, never native catalog aliases', async () => {
@@ -3596,7 +3598,7 @@ describe('Composer restored selection diagnostics', () => {
     } else expect(identity.title).not.toContain('does not accept a model change here');
   });
 
-  it('says the engine catalog read is old when it is stale, with refresh beside it', async () => {
+  it('says the engine catalog read is old when it is stale, and refresh stays inside the model panel', async () => {
     getExecutorModels.mockResolvedValue({
       executor_id: 'claude-acp', source: 'cli_probe', provenance: 'read_only_cli_probe', revision: '1', apply_state: 'ready', observed_at: Date.now() - 120_000,
       effective: {
@@ -3613,7 +3615,11 @@ describe('Composer restored selection diagnostics', () => {
     const identity = container.querySelector<HTMLElement>('[data-composer-engine-model]')!;
     expect(identity.title).toContain('Last read over a minute ago.');
     expect(identity.title).not.toContain('not known yet');
-    expect(container.querySelector('[data-external-model-refresh]')).not.toBeNull();
+    expect(container.querySelector('[data-external-model-refresh]')).toBeNull();
+    await click(container.querySelector<HTMLButtonElement>('#composer-execution-select')!);
+    const refresh = container.querySelector<HTMLButtonElement>('[data-external-model-refresh]')!;
+    expect(refresh.disabled).toBe(false);
+    expect(container.querySelector('[data-external-model-status]')?.textContent).toContain('Last read over a minute ago.');
   });
 
   it('preserves an absent-data binding without offering fabricated model choices', async () => {
@@ -3790,6 +3796,70 @@ describe('Composer restored selection diagnostics', () => {
     await click((container.querySelector('#composer-engine-model-select') ?? container.querySelector('#composer-execution-select'))!);
     await click(container.querySelector('[data-option-value=""]')!);
     expect(onChangeExecution).toHaveBeenCalledWith({ ...choice, overrides: { model: null, thinking: null } });
+  });
+
+  it('changes native effort without publishing an execution choice', async () => {
+    const onChangeExecution = vi.fn();
+    const onChangeEffort = vi.fn();
+    const { container } = await renderComposer({
+      execution: NATIVE_AGENT,
+      onChangeExecution,
+      onChangeEffort,
+      model: 'fixture/kiki-pro',
+      effort: 'medium',
+      efforts: ['low', 'medium', 'high'],
+    });
+    await click(container.querySelector('#composer-execution-select')!);
+    const high = container.querySelector<HTMLButtonElement>('[data-execution-effort="high"]')!;
+    expect(high).not.toBeNull();
+    await click(high);
+    expect(onChangeEffort).toHaveBeenCalledWith('high');
+    expect(onChangeExecution).not.toHaveBeenCalled();
+    expect(high.getAttribute('aria-checked')).toBe('true');
+    expect(high.className).toContain('bg-panel');
+    expect(high.className).not.toContain('bg-ink');
+    expect(high.className).not.toContain('text-paper');
+    await click(container.querySelector('[data-execution-effort=""]')!);
+    expect(onChangeEffort).toHaveBeenLastCalledWith('');
+    expect(onChangeExecution).not.toHaveBeenCalled();
+  });
+
+  it('changes external effort without publishing an execution choice or replacing the model', async () => {
+    getExecutorModels.mockResolvedValue({
+      executor_id: 'claude-acp', source: 'negotiated', provenance: 'acp_negotiation', revision: '1', apply_state: 'ready', observed_at: Date.now(),
+      effective: {
+        models: { state: 'ready', values: ['vendor/sonnet'] },
+        thinking_levels: { state: 'ready', values: ['medium', 'high'] },
+        context: { state: 'unknown' },
+        controls: {
+          model_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
+          thinking_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
+          manual_compact: { applicability: 'unsupported', apply_state: 'unsupported' },
+        },
+      },
+    });
+    const onChangeExecution = vi.fn();
+    const onChangeEffort = vi.fn();
+    const choice = {
+      executor: 'claude-acp',
+      profile: undefined,
+      profile_file: undefined,
+      overrides: { model: 'vendor/sonnet', thinking: 'medium' },
+    };
+    const { container } = await renderComposer({ execution: choice, onChangeExecution, onChangeEffort, effort: 'medium' });
+    const trigger = container.querySelector('#composer-execution-select')!;
+    expect(trigger.textContent).toContain('vendor/sonnet');
+    expect(container.textContent).not.toContain('This engine did not report its models.');
+    await click(trigger);
+    const high = container.querySelector<HTMLButtonElement>('[data-execution-effort="high"]')!;
+    expect(high).not.toBeNull();
+    await click(high);
+    expect(onChangeEffort).toHaveBeenCalledWith('high');
+    expect(onChangeExecution).not.toHaveBeenCalled();
+    expect(trigger.textContent).toContain('vendor/sonnet');
+    expect(trigger.textContent).toContain('high');
+    expect(high.className).toContain('bg-panel');
+    expect(high.className).not.toContain('text-paper');
   });
   it.each([
     { catalog: 'model', code: API_CODES.TIMEOUT },

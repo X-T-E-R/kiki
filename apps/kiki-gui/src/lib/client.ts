@@ -1207,6 +1207,11 @@ export class KikiClient {
     // Controllers consume this transport directly, not the convenience methods below.
     this.sessions = {
       ...sessions,
+      listDurableIngress: (sessionId, options) => this.run(() => this.rest.sessions.listPrompts(sessionId, {
+        admission: 'durable', agent_id: options?.agentId, cursor: options?.cursor,
+      })),
+      getDurableIngress: (sessionId, promptId, agentId) => this.run(() => this.rest.sessions.getPrompt(sessionId, promptId, { admission: 'durable', agent_id: agentId })),
+      resumeDurableIngress: (sessionId, promptId, body, agentId) => this.runSessionMutation(sessionId, () => this.rest.sessions.resumePrompt(sessionId, promptId, body, { agent_id: agentId })),
       submitPrompt: (...args) => this.runSessionMutation(args[0], () => sessions.submitPrompt(...args)),
       editMessage: (...args) => this.runSessionMutation(args[0], () => sessions.editMessage(...args)),
       regenerateMessage: (...args) => this.runSessionMutation(args[0], () => sessions.regenerateMessage(...args)),
@@ -1374,8 +1379,9 @@ export class KikiClient {
   /** Cross-session usage aggregation. Filter axes travel in the query. */
   getUsage(
     query: Record<string, string | readonly string[] | number | boolean | undefined>,
+    options?: { signal?: AbortSignal },
   ): Promise<UsageResponseWire> {
-    return this.run(() => this.rest.usage(query));
+    return this.run(() => this.rest.usage(query, options));
   }
 
   /** Per-model prices the usage estimate uses, with where each came from. */
@@ -1503,8 +1509,8 @@ export class KikiClient {
     return this.run(() => this.rest.sessions.listMessages(sessionId, query));
   }
 
-  listPrompts(sessionId: string): Promise<PromptListResponse> {
-    return this.run(() => this.rest.sessions.listPrompts(sessionId));
+  listPrompts(sessionId: string, query: { admission?: 'durable'; agent_id?: string; cursor?: string } = {}): Promise<PromptListResponse> {
+    return this.run(() => this.rest.sessions.listPrompts(sessionId, query));
   }
 
   submitPrompt(sessionId: string, body: PromptSubmission): Promise<PromptSubmitResult> {
@@ -2428,6 +2434,33 @@ export class KikiClient {
   /** `POST /executors/{id}/check` — re-probe the binary and the declared login command. */
   checkExecutor(id: string): Promise<ExecutorCheckResult> {
     return this.memoryRequest('POST', `/executors/${encodeURIComponent(id)}/check`);
+  }
+
+  /**
+   * `POST /executors/{id}/registration:remove` — drop a user registration.
+   * Owned adapter files stay when a live or recoverable binding is present;
+   * the response `reason` is that fact. Built-in engines stay registered.
+   */
+  removeExecutorRegistration(id: string): Promise<import('@kiki/protocol').RemoveExecutorRegistrationResponse> {
+    return this.memoryRequest('POST', `/executors/${encodeURIComponent(id)}/registration:remove`, { body: {} });
+  }
+
+  /**
+   * Set browser control master enabled state.
+   */
+  setBrowserControlEnabled(enabled: boolean | null): Promise<KikiConfigResponse> {
+    return this.patchConfig({
+      browser_control: { enabled },
+    } as KikiConfigPatch);
+  }
+
+  /**
+   * Set computer control master enabled state.
+   */
+  setComputerControlEnabled(enabled: boolean | null): Promise<KikiConfigResponse> {
+    return this.patchConfig({
+      computer_control: { enabled },
+    } as KikiConfigPatch);
   }
 
   /** Antigravity ACP CLI cache: the release Kiki would fetch, installed versions, the active one. */

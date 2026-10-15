@@ -46,6 +46,7 @@ import { useInspectorFocusTracking } from './inspectorFocus';
 import { SelectionQuoteButton } from './SelectionQuoteButton';
 import { TerminalPanel } from './TerminalPanel';
 import { useStableForest, type TranscriptRowActions } from './Transcript';
+import { mergeLoadedAttachments } from './RowActions';
 import { Icon } from './icons';
 import { MessageViewContext, type MessageViewContextValue } from './message/messageViewContext';
 import { isTimelineViewShortcut, useTimelineView, type TimelineView } from './message/messageViewMode';
@@ -91,6 +92,7 @@ import {
   writeComposerState,
   writeDraft,
   type ComposerAttachment,
+  type RetainedAttachment,
   type FileMention,
   type ComposerModelChoice,
   type ComposerModelBindingChange,
@@ -106,6 +108,7 @@ import {
   namesLegacyControl,
   executionSelectionOf,
   sameExecutionChoice,
+  isEffortOnlyExecutionChange,
   isNativeExecutor,
   profileExecutor,
   type ExecutionChoice,
@@ -320,6 +323,7 @@ function MoreIcon({ className = '' }: { className?: string }) {
 function useActiveController(
   sessionId: string | undefined,
   focusedAgentId?: string,
+  persistenceHint?: 'temporary' | 'saved' | 'unknown',
 ): { controller: SessionController | null; leaseReady: boolean } {
   const { client } = useConnection();
   const registry = useControllerRegistry();
@@ -342,6 +346,7 @@ function useActiveController(
     );
     const next = lease.controller;
     let activeLease = true;
+    next.setPersistenceHint?.(persistenceHint);
     next.setFocusedAgent(focusedAgentId);
     setActive({ controller: next, leaseReady: false });
     void lease.ready.then(
@@ -360,6 +365,10 @@ function useActiveController(
       setActive({ controller: null, leaseReady: false });
     };
   }, [client, sessionId, registry]);
+
+  useEffect(() => {
+    active.controller?.setPersistenceHint?.(persistenceHint);
+  }, [active.controller, persistenceHint]);
 
   return active;
 }
@@ -991,19 +1000,36 @@ export function resolveSessionSeatPhase(input: {
  * transcript seed is independent presentation work.
  */
 export function resolveSessionSendReady(input: {
+  /** A controller exists and can submit the durable prompt command. */
+  controllerAvailable: boolean;
   leaseReady: boolean;
   loaded: boolean;
   loadError?: string;
   resyncing: boolean;
   resyncFailed: boolean;
 }): boolean {
-  return input.leaseReady && input.loaded &&
-    input.loadError === undefined && !input.resyncing && !input.resyncFailed;
+  // Transcript/history readiness is presentation work. Once the session
+  // controller is admitted, the prompt command is the independent durable
+  // enqueue boundary; do not hold the send button behind snapshot, forest,
+  // model-catalog, or ordered-view readiness.
+  return input.controllerAvailable;
 }
 
 /** Session-operation reads start only after the snapshot operation lease settles. */
 export function sessionIdForSendReadyRead(sessionId: string | undefined, sendReady: boolean): string | undefined {
   return sendReady ? sessionId : undefined;
+}
+
+export function initialBindingStillPending(input: {
+  expectedModel?: string;
+  expectedThinking?: string;
+  modelOverride?: string;
+  effortOverride?: string;
+  boundModel?: string;
+  boundThinking?: string;
+}): boolean {
+  return input.expectedModel !== undefined && input.modelOverride === input.expectedModel && input.boundModel !== input.expectedModel
+    || input.expectedThinking !== undefined && input.effortOverride === input.expectedThinking && input.boundThinking !== input.expectedThinking;
 }
 
 interface SessionCreateHandoff {
@@ -1016,6 +1042,7 @@ interface SessionCreateHandoff {
   readonly permissionMode?: PermissionMode;
   readonly planMode?: boolean;
   readonly goalObjective?: string;
+  readonly ephemeral?: boolean;
   /** The first message answers the persona's local greeting (see NewSessionDraft). */
   readonly personaGreetingReply?: boolean;
 }
@@ -1063,6 +1090,7 @@ export function parseSessionCreateHandoff(state: unknown): SessionCreateHandoff 
     permissionMode: raw.permissionMode,
     planMode: raw.planMode,
     goalObjective: raw.goalObjective,
+    ephemeral: typeof raw.ephemeral === 'boolean' ? raw.ephemeral : undefined,
     personaGreetingReply: raw.personaGreetingReply === true ? true : undefined,
   };
 }
@@ -1191,7 +1219,7 @@ export function resolveProfileSwitchSubmission(input: {
   profile?: string;
   execution?: ReturnType<typeof executionSelectionOf>;
   model?: string;
-  thinking?: string;
+  thinking?: string | null;
   permissionMode?: PermissionMode;
 } {
   const executionSwitching = input.pendingExecution !== undefined
@@ -1203,10 +1231,18 @@ export function resolveProfileSwitchSubmission(input: {
   const governing = executionSwitching ? input.pendingExecution : input.boundExecution;
   // Displayed bindings are inherited, not message overrides. Carry only the
   // control the user picked, on continuations as well as binding switches.
-  // Execution-owned overrides (including null) must not be overwritten by a
-  // legacy field even when an earlier composer pick left its touched flag set.
+  // A confirmed switch that names a control owns that value, so a stale touch
+  // must not overwrite it. Effort on the engine already bound is the update
+  // itself: send it even when the live selection stored the previous effort.
+  // An empty string is the default capsule: null drops the user pin. Omitting
+  // the field keeps the current override.
   const sendModel = input.modelTouched && !namesLegacyControl(governing, 'model');
-  const sendThinking = input.effortTouched && !namesLegacyControl(governing, 'thinking');
+  const incomingOwnsThinking = executionSwitching && namesLegacyControl(input.pendingExecution, 'thinking');
+  const clearThinking = input.effortTouched && input.thinking === '' && !incomingOwnsThinking;
+  const sendThinking = input.effortTouched
+    && typeof input.thinking === 'string'
+    && input.thinking !== ''
+    && !incomingOwnsThinking;
   const sendPermission = sendsLegacyControl(governing, 'permission_mode', input.permissionTouched === true);
   return {
     ...(input.pendingProfile !== undefined && input.pendingProfile !== input.boundProfile
@@ -1214,7 +1250,7 @@ export function resolveProfileSwitchSubmission(input: {
       : {}),
     ...(executionSwitching ? { execution: executionSelectionOf(input.pendingExecution!) } : {}),
     model: sendModel ? input.model : undefined,
-    thinking: sendThinking ? input.thinking : undefined,
+    thinking: clearThinking ? null : (sendThinking ? input.thinking : undefined),
     permissionMode: sendPermission ? input.permissionMode : undefined,
   };
 }
@@ -1872,6 +1908,9 @@ export function SessionView({
   const [queueEdit, setQueueEdit] = useState<{
     readonly promptId: string;
     readonly owner: string;
+    readonly abort: AbortController;
+    readonly loading: boolean;
+    readonly loadError: boolean;
     readonly attachments: readonly ComposerAttachment[];
     readonly savedDraft: string;
     readonly savedQuotes: readonly SelectionQuote[];
@@ -1882,8 +1921,15 @@ export function SessionView({
   const composerOwnerActive = useRef(true);
   const [draft, setDraft] = useState('');
   const [pendingSubmission, setPendingSubmission] = useState<{
-    id: string; text: string; createdAt: string; slow: boolean;
+    id: string;
+    text: string;
+    contentKey: string;
+    createdAt: string;
+    slow: boolean;
+    status: 'sending' | 'offline' | 'server' | 'executing' | 'failed' | 'cancelled';
   } | undefined>();
+  const pendingSubmissionRef = useRef(pendingSubmission);
+  pendingSubmissionRef.current = pendingSubmission;
   const pendingSendRef = useRef(false);
   useEffect(() => {
     if (pendingSubmission === undefined || pendingSubmission.slow) return;
@@ -1936,7 +1982,11 @@ export function SessionView({
     setAnnotations((current) => current.map((annotation) => (annotation.id === id ? { ...annotation, comment } : annotation)));
   }, []);
 
-  const { controller, leaseReady } = useActiveController(sessionId, selectedAgentId);
+  const knownSession = sessions.find((item) => item.id === sessionId);
+  const persistenceHint = createHandoff.ephemeral !== undefined
+    ? createHandoff.ephemeral ? 'temporary' : 'saved'
+    : knownSession === undefined ? 'unknown' : knownSession.ephemeral === true ? 'temporary' : 'saved';
+  const { controller, leaseReady } = useActiveController(sessionId, selectedAgentId, persistenceHint);
   const queryClient = useQueryClient();
 
   // Embedded terminal panel: per-session manager (terminal list + attach
@@ -2057,6 +2107,8 @@ export function SessionView({
       // Restore the parked composition before flushing and releasing the hold.
       const edit = queueEditRef.current;
       if (edit !== null) {
+        edit.abort.abort();
+        queueEditRef.current = null;
         const chrome = readComposerState(sessionId);
         writeDraft(sessionId, edit.savedDraft);
         writeComposerState(sessionId, {
@@ -2171,12 +2223,31 @@ export function SessionView({
     controller?.getState ?? emptyState,
   );
   const sessionSendReady = resolveSessionSendReady({
+    controllerAvailable: controller !== null,
     leaseReady,
     loaded: state.loaded,
     loadError: state.loadError,
     resyncing: state.resyncing,
     resyncFailed: state.resyncFailed,
   });
+  useEffect(() => {
+    const pending = pendingSubmissionRef.current;
+    if (pending === undefined) return;
+    const ingress = state.durableIngress?.find((item) => item.prompt_id === pending.id);
+    const row = state.blocks.find((block): block is UserBlock => block.kind === 'user' && block.promptId === pending.id);
+    const nextStatus = ingress?.admission === 'failed'
+      ? 'failed'
+      : ingress?.admission === 'cancelled'
+        ? 'cancelled'
+        : row !== undefined && row.promptStatus !== 'queued' || state.activePromptId === pending.id
+          ? 'executing'
+          : ingress?.admission === 'restoring' || ingress?.admission === 'admitted' || ingress?.admission === 'held'
+            ? 'server'
+            : undefined;
+    if (nextStatus !== undefined && nextStatus !== pending.status) {
+      setPendingSubmission({ ...pending, status: nextStatus, slow: false });
+    }
+  }, [state.activePromptId, state.blocks, state.durableIngress]);
 
   // Which projection of the timeline this session shows (remembered per
   // session; a `message` delivery opens in the message view) and the delivery
@@ -2360,9 +2431,18 @@ export function SessionView({
   const sessionModel = state.model;
   const inheritedDefault = harness === undefined ? serverDefaultModel ?? liveSettings.defaultModel : undefined;
   const conversationStarted = state.loaded && sessionHasStartedConversation(state.blocks);
+  const initialBindingIntentRef = useRef({ model: initialOptionsRef.current.model, thinking: initialOptionsRef.current.thinking });
+  const initialBindingPending = initialBindingStillPending({
+    expectedModel: initialBindingIntentRef.current.model,
+    expectedThinking: initialBindingIntentRef.current.thinking,
+    modelOverride,
+    effortOverride,
+    boundModel: sessionModel,
+    boundThinking: state.thinkingEffort,
+  });
   const skillBindingChangeRef = useRef<ComposerModelBindingChange | undefined>(undefined);
   const composerSelection = resolveComposerModelOverrides({ modelOverride, effortOverride, modelChoice, effortChoice, modelSwitchMode,
-    conversationStarted, pendingBinding: pendingProfile !== undefined || executionPending,
+    conversationStarted, pendingBinding: pendingProfile !== undefined || executionPending || initialBindingPending,
     binding: { model: sessionModel, thinking: state.thinkingEffort }, acceptedBindingChange: skillBindingChangeRef.current });
   useEffect(() => {
     if (composerSelection.modelOverride !== modelOverride) setModelOverride(composerSelection.modelOverride);
@@ -2712,7 +2792,15 @@ export function SessionView({
     clearTouchedControls();
   }, [clearTouchedControls]);
   const handleExecutionChange = useCallback((next: ExecutionChoice) => {
-    if (sameExecutionChoice(next, pendingExecution ?? boundExecution)) return;
+    const current = pendingExecution ?? boundExecution;
+    if (sameExecutionChoice(next, current)) return;
+    // Effort capsules must not confirm an engine switch or rebind the model.
+    // A caller that still publishes the choice only moves the effort control.
+    if (isEffortOnlyExecutionChange(next, current)) {
+      const thinking = next.overrides?.thinking;
+      handleEffortChange(typeof thinking === 'string' ? thinking : '');
+      return;
+    }
     if (sameExecutionChoice(next, boundExecution)) {
       cancelPendingExecution();
       return;
@@ -2733,7 +2821,7 @@ export function SessionView({
       return;
     }
     setExecutionSwitchConfirm(next);
-  }, [applyPendingExecution, boundExecution, cancelPendingExecution, canonicalModel, currentBoundModel, pendingExecution, state.blocks, state.loaded]);
+  }, [applyPendingExecution, boundExecution, cancelPendingExecution, canonicalModel, currentBoundModel, handleEffortChange, pendingExecution, state.blocks, state.loaded]);
   const confirmExecutionSwitchRun = useCallback(() => {
     if (executionSwitchConfirm === undefined) return;
     applyPendingExecution(executionSwitchConfirm);
@@ -2960,8 +3048,32 @@ export function SessionView({
               onAcknowledged: releaseComposition,
             })
             .then((result) => {
+              if (result.outcome === 'failed' || result.outcome === 'cancelled') {
+                if (composerOwnerActive.current) {
+                  setAnnotations((current) => restoreSentAnnotations(current, sentAnnotationsNow));
+                  setQuotes((current) => restoreSentAnnotations(current, sentQuotesNow));
+                  const recovery = recoverFailedSubmission(draftRef.current, attachmentsRef.current, stripThreadRefContext(text), composerAttachments);
+                  if (recovery !== undefined) {
+                    updateDraft(recovery.text);
+                    updateAttachments(recovery.attachments);
+                  }
+                } else {
+                  recoverSubmittedDraft(sessionId, stripThreadRefContext(text), composerAttachments);
+                  updateStoredSelectionCarryovers(sessionId,
+                    (current) => restoreSentAnnotations(current, sentQuotesNow),
+                    (current) => restoreSentAnnotations(current, sentAnnotationsNow));
+                }
+                pushToast({
+                  tone: 'info',
+                  text: t(result.outcome === 'cancelled' ? 'sv.submissionRecovery.cancelled' : 'sv.submissionRecovery.failed'),
+                });
+                return;
+              }
               releaseComposition();
               completeControls();
+              if (result.outcome === 'restoring' || result.outcome === 'held') {
+                pushToast({ tone: 'info', text: t('sv.submissionRecovery.server') });
+              }
               if (result.outcome === 'queued') {
                 // The turn ended while it was on the way: it runs next, from
                 // the queue — say so instead of letting it look lost.
@@ -3000,7 +3112,12 @@ export function SessionView({
               pendingSendRef.current = false;
             });
         }
-        const submissionId = crypto.randomUUID();
+        const contentKey = JSON.stringify(content);
+        const retryablePending = pendingSubmissionRef.current;
+        const retryableStatus = retryablePending?.status === 'offline' || retryablePending?.status === 'failed';
+        const submissionId = retryableStatus && retryablePending.text === echoText && retryablePending.contentKey === contentKey
+          ? retryablePending.id
+          : crypto.randomUUID();
         // The captured payload, notes and identity belong to X, not whatever
         // the user composes after a failure toast appears.
         const sentAnnotations = annotations;
@@ -3028,7 +3145,9 @@ export function SessionView({
         };
         let accepted = false;
         const submitCaptured = (first = false): Promise<void> | undefined => {
+          const currentPending = pendingSubmissionRef.current;
           if (!composerOwnerActive.current || (!first && (accepted || pendingSendRef.current))) return;
+          if (!first && (currentPending?.status === 'server' || currentPending?.status === 'executing' || currentPending?.status === 'cancelled')) return;
           pendingSendRef.current = true;
           let compositionReleased = false;
           const releaseComposition = (force = false) => {
@@ -3049,16 +3168,49 @@ export function SessionView({
                 (current) => current.filter((item) => !sentIds.has(item.id)));
             }
           };
-          setPendingSubmission({ id: submissionId, text: echoText, createdAt: new Date().toISOString(), slow: false });
-          return controller.sendPrompt({
-            ...submission,
-            onPreservation: (persisted) => {
-              if (persisted) releaseComposition(first);
-              else pushToast({ tone: 'info', text: t('sv.submissionRecovery.degraded') });
-            },
-            onAcknowledged: () => releaseComposition(),
-          })
+          setPendingSubmission({ id: submissionId, text: echoText, contentKey, createdAt: new Date().toISOString(), slow: false, status: 'sending' });
+          const ingress = (controller.getDurableIngress?.() ?? []).find((item) => item.prompt_id === submissionId);
+          const resume = !first && (ingress?.admission === 'failed' || ingress?.admission === 'held') && controller.resumeDurableIngress !== undefined;
+          const request = resume
+            ? controller.resumeDurableIngress(submissionId, {
+              admission: 'durable', content: submission.content, prompt_id: submission.promptId,
+              profile: submission.profile, execution: submission.execution, model: submission.model,
+              thinking: submission.thinking, permission_mode: submission.permissionMode,
+              plan_mode: submission.planMode, plan_gate: submission.planGate,
+              goal_objective: submission.goalObjective, append_timing: submission.appendTiming,
+              persona_greeting_reply: submission.personaGreetingReply,
+            })
+            : controller.sendPrompt({
+              ...submission,
+              onPreservation: (persisted) => {
+                if (persisted) releaseComposition(first);
+                else pushToast({ tone: 'info', text: t('sv.submissionRecovery.degraded') });
+              },
+              onAcknowledged: () => releaseComposition(),
+            });
+          return request
           .then((result) => {
+            const admissionRejected = result.admission === 'failed' || result.admission === 'cancelled';
+            if (admissionRejected) {
+              if (composerOwnerActive.current) {
+                setAnnotations((current) => restoreSentAnnotations(current, sentAnnotations));
+                setQuotes((current) => restoreSentAnnotations(current, sentQuotes));
+                const recovery = recoverFailedSubmission(draftRef.current, attachmentsRef.current, stripThreadRefContext(text), composerAttachments);
+                if (recovery !== undefined) {
+                  updateDraft(recovery.text);
+                  updateAttachments(recovery.attachments);
+                }
+              } else {
+                recoverSubmittedDraft(sessionId, stripThreadRefContext(text), composerAttachments);
+                updateStoredSelectionCarryovers(sessionId,
+                  (current) => restoreSentAnnotations(current, sentQuotes),
+                  (current) => restoreSentAnnotations(current, sentAnnotations));
+              }
+              setPendingSubmission((current) => current?.id === submissionId
+                ? { ...current, slow: true, status: result.admission === 'cancelled' ? 'cancelled' : 'failed' }
+                : current);
+              return;
+            }
             accepted = true;
             releaseComposition();
             setGoalMode(false);
@@ -3096,9 +3248,24 @@ export function SessionView({
                 (current) => restoreSentAnnotations(current, sentAnnotations));
             }
             const isApi = error instanceof ApiError;
+            const transportUnconfirmed = !isApi || error.code === API_CODES.TIMEOUT;
+            if (transportUnconfirmed) {
+              // Keep the captured identity visible and retryable. A timeout or
+              // fetch failure has unknown delivery; any retry must reuse the
+              // same promptId so the server can deduplicate an accepted request.
+              setPendingSubmission((current) => current?.id === submissionId
+                ? { ...current, slow: true, status: 'offline' }
+                : current);
+            } else if (resume) {
+              setPendingSubmission((current) => current?.id === submissionId
+                ? { ...current, slow: true, status: 'failed' }
+                : current);
+            } else {
+              setPendingSubmission((current) => current?.id === submissionId ? undefined : current);
+            }
             pushToast({
-              tone: 'error',
-              text: error instanceof Error ? error.message : String(error),
+              tone: transportUnconfirmed ? 'info' : 'error',
+              text: transportUnconfirmed ? t('sv.submissionRecovery.title') : error instanceof Error ? error.message : String(error),
               code: isApi ? error.code : undefined,
               requestId: isApi ? error.requestId : undefined,
               detail: error instanceof Error ? error.stack : undefined,
@@ -3111,7 +3278,7 @@ export function SessionView({
           })
           .finally(() => {
             pendingSendRef.current = false;
-            setPendingSubmission((current) => current?.id === submissionId ? undefined : current);
+            setPendingSubmission((current) => current?.id === submissionId && current.status === 'sending' ? undefined : current);
           });
         };
         return submitCaptured(true);
@@ -3469,16 +3636,23 @@ boundExecution,
 
   // ---- message-closure row actions (edit-resend / regenerate / fork) ----
 
-  const loadMessageEditAttachments = useCallback(async (block: Pick<UserBlock, 'queuedContent' | 'media'>): Promise<readonly ComposerAttachment[]> => {
+  const loadMessageEditAttachments = useCallback(async (block: Pick<UserBlock, 'queuedContent' | 'media'>, signal?: AbortSignal): Promise<readonly ComposerAttachment[]> => {
+    signal?.throwIfAborted();
     const mediaItems = block.queuedContent === undefined ? block.media ?? [] : mediaFromContentParts(block.queuedContent);
     const retained = block.queuedContent === undefined ? [] : retainedAttachmentsFromContent(block.queuedContent);
     return Promise.all(mediaItems.map(async (media, index): Promise<ComposerAttachment> => {
+      const existing = retained[index];
+      if (existing !== undefined && (existing.content.type === 'image' || existing.content.type === 'video')) {
+        const source = existing.content.source;
+        if (source.kind === 'base64') return existing;
+      }
       let url = media.blobHash === undefined ? media.url : `blobref:${media.mime};${media.blobHash}`;
       let fileId = media.fileId;
       if (media.detail !== undefined) {
         const detail = await client.klient.session(sessionId).view.transcript.detail?.({
           agentId: media.detail.agentId, kind: 'attachment', id: media.detail.attachmentId,
-        });
+        }, { signal });
+        signal?.throwIfAborted();
         if (detail?.kind !== 'attachment' || detail.attachment.source === undefined) throw new Error(t('preview.failed'));
         const source = detail.attachment.source;
         if (source.kind === 'url') url = source.url;
@@ -3486,21 +3660,41 @@ boundExecution,
       }
       if (media.kind === 'file') {
         if (fileId === undefined) throw new Error(t('preview.failed'));
-        return retained[index] ?? { kind: 'retained', name: media.name ?? fileId, content: { type: 'file', file_id: fileId, name: media.name ?? fileId, media_type: media.mime ?? 'application/octet-stream', size: media.size ?? 0 } };
+        return existing ?? { kind: 'retained', name: media.name ?? fileId, content: { type: 'file', file_id: fileId, name: media.name ?? fileId, media_type: media.mime ?? 'application/octet-stream', size: media.size ?? 0 } };
+      }
+      if (url !== undefined && url.startsWith('data:')) {
+        return existing ?? {
+          kind: 'retained',
+          name: media.name ?? media.kind,
+          content: { type: media.kind, name: media.name, source: { kind: 'url', url } },
+          previewUrl: url,
+        };
       }
       const blob = /^blobref:([^;]+);([0-9a-f]{64})$/.exec(url ?? '');
       const originalId = blob === null ? fileId : `blobref:main:${blob[2]}`;
       if (originalId !== undefined) {
-        const original = await client.readSessionMediaBytes(sessionId, originalId, client.readingOptions());
-        const bytes = await fileToImageAttachment(new File([original.bytes as Uint8Array<ArrayBuffer>], media.name ?? media.kind, { type: media.mime ?? blob?.[1] ?? original.mime }));
-        if (media.kind === 'image') return retained[index] === undefined ? bytes : { ...retained[index]!, previewUrl: bytes.previewUrl };
-        return retained[index] ?? { kind: 'retained', name: bytes.name, content: { type: 'video', source: { kind: 'base64', media_type: bytes.mediaType, data: bytes.data } } };
+        const baseRetained: RetainedAttachment = existing ?? {
+          kind: 'retained',
+          name: media.name ?? media.kind,
+          content: { type: media.kind, name: media.name, source: url !== undefined ? { kind: 'url', url } : { kind: 'session_media', file_id: fileId! } },
+        };
+        try {
+          const preview = await client.readSessionMediaPreviewBytes(sessionId, originalId, { ...client.readingOptions(), signal, mediaType: media.mime ?? blob?.[1] });
+          signal?.throwIfAborted();
+          const image = await fileToImageAttachment(new File([preview.bytes as Uint8Array<ArrayBuffer>], media.name ?? media.kind, { type: preview.mime }));
+          signal?.throwIfAborted();
+          return { ...baseRetained, previewUrl: image.previewUrl };
+        } catch (error: unknown) {
+          signal?.throwIfAborted();
+          if (!(error instanceof ApiError) || error.code !== API_CODES.REQUEST_INVALID) throw error;
+          return baseRetained;
+        }
       }
       if (url === undefined && fileId === undefined) throw new Error(t('preview.failed'));
-      if (retained[index] !== undefined) return retained[index]!;
+      if (existing !== undefined) return existing;
       return {
         kind: 'retained', name: media.name ?? media.kind,
-        content: { type: media.kind, source: url !== undefined ? { kind: 'url', url } : { kind: 'session_media', file_id: fileId! } },
+        content: { type: media.kind, name: media.name, source: url !== undefined ? { kind: 'url', url } : { kind: 'session_media', file_id: fileId! } },
       };
     }));
   }, [client, sessionId, t]);
@@ -3837,7 +4031,7 @@ boundExecution,
   // in place via actions.editQueued, cancel/remove hand the saved state back.
   const handleStartQueueEdit = useCallback(
     (promptId: string) => {
-      if (queueEdit !== null) return;
+      if (queueEditRef.current !== null || controller === null) return;
       const item = queuedItems.find((entry) => entry.promptId === promptId);
       const block = state.blocks.find(
         (candidate): candidate is UserBlock => candidate.kind === 'user' && candidate.promptId === promptId,
@@ -3847,42 +4041,57 @@ boundExecution,
         const mention = fileMentionFromPathMedia(media);
         return mention === undefined ? [] : [mention];
       });
-      const parkedDraft = draftRef.current;
-      const open = async (content: readonly MessageContent[], text: string) => {
-        const attachments = await loadMessageEditAttachments({ queuedContent: [...content] });
-        if (!composerOwnerActive.current || sessionIdRef.current !== sessionId || queueEditRef.current !== null || draftRef.current !== parkedDraft) return false;
-        setQueueEdit({
-          promptId,
-          owner: crypto.randomUUID(),
-          attachments: [...attachments, ...pathFileMentions],
-          savedDraft: draftRef.current,
-          savedQuotes: draftSelectionsRef.current.quotes,
-          savedAnnotations: draftSelectionsRef.current.annotations,
-        });
-        const carryovers = parseSelectionCarryovers(
-          block?.text ?? text,
-          block?.presentation ?? contentTextPresentation(content, '\n\n'),
-        );
-        updateDraft(carryovers.body);
-        setQuotes(carryovers.quotes.map((item) => createQuote(item.quote, item.source)));
-        setAnnotations(carryovers.annotations.reduce<readonly SelectionAnnotation[]>(
-          (current, note) => addAnnotation(current, note.quote, note.comment, note.source), [],
-        ));
-        return true;
+      let initialAttachments = retainedAttachmentsFromContent(item.content ?? []);
+      const abort = new AbortController();
+      const edit = {
+        promptId, owner: crypto.randomUUID(), abort, loading: true, loadError: false,
+        attachments: [...initialAttachments, ...pathFileMentions],
+        savedDraft: draftRef.current,
+        savedQuotes: draftSelectionsRef.current.quotes,
+        savedAnnotations: draftSelectionsRef.current.annotations,
       };
-      const incomplete = controller?.contentRefsFor(MAIN_AGENT_ID, { kind: 'prompt', id: promptId }).some((ref) => ref.path[0] === 'content') === true;
+      queueEditRef.current = edit;
+      setQueueEdit(edit);
+      const carryovers = parseSelectionCarryovers(block?.text ?? item.text, block?.presentation ?? contentTextPresentation(item.content ?? [], '\n\n'));
+      updateDraft(carryovers.body);
+      setQuotes(carryovers.quotes.map((entry) => createQuote(entry.quote, entry.source)));
+      setAnnotations(carryovers.annotations.reduce<readonly SelectionAnnotation[]>(
+        (current, note) => addAnnotation(current, note.quote, note.comment, note.source), [],
+      ));
+      const ownsEdit = () => !abort.signal.aborted && composerOwnerActive.current && sessionIdRef.current === sessionId && queueEditRef.current?.owner === edit.owner;
+      const incomplete = controller.contentRefsFor(MAIN_AGENT_ID, { kind: 'prompt', id: promptId }).some((ref) => ref.path[0] === 'content') === true;
       void (async () => {
-        await controller?.holdQueued(promptId, true);
-        let opened = false;
         try {
-          const content = incomplete ? await controller?.readQueuedPromptContent(promptId) : item.content ?? [];
-          if (content !== undefined) opened = await open(content, incomplete ? content.filter((part) => part.type === 'text').map((part) => part.text).join('\n\n') : item.text);
+          await controller.holdQueued(promptId, true);
+          abort.signal.throwIfAborted();
+          const content = incomplete ? await controller.readQueuedPromptContent(promptId, abort.signal) : item.content ?? [];
+          abort.signal.throwIfAborted();
+          if (!ownsEdit()) return;
+          if (content === undefined) throw new Error(t('preview.failed'));
+          if (incomplete) {
+            const completeAttachments = retainedAttachmentsFromContent(content);
+            const previous = initialAttachments;
+            setQueueEdit((current) => current?.owner !== edit.owner ? current : {
+              ...current, attachments: mergeLoadedAttachments(current.attachments, completeAttachments, previous),
+            });
+            initialAttachments = completeAttachments;
+            if (draftRef.current === carryovers.body) {
+              const complete = parseSelectionCarryovers(content.filter((part) => part.type === 'text').map((part) => part.text).join('\n\n'), contentTextPresentation(content, '\n\n'));
+              updateDraft(complete.body);
+            }
+          }
+          const loaded = await loadMessageEditAttachments({ queuedContent: [...content] }, abort.signal);
+          if (ownsEdit()) setQueueEdit((current) => current?.owner !== edit.owner ? current : {
+            ...current, loading: false, attachments: mergeLoadedAttachments(current.attachments, loaded, initialAttachments),
+          });
+        } catch (error: unknown) {
+          if (!ownsEdit()) return;
+          setQueueEdit((current) => current?.owner !== edit.owner ? current : { ...current, loading: false, loadError: true });
+          pushToast({ tone: 'error', text: t('sv.editQueuedFailed', { detail: error instanceof Error ? error.message : String(error) }) });
         } finally {
-          if (!opened) await controller?.holdQueued(promptId, false);
+          if (abort.signal.aborted && queueEditRef.current?.promptId !== promptId) await controller.holdQueued(promptId, false).catch(() => undefined);
         }
-      })().catch((error: unknown) => {
-        if (composerOwnerActive.current && sessionIdRef.current === sessionId) pushToast({ tone: 'error', text: t('sv.editQueuedFailed', { detail: error instanceof Error ? error.message : String(error) }) });
-      });
+      })();
     },
     [queueEdit, queuedItems, state.blocks, updateDraft, controller, loadMessageEditAttachments, sessionId, t],
   );
@@ -3896,9 +4105,10 @@ boundExecution,
   const handleQueueEditConfirm = useCallback(
     (text: string, editedAttachments: readonly ComposerAttachment[], argumentPresentation?: import('@kiki/transcript').TextPresentation): Promise<void> => {
       const edit = queueEdit;
-      if (edit === null) return Promise.resolve();
+      if (edit === null || edit.loading || edit.loadError) return Promise.resolve();
       const exit = () => {
         if (!composerOwnerActive.current || queueEditRef.current?.owner !== edit.owner) return;
+        edit.abort.abort();
         queueEditRef.current = null;
         setQueueEdit(null);
         updateDraft(edit.savedDraft);
@@ -3933,16 +4143,20 @@ boundExecution,
     [queueEdit, queuedItems, quotes, annotations, actions, updateDraft],
   );
   const handleQueueEditCancel = useCallback(() => {
-    if (queueEdit === null) return;
-    updateDraft(queueEdit.savedDraft);
-    setQuotes(queueEdit.savedQuotes);
-    setAnnotations(queueEdit.savedAnnotations);
+    const edit = queueEditRef.current;
+    if (edit === null) return;
+    edit.abort.abort();
+    updateDraft(edit.savedDraft);
+    setQuotes(edit.savedQuotes);
+    setAnnotations(edit.savedAnnotations);
     queueEditRef.current = null;
     setQueueEdit(null);
-  }, [queueEdit, updateDraft]);
+  }, [updateDraft]);
   const handleQueueEditRemove = useCallback(() => {
-    const edit = queueEdit;
+    const edit = queueEditRef.current;
     if (edit === null) return;
+    edit.abort.abort();
+    queueEditRef.current = null;
     setQueueEdit(null);
     updateDraft(edit.savedDraft);
     setQuotes(edit.savedQuotes);
@@ -4337,12 +4551,25 @@ boundExecution,
   // continuation in the footer even when there is no queue header to open.
   const composerStatusNotice = useMemo(() => {
     const connectionNotice = wsStatus === 'connecting' ? t('app.reconnecting') : wsStatus === 'closed' ? t('app.disconnected') : undefined;
-    if (!hasPromptContinuation && connectionNotice === undefined) return undefined;
+    const pendingNotice = pendingSubmission?.status === 'offline' ? t('sv.submissionRecovery.title')
+      : pendingSubmission?.status === 'server' ? t('sv.submissionRecovery.server')
+        : pendingSubmission?.status === 'executing' ? t('sv.submissionRecovery.executing')
+          : pendingSubmission?.status === 'failed' ? t('sv.submissionRecovery.failed')
+            : pendingSubmission?.status === 'cancelled' ? t('sv.submissionRecovery.cancelled') : undefined;
+    const ingress = state.durableIngress ?? [];
+    const failedIngress = ingress.some((item) => item.admission === 'failed');
+    const retainedIngress = ingress.some((item) => item.admission === 'restoring' || item.admission === 'admitted' || item.admission === 'held');
+    const ingressNotice = pendingNotice === undefined
+      ? failedIngress ? t('sv.submissionRecovery.failed') : retainedIngress ? t('sv.submissionRecovery.server') : undefined
+      : undefined;
+    if (!hasPromptContinuation && connectionNotice === undefined && pendingNotice === undefined && ingressNotice === undefined) return undefined;
     return <>
       {hasPromptContinuation && promptCoverage !== undefined ? <PromptRecordsRemainder continuation={{ coverage: promptCoverage, status: promptEntityLoad, onRequest: handleLoadPromptEntities }} /> : null}
       {connectionNotice === undefined ? null : <span className="truncate">{connectionNotice}</span>}
+      {pendingNotice === undefined ? null : <span data-submission-pending className="truncate">{pendingNotice}</span>}
+      {ingressNotice === undefined ? null : <span data-durable-ingress className="truncate">{ingressNotice}</span>}
     </>;
-  }, [hasPromptContinuation, promptCoverage, promptEntityLoad, handleLoadPromptEntities, wsStatus, t]);
+  }, [hasPromptContinuation, promptCoverage, promptEntityLoad, handleLoadPromptEntities, pendingSubmission?.status, state.durableIngress, wsStatus, t]);
 
   const composerBusy = canAbortActiveTurn(state);
   // The working line under the composer: only while the agent itself is
@@ -4458,8 +4685,8 @@ boundExecution,
           <Composer
             busy={composerBusy}
             disabled={composerDisabled}
-            sendDisabled={!sessionSendReady}
-            sendDisabledTitle={state.resyncing || state.resyncFailed ? t('sv.sendPaused') : undefined}
+            sendDisabled={!sessionSendReady || queueEdit?.loading === true || queueEdit?.loadError === true}
+            sendDisabledTitle={queueEdit?.loading ? t('preview.loading') : queueEdit?.loadError ? t('preview.failed') : state.resyncing || state.resyncFailed ? t('sv.sendPaused') : undefined}
             busyPlaceholder={state.resyncing || state.resyncFailed ? t('sv.sendPaused') : undefined}
             value={draft}
             onChange={updateDraft}

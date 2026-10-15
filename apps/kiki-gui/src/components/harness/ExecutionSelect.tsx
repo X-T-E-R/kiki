@@ -28,7 +28,7 @@ import {
 
 import { useI18n } from '../../i18n';
 import { externalClientsFacade } from '../../lib/externalClients';
-import { mapExecutorCapabilities } from '../../lib/executorCapabilities';
+import { mapExecutorCapabilities, type ExecutorCapabilityPresentation } from '../../lib/executorCapabilities';
 import { useNow } from '../RelativeTime';
 import { useOptionalConnection } from '../../state/connection';
 import {
@@ -43,6 +43,20 @@ import {
 import type { SearchableSelectOption } from '../SearchableSelect';
 import { Icon } from '../icons';
 
+/**
+ * `ready` / `partial` / `unavailable` are an advertised effort list (an empty
+ * list and an unavailable dimension included). `unknown`, `absent`, and
+ * `loading` have not named legal efforts, so a model click must not clear one.
+ */
+function advertisedThinkingLevels(
+  capabilities: ExecutorCapabilityPresentation | undefined,
+): readonly string[] | undefined {
+  const levels = capabilities?.thinking_levels;
+  if (levels?.kind === 'unavailable') return [];
+  if (levels?.kind === 'ready' || levels?.kind === 'partial') return levels.values ?? [];
+  return undefined;
+}
+
 function Check({ on }: { on: boolean }) {
   return (
     <span aria-hidden className={`flex h-[19px] w-3 shrink-0 items-center ${on ? 'text-ink' : 'text-transparent'}`}>
@@ -50,6 +64,10 @@ function Check({ on }: { on: boolean }) {
     </span>
   );
 }
+
+/** Selected effort capsule from the model-chip row: a paper sheet on the paper track, not an ink fill. */
+const EFFORT_SELECTED_CLASS = 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]';
+const EFFORT_IDLE_CLASS = 'text-ink-soft hover:text-ink';
 
 export interface ExecutionSelectProps {
   readonly choice: ExecutionChoice;
@@ -136,6 +154,12 @@ export function ExecutionSelect({
   }, [open]);
 
   const [modelSearch, setModelSearch] = useState('');
+  // External effort is not stored on the choice: writing overrides.thinking
+  // would look like an engine switch. The local pick paints the capsule until
+  // the parent reports the new effort, and resets when the engine or model changes.
+  const [pickedEffort, setPickedEffort] = useState<string | null | undefined>(undefined);
+  const effortChoiceKey = `${choice.executor}\0${choice.profile ?? ''}\0${choice.profile_file ?? ''}\0${choice.external_connection_id ?? ''}\0${choice.overrides?.model ?? ''}\0${String(choice.overrides?.thinking)}`;
+  useEffect(() => { setPickedEffort(undefined); }, [effortChoiceKey]);
 
   useEffect(() => {
     if (!open) {
@@ -271,7 +295,8 @@ export function ExecutionSelect({
     ? displayEfforts.length > 0
     : (executorCapabilities?.controls?.thinking_switch?.kind !== 'unavailable' && displayEfforts.length > 0);
 
-  const activeEffort = isNative ? currentEffort : (choice.overrides?.thinking ?? undefined);
+  const boundEffort = isNative ? currentEffort : (choice.overrides?.thinking ?? undefined);
+  const activeEffort = pickedEffort !== undefined ? (pickedEffort ?? undefined) : (boundEffort || undefined);
 
   const switchControl = executorCapabilities?.controls?.model_switch;
   const supportsModelOverride = isNative || (switchControl && switchControl.kind !== 'unavailable');
@@ -336,33 +361,33 @@ export function ExecutionSelect({
       close(true);
       return;
     }
-    const nextEffort = (choice.overrides?.thinking && executorEffortLevels.includes(choice.overrides.thinking))
-      ? choice.overrides.thinking
-      : undefined;
+    const advertised = advertisedThinkingLevels(executorCapabilities);
+    const current = choice.overrides?.thinking;
+    const thinking = advertised === undefined
+      ? (current === '' ? undefined : current)
+      : current === null
+        ? null
+        : (typeof current === 'string' && current !== '' && advertised.includes(current) ? current : undefined);
+    const { thinking: _previous, ...rest } = choice.overrides ?? {};
     onChange({
       ...choice,
       external_connection_id: undefined,
       external_connection_name: undefined,
-      overrides: {
-        model: modelVal,
-        thinking: nextEffort ?? undefined,
-      },
+      overrides: thinking === undefined && advertised === undefined
+        ? { ...rest, model: modelVal }
+        : { ...rest, model: modelVal, thinking },
     });
     close(true);
-  }, [onRequireSwitchConfirmation, choice, executorEffortLevels, onChange, close]);
+  }, [onRequireSwitchConfirmation, choice, executorCapabilities, onChange, close]);
 
   const handleSelectEffort = useCallback((effortVal: string | undefined) => {
-    if (isNative) {
-      if (onChangeEffort) onChangeEffort(effortVal ?? '');
-    }
-    onChange({
-      ...choice,
-      overrides: {
-        ...choice.overrides,
-        thinking: effortVal ?? null,
-      },
-    });
-  }, [isNative, onChangeEffort, onChange, choice]);
+    setPickedEffort(effortVal ?? null);
+    // Do not publish an execution choice. Native and external effort are the
+    // composer control: the session sends legacy `thinking` and keeps the
+    // bound executor, profile, and model. An execution selection here confirms
+    // a new context, and for a bare external engine it also clears persona.
+    onChangeEffort?.(effortVal ?? '');
+  }, [onChangeEffort]);
 
   // Format trigger label: Model · Effort
   const triggerLabel = useMemo(() => {
@@ -374,17 +399,16 @@ export function ExecutionSelect({
       const resolvedModel = currentModel
         ? (resolveCatalogModel(models ?? [], currentModel)?.display_name ?? currentModel)
         : (effectiveModel ?? modelShortLabel ?? fallbackModel);
-      const parts = [resolvedModel, currentEffort].filter(Boolean);
+      const parts = [resolvedModel, activeEffort].filter(Boolean);
       return parts.join(' · ');
     }
     const targetModel = choice.overrides?.model;
-    const targetEffort = choice.overrides?.thinking;
     if (targetModel) {
-      const parts = [targetModel, targetEffort].filter(Boolean);
+      const parts = [targetModel, activeEffort].filter(Boolean);
       return parts.join(' · ');
     }
     return t('composer.engineModelFollow');
-  }, [choice, isNative, currentModel, models, effectiveModel, modelShortLabel, currentEffort, t]);
+  }, [choice, isNative, currentModel, models, effectiveModel, modelShortLabel, activeEffort, t]);
 
   const onKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key === 'Escape' && open) {
@@ -428,26 +452,12 @@ export function ExecutionSelect({
           className={STATUS_SEGMENT_ICON_CLASS}
         />
         <span className="min-w-0 truncate">
-          {pending ? t('composer.execution.pendingSuffix', { name: triggerLabel }) : triggerLabel}
+          {/* The profile chip on the left already says the switch applies on
+              the next message. The model chip keeps the pending accent, title,
+              and cancel, and names only the model and effort. */}
+          {triggerLabel}
         </span>
       </button>
-
-      {!open && !isNative && onRefreshExecutorModels && (executorCapabilities?.freshness === 'stale' || executorRefreshFailed) ? (
-        <button
-          type="button"
-          data-external-model-refresh
-          disabled={executorRefreshBusy}
-          onClick={(e) => {
-            e.stopPropagation();
-            onRefreshExecutorModels();
-          }}
-          aria-label={t('composer.engineCapabilityRefreshAria')}
-          title={t('composer.engineCapabilityRefreshAria')}
-          className="rounded p-1 text-ink-faint hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40"
-        >
-          <Icon name="refresh" size={12} />
-        </button>
-      ) : null}
 
       {pending && onCancelPending !== undefined ? (
         <button
@@ -702,7 +712,7 @@ export function ExecutionSelect({
               <p className="mb-1 text-[11.5px] font-medium text-ink-faint">
                 {t('composer.execution.effortHeading')}
               </p>
-              <div className="flex flex-wrap gap-1">
+              <div className="flex flex-wrap gap-0.5 rounded-md bg-paper p-0.5">
                 <button
                   type="button"
                   role="radio"
@@ -710,10 +720,8 @@ export function ExecutionSelect({
                   data-effort=""
                   data-execution-effort=""
                   onClick={() => { handleSelectEffort(undefined); }}
-                  className={`rounded px-2 py-0.5 text-[11.5px] font-medium transition-colors ${
-                    !activeEffort
-                      ? 'bg-ink text-paper'
-                      : 'bg-panel text-ink hover:text-selected-ink'
+                  className={`rounded px-2 py-0.5 text-[11.5px] transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none ${
+                    !activeEffort ? EFFORT_SELECTED_CLASS : EFFORT_IDLE_CLASS
                   }`}
                 >
                   {t('composer.execution.defaultEffort')}
@@ -729,10 +737,8 @@ export function ExecutionSelect({
                       data-effort={level}
                       data-execution-effort={level}
                       onClick={() => { handleSelectEffort(level); }}
-                      className={`rounded px-2 py-0.5 text-[11.5px] font-medium capitalize transition-colors ${
-                        isLevelActive
-                          ? 'bg-ink text-paper'
-                          : 'bg-panel text-ink hover:text-selected-ink'
+                      className={`rounded px-2 py-0.5 text-[11.5px] capitalize transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none ${
+                        isLevelActive ? EFFORT_SELECTED_CLASS : EFFORT_IDLE_CLASS
                       }`}
                     >
                       {level}

@@ -8,11 +8,12 @@ import { I18nProvider } from '../i18n';
 import { ConversationShell } from './ConversationShell';
 import { SessionRouteView } from './SessionView';
 import { SubmissionRecovery } from './SubmissionRecovery';
-import { preserveSubmission, readUnconfirmedSubmissions, readDraft, resetDraftMemoryForTests, readComposerState, writeComposerState, createQuote, selectionCarryoverPresentation } from '@kiki/session-core/composer';
+import { preserveSubmission, readUnconfirmedSubmissions, readDraft, writeDraft, resetDraftMemoryForTests, readComposerState, writeComposerState, createQuote, selectionCarryoverPresentation } from '@kiki/session-core/composer';
 import { createViewState } from '@kiki/session-core/session';
 import { emptySessionUsage } from '@kiki/protocol';
+import { ApiError } from '@kiki/session-core/transport';
 
-const fixture = vi.hoisted(() => ({ controller: undefined as object | undefined, autoCompact: true, dependencies: undefined as Promise<void> | undefined, queued: true, partialPrompts: false, structureUnread: false, loadEntities: vi.fn(async () => true), loadContent: vi.fn(async () => true), readMedia: vi.fn(), pushToast: vi.fn() }));
+const fixture = vi.hoisted(() => ({ controller: undefined as object | undefined, autoCompact: true, dependencies: undefined as Promise<void> | undefined, queued: true, partialPrompts: false, structureUnread: false, acquires: 0, releases: 0, persistenceHints: [] as unknown[], loadEntities: vi.fn(async () => true), loadContent: vi.fn(async () => true), readMedia: vi.fn(), readPreview: vi.fn(), pushToast: vi.fn() }));
 vi.mock('../lib/toasts', () => ({ pushToast: fixture.pushToast }));
 /** A snapshot field the header shows, cut in the window — the composer's remainder. */
 const STRUCTURE_REF = { source: { kind: 'snapshot' as const, id: '' }, revision: 'rev-1', path: ['session', 'title'], kind: 'text' as const, offset: 12, total: 40 };
@@ -31,13 +32,15 @@ vi.mock('../state/connection', () => {
     },
     getContextStrategy: async () => ({ strategy: 'summarize', source: 'global' }),
     readSessionMediaBytes: fixture.readMedia,
+    readSessionMediaPreviewBytes: fixture.readPreview,
     readingOptions: () => ({ timeoutMs: 5000 }),
     listAgentModelSwitches: async () => [],
     subscribeAgentModelSwitches: () => ({ ready: Promise.resolve(), dispose: () => {} }),
     klient: { session: () => ({ agent: () => ({ events: { on: () => ({ ready: Promise.resolve(), dispose: () => {} }) } }) }) },
   };
   const registry = { acquire: (_id: string, _scope: object, create: () => { open(): Promise<void>; close(): void }) => {
-    const controller = create(); return { controller, ready: controller.open(), release: () => controller.close() };
+    fixture.acquires += 1;
+    const controller = create(); return { controller, ready: controller.open(), release: () => { fixture.releases += 1; controller.close(); } };
   } };
   return { useConnection: () => ({ client, meta: { capabilities: {} }, wsStatus: 'closed' }),
     useOptionalConnection: () => null, useControllerRegistry: () => registry };
@@ -64,6 +67,7 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
     getState = () => this.state;
     getAgentState = () => this.state;
     setFocusedAgent() {}
+    setPersistenceHint(value: unknown) { fixture.persistenceHints.push(value); }
     refreshSession() { return Promise.resolve(); }
     open() { return Promise.resolve(); }
     close() {}
@@ -85,9 +89,13 @@ beforeEach(() => {
   fixture.queued = true;
   fixture.partialPrompts = false;
   fixture.structureUnread = false;
+  fixture.acquires = 0;
+  fixture.releases = 0;
+  fixture.persistenceHints = [];
   fixture.loadEntities.mockClear();
   fixture.loadContent.mockClear();
   fixture.readMedia.mockReset();
+  fixture.readPreview.mockReset();
   fixture.pushToast.mockClear();
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   localStorage.clear();
@@ -111,6 +119,33 @@ it('keeps a queued composer seat mounted when real auto-compaction status is ava
   for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
   expect(container.querySelector('textarea[data-composer]')).not.toBeNull();
   expect(container.querySelector('[data-queue-count]')?.textContent).toContain('1');
+});
+
+it('updates a late saved-session classification without reacquiring the controller or dropping the draft', async () => {
+  writeDraft('session-example', 'late classification draft');
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const render = (sessions: readonly import('@kiki/protocol').Session[]) => root!.render(
+    <QueryClientProvider client={queryClient}>
+      <I18nProvider><MemoryRouter initialEntries={['/s/session-example']}><Routes>
+        <Route element={<ConversationShell />}><Route path="/s/:id" element={<SessionRouteView sessionId="session-example" sessions={sessions} onToggleSidebar={() => {}} />} /></Route>
+      </Routes></MemoryRouter></I18nProvider>
+    </QueryClientProvider>,
+  );
+  root = createRoot(container);
+  await act(async () => render([]));
+  for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  expect(fixture.acquires).toBe(1);
+  expect(fixture.persistenceHints).toContain('unknown');
+  const saved = {
+    id: 'session-example', title: 'Late saved classification', workspace_id: 'workspace-example', ephemeral: false,
+    metadata: { cwd: '/example' }, agent_config: { profile: 'agent' }, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:01Z',
+  } as unknown as import('@kiki/protocol').Session;
+  await act(async () => render([saved]));
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  expect(fixture.acquires).toBe(1);
+  expect(fixture.releases).toBe(0);
+  expect(fixture.persistenceHints.at(-1)).toBe('saved');
+  expect(readDraft('session-example')).toBe('late classification draft');
 });
 
 it('keeps unknown sends recoverable through an empty snapshot, restores only by user action, and retires authoritative ack', async () => {
@@ -421,7 +456,7 @@ it.each(['session_media', 'blobref'] as const)('restores serialized queued %s or
   };
   fixture.controller = controller;
   const png = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII='), c => c.charCodeAt(0));
-  fixture.readMedia.mockResolvedValue({ bytes: png, mime: 'image/png', name: 'saved.png' });
+  fixture.readPreview.mockResolvedValue({ bytes: png, mime: 'image/png', name: 'saved.png' });
   root = createRoot(container);
   await act(async () => root!.render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><I18nProvider><MemoryRouter initialEntries={['/s/session-example']}><Routes><Route element={<ConversationShell />}><Route path="/s/:id" element={<SessionRouteView sessionId="session-example" sessions={[]} onToggleSidebar={() => {}} />} /></Route></Routes></MemoryRouter></I18nProvider></QueryClientProvider>));
   for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
@@ -429,7 +464,8 @@ it.each(['session_media', 'blobref'] as const)('restores serialized queued %s or
   const edit = () => container.querySelector<HTMLButtonElement>('[aria-label="Edit queued prompt"]')!;
   await act(async () => edit().click());
   for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
-  expect(fixture.readMedia).toHaveBeenCalledWith('session-example', fileId, { timeoutMs: 5000 });
+  expect(fixture.readPreview).toHaveBeenCalledWith('session-example', fileId, { timeoutMs: 5000, signal: expect.any(AbortSignal), mediaType: source === 'blobref' ? 'image/png' : undefined });
+  expect(fixture.readMedia).not.toHaveBeenCalled();
   expect(container.querySelector('[data-context-tray] img')?.getAttribute('src')).toMatch(/^data:image\/png;base64,/);
   await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Cancel editing"]')!.click());
   expect(replaceQueued).not.toHaveBeenCalled();
@@ -438,13 +474,22 @@ it.each(['session_media', 'blobref'] as const)('restores serialized queued %s or
   for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
   await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Confirm edit"]')!.click());
   expect(replaceQueued).toHaveBeenCalledWith('queued-example', 'saved with image', content.slice(1), undefined);
-  fixture.readMedia.mockRejectedValue(new Error('Original unavailable'));
+  fixture.readPreview.mockRejectedValue(new ApiError({ code: 40407, msg: 'Original unavailable', data: null }));
   await act(async () => edit().click());
   for (let i = 0; i < 3; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
   expect(fixture.pushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: 'error', text: expect.stringContaining('Original unavailable') }));
-  expect(container.querySelector('[aria-label="Confirm edit"]')).toBeNull();
+  expect(container.querySelector<HTMLButtonElement>('[aria-label="Confirm edit"]')!.disabled).toBe(true);
+  expect(container.querySelector('[data-attachment-chips]')?.textContent).toContain('saved.png');
   expect(controller.state.blocks[0]?.queuedContent).toEqual(content);
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Cancel editing"]')!.click());
   expect(holdQueued).toHaveBeenCalledWith('queued-example', false);
+  fixture.readPreview.mockRejectedValue(new ApiError({ code: 40001, msg: 'No image preview', data: null }));
+  await act(async () => edit().click());
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  expect(container.querySelector<HTMLButtonElement>('[aria-label="Confirm edit"]')!.disabled).toBe(false);
+  expect(fixture.readMedia).not.toHaveBeenCalled();
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Confirm edit"]')!.click());
+  expect(replaceQueued).toHaveBeenLastCalledWith('queued-example', 'saved with image', content.slice(1), undefined);
 });
 
 
@@ -492,6 +537,49 @@ it.each([
   expect(new Set(retained.map(item => item.id)).size).toBe(retained.length);
 });
 
+it.each(['failed', 'cancelled'] as const)('restores draft and selection after a durable send-now %s admission', async admission => {
+  const first = createQuote('retained before admission');
+  writeDraft('session-example', 'retry this message');
+  writeComposerState('session-example', { attachments: [], annotations: [], quotes: [first], permissionMode: undefined, planMode: undefined, planGate: undefined, goalObjective: undefined, modelOverride: undefined, effortOverride: undefined });
+  let callbacks!: { onPreservation?: (persisted: boolean) => void; content: import('@kiki/protocol').MessageContent[] };
+  let resolveResult!: (result: { outcome: typeof admission }) => void;
+  const send = vi.fn((input: typeof callbacks) => {
+    callbacks = input;
+    return new Promise<{ outcome: typeof admission }>(resolve => { resolveResult = resolve; });
+  });
+  const controller = {
+    state: { ...createViewState('session-example'), loaded: true, transcriptReady: true, busy: true, abortableTurnId: 'turn-example',
+      session: { id: 'session-example', title: 'Admission recovery', workspace_id: 'workspace-example', metadata: { cwd: '/example' }, agent_config: { model: 'example/model', profile: 'agent' }, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' } },
+    subscribe: () => () => {}, subscribeInterruptedPrompt: () => () => {}, subscribeAgent: () => () => {},
+    getState: () => controller.state, getAgentState: () => controller.state, getForest: () => ({ roots: [], byId: {} }),
+    open: async () => {}, close() {}, setFocusedAgent() {}, refreshSession: async () => {}, retainHistoryRead: () => () => {},
+    sendPrompt: send, sendPromptNow: send,
+  };
+  fixture.controller = controller;
+  root = createRoot(container);
+  await act(async () => root!.render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><I18nProvider><MemoryRouter initialEntries={['/s/session-example']}><Routes><Route element={<ConversationShell />}><Route path="/s/:id" element={<SessionRouteView sessionId="session-example" sessions={[]} onToggleSidebar={() => {}} />} /></Route></Routes></MemoryRouter></I18nProvider></QueryClientProvider>));
+  for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  const input = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true })));
+  expect(send).toHaveBeenCalledTimes(1);
+  expect(callbacks.content.find(part => part.type === 'text')).toMatchObject({ text: expect.stringContaining('retry this message') });
+  await act(async () => callbacks.onPreservation?.(true));
+  expect(readDraft('session-example')).toBe('');
+  expect(container.querySelectorAll('[data-quote-chip]')).toHaveLength(0);
+  await act(async () => container.querySelector<HTMLButtonElement>('[data-fixture-quote]')!.click());
+  const pending = send.mock.results[0]!.value as Promise<{ outcome: typeof admission }>;
+  await act(async () => {
+    resolveResult({ outcome: admission });
+    await pending;
+    await Promise.resolve();
+  });
+  expect(readDraft('session-example')).toContain('retry this message');
+  expect(container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')?.value).toContain('retry this message');
+  const retained = readComposerState('session-example').quotes!;
+  expect(retained.map(item => item.id)).toEqual([first.id, retained[1]!.id]);
+  expect(retained[1]!.quote).toBe('new passage');
+});
+
 it('migrates a legacy draft quote and restores all serialized queued quotes through cancel and replacement', async () => {
   writeComposerState('session-example', { attachments: [], annotations: [], quote: 'legacy passage', permissionMode: undefined, planMode: undefined, planGate: undefined, goalObjective: undefined, modelOverride: undefined, effortOverride: undefined });
   const carry = selectionCarryoverPresentation([], [createQuote('queued first'), createQuote('queued second')]);
@@ -526,8 +614,10 @@ it('migrates a legacy draft quote and restores all serialized queued quotes thro
 });
 
 
-it('parks quotes and annotations added while a queued image original loads and restores them on cancel', async () => {
-  writeComposerState('session-example', { attachments: [], annotations: [], quotes: [], permissionMode: undefined, planMode: undefined, planGate: undefined, goalObjective: undefined, modelOverride: undefined, effortOverride: undefined });
+it('cancels pending queued previews, restores the parked draft and rejects late results across reopen and unmount', async () => {
+  const savedQuote = createQuote('parked passage');
+  writeDraft('session-example', 'parked draft');
+  writeComposerState('session-example', { attachments: [], annotations: [], quotes: [savedQuote], permissionMode: undefined, planMode: undefined, planGate: undefined, goalObjective: undefined, modelOverride: undefined, effortOverride: undefined });
   const content: import('@kiki/protocol').MessageContent[] = [
     { type: 'text', text: 'queued image body' },
     { type: 'image', name: 'saved.png', source: { kind: 'session_media', file_id: 'saved-image' } },
@@ -544,35 +634,55 @@ it('parks quotes and annotations added while a queued image original loads and r
     contentRefsFor: () => [], holdQueued, replaceQueued,
   };
   fixture.controller = controller;
-  let resolveOriginal!: (result: { bytes: Uint8Array; mime: string; name: string }) => void;
-  fixture.readMedia.mockReturnValue(new Promise(resolve => { resolveOriginal = resolve; }));
+  type Preview = { bytes: Uint8Array; mime: string; name: string };
+  const pending: { resolve: (result: Preview) => void; signal: AbortSignal }[] = [];
+  fixture.readPreview.mockImplementation((_session, _file, options: { signal: AbortSignal }) => new Promise<Preview>((resolve) => { pending.push({ resolve, signal: options.signal }); }));
   root = createRoot(container);
   await act(async () => root!.render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><I18nProvider><MemoryRouter initialEntries={['/s/session-example']}><Routes><Route element={<ConversationShell />}><Route path="/s/:id" element={<SessionRouteView sessionId="session-example" sessions={[]} onToggleSidebar={() => {}} />} /></Route></Routes></MemoryRouter></I18nProvider></QueryClientProvider>));
   for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
   await act(async () => container.querySelector<HTMLButtonElement>('[data-header-toggle="queue"]')!.click());
   await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Edit queued prompt"]')!.click());
-  expect(fixture.readMedia).toHaveBeenCalledWith('session-example', 'saved-image', { timeoutMs: 5000 });
-  expect(container.querySelector('[aria-label="Cancel editing"]')).toBeNull();
+  expect(pending).toHaveLength(1);
+  expect(fixture.readMedia).not.toHaveBeenCalled();
+  const input = () => container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  const confirm = () => container.querySelector<HTMLButtonElement>('[aria-label="Confirm edit"]')!;
+  const cancel = () => container.querySelector<HTMLButtonElement>('[aria-label="Cancel editing"]')!;
+  expect(input().disabled).toBe(false);
+  expect(input().value).toBe('queued image body');
+  expect(confirm().disabled).toBe(true);
+  expect(cancel().disabled).toBe(false);
   expect(holdQueued).toHaveBeenCalledWith('queued-example', true);
+  await act(async () => cancel().click());
+  expect(pending[0]!.signal.aborted).toBe(true);
+  expect(input().value).toBe('parked draft');
+  expect(readComposerState('session-example').quotes).toEqual([savedQuote]);
+  expect(replaceQueued).not.toHaveBeenCalled();
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Edit queued prompt"]')!.click());
+  expect(pending).toHaveLength(2);
+  const preview = { bytes: Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII='), char => char.charCodeAt(0)), mime: 'image/png', name: 'saved.png' };
+  await act(async () => { pending[0]!.resolve(preview); });
+  expect(confirm().disabled).toBe(true);
+  expect(pending[1]!.signal.aborted).toBe(false);
   await act(async () => {
-    container.querySelector<HTMLButtonElement>('[data-fixture-quote]')!.click();
-    container.querySelector<HTMLButtonElement>('[data-fixture-annotation]')!.click();
-  });
-  const added = readComposerState('session-example');
-  expect(added.quotes?.map(item => item.quote)).toEqual(['new passage']);
-  expect(added.annotations?.map(item => item.comment)).toEqual(['keep this note']);
-  expect(container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!.value).toBe('');
-  await act(async () => {
-    resolveOriginal({ bytes: Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII='), char => char.charCodeAt(0)), mime: 'image/png', name: 'saved.png' });
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input(), 'typed queued edit');
+    input().dispatchEvent(new Event('input', { bubbles: true }));
+    pending[1]!.resolve(preview);
     await new Promise(resolve => setTimeout(resolve, 20));
   });
+  expect(input().value).toBe('typed queued edit');
+  expect(confirm().disabled).toBe(false);
   expect(container.querySelector('[data-context-tray] img')?.getAttribute('src')).toMatch(/^data:image\/png;base64,/);
-  expect(container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!.value).toBe('queued image body');
-  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Cancel editing"]')!.click());
-  expect(readComposerState('session-example').quotes).toEqual(added.quotes);
-  expect(readComposerState('session-example').annotations).toEqual(added.annotations);
-  expect(container.querySelector('[data-quote-chip]')?.getAttribute('title')).toBe('new passage');
-  expect(replaceQueued).not.toHaveBeenCalled();
+  await act(async () => confirm().click());
+  expect(replaceQueued).toHaveBeenCalledWith('queued-example', 'typed queued edit', content.slice(1), undefined);
+  expect(input().value).toBe('parked draft');
+  expect(readComposerState('session-example').quotes).toEqual([savedQuote]);
   expect(controller.state.blocks[0]!.queuedContent).toEqual(content);
   expect(holdQueued).toHaveBeenCalledWith('queued-example', false);
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Edit queued prompt"]')!.click());
+  expect(pending).toHaveLength(3);
+  await act(async () => { root!.unmount(); root = undefined; });
+  expect(pending[2]!.signal.aborted).toBe(true);
+  await act(async () => { pending[2]!.resolve(preview); });
+  expect(readDraft('session-example')).toBe('parked draft');
+  expect(readComposerState('session-example').quotes).toEqual([savedQuote]);
 });

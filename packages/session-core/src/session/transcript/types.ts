@@ -662,6 +662,8 @@ export interface SessionViewState {
    * queued.
    */
   readonly queuedPromptMeta: Readonly<Record<string, QueuedPromptMeta>>;
+  /** Server-owned durable ingress records retained while cold-session admission recovers. */
+  readonly durableIngress?: readonly import('@kiki/protocol').PromptItem[];
   readonly model: string | undefined;
   readonly profile: string | undefined;
   readonly thinkingEffort: string | undefined;
@@ -743,6 +745,7 @@ export function createViewState(sessionId: string): SessionViewState {
     queuedPromptIds: [],
     promptQueueHold: undefined,
     queuedPromptMeta: {},
+    durableIngress: [],
     model: undefined,
     profile: undefined,
     thinkingEffort: undefined,

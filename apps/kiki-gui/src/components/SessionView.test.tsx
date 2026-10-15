@@ -96,6 +96,7 @@ import {
   resolveSessionSeatPhase,
   resolveSessionSendReady,
   sessionIdForSendReadyRead,
+  initialBindingStillPending,
   sessionAgentProfileWorkspaceId,
   SessionRouteView,
   shouldClearModeOverride,
@@ -521,6 +522,7 @@ describe('conversation shell phase (session side)', () => {
 
 describe('session send readiness', () => {
   const shellReady = {
+    controllerAvailable: true,
     leaseReady: true,
     loaded: true,
     loadError: undefined,
@@ -528,20 +530,30 @@ describe('session send readiness', () => {
     resyncFailed: false,
   };
 
-  it('allows send once the shell snapshot lease settles, before transcript seed', () => {
+  it('allows durable send as soon as a controller exists, before transcript seed or WS readiness', () => {
     expect(resolveSessionSendReady(shellReady)).toBe(true);
-    expect(resolveSessionSendReady({ ...shellReady, leaseReady: false })).toBe(false);
+    expect(resolveSessionSendReady({ ...shellReady, leaseReady: false, loaded: false, resyncing: true })).toBe(true);
+    expect(resolveSessionSendReady({ ...shellReady, controllerAvailable: false })).toBe(false);
   });
 
-  it('keeps send paused through load and resync failures', () => {
-    expect(resolveSessionSendReady({ ...shellReady, loadError: 'snapshot failed' })).toBe(false);
-    expect(resolveSessionSendReady({ ...shellReady, resyncing: true })).toBe(false);
-    expect(resolveSessionSendReady({ ...shellReady, resyncFailed: true })).toBe(false);
+  it('keeps send available when history loading failed, while still requiring a controller', () => {
+    expect(resolveSessionSendReady({ ...shellReady, loadError: 'snapshot failed' })).toBe(true);
+    expect(resolveSessionSendReady({ ...shellReady, resyncing: true })).toBe(true);
+    expect(resolveSessionSendReady({ ...shellReady, resyncFailed: true })).toBe(true);
+    expect(resolveSessionSendReady({ ...shellReady, controllerAvailable: false, loadError: 'snapshot failed' })).toBe(false);
   });
 
   it('does not start session-operation reads before the snapshot lease is settled', () => {
     expect(sessionIdForSendReadyRead('session-a', false)).toBeUndefined();
     expect(sessionIdForSendReadyRead('session-a', true)).toBe('session-a');
+  });
+
+  it('keeps an explicit new-session model through a stale binding snapshot, but honors clear or a newer pick', () => {
+    const base = { expectedModel: 'picked/model', modelOverride: 'picked/model', boundModel: 'default/model' };
+    expect(initialBindingStillPending(base)).toBe(true);
+    expect(initialBindingStillPending({ ...base, boundModel: 'picked/model' })).toBe(false);
+    expect(initialBindingStillPending({ ...base, modelOverride: undefined })).toBe(false);
+    expect(initialBindingStillPending({ ...base, modelOverride: 'newer/model' })).toBe(false);
   });
 });
 
@@ -562,6 +574,7 @@ describe('parseSessionCreateHandoff', () => {
       permissionMode: 'auto',
       planMode: undefined,
       goalObjective: undefined,
+      ephemeral: undefined,
     });
   });
 
@@ -570,6 +583,8 @@ describe('parseSessionCreateHandoff', () => {
     expect(handoff.personaGreetingReply).toBe(true);
     expect(resolveSessionCreateSubmission(handoff)).toMatchObject({ kind: 'prompt', text: 'hi', personaGreetingReply: true });
     expect(parseSessionCreateHandoff({ initialPrompt: 'hi', personaGreetingReply: 'yes' }).personaGreetingReply).toBeUndefined();
+    expect(parseSessionCreateHandoff({ initialPrompt: 'hi', ephemeral: true }).ephemeral).toBe(true);
+    expect(parseSessionCreateHandoff({ initialPrompt: 'hi', ephemeral: false }).ephemeral).toBe(false);
     expect(resolveSessionCreateSubmission({ initialPrompt: 'hi' })).not.toHaveProperty('personaGreetingReply');
   });
 
@@ -1255,6 +1270,112 @@ describe('resolveProfileSwitchSubmission', () => {
           profile: undefined,
           overrides: { model: 'vendor-model' },
         },
+      }),
+    ).toEqual({ model: undefined, thinking: undefined, permissionMode: undefined });
+  });
+
+  it('sends a new effort on an external binding that already names thinking, without an execution or model', () => {
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: false,
+        effortTouched: true,
+        model: 'vendor/sonnet',
+        thinking: 'high',
+        permissionMode: 'manual',
+        pendingExecution: undefined,
+        boundExecution: {
+          executor: 'example-acp',
+          profile: undefined,
+          overrides: { model: 'vendor-model', thinking: 'medium' },
+        },
+      }),
+    ).toEqual({ model: undefined, thinking: 'high', permissionMode: undefined });
+  });
+
+  it('sends a native effort pick as thinking and keeps the existing permission rule', () => {
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: false,
+        effortTouched: true,
+        model: 'fixture/live-model',
+        thinking: 'high',
+        permissionMode: 'manual',
+        pendingExecution: undefined,
+        boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
+      }),
+    ).toEqual({ model: undefined, thinking: 'high', permissionMode: 'manual' });
+  });
+
+  it('sends null when Default clears a native effort, without an execution selection', () => {
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: false,
+        effortTouched: true,
+        model: 'fixture/live-model',
+        thinking: '',
+        permissionMode: 'manual',
+        pendingExecution: undefined,
+        boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
+      }),
+    ).toEqual({ model: undefined, thinking: null, permissionMode: 'manual' });
+  });
+
+  it('sends null when Default clears a native execution thinking override, without a new execution', () => {
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: false,
+        effortTouched: true,
+        model: 'fixture/live-model',
+        thinking: '',
+        permissionMode: 'manual',
+        pendingExecution: undefined,
+        boundExecution: {
+          executor: 'native',
+          profile: 'agent',
+          overrides: { model: 'fixture/live-model', thinking: 'high' },
+        },
+      }),
+    ).toEqual({ model: undefined, thinking: null, permissionMode: 'manual' });
+  });
+
+  it('sends null when Default clears an external thinking override, and omits thinking when effort was not touched', () => {
+    const boundExecution = {
+      executor: 'example-acp',
+      profile: undefined,
+      overrides: { model: 'vendor/sonnet', thinking: 'medium' as const },
+    };
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: false,
+        effortTouched: true,
+        model: 'vendor/sonnet',
+        thinking: '',
+        permissionMode: 'manual',
+        pendingExecution: undefined,
+        boundExecution,
+      }),
+    ).toEqual({ model: undefined, thinking: null, permissionMode: undefined });
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: false,
+        effortTouched: false,
+        model: 'vendor/sonnet',
+        thinking: '',
+        permissionMode: 'manual',
+        pendingExecution: undefined,
+        boundExecution,
       }),
     ).toEqual({ model: undefined, thinking: undefined, permissionMode: undefined });
   });

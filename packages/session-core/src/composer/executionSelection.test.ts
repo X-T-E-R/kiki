@@ -8,6 +8,7 @@ import {
   NATIVE_EXECUTOR,
   overrideFor,
   isBareExternalChoice,
+  isEffortOnlyExecutionChange,
   sendsLegacyControl,
   profileExecutor,
   profileFileLabel,
@@ -143,6 +144,65 @@ describe('sameExecutionChoice', () => {
   });
 });
 
+describe('isEffortOnlyExecutionChange', () => {
+  const base = (overrides?: ExecutionChoice['overrides']): ExecutionChoice => ({
+    executor: 'claude-acp',
+    profile: undefined,
+    profile_file: undefined,
+    overrides,
+  });
+
+  it('is true when thinking is the only difference, including a clear', () => {
+    expect(isEffortOnlyExecutionChange(base({ thinking: 'high' }), base())).toBe(true);
+    expect(isEffortOnlyExecutionChange(
+      base({ model: 'vendor/sonnet', thinking: 'high' }),
+      base({ model: 'vendor/sonnet', thinking: 'medium' }),
+    )).toBe(true);
+    expect(isEffortOnlyExecutionChange(
+      base({ model: 'vendor/sonnet', thinking: null }),
+      base({ model: 'vendor/sonnet', thinking: 'medium' }),
+    )).toBe(true);
+    expect(isEffortOnlyExecutionChange(
+      { ...native('agent'), overrides: { thinking: 'xhigh' } },
+      native('agent'),
+    )).toBe(true);
+  });
+
+  it('is false for an equal choice, a missing current choice, or any other field', () => {
+    expect(isEffortOnlyExecutionChange(base({ thinking: 'high' }), undefined)).toBe(false);
+    expect(isEffortOnlyExecutionChange(base({ thinking: 'high' }), base({ thinking: 'high' }))).toBe(false);
+    expect(isEffortOnlyExecutionChange(base(), base())).toBe(false);
+    expect(isEffortOnlyExecutionChange(
+      base({ model: 'other', thinking: 'high' }),
+      base({ model: 'vendor/sonnet', thinking: 'medium' }),
+    )).toBe(false);
+    expect(isEffortOnlyExecutionChange(
+      { ...base({ thinking: 'high' }), executor: 'codex' },
+      base({ thinking: 'medium' }),
+    )).toBe(false);
+    expect(isEffortOnlyExecutionChange(
+      { ...base({ thinking: 'high' }), profile: 'reviewer' },
+      base(),
+    )).toBe(false);
+    expect(isEffortOnlyExecutionChange(
+      { ...base({ thinking: 'high' }), profile_file: '/home/dev/profiles/research.md' },
+      base({ thinking: 'medium' }),
+    )).toBe(false);
+    expect(isEffortOnlyExecutionChange(
+      { ...base({ thinking: 'high' }), external_connection_id: 'conn-1' },
+      base(),
+    )).toBe(false);
+    expect(isEffortOnlyExecutionChange(
+      base({ thinking: 'high', permission_mode: null }),
+      base({ thinking: 'medium' }),
+    )).toBe(false);
+    expect(isEffortOnlyExecutionChange(
+      base({ thinking: 'high', kiki_context: [] }),
+      base({ thinking: 'medium' }),
+    )).toBe(false);
+  });
+});
+
 describe('profilesForExecutor', () => {
   const catalog = [
     { name: 'agent', main: true, executor: undefined },
@@ -213,6 +273,21 @@ describe('sendsLegacyControl', () => {
       expect(sendsLegacyControl(profiled, control, false)).toBe(true);
       expect(sendsLegacyControl(undefined, control, false)).toBe(true);
     }
+  });
+
+  it('sends model and effort parked on a native profile, because that selection is not published', () => {
+    const choice: ExecutionChoice = {
+      executor: 'native', profile: 'agent', profile_file: undefined,
+      overrides: { model: 'axon/gpt-6.1-sol', thinking: 'xhigh' },
+    };
+    expect(sendsLegacyControl(choice, 'model', true)).toBe(true);
+    expect(sendsLegacyControl(choice, 'thinking', true)).toBe(true);
+    expect(sendsLegacyControl(choice, 'model', false)).toBe(true);
+    const namedPermission: ExecutionChoice = {
+      ...choice,
+      overrides: { model: 'axon/gpt-6.1-sol', thinking: 'xhigh', permission_mode: null },
+    };
+    expect(sendsLegacyControl(namedPermission, 'permission_mode', true)).toBe(false);
   });
 
   it('leaves a file profile’s own controls to the file', () => {

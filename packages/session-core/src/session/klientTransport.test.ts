@@ -13,8 +13,18 @@ const actions = [
   { command: 'dismiss', args: ['q1'], invoke: (t: SessionTransport) => t.dismissQuestion('s1', 'q1') },
   { command: 'cancelTask', args: ['task1', { agent_id: 'child-1' }], invoke: (t: SessionTransport) => t.cancelTask('s1', 'task1', { agent_id: 'child-1' }) },
 ];
+const resumeActions = actions.filter(({ command }) => command !== 'submit');
 
 describe('session command runtime admission', () => {
+  it('submits through the durable command boundary without waiting for history resume', async () => {
+    const resume = vi.fn(() => new Promise<boolean>(() => {}));
+    const submit = vi.fn(async () => ({ accepted: true }));
+    const session = vi.fn(() => ({ resume, commands: { submit } as never }));
+    const transport = createSessionTransport({ session });
+    await expect(transport.submitPrompt('s1', { content: [{ type: 'text', text: 'hello' }] })).resolves.toEqual({ accepted: true });
+    expect(resume).not.toHaveBeenCalled();
+    expect(submit).toHaveBeenCalledOnce();
+  });
   it('preserves deadline details and identity across the session error adapter', async () => {
     const requestId = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
     const details = { method: 'GET', path: '/api/sessions/s1', phase: 'headers', timeoutMs: 100, elapsedMs: 101, request_id: requestId };
@@ -22,7 +32,7 @@ describe('session command runtime admission', () => {
     const transport = createSessionTransport({ session: () => ({ resume: async () => true, commands: { read: async () => { throw failure; } } as never }) });
     await expect(transport.getSession('s1')).rejects.toMatchObject({ name: 'ApiError', details, requestId });
   });
-  it.each(actions)('awaits resume before $command and never while reading', async ({ command, args, invoke }) => {
+  it.each(resumeActions)('awaits resume before $command and never while reading', async ({ command, args, invoke }) => {
     let settle!: (value: boolean) => void;
     const resume = vi.fn(() => new Promise<boolean>((resolve) => { settle = resolve; }));
     const operation = vi.fn(async () => ({ accepted: true }));
@@ -40,14 +50,14 @@ describe('session command runtime admission', () => {
     expect(operation).toHaveBeenCalledExactlyOnceWith(...args);
   });
 
-  it.each(actions)('does not execute $command when the session is missing', async ({ command, invoke }) => {
+  it.each(resumeActions)('does not execute $command when the session is missing', async ({ command, invoke }) => {
     const operation = vi.fn();
     const transport = createSessionTransport({ session: () => ({ resume: async () => false, commands: { [command]: operation } as never }) });
     await expect(invoke(transport)).rejects.toMatchObject({ code: 40401 });
     expect(operation).not.toHaveBeenCalled();
   });
 
-  it.each(actions)('preserves resume errors without executing $command', async ({ command, invoke }) => {
+  it.each(resumeActions)('preserves resume errors without executing $command', async ({ command, invoke }) => {
     const operation = vi.fn();
     const failure = new RPCError(40901, 'session locked');
     const transport = createSessionTransport({ session: () => ({ resume: async () => { throw failure; }, commands: { [command]: operation } as never }) });

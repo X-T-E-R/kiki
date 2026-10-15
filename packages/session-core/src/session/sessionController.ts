@@ -11,7 +11,9 @@ import type {
   ExecutionSelection,
   MessageContent,
   PermissionMode,
+  PromptItem,
   PromptPlanGate,
+  PromptSubmission,
   PromptSubmitResult,
   QuestionResponse,
   Session,
@@ -79,7 +81,7 @@ import { isSteerSettled, newSteerPromptId, withPendingSteers, type PendingSteer 
 import type { QueuedPromptMeta } from './transcript/types';
 import type { AgentForest } from './agentTree';
 import { messageContentSchema } from '@kiki/protocol';
-import { preserveSubmission } from '../composer/submissionRecovery';
+import { forgetUnconfirmedSubmission, preserveSubmission } from '../composer/submissionRecovery';
 
 export type Listener = () => void;
 
@@ -320,19 +322,24 @@ export class SessionController {
   private readonly toolDetailReads = new Map<string, { promise: Promise<Extract<SessionViewTranscriptDetail, { kind: 'tool' }>['lookup']>; controller: AbortController; readers: number }>();
   private readonly entityPageCursors = new Map<string, string | null>();
   private latestSnapshot: SessionSnapshotResponse | undefined;
+  private durableIngressReadInFlight: Promise<void> | undefined;
   private readonly catchupReplay = new Map<
     string,
     { readonly ops: readonly TranscriptOperation[]; readonly cursor: TranscriptCursor }
   >();
+  private ephemeralHint: boolean | undefined;
+  private persistenceHint: 'temporary' | 'saved' | 'unknown' | undefined;
 
   constructor(
     client: SessionTransport,
     private readonly view: SessionViewFacade,
     sessionId: string,
-    options: { scheduler?: PublicationScheduler; rewriteResetTimeoutMs?: number; historyPreviewBytes?: number } = {},
+    options: { scheduler?: PublicationScheduler; rewriteResetTimeoutMs?: number; historyPreviewBytes?: number; ephemeral?: boolean; persistenceHint?: 'temporary' | 'saved' | 'unknown' } = {},
   ) {
     this.client = client;
     this.sessionId = sessionId;
+    this.ephemeralHint = options.ephemeral;
+    this.persistenceHint = options.persistenceHint ?? (options.ephemeral === undefined ? 'unknown' : options.ephemeral ? 'temporary' : 'saved');
     this.scheduler = options.scheduler ?? browserScheduler;
     this.usesBrowserScheduler = options.scheduler === undefined;
     this.visibilityDocument = this.usesBrowserScheduler ? browserVisibilityDocument() : undefined;
@@ -526,6 +533,7 @@ export class SessionController {
       this.setState(applyTranscriptShell(this.sessionId, snapshot, this.state));
       this.transcriptGrades = this.requestedTranscriptGrades();
       this.attachView({ seq: snapshot.as_of_seq, epoch: snapshot.epoch });
+      void this.refreshDurableIngress();
     } catch (error) {
       if (this.closed || this.isSuspended) return;
       this.setState(setLoadError(this.state, errorMessage(error, 'Could not load session')));
@@ -1073,6 +1081,7 @@ export class SessionController {
   handleReconnectAck(): void {
     if (this.closed || !this.droppedWithLiveWork || this.state.resyncError?.retryable === false) return;
     this.droppedWithLiveWork = false;
+    void this.refreshDurableIngress();
     const agents = [...this.agentTranscripts.keys()];
     if (agents.length === 0) {
       void this.resync();
@@ -1183,16 +1192,125 @@ export class SessionController {
     }, delay);
   }
 
+  setPersistenceHint(value: 'temporary' | 'saved' | 'unknown' | undefined): void {
+    if (value === undefined) return;
+    if (value === 'unknown' && this.persistenceHint !== undefined && this.persistenceHint !== 'unknown') return;
+    if (value === 'temporary' && this.persistenceHint === 'saved') return;
+    this.persistenceHint = value;
+  }
+
+  setEphemeralHint(value: boolean | undefined): void {
+    if (value === undefined) return;
+    if (value && this.persistenceHint === 'saved') return;
+    this.ephemeralHint = value;
+    this.setPersistenceHint(value ? 'temporary' : 'saved');
+  }
+
+  private usesDurableSubmission(): boolean {
+    if (this.persistenceHint === 'temporary' || this.persistenceHint === 'unknown') return false;
+    if (this.persistenceHint === 'saved') return true;
+    return this.ephemeralHint !== true && this.state.session?.ephemeral !== true;
+  }
+
+  private hasKnownSavedSession(): boolean {
+    if (this.persistenceHint !== undefined) return this.persistenceHint === 'saved';
+    return this.ephemeralHint === false || this.state.session?.ephemeral === false;
+  }
+
   handleSessionRecord = (record: Session): void => {
     if (record.id !== this.sessionId || this.closed) return;
     const current = this.state.session;
     if (current === undefined || record.updated_at >= current.updated_at) {
+      if (record.ephemeral !== undefined) this.setEphemeralHint(record.ephemeral);
       this.setState(setSessionRecord(this.state, record));
     }
   };
 
+  private setDurableIngress(records: readonly PromptItem[]): void {
+    const previous = this.state.durableIngress ?? [];
+    if (previous.length === records.length && previous.every((item, index) => {
+      const next = records[index];
+      return next !== undefined && item.prompt_id === next.prompt_id && item.status === next.status &&
+        item.admission === next.admission && item.revision === next.revision &&
+        item.admission_content_truncated === next.admission_content_truncated &&
+        item.admission_error?.code === next.admission_error?.code &&
+        item.admission_error?.message === next.admission_error?.message;
+    })) return;
+    this.setState({ ...this.state, version: this.state.version + 1, durableIngress: [...records] });
+  }
+
+  async refreshDurableIngress(): Promise<void> {
+    const read = this.client.listDurableIngress;
+    if (read === undefined || !this.hasKnownSavedSession() || this.closed || this.isSuspended) return;
+    if (this.durableIngressReadInFlight !== undefined) return this.durableIngressReadInFlight;
+    let request!: Promise<void>;
+    request = (async () => {
+      try {
+        const records: PromptItem[] = [];
+        const cursors = new Set<string>();
+        let cursor: string | undefined;
+        for (;;) {
+          const result = await read(this.sessionId, { cursor });
+          if (this.closed || this.isSuspended) return;
+          records.push(...(result.ingress ?? []));
+          const next = result.ingress_next_cursor;
+          if (next === undefined || cursors.has(next)) break;
+          cursors.add(next);
+          cursor = next;
+        }
+        if (!this.closed && !this.isSuspended) this.setDurableIngress(records);
+      } catch {
+        // Durable ingress is an auxiliary recovery read; prompt submission and
+        // the ordered transcript remain usable when this best-effort probe fails.
+      } finally {
+        if (this.durableIngressReadInFlight === request) this.durableIngressReadInFlight = undefined;
+      }
+    })();
+    this.durableIngressReadInFlight = request;
+    return request;
+  }
+
+  getDurableIngress(): readonly PromptItem[] {
+    return this.state.durableIngress ?? [];
+  }
+
+  async resumeDurableIngress(promptId: string, body: PromptSubmission, agentId = MAIN_AGENT_ID): Promise<PromptItem> {
+    const resume = this.client.resumeDurableIngress;
+    if (resume === undefined) throw new Error('Durable prompt recovery is unavailable on this transport');
+    const result = await resume(this.sessionId, promptId, {
+      ...body,
+      admission: 'durable',
+      prompt_id: promptId,
+      agent_id: body.agent_id ?? (agentId === MAIN_AGENT_ID ? undefined : agentId),
+    }, agentId);
+    const admissionRejected = result.admission === 'failed' || result.admission === 'cancelled';
+    if (!admissionRejected) forgetUnconfirmedSubmission(this.sessionId, promptId);
+    if (result.admission !== undefined) {
+      this.setDurableIngress([
+        ...this.getDurableIngress().filter((item) => item.prompt_id !== promptId),
+        result,
+      ]);
+    }
+    if (admissionRejected || result.admission === 'restoring' || result.admission === 'held') return result;
+    if (!this.state.blocks.some((block) => block.kind === 'user' && block.promptId === result.prompt_id)) {
+      const projection = projectMessageContent(result.content);
+      this.setState(appendLocalUserMessage(this.state, {
+        userMessageId: result.user_message_id,
+        promptId: result.prompt_id,
+        text: projection.text,
+        createdAt: result.created_at,
+        status: result.status,
+        origin: result.origin,
+        media: projection.media,
+        content: result.content,
+        appendTiming: result.append_timing,
+      }));
+    }
+    return result;
+  }
+
   async refreshPrompts(): Promise<void> {
-    // Queue / prompt truth is projected from the canonical transcript.
+    await this.refreshDurableIngress();
   }
 
   async refreshTasks(): Promise<void> {
@@ -2065,7 +2183,7 @@ export class SessionController {
       (ref.path.length === 1 || ref.path.length === 3 && ref.path[2] === 'frames');
   }
 
-  /** One bounded preview of this turn. The revision has to come back on the preview; a matching revision is left as a real conflict. */
+  /** One bounded preview of this turn. The same revision and window is a real conflict; a moved window is continued. */
   private async refreshTurnStructurePreview(agentId: string, ref: ContentRef, signal: AbortSignal): Promise<ContentRef | undefined> {
     if (ref.source.kind !== 'turn' || signal.aborted || this.closed) return undefined;
     const turnId = ref.source.id;
@@ -2083,12 +2201,14 @@ export class SessionController {
     const fresh = preview.contentRefs?.find((candidate) => candidate.kind === 'array' && candidate.direction === 'backward' &&
       candidate.path.length === ref.path.length && candidate.path.every((part, partIndex) => part === ref.path[partIndex]) &&
       candidate.source.kind === ref.source.kind && candidate.source.id === ref.source.id);
-    if (fresh === undefined || fresh.revision === ref.revision || signal.aborted) return undefined;
+    const sameWindow = (candidate: ContentRef | undefined): boolean => candidate !== undefined &&
+      candidate.revision === ref.revision && candidate.offset === ref.offset && candidate.total === ref.total;
+    if (fresh === undefined || sameWindow(fresh) || signal.aborted) return undefined;
     if (!this.installTurnStructureRef(agentId, ref, fresh) || signal.aborted) return undefined;
     const installed = this.contentEntity(agentId, ref.source)?.contentRefs?.find((candidate) => candidate.kind === fresh.kind &&
       candidate.direction === 'backward' && candidate.revision === fresh.revision && candidate.offset === fresh.offset &&
       candidate.total === fresh.total && candidate.path.every((part, partIndex) => part === fresh.path[partIndex]));
-    return installed?.revision === ref.revision ? undefined : installed;
+    return sameWindow(installed) ? undefined : installed;
   }
 
   private installTurnStructureRef(agentId: string, ref: ContentRef, fresh: ContentRef): boolean {
@@ -2832,7 +2952,7 @@ export class SessionController {
     profile?: string;
     execution?: ExecutionSelection;
     model?: string;
-    thinking?: string;
+    thinking?: string | null;
     permissionMode?: PermissionMode;
     planMode?: boolean;
     /**
@@ -2862,12 +2982,16 @@ export class SessionController {
     onPreservation?: (persisted: boolean) => void;
     onAcknowledged?: () => void;
   }): Promise<PromptSubmitResult> {
-    assertSessionWritable(this.state);
+    // Prompt submission is the durable enqueue boundary. History resync and
+    // ordered-view readiness must not block a user message from reaching the
+    // server; rewrite/edit/steer operations keep their stricter cursor gate.
     const content = input.content ?? [{ type: 'text' as const, text: input.text }];
     const promptId = input.promptId ?? newSteerPromptId();
-    const preservation = preserveSubmission({ sessionId: this.sessionId, agentId: MAIN_AGENT_ID, promptId, content, createdAt: new Date().toISOString() });
+    const durable = this.usesDurableSubmission();
+    const preservation = preserveSubmission({ sessionId: this.sessionId, agentId: MAIN_AGENT_ID, promptId, content, createdAt: new Date().toISOString() }, { persist: durable });
     input.onPreservation?.(preservation.persisted);
     const result = await this.client.submitPrompt(this.sessionId, {
+      admission: durable ? 'durable' : undefined,
       content,
       profile: input.profile,
       execution: input.execution,
@@ -2888,11 +3012,22 @@ export class SessionController {
       skills: input.skills,
       persona_greeting_reply: input.personaGreetingReply,
     });
-    preservation.acknowledge();
-    input.onAcknowledged?.();
-    if (result.status === 'queued' && !this.agentTranscripts.get(MAIN_AGENT_ID)?.snapshot().prompts.some(prompt => prompt.promptId === result.prompt_id)) {
+    const admissionRejected = result.admission === 'failed' || result.admission === 'cancelled';
+    if (!admissionRejected) {
+      preservation.acknowledge();
+      input.onAcknowledged?.();
+    }
+    if (result.admission !== undefined) {
+      this.setDurableIngress([
+        ...(this.state.durableIngress ?? []).filter((item) => item.prompt_id !== result.prompt_id),
+        result,
+      ]);
+    }
+    const coreAdmitted = result.admission === undefined || result.admission === 'admitted';
+    if (coreAdmitted && result.status === 'queued' && !this.agentTranscripts.get(MAIN_AGENT_ID)?.snapshot().prompts.some(prompt => prompt.promptId === result.prompt_id)) {
       this.unprojectedQueueReceipts.set(result.prompt_id, result);
     }
+    if (!coreAdmitted || admissionRejected) return result;
     const projection = projectMessageContent(result.content);
     this.setState(
       appendLocalUserMessage(this.state, {
@@ -2932,7 +3067,7 @@ export class SessionController {
       text: string;
       content?: MessageContent[];
       model?: string;
-      thinking?: string;
+      thinking?: string | null;
       permissionMode?: PermissionMode;
       planMode?: boolean;
       planGate?: PromptPlanGate;
@@ -2960,7 +3095,7 @@ export class SessionController {
     messageId: string,
     input: {
       model?: string;
-      thinking?: string;
+      thinking?: string | null;
       permissionMode?: PermissionMode;
       planMode?: boolean;
       planGate?: PromptPlanGate;
@@ -3295,19 +3430,20 @@ export class SessionController {
     readonly execution?: ExecutionSelection;
     readonly model?: string;
     readonly modelSwitchMode?: 'direct' | 'compact' | 'fresh';
-    readonly thinking?: string;
+    readonly thinking?: string | null;
     readonly permissionMode?: PermissionMode;
     readonly planMode?: boolean;
     readonly planGate?: PromptPlanGate;
     readonly onPreservation?: (persisted: boolean) => void;
     readonly onAcknowledged?: () => void;
-  }): Promise<{ readonly promptId: string; readonly outcome: 'steered' | 'started' | 'queued' }> {
+  }): Promise<{ readonly promptId: string; readonly outcome: 'steered' | 'started' | 'queued' | 'restoring' | 'held' | 'failed' | 'cancelled' }> {
     assertSessionWritable(this.state);
     const agentId = input.agentId ?? MAIN_AGENT_ID;
     const promptId = input.promptId ?? newSteerPromptId();
     const content = input.content ?? [{ type: 'text' as const, text: input.text }];
     const projection = projectMessageContent(content);
-    const preservation = preserveSubmission({ sessionId: this.sessionId, agentId, promptId, content, createdAt: new Date().toISOString() });
+    const durable = this.usesDurableSubmission();
+    const preservation = preserveSubmission({ sessionId: this.sessionId, agentId, promptId, content, createdAt: new Date().toISOString() }, { persist: durable });
     input.onPreservation?.(preservation.persisted);
     this.setPendingSteer(agentId, {
       promptId,
@@ -3320,6 +3456,7 @@ export class SessionController {
     let result: PromptSubmitResult;
     try {
       result = await this.client.submitPrompt(this.sessionId, {
+        admission: durable ? 'durable' : undefined,
         content,
         prompt_id: promptId,
         ...(agentId === MAIN_AGENT_ID ? {} : { agent_id: agentId }),
@@ -3336,8 +3473,27 @@ export class SessionController {
       this.clearPendingSteer(agentId, promptId);
       throw new SendNowError('submit', error);
     }
-    preservation.acknowledge();
-    input.onAcknowledged?.();
+    const admission = result.admission;
+    const admissionRejected = admission === 'failed' || admission === 'cancelled';
+    if (!admissionRejected) {
+      preservation.acknowledge();
+      input.onAcknowledged?.();
+    }
+    if (admission !== undefined) {
+      this.setDurableIngress([
+        ...(this.state.durableIngress ?? []).filter((item) => item.prompt_id !== result.prompt_id),
+        result,
+      ]);
+    }
+    if (admissionRejected) {
+      this.clearPendingSteer(agentId, promptId);
+      return { promptId: result.prompt_id, outcome: admission };
+    }
+    if (admission === 'restoring' || admission === 'held') {
+      const retained = this.findPendingSteer(agentId, promptId);
+      if (retained !== undefined) this.setPendingSteer(agentId, { ...retained, phase: 'waiting' });
+      return { promptId: result.prompt_id, outcome: admission };
+    }
     if (result.status !== 'queued') {
       // Idle by the time it landed: the prompt opened its own turn, which is
       // an ordinary send — the projection owns the row from here.

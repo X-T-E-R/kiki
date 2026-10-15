@@ -1914,6 +1914,53 @@ describe('hidden prefix turn preview', () => {
     } finally { controller.close(); }
   });
 
+  it('continues a stale 18-step tail from one canonical preview and keeps the loaded suffix', async () => {
+    const steps = Array.from({ length: 18 }, (_, ordinal) => ({
+      kind: 'step' as const, stepId: `s${ordinal}`, turnId: 't1', ordinal, state: 'completed' as const,
+      frames: [{ kind: 'text' as const, frameId: `f${ordinal}`, role: 'assistant' as const, text: ordinal === 17 ? 'VISIBLE-TAIL' : `saved ${ordinal}` }],
+    }));
+    const original = transcriptTurnSchema.parse({
+      kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, prompt: 'owned-prompt', promptId: 'prompt-1', steps,
+    });
+    const canonical = transcriptTurnSchema.parse({
+      ...original,
+      steps: original.steps.map((step, index) => index === 0 ? { ...step, stepId: 'replaced-step' } : step),
+    });
+    const preview = rebindTurnContentRefs(boundedEntity(original, { kind: 'turn', id: 't1' }, undefined, 'main', 'tail'));
+    const stale = preview.contentRefs?.find((candidate) => candidate.direction === 'backward' && candidate.path.length === 1);
+    if (stale === undefined) throw new Error('missing backward steps ref');
+    expect(stale.total - stale.offset).toBe(8);
+    expect(stale.total).toBe(18);
+    const content = vi.fn(segmentRead(canonical));
+    const { controller, deliver, view } = harness(undefined, content);
+    vi.mocked(view.transcript.page).mockImplementation(previewPage(canonical, 128 * 1024));
+    await controller.open();
+    const sibling: TranscriptTurn = {
+      kind: 'turn', turnId: 't2', ordinal: 2, state: 'completed', origin: { kind: 'user' }, prompt: 'SIBLING-PAGE', steps: [],
+    };
+    deliver(resetEvent('main', emptySnapshot({ items: [preview, sibling] }), 2));
+    try {
+      expect(blockText(controller, 'VISIBLE-TAIL')).toBe(true);
+      expect(await controller.loadOlderMessages()).toBe(true);
+      expect(view.transcript.page).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(view.transcript.page).mock.calls[0]?.[0]).toEqual({ agentId: 'main', beforeTurn: 't2', pageSize: 1 });
+      expect(view.snapshot).toHaveBeenCalledTimes(1);
+      expect(view.transcript.catchUp).not.toHaveBeenCalled();
+      expect(content.mock.calls[0]?.[0].ref.revision).toBe(stale.revision);
+      expect(content.mock.calls.length).toBeGreaterThan(1);
+      expect(content.mock.calls.length).toBeLessThan(5);
+      expect(content.mock.calls.slice(1).every(([input]) => input.ref.revision !== stale.revision)).toBe(true);
+      expect(blockText(controller, 'VISIBLE-TAIL')).toBe(true);
+      expect(blockText(controller, 'owned-prompt')).toBe(true);
+      expect(blockText(controller, 'SIBLING-PAGE')).toBe(true);
+      expect(controller.getState().olderError).toBeUndefined();
+      const calls = content.mock.calls.length;
+      await controller.loadOlderMessages();
+      expect(view.transcript.page).toHaveBeenCalledTimes(1);
+      expect(content.mock.calls.slice(calls).some(([input]) => input.ref.revision === stale.revision)).toBe(false);
+    } finally { controller.close(); }
+  });
+
   it('drops a late turn preview after a same-agent epoch reset', async () => {
     const fixture = hiddenPrefixFixture();
     const content = vi.fn(segmentRead(fixture.inserted));

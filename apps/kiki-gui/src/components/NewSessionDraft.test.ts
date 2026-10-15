@@ -312,6 +312,34 @@ describe('buildNewSessionCreate', () => {
     });
   });
 
+  it('sends an explicit native model and effort even when the picker parked them on unpublished overrides', () => {
+    const body = buildNewSessionCreate({
+      cwd: 'C:/repo',
+      profile: 'agent',
+      execution: {
+        executor: 'native',
+        profile: 'agent',
+        profile_file: undefined,
+        overrides: { model: 'axon/gpt-6.1-sol', thinking: 'xhigh' },
+      },
+      model: 'axon/gpt-6.1-sol',
+      thinking: 'xhigh',
+      permissionMode: 'manual',
+      planMode: false,
+      modelTouched: true,
+      effortTouched: true,
+      permissionTouched: false,
+    });
+    expect(body.agent_config).toEqual({
+      profile: 'agent',
+      model: 'axon/gpt-6.1-sol',
+      thinking: 'xhigh',
+      permission_mode: 'manual',
+      plan_mode: false,
+    });
+    expect(body.agent_config).not.toHaveProperty('execution');
+  });
+
   it('leaves the native engine and an external profile exactly as before', () => {
     // Native keeps every legacy field, untouched or not: that path has always
     // sent them and the server resolves them against Kiki's own defaults.
@@ -1747,6 +1775,84 @@ describe('useNewSessionDraft agent profile scope', () => {
       void state.send('Must not send with failed persona or impersonate old persona', []);
     });
     expect(client.createSession).not.toHaveBeenCalled();
+  });
+
+  it('keeps an explicit Sol pick through the profile pin, the parked overrides, and both create hops', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({
+      items: [profile('agent', 'kimi-code/kimi-for-coding', 'high')],
+    });
+    client.listModels.mockResolvedValue({
+      items: [
+        model('kimi-code/kimi-for-coding', 'high'),
+        {
+          id: 'axon/gpt-6.1-sol',
+          provider_id: 'axon',
+          remote_id: 'gpt-6.1-sol',
+          max_context_size: 128000,
+          support_efforts: ['high', 'xhigh'],
+          default_effort: 'high',
+        },
+      ],
+    });
+    await renderDraft();
+    let state = await settleDraft((value) =>
+      !value.agentProfileCatalogPending && value.modelOverride === 'kimi-code/kimi-for-coding');
+    await act(async () => {
+      state.setModelOverride('axon/gpt-6.1-sol');
+      state.setEffortOverride('xhigh');
+      state.setExecution({
+        executor: 'native',
+        profile: 'agent',
+        profile_file: undefined,
+        overrides: { model: 'axon/gpt-6.1-sol', thinking: 'xhigh' },
+      });
+    });
+    state = latestDraftState!;
+    expect(state.modelOverride).toBe('axon/gpt-6.1-sol');
+    expect(state.effectiveEffort).toBe('xhigh');
+    expect(state.agentProfile).toBe('agent');
+    const body = await sentBody(state);
+    expect(body.agent_config).toMatchObject({
+      profile: 'agent',
+      model: 'axon/gpt-6.1-sol',
+      thinking: 'xhigh',
+    });
+    expect(body.agent_config).not.toHaveProperty('execution');
+    expect(navigate.mock.calls[0]?.[1].state).toMatchObject({
+      model: 'axon/gpt-6.1-sol',
+      thinking: 'xhigh',
+    });
+  });
+
+  it('does not let a late profile pin replace a model chosen before the catalog arrives', async () => {
+    const profiles = deferred<{ items: NamedAgentProfile[] }>();
+    client.listNamedAgentProfiles.mockReturnValue(profiles.promise);
+    client.listModels.mockResolvedValue({
+      items: [{
+        id: 'axon/gpt-6.1-sol',
+        provider_id: 'axon',
+        remote_id: 'gpt-6.1-sol',
+        max_context_size: 128000,
+        support_efforts: ['xhigh'],
+        default_effort: 'xhigh',
+      }],
+    });
+    await renderDraft();
+    let state = await settleDraft((value) => value.agentProfileCatalogPending);
+    await act(async () => {
+      state.setModelOverride('axon/gpt-6.1-sol');
+      state.setEffortOverride('xhigh');
+    });
+    profiles.resolve({ items: [profile('agent', 'kimi-code/kimi-for-coding', 'high')] });
+    state = await settleDraft((value) => !value.agentProfileCatalogPending && value.selectionReady);
+    expect(state.modelOverride).toBe('axon/gpt-6.1-sol');
+    expect(state.effectiveEffort).toBe('xhigh');
+    const body = await sentBody(state);
+    expect(body.agent_config).toMatchObject({
+      profile: 'agent',
+      model: 'axon/gpt-6.1-sol',
+      thinking: 'xhigh',
+    });
   });
 
   it('retains current model selection when switching to a profile without pinned model, but adopts pin when profile has one', async () => {

@@ -614,4 +614,12 @@ describe('unacknowledged submissions', () => {
     expect(ack.acknowledge).not.toThrow();
     cleanup.mockRestore();
   });
+  it('keeps an explicitly non-persistent submission only in caller memory', () => {
+    localStorage.clear();
+    const temporary = preserveSubmission(input('temporary'), { persist: false });
+    expect(temporary.persisted).toBe(false);
+    expect(readUnconfirmedSubmissions('session-example')).toEqual([]);
+    expect(temporary.acknowledge).not.toThrow();
+    expect(readUnconfirmedSubmissions('session-example')).toEqual([]);
+  });
 });

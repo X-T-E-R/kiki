@@ -279,6 +279,7 @@ interface Harness {
     listPrompts: ReturnType<typeof vi.fn>;
     listMessages: ReturnType<typeof vi.fn>;
     submitPrompt: ReturnType<typeof vi.fn>;
+    listDurableIngress?: ReturnType<typeof vi.fn>;
     replacePrompt: ReturnType<typeof vi.fn>;
     abortPrompt: ReturnType<typeof vi.fn>;
     movePrompt: ReturnType<typeof vi.fn>;
@@ -295,7 +296,7 @@ interface Harness {
   mainPublishes: () => number;
 }
 
-async function openController(options: { defaultScheduler?: boolean } = {}): Promise<Harness> {
+async function openController(options: { defaultScheduler?: boolean; persistenceHint?: 'temporary' | 'saved' | 'unknown' } = {}): Promise<Harness> {
   const client = {
     snapshot: vi.fn(async () => snapshot()),
     listPrompts: vi.fn(async () => ({ active: null, queued: [] })),
@@ -362,7 +363,9 @@ async function openController(options: { defaultScheduler?: boolean } = {}): Pro
     client as unknown as KikiClient,
     fakeView(client, socket),
     'session_test',
-    options.defaultScheduler === true ? undefined : { scheduler },
+    options.defaultScheduler === true
+      ? { persistenceHint: options.persistenceHint ?? 'saved' }
+      : { scheduler, persistenceHint: options.persistenceHint ?? 'saved' },
   );
   let publishes = 0;
   controller.subscribe(() => {
@@ -402,8 +405,154 @@ describe('SessionController prompt runtime projection', () => {
     await controller.sendPrompt({ text: 'follow-up', permissionMode: 'manual',
       planMode: enabled, goalObjective: 'same objective' });
     expect(client.submitPrompt).toHaveBeenCalledWith('session_test', expect.objectContaining({
-      plan_mode: enabled, goal_objective: 'same objective',
+      admission: 'durable', plan_mode: enabled, goal_objective: 'same objective',
     }));
+    controller.close();
+  });
+
+  it('defaults an unclassified controller to non-persistent legacy send', async () => {
+    const client = {
+      submitPrompt: vi.fn(async () => ({
+        prompt_id: 'unknown-default', user_message_id: 'unknown-default-message', status: 'running' as const,
+        content: [{ type: 'text' as const, text: 'unknown default' }], created_at: '2026-01-01T00:00:02.000Z',
+      })),
+    };
+    const controller = new SessionController(client as unknown as KikiClient, fakeView(client, {}), 'session_default_unknown');
+    await controller.sendPrompt({ text: 'unknown default' });
+    expect(client.submitPrompt).toHaveBeenLastCalledWith('session_default_unknown', expect.objectContaining({ admission: undefined }));
+    controller.close();
+  });
+
+  it('keeps unknown identity ordinary sends off durable admission and disk backup', async () => {
+    const { controller, client } = await openController({ persistenceHint: 'unknown' });
+    client.listDurableIngress = vi.fn();
+    await controller.refreshDurableIngress();
+    expect(client.listDurableIngress).not.toHaveBeenCalled();
+    client.submitPrompt.mockResolvedValue({
+      prompt_id: 'unknown-prompt', user_message_id: 'unknown-message', status: 'queued',
+      content: [{ type: 'text', text: 'unknown' }], created_at: '2026-01-01T00:00:02.000Z',
+    });
+    await controller.sendPrompt({ text: 'unknown' });
+    expect(client.submitPrompt).toHaveBeenLastCalledWith('session_test', expect.objectContaining({ admission: undefined }));
+    controller.close();
+  });
+
+  it('does not let an unknown hint downgrade confirmed saved or temporary modes', async () => {
+    const saved = await openController({ persistenceHint: 'saved' });
+    saved.controller.setPersistenceHint('unknown');
+    saved.client.submitPrompt.mockResolvedValue({
+      prompt_id: 'saved-mode', user_message_id: 'saved-mode-message', status: 'running',
+      content: [{ type: 'text', text: 'saved mode' }], created_at: '2026-01-01T00:00:02.000Z',
+    });
+    await saved.controller.sendPrompt({ text: 'saved mode' });
+    expect(saved.client.submitPrompt).toHaveBeenLastCalledWith('session_test', expect.objectContaining({ admission: 'durable' }));
+    saved.controller.close();
+    const temporary = await openController({ persistenceHint: 'temporary' });
+    temporary.controller.setPersistenceHint('unknown');
+    temporary.client.submitPrompt.mockResolvedValue({
+      prompt_id: 'temp-mode', user_message_id: 'temp-mode-message', status: 'running',
+      content: [{ type: 'text', text: 'temp mode' }], created_at: '2026-01-01T00:00:02.000Z',
+    });
+    await temporary.controller.sendPrompt({ text: 'temp mode' });
+    expect(temporary.client.submitPrompt).toHaveBeenLastCalledWith('session_test', expect.objectContaining({ admission: undefined }));
+    temporary.controller.close();
+  });
+
+  it('keeps temporary ordinary and send-now submissions off durable admission and disk backup', async () => {
+    const { controller, client } = await openController({ persistenceHint: 'temporary' });
+    client.listDurableIngress = vi.fn();
+    await controller.refreshDurableIngress();
+    expect(client.listDurableIngress).not.toHaveBeenCalled();
+    client.submitPrompt.mockResolvedValue({
+      prompt_id: 'temporary-prompt', user_message_id: 'temporary-message', status: 'queued',
+      content: [{ type: 'text', text: 'temporary' }], created_at: '2026-01-01T00:00:02.000Z',
+    });
+    await controller.sendPrompt({ text: 'temporary' });
+    expect(client.submitPrompt).toHaveBeenLastCalledWith('session_test', expect.objectContaining({ admission: undefined }));
+    client.submitPrompt.mockResolvedValue({
+      prompt_id: 'temporary-now', user_message_id: 'temporary-now-message', status: 'running',
+      content: [{ type: 'text', text: 'temporary now' }], created_at: '2026-01-01T00:00:03.000Z',
+    });
+    await expect(controller.sendPromptNow({ text: 'temporary now' })).resolves.toMatchObject({ promptId: 'temporary-now', outcome: 'started' });
+    expect(client.submitPrompt).toHaveBeenLastCalledWith('session_test', expect.objectContaining({ admission: undefined }));
+    controller.close();
+  });
+
+  it.each(['restoring', 'held'] as const)('does not steer a durable send-now receipt retained in %s ingress', async (admission) => {
+    const { controller, client } = await openController({ persistenceHint: 'saved' });
+    client.submitPrompt.mockResolvedValue({
+      prompt_id: `retained-${admission}`, user_message_id: `retained-${admission}-message`, status: 'queued',
+      content: [{ type: 'text', text: admission }], created_at: '2026-01-01T00:00:02.000Z', admission,
+    });
+    const result = await controller.sendPromptNow({ text: admission });
+    expect(result).toMatchObject({ promptId: `retained-${admission}`, outcome: admission });
+    expect(client.steerPrompt).not.toHaveBeenCalled();
+    controller.close();
+  });
+
+  it.each(['failed', 'cancelled'] as const)('does not ack or steer a durable send-now %s receipt', async (admission) => {
+    const { controller, client } = await openController({ persistenceHint: 'saved' });
+    client.submitPrompt.mockResolvedValue({
+      prompt_id: `rejected-${admission}`, user_message_id: `rejected-${admission}-message`, status: 'queued',
+      content: [{ type: 'text', text: admission }], created_at: '2026-01-01T00:00:02.000Z', admission,
+    });
+    const acknowledged = vi.fn();
+    const result = await controller.sendPromptNow({ text: admission, onAcknowledged: acknowledged });
+    expect(result).toMatchObject({ promptId: `rejected-${admission}`, outcome: admission });
+    expect(acknowledged).not.toHaveBeenCalled();
+    expect(client.steerPrompt).not.toHaveBeenCalled();
+    controller.close();
+  });
+
+  it('reconciles every durable ingress page without treating restoring as execution', async () => {
+    const { controller, client } = await openController();
+    controller.setEphemeralHint(false);
+    const item = (promptId: string, admission: 'restoring' | 'admitted') => ({
+      prompt_id: promptId,
+      user_message_id: `${promptId}-message`,
+      status: 'queued' as const,
+      content: [{ type: 'text' as const, text: promptId }],
+      created_at: '2026-01-01T00:00:02.000Z',
+      admission,
+    });
+    client.listDurableIngress = vi.fn()
+      .mockResolvedValueOnce({ active: null, queued: [], ingress: [item('p-one', 'restoring')], ingress_next_cursor: 'page-2' })
+      .mockResolvedValueOnce({ active: null, queued: [], ingress: [item('p-two', 'admitted')] });
+    await controller.refreshDurableIngress();
+    expect(client.listDurableIngress).toHaveBeenNthCalledWith(1, 'session_test', { cursor: undefined });
+    expect(client.listDurableIngress).toHaveBeenNthCalledWith(2, 'session_test', { cursor: 'page-2' });
+    expect(controller.getDurableIngress().map((entry) => [entry.prompt_id, entry.admission])).toEqual([
+      ['p-one', 'restoring'], ['p-two', 'admitted'],
+    ]);
+    controller.close();
+  });
+
+  it('stops durable ingress pagination after suspension and ignores the late first page', async () => {
+    const { controller, client, mainPublishes } = await openController({ persistenceHint: 'saved' });
+    const firstPage = deferred<Awaited<ReturnType<NonNullable<KikiClient['listDurableIngress']>>>>();
+    client.listDurableIngress = vi.fn().mockReturnValueOnce(firstPage.promise).mockResolvedValue({ active: null, queued: [], ingress: [] });
+    const refresh = controller.refreshDurableIngress();
+    expect(client.listDurableIngress).toHaveBeenCalledTimes(1);
+    const publishesBeforeSuspend = mainPublishes();
+    controller.suspend();
+    firstPage.resolve({ active: null, queued: [], ingress: [], ingress_next_cursor: 'page-2' });
+    await refresh;
+    expect(client.listDurableIngress).toHaveBeenCalledTimes(1);
+    expect(controller.getDurableIngress()).toEqual([]);
+    expect(mainPublishes()).toBe(publishesBeforeSuspend);
+    controller.close();
+  });
+
+  it('keeps a restoring durable receipt in ingress instead of projecting it as an execution queue row', async () => {
+    const { controller, client } = await openController();
+    client.submitPrompt.mockResolvedValue({
+      prompt_id: 'restoring-prompt', user_message_id: 'restoring-message', status: 'queued',
+      content: [{ type: 'text', text: 'restore me' }], created_at: '2026-01-01T00:00:02.000Z', admission: 'restoring',
+    });
+    const result = await controller.sendPrompt({ text: 'restore me' });
+    expect(client.submitPrompt).toHaveBeenCalledWith('session_test', expect.objectContaining({ admission: 'durable', content: [{ type: 'text', text: 'restore me' }] }));
+    expect(controller.getDurableIngress()).toEqual([expect.objectContaining({ prompt_id: 'restoring-prompt', admission: 'restoring' })]);
+    expect(controller.getState().blocks.some((block) => block.kind === 'user' && block.promptId === 'restoring-prompt')).toBe(false);
     controller.close();
   });
 });
@@ -1135,21 +1284,22 @@ describe('SessionController pipeline', () => {
     controller.close();
   });
 
-  it('refuses sendPrompt during resync without REST or local echo', async () => {
+  it('submits through the durable enqueue boundary during resync without waiting for history', async () => {
     const { controller, client } = await openController();
     const held = deferred<SessionSnapshotResponse>();
     client.snapshot.mockReturnValue(held.promise);
+    client.submitPrompt.mockResolvedValue({
+      prompt_id: 'p-resync', user_message_id: 'm-resync', status: 'queued',
+      content: [{ type: 'text', text: 'during resync' }], created_at: '2026-01-01T00:00:03Z',
+    });
     void controller.resync();
     await waitFor(() => controller.getState().resyncing);
-    await expect(controller.sendPrompt({ text: 'nope', permissionMode: 'manual' })).rejects.toThrow(
-      /resync/i,
-    );
-    expect(client.submitPrompt).not.toHaveBeenCalled();
+    await expect(controller.sendPrompt({ text: 'during resync', permissionMode: 'manual' })).resolves.toMatchObject({ prompt_id: 'p-resync', status: 'queued' });
+    expect(client.submitPrompt).toHaveBeenCalledOnce();
     held.reject(new Error('snapshot down'));
     await waitFor(() => controller.getState().resyncFailed);
-    await expect(controller.sendPrompt({ text: 'still nope', permissionMode: 'manual' })).rejects.toThrow(
-      /resync/i,
-    );
+    await expect(controller.sendPrompt({ text: 'after failure', permissionMode: 'manual' })).resolves.toMatchObject({ prompt_id: 'p-resync', status: 'queued' });
+    expect(client.submitPrompt).toHaveBeenCalledTimes(2);
     controller.close();
   });
 

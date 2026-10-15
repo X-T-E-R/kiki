@@ -5,12 +5,11 @@
  * The composer itself is NOT rendered here — this route publishes it into the
  * conversation shell's seat (same DOM node that docks at the bottom once the
  * first send lands on /s/:id). What this file owns is the chrome above the
- * card (wordmark + claim, then the target row: workspace, whose popover also
- * folds the dispatch diagnostic, and the per-draft switches) and the starters
- * hanging under it, portaled into the shell's
- * hero-footer slot. Recent sessions and the agent roster live elsewhere (the
- * sidebar, the composer's agent chip), so the page carries only what starts
- * this conversation.
+ * card (wordmark + claim, then the target row: the workspace chip and the
+ * per-draft switches) and the starters hanging under it, portaled into the
+ * shell's hero-footer slot. Recent sessions and the agent roster live
+ * elsewhere (the sidebar, the composer's agent chip), so the page carries
+ * only what starts this conversation.
  *
  * The workspace picker + send path come from the shared `useNewSessionDraft`
  * hook; /new is the single new-session surface (Ctrl+N and the sidebar button
@@ -24,7 +23,6 @@ import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { Composer } from './Composer';
 import { fsSearchRequestBody, type FsSearchPageArgs } from '../lib/fsSearchFeed';
 import { Icon } from './icons';
-import { AgentCapabilitiesPanel } from './AgentCapabilitiesPanel';
 import { ContextBreakdownProvider } from './ContextMeter';
 import { useConversationShell, useRegisterSeat, type ConversationSeat } from './ConversationShell';
 import { AUTO_WORKSPACE_ID, WorkspacePickerFields, useNewSessionDraft, isAutoCreatedWorkspace, type NewSessionDraftState } from './NewSessionDraft';
@@ -88,7 +86,6 @@ function HeroWorkspaceChip({ state }: { state: NewSessionDraftState }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const label = workspaceChipLabel(state);
-  const catalogMode = state.agentProfileCatalogMode;
 
   return (
     <div className="relative" data-hero-workspace>
@@ -124,15 +121,6 @@ function HeroWorkspaceChip({ state }: { state: NewSessionDraftState }) {
       {open ? (
         <div className="anim-enter absolute top-9 left-0 z-30 w-[26rem] max-w-[calc(100vw-32px)] rounded-[10px] border border-hairline bg-panel p-3 text-left shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]">
           <WorkspacePickerFields state={state} />
-          {/* What the chosen agent can dispatch here depends on the target,
-              so the diagnostic lives with the target, folded. */}
-          {catalogMode.mode === 'cwd' || catalogMode.mode === 'workspace' ? (
-            <div data-hero-capabilities className="mt-3 border-t border-hairline pt-3">
-              <AgentCapabilitiesPanel query={catalogMode.mode === 'cwd'
-                ? { cwd: catalogMode.cwd, profile: state.agentProfile }
-                : { workspace_id: catalogMode.workspaceId, profile: state.agentProfile }} />
-            </div>
-          ) : null}
         </div>
       ) : null}
     </div>
