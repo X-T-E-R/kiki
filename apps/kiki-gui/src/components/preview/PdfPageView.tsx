@@ -17,7 +17,7 @@
  * the document's own whether the panel is wide or narrow.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { PDFDocumentLoadingTask, PDFDocumentProxy } from 'pdfjs-dist';
 import { cMapUrl, standardFontDataUrl, workerSrc } from 'virtual:kiki-pdf-assets';
@@ -51,20 +51,45 @@ interface ActiveRender {
   readonly cancel: () => void;
 }
 
-function ignoreRejection(action: () => unknown): void {
+async function disposePdfSession(session: PdfSession): Promise<void> {
   try {
-    void Promise.resolve(action()).catch(() => undefined);
+    if (session.document !== undefined) await session.document.destroy();
+    else await session.loadingTask.destroy();
   } catch {
     return;
   }
 }
 
-function disposePdfSession(session: PdfSession): void {
-  if (session.document !== undefined) {
-    ignoreRejection(() => session.document!.destroy());
-  } else {
-    ignoreRejection(() => session.loadingTask.destroy());
-  }
+/** A reopen of one source waits for its own destroy, never for another preview. */
+const pdfDisposalTails = new Map<string, Promise<void>>();
+
+function queuePdfSessionDisposal(sourceIdentity: string, session: PdfSession): void {
+  const previous = pdfDisposalTails.get(sourceIdentity) ?? Promise.resolve();
+  const next = previous.then(() => disposePdfSession(session)).catch(() => undefined);
+  pdfDisposalTails.set(sourceIdentity, next);
+  void next.then(() => {
+    if (pdfDisposalTails.get(sourceIdentity) === next) pdfDisposalTails.delete(sourceIdentity);
+  });
+}
+
+function waitForPdfDisposal(pending: Promise<void>, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ready: boolean) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      resolve(ready);
+    };
+    const onAbort = () => { finish(false); };
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    void pending.then(() => { finish(true); }, () => { finish(true); });
+  });
 }
 
 function cleanupPage(page: PdfPage): void {
@@ -150,13 +175,6 @@ export function PdfPageView({ client, assetUrl, sourceKey, page, name, onPageCou
 
   const reload = useCallback(() => { setAttempt((value) => value + 1); }, []);
 
-  useLayoutEffect(() => {
-    clearCanvas(canvas.current);
-    renderedKey.current = undefined;
-    reportedPages.current = 0;
-    setAspect(null);
-  }, [attempt, client, sourceIdentity]);
-
   useEffect(() => {
     const element = frame.current;
     if (element === null) return;
@@ -182,9 +200,11 @@ export function PdfPageView({ client, assetUrl, sourceKey, page, name, onPageCou
     const abort = new AbortController();
     let cancelled = false;
     const previous = session.current;
-    session.current = undefined;
     cancelActiveRender();
-    if (previous !== undefined) disposePdfSession(previous);
+    if (previous !== undefined) queuePdfSessionDisposal(sourceIdentity, previous);
+    const priorDisposal = pdfDisposalTails.get(sourceIdentity) ?? Promise.resolve();
+    session.current = undefined;
+    clearCanvas(canvas.current);
     reportedPages.current = 0;
     renderedKey.current = undefined;
     setState('loading');
@@ -204,6 +224,7 @@ export function PdfPageView({ client, assetUrl, sourceKey, page, name, onPageCou
     const run = async (): Promise<void> => {
       try {
         const pdfjs = await loadPdfJs();
+        if (!await waitForPdfDisposal(priorDisposal, abort.signal)) return;
         if (cancelled) return;
         const { bytes } = await client.readDocumentPreviewAsset(assetUrlRef.current, abort.signal);
         if (cancelled) return;
@@ -216,10 +237,7 @@ export function PdfPageView({ client, assetUrl, sourceKey, page, name, onPageCou
         const nextSession: PdfSession = { loadingTask };
         session.current = nextSession;
         const document = await loadingTask.promise;
-        if (cancelled || session.current !== nextSession) {
-          disposePdfSession({ loadingTask, document });
-          return;
-        }
+        if (cancelled || session.current !== nextSession) return;
         nextSession.document = document;
         if (reportedPages.current !== document.numPages) {
           reportedPages.current = document.numPages;
@@ -241,7 +259,7 @@ export function PdfPageView({ client, assetUrl, sourceKey, page, name, onPageCou
       cancelActiveRender();
       const active = session.current;
       session.current = undefined;
-      if (active !== undefined) disposePdfSession(active);
+      if (active !== undefined) queuePdfSessionDisposal(sourceIdentity, active);
     };
   }, [attempt, cancelActiveRender, client, sourceIdentity]);
 
