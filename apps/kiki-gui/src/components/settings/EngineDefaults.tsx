@@ -38,6 +38,7 @@ export interface EngineDefaultsDraft {
   readonly permissionMode: '' | 'manual' | 'auto' | 'review' | 'yolo';
   readonly kikiContext: readonly string[] | undefined;
   readonly allowKikiSubagents: boolean | undefined;
+  readonly injectKikiMcp: boolean | undefined;
   readonly promptDelivery: '' | ExecutorPromptDelivery;
   readonly promptInclude: readonly string[] | undefined;
   readonly promptBody: string;
@@ -50,6 +51,7 @@ export const EMPTY_ENGINE_DEFAULTS: EngineDefaultsDraft = {
   permissionMode: '',
   kikiContext: undefined,
   allowKikiSubagents: undefined,
+  injectKikiMcp: undefined,
   promptDelivery: '',
   promptInclude: undefined,
   promptBody: '',
@@ -88,6 +90,7 @@ export function engineDefaultsDraftFrom(saved: SavedDefaults): EngineDefaultsDra
     permissionMode: permissionField(saved['permission_mode']),
     kikiContext: listField(saved['kiki_context']),
     allowKikiSubagents: boolField(saved['allow_kiki_subagents']),
+    injectKikiMcp: boolField(saved['inject_kiki_mcp']),
     // A delivery is optional on the wire: writing only `include` must not
     // invent one, and an unwritten delivery stays unwritten.
     promptDelivery: prompt?.['delivery'] === 'append' || prompt?.['delivery'] === 'replace' || prompt?.['delivery'] === 'preamble'
@@ -118,6 +121,7 @@ export function engineDefaultsPatch(draft: EngineDefaultsDraft): Record<string, 
     permission_mode: draft.permissionMode === '' ? null : draft.permissionMode,
     kiki_context: draft.kikiContext === undefined ? null : [...draft.kikiContext],
     allow_kiki_subagents: draft.allowKikiSubagents === undefined ? null : draft.allowKikiSubagents,
+    inject_kiki_mcp: draft.injectKikiMcp === undefined ? null : draft.injectKikiMcp,
     executor_prompt: promptEmpty ? null : prompt,
   };
   return Object.values(defaults).every((value) => value === null) ? null : defaults;

@@ -20,15 +20,16 @@ import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import {
   computerControlPreference,
   computerControlPreferencePatch,
+  isComputerControlEnabled,
+  isComputerToolPolicyDenied,
+  isComputerToolPolicyPartiallyDenied,
 } from '@kiki/session-core/settings';
-
-type ComputerUsagePreference = ReturnType<typeof computerControlPreference>;
 
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import type { CapabilityStatus } from '../../lib/client';
 import { ConfirmDialog } from '../ConfirmDialog';
-import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
+import { FeedbackLine, Hint, InlineError, SaveStatus, type Feedback } from '../controls';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { AdvancedDetails, SettingField } from './fields';
@@ -38,8 +39,11 @@ import {
   type SettingsChoice,
 } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
+import { useInstantSave } from './useInstantSave';
 import { ComputerConnectionCard } from './computerControl/ComputerConnectionCard';
 import { platformDisplay } from './computerControl/computerMcp';
+
+type ComputerUsagePreference = ReturnType<typeof computerControlPreference>;
 
 const CAPABILITY_ID = 'kiki-computer';
 
@@ -98,6 +102,18 @@ export function ComputerControlSection() {
     : 'avoid';
   const preferenceSource = configQuery.data?.computer_control?.usagePreferenceSource ?? 'default';
   const isOverriddenByHigherSource = preferenceSource === 'env' || preferenceSource === 'memory';
+
+  const isComputerEnabled = isComputerControlEnabled(configQuery.data);
+  const isToolPolicyDenied = isComputerToolPolicyDenied(configQuery.data);
+  const isToolPolicyPartiallyDenied = isComputerToolPolicyPartiallyDenied(configQuery.data);
+  const enabledSave = useInstantSave();
+
+  const handleToggleEnabled = (next: boolean) => {
+    void enabledSave.run(async () => {
+      await client.setComputerControlEnabled(next);
+      await queryClient.invalidateQueries({ queryKey: ['config', scopeId] });
+    });
+  };
 
   const [draftPreference, setDraftPreference] = useState<ComputerUsagePreference | null>(null);
   const [preferenceSaving, setPreferenceSaving] = useState(false);
@@ -224,101 +240,131 @@ export function ComputerControlSection() {
 
   return (
     <div className="space-y-6" data-settings-computer-control>
-      {/* A — the machine this drives, and how to re-check it */}
-      <SectionCard id="st-card-computer-machine" title={t('st.computer.title')}>
-        <div className="space-y-3">
-          <SettingField label={t('st.computer.machineLabel')} labelId="computer-machine-label">
-            <span className="font-mono text-[12px] text-ink" data-computer-platform>
-              {serverFacts === '' ? t('st.computer.machineUnknown') : serverFacts}
-            </span>
-            <button type="button" className={SECONDARY_BUTTON} data-computer-check-btn
-              disabled={checking}
-              onClick={() => { void check(); }}>
-              {checking ? t('st.computer.checking') : t('st.computer.recheckButton')}
-            </button>
-          </SettingField>
-          <Hint>
-            {sshLabel === null
-              ? t('st.computer.machineHint')
-              : t('st.computer.machineHintSsh', { label: sshLabel })}
-          </Hint>
-          {envQuery.isError ? <InlineError error={envQuery.error} /> : null}
-        </div>
-      </SectionCard>
-
-      {/* B — executor installation: one state line, details folded */}
-      <SectionCard id="st-card-computer-setup" title={t('st.computer.setupTitle')}>
-        <div className="space-y-3">
-          {capabilityQuery.isPending ? (
-            <p className="flex items-center gap-2 text-[12px] leading-4 text-ink-faint" role="status" data-computer-state="detecting">
-              <span className="status-dot-busy inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-ink-soft" />
-              {t('st.computer.state.detecting')}
-            </p>
-          ) : capabilityQuery.isError || capability === undefined ? (
-            <div className="space-y-2" data-computer-state="failed">
-              <p className="text-[12px] text-danger" role="alert">{t('st.computer.state.failed')}</p>
-              <InlineError error={capabilityQuery.error} />
-              <button type="button" className={SECONDARY_BUTTON} data-computer-retry
-                onClick={() => { void check(); }}>
-                {t('common.retry')}
-              </button>
-            </div>
-          ) : (
-            <>
-              <SettingField label={t('st.computer.statusLabel')} labelId="computer-state-label">
-                <span className="text-[13px] text-ink" data-computer-state={capability.state}>
-                  {t(STATE_KEYS[capability.state])}
-                </span>
-                {capability.version !== undefined ? (
-                  <span className="font-mono text-[11px] text-ink-faint" data-computer-version>v{capability.version}</span>
-                ) : null}
-                {capability.state !== 'ready' && !capability.install.running && capability.plan !== undefined ? (
-                  <button type="button" className={PRIMARY_BUTTON} data-computer-install-btn
-                    disabled={installing}
-                    onClick={() => { setConfirmingInstall(true); }}>
-                    {installing ? t('st.computer.installing') : installError === undefined ? t('st.computer.installButton') : t('st.computer.retryInstall')}
-                  </button>
-                ) : null}
-              </SettingField>
-
-              {capability.state === 'ready' ? <Hint>{t('st.computer.installedHint')}</Hint> : null}
-              {capability.state === 'ready' && optionalUnchecked ? <Hint>{t('st.computer.optionalUnverified')}</Hint> : null}
-              {capability.state === 'ready' && platform === 'darwin' ? <Hint>{t('st.computer.macPermissions')}</Hint> : null}
-
-              {capability.install.running ? (
-                <p className="flex items-center gap-2 text-[12px] leading-4 text-ink-faint" role="status" data-computer-installing>
-                  <span className="status-dot-busy inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-ink-soft" />
-                  {capability.install.step ?? t('st.computer.installing')}
-                  {capability.install.percent === undefined ? null : ` · ${Math.round(capability.install.percent)}%`}
+      {/* 0+A+B — unified top status bar: master switch, target machine, and executor state */}
+      <div className="sticky top-0 z-10 -mx-1 bg-paper/95 px-1 py-1 backdrop-blur-[2px]" data-computer-status-bar>
+        <SectionCard id="st-card-computer-enabled" title={t('st.computer.title')}>
+          <div className="space-y-3" data-computer-control-enabled={isComputerEnabled ? 'true' : 'false'}>
+            <div className="flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                <label htmlFor="computer-master-switch" className="text-[13px] font-medium text-ink cursor-pointer">
+                  {t('st.computer.enabledLabel')}
+                </label>
+                <p className="mt-0.5 text-[12px] leading-relaxed text-ink-soft">
+                  {t('st.computer.enabledHint')}
                 </p>
-              ) : null}
-              {installError !== undefined ? <FeedbackLine feedback={{ tone: 'error', text: installError }} /> : null}
-              {capability.install.note !== undefined ? (
-                <p className="text-[11px] text-ink-soft" data-computer-install-note>{capability.install.note}</p>
-              ) : null}
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <SaveStatus saving={enabledSave.saving} saved={enabledSave.saved} />
+                <button
+                  type="button"
+                  id="computer-master-switch"
+                  role="switch"
+                  aria-checked={isComputerEnabled}
+                  data-computer-enabled-switch
+                  disabled={enabledSave.saving || configQuery.isLoading}
+                  onClick={() => { handleToggleEnabled(!isComputerEnabled); }}
+                  className={`relative inline-flex h-[18px] w-8 shrink-0 items-center rounded-full ring-1 transition-colors duration-[var(--kiki-motion-quick)] ${
+                    isComputerEnabled ? 'bg-selected ring-selected-ink/45' : 'bg-hairline ring-hairline-strong'
+                  } ${enabledSave.saving || configQuery.isLoading ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
+                >
+                  <span
+                    className={`inline-block h-3 w-3 transform rounded-full transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${
+                      isComputerEnabled ? 'translate-x-[16px] bg-selected-ink' : 'translate-x-[3px] bg-ink-faint'
+                    }`}
+                  />
+                </button>
+              </div>
+            </div>
 
-              {capability.steps.length > 0 ? (
-                <AdvancedDetails summary={t('st.computer.details')} data-computer-steps>
-                  <ul className="space-y-1">
-                    {capability.steps.map((step) => (
-                      <li className="text-[11px] text-ink-soft" key={step.id} data-computer-step={step.id}
-                        data-computer-step-kind={step.optional === true ? 'optional' : 'required'}>
-                        {(STEP_KEYS[step.id] === undefined ? step.id : t(STEP_KEYS[step.id]!))}
-                        {' · '}
-                        {step.optional === true ? `${t('st.plugins.optional')} · ` : ''}
-                        {t(`st.plugins.runtimeStepState.${step.state}`)}
-                        {step.detail === undefined ? '' : ` · ${step.detail}`}
-                      </li>
-                    ))}
-                  </ul>
-                </AdvancedDetails>
-              ) : null}
-            </>
-          )}
+            {isToolPolicyDenied ? (
+              <p className="text-[12px] text-danger" data-computer-toolpolicy-denied>
+                {t('st.computer.toolPolicyDenied')}
+              </p>
+            ) : isToolPolicyPartiallyDenied ? (
+              <p className="text-[12px] text-amber-ink" data-computer-toolpolicy-partial>
+                {t('st.computer.toolPolicyPartial')}
+              </p>
+            ) : null}
 
-          <FeedbackLine feedback={feedback} />
-        </div>
-      </SectionCard>
+            <FeedbackLine feedback={enabledSave.error} />
+
+            {/* A — the machine this drives, and how to re-check it */}
+            <div id="st-card-computer-machine" className="space-y-2 border-t border-hairline pt-2.5">
+              <SettingField label={t('st.computer.machineLabel')} labelId="computer-machine-label">
+                <span className="font-mono text-[12px] text-ink" data-computer-platform>
+                  {serverFacts === '' ? t('st.computer.machineUnknown') : serverFacts}
+                </span>
+                <button type="button" className={SECONDARY_BUTTON} data-computer-check-btn
+                  disabled={checking}
+                  onClick={() => { void check(); }}>
+                  {checking ? t('st.computer.checking') : t('st.computer.recheckButton')}
+                </button>
+              </SettingField>
+              <Hint>
+                {sshLabel === null
+                  ? t('st.computer.machineHint')
+                  : t('st.computer.machineHintSsh', { label: sshLabel })}
+              </Hint>
+              {envQuery.isError ? <InlineError error={envQuery.error} /> : null}
+            </div>
+
+            {/* B — executor installation: one state line */}
+            <div id="st-card-computer-setup" className="space-y-2 border-t border-hairline pt-2.5">
+              {capabilityQuery.isPending ? (
+                <p className="flex items-center gap-2 text-[12px] leading-4 text-ink-faint" role="status" data-computer-state="detecting">
+                  <span className="status-dot-busy inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-ink-soft" />
+                  {t('st.computer.state.detecting')}
+                </p>
+              ) : capabilityQuery.isError || capability === undefined ? (
+                <div className="space-y-2" data-computer-state="failed">
+                  <p className="text-[12px] text-danger" role="alert">{t('st.computer.state.failed')}</p>
+                  <InlineError error={capabilityQuery.error} />
+                  <button type="button" className={SECONDARY_BUTTON} data-computer-retry
+                    onClick={() => { void check(); }}>
+                    {t('common.retry')}
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <SettingField label={t('st.computer.statusLabel')} labelId="computer-state-label">
+                    <span className="text-[13px] text-ink" data-computer-state={capability.state}>
+                      {t(STATE_KEYS[capability.state])}
+                    </span>
+                    {capability.version !== undefined ? (
+                      <span className="font-mono text-[11px] text-ink-faint" data-computer-version>v{capability.version}</span>
+                    ) : null}
+                    {capability.state !== 'ready' && !capability.install.running && capability.plan !== undefined ? (
+                      <button type="button" className={PRIMARY_BUTTON} data-computer-install-btn
+                        disabled={installing}
+                        onClick={() => { setConfirmingInstall(true); }}>
+                        {installing ? t('st.computer.installing') : installError === undefined ? t('st.computer.installButton') : t('st.computer.retryInstall')}
+                      </button>
+                    ) : null}
+                  </SettingField>
+
+                  {capability.state === 'ready' ? <Hint>{t('st.computer.installedHint')}</Hint> : null}
+                  {capability.state === 'ready' && optionalUnchecked ? <Hint>{t('st.computer.optionalUnverified')}</Hint> : null}
+                  {capability.state === 'ready' && platform === 'darwin' ? <Hint>{t('st.computer.macPermissions')}</Hint> : null}
+
+                  {capability.install.running ? (
+                    <p className="flex items-center gap-2 text-[12px] leading-4 text-ink-faint" role="status" data-computer-installing>
+                      <span className="status-dot-busy inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-ink-soft" />
+                      {capability.install.step ?? t('st.computer.installing')}
+                      {capability.install.percent === undefined ? null : ` · ${Math.round(capability.install.percent)}%`}
+                    </p>
+                  ) : null}
+                  {installError !== undefined ? <FeedbackLine feedback={{ tone: 'error', text: installError }} /> : null}
+                  {capability.install.note !== undefined ? (
+                    <p className="text-[11px] text-ink-soft" data-computer-install-note>{capability.install.note}</p>
+                  ) : null}
+                </>
+              )}
+
+              <FeedbackLine feedback={feedback} />
+            </div>
+          </div>
+        </SectionCard>
+      </div>
 
       {/* C — model usage guidance preference */}
       <SectionCard id="st-card-computer-preference" title={t('st.computer.preferenceTitle')}>
@@ -390,6 +436,10 @@ export function ComputerControlSection() {
                 <InlineError error={configQuery.error} />
               ) : null}
 
+              <p className="text-[12px] text-ink-soft leading-relaxed" data-computer-preference-note>
+                {t('st.computer.preferenceNote')}
+              </p>
+
               <FeedbackLine feedback={preferenceFeedback} />
 
               <SettingsDraftFooter
@@ -415,6 +465,24 @@ export function ComputerControlSection() {
           />
         </div>
       </SectionCard>
+
+      {/* Diagnostic steps at bottom */}
+      {capability !== undefined && capability.steps.length > 0 ? (
+        <AdvancedDetails summary={t('st.computer.details')} data-computer-steps>
+          <ul className="space-y-1">
+            {capability.steps.map((step) => (
+              <li className="text-[11px] text-ink-soft" key={step.id} data-computer-step={step.id}
+                data-computer-step-kind={step.optional === true ? 'optional' : 'required'}>
+                {(STEP_KEYS[step.id] === undefined ? step.id : t(STEP_KEYS[step.id]!))}
+                {' · '}
+                {step.optional === true ? `${t('st.plugins.optional')} · ` : ''}
+                {t(`st.plugins.runtimeStepState.${step.state}`)}
+                {step.detail === undefined ? '' : ` · ${step.detail}`}
+              </li>
+            ))}
+          </ul>
+        </AdvancedDetails>
+      ) : null}
 
       {confirmingInstall && capability?.plan !== undefined ? (
         <ConfirmDialog

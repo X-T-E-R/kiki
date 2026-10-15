@@ -21,6 +21,7 @@ import type { ServerConnection } from '@kiki/session-core/settings';
 import { translate } from '@kiki/session-core/i18n';
 import { I18nProvider } from '../../i18n';
 import { DirtyGuardContext } from '../dirtyGuard';
+import { DefaultModelBar } from './DefaultModelBar';
 import { CatalogRefreshCard, GlobalDefaultsCard, ModelCatalogCard, ThinkingCard } from './ModelsSection';
 import { ModelSwitchCard } from './ModelSwitchCard';
 import { optionLabels, pickValue } from './testControls';
@@ -145,6 +146,7 @@ async function renderCard(reportDirty = (_id: string, _dirty: boolean) => {}): P
         <QueryClientProvider client={client}>
           <I18nProvider>
             <DirtyGuardContext.Provider value={{ dirty: false, reportDirty, navigate: () => {} }}>
+              <DefaultModelBar tab="models" />
               <ModelCatalogCard />
               <CatalogRefreshCard />
             </DirtyGuardContext.Provider>
@@ -765,7 +767,7 @@ describe('GlobalDefaultsCard', () => {
     setFastModel.mockResolvedValue(undefined);
     const container = await renderDefaults();
     expect([...container.querySelectorAll<HTMLElement>('[data-default-row]')].map((row) => row.dataset['defaultRow']))
-      .toEqual(['new-session', 'session-title', 'fast', 'subagent']);
+      .toEqual(['session-title', 'fast', 'subagent']);
     const subagentRow = container.querySelector('[data-default-row="subagent"]')!;
     expect(subagentRow.textContent).toContain('only when a subagent has no other pin');
     expect(container.querySelector('[data-default-row="fast"]')!.textContent).toContain('small background jobs');
@@ -810,6 +812,51 @@ describe('GlobalDefaultsCard', () => {
     expect(empty.textContent).toContain('Pick a model to write titles');
     expect(empty.textContent).not.toContain('Included with your subscription');
     expect(empty.textContent).not.toContain('fast model');
+  });
+
+  it('picks the new-session default model in DefaultModelBar and hides the other-jobs summary on the defaults tab', async () => {
+    const secondModel: ModelCatalogItem = {
+      id: 'kimi-code/kimi-k1',
+      provider_id: 'managed:kimi-code',
+      remote_id: 'kimi-k1',
+      display_name: 'Kimi K1',
+      max_context_size: 131072,
+      capabilities: ['chat'],
+      support_efforts: ['high'],
+    };
+    listModels.mockResolvedValue({ items: [MODELS[0]!, secondModel] });
+    getConfig.mockResolvedValue({ default_model: 'kimi-code/kimi-k2', fast_model: 'kimi-code/kimi-k1', subagent: {} });
+    setDefaultModel.mockResolvedValue(undefined);
+    patchConfig.mockResolvedValue({});
+
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={client}>
+            <I18nProvider>
+              <DirtyGuardContext.Provider value={{ dirty: false, reportDirty: () => {}, navigate: () => {} }}>
+                <DefaultModelBar tab="defaults" />
+                <GlobalDefaultsCard />
+              </DirtyGuardContext.Provider>
+            </I18nProvider>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    expect(container.querySelector('[data-default-model-others]')).toBeNull();
+    await act(async () => { container.querySelector<HTMLButtonElement>('#st-default-model')!.click(); });
+    const option = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')].find((item) => item.textContent?.includes('Kimi K1'))!;
+    await act(async () => { option.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(setDefaultModel).toHaveBeenCalledWith('kimi-code/kimi-k1');
   });
 });
 

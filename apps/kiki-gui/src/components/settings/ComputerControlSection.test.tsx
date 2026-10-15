@@ -30,6 +30,7 @@ const installCapability = vi.fn(async () => CAPABILITY);
 const revealSecret = vi.fn(async () => ({ value: 'revealed' }));
 const getConfig = vi.fn<() => Promise<KikiConfigResponse>>();
 const patchConfig = vi.fn(async (_patch: KikiConfigPatch) => ({}) as KikiConfigResponse);
+const setComputerControlEnabled = vi.fn(async (_enabled: boolean) => ({ computer_control: { enabled: _enabled } }) as unknown as KikiConfigResponse);
 const mcpList = vi.fn<() => Promise<readonly McpManagedServer[]>>();
 const mcpAdd = vi.fn(async (_input: { server: Record<string, unknown> }) => [] as readonly McpManagedServer[]);
 const mcpUpdate = vi.fn(async (_input: { server: Record<string, unknown> }) => [] as readonly McpManagedServer[]);
@@ -39,7 +40,7 @@ const mcpStop = vi.fn(async (_target: { name: string }) => ({ state: 'unconfirme
 
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({
-    client: { getCapability, installCapability, revealSecret, getConfig, patchConfig },
+    client: { getCapability, installCapability, revealSecret, getConfig, patchConfig, setComputerControlEnabled },
     klient: { global: { env, mcp: { list: mcpList, add: mcpAdd, update: mcpUpdate, remove: mcpRemove, test: mcpTest, stop: mcpStop } } },
     scopeId: connection.scopeId,
     sshLabel: connection.sshLabel,
@@ -800,5 +801,77 @@ describe('ComputerControlSection', () => {
     // Feedback error must NOT be shown for the stale generation
     expect(query('[data-feedback-tone="error"]')).toBeNull();
     expect(container.textContent).not.toContain('Stale write failure');
+  });
+
+  describe('Computer control master switch and tool policy', () => {
+    it('renders master enabled card, toggles switch calling client contract, and retains components on disable', async () => {
+      getConfig.mockResolvedValue({
+        providers: {},
+        computer_control: { enabled: true, enabledSource: 'default', usagePreference: 'avoid', usagePreferenceSource: 'default', appliesOn: 'next-model-request', toolsApplyOn: 'next-step' },
+      });
+      getCapability.mockResolvedValue(CAPABILITY);
+      mcpList.mockResolvedValue([managedEntry({ name: 'kiki-computer' })]);
+
+      await render();
+      await settleUntil('[data-computer-control-enabled]');
+
+      const card = query('[data-computer-control-enabled]');
+      expect(card).not.toBeNull();
+      expect(card?.getAttribute('data-computer-control-enabled')).toBe('true');
+
+      // Preference note explaining preference does not gate tool availability
+      expect(query('[data-computer-preference-note]')).not.toBeNull();
+
+      const toggleBtn = query<HTMLButtonElement>('[data-computer-enabled-switch]');
+      expect(toggleBtn).not.toBeNull();
+      expect(toggleBtn?.getAttribute('aria-checked')).toBe('true');
+
+      // Toggle switch to off
+      await act(async () => {
+        toggleBtn?.click();
+      });
+      await settle();
+
+      expect(setComputerControlEnabled).toHaveBeenCalledWith(false);
+
+      // Verify components and MCP connections are NOT deleted when turned off
+      expect(query('#st-card-computer-setup')).not.toBeNull();
+      expect(query('#st-card-computer-mcp')).not.toBeNull();
+    });
+
+    it('displays explicit tool policy denied message when tools disable computer', async () => {
+      getConfig.mockResolvedValue({
+        providers: {},
+        tools: { disabled: ['mcp__kiki-computer__*'] },
+        computer_control: { enabled: true, enabledSource: 'default', usagePreference: 'avoid', usagePreferenceSource: 'default', appliesOn: 'next-model-request', toolsApplyOn: 'next-step' },
+      } as unknown as KikiConfigResponse);
+      getCapability.mockResolvedValue(CAPABILITY);
+      mcpList.mockResolvedValue([]);
+
+      await render();
+      await settleUntil('[data-computer-control-enabled]');
+
+      const denied = query('[data-computer-toolpolicy-denied]');
+      expect(denied).not.toBeNull();
+      expect(denied?.textContent).toContain('Computer control tools are denied by tool policy.');
+    });
+
+    it('displays partial policy notice when only specific computer tools are disabled', async () => {
+      getConfig.mockResolvedValue({
+        providers: {},
+        tools: { disabled: ['mcp__kiki-computer__click'] },
+        computer_control: { enabled: true, enabledSource: 'default', usagePreference: 'avoid', usagePreferenceSource: 'default', appliesOn: 'next-model-request', toolsApplyOn: 'next-step' },
+      } as unknown as KikiConfigResponse);
+      getCapability.mockResolvedValue(CAPABILITY);
+      mcpList.mockResolvedValue([]);
+
+      await render();
+      await settleUntil('[data-computer-control-enabled]');
+
+      expect(query('[data-computer-toolpolicy-denied]')).toBeNull();
+      const partial = query('[data-computer-toolpolicy-partial]');
+      expect(partial).not.toBeNull();
+      expect(partial?.textContent).toContain('Some computer control tools are denied by tool policy.');
+    });
   });
 });

@@ -23,6 +23,12 @@ describe('engineDefaultsDraftFrom', () => {
     expect(engineDefaultsDraftFrom({}).allowKikiSubagents).toBeUndefined();
   });
 
+  it('separates an absent MCP injection flag from an explicit off', () => {
+    expect(engineDefaultsDraftFrom({ inject_kiki_mcp: false }).injectKikiMcp).toBe(false);
+    expect(engineDefaultsDraftFrom({ inject_kiki_mcp: true }).injectKikiMcp).toBe(true);
+    expect(engineDefaultsDraftFrom({}).injectKikiMcp).toBeUndefined();
+  });
+
   it('leaves a delivery unwritten when the saved prompt names only include', () => {
     const draft = engineDefaultsDraftFrom({ executor_prompt: { include: ['memory_snapshot'] } });
     expect(draft.promptDelivery).toBe('');
@@ -39,6 +45,7 @@ describe('engineDefaultsPatch', () => {
       permission_mode: null,
       kiki_context: null,
       allow_kiki_subagents: null,
+      inject_kiki_mcp: null,
       executor_prompt: null,
     });
   });
@@ -48,9 +55,11 @@ describe('engineDefaultsPatch', () => {
       ...EMPTY_ENGINE_DEFAULTS,
       kikiContext: [],
       allowKikiSubagents: false,
+      injectKikiMcp: false,
     });
     expect(patch?.['kiki_context']).toEqual([]);
     expect(patch?.['allow_kiki_subagents']).toBe(false);
+    expect(patch?.['inject_kiki_mcp']).toBe(false);
   });
 
   it('never invents a delivery or an include list from an untouched field', () => {
@@ -67,6 +76,7 @@ describe('engineDefaultsPatch', () => {
       permission_mode: 'auto',
       kiki_context: ['memory', 'hooks'],
       allow_kiki_subagents: true,
+      inject_kiki_mcp: true,
       executor_prompt: { delivery: 'preamble', include: ['agents_md'], body: 'b', append: 'a' },
     };
     const draft = engineDefaultsDraftFrom(saved);
@@ -76,6 +86,7 @@ describe('engineDefaultsPatch', () => {
       permission_mode: 'auto',
       kiki_context: ['memory', 'hooks'],
       allow_kiki_subagents: true,
+      inject_kiki_mcp: true,
       executor_prompt: { delivery: 'preamble', include: ['agents_md'], body: 'b', append: 'a' },
     });
   });

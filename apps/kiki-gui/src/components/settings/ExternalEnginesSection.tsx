@@ -12,9 +12,12 @@ import { localSessionEngine } from '../../lib/localSessions';
 import { LocalSessionsEntry } from '../localSessions/LocalSessionsEntry';
 import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
 import { DisclosureChevron, Icon } from '../icons';
-import { INPUT, SECONDARY_BUTTON } from '../ui';
+import { DANGER_GHOST_BUTTON, INPUT, SECONDARY_BUTTON } from '../ui';
+import { SidePanel } from '../SidePanel';
+import { SettingsSegmented, type SettingsChoice } from './SettingsPrimitives';
 import {
   applyExecutorCheck,
+  configuredEngineDescriptors,
   engineDisplayOf,
   engineOverridesOf,
   engineVisibilityOf,
@@ -135,52 +138,43 @@ function EngineVisibilityToggle({ item, overrides, display }: {
 }
 
 /**
- * The one switch for every external engine. Kept as its own row above the
- * per-engine toggles because it changes what they all mean at once, and
- * leaving N rows unexplained is how a preference becomes a puzzle.
+ * The one switch for every external engine, on the engines section heading.
+ * It changes what every row's own "offer in new choices" means at once, so it
+ * sits above them; when it is off the list says so in one line.
  */
-function ExternalEnginesVisibilityCard({ overrides, display, engineCount }: {
-  overrides: Readonly<Record<string, unknown>> | undefined;
-  display: Readonly<Record<string, unknown>> | undefined;
-  engineCount: number;
-}) {
+export function ExternalEnginesVisibilitySwitch() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
-  const prefs = engineVisibilityOf(overrides, display);
+  const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000, retry: false });
+  const prefs = engineVisibilityOf(engineOverridesOf(configQuery.data), engineDisplayOf(configQuery.data));
   const [saving, setSaving] = useState(false);
-  const [feedback, setFeedback] = useState<Feedback>(null);
+  const [error, setError] = useState<string | undefined>();
 
   const toggle = async (next: boolean) => {
     const patch = engineVisibilityPatch(prefs, { externals: next });
     if (patch === undefined) return;
     setSaving(true);
-    setFeedback(null);
+    setError(undefined);
     try {
       await client.patchConfig(patch);
       await queryClient.invalidateQueries({ queryKey: ['config'] });
-    } catch (error) {
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } catch (failure) {
+      setError(errorText(locale, failure));
     } finally {
       setSaving(false);
     }
   };
 
   return (
-    <div data-external-visibility className="space-y-1.5 border-t border-hairline pt-3">
+    <div data-external-visibility data-visible={prefs.externalsVisible ? 'true' : 'false'} className="flex items-center gap-2">
+      {error !== undefined ? <span role="alert" className="max-w-[16rem] truncate text-[12px] text-danger" title={error}>{error}</span> : null}
       <Toggle
-        layout="row"
         label={t('st.engines.showAllInList')}
         checked={prefs.externalsVisible}
-        disabled={saving}
+        disabled={saving || !configQuery.isSuccess}
         onChange={(next) => { void toggle(next); }}
       />
-      <p className="text-[12px] leading-4 text-ink-faint">
-        {prefs.externalsVisible
-          ? t('st.engines.showAllInListHint', { count: engineCount })
-          : t('st.engines.showAllInListOffHint')}
-      </p>
-      <FeedbackLine feedback={feedback} />
     </div>
   );
 }
@@ -212,6 +206,7 @@ export function ExternalEnginesList() {
   const engines = (query.data?.items ?? []).filter((item) => item.id !== 'native')
     .toSorted((a, b) => a.label.localeCompare(b.label));
   const [faults, setFaults] = useState<Readonly<Record<string, string>>>({});
+  const [removalNote, setRemovalNote] = useState<string | undefined>();
   const engineIds = engines.map((item) => item.id).join('\0');
   const discoveryKey = `${scopeId}\0${meta?.server_id ?? ''}`;
   const ran = useRef(false);
@@ -252,28 +247,27 @@ export function ExternalEnginesList() {
       await queryClient.invalidateQueries({ queryKey: catalogKey });
     })();
   }, [catalogKey, client, configQuery.isSuccess, discoveryKey, display, engineIds, locale, query.isSuccess, queryClient]);
+  const externalsVisible = engineVisibilityOf(overrides, display).externalsVisible;
   return (
     <div data-external-engines className="space-y-3">
-      <p className="max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t('st.engines.intro')}</p>
       {faults['*'] !== undefined ? <p role="alert" data-engine-discovery-error className="text-[12px] leading-4 text-danger">{faults['*']}</p> : null}
+      {engines.length > 0 && configQuery.isSuccess && !externalsVisible ? (
+        <p data-engines-hidden-note className="text-[12px] leading-4 text-ink-faint">{t('st.engines.showAllInListOffHint')}</p>
+      ) : null}
       {engines.length > 0 ? (
         <div data-engine-list className="overflow-hidden rounded-lg border border-hairline bg-panel">
-          {engines.map((item) => <EngineRow key={item.id} item={item} overrides={overrides} display={display} fault={faults[item.id]} />)}
+          {removalNote !== undefined ? <p role="status" data-engine-removal-result className="border-b border-hairline px-3 py-2 text-[12px] leading-4 text-ink-soft">{removalNote}</p> : null}
+          {engines.map((item) => <EngineRow key={item.id} item={item} overrides={overrides} display={display} fault={faults[item.id]} onRegistrationRemoved={setRemovalNote} />)}
         </div>
       ) : null}
       {query.isSuccess && engines.length === 0 ? (
-        <div data-engines-empty className="rounded-lg border border-dashed border-hairline-strong px-4 py-4">
+        <div data-engines-empty className="space-y-1 rounded-lg border border-dashed border-hairline-strong px-4 py-4">
           <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.empty')}</p>
+          <p className="max-w-[62ch] text-[12px] leading-4 text-ink-faint">{t('st.engines.intro')}</p>
         </div>
       ) : null}
       {query.isLoading ? <Hint>{t('st.engines.loading')}</Hint> : null}
       {query.isError ? <InlineError error={query.error} /> : null}
-      {engines.length > 0 ? (
-        <>
-          <ExternalEnginesVisibilityCard overrides={overrides} display={display} engineCount={engines.length} />
-          <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.configHint')}</p>
-        </>
-      ) : null}
     </div>
   );
 }
@@ -488,6 +482,135 @@ function overrideCheckFeedback(result: ExecutorCheckResult, t: ReturnType<typeof
   return { tone: 'success', text: t('st.engines.checkedOk') };
 }
 
+type RunChoice = 'plain' | 'kiki';
+
+/**
+ * How one engine runs in new bindings: as is, or with the Kiki MCP bridge.
+ *
+ * The contract is unchanged — `agent_executor_overrides.<id>.defaults.
+ * inject_kiki_mcp` is `true`, `false`, or `null` (follow the engine default).
+ * A following engine highlights what that default currently is and says
+ * nothing more on the row; a pinned one offers "follow default", which writes
+ * `null`. An engine that cannot carry the bridge only states that it runs as
+ * is. The row and the detail panel render the same control (`variant`), both
+ * reading the shared config query, so they cannot disagree.
+ */
+const RUN_MODE_COPY = {
+  en: {
+    title: 'Run mode',
+    plain: 'Run as is',
+    kiki: 'With Kiki MCP',
+    plainOnly: 'Run as is only',
+    following: 'Following default',
+    restore: 'Follow default',
+  },
+  zh: {
+    title: '运行方式',
+    plain: '原样运行',
+    kiki: '接入 Kiki MCP',
+    plainOnly: '仅原样运行',
+    following: '跟随默认',
+    restore: '恢复跟随',
+  },
+} as const;
+
+function runModeCopy(locale: string) {
+  return locale === 'zh' ? RUN_MODE_COPY.zh : RUN_MODE_COPY.en;
+}
+
+function EngineRunMode({ item, savedDefaults, onSaved, variant }: {
+  item: ExecutorCatalogItem;
+  savedDefaults: Record<string, unknown> | null | undefined;
+  onSaved: () => Promise<void>;
+  variant: 'row' | 'panel';
+}) {
+  const { client, scopeId, meta } = useConnection();
+  const { t, locale } = useI18n();
+  const copy = runModeCopy(locale);
+  const queryClient = useQueryClient();
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+
+  const mcpInfo = item.kiki_mcp;
+  const isUnsupported = mcpInfo?.support?.state === 'unsupported';
+  const unsupportedFact = mcpInfo?.support?.fact ?? t('st.engines.mcpInject.unsupportedHint');
+
+  const explicit = typeof savedDefaults?.['inject_kiki_mcp'] === 'boolean'
+    ? savedDefaults['inject_kiki_mcp']
+    : (mcpInfo?.source === 'harness-settings' && typeof mcpInfo.effective === 'boolean' ? mcpInfo.effective : undefined);
+  const following = explicit === undefined;
+  const inherited = mcpInfo?.source === 'harness-default' ? mcpInfo.effective : null;
+  const effective = explicit ?? inherited;
+  const shown: RunChoice | 'unset' = effective === true ? 'kiki' : effective === false ? 'plain' : 'unset';
+  const explicitChoice: 'inherit' | 'on' | 'off' = explicit === true ? 'on' : explicit === false ? 'off' : 'inherit';
+
+  const choices: SettingsChoice<RunChoice | 'unset'>[] = [
+    { value: 'plain', label: copy.plain },
+    { value: 'kiki', label: copy.kiki },
+  ];
+
+  const write = async (value: boolean | null) => {
+    if (saving || isUnsupported) return;
+    setSaving(true);
+    setError(undefined);
+    try {
+      await client.patchConfig({ agent_executor_overrides: { [item.id]: { defaults: { inject_kiki_mcp: value } } } });
+      await queryClient.invalidateQueries({ queryKey: ['config'] });
+      await queryClient.invalidateQueries({ queryKey: executorCatalogQueryKey(scopeId, meta?.server_id) });
+      await onSaved();
+    } catch (failure) {
+      setError(errorText(locale, failure));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const restore = following ? null : (
+    <button type="button" data-mcp-restore disabled={saving} onClick={() => void write(null)}
+      className="rounded px-1 text-[12px] text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink hover:decoration-ink disabled:cursor-not-allowed disabled:text-ink-faint">
+      {copy.restore}
+    </button>
+  );
+  const control = isUnsupported ? (
+    <span data-mcp-unsupported-badge title={unsupportedFact} className="text-[12px] text-ink-faint">{copy.plainOnly}</span>
+  ) : (
+    <SettingsSegmented
+      ariaLabel={`${copy.title} · ${item.label}`}
+      choices={choices}
+      value={shown}
+      onChange={(next) => { if (next !== 'unset') void write(next === 'kiki'); }}
+      disabled={saving}
+      dataAttr="data-mcp-option"
+    />
+  );
+  const data = {
+    'data-engine-mcp-switch': item.id,
+    'data-mcp-choice': explicitChoice,
+    'data-mcp-effective': shown,
+    'data-mcp-supported': isUnsupported ? 'false' : 'true',
+  };
+
+  if (variant === 'row') {
+    return (
+      <div {...data} className="flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1">
+        {error !== undefined ? <span role="alert" className="max-w-[14rem] truncate text-[12px] text-danger" title={error}>{error}</span> : null}
+        {restore}
+        {control}
+      </div>
+    );
+  }
+  return (
+    <div {...data} className="space-y-1.5">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        {control}
+        {isUnsupported ? null : following ? <span className="text-[12px] text-ink-faint">{copy.following}</span> : restore}
+      </div>
+      <p className="max-w-[62ch] text-[12px] leading-4 text-ink-faint">{isUnsupported ? unsupportedFact : t('st.engines.mcpInject.hint')}</p>
+      {error !== undefined ? <p role="alert" className="text-[12px] leading-4 text-danger">{error}</p> : null}
+    </div>
+  );
+}
+
 function EngineOverrides({ item, program, onCheck }: { item: ExecutorCatalogItem; program?: string; onCheck: () => Promise<ExecutorCheckResult | undefined> }) {
   const { client, scopeId, meta } = useConnection();
   const { t, locale } = useI18n();
@@ -647,7 +770,26 @@ function catalogCheckOf(item: ExecutorCatalogItem): ExecutorCheckResult | undefi
   };
 }
 
-function EngineRow({ item, overrides, display, fault }: {
+function registrationRemovalText(locale: string, result: {
+  registration_removed: boolean;
+  builtin_retained: boolean;
+  resources: 'removed' | 'retained' | 'not_owned';
+  reason?: string;
+}): string {
+  const zh = locale === 'zh';
+  const registration = result.registration_removed
+    ? (zh ? '自定义注册已移除。' : 'Custom registration removed.')
+    : (zh ? '没有可移除的自定义注册。' : 'No custom registration was stored.');
+  const builtin = result.builtin_retained
+    ? (zh ? '内置引擎仍保留。' : 'The built-in engine stays.')
+    : undefined;
+  const resources = result.resources === 'removed'
+    ? (zh ? '所拥有的适配器文件已移除。' : 'Owned adapter files were removed.')
+    : undefined;
+  return [registration, builtin, resources, result.reason].filter((part): part is string => part !== undefined && part !== '').join(' ');
+}
+
+function EngineRow({ item, overrides, display, fault, onRegistrationRemoved }: {
   item: ExecutorCatalogItem;
   /** The config's `agent_executor_overrides` record, for the per-engine display choice. */
   overrides: Readonly<Record<string, unknown>> | undefined;
@@ -655,6 +797,7 @@ function EngineRow({ item, overrides, display, fault }: {
   display: Readonly<Record<string, unknown>> | undefined;
   /** This engine's own check failure. It never changes another row. */
   fault?: string;
+  onRegistrationRemoved?: (text: string) => void;
 }) {
   const { client, scopeId, meta } = useConnection();
   const { t, time, locale } = useI18n();
@@ -675,6 +818,8 @@ function EngineRow({ item, overrides, display, fault }: {
   const refetchConfig = useCallback(async () => { await configQuery.refetch(); }, [configQuery]);
   const connection = item.connection;
   const config = configQuery.data;
+  const customRegistration = Object.hasOwn(configuredEngineDescriptors(config) ?? {}, item.id);
+  const [removing, setRemoving] = useState(false);
   const shown = check ?? catalogCheckOf(item);
   const faultText = localFault ?? (shown === undefined ? fault : undefined);
   const health = faultText !== undefined && shown === undefined ? 'warning' : engineHealth(item, shown);
@@ -720,17 +865,46 @@ function EngineRow({ item, overrides, display, fault }: {
     }
   };
 
+  const removeRegistration = async () => {
+    if (removing || !customRegistration) return;
+    setRemoving(true);
+    setFeedback(null);
+    try {
+      const result = await client.removeExecutorRegistration(item.id);
+      const text = registrationRemovalText(locale, result);
+      setFeedback({ tone: result.resources === 'removed' ? 'success' : 'info', text });
+      onRegistrationRemoved?.(text);
+      await queryClient.invalidateQueries({ queryKey: ['config'] });
+      await queryClient.invalidateQueries({ queryKey: executorCatalogQueryKey(scopeId, meta?.server_id) });
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setRemoving(false);
+    }
+  };
+
   const summaryFacts = [
     t('st.engines.kind'),
     protocolLabel(item.protocol),
     version,
     health === 'missing' ? undefined : credentialKey === undefined ? t(`st.engines.login.${login}`) : t(credentialKey),
   ].filter((part): part is string => part !== undefined);
+  const savedDefaults = engineDefaultsOf(config?.raw, item.id);
+  const [open, setOpen] = useState(false);
 
+  // One row per engine: what it is and whether it works on the left, how it
+  // runs on the right — the one choice people make here every day. The rest
+  // (setup, checks, parameters, diagnostics) opens beside the list, so the
+  // list stays a list. The row itself opens the panel; the run-mode control
+  // keeps its clicks to itself.
   return (
-    <details data-engine-row={item.id} data-engine-health={health}
-      className="group/engine border-b border-hairline last:border-b-0 [&[open]]:bg-paper">
-      <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-3 py-2 outline-none transition-colors hover:bg-ink/[0.03] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-selected-ink/40 [&::-webkit-details-marker]:hidden">
+    <>
+    <div data-engine-row={item.id} data-engine-health={health} data-engine-open-state={open ? 'open' : 'closed'}
+      onClick={() => { setOpen(true); }}
+      className="group/engine flex min-h-14 cursor-pointer flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-hairline px-3 py-2 transition-colors last:border-b-0 hover:bg-ink/[0.03]">
+      <button type="button" data-engine-open aria-haspopup="dialog"
+        onClick={(event) => { event.stopPropagation(); setOpen(true); }}
+        className="-my-1 flex min-w-0 flex-1 items-center gap-3 rounded-md py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40">
         <span aria-hidden className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-ink/[0.05] text-ink-soft">
           <Icon name="terminal" size={14} />
         </span>
@@ -746,148 +920,191 @@ function EngineRow({ item, overrides, display, fault }: {
             health === 'missing' ? 'text-danger' : health === 'warning' ? 'text-amber-ink' : 'text-ink-faint'}`}>
           <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${
             health === 'missing' ? 'bg-danger' : health === 'warning' ? 'bg-amber-rule' : health === 'unknown' ? 'bg-ink-faint' : 'bg-success'}`} />
-          <span className="hidden sm:inline">{healthText}</span>
-          <span className="sr-only sm:hidden">{healthText}</span>
+          <span className="hidden md:inline">{healthText}</span>
+          <span className="sr-only md:hidden">{healthText}</span>
         </span>
-        <DisclosureChevron open={false} className="text-ink-faint transition-transform group-open/engine:rotate-90" />
-      </summary>
-      <div className="space-y-4 px-3 pb-4 pt-1 sm:pl-[3.25rem]">
-        {antigravity ? <AntigravitySetup login={login} onChanged={() => void runCheck()}
-          ideDetected={shown?.diagnostics.some((diagnostic) => diagnostic.code === 'antigravity_ide_not_acp') === true} /> : null}
-        {setup && !antigravity && shown !== undefined ? <EngineSetup check={shown} loginCommand={loginCommand} apiKeyEnv={apiKeyEnv} /> : null}
-        {health === 'missing' && !setup && !antigravity ? (
-          <div role="alert" data-engine-missing className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2">
-            <p className="text-[12px] leading-4 text-ink-soft">{t('st.engines.notFoundBody', { program: program ?? item.label })}</p>
-            {connection?.install_hint !== undefined ? (
-              <div className="mt-1.5 flex flex-wrap items-center gap-2">
-                <span className="text-[12px] text-ink-faint">{t('st.engines.install')}</span>
-                <CopyCommand command={connection.install_hint} />
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-        <div data-engine-check className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-          <button type="button" data-engine-check-button className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
-            disabled={checking} aria-busy={checking} onClick={() => void runCheck()}>
-            {checking ? <span aria-hidden className="h-3 w-3 animate-spin rounded-full border-[1.5px] border-current border-t-transparent motion-reduce:animate-none" /> : null}
-            {checking ? t('st.engines.checking') : shown === undefined ? t('st.engines.check') : t('st.engines.recheck')}
-          </button>
-          <p data-engine-last-check={faultText !== undefined && shown === undefined ? 'failed' : shown?.status ?? 'none'}
-            data-engine-check-stale={item.check_stale === true && check === undefined ? 'true' : undefined}
-            aria-live="polite" className="min-w-0 text-[12px] leading-4 text-ink-faint">
-            {checking ? t('st.engines.checkingHint')
-              : faultText !== undefined && shown === undefined ? <span className="text-danger">{faultText}</span>
-                : shown === undefined ? t('st.engines.neverChecked')
-                : <>
-                  <span className={shown.status === 'ready' ? 'text-success' : shown.status === 'warning' ? 'text-amber-ink' : 'text-danger'}>
-                    {t(shown.status === 'ready' ? 'st.engines.checkedOk' : shown.status === 'warning' ? 'st.engines.checkedWarning' : 'st.engines.checkedFailed')}
-                  </span>
-                  {(checkedAt ?? item.checked_at) !== undefined ? <>{' · '}{time.relativeTime(checkedAt ?? item.checked_at!)}</> : null}
-                </>}
-          </p>
-        </div>
-        <dl className="space-y-2">
-          <Fact label={t('st.engines.program')} dataFact="program">
-            {program !== undefined ? <span className="break-all font-mono text-[12px]">{program}</span> : <span className="text-ink-faint">{t('st.engines.versionUnknown')}</span>}
-            {source !== undefined ? <span className="block text-[12px] text-ink-faint">{t('st.engines.source')} <span className="font-mono text-[11.5px]">{source}</span></span> : null}
-          </Fact>
-          <Fact label={t('st.engines.version')} dataFact="version">
-            {version ?? <span className="text-ink-faint">{t('st.engines.versionUnknown')}</span>}
-            <span className="text-ink-faint"> · {protocolLabel(item.protocol)}</span>
-          </Fact>
-          {health === 'missing' || setup || antigravity ? null : <Fact label={t('st.engines.login')} dataFact="login">
-            <span className={login === 'logged_out' ? 'text-amber-ink' : login === 'unknown' ? 'text-ink-soft' : ''}>{t(`st.engines.login.${login}`)}</span>
-            {credentialKey !== undefined ? <span data-engine-credential={credential} className="block text-[12px] text-ink-faint">
-              {t(credentialKey)}
-              {credentialDetail !== undefined ? <span className="font-mono text-[11.5px]"> · {credentialDetail}</span> : null}
-            </span> : null}
-            {login === 'unknown' && shown === undefined ? <span className="block text-[12px] text-ink-faint">{t('st.engines.loginStale')}</span> : null}
-            {login === 'logged_out' ? <span className="block text-[12px] text-ink-faint">{t('st.engines.loginOrKey')}</span> : null}
-            {loginCommand !== undefined && login !== 'logged_in' ? (
-              <span className="mt-1 flex flex-wrap items-center gap-2">
-                <span className="text-[12px] text-ink-faint">{t('st.engines.loginCommand')}</span>
-                <CopyCommand command={loginCommand} />
-              </span>
-            ) : null}
-            {apiKeyEnv !== undefined && login !== 'logged_in' ? (
-              <span className="mt-1 flex flex-wrap items-center gap-2">
-                <span className="text-[12px] text-ink-faint">{t('st.engines.apiKeyCommand')}</span>
-                <CopyCommand command={`export ${apiKeyEnv}=YOUR_API_KEY`} />
-              </span>
-            ) : null}
-          </Fact>}
-          <Fact label={t('st.engines.args')} dataFact="args">
-            {args.length === 0 ? <span className="text-ink-faint">{t('st.engines.argsNone')}</span>
-              : <code className="break-all font-mono text-[12px] text-ink-soft">{args.join(' ')}</code>}
-          </Fact>
-        </dl>
-        <div data-engine-capabilities className="space-y-2 border-t border-hairline pt-3">
-          <p className="text-[12px] font-medium text-ink-soft">{t('st.engines.capabilities')}</p>
-          <dl className="space-y-1.5">
-            <Fact label={t('st.engines.cap.prompt')} dataFact="cap-prompt">
-              {caps === undefined ? <span className="text-ink-faint">{t('st.engines.versionUnknown')}</span>
-                : caps.prompt_deliveries.map((delivery) => t(`st.executorPrompt.delivery.${delivery}`)).join(' · ')}
-            </Fact>
-            <Fact label={t('st.engines.cap.steer')} dataFact="cap-steer">
-              {caps === undefined ? <span className="text-ink-faint">{t('st.engines.versionUnknown')}</span> : t(`st.engines.steer.${caps.steer}`)}
-            </Fact>
-            <Fact label={t('st.engines.cap.model')} dataFact="cap-model">
-              {t(item.model_binding === 'mapped' ? 'st.engines.cap.mapped' : 'st.engines.cap.unavailable')}
-            </Fact>
-            <Fact label={t('st.engines.cap.thinking')} dataFact="cap-thinking">
-              {t(item.thinking_binding === 'mapped' ? 'st.engines.cap.mapped' : 'st.engines.cap.unavailable')}
-            </Fact>
-            <Fact label={t('st.engines.cap.permission')} dataFact="cap-permission">
-              {caps === undefined ? <span className="text-ink-faint">{t('st.engines.versionUnknown')}</span> : <>
-                {t(caps.permission.via === undefined ? 'st.engines.permission.none' : `st.engines.permission.${caps.permission.via}`)}
-                {caps.permission.trust_engine_settings ? <span className="text-ink-faint"> · {t('st.engines.permissionTrust')}</span> : null}
-              </>}
-            </Fact>
-            {caps?.negotiated !== undefined ? (
-              <Fact label={t('st.engines.cap.handshake')} dataFact="cap-handshake">
-                {caps.negotiated.agent_version !== undefined ? <span className="font-mono text-[12px]">{caps.negotiated.agent_version}</span> : null}
-                <span className="block text-[12px] text-ink-soft">
-                  {HARNESS_CAPABILITIES.filter(({ key }) => caps.negotiated?.[key] === true).map(({ label }) => t(label)).join(' · ')
-                    || t('st.engines.cap.handshakeNone')}
-                </span>
-              </Fact>
-            ) : null}
-          </dl>
-          <p className="text-[12px] leading-4 text-ink-faint">{t(caps?.negotiated !== undefined ? 'st.engines.capsNegotiated' : 'st.engines.capsDeclared')}</p>
-        </div>
-        <EngineVisibilityToggle item={item} overrides={overrides} display={display} />
-        {localSessionEngine(item.id) !== undefined ? (
-          <div data-engine-local-sessions className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-hairline pt-3">
-            <div className="min-w-0 flex-1">
-              <p className="text-[12px] font-medium text-ink-soft">{t('localSessions.settingsTitle')}</p>
-              <p className="text-[12px] leading-4 text-ink-faint">{t('localSessions.settingsHint', { engine: item.label })}</p>
-            </div>
-            <LocalSessionsEntry executorId={item.id} variant="button" />
-          </div>
-        ) : null}
-        {shown !== undefined && shown.diagnostics.length > 0 ? (
-          <div data-engine-diagnostics className="space-y-1 border-t border-hairline pt-3">
-            <p className="text-[12px] font-medium text-ink-soft">{t('st.engines.diagnostics')}</p>
-            <ul className="space-y-1">
-              {shown.diagnostics.map((diagnostic, index) => (
-                <li key={index} data-engine-diagnostic={diagnostic.severity} className="flex min-w-0 gap-2 text-[12px] leading-4">
-                  <Icon name={diagnostic.severity === 'info' ? 'dot' : 'warning'} size={12}
-                    className={`mt-0.5 shrink-0 ${diagnostic.severity === 'error' ? 'text-danger' : diagnostic.severity === 'warning' ? 'text-amber-ink' : 'text-ink-faint'}`} />
-                  <span className="min-w-0 break-words text-ink-soft">{diagnostic.message}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-        <div data-engine-integrations className="space-y-1 border-t border-hairline pt-3">
-          <p className="text-[12px] font-medium text-ink-soft">{t('st.engines.integrations')}</p>
-          <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.integrationsBody')}</p>
-          {item.default_profile === true ? <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.defaultProfile')}</p> : null}
-        <EngineOverrides item={item} program={program} onCheck={runCheck} />
-        </div>
-        <EngineDefaults item={item} saved={engineDefaultsOf(config?.raw, item.id)} onSaved={refetchConfig} />
-        <FeedbackLine feedback={feedback} />
+      </button>
+      <div data-engine-row-run className="order-last w-full pl-10 sm:order-none sm:w-auto sm:pl-0"
+        onClick={(event) => { event.stopPropagation(); }}>
+        <EngineRunMode item={item} savedDefaults={savedDefaults} onSaved={refetchConfig} variant="row" />
       </div>
-    </details>
+      <Icon name="chevron" size={12} className="shrink-0 text-ink-faint transition-colors group-hover/engine:text-ink-soft" />
+    </div>
+      {open ? (
+        <SidePanel
+          title={item.label}
+          description={summaryFacts.join(' · ')}
+          overlayId="settings-engine-detail"
+          onClose={() => { setOpen(false); }}
+          width="lg"
+          data={{ 'data-engine-panel-overlay': item.id }}
+        >
+          <div data-engine-panel={item.id} className="space-y-6">
+            <div className="space-y-4">
+              {antigravity ? <AntigravitySetup login={login} onChanged={() => void runCheck()}
+                ideDetected={shown?.diagnostics.some((diagnostic) => diagnostic.code === 'antigravity_ide_not_acp') === true} /> : null}
+              {setup && !antigravity && shown !== undefined ? <EngineSetup check={shown} loginCommand={loginCommand} apiKeyEnv={apiKeyEnv} /> : null}
+              {health === 'missing' && !setup && !antigravity ? (
+                <div role="alert" data-engine-missing className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2">
+                  <p className="text-[12px] leading-4 text-ink-soft">{t('st.engines.notFoundBody', { program: program ?? item.label })}</p>
+                  {connection?.install_hint !== undefined ? (
+                    <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                      <span className="text-[12px] text-ink-faint">{t('st.engines.install')}</span>
+                      <CopyCommand command={connection.install_hint} />
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              <div data-engine-check className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                <button type="button" data-engine-check-button className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
+                  disabled={checking} aria-busy={checking} onClick={() => void runCheck()}>
+                  {checking ? <span aria-hidden className="h-3 w-3 animate-spin rounded-full border-[1.5px] border-current border-t-transparent motion-reduce:animate-none" /> : null}
+                  {checking ? t('st.engines.checking') : shown === undefined ? t('st.engines.check') : t('st.engines.recheck')}
+                </button>
+                <p data-engine-last-check={faultText !== undefined && shown === undefined ? 'failed' : shown?.status ?? 'none'}
+                  data-engine-check-stale={item.check_stale === true && check === undefined ? 'true' : undefined}
+                  aria-live="polite" className="min-w-0 text-[12px] leading-4 text-ink-faint">
+                  {checking ? t('st.engines.checkingHint')
+                    : faultText !== undefined && shown === undefined ? <span className="text-danger">{faultText}</span>
+                      : shown === undefined ? t('st.engines.neverChecked')
+                      : <>
+                        <span className={shown.status === 'ready' ? 'text-success' : shown.status === 'warning' ? 'text-amber-ink' : 'text-danger'}>
+                          {t(shown.status === 'ready' ? 'st.engines.checkedOk' : shown.status === 'warning' ? 'st.engines.checkedWarning' : 'st.engines.checkedFailed')}
+                        </span>
+                        {(checkedAt ?? item.checked_at) !== undefined ? <>{' · '}{time.relativeTime(checkedAt ?? item.checked_at!)}</> : null}
+                      </>}
+                </p>
+              </div>
+              <dl className="space-y-2">
+                <Fact label={t('st.engines.program')} dataFact="program">
+                  {program !== undefined ? <span className="break-all font-mono text-[12px]">{program}</span> : <span className="text-ink-faint">{t('st.engines.versionUnknown')}</span>}
+                  {source !== undefined ? <span className="block text-[12px] text-ink-faint">{t('st.engines.source')} <span className="font-mono text-[11.5px]">{source}</span></span> : null}
+                </Fact>
+                <Fact label={t('st.engines.version')} dataFact="version">
+                  {version ?? <span className="text-ink-faint">{t('st.engines.versionUnknown')}</span>}
+                  <span className="text-ink-faint"> · {protocolLabel(item.protocol)}</span>
+                </Fact>
+                {health === 'missing' || setup || antigravity ? null : <Fact label={t('st.engines.login')} dataFact="login">
+                  <span className={login === 'logged_out' ? 'text-amber-ink' : login === 'unknown' ? 'text-ink-soft' : ''}>{t(`st.engines.login.${login}`)}</span>
+                  {credentialKey !== undefined ? <span data-engine-credential={credential} className="block text-[12px] text-ink-faint">
+                    {t(credentialKey)}
+                    {credentialDetail !== undefined ? <span className="font-mono text-[11.5px]"> · {credentialDetail}</span> : null}
+                  </span> : null}
+                  {login === 'unknown' && shown === undefined ? <span className="block text-[12px] text-ink-faint">{t('st.engines.loginStale')}</span> : null}
+                  {login === 'logged_out' ? <span className="block text-[12px] text-ink-faint">{t('st.engines.loginOrKey')}</span> : null}
+                  {loginCommand !== undefined && login !== 'logged_in' ? (
+                    <span className="mt-1 flex flex-wrap items-center gap-2">
+                      <span className="text-[12px] text-ink-faint">{t('st.engines.loginCommand')}</span>
+                      <CopyCommand command={loginCommand} />
+                    </span>
+                  ) : null}
+                  {apiKeyEnv !== undefined && login !== 'logged_in' ? (
+                    <span className="mt-1 flex flex-wrap items-center gap-2">
+                      <span className="text-[12px] text-ink-faint">{t('st.engines.apiKeyCommand')}</span>
+                      <CopyCommand command={`export ${apiKeyEnv}=YOUR_API_KEY`} />
+                    </span>
+                  ) : null}
+                </Fact>}
+              </dl>
+            </div>
+
+            <section data-engine-section="run" className="space-y-3 border-t border-hairline pt-5">
+              <h3 className="text-[13px] font-medium text-ink">{runModeCopy(locale).title}</h3>
+              <EngineRunMode item={item} savedDefaults={savedDefaults} onSaved={refetchConfig} variant="panel" />
+              <EngineDefaults item={item} saved={savedDefaults} onSaved={refetchConfig} />
+            </section>
+
+            <section data-engine-section="offer" className="space-y-3">
+              <EngineVisibilityToggle item={item} overrides={overrides} display={display} />
+              {item.default_profile === true ? <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.defaultProfile')}</p> : null}
+              {localSessionEngine(item.id) !== undefined ? (
+                <div data-engine-local-sessions className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-hairline pt-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[12px] font-medium text-ink-soft">{t('localSessions.settingsTitle')}</p>
+                    <p className="text-[12px] leading-4 text-ink-faint">{t('localSessions.settingsHint', { engine: item.label })}</p>
+                  </div>
+                  <LocalSessionsEntry executorId={item.id} variant="button" />
+                </div>
+              ) : null}
+            </section>
+
+            <section data-engine-section="details" className="space-y-4 border-t border-hairline pt-5">
+              {shown !== undefined && shown.diagnostics.length > 0 ? (
+                <div data-engine-diagnostics className="space-y-1">
+                  <p className="text-[12px] font-medium text-ink-soft">{t('st.engines.diagnostics')}</p>
+                  <ul className="space-y-1">
+                    {shown.diagnostics.map((diagnostic, index) => (
+                      <li key={index} data-engine-diagnostic={diagnostic.severity} className="flex min-w-0 gap-2 text-[12px] leading-4">
+                        <Icon name={diagnostic.severity === 'info' ? 'dot' : 'warning'} size={12}
+                          className={`mt-0.5 shrink-0 ${diagnostic.severity === 'error' ? 'text-danger' : diagnostic.severity === 'warning' ? 'text-amber-ink' : 'text-ink-faint'}`} />
+                        <span className="min-w-0 break-words text-ink-soft">{diagnostic.message}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+              <details data-engine-capabilities className="group/caps [&[open]]:space-y-2">
+                <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[12px] font-medium text-ink-soft [&::-webkit-details-marker]:hidden">
+                  <DisclosureChevron open={false} className="text-ink-faint transition-transform group-open/caps:rotate-90" />
+                  {t('st.engines.capabilities')}
+                </summary>
+                <dl className="space-y-1.5">
+                  <Fact label={t('st.engines.cap.prompt')} dataFact="cap-prompt">
+                    {caps === undefined ? <span className="text-ink-faint">{t('st.engines.versionUnknown')}</span>
+                      : caps.prompt_deliveries.map((delivery) => t(`st.executorPrompt.delivery.${delivery}`)).join(' · ')}
+                  </Fact>
+                  <Fact label={t('st.engines.cap.steer')} dataFact="cap-steer">
+                    {caps === undefined ? <span className="text-ink-faint">{t('st.engines.versionUnknown')}</span> : t(`st.engines.steer.${caps.steer}`)}
+                  </Fact>
+                  <Fact label={t('st.engines.cap.model')} dataFact="cap-model">
+                    {t(item.model_binding === 'mapped' ? 'st.engines.cap.mapped' : 'st.engines.cap.unavailable')}
+                  </Fact>
+                  <Fact label={t('st.engines.cap.thinking')} dataFact="cap-thinking">
+                    {t(item.thinking_binding === 'mapped' ? 'st.engines.cap.mapped' : 'st.engines.cap.unavailable')}
+                  </Fact>
+                  <Fact label={t('st.engines.cap.permission')} dataFact="cap-permission">
+                    {caps === undefined ? <span className="text-ink-faint">{t('st.engines.versionUnknown')}</span> : <>
+                      {t(caps.permission.via === undefined ? 'st.engines.permission.none' : `st.engines.permission.${caps.permission.via}`)}
+                      {caps.permission.trust_engine_settings ? <span className="text-ink-faint"> · {t('st.engines.permissionTrust')}</span> : null}
+                    </>}
+                  </Fact>
+                  <Fact label={t('st.engines.args')} dataFact="args">
+                    {args.length === 0 ? <span className="text-ink-faint">{t('st.engines.argsNone')}</span>
+                      : <code className="break-all font-mono text-[12px] text-ink-soft">{args.join(' ')}</code>}
+                  </Fact>
+                  {caps?.negotiated !== undefined ? (
+                    <Fact label={t('st.engines.cap.handshake')} dataFact="cap-handshake">
+                      {caps.negotiated.agent_version !== undefined ? <span className="font-mono text-[12px]">{caps.negotiated.agent_version}</span> : null}
+                      <span className="block text-[12px] text-ink-soft">
+                        {HARNESS_CAPABILITIES.filter(({ key }) => caps.negotiated?.[key] === true).map(({ label }) => t(label)).join(' · ')
+                          || t('st.engines.cap.handshakeNone')}
+                      </span>
+                    </Fact>
+                  ) : null}
+                </dl>
+                <p className="text-[12px] leading-4 text-ink-faint">{t(caps?.negotiated !== undefined ? 'st.engines.capsNegotiated' : 'st.engines.capsDeclared')}</p>
+              </details>
+              <EngineOverrides item={item} program={program} onCheck={runCheck} />
+              <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.configHint')}</p>
+            </section>
+
+            {customRegistration ? (
+              <section data-engine-registration={item.id} className="space-y-1.5 border-t border-hairline pt-5">
+                <button type="button" data-engine-remove-registration className={DANGER_GHOST_BUTTON}
+                  disabled={removing} aria-busy={removing} onClick={() => { void removeRegistration(); }}>
+                  {t('common.remove')}
+                </button>
+                <p className="text-[12px] leading-4 text-ink-faint">
+                  {locale === 'zh'
+                    ? '只移出这项自定义注册。活动或可恢复的绑定会留下适配器文件，原因显示在这里。内置引擎不会被删除。'
+                    : 'Removes this custom registration only. A live or recoverable binding keeps its adapter files, and the reason is shown here. A built-in engine is not deleted.'}
+                </p>
+              </section>
+            ) : null}
+            <FeedbackLine feedback={feedback} />
+          </div>
+        </SidePanel>
+      ) : null}
+    </>
   );
 }

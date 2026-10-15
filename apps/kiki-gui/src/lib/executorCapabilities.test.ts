@@ -58,6 +58,72 @@ describe('executor capability presentation', () => {
     expect(presentation.controls.model_switch.kind).toBe('unknown');
   });
 
+  it('treats an under-reported apply receipt as writable when the pass is concrete', () => {
+    const presentation = mapExecutorCapabilities(response({
+      effective: {
+        ...response().effective,
+        controls: {
+          model_switch: { advertised: true, applicability: 'fresh_binding', apply_state: 'unknown' },
+          thinking_switch: { advertised: true, applicability: 'live', apply_state: 'unknown' },
+          manual_compact: { advertised: true, applicability: 'next_binding', apply_state: 'unknown' },
+        },
+      },
+    }), 100_001);
+
+    expect(presentation.controls.model_switch).toMatchObject({
+      kind: 'ready', applicability: 'fresh_binding', apply_state: 'unknown', advertised: true,
+    });
+    expect(presentation.controls.thinking_switch.kind).toBe('ready');
+    expect(presentation.controls.manual_compact.kind).toBe('ready');
+    expect(isExecutorActionAvailable(presentation.controls.model_switch)).toBe(true);
+  });
+
+  it('keeps an unknown or refused model switch unavailable to write', () => {
+    const unknown = mapExecutorCapabilities(response({
+      effective: {
+        ...response().effective,
+        controls: {
+          ...response().effective.controls,
+          model_switch: { applicability: 'unknown', apply_state: 'unknown' },
+        },
+      },
+    }), 100_001);
+    const refused = mapExecutorCapabilities(response({
+      effective: {
+        ...response().effective,
+        controls: {
+          ...response().effective.controls,
+          model_switch: { advertised: false, applicability: 'fresh_binding', apply_state: 'unknown' },
+        },
+      },
+    }), 100_001);
+    const unsupported = mapExecutorCapabilities(response({
+      effective: {
+        ...response().effective,
+        controls: {
+          ...response().effective.controls,
+          model_switch: { applicability: 'unsupported', apply_state: 'unsupported' },
+        },
+      },
+    }), 100_001);
+    const stale = mapExecutorCapabilities(response({
+      effective: {
+        ...response().effective,
+        controls: {
+          ...response().effective.controls,
+          model_switch: { advertised: true, applicability: 'fresh_binding', apply_state: 'unknown' },
+        },
+      },
+    }), 100_000 + EXECUTOR_CAPABILITY_STALE_AFTER_MS);
+
+    expect(unknown.controls.model_switch.kind).toBe('unknown');
+    expect(refused.controls.model_switch.kind).toBe('unavailable');
+    expect(unsupported.controls.model_switch.kind).toBe('unavailable');
+    expect(stale.controls.model_switch.kind).toBe('unknown');
+    expect(isExecutorActionAvailable(unknown.controls.model_switch)).toBe(false);
+    expect(isExecutorActionAvailable(refused.controls.model_switch)).toBe(false);
+  });
+
   it('offers actions only for a ready dimension', () => {
     expect(isExecutorActionAvailable({ kind: 'ready' })).toBe(true);
     expect(isExecutorActionAvailable({ kind: 'partial' })).toBe(false);

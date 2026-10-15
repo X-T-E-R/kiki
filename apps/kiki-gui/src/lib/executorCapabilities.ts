@@ -65,13 +65,19 @@ function mapContext(context: CatalogContext, stale: boolean): ExecutorContextSta
 }
 
 function mapControl(control: CatalogControl, stale: boolean): ExecutorControlState {
+  // apply_state unknown on a concrete pass is a missing receipt, not a refusal.
+  // Applicability unknown stays unknown: a probe alone is not a pass.
+  const passAdvertised = control.advertised !== false
+    && (control.applicability === 'live' || control.applicability === 'next_binding' || control.applicability === 'fresh_binding');
   const kind = stale
     ? 'unknown'
     : control.advertised === false || control.applicability === 'unsupported' || control.apply_state === 'unsupported'
       ? 'unavailable'
-      : control.applicability === 'unknown' || control.apply_state === 'unknown'
-        ? 'unknown'
-        : control.apply_state === 'pending' ? 'loading' : 'ready';
+      : control.apply_state === 'unknown' && passAdvertised
+        ? 'ready'
+        : control.applicability === 'unknown' || control.apply_state === 'unknown'
+          ? 'unknown'
+          : control.apply_state === 'pending' ? 'loading' : 'ready';
   return {
     kind,
     advertised: control.advertised,

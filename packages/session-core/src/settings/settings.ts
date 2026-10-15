@@ -1971,8 +1971,12 @@ export async function fetchRemoteModels(probe: RemoteModelsProbe): Promise<Provi
 export const AI_SETTINGS_TABS = ['providers', 'models', 'defaults'] as const;
 export type AiSettingsTab = (typeof AI_SETTINGS_TABS)[number];
 
-/** Bare `/settings/ai` opens the daily-driver tab: browsing and switching models. */
-export const AI_SETTINGS_DEFAULT_TAB: AiSettingsTab = 'models';
+/**
+ * Bare `/settings/ai` opens Connections: a model can only be chosen once
+ * something reaches it, and the new-session default model is shown and
+ * changed from the bar above every tab, so it does not need a tab of its own.
+ */
+export const AI_SETTINGS_DEFAULT_TAB: AiSettingsTab = 'providers';
 
 const AI_TAB_BY_CARD: Readonly<Record<string, AiSettingsTab>> = {
   'st-card-auth': 'providers',
@@ -2103,9 +2107,9 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'shortcuts', labelKey: 'st.section.shortcuts' },
   { id: 'connection', labelKey: 'st.section.connection' },
   { id: 'ssh', labelKey: 'st.section.ssh' },
+  { id: 'connection-services', labelKey: 'st.section.connectionServices' },
   { id: 'spaces', labelKey: 'st.section.spaces' },
   { id: 'ai', labelKey: 'st.section.ai' },
-  { id: 'connection-services', labelKey: 'st.section.connectionServices' },
   { id: 'identity', labelKey: 'st.section.identity' },
   { id: 'agents', labelKey: 'st.section.agents' },
   { id: 'subagents', labelKey: 'st.section.subagents' },
@@ -2143,12 +2147,20 @@ export interface SettingsNavLeafSpec {
 
 export type SettingsNavNode = SettingsNavGroupSpec | SettingsNavLeafSpec;
 
+/**
+ * Group order follows how a person actually uses Kiki: this app's own
+ * preferences, then connecting and choosing models, then how work runs, what
+ * the agent can reach, and finally reaching this Kiki from elsewhere and
+ * maintenance. Inbound access (`connection-services`: outside clients calling
+ * this machine) sits with SSH and the server connection, not with the outbound
+ * model connections it used to share a group and a name with.
+ */
 export const SETTINGS_NAV_TREE: readonly SettingsNavNode[] = [
   { kind: 'group', id: 'device', labelKey: 'st.group.device', sections: ['general', 'appearance', 'shortcuts'] },
-  { kind: 'group', id: 'connection', labelKey: 'st.group.connection', sections: ['connection', 'ssh', 'spaces'] },
-  { kind: 'group', id: 'models-agents', labelKey: 'st.group.modelsAgents', sections: ['ai', 'connection-services', 'identity', 'agents', 'subagents'] },
+  { kind: 'group', id: 'models-agents', labelKey: 'st.group.modelsAgents', sections: ['ai', 'identity', 'agents', 'subagents'] },
   { kind: 'group', id: 'work', labelKey: 'st.group.work', sections: ['sessions', 'workspaces', 'notifications', 'memory', 'permissions', 'tasks'] },
   { kind: 'group', id: 'capabilities', labelKey: 'st.group.capabilities', sections: ['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks'] },
+  { kind: 'group', id: 'connection', labelKey: 'st.group.connection', sections: ['connection', 'ssh', 'connection-services', 'spaces'] },
   { kind: 'group', id: 'advanced', labelKey: 'st.group.advanced', sections: ['developer', 'labs', 'about'] },
 ];
 

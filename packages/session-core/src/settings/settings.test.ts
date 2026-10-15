@@ -1362,7 +1362,7 @@ describe('settings nav groups (IA v2)', () => {
   it('lists six intent groups with dedicated pages and knows which pages stay on this device', () => {
     const groups = SETTINGS_NAV_TREE.filter((node) => node.kind === 'group');
     expect(groups.map((group) => group.id))
-      .toEqual(['device', 'connection', 'models-agents', 'work', 'capabilities', 'advanced']);
+      .toEqual(['device', 'models-agents', 'work', 'capabilities', 'connection', 'advanced']);
     expect(groups.every((group) => group.sections.length > 0)).toBe(true);
     expect(SETTINGS_NAV_TREE.every((node) => node.kind === 'group')).toBe(true);
     expect(settingsSectionIsDeviceOnly('appearance')).toBe(true);
@@ -1379,8 +1379,8 @@ describe('settings nav groups (IA v2)', () => {
     expect(new Set(placed)).toEqual(new Set(SETTINGS_SECTIONS.map((section) => section.id)));
     const sectionsOf = (id: string) => (SETTINGS_NAV_TREE.find((node) => node.kind === 'group' && node.id === id) as { sections: readonly string[] }).sections;
     expect(sectionsOf('device')).toEqual(['general', 'appearance', 'shortcuts']);
-    expect(sectionsOf('connection')).toEqual(['connection', 'ssh', 'spaces']);
-    expect(sectionsOf('models-agents')).toEqual(['ai', 'connection-services', 'identity', 'agents', 'subagents']);
+    expect(sectionsOf('connection')).toEqual(['connection', 'ssh', 'connection-services', 'spaces']);
+    expect(sectionsOf('models-agents')).toEqual(['ai', 'identity', 'agents', 'subagents']);
     expect(sectionsOf('work')).toEqual(['sessions', 'workspaces', 'notifications', 'memory', 'permissions', 'tasks']);
     expect(sectionsOf('capabilities')).toEqual(['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks']);
     expect(sectionsOf('advanced')).toEqual(['developer', 'labs', 'about']);
@@ -1506,7 +1506,7 @@ describe('settings search breadcrumbs and synonyms', () => {
     const models = index.find((entry) => entry.cardId === 'st-card-models');
     expect(models?.groupLabel).toBe('Models & agents');
     const about = index.find((entry) => entry.cardId === 'st-card-about');
-    expect(about?.groupLabel).toBe('System & connection');
+    expect(about?.groupLabel).toBe('Advanced');
     expect(index.every((entry) => entry.groupLabel !== '')).toBe(true);
     expect(searchSettings(index, 'Models & agents').some((hit) => hit.section === 'ai')).toBe(true);
   });

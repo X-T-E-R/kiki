@@ -332,7 +332,6 @@ export function ModelCatalogCard() {
   };
 
   const catalogEmpty = !modelsQuery.isLoading && !modelsQuery.isError && items.length === 0;
-  const defaultItem = items.find((item) => item.id === defaultModel);
   const editingItem = items.find((item) => item.id === editing);
 
   const renderRow = (item: ModelCatalogItem) => (
@@ -352,22 +351,11 @@ export function ModelCatalogCard() {
   return (
     <SectionCard id="st-card-models" title={t('st.models.defaultTitle')}>
       <div className="space-y-3">
-        {/* The one global default, stated once, above the list it is picked from. */}
-        <div data-default-model-line className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px]">
-          <span className="text-ink-soft">{t('st.models.newSessionsUse')}</span>
-          {defaultItem !== undefined ? (
-            <span className="inline-flex min-w-0 items-center gap-1.5 font-medium text-ink">
-              <Icon name="starFilled" size={12} className="text-ink" />
-              <span className="truncate">{defaultItem.display_name ?? defaultItem.id}</span>
-              <span className="truncate text-[12px] font-normal text-ink-faint">{groupLabel(defaultItem.provider_id)}</span>
-            </span>
-          ) : (
-            <span className="text-ink-faint">{defaultModel ?? t('st.models.noDefault')}</span>
-          )}
-          <span className="ml-auto"><SavedTick show={tick} /></span>
-        </div>
+        {/* The new-session default is stated once, in the bar above the tabs;
+            here it is the starred row with its Default badge. */}
         {items.length > 0 ? (
           <ListToolbar view={view} total={items.length} filters={filters}
+            actions={tick ? <SavedTick show /> : undefined}
             searchLabel={t('st.models.searchAria')} searchPlaceholder={t('st.models.searchWide')} />
         ) : null}
         {items.length > 0 && view.visible.length === 0 ? (
@@ -426,33 +414,28 @@ export function ModelCatalogCard() {
 }
 
 /**
- * Tab 3 opener (redesign §3.3): the GLOBAL default provider/model new
- * sessions start with. The provider is a plain select; the model is chosen
- * by starring a row on the Available models tab, so this card links there
- * instead of duplicating the picker. This is deliberately distinct from the
- * per-provider default edited inside each provider.
+ * Picker look for the per-job default rows below. The new-session default is
+ * not one of them: it is the bar above every Models & providers tab
+ * (`DefaultModelBar`), so it is stated in exactly one place.
  */
 const DEFAULT_PICKER =
   'flex h-8 w-full min-w-0 items-center justify-between gap-1.5 rounded-md bg-ink/[0.04] px-3 text-left text-[13px] text-ink outline-none transition-colors hover:bg-ink/[0.07] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:text-ink-faint';
 
 /**
- * Every "which model does X" choice in one place: new sessions, then the
- * background jobs that run on their own model (session titles). Each row
- * applies on pick. The new-session pick carries its connection along as the
- * default provider, the same rule the star in the model list follows.
+ * Every "which model does this job use" choice besides new sessions: titles,
+ * the fast model and subagents. Each row applies on pick.
  */
 export function GlobalDefaultsCard() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
-  const [busy, setBusy] = useState<'model' | 'title' | 'subagent' | 'fast' | null>(null);
+  const [busy, setBusy] = useState<'title' | 'subagent' | 'fast' | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [tick, ping] = useSavedTick();
 
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const modelsQuery = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
   const models = modelsQuery.data?.items ?? [];
-  const defaultModel = configQuery.data?.default_model ?? '';
   const titleModel = configQuery.data?.session_title?.model ?? '';
   const subagentModel = configQuery.data?.subagent?.defaultModel ?? '';
   const fastModel = configQuery.data?.fast_model ?? '';
@@ -475,21 +458,6 @@ export function GlobalDefaultsCard() {
     }
   };
 
-  const pickDefault = async (modelId: string) => {
-    const item = models.find((candidate) => candidate.id === modelId);
-    if (item === undefined) return;
-    setBusy('model');
-    setFeedback(null);
-    const selection = selectGlobalDefaultModel(client, queryClient, item);
-    try {
-      if (await selection.completed) ping();
-    } catch (error) {
-      if (selection.isCurrent()) setFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setBusy(null);
-    }
-  };
-
   const pickTitle = async (modelId: string) => {
     if (modelId === titleModel) return;
     setBusy('title');
@@ -507,25 +475,6 @@ export function GlobalDefaultsCard() {
   };
 
   const rows = [
-    {
-      id: 'new-session',
-      origin: { domain: 'default_model', keyPath: [] },
-      label: t('st.defaults.row.newSession'),
-      help: t('st.defaults.row.newSessionHelp'),
-      picker: (
-        <SearchableSelect
-          id="st-default-model"
-          value={defaultModel}
-          options={options}
-          onChange={(value) => void pickDefault(value)}
-          ariaLabel={t('st.defaults.row.newSession')}
-          searchPlaceholder={t('st.models.searchPlaceholder')}
-          emptyText={t('st.models.noDefault')}
-          disabled={busy !== null || models.length === 0}
-          buttonClassName={DEFAULT_PICKER}
-        />
-      ),
-    },
     {
       id: 'session-title',
       origin: { domain: 'session_title', keyPath: ['model'] },
@@ -596,7 +545,7 @@ export function GlobalDefaultsCard() {
     },
   ];
   const pickerId: Record<string, string> = {
-    'new-session': 'st-default-model', 'session-title': 'st-default-title-model',
+    'session-title': 'st-default-title-model',
     fast: 'st-default-fast-model', subagent: 'st-default-subagent-model',
   };
 
