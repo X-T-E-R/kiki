@@ -256,11 +256,13 @@ Set `agent_config.execution` at creation to select a harness independently of a 
 { "agent_config": { "execution": { "executor": "claude-acp" } } }
 ```
 
-The selection is `{ executor, profile?, profile_file?, overrides? }`. Choose either a registered `profile` name or a `profile_file` Markdown path; they are mutually exclusive, and the selected profile must use the same executor. Explicit files do not require `main: true` and are not registered or copied into a profile directory. Omit both fields for direct external execution. `overrides` accepts `model`, `thinking`, `permission_mode`, `kiki_context` and `allow_kiki_subagents`. With the same executor and profile name or file path, omitted overrides keep the session's saved overrides; `null` removes an override and restores the [lower-priority defaults](../configuration/config-files.md#external-harness-defaults), while `[]` and `false` explicitly disable their respective capabilities. Legacy top-level model/profile/thinking requests remain supported.
+The selection is `{ executor, profile?, profile_file?, overrides? }`. Choose either a registered `profile` name or a `profile_file` Markdown path; they are mutually exclusive, and the selected profile must use the same executor. Explicit files do not require `main: true` and are not registered or copied into a profile directory. Omit both fields for direct external execution. `overrides` accepts `model`, `thinking`, `permission_mode`, `kiki_context`, `allow_kiki_subagents`, `native_agent` and `inject_kiki_mcp`. With the same executor and profile name or file path, omitted overrides keep the session's saved overrides; `null` removes an override and restores the [lower-priority defaults](../configuration/config-files.md#external-harness-defaults), while `[]` and `false` explicitly disable their respective capabilities. For `native_agent`, `engine-default` keeps the vendor's default agent and does not send a custom selection. A newly chosen value must already be advertised. Missing discovery keeps an existing choice when the executor, that agent, and the descriptor revision still match; a discovery list that omits the value is rejected and the current binding stays. `inject_kiki_mcp: true` opens the bridge without granting tools the binding already denies; `false` closes it. Legacy top-level model/profile/thinking requests remain supported.
 
 Before choosing a file, `POST /api/agent-profiles/file-preview` accepts `{ path, cwd?, workspace_id? }` and returns `{ profile }` with the usual named-profile metadata, including its canonical `source_file` and executor. Supply at most one of `cwd` and `workspace_id`; a relative path requires one, while an absolute or `~/` path can be previewed without either. Paths are read on the connected server, not the client machine. Missing or invalid files return `40001` with path diagnostics, without changing a binding. The typed HTTP client exposes this as `klient.rest.agents.previewFile(body, options?)`. Use the returned `source_file` as `execution.profile_file` at session creation or with the next prompt.
 
 Session reads return the committed `agent_config.execution` binding as `{ version: 1, selection, effective, sources, generation }`. Sources are `session`, `profile`, `harness-settings` or `harness-default`; an absent effective model or effort means Kiki has not selected one, not that the harness has none. A reported vendor model is an observation, not a new override. Idle updates can also use `POST /api/sessions/{session_id}/profile` with `agent_config.execution`; while running, submit the selection with the next prompt instead.
+
+On an idle agent, `thinking: null` in `agent_config` clears only the session thinking override, so the lower-priority effort applies again: the profile, then the harness setting, then the engine default when Kiki has not pinned an effort. Leaving `model` out keeps the saved model. An empty thinking string is rejected; omitting `thinking` keeps the current effort. While the agent is running, that profile update is refused. A prompt can carry the same `thinking: null`; Kiki applies it when that prompt launches, and an omitted model stays in place.
 
 #### `POST /api/sessions/{session_id}:archive`
 
@@ -328,6 +330,18 @@ The transcript response's `agents` descriptors use camelCase: `{ agentId, type?,
 | `POST /api/sessions/{session_id}/prompts:steer` | Send selected queued prompts now |
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:abort` | Abort one queued, launching, running, or steered prompt |
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:steer` | Send one queued prompt now |
+| `GET /api/sessions/{session_id}/prompts/{prompt_id}?admission=durable` | Read a saved request, including its complete content, without restoring the agent |
+| `POST /api/sessions/{session_id}/prompts/{prompt_id}:resume?admission=durable` | Retry a held or failed saved request |
+
+A saved session opts in with `admission: "durable"` and a stable `prompt_id` of 1–256 characters. Saving while that session is still restoring is one use; the gate is the saved session, not an in-progress restore. Any other `admission` value is rejected before a body is stored. A session that does not exist, and a temporary session that is live but not yet saved, are rejected before storage and do not produce an acceptance receipt.
+
+The server then saves the complete request and uploaded attachments and returns `status: "queued", admission: "restoring"`. That pair means the message is persisted and waiting for recovery, not that the agent has accepted it. A successful HTTP envelope confirms only the save.
+
+Invalid request shapes, empty messages, missing targets and unavailable uploads fail before that receipt. Model, profile and execution checks run during recovery. Omitting `admission` keeps the synchronous launch or block response and does not write this durable copy. `?receipt=true` returns a compact receipt without echoing the full content.
+
+Read `GET /api/sessions/{session_id}/prompts?admission=durable` to receive `ingress` items. Follow `ingress_next_cursor` as `cursor` until absent, even if a page has no items for the selected agent. Pages scan at most 64 saved requests and return a text preview of at most 1024 characters with `admission_content_truncated: true`. A saved request with no text previews as `[Attachment]`. Use the point-read route for the original. Both reads leave cold agents unloaded. For a child agent, include the same `agent_id` in the submission body and every query or action.
+
+`admission: "admitted"` means the agent accepted the request; `status` reports its receipt state. `failed` includes `admission_error` and keeps the original content and attachments. Restarted or uncertain submissions become `held` until an explicit `:resume`; the server checks the original receipt before retrying, and a failed receipt lookup does not authorize another launch. Use `:abort` to cancel. `aborted: false` with admission `held` means cancellation still needs reconciliation; `cancelled` confirms it. To edit a saved request, cancel it and submit a new ID.
 
 To retry a submission whose response was lost, keep its optional `prompt_id` and complete request body unchanged. Matching retries return the original accepted receipt without resubmitting the prompt, including main-agent, attachment, and bundled-skill submissions. Changed input needs a new `prompt_id`; reusing an accepted ID for different input returns `40938`. If an older accepted request has no replayable receipt, inspect its queue or history rather than automatically sending it again.
 
@@ -433,7 +447,7 @@ Execution actions fail closed: without the `native_browser` experimental flag `:
 
 ### Browser setup presets
 
-Presets are `kimi-webbridge`, `independent-browser`, and `codex-browser`. `kimi-webbridge` and `independent-browser` manage local components, while `codex-browser` discovers active extension pipes as candidates (`candidates`, up to 20 entries) and pairs with a selected pipe rather than pretending to install the external app.
+Presets are `kimi-webbridge`, `independent-browser`, and `codex-browser`. `kimi-webbridge` and `independent-browser` manage local components, while `codex-browser` discovers active extension pipes as candidates (`candidates`, up to 20 entries) and pairs with a selected pipe rather than pretending to install the external app. `kimi-webbridge` connects and opens one fixed local bridge and does not take a candidate list. Codex pipes and independent-browser profiles are separate connection styles; they do not create extra Kimi WebBridge instances.
 
 | Method and path | Description |
 | --- | --- |
@@ -527,7 +541,7 @@ A session lease is a periodically renewed "online token" a client holds: `POST /
 | --- | --- |
 | `POST /api/leases` | Create or renew a lease (body carries an optional `lease_id`); returns `lease_id` and `expires_at` |
 
-The peer-thread endpoints support cross-session collaboration: a thread is addressed by the `{ host_id, workspace_id, session_id }` triple for another session on the same local host, whose completed turns you can read and to which you can deliver messages. The tool-side counterparts are `ThreadList` / `ThreadRead` / `ThreadSend` / `ThreadWait`; for the concepts, see [Agents and Sub-Agents](../customization/agents.md#peer-thread-communication).
+The peer-thread endpoints support cross-session collaboration: a thread is addressed by the `{ host_id, workspace_id, session_id }` triple for another session on the same local host, whose completed turns you can read and to which you can deliver messages. The tool-side counterparts are `ThreadList` / `ThreadRead` / `ThreadSend` / `ThreadWait`; for the concepts, see [Agents and Sub-Agents](../customization/agents-and-subagents.md#peer-thread-communication).
 
 | Method and path | Description |
 | --- | --- |

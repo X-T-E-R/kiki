@@ -23,7 +23,7 @@ Every override surface uses the same format — optional `files` (strict TOML fi
 
 Precedence from low to high follows the table order; a missing key inherits the lower value. The complete format, `${name}` variable substitution rules, and validation failures are documented in [`prompt`](../configuration/config-files.md#prompt).
 
-An existing agent keeps its bound prompt fields, custom variables and cognition text when it resumes, even if their source files have changed or been deleted. Edits apply to new bindings; choose [Rebuild context](./agents.md#rebuilding-a-session-context) to adopt them in an existing session. An explicit model change selects the target model's prompt inputs; `new_window` alone does not reload prompt sources. Current tool permissions and hard model constraints still apply.
+An existing agent keeps its bound prompt fields, custom variables and cognition text when it resumes, even if their source files have changed or been deleted. Edits apply to new bindings; choose [Rebuild context](./agents-and-subagents.md#rebuilding-a-session-context) to adopt them in an existing session. An explicit model change selects the target model's prompt inputs; `new_window` alone does not reload prompt sources. Current tool permissions and hard model constraints still apply.
 
 Older records reuse their saved system prompt and recover inline fields from the saved profile where possible. If a record never saved a required shared field, tool override, steering cue or anchor and its original inputs cannot be reconstructed, recovery names the missing inputs. Rebuild the context to use current sources rather than rolling back your installed prompts.
 
@@ -109,7 +109,7 @@ A package can declare one parent with `extends = { source = "https://example.com
 
 `prompts` is the common branch used by subagents. A `[prompts.main]` or `[prompts.independent]` table selects a whole position-specific branch; it does not implicitly fill missing slots from common. Set `main = "same"` or `independent = "same"` inside `[prompts]` to explicitly use common, or use `"off"` to disable the whole branch. Text slots accept `{ text = "..." }`, `{ file = "prompt.md" }`, or an array of those sources. An anchor uses `{ content = { text = "..." }, steps = 1, scope = "session" }`; `scope` also accepts `"turn"`.
 
-Steering cadence belongs to the selected branch; an omitted key retains the lower layer's value. The ordinary steering body and cadence apply to direct user input. With no declaration, `steering_on_turn` and `steering_on_input` default to `true`, while `steering_interval_steps` defaults to `0` (no periodic injection). A positive interval counts this agent's model steps driven by that source, not seconds or tool calls; off sources stay off after compaction too.
+Steering cadence belongs to the selected branch; an omitted key retains the lower layer's value. The ordinary steering body and cadence apply to direct user input and, by default, verified completed subagent-task receipts. Explicit `steering_sources.task.mode = "off"` disables that inheritance; ordinary process results, failed children and other non-user sources still require their own source setting. With no declaration, `steering_on_turn` and `steering_on_input` default to `true`, while `steering_interval_steps` defaults to `0` (no periodic injection). A positive interval counts this agent's model steps driven by that source, not seconds or tool calls; off sources stay off after compaction too.
 
 Use `steering_sources` in that same branch to enable another source: `mode = "inherit"` follows the final user body and cadence at binding, while `mode = "custom"` uses its own `custom` body and cadence. Sources and custom fields merge by declared leaf across parent, model and profile Recipe layers, then freeze with the binding; changing user settings does not rewrite existing sessions. Source keys and defaults are listed under [Model cognition](../configuration/config-files.md#model-cognition). For example:
 
@@ -130,10 +130,10 @@ To share a local customization, save any draft first, then call `global.recipes.
 
 ## Desktop settings entry point
 
-In the desktop app, **Settings → Agents → Prompt** edits this section — see [Settings pages](../guides/settings.md#agents). The card starts collapsed.
+In the desktop app, **Settings → Agents → Prompt fields** edits this section — see [Settings pages](../guides/settings.md#agents). The card starts collapsed.
 
 ## Next steps
 
 - [Configuration files: `prompt`](../configuration/config-files.md#prompt) — full field registry, override format, and validation rules
 - [`kiki` command reference](../reference/command.md) — command-line flags for the CLI entry
-- [Agents and subagents](../customization/agents.md) — agent files and `prompt_overrides` frontmatter
+- [Agents and subagents](../customization/agents-and-subagents.md) — agent files and `prompt_overrides` frontmatter

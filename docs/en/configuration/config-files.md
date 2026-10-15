@@ -125,6 +125,12 @@ allow_kiki_subagents = false
 
 Omit model, effort and permission fields to let the harness choose them. `kiki_context` accepts `memory`, `board`, `cron`, `threads`, `history` and `hooks`; `[]` explicitly disables all groups, and `allow_kiki_subagents = false` explicitly disables delegation. An omitted profile field inherits the harness settings in this execution path. Changing settings does not rewrite an existing binding: select the execution again or explicitly rebuild its context to adopt them.
 
+`native_agent` selects the vendor's own agent. It is a session override or a value in these defaults, not a profile field. JSON `null` on the session override clears that choice and inherits the defaults value. Omit it, or set `engine-default`, to keep the vendor's default agent; Kiki then does not send a custom agent selection. A newly chosen value must be one the executor has already advertised. Missing discovery keeps an existing choice when the executor, that agent, and the descriptor revision still match; a discovery list that omits the value is rejected and the current binding stays.
+
+Kiki's own executor accepts only omission or `engine-default`. AGY CLI's menu currently offers only `engine-default`, so its default main agent stays AGY's own and is not passed as a custom `--agent`.
+
+`inject_kiki_mcp` opens or closes the Kiki tool bridge. `true` opens the bridge and does not grant a tool the binding already denies. `false` closes the bridge, including credentials already issued. JSON `null` on the session override inherits the profile value or these defaults. The bridge rules are in [Kiki tools in an external harness](../server/acp.md#kiki-tools-in-an-external-harness).
+
 `defaults.executor_prompt` accepts `delivery` (`append`, `replace` or `preamble`), `body`, `append`, `include`, and `per_engine.<id>` overrides. These fields merge individually with the selected profile, so setting only `delivery` does not erase the default body. Omitted `include` inherits; `include = []` turns off the additional sections. A profile body is used when no effective `executor_prompt.body` is set. External execution does not automatically add Kiki cognition or shared prompt fields; request the desired fields explicitly in `include`.
 
 Through [the REST API](../server/rest-api.md#sessions), update these settings with `POST /api/config` and an `agent_executor_overrides` object. A defaults field set to JSON `null` removes that saved setting; `defaults: null` removes the whole defaults block. TOML has no `null`, so remove the corresponding key when editing the file. Launch settings such as `bin_path`, `home_dir`, `env` and `args` remain separate from defaults.
@@ -366,7 +372,7 @@ You can also switch models temporarily without touching the config file — by s
 | `steering_on_turn` | `boolean` | `true` | Inject on a new user-source turn and after compaction re-arms its context |
 | `steering_on_input` | `boolean` | `true` | Inject after newly accepted human input, including in-turn Send now corrections |
 | `steering_interval_steps` | `integer` | `0` | Repeat every N model steps driven by user input; nonnegative, with `0` disabling periodic steering |
-| `steering_sources` | `table` | other sources off | Per-source `mode`: `off`, `inherit` (use user settings), or `custom` (separate body and cadence) |
+| `steering_sources` | `table` | verified child completions inherit; other sources off | Per-source `mode`: `off`, `inherit` (use user settings), or `custom` (separate body and cadence) |
 | `anchor` | `{text: string}`, `string` or `array<string>` | — | Body used as the complete system prompt for the opening steps of a turn, replacing the profile prompt and any `overlay` |
 | `anchor_steps` | `integer` | `1` | How many model requests at the start of an anchored turn use the `anchor` text; must be at least 1 |
 | `anchor_scope` | `string` | `session` | `session` anchors only the session's first turn; `turn` anchors the opening steps of every turn |
@@ -396,7 +402,7 @@ Usage differences on `main` and `independent` are not that copy. `thinking_effor
 
 Paths are relative to the [data root directory](./data-locations.md#data-root-directory) (`~/.kiki` by default). Absolute paths, paths that resolve outside the data root (including through a symlink), and missing files are rejected when the profile binds, with an error naming the field and the path. A declared file that exists but is empty is skipped; when every file declared for one field is empty, that field behaves as unset. Reading the model does not alter these files. Explicitly saving an edited file-backed slot as `{text}` stores a body in the model instead, leaving the original files unchanged; restore their original path references to use them again. Existing sessions keep their frozen text until an explicit context rebuild or model change.
 
-The three text slots differ in how far they sit from the model's next token. `overlay` and `anchor` rewrite the system prompt, which the model reads before your request. `steering` follows your input as an ordinary user message — not a `<system-reminder>`. Its body and cadence apply to direct user messages, including queued input, **Send now**, user-slash skills and plugin commands. Other sources are off unless enabled in `steering_sources`; a retry keeps the original input's source.
+The three text slots differ in how far they sit from the model's next token. `overlay` and `anchor` rewrite the system prompt, which the model reads before your request. `steering` follows your input as an ordinary user message — not a `<system-reminder>`. Its body and cadence apply to direct user messages, including queued input, **Send now**, user-slash skills and plugin commands. Verified completed subagent-task receipts inherit that steering by default; an explicit `steering_sources.task.mode = "off"` still wins. Ordinary process results, failed child tasks and other non-user sources remain off unless enabled in `steering_sources`. A retry keeps the original input's source.
 
 Choose `mode = "inherit"` to use the steering body and timing already in effect for user messages on the selected identity, or `mode = "custom"` to use `custom.steering`, `custom.steering_on_turn`, `custom.steering_on_input` and `custom.steering_interval_steps`. Custom bodies accept the same inline, path and path-array forms; a missing custom body does not inherit user text. `off` and `inherit` retain a saved custom draft. Source keys are `thread` (peer messages and model-created threads), `room`, `agent` (child messages and parent notifications), `task`, `cron`, `hook`, `automation` (automatic goal continuation), `skill` (model-tool activation) and `external` (external-client thread input). Unknown sources remain off; delivery through Send now does not turn another source into user input.
 
@@ -658,7 +664,7 @@ In print mode (`kiki -p "<prompt>"`), Kiki stays alive after the main agent's tu
 
 ## `subagent`
 
-`subagent` controls how spawned subagents (`AgentRun`) run. Role selection uses the profile's [`can_spawn_subagents`, `allowed_subagents`, `preferred_subagents`, and `deny_subagents`](../customization/agents.md#agent-file-format); the former host dispatch-policy settings are removed.
+`subagent` controls how spawned subagents (`AgentRun`) run. Role selection uses the profile's [`can_spawn_subagents`, `allowed_subagents`, `preferred_subagents`, and `deny_subagents`](../customization/agents-and-subagents.md#agent-file-format); the former host dispatch-policy settings are removed.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -670,7 +676,7 @@ In print mode (`kiki -p "<prompt>"`), Kiki stays alive after the main agent's tu
 | `max_total_subagents` | `integer` | `0` | Maximum simultaneous dispatched subagent runs throughout one session tree, including grandchildren and deeper descendants but not main; `0` disables this limit |
 | `timeout_ms` | `integer` | `7200000` (2 hours) | Maximum wall-clock time (milliseconds) a single subagent (`AgentRun`) is allowed to run before it is settled as `timed_out`. `0` means no timeout — the subagent runs until it finishes or the model stops it. This is the background-task manager's per-task timeout for each subagent task, so it applies to both foreground and background subagents. In print mode (`kiki -p`) the default is `0` unless explicitly set. Note: any value above `2147483647` (about 24.8 days) is clamped to roughly 24.8 days by the runtime |
 
-Native subagents get the ordinary tools, including read-only `MemorySearch` and `MemoryRead`. A few built-in tools are off until something opts in: `AskUserQuestion`, `Cron`, `EnterPlanMode` and `ExitPlanMode`, and `ThreadCreate`, `ThreadList`, `ThreadRead`, and `ThreadWait`. Opt in per profile by naming the tool in the subagent profile's [`tools`](../customization/agents.md#agent-file-format) list, or set a server-wide default in `config.toml`:
+Native subagents get the ordinary tools, including read-only `MemorySearch` and `MemoryRead`. A few built-in tools are off until something opts in: `AskUserQuestion`, `Cron`, `EnterPlanMode` and `ExitPlanMode`, and `ThreadCreate`, `ThreadList`, `ThreadRead`, and `ThreadWait`. Opt in per profile by naming the tool in the subagent profile's [`tools`](../customization/agents-and-subagents.md#agent-file-format) list, or set a server-wide default in `config.toml`:
 
 ```toml
 [subagent]
@@ -689,7 +695,7 @@ The limits are global configuration defaults, but counts are isolated to each se
 
 ## `agents`
 
-This strict section controls the boolean gates for [delegation notices](../customization/agents.md). Unknown keys are configuration errors.
+This strict section controls the boolean gates for [delegation notices](../customization/agents-and-subagents.md). Unknown keys are configuration errors.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -707,7 +713,7 @@ To replace notice text, override `delegation.sub.notice` or `delegation.independ
 
 ## `thread_communication`
 
-This strict section controls [local peer-thread communication](../customization/agents.md#peer-thread-communication). It is disabled by default and has no environment-variable override.
+This strict section controls [local peer-thread communication](../customization/agents-and-subagents.md#peer-thread-communication). It is disabled by default and has no environment-variable override.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -850,7 +856,7 @@ The default `WebSearch` lane is `duckduckgo.search`, which searches the general 
 | `defaults.fetch_chain` | `array<table>` | No | URL default tries `direct.fetch` first and keyless `jina.reader` on failure; a successful but unusable direct response needs explicit `execution.fetch.quality` rules to trigger fallback |
 | `execution` | `table` | No | Provider-call, concurrency, retry, timeout, inline-output, response-size, redirect, content-size, and quality budgets |
 
-Credential values are never stored in `config.toml`; each canonical credential slot still contains only `provider_id` and the environment-variable name `env`. The server process environment takes precedence, including an explicitly empty value. When local reuse is enabled, Kiki fills missing variables from the local nb-search `secrets.json` under the server's `NB_SEARCH_HOME` (default: `~/.nb-search`). It imports matching slots only, validates imported bindings, and rejects redirects. If neither source supplies a value, an optional **Kiki-managed** value for that slot is used. Save, explicitly reveal, edit, overwrite, or clear it in **Settings → Search & retrieval → Providers**. This value is stored in this server's protected `secrets/nb-search/gui-credentials.json` under the Kiki home, not in `config.toml`, the nb-search CLI file, or browser storage. Changing a slot's provider, variable name, consumer, or endpoint invalidates the stored binding rather than silently rebinding it; overwrite explicitly after checking the new binding or clear the obsolete value. Only Kiki-managed values can be revealed; server environment and CLI `secrets.json` values show their source only and are never sent to the GUI. Referenced slots must use distinct environment-variable names to prevent a managed value from crossing provider boundaries. If another editor changes a slot's variable, provider, consumers, or endpoint while the credential editor is open, saving the older draft returns a conflict: reload, check the destination, then save again. The read/write REST endpoints use the existing Kiki bearer token; anyone holding it can reveal Kiki-managed values. On a remote connection the credential file is on that server, and switching connections does not transfer the editor's value. The module does not read another terminal's variables or automatically load `.env` files.
+Credential values are never stored in `config.toml`; each canonical credential slot still contains only `provider_id` and the environment-variable name `env`. The server process environment takes precedence, including an explicitly empty value. When local reuse is enabled, Kiki fills missing variables from the local nb-search `secrets.json` under the server's `NB_SEARCH_HOME` (default: `~/.nb-search`). It imports matching slots only, validates imported bindings, and rejects redirects. If neither source supplies a value, an optional **Kiki-managed** value for that slot is used. Save, explicitly reveal, edit, overwrite, or clear it in **Settings → Search & retrieval → Services & credentials**. This value is stored in this server's protected `secrets/nb-search/gui-credentials.json` under the Kiki home, not in `config.toml`, the nb-search CLI file, or browser storage. Changing a slot's provider, variable name, consumer, or endpoint invalidates the stored binding rather than silently rebinding it; overwrite explicitly after checking the new binding or clear the obsolete value. Only Kiki-managed values can be revealed; server environment and CLI `secrets.json` values show their source only and are never sent to the GUI. Referenced slots must use distinct environment-variable names to prevent a managed value from crossing provider boundaries. If another editor changes a slot's variable, provider, consumers, or endpoint while the credential editor is open, saving the older draft returns a conflict: reload, check the destination, then save again. The read/write REST endpoints use the existing Kiki bearer token; anyone holding it can reveal Kiki-managed values. On a remote connection the credential file is on that server, and switching connections does not transfer the editor's value. The module does not read another terminal's variables or automatically load `.env` files.
 
 An existing single Tavily key in `~/.nb-search/secrets.json` under `values.NB_SEARCH_TAVILY_API_KEY` keeps working without migration when local reuse is enabled. For multiple keys, set that same value or the Kiki server's `NB_SEARCH_TAVILY_API_KEY` environment variable to an ordered, comma-separated list of 1–32 distinct nonempty keys, such as `YOUR_FIRST_API_KEY,YOUR_SECOND_API_KEY`. Do not put the keys in `config.toml`; the server environment takes precedence over the local file. The same format works for other configured credential slots.
 
@@ -1099,7 +1105,7 @@ A whole-body `SYSTEM.md` or agent replacement, or a model cognition `replace`, s
 The old `[prompt] shared` and `[prompt.tools]` keys have been removed and now fail strict configuration parsing. Move `shared` to the `"system.shared"` key under `[prompt.overrides.fields]`; move each tool entry to `tool.<kebab-case-name>.guidance` (for example, `WebSearch` becomes `tool.web-search.guidance`).
 :::
 
-In the desktop GUI, open **Settings → Agents → Prompt** to edit this section. The card is collapsed by default — expand it before editing.
+In the desktop GUI, open **Settings → Agents → Prompt fields** to edit this section. The card is collapsed by default — expand it before editing.
 
 ## `[request_governance]`
 

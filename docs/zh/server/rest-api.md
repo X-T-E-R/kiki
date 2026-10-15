@@ -256,11 +256,13 @@ Agent 的持久元数据若未保存创建时间，就省略 `created_at`；客�
 { "agent_config": { "execution": { "executor": "claude-acp" } } }
 ```
 
-选择对象为 `{ executor, profile?, profile_file?, overrides? }`。可选择已注册的 `profile` 名称，或 `profile_file` Markdown 路径；两者互斥，所选 profile 必须使用同一执行器。显式文件不要求 `main: true`，不会被注册或复制进 profile 目录。同时省略这两个字段表示外部直连。`overrides` 接受 `model`、`thinking`、`permission_mode`、`kiki_context`、`allow_kiki_subagents`。执行器和 profile 名称或文件路径相同时，省略覆盖字段保留该会话已有覆盖；`null` 删除覆盖并恢复 [下层默认值](../configuration/config-files.md#外部-harness-默认设置)，`[]` 与 `false` 则明确关闭对应能力。旧的顶层 model/profile/thinking 请求仍可使用。
+选择对象为 `{ executor, profile?, profile_file?, overrides? }`。可选择已注册的 `profile` 名称，或 `profile_file` Markdown 路径；两者互斥，所选 profile 必须使用同一执行器。显式文件不要求 `main: true`，不会被注册或复制进 profile 目录。同时省略这两个字段表示外部直连。`overrides` 接受 `model`、`thinking`、`permission_mode`、`kiki_context`、`allow_kiki_subagents`、`native_agent` 和 `inject_kiki_mcp`。执行器和 profile 名称或文件路径相同时，省略覆盖字段保留该会话已有覆盖；`null` 删除覆盖并恢复 [下层默认值](../configuration/config-files.md#外部-harness-默认设置)，`[]` 与 `false` 则明确关闭对应能力。`native_agent` 取 `engine-default` 时保留厂商默认 Agent，且不发送自定义选择。新值必须已被宣告。尚未发现时，只有执行器、该 Agent 和描述符版本仍与当前绑定一致，已有选择才会保留；发现结果不含该值时拒绝，当前绑定保持不变。`inject_kiki_mcp: true` 打开工具桥，但不会授予绑定已经拒绝的工具；`false` 关闭工具桥。旧的顶层 model/profile/thinking 请求仍可使用。
 
 选文件前可用 `POST /api/agent-profiles/file-preview`，请求为 `{ path, cwd?, workspace_id? }`，响应为 `{ profile }`，包含普通 profile 元数据、规范绝对路径 `source_file` 和执行器。`cwd` 与 `workspace_id` 最多传一个；相对路径必须指定其中一个，绝对路径或 `~/` 路径则无需指定。路径由当前连接的服务端读取，不是客户端本机路径。缺失或非法文件返回 `40001` 和带路径的诊断，不改变绑定。typed HTTP 客户端对应 `klient.rest.agents.previewFile(body, options?)`。创建会话或发送下一条消息时，把返回的 `source_file` 作为 `execution.profile_file`。
 
 读取会话时，已提交的 `agent_config.execution` 绑定为 `{ version: 1, selection, effective, sources, generation }`。来源取 `session`、`profile`、`harness-settings`、`harness-default`；有效模型或档位未设置表示 Kiki 没有指定，而不是 harness 没有使用模型。厂商报告的模型是观测值，不会变成新的覆盖。空闲时也可通过 `POST /api/sessions/{session_id}/profile` 的 `agent_config.execution` 修改；运行中请随下一条提示词提交选择。
+
+Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的思考强度覆盖，更低优先级的强度因此重新生效：先是 profile，然后是 harness 设置；Kiki 没有钉住强度时，才回到引擎默认。不带 `model` 会保留已保存的模型。空的思考强度字符串会被拒绝；省略 `thinking` 则保持当前强度。Agent 仍在运行时，这次 profile 更新会被拒绝。提示词可以携带同样的 `thinking: null`，Kiki 在该提示词启动时应用它，省略的 `model` 仍保留。
 
 #### `POST /api/sessions/{session_id}:archive`
 
@@ -328,6 +330,18 @@ Agent 的持久元数据若未保存创建时间，就省略 `created_at`；客�
 | `POST /api/sessions/{session_id}/prompts:steer` | 立即发送选中的排队提示词 |
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:abort` | 中止指定的排队中、启动中、运行中或已追加的提示词 |
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:steer` | 立即发送单个排队提示词 |
+| `GET /api/sessions/{session_id}/prompts/{prompt_id}?admission=durable` | 读取已保存请求的完整内容，不恢复 Agent |
+| `POST /api/sessions/{session_id}/prompts/{prompt_id}:resume?admission=durable` | 重试等待确认或失败的已保存请求 |
+
+已保存的会话通过 `admission: "durable"` 和长度为 1–256 字符的稳定 `prompt_id` 显式选择保存。会话仍在恢复时保存是其中一种用途；门槛是会话已经保存，而不是恢复正在进行。其他 `admission` 值会在正文落盘前被拒绝。不存在的会话，以及仍在运行但尚未保存的临时会话，也会在落盘前被拒绝，并且不会产生受理回执。
+
+服务端随后保存完整请求和上传附件，并返回 `status: "queued", admission: "restoring"`。这一对值表示消息已持久化、等待恢复，不是 Agent 已经受理。成功的 HTTP 信封只确认这次保存。
+
+请求格式错误、空消息、目标不存在或上传附件不可用会在回执前报错；模型、profile 和执行校验在恢复阶段进行。省略 `admission` 保持原同步启动或阻止响应，也不会写入这份持久副本。`?receipt=true` 返回不回显完整内容的精简回执。
+
+通过 `GET /api/sessions/{session_id}/prompts?admission=durable` 读取 `ingress`。将 `ingress_next_cursor` 作为下一页的 `cursor`，直到不再返回游标；即使某一页没有所选 Agent 的条目，也应继续翻页。每页最多扫描 64 个已保存请求，文本预览最长 1024 个字符，并带 `admission_content_truncated: true`。没有文本的已保存请求预览为 `[Attachment]`。原文使用单项读取接口。这两种读取都不加载冷 Agent。目标为子 Agent 时，提交正文及每次查询、操作都须带同一 `agent_id`。
+
+`admission: "admitted"` 表示 Agent 已受理请求，`status` 是其回执状态。`failed` 带有 `admission_error`，原文与附件仍保留。重启后或投递结果不确定的请求转为 `held`，等待显式 `:resume`；服务端会先核对原回执，回执查询失败不会触发再次启动。使用 `:abort` 取消；`aborted: false` 且 admission 为 `held` 表示取消仍待核对，`cancelled` 才确认取消。要修改已保存请求，应先取消，再使用新 ID 提交。
 
 提交提示词后若响应丢失，重试时保持可选的 `prompt_id` 和完整请求体不变。匹配的重试返回原受理回执，不会重复提交，main agent、附件和内嵌 Skill 提交也遵循此规则。输入改变时须使用新 `prompt_id`；复用已受理 ID 携带不同输入会返回 `40938`。较早的受理请求若没有可重放回执，应检查队列或历史，不要自动再次发送。
 
@@ -433,7 +447,7 @@ Kiki 根据 OpenSSH 配置和路径展开结果确定 `UserKnownHostsFile` 的�
 
 ### 浏览器引导预设
 
-预设为 `kimi-webbridge`、`independent-browser` 和 `codex-browser`。`kimi-webbridge` 与 `independent-browser` 管理本地组件，而 `codex-browser` 发现正在运行的扩展管道候选列表（`candidates`，最多 20 项）并配合所选管道进行连接保存，不会声称由 Kiki 安装或控制外部应用。
+预设为 `kimi-webbridge`、`independent-browser` 和 `codex-browser`。`kimi-webbridge` 与 `independent-browser` 管理本地组件，而 `codex-browser` 发现正在运行的扩展管道候选列表（`candidates`，最多 20 项）并配合所选管道进行连接保存，不会声称由 Kiki 安装或控制外部应用。`kimi-webbridge` 的连接与打开都指向一条固定的本地桥，不接受候选列表。Codex 管道和独立浏览器 profile 是另外的接法，不会因此多出 Kimi WebBridge 实例。
 
 | 方法与路径 | 说明 |
 | --- | --- |
@@ -527,7 +541,7 @@ PTY 终端接口，仅 loopback 绑定时挂载。
 | --- | --- |
 | `POST /api/leases` | 创建或续期租约（body 为可选的 `lease_id`），返回 `lease_id` 与 `expires_at` |
 
-peer thread 接口用于跨会话协作：以 `{ host_id, workspace_id, session_id }` 三元组定位同一台本地主机上的其他会话，读取其已完成轮次或投递消息。工具侧对应 `ThreadList` / `ThreadRead` / `ThreadSend` / `ThreadWait`，概念介绍见 [Agent 与子 Agent](../customization/agents.md#peer-thread-通信)。
+peer thread 接口用于跨会话协作：以 `{ host_id, workspace_id, session_id }` 三元组定位同一台本地主机上的其他会话，读取其已完成轮次或投递消息。工具侧对应 `ThreadList` / `ThreadRead` / `ThreadSend` / `ThreadWait`，概念介绍见 [Agent 与子 Agent](../customization/agents-and-subagents.md#peer-thread-通信)。
 
 | 方法与路径 | 说明 |
 | --- | --- |

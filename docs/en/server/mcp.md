@@ -8,7 +8,7 @@ MCP tool results can carry embedded media. When the current model cannot take an
 
 Kiki can also serve its native tools to an explicitly authorized MCP client. The feature is available by default; it does not start a listener or authorize a client until you configure access.
 
-1. In Settings → model providers → connection services, add an external client and choose its shared tools and permission ceiling. These are access settings, not a workspace or conversation.
+1. In Settings → Connection & remote → Connection services, add an external client and choose its shared tools and permission ceiling. These are access settings, not a workspace or conversation.
 2. Create a conversation in Kiki, choose that external client, and select the workspace, worktree, Profile, and permission mode there. Kiki binds the resolved workspace to the conversation; the client cannot supply an arbitrary working directory.
 3. Configure the other application's MCP entry with the local command below, replacing `CONNECTION_ID` with the connection's ID. For remote access, enable the MCP listener in connection services and use its displayed HTTPS URL; approve the client's authorization request in Kiki.
 
@@ -127,16 +127,16 @@ In YOLO mode, MCP tool calls are automatically approved. Only use this mode when
 
 External clients reverse the direction described above: an MCP-capable model calls Kiki's native file, media, agent, task, History and authorized Memory tools. Kiki keeps the tool activity in a normal session without binding a local model to its main agent. This does not automatically import the external chat, its thinking, or its usage.
 
-Open **Settings → Connection services** to create a named connection, select the shared workspace and tools, and choose a permission mode. The capability is available by default; setting `external_clients = false` under `[experimental]`, or `KIKI_EXPERIMENTAL_EXTERNAL_CLIENTS=0`, keeps it off, and changing that override requires a host restart. Leave local commands off unless the client needs them. A connection is a permission grant, not a chat: initialization and tool discovery do not create business sessions.
+Open **Settings → Connection & remote → Connection services** to create a named connection, select the shared workspace and tools, and choose a permission mode. The capability is available by default; setting `external_clients = false` under `[experimental]`, or `KIKI_EXPERIMENTAL_EXTERNAL_CLIENTS=0`, keeps it off, and changing that override requires a host restart. Leave local commands off unless the client needs them. A connection is a permission grant, not a chat: initialization and tool discovery do not create business sessions.
 
 ### Connect a local client
 
-Copy the connection's stdio configuration into your MCP client. Its shape is:
+Copy the connection's stdio configuration into your MCP client, keeping its generated `--home` path so it reaches the same Kiki instance. A command written by hand must include that same `--home`. Leaving it out, or pointing it at another directory, reaches a different Kiki home, not this connection. Its shape is:
 
 ```json
 {
   "command": "kiki",
-  "args": ["mcp", "--client", "client_YOUR_CONNECTION_ID", "--tools"]
+  "args": ["mcp", "--client", "client_YOUR_CONNECTION_ID", "--tools", "--home", "C:/Users/Example/.kiki"]
 }
 ```
 

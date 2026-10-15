@@ -125,6 +125,12 @@ allow_kiki_subagents = false
 
 省略模型、思考强度与权限字段，就交给 harness 自己选择。`kiki_context` 接受 `memory`、`board`、`cron`、`threads`、`history`、`hooks`；`[]` 明确关闭全部组，`allow_kiki_subagents = false` 明确关闭委派。在这条 execution 路径中，profile 未声明的字段继承 harness 设置。修改设置不会改写已有绑定；重新选择 execution 或显式重建上下文才会采用新值。
 
+`native_agent` 选择厂商自己的 Agent。它是会话覆盖，或这里 defaults 中的一项，不是 profile 字段。会话覆盖上的 JSON `null` 清除这项选择，并继承 defaults。省略它，或写成 `engine-default`，就保留厂商默认 Agent；Kiki 此时不发送自定义 Agent 选择。新选择的值必须是该执行器已经宣告的 Agent。尚未发现时，只有执行器、该 Agent 和描述符版本仍与当前绑定一致，已有选择才会保留；发现结果不含该值时拒绝，当前绑定保持不变。
+
+Kiki 自己的执行器只接受省略或 `engine-default`。AGY CLI 的菜单目前只提供 `engine-default`，因此默认 main agent 仍是 AGY 自己的，不会作为自定义 `--agent` 传出。
+
+`inject_kiki_mcp` 打开或关闭 Kiki 工具桥。`true` 打开工具桥，且不会授予绑定已经拒绝的工具。`false` 关闭工具桥，已经发出的凭证也包括在内。会话覆盖上的 JSON `null` 继承 profile 值或这些 defaults。工具桥规则见 [外部 harness 中的 Kiki 工具](../server/acp.md#外部-harness-中的-kiki-工具)。
+
 `defaults.executor_prompt` 接受 `delivery`（`append`、`replace`、`preamble`）、`body`、`append`、`include` 和 `per_engine.<id>` 覆盖。这些字段与所选 profile 逐项合并，因此只设置 `delivery` 不会抹掉默认正文。省略 `include` 会继承，`include = []` 关闭附加段落。没有有效的 `executor_prompt.body` 时才使用 profile 正文。外部 execution 不会自动添加 Kiki cognition 或共享提示字段；需要哪些字段，在 `include` 中显式选择。
 
 通过 [REST API](../server/rest-api.md#会话) 修改时，向 `POST /api/config` 发送 `agent_executor_overrides` 对象。defaults 字段的 JSON `null` 删除该项保存值，`defaults: null` 删除整个默认设置块。TOML 不支持 `null`，直接编辑文件时删除对应键即可。`bin_path`、`home_dir`、`env`、`args` 等启动设置与 defaults 分开保存。
@@ -364,7 +370,7 @@ display_name = "Kimi for Coding (custom)"
 | `steering_on_turn` | `boolean` | `true` | 在用户来源的新轮次及其压缩后重新装填上下文时注入 |
 | `steering_on_input` | `boolean` | `true` | 在新接纳的人类输入后注入，包括轮内「立即发送」的纠偏 |
 | `steering_interval_steps` | `integer` | `0` | 每隔用户输入驱动的 N 个模型步骤重复注入；必须非负，`0` 关闭定期 steering |
-| `steering_sources` | `table` | 其他来源关闭 | 按来源选择 `mode`：`off`、`inherit`（沿用用户设置）或 `custom`（单独正文与节奏） |
+| `steering_sources` | `table` | 已核验的子任务完成回执继承，其它来源关闭 | 按来源选择 `mode`：`off`、`inherit`（沿用用户设置）或 `custom`（单独正文与节奏） |
 | `anchor` | `{text: string}`、`string` 或 `array<string>` | — | 用作一轮开头若干步的完整系统提示词的正文，会替换 profile 提示词以及任何 `overlay` |
 | `anchor_steps` | `integer` | `1` | 被锚定的一轮开头有多少次模型请求使用 `anchor` 正文；必须至少为 1 |
 | `anchor_scope` | `string` | `session` | `session` 只锚定会话的第一轮；`turn` 锚定每一轮的开头若干步 |
@@ -394,7 +400,7 @@ await klient.global.kosong.updateModel(baseline.id, {
 
 路径相对于 [数据根目录](./data-locations.md#数据根目录)（默认为 `~/.kiki`）。绝对路径、解析后落到数据根之外的路径（包括经由符号链接）以及缺失的文件，会在 profile 绑定时被拒绝，错误信息会标出字段和路径。已声明且存在但内容为空的文件会被跳过；某个字段声明的文件全部为空时，该字段视为未设置。读取模型不改变这些文件。明确把编辑后的文件槽保存为 `{text}` 时，正文改存到模型中，原文件保持不变；要再次使用原文件，恢复原路径引用即可。已有会话保留冻结正文，直到显式重建上下文或换模。
 
-三个正文槽离模型下一个 token 的远近不同。`overlay` 和 `anchor` 改写系统提示词，模型在你的请求之前读取。`steering` 作为普通 User 消息跟在输入之后注入，不包装成 `<system-reminder>`。它的正文与节奏适用于直接用户消息，包括排队输入、「立即发送」、用户斜杠激活的 Skill 和插件命令。其他来源默认关闭，需在 `steering_sources` 中启用；重试沿用原输入来源。
+三个正文槽离模型下一个 token 的远近不同。`overlay` 和 `anchor` 改写系统提示词，模型在你的请求之前读取。`steering` 作为普通 User 消息跟在输入之后注入，不包装成 `<system-reminder>`。它的正文与节奏适用于直接用户消息，包括排队输入、「立即发送」、用户斜杠激活的 Skill 和插件命令。已核验且完成的 subagent 任务回执默认继承该 steering；明确设置 `steering_sources.task.mode = "off"` 仍优先关闭。普通进程结果、失败子任务及其它非用户来源保持关闭，需在 `steering_sources` 中启用。重试沿用原输入来源。
 
 选 `mode = "inherit"` 沿用当前选中身份上、用户消息已经在用的 steering 正文和节奏，选 `mode = "custom"` 则使用 `custom.steering`、`custom.steering_on_turn`、`custom.steering_on_input` 和 `custom.steering_interval_steps`。单独正文接受相同的内联、路径及路径数组形式；缺正文时不会继承用户文本。`off` 和 `inherit` 都保留已保存的 custom 草稿。来源键包括 `thread`（peer 消息和模型创建的 thread）、`room`、`agent`（子 Agent 消息与父级通知）、`task`、`cron`、`hook`、`automation`（goal 自动继续）、`skill`（模型工具激活）及 `external`（外部客户端 thread 输入）。未知来源保持关闭；通过「立即发送」投递不会把其他来源变成用户输入。
 
@@ -644,7 +650,7 @@ retry = false
 
 ## `subagent`
 
-`subagent` 控制派生 subagent（`AgentRun`）的运行方式。角色选择使用 profile 的 [`can_spawn_subagents`、`allowed_subagents`、`preferred_subagents` 和 `deny_subagents`](../customization/agents.md#agent-文件格式)；原宿主派发策略设置已移除。
+`subagent` 控制派生 subagent（`AgentRun`）的运行方式。角色选择使用 profile 的 [`can_spawn_subagents`、`allowed_subagents`、`preferred_subagents` 和 `deny_subagents`](../customization/agents-and-subagents.md#agent-文件格式)；原宿主派发策略设置已移除。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
@@ -656,7 +662,7 @@ retry = false
 | `max_total_subagents` | `integer` | `0` | 单棵会话树同时在途的子 Agent 执行总数上限，包括孙代及更深后代，不含 main；`0` 表示不限 |
 | `timeout_ms` | `integer` | `7200000`（2 小时） | 单个 subagent（`AgentRun`）允许运行的最长时间（毫秒）。超时后 subagent 以 `timed_out` 收尾。`0` 表示无超时——subagent 一直运行到自行结束或被模型手动停止。该值是后台任务管理器对每个 subagent 任务的 per-task timeout，因此对前台与后台 subagent 同时生效。在 print 模式（`kiki -p`）下未显式设置时默认为 `0`。注意：超过 `2147483647`（约 24.8 天）的值会被运行时钳到约 24.8 天 |
 
-原生 subagent 默认可以使用普通工具，包括只读的 `MemorySearch` 和 `MemoryRead`。有一批内置工具默认关闭，需要显式开放：`AskUserQuestion`、`Cron`、`EnterPlanMode` 与 `ExitPlanMode`，以及 `ThreadCreate`、`ThreadList`、`ThreadRead` 和 `ThreadWait`。可以按档案在 subagent profile 的 [`tools`](../customization/agents.md#agent-文件格式) 列表中点名，也可以设置服务端默认值：
+原生 subagent 默认可以使用普通工具，包括只读的 `MemorySearch` 和 `MemoryRead`。有一批内置工具默认关闭，需要显式开放：`AskUserQuestion`、`Cron`、`EnterPlanMode` 与 `ExitPlanMode`，以及 `ThreadCreate`、`ThreadList`、`ThreadRead` 和 `ThreadWait`。可以按档案在 subagent profile 的 [`tools`](../customization/agents-and-subagents.md#agent-文件格式) 列表中点名，也可以设置服务端默认值：
 
 ```toml
 [subagent]
@@ -675,7 +681,7 @@ profile 描述和设置页中的工具列表是配置预览，不保证运行时
 
 ## `agents`
 
-这个严格配置节控制[委派说明](../customization/agents.md)的布尔 gate。未知字段会被报告为配置错误。
+这个严格配置节控制[委派说明](../customization/agents-and-subagents.md)的布尔 gate。未知字段会被报告为配置错误。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
@@ -693,7 +699,7 @@ profile 描述和设置页中的工具列表是配置预览，不保证运行时
 
 ## `thread_communication`
 
-这个严格配置节控制[本地 peer thread 通信](../customization/agents.md#peer-thread-通信)。功能默认关闭，没有对应的环境变量覆盖。
+这个严格配置节控制[本地 peer thread 通信](../customization/agents-and-subagents.md#peer-thread-通信)。功能默认关闭，没有对应的环境变量覆盖。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
@@ -836,7 +842,7 @@ usage_preference = "avoid"
 | `defaults.fetch_chain` | `array<table>` | 否 | URL 默认先用 `direct.fetch`，失败时尝试免密钥的 `jina.reader`；直连成功但内容无用时，需显式配置 `execution.fetch.quality` 规则才能触发回退 |
 | `execution` | `table` | 否 | provider 调用数、并发、重试、超时、内联输出、响应大小、重定向、内容长度和质量预算 |
 
-凭据值不会写入 `config.toml`；规范凭据槽仍只有 `provider_id` 与环境变量名 `env`。Kiki 服务器进程环境变量优先，包括显式设置的空值。启用本机复用后，Kiki 会从服务器 `NB_SEARCH_HOME`（默认 `~/.nb-search`）下的 nb-search `secrets.json` 补充缺少的变量，仅导入匹配的凭据槽并校验绑定；重定向会被拒绝。如果这两种来源都没有提供值，可选择使用该凭据槽的 **Kiki 管理凭据**。在「设置 → 搜索与抓取 → 提供商」可保存、显式查看已存值、编辑、覆写或清除。凭据保存在当前 Kiki 服务器主目录下受保护的 `secrets/nb-search/gui-credentials.json`，而非 `config.toml`、nb-search CLI 文件或浏览器存储。修改凭据槽的提供商、变量名、使用该槽的实例或端点会使已存绑定失效，不会静默改绑；核对新绑定后显式覆写或清除旧值。只有 Kiki 管理的值可被查看；服务器环境变量及 CLI `secrets.json` 只显示来源，其值不会发送到 GUI。被引用的不同凭据槽必须使用不同的环境变量名，避免托管凭据跨提供商混用。如果另一处在凭据编辑器打开期间修改了槽的变量名、提供商、使用实例或端点，旧草稿保存时会提示冲突：请重新加载、核对目标后再保存。读写 REST 接口沿用现有 Kiki bearer token；持有它的人可显式查看 Kiki 管理的密钥。远程连接时凭据位于远程服务器；切换连接不会转移编辑器内的值。该模块不会读取其他终端的变量，也不会自动加载 `.env` 文件。
+凭据值不会写入 `config.toml`；规范凭据槽仍只有 `provider_id` 与环境变量名 `env`。Kiki 服务器进程环境变量优先，包括显式设置的空值。启用本机复用后，Kiki 会从服务器 `NB_SEARCH_HOME`（默认 `~/.nb-search`）下的 nb-search `secrets.json` 补充缺少的变量，仅导入匹配的凭据槽并校验绑定；重定向会被拒绝。如果这两种来源都没有提供值，可选择使用该凭据槽的 **Kiki 管理凭据**。在「设置 → 搜索与抓取 → 服务与凭证」可保存、显式查看已存值、编辑、覆写或清除。凭据保存在当前 Kiki 服务器主目录下受保护的 `secrets/nb-search/gui-credentials.json`，而非 `config.toml`、nb-search CLI 文件或浏览器存储。修改凭据槽的提供商、变量名、使用该槽的实例或端点会使已存绑定失效，不会静默改绑；核对新绑定后显式覆写或清除旧值。只有 Kiki 管理的值可被查看；服务器环境变量及 CLI `secrets.json` 只显示来源，其值不会发送到 GUI。被引用的不同凭据槽必须使用不同的环境变量名，避免托管凭据跨提供商混用。如果另一处在凭据编辑器打开期间修改了槽的变量名、提供商、使用实例或端点，旧草稿保存时会提示冲突：请重新加载、核对目标后再保存。读写 REST 接口沿用现有 Kiki bearer token；持有它的人可显式查看 Kiki 管理的密钥。远程连接时凭据位于远程服务器；切换连接不会转移编辑器内的值。该模块不会读取其他终端的变量，也不会自动加载 `.env` 文件。
 
 开启本机复用时，`~/.nb-search/secrets.json` 中 `values.NB_SEARCH_TAVILY_API_KEY` 原有的单个 Tavily 密钥可以直接沿用，无须迁移或补充第二个密钥。需要多个密钥时，把同一字段或 Kiki 服务器的 `NB_SEARCH_TAVILY_API_KEY` 环境变量设为有序、逗号分隔的 1–32 个不同且非空的密钥，例如 `YOUR_FIRST_API_KEY,YOUR_SECOND_API_KEY`；逗号两侧的空格会被忽略。不要把密钥写入 `config.toml`，且服务器环境变量仍优先于本机凭证文件。其他已配置凭证槽也使用相同格式。
 
@@ -1085,7 +1091,7 @@ prompt_overrides:
 旧的 `[prompt] shared` 和 `[prompt.tools]` 键已经移除，继续使用会触发严格配置解析错误。把 `shared` 迁到 `[prompt.overrides.fields]` 下的 `"system.shared"` 键；每个工具条目迁到 `tool.<kebab-case-name>.guidance`（例如 `WebSearch` 对应 `tool.web-search.guidance`）。
 :::
 
-桌面 GUI 中，请进入「设置 → 智能体 → 提示词」编辑本节；该卡片默认折叠，展开后再编辑。
+桌面 GUI 中，请进入「设置 → 智能体 → 提示词字段」编辑本节；该卡片默认折叠，展开后再编辑。
 
 ## `[request_governance]`
 

@@ -120,6 +120,8 @@ If session recovery fails, the GUI keeps whatever history it had already loaded 
 
 Editing a queued prompt's text or delivery timing through Kiki keeps its identity on recovery; you do not need to restore the original text or send a duplicate. Messages not yet launched stay pending when Kiki's backend shuts down normally. After recovery, review and resume the saved queue. Already launched messages are not automatically resent if their result is unknown; check the saved result before resending. Explicitly cancelled requests stay cancelled, including those cancelled by archiving or deleting the session.
 
+A saved session can also retain a message for recovery before the agent accepts it. That save is not a started turn: the page says the server retained the message for recovery and it has not started yet. Resume a held or failed save with the same message instead of sending a new one. A temporary session, or one whose save state is still unknown, does not store that recovery copy and does not count as accepted.
+
 If a completed turn cannot be saved because storage is temporarily unavailable, Kiki briefly retries saving the same result without running the turn again. A longer outage keeps the turn waiting for persistence; after storage is writable again, submitting the next prompt retries that save before continuing. A pending save is not confirmation that the result is on disk.
 
 Resolved questions, approvals, markers and finished background tasks stay in the timeline as compact entries. Finished work can be grouped under **Worked**; expand it to see the individual entries. Expanding a question shows the full question and, for an answered one, the saved answer — dismissed and expired questions show their original choices too. Output from completed tasks stays in task history. File references can be previewed, opened or revealed in their folder; a preview is generated on demand, and the original file is still there to open or download.
@@ -134,13 +136,17 @@ Markdown previews otherwise open rendered. **Source** shows the text, and in the
 
 ## GUI usage statistics
 
-**Usage → History** opens on today in the browser's local time. A range in the URL overrides that, and a saved all-history view does not replace it. The page keeps its date boundary correct across midnight and when the browser's timezone offset changes.
+**Usage** opens on **Live**, showing model requests, running agents and concurrency rules without loading historical usage. Choose **History** for today in the browser's local time. Existing history, filter and session links still open their historical view; a range in the URL overrides today, and a saved all-history view does not replace it. The page keeps its date boundary correct across midnight and when the browser's timezone offset changes.
 
 Start with the cost trend, then select a bar to see the consumption sources for that interval. Group sources by model, provider, agent profile, or workspace; selecting a source narrows that dimension while keeping the date range and other filters. Open its session records on demand and use the recorded turn's link to jump to the original conversation. Returning keeps your usage view. Records without turn attribution say so instead of offering a guessed location.
 
 For a bounded date range, request the previous-period comparison when you need it. Missing prior data is shown as unavailable, not zero; a failed comparison leaves the current period readable. The collapsed live reference remains separate from the selected history.
 
+When a scan has not finished, the page says so and shows only the counted subtotal; an unfinished empty total appears as a dash, not zero. **Continue counting** resumes from saved progress rather than starting a full rescan. Leaving History cancels its pending reads.
+
 Token usage and estimated cost each carry their own completeness marker. If a provider returned no usage, Kiki shows that as unknown rather than as a real zero, and mixed results show the recorded subtotal with an incomplete-accounting notice. A missing model price affects the cost estimate only, never the recorded token count. **Data reliability** tells these cases apart from an empty range or a failed request.
+
+The context card's cumulative tokens and cost refer to the current agent, including when that agent is the main agent. They use the same totals as **This agent** in the right panel; **Whole tree** includes its descendants. The context-window gauge is separate: it measures the current engine's occupied window, not cumulative billing tokens or a sum of agent windows.
 
 ## Context compression
 
@@ -161,6 +167,8 @@ You can ask for a compaction while the agent is already working. Kiki queues the
 The timeline distinguishes **Manual compaction queued · waiting for a safe boundary** from **Compacting context…**. Once context is committed, a summarize run says **summary generated**, while a fresh-context run says **handoff retained**. Older records without an explicit mode say only **Context compacted**. Cancellation leaves context unchanged only before the new context is committed; a later cancellation request keeps the successful result. Failure, cancellation and an interrupted cold-session run do not count as successes. Consecutive successful commits of the same kind may share one divider labelled **3 successful compactions**, for example; expand it for each commit's time and recorded reasons. This count is not the number of generation retries.
 
 The context meter under the composer shows the same numbers, lets you set the compaction point, and carries the renewal strategy: **summarize**, **fresh**, or **auto**. Fresh-context compaction does not call a summarizing model or delete session history. It replaces earlier model context with working notes, history pointers and a handoff, retaining user input and recent messages within their budgets. **Auto** is the built-in main-agent default: use a fresh context when the safety conditions are met, otherwise summarize. The timeline names the mode actually used. `/autocompact` shows or moves the compaction point from the terminal. Facts that must survive compression belong in [memory](./memory.md), which outlives the session.
+
+Both renewal modes keep media in unanswered user input. Historical images, audio and video share a 20,000-token estimated allowance across retained input, the handoff and recent tool output; user-provided media takes priority over tool media. Compaction does not delete session history or saved attachments, so the agent can reread an earlier image when needed. This allowance uses Kiki's media estimate, not the provider's actual image-token count.
 
 ## Forking a session
 

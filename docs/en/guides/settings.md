@@ -6,16 +6,16 @@ The Kiki desktop app exposes preferences in the **Settings** dialog and activity
 
 | I want to change… | Go to |
 | --- | --- |
-| Sign in with a subscription, or add an API key | **Models & agents → Model providers** |
-| Version and update channel (Stable / Beta) | **System & connection → Developer, labs & about** |
-| Agent profiles, prompt-field overrides | **Models & agents → Profiles & subagents** |
+| Sign in with a subscription, or add an API key | **Models & agents → Models & providers → Connections** |
+| Version and update channel (Stable / Beta) | **Advanced → About & updates** |
+| Agent profiles, prompt-field overrides | **Models & agents → Agents** |
 | Low-frequency long-term memory reminders | [`loop_control.continuity_cadence.memory_maintenance`](../configuration/config-files.md#continuity-reminder-settings) in `config.toml` |
-| Search and retrieval configuration source | **Capabilities & safety → Web, browser & computer control** |
-| Whether input drafts are remembered | **Composer** |
+| Search and retrieval configuration source | **Capabilities → Search & retrieval** |
+| Whether input drafts are remembered | **App → General** |
 | Subagent dispatch configuration | **Dispatch capabilities** |
-| Run a browser for agent tasks | **Capabilities & safety → Web, browser & computer control** |
-| Drive the server's own desktop | **Capabilities & safety → Web, browser & computer control** |
-| Experimental features | **System & connection → Developer, labs & about** |
+| Run a browser for agent tasks | **Capabilities → Browser control** |
+| Drive the server's own desktop | **Capabilities → Computer control** |
+| Experimental features | **Advanced → Labs** |
 | Inspect this session's prompt sources | Session header **⋯ → Effective prompts** |
 | Temporarily use the preview space for the cockpit | Right-panel header **Cockpit** |
 | Token usage and cost | **Usage → History** |
@@ -26,16 +26,16 @@ The Kiki desktop app exposes preferences in the **Settings** dialog and activity
 
 ## Connections
 
-**Settings → Models & agents → Model providers** opens **Connections** (`/settings/ai?tab=providers`). `/settings/providers` opens the same tab. The page has three sections.
+**Settings → Models & agents → Models & providers** opens **Connections** (`/settings/ai?tab=providers`). `/settings/providers` opens the same tab. The page has three blocks, in this order.
 
-**① Account sign-in (subscription)** connects a subscription this server offers: Kimi Code, a ChatGPT account for Codex, a Grok Build account, GitHub Copilot. An account you already have a connection for is not offered again; a sign-in that has gone stale is recovered on that connection's own row.
-
-**② Local CLI harnesses** lists programs already on this machine, such as AGY CLI, Codex, and Claude Code. A harness you enable appears in the profile selector. **Let an outside client use Kiki** in this section opens `/settings/external-clients`.
-
-**③ API key providers** is the list of hosted APIs and servers you reach with a key. **Add connection** adds one there. With nothing in that list yet, the form is the section; otherwise it opens beside the list. It asks which service, by what means:
+**① API key providers** is the list of hosted APIs and servers you reach with a key. **Add connection** adds one there. With nothing in that list yet, the form is the block; otherwise it opens beside the list. It asks which service, by what means:
 
 - **From the directory** — pick a service from models.dev and Kiki fills in its address and model list. An id that already exists updates that connection, and the form says so before you press.
 - **Enter it myself** — a protocol, an address and a key, for a service the directory does not have, including a local server.
+
+**② Account sign-in (subscription)** connects a subscription this server offers: Kimi Code, a ChatGPT account for Codex, a Grok Build account, GitHub Copilot. An account you already have a connection for is not offered again; a sign-in that has gone stale is recovered on that connection's own row.
+
+**③ Local CLI harnesses** lists programs already on this machine, such as AGY CLI, Codex, and Claude Code. Once enabled, choose one from the conversation's runtime picker. **Let an outside client use Kiki** opens **Connection & remote → Connection services** (`/settings/connection-services`). `/settings/external-clients` opens the same page.
 
 An account connection is written by the sign-in, so its row has no protocol, address or key to fill in. Expand it to see which account is behind it, what the vendor says it has left, and the action that changes the sign-in:
 
@@ -62,7 +62,7 @@ If the machine cannot be used, the page says why in terms you can act on — no 
 
 ### Timeouts
 
-Open **Settings → System & connection → Remote daemon & SSH**, then **HTTP requests** (`/settings/connection?tab=current`). These settings govern requests from this interface to the Kiki server, not the model-provider connections above:
+Open **Settings → Connection & remote → Connection**, then **Current connection** and **HTTP requests** (`/settings/connection?tab=current`). These settings govern requests from this interface to the Kiki server, not the provider connections above:
 
 - **Request timeout (seconds)** — the default deadline for ordinary requests this interface makes to the Kiki server.
 - **Reading timeout (seconds)** — how long a history or content read may wait before Kiki gives up on it. The default is `0`, meaning no deadline: a large or slow conversation loads as long as it takes. Set a number of seconds if you would rather a stalled read fail quickly.
@@ -71,7 +71,7 @@ A reading timeout only bounds waiting; it never limits how much can be read. A c
 
 ## Models and Recipes
 
-**Settings → Models & agents → Model catalog & defaults** opens **Models** (`/settings/ai?tab=models`) and each model's editor. Change its request settings and prompt text here, then **Save** once. The identity selector keeps common, main-agent and independent-agent drafts separate; saving includes edits made in all three. Editing text loaded from a file stores an inline copy on the model, leaving the source file unchanged. Advanced fields edit the same model rather than a second form.
+**Settings → Models & agents → Models & providers** opens **Models** (`/settings/ai?tab=models`) and each model's editor. Change its request settings and prompt text here, then **Save** once. The identity selector keeps common, main-agent and independent-agent drafts separate; saving includes edits made in all three. Editing text loaded from a file stores an inline copy on the model, leaving the source file unchanged. Advanced fields edit the same model rather than a second form.
 
 Opening a prompt does not by itself leave the shared group. While main or independent still follows that group, the first **Save** of a prompt copies the whole effective group onto that identity, including unchanged file references and timing. Later edits to the shared group no longer change it. A steering source set to **Follow the user-message setting** uses the steering text and timing already in effect for user messages on the selected identity. That is the saved steering, not the words of the user message. After the identity has its own prompt copy, this reads the steering on that copy. A source left unconfigured stays off.
 
@@ -86,23 +86,23 @@ A [Recipe](../customization/prompt-fields.md#recipe-model-presets) contributes a
 - **Copy and edit** creates an independent local Recipe; **Extend from this** keeps a parent reference. In its author view, edit **Prompt words** or **Source files**, then **Save Recipe**. This saves the package, not a new model selection. Mixed inline/file text stays in separate editable segments. A notice appears when a prompt edit will rewrite the manifest's TOML formatting; file-only edits leave that manifest unchanged.
 - **Download as ZIP** shares the accepted package, including inherited content, without uploading it. Save author drafts first. A profile can also reference an installed Recipe through its [Markdown frontmatter](../customization/prompt-fields.md#recipe-model-presets).
 
-Recipe values cover only the fields or prompt slots they declare; uncovered settings keep their lower-layer values, and explicit profile differences still apply. A running conversation keeps its bound revision. Use [Rebuild context](../customization/agents.md#rebuilding-a-session-context) while idle to adopt current sources.
+Recipe values cover only the fields or prompt slots they declare; uncovered settings keep their lower-layer values, and explicit profile differences still apply. A running conversation keeps its bound revision. Use [Rebuild context](../customization/agents-and-subagents.md#rebuilding-a-session-context) while idle to adopt current sources.
 
 ## About
 
-**Settings → System & connection → Developer, labs & about** shows the current version and owns the update settings. `/settings/about` still opens those controls. **Update channel** picks Stable or Beta, and every check — automatic or manual — reads the channel from here. **Check for updates automatically** turns the daily check on or off; with it off, only **Check for updates** checks. The **When an update is found** setting applies: **Notify me** shows a dialog with the version and a short summary and waits for you, while **Download and install** starts the install without that dialog. Either way, Kiki asks before closing spaces that still have running work.
+**Settings → Advanced → About & updates** (`/settings/about`) shows the current version and owns the update settings. **Update channel** picks Stable or Beta, and every check — automatic or manual — reads the channel from here. **Check for updates automatically** turns the daily check on or off; with it off, only **Check for updates** checks. The **When an update is found** setting applies: **Notify me** shows a dialog with the version and a short summary and waits for you, while **Download and install** starts the install without that dialog. Either way, Kiki asks before closing spaces that still have running work.
 
 The dialog's three choices are saved rather than repeated each time: **Remind me tomorrow** comes back 24 hours later, **Skip this version** silences that version on that channel only, and a newer version still comes either way. Before installing, Kiki re-checks the channel and the version and refuses an offer that has changed underneath you. If a choice cannot be saved, the dialog stays open and asks you to try again. See [Kiki desktop](../getting-started/desktop-app.md#update).
 
 ## Agents
 
-**Settings → Models & agents → Profiles & subagents** (`/settings/agents`) picks a workspace and shows its default main profile (the agent's configuration file), the source in effect, and the subagent capabilities. File-backed profiles can be edited at the source shown. **Prompt** on that page edits the `[prompt]` prompt-field overrides section in `config.toml`; expand the card first. See [Agents and subagents](../customization/agents.md#capability-visibility) and [Prompt field overrides](../customization/prompt-fields.md).
+**Settings → Models & agents → Agents** (`/settings/agents`) picks a workspace and shows its default main profile (the agent's configuration file), the source in effect, and the subagent capabilities. File-backed profiles can be edited at the source shown. **Prompt fields** on that page edits the `[prompt]` prompt-field overrides section in `config.toml`; expand the card first. See [Agents and subagents](../customization/agents-and-subagents.md#capability-visibility) and [Prompt field overrides](../customization/prompt-fields.md).
 
 The periodic long-term memory reminders run on their own schedule. To stop just those while keeping the new standing-instruction and pre-compaction checks, set `memory_maintenance = false` in `config.toml`; memory tools, approval and task notes stay available. See [Continuity reminder settings](../configuration/config-files.md#continuity-reminder-settings).
 
 ## Notifications & messages
 
-**Notifications & messages** is not a sidebar entry. Open `/settings/notifications`, or search Settings for it. The sidebar highlights **Preferences & appearance → General & appearance** while that page is open; the controls stay on this page.
+**Settings → How work runs → Notifications & messages** (`/settings/notifications`) is its own entry in the settings sidebar.
 
 Under **System notifications**, **Allow system notifications** controls session notifications and pending-input reminders from other spaces on this device. The default-on **Notify when the conversation finishes** switch notifies when you are not viewing that conversation, including when another conversation or Settings is open in Kiki. Completion means the assigned work has settled: the main agent has finished, finite background tasks and subagents have settled, and their results and any automatic continuation have been handled. A turn ending alone does not notify. Resident servers, watchers and future schedules do not keep work unfinished; approvals, questions, failures and user stops are not completion notices. In a browser, allow this site to send notifications; if you previously denied permission, restore it in the address bar’s site permissions.
 
@@ -112,13 +112,13 @@ For configured phone or team-chat channels, enable **The conversation finishes**
 
 ## Search & retrieval
 
-**Settings → Capabilities & safety → Web, browser & computer control** opens search on **Overview & source** (`/settings/search`, or `/settings/environment-tools?tab=search`). It inspects the built-in search and retrieval module — the capability behind the `WebSearch` and `FetchURL` tools — showing which configuration source is in effect and whether the server reuses the local search configuration. The equivalent configuration lives in `config.toml` — see [Configuration files](../configuration/config-files.md#nb-search).
+**Settings → Capabilities → Search & retrieval** opens **Overview & source** (`/settings/search`). An old `/settings/environment-tools` address opens this page, and a `tab` there selects a search tab (`overview`, `search`, `fetch`, `providers`, or `advanced`). It inspects the built-in search and retrieval module — the capability behind the `WebSearch` and `FetchURL` tools — showing which configuration source is in effect and whether the server reuses the local search configuration. The equivalent configuration lives in `config.toml` — see [Configuration files](../configuration/config-files.md#nb-search).
 
 The same section's **Advanced & diagnostics** tab carries a **Full-text index** card for searching your own session history. The first index is built in the background, newest sessions first, and the card counts what is done so far. If the index stops for a reason you can fix, that card is where **Restart the indexer** appears; when indexing is off or unavailable by configuration, there is nothing to restart and the reason is stated instead.
 
 ## Browser control
 
-**Settings → Capabilities & safety → Web, browser & computer control** (`/settings/environment-tools?tab=browser-control`) opens three setup routes. `/settings/browser-control` opens the same section.
+**Settings → Capabilities → Browser control** (`/settings/browser-control`) opens three setup routes.
 
 - **Kimi Browser Extension**: drives the browser you already use, with your own sign-ins. Kiki installs the plugin and local bridge; add the extension from your browser's store and approve it there. An existing usable bridge can connect even when its version differs from the bundled download. **Advanced options → Check and update** downloads the verified release; a failed update keeps the previous installation, and a running bridge stays on its current version.
 - **Independent browser**: Kiki manages a separate browser and sign-in profile. **Set up** downloads its components; **Connect** starts control, and **Open browser** opens or activates its window. **Advanced options** provides **Check and update** and, on a Windows server, **Create desktop shortcut**. Updates keep a running browser unchanged; shortcuts appear on the server's desktop without overwriting unrelated shortcuts.
@@ -141,11 +141,11 @@ The driver, and any browser Kiki starts, run on the Kiki server — not on the d
 
 Agents use these connections through the [browser tools](../reference/tools.md#browser-tools), naming a connection by its id — never by display name. The switch and the connections themselves live under [`[experimental]`](../configuration/config-files.md#experimental) and [`[browser_control]`](../configuration/config-files.md#browser-control) respectively.
 
-The **WebBridge readiness** card sits on this page too, below the routes. It states whether the Kimi Browser Extension bridge is working, offers **Check again**, and — while a component is missing — the consented **Set up WebBridge** action.
+The **WebBridge readiness** card sits on this page too, below the routes. It states whether the Kimi Browser Extension bridge is working, offers **Check again**, and — while a component is missing — the consented **Set up WebBridge** action. Kimi WebBridge checks one fixed local bridge. A list of Codex extension pipes, or several independent-browser profiles, does not add Kimi WebBridge instances.
 
 ## Plugins
 
-**Settings → Capabilities & safety → Skills, MCP & plugins** (`/settings/extensions`) lists skills, MCP servers, and plugins. `/settings/plugins` still opens the installed plugin list. Each row carries the plugin's own name, where it came from, its version, whether it is on or reporting errors, and a switch to turn it off without leaving the list. **Find plugins in the market** at the top is where new plugins are installed.
+**Settings → Capabilities → Plugins** (`/settings/plugins`) lists installed plugins. `/settings/extensions` opens this same page. Skills and MCP are separate entries: `/settings/skills` and `/settings/mcp`. Each row carries the plugin's own name, where it came from, its version, whether it is on or reporting errors, and a switch to turn it off without leaving the list. **Find plugins in the market** at the top is where new plugins are installed.
 
 Selecting a plugin opens **its own settings page** (`/settings/plugins?plugin=<id>`): the plugin's name and state, a way back to the list, its settings, and a switch to turn it on or off. An enabled plugin can supply its own settings interface. Otherwise Kiki shows the fields its manifest declares, with Save and Discard after a field changes. If the plugin's interface fails to load, choose **Retry** or use those fields. Leaving with unsaved changes asks first.
 
@@ -155,13 +155,13 @@ The page has its own address, so you can copy it, refresh, or use the browser's 
 
 ## Workspaces
 
-**Settings → Workspaces & memory → Workspaces & sessions** (`/settings/workspaces`) lists the folders known to this server. Open a row to configure that workspace on its own page (`/settings/workspaces?workspace=<id>`): rename it, pin it, choose its [plugin defaults](../customization/plugins.md#choose-where-a-plugin-is-used), or set memory to inherit, on or off. Its root path is shown for identification, not edited here.
+**Settings → How work runs → Workspaces** (`/settings/workspaces`) lists the folders known to this server. Open a row to configure that workspace on its own page (`/settings/workspaces?workspace=<id>`): rename it, pin it, choose its [plugin defaults](../customization/plugins.md#choose-where-a-plugin-is-used), or set memory to inherit, on or off. Its root path is shown for identification, not edited here.
 
 **Workspace trust** controls whether Kiki loads that project's configuration, MCP servers and hooks, and permits its project profiles to name external executors. Trust changes only when you explicitly use the switch; opening the page grants nothing and does not change tool approval mode. The **Agents**, **MCP servers** and **Skills** links keep this workspace as their target. Profiles retain their file source and write scope. MCP entries from plugins or project files are read-only here; editable user entries still save to the user configuration, not a new workspace copy. A missing workspace is reported rather than silently switching to another one.
 
 ## Computer control
 
-**Settings → Capabilities & safety → Web, browser & computer control** (`/settings/computer-control`, or `/settings/environment-tools?tab=computer-control`) brings together the connected machine, executor installation, model usage preference, and computer MCP connections. Desktop actions run on the machine hosting the Kiki server, through a pinned open-source executor; nothing is installed or connected automatically.
+**Settings → Capabilities → Computer control** (`/settings/computer-control`) brings together the connected machine, executor installation, model usage preference, and computer MCP connections. Desktop actions run on the machine hosting the Kiki server, through a pinned open-source executor; nothing is installed or connected automatically.
 
 **Model usage preference** defaults to **Avoid**: models generally avoid computer control unless you or your rules explicitly request it, and prefer existing CLI, API, MCP, short-script, and browser-specific capabilities. **Prefer** favors computer control for suitable interactive tasks. Both choices respect your current explicit instructions, tool availability, correctness, and permissions. Saving changes guidance on the next model request, not tool permissions or installation. The source tag shows the effective configuration layer; **Restore inherited** removes this server's override and adopts the inherited value, which can also be **Prefer**. A failed save keeps your draft.
 
@@ -173,15 +173,15 @@ The main agent of each session uses the executor's own tools through the existin
 
 ## Composer
 
-The **Composer → Persist composer drafts** toggle controls whether new-session choices (model, effort, workspace, working directory, profile) and per-session draft text are written to this browser. Turning it off clears the saved store. See [Workspace and session management](./sessions.md#session-storage).
+**Settings → App → General** (`/settings/general`) holds **Persist composer drafts** on the **Composer & session** card. It controls whether new-session choices (model, effort, workspace, working directory, profile) and per-session draft text are written to this browser. Turning it off clears the saved store. See [Workspace and session management](./sessions.md#session-storage).
 
 ## Dispatch capabilities
 
-Open **Dispatch capabilities** — next to the new-session workspace selector, or in a session's right rail — to inspect a subagent's profile (configuration file), route, and executor, plus where the default model and effort come from. Default configuration validity and permission to launch are shown separately. See [Agents and subagents](../customization/agents.md#rebuilding-a-session-context).
+Open **Dispatch capabilities** — next to the new-session workspace selector, or in a session's right rail — to inspect a subagent's profile (configuration file), route, and executor, plus where the default model and effort come from. Default configuration validity and permission to launch are shown separately. See [Agents and subagents](../customization/agents-and-subagents.md#rebuilding-a-session-context).
 
 ## Session controls
 
-Session controls stay at `/settings/sessions`. **Workspaces & sessions** in the sidebar opens workspaces and does not replace these addresses.
+Session controls stay at `/settings/sessions` (**How work runs → Sessions**). **How work runs → Workspaces** opens workspaces and does not replace these addresses.
 
 **Import history** (`/settings/sessions/import`) opens Kiki's built-in importer, also available from **New session**. No plugin installation or activation is needed for the built-in formats; see [Session history import](../customization/plugins.md#session-history-import).
 
@@ -193,7 +193,7 @@ Session controls stay at `/settings/sessions`. **Workspaces & sessions** in the 
 
 In a session, open the header's **⋯ → Effective prompts**. The drawer opens independently of the right rail, including on narrow screens, and shows the current agent identity, profile, model and executor, the prompt channels and their source order, field overrides with the reason for each, file locations, and the cognition-anchor scope.
 
-The binding and disk revisions help you spot which source files changed. To actually reload the session's prompt sources, use [Rebuild context](../customization/agents.md#rebuilding-a-session-context) once the session is idle. **Check all branches** is a separate action that inspects the configured common, main-agent and independent-agent prompt files without switching the current identity.
+The binding and disk revisions help you spot which source files changed. To actually reload the session's prompt sources, use [Rebuild context](../customization/agents-and-subagents.md#rebuilding-a-session-context) once the session is idle. **Check all branches** is a separate action that inspects the configured common, main-agent and independent-agent prompt files without switching the current identity.
 
 ### Cockpit
 

@@ -79,9 +79,15 @@ ACP 客户端在 `session/new`、`session/load` 或 `session/resume` 中提供 `
 
 ### 外部 harness 中的 Kiki 工具
 
-上面的转发是入站连接：IDE 向 `kiki acp` 提供 MCP 服务器。Kiki 运行外部 harness 时使用另一条出站连接。接受会话级 stdio MCP 的执行器可以使用绑定到准确 Kiki Agent 的工具桥，沿原生工具策略和审批执行。兼容的子 Agent 获得其获准的原生工具；原样 main agent 只有明确请求上下文或委派能力时才获得桥。明确的 `false` 和 `[]` 保持所辖能力组关闭。
+上面的转发是入站连接：IDE 向 `kiki acp` 提供 MCP 服务器。Kiki 运行外部 harness 时，可以提供绑定到该 Kiki 会话和 Agent 的会话级工具桥。Adapter 必须接受 stdio MCP；模型设置、厂商登录和权限仍沿用 harness 自身配置，无需把受管工具桥的临时凭证复制到厂商配置中。
 
-桥以 `kiki_<原生工具名>` 暴露工具，列目录和调用使用同一身份重新检查权限。子 Agent 获准的插件和 MCP 工具也走这条链，不通过第二条直接转发路径绕过策略。配置、父级通知与旧连接名称见 [外部 main agent 的委派](../customization/agents.md#外部-main-agent-的委派) 和 [外部 main agent 的 Kiki 上下文](../customization/agents.md#外部-main-agent-的-kiki-上下文)。MCP 连通不等于特定 adapter 接受图片或音频 prompt；输入能力仍以该 adapter 的实际合同为准。
+在 `[agent_executor_overrides.<executor-id>.defaults]` 下设置 `inject_kiki_mcp`，作为引擎默认值。Profile 的 `inject_kiki_mcp` 优先于引擎默认，会话的 `execution.overrides.inject_kiki_mcp` 再覆盖 Profile。将会话值设为 `null` 即恢复继承。这些选择在下一次绑定生效，也适用于具名外部子 Agent；冷恢复保留已保存的选择。Agent 绑定 `false` 后，现有工具桥凭证也不能继续列出或调用其工具。
+
+各层均未设置时，保留原有行为：兼容的子 Agent 获得其获准的原生工具，原样 main agent 只有请求上下文或委派能力时才获得桥。开启注入不会额外开放工具组；明确的 `kiki_context: []` 和 `allow_kiki_subagents: false` 仍保持这些组关闭。
+
+打开工具桥也不会授予绑定已经拒绝的工具。外部工具同时按厂商名和映射后的原生名检查时，每一份允许列表都须包含其中至少一个名字，拒绝其中任一名字都会阻止这次调用。
+
+桥以 `kiki_<原生工具名>` 暴露工具，列目录和调用使用同一身份重新检查权限。子 Agent 获准的插件和 MCP 工具也走这条链，不通过第二条直接转发路径绕过策略。配置、父级通知与旧连接名称见 [外部 main agent 的委派](../customization/agents-and-subagents.md#外部-main-agent-的委派) 和 [外部 main agent 的 Kiki 上下文](../customization/agents-and-subagents.md#外部-main-agent-的-kiki-上下文)。MCP 连通不等于特定 adapter 接受图片或音频 prompt；输入能力仍以该 adapter 的实际合同为准。
 
 ## 下一步
 

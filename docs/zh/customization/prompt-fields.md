@@ -23,7 +23,7 @@
 
 优先级从低到高按表顺序；缺失的键继承较低层的值。完整格式、`${name}` 变量替换规则和校验失败行为见 [`prompt`](../configuration/config-files.md#prompt)。
 
-已有 Agent 恢复时保留绑定时的提示词字段、自定义变量和 cognition 文本，即使来源文件后来被修改或删除。修改对新绑定生效；要在已有会话里采用新内容，选择[重建上下文](./agents.md#重建会话上下文)。显式换模会选择目标模型的提示词输入；单独设置 `new_window` 不会重新加载提示词来源。当前工具权限与模型硬约束仍然生效。
+已有 Agent 恢复时保留绑定时的提示词字段、自定义变量和 cognition 文本，即使来源文件后来被修改或删除。修改对新绑定生效；要在已有会话里采用新内容，选择[重建上下文](./agents-and-subagents.md#重建会话上下文)。显式换模会选择目标模型的提示词输入；单独设置 `new_window` 不会重新加载提示词来源。当前工具权限与模型硬约束仍然生效。
 
 旧记录优先复用已保存的系统提示词，并尽可能从保存的 profile 还原内联字段。若记录从未保存必需的共享字段、工具覆写、steering 提示或 anchor，且原始输入已无法重建，恢复错误会点名缺失的输入。此时重建上下文以采用当前来源，无需回滚已安装的新提示词。
 
@@ -109,7 +109,7 @@ Recipe 只贡献自己声明的值。模型设置依次采用保存模型、模�
 
 `prompts` 是 subagent 使用的 common 分支。`[prompts.main]` 或 `[prompts.independent]` 选择一个完整的位置分支，不会自动用 common 填补缺失 slot。在 `[prompts]` 内写 `main = "same"` 或 `independent = "same"` 可显式采用 common，写 `"off"` 则禁用整个分支。正文 slot 接受 `{ text = "..." }`、`{ file = "prompt.md" }` 或这些来源的数组。anchor 使用 `{ content = { text = "..." }, steps = 1, scope = "session" }`；`scope` 也接受 `"turn"`。
 
-Steering 节奏属于所选分支；未声明项沿用下层值。普通 steering 正文与节奏适用于直接用户输入。所有层均未声明时，`steering_on_turn` 与 `steering_on_input` 默认 `true`，`steering_interval_steps` 默认 `0`，不额外周期注入。正整数间隔统计本 Agent 由该来源驱动的模型步骤，不是秒数或工具调用次数；关闭的来源在压缩后也保持关闭。
+Steering 节奏属于所选分支；未声明项沿用下层值。普通 steering 正文与节奏适用于直接用户输入，已核验且完成的 subagent 任务回执也默认继承。明确设置 `steering_sources.task.mode = "off"` 可关闭该继承；普通进程结果、失败子任务及其它非用户来源仍需各自配置。所有层均未声明时，`steering_on_turn` 与 `steering_on_input` 默认 `true`，`steering_interval_steps` 默认 `0`，不额外周期注入。正整数间隔统计本 Agent 由该来源驱动的模型步骤，不是秒数或工具调用次数；关闭的来源在压缩后也保持关闭。
 
 在同一分支中使用 `steering_sources` 开启其他来源：`mode = "inherit"` 在绑定时沿用最终用户正文与节奏，`mode = "custom"` 使用自己的 `custom` 正文与节奏。来源及 custom 字段在父配方、模型 Recipe、profile Recipe 各层按声明的叶项合并，再随绑定冻结；改用户设置不会重写已有会话。来源键与默认值见 [模型认知](../configuration/config-files.md#模型认知)。例如：
 
@@ -136,4 +136,4 @@ custom = { steering = { file = "task-cue.md" }, steering_interval_steps = 2 }
 
 - [配置文件：`prompt`](../configuration/config-files.md#prompt) —— 完整字段注册表、覆写格式与校验规则
 - [`kiki` 命令参考](../reference/command.md) —— CLI 入口的命令行旗标
-- [Agent 与 subagent](../customization/agents.md) —— agent 文件与 `prompt_overrides` frontmatter
+- [Agent 与 subagent](../customization/agents-and-subagents.md) —— agent 文件与 `prompt_overrides` frontmatter
