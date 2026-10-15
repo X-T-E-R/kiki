@@ -134,6 +134,22 @@ const timeoutCases = [
   { surface, field: 'toolTimeoutMs' as const, parse },
 ]);
 
+describe('session thinking selection contract', () => {
+  it.each([{ thinking: 'high' }, { thinking: null }, { thinking: undefined }])(
+    'preserves thinking $thinking when creating a session',
+    ({ thinking }) => {
+      const input = { workDir: '/tmp/example', mainAgentBinding: { thinking } };
+      expect(createSessionOptionsSchema.parse(input)).toEqual(input);
+    },
+  );
+
+  it('rejects a malformed thinking selection', () => {
+    expect(createSessionOptionsSchema.safeParse({
+      workDir: '/tmp/example', mainAgentBinding: { thinking: 1 },
+    }).success).toBe(false);
+  });
+});
+
 describe('MCP timeout contract validation', () => {
   it.each(timeoutCases)('accepts the maximum $field for $surface', ({ field, parse }) => {
     expect(parse(field, 2_147_483_647).success).toBe(true);

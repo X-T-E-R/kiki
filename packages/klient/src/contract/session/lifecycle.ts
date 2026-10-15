@@ -24,7 +24,7 @@ export const createSessionOptionsSchema = z.object({
   mainAgentBinding: z.object({
     execution: executionSelectionSchema.optional(),
     persona: z.string().optional(),
-    profile: z.string().optional(), model: z.string().optional(), thinking: z.string().optional(),
+    profile: z.string().optional(), model: z.string().optional(), thinking: z.string().nullable().optional(),
   }).optional(),
   /**
    * Ephemeral per-session MCP servers (engine `CreateSessionOptions.mcpServers`):
