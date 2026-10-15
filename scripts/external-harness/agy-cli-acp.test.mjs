@@ -167,7 +167,11 @@ test('SUCCESS does not fabricate a result for an unfinished tool', async () => {
     const updates = messages.filter(message => message.update?.sessionUpdate === 'tool_call_update');
     assert.equal(updates.length, 1);
     assert.equal(updates[0].update.status, 'failed');
+    assert.match(updates[0].update.content[0].content.text, /fixture-conversation-1 \(view_file, ACTIVE\).*execution state is unknown/);
     assert.equal([...b.session(id).toolIds.values()].includes('pending'), false);
+    assert.equal(b.session(id).broken, true);
+    assert.equal(b.session(id).child.exitCode, null);
+    await assert.rejects(turn(b, id, 'again', []), /do not replay these calls or reuse this session/);
   } finally { await b.close(); }
 });
 
@@ -201,6 +205,9 @@ test('real ACP transport preserves tool failure, protocol diagnostics and shuts 
     assert.match(update.params.update.content[0].content.text, /file does not exist/);
     const failed = await request('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'unfinished-tool' }] });
     assert.match(failed.error.message, /terminal result arrived before a tool terminal update/);
+    assert.equal(failed.error.code, -32603);
+    assert.equal(failed.error.data.adapterCode, 'AGY_TOOL_TERMINAL_MISSING');
+    assert.equal(failed.error.data.details.unresolvedTools[0].name, 'view_file');
   } finally { child.stdin.end(); }
   const exit = await closed;
   assert.deepEqual(exit, { code: 0, signal: null }, stderr);
@@ -235,6 +242,39 @@ test('official permission hook preserves raw command, cwd and identity; only the
   assert.equal((await b.requestPermission(s, { ...input, conversationId: 'other-session' })).decision, 'deny');
   s.active = undefined;
   assert.equal((await b.requestPermission(s, input)).decision, 'deny');
+});
+
+test('native task reads project exact actions without hiding the native policy identity or host rejection', async () => {
+  const { canonicalTool } = await import('./agy-cli-acp.mjs');
+  const b = new AgyBridge({ cliPath: process.execPath });
+  const permission = { version: 1, hostGate: true, override: { mode: 'manual', source: 'profile' }, policyIdentity: 'fixture-policy', workspace: { cwd, additionalDirectories: [] } };
+  const id = (await b.newSession({ cwd, mcpServers: [], _meta: { 'kiki.permission': permission } })).sessionId;
+  const s = b.session(id);
+  s.init = { conversation_id: 'fixture-conversation' };
+  let captured;
+  let optionId = 'allow_once';
+  s.active = { client: { request: async (method, request) => {
+    assert.equal(method, 'session/request_permission');
+    captured = request;
+    return { outcome: { outcome: 'selected', optionId } };
+  } } };
+  try {
+    for (const [args, name] of [[{ Action: 'list' }, 'TaskList'], [{ Action: 'status', TaskId: 'fixture-task' }, 'TaskOutput']]) {
+      const input = { conversationId: 'fixture-conversation', stepIdx: 7, toolCall: { name: 'manage_task', args } };
+      assert.equal((await b.requestPermission(s, input)).decision, 'allow');
+      assert.deepEqual(captured.toolCall.rawInput, args);
+      assert.equal(captured.toolCall.title, 'manage_task');
+      assert.equal(captured.toolCall.kind, 'read');
+      assert.deepEqual(captured._meta['kiki.tool'], { name, nativeName: 'manage_task', input: args });
+      optionId = 'reject_once';
+      assert.equal((await b.requestPermission(s, input)).decision, 'deny');
+      optionId = 'allow_once';
+    }
+    for (const args of [{ Action: 'kill', TaskId: 'fixture-task' }, { Action: 'send_input', TaskId: 'fixture-task', Input: 'stop' },
+      { Action: 'status' }, { Action: 'status', TaskId: '' }, { Action: 'list', TaskId: 3 }, { Action: 'list', Unknown: true }, { Action: 'unknown' }]) {
+      assert.deepEqual(canonicalTool('manage_task', args, cwd), { name: 'manage_task', kind: 'other', input: args });
+    }
+  } finally { s.active = undefined; await b.close(); }
 });
 
 test('owned permission channel rejects bad nonce and disconnects, unrelated AGY keeps default policy', async () => {
@@ -321,6 +361,7 @@ test('fixture follows project PreToolUse through the owned hook and host ACP dec
     await assert.rejects(b.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'hook-deny' }] }, client), /AGY permission denied/);
     assert.equal(requests, 2);
     assert.equal(messages.find(message => message.update?.sessionUpdate === 'tool_call_update').update.status, 'failed');
+    assert.equal(messages.filter(message => message.update?.sessionUpdate === 'tool_call_update').length, 1);
     hold = true;
     const ready = new Promise(done => { entered = done; });
     const pending = b.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'hook-wait' }] }, client);
@@ -335,6 +376,38 @@ test('fixture follows project PreToolUse through the owned hook and host ACP dec
   } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
 });
 
+
+test('missing native tool terminals retain exact host denials and never infer completion from approval or vendor default', { timeout: 20000 }, async () => {
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  for (const outcome of [{ outcome: 'selected', optionId: 'reject_once' }, { outcome: 'cancelled' },
+    { outcome: 'selected', optionId: 'allow_once' }, { outcome: 'selected', optionId: 'kiki.vendor_default' }]) {
+    const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-terminal-'));
+    const b = bridge();
+    const permission = { version: 1, hostGate: true, policyIdentity: 'fixture-policy', workspace: { cwd: root, additionalDirectories: [] } };
+    const id = (await b.newSession({ cwd: root, mcpServers: [], _meta: { 'kiki.permission': permission } })).sessionId;
+    const messages = [];
+    const client = { notify: async (_method, event) => messages.push(event), request: async () => ({ outcome }) };
+    const denied = outcome.outcome === 'cancelled' || outcome.optionId === 'reject_once';
+    try {
+      await assert.rejects(b.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'hook-no-terminal' }] }, client), error => {
+        assert.equal(error.code, denied ? 'AGY_PERMISSION_DENIED' : 'AGY_TOOL_TERMINAL_MISSING');
+        assert.match(error.message, denied ? /Kiki rejected agy-fixture-conversation-1 before execution/ : /execution state is unknown/);
+        assert.equal(error.details.unresolvedTools.length, denied ? 0 : 1);
+        if (denied) assert.deepEqual(error.details.deniedToolCallIds, ['agy-fixture-conversation-1']);
+        return true;
+      });
+      const terminals = messages.filter(message => message.update.sessionUpdate === 'tool_call_update');
+      assert.equal(terminals.length, 1);
+      assert.equal(terminals[0].update.status, 'failed');
+      assert.match(terminals[0].update.content[0].content.text, denied ? /Kiki permission gate.*before execution/ : /execution state is unknown/);
+      assert.equal(b.session(id).broken, !denied);
+      assert.equal(b.session(id).child.exitCode, null);
+      if (denied) assert.equal((await b.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'unrelated neutral turn' }] }, client)).stopReason, 'end_turn');
+      else await assert.rejects(b.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'unrelated neutral turn' }] }, client), /do not replay/);
+    } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
+  }
+});
 
 test('inherit starts without host hook, even with legacy ambient mode; clearing override is a fresh vendor session', async () => {
   const { mkdtemp, readFile, rm } = await import('node:fs/promises');
@@ -1018,7 +1091,7 @@ test('cancel and ACP close during permission setup cannot launch a late vendor p
   }
 });
 
-test('session stdio MCP generates custom agent definition, passes env, and cleans up on close or cancel', async () => {
+test('session stdio MCP uses a native plugin without replacing main, passes env and cleans up', async () => {
   const { mkdtemp, readFile, rm } = await import('node:fs/promises');
   const { join, resolve } = await import('node:path');
   const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-mcp-agent-'));
@@ -1037,22 +1110,139 @@ test('session stdio MCP generates custom agent definition, passes env, and clean
   }];
   try {
     const id = (await b.newSession({ cwd: root, mcpServers })).sessionId;
-    const agentFile = join(root, '.agents', 'agents', `kiki-acp-${id}.md`);
+    const pluginPath = join(root, '.agents', 'plugins', `kiki-acp-${id}`);
     await turn(b, id, 'hello mcp', []);
-    assert.equal(launch.args.includes('--agent'), true);
-    assert.equal(launch.args[launch.args.indexOf('--agent') + 1], `kiki-acp-${id}`);
+    assert.equal(launch.args.includes('--agent'), false);
+    assert.equal(b.session(id).init.init.agent, undefined);
     const key = `KIKI_AGY_MCP_${id.replaceAll('-', '_')}_0`;
     assert.ok(launch.env[key]);
     assert.deepEqual(JSON.parse(launch.env[key]), mcpServers[0]);
-    const fileContent = await readFile(agentFile, 'utf8');
-    assert.match(fileContent, /"name": "kiki-acp-/);
+    const manifest = JSON.parse(await readFile(join(pluginPath, 'plugin.json'), 'utf8'));
+    assert.equal(manifest.name, `kiki-acp-${id}`);
+    const fileContent = await readFile(join(pluginPath, 'mcp_config.json'), 'utf8');
     assert.match(fileContent, /--mcp-stdio/);
+    assert.equal(fileContent.includes('test-value'), false);
+    assert.equal(b.session(id).mcpBound.size, 1);
     await b.close();
-    await assert.rejects(readFile(agentFile), { code: 'ENOENT' });
+    await assert.rejects(readFile(join(pluginPath, 'plugin.json')), { code: 'ENOENT' });
   } finally {
     await b.close();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('native MCP plugin ownership preserves conflicts and edits, isolates sessions and recovers only dead leases', async () => {
+  const { mkdtemp, mkdir, readFile, writeFile, rm } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const { randomUUID } = await import('node:crypto');
+  const { registerProjectMcpPlugin, recoverProjectMcpPlugin } = await import('./agy-mcp-plugin.mjs');
+  const root = await mkdtemp(join(tmpdir(), 'agy-plugin-owner-'));
+  const options = id => ({ cwd: root, sessionId: id, nodePath: process.execPath,
+    handlerPath: fileURLToPath(new URL('./agy-cli-acp.mjs', import.meta.url)),
+    servers: [{ name: 'fixture', command: process.execPath, args: [], env: [{ name: 'FIXTURE_SECRET', value: 'private-fixture-value' }] }] });
+  try {
+    const firstId = randomUUID();
+    const first = await registerProjectMcpPlugin(options(firstId));
+    const second = await registerProjectMcpPlugin(options(randomUUID()));
+    assert.equal((await recoverProjectMcpPlugin({ cwd: root, sessionId: firstId })).status, 'owned-session-still-live');
+    assert.equal((await readFile(join(first.path, '.kiki-mcp-owner.json'), 'utf8')).includes('private-fixture-value'), false);
+    assert.equal((await readFile(join(first.path, 'plugin.json'), 'utf8')).includes('enabled'), false);
+    await assert.rejects(registerProjectMcpPlugin(options(firstId)), /already exists/);
+    const original = await readFile(join(first.path, 'plugin.json'), 'utf8');
+    await writeFile(join(first.path, 'plugin.json'), 'user edit');
+    await assert.rejects(first.close(), /plugin changed/);
+    assert.equal(await readFile(join(first.path, 'plugin.json'), 'utf8'), 'user edit');
+    await writeFile(join(first.path, 'plugin.json'), original);
+    await first.close();
+    assert.ok(await readFile(join(second.path, 'plugin.json')));
+    const dead = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' });
+    await new Promise((done, reject) => { dead.once('error', reject); dead.once('close', done); });
+    const receiptPath = join(second.path, '.kiki-mcp-owner.json');
+    const state = JSON.parse(await readFile(receiptPath, 'utf8'));
+    state.adapterPid = dead.pid;
+    state.phase = 'launching';
+    await writeFile(receiptPath, JSON.stringify(state));
+    assert.equal((await recoverProjectMcpPlugin({ cwd: root, sessionId: state.sessionId })).status, 'native-launch-identity-unconfirmed');
+    state.phase = 'launched'; state.nativePid = dead.pid;
+    await writeFile(receiptPath, JSON.stringify(state));
+    await writeFile(join(second.path, 'user.txt'), 'keep');
+    await assert.rejects(recoverProjectMcpPlugin({ cwd: root, sessionId: state.sessionId }), /foreign files/);
+    assert.equal(await readFile(join(second.path, 'user.txt'), 'utf8'), 'keep');
+    await rm(join(second.path, 'user.txt'));
+    assert.equal((await recoverProjectMcpPlugin({ cwd: root, sessionId: state.sessionId })).status, 'owned-registration-recovered');
+    await assert.rejects(readFile(receiptPath), { code: 'ENOENT' });
+    const userId = randomUUID();
+    const userPath = join(root, '.agents', 'plugins', `kiki-acp-${userId}`);
+    await mkdir(userPath);
+    await writeFile(join(userPath, 'plugin.json'), '{"disabled":true}');
+    await assert.rejects(registerProjectMcpPlugin(options(userId)), /already exists/);
+    assert.equal(await readFile(join(userPath, 'plugin.json'), 'utf8'), '{"disabled":true}');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('unbound native stdio bootstrap is healthy and empty even with a different session lease in the environment', async () => {
+  const script = fileURLToPath(new URL('./agy-cli-acp.mjs', import.meta.url));
+  const child = spawn(process.execPath, [script, '--mcp-stdio', 'KIKI_AGY_MCP_aaaaaaaa_0'], { stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, KIKI_AGY_MCP_bbbbbbbb_0: JSON.stringify({ command: 'must-not-launch', args: [], env: [] }) } });
+  let output = ''; let stderr = '';
+  child.stdout.on('data', chunk => { output += chunk; }); child.stderr.on('data', chunk => { stderr += chunk; });
+  const ended = new Promise((done, reject) => { child.once('error', reject); child.once('close', done); });
+  child.stdin.end([
+    { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26' } },
+    { jsonrpc: '2.0', method: 'notifications/initialized' },
+    { jsonrpc: '2.0', id: 2, method: 'tools/list' },
+    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'foreign' } },
+  ].map(value => JSON.stringify(value)).join('\n') + '\n');
+  assert.equal(await ended, 0, stderr);
+  const frames = output.trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(frames[0].result.protocolVersion, '2025-03-26');
+  assert.deepEqual(frames[1].result, { tools: [] });
+  assert.equal(frames[2].error.code, -32601);
+  assert.equal(stderr, '');
+});
+
+test('MCP off does not register a plugin and native disabled discovery never falls back to a custom agent', async () => {
+  const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const root = await mkdtemp(join(tmpdir(), 'agy-plugin-off-'));
+  const b = bridge();
+  const spawnProcess = b.spawnProcess;
+  b.spawnProcess = (exe, args, options) => spawnProcess(exe, args, { ...options, env: { ...options.env, AGY_FIXTURE_MCP_OFF: '1' } });
+  try {
+    const off = (await b.newSession({ cwd: root, mcpServers: [] })).sessionId;
+    assert.equal((await turn(b, off, 'hello', [])).stopReason, 'end_turn');
+    assert.equal(b.session(off).mcpPlugin, undefined);
+    const disabled = (await b.newSession({ cwd: root, mcpServers: [{ name: 'fixture', command: process.execPath, args: [], env: [] }] })).sessionId;
+    await assert.rejects(turn(b, disabled, 'hello', []), /did not activate/);
+    assert.equal(launchArgs(b.session(disabled)).includes('--agent'), false);
+    b.spawnProcess = (exe, args, options) => spawnProcess(exe, args, { ...options, env: { ...options.env, AGY_FIXTURE_MCP_OFF: 'ready' } });
+    const unready = (await b.newSession({ cwd: root, mcpServers: [{ name: 'fixture', command: process.execPath, args: [], env: [] }] })).sessionId;
+    await assert.rejects(turn(b, unready, 'hello', []), /did not activate and initialize/);
+    assert.equal(b.session(unready).mcpBound.size, 1); assert.equal(b.session(unready).mcpReady.size, 0);
+    await b.close();
+    await assert.rejects(readFile(join(root, '.agents', 'plugins', `kiki-acp-${disabled}`, 'plugin.json')), { code: 'ENOENT' });
+  } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('session bootstrap reports readiness only after its actual stdio consumer lists target tools', async () => {
+  const { Client } = await import(pathToFileURL(createRequire(new URL('../../packages/agent-core-v2/package.json', import.meta.url)).resolve('@modelcontextprotocol/sdk/client/index.js')).href);
+  const { StdioClientTransport } = await import(pathToFileURL(createRequire(new URL('../../packages/agent-core-v2/package.json', import.meta.url)).resolve('@modelcontextprotocol/sdk/client/stdio.js')).href);
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const root = await mkdtemp(join(tmpdir(), 'agy-bootstrap-ready-'));
+  const b = bridge();
+  const script = `const r=require('node:readline').createInterface({input:process.stdin});r.on('line',l=>{const q=JSON.parse(l);if(q.id===undefined)return;const result=q.method==='initialize'?{protocolVersion:q.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'neutral',version:'1'}}:{tools:[{name:'ping',inputSchema:{type:'object'}}]};console.log(JSON.stringify({jsonrpc:'2.0',id:q.id,result}));});`;
+  const id = (await b.newSession({ cwd: root, mcpServers: [{ name: 'fixture', command: process.execPath, args: ['-e', script], env: [] }] })).sessionId;
+  const s = b.session(id); const client = new Client({ name: 'neutral-consumer', version: '1' });
+  try {
+    await b.syncPermissionHook(s); await b.registerMcpPlugin(s);
+    assert.equal((await b.bindMcpBootstrap(s, { type: 'mcp_ready', key: Object.keys(s.mcpPlugin.env)[0] })).decision, 'deny');
+    const key = Object.keys(s.mcpPlugin.env)[0];
+    await client.connect(new StdioClientTransport({ command: process.execPath, args: [fileURLToPath(new URL('./agy-cli-acp.mjs', import.meta.url)), '--mcp-stdio', key], env: { ...process.env, ...s.permissionIdentity, ...s.mcpPlugin.env } }));
+    assert.equal(s.mcpBound.size, 1); assert.equal(s.mcpReady.size, 0);
+    assert.equal((await client.listTools()).tools[0].name, 'ping');
+    assert.equal(s.mcpReady.size, 1);
+  } finally { await client.close(); await b.close(); await rm(root, { recursive: true, force: true }); }
 });
 
 test('agy models columns are raw ids; a listed id can be selected and an unknown or conflicting id cannot', async () => {

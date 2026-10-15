@@ -24,7 +24,12 @@ if (args[0] === 'models') {
   process.exit(0);
 }
 const model = args[args.indexOf('--model') + 1];
-const agent = args[args.indexOf('--agent') + 1];
+const agent = args.includes('--agent') ? args[args.indexOf('--agent') + 1] : undefined;
+const { requestHookPermission } = await import('./agy-permission-hook.mjs');
+for (const key of Object.keys(process.env).filter(key => key.startsWith('KIKI_AGY_MCP_') && process.env.AGY_FIXTURE_MCP_OFF !== '1')) {
+  await requestHookPermission({ type: 'mcp_bootstrap', key });
+  if (process.env.AGY_FIXTURE_MCP_OFF !== 'ready') await requestHookPermission({ type: 'mcp_ready', key });
+}
 for await (const line of createInterface({ input: process.stdin })) {
   const input = JSON.parse(line);
   if (!turns) process.stdout.write(JSON.stringify({ event: 'init', conversation_id: conversation,
@@ -74,10 +79,11 @@ for await (const line of createInterface({ input: process.stdin })) {
     process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation, step_update: { ...tool, state: 'ACTIVE' } }) + '\n');
     const result = await invokeHook({ conversationId: conversation, stepIdx: turns, workspacePaths: [process.cwd()], toolCall: { name: 'run_command', args: parameters } });
     const allowed = result.decision === 'allow';
-    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
+    const omitTerminal = input.message.content === 'hook-no-terminal';
+    if (!omitTerminal) process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
       step_update: { ...tool, state: allowed ? 'DONE' : 'ERROR', tool_info: { parameters, output: allowed ? 'directory result' : undefined, error: allowed ? undefined : result.reason } } }) + '\n');
     process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: conversation, status: 'SUCCESS',
-      response: allowed ? 'hook-approved' : '', num_turns: turns, denied_actions: allowed ? undefined : [{ action: 'command', display_name: 'RunCommand' }] } }) + '\n');
+      response: allowed ? 'hook-approved' : '', num_turns: turns, denied_actions: allowed || omitTerminal ? undefined : [{ action: 'command', display_name: 'RunCommand' }] } }) + '\n');
     continue;
   }
   const denied = input.message.content === 'deny';

@@ -18,7 +18,16 @@ import type { ToolInputDisplay } from '#/tool/toolInputDisplay';
 
 export interface ExternalToolPermission {
   readonly name: string;
+  readonly nativeName?: string;
   readonly input: Readonly<Record<string, unknown>>;
+}
+
+function nativeTaskReadName(input: Readonly<Record<string, unknown>>): string | undefined {
+  if (Object.keys(input).some((key) => !['Action', 'TaskId', 'Input'].includes(key)) ||
+      ['TaskId', 'Input'].some((key) => input[key] !== undefined && typeof input[key] !== 'string')) return undefined;
+  if (input['Action'] === 'list') return 'TaskList';
+  if (input['Action'] === 'status' && typeof input['TaskId'] === 'string' && input['TaskId'].length > 0) return 'TaskOutput';
+  return undefined;
 }
 
 export function externalPermissionOverride(context: AgentExecutorContext):
@@ -75,6 +84,12 @@ export function externalToolPermission(value: unknown): ExternalToolPermission |
   if (typeof tool['name'] !== 'string' || tool['name'].length === 0 || tool['input'] === null ||
       typeof tool['input'] !== 'object' || Array.isArray(tool['input'])) return undefined;
   const input = tool['input'] as Record<string, unknown>;
+  if (tool['nativeName'] !== undefined) {
+    if (tool['nativeName'] !== 'manage_task' || tool['name'] !== nativeTaskReadName(input)) return undefined;
+    return { name: tool['name'], nativeName: 'manage_task', input };
+  }
+  const taskRead = tool['name'] === 'manage_task' ? nativeTaskReadName(input) : undefined;
+  if (taskRead !== undefined) return { name: taskRead, nativeName: 'manage_task', input };
   const names: Readonly<Record<string, string>> = { RunCommand: 'Bash', run_command: 'Bash', view_file: 'Read',
     read_file: 'Read', write_to_file: 'Write', replace_file_content: 'Edit', multi_replace_file_content: 'Edit',
     list_directory: 'Glob', find_by_name: 'Glob', grep_search: 'Grep' };
@@ -92,6 +107,8 @@ export async function authorizeExternalTool(
   display: ToolInputDisplay,
 ): Promise<'allow' | 'deny' | 'inherit' | 'cancelled'> {
   signal.throwIfAborted();
+  if (tool.nativeName !== undefined &&
+      (tool.nativeName !== 'manage_task' || tool.name !== nativeTaskReadName(tool.input))) return 'deny';
   if (!externalPermissionHostGate(context)) return 'inherit';
   const override = externalPermissionOverride(context);
   if (override !== undefined) context.agent.accessor.get(IAgentPermissionModeService).setMode(override.mode, 'ambient');
@@ -101,16 +118,33 @@ export async function authorizeExternalTool(
     permissionAuthority: override === undefined ? 'external-inherit' : undefined,
     toolCall: { type: 'function', id: toolCallId, name: tool.name, arguments: JSON.stringify(tool.input) },
     toolCalls: [], args: tool.input, execution };
-  const decision = await context.agent.accessor.get(IAgentPermissionGate).authorize(resolved);
+  const gate = context.agent.accessor.get(IAgentPermissionGate);
+  let nativeApproved = false;
+  if (tool.nativeName !== undefined) {
+    const nativeDecision = await gate.authorize({ ...resolved, permissionAuthority: 'external-inherit',
+      toolCall: { ...resolved.toolCall, name: tool.nativeName }, execution: { ...execution, approvalRule: tool.nativeName } });
+    if (signal.aborted || nativeDecision?.permissionDecision === 'cancelled') return 'cancelled';
+    if (nativeDecision?.veto !== undefined) return 'deny';
+    nativeApproved = nativeDecision?.permissionDecision === 'approved';
+  }
+  const decision = await gate.authorize(resolved);
   return signal.aborted || decision?.permissionDecision === 'cancelled' ? 'cancelled'
     : decision?.veto !== undefined ? 'deny'
-      : override === undefined && decision?.permissionDecision !== 'approved' ? 'inherit' : 'allow';
+      : override === undefined && decision?.permissionDecision !== 'approved' && !nativeApproved ? 'inherit' : 'allow';
 }
 
 async function resolveExternalExecution(context: AgentExecutorContext, tool: ExternalToolPermission,
   display: ToolInputDisplay): Promise<RunnableToolExecution | undefined> {
-  const { name, input } = tool;
-  if (!isToolActive(externalToolPolicy(context), name, name.startsWith('mcp__') ? 'mcp' : 'builtin')) return undefined;
+  const { name, input, nativeName } = tool;
+  const policy = externalToolPolicy(context);
+  if (nativeName === undefined) {
+    if (!isToolActive(policy, name, name.startsWith('mcp__') ? 'mcp' : 'builtin')) return undefined;
+  } else {
+    if ([policy.tools, ...policy.toolAllowPolicies ?? []].some((tools) => tools !== undefined &&
+        !isToolActive({ tools }, name) && !isToolActive({ tools }, nativeName))) return undefined;
+    const exclusions = { disallowedTools: policy.disallowedTools };
+    if (!isToolActive(exclusions, name) || !isToolActive(exclusions, nativeName)) return undefined;
+  }
   const command = input['command'];
   if (name === 'Bash') {
     if (typeof command !== 'string' || command.length === 0) return undefined;

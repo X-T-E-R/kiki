@@ -2,6 +2,7 @@ export const SOURCE_OWNED_ADAPTER_FILES = Object.freeze([
   'agy-cli-acp.mjs',
   'agy-hook-registration.mjs',
   'agy-permission-hook.mjs',
+  'agy-mcp-plugin.mjs',
 ]);
 
 export const SOURCE_OWNED_ADAPTER_ENTRY = 'agy-cli-acp.mjs';
