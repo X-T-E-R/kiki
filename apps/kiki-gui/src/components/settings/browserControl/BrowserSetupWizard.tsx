@@ -31,16 +31,18 @@
  * column would read as a gallery rather than as three answers to one question.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
+import { isBrowserToolPolicyDenied, isBrowserToolPolicyPartiallyDenied } from '@kiki/session-core/settings';
 
 import { useI18n } from '../../../i18n';
 import { ExternalLink } from '../../../host/ExternalLink';
 import { useConnection } from '../../../state/connection';
 import {
-  blockingStep, browserApi, browserKeys, presetAction, presetReadiness, runningStep, warningStep, whenText,
-  type BrowserSetupStatus, type PresetReadiness,
+  blockingStep, browserApi, browserKeys, browserPresetOwnsConnection, browserRealStatus, codexConnectionForPipe, codexConnectionIdForNewPipe,
+  presetAction, presetReadiness, runningStep, warningStep, whenText,
+  type BrowserSetupStatus, type PresetReadiness, type SourceBrowserItem,
 } from '../../../lib/browserRest';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../../controls';
 import { Icon } from '../../icons';
@@ -120,12 +122,207 @@ function BrowserRoute({ preset, active, onSelect }: {
   const { client, scopeId } = useConnection();
   const queryClient = useQueryClient();
   const [feedback, setFeedback] = useState<Feedback>(null);
-  const [busy, setBusy] = useState<'prepare' | 'connect' | 'cancel' | 'open' | 'update' | 'shortcut' | null>(null);
+  const [busy, setBusy] = useState<'prepare' | 'connect' | 'cancel' | 'open' | 'update' | 'shortcut' | 'allow' | 'default' | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [selectedBrowserId, setSelectedBrowserId] = useState(preset.browserId ?? '');
   useEffect(() => {
     setSelectedBrowserId(preset.browserId ?? '');
   }, [preset.browserId]);
+
+  const configQuery = useQuery({
+    queryKey: ['config', scopeId],
+    queryFn: () => client.getConfig(),
+    staleTime: 30_000,
+  });
+
+  const connectionsQuery = useQuery({
+    queryKey: browserKeys.connections(scopeId),
+    queryFn: () => browserApi(client).list(),
+    staleTime: 10_000,
+  });
+
+  const toolPolicyDenied = isBrowserToolPolicyDenied(configQuery.data);
+  const toolPolicyPartial = isBrowserToolPolicyPartiallyDenied(configQuery.data);
+  const connections = connectionsQuery.data?.connections ?? [];
+  const allowedBrowsers = (connectionsQuery.data as { allowedBrowsers?: string[] } | undefined)?.allowedBrowsers
+    ?? (configQuery.data as { browser_control?: { allowedBrowsers?: string[] } } | undefined)?.browser_control?.allowedBrowsers;
+  const isAllowedConfigured = (connectionsQuery.data as { allowedBrowsersConfigured?: boolean } | undefined)?.allowedBrowsersConfigured === true
+    || (configQuery.data as { browser_control?: { allowedBrowsersConfigured?: boolean } } | undefined)?.browser_control?.allowedBrowsersConfigured === true;
+
+  const items: SourceBrowserItem[] = useMemo(() => {
+    const list: SourceBrowserItem[] = [];
+    const seenConnectionIds = new Set<string>();
+    const allowedFor = (connection: { readonly id: string; readonly enabled?: boolean } | undefined): boolean => {
+      if (connection === undefined || connection.enabled === false) return false;
+      if (isAllowedConfigured && allowedBrowsers !== undefined) return allowedBrowsers.includes(connection.id);
+      return true;
+    };
+
+    if (preset.candidates !== undefined && preset.candidates.length > 0) {
+      for (const cand of preset.candidates) {
+        const conn = preset.preset === 'codex-browser'
+          ? codexConnectionForPipe(connections, cand.browserId)
+          : connections.find((connection) => connection.id === preset.connectionId && preset.browserId === cand.browserId);
+        if (conn !== undefined && seenConnectionIds.has(conn.id)) continue;
+        if (conn !== undefined) seenConnectionIds.add(conn.id);
+        const namedThisPipe = preset.browserId === cand.browserId;
+        const isAllowed = allowedFor(conn);
+        const isReady = conn?.status?.state === 'ready' || conn?.status?.state === 'running'
+          || (preset.state === 'connected' && namedThisPipe);
+        const isAuthUnknown = preset.reason === 'approval_unproven' && namedThisPipe;
+        const isLive = conn?.enabled;
+        list.push({
+          id: conn?.id ?? cand.browserId,
+          browserId: cand.browserId,
+          source: preset.preset,
+          name: conn?.name ?? cand.browserId,
+          allowed: isAllowed,
+          realStatus: browserRealStatus({
+            toolPolicyDenied,
+            toolPolicyPartial,
+            ready: isReady,
+            authUnknown: isAuthUnknown,
+            allowed: isAllowed,
+            live: isLive,
+          }),
+          connectionId: conn?.id,
+        });
+      }
+    }
+
+    for (const conn of connections) {
+      if (seenConnectionIds.has(conn.id) || !browserPresetOwnsConnection(preset.preset, conn, preset.connectionId)) continue;
+      seenConnectionIds.add(conn.id);
+      const isAllowed = allowedFor(conn);
+      const isReady = conn.status?.state === 'ready' || conn.status?.state === 'running';
+      const isLive = conn.enabled;
+      list.push({
+        id: conn.id,
+        browserId: conn.type === 'codex-extension' ? (conn.browserId ?? conn.id) : conn.id,
+        source: preset.preset,
+        name: conn.name ?? conn.id,
+        allowed: isAllowed,
+        realStatus: browserRealStatus({
+          toolPolicyDenied,
+          toolPolicyPartial,
+          ready: isReady,
+          allowed: isAllowed,
+          live: isLive,
+        }),
+        connectionId: conn.id,
+      });
+    }
+
+    return list;
+  }, [preset, connections, allowedBrowsers, isAllowedConfigured, toolPolicyDenied, toolPolicyPartial]);
+
+  const allowedCountForRoute = items.filter((item) => item.allowed).length;
+
+  const handleToggleAllow = async (item: SourceBrowserItem, nextChecked: boolean) => {
+    setBusy('allow');
+    setFeedback(null);
+    try {
+      let connectionId = item.connectionId;
+      if (nextChecked && connectionId === undefined) {
+        if (preset.preset !== 'codex-browser') {
+          setFeedback({ tone: 'error', text: t('st.browser.reason.chooseConnection') });
+          return;
+        }
+        const createId = codexConnectionIdForNewPipe(connections, item.browserId);
+        if (createId === undefined) {
+          setFeedback({ tone: 'error', text: t('st.browser.reason.connectionConflict') });
+          return;
+        }
+        const created = await browserApi(client).connectPreset(preset.preset, {
+          connectionId: createId,
+          browserId: item.browserId,
+        });
+        const blocked = created.reason === 'connection_conflict' || created.reason === 'connection_disabled' || created.reason === 'choose_connection';
+        const usable = (created.state === 'ready' || created.state === 'connected') && !blocked && created.connectionId !== undefined;
+        if (!usable) {
+          setFeedback({
+            tone: 'error',
+            text: created.error ?? (created.reason === 'connection_conflict'
+              ? t('st.browser.reason.connectionConflict')
+              : t('st.browser.outcome.connectIncomplete')),
+          });
+          return;
+        }
+        connectionId = created.connectionId;
+      }
+      if (connectionId === undefined) return;
+
+      const rawAllowed = (connectionsQuery.data as { allowedBrowsers?: string[] } | undefined)?.allowedBrowsers
+        ?? (configQuery.data as { browser_control?: { allowedBrowsers?: string[] } } | undefined)?.browser_control?.allowedBrowsers;
+      const isConfigured = (connectionsQuery.data as { allowedBrowsersConfigured?: boolean } | undefined)?.allowedBrowsersConfigured === true
+        || (configQuery.data as { browser_control?: { allowedBrowsersConfigured?: boolean } } | undefined)?.browser_control?.allowedBrowsersConfigured === true;
+      const known = new Set(connections.map((connection) => connection.id));
+      const base = (isConfigured && rawAllowed !== undefined
+        ? [...rawAllowed]
+        : connections.filter((connection) => connection.enabled).map((connection) => connection.id))
+        .filter((id) => known.has(id));
+      const nextAllowed = nextChecked
+        ? [...new Set([...base, connectionId])]
+        : base.filter((id) => id !== connectionId);
+
+      await client.patchConfig({
+        browser_control: { allowed_browsers: nextAllowed },
+      } as import('../../../lib/client').KikiConfigPatch);
+
+      const existingConn = connections.find((connection) => connection.id === connectionId);
+      if (existingConn && existingConn.enabled !== nextChecked) {
+        if (existingConn.type === 'agent-browser-profile') {
+          await browserApi(client).upsert(connectionId, {
+            type: 'agent-browser-profile',
+            name: existingConn.name,
+            enabled: nextChecked,
+            profilePath: existingConn.profilePath,
+            executablePath: existingConn.executablePath,
+            headed: existingConn.headed,
+            driverPath: existingConn.driverPath,
+          });
+        } else if (existingConn.type === 'agent-browser-cdp') {
+          await browserApi(client).upsert(connectionId, {
+            type: 'agent-browser-cdp',
+            name: existingConn.name,
+            enabled: nextChecked,
+            endpoint: { action: 'keep' },
+            driverPath: existingConn.driverPath,
+          });
+        } else if (existingConn.type === 'codex-extension') {
+          await browserApi(client).upsert(connectionId, {
+            type: 'codex-extension',
+            name: existingConn.name,
+            enabled: nextChecked,
+            runtimeRoot: existingConn.runtimeRoot ?? '',
+            browserId: existingConn.browserId ?? item.browserId,
+          });
+        }
+      }
+
+      await queryClient.invalidateQueries({ queryKey: browserKeys.connections(scopeId) });
+      await queryClient.invalidateQueries({ queryKey: browserKeys.presets(scopeId) });
+      await queryClient.invalidateQueries({ queryKey: ['config', scopeId] });
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleDefault = async (connectionId: string, isDefault: boolean) => {
+    setBusy('default');
+    setFeedback(null);
+    try {
+      await browserApi(client).setDefault(isDefault ? undefined : connectionId);
+      await queryClient.invalidateQueries({ queryKey: browserKeys.connections(scopeId) });
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setBusy(null);
+    }
+  };
+
   /** Set by the forced-off line so its fold opens; the fold owns its state. */
   const [openDiagnostics, setDiagnosticsOpen] = useState(false);
 
@@ -395,6 +592,86 @@ function BrowserRoute({ preset, active, onSelect }: {
               ) : null}
             </div>
           )}
+        </div>
+      ) : null}
+
+      {items.length > 0 ? (
+        <div className="mt-3 space-y-2 rounded border border-hairline bg-surface/40 p-2.5" data-browser-source-items={preset.preset}>
+          <div className="flex items-center justify-between text-[12px]">
+            <span className="font-medium text-ink">{t('st.browser.allowCheckbox')}</span>
+            <span className="text-ink-soft" data-browser-allowed-count={preset.preset}>
+              {t('st.browser.allowedCount', { count: allowedCountForRoute })}
+            </span>
+          </div>
+          <div className="space-y-1.5 pt-1">
+            {items.map((item) => {
+              const currentDefault = connectionsQuery.data?.defaultBrowser ?? '';
+              const targetConnId = item.connectionId;
+              const isDefault = targetConnId !== undefined && currentDefault !== '' && currentDefault === targetConnId;
+              return (
+                <div
+                  key={item.id}
+                  className="flex items-center justify-between gap-2.5 rounded px-2 py-1 text-[12px] hover:bg-ink/[0.03]"
+                >
+                  <label className="flex items-center gap-2 min-w-0 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="h-3.5 w-3.5 rounded border-hairline-strong text-selected-ink focus:ring-0 cursor-pointer"
+                      data-browser-allow-checkbox={item.id}
+                      checked={item.allowed}
+                      disabled={busy !== null}
+                      onChange={(e) => { void handleToggleAllow(item, e.target.checked); }}
+                    />
+                    <span className="font-mono text-ink truncate" data-browser-identity={item.browserId}>
+                      {item.name || item.browserId}
+                    </span>
+                    <span className="rounded bg-ink/[0.05] px-1.5 py-0.5 text-[10px] text-ink-soft" data-browser-source-tag={item.source}>
+                      {item.source}
+                    </span>
+                  </label>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {targetConnId !== undefined && (item.allowed || isDefault) ? (
+                      <button
+                        type="button"
+                        data-browser-default-star={targetConnId}
+                        aria-pressed={isDefault}
+                        aria-label={t('st.browser.defaultLabel')}
+                        disabled={busy !== null}
+                        onClick={() => { void handleDefault(targetConnId, isDefault); }}
+                        className={`rounded px-1.5 py-0.5 text-[10px] transition-colors ${
+                          isDefault
+                            ? 'bg-selected text-selected-ink font-medium'
+                            : 'text-ink-faint hover:bg-ink/[0.05] hover:text-ink-soft'
+                        }`}
+                      >
+                        {isDefault ? t('st.models.default') : t('st.models.unstarredTitle')}
+                      </button>
+                    ) : null}
+                    <span
+                      className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                        item.realStatus === 'ready'
+                          ? 'bg-success/10 text-success'
+                          : item.realStatus === 'denied'
+                            ? 'bg-danger/10 text-danger'
+                            : item.realStatus === 'partial'
+                              ? 'bg-amber-ink/10 text-amber-ink'
+                              : item.realStatus === 'auth_unknown'
+                                ? 'bg-amber-ink/10 text-amber-ink'
+                                : item.realStatus === 'allowed'
+                                  ? 'bg-selected-ink/10 text-selected-ink'
+                                  : 'bg-ink/[0.05] text-ink-soft'
+                      }`}
+                      data-browser-status-tag={item.realStatus}
+                    >
+                      {t(`st.browser.status.${
+                        item.realStatus === 'auth_unknown' ? 'authUnknown' : item.realStatus
+                      }`)}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       ) : null}
 

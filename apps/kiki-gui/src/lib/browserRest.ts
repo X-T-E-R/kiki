@@ -7,7 +7,7 @@
  * `list` / `status` read config and in-memory state only.
  */
 
-import { browserFailureSchema } from '@kiki/protocol';
+import { browserFailureSchema, browserIdSchema } from '@kiki/protocol';
 import type { BrowserCatalogResponse, BrowserConnection, BrowserConnectionInput, BrowserControlList, BrowserFailure, BrowserPresetId, BrowserSetupCandidate, BrowserSetupList, BrowserSetupStatus, BrowserStatus, BrowserTab } from '@kiki/protocol';
 
 import type { KikiClient } from './client';
@@ -35,6 +35,86 @@ export type BrowserSetupState = BrowserSetupStatus['state'];
  */
 export const LIVE_STATES: ReadonlySet<string> = new Set(['connecting', 'ready', 'running', 'stopping', 'unconfirmed']);
 export const LIVE_BLOCKING_CONNECT: ReadonlySet<string> = new Set(['connecting', 'ready', 'running', 'stopping']);
+
+export type BrowserItemRealStatus = 'available' | 'allowed' | 'ready' | 'auth_unknown' | 'disconnected' | 'denied' | 'partial';
+
+export interface SourceBrowserItem {
+  readonly id: string;
+  readonly browserId: string;
+  readonly source: string;
+  readonly name: string;
+  readonly allowed: boolean;
+  readonly realStatus: BrowserItemRealStatus;
+  readonly connectionId?: string;
+}
+
+export function browserRealStatus(options: {
+  readonly toolPolicyDenied?: boolean;
+  readonly toolPolicyPartial?: boolean;
+  readonly ready?: boolean;
+  readonly authUnknown?: boolean;
+  readonly allowed?: boolean;
+  readonly live?: boolean;
+}): BrowserItemRealStatus {
+  if (options.toolPolicyDenied) return 'denied';
+  if (options.ready) return 'ready';
+  if (options.authUnknown) return 'auth_unknown';
+  if (options.allowed) return 'allowed';
+  if (options.live === false) return 'disconnected';
+  if (options.toolPolicyPartial) return 'partial';
+  return 'available';
+}
+
+/** Id `connectCodex` stores when the caller does not pass one. The pipe stays on `browserId`. */
+const CODEX_DEFAULT_CONNECTION_ID = 'codex-browser';
+
+/**
+ * The saved Codex connection for a discovered pipe.
+ * Match is `type` plus the stored pipe. A record that never stored a pipe owns
+ * the candidate only when its connection id is that pipe exactly.
+ */
+export function codexConnectionForPipe<T extends Pick<BrowserConnection, 'id' | 'type' | 'browserId'>>(
+  connections: readonly T[],
+  pipe: string,
+): T | undefined {
+  return connections.find((connection) => connection.type === 'codex-extension'
+    && (connection.browserId === pipe || (connection.browserId === undefined && connection.id === pipe)));
+}
+
+/**
+ * Connection id to give setup connect for a pipe that is not registered yet.
+ * Uses the server default while that id is free or already this pipe. A further
+ * pipe uses its own legal connection id so the earlier connection is not rebound.
+ * Undefined when every choice would overwrite a connection that points elsewhere.
+ */
+export function codexConnectionIdForNewPipe(
+  connections: readonly Pick<BrowserConnection, 'id' | 'type' | 'browserId'>[],
+  pipe: string,
+): string | undefined {
+  if (codexConnectionForPipe(connections, pipe) !== undefined) return undefined;
+  const occupant = connections.find((connection) => connection.id === CODEX_DEFAULT_CONNECTION_ID);
+  if (occupant === undefined || (occupant.type === 'codex-extension' && (occupant.browserId === undefined || occupant.browserId === pipe))) {
+    return CODEX_DEFAULT_CONNECTION_ID;
+  }
+  if (browserIdSchema.safeParse(pipe).success && connections.every((connection) => connection.id !== pipe)) return pipe;
+  return undefined;
+}
+
+/**
+ * Whether a saved connection belongs on a setup route.
+ * Codex is the extension type, the managed route is a profile or CDP connection,
+ * and Kimi only the connection the server named — Kimi has no per-browser id.
+ */
+export function browserPresetOwnsConnection(
+  preset: BrowserPresetId,
+  connection: Pick<BrowserConnection, 'id' | 'type'>,
+  namedConnectionId?: string,
+): boolean {
+  if (preset === 'codex-browser') return connection.type === 'codex-extension';
+  if (preset === 'kimi-webbridge') return namedConnectionId !== undefined && connection.id === namedConnectionId;
+  if (preset === 'independent-browser') return connection.type === 'agent-browser-profile' || connection.type === 'agent-browser-cdp';
+  return namedConnectionId !== undefined && connection.id === namedConnectionId;
+}
 
 type BrowserRest = NonNullable<KikiClient['klient']['rest']>['browser'];
 

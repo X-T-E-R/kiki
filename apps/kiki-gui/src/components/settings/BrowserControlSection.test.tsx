@@ -19,7 +19,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { BrowserCatalogResponse, BrowserConnection, BrowserPresetId, BrowserSetupList, BrowserSetupStatus, BrowserStatus, BrowserControlList, BrowserTabsResponse } from '@kiki/protocol';
+import type { BrowserCatalogResponse, BrowserConnection, BrowserPresetId, BrowserSetupList, BrowserSetupStatus, BrowserStatus, BrowserControlList, BrowserTabsResponse, ControlSettingSource } from '@kiki/protocol';
 
 import { I18nProvider } from '../../i18n';
 import { DirtyGuardContext, type DirtyGuardValue } from '../dirtyGuard';
@@ -27,7 +27,17 @@ import { BrowserControlSection } from './BrowserControlSection';
 
 const connection = { scopeId: 'local', sshLabel: null as string | null };
 
-const list = vi.fn<() => Promise<BrowserControlList>>();
+type MockBrowserControlList = {
+  enabled?: boolean;
+  enabledSource?: ControlSettingSource;
+  allowedBrowsers?: string[];
+  allowedBrowsersConfigured?: boolean;
+  allowedBrowsersSource?: ControlSettingSource;
+  connections: (BrowserConnection & { status?: BrowserStatus })[];
+  defaultBrowser?: string;
+};
+
+const list = vi.fn<() => Promise<BrowserControlList | MockBrowserControlList>>();
 const upsert = vi.fn<(id: string, input: unknown) => Promise<{ connection: BrowserConnection }>>();
 const remove = vi.fn<(id: string) => Promise<{ removed: true }>>();
 const setDefault = vi.fn<(browser?: string) => Promise<{ browser?: string }>>();
@@ -51,6 +61,12 @@ const getCapability = vi.fn(async () => ({
   install: { running: false },
 }));
 const revealSecret = vi.fn(async () => ({ value: 'http://127.0.0.1:9222' }));
+const getConfig = vi.fn(async () => ({
+  browser_control: { enabled: true, allowedBrowsers: [] as string[], allowedBrowsersConfigured: false },
+  tools: {},
+}));
+const patchConfig = vi.fn(async (patch: unknown) => patch);
+const setBrowserControlEnabled = vi.fn(async (enabled: boolean) => ({ browser_control: { enabled } }));
 
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({
@@ -58,6 +74,9 @@ vi.mock('../../state/connection', () => ({
       getCapability,
       installCapability: vi.fn(async () => {}),
       revealSecret,
+      getConfig,
+      patchConfig,
+      setBrowserControlEnabled,
       klient: { rest: { browser: { list, upsert, remove, setDefault, status, check, connect, disconnect, tabs, catalog, setupPresets, setupStatus, prepare, connectPreset, openPreset, updatePreset, createShortcut, cancelSetup } } },
     },
     scopeId: connection.scopeId,
@@ -145,6 +164,63 @@ function cdpRow(patch: Partial<BrowserConnection> & { id?: string } = {}): Brows
 let root: Root;
 let container: HTMLDivElement;
 let queries: QueryClient;
+
+/**
+ * The connection store accepts an allow id only when that id is already a
+ * saved connection. A discovered pipe is not such an id until setup connect
+ * returns the connection that owns it.
+ */
+function boundedBrowserStore(seed: {
+  readonly connections: MockBrowserControlList['connections'];
+  readonly allowed: readonly string[];
+  readonly defaultBrowser?: string;
+}) {
+  const state: {
+    connections: MockBrowserControlList['connections'];
+    allowed: string[];
+    defaultBrowser?: string;
+  } = {
+    connections: seed.connections.map((connection) => ({ ...connection })),
+    allowed: [...seed.allowed],
+    ...(seed.defaultBrowser !== undefined ? { defaultBrowser: seed.defaultBrowser } : {}),
+  };
+  const rejectUnknown = (ids: readonly string[]) => {
+    for (const id of ids) {
+      if (!state.connections.some((connection) => connection.id === id)) {
+        throw new Error(`Unknown browser connection "${id}"`);
+      }
+    }
+  };
+  list.mockImplementation(async () => ({
+    enabled: true,
+    enabledSource: 'default',
+    allowedBrowsers: [...state.allowed],
+    allowedBrowsersConfigured: true,
+    allowedBrowsersSource: 'home',
+    ...(state.defaultBrowser !== undefined ? { defaultBrowser: state.defaultBrowser } : {}),
+    connections: state.connections.map((connection) => ({ ...connection })),
+  }));
+  patchConfig.mockImplementation(async (patch: unknown) => {
+    const ids = (patch as { browser_control?: { allowed_browsers?: string[] } }).browser_control?.allowed_browsers;
+    if (ids !== undefined) {
+      rejectUnknown(ids);
+      state.allowed = [...ids];
+    }
+    return patch;
+  });
+  upsert.mockImplementation(async (id: string, input: unknown) => {
+    if (id === 'research') throw new Error('reconfigured research');
+    const row = state.connections.find((connection) => connection.id === id);
+    if (row === undefined) throw new Error(`Unknown browser connection "${id}"`);
+    const body = input as { enabled?: boolean; browserId?: string };
+    if (row.browserId !== undefined && body.browserId !== undefined && body.browserId !== row.browserId) {
+      throw new Error(`rebinding ${id}`);
+    }
+    if (typeof body.enabled === 'boolean') row.enabled = body.enabled;
+    return { connection: row };
+  });
+  return { state, rejectUnknown };
+}
 const reactActEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean };
 
 async function settle() {
@@ -1316,6 +1392,11 @@ describe('BrowserControlSection', () => {
 
     connection.scopeId = 'ssh:office-mac';
     list.mockResolvedValue({
+      enabled: true,
+      enabledSource: 'default',
+      allowedBrowsers: [],
+      allowedBrowsersConfigured: false,
+      allowedBrowsersSource: 'default',
       connections: [profileRow({ id: 'office-mac', name: 'Office Mac' })].map((row) => ({
         ...row,
         status: browserStatus({ browser: row.id, executionHost: 'office-mac-host', ownership: 'managed-profile' }),
@@ -1431,7 +1512,7 @@ describe('BrowserControlSection', () => {
       expect(query('[data-browser-route="codex-browser"] [data-browser-route-connected]')).toBeNull();
       expect(query('[data-browser-route="codex-browser"] [data-browser-route-readiness]')?.textContent).toContain('Ready');
       expect(query('[data-browser-route="codex-browser"] [data-browser-route-readiness]')?.textContent).not.toContain('Connected');
-      expect(query('[data-feedback-tone="info"]')?.textContent).toContain('Connection saved. Complete first-time approval');
+      expect(query('[data-feedback-tone="info"]')?.textContent).toContain('Connection saved. Extension protocol will perform required authorization on invocation.');
       expect(query('[data-feedback-tone="info"]')?.textContent).not.toContain('Connected.');
     });
 
@@ -1523,6 +1604,413 @@ describe('BrowserControlSection', () => {
 
       expect(query('[data-browser-candidate-select]')).not.toBeNull();
       expect(query('[data-browser-candidates-empty]')).toBeNull();
+    });
+
+    it('renders multi-browser allowlist with checkboxes, allows selecting multiple simultaneously, and preserves defaultBrowser', async () => {
+      const connections: MockBrowserControlList['connections'] = [
+        {
+          id: 'work-browser',
+          type: 'codex-extension',
+          name: 'Work browser',
+          enabled: true,
+          browserId: 'codex-browser-use-pipe-1',
+          status: browserStatus({ browser: 'work-browser', state: 'ready', ownership: 'external-browser' }),
+        },
+      ];
+      let currentAllowed: string[] = ['work-browser'];
+      list.mockImplementation(async () => ({
+        enabled: true,
+        enabledSource: 'default',
+        allowedBrowsers: currentAllowed,
+        allowedBrowsersConfigured: true,
+        allowedBrowsersSource: 'home',
+        defaultBrowser: 'work-browser',
+        connections: connections.map((connection) => ({ ...connection })),
+      }));
+      setupPresets.mockResolvedValue({ presets: [codexWithCandidates] });
+
+      await render();
+      await settleUntil('[data-browser-source-items="codex-browser"]');
+
+      const countBadge = query('[data-browser-allowed-count="codex-browser"]');
+      expect(countBadge).not.toBeNull();
+      expect(countBadge?.textContent).toContain('1 allowed');
+      expect(queryAll('[data-browser-route="codex-browser"] [data-browser-allow-checkbox]')).toHaveLength(3);
+      expect(queryAll('[data-browser-allow-checkbox="work-browser"]')).toHaveLength(1);
+
+      const registered = query<HTMLInputElement>('[data-browser-allow-checkbox="work-browser"]');
+      const unregistered = query<HTMLInputElement>('[data-browser-allow-checkbox="codex-browser-use-pipe-2"]');
+      expect(registered?.checked).toBe(true);
+      expect(unregistered?.checked).toBe(false);
+      expect(query('[data-browser-allow-checkbox="codex-browser-use-pipe-1"]')).toBeNull();
+      expect(query('[data-browser-identity="codex-browser-use-pipe-1"]')).not.toBeNull();
+      expect(query('[data-browser-source-tag="codex-browser"]')).not.toBeNull();
+      expect(query('[data-browser-status-tag="ready"]')).not.toBeNull();
+      expect(query('[data-browser-default-star="work-browser"]')?.getAttribute('aria-pressed')).toBe('true');
+
+      connectPreset.mockImplementationOnce(async () => {
+        connections.push({
+          id: 'codex-browser',
+          type: 'codex-extension',
+          name: 'Codex browser extension',
+          enabled: true,
+          browserId: 'codex-browser-use-pipe-2',
+          status: browserStatus({ browser: 'codex-browser', state: 'idle', ownership: 'external-browser' }),
+        });
+        return {
+          ...codexWithCandidates,
+          state: 'ready',
+          reason: undefined,
+          connectionId: 'codex-browser',
+          browserId: 'codex-browser-use-pipe-2',
+        };
+      });
+      patchConfig.mockImplementationOnce(async (patch) => {
+        currentAllowed = (patch as { browser_control?: { allowed_browsers?: string[] } }).browser_control?.allowed_browsers ?? [];
+        return patch;
+      });
+
+      await act(async () => { unregistered?.click(); });
+      await settle();
+
+      expect(connectPreset).toHaveBeenCalledTimes(1);
+      expect(connectPreset).toHaveBeenCalledWith('codex-browser', {
+        connectionId: 'codex-browser',
+        browserId: 'codex-browser-use-pipe-2',
+      });
+      expect(patchConfig).toHaveBeenCalledWith(expect.objectContaining({
+        browser_control: { allowed_browsers: ['work-browser', 'codex-browser'] },
+      }));
+      expect(setDefault).not.toHaveBeenCalled();
+      expect(query('[data-browser-default-star="work-browser"]')?.getAttribute('aria-pressed')).toBe('true');
+    });
+
+    it('allows and clears the registered connection id, connects an unregistered pipe without rebinding or changing the default, and keeps a refused connect retryable', async () => {
+      const store = boundedBrowserStore({
+        defaultBrowser: 'work-browser',
+        allowed: ['work-browser', 'research'],
+        connections: [
+          {
+            id: 'work-browser',
+            type: 'codex-extension',
+            name: 'Work browser',
+            enabled: true,
+            browserId: 'codex-browser-use-pipe-1',
+            runtimeRoot: 'C:\\kiki\\codex\\bridge.exe',
+            status: browserStatus({ browser: 'work-browser', state: 'ready', ownership: 'external-browser' }),
+          },
+          profileRow({ id: 'research', name: 'Research notes' }),
+        ],
+      });
+      setupPresets.mockResolvedValue({ presets: [codexWithCandidates] });
+      const reasons: unknown[] = [];
+      const onRejection = (reason: unknown) => { reasons.push(reason); };
+      process.on('unhandledRejection', onRejection);
+
+      const clickBox = async (id: string) => {
+        const box = query<HTMLInputElement>(`[data-browser-allow-checkbox="${id}"]`);
+        expect(box).not.toBeNull();
+        await act(async () => { box?.click(); });
+        await settle();
+      };
+
+      try {
+        await render();
+        await settleUntil('[data-browser-source-items="codex-browser"]');
+
+        expect(() => { store.rejectUnknown(['codex-browser-use-pipe-1']); }).toThrow('Unknown browser connection "codex-browser-use-pipe-1"');
+        expect(queryAll('[data-browser-route="codex-browser"] [data-browser-allow-checkbox]')).toHaveLength(3);
+        expect(queryAll('[data-browser-allow-checkbox="work-browser"]')).toHaveLength(1);
+        expect(query('[data-browser-route="codex-browser"] [data-browser-allow-checkbox="codex-browser-use-pipe-1"]')).toBeNull();
+        expect(query('[data-browser-route="codex-browser"] [data-browser-allow-checkbox="research"]')).toBeNull();
+        expect(query('[data-browser-identity="codex-browser-use-pipe-1"]')).not.toBeNull();
+        expect(query<HTMLInputElement>('[data-browser-allow-checkbox="work-browser"]')?.checked).toBe(true);
+        expect(query<HTMLInputElement>('[data-browser-allow-checkbox="codex-browser-use-pipe-2"]')?.checked).toBe(false);
+        expect(query('[data-browser-allowed-count="codex-browser"]')?.textContent).toContain('1 allowed');
+        expect(query('[data-browser-allowed-total]')?.textContent).toContain('2 browsers currently allowed');
+
+        await clickBox('work-browser');
+        expect(store.state.allowed).toEqual(['research']);
+        expect(store.state.defaultBrowser).toBe('work-browser');
+        expect(connectPreset).not.toHaveBeenCalled();
+        expect(setDefault).not.toHaveBeenCalled();
+        expect(upsert.mock.calls.map(([id]) => id)).toEqual(['work-browser']);
+        expect(upsert.mock.calls[0]?.[1]).toMatchObject({ type: 'codex-extension', browserId: 'codex-browser-use-pipe-1', enabled: false });
+        expect(query('[data-browser-allowed-count="codex-browser"]')?.textContent).toContain('0 allowed');
+        expect(query('[data-browser-allowed-total]')?.textContent).toContain('1 browsers currently allowed');
+
+        await clickBox('work-browser');
+        expect(store.state.allowed).toEqual(['research', 'work-browser']);
+        expect(store.state.defaultBrowser).toBe('work-browser');
+        expect(connectPreset).not.toHaveBeenCalled();
+        expect(store.state.connections.find((connection) => connection.id === 'work-browser')?.browserId).toBe('codex-browser-use-pipe-1');
+
+        connectPreset.mockRejectedValueOnce(new Error('pipe refused'));
+        await clickBox('codex-browser-use-pipe-2');
+        expect(store.state.allowed).toEqual(['research', 'work-browser']);
+        expect(patchConfig).toHaveBeenCalledTimes(2);
+        expect(query('[data-browser-route="codex-browser"] [data-feedback-tone="error"]')?.textContent).toContain('pipe refused');
+        expect(query<HTMLInputElement>('[data-browser-allow-checkbox="codex-browser-use-pipe-2"]')?.checked).toBe(false);
+        expect(query<HTMLInputElement>('[data-browser-allow-checkbox="codex-browser-use-pipe-2"]')?.disabled).toBe(false);
+
+        connectPreset.mockImplementation(async (presetName: string, input: Record<string, unknown>) => {
+          expect(presetName).toBe('codex-browser');
+          expect(input['setDefault']).not.toBe(true);
+          const connectionId = String(input['connectionId']);
+          const browserId = String(input['browserId']);
+          const occupant = store.state.connections.find((connection) => connection.id === connectionId);
+          if (occupant?.type === 'codex-extension' && occupant.browserId !== undefined && occupant.browserId !== browserId) {
+            return { ...codexWithCandidates, state: 'needs_user_action' as const, reason: 'connection_conflict' };
+          }
+          if (occupant === undefined) {
+            store.state.connections.push({
+              id: connectionId,
+              type: 'codex-extension',
+              name: 'Codex browser extension',
+              enabled: true,
+              browserId,
+              status: browserStatus({ browser: connectionId, state: 'idle', ownership: 'external-browser' }),
+            });
+          }
+          return { ...codexWithCandidates, state: 'ready' as const, reason: undefined, connectionId, browserId };
+        });
+
+        await clickBox('codex-browser-use-pipe-2');
+        expect(connectPreset).toHaveBeenLastCalledWith('codex-browser', {
+          connectionId: 'codex-browser',
+          browserId: 'codex-browser-use-pipe-2',
+        });
+        expect(store.state.allowed).toEqual(['research', 'work-browser', 'codex-browser']);
+        expect(store.state.defaultBrowser).toBe('work-browser');
+        expect(setDefault).not.toHaveBeenCalled();
+        expect(query('[data-browser-route="codex-browser"] [data-feedback-tone="error"]')).toBeNull();
+        expect(queryAll('[data-browser-route="codex-browser"] [data-browser-allow-checkbox]')).toHaveLength(3);
+        expect(query('[data-browser-allow-checkbox="codex-browser-use-pipe-2"]')).toBeNull();
+        expect(query<HTMLInputElement>('[data-browser-allow-checkbox="codex-browser"]')?.checked).toBe(true);
+        expect(query('[data-browser-identity="codex-browser-use-pipe-2"]')).not.toBeNull();
+
+        await clickBox('codex-browser-use-pipe-3');
+        expect(connectPreset).toHaveBeenLastCalledWith('codex-browser', {
+          connectionId: 'codex-browser-use-pipe-3',
+          browserId: 'codex-browser-use-pipe-3',
+        });
+        expect(store.state.allowed).toEqual(['research', 'work-browser', 'codex-browser', 'codex-browser-use-pipe-3']);
+        expect(store.state.connections.find((connection) => connection.id === 'work-browser')?.browserId).toBe('codex-browser-use-pipe-1');
+        expect(store.state.connections.find((connection) => connection.id === 'codex-browser')?.browserId).toBe('codex-browser-use-pipe-2');
+        expect(store.state.defaultBrowser).toBe('work-browser');
+        expect(upsert.mock.calls.every(([id]) => id !== 'research')).toBe(true);
+
+        const connectsAfterCreate = connectPreset.mock.calls.length;
+        await clickBox('codex-browser');
+        expect(connectPreset).toHaveBeenCalledTimes(connectsAfterCreate);
+        expect(store.state.allowed).toEqual(['research', 'work-browser', 'codex-browser-use-pipe-3']);
+        expect(store.state.defaultBrowser).toBe('work-browser');
+        expect(reasons).toEqual([]);
+      } finally {
+        process.off('unhandledRejection', onRejection);
+      }
+    });
+
+    it('shows a readable retryable error when setting the default is refused and leaves the allow list untouched', async () => {
+      const store = boundedBrowserStore({
+        defaultBrowser: 'work-browser',
+        allowed: ['work-browser', 'research'],
+        connections: [
+          {
+            id: 'work-browser',
+            type: 'codex-extension',
+            name: 'Work browser',
+            enabled: true,
+            browserId: 'codex-browser-use-pipe-1',
+            status: browserStatus({ browser: 'work-browser', state: 'ready', ownership: 'external-browser' }),
+          },
+          profileRow({ id: 'research', name: 'Research notes' }),
+        ],
+      });
+      setupPresets.mockResolvedValue({ presets: [codexWithCandidates] });
+      const reasons: unknown[] = [];
+      const onRejection = (reason: unknown) => { reasons.push(reason); };
+      process.on('unhandledRejection', onRejection);
+      try {
+        await render();
+        await settleUntil('[data-browser-default-star="work-browser"]');
+        setDefault.mockRejectedValueOnce(new Error('default refused'));
+
+        await act(async () => { query<HTMLButtonElement>('[data-browser-default-star="work-browser"]')?.click(); });
+        await settle();
+        await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 20); }); });
+
+        expect(reasons).toEqual([]);
+        expect(query('[data-browser-route="codex-browser"] [data-feedback-tone="error"]')?.textContent).toContain('default refused');
+        expect(store.state.allowed).toEqual(['work-browser', 'research']);
+        expect(store.state.defaultBrowser).toBe('work-browser');
+        expect(patchConfig).not.toHaveBeenCalled();
+        expect(connectPreset).not.toHaveBeenCalled();
+        const star = query<HTMLButtonElement>('[data-browser-default-star="work-browser"]');
+        expect(star?.disabled).toBe(false);
+        expect(star?.getAttribute('aria-pressed')).toBe('true');
+
+        setDefault.mockImplementationOnce(async (browser?: string) => {
+          store.state.defaultBrowser = browser;
+          return { browser };
+        });
+        await act(async () => { star?.click(); });
+        await settle();
+
+        expect(setDefault).toHaveBeenCalledTimes(2);
+        expect(setDefault).toHaveBeenLastCalledWith(undefined);
+        expect(store.state.defaultBrowser).toBeUndefined();
+        expect(store.state.allowed).toEqual(['work-browser', 'research']);
+        expect(query('[data-browser-route="codex-browser"] [data-feedback-tone="error"]')).toBeNull();
+        expect(query('[data-browser-default-star="work-browser"]')?.getAttribute('aria-pressed')).toBe('false');
+        expect(reasons).toEqual([]);
+      } finally {
+        process.off('unhandledRejection', onRejection);
+      }
+    });
+  });
+
+  describe('Browser control master enabled switch and tool policy', () => {
+    it('renders master enabled switch, toggles switch calling client contract, and retains connections', async () => {
+      getConfig.mockResolvedValue({
+        browser_control: { enabled: true, allowedBrowsers: ['work'], allowedBrowsersConfigured: true },
+        tools: {},
+      });
+      list.mockResolvedValue({
+        enabled: true,
+        enabledSource: 'default',
+        allowedBrowsers: ['work'],
+        allowedBrowsersConfigured: true,
+        allowedBrowsersSource: 'default',
+        connections: [
+          { ...profileRow({ id: 'work', name: 'Work' }), status: browserStatus({ browser: 'work', state: 'disconnected' }) },
+        ],
+      });
+
+      await render();
+      await settleUntil('[data-browser-control-enabled]');
+
+      const switchBtn = query<HTMLButtonElement>('[data-browser-enabled-switch]');
+      expect(switchBtn).not.toBeNull();
+      expect(switchBtn?.getAttribute('aria-checked')).toBe('true');
+
+      // Allowed total count
+      expect(query('[data-browser-allowed-total]')?.textContent).toContain('1 browsers currently allowed');
+
+      // Toggle switch to off
+      await act(async () => {
+        switchBtn?.click();
+      });
+      await settle();
+
+      expect(setBrowserControlEnabled).toHaveBeenCalledWith(false);
+
+      // Connections card is not deleted
+      expect(query('#st-card-browser-setup')).not.toBeNull();
+    });
+
+    it('displays explicit tool policy denied notice when all browser tools are disabled in policy', async () => {
+      getConfig.mockResolvedValue({
+        browser_control: { enabled: true, allowedBrowsers: [], allowedBrowsersConfigured: false },
+        tools: { disabled: ['BrowserConnections', 'BrowserTabs'] },
+      });
+
+      await render();
+      await settleUntil('[data-browser-control-enabled]');
+
+      const denied = query('[data-browser-toolpolicy-denied]');
+      expect(denied).not.toBeNull();
+      expect(denied?.textContent).toContain('Browser control tools are denied by tool policy.');
+    });
+
+    it('displays partial policy notice when only some browser tools are disabled', async () => {
+      getConfig.mockResolvedValue({
+        browser_control: { enabled: true, allowedBrowsers: [], allowedBrowsersConfigured: false },
+        tools: { disabled: ['BrowserConnections'] },
+      });
+
+      await render();
+      await settleUntil('[data-browser-control-enabled]');
+
+      expect(query('[data-browser-toolpolicy-denied]')).toBeNull();
+      const partial = query('[data-browser-toolpolicy-partial]');
+      expect(partial).not.toBeNull();
+      expect(partial?.textContent).toContain('Some browser control tools are denied by tool policy.');
+    });
+
+    it('supports configured empty list ([]) yielding 0 allowed, selecting 2, and cancelling 1 with consistent master and group counts', async () => {
+      const store = boundedBrowserStore({
+        allowed: [],
+        connections: [
+          {
+            id: 'work-browser',
+            type: 'codex-extension',
+            name: 'Pipe 1',
+            enabled: true,
+            browserId: 'codex-browser-use-pipe-1',
+            status: browserStatus({ browser: 'work-browser', state: 'ready', ownership: 'external-browser' }),
+          },
+          {
+            id: 'lab-browser',
+            type: 'codex-extension',
+            name: 'Pipe 2',
+            enabled: true,
+            browserId: 'codex-browser-use-pipe-2',
+            status: browserStatus({ browser: 'lab-browser', state: 'ready', ownership: 'external-browser' }),
+          },
+        ],
+      });
+
+      setupPresets.mockResolvedValue({
+        presets: [
+          preset({
+            preset: 'codex-browser',
+            displayName: 'Codex Browser',
+            controlSurface: 'browser-connection',
+            state: 'ready',
+            candidates: [
+              { browserId: 'codex-browser-use-pipe-1' },
+              { browserId: 'codex-browser-use-pipe-2' },
+            ],
+          }),
+        ],
+      });
+
+      await render();
+      await settleUntil('[data-browser-source-items="codex-browser"]');
+
+      expect(() => { store.rejectUnknown(['codex-browser-use-pipe-1']); }).toThrow('Unknown browser connection "codex-browser-use-pipe-1"');
+      expect(query('[data-browser-allowed-total]')?.textContent).toContain('0 browsers currently allowed');
+      expect(query('[data-browser-allowed-count="codex-browser"]')?.textContent).toContain('0 allowed');
+      expect(queryAll('[data-browser-route="codex-browser"] [data-browser-allow-checkbox]')).toHaveLength(2);
+      expect(query('[data-browser-allow-checkbox="codex-browser-use-pipe-1"]')).toBeNull();
+      expect(query('[data-browser-identity="codex-browser-use-pipe-1"]')).not.toBeNull();
+      const cb1 = query<HTMLInputElement>('[data-browser-allow-checkbox="work-browser"]');
+      const cb2 = query<HTMLInputElement>('[data-browser-allow-checkbox="lab-browser"]');
+      expect(cb1?.checked).toBe(false);
+      expect(cb2?.checked).toBe(false);
+
+      await act(async () => { cb1?.click(); });
+      await settle();
+      await act(async () => { query<HTMLInputElement>('[data-browser-allow-checkbox="lab-browser"]')?.click(); });
+      await settle();
+
+      expect(store.state.allowed).toEqual(['work-browser', 'lab-browser']);
+      expect(connectPreset).not.toHaveBeenCalled();
+      expect(setDefault).not.toHaveBeenCalled();
+      expect(query('[data-browser-allowed-total]')?.textContent).toContain('2 browsers currently allowed');
+      expect(query('[data-browser-allowed-count="codex-browser"]')?.textContent).toContain('2 allowed');
+
+      await act(async () => { query<HTMLInputElement>('[data-browser-allow-checkbox="work-browser"]')?.click(); });
+      await settle();
+
+      expect(store.state.allowed).toEqual(['lab-browser']);
+      expect(store.state.defaultBrowser).toBeUndefined();
+      expect(query('[data-browser-allowed-total]')?.textContent).toContain('1 browsers currently allowed');
+      expect(query('[data-browser-allowed-count="codex-browser"]')?.textContent).toContain('1 allowed');
+      expect(query<HTMLInputElement>('[data-browser-allow-checkbox="work-browser"]')?.checked).toBe(false);
+      expect(query<HTMLInputElement>('[data-browser-allow-checkbox="lab-browser"]')?.checked).toBe(true);
+      expect(queryAll('[data-browser-route="codex-browser"] [data-browser-allow-checkbox]')).toHaveLength(2);
     });
   });
 });

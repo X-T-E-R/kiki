@@ -94,9 +94,9 @@ export function WebBridgeReadiness() {
   // merely describe it. A required step that is not ready is the one thing the
   // reader has to act on, so it names itself in the first screen.
   const blocking = steps.filter((step) => step.optional !== true && step.state !== 'ok');
-  const daemonFailed = steps.some((step) => step.id === 'daemon' && (step.state === 'missing' || step.state === 'failed'));
-  const installFailed = capability?.install.error !== undefined || steps.some((step) => step.state === 'failed');
-  const needsSetup = capability !== undefined && capability.state !== 'unsupported' && (daemonFailed || installFailed);
+  const runtimeMissing = steps.some((step) => (step.id === 'daemon' || step.id === 'skill') && (step.state === 'missing' || step.state === 'failed'));
+  const stepFailed = steps.some((step) => step.state === 'failed');
+  const needsSetup = capability !== undefined && capability.state !== 'unsupported' && (capability.state === 'not_installed' || runtimeMissing || stepFailed);
   return (
     <SectionCard id="st-card-webbridge" title={t('st.plugins.runtimeTitle')}>
       <div className="space-y-2" data-webbridge-readiness>
