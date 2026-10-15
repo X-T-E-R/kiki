@@ -15,6 +15,7 @@ import {
 } from '#/kosong/contract/errors';
 import { type Message, type StreamedMessagePart, type ToolCall } from '#/kosong/contract/message';
 import { generate as runKosongGenerate } from '#/kosong/contract/generate';
+import { ProtocolAdapterRegistry } from '#/kosong/provider/protocolAdapterRegistry';
 import type { ChatProvider, StreamedMessage } from '#/kosong/contract/provider';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -4563,3 +4564,89 @@ describe('queued manual compaction failures', () => {
     expect(countEvents(ctx.allEvents, 'context.apply_compaction')).toBe(0);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });
+
+
+it.each(['auto', 'summarize'] as const)('automatically compacts 189 mixed images through %s into the next provider request, cold resume, undo and clear', async (contextStrategy) => {
+  const requests: (readonly Message[])[] = [];
+  const generate = realKosongGenerate((attempt, history) => {
+    requests.push(structuredClone(history));
+    return mockStreamedMessage([{ type: 'text', text: contextStrategy === 'summarize' && attempt === 1 ? 'Keep the requested comparison and the user reference image.' : 'Comparison continued.' }]);
+  });
+  const options: TestAgentOptions = { generate, initialConfig: { providers: {}, loopControl: { contextStrategy } } };
+  const configure = (ctx: TestAgentContext) => ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
+  const ctx = testAgent(options);
+  configure(ctx);
+  const images = Array.from({ length: 189 }, (_, index) => ({ type: 'image_url' as const, imageUrl: { url: `https://example.test/sample-${index}.png`, id: `sample-${index}` } }));
+  ctx.context.append({ role: 'user', origin: { kind: 'user' }, content: [
+    { type: 'text', text: 'Compare the supplied samples; preserve the reference image.' }, ...images.slice(0, 5),
+  ], toolCalls: [] });
+  ctx.context.append(textMessage('assistant', 'The original user samples are recorded.'));
+  ctx.context.append({ role: 'assistant', content: [], toolCalls: [{ type: 'function', id: 'old-samples', name: 'Read', arguments: '{}' }] });
+  ctx.context.append({ role: 'tool', toolCallId: 'old-samples', content: [{ type: 'text', text: 'Recorded samples' }, ...images.slice(5, 164)], toolCalls: [] });
+  ctx.context.append(textMessage('assistant', 'The initial comparison is complete.'));
+  ctx.context.append({ role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'Compare these five new inputs next.' }, ...images.slice(164, 169)], toolCalls: [] });
+  ctx.context.append({ role: 'assistant', content: [], toolCalls: [{ type: 'function', id: 'recent-samples', name: 'Read', arguments: '{}' }] });
+  ctx.context.append({ role: 'tool', toolCallId: 'recent-samples', content: [{ type: 'text', text: 'Recent samples' }, ...images.slice(169)], toolCalls: [] });
+  expect(estimateTokensForMessages(ctx.context.get())).toBeGreaterThan(ctx.get(IAgentFullCompactionService).getAutoCompact().tokens);
+  const imageIds = (history: readonly Message[]) => history.flatMap(message => message.content.flatMap(part => part.type === 'image_url' ? [part.imageUrl.id] : []));
+  await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Continue the comparison now; keep this reference.' }, { type: 'image_url', imageUrl: { url: 'https://example.test/reference.png', id: 'reference' } }] });
+  await ctx.untilTurnEnd();
+  await ctx.get(IAgentLoopService).settled();
+  expect(ctx.get(IAgentLoopService).status().lastTurnResult).toBe('completed');
+  const keptUsers = contextStrategy === 'summarize' ? [...images.slice(0, 5), ...images.slice(164, 169)] : [...images.slice(164, 169), ...images.slice(0, 5)];
+  const expected = [...keptUsers, ...images.slice(184)].map(part => part.imageUrl.id).concat('reference');
+  expect(requests).toHaveLength(contextStrategy === 'summarize' ? 2 : 1);
+  expect(imageIds(requests.at(-1)!)).toEqual(expected);
+  expect(estimateTokensForMessages(requests.at(-1)!)).toBeLessThan(40_000);
+  expect(requests.at(-1)!.map(messageText).join('\n')).toContain('Compare the supplied samples; preserve the reference image.');
+  const serializedImages = async (history: readonly Message[]) => {
+    const bodies: string[] = [];
+    const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const request = new Request(input, init);
+      expect(request.url).toBe('https://api.example.test/v1/responses');
+      bodies.push(await request.text());
+      return new Response(JSON.stringify({ error: { message: 'local capture complete' } }), { status: 400, headers: { 'content-type': 'application/json' } });
+    });
+    try {
+      const provider = new ProtocolAdapterRegistry().createChatProvider({ modelName: 'example-vision', protocol: 'openai_responses', apiKey: 'test-key', baseUrl: 'https://api.example.test/v1' });
+      await expect(provider.generate('Compare the samples', [], [...history])).rejects.toThrow();
+      expect(bodies).toHaveLength(1);
+      return [...bodies[0]!.matchAll(/https:\/\/example\.test\/(sample-\d+|reference)\.png/g)].map(match => match[1]);
+    } finally { fetch.mockRestore(); }
+  };
+  expect(await serializedImages(requests.at(-1)!)).toEqual(expected);
+  const records = await ctx.persistedWireRecords();
+  expect(records.filter(record => record.type === 'full_compaction.begin')).toMatchObject([{ source: 'auto' }]);
+  expect(records.filter(record => record.type === 'context.apply_compaction')).toMatchObject([{ strategy: contextStrategy === 'auto' ? 'relay' : 'summarize', compactedCount: contextStrategy === 'summarize' ? 2 : 8 }]);
+  expect(JSON.stringify(records)).toContain('sample-0.png');
+  expect(JSON.stringify(records)).toContain('sample-188.png');
+  await ctx.expectResumeMatches();
+  const cold = testAgent(options);
+  configure(cold);
+  await cold.restore(structuredClone(records));
+  const callsBefore = requests.length;
+  await cold.rpc.prompt({ input: [{ type: 'text', text: 'Continue after cold resume.' }] });
+  await cold.untilTurnEnd();
+  await cold.get(IAgentLoopService).settled();
+  expect(requests).toHaveLength(callsBefore + 1);
+  expect(imageIds(requests.at(-1)!)).toEqual(expected);
+  await cold.rpc.undoHistory({ count: 1 });
+  expect(cold.context.get().map(messageText)).not.toContain('Continue after cold resume.');
+  expect(imageIds(cold.context.get())).toEqual(expected);
+  await cold.expectResumeMatches();
+  const compaction = cold.get(IAgentFullCompactionService);
+  expect(compaction.begin({ source: 'manual', strategy: contextStrategy === 'auto' ? 'relay' : 'summarize' })).toBe(true);
+  await compaction.compacting!.promise;
+  const twice = imageIds(cold.context.get());
+  const secondHistorical = contextStrategy === 'summarize' ? images.slice(1, 5) : images.slice(185);
+  expect([...twice].sort()).toEqual([...images.slice(164, 169), ...secondHistorical].map(part => part.imageUrl.id).concat('reference').sort());
+  await cold.expectResumeMatches();
+  await cold.rpc.prompt({ input: [{ type: 'text', text: 'Continue after the second compaction.' }] });
+  await cold.untilTurnEnd();
+  await cold.get(IAgentLoopService).settled();
+  expect(imageIds(requests.at(-1)!)).toEqual(twice);
+  expect(await serializedImages(requests.at(-1)!)).toEqual(twice);
+  await cold.rpc.clearContext({});
+  expect(cold.context.get()).toEqual([]);
+  await cold.expectResumeMatches();
+}, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);

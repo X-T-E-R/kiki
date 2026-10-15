@@ -7,7 +7,7 @@ import type { ContextMessage, PromptOrigin } from './types';
 export const COMPACTION_SUMMARY_PREFIX = summaryPrefixTemplate.trimEnd();
 export const COMPACT_USER_MESSAGE_MAX_TOKENS = 20_000;
 export const COMPACT_USER_MESSAGE_HEAD_TOKENS = 2_000;
-/** Media copied off removed messages onto the handoff, separate from images that already sit on kept input. */
+/** Shared budget for historical media in kept input, the handoff and the uncompacted tail. Pending user input is preserved. */
 export const COMPACT_CARRIED_MEDIA_MAX_TOKENS = COMPACT_USER_MESSAGE_MAX_TOKENS;
 export const COMPACTION_ELISION_VARIANT = 'compaction_elision';
 
@@ -83,8 +83,9 @@ export function buildContextCompactionShape(
     };
   }
 
-  const compactedHistory = history.slice(0, input.compactedCount);
-  const tail = history
+  const media = selectCompactionMedia(history, COMPACT_CARRIED_MEDIA_MAX_TOKENS, estimate);
+  const compactedHistory = media.messages.slice(0, input.compactedCount);
+  const tail = media.messages
     .slice(input.compactedCount)
     .filter((message) => message.origin?.kind !== 'injection');
   const compactableUserMessages = collectCompactableUserMessages(compactedHistory);
@@ -96,9 +97,8 @@ export function buildContextCompactionShape(
   );
   const keptUserMessages = [...selection.head, ...selection.tail];
   const contextSummary = input.contextSummary ?? input.summary;
-  const carriedAll = retainedContinuableMedia(history, input.compactedCount, [...keptUserMessages, ...tail]);
-  const carriedMedia = limitCarriedMedia(carriedAll, COMPACT_CARRIED_MEDIA_MAX_TOKENS, estimate);
-  const mediaOmitted = carriedAll.length - carriedMedia.length;
+  const carriedMedia = retainedContinuableMedia(media.messages, input.compactedCount, [...keptUserMessages, ...tail]);
+  const mediaOmitted = media.omitted;
   const elisionMessage = selection.elided || mediaOmitted > 0
     ? createCompactionElisionMessage(selection.omittedTokens, mediaOmitted)
     : undefined;
@@ -174,6 +174,41 @@ export function retainedContinuableMedia(
   return parts;
 }
 
+function selectCompactionMedia(
+  history: readonly ContextMessage[], maxTokens: number, estimate: TokenEstimate,
+): { messages: readonly ContextMessage[]; omitted: number } {
+  const completed = history.findLastIndex(message => message.role === 'assistant' && message.toolCalls.length === 0);
+  const selected = new Map<number, Set<number>>();
+  let remaining = maxTokens;
+  let omitted = 0;
+  for (const userInput of [true, false]) {
+    for (let index = history.length - 1; index >= 0; index--) {
+      const message = history[index]!;
+      if (isRealUserInput(message) !== userInput) continue;
+      const currentInput = userInput && index > completed;
+      for (let partIndex = message.content.length - 1; partIndex >= 0; partIndex--) {
+        const part = message.content[partIndex]!;
+        if (!isContinuableMediaPart(part)) continue;
+        const cost = mediaPartTokens(part, estimate);
+        if (!currentInput && cost > remaining) { omitted++; continue; }
+        if (!currentInput) remaining -= cost;
+        let parts = selected.get(index);
+        if (parts === undefined) { parts = new Set(); selected.set(index, parts); }
+        parts.add(partIndex);
+      }
+    }
+  }
+  if (omitted === 0) return { messages: history, omitted };
+  return {
+    messages: history.map((message, index) => {
+      const content = message.content.filter((part, partIndex) => !isContinuableMediaPart(part) || selected.get(index)?.has(partIndex));
+      if (content.length === message.content.length) return message;
+      return { ...message, content: content.length > 0 ? content : [{ type: 'text', text: '[Earlier media is available in session history.]' }] };
+    }),
+    omitted,
+  };
+}
+
 export function limitCarriedMedia(
   parts: readonly ContentPart[],
   maxTokens: number,
@@ -217,7 +252,7 @@ export function buildCompactionElisionText(omittedTokens: number, mediaOmitted =
   }
   if (mediaOmitted > 0) {
     notes.push(
-      'Older media from removed messages was not reattached. The most recent media that fits stays with the handoff; the files themselves are unchanged.',
+      'Older media beyond the shared compaction limit was not reattached. Pending user input keeps its media; other user-provided media takes priority over tool media within that limit. Use history tools to retrieve other original media when needed; the files themselves are unchanged.',
     );
   }
   return wrapSystemReminder(notes.join(' '));

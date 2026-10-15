@@ -1119,6 +1119,36 @@ describe('Agent context', () => {
     });
   });
 
+  it('shares the historical media budget across kept user input, prior handoffs, injections and the uncompacted tail', () => {
+    const image = (id: string) => ({ type: 'image_url' as const, imageUrl: { url: `https://example.test/${id}.png`, id } });
+    const media = (prefix: string, count: number) => Array.from({ length: count }, (_, index) => image(`${prefix}-${index}`));
+    const history: ContextMessage[] = [
+      { role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'Keep this instruction' }, ...media('user', 4)], toolCalls: [] },
+      { role: 'assistant', content: [{ type: 'text', text: 'Completed comparison' }], toolCalls: [] },
+      { ...createCompactionSummaryMessage('Previous handoff'), content: [{ type: 'text', text: 'Previous handoff' }, ...media('previous', 12)] },
+      { role: 'tool', content: media('old-tool', 12), toolCalls: [], toolCallId: 'old' },
+      { role: 'user', origin: { kind: 'injection', variant: 'runtime_snapshot' }, content: media('injection', 12), toolCalls: [] },
+      { role: 'tool', content: [{ type: 'text', text: 'Recent evidence' }, ...media('tail', 12)], toolCalls: [], toolCallId: 'recent' },
+      { role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'Compare these new images' }, ...media('pending', 2)], toolCalls: [] },
+    ];
+    const ids = (messages: readonly ContextMessage[]) => messages.flatMap(message => message.content.flatMap(part => part.type === 'image_url' ? [part.imageUrl.id] : [])).sort();
+    const before = ids(history);
+    const shape = buildContextCompactionShape(history, { summary: 'New handoff', compactedCount: 5, tokensBefore: 100_000 });
+    const expected = [...media('user', 4), ...media('tail', 12).slice(6), ...media('pending', 2)].map(part => part.imageUrl.id).sort();
+    expect(ids(shape.messages)).toEqual(expected);
+    expect(shape.messages.find(message => message.toolCallId === 'recent')?.content).toHaveLength(7);
+    expect(shape.messages.map(textOf).join('\n')).toContain('Keep this instruction');
+    expect(ids(history)).toEqual(before);
+    const restored = applyContextCompactionRecord(history, { ...shape, shapeVersion: 1 });
+    expect(ids(restored)).toEqual(expected);
+    const secondHistory = [...restored, { role: 'assistant' as const, content: [{ type: 'text' as const, text: 'Finished' }], toolCalls: [] }];
+    const second = buildContextCompactionShape(secondHistory, { summary: 'Second handoff', compactedCount: secondHistory.length, tokensBefore: shape.tokensAfter });
+    expect(ids(second.messages)).toHaveLength(10);
+    expect(ids(second.messages)).toContain('pending-1');
+    expect(ids(second.messages).some(id => id?.startsWith('previous') || id?.startsWith('injection'))).toBe(false);
+    expect(ids(applyContextCompactionRecord(secondHistory, { ...second, shapeVersion: 1 }))).toEqual(ids(second.messages));
+  });
+
   describe('legacy compaction layout', () => {
     it('keeps the verbatim summary followed by the uncompacted tail', () => {
       const history = [userMessage('old'), userMessage('tail')];
