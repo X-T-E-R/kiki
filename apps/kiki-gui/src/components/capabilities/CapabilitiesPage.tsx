@@ -27,7 +27,7 @@ import { useConnection } from '../../state/connection';
 import { Dialog } from '../Dialog';
 import { Icon } from '../icons';
 import { MediaPreviewProvider } from '../mediaPreview';
-import { PageHeader } from '../PageChrome';
+import { PAGE_WIDTH, PageHeader } from '../PageChrome';
 import { SearchableSelect } from '../SearchableSelect';
 import { AddSourceDialog } from './AddSourceDialog';
 import { CapabilityGlyph } from './CapabilityIcon';
@@ -247,12 +247,12 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
     // "Loading…" forever rather than admitting it cannot resolve.
     <MediaPreviewProvider sessionId={sessionId}>
       <div className="flex h-full min-h-0 flex-col bg-paper" data-capabilities-page={tab}>
-        <PageHeader title={t('cap.page.title')} onToggleSidebar={onToggleSidebar}>
+        <PageHeader title={t('cap.page.title')} onToggleSidebar={onToggleSidebar} width="split">
           <IconButton glyph={<CapabilityGlyph kind="refresh" />} label={t('cap.page.refresh')} onClick={refresh} dataAttrs={{ 'data-capabilities-refresh': '' }} />
           {addControl}
         </PageHeader>
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto w-full max-w-[880px] px-4 pb-16 pt-4 min-[720px]:px-8 min-[720px]:pt-8">
+          <div className={`mx-auto w-full ${PAGE_WIDTH.split} px-4 pb-16 pt-4 min-[720px]:px-8 min-[720px]:pt-8`}>
             {/* One row of chrome: which kind of capability, and (for Skills and
                 MCP) which workspace. Every view below starts at its own
                 switch + search. */}

@@ -301,10 +301,12 @@ export function PluginSettingsForm({ pluginId }: { readonly pluginId: string }) 
           </details>
         ) : null}
       </fieldset>
-      <SettingsDraftFooter saved={justSaved} id={`plugin-settings-${pluginId}`} dirty={dirty} saving={saving}
-        onSave={() => void save()}
-        onDiscard={() => { setDraft(baseline); setIssue(null); setFeedback(null); }} />
-      <FeedbackLine feedback={feedback} />
+      <div className="sticky bottom-0 z-10 bg-paper/95 py-2 backdrop-blur-[2px]" data-plugin-settings-sticky-footer>
+        <SettingsDraftFooter saved={justSaved} id={`plugin-settings-${pluginId}`} dirty={dirty} saving={saving}
+          onSave={() => void save()}
+          onDiscard={() => { setDraft(baseline); setIssue(null); setFeedback(null); }} />
+        <FeedbackLine feedback={feedback} />
+      </div>
     </section>
   );
 }

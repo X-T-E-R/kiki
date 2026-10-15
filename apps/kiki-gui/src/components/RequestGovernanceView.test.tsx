@@ -204,6 +204,32 @@ describe('live request governance', () => {
     expect(container.textContent).not.toContain('session_3f9e1ab7');
     expect(container.querySelector('[data-governance-dimensions]')?.textContent).toContain('Subagents');
   });
+
+  it('hides RequestGovernanceBadge when unavailable or idle and shows it when active or stale', async () => {
+    vi.useFakeTimers();
+    connection.wsStatus = 'open';
+    connection.client.getRequestGovernance.mockRejectedValueOnce(new Error('unavailable'));
+    const { container, render } = mount('realtime', true);
+    await settle(render);
+    expect(container.querySelector('[data-request-governance-badge]')).toBeNull();
+
+    connection.client.getRequestGovernance.mockResolvedValueOnce({
+      ...snapshot,
+      active: 0,
+      queued: 0,
+      dimensions: [],
+    });
+    await act(async () => { render(); await vi.advanceTimersByTimeAsync(1100); });
+    expect(container.querySelector('[data-request-governance-badge]')).toBeNull();
+
+    connection.client.getRequestGovernance.mockResolvedValueOnce({
+      ...snapshot,
+      active: 2,
+      queued: 0,
+    });
+    await act(async () => { render(); await vi.advanceTimersByTimeAsync(1100); });
+    expect(container.querySelector('[data-request-governance-badge]')?.textContent).toBe('2');
+  });
 });
 
 describe('limit rules editor', () => {

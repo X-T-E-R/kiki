@@ -11,11 +11,13 @@
  * empty form or sending the reader somewhere else to find the same switch.
  */
 
-import { useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useCallback, useMemo, useState, useSyncExternalStore } from 'react';
+import { useQueryClient, type QueryClient, type QueryKey } from '@tanstack/react-query';
+import { Link, useNavigate } from 'react-router-dom';
 
+import type { PluginUsageResponse } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
-import { installedPluginsPath } from '@kiki/session-core/settings';
+import { installedPluginsPath, workspacesSettingsPath } from '@kiki/session-core/settings';
 
 import { useI18n } from '../../../i18n';
 import type { PluginSummary } from '../../../lib/client';
@@ -23,12 +25,15 @@ import { pluginOrigin, type PluginOrigin } from '../../../lib/pluginCatalog';
 import { useConnection } from '../../../state/connection';
 import { ConfirmDialog } from '../../ConfirmDialog';
 import { CapabilityIcon } from '../../capabilities/CapabilityIcon';
+import { LINK_CLASS } from '../../capabilities/CapabilityLink';
 import { PluginSettingsForm } from '../../capabilities/PluginSettingsForm';
+import { isStaleRevision, isStaleScope, scopeOf } from '../../capabilities/pluginUsage';
 import { Tag } from '../../capabilities/primitives';
 import { useInstalledPlugins, useInvalidatePlugins, usePluginInfo, usePluginMarketplace } from '../../capabilities/usePlugins';
 import { PluginSettingsPanel, settingsPanelOf } from './PluginSettingsPanel';
 import { FeedbackLine, InlineError, Toggle } from '../../controls';
 import { Icon } from '../../icons';
+import { SettingsSegmented } from '../SettingsPrimitives';
 import { DANGER_GHOST_BUTTON, SECONDARY_BUTTON } from '../../ui';
 
 const ORIGIN_KEYS = {
@@ -69,9 +74,162 @@ export function PluginSettingsPage({ pluginId }: { readonly pluginId: string }) 
   return (
     <div className="space-y-6" data-plugin-settings-page={plugin.id}>
       <PluginHeader plugin={plugin} origin={pluginOrigin(plugin, entries.data?.entries ?? [])} />
+      <PluginEffectiveScope plugin={plugin} />
       <PluginSettingsBody plugin={plugin} />
       <PluginManagement plugin={plugin} />
     </div>
+  );
+}
+
+interface CachedWorkspaceUsage {
+  readonly queryKey: QueryKey;
+  readonly response: PluginUsageResponse;
+  readonly item: PluginUsageResponse['plugins'][number];
+}
+
+/**
+ * Primitive cache token for one plugin. Workspace id, revision, this plugin's
+ * override and the server's name — not the usage document. `useSyncExternalStore`
+ * compares it with `Object.is`, so an unchanged cache does not re-render.
+ */
+export function workspaceUsageCacheToken(queryClient: QueryClient, pluginId: string): string {
+  const parts: string[] = [];
+  for (const [, data] of queryClient.getQueriesData<PluginUsageResponse>({ queryKey: ['plugin-usage'] })) {
+    if (data?.target.workspace_id === undefined || data.target.session_id !== undefined) continue;
+    const item = data.plugins.find((candidate) => candidate.id === pluginId);
+    parts.push(`${data.target.workspace_id}\u0001${data.revision}\u0001${item?.override ?? ''}\u0001${data.target.name}`);
+  }
+  parts.sort();
+  return parts.join('\u0002');
+}
+
+/** Follows workspace usage already in the cache. Subscribing to the cache does not register a usage query. */
+export function useWorkspaceUsageCacheToken(pluginId: string): string {
+  const queryClient = useQueryClient();
+  const subscribe = useCallback(
+    (listener: () => void) => queryClient.getQueryCache().subscribe(listener),
+    [queryClient],
+  );
+  const read = useCallback(
+    () => workspaceUsageCacheToken(queryClient, pluginId),
+    [queryClient, pluginId],
+  );
+  return useSyncExternalStore(subscribe, read, read);
+}
+
+/** Workspace usage already in memory. Reading the cache does not register a usage query. */
+function cachedWorkspaceUsages(queryClient: QueryClient, pluginId: string): readonly CachedWorkspaceUsage[] {
+  const found = new Map<string, CachedWorkspaceUsage>();
+  for (const [queryKey, data] of queryClient.getQueriesData<PluginUsageResponse>({ queryKey: ['plugin-usage'] })) {
+    if (data?.target.workspace_id === undefined || data.target.session_id !== undefined) continue;
+    const item = data.plugins.find((candidate) => candidate.id === pluginId);
+    if (item === undefined) continue;
+    const previous = found.get(data.target.workspace_id);
+    if (previous !== undefined && isStaleRevision(previous.response.revision, data.revision)) continue;
+    found.set(data.target.workspace_id, { queryKey, response: data, item });
+  }
+  return [...found.values()].sort((a, b) => a.response.target.workspace_id.localeCompare(b.response.target.workspace_id));
+}
+
+function PluginEffectiveScope({ plugin }: { readonly plugin: PluginSummary }) {
+  const { t, locale } = useI18n();
+  const { client } = useConnection();
+  const queryClient = useQueryClient();
+  const invalidate = useInvalidatePlugins();
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<unknown>(null);
+  const usageCacheToken = useWorkspaceUsageCacheToken(plugin.id);
+  const cachedWorkspaceUsage = useMemo(
+    () => cachedWorkspaceUsages(queryClient, plugin.id),
+    [queryClient, plugin.id, usageCacheToken],
+  );
+
+  const enableEverywhere = async () => {
+    setBusy(true);
+    setFailure(null);
+    try {
+      await client.setPluginEnabled(plugin.id, true);
+      await invalidate();
+    } catch (error) {
+      setFailure(error);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const setWorkspaceOverride = async (entry: CachedWorkspaceUsage, override: 'inherit' | 'on' | 'off') => {
+    if (typeof client.setPluginUsage !== 'function') return;
+    const workspaceId = entry.response.target.workspace_id;
+    setBusy(true);
+    setFailure(null);
+    try {
+      const response = await client.setPluginUsage({
+        target: { workspace_id: workspaceId },
+        plugin_id: plugin.id,
+        override,
+      });
+      if (!isStaleScope(response, scopeOf(entry.response))) {
+        const prev = queryClient.getQueryData<PluginUsageResponse>(entry.queryKey);
+        if (prev === undefined || !isStaleRevision(prev.revision, response.revision)) {
+          queryClient.setQueryData(entry.queryKey, response);
+        }
+      }
+      await invalidate();
+    } catch (error) {
+      setFailure(error);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="space-y-2 border-t border-hairline pt-4" data-plugin-effective-scope={plugin.id}>
+      <div className="flex flex-wrap items-center justify-between gap-2 text-[12px]">
+        <span className="text-ink-soft" data-plugin-scope-global={plugin.globalEnabled ? 'on' : 'off'}>
+          {plugin.globalEnabled ? t('st.plugins.globalDefaultOn') : t('st.plugins.globalDefaultOff')}
+        </span>
+        <div className="flex flex-wrap items-center gap-3">
+          {plugin.enabled && !plugin.globalEnabled ? (
+            <button
+              type="button"
+              data-plugin-enable-everywhere={plugin.id}
+              disabled={busy}
+              onClick={() => { void enableEverywhere(); }}
+              className="rounded text-[12px] text-ink-soft underline decoration-dotted underline-offset-2 transition-colors hover:text-ink disabled:opacity-50"
+            >
+              {t('st.plugins.enableEverywhere')}
+            </button>
+          ) : null}
+          <Link to={workspacesSettingsPath()} className={LINK_CLASS} data-plugin-scope-workspaces>
+            {t('st.workspaces.title')}
+            <Icon name="arrowRight" size={14} />
+          </Link>
+        </div>
+      </div>
+      {cachedWorkspaceUsage.map((entry) => (
+        <div key={entry.response.target.workspace_id} className="flex flex-wrap items-center justify-between gap-2 text-[12px]" data-plugin-scope-workspace={entry.response.target.workspace_id}>
+          <span className="text-ink-soft">{entry.response.target.name}</span>
+          <SettingsSegmented
+            choices={[
+              { value: 'inherit', label: t('rail.plugins.restore') },
+              { value: 'on', label: t('cap.state.on') },
+              { value: 'off', label: t('cap.state.off') },
+            ]}
+            value={entry.item.override}
+            disabled={!plugin.enabled || busy}
+            onChange={(next) => { void setWorkspaceOverride(entry, next); }}
+            ariaLabel={entry.response.target.name}
+            dataAttr="data-plugin-workspace-override"
+          />
+        </div>
+      ))}
+      {!plugin.enabled ? (
+        <p className="text-[12px] text-ink-faint" data-plugin-scope-locked>
+          {t('rail.plugins.reason.homeOff')}
+        </p>
+      ) : null}
+      {failure !== null ? <FeedbackLine feedback={{ tone: 'error', text: errorText(locale, failure) }} /> : null}
+    </section>
   );
 }
 

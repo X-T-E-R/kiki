@@ -48,7 +48,7 @@ import { useThreadTitle } from '../lib/threadTitles';
 import { useConnection } from '../state/connection';
 import { ConfirmDialog } from './ConfirmDialog';
 import { CronTaskEditor } from './CronTaskEditor';
-import { PageHeader, useWorkspaceScope } from './PageChrome';
+import { PAGE_WIDTH, PageHeader, useWorkspaceScope } from './PageChrome';
 import { useNow } from './RelativeTime';
 import { DANGER_GHOST_BUTTON, PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 import { WorkspaceScopeControl } from './WorkspaceScopeControl';
@@ -688,7 +688,7 @@ export function CronPage({ sessions, workspaceOptions, onNavigate, onToggleSideb
 
   return (
     <div data-cron-page className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
-      <PageHeader title={t('cron.panel.title')} onToggleSidebar={onToggleSidebar}>
+      <PageHeader title={t('cron.panel.title')} onToggleSidebar={onToggleSidebar} width="split">
         <button
           type="button"
           data-cron-create
@@ -707,30 +707,32 @@ export function CronPage({ sessions, workspaceOptions, onNavigate, onToggleSideb
           {t('cron.panel.refresh')}
         </button>
       </PageHeader>
-      <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-hairline px-4 py-2 lg:px-6">
-        <WorkspaceScopeControl workspaces={workspaceOptions} value={scope} onChange={setScope} />
-        {sessionScope !== undefined ? (
-          <span data-cron-session-scope={sessionScope} className="inline-flex min-w-0 items-center gap-1.5 text-[12px] text-ink-faint">
-            <span className="shrink-0">{t('cron.scope.session')}</span>
-            <span className="min-w-0 max-w-56 truncate text-ink-soft" title={sessionScope}>
-              {sessionsById.get(sessionScope)?.title ?? sessionScope}
+      <div className="shrink-0 border-b border-hairline px-4 py-2 lg:px-6">
+        <div className={`mx-auto flex w-full ${PAGE_WIDTH.split} flex-wrap items-center gap-x-4 gap-y-2`}>
+          <WorkspaceScopeControl workspaces={workspaceOptions} value={scope} onChange={setScope} />
+          {sessionScope !== undefined ? (
+            <span data-cron-session-scope={sessionScope} className="inline-flex min-w-0 items-center gap-1.5 text-[12px] text-ink-faint">
+              <span className="shrink-0">{t('cron.scope.session')}</span>
+              <span className="min-w-0 max-w-56 truncate text-ink-soft" title={sessionScope}>
+                {sessionsById.get(sessionScope)?.title ?? sessionScope}
+              </span>
+              <button
+                type="button"
+                data-cron-session-clear
+                onClick={clearSessionScope}
+                className="shrink-0 font-medium text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline"
+              >
+                {t('cron.scope.sessionClear')}
+              </button>
             </span>
-            <button
-              type="button"
-              data-cron-session-clear
-              onClick={clearSessionScope}
-              className="shrink-0 font-medium text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline"
-            >
-              {t('cron.scope.sessionClear')}
-            </button>
-          </span>
-        ) : null}
-        {tasksQuery.data !== undefined ? (
-          <p data-cron-summary className="ml-auto text-[12px] text-ink-faint tabular-nums">
-            {tp('cron.panel.count', tasks.length)}
-            {tasks.length > 0 ? ` · ${tp('cron.summary.active', activeTasks.length)} · ${tp('cron.summary.paused', pausedTasks.length)}` : ''}
-          </p>
-        ) : null}
+          ) : null}
+          {tasksQuery.data !== undefined ? (
+            <p data-cron-summary className="ml-auto text-[12px] text-ink-faint tabular-nums">
+              {tp('cron.panel.count', tasks.length)}
+              {tasks.length > 0 ? ` · ${tp('cron.summary.active', activeTasks.length)} · ${tp('cron.summary.paused', pausedTasks.length)}` : ''}
+            </p>
+          ) : null}
+        </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-5 pb-8 lg:px-6" data-cron-panel-body>
@@ -757,14 +759,14 @@ export function CronPage({ sessions, workspaceOptions, onNavigate, onToggleSideb
             </button>
           </div>
         ) : tasks.length === 0 && sessionScope !== undefined ? (
-          <div data-cron-session-empty className="mx-auto max-w-[960px] py-10">
+          <div data-cron-session-empty className={`mx-auto ${PAGE_WIDTH.split} py-10`}>
             <p className="text-[13px] text-ink-soft">{t('cron.scope.sessionEmpty')}</p>
             <button type="button" onClick={clearSessionScope} className="mt-1 text-[13px] font-medium text-ink underline underline-offset-2">
               {t('cron.scope.sessionClear')}
             </button>
           </div>
         ) : tasks.length === 0 && scope !== undefined && allTasks.length > 0 ? (
-          <div data-cron-scope-empty className="mx-auto max-w-[960px] py-10">
+          <div data-cron-scope-empty className={`mx-auto ${PAGE_WIDTH.split} py-10`}>
             <p className="text-[13px] text-ink-soft">{t('cron.scope.empty')}</p>
             <button type="button" onClick={() => { setScope(undefined); }} className="mt-1 text-[13px] font-medium text-ink underline underline-offset-2">
               {t('cron.scope.showAll')}
@@ -793,7 +795,7 @@ export function CronPage({ sessions, workspaceOptions, onNavigate, onToggleSideb
           </div>
         ) : (
           <>
-            <div className="mx-auto max-w-[960px] space-y-6" data-cron-list>
+            <div className={`mx-auto ${PAGE_WIDTH.split} space-y-6`} data-cron-list>
               {section('active', activeTasks)}
               {section('paused', pausedTasks)}
             </div>

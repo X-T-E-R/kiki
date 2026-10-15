@@ -369,13 +369,13 @@ function RosterGroup({ row, onToggle }: { row: Extract<RosterRow, { kind: 'group
   return (
     <button
       type="button"
-      data-roster-done-group
+      data-roster-done-group=""
       aria-expanded={row.open}
       onClick={onToggle}
       className="row-interactive flex h-8 w-full items-center pr-2 text-left text-[12.5px] text-ink-soft hover:text-ink"
     >
       <span className="flex w-6 shrink-0 justify-center"><DisclosureChevron open={row.open} /></span>
-      <span className={RAIL_MARK}><LifeMark markId="roster-done-group" life="done" still /></span>
+      <span className={RAIL_MARK}><LifeMark markId="roster-ended-group" life="done" still /></span>
       {tp('inspector.endedGroup', row.count)}
     </button>
   );
@@ -437,7 +437,7 @@ export const AgentRoster = memo(function AgentRoster({
     estimateSize: (index) => (model.rows[index]?.kind === 'group' ? GROUP_HEIGHT : ROW_HEIGHT),
     getItemKey: (index) => {
       const row = model.rows[index];
-      return row === undefined ? index : row.kind === 'group' ? '__done' : row.node.agentId;
+      return row === undefined ? index : row.kind === 'group' ? `__${row.bucket}` : row.node.agentId;
     },
     overscan: 8,
     initialRect: { width: 300, height: 480 },
@@ -512,7 +512,7 @@ export const AgentRoster = memo(function AgentRoster({
               ))}
             </div>
           ) : model.rows.map((row) => (
-            <div key={row.kind === 'group' ? '__done' : row.node.agentId} role="listitem" data-rail-item>
+            <div key={row.kind === 'group' ? `__${row.bucket}` : row.node.agentId} role="listitem" data-rail-item>
               {renderRow(row)}
             </div>
           ))}

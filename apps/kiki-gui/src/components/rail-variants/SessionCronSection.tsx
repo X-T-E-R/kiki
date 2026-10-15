@@ -245,6 +245,9 @@ function SessionCronList({ sessionId, client }: { readonly sessionId: string; re
   const manage = useCallback(() => {
     void navigate(`/cron?session=${encodeURIComponent(sessionId)}`);
   }, [navigate, sessionId]);
+  if (loaded && tasks.length === 0 && !read.hasNextPage && !read.isError && failed === null) {
+    return null;
+  }
   return (
     <section data-rail-cron="" aria-labelledby="rail-cron-head">
       <CronHead
@@ -268,11 +271,7 @@ function SessionCronList({ sessionId, client }: { readonly sessionId: string; re
                 {t('common.retry')}
               </button>
             </p>
-          ) : !loaded ? null : tasks.length === 0 ? (
-            <p data-rail-cron-empty className="pb-0.5 text-[12.5px] leading-relaxed text-ink-faint">
-              {t('rail.cron.empty')}
-            </p>
-          ) : (
+          ) : !loaded || tasks.length === 0 ? null : (
             <>
               <ul className="space-y-0.5">
                 {shown.map((task) => (

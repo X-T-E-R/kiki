@@ -277,12 +277,22 @@ describe('SessionCronSection', () => {
     expect(rowIds()).toEqual(['task-1']);
   });
 
-  it('states an empty list in one line and keeps the way to manage it', async () => {
-    seed([]);
-    const block = await mount();
-    expect(block.querySelector('[data-rail-cron-empty]')!.textContent).toBe('暂无定时任务');
-    expect(rowIds()).toHaveLength(0);
-    expect(block.querySelector<HTMLElement>('[data-rail-cron-manage]')!.textContent).toBe('管理定时任务');
+  it('omits the block when confirmed empty while keeping pending and error states visible', async () => {
+    let resolveRead: ((value: ListCronTasksResponse) => void) | undefined;
+    listCronTasks.mockImplementation(() => new Promise<ListCronTasksResponse>((resolve) => {
+      resolveRead = resolve;
+    }));
+    await render();
+    await settle(2);
+    // Loading state stays visible until the read confirms zero tasks.
+    expect(container.querySelector('[data-rail-cron]')).not.toBeNull();
+    expect(container.querySelector('[data-rail-cron-manage]')).not.toBeNull();
+    await act(async () => {
+      resolveRead?.({ items: [], has_more: false });
+    });
+    await settle();
+    expect(container.querySelector('[data-rail-cron]')).toBeNull();
+    expect(container.querySelector('[data-rail-cron-empty]')).toBeNull();
   });
 
   it('claims nothing at all without a connection', async () => {

@@ -216,6 +216,22 @@ describe('RightRail fixed and switchable parts', () => {
 
   it('keeps every fixed part, the agents section included, in both modes', async () => {
     const rail = await renderRail({ sessionPending: [pendingApproval] });
+    const standardReadingOrder = [
+      '[data-inspector-needs-you]',
+      '[data-rail-agent-panel-slot]',
+      '#rail-todos',
+      '[data-inspector-agents]',
+      '[data-tasks-scroll]',
+      '[data-rail-session-cron]',
+      '[data-rail-persona-settings]',
+      '[data-inspector-tail]',
+    ].map((selector) => rail.querySelector(selector));
+    expect(standardReadingOrder.every((node) => node !== null)).toBe(true);
+    for (let index = 1; index < standardReadingOrder.length; index += 1) {
+      const before = standardReadingOrder[index - 1]!;
+      const after = standardReadingOrder[index]!;
+      expect(before.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    }
     const standard = fixedParts(rail);
     const standardHtml = [...rail.querySelectorAll('[data-inspector-agents], [data-rail-profile-head]')].map((node) => node.outerHTML);
     await choose(rail, 'cockpit');
@@ -480,16 +496,16 @@ describe('RightRail shared chapters', () => {
     expect(now?.textContent).toContain('Needs you');
     expect(child.querySelector('[data-subagent-context] [data-rail-locate]')).not.toBeNull();
     expect(child.querySelector('[data-agent-tree]')).toBeNull();
-    // Reading order: the pinned profile head and Now, then the agent's own
-    // checklist, its tasks, context and cost, and the folded tail.
+    // Reading order: the pinned profile head and Now, then context and cost
+    // (overview), the agent's own checklist, its tasks, and the folded tail.
     const scroll = child.querySelector('[data-agent-panel-scroll]')!;
     expect(scroll.querySelector('[data-inspector-setup]')).toBeNull();
     const order = [
       scroll.querySelector('[data-rail-profile-head]'),
       now,
+      scroll.querySelector('[data-rail-agent-panel-slot]'),
       scroll.querySelector('[data-panel-props="work"]'),
       scroll.querySelector('[data-tasks-scroll]'),
-      scroll.querySelector('[data-rail-agent-panel-slot]'),
       scroll.querySelector('[data-inspector-tail]'),
     ];
     expect(order.every((node) => node !== null)).toBe(true);
@@ -498,6 +514,7 @@ describe('RightRail shared chapters', () => {
       const after = order[index]!;
       expect(before === after || (before.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true);
     }
+    expect(scroll.querySelector('[data-inspector-tail] [data-rail-cron-tail-manage]')).not.toBeNull();
     // Every slice describes the focused agent.
     for (const slice of child.querySelectorAll('[data-panel-props]')) {
       expect(slice.getAttribute('data-panel-agent')).toBe('agent-1');

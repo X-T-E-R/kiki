@@ -46,9 +46,10 @@ function editorErrorText(error: unknown, t?: (key: I18nKey) => string): string {
 export function RequestGovernanceBadge({ compact = false }: { compact?: boolean }) {
   const { snapshot, stale } = useRequestGovernance();
   const { t } = useI18n();
-  const title = snapshot === undefined
-    ? t('usage.governance.unavailable')
-    : `${t('usage.governance.badge', { active: snapshot.active, queued: snapshot.queued })}${stale ? ` · ${t('usage.governance.stale', { time: snapshot.asOf })}` : ''}`;
+  if (snapshot === undefined || (snapshot.active === 0 && snapshot.queued === 0 && !stale)) {
+    return null;
+  }
+  const title = `${t('usage.governance.badge', { active: snapshot.active, queued: snapshot.queued })}${stale ? ` · ${t('usage.governance.stale', { time: snapshot.asOf })}` : ''}`;
   return (
     <span
       data-request-governance-badge
@@ -59,8 +60,8 @@ export function RequestGovernanceBadge({ compact = false }: { compact?: boolean 
         ? 'absolute -right-2 -bottom-1 rounded bg-paper px-0.5 font-mono text-[9px] leading-3 text-ink-faint tabular-nums'
         : 'ml-auto shrink-0 font-mono text-[11px] text-ink-faint tabular-nums'}
     >
-      {snapshot === undefined ? '—' : `${snapshot.active}${!compact && snapshot.queued > 0 ? ` · +${snapshot.queued}` : ''}`}
-      {!compact && stale && snapshot !== undefined ? ' ◦' : ''}
+      {`${snapshot.active}${!compact && snapshot.queued > 0 ? ` · +${snapshot.queued}` : ''}`}
+      {!compact && stale ? ' ◦' : ''}
     </span>
   );
 }

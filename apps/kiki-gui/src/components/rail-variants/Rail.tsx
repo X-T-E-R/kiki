@@ -1,22 +1,23 @@
 /**
  * The right rail: one page per agent, the same component for the main agent
- * and every subagent. Top to bottom:
+ * and every subagent. Top to bottom in standard mode:
  *
  *   head       who this page is about, the 标准 / 驾驶舱 switch, close  fixed
  *   现在        profile head, what the agent is doing, its actions  fixed
- *   待办        checklist, notes, plan                             fixed
- *   定时任务    what this conversation scheduled for itself        fixed
  *   等你处理    decision stack, from any depth                     fixed
+ *   概览        standard figures | cockpit session graph           switches
+ *   待办        checklist, notes, plan                             fixed
  *   智能体      the team under this agent                          fixed
  *   后台任务                                                       fixed
- *   概览        standard figures | cockpit session graph           switches
- *   能力 · 动态 · 会话信息, folded                                  fixed
+ *   定时任务    what this conversation scheduled for itself        fixed
+ *   角色更新                                                       fixed
+ *   能力 · 动态 · 会话信息 · 定时任务, folded                       fixed
  *
  * The cockpit reorders the same sections: its subject is the whole session,
- * so the execution graph comes first, then the instruments, then what waits
- * on the reader, then the shared agent roster, then background detail. Every
- * section is the same component it is in standard mode, so the roster keeps
- * its filtering and its actions and losing nothing when the mode changes.
+ * so the execution graph comes first, then what waits on the reader, then the
+ * shared agent roster, then background detail, then checklist/cron/persona.
+ * Every section is the same component it is in standard mode, so the roster
+ * keeps its filtering and its actions and loses nothing when the mode changes.
  *
  * Cockpit temporarily widens this rail into the preview's space. Standard
  * mode restores the original layout. `railVisibility` owns the differences
@@ -583,7 +584,10 @@ export function Rail({
   // Every one of these is the same component standard mode renders, so the
   // shared roster keeps its selection, its filter and its actions.
   const todosSection = (
-    <div id="rail-todos" className={`space-y-3 empty:hidden [&:not(:has(>:not(:empty)))]:hidden ${SECTION} [&_[data-agent-todo-section]]:hidden [&_[data-agent-todos-status]]:hidden`}>
+    <div
+      id="rail-todos"
+      className={`space-y-3 empty:hidden [&:not(:has(>:not(:empty)))]:hidden [&_[data-agent-notes-state=empty]]:hidden [&_[data-agent-panel-part=work]:has([data-agent-notes-state=empty]):not(:has([data-agent-hooks-section],[data-agent-plan],[data-agent-plan-error]))]:hidden [&:has([data-agent-notes-state=empty]):not(:has([data-rail-todos],[data-agent-hooks-section],[data-agent-plan],[data-agent-plan-error]))]:hidden ${SECTION} [&_[data-agent-todo-section]]:hidden [&_[data-agent-todos-status]]:hidden`}
+    >
       <RailTodos sessionId={state.sessionId} agentId={focusedAgentId} state={state} />
       <AgentPanelContainer key={`work:${agentPanelKey}`} state={state} forest={forest} agentId={focusedAgentId} part="work" />
     </div>
@@ -683,12 +687,9 @@ export function Rail({
       </div>
     </section>
   );
-  // Standard reads one agent at a time, so the overview sits with the rest of
-  // its sections. The cockpit is about the session as a whole: the graph takes
-  // the first screen, the instruments follow it, and what waits on the reader
-  // comes before the lists they would otherwise have to scroll to reach.
-  // A section that renders nothing is dropped, so the order is also what
-  // decides what the rail actually has to show.
+  // Standard puts pending decisions and context/cost figures ahead of checklists
+  // and rosters; the cockpit leads with the session execution graph, followed by
+  // pending items and rosters. Sections that render nothing collapse in place.
   const orderedSections = (mode === 'cockpit'
     ? [
       ['overview', overviewSection],
@@ -700,13 +701,13 @@ export function Rail({
       ['persona', personaSection],
     ] as const
     : [
-      ['todos', todosSection],
-      ['cron', cronSection],
-      ['persona', personaSection],
       ['needsYou', needsYouSection],
+      ['overview', overviewSection],
+      ['todos', todosSection],
       ['roster', rosterSection],
       ['tasks', tasksSection],
-      ['overview', overviewSection],
+      ['cron', cronSection],
+      ['persona', personaSection],
     ] as const
   ).filter(([, section]) => section !== null);
   return (
@@ -799,10 +800,9 @@ export function Rail({
 
       {/* One page per agent: switching agents raises the new page into place. */}
       <div key={focusedAgentId} className="rail-page">
-      {/* The same sections in both modes, ordered for what each mode is about:
-          standard reads one agent, so its checklist leads; the cockpit reads
-          the session, so the execution graph does. Nothing is duplicated and
-          nothing is dropped. */}
+      {/* The same sections in both modes: standard leads with pending items and
+          overview figures before checklists and rosters; cockpit leads with the
+          session execution graph. Nothing is duplicated and nothing is dropped. */}
       {orderedSections.map(([key, section]) => (
         <Fragment key={key}>{section}</Fragment>
       ))}
@@ -831,6 +831,21 @@ export function Rail({
               <InspectorRow label={t('rail.updatedRow')}><RelativeTime at={session.updated_at} /></InspectorRow>
             </dl>
           </RailSection>
+        ) : null}
+        {state.sessionId.trim() !== '' ? (
+          <dl data-inspector-cron-tail>
+            <InspectorRow label={t('rail.cron.title')}>
+              <button
+                type="button"
+                data-rail-cron-tail-manage
+                onClick={() => { void navigate(`/cron?session=${encodeURIComponent(state.sessionId)}`); }}
+                className={INSPECTOR_LINK}
+              >
+                {t('rail.cron.manage')}
+                <Icon name="arrowRight" size={12} className="text-ink-faint" />
+              </button>
+            </InspectorRow>
+          </dl>
         ) : null}
       </div>
       </div>

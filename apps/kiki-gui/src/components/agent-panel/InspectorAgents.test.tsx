@@ -106,8 +106,13 @@ describe('AgentRoster metadata identity and state', () => {
     expect(named?.getAttribute('data-agent-name-source')).toBe('user_label');
     expect(named?.getAttribute('title')).toContain('Status: session registry');
     expect(container.querySelector('[data-agent-id="idle"]')?.getAttribute('data-roster-bucket')).toBe('idle');
-    expect(container.querySelector('[data-agent-id="unknown"]')?.getAttribute('data-roster-bucket')).toBe('unknown');
-    expect(container.querySelector('[data-agent-id="unknown"]')?.textContent).toContain('Name not registered');
+    expect(container.querySelector('[data-roster-unknown-group]')).toBeNull();
+    const unknown = container.querySelector('[data-agent-id="unknown"]');
+    expect(unknown?.getAttribute('data-roster-bucket')).toBe('unknown');
+    expect(unknown?.querySelector('[data-agent-status]')?.textContent).toBe('Status unknown');
+    expect(unknown?.querySelector('[data-life]')).toBeNull();
+    expect(unknown?.textContent).toContain('Name not registered');
+    expect(unknown?.textContent).not.toContain('Idle');
     expect(container.querySelector('[data-agent-id="lost"]')?.textContent).toContain('Lost');
     expect(container.textContent).not.toContain('Working');
   });
@@ -135,6 +140,8 @@ it('keeps historical duration fixed, omits missing execution timing and only tic
   expect(state('untimed')?.textContent).toBe('Completed');
   expect(state('idle')?.textContent).toBe('Idle');
   expect(state('unknown')?.textContent).toBe('Status unknown');
+  expect(state('unknown')?.getAttribute('data-agent-status')).toBe('unknown');
+  expect(container.querySelector('[data-roster-unknown-group]')).toBeNull();
   expect(state('live')?.textContent).toBe('72h 0m');
   for (const id of ['done', 'untimed', 'idle', 'unknown']) {
     expect(state(id)?.className).not.toContain('text-success');

@@ -13,6 +13,8 @@ import type { CapabilityStatus, PluginInfo, PluginMarketplaceEntry, PluginMarket
 import { PluginsView, type PluginsRoute } from '../capabilities/PluginsView';
 import { BrowserControlSection } from './BrowserControlSection';
 import { PluginsSection } from './PluginsSection';
+import { InstalledPluginsList } from './plugins/InstalledPluginsList';
+import { PluginSettingsPage } from './plugins/PluginSettingsPage';
 import { InstallFlow } from '../capabilities/InstallFlow';
 import { SettingsNavTree } from './SettingsNav';
 
@@ -1105,5 +1107,143 @@ describe('InstallFlow scope choice', () => {
     await click(container.querySelector('[data-install-confirm]')!);
     await flush();
     expect(setPluginUsage).not.toHaveBeenCalled();
+  });
+
+  it('renders PluginEffectiveScope on the plugin settings page and sticky draft footer on the form', async () => {
+    getPluginSettings.mockResolvedValue({
+      schema: { schema: { properties: { workspace: { type: 'string', title: 'Workspace' } } } },
+      values: { workspace: 'notes-1' },
+      secretsConfigured: [],
+    });
+    const container = await renderPlugin('notes');
+    for (let attempt = 0; attempt < 20 && container.querySelector('[data-plugin-settings="notes"]') === null; attempt += 1) await flush();
+    const scopeCard = container.querySelector('[data-plugin-effective-scope="notes"]');
+    expect(scopeCard).not.toBeNull();
+    expect(scopeCard?.querySelector('[data-plugin-scope-global="on"]')).not.toBeNull();
+    expect(scopeCard?.querySelector('[data-plugin-scope-workspaces]')?.getAttribute('href')).toBe('/settings/workspaces');
+    expect(container.querySelector('[data-plugin-settings-sticky-footer]')).not.toBeNull();
+  });
+});
+
+describe('workspace usage cache subscription', () => {
+  function usage(workspaceId: string, name: string, revision: number, override: 'on' | 'off' | 'inherit') {
+    return {
+      home_id: 'home',
+      target: { workspace_id: workspaceId, name, root: '/work' },
+      revision,
+      apply_state: 'applied' as const,
+      errors: [] as string[],
+      plugins: [{
+        id: 'notes',
+        displayName: 'Notes',
+        home_enabled: true,
+        global_enabled: true,
+        state: 'ok' as const,
+        override,
+        effective: override === 'on',
+        app_service: false,
+        skillCount: 0,
+        mcpServerCount: 0,
+      }],
+    };
+  }
+
+  function pressed(container: HTMLElement, workspaceId: string): string | null {
+    const row = container.querySelector(`[data-plugin-scope-workspace="${workspaceId}"]`);
+    return row?.querySelector('[aria-pressed="true"]')?.getAttribute('data-plugin-workspace-override') ?? null;
+  }
+
+  async function renderSurfaces(queryClient: QueryClient): Promise<HTMLDivElement> {
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <MemoryRouter>
+              <InstalledPluginsList />
+              <PluginSettingsPage pluginId="notes" />
+            </MemoryRouter>
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+    for (let attempt = 0; attempt < 20 && container.querySelector('[data-plugin-effective-scope="notes"]') === null; attempt += 1) await flush();
+    return container;
+  }
+
+  it('follows workspace cache edits without calling getPluginUsage', async () => {
+    const getPluginUsage = vi.fn(async () => {
+      throw new Error('getPluginUsage');
+    });
+    const setPluginUsage = vi.fn(async () => usage('ws-a', 'Alpha', 3, 'on'));
+    Object.assign(mocks.client, { getPluginUsage, setPluginUsage });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const alpha = ['plugin-usage', { workspace_id: 'ws-a' }] as const;
+    const beta = ['plugin-usage', { workspace_id: 'ws-b' }] as const;
+    queryClient.setQueryData(alpha, usage('ws-a', 'Alpha', 4, 'on'));
+
+    const container = await renderSurfaces(queryClient);
+    const summary = () => container.querySelector('[data-plugin-row="notes"] [data-plugin-scope-summary]')?.textContent ?? '';
+    expect(pressed(container, 'ws-a')).toBe('on');
+    expect(summary()).toContain('Alpha: On');
+    expect(queryClient.getQueryCache().findAll({ queryKey: ['plugin-usage'] }).every((query) => query.getObserversCount() === 0)).toBe(true);
+
+    await act(async () => {
+      queryClient.setQueryData(alpha, usage('ws-a', 'Alpha', 5, 'off'));
+    });
+    expect(pressed(container, 'ws-a')).toBe('off');
+    expect(summary()).toContain('Alpha: Off');
+
+    await act(async () => {
+      queryClient.setQueryData(beta, usage('ws-b', 'Beta', 1, 'on'));
+    });
+    expect(pressed(container, 'ws-b')).toBe('on');
+    expect(summary()).toContain('Alpha: Off');
+    expect(summary()).toContain('Beta: On');
+
+    await act(async () => {
+      queryClient.removeQueries({ queryKey: beta, exact: true });
+    });
+    expect(container.querySelector('[data-plugin-scope-workspace="ws-b"]')).toBeNull();
+    expect(summary()).not.toContain('Beta');
+    expect(pressed(container, 'ws-a')).toBe('off');
+
+    await act(async () => {
+      queryClient.setQueryData(['plugin-usage', { workspace_id: 'ws-a', stale: true }], usage('ws-a', 'Alpha', 2, 'on'));
+      queryClient.setQueryData(['plugin-usage', { session_id: 'sess-1' }], {
+        ...usage('ws-a', 'Sessionish', 9, 'on'),
+        target: { workspace_id: 'ws-a', name: 'Sessionish', root: '/work', session_id: 'sess-1' },
+      });
+    });
+    expect(pressed(container, 'ws-a')).toBe('off');
+    expect(summary()).not.toContain('Sessionish');
+    expect(container.querySelectorAll('[data-plugin-scope-workspace="ws-a"]')).toHaveLength(1);
+
+    await click(container.querySelector('[data-plugin-scope-workspace="ws-a"] [data-plugin-workspace-override="on"]')!);
+    for (let attempt = 0; attempt < 20 && setPluginUsage.mock.calls.length === 0; attempt += 1) await flush();
+    expect(setPluginUsage).toHaveBeenCalledWith({
+      target: { workspace_id: 'ws-a' },
+      plugin_id: 'notes',
+      override: 'on',
+    });
+    expect(pressed(container, 'ws-a')).toBe('off');
+    expect(getPluginUsage).not.toHaveBeenCalled();
+    expect(queryClient.getQueryCache().findAll({ queryKey: ['plugin-usage'] }).every((query) => query.getObserversCount() === 0)).toBe(true);
+
+    await act(async () => {
+      queryClient.setQueryData(alpha, usage('ws-a', 'Alpha', 6, 'inherit'));
+    });
+    expect(queryClient.getQueryData(alpha)).toMatchObject({ revision: 6, plugins: [{ override: 'inherit' }] });
+    expect(queryClient.getQueryData(['plugin-usage', { workspace_id: 'ws-a', stale: true }])).toMatchObject({ revision: 2, plugins: [{ override: 'on' }] });
+    expect(pressed(container, 'ws-a')).toBe('inherit');
+    expect(summary()).not.toContain('Alpha: On');
+    expect(summary()).not.toContain('Alpha: Off');
+    expect(getPluginUsage).not.toHaveBeenCalled();
+    expect(queryClient.getQueryCache().findAll({ queryKey: ['plugin-usage'] }).every((query) => query.getObserversCount() === 0)).toBe(true);
   });
 });

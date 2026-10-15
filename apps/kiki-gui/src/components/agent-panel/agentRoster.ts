@@ -59,6 +59,8 @@ export interface RosterAgentRow {
 
 export interface RosterGroupRow {
   readonly kind: 'group';
+  /** Only settled agents fold. Unknown stays a row: it is not idle and not finished. */
+  readonly bucket: 'ended';
   readonly count: number;
   readonly open: boolean;
 }
@@ -201,6 +203,8 @@ export function buildRoster(input: RosterInput): RosterModel {
     for (const child of byUrgency(kids.get(node.agentId) ?? [])) emit(child, depth + 1);
   };
   const ordered = byUrgency(top);
+  // Unknown stays in the open list with waiting, running and idle. Folding it
+  // would hide historical agents behind a new control and read as idle.
   const active = ordered.filter((node) => subtreeRank.get(node.agentId)! < RANK.ended);
   const settled = ordered.filter((node) => subtreeRank.get(node.agentId)! === RANK.ended);
   for (const node of active) emit(node, 0);
@@ -209,7 +213,7 @@ export function buildRoster(input: RosterInput): RosterModel {
     if (settled.length <= 3) {
       for (const node of settled) emit(node, 0);
     } else {
-      rows.push({ kind: 'group', count: settled.length, open: doneOpen });
+      rows.push({ kind: 'group', bucket: 'ended', count: settled.length, open: doneOpen });
       if (doneOpen) for (const node of settled) emit(node, 0);
     }
   }

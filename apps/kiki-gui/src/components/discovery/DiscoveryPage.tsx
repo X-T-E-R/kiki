@@ -21,6 +21,7 @@ import { useDiscovery } from './DiscoveryContext';
 import { DiscoveryRouteRow } from './DiscoveryRouteRow';
 import { MODEL_SETTINGS_HREF, ModelConnectionEntry, useModelConnection } from './ModelConnectionEntry';
 import { useGuardedNavigate } from '../dirtyGuard';
+import { PAGE_WIDTH } from '../PageChrome';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 
 function RouteMicroWireframe({ routeId }: { readonly routeId: string }) {
@@ -132,7 +133,7 @@ export function DiscoveryPage({
         </div>
       </WorkspaceHeader>
 
-      <main className="mx-auto w-full max-w-[840px] flex-1 px-6 py-8">
+      <main className={`mx-auto w-full ${PAGE_WIDTH.reading} flex-1 px-6 py-8`}>
         {/* Intro Banner */}
         <section data-discovery-welcome className="rounded-2xl border border-hairline bg-paper p-6 shadow-[var(--kiki-sheet-shadow)]">
           <div className="flex flex-wrap items-center gap-2 text-[12px] font-medium text-ink-soft">

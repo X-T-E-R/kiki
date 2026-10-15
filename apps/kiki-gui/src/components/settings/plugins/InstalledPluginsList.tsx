@@ -17,9 +17,11 @@
  * or a removal made on either surface is what the other one shows.
  */
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 
+import type { PluginUsageResponse } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 import { pluginSettingsPath } from '@kiki/session-core/settings';
 
@@ -35,6 +37,7 @@ import { FeedbackLine, InlineError, Toggle } from '../../controls';
 import { Icon } from '../../icons';
 import { SECONDARY_BUTTON } from '../../ui';
 import { SectionCard } from '../SectionCard';
+import { useWorkspaceUsageCacheToken } from './PluginSettingsPage';
 
 /** Where a plugin came from, in the words the plugin list already uses. */
 const ORIGIN_KEYS = {
@@ -118,10 +121,30 @@ function InstalledPluginRow({ plugin, origin, onOpen }: {
 }) {
   const { t, locale } = useI18n();
   const { client } = useConnection();
+  const queryClient = useQueryClient();
   const invalidate = useInvalidatePlugins();
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<unknown>(null);
   const broken = plugin.state === 'error' || plugin.hasErrors;
+
+  const usageCacheToken = useWorkspaceUsageCacheToken(plugin.id);
+  const cachedWorkspaceOverrides = useMemo(() => {
+    const found = new Map<string, { name: string; override: 'inherit' | 'on' | 'off'; revision: number }>();
+    for (const [, data] of queryClient.getQueriesData<PluginUsageResponse>({ queryKey: ['plugin-usage'] })) {
+      if (data?.target.workspace_id === undefined || data.target.session_id !== undefined) continue;
+      const item = data.plugins.find((candidate) => candidate.id === plugin.id);
+      if (item === undefined) continue;
+      const previous = found.get(data.target.workspace_id);
+      if (previous !== undefined && data.revision < previous.revision) continue;
+      found.set(data.target.workspace_id, { name: data.target.name, override: item.override, revision: data.revision });
+    }
+    return [...found.values()]
+      .filter((entry) => entry.override !== 'inherit')
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [queryClient, plugin.id, usageCacheToken]);
+  const scopeSummary = cachedWorkspaceOverrides
+    .map((entry) => `${entry.name}: ${entry.override === 'on' ? t('cap.state.on') : t('cap.state.off')}`)
+    .join(' · ');
 
   const toggle = async (enabled: boolean) => {
     setBusy(true);
@@ -167,8 +190,10 @@ function InstalledPluginRow({ plugin, origin, onOpen }: {
               className="mt-0.5 block truncate text-[11px] leading-4 text-ink-faint"
               title={t('st.plugins.globalDefaultHint')}
               data-plugin-global-default={plugin.globalEnabled ? 'on' : 'off'}
+              data-plugin-scope-summary
             >
               {plugin.globalEnabled ? t('st.plugins.globalDefaultOn') : t('st.plugins.globalDefaultOff')}
+              {scopeSummary === '' ? '' : ` · ${scopeSummary}`}
             </span>
           </span>
           <Icon name="chevron" size={14} className="shrink-0 text-ink-faint" />

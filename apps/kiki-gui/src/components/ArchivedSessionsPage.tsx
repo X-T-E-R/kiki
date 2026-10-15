@@ -19,7 +19,7 @@ import { useConnection } from '../state/connection';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useGuardedNavigate } from './dirtyGuard';
 import { Icon } from './icons';
-import { PageHeader } from './PageChrome';
+import { PAGE_WIDTH, PageHeader } from './PageChrome';
 import { RelativeTime } from './RelativeTime';
 import { ThreadTitle } from './ThreadTitle';
 import { DANGER_GHOST_BUTTON, SECONDARY_BUTTON } from './ui';
@@ -228,7 +228,7 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
 
   return (
     <>
-      <PageHeader title={t('archive.title')} onToggleSidebar={onToggleSidebar}>
+      <PageHeader title={t('archive.title')} onToggleSidebar={onToggleSidebar} width="reading">
         <button
           type="button"
           data-archive-back
@@ -243,7 +243,7 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
       </PageHeader>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-1 pb-12 lg:px-6">
-        <div className="mx-auto flex w-full max-w-[720px] flex-col gap-4">
+        <div className={`mx-auto flex w-full ${PAGE_WIDTH.reading} flex-col gap-4`}>
           <div className="flex flex-col gap-1">
             <p className="max-w-[62ch] text-[13px] leading-relaxed text-ink-soft">{t('archive.lede')}</p>
             <p className="text-[12px] text-ink-faint" title={t('archive.scopeNoteHint')}>

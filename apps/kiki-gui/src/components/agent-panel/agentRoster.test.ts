@@ -91,7 +91,7 @@ describe('buildRoster', () => {
 });
 
 
-it('keeps unknown and idle inventory rows separate from the finished fold', () => {
+it('keeps unknown agents reachable and distinct from idle and finished', () => {
   const registered = buildAgentForest([], [
     { agentId: 'main' },
     ...Array.from({ length: 4 }, (_, index) => ({ agentId: `unknown-${index}`, parentAgentId: 'main', status: 'unknown' })),
@@ -101,6 +101,28 @@ it('keeps unknown and idle inventory rows separate from the finished fold', () =
   const model = buildRoster({ ...base, forest: registered, waiting: new Set() });
   expect(model.counts).toEqual({ waiting: 0, running: 0, idle: 1, unknown: 4, ended: 4 });
   expect(model.total).toBe(9);
-  expect(model.rows.filter((row) => row.kind === 'agent')).toHaveLength(5);
-  expect(model.rows.find((row) => row.kind === 'group')).toMatchObject({ count: 4 });
+  const agents = model.rows.filter((row): row is RosterAgentRow => row.kind === 'agent');
+  expect(agents.map((row) => row.bucket).sort()).toEqual(['idle', 'unknown', 'unknown', 'unknown', 'unknown']);
+  expect(agents.some((row) => row.bucket === 'unknown' && row.node.status !== 'unknown')).toBe(false);
+  expect(model.rows.filter((row) => row.kind === 'group')).toEqual([
+    { kind: 'group', bucket: 'ended', count: 4, open: false },
+  ]);
+  const filtered = buildRoster({ ...base, forest: registered, waiting: new Set(), filter: 'unknown' });
+  expect(filtered.rows.filter((row) => row.kind === 'agent')).toHaveLength(4);
+  expect(filtered.counts.idle).toBe(1);
+  expect(filtered.rows.every((row) => row.kind === 'agent' && row.bucket === 'unknown')).toBe(true);
+});
+
+it('keeps an unknown parent with live or waiting descendants in the active list', () => {
+  const registered = buildAgentForest([], [
+    { agentId: 'main' },
+    { agentId: 'parent', parentAgentId: 'main', status: 'unknown' },
+    { agentId: 'child', parentAgentId: 'parent', status: 'running' },
+    { agentId: 'uncertain', parentAgentId: 'main', status: 'unknown' },
+  ]);
+  const model = buildRoster({ ...base, forest: registered, waiting: new Set() });
+  expect(model.rows[0]).toMatchObject({ kind: 'agent', node: { agentId: 'parent' }, bucket: 'unknown', childCount: 1 });
+  expect(model.rows[1]).toMatchObject({ kind: 'agent', node: { agentId: 'uncertain' }, bucket: 'unknown' });
+  expect(model.rows.find((row) => row.kind === 'group')).toBeUndefined();
+  expect(model.counts).toEqual({ waiting: 0, running: 1, idle: 0, unknown: 2, ended: 0 });
 });
