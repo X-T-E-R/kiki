@@ -34,11 +34,19 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "DELETE",
+      "/api/external-clients/{id}",
+    ],
+    [
+      "DELETE",
       "/api/external-delegation/seats/{seat_id}",
     ],
     [
       "DELETE",
       "/api/files/{file_id}",
+    ],
+    [
+      "DELETE",
+      "/api/fs:html-preview/{previewId}",
     ],
     [
       "DELETE",
@@ -82,6 +90,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "DELETE",
+      "/api/recipe-markets/{id}",
+    ],
+    [
+      "DELETE",
+      "/api/recipes/{id}",
+    ],
+    [
+      "DELETE",
       "/api/remote-connections/{connectionId}",
     ],
     [
@@ -103,6 +119,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "DELETE",
       "/api/ssh/hosts/{id}",
+    ],
+    [
+      "DELETE",
+      "/api/work-presets/{id}",
     ],
     [
       "DELETE",
@@ -238,6 +258,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/desktop-lifecycle",
+    ],
+    [
+      "GET",
       "/api/discovered-models",
     ],
     [
@@ -258,11 +282,35 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/executors/{id}/models",
+    ],
+    [
+      "GET",
       "/api/executors/antigravity-acp/binaries",
     ],
     [
       "GET",
       "/api/executors/installations",
+    ],
+    [
+      "GET",
+      "/api/external-clients",
+    ],
+    [
+      "GET",
+      "/api/external-clients/{id}/sessions",
+    ],
+    [
+      "GET",
+      "/api/external-clients/authorizations",
+    ],
+    [
+      "GET",
+      "/api/external-clients/listener",
+    ],
+    [
+      "GET",
+      "/api/external-clients/sessions/{id}/materials",
     ],
     [
       "GET",
@@ -315,6 +363,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/homes/presets",
+    ],
+    [
+      "GET",
+      "/api/html-preview/{previewId}/resource",
     ],
     [
       "GET",
@@ -426,6 +478,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/output-layer/configuration",
+    ],
+    [
+      "GET",
       "/api/personas",
     ],
     [
@@ -466,7 +522,15 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/plugins/navigation",
+    ],
+    [
+      "GET",
       "/api/plugins/panels",
+    ],
+    [
+      "GET",
+      "/api/plugins/usage",
     ],
     [
       "GET",
@@ -479,6 +543,22 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/providers/{provider_id}",
+    ],
+    [
+      "GET",
+      "/api/recipe-markets",
+    ],
+    [
+      "GET",
+      "/api/recipes",
+    ],
+    [
+      "GET",
+      "/api/recipes/{id}",
+    ],
+    [
+      "GET",
+      "/api/recipes/{id}/export",
     ],
     [
       "GET",
@@ -570,6 +650,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/sessions/{session_id}/document-preview/assets/{asset_id}",
+    ],
+    [
+      "GET",
       "/api/sessions/{session_id}/fs/{*}",
     ],
     [
@@ -607,6 +691,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/sessions/{session_id}/prompts",
+    ],
+    [
+      "GET",
+      "/api/sessions/{session_id}/prompts/{prompt_id}",
     ],
     [
       "GET",
@@ -686,6 +774,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/skills",
+    ],
+    [
+      "GET",
       "/api/skills/{tail}",
     ],
     [
@@ -746,7 +838,31 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/usage-export",
+    ],
+    [
+      "GET",
+      "/api/usage-export/destinations/{id}/export",
+    ],
+    [
+      "GET",
+      "/api/usage-export/destinations/{id}/handoff",
+    ],
+    [
+      "GET",
+      "/api/usage-export/destinations/{id}/preview",
+    ],
+    [
+      "GET",
+      "/api/usage-export/diagnostics",
+    ],
+    [
+      "GET",
       "/api/usage/pricing",
+    ],
+    [
+      "GET",
+      "/api/usage/provider-quotas",
     ],
     [
       "GET",
@@ -754,11 +870,23 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/usage/realtime/agents",
+    ],
+    [
+      "GET",
       "/api/usage/rescan",
     ],
     [
       "GET",
+      "/api/work-presets",
+    ],
+    [
+      "GET",
       "/api/workspaces",
+    ],
+    [
+      "GET",
+      "/api/workspaces/{workspace_id}",
     ],
     [
       "GET",
@@ -790,6 +918,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/html-preview/{previewId}/{*}",
+    ],
+    [
+      "GET",
       "/openapi.json",
     ],
     [
@@ -803,6 +935,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "PATCH",
       "/api/cron/{task_id}",
+    ],
+    [
+      "PATCH",
+      "/api/external-clients/{id}",
     ],
     [
       "PATCH",
@@ -842,11 +978,19 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "PATCH",
+      "/api/work-presets/{id}",
+    ],
+    [
+      "PATCH",
       "/api/workspaces/{workspace_id}",
     ],
     [
       "POST",
       "/api/agent-profiles",
+    ],
+    [
+      "POST",
+      "/api/agent-profiles/file-preview",
     ],
     [
       "POST",
@@ -926,6 +1070,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/desktop-lifecycle",
+    ],
+    [
+      "POST",
       "/api/executors/{id}/check",
     ],
     [
@@ -935,6 +1083,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/executors/{id}/local-sessions/{local_session_id}/resume",
+    ],
+    [
+      "POST",
+      "/api/executors/{id}/models{refresh}",
+    ],
+    [
+      "POST",
+      "/api/executors/{id}/registration{remove}",
     ],
     [
       "POST",
@@ -966,11 +1122,51 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/external-clients",
+    ],
+    [
+      "POST",
+      "/api/external-clients/{id}/credential",
+    ],
+    [
+      "POST",
+      "/api/external-clients/{id}/stdio",
+    ],
+    [
+      "POST",
+      "/api/external-clients/authorizations/{id}/respond",
+    ],
+    [
+      "POST",
+      "/api/external-clients/sessions/{id}/close",
+    ],
+    [
+      "POST",
+      "/api/external-clients/sessions/{id}/continue",
+    ],
+    [
+      "POST",
+      "/api/external-clients/sessions/{id}/stop",
+    ],
+    [
+      "POST",
+      "/api/external-clients/sessions/{id}/text",
+    ],
+    [
+      "POST",
       "/api/external-delegation/seats",
     ],
     [
       "POST",
+      "/api/external-delegation/seats:resolve",
+    ],
+    [
+      "POST",
       "/api/files",
+    ],
+    [
+      "POST",
+      "/api/fs:html-preview",
     ],
     [
       "POST",
@@ -995,6 +1191,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/homes",
+    ],
+    [
+      "POST",
+      "/api/homes:inspect",
     ],
     [
       "POST",
@@ -1118,6 +1318,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/output-layer/stream",
+    ],
+    [
+      "POST",
       "/api/personas/{id}:archive",
     ],
     [
@@ -1162,6 +1366,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/plugins/usage",
+    ],
+    [
+      "POST",
       "/api/providers",
     ],
     [
@@ -1178,6 +1386,34 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/recipe-markets",
+    ],
+    [
+      "POST",
+      "/api/recipes:check-updates",
+    ],
+    [
+      "POST",
+      "/api/recipes:fork",
+    ],
+    [
+      "POST",
+      "/api/recipes:install",
+    ],
+    [
+      "POST",
+      "/api/recipes:preview",
+    ],
+    [
+      "POST",
+      "/api/recipes:save-local",
+    ],
+    [
+      "POST",
+      "/api/recipes:update",
+    ],
+    [
+      "POST",
       "/api/remote-connections",
     ],
     [
@@ -1187,6 +1423,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/remote-connections/{connectionId}/download",
+    ],
+    [
+      "POST",
+      "/api/remote-connections/{connectionId}/html-preview",
     ],
     [
       "POST",
@@ -1302,6 +1542,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/sessions:delete-archived",
+    ],
+    [
+      "POST",
       "/api/sessions:restore",
     ],
     [
@@ -1327,6 +1571,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/sessions/{session_id}/children",
+    ],
+    [
+      "POST",
+      "/api/sessions/{session_id}/document-preview",
     ],
     [
       "POST",
@@ -1522,7 +1770,87 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/usage-export/auth/{id}/cancel",
+    ],
+    [
+      "POST",
+      "/api/usage-export/auth/{id}/poll",
+    ],
+    [
+      "POST",
+      "/api/usage-export/destinations",
+    ],
+    [
+      "POST",
+      "/api/usage-export/destinations/{id}/auth/begin",
+    ],
+    [
+      "POST",
+      "/api/usage-export/destinations/{id}/backfill",
+    ],
+    [
+      "POST",
+      "/api/usage-export/destinations/{id}/clear-queue",
+    ],
+    [
+      "POST",
+      "/api/usage-export/destinations/{id}/disable",
+    ],
+    [
+      "POST",
+      "/api/usage-export/destinations/{id}/enable",
+    ],
+    [
+      "POST",
+      "/api/usage-export/destinations/{id}/handoff/arm",
+    ],
+    [
+      "POST",
+      "/api/usage-export/destinations/{id}/handoff/plan",
+    ],
+    [
+      "POST",
+      "/api/usage-export/destinations/{id}/handoff/refresh",
+    ],
+    [
+      "POST",
+      "/api/usage-export/destinations/{id}/handoff/rollback",
+    ],
+    [
+      "POST",
+      "/api/usage-export/destinations/{id}/remove",
+    ],
+    [
+      "POST",
+      "/api/usage-export/destinations/{id}/retry",
+    ],
+    [
+      "POST",
+      "/api/usage-export/destinations/{id}/sync",
+    ],
+    [
+      "POST",
+      "/api/usage-export/destinations/{id}/test",
+    ],
+    [
+      "POST",
+      "/api/usage-export/destinations/{id}/withdraw",
+    ],
+    [
+      "POST",
+      "/api/usage-export/rebuild",
+    ],
+    [
+      "POST",
+      "/api/usage/provider-quotas/refresh",
+    ],
+    [
+      "POST",
       "/api/usage/rescan",
+    ],
+    [
+      "POST",
+      "/api/work-presets/{id}/enable",
     ],
     [
       "POST",
@@ -1566,6 +1894,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "PUT",
+      "/api/external-clients/listener",
+    ],
+    [
+      "PUT",
       "/api/gui/shortcuts",
     ],
     [
@@ -1594,6 +1926,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "PUT",
+      "/api/output-layer/configuration",
+    ],
+    [
+      "PUT",
       "/api/personas/{id}",
     ],
     [
@@ -1603,6 +1939,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "PUT",
       "/api/personas/{id}/home",
+    ],
+    [
+      "PUT",
+      "/api/recipe-markets/{id}",
     ],
     [
       "PUT",
@@ -1646,7 +1986,15 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "PUT",
+      "/api/usage-export/queue-capacity",
+    ],
+    [
+      "PUT",
       "/api/usage/pricing",
+    ],
+    [
+      "PUT",
+      "/api/usage/provider-quotas/enabled",
     ],
     [
       "PUT",
