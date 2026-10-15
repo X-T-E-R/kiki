@@ -667,6 +667,62 @@ describe('agentsMdReminder duplicate calls', () => {
     expect(reminderText(h)).toContain(subAgentsMd);
   });
 
+  it('discloses a reverted version instead of reviving an older superseded carrier', async () => {
+    const path = await writeAgentsMd(workDir, 'original rule');
+    const h = createHarness({ restoredProfile: { systemPrompt: `<!-- From: ${path} -->\noriginal rule`, agentsMdPaths: [path] } });
+    await snapshot(h, [path]);
+    await writeAgentsMd(workDir, 'updated rule');
+    await fire(h, didCtx('Write', { path }));
+    expect(h.reminders).toHaveLength(1);
+    await writeAgentsMd(workDir, 'original rule');
+    await fire(h, didCtx('Write', { path }));
+    expect(h.reminders).toHaveLength(2);
+    expect(h.reminders[1]?.content).toContain('original rule');
+    await fire(h, didCtx('Read', { path: join(workDir, 'a.ts') }));
+    expect(h.reminders).toHaveLength(2);
+  });
+
+  it('does not publish an in-flight disclosure collected before restore', async () => {
+    const h = createHarness();
+    const subDir = join(workDir, 'packages', 'example');
+    await writeAgentsMd(workDir, 'root rules');
+    const nested = await writeAgentsMd(subDir, 'nested rules');
+    await h.events.didExecuteSlot.run(didCtx('Read', { path: join(subDir, 'a.ts') }));
+    const fs = h.ix.get(IHostFileSystem);
+    const stat = fs.stat.bind(fs);
+    let release!: () => void;
+    let started!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const entered = new Promise<void>((resolve) => { started = resolve; });
+    const spy = vi.spyOn(fs, 'stat').mockImplementation(async (path) => {
+      if (path === nested) { started(); await blocked; }
+      return stat(path);
+    });
+    const flush = h.reminder.flushStepHead();
+    await entered;
+    await h.dispatcher.hooks.onDidRestore.run({});
+    release();
+    await flush;
+    spy.mockRestore();
+    expect(h.reminders).toHaveLength(0);
+    await fire(h, didCtx('Read', { path: join(subDir, 'a.ts') }));
+    expect(h.reminders).toHaveLength(1);
+  });
+
+  it('deduplicates concurrent multi-file step-head reconciliation', async () => {
+    const h = createHarness();
+    const subDir = join(workDir, 'packages', 'example');
+    const root = await writeAgentsMd(workDir, 'root rules');
+    const nested = await writeAgentsMd(subDir, 'nested rules');
+    await h.events.didExecuteSlot.run(didCtx('Read', { path: join(subDir, 'a.ts') }));
+
+    await Promise.all([h.reminder.flushStepHead(), h.reminder.flushStepHead()]);
+
+    expect(h.reminders).toHaveLength(1);
+    expect(reminderText(h)).toContain(root);
+    expect(reminderText(h)).toContain(nested);
+  });
+
   it('deduplicates staggered same-step discoveries and flushes at step head', async () => {
     const h = createHarness();
     const subDir = join(workDir, 'packages', 'kap-server');

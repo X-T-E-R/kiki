@@ -19,38 +19,48 @@ export function instructionKey(file: Pick<InstructionFile, 'path' | 'runtimeId' 
   return `${file.runtimeId}:${key(file.path)}:${key(file.scope)}`;
 }
 
-export function coveredInstructions(history: readonly ContextMessage[], pathClass: 'posix' | 'win32'): ReadonlySet<string> {
-  const coverage = new Set<string>();
+export function coveredInstructions(history: readonly ContextMessage[], pathClass: 'posix' | 'win32', systemFiles: readonly InstructionFile[] = []): ReadonlySet<string> {
+  const coverage = new Map<string, { version: string; position: number }>();
+  const cover = (file: InstructionFile, position: number) => {
+    const key = instructionKey(file, pathClass);
+    if ((coverage.get(key)?.position ?? -2) < position) coverage.set(key, { version: file.version, position });
+  };
+  for (const file of systemFiles) cover(file, -1);
   let snapshotFiles: readonly InstructionFile[] = [];
+  let snapshotPosition = -1;
   let revision: number | undefined;
-  const reads = new Map<string, { version: string; lines: Set<number>; total?: number }>();
-  for (const message of history) {
+  const reads = new Map<string, { file: InstructionFile; position: number; lines: Set<number>; total?: number }>();
+  for (const [position, message] of history.entries()) {
     const origin = message.origin;
     if (origin?.kind === 'injection' && origin.variant === 'runtime_snapshot') {
       const disclosure = origin.disclosure as { revision?: number; previousRevision?: number; instructions?: InstructionDisclosure } | undefined;
       if (disclosure?.previousRevision === undefined) snapshotFiles = [];
       else if (disclosure.previousRevision !== revision) { snapshotFiles = []; revision = undefined; continue; }
       revision = disclosure?.revision;
-      if (disclosure?.instructions !== undefined) snapshotFiles = disclosure.instructions.files;
+      if (disclosure?.instructions !== undefined) {
+        snapshotFiles = disclosure.instructions.files;
+        snapshotPosition = position;
+      }
     }
     if (origin?.kind === 'injection' && origin.variant === 'agents_md') {
       const disclosure = origin.disclosure as InstructionDisclosure | undefined;
-      for (const file of disclosure?.files ?? []) coverage.add(`${instructionKey(file, pathClass)}:${file.version}`);
+      for (const file of disclosure?.files ?? []) cover(file, position);
     }
     const read = message.fileRead;
     if (message.role !== 'tool' || message.isError || read === undefined || read.truncated) continue;
     const key = instructionKey(read.file, pathClass);
     const previous = reads.get(key);
-    const entry: { version: string; lines: Set<number>; total?: number } = previous !== undefined && previous.version === read.file.version
-      ? previous : { version: read.file.version, lines: new Set<number>() };
+    const entry: { file: InstructionFile; position: number; lines: Set<number>; total?: number } = previous !== undefined && previous.file.version === read.file.version
+      ? previous : { file: read.file, position, lines: new Set<number>() };
+    entry.position = position;
     entry.total = read.totalLines ?? entry.total;
     for (let line = read.startLine; line <= read.endLine; line++) entry.lines.add(line);
     reads.set(key, entry);
   }
-  for (const file of snapshotFiles) coverage.add(`${instructionKey(file, pathClass)}:${file.version}`);
-  for (const [key, read] of reads) {
+  for (const file of snapshotFiles) cover(file, snapshotPosition);
+  for (const read of reads.values()) {
     if (read.total === undefined || read.lines.size < read.total) continue;
-    if (Array.from({ length: read.total }, (_, index) => index + 1).every((line) => read.lines.has(line))) coverage.add(`${key}:${read.version}`);
+    if (Array.from({ length: read.total }, (_, index) => index + 1).every((line) => read.lines.has(line))) cover(read.file, read.position);
   }
-  return coverage;
+  return new Set([...coverage].map(([key, entry]) => `${key}:${entry.version}`));
 }
