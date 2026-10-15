@@ -1863,6 +1863,7 @@ describe('BrowserControlSection', () => {
         expect(store.state.allowed).toEqual(['work-browser', 'research']);
         expect(query('[data-browser-route="codex-browser"] [data-feedback-tone="error"]')).toBeNull();
         expect(query('[data-browser-default-star="work-browser"]')?.getAttribute('aria-pressed')).toBe('false');
+        expect(query('[data-browser-default-star="work-browser"]')?.textContent).toBe('Set as default');
         expect(reasons).toEqual([]);
       } finally {
         process.off('unhandledRejection', onRejection);

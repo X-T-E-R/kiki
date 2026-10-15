@@ -644,7 +644,7 @@ function BrowserRoute({ preset, active, onSelect }: {
                             : 'text-ink-faint hover:bg-ink/[0.05] hover:text-ink-soft'
                         }`}
                       >
-                        {isDefault ? t('st.models.default') : t('st.models.unstarredTitle')}
+                        {isDefault ? t('st.browser.defaultActive') : t('st.browser.setDefaultAction')}
                       </button>
                     ) : null}
                     <span

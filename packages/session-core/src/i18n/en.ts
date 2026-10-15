@@ -10502,6 +10502,8 @@ export const en = {
   'st.browser.advanced.title': 'Advanced: edit connections, or connect a browser you already run',
   'st.browser.defaultTitle': 'Default browser for new sessions',
   'st.browser.defaultLabel': 'Default connection',
+  'st.browser.defaultActive': 'Default',
+  'st.browser.setDefaultAction': 'Set as default',
   'st.browser.defaultHint': 'Applies to sessions created afterwards. Disabling a connection never swaps in another one.',
   'st.browser.defaultEmpty': 'No browser connection yet — add one first, then pick a default.',
   'st.browser.defaultNone': 'Choose each time',

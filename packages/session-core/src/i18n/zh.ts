@@ -10406,6 +10406,8 @@ export const zh = {
   'st.browser.advanced.title': '高级：编辑已有连接，或接上一个你自己已经开着的浏览器',
   'st.browser.defaultTitle': '新会话默认浏览器',
   'st.browser.defaultLabel': '默认连接',
+  'st.browser.defaultActive': '默认',
+  'st.browser.setDefaultAction': '设为默认',
   'st.browser.defaultHint': '只影响之后创建的会话。停用某个连接不会自动改用另一个。',
   'st.browser.defaultEmpty': '还没有浏览器连接，先添加一个再选默认。',
   'st.browser.defaultNone': '每次指定',

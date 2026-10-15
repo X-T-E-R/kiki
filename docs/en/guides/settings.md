@@ -12,7 +12,7 @@ The Kiki desktop app exposes preferences in the **Settings** dialog and activity
 | Low-frequency long-term memory reminders | [`loop_control.continuity_cadence.memory_maintenance`](../configuration/config-files.md#continuity-reminder-settings) in `config.toml` |
 | Search and retrieval configuration source | **Capabilities → Search & retrieval** |
 | Whether input drafts are remembered | **App → General** |
-| Subagent dispatch configuration | **Dispatch capabilities** |
+| Subagent dispatch configuration | **Models & agents → Agents**, then **Child agents** on the profile |
 | Run a browser for agent tasks | **Capabilities → Browser control** |
 | Drive the server's own desktop | **Capabilities → Computer control** |
 | Experimental features | **Advanced → Labs** |
@@ -28,14 +28,18 @@ The Kiki desktop app exposes preferences in the **Settings** dialog and activity
 
 **Settings → Models & agents → Models & providers** opens **Connections** (`/settings/ai?tab=providers`). `/settings/providers` opens the same tab. The page has three blocks, in this order.
 
-**① API key providers** is the list of hosted APIs and servers you reach with a key. **Add connection** adds one there. With nothing in that list yet, the form is the block; otherwise it opens beside the list. It asks which service, by what means:
+**① API key providers** lists hosted APIs you reach with a key. An empty list in this block does not mean the page has no connections.
+
+**Add connection** adds a service you reach with a key. With nothing connected yet, the form is the page; otherwise it opens beside the lists. It asks which service, and how:
 
 - **From the directory** — pick a service from models.dev and Kiki fills in its address and model list. An id that already exists updates that connection, and the form says so before you press.
 - **Enter it myself** — a protocol, an address and a key, for a service the directory does not have, including a local server.
 
-**② Account sign-in (subscription)** connects a subscription this server offers: Kimi Code, a ChatGPT account for Codex, a Grok Build account, GitHub Copilot. An account you already have a connection for is not offered again; a sign-in that has gone stale is recovered on that connection's own row.
+Once any connection exists, search covers every configured connection. The new row appears in the block for how it is reached.
 
-**③ Local CLI harnesses** lists programs already on this machine, such as AGY CLI, Codex, and Claude Code. Once enabled, choose one from the conversation's runtime picker. **Let an outside client use Kiki** opens **Connection & remote → Connection services** (`/settings/connection-services`). `/settings/external-clients` opens the same page.
+**② Account sign-in (subscription)** lists the subscription accounts already connected: Kimi Code, a ChatGPT account for Codex, a Grok Build account, GitHub Copilot. An account that is not connected yet has **Sign in** in this block. An account you already have a connection for is not offered again; a sign-in that has gone stale is recovered on that connection's own row.
+
+**③ Local HTTP and CLI** holds a server on this machine and local programs such as AGY CLI, Codex, and Claude Code. Once a CLI program is enabled, choose it from the conversation's runtime picker. **Let an outside client use Kiki** opens **Connection & remote → Connection services** (`/settings/connection-services`). `/settings/external-clients` opens the same page.
 
 An account connection is written by the sign-in, so its row has no protocol, address or key to fill in. Expand it to see which account is behind it, what the vendor says it has left, and the action that changes the sign-in:
 
@@ -71,7 +75,11 @@ A reading timeout only bounds waiting; it never limits how much can be read. A c
 
 ## Models and Recipes
 
-**Settings → Models & agents → Models & providers** opens **Models** (`/settings/ai?tab=models`) and each model's editor. Change its request settings and prompt text here, then **Save** once. The identity selector keeps common, main-agent and independent-agent drafts separate; saving includes edits made in all three. Editing text loaded from a file stores an inline copy on the model, leaving the source file unchanged. Advanced fields edit the same model rather than a second form.
+**Settings → Models & agents → Models & providers** opens **Connections**. **Models** (`/settings/ai?tab=models`) is the catalog and each model's editor. **Defaults** (`/settings/ai?tab=defaults`) is where the other task models are set.
+
+Above the three tabs, **New sessions use** changes the model a new session starts with as soon as you pick one. The titles, fast model, and subagents listed beside it open **Defaults**, where you change them.
+
+On **Models**, change a model's request settings and prompt text, then **Save** once. The identity selector keeps common, main-agent and independent-agent drafts separate; saving includes edits made in all three. Editing text loaded from a file stores an inline copy on the model, leaving the source file unchanged. Advanced fields edit the same model rather than a second form.
 
 Opening a prompt does not by itself leave the shared group. While main or independent still follows that group, the first **Save** of a prompt copies the whole effective group onto that identity, including unchanged file references and timing. Later edits to the shared group no longer change it. A steering source set to **Follow the user-message setting** uses the steering text and timing already in effect for user messages on the selected identity. That is the saved steering, not the words of the user message. After the identity has its own prompt copy, this reads the steering on that copy. A source left unconfigured stays off.
 
@@ -120,11 +128,15 @@ The same section's **Advanced & diagnostics** tab carries a **Full-text index** 
 
 **Settings → Capabilities → Browser control** (`/settings/browser-control`) opens three setup routes.
 
+**Enable browser control** sits at the top of the page. It stays on unless this server has turned it off. On, the main agent may use navigation, clicks, inputs, and screenshots. The page shows how many browsers are currently allowed. **Default connection** beside that count chooses the browser new sessions use; **Choose each time** stores no default. Tool policy can still deny these tools, and the page says so.
+
 - **Kimi Browser Extension**: drives the browser you already use, with your own sign-ins. Kiki installs the plugin and local bridge; add the extension from your browser's store and approve it there. An existing usable bridge can connect even when its version differs from the bundled download. **Advanced options → Check and update** downloads the verified release; a failed update keeps the previous installation, and a running bridge stays on its current version.
 - **Independent browser**: Kiki manages a separate browser and sign-in profile. **Set up** downloads its components; **Connect** starts control, and **Open browser** opens or activates its window. **Advanced options** provides **Check and update** and, on a Windows server, **Create desktop shortcut**. Updates keep a running browser unchanged; shortcuts appear on the server's desktop without overwriting unrelated shortcuts.
-- **Codex / ChatGPT browser extension**: a setup route for the Codex or ChatGPT desktop app and its browser extension. It is not a connection type in the editor below. **Set up** prepares the bridge components. Choose a discovered **Available extension connection**, then **Save connection**. The first approval happens in that desktop app or extension. Saving leaves the route **Ready**; it does not mark it **Connected**, approve the extension, register a native host, or restart the browser. **Official instructions** stay on the route. If none are listed, start the desktop app and enable its extension. A list of discovered connections is not approval, and it is not a completed live connection.
+- **Codex / ChatGPT browser extension**: a setup route for the Codex or ChatGPT desktop app and its browser extension. It is not a connection type in the editor below. **Set up** prepares the bridge components. Choose a discovered **Available extension connection**, then **Save connection**. Kiki does not ask that app for a separate approval. A real permission request is handled when the app or extension actually sends one. Saving leaves the route **Ready**; it does not mark it **Connected**, approve the extension, register a native host, or restart the browser. **Official instructions** stay on the route. If none are listed, start the desktop app and enable its extension. A listed candidate is not an open connection. Checking a discovered candidate that is not saved yet saves that connection, then allows the agent to use it, and leaves the current default unchanged. **Save connection** remains the way to save the candidate you picked in the list. If that save fails, the checkbox stays clear and the page says why, so you can try again.
 
-Each row states its own status and **what it still needs**, and puts the next action on that same line: **Set up** while a component is missing, the store link while only the approval is left, and **Turn on browser control** while only the switch is. Once everything Kiki can install is in place, the Kimi and Independent rows stop asking you to install. The Codex route stays **Ready** until the approval outside Kiki. The detector's own sentences — which parts are merely reported rather than verified — sit in the **What this server checked** fold, off the first screen.
+Each route that lists browsers has **Allow agent use**, one checkbox per browser. Check it to let the agent use that browser; clear it to take the permission back. Several can be checked. On an allowed browser, **Default** marks the one new sessions use. Before it is selected the control reads **Set as default**. Press it on another allowed browser to move the mark, or press the current one to clear it. Allowing a browser and choosing the default are separate: clearing a checkbox leaves the default where it is, and a failed default change leaves the allowed browsers as they were and keeps the control so you can try again. The page says why. These checkboxes do not add another Kimi WebBridge.
+
+Each row states its own status and **what it still needs**, and puts the next action on that same line: **Set up** while a component is missing, the store link while only the approval is left, and **Turn on browser control** while only the switch is. Once everything Kiki can install is in place, the Kimi and Independent rows stop asking you to install. The Codex route can stay **Ready** with nothing connected. Kiki does not hold it for a separate first approval. The detector's own sentences — which parts are merely reported rather than verified — sit in the **What this server checked** fold, off the first screen.
 
 **Turn on browser control** is the same consented action, on this page. When the switch is the only thing missing, that one confirmation installs whatever is still missing — nothing at all when the components are already in place — enables the plugin, and turns browser control on for the server. The confirmation says all three before you accept. Browser control is available by default; components still need consented setup and a connection starts only when requested. The action also restores a saved off choice when you explicitly confirm it.
 
@@ -163,7 +175,9 @@ The page has its own address, so you can copy it, refresh, or use the browser's 
 
 **Settings → Capabilities → Computer control** (`/settings/computer-control`) brings together the connected machine, executor installation, model usage preference, and computer MCP connections. Desktop actions run on the machine hosting the Kiki server, through a pinned open-source executor; nothing is installed or connected automatically.
 
-**Model usage preference** defaults to **Avoid**: models generally avoid computer control unless you or your rules explicitly request it, and prefer existing CLI, API, MCP, short-script, and browser-specific capabilities. **Prefer** favors computer control for suitable interactive tasks. Both choices respect your current explicit instructions, tool availability, correctness, and permissions. Saving changes guidance on the next model request, not tool permissions or installation. The source tag shows the effective configuration layer; **Restore inherited** removes this server's override and adopts the inherited value, which can also be **Prefer**. A failed save keeps your draft.
+**Enable computer control** is the switch at the top of this page. It is on unless this server has turned it off. On, desktop observation and input (screen capture, mouse, keyboard) are tools the agent can be given. Off, those computer tools are left out. Changing the switch updates the tools a computer connection that is already running offers. Tool policy can still deny those tools, or only some of them, and the page says so. The switch does not install the executor or connect the desktop.
+
+**Model usage preference** only guides the model. It does not grant or remove the permission the switch and tool policy decide. It defaults to **Avoid**: models generally avoid computer control unless you or your rules explicitly request it, and prefer existing CLI, API, MCP, short-script, and browser-specific capabilities. **Prefer** favors computer control for suitable interactive tasks. Both choices respect your current explicit instructions, tool availability, correctness, and permissions. Saving changes guidance on the next model request, not tool permissions or installation. The source tag shows the effective configuration layer; **Restore inherited** removes this server's override and adopts the inherited value, which can also be **Prefer**. A failed save keeps your draft.
 
 **Install executor** downloads and verifies that release, then registers a global MCP connection named `kiki-computer` (the driver's path plus `mcp` arguments). **Installed** means the files verified — it does not check that anything can actually be controlled, and it does not touch the desktop. The page names the machine that would be driven: **Kiki server** is the connected server, so over a remote or SSH connection the desktop is that host's own graphical session.
 
@@ -177,7 +191,7 @@ The main agent of each session uses the executor's own tools through the existin
 
 ## Dispatch capabilities
 
-Open **Dispatch capabilities** — next to the new-session workspace selector, or in a session's right rail — to inspect a subagent's profile (configuration file), route, and executor, plus where the default model and effort come from. Default configuration validity and permission to launch are shown separately. See [Agents and subagents](../customization/agents-and-subagents.md#rebuilding-a-session-context).
+On **Settings → Models & agents → Agents** (`/settings/agents`), open a profile and use **Child agents**. **Allow creating child agents** is **Not declared**, **Allowed**, or **Off**. **Not declared** follows the layer above this profile. **Off** stops this agent from starting child agents, including a definition supplied by path. **Preset list** chooses the named presets and routes it may start; a grey value is the child's own until you set one here. **Recommended first** is only an order, and does not allow or forbid a child. **Never dispatch** refuses those names even when the preset list would allow them. A missing model or preset is reported on the profile, separately from whether creating child agents is allowed. See [Agents and subagents](../customization/agents-and-subagents.md#rebuilding-a-session-context).
 
 ## Session controls
 
@@ -201,10 +215,10 @@ On desktop-width screens, **Standard / Cockpit** in the right-panel header switc
 
 ## Usage
 
-Open **Usage** in the sidebar (`/usage`). It has four tabs and opens **History** by default:
+Open **Usage** in the sidebar (`/usage`). The tabs are **Live**, **History**, **Quotas**, and **External sync**, in that order. With no history filter and no `panel=` choice, the page opens **Live**. An address that already filters history, or `panel=history`, opens **History**. `panel=realtime` and `panel=limits` open **Live**.
 
-- **History:** costs and token usage for a date range, defaulting to today. Follow a trend bar to its consumption sources, then open session records and recorded turns on demand; filters stay with the view. Previous-period comparisons are read only when requested. Token usage and cost have separate completeness indicators; **Data reliability** distinguishes unknown accounting from empty ranges. Existing filtered usage links open History. See [Usage statistics](./sessions.md#gui-usage-statistics).
 - **Live:** model requests and live agents appear as two vertically arranged groups, each with its own expandable details. Request details show running and queued native-request counts across this service, breakdowns by model, provider and role, and waiting rows with blocking rule IDs and elapsed queue time. Agent details show main, subagent and independent execution counts, with breakdowns by executor, profile, model or role. If the connection fails, the last counts are marked stale. On the same tab, **Concurrency limits** lets you add or edit rules, choose a model or provider target, and set a shared or per-session cap. The switch pauses a rule without deleting it. Saving applies the rule to new and queued requests without stopping active streams.
+- **History:** costs and token usage for a date range, defaulting to today. Follow a trend bar to its consumption sources, then open session records and recorded turns on demand; filters stay with the view. Previous-period comparisons are read only when requested. Token usage and cost have separate completeness indicators; **Data reliability** distinguishes unknown accounting from empty ranges. Existing filtered usage links open History. See [Usage statistics](./sessions.md#gui-usage-statistics).
 - **Quotas:** balances, credits, usage windows and other metrics reported by configured providers and services, separate from Kiki's local usage accounting. Cards show the source account, status and available meters. Use **Refresh quotas** to refresh eligible sources, or a card's refresh action for one source. A source that requires authentication offers the appropriate sign-in or settings action; missing or unsupported metrics are not treated as a zero balance.
 - **External sync:** destinations that receive this server's own usage. Three kinds are available: **vibecafe.ai**, **Kiki webhook**, and **Script**. Only the model, the UTC half-hour, the four token counts, quality and cost go out — never a prompt, answer, title, workspace name or path.
 

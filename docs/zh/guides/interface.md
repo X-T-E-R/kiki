@@ -54,7 +54,7 @@ Agent 忙碌时，你提交的新消息默认进入输入框上方的队列，�
 
 Agent 树会在名称旁标出外部执行器；只有明确选择过 **off** 时，思考力度才会显示这个值。
 
-**Dispatch capabilities** 打开的是 Agent 派发 subagent 的配置面板，从那里可以看到某个 subagent 的配置档案（profile）、路由和执行器，以及它的默认模型与思考力度（effort，模型投入多少推理）来自哪里——见 [Agent 与 subagent](../customization/agents-and-subagents.md#重建会话上下文)。
+折起的**能力**区块有一栏**子智能体**。每一行写出 profile 与 route，以及现在能不能启动。要改这个智能体能创建谁，见[派遣能力](./settings.md#派遣能力)。
 
 桌面宽度下右栏默认展开。页头的 **Standard / Cockpit** 让它临时加宽、占用预览区，对话和输入框仍留在主列；选 **Standard** 或 **退出驾驶舱**会把原来的预览内容、页签、草稿和宽度还原。
 

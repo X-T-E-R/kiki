@@ -30,17 +30,17 @@ That is also where the "send timing" menu lives while the agent is busy, so a de
 
 The right panel describes one agent at a time: whichever you last clicked into or focused. The main agent and every subagent get the same page, and the same rail follows you into a subagent's transcript.
 
-It shows the agent's head over what it is doing now, "needs you" items as plain rows you can decide from, the activity feed, and a folded capabilities block. From there you can open **Dispatch capabilities** to inspect a subagent's profile, route, and executor, plus where the default model and thinking effort come from. On wide windows the panel is open by default, and **Standard / Cockpit** in the header lets it temporarily take over the preview space; exiting cockpit restores your previous preview content, tabs, draft, and width.
+It shows the agent's head over what it is doing now, "needs you" items as plain rows you can decide from, the activity feed, and a folded capabilities block. That block's **Subagents** list names each child profile and route, and whether that child can be launched. Who may be started is **Child agents** on the profile — see [Dispatch capabilities](/en/guides/settings#dispatch-capabilities). On wide windows the panel is open by default, and **Standard / Cockpit** in the header lets it temporarily take over the preview space; exiting cockpit restores your previous preview content, tabs, draft, and width.
 
 See [Interface overview](/en/guides/interface#right-rail) and [Session controls](/en/guides/settings#session-controls).
 
-## The usage page answers three different questions
+## The usage page {#the-usage-page-answers-three-different-questions}
 
-**Usage** in the sidebar is one page with three tabs. **History** answers what a date range cost, **Live** answers why nothing is moving, and **External sync** answers where you want the numbers to go.
+**Usage** in the sidebar opens on **Live**. The tabs are **Live**, **History**, **Quotas**, and **External sync**, in that order. **Live** answers why nothing is moving, **History** answers what a date range cost, **Quotas** answers what a configured provider account still has, and **External sync** answers where you want the numbers to go. An address that already filters history opens **History**. See [Usage](/en/guides/settings#usage).
 
 ### History: what the range cost
 
-**History** opens by default: token usage and estimated cost for a date range, starting at today. The filter bar drives it — range first, then workspace, bucket size, and what the chart is broken down by — and every choice rides the URL, so a view you settled on is a link you can paste. Under the four totals, the trend chart stacks by the breakdown axis, a bucket opens into the sessions and turns behind it, and the tabs below rank sessions by cost so the expensive one is the first row.
+**History** is the date-range view: token usage and estimated cost, starting at today. The filter bar drives it — range first, then workspace, bucket size, and what the chart is broken down by — and every choice rides the URL, so a view you settled on is a link you can paste. Under the four totals, the trend chart stacks by the breakdown axis, a bucket opens into the sessions and turns behind it, and the tabs below rank sessions by cost so the expensive one is the first row.
 
 The number it will not give you is a confident wrong one. Token usage and cost carry **separate** completeness indicators: when a provider does not return usage for a call, Kiki marks it unknown rather than recording a real zero, and a figure with unknowns in it is shown as partially unknown instead of a total. **Data reliability** then separates the cases a reader must not confuse — a provider that never reported, accounting that is incomplete, a range with nothing in it, and a request that failed. The cost itself is a local estimate from your own price table; **Model prices** in the header is where an unpriced model gets one, and the page names the models it could not price rather than quietly pricing them at zero.
 

@@ -54,7 +54,7 @@ The rail describes one agent at a time — whichever you last clicked into or fo
 
 The agent tree labels external executors beside each agent's name. An **off** thinking effort is shown only when it was explicitly selected.
 
-**Dispatch capabilities** opens the panel showing how the agent hands work to subagents, and from there you can inspect a subagent's profile (its configuration file), route and executor, plus where its default model and thinking effort (how much reasoning the model invests) come from — see [Agents and subagents](../customization/agents-and-subagents.md#rebuilding-a-session-context).
+The folded **Capabilities** block includes **Subagents**. Each row names the profile and route, and whether that child can be launched now. Who this agent may start is set on the profile under **Child agents** — see [Dispatch capabilities](./settings.md#dispatch-capabilities).
 
 On desktop-width screens the rail is open by default. **Standard / Cockpit** in its header widens it over the preview space while the conversation and composer stay in the main column; **Standard** or **Exit cockpit** puts the previous preview content, tabs, draft and width back.
 
