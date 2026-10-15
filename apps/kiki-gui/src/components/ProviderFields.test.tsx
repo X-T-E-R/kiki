@@ -1120,19 +1120,19 @@ describe('Connections list', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const rows = [...container.querySelectorAll<HTMLElement>('[data-connection-row]')];
     expect(rows.map((row) => [row.dataset['connectionRow'], row.dataset['connectionKind']])).toEqual([
-      ['managed:kimi-code', 'account'],
       ['edge:gateway', 'api'],
+      ['managed:kimi-code', 'account'],
       ['ollama', 'local'],
     ]);
     // The account row names the sign-in and its kind, never a wire protocol.
-    const accountSummary = rows[0]!.querySelector('summary')!.textContent;
+    const accountSummary = rows[1]!.querySelector('summary')!.textContent;
     expect(accountSummary).toContain('Kimi Code');
     expect(accountSummary).toContain('Account');
     expect(accountSummary).not.toContain('Moonshot');
     expect(rows[2]!.querySelector('summary')!.textContent).toContain('Local server · localhost:11434');
-    expect(rows[1]!.querySelector('[data-connection-status]')!.textContent).toContain('Connected');
+    expect(rows[0]!.querySelector('[data-connection-status]')!.textContent).toContain('Connected');
     // No per-row protocol/identity/key pills in the collapsed row.
-    expect(rows[1]!.querySelector('summary')!.textContent).not.toContain('key stored');
+    expect(rows[0]!.querySelector('summary')!.textContent).not.toContain('key stored');
   });
 
   it('shows an error row with the last failure and a fix, and signs an account out from its row', async () => {
