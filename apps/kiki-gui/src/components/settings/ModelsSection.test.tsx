@@ -850,6 +850,101 @@ describe('ModelCatalogCard list and detail hierarchy', () => {
     expect(advanced.contains(capabilities!)).toBe(false);
     expect(capabilities!.querySelector('[role="group"][aria-label="Capabilities for kimi-code/kimi-k2"]')).not.toBeNull();
   });
+
+  it('displays default badge on default model and updates both defaultModel and patchConfig when setting new default', async () => {
+    const k1: ModelCatalogItem = {
+      id: 'managed:kimi-code/kimi-k1',
+      provider_id: 'managed:kimi-code',
+      remote_id: 'kimi-k1',
+      display_name: 'Kimi K1',
+      max_context_size: 131072,
+      capabilities: ['chat'],
+      support_efforts: [],
+    };
+    listModels.mockResolvedValue({ items: [MODELS[0], k1] });
+    setDefaultModel.mockResolvedValue(undefined);
+    patchConfig.mockResolvedValue({});
+    const container = await renderCard();
+
+    const defaultRow = container.querySelector<HTMLElement>('[data-model-row="kimi-code/kimi-k2"]')!;
+    expect(defaultRow.getAttribute('data-default')).toBe('true');
+    expect(defaultRow.querySelector('[data-default-badge]')).not.toBeNull();
+    expect(defaultRow.querySelector('[data-default-badge]')?.textContent).toBe('Default');
+
+    const nonDefaultRow = container.querySelector<HTMLElement>('[data-model-row="managed:kimi-code/kimi-k1"]')!;
+    expect(nonDefaultRow.getAttribute('data-default')).toBeNull();
+    expect(nonDefaultRow.querySelector('[data-default-badge]')).toBeNull();
+
+    const starBtn = nonDefaultRow.querySelector<HTMLButtonElement>('button[aria-pressed="false"]')!;
+    expect(starBtn).not.toBeNull();
+    await act(async () => starBtn.click());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    expect(setDefaultModel).toHaveBeenCalledWith('managed:kimi-code/kimi-k1');
+    expect(patchConfig).toHaveBeenCalledWith({
+      default_model: 'managed:kimi-code/kimi-k1',
+      default_provider: 'managed:kimi-code',
+    });
+  });
+
+  it('renders default control banner in model detail panel and triggers set default from panel', async () => {
+    const k1: ModelCatalogItem = {
+      id: 'managed:kimi-code/kimi-k1',
+      provider_id: 'managed:kimi-code',
+      remote_id: 'kimi-k1',
+      display_name: 'Kimi K1',
+      max_context_size: 131072,
+      capabilities: ['chat'],
+      support_efforts: [],
+    };
+    const k1Entity: GetModelResponse = {
+      ...ENTITY,
+      id: 'managed:kimi-code/kimi-k1',
+      remote_id: 'kimi-k1',
+      display_name: 'Kimi K1',
+    };
+    listModels.mockResolvedValue({ items: [MODELS[0], k1] });
+    getModel.mockImplementation(async (id: string) => (id === 'managed:kimi-code/kimi-k1' ? k1Entity : ENTITY));
+    setDefaultModel.mockResolvedValue(undefined);
+    patchConfig.mockResolvedValue({});
+    const container = await renderCard();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Edit parameters for kimi-code/kimi-k2"]')!.click();
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    const defaultBanner = container.querySelector<HTMLElement>('[data-model-default-control="kimi-code/kimi-k2"]')!;
+    expect(defaultBanner).not.toBeNull();
+    expect(defaultBanner.getAttribute('data-is-default')).toBe('true');
+    expect(defaultBanner.querySelector('[data-default-badge]')).not.toBeNull();
+    expect(defaultBanner.querySelector('[data-set-default-button]')).toBeNull();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Close"]')!.click();
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Edit parameters for managed:kimi-code/kimi-k1"]')!.click();
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    const nonDefaultBanner = container.querySelector<HTMLElement>('[data-model-default-control="managed:kimi-code/kimi-k1"]')!;
+    expect(nonDefaultBanner).not.toBeNull();
+    expect(nonDefaultBanner.getAttribute('data-is-default')).toBe('false');
+    const setDefaultBtn = nonDefaultBanner.querySelector<HTMLButtonElement>('[data-set-default-button]')!;
+    expect(setDefaultBtn).not.toBeNull();
+
+    await act(async () => setDefaultBtn.click());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    expect(setDefaultModel).toHaveBeenCalledWith('managed:kimi-code/kimi-k1');
+    expect(patchConfig).toHaveBeenCalledWith({
+      default_model: 'managed:kimi-code/kimi-k1',
+      default_provider: 'managed:kimi-code',
+    });
+  });
 });
 
 describe('model prompt identity settings', () => {

@@ -39,9 +39,14 @@ export function selectGlobalDefaultModel(
     if (!isCurrent()) return false;
     try {
       await client.setDefaultModel(model.id);
-      // Always carry the provider: the previous selection may have changed it
-      // while this tab still displayed the earlier cached configuration.
-      await publish(await client.patchConfig({ default_provider: model.provider_id }));
+      // Carry the model with its provider when publishing the server's saved defaults.
+      const config = await client.patchConfig({
+        default_model: model.id,
+        default_provider: model.provider_id,
+      });
+      await publish(config);
+      await queryClient.invalidateQueries({ queryKey: ['config'] });
+      await queryClient.invalidateQueries({ queryKey: ['models'] });
       return isCurrent();
     } catch (error) {
       if (!isCurrent()) return false;
@@ -52,6 +57,7 @@ export function selectGlobalDefaultModel(
       } catch {
         if (isCurrent()) await queryClient.invalidateQueries({ queryKey: ['config'] });
       }
+      if (isCurrent()) await queryClient.invalidateQueries({ queryKey: ['models'] });
       if (!isCurrent()) return false;
       throw error;
     }

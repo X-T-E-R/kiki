@@ -414,6 +414,9 @@ export function ModelCatalogCard() {
           key={editingItem.id}
           item={editingItem}
           inheritedImageTypes={providers.get(editingItem.provider_id)?.images?.accepted_types}
+          isDefault={editingItem.id === defaultModel}
+          defaultBusy={busy}
+          onSetDefault={() => void selectDefaultModel(editingItem)}
           onSaved={refreshCatalog}
           onClose={() => { setEditing(null); }}
         />
@@ -1176,7 +1179,14 @@ function ModelRow({
         <span className={`min-w-0 flex-1 ${compact ? 'flex items-baseline gap-2' : ''}`}>
           <span className={`flex min-w-0 items-center gap-2 ${compact ? 'shrink' : ''}`}>
             <span className="truncate text-[13px] font-medium text-ink">{item.display_name ?? item.id}</span>
-            {isDefault ? <span className="sr-only">{t('st.models.default')}</span> : null}
+            {isDefault ? (
+              <span
+                data-default-badge
+                className="inline-flex shrink-0 items-center rounded bg-selected-ink/10 px-1.5 py-0.5 text-[11px] font-medium text-selected-ink"
+              >
+                {t('st.models.default')}
+              </span>
+            ) : null}
             {attention ? <span className="shrink-0 text-attention" title={t('st.models.providerAttention')}><Icon name="warning" size={12} /></span> : null}
           </span>
           <span className="flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint">
@@ -1200,9 +1210,20 @@ function ModelRow({
  * the row. Closing with unsaved changes asks first; the list and its scroll
  * position stay exactly where they were.
  */
-function ModelDetailPanel({ item, inheritedImageTypes, onSaved, onClose }: {
+function ModelDetailPanel({
+  item,
+  inheritedImageTypes,
+  isDefault = false,
+  defaultBusy = false,
+  onSetDefault,
+  onSaved,
+  onClose,
+}: {
   item: ModelCatalogItem;
   inheritedImageTypes: readonly string[] | undefined;
+  isDefault?: boolean;
+  defaultBusy?: boolean;
+  onSetDefault?: () => void;
   onSaved: () => Promise<void>;
   onClose: () => void;
 }) {
@@ -1223,6 +1244,9 @@ function ModelDetailPanel({ item, inheritedImageTypes, onSaved, onClose }: {
         <ModelCatalogRowEditor
           item={item}
           inheritedImageTypes={inheritedImageTypes}
+          isDefault={isDefault}
+          defaultBusy={defaultBusy}
+          onSetDefault={onSetDefault}
           onSaved={onSaved}
           onDirtyChange={setDirty}
           onClose={requestClose}
@@ -1255,12 +1279,18 @@ function ModelDetailPanel({ item, inheritedImageTypes, onSaved, onClose }: {
 function ModelCatalogRowEditor({
   item,
   inheritedImageTypes,
+  isDefault = false,
+  defaultBusy = false,
+  onSetDefault,
   onSaved,
   onDirtyChange,
   onClose,
 }: {
   item: ModelCatalogItem;
   inheritedImageTypes: readonly string[] | undefined;
+  isDefault?: boolean;
+  defaultBusy?: boolean;
+  onSetDefault?: () => void;
   onSaved: () => Promise<void>;
   onDirtyChange: (dirty: boolean) => void;
   onClose: () => void;
@@ -1856,7 +1886,43 @@ function ModelCatalogRowEditor({
         />
       </div>
       <div hidden={activeEditorTab !== 'basics'} className="space-y-6">
-      <EditorSection id={sectionId('basics')} title={t('st.modelEditor.nav.basics')} note={t('st.modelEditor.basicsNote')}>
+        <div
+          data-model-default-control={item.id}
+          data-is-default={isDefault ? 'true' : 'false'}
+          className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-hairline bg-paper/60 p-3"
+        >
+          <div className="min-w-0 flex-1 space-y-0.5">
+            <div className="flex items-center gap-2">
+              <Icon name={isDefault ? 'starFilled' : 'star'} size={14} className={isDefault ? 'text-ink' : 'text-ink-faint'} />
+              <span className="text-[12.5px] font-medium text-ink">
+                {isDefault ? t('st.models.currentDefault') : t('st.models.setDefaultAction')}
+              </span>
+              {isDefault ? (
+                <span
+                  data-default-badge
+                  className="inline-flex items-center rounded bg-selected-ink/10 px-1.5 py-0.5 text-[11px] font-medium text-selected-ink"
+                >
+                  {t('st.models.default')}
+                </span>
+              ) : null}
+            </div>
+            <p className="text-[11.5px] leading-snug text-ink-faint">
+              {t('st.models.defaultScopeHint')}
+            </p>
+          </div>
+          {!isDefault && onSetDefault !== undefined ? (
+            <button
+              type="button"
+              data-set-default-button
+              className={`${SECONDARY_BUTTON} shrink-0 text-[12px]`}
+              disabled={defaultBusy || isDefault}
+              onClick={onSetDefault}
+            >
+              {t('st.models.unstarredTitle')}
+            </button>
+          ) : null}
+        </div>
+        <EditorSection id={sectionId('basics')} title={t('st.modelEditor.nav.basics')} note={t('st.modelEditor.basicsNote')}>
         {entity.issues.length > 0 ? (
           <p role="status" className="rounded-md bg-amber-card px-3 py-1.5 text-[12px] leading-4 text-amber-ink">
             {entity.issues.map((issue) => {
