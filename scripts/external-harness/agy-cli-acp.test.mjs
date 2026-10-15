@@ -404,7 +404,7 @@ test('real ACP permission request carries raw tool metadata and vendor-default I
   const { mkdtemp, readFile, rm } = await import('node:fs/promises');
   const { join } = await import('node:path');
   const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-acp-permission-'));
-  const sdkPath = process.env.AGY_TEST_ACP_SDK_PATH;
+  const sdkPath = process.env.AGY_TEST_ACP_SDK_PATH ?? createRequire(new URL('../../packages/acp-client/package.json', import.meta.url)).resolve('@agentclientprotocol/sdk');
   const script = `import { runBridge } from ${JSON.stringify(new URL('./agy-cli-acp.mjs', import.meta.url).href)}; await runBridge(${JSON.stringify({ sdkPath, cliPath: process.execPath, cliPrefix: [fileURLToPath(new URL('./fixture-cli.mjs', import.meta.url))] })});`;
   const child = spawn(process.execPath, ['--input-type=module', '-e', script], { cwd: root, stdio: ['pipe', 'pipe', 'pipe'] });
   const closed = new Promise((done, reject) => { child.once('error', reject); child.once('close', (code, signal) => done({ code, signal })); });
@@ -574,7 +574,7 @@ test('authenticated hook accepts over 1MiB Write args intact through real ACP ho
       console.log(JSON.stringify({event:'result',result:{conversation_id:'fixture-large',status:'SUCCESS',response:'fixture tool approved',num_turns:turn,denied_actions:result.decision==='allow'?undefined:[{action:'write'}]}}));
     }`;
   await writeFile(cli, cliSource);
-  const sdkPath = process.env.AGY_TEST_ACP_SDK_PATH;
+  const sdkPath = process.env.AGY_TEST_ACP_SDK_PATH ?? createRequire(new URL('../../packages/acp-client/package.json', import.meta.url)).resolve('@agentclientprotocol/sdk');
   const script = `import {runBridge} from ${JSON.stringify(new URL('./agy-cli-acp.mjs', import.meta.url).href)}; await runBridge(${JSON.stringify({ sdkPath, cliPath: process.execPath, cliPrefix: [cli] })});`;
   const child = spawn(process.execPath, ['--input-type=module', '-e', script], { cwd: root, stdio: ['pipe', 'pipe', 'pipe'] });
   const closed = new Promise((done, reject) => { child.once('error', reject); child.once('close', code => done(code)); });
@@ -729,6 +729,54 @@ test('per-call resources cross downstream vendor command and write checks withou
   } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
 });
 
+
+test('agy 1.3.4 catalog ids embed effort; a bare provider id does not inherit another model menu', async () => {
+  const { vendorModelIds, configOptions, encodedEffort } = await import('./agy-cli-acp.mjs');
+  const catalog = [
+    'gemini-4-argon-medium\tGemini 4 Argon (Medium)',
+    'gemini-4-argon-high\tGemini 4 Argon (High)',
+    'gemini-4-argon-low\tGemini 4 Argon (Low)',
+    'gemini-3.8-flash-high\tGemini 3.8 Flash (High)',
+    'gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)',
+    'gemini-3.8-flash-low\tGemini 3.8 Flash (Low)',
+    'claude-opus-5-5-low\tClaude Opus 5.5 (Low)',
+    'claude-opus-5-5-medium\tClaude Opus 5.5 (Medium)',
+    'claude-opus-5-5-high\tClaude Opus 5.5 (High)',
+    'claude-sonnet-5-5-low\tClaude Sonnet 5.5 (Low)',
+    'claude-sonnet-5-5-medium\tClaude Sonnet 5.5 (Medium)',
+    'claude-sonnet-5-5-high\tClaude Sonnet 5.5 (High)',
+    'gpt-oss-120b-medium\tGPT-OSS 120B (Medium)',
+  ].join('\n');
+  const ids = vendorModelIds(catalog);
+  assert.equal(ids.includes('claude-opus-5-5-high'), true);
+  assert.equal(ids.includes('gemini-3.8-flash-high'), true);
+  assert.equal(ids.includes('anthropic/claude-opus-5-5'), false);
+  assert.equal(encodedEffort('claude-opus-5-5-high'), 'high');
+  assert.equal(encodedEffort('anthropic/claude-opus-5-5'), undefined);
+  const opus = bridge('claude-opus-5-5-high');
+  const opusId = await session(opus);
+  opus.setConfig({ sessionId: opusId, configId: 'effort', value: 'high' });
+  assert.deepEqual(configOptions(opus.session(opusId))[0].options.map(option => option.value), ['engine-default', 'high']);
+  assert.deepEqual(launchArgs(opus.session(opusId)), ['--input-format', 'stream-json', '--output-format', 'stream-json',
+    '--model', 'claude-opus-5-5-high', '--effort', 'high']);
+  const gemini = bridge('gemini-3.8-flash-high');
+  const geminiId = await session(gemini);
+  gemini.setConfig({ sessionId: geminiId, configId: 'effort', value: 'high' });
+  assert.ok(launchArgs(gemini.session(geminiId)).includes('--effort'));
+  assert.equal(launchArgs(gemini.session(geminiId))[launchArgs(gemini.session(geminiId)).indexOf('--effort') + 1], 'high');
+  const bare = bridge('anthropic/claude-opus-5-5');
+  const bareId = await session(bare);
+  assert.deepEqual(configOptions(bare.session(bareId))[0].options.map(option => option.value), ['engine-default']);
+  assert.throws(() => bare.setConfig({ sessionId: bareId, configId: 'effort', value: 'high' }), /not an advertised config/);
+  assert.equal(bare.session(bareId).effort, 'engine-default');
+  assert.equal(launchArgs(bare.session(bareId)).includes('--effort'), false);
+  assert.throws(() => launchArgs({ model: 'engine-default', effort: 'high', additionalDirectories: [] }), /not an advertised config/);
+  assert.deepEqual(launchArgs({ model: 'engine-default', effort: 'engine-default', additionalDirectories: [] }),
+    ['--input-format', 'stream-json', '--output-format', 'stream-json']);
+  await opus.close();
+  await gemini.close();
+  await bare.close();
+});
 
 test('raw model effort suffix is authoritative, not the generic CLI effort menu', async () => {
   const { configOptions } = await import('./agy-cli-acp.mjs');
@@ -906,7 +954,7 @@ test('real ACP session/load restores exact native argv after adapter EOF without
   const { join } = await import('node:path');
   const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-acp-load-'));
   const auditDir = join(root, 'audit');
-  const sdkPath = process.env.AGY_TEST_ACP_SDK_PATH;
+  const sdkPath = process.env.AGY_TEST_ACP_SDK_PATH ?? createRequire(new URL('../../packages/acp-client/package.json', import.meta.url)).resolve('@agentclientprotocol/sdk');
   const script = `import { runBridge } from ${JSON.stringify(new URL('./agy-cli-acp.mjs', import.meta.url).href)}; await runBridge(${JSON.stringify({ sdkPath, cliPath: process.execPath, cliPrefix: [fileURLToPath(new URL('./fixture-cli.mjs', import.meta.url))], model: 'gemini-3.8-flash-medium', auditDir })});`;
   function transport() {
     const child = spawn(process.execPath, ['--input-type=module', '-e', script], { cwd: root, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -1005,4 +1053,81 @@ test('session stdio MCP generates custom agent definition, passes env, and clean
     await b.close();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('agy models columns are raw ids; a listed id can be selected and an unknown or conflicting id cannot', async () => {
+  const { EventEmitter } = await import('node:events');
+  const { PassThrough } = await import('node:stream');
+  const { vendorModelIds, configOptions } = await import('./agy-cli-acp.mjs');
+  const output = 'model                         label\nfixture-alpha-high       Fixture Alpha (High)\nfixture-beta-medium     Fixture Beta (Medium)\n';
+  assert.deepEqual(vendorModelIds(output), ['fixture-alpha-high', 'fixture-beta-medium']);
+  assert.equal(vendorModelIds(output).includes('not-a-vendor-model'), false);
+  assert.deepEqual(vendorModelIds('model\n# comment\n'), []);
+
+  function catalogSpawn(stdout, { code = 0, stderr = '' } = {}) {
+    const calls = [];
+    const spawnProcess = (cmd, args) => {
+      calls.push({ cmd, args });
+      const child = new EventEmitter();
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = () => child.emit('close', null);
+      queueMicrotask(() => {
+        child.stdout.end(Buffer.from(stdout));
+        child.stderr.end(Buffer.from(stderr));
+        child.emit('close', code);
+      });
+      return child;
+    };
+    return { spawnProcess, calls };
+  }
+
+  const quiet = catalogSpawn(output);
+  const untouched = new AgyBridge({ cliPath: 'C:/vendor/agy.exe', spawnProcess: quiet.spawnProcess, stopProcess: async () => {} });
+  await untouched.newSession({ cwd, mcpServers: [] });
+  assert.equal(quiet.calls.length, 0);
+  await untouched.close();
+
+  const listed = catalogSpawn(output);
+  const bridge = new AgyBridge({ cliPath: 'C:/vendor/agy.exe', model: 'engine-default', spawnProcess: listed.spawnProcess, stopProcess: async () => {} });
+  await bridge.loadVendorModels();
+  assert.deepEqual(listed.calls, [{ cmd: 'C:/vendor/agy.exe', args: ['models'] }]);
+  const id = (await bridge.newSession({ cwd, mcpServers: [] })).sessionId;
+  const options = configOptions(bridge.session(id));
+  assert.equal(options[0].id, 'effort');
+  assert.equal(options[0].category, 'thought_level');
+  assert.equal(options[1].id, 'model');
+  assert.equal(options[1].category, 'model');
+  assert.deepEqual(options[1].options.map(option => option.value), ['engine-default', 'fixture-alpha-high', 'fixture-beta-medium']);
+  bridge.setConfig({ sessionId: id, configId: 'model', value: 'fixture-alpha-high' });
+  assert.equal(launchArgs(bridge.session(id))[launchArgs(bridge.session(id)).indexOf('--model') + 1], 'fixture-alpha-high');
+  assert.throws(() => bridge.setConfig({ sessionId: id, configId: 'model', value: 'not-a-vendor-model' }), /not in the vendor catalog/);
+  assert.equal(bridge.session(id).model, 'fixture-alpha-high');
+  assert.throws(() => bridge.setConfig({ sessionId: id, configId: 'effort', value: 'max' }), /conflicts with effort/);
+  bridge.setConfig({ sessionId: id, configId: 'model', value: 'engine-default' });
+  assert.equal(launchArgs(bridge.session(id)).includes('--model'), false);
+  bridge.session(id).child = { pid: 1 };
+  assert.throws(() => bridge.setConfig({ sessionId: id, configId: 'model', value: 'fixture-beta-medium' }), /frozen/);
+  bridge.session(id).child = undefined;
+  await bridge.close();
+
+  const failed = catalogSpawn('', { code: 1, stderr: 'token sk-abcdefghijklmnopqrstuvwxyz0123456789ABCDEF' });
+  const blind = new AgyBridge({ cliPath: 'C:/vendor/agy.exe', spawnProcess: failed.spawnProcess, stopProcess: async () => {} });
+  await blind.loadVendorModels();
+  assert.equal(blind.modelChoices, undefined);
+  assert.equal(blind.modelDiagnostic, 'AGY model catalog probe failed');
+  const blindId = (await blind.newSession({ cwd, mcpServers: [] })).sessionId;
+  assert.equal(configOptions(blind.session(blindId)).some(option => option.category === 'model'), false);
+  assert.throws(() => blind.setConfig({ sessionId: blindId, configId: 'model', value: 'fixture-alpha-high' }), /catalog is unavailable/);
+  await blind.close();
+
+  const empty = catalogSpawn('model\n');
+  const none = new AgyBridge({ cliPath: 'C:/vendor/agy.exe', spawnProcess: empty.spawnProcess, stopProcess: async () => {} });
+  await none.loadVendorModels();
+  assert.deepEqual(none.modelChoices, []);
+  const noneId = (await none.newSession({ cwd, mcpServers: [] })).sessionId;
+  assert.deepEqual(configOptions(none.session(noneId)).find(option => option.id === 'model').options, []);
+  assert.throws(() => none.setConfig({ sessionId: noneId, configId: 'model', value: 'fixture-alpha-high' }), /not in the vendor catalog/);
+  none.setConfig({ sessionId: noneId, configId: 'model', value: 'engine-default' });
+  await none.close();
 });

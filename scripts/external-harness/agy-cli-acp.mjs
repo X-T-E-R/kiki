@@ -68,15 +68,94 @@ export function encodedEffort(model) {
 export function validateEffort(model, effort) {
   if (![DEFAULT, ...EFFORTS].includes(effort)) throw new Error('Unsupported AGY effort selection');
   const encoded = encodedEffort(model);
-  if (effort !== DEFAULT && encoded && effort !== encoded) {
+  if (effort === DEFAULT) return;
+  if (encoded === undefined) {
+    throw new Error(`AGY model ID ${model} does not embed an effort; effort ${effort} is not an advertised config for this id`);
+  }
+  if (effort !== encoded) {
     throw new Error(`AGY model ID ${model} encodes effort ${encoded} and conflicts with effort ${effort}; select the corresponding raw AGY model ID instead`);
   }
 }
 
+const CATALOG_TIMEOUT_MS = 20_000;
+const CATALOG_MAX_BYTES = 65_536;
+
+/** First whitespace token of each `agy models` row. Header and comment rows are not ids. */
+export function vendorModelIds(output) {
+  const values = [];
+  const seen = new Set();
+  for (const line of String(output).split(/\r?\n/u)) {
+    const first = (line.trim().split(/\s+/u)[0] ?? '').trim();
+    if (first === '' || first.startsWith('#') || /^(?:id|model|models|name)$/iu.test(first)) continue;
+    if (first.length > 256 || /\s/u.test(first) || seen.has(first)) continue;
+    seen.add(first);
+    values.push(first);
+  }
+  return values;
+}
+
+export function catalogDiagnostic(text) {
+  const line = String(text).split(/\r?\n/u).map(part => part.trim()).find(Boolean) ?? '';
+  if (line.length === 0 || /(?:token|bearer|api[_-]?key|secret|authorization|password)/iu.test(line) || /[A-Za-z0-9+/_-]{32,}={0,2}/u.test(line)) {
+    return 'AGY model catalog probe failed';
+  }
+  return line.slice(0, 180);
+}
+
+export function readVendorModelCatalog({ cliPath, cliPrefix = [], spawnProcess = spawn, stopProcess, timeoutMs = CATALOG_TIMEOUT_MS, maxOutputBytes = CATALOG_MAX_BYTES } = {}) {
+  return new Promise(resolveCatalog => {
+    let child;
+    let settled = false;
+    let overflow = false;
+    const finish = result => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolveCatalog(result);
+    };
+    const timer = setTimeout(() => {
+      const stopping = child === undefined ? undefined : Promise.resolve(stopProcess ? stopProcess(child) : child.kill?.()).catch(() => {});
+      void Promise.resolve(stopping).finally(() => finish({ ok: false, diagnostic: 'AGY model catalog probe timed out' }));
+    }, timeoutMs);
+    let stdout = Buffer.alloc(0);
+    let stderr = Buffer.alloc(0);
+    try {
+      child = spawnProcess(cliPath, [...cliPrefix, 'models'], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    } catch (error) {
+      finish({ ok: false, diagnostic: catalogDiagnostic(error instanceof Error ? error.message : String(error)) });
+      return;
+    }
+    const take = (current, chunk) => {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const next = Buffer.concat([current, bytes]);
+      if (next.length > maxOutputBytes) {
+        overflow = true;
+        child.kill?.();
+        return next.subarray(0, maxOutputBytes);
+      }
+      return next;
+    };
+    child.stdout?.on('data', chunk => { stdout = take(stdout, chunk); });
+    child.stderr?.on('data', chunk => { stderr = take(stderr, chunk); });
+    child.once?.('error', error => finish({ ok: false, diagnostic: catalogDiagnostic(error instanceof Error ? error.message : String(error)) }));
+    child.once?.('close', code => {
+      if (overflow) finish({ ok: false, diagnostic: 'AGY model catalog probe exceeded the output limit' });
+      else if (code !== 0) finish({ ok: false, diagnostic: catalogDiagnostic(stderr.toString('utf8') || `AGY model catalog probe exited ${code}`) });
+      else finish({ ok: true, ids: vendorModelIds(stdout.toString('utf8')) });
+    });
+  });
+}
+
 export function configOptions(session) {
   const effort = encodedEffort(session.model);
-  return [{ id: 'effort', name: 'AGY effort', category: 'thought_level', type: 'select', currentValue: session.effort,
+  const options = [{ id: 'effort', name: 'AGY effort', category: 'thought_level', type: 'select', currentValue: session.effort,
     options: [{ value: DEFAULT, name: 'Follow AGY settings' }, ...(effort ? [{ value: effort, name: effort }] : [])] }];
+  if (Array.isArray(session.modelChoices)) {
+    options.push({ id: 'model', name: 'AGY model', category: 'model', type: 'select', currentValue: session.model,
+      options: session.modelChoices.length === 0 ? [] : [{ value: DEFAULT, name: 'Follow AGY settings' },
+        ...session.modelChoices.map(id => ({ value: id, name: id }))] });
+  }
+  return options;
 }
 
 async function terminate(child) {
@@ -170,6 +249,7 @@ export class AgyBridge {
     const dirs = params.additionalDirectories ?? [];
     if (!Array.isArray(dirs) || dirs.some(d => typeof d !== 'string' || !isAbsolute(d))) throw new Error('Additional directories must be absolute');
     const session = { id, cwd: params.cwd, additionalDirectories: dirs, model: this.model, effort: DEFAULT,
+      modelChoices: this.modelChoices,
       mcpServers: structuredClone(mcpServers), mcpAgent: undefined,
       permission: undefined, hostGate: false, permissionIdentity: permissionChannelIdentity(),
       permissionRequests: new Set(), permissionChannel: undefined, permissionRegistration: undefined,
@@ -238,8 +318,34 @@ export class AgyBridge {
     return session;
   }
 
+  async loadVendorModels() {
+    try {
+      const result = await readVendorModelCatalog({
+        cliPath: this.cliPath, cliPrefix: this.cliPrefix, spawnProcess: this.spawnProcess, stopProcess: this.stopProcess,
+      });
+      this.modelChoices = result.ok ? result.ids : undefined;
+      this.modelDiagnostic = result.ok ? undefined : result.diagnostic;
+    } catch (error) {
+      this.modelChoices = undefined;
+      this.modelDiagnostic = catalogDiagnostic(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  setModel(session, value) {
+    if (typeof value !== 'string' || value.length === 0 || /\s/u.test(value)) throw new Error('AGY model must be a nonempty engine ID');
+    if (session.child && session.model !== value) throw new Error('AGY model/effort is frozen after process launch; select a fresh session');
+    if (!Array.isArray(session.modelChoices)) throw new Error('AGY model catalog is unavailable; model is selected by argv in its own namespace');
+    if (value !== DEFAULT && value !== session.model && !session.modelChoices.includes(value)) {
+      throw new Error(`AGY model ID ${value} is not in the vendor catalog`);
+    }
+    validateEffort(value, session.effort);
+    session.model = value;
+    return { configOptions: configOptions(session) };
+  }
+
   setConfig(params) {
     const session = this.session(params.sessionId);
+    if (params.configId === 'model') return this.setModel(session, params.value);
     const key = params.configId === 'effort' ? 'effort' : undefined;
     if (!key) throw new Error('Unsupported AGY config option; model is selected by argv in its own namespace');
     if (session.child && session[key] !== params.value) throw new Error('AGY model/effort is frozen after process launch; select a fresh session');
@@ -566,6 +672,7 @@ export async function runBridge({ sdkPath, cliPath, cliPrefix = [], auditDir, mo
   if (!isAbsolute(sdkPath ?? '')) throw new Error('Pass an installed ACP SDK absolute path');
   const acp = await import(pathToFileURL(sdkPath).href);
   const bridge = new AgyBridge({ cliPath, cliPrefix, auditDir, model });
+  await bridge.loadVendorModels();
   const connection = acp.agent({ name: 'agy-cli-acp', version: '0.1.0' })
     .onRequest('initialize', () => bridge.initialize(acp.PROTOCOL_VERSION))
     .onRequest('session/new', ctx => bridge.newSession(ctx.params))
