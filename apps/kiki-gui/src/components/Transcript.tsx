@@ -49,6 +49,7 @@ import {
   buildQuotePrefix,
   type TimelineAnnotation,
   type ComposerAttachment,
+  retainedAttachmentsFromContent,
   appendToDraft,
   prepareThreadRefContext,
   findThreadRefs,
@@ -116,6 +117,7 @@ import { timelineSnapshotKey, type TimelineReadingSnapshot } from '../lib/navVie
 import { restoreTimelineReading, type TimelineReadingAdapter } from '../lib/timelineReading';
 import { useNavSnapshotAdapter } from '../lib/useNavSnapshot';
 import { useTimelineVisitLocator } from '../lib/useTimelineNavigation';
+import { useCollapsibleOverflow } from '../lib/collapsibleOverflow';
 import {
   HistoryLine,
   isAbortedPromptNotice,
@@ -307,7 +309,7 @@ export interface TranscriptRowActions {
   /** Turn running / resyncing: mutating actions render but disable. */
   disabled: boolean;
   onEditMessage: (block: UserBlock, text: string, attachments?: readonly ComposerAttachment[], presentation?: TextPresentation) => void | Promise<void>;
-  loadEditAttachments?: (block: UserBlock) => Promise<readonly ComposerAttachment[]>;
+  loadEditAttachments?: (block: UserBlock, signal: AbortSignal) => Promise<readonly ComposerAttachment[]>;
   onRegenerate: (block: AssistantBlock) => void;
   onFork: (block: UserBlock | AssistantBlock) => void;
   /** False when the session's engine cannot fork (external handshake said no): the fork action leaves the row. */
@@ -355,12 +357,32 @@ const UserMessage = memo(function UserMessage({
   const messageLink = useMessageLink();
   const [editing, setEditing] = useState(false);
   const tapActions = useMessageRowTapActions<HTMLDivElement>();
+  const { contentRef, contentId, isOverflowing, expanded, toggle } =
+    useCollapsibleOverflow<HTMLDivElement>(block.text);
+  const clipped = !expanded && isOverflowing;
+  useFindReveal(`clamp:${block.id}`, expanded, useCallback((open: boolean) => { if (open) toggle(); }, [toggle]));
 
   // Edit/fork need the stable wire identity; parked prompts settle through
   // the queue strip instead of a rewrite.
   const settled = block.promptStatus === undefined && block.steerStatus === undefined;
-  const incomplete = useContentContinuation(block.contentSource, MESSAGE_TEXT_ROOTS).pending.length > 0;
+  const continuation = useContentContinuation(block.contentSource, MESSAGE_TEXT_ROOTS);
+  const serverRef = continuation.pending.find((ref) => MESSAGE_TEXT_ROOTS.includes(String(ref.path[0])));
+  const serverRemaining = serverRef !== undefined;
+  const serverStatus = serverRef !== undefined ? continuation.statusOf(serverRef) : undefined;
+  const isServerLoading = serverStatus?.status === 'loading';
+  const isServerFailed = serverStatus?.status === 'error';
+  const incomplete = continuation.pending.length > 0;
   const canMutate = rowActions !== undefined && block.userMessageId !== undefined && settled && !incomplete;
+
+  const handleContinue = useCallback(() => {
+    if (clipped) {
+      toggle();
+      return;
+    }
+    if (serverRemaining && serverRef !== undefined) {
+      continuation.request(serverRef);
+    }
+  }, [clipped, toggle, serverRemaining, serverRef, continuation]);
   const agentMessageLabel =
     block.agentMessage === undefined
       ? undefined
@@ -443,6 +465,34 @@ const UserMessage = memo(function UserMessage({
     if (display.text === block.text) return bodyText;
     return editableUserMessageText(block);
   }, [editing, display.text, block, bodyText]);
+  const initialEditAttachments = useMemo<readonly ComposerAttachment[]>(() => {
+    if (!editing) return [];
+    if (block.queuedContent !== undefined) {
+      return retainedAttachmentsFromContent(block.queuedContent);
+    }
+    if (block.media !== undefined && block.media.length > 0) {
+      return block.media.flatMap((mediaItem): ComposerAttachment[] => {
+        const url = mediaItem.blobHash === undefined ? mediaItem.url : `blobref:${mediaItem.mime};${mediaItem.blobHash}`;
+        if (mediaItem.kind === 'file') {
+          const fileId = mediaItem.fileId;
+          if (fileId === undefined) return [];
+          return [{ kind: 'retained', name: mediaItem.name ?? fileId, content: { type: 'file', file_id: fileId, name: mediaItem.name ?? fileId, media_type: mediaItem.mime ?? 'application/octet-stream', size: mediaItem.size ?? 0 } }];
+        }
+        if (url === undefined && mediaItem.fileId === undefined) return [];
+        return [{
+          kind: 'retained',
+          name: mediaItem.name ?? mediaItem.kind,
+          content: {
+            type: mediaItem.kind,
+            name: mediaItem.name,
+            source: url !== undefined ? { kind: 'url', url } : { kind: 'session_media', file_id: mediaItem.fileId! },
+          },
+          previewUrl: url !== undefined && /^(?:data:|blob:|https?:)/.test(url) ? url : undefined,
+        }];
+      });
+    }
+    return [];
+  }, [editing, block.queuedContent, block.media]);
   const threadRefDirectory = useThreadRefDirectory(
     useMemo(() => findThreadRefs(bodyText).map((ref) => ref.sessionId), [bodyText]),
   );
@@ -529,7 +579,8 @@ const UserMessage = memo(function UserMessage({
       {editing && rowActions !== undefined ? (
         <UserMessageEditor
           initialText={editInitialText}
-          loadAttachments={rowActions.loadEditAttachments === undefined ? undefined : () => rowActions.loadEditAttachments!(block)}
+          initialAttachments={initialEditAttachments}
+          loadAttachments={rowActions.loadEditAttachments === undefined ? undefined : (signal) => rowActions.loadEditAttachments!(block, signal)}
           onSubmit={async (text, attachments, editedPresentation) => {
             const prepared = editedPresentation === undefined
               ? prepareThreadRefContext(text, threadRefDirectory.info)
@@ -552,16 +603,104 @@ const UserMessage = memo(function UserMessage({
           }`}
         >
           <div
+            ref={contentRef}
+            id={contentId}
             data-source-block-id={block.id}
             data-source-version={sourceTextVersion(block.text)}
+            data-collapsible-content
+            className={
+              clipped
+                ? 'max-h-60 overflow-hidden relative collapsed-content-fade'
+                : undefined
+            }
           >
             {annotations === undefined || annotations.length === 0
               ? projectBody(bodyText)
               : projectTextWithAnnotationMarks(bodyText, annotations, projectBody)}
+            {!clipped && serverRemaining ? (
+              <span
+                data-content-continuation={serverStatus?.status ?? 'idle'}
+                className="inline-block ml-1 select-none"
+              >
+                <button
+                  type="button"
+                  data-user-ellipsis
+                  data-content-continuation-action
+                  onClick={handleContinue}
+                  disabled={isServerLoading}
+                  aria-busy={isServerLoading}
+                  aria-label={t(
+                    isServerFailed
+                      ? 'transcript.detail.retry'
+                      : isServerLoading
+                        ? 'transcript.content.loading'
+                        : 'transcript.loadMoreSegment',
+                  )}
+                  title={t(
+                    isServerFailed
+                      ? 'transcript.detail.retry'
+                      : isServerLoading
+                        ? 'transcript.content.loading'
+                        : 'transcript.loadMoreSegment',
+                  )}
+                  className="cursor-pointer font-mono tracking-widest text-[13px] leading-none text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+                >
+                  {isServerLoading ? '…' : isServerFailed ? '… ↺' : '……'}
+                </button>
+              </span>
+            ) : null}
           </div>
+          {clipped ? (
+            <div
+              data-content-continuation={serverRemaining ? (serverStatus?.status ?? 'idle') : undefined}
+              className="mt-1 flex justify-end select-none"
+            >
+              <button
+                type="button"
+                data-user-ellipsis
+                data-collapsible-toggle
+                data-content-continuation-action={serverRemaining ? '' : undefined}
+                onClick={handleContinue}
+                disabled={isServerLoading}
+                aria-busy={isServerLoading}
+                aria-label={t(
+                  isServerFailed
+                    ? 'transcript.detail.retry'
+                    : isServerLoading
+                      ? 'transcript.content.loading'
+                      : 'transcript.expandContent',
+                )}
+                title={t(
+                  isServerFailed
+                    ? 'transcript.detail.retry'
+                    : isServerLoading
+                      ? 'transcript.content.loading'
+                      : 'transcript.expandContent',
+                )}
+                className="cursor-pointer font-mono tracking-widest text-[13px] leading-none text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+              >
+                {isServerLoading ? '…' : isServerFailed ? '… ↺' : '……'}
+              </button>
+            </div>
+          ) : null}
         </div>
       )}
-      <ContentContinuation source={block.contentSource} roots={MESSAGE_TEXT_ROOTS} presentation={block.presentation} renderText={projectBody} label={t('subagent.message')} className="mt-1 justify-end" />
+      {!editing && isOverflowing && expanded ? (
+        <button
+          type="button"
+          data-collapsible-toggle
+          onClick={toggle}
+          aria-expanded={expanded}
+          aria-controls={contentId}
+          className="mt-1 mr-1 inline-flex items-center gap-1 text-[12px] font-medium text-ink-faint transition-colors hover:text-ink cursor-pointer"
+        >
+          {t('transcript.showLess')}
+          <Icon name="chevron" size={12} className="-rotate-90" />
+        </button>
+      ) : null}
+      {continuation.pending.some((ref) => ref.path[0] !== 'text' && ref.path[0] !== 'prompt') ? (
+        <ContentContinuation source={block.contentSource} roots={MESSAGE_TEXT_ROOTS} presentation={block.presentation} renderText={projectBody} label={t('subagent.message')} className="mt-1 justify-end" />
+      ) : null}
       {/* Row actions hang under the bubble they belong to, flush right: an
           overlay off the row's bottom edge that reserves no height and never
           sits over the bubble's own inline links. */}

@@ -40,6 +40,7 @@ import {
   selectionCarryoverPresentation,
   buildQuotePrefix,
   sourceTextVersion,
+  type ComposerAttachment,
 } from '@kiki/session-core/composer';
 import {
   SessionController,
@@ -102,7 +103,7 @@ import {
   TurnTailLine,
   type TranscriptRowActions,
 } from './Transcript';
-import { messageLinkHref } from './RowActions';
+import { messageLinkHref, mergeLoadedAttachments } from './RowActions';
 import { displayUserMessageText, editableUserMessageText } from './message/messageSource';
 
 vi.mock('./markdown/streamdown-plugins', async (importOriginal) => {
@@ -978,15 +979,15 @@ describe('media part deduplication', () => {
     expect(videoElem).not.toBeNull();
   });
 
-  it('omits the attachment when a reference-style image renders the same url', async () => {
+  it('keeps one attachment when a reference-style image remains literal', async () => {
     const container = await renderTranscript([
       assistantBlock('asst-ref', 'See ![board][fig]\n\n[fig]: https://example.test/board.png?v=1#crop', {
         media: [{ kind: 'image', url: 'https://example.test/board.png?v=1#crop' }],
       }),
     ]);
-    expect(container.querySelector('img[src="https://example.test/board.png?v=1#crop"]')).not.toBeNull();
     const prose = container.querySelector('[data-block-id="asst-ref"] [data-assistant-prose]');
-    expect(prose?.querySelectorAll(':scope > div.flex.flex-wrap')).toHaveLength(0);
+    expect(prose?.textContent).toContain('![board][fig]');
+    expect(prose?.querySelectorAll('img[src="https://example.test/board.png?v=1#crop"]')).toHaveLength(1);
   });
 
   it('omits the attachment when a nested-list image renders, and keeps one inside a nested fence', async () => {
@@ -3219,6 +3220,241 @@ describe('message row actions', () => {
     expect(cancel.compareDocumentPosition(send) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it('does not block typing or cancel while edit attachments are pending, and gates send until settled', async () => {
+    let resolveAttachments!: (attachments: readonly ComposerAttachment[]) => void;
+    const pendingLoad = new Promise<readonly ComposerAttachment[]>((resolve) => {
+      resolveAttachments = resolve;
+    });
+    const onEditMessage = vi.fn();
+    const rowActions: TranscriptRowActions = {
+      disabled: false,
+      onEditMessage,
+      loadEditAttachments: vi.fn(() => pendingLoad),
+      onRegenerate: () => undefined,
+      onFork: () => undefined,
+    };
+    const container = await renderTranscript(
+      [userBlock({ id: 'user-m1', text: 'original text', userMessageId: 'm1', media: [{ kind: 'image', fileId: 'img-1', name: 'photo.png' }] })],
+      rowActions,
+      undefined,
+      undefined,
+      true,
+    );
+    const row = container.querySelector('[data-block-id="user-m1"]')!;
+    await act(async () => {
+      flushSync(() => { click(row.querySelector('[data-row-action="edit"]')!); });
+    });
+    const textarea = container.querySelector<HTMLTextAreaElement>('[data-edit-editor] textarea');
+    expect(textarea).not.toBeNull();
+    expect(textarea?.disabled).toBe(false);
+
+    // Typing is immediately available while attachments load
+    await act(async () => {
+      flushSync(() => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+        setter.call(textarea!, 'typed while loading');
+        textarea!.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    });
+    expect(textarea?.value).toBe('typed while loading');
+
+    // Cancel is immediately clickable
+    const cancel = container.querySelector<HTMLButtonElement>('[data-edit-cancel]')!;
+    expect(cancel).not.toBeNull();
+    expect(cancel.disabled).toBe(false);
+
+    // Send is gated while attachments are still pending
+    const send = container.querySelector<HTMLButtonElement>('[data-edit-submit]')!;
+    expect(send.disabled).toBe(true);
+
+    // Initial retained attachment chip is already visible with original name
+    expect(container.querySelector('[data-attachment-chips]')?.textContent).toContain('photo.png');
+
+    // Attachments resolve with thumbnail preview
+    await act(async () => {
+      resolveAttachments([
+        {
+          kind: 'retained',
+          name: 'photo.png',
+          content: { type: 'image', source: { kind: 'session_media', file_id: 'img-1' } },
+          previewUrl: 'data:image/png;base64,thumb',
+        },
+      ]);
+    });
+
+    // Send button is now enabled
+    expect(send.disabled).toBe(false);
+
+    // Submit carries original identity and new text
+    await act(async () => {
+      flushSync(() => { click(send); });
+    });
+    expect(onEditMessage).toHaveBeenCalledOnce();
+    const [_block, text, attachments] = onEditMessage.mock.calls[0] as [{ text: string }, string, readonly ComposerAttachment[]];
+    expect(text).toBe('typed while loading');
+    expect(attachments).toHaveLength(1);
+    expect(attachments[0]).toMatchObject({
+      kind: 'retained',
+      content: { type: 'image', source: { kind: 'session_media', file_id: 'img-1' } },
+    });
+    expect(container.querySelector('[data-edit-editor]')).toBeNull();
+  });
+
+  it('preserves initial attachments on load error and allows retry without wiping items', async () => {
+    let rejectAttachments!: (err: Error) => void;
+    let resolveAttachments!: (attachments: readonly ComposerAttachment[]) => void;
+    const signals: AbortSignal[] = [];
+    const rowActions: TranscriptRowActions = {
+      disabled: false,
+      onEditMessage: vi.fn(),
+      loadEditAttachments: vi.fn()
+        .mockImplementationOnce((_block, signal: AbortSignal) => { signals.push(signal); return new Promise((_, reject) => { rejectAttachments = reject; }); })
+        .mockImplementationOnce((_block, signal: AbortSignal) => { signals.push(signal); return new Promise((resolve) => { resolveAttachments = resolve; }); }),
+      onRegenerate: () => undefined,
+      onFork: () => undefined,
+    };
+    const container = await renderTranscript(
+      [userBlock({ id: 'user-m2', text: 'error case text', userMessageId: 'm2', media: [{ kind: 'image', fileId: 'img-fail', name: 'failed.png' }] })],
+      rowActions,
+      undefined,
+      undefined,
+      true,
+    );
+    const row = container.querySelector('[data-block-id="user-m2"]')!;
+    await act(async () => {
+      flushSync(() => { click(row.querySelector('[data-row-action="edit"]')!); });
+    });
+    expect(container.querySelector('[data-edit-retry]')).toBeNull();
+
+    // Reject the load
+    await act(async () => {
+      rejectAttachments(new Error('Network error'));
+    });
+
+    // Original attachment chip is still preserved, send is disabled, retry button appears
+    expect(container.querySelector('[data-attachment-chips]')?.textContent).toContain('failed.png');
+    const send = container.querySelector<HTMLButtonElement>('[data-edit-submit]')!;
+    expect(send.disabled).toBe(true);
+    const retry = container.querySelector<HTMLButtonElement>('[data-edit-retry]');
+    expect(retry).not.toBeNull();
+
+    // Click retry
+    await act(async () => {
+      flushSync(() => { click(retry!); });
+    });
+    expect(rowActions.loadEditAttachments).toHaveBeenCalledTimes(2);
+    expect(signals[0]!.aborted).toBe(true);
+    expect(signals[1]!.aborted).toBe(false);
+
+    // Resolve second attempt
+    await act(async () => {
+      resolveAttachments([
+        {
+          kind: 'retained',
+          name: 'failed.png',
+          content: { type: 'image', source: { kind: 'session_media', file_id: 'img-fail' } },
+          previewUrl: 'data:image/png;base64,recovered',
+        },
+      ]);
+    });
+    expect(container.querySelector('[data-edit-retry]')).toBeNull();
+    expect(send.disabled).toBe(false);
+  });
+
+  it('cancels immediately during load and prevents late arrivals from resurrecting or overwriting edits', async () => {
+    let resolveAttachments!: (attachments: readonly ComposerAttachment[]) => void;
+    const pendingLoad = new Promise<readonly ComposerAttachment[]>((resolve) => {
+      resolveAttachments = resolve;
+    });
+    let loadSignal!: AbortSignal;
+    const rowActions: TranscriptRowActions = {
+      disabled: false,
+      onEditMessage: vi.fn(),
+      loadEditAttachments: vi.fn((_block, signal: AbortSignal) => { loadSignal = signal; return pendingLoad; }),
+      onRegenerate: () => undefined,
+      onFork: () => undefined,
+    };
+    const container = await renderTranscript(
+      [userBlock({ id: 'user-m3', text: 'cancel test', userMessageId: 'm3', media: [{ kind: 'image', fileId: 'img-cancel', name: 'cancel.png' }] })],
+      rowActions,
+      undefined,
+      undefined,
+      true,
+    );
+    const row = container.querySelector('[data-block-id="user-m3"]')!;
+    await act(async () => {
+      flushSync(() => { click(row.querySelector('[data-row-action="edit"]')!); });
+    });
+    expect(container.querySelector('[data-edit-editor]')).not.toBeNull();
+
+    // Click cancel while load is still pending
+    const cancel = container.querySelector<HTMLButtonElement>('[data-edit-cancel]')!;
+    await act(async () => {
+      flushSync(() => { click(cancel); });
+    });
+    expect(container.querySelector('[data-edit-editor]')).toBeNull();
+    expect(loadSignal.aborted).toBe(true);
+
+    // Late arrival after unmount does not throw or remount editor
+    await act(async () => {
+      resolveAttachments([
+        {
+          kind: 'retained',
+          name: 'cancel.png',
+          content: { type: 'image', source: { kind: 'session_media', file_id: 'img-cancel' } },
+        },
+      ]);
+    });
+    expect(container.querySelector('[data-edit-editor]')).toBeNull();
+  });
+
+  it('merges late-loaded attachments without overwriting new attachments or restoring deleted attachments', () => {
+    const initialImg: ComposerAttachment = {
+      kind: 'retained',
+      name: 'initial.png',
+      content: { type: 'image', name: 'original-name.png', source: { kind: 'session_media', file_id: 'img-1' } },
+    };
+    const loadedImgWithPreview: ComposerAttachment = {
+      ...initialImg,
+      content: { ...initialImg.content, name: 'different-detail-name.png' },
+      previewUrl: 'data:image/png;base64,loadedThumb',
+    };
+    const userAddedFile: ComposerAttachment = {
+      kind: 'file',
+      name: 'notes.txt',
+      path: '/path/to/notes.txt',
+      isDir: false,
+    };
+    const initial = [initialImg];
+
+    // Case 1: User added a new attachment while loading -> both preserved, loaded gets preview
+    const mergedWithNew = mergeLoadedAttachments([initialImg, userAddedFile], [loadedImgWithPreview], initial);
+    expect(mergedWithNew).toEqual([{ ...initialImg, previewUrl: loadedImgWithPreview.previewUrl }, userAddedFile]);
+    expect(mergedWithNew[0]!.kind === 'retained' && mergedWithNew[0]!.content).toBe(initialImg.content);
+
+    // Case 2: User explicitly removed the initial attachment -> not resurrected by late load
+    const mergedAfterRemoval = mergeLoadedAttachments([userAddedFile], [loadedImgWithPreview], initial);
+    expect(mergedAfterRemoval).toEqual([userAddedFile]);
+
+    // Case 3: Initial was empty, user added a file, then loaded arrives -> neither is lost
+    const mergedEmptyInitial = mergeLoadedAttachments([userAddedFile], [loadedImgWithPreview], []);
+    expect(mergedEmptyInitial).toEqual([loadedImgWithPreview, userAddedFile]);
+  });
+
+  it.each(['image', 'retained'] as const)('keeps same-name %s images with identical base64 prefixes distinct during late loading', (kind) => {
+    const prefix = 'A'.repeat(32);
+    const image = (tail: string): ComposerAttachment => kind === 'image'
+      ? { kind: 'image', name: 'same.png', mediaType: 'image/png', data: prefix + tail, size: 30, previewUrl: '' }
+      : { kind: 'retained', name: 'same.png', content: { type: 'image', source: { kind: 'base64', media_type: 'image/png', data: prefix + tail } } };
+    const first = image('AAAA');
+    const second = image('BBBB');
+    const loadedFirst = { ...first, previewUrl: 'first-preview' };
+    const loadedSecond = { ...second, previewUrl: 'second-preview' };
+    const initial = [first, second];
+    expect(mergeLoadedAttachments([first, second], [loadedFirst, loadedSecond], initial)).toEqual([loadedFirst, loadedSecond]);
+    expect(mergeLoadedAttachments([second], [loadedFirst, loadedSecond], initial)).toEqual([loadedSecond]);
+  });
+
   it('copies the typed body and preserves selected carry annotations in the edit metadata', async () => {
     const quote = 'selected fragment';
     const comment = 'keep this selection';
@@ -3544,20 +3780,130 @@ describe('message row actions', () => {
 });
 
 describe('user message body sizing', () => {
-  it('does not render a collapse toggle for short messages', async () => {
-    const container = await renderTranscript([userBlock({ id: 'user-m1', text: 'short' })]);
+  it('does not render a collapse toggle or ellipsis when content fits without overflow or server continuation', async () => {
+    const container = await renderTranscript([userBlock({ id: 'user-m1', text: 'short message' })]);
     expect(container.querySelector('[data-collapsible-toggle]')).toBeNull();
+    expect(container.querySelector('[data-user-ellipsis]')).toBeNull();
+    const content = container.querySelector<HTMLElement>('[data-source-block-id="user-m1"]')!;
+    expect(content.className).not.toContain('max-h-60');
+    expect(content.className).not.toContain('collapsed-content-fade');
   });
 
-  it('keeps a long user body fully expanded without a max-height clamp', async () => {
+  it('clamps an overflowing user message with grey ellipsis and expands on click', async () => {
     const text = 'x'.repeat(600);
     const container = await renderTranscript([userBlock({ id: 'user-m1', text })]);
     const content = container.querySelector<HTMLElement>('[data-source-block-id="user-m1"]')!;
     expect(content.textContent).toBe(text);
+    expect(container.querySelector('[data-user-ellipsis]')).toBeNull();
+
+    Object.defineProperty(content, 'scrollHeight', { value: 600, configurable: true });
+    Object.defineProperty(content, 'clientHeight', { value: 100, configurable: true });
+    await act(async () => {
+      resizeElement(content, 100);
+    });
+
+    expect(content.className).toContain('max-h-60');
+    expect(content.className).toContain('collapsed-content-fade');
+    const ellipsis = container.querySelector<HTMLButtonElement>('[data-user-ellipsis]')!;
+    expect(ellipsis).not.toBeNull();
+    expect(ellipsis.textContent).toBe('……');
+    expect(ellipsis.hasAttribute('data-collapsible-toggle')).toBe(true);
+
+    await act(async () => {
+      ellipsis.click();
+    });
     expect(content.className).not.toContain('max-h-60');
     expect(content.className).not.toContain('collapsed-content-fade');
-    expect(container.querySelector('[data-collapsible-content]')).toBeNull();
-    expect(container.querySelector('[data-collapsible-toggle]')).toBeNull();
+
+    const showLess = container.querySelector<HTMLButtonElement>('[data-collapsible-toggle]')!;
+    expect(showLess).not.toBeNull();
+    expect(showLess.textContent).toContain('Show less');
+
+    await act(async () => {
+      showLess.click();
+    });
+    expect(content.className).toContain('max-h-60');
+    expect(content.className).toContain('collapsed-content-fade');
+  });
+
+  it('renders grey ellipsis for server continuation and loads the next segment on click', async () => {
+    const { TranscriptDetailProvider } = await import('./transcriptDetail');
+    const source: import('@kiki/transcript').ContentSource = { kind: 'turn', id: 't0' };
+    const ref: import('@kiki/transcript').ContentRef = {
+      source,
+      path: ['prompt'],
+      revision: 't0',
+      kind: 'text',
+      offset: 10,
+      total: 20,
+    };
+    const loadContent = vi.fn(async (_ref: import('@kiki/transcript').ContentRef) => true);
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <TranscriptDetailProvider load={async () => false} loads={{}} contentRefs={[ref]} loadContent={loadContent}>
+        <Transcript
+          state={transcriptState([userBlock({ id: 'user-m1', text: 'prefix text', contentSource: source })])}
+          onLoadOlder={() => Promise.resolve(false)}
+          onResolveApproval={() => noopActions()}
+          onAnswerQuestion={() => noopActions()}
+          onDismissQuestion={() => noopActions()}
+        />
+      </TranscriptDetailProvider>,
+    );
+    const ellipsis = container.querySelector<HTMLButtonElement>('[data-user-ellipsis]')!;
+    expect(ellipsis).not.toBeNull();
+    expect(ellipsis.textContent).toBe('……');
+    expect(ellipsis.hasAttribute('data-content-continuation-action')).toBe(true);
+
+    await act(async () => {
+      ellipsis.click();
+    });
+    expect(loadContent).toHaveBeenCalledWith(ref);
+  });
+
+  it('renders a retryable grey ellipsis for an error detail load and reloads that segment', async () => {
+    const { TranscriptDetailProvider, contentSegmentKey } = await import('./transcriptDetail');
+    const source: import('@kiki/transcript').ContentSource = { kind: 'turn', id: 't0' };
+    const ref: import('@kiki/transcript').ContentRef = {
+      source,
+      path: ['prompt'],
+      revision: 't0',
+      kind: 'text',
+      offset: 10,
+      total: 20,
+    };
+    const loadContent = vi.fn(async (_ref: import('@kiki/transcript').ContentRef) => true);
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <TranscriptDetailProvider
+        load={async () => false}
+        loads={{ [contentSegmentKey(ref)]: { status: 'error', message: 'segment read failed' } }}
+        contentRefs={[ref]}
+        loadContent={loadContent}
+      >
+        <Transcript
+          state={transcriptState([userBlock({ id: 'user-m1', text: 'prefix text', contentSource: source })])}
+          onLoadOlder={() => Promise.resolve(false)}
+          onResolveApproval={() => noopActions()}
+          onAnswerQuestion={() => noopActions()}
+          onDismissQuestion={() => noopActions()}
+        />
+      </TranscriptDetailProvider>,
+    );
+    const ellipsis = container.querySelector<HTMLButtonElement>('[data-user-ellipsis]')!;
+    expect(ellipsis).not.toBeNull();
+    expect(ellipsis.parentElement?.getAttribute('data-content-continuation')).toBe('error');
+    expect(ellipsis.textContent).toBe('… ↺');
+    expect(ellipsis.getAttribute('aria-label')).toBe('Try again');
+    expect(ellipsis.disabled).toBe(false);
+
+    await act(async () => {
+      ellipsis.click();
+    });
+    expect(loadContent).toHaveBeenCalledOnce();
+    expect(loadContent).toHaveBeenCalledWith(ref);
   });
 });
 
