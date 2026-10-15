@@ -98,8 +98,8 @@ describe('copyImageBitmap', () => {
   });
 
   it('writes the png bytes as a clipboard image and not as a url', async () => {
-    const bytes = Uint8Array.from([137, 80, 78, 71, 1, 2, 3]);
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, blob: async () => new Blob([bytes], { type: 'image/png' }) })));
+    const bytes = bytesOfPng();
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, blob: async () => new Blob([bytes as BlobPart], { type: 'image/png' }) })));
     await copyImageBitmap('blob:shot');
     expect(write).toHaveBeenCalledOnce();
     const item = write.mock.calls[0]?.[0]?.[0] as { items: Record<string, Blob> };
@@ -108,26 +108,50 @@ describe('copyImageBitmap', () => {
     expect(writeText).not.toHaveBeenCalled();
   });
 
-  it('rasterizes a non-png bitmap and reports a clipboard rejection without copying the url', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, blob: async () => new Blob([Uint8Array.from([1, 2])], { type: 'image/jpeg' }) })));
+  it('rasterizes a non-png bitmap and writes real converted png to clipboard', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, blob: async () => new Blob([bytesOfJpeg() as BlobPart], { type: 'image/jpeg' }) })));
     vi.stubGlobal('Image', class { crossOrigin: string | null = null; src = ''; naturalWidth = 4; naturalHeight = 2; decode() { return Promise.resolve(); } });
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage() {} } as unknown as CanvasRenderingContext2D);
-    HTMLCanvasElement.prototype.toBlob = (callback) => { callback(new Blob([Uint8Array.from([9, 9, 9])], { type: 'image/png' })); };
+    const convertedPng = bytesOfPng();
+    HTMLCanvasElement.prototype.toBlob = (callback) => { callback(new Blob([convertedPng as BlobPart], { type: 'image/png' })); };
     await copyImageBitmap('https://example.test/shot.jpg');
     const item = write.mock.calls[0]?.[0]?.[0] as { items: Record<string, Blob> };
     expect(item.items['image/png']?.type).toBe('image/png');
-    expect(item.items['image/png']?.size).toBe(3);
+    expect(item.items['image/png']?.size).toBe(convertedPng.byteLength);
     expect(writeText).not.toHaveBeenCalled();
 
     write.mockRejectedValueOnce(new Error('denied'));
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, blob: async () => new Blob([bytesOfPng()], { type: 'image/png' }) })));
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, blob: async () => new Blob([bytesOfPng() as BlobPart], { type: 'image/png' }) })));
     await expect(copyImageBitmap('https://example.test/shot.png')).rejects.toThrow('denied');
     expect(writeText).not.toHaveBeenCalled();
   });
+
+  it('rasterizes when blob has image/png MIME but invalid PNG magic signature', async () => {
+    // Blob falsely claims image/png, but contains JPEG bytes -> must be rasterized to real PNG
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, blob: async () => new Blob([bytesOfJpeg() as BlobPart], { type: 'image/png' }) })));
+    vi.stubGlobal('Image', class { crossOrigin: string | null = null; src = ''; naturalWidth = 4; naturalHeight = 2; decode() { return Promise.resolve(); } });
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage() {} } as unknown as CanvasRenderingContext2D);
+    const convertedPng = bytesOfPng();
+    HTMLCanvasElement.prototype.toBlob = (callback) => { callback(new Blob([convertedPng as BlobPart], { type: 'image/png' })); };
+    await copyImageBitmap('blob:corrupt-mime');
+    const item = write.mock.calls[0]?.[0]?.[0] as { items: Record<string, Blob> };
+    expect(item.items['image/png']?.type).toBe('image/png');
+    expect(item.items['image/png']?.size).toBe(convertedPng.byteLength);
+  });
 });
 
-function bytesOfPng(): BlobPart {
-  return Uint8Array.from([137, 80, 78, 71]);
+function bytesOfPng(): Uint8Array {
+  const buffer = new ArrayBuffer(11);
+  const view = new Uint8Array(buffer);
+  view.set([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3]);
+  return view;
+}
+
+function bytesOfJpeg(): Uint8Array {
+  const buffer = new ArrayBuffer(8);
+  const view = new Uint8Array(buffer);
+  view.set([0xFF, 0xD8, 0xFF, 0xE0, 0, 16, 0x4A, 0x46]);
+  return view;
 }
 
 describe('lightbox image menu', () => {

@@ -51,7 +51,7 @@ afterEach(async () => {
 });
 
 describe('lightbox viewing', () => {
-  it('fits a wide image and a narrow long image to width and pages the scroller', () => {
+  it('fits a wide image and a narrow long image to available area and pages scroller at actual size', () => {
     renderLightbox({ name: 'wide.png' });
     const wide = loadImage(2000, 80);
     expect(wide.className).toContain('h-auto');
@@ -62,7 +62,15 @@ describe('lightbox viewing', () => {
 
     renderLightbox({ name: 'tall.png', identity: 'tall' });
     const tall = loadImage(80, 900);
+    // In fit mode, fits within window.innerHeight * 0.75
+    const expectedFitWidth = 80 * Math.min(1, (window.innerWidth * 0.92) / 80, (window.innerHeight * 0.75) / 900);
+    expect((tall.parentElement as HTMLElement).style.width).toBe(`${expectedFitWidth}px`);
+
+    // Toggle to actual size, where tall image reaches full natural width 80px and height 900px, enabling page scrolling
+    const zoomButton = document.querySelector<HTMLButtonElement>('button[data-autofocus]')!;
+    act(() => { zoomButton.click(); });
     expect((tall.parentElement as HTMLElement).style.width).toBe('80px');
+
     const scroller = document.querySelector<HTMLDivElement>('[data-lightbox-viewport]')!;
     Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 200 });
     scroller.scrollTop = 0;
@@ -128,6 +136,62 @@ describe('lightbox viewing', () => {
     } finally {
       vi.stubGlobal('Image', OriginalImage);
     }
+  });
+
+  it('defaults to fit on open, toggles to actual size and back, and resets to fit on image change or reopen', () => {
+    renderLightbox({ name: 'reset-test-1.png', identity: 'img-1' });
+    const img1 = loadImage(1000, 500);
+    const viewport = () => document.querySelector('[data-lightbox-viewport]');
+    const zoomButton = () => document.querySelector<HTMLButtonElement>('button[data-autofocus]');
+
+    // 1. Opens with fit by default
+    expect(viewport()?.getAttribute('data-lightbox-viewport')).toBe('fit');
+    expect(zoomButton()?.textContent).toBe('Actual size');
+
+    // 2. Click toggles to actual size
+    act(() => { zoomButton()?.click(); });
+    expect(viewport()?.getAttribute('data-lightbox-viewport')).toBe('actual');
+    expect(zoomButton()?.textContent).toBe('Fit width');
+
+    // 3. Image click toggles back to fit
+    act(() => { img1.click(); });
+    expect(viewport()?.getAttribute('data-lightbox-viewport')).toBe('fit');
+    expect(zoomButton()?.textContent).toBe('Actual size');
+
+    // 4. Toggle back to actual size, then switch identity (next image)
+    act(() => { zoomButton()?.click(); });
+    expect(viewport()?.getAttribute('data-lightbox-viewport')).toBe('actual');
+
+    renderLightbox({ name: 'reset-test-2.png', identity: 'img-2' });
+    loadImage(800, 600);
+    // Verified: Resets to fit by default on new image identity
+    expect(viewport()?.getAttribute('data-lightbox-viewport')).toBe('fit');
+    expect(zoomButton()?.textContent).toBe('Actual size');
+
+    // 5. Toggle to actual size, close, and reopen with the SAME identity
+    act(() => { zoomButton()?.click(); });
+    expect(viewport()?.getAttribute('data-lightbox-viewport')).toBe('actual');
+
+    // Close lightbox (unmount)
+    act(() => { root.render(null); });
+    expect(document.querySelector('[data-lightbox-viewport]')).toBeNull();
+
+    // Reopen with the SAME identity 'img-2'
+    renderLightbox({ name: 'reset-test-2.png', identity: 'img-2' });
+    loadImage(800, 600);
+    // Verified: Reopening with the same identity mounts afresh with fit by default
+    expect(viewport()?.getAttribute('data-lightbox-viewport')).toBe('fit');
+    expect(zoomButton()?.textContent).toBe('Actual size');
+
+    // 6. Window resize recalculates display width while remaining open
+    act(() => {
+      window.innerWidth = 500;
+      window.innerHeight = 400;
+      window.dispatchEvent(new Event('resize'));
+    });
+    const resizedStyleWidth = (document.querySelector('[data-lightbox-viewport] img')?.parentElement as HTMLElement).style.width;
+    const expectedResized = 800 * Math.min(1, (500 * 0.92) / 800, (400 * 0.75) / 600);
+    expect(resizedStyleWidth).toBe(`${expectedResized}px`);
   });
 });
 

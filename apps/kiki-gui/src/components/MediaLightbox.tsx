@@ -38,6 +38,18 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
   const dpr = useDevicePixelRatio();
   const pan = useDragPan(actualSize && !editing);
   const label = imagePreviewLabel({ name }, t('media.image'));
+  const [viewportDims, setViewportDims] = useState(() => ({
+    width: typeof window !== 'undefined' ? window.innerWidth : 1024,
+    height: typeof window !== 'undefined' ? window.innerHeight : 768,
+  }));
+
+  useEffect(() => {
+    const onResize = () => {
+      setViewportDims({ width: window.innerWidth, height: window.innerHeight });
+    };
+    window.addEventListener('resize', onResize);
+    return () => { window.removeEventListener('resize', onResize); };
+  }, []);
 
   useLayoutEffect(() => {
     setActualSize(false);
@@ -139,6 +151,10 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
     onSaveAnnotated: () => save(true),
   });
 
+  const fitScale = natural === undefined || natural.width <= 0 || natural.height <= 0 ? 1
+    : Math.min(1, (viewportDims.width * 0.92) / natural.width, (viewportDims.height * 0.75) / natural.height);
+  const displayWidth = natural === undefined ? undefined : actualSize ? natural.width / dpr : natural.width * fitScale;
+
   return <Dialog onClose={dismiss} ariaLabel={label} overlayId="media-lightbox"
     overlayClassName="fixed inset-0 z-50 flex items-center justify-center bg-shell/85 p-4"
     panelClassName="anim-enter flex max-h-full w-full max-w-[94vw] flex-col items-center gap-3 outline-none">
@@ -175,7 +191,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
         className={`relative min-h-0 max-h-[75vh] w-full select-none overflow-auto overscroll-contain ${editing ? '' : actualSize ? pan.dragging ? 'cursor-grabbing' : 'cursor-grab' : 'cursor-zoom-in'}`}>
         {loading ? <div aria-busy="true" className="flex min-h-48 items-center justify-center text-sm text-shell-ink">{t('preview.loading')}</div>
           : failed || sourceFailed ? <div role="alert" className="flex min-h-48 flex-col items-center justify-center gap-3 text-sm text-shell-ink"><span>{t('media.unavailable', { name: label })}</span><button type="button" onClick={() => { setFailed(false); setAttempt((value) => value + 1); onRetry?.(); }} className={controlClass}>{t('transcript.detail.retry')}</button></div>
-            : <div className="relative mx-auto" style={{ width: natural === undefined ? undefined : actualSize ? natural.width / dpr : Math.min(natural.width, window.innerWidth * 0.92), maxWidth: actualSize ? 'none' : '100%' }}>
+            : <div className="relative mx-auto" style={{ width: displayWidth, maxWidth: actualSize ? 'none' : '100%' }}>
               <img ref={image} key={`${identity}:${attempt}`} src={src} alt={label} tabIndex={0} draggable={false} decoding="async"
                 onError={() => { setFailed(true); }} onLoad={(event) => { setNatural({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight }); noteMediaReady(outcomeKey ?? (src === undefined ? undefined : `url:${src}`)); }}
                 onClick={(event) => { if (!editing && !pan.consumePan()) switchZoom({ x: event.clientX, y: event.clientY }); }} className="block h-auto w-full rounded-lg" />

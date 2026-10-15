@@ -1,7 +1,7 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react';
 import type { I18nKey } from '@kiki/session-core/i18n';
 
-import { copyTextToClipboard } from '../lib/clipboard';
+import { copyImageToClipboard, copyTextToClipboard, isPngBlob } from '../lib/clipboard';
 import type { MiniMenuEntry } from './MiniContextMenu';
 
 const COPY_IMAGE = 'media.copyImage' as I18nKey;
@@ -83,22 +83,52 @@ export function useMediaReady(key: string | undefined, onReady: () => void): voi
 }
 
 export async function copyImageBitmap(src: string): Promise<void> {
-  const response = await fetch(src);
-  if (!response.ok) throw new Error(`Image could not be read (${response.status})`);
-  let blob = await response.blob();
-  if (blob.size === 0) throw new Error('Image could not be read');
-  if (blob.type !== 'image/png') blob = await rasterPng(src);
-  const clipboard = navigator.clipboard;
-  if (clipboard === undefined || typeof clipboard.write !== 'function' || typeof ClipboardItem === 'undefined') {
-    throw new Error('Clipboard image write is unavailable');
+  let blob: Blob;
+  try {
+    const response = await fetch(src);
+    if (!response.ok) throw new Error(`Image could not be read (${response.status})`);
+    blob = await response.blob();
+    if (blob.size === 0) throw new Error('Image could not be read');
+  } catch (error) {
+    if (src.startsWith('blob:') || src.startsWith('data:')) throw error;
+    try {
+      blob = await rasterPng(src);
+    } catch {
+      throw error;
+    }
   }
-  const png = blob.type === 'image/png' ? blob : new Blob([await blob.arrayBuffer()], { type: 'image/png' });
-  await clipboard.write([new ClipboardItem({ 'image/png': png })]);
+  if (blob.type !== 'image/png' || !(await isPngBlob(blob))) {
+    blob = await rasterPng(src, blob);
+  }
+  await copyImageToClipboard(blob);
 }
 
-async function rasterPng(src: string): Promise<Blob> {
+async function rasterPng(src: string, blob?: Blob): Promise<Blob> {
+  if (blob !== undefined && typeof createImageBitmap === 'function') {
+    try {
+      const bitmap = await createImageBitmap(blob);
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        const context = canvas.getContext('2d');
+        if (context === null) throw new Error('Canvas is unavailable');
+        context.drawImage(bitmap, 0, 0);
+        const out = await new Promise<Blob | null>((resolve) => { canvas.toBlob(resolve, 'image/png'); });
+        if (out !== null) return out;
+      } finally {
+        bitmap.close();
+      }
+    } catch {
+      // Fall through to Image loading
+    }
+  }
+
+  const isBlobUrl = src.startsWith('blob:') || src.startsWith('data:');
   const image = new Image();
-  image.crossOrigin = 'anonymous';
+  if (!isBlobUrl) {
+    image.crossOrigin = 'anonymous';
+  }
   image.src = src;
   await image.decode();
   const canvas = document.createElement('canvas');
@@ -107,9 +137,9 @@ async function rasterPng(src: string): Promise<Blob> {
   const context = canvas.getContext('2d');
   if (context === null) throw new Error('Canvas is unavailable');
   context.drawImage(image, 0, 0);
-  const blob = await new Promise<Blob | null>((resolve) => { canvas.toBlob(resolve, 'image/png'); });
-  if (blob === null) throw new Error('Image could not be copied');
-  return blob;
+  const out = await new Promise<Blob | null>((resolve) => { canvas.toBlob(resolve, 'image/png'); });
+  if (out === null) throw new Error('Image could not be copied');
+  return out;
 }
 
 export function imageMenuEntries({
