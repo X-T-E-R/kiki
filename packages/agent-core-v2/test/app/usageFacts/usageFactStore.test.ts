@@ -155,4 +155,83 @@ describe('UsageFactStore', () => {
     await facts.commit(SCOPE, 0, { generation: 'legacy', offset: (await storage.size(SCOPE, KEY))!, size: (await storage.size(SCOPE, KEY))!, mtimeMs: (await storage.mtime(SCOPE, KEY))!, boundaryHash: '', valid: true }, [normalized, normalized]);
     expect((await facts.read(SCOPE)).records).toEqual([normalized, normalized]);
   });
+
+  it('bounds range pages and preserves unknown and out-of-range invalid facts across cursors', async () => {
+    const records = Array.from({ length: 620 }, (_, index) => normalizeUsageFact(fact(index, index % 3 !== 0), 'main')!);
+    records.push({ ...records[0]!, time: -1, invalid: true });
+    await facts.commit(SCOPE, 0, { generation: 'legacy', offset: 620, size: 620, mtimeMs: 1, boundaryHash: '', valid: false }, records);
+    await facts.summary(SCOPE);
+    let cursor: string | undefined;
+    const result = [];
+    for (let pass = 0; pass < 10; pass++) {
+      const budget = { remainingRecords: 100 };
+      const snapshot = await facts.read(SCOPE, { startAt: 0, endAt: 1000 }, undefined, { budget, cursor });
+      expect(snapshot.records.length).toBeLessThanOrEqual(100);
+      expect(budget.remainingRecords).toBeGreaterThanOrEqual(0);
+      result.push(...snapshot.records);
+      cursor = snapshot.nextCursor;
+      if (snapshot.readComplete !== false) break;
+      expect(cursor).toBeDefined();
+    }
+    expect(cursor).toBeUndefined();
+    expect(result).toHaveLength(621);
+    expect(result.filter((row) => row.usageKnown === false)).toHaveLength(208);
+    expect(result.filter((row) => row.invalid)).toHaveLength(1);
+  });
+
+  it('resumes multi-page index construction within fact allowances without publishing its source checkpoint early', async () => {
+    const records = Array.from({ length: 900 }, (_, index) => normalizeUsageFact(fact(index), 'main')!);
+    await facts.commit(SCOPE, 0, { generation: 'legacy', offset: 900, size: 900, mtimeMs: 1, boundaryHash: '', valid: true }, records);
+    const batch = vi.spyOn(query, 'batch');
+    const read = vi.spyOn(storage, 'readStream');
+    const keys = vi.spyOn(query, 'listKeys');
+    let complete = false;
+    for (let pass = 0; pass < 24; pass++) {
+      const budget = { remainingRecords: 100 };
+      const snapshot = await facts.read(SCOPE, undefined, undefined, { budget });
+      expect(budget.remainingRecords).toBeGreaterThanOrEqual(0);
+      expect(snapshot.records.length).toBeLessThanOrEqual(100);
+      if (snapshot.checkpoint !== undefined) { complete = true; break; }
+      expect(snapshot.readComplete).toBe(false);
+      expect(await query.get(COLLECTION, 'head')).toBeUndefined();
+    }
+    expect(complete).toBe(true);
+    expect(batch.mock.calls.every(([ops]) => ops.length <= 256)).toBe(true);
+    expect(keys).not.toHaveBeenCalled();
+    expect(read.mock.calls.some(([, , range]) => (range?.start ?? 0) > 0)).toBe(true);
+    expect((await facts.read(SCOPE)).records).toEqual(records);
+  });
+
+  it('shares one fact allowance across concurrent source reads', async () => {
+    const records = Array.from({ length: 300 }, (_, index) => normalizeUsageFact(fact(index, false), 'main')!);
+    const scopes = [SCOPE, 'sessions/example/session/agents/child'];
+    for (const scope of scopes) {
+      await facts.commit(scope, 0, { generation: 'legacy', offset: 300, size: 300, mtimeMs: 1, boundaryHash: '', valid: true }, records);
+      await facts.summary(scope);
+    }
+    const budget = { remainingRecords: 350 };
+    const snapshots = await Promise.all(scopes.map((scope) => facts.read(scope, undefined, undefined, { budget })));
+    expect(snapshots.reduce((total, snapshot) => total + snapshot.records.length, 0)).toBe(350);
+    expect(snapshots.every((snapshot) => snapshot.readComplete === false)).toBe(true);
+    expect(budget.remainingRecords).toBe(0);
+  });
+
+  it('cancels a stalled index read promptly and leaves another read usable', async () => {
+    logs.append(SCOPE, KEY, fact());
+    await logs.flush(SCOPE, KEY);
+    const expected = await facts.read(SCOPE);
+    let release!: () => void;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const get = query.get.bind(query);
+    vi.spyOn(query, 'get').mockImplementationOnce(async (collection, key) => { entered(); await gate; return get(collection, key); });
+    const controller = new AbortController();
+    const reading = facts.read(SCOPE, undefined, controller.signal);
+    await started;
+    controller.abort();
+    await expect(reading).rejects.toMatchObject({ name: 'AbortError' });
+    release();
+    expect(await facts.read(SCOPE)).toEqual(expected);
+  });
 });

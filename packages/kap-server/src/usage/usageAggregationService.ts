@@ -5,8 +5,10 @@ import {
   AGENT_WIRE_RECORD_KEY,
   normalizeUsageFact as normalizeRecord,
   parseUsageJson,
+  UsageJsonStream,
   type UsageFact,
   type UsageFactTotals,
+  type UsageFactReadBudget,
   IUsageFactStore,
   IAppendLogStore,
   IFileSystemStorageService,
@@ -116,6 +118,7 @@ interface PersistentSessionRecords {
   readonly sessionKey: string;
   readonly records: readonly NormalizedUsageRecord[];
   readonly agents: Readonly<Record<string, WireCheckpoint>>;
+  readonly readComplete?: boolean;
 }
 
 interface SessionLoadResult {
@@ -144,6 +147,8 @@ export interface AgentUsageReadOptions {
 
 interface ScanBudget {
   readonly signal?: AbortSignal;
+  factSignal?: AbortSignal;
+  factBudget?: UsageFactReadBudget;
   remainingRecords: number;
   remainingFacts?: number;
   readonly deadlineAt: number;
@@ -225,6 +230,7 @@ export class UsagePageTokenMismatchError extends Error {}
 /** Incremental usage projection for managed append/rewrite stores. Tracked sources reuse complete verified checkpoints until an event or a ten-minute safety recheck; untracked sources, export and rescan validate inventories, sizes and mtimes. Bounded views never replace full checkpoints. External rewrites preserving size and mtime remain outside the consistency contract. */
 export class UsageAggregationService {
   private readonly cache = new Map<string, SessionCacheEntry>();
+  private readonly pendingWireLines = new Map<string, WireLineContinuation>();
   private readonly sessionFlights = new Map<string, Promise<SessionLoadResult>>();
   private readonly queryFlights = new Map<string, {
     controller: AbortController; promise: Promise<UsageResponse>; waiters: number; settled: boolean;
@@ -340,6 +346,7 @@ export class UsageAggregationService {
     this.sourceSubscription?.dispose();
     for (const flight of this.queryFlights.values()) flight.controller.abort();
     this.queryFlights.clear();
+    this.pendingWireLines.clear();
   }
 
   private revisionOf(key: string): string {
@@ -545,69 +552,85 @@ export class UsageAggregationService {
       sourcesComplete: true,
       incompleteReason: null,
     };
-    const listed = await this.listSessions(query, budget);
+    const deadline = new AbortController();
+    const timer = setTimeout(() => { deadline.abort(new DOMException('Usage query deadline', 'TimeoutError')); }, this.limits.deadlineMs);
+    timer.unref();
+    budget.factSignal = AbortSignal.any([signal, deadline.signal]);
+    budget.factBudget = {
+      get remainingRecords() { return budget.remainingFacts ?? Infinity; },
+      set remainingRecords(value: number) { budget.remainingFacts = value; },
+    };
     const sessions: SessionRecords[] = [];
-    sessionLoop: for (let offset = 0; offset < listed.items.length; offset += CHECKPOINT_READ_CONCURRENCY) {
-      signal.throwIfAborted();
-      if (this.now() >= budget.deadlineAt) {
-        budget.incompleteReason = 'deadline';
-        break;
-      }
-      const batch = listed.items.slice(offset, offset + CHECKPOINT_READ_CONCURRENCY);
-      const prepared = await Promise.all(batch.map(async (summary) => {
-        const key = sessionKey(summary);
-        const cached = this.readCachedSession(key, query.range);
-        const indexedRange = query.range.startAt !== undefined && query.range.endAt !== undefined ? query.range : undefined;
-        const persisted = cached?.persisted ?? await this.readPersistentSession(
-          this.core.accessor.get(IFileSystemStorageService), key, indexedRange, signal,
-        );
-        const revision = this.revisionOf(key);
-        const current = await this.cacheIsCurrent(summary, persisted, this.rescan.state !== 'running');
-        if (current && !cached?.view && this.rescan.state !== 'running') {
-          this.cacheSessionRange(key, persisted, true, query.range);
-        }
-        if (current) this.rememberVerified(key, persisted, revision);
-        if (current && !cached?.view && (query.range.startAt !== undefined || query.range.endAt !== undefined)) {
-          return {
-            persisted: { ...persisted, records: persisted.records.filter((record) => record.invalid || inRange(record.time, query.range)) },
-            current,
-            view: true,
-          };
-        }
-        return { persisted, current, view: cached?.view ?? indexedRange !== undefined };
-      }));
-      for (const [index, summary] of batch.entries()) {
-        if (index > 0 && this.now() >= budget.deadlineAt) {
+    try {
+      const listed = await this.listSessions(query, budget);
+      sessionLoop: for (let offset = 0; offset < listed.items.length; offset += CHECKPOINT_READ_CONCURRENCY) {
+        signal.throwIfAborted();
+        if (this.now() >= budget.deadlineAt) {
           budget.incompleteReason = 'deadline';
-          break sessionLoop;
+          break;
         }
-        const session = await this.readSession(summary, budget, false, prepared[index], query.range);
-        if (session !== undefined) sessions.push(session);
-        if (budget.incompleteReason === 'record_budget' || budget.incompleteReason === 'deadline') break sessionLoop;
+        const batch = listed.items.slice(offset, offset + CHECKPOINT_READ_CONCURRENCY);
+        const prepared = await Promise.all(batch.map(async (summary) => {
+          const key = sessionKey(summary);
+          const cached = this.readCachedSession(key, query.range);
+          const indexedRange = query.range.startAt !== undefined && query.range.endAt !== undefined ? query.range : undefined;
+          const persisted = cached?.persisted ?? await this.readPersistentSession(
+            this.core.accessor.get(IFileSystemStorageService), key, indexedRange, budget.factSignal, undefined, budget.factBudget,
+          );
+          const revision = this.revisionOf(key);
+          const current = persisted.readComplete !== false && await waitForSource(this.cacheIsCurrent(summary, persisted, this.rescan.state !== 'running'), budget.factSignal);
+          if (current && !cached?.view && this.rescan.state !== 'running') {
+            this.cacheSessionRange(key, persisted, true, query.range);
+          }
+          if (current) this.rememberVerified(key, persisted, revision);
+          if (current && !cached?.view && (query.range.startAt !== undefined || query.range.endAt !== undefined)) {
+            return {
+              persisted: { ...persisted, records: persisted.records.filter((record) => record.invalid || inRange(record.time, query.range)) },
+              current,
+              view: true,
+            };
+          }
+          return { persisted, current, view: cached?.view ?? indexedRange !== undefined };
+        }));
+        for (const [index, summary] of batch.entries()) {
+          if (index > 0 && this.now() >= budget.deadlineAt) {
+            budget.incompleteReason = 'deadline';
+            break sessionLoop;
+          }
+          const session = await this.readSession(summary, budget, false, prepared[index], query.range);
+          if (session !== undefined) sessions.push(session);
+          if (budget.incompleteReason === 'record_budget' || budget.incompleteReason === 'deadline') break sessionLoop;
+        }
+        await yieldToEventLoop();
       }
-      await yieldToEventLoop();
-    }
-    let ephemeralUsage: readonly EphemeralUsageTotal[] = [];
-    if (budget.incompleteReason === null) {
-      const uncachedSessionCount = sessions.filter((session) => !this.fullScanKeys?.has(sessionKey(session.summary))).length;
-      for (const session of await this.readRetainedSessions(query, budget, listed.activeKeys, uncachedSessionCount)) {
-        sessions.push(session);
+      let ephemeralUsage: readonly EphemeralUsageTotal[] = [];
+      if (budget.incompleteReason === null) {
+        const uncachedSessionCount = sessions.filter((session) => !this.fullScanKeys?.has(sessionKey(session.summary))).length;
+        for (const session of await this.readRetainedSessions(query, budget, listed.activeKeys, uncachedSessionCount)) {
+          sessions.push(session);
+        }
       }
-    }
-    const retainedUsage = this.core.accessor.get(IRetainedUsageService);
-    if (budget.incompleteReason === null && retainedUsage.listEphemeralUsage !== undefined) {
-      const anonymous = await retainedUsage.listEphemeralUsage({
-        workspaceIds: query.workspaceIds.length === 0 ? undefined : query.workspaceIds,
-        deadlineAt: budget.deadlineAt,
-        recordLimit: budget.remainingFacts ?? Infinity,
-        signal: budget.signal,
-      });
-      ephemeralUsage = anonymous.items;
-      if (budget.remainingFacts !== undefined) budget.remainingFacts -= anonymous.scannedRecords;
-      if (!anonymous.complete) budget.sourcesComplete = false;
-      if (anonymous.incompleteReason !== undefined) budget.incompleteReason = anonymous.incompleteReason;
-    }
-    return this.aggregate(query, sessions, fingerprint, cursor, budget, ephemeralUsage);
+      const retainedUsage = this.core.accessor.get(IRetainedUsageService);
+      if (budget.incompleteReason === null && retainedUsage.listEphemeralUsage !== undefined) {
+        const anonymous = await retainedUsage.listEphemeralUsage({
+          workspaceIds: query.workspaceIds.length === 0 ? undefined : query.workspaceIds,
+          deadlineAt: budget.deadlineAt,
+          recordLimit: budget.remainingFacts ?? Infinity,
+          signal: budget.signal,
+        });
+        ephemeralUsage = anonymous.items;
+        if (budget.remainingFacts !== undefined) budget.remainingFacts -= anonymous.scannedRecords;
+        if (!anonymous.complete) budget.sourcesComplete = false;
+        if (anonymous.incompleteReason !== undefined) budget.incompleteReason = anonymous.incompleteReason;
+      }
+      return await this.aggregate(query, sessions, fingerprint, cursor, budget, ephemeralUsage);
+    } catch (error) {
+      signal.throwIfAborted();
+      if (!deadline.signal.aborted) throw error;
+      budget.incompleteReason = 'deadline';
+      budget.sourcesComplete = false;
+      return await this.aggregate(query, sessions, fingerprint, cursor, budget, []);
+    } finally { clearTimeout(timer); }
   }
 
   private async listSessions(
@@ -661,6 +684,11 @@ export class UsageAggregationService {
     budget.signal?.throwIfAborted();
     const cacheKey = sessionKey(summary);
     const cached = prepared === undefined ? this.readCachedSession(cacheKey, range) : undefined;
+    if (prepared?.persisted.readComplete === false) {
+      budget.incompleteReason = 'record_budget';
+      budget.sourcesComplete = false;
+      return { summary, records: prepared.persisted.records, complete: false, deleted: false };
+    }
     if (this.rescan.state === 'running') {
       const persisted = prepared?.persisted ?? cached?.persisted ?? await this.readPersistentSession(
         this.core.accessor.get(IFileSystemStorageService), cacheKey,
@@ -678,7 +706,7 @@ export class UsageAggregationService {
     const revision = this.sessionFlights.has(cacheKey) ? undefined : this.revisionOf(cacheKey);
     let flight = this.sessionFlights.get(cacheKey);
     if (flight === undefined) {
-      flight = this.loadSessionIncremental(summary, budget.remainingRecords, budget.deadlineAt, undefined, preserveMissingSources, prepared?.view ? undefined : prepared?.persisted, undefined, { signal: budget.signal, maxFacts: budget.remainingFacts });
+      flight = this.loadSessionIncremental(summary, budget.remainingRecords, budget.deadlineAt, undefined, preserveMissingSources, prepared?.view ? undefined : prepared?.persisted, undefined, { signal: budget.signal, maxFacts: budget.remainingFacts, factSignal: budget.factSignal, factBudget: budget.factBudget });
       this.sessionFlights.set(cacheKey, flight);
       const clearFlight = (): void => {
         if (this.sessionFlights.get(cacheKey) === flight) this.sessionFlights.delete(cacheKey);
@@ -690,7 +718,8 @@ export class UsageAggregationService {
       result = await waitForSource(flight, budget.signal);
     } catch (error) {
       budget.signal?.throwIfAborted();
-      if (!(error instanceof Error) || error.name !== 'AbortError') throw error;
+      budget.factSignal?.throwIfAborted();
+      if (!(error instanceof Error) || (error.name !== 'AbortError' && error.name !== 'TimeoutError')) throw error;
       if (this.sessionFlights.get(cacheKey) === flight) this.sessionFlights.delete(cacheKey);
       return this.readSession(summary, budget, preserveMissingSources, undefined, range);
     }
@@ -705,8 +734,10 @@ export class UsageAggregationService {
     budget.remainingRecords -= result.scannedRecordCount;
     if (budget.remainingFacts !== undefined) budget.remainingFacts -= result.scannedFactCount ?? 0;
     if (result.incompleteReason !== null) budget.incompleteReason = result.incompleteReason;
-    this.cacheSessionRange(cacheKey, result.persisted, result.session.complete, range);
-    if (revision !== undefined) this.rememberVerified(cacheKey, result.persisted, revision);
+    if (result.persisted.readComplete !== false) {
+      this.cacheSessionRange(cacheKey, result.persisted, result.session.complete, range);
+      if (revision !== undefined) this.rememberVerified(cacheKey, result.persisted, revision);
+    }
     if (range !== undefined && (range.startAt !== undefined || range.endAt !== undefined)) {
       return { ...result.session, records: result.session.records.filter((record) => record.invalid || inRange(record.time, range)) };
     }
@@ -747,13 +778,14 @@ export class UsageAggregationService {
     preserveMissingSources = false,
     prepared?: PersistentSessionRecords,
     targetedAgentIds?: readonly string[],
-    options: AgentUsageReadOptions = {},
+    options: AgentUsageReadOptions & { factSignal?: AbortSignal; factBudget?: UsageFactReadBudget } = {},
   ): Promise<SessionLoadResult> {
     const storage = this.core.accessor.get(IFileSystemStorageService);
     const facts = this.core.accessor.get(IUsageFactStore);
     const logs = this.core.accessor.get(IAppendLogStore);
     const cacheKey = sessionKey(summary);
-    const persisted = this.readCachedSession(cacheKey)?.persisted ?? prepared ?? await this.readPersistentSession(storage, cacheKey, undefined, options.signal, targetedAgentIds);
+    const persisted = this.readCachedSession(cacheKey)?.persisted ?? prepared ?? await this.readPersistentSession(storage, cacheKey, undefined, options.factSignal ?? options.signal, targetedAgentIds, options.factBudget);
+    if (persisted.readComplete === false) return { session: { summary, records: persisted.records, complete: false, deleted: false }, persisted, scannedRecordCount: 0, incompleteReason: 'record_budget' };
     const sessionScope = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
     options.signal?.throwIfAborted();
     const agentIds = targetedAgentIds ?? await storage.list(`${sessionScope}/agents`);
@@ -793,7 +825,14 @@ export class UsageAggregationService {
       if (!source.stable) { recordsByAgent.delete(agentId); complete = false; continue; }
       const size = source.size ?? 0;
       const { mtimeMs, generation } = source;
-      const snapshot = await facts.read(wireScope, undefined, options.signal);
+      const snapshot = options.factBudget !== undefined && persisted.agents[agentId] !== undefined
+        ? { checkpoint: persisted.agents[agentId], records: recordsByAgent.get(agentId) ?? [], readComplete: true }
+        : await facts.read(wireScope, undefined, options.factSignal ?? options.signal, { budget: options.factBudget });
+      if (snapshot.readComplete === false) {
+        recordsByAgent.set(agentId, [...snapshot.records]);
+        const records = [...recordsByAgent.values()].flat();
+        return { session: { summary, records, complete: false, deleted: false }, persisted: { ...persisted, records, readComplete: false }, scannedRecordCount, scannedFactCount, incompleteReason: 'record_budget', targetedAgentIds };
+      }
       let checkpoint = persisted.agents[agentId];
       if (snapshot.checkpoint !== undefined && snapshot.checkpoint.generation === generation && snapshot.checkpoint.offset > size && (await storage.size(wireScope, AGENT_WIRE_RECORD_KEY) ?? 0) > size) {
         recordsByAgent.delete(agentId);
@@ -840,8 +879,8 @@ export class UsageAggregationService {
           hasFacts = true;
         } catch { stored = false; complete = false; }
       };
-      const tail = await readWireTail(storage, wireScope, offset, Math.min(size, offset + remainingBytes), recordLimit - scannedRecordCount, deadlineAt, this.now, onScannedRecord, agentId, options.signal, (options.maxFacts ?? Infinity) - scannedFactCount, commitPrefix);
-      remainingBytes -= Math.min(size - offset, remainingBytes);
+      const tail = await readWireTail(storage, wireScope, offset, size, recordLimit - scannedRecordCount, deadlineAt, this.now, onScannedRecord, agentId, options.signal, (options.factBudget?.remainingRecords ?? options.maxFacts ?? Infinity) - scannedFactCount, commitPrefix, this.pendingWireLines, JSON.stringify([generation, size, mtimeMs]), remainingBytes);
+      remainingBytes -= tail.readBytes;
       scannedRecordCount += tail.scannedRecordCount;
       scannedFactCount += tail.scannedFactCount;
       if (!tail.complete || tail.offset < size) complete = false;
@@ -872,22 +911,25 @@ export class UsageAggregationService {
     range?: RangeBounds,
     signal?: AbortSignal,
     targetedAgentIds?: readonly string[],
+    budget?: UsageFactReadBudget,
   ): Promise<PersistentSessionRecords> {
     const [workspaceId, sessionId] = cacheKey.split('\0');
     const scope = sessionScopeOf(workspacePersistenceScope('sessions', workspaceId!), sessionId!);
     const facts = this.core.accessor.get(IUsageFactStore);
     const logs = this.core.accessor.get(IAppendLogStore);
-    const agentIds = targetedAgentIds ?? await storage.list(`${scope}/agents`);
+    const agentIds = targetedAgentIds ?? await waitForSource(storage.list(`${scope}/agents`), signal);
     const agents: Record<string, WireCheckpoint> = {};
     const records: NormalizedUsageRecord[] = [];
+    let readComplete = true;
     for (let start = 0; start < agentIds.length; start += CHECKPOINT_READ_CONCURRENCY) {
       signal?.throwIfAborted();
-      const snapshots = await Promise.all(agentIds.slice(start, start + CHECKPOINT_READ_CONCURRENCY).map(async (agentId) => ({ agentId, snapshot: await facts.read(agentScopeOf(scope, agentId), range, signal) })));
+      const snapshots = await waitForSource(Promise.all(agentIds.slice(start, start + CHECKPOINT_READ_CONCURRENCY).map(async (agentId) => ({ agentId, snapshot: await facts.read(agentScopeOf(scope, agentId), range, signal, { budget }) }))), signal);
       for (const { agentId, snapshot } of snapshots) {
-        if (snapshot.checkpoint === undefined) continue;
-        agents[agentId] = snapshot.checkpoint;
+        if (snapshot.readComplete === false) readComplete = false;
+        if (snapshot.checkpoint !== undefined) agents[agentId] = snapshot.checkpoint;
         for (const record of snapshot.records) records.push(record);
       }
+      if (!readComplete) return { version: PERSISTENCE_VERSION, sessionKey: cacheKey, records, agents, readComplete: false };
     }
     if (Object.keys(agents).length !== agentIds.length) {
       let legacy: PersistentSessionRecords | undefined;
@@ -1366,7 +1408,17 @@ export class UsageAggregationService {
   }
 }
 
+interface WireLineContinuation {
+  readonly source: string;
+  readonly start: number;
+  cursor: number;
+  readonly parser: UsageJsonStream;
+  readonly decoder: TextDecoder;
+  invalid: boolean;
+}
+
 interface WireTailResult {
+  readonly readBytes: number;
   readonly records: readonly NormalizedUsageRecord[];
   readonly offset: number;
   readonly scannedRecordCount: number;
@@ -1401,20 +1453,16 @@ async function readWireTail(
   signal?: AbortSignal,
   factLimit = Infinity,
   onCheckpoint?: (offset: number, records: readonly NormalizedUsageRecord[], valid: boolean) => Promise<void>,
+  continuations = new Map<string, WireLineContinuation>(),
+  source = '',
+  byteLimit = Infinity,
 ): Promise<WireTailResult> {
-  if (startOffset >= size) {
-    return {
-      records: [],
-      offset: startOffset,
-      scannedRecordCount: 0,
-      scannedFactCount: 0,
-      valid: true,
-      complete: true,
-      incompleteReason: null,
-    };
-  }
-  let lineChunks: Buffer[] = [];
-  let lineBytes = 0;
+  let line = continuations.get(scope);
+  continuations.delete(scope);
+  if (line?.source !== source || line.start !== startOffset) line = undefined;
+  let cursor = line?.cursor ?? startOffset;
+  const end = Math.min(size, cursor + byteLimit);
+  let readBytes = 0;
   let offset = startOffset;
   let committedAt = startOffset;
   let scannedRecordCount = 0;
@@ -1428,63 +1476,65 @@ async function readWireTail(
   const timer = Number.isFinite(deadlineAt) ? setTimeout(() => { deadline.abort(); }, Math.max(0, deadlineAt - now())) : undefined;
   const readSignal = signal === undefined ? deadline.signal : AbortSignal.any([signal, deadline.signal]);
   try {
-    for await (const chunkValue of storage.readStream(
-      scope,
-      AGENT_WIRE_RECORD_KEY,
-      { start: startOffset, end: size - 1 },
-      { signal: readSignal, chunkBytes: 1 << 20 },
+    if (cursor < end) for await (const chunkValue of storage.readStream(
+      scope, AGENT_WIRE_RECORD_KEY, { start: cursor, end: end - 1 }, { signal: readSignal, chunkBytes: 1 << 20 },
     )) {
       signal?.throwIfAborted();
+      readBytes += chunkValue.byteLength;
       const chunk = Buffer.from(chunkValue.buffer, chunkValue.byteOffset, chunkValue.byteLength);
       let start = 0;
-      for (;;) {
+      while (start < chunk.length) {
+        if (now() >= deadlineAt) { incompleteReason = 'deadline'; break; }
+        if (scannedRecordCount >= recordLimit) { incompleteReason = 'record_budget'; break; }
         const newline = chunk.indexOf(0x0a, start);
-        if (lineBytes + (newline < 0 ? chunk.length : newline) - start > 8 * 1024 * 1024) {
-          incompleteReason = 'record_budget';
-          break;
-        }
-        if (newline < 0) {
-          if (start < chunk.length) {
-            lineChunks.push(chunk.subarray(start));
-            lineBytes += chunk.length - start;
-          }
-          break;
-        }
-        if (now() >= deadlineAt) {
-          incompleteReason = 'deadline';
-          break;
-        }
-        if (scannedRecordCount >= recordLimit) {
-          incompleteReason = 'record_budget';
-          break;
-        }
-        const part = chunk.subarray(start, newline);
-        const line = lineChunks.length === 0 ? part : Buffer.concat([...lineChunks, part], lineBytes + part.length);
-        if (line.length > 0) {
-          try {
-            const raw = parseUsageJson(line.toString('utf8'));
-            if (raw !== undefined) {
-              if (scannedFactCount >= factLimit) { incompleteReason = 'record_budget'; break; }
-              scannedFactCount++;
-              const record = normalizeRecord(raw, sourceAgentId);
-              if (record === undefined) valid = false;
-              else records.push(record);
+        const stop = newline < 0 ? chunk.length : newline;
+        if (line !== undefined || newline < 0 || stop - start > 1 << 20) {
+          line ??= { source, start: offset, cursor, parser: new UsageJsonStream(), decoder: new TextDecoder(), invalid: false };
+          while (start < stop) {
+            const next = Math.min(stop, start + (64 << 10));
+            if (!line.invalid) {
+              try { line.parser.write(line.decoder.decode(chunk.subarray(start, next), { stream: true })); }
+              catch { line.invalid = true; }
             }
-          } catch {
-            if (scannedFactCount >= factLimit) { incompleteReason = 'record_budget'; break; }
-            scannedFactCount++;
-            valid = false;
+            cursor += next - start;
+            line.cursor = cursor;
+            start = next;
+            if (performance.now() >= yieldAt) {
+              await yieldToEventLoop(undefined, { signal: readSignal });
+              yieldAt = performance.now() + 8;
+            }
+            if (now() >= deadlineAt) { incompleteReason = 'deadline'; break; }
+          }
+          if (incompleteReason !== null || newline < 0) break;
+        }
+        let raw: ReturnType<typeof parseUsageJson>;
+        let invalid = line?.invalid ?? false;
+        try {
+          if (line !== undefined) {
+            if (!invalid) { line.parser.write(line.decoder.decode()); raw = line.parser.finish(); }
+          } else if (stop > start) raw = parseUsageJson(chunk.toString('utf8', start, stop));
+        } catch { invalid = true; }
+        if (invalid || raw !== undefined) {
+          if (scannedFactCount >= factLimit) { incompleteReason = 'record_budget'; line = undefined; break; }
+          scannedFactCount++;
+          if (invalid) valid = false;
+          else {
+            const record = normalizeRecord(raw!, sourceAgentId);
+            if (record === undefined) valid = false;
+            else records.push(record);
           }
         }
-        offset += line.length + 1;
-        start = newline + 1;
-        lineChunks = [];
-        lineBytes = 0;
-        scannedRecordCount += 1;
+        cursor += stop - start + 1;
+        offset = cursor;
+        line = undefined;
+        start = stop + 1;
+        scannedRecordCount++;
         onScannedRecord?.();
         if (offset - committedAt >= 16 * 1024 * 1024) {
           await onCheckpoint?.(offset, records, valid);
           committedAt = offset;
+          await yieldToEventLoop(undefined, { signal: readSignal });
+          yieldAt = performance.now() + 8;
         }
         if (scannedRecordCount % 1024 === 0 || (scannedRecordCount % 128 === 0 && performance.now() >= yieldAt)) {
           await yieldToEventLoop(undefined, { signal: readSignal });
@@ -1505,15 +1555,11 @@ async function readWireTail(
     if (timer !== undefined) clearTimeout(timer);
   }
   signal?.throwIfAborted();
-  return {
-    records,
-    offset,
-    scannedRecordCount,
-    scannedFactCount,
-    valid,
-    complete: !readFailed && incompleteReason === null && offset === size,
-    incompleteReason,
-  };
+  if (line !== undefined && line.cursor < size) {
+    if (continuations.size >= 16) continuations.delete(continuations.keys().next().value!);
+    continuations.set(scope, line);
+  }
+  return { readBytes, records, offset, scannedRecordCount, scannedFactCount, valid, complete: !readFailed && incompleteReason === null && offset === size, incompleteReason };
 }
 
 async function readRange(

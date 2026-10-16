@@ -30,6 +30,7 @@ import { UsageSourceTracker, type UsageSourceChanges } from '../src/usage/usageS
 
 interface Fixture {
   readonly service: UsageAggregationService;
+  readonly facts: IUsageFactStore;
   readonly reads: Map<string, number>;
   readonly readBytes: Map<string, number>;
   readonly readOffsets: number[];
@@ -244,6 +245,7 @@ function fixture(
   } as unknown as Scope;
   return {
     service: new UsageAggregationService(core, now, limits, sourceChanges),
+    facts,
     reads,
     readBytes,
     readOffsets,
@@ -892,6 +894,51 @@ describe('UsageAggregationService cache budgets', () => {
     expect(final.reliability.complete).toBe(true);
     expect(final.summary.tokens.output).toBe(1);
     expect(f.readOffsets[0]).toBeGreaterThanOrEqual(16 * 1024 * 1024);
+  });
+
+  it.each(['message', 'usage.record'])('streams a 27 MiB %s row without a permanent length gate or full-body parsing', async (type) => {
+    const wireScope = scope('w', 's');
+    const large = { ...usageRecord(1), usage: { inputOther: 0, output: 7, inputCacheRead: 0, inputCacheCreation: 0 }, extra: 'x'.repeat(27 << 20), type } as WireRecord;
+    const after = { ...usageRecord(2), usage: { inputOther: 0, output: 3, inputCacheRead: 0, inputCacheCreation: 0 } };
+    const f = fixture([summary('s', 'w')], { [wireScope]: [large, after] }, () => 0);
+    const nativeParse = JSON.parse;
+    let largestParsed = 0;
+    const parser = vi.spyOn(JSON, 'parse').mockImplementation((text: string) => {
+      largestParsed = Math.max(largestParsed, text.length);
+      return nativeParse(text) as unknown;
+    });
+    let row: Awaited<ReturnType<UsageAggregationService['readAgentUsage']>>['main'] | undefined;
+    try {
+      for (let attempt = 0; attempt < 16; attempt++) {
+        row = (await f.service.readAgentUsage('w', 's', ['main'], { maxBytes: 2 << 20 }))['main'];
+        if (row?.complete) break;
+      }
+    } finally { parser.mockRestore(); }
+    expect(row!.complete).toBe(true);
+    expect(row!.records.reduce((sum, value) => sum + value.usage.output, 0)).toBe(type === 'usage.record' ? 10 : 3);
+    expect(f.readOffsets.some((offset) => offset >= (26 << 20))).toBe(true);
+    expect(largestParsed).toBeLessThan(1 << 20);
+    expect(f.persistedRecordCounts()).toEqual([type === 'usage.record' ? 2 : 1]);
+    const final = await query(f.restart());
+    expect(final.reliability.complete).toBe(true);
+    expect(final.summary.tokens.output).toBe(type === 'usage.record' ? 10 : 3);
+  });
+
+  it('yields and cancels inside a giant JSON row without publishing its unfinished usage', async () => {
+    const wireScope = scope('w', 's');
+    const f = fixture([summary('s', 'w')], { [wireScope]: [{ ...usageRecord(1), extra: 'x'.repeat(27 << 20) }, usageRecord(2)] }, () => 0);
+    const controller = new AbortController();
+    let ticks = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => {
+      if (ticks === 1) queueMicrotask(() => { controller.abort(new DOMException('left page', 'AbortError')); });
+      return ticks++ * 10;
+    });
+    try { await expect(f.service.query({}, controller.signal)).rejects.toMatchObject({ name: 'AbortError' }); }
+    finally { clock.mockRestore(); }
+    expect(f.persistedRecordCounts()).toEqual([]);
+    const final = await query(f.restart());
+    expect(final.reliability.complete).toBe(true);
+    expect(final.summary.tokens.output).toBe(2);
   });
 
   it.each([128, 1024])('does not skip usage when the deadline aborts the %i-record yield', async (boundary) => {
@@ -1549,6 +1596,79 @@ describe('shared agent and history usage projection', () => {
     expect(result.summary.tokens_unknown).toBe(true);
     expect(result.reliability.usage_coverage).toMatchObject({ known_records: 1, missing_records: 1 });
     expect((await f.service.readAgentUsage('w', 's', ['main']))['main']?.records).toHaveLength(2);
+  });
+
+  it('applies the ordinary deadline while persistent facts are stalled before wire recovery', async () => {
+    const f = fixture([summary('s', 'w')], { [scope('w', 's')]: [usageRecord(10)] }, () => 100, { deadlineMs: 30 });
+    let aborted = false;
+    vi.spyOn(f.facts, 'read').mockImplementationOnce(async (_scope, _range, signal) => new Promise((_resolve, reject) => {
+      signal!.addEventListener('abort', () => { aborted = true; reject(signal!.reason); }, { once: true });
+    }));
+    const started = performance.now();
+    const response = await f.service.query({});
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(aborted).toBe(true);
+    expect(response.reliability).toMatchObject({ complete: false, incomplete_reason: 'deadline' });
+    expect(f.reads.size).toBe(0);
+    expect((await f.service.query({})).reliability.complete).toBe(true);
+  });
+
+  it.each([false, true])('does not treat a complete source checkpoint as a complete fact range or cache it (late facts: %s)', async (late) => {
+    const f = fixture([summary('s', 'w')], { [scope('w', 's')]: [usageRecord(10), usageRecord(11)] }, () => 100, { usageFactBudget: 3 });
+    await f.service.readAgentUsage('w', 's', ['main']);
+    const service = f.restart();
+    const read = f.facts.read.bind(f.facts);
+    const spy = vi.spyOn(f.facts, 'read');
+    if (late) spy.mockResolvedValueOnce({ records: [] });
+    spy.mockImplementationOnce(async (scope, range, signal, options) => {
+      const snapshot = await read(scope, range, signal);
+      expect(options?.budget?.remainingRecords).toBe(3);
+      options!.budget!.remainingRecords = 0;
+      return { ...snapshot, records: snapshot.records.slice(0, 1), readComplete: false, nextCursor: 'remaining' };
+    });
+    const partial = await service.query({});
+    expect(partial.reliability).toMatchObject({ complete: false, incomplete_reason: 'record_budget' });
+    expect(partial.summary.tokens.output).toBe(1);
+    const continued = await service.query({});
+    expect(continued.reliability.complete).toBe(true);
+    expect(continued.summary.tokens.output).toBe(2);
+  });
+
+  it('keeps a shared fact preparation alive when only one query waiter cancels', async () => {
+    const f = fixture([summary('s', 'w')], { [scope('w', 's')]: [usageRecord(10)] }, () => 100);
+    let entered!: () => void;
+    let release!: () => void;
+    let sharedSignal: AbortSignal | undefined;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(f.facts, 'read').mockImplementationOnce(async (_scope, _range, signal) => { sharedSignal = signal; entered(); await gate; signal?.throwIfAborted(); return { records: [] }; });
+    const controller = new AbortController();
+    const first = f.service.query({}, controller.signal);
+    const second = f.service.query({});
+    await started;
+    controller.abort();
+    await expect(first).rejects.toMatchObject({ name: 'AbortError' });
+    expect(sharedSignal?.aborted).toBe(false);
+    release();
+    expect((await second).reliability.complete).toBe(true);
+  });
+
+  it('retries a borrowed source flight when its owner times out without expiring the other query', async () => {
+    const f = fixture([summary('s', 'w')], { [scope('w', 's')]: [usageRecord(10)] }, () => 100);
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    vi.spyOn(f.facts, 'read').mockResolvedValueOnce({ records: [] }).mockImplementationOnce(async (_scope, _range, signal) => {
+      entered();
+      return new Promise((_resolve, reject) => signal!.addEventListener('abort', () => reject(signal!.reason), { once: true }));
+    });
+    const controller = new AbortController();
+    const first = f.service.query({}, controller.signal);
+    await started;
+    const second = f.service.query({ dimension: 'agent' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    controller.abort(new DOMException('Source deadline', 'TimeoutError'));
+    await expect(first).rejects.toMatchObject({ name: 'TimeoutError' });
+    expect((await second).reliability.complete).toBe(true);
   });
 
   it('coalesces the same host query and isolates a cancelled waiter', async () => {
