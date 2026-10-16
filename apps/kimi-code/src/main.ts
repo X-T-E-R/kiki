@@ -38,6 +38,7 @@ import { installMinidbTextBuildWorker } from './native/minidb-worker';
 import { installKapModelPricing } from './native/model-pricing';
 import { installKikiDocs } from './native/product-docs';
 import { installKapSearchWorker } from './native/search-worker';
+import { installKapUsageWorker } from './native/usage-worker';
 import { installNativeModuleHook } from './native/module-hook';
 import { runNativeAssetSmokeIfRequested } from './native/smoke';
 
@@ -128,6 +129,10 @@ function bootstrap(): void {
         ? `search-worker:failed code=${searchWorkerInstall.errorCode} sha256=${searchWorkerInstall.assetSha256 ?? 'unknown'}`
         : `search-worker:${searchWorkerInstall.status}`,
   );
+  const usageWorkerInstall = installKapUsageWorker();
+  startupTrace(usageWorkerInstall.status === 'failed'
+    ? `usage-worker:failed code=${usageWorkerInstall.errorCode}`
+    : `usage-worker:${usageWorkerInstall.status}`);
   if (isSea()) {
     const queryWorker = getKapSqliteQueryWorkerFile();
     if (queryWorker) process.env['KIKI_SQLITE_QUERY_WORKER_PATH'] = queryWorker;

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { parseUsageJson, UsageJsonStream } from '#/agent/usage/usageJson';
 import { normalizeUsageFact } from '#/agent/usage/usageFact';
+import { UsageReadAllowance, UsageWireFramer, type UsageWireState } from '#/agent/usage/usageWireFramer';
 import type { WireRecord } from '#/wire/record';
 
 const usage = { type: 'usage.record', time: 1, model: 'example', usage: { inputOther: 1, output: 2, inputCacheRead: 3, inputCacheCreation: 4 } };
@@ -137,5 +138,39 @@ describe('streaming usage JSON', () => {
     for (let i = 0; i < text.length; i += 11) stream.write(text.slice(i, i + 11));
     expect(stream.finishBatch()).toEqual({ version: 1, start: 0, checkpoint, records: [] });
     expect(records).toEqual([{ ...usage, time: 2 }]);
+  });
+});
+
+describe('usage wire framing', () => {
+  it('resumes a transferable state at every UTF-8 byte boundary without retaining unrelated bodies', () => {
+    const value = { ...usage, model: '模型🙂', extra: '示例\\\n'.repeat(1000) };
+    const bytes = Buffer.from(JSON.stringify(value) + '\n' + JSON.stringify(usage) + '\n');
+    const allowance = new UsageReadAllowance(Infinity, Infinity);
+    let state: UsageWireState = { offset: 0, cursor: 0, valid: true };
+    const facts = [];
+    for (let start = 0; start < bytes.length; start++) {
+      const framer = new UsageWireFramer(state.offset, 'example', structuredClone(state));
+      const slice = framer.consume(bytes.subarray(start, start + 1), allowance, Infinity);
+      state = slice.state;
+      facts.push(...slice.records);
+      expect(state.utf8?.byteLength ?? 0).toBeLessThanOrEqual(3);
+      expect(JSON.stringify(state).length).toBeLessThan(4096);
+    }
+    expect(state.offset).toBe(bytes.length);
+    expect(facts).toEqual([normalizeUsageFact(value, 'example'), normalizeUsageFact(usage, 'example')]);
+  });
+
+  it('shares raw and fact visits between lane views and does not publish an over-budget record', () => {
+    const allowance = new UsageReadAllowance(3, 1);
+    const other = new UsageReadAllowance(allowance.buffer);
+    const bytes = Buffer.from(JSON.stringify(usage) + '\n');
+    const first = new UsageWireFramer(0).consume(bytes, allowance, Infinity);
+    const second = new UsageWireFramer(0).consume(bytes, other, Infinity);
+    expect(first.factCount).toBe(1);
+    expect(second).toMatchObject({ factCount: 0, rawCount: 0, stop: 'record_budget', state: { offset: 0, cursor: 0 } });
+    const nonUsage = Buffer.from('{"type":"other"}\n');
+    expect(new UsageWireFramer(0).consume(nonUsage, other, Infinity).rawCount).toBe(1);
+    expect(new UsageWireFramer(0).consume(nonUsage, allowance, Infinity).rawCount).toBe(1);
+    expect(new UsageWireFramer(0).consume(nonUsage, other, Infinity).stop).toBe('record_budget');
   });
 });

@@ -147,6 +147,13 @@ export class UsageJsonStream {
 
   constructor(private readonly batchObserver?: UsageFactJsonObserver) {}
 
+  snapshot(): object {
+    if (this.batchObserver !== undefined) throw new TypeError('Fact observers cannot be transferred');
+    return structuredClone(this);
+  }
+
+  static resume(state: object): UsageJsonStream { return Object.assign(new UsageJsonStream(), state); }
+
   write(text: string): void {
     let position = 0;
     while (position < text.length) {

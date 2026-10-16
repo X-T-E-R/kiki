@@ -3,9 +3,6 @@ import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 
 import {
   AGENT_WIRE_RECORD_KEY,
-  normalizeUsageFact as normalizeRecord,
-  parseUsageJson,
-  UsageJsonStream,
   type UsageFact,
   type UsageFactTotals,
   type UsageFactReadBudget,
@@ -27,6 +24,8 @@ import type { UsageAggregateWire, UsageQuery, UsageResponse, UsageRescanStatus }
 
 import { IModelPricingService } from '../pricing/modelPricingService';
 import type { UsageSourceChanges } from './usageSourceTracker';
+import { UsageReadAllowance } from '@kiki/agent-core-v2/agent/usage/usageWireFramer';
+import { readUsageWireTail, usageRecoveryPool, type UsageRecoveryPool, type WireLineContinuation } from './usageRecovery';
 
 const SOURCE_RECHECK_MS = 10 * 60_000;
 
@@ -323,6 +322,7 @@ export class UsageAggregationService {
     private readonly now: () => number = Date.now,
     limits: Partial<UsageAggregationLimits> = {},
     private readonly sourceChanges?: UsageSourceChanges,
+    private readonly recovery: UsageRecoveryPool = usageRecoveryPool(core),
   ) {
     this.limits = { ...DEFAULT_LIMITS, ...limits };
     this.sourceSubscription = sourceChanges?.onDidChange((key) => {
@@ -347,6 +347,7 @@ export class UsageAggregationService {
     for (const flight of this.queryFlights.values()) flight.controller.abort();
     this.queryFlights.clear();
     this.pendingWireLines.clear();
+    this.recovery.dispose();
   }
 
   private revisionOf(key: string): string {
@@ -841,7 +842,8 @@ export class UsageAggregationService {
     let complete = true;
     let stored = true;
     let scannedFactCount = 0;
-    let remainingBytes = options.maxBytes ?? Infinity;
+    const remainingBytes = options.maxBytes ?? Infinity;
+    const jobs: { agentId: string; wireScope: string; size: number; mtimeMs: number; generation: string; checkpoint?: WireCheckpoint; hasFacts: boolean; offset: number }[] = [];
     for (const agentId of agentIds) {
       options.signal?.throwIfAborted();
       if (this.now() >= deadlineAt || remainingBytes <= 0) { incompleteReason = 'deadline'; complete = false; break; }
@@ -888,41 +890,59 @@ export class UsageAggregationService {
         }
         continue;
       }
-      const offset = checkpoint?.offset ?? 0;
-      let committedOffset = hasFacts ? offset : 0;
-      let committedFacts = 0;
-      let lastPrefix: WireCheckpoint | undefined;
-      const commitPrefix = async (end: number, tailRecords: readonly NormalizedUsageRecord[], valid: boolean): Promise<void> => {
-        options.signal?.throwIfAborted();
-        if (await logs.generation(wireScope, AGENT_WIRE_RECORD_KEY) !== generation) { complete = false; stored = false; return; }
-        const prefix = { generation, offset: end, size, mtimeMs, boundaryHash: await this.boundaryHash(storage, wireScope, end), valid: (checkpoint?.valid ?? true) && valid };
-        lastPrefix = prefix;
-        const records = hasFacts ? tailRecords.slice(committedFacts) : [...recordsByAgent.get(agentId) ?? [], ...tailRecords];
-        try {
-          await facts.commit(wireScope, committedOffset, prefix, records);
-          committedOffset = end;
-          committedFacts = tailRecords.length;
-          hasFacts = true;
-        } catch { stored = false; complete = false; }
-      };
-      const tail = await readWireTail(storage, wireScope, offset, size, recordLimit - scannedRecordCount, deadlineAt, this.now, onScannedRecord, agentId, options.signal, (options.factBudget?.remainingRecords ?? options.maxFacts ?? Infinity) - scannedFactCount, commitPrefix, this.pendingWireLines, JSON.stringify([generation, size, mtimeMs]), remainingBytes);
-      remainingBytes -= tail.readBytes;
-      scannedRecordCount += tail.scannedRecordCount;
-      scannedFactCount += tail.scannedFactCount;
-      if (!tail.complete || tail.offset < size) complete = false;
-      if (await logs.generation(wireScope, AGENT_WIRE_RECORD_KEY) !== generation) {
-        recordsByAgent.delete(agentId);
-        complete = false;
-        continue;
-      }
-      if (tail.offset !== committedOffset || !hasFacts) await commitPrefix(tail.offset, tail.records, tail.valid);
-      const next = lastPrefix?.offset === tail.offset ? lastPrefix : { generation, offset: tail.offset, size, mtimeMs, boundaryHash: checkpoint?.boundaryHash ?? '', valid: (checkpoint?.valid ?? true) && tail.valid };
-      const records = [...recordsByAgent.get(agentId) ?? [], ...tail.records];
-      recordsByAgent.set(agentId, records);
-      agents[agentId] = next;
-      if (!next.valid) complete = false;
-      if (tail.incompleteReason !== null) { incompleteReason = tail.incompleteReason; break; }
+      jobs.push({ agentId, wireScope, size, mtimeMs, generation, checkpoint, hasFacts, offset: checkpoint?.offset ?? 0 });
     }
+    const allowance = new UsageReadAllowance(recordLimit, options.factBudget?.remainingRecords ?? options.maxFacts ?? Infinity, remainingBytes);
+    const ordered = jobs.toSorted((left, right) => (right.size - right.offset) - (left.size - left.offset));
+    try {
+      await this.recovery.run(ordered, async (job, worker, laneSignal) => {
+        if (incompleteReason !== null || this.now() >= deadlineAt) { incompleteReason ??= 'deadline'; complete = false; return; }
+        const { agentId, wireScope, size, mtimeMs, generation, checkpoint, offset } = job;
+        let hasFacts = job.hasFacts;
+        const baseRecords = recordsByAgent.get(agentId) ?? [];
+        let committedOffset = hasFacts ? offset : 0;
+        let committedFacts = 0;
+        let lastPrefix: WireCheckpoint | undefined;
+        const commitPrefix = async (end: number, tailRecords: readonly NormalizedUsageRecord[], valid: boolean): Promise<void> => {
+          options.signal?.throwIfAborted();
+          if (laneSignal.aborted && !(laneSignal.reason instanceof Error && laneSignal.reason.name === 'TimeoutError')) laneSignal.throwIfAborted();
+          if (await logs.generation(wireScope, AGENT_WIRE_RECORD_KEY) !== generation) { complete = false; stored = false; return; }
+          const prefix = { generation, offset: end, size, mtimeMs, boundaryHash: await this.boundaryHash(storage, wireScope, end), valid: (checkpoint?.valid ?? true) && valid };
+          const records = hasFacts ? tailRecords.slice(committedFacts) : [...baseRecords, ...tailRecords];
+          try {
+            await facts.commit(wireScope, committedOffset, prefix, records);
+            committedOffset = end;
+            committedFacts = tailRecords.length;
+            hasFacts = true;
+            lastPrefix = prefix;
+            recordsByAgent.set(agentId, [...baseRecords, ...tailRecords]);
+            agents[agentId] = prefix;
+          } catch { stored = false; complete = false; }
+        };
+        const tail = await readUsageWireTail(storage, wireScope, offset, size, allowance, deadlineAt, this.now, agentId, laneSignal, commitPrefix, this.pendingWireLines, JSON.stringify([generation, size, mtimeMs]), worker, onScannedRecord, options.signal);
+        if (!tail.complete || tail.offset < size) complete = false;
+        if (await logs.generation(wireScope, AGENT_WIRE_RECORD_KEY) !== generation) {
+          recordsByAgent.delete(agentId);
+          delete agents[agentId];
+          complete = false;
+          return;
+        }
+        if (tail.offset !== committedOffset || !hasFacts) await commitPrefix(tail.offset, tail.records, tail.valid);
+        const next = lastPrefix?.offset === tail.offset ? lastPrefix : { generation, offset: tail.offset, size, mtimeMs, boundaryHash: checkpoint?.boundaryHash ?? '', valid: (checkpoint?.valid ?? true) && tail.valid };
+        recordsByAgent.set(agentId, [...baseRecords, ...tail.records]);
+        agents[agentId] = next;
+        if (!next.valid) complete = false;
+        if (tail.incompleteReason !== null) incompleteReason = tail.incompleteReason;
+      }, options.factSignal ?? options.signal, ordered.reduce((sum, job) => sum + job.size - job.offset, 0) >= 16 * 1024 * 1024);
+    } catch (error) {
+      options.signal?.throwIfAborted();
+      if (!options.factSignal?.aborted && this.now() < deadlineAt) throw error;
+      incompleteReason = 'deadline';
+      complete = false;
+    }
+    const counts = allowance.counts();
+    scannedRecordCount = counts.raw;
+    scannedFactCount = counts.facts;
     for (const agentId of agentIds) {
       if (agents[agentId] === undefined && persisted.agents[agentId] !== undefined) agents[agentId] = persisted.agents[agentId];
     }
@@ -1434,26 +1454,6 @@ export class UsageAggregationService {
   }
 }
 
-interface WireLineContinuation {
-  readonly source: string;
-  readonly start: number;
-  cursor: number;
-  readonly parser: UsageJsonStream;
-  readonly decoder: TextDecoder;
-  invalid: boolean;
-}
-
-interface WireTailResult {
-  readonly readBytes: number;
-  readonly records: readonly NormalizedUsageRecord[];
-  readonly offset: number;
-  readonly scannedRecordCount: number;
-  readonly scannedFactCount: number;
-  readonly valid: boolean;
-  readonly complete: boolean;
-  readonly incompleteReason: UsageResponse['reliability']['incomplete_reason'];
-}
-
 async function waitForSource<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   signal?.throwIfAborted();
   if (signal === undefined) return promise;
@@ -1464,128 +1464,6 @@ async function waitForSource<T>(promise: Promise<T>, signal?: AbortSignal): Prom
   });
   try { return await Promise.race([promise, aborted]); }
   finally { signal.removeEventListener('abort', abort); }
-}
-
-async function readWireTail(
-  storage: IFileSystemStorageService,
-  scope: string,
-  startOffset: number,
-  size: number,
-  recordLimit: number,
-  deadlineAt: number,
-  now: () => number,
-  onScannedRecord?: () => void,
-  sourceAgentId?: string,
-  signal?: AbortSignal,
-  factLimit = Infinity,
-  onCheckpoint?: (offset: number, records: readonly NormalizedUsageRecord[], valid: boolean) => Promise<void>,
-  continuations = new Map<string, WireLineContinuation>(),
-  source = '',
-  byteLimit = Infinity,
-): Promise<WireTailResult> {
-  let line = continuations.get(scope);
-  continuations.delete(scope);
-  if (line?.source !== source || line.start !== startOffset) line = undefined;
-  let cursor = line?.cursor ?? startOffset;
-  const end = Math.min(size, cursor + byteLimit);
-  let readBytes = 0;
-  let offset = startOffset;
-  let committedAt = startOffset;
-  let scannedRecordCount = 0;
-  let scannedFactCount = 0;
-  let valid = true;
-  let readFailed = false;
-  let yieldAt = performance.now() + 8;
-  let incompleteReason: UsageResponse['reliability']['incomplete_reason'] = null;
-  const records: NormalizedUsageRecord[] = [];
-  const deadline = new AbortController();
-  const timer = Number.isFinite(deadlineAt) ? setTimeout(() => { deadline.abort(); }, Math.max(0, deadlineAt - now())) : undefined;
-  const readSignal = signal === undefined ? deadline.signal : AbortSignal.any([signal, deadline.signal]);
-  try {
-    if (cursor < end) for await (const chunkValue of storage.readStream(
-      scope, AGENT_WIRE_RECORD_KEY, { start: cursor, end: end - 1 }, { signal: readSignal, chunkBytes: 1 << 20 },
-    )) {
-      signal?.throwIfAborted();
-      readBytes += chunkValue.byteLength;
-      const chunk = Buffer.from(chunkValue.buffer, chunkValue.byteOffset, chunkValue.byteLength);
-      let start = 0;
-      while (start < chunk.length) {
-        if (now() >= deadlineAt) { incompleteReason = 'deadline'; break; }
-        if (scannedRecordCount >= recordLimit) { incompleteReason = 'record_budget'; break; }
-        const newline = chunk.indexOf(0x0a, start);
-        const stop = newline < 0 ? chunk.length : newline;
-        if (line !== undefined || newline < 0 || stop - start > 1 << 20) {
-          line ??= { source, start: offset, cursor, parser: new UsageJsonStream(), decoder: new TextDecoder(), invalid: false };
-          while (start < stop) {
-            const next = Math.min(stop, start + (64 << 10));
-            if (!line.invalid) {
-              try { line.parser.write(line.decoder.decode(chunk.subarray(start, next), { stream: true })); }
-              catch { line.invalid = true; }
-            }
-            cursor += next - start;
-            line.cursor = cursor;
-            start = next;
-            if (performance.now() >= yieldAt) {
-              await yieldToEventLoop(undefined, { signal: readSignal });
-              yieldAt = performance.now() + 8;
-            }
-            if (now() >= deadlineAt) { incompleteReason = 'deadline'; break; }
-          }
-          if (incompleteReason !== null || newline < 0) break;
-        }
-        let raw: ReturnType<typeof parseUsageJson>;
-        let invalid = line?.invalid ?? false;
-        try {
-          if (line !== undefined) {
-            if (!invalid) { line.parser.write(line.decoder.decode()); raw = line.parser.finish(); }
-          } else if (stop > start) raw = parseUsageJson(chunk.subarray(start, stop));
-        } catch { invalid = true; }
-        if (invalid || raw !== undefined) {
-          if (scannedFactCount >= factLimit) { incompleteReason = 'record_budget'; line = undefined; break; }
-          scannedFactCount++;
-          if (invalid) valid = false;
-          else {
-            const record = normalizeRecord(raw!, sourceAgentId);
-            if (record === undefined) valid = false;
-            else records.push(record);
-          }
-        }
-        cursor += stop - start + 1;
-        offset = cursor;
-        line = undefined;
-        start = stop + 1;
-        scannedRecordCount++;
-        onScannedRecord?.();
-        if (offset - committedAt >= 16 * 1024 * 1024) {
-          await onCheckpoint?.(offset, records, valid);
-          committedAt = offset;
-          await yieldToEventLoop(undefined, { signal: readSignal });
-          yieldAt = performance.now() + 8;
-        }
-        if (scannedRecordCount % 1024 === 0 || (scannedRecordCount % 128 === 0 && performance.now() >= yieldAt)) {
-          await yieldToEventLoop(undefined, { signal: readSignal });
-          yieldAt = performance.now() + 8;
-        }
-      }
-      if (incompleteReason !== null) break;
-      if (performance.now() >= yieldAt) {
-        await yieldToEventLoop(undefined, { signal: readSignal });
-        yieldAt = performance.now() + 8;
-      }
-    }
-  } catch {
-    signal?.throwIfAborted();
-    readFailed = true;
-    if (deadline.signal.aborted) incompleteReason = 'deadline';
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-  signal?.throwIfAborted();
-  if (line !== undefined && line.cursor < size) {
-    if (continuations.size >= 16) continuations.delete(continuations.keys().next().value!);
-    continuations.set(scope, line);
-  }
-  return { readBytes, records, offset, scannedRecordCount, scannedFactCount, valid, complete: !readFailed && incompleteReason === null && offset === size, incompleteReason };
 }
 
 async function readRange(

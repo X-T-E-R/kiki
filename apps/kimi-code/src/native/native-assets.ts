@@ -21,6 +21,7 @@ import {
   KAP_MODEL_PRICES_ASSET,
   KAP_SEARCH_WORKER_ASSET,
   KAP_SQLITE_QUERY_WORKER_ASSET,
+  KAP_USAGE_PARSER_WORKER_ASSET,
   MINIDB_TEXT_BUILD_WORKER_ASSET,
   PLUGIN_HOST_RUNNER_ASSET,
   WINDOWS_PROCESS_HELPER_ASSET,
@@ -443,6 +444,10 @@ export function getMinidbTextBuildWorkerFile(
 
 export function getKapSearchWorkerFile(options: NativeAssetOptions = {}): string | null {
   return getNativeRuntimeFile(KAP_SEARCH_WORKER_ASSET.key, options);
+}
+
+export function getKapUsageWorkerFile(options: NativeAssetOptions = {}): string | null {
+  return getNativeRuntimeFile(KAP_USAGE_PARSER_WORKER_ASSET.key, options);
 }
 
 export function getKapSqliteQueryWorkerFile(options: NativeAssetOptions = {}): string | null {

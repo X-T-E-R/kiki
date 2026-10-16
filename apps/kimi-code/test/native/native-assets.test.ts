@@ -32,6 +32,8 @@ import {
   type NativeAssetSource,
 } from '#/native/native-assets';
 import { installMinidbTextBuildWorker } from '#/native/minidb-worker';
+import { installKapUsageWorker } from '#/native/usage-worker';
+import { resetUsageWorkerRuntime, usageWorkerEntry } from '@kiki/kap-server/usage-worker-runtime';
 import { loadNativePackage } from '#/native/native-require';
 import { installKikiDocs, resolveKikiDocsSourceDir } from '#/native/product-docs';
 import { Marked } from '@kiki/pi-tui';
@@ -160,6 +162,7 @@ function writeDocsTree(root: string, english: string, chinese: string): void {
 
 afterEach(() => {
   resetTextBuildWorkerRuntime();
+  resetUsageWorkerRuntime();
 });
 
 describe('native assets', () => {
@@ -291,6 +294,19 @@ describe('native assets', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
+  });
+
+  it('installs the usage parser asset without starting a worker or changing other worker entries', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kimi-usage-worker-'));
+    try {
+      const content = Buffer.from('export const worker = true;\n');
+      const key = 'native/test-target/runtime/kap-usage-parser-worker';
+      const manifest: NativeAssetManifest = { version: NATIVE_ASSET_MANIFEST_VERSION, target: 'test-target', packages: [], runtimeFiles: [{ key: 'kap-usage-parser-worker', assetKey: key, relativePath: 'runtime/kap-server/usage-parser-worker.mjs', sha256: sha256(content), mode: 0o644 }] };
+      const source: NativeAssetSource = { getAssetKeys: () => [key], getRawAsset: (asset) => { if (asset !== key) throw new Error('Unexpected asset'); return content; } };
+      expect(installKapUsageWorker({ cacheBase: dir, manifest, source, version: 'test' })).toMatchObject({ status: 'installed', basename: 'usage-parser-worker.mjs' });
+      expect(readFileSync(usageWorkerEntry()!, 'utf8')).toBe(content.toString());
+      expect(getTextBuildWorkerRuntimeState()).toEqual({ configured: false });
+    } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
   });
 
   it('extracts the plugin host runner from the checked native asset manifest', () => {

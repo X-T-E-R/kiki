@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { IBootstrapService, IConfigService, type Scope } from '@kiki/agent-core-v2';
+import { IBootstrapService, IConfigService, IInstantiationService, type Scope } from '@kiki/agent-core-v2';
 import { parseBooleanEnv } from '@kiki/agent-core-v2/_base/utils/env';
 import { IModelPricingService } from '../../pricing/modelPricingService';
 import { UsageAggregationService } from '../usageAggregationService';
@@ -21,7 +21,9 @@ export class UsageExportRuntime {
     const credentialsHome = bootstrap.credentialsHomeDir;
     if (store.writer) store.installationKey();
     const secrets = new UsageExportSecretStore(credentialsHome, () => store.installationKey());
-    this.service = new UsageExportService(store, new UsageAggregationService(core, Date.now, { cacheMaxBytes: 4 * 1024 * 1024, cacheMaxRecords: 5_000, cacheMaxEntries: 20 }), core.accessor.get(IModelPricingService), secrets, [createWebhookUsageAdapter(), createVibeUsageAdapter(), createScriptUsageAdapter()], { sourceHome: homeDir });
+    const aggregation = new UsageAggregationService(core, Date.now, { cacheMaxBytes: 4 * 1024 * 1024, cacheMaxRecords: 5_000, cacheMaxEntries: 20 });
+    core.accessor.get(IInstantiationService).onWillDispose(() => { aggregation.dispose(); });
+    this.service = new UsageExportService(store, aggregation, core.accessor.get(IModelPricingService), secrets, [createWebhookUsageAdapter(), createVibeUsageAdapter(), createScriptUsageAdapter()], { sourceHome: homeDir });
   }
   registerAdapter(adapter: UsageExportAdapter): void { this.service.registerAdapter(adapter); }
   start(): void { this.service.start(); }

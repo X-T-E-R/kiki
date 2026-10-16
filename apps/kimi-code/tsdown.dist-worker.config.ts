@@ -1,10 +1,6 @@
-// Bundles the kap-server global-search worker
-// (packages/kap-server/src/search/worker/entry.ts) into ONE self-contained
-// `dist/search-worker.mjs` sibling of the main bundle. The search worker
-// host resolves it at runtime next to `dist/main.mjs` (dev/tests use the TS
-// source; the SEA binary uses the extracted asset from
-// tsdown.worker.config.ts). Separate config because rolldown forbids
-// `codeSplitting: false` with multiple inputs.
+// Bundle each kap-server worker as a self-contained sibling of dist/main.mjs.
+// Dev uses source entries; SEA uses the matching extracted worker assets.
+// Each config has one input because codeSplitting:false forbids multiple inputs.
 
 import { resolve } from 'node:path';
 
@@ -12,31 +8,31 @@ import { defineConfig } from 'tsdown';
 
 const appRoot = import.meta.dirname;
 
-export default defineConfig({
-  entry: {
-    'search-worker': resolve(
-      appRoot,
-      '../../packages/kap-server/src/search/worker/entry.ts',
-    ),
-  },
-  format: ['esm'],
-  // Shares the main bundle's dist (never wipe it) and lands as
-  // `dist/search-worker.mjs`.
-  outDir: 'dist',
-  clean: false,
-  dts: false,
-  hash: false,
-  platform: 'node',
-  target: 'node24',
-  sourcemap: false,
-  minify: false,
-  silent: true,
-  deps: {
-    alwaysBundle: [/^@kiki\//],
-    onlyBundle: false,
-  },
-  outputOptions: {
-    codeSplitting: false,
-    entryFileNames: '[name].mjs',
-  },
-});
+function workerConfig(name: string, entry: string) {
+  return defineConfig({
+    entry: { [name]: resolve(appRoot, entry) },
+    format: ['esm'],
+    outDir: 'dist',
+    clean: false,
+    dts: false,
+    hash: false,
+    platform: 'node',
+    target: 'node24',
+    sourcemap: false,
+    minify: false,
+    silent: true,
+    deps: {
+      alwaysBundle: [/^@kiki\//],
+      onlyBundle: false,
+    },
+    outputOptions: {
+      codeSplitting: false,
+      entryFileNames: '[name].mjs',
+    },
+  });
+}
+
+export default [
+  workerConfig('search-worker', '../../packages/kap-server/src/search/worker/entry.ts'),
+  workerConfig('usage-parser-worker', '../../packages/kap-server/src/usage/worker/entry.ts'),
+];
