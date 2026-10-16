@@ -951,7 +951,7 @@ export class AcpProcessClient {
       currentModeId: opened.currentModeId,
       availableModes: opened.availableModes,
       sessionRef,
-      sessionRequestMeta: options.sessionMeta === undefined ? undefined : structuredClone(options.sessionMeta),
+      sessionRequestMeta: options.sessionMeta === undefined ? undefined : JSON.parse(JSON.stringify(options.sessionMeta)),
       sessionResponseMeta: opened.sessionMeta,
       loadReplayObserved: this.#loadReplayCount > 0,
       quarantinedUpdateCount: this.#loadReplayCount,

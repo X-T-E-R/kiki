@@ -376,7 +376,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
     capabilities: options.capabilities ?? {},
     configOptions: configured,
     sessionRef: { executorId: 'example-acp', version: 1, ref: { sessionId: 'remote-2' } },
-    sessionRequestMeta: opens.at(-1)?.sessionMeta,
+    sessionRequestMeta: opens.at(-1)?.sessionMeta === undefined ? undefined : JSON.parse(JSON.stringify(opens.at(-1)!.sessionMeta)),
     sessionResponseMeta: opens.length === 0 ? undefined : options.hostPermissionReceipt?.(opens.at(-1)!),
     loadReplayObserved: options.loadReplayObserved ?? false,
     quarantinedUpdateCount: options.loadReplayObserved === true ? 2 : 0,
@@ -2842,7 +2842,7 @@ describe('ACP external executor', () => {
       prior: mode === 'load' ? { executorId: 'example-acp', descriptorRevision: 'r1',
         sessionRef: { executorId: 'example-acp', version: 1, ref: { sessionId: 'remote-2' } } } : undefined,
       hostPermissionReceipt: (input) => ({ 'kiki.permission': { version: 1, sessionId: 'remote-2', openMode: mode,
-        gate: 'pre-tool-hook', applied: structuredClone(input.sessionMeta?.['kiki.permission']) } }),
+        gate: 'pre-tool-hook', applied: JSON.parse(JSON.stringify(input.sessionMeta?.['kiki.permission'])) } }),
       permissionToolCall: { toolCallId: 'native-task', title: 'manage_task', kind: 'read', rawInput: { Action: 'list' } },
       permissionRequestMeta: { 'kiki.tool': { name: 'TaskList', nativeName: 'manage_task', input: { Action: 'list' } } },
       permissionGate: authorize,
@@ -2858,11 +2858,11 @@ describe('ACP external executor', () => {
     } finally { await harness.session.shutdown(); }
   });
 
-  it.each(['session', 'mode', 'source', 'policy', 'workspace', 'nonce', 'gate', 'version', 'openMode', 'missing'] as const)(
+  it.each(['session', 'mode', 'source', 'policy', 'workspace', 'restriction', 'extra', 'nonce', 'gate', 'version', 'openMode', 'missing'] as const)(
     'rejects an unapplied or mismatched host gate receipt: %s', async (mismatch) => {
       const harness = createHarness({ mode: 'load', permissionMapping: null, permissionMode: 'yolo',
         hostPermissionReceipt: (input) => {
-          const applied = structuredClone(input.sessionMeta?.['kiki.permission']) as Record<string, unknown>;
+          const applied = JSON.parse(JSON.stringify(input.sessionMeta?.['kiki.permission'])) as Record<string, unknown>;
           const receipt: Record<string, unknown> = { version: 1, sessionId: 'remote-2', openMode: 'load', gate: 'pre-tool-hook', applied };
           if (mismatch === 'missing') return undefined;
           if (mismatch === 'session') receipt['sessionId'] = 'other-session';
@@ -2870,6 +2870,8 @@ describe('ACP external executor', () => {
           if (mismatch === 'source') applied['override'] = { mode: 'yolo', source: 'ambient' };
           if (mismatch === 'policy') applied['policyIdentity'] = 'other-policy';
           if (mismatch === 'workspace') applied['workspace'] = { cwd: '/other', additionalDirectories: [] };
+          if (mismatch === 'restriction') applied['restriction'] = { kind: 'unexpected-restriction' };
+          if (mismatch === 'extra') applied['unexpected'] = true;
           if (mismatch === 'nonce') applied['requestId'] = 'previous-load';
           if (mismatch === 'gate') receipt['gate'] = 'echo-only';
           if (mismatch === 'version') receipt['version'] = 2;

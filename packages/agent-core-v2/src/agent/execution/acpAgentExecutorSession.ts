@@ -919,7 +919,7 @@ function appliedHostPermission(opened: AcpOpenSessionResult, expected: unknown):
       !isDeepStrictEqual(receipt['applied'], requested)) return false;
   const { requestId: currentRequestId, ...currentPolicy } = current;
   const { requestId: appliedRequestId, ...appliedPolicy } = requested;
-  return (opened.mode === 'live' || currentRequestId === appliedRequestId) && isDeepStrictEqual(currentPolicy, appliedPolicy);
+  return (opened.mode === 'live' || currentRequestId === appliedRequestId) && isDeepStrictEqual(JSON.parse(JSON.stringify(currentPolicy)), appliedPolicy);
 }
 
 function sessionIdFromState(ref: ExecutorSessionRefEnvelope | undefined): string | undefined {
