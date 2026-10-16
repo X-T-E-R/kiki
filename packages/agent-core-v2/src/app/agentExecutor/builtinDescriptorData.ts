@@ -36,7 +36,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     startupTimeoutMs: 150_000, shutdownGraceMs: 3_000,
     installHint: 'Install the Antigravity CLI (agy). Kiki bridges it with the bundled source-owned adapter; the CLI does not advertise an ACP server.',
     diagnostics: [{ kind: 'message', severity: 'info', message: 'AGY CLI model ids come from `agy models`. The official ACP server remains the separate antigravity-acp executor.' }],
-    revision: '2026-10-14.1',
+    revision: '2026-10-16.1',
   },
   'grok-acp': {
     label: 'Grok Build',
@@ -49,6 +49,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     modelBinding: 'session_config',
     modelConfigCategory: 'model',
     profileDelivery: 'system_prompt_override',
+    supportsMcp: true, mcpTransports: ['stdio', 'http', 'sse'],
     promptDeliveries: ['replace', 'preamble'],
     defaultProfile: true,
     installHint: 'Install the Grok Build CLI',
@@ -59,7 +60,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
       { kind: 'message', severity: 'info', message: 'Grok runs with --permission-mode default in manual/review, acceptEdits in auto, and bypassPermissions in yolo.' },
     ],
     permission: { via: 'argv', flag: '--permission-mode', manual: 'default', auto: 'acceptEdits', yolo: 'bypassPermissions' },
-    revision: '2026-08-30.1',
+    revision: '2026-10-16.1',
   },
   'codex-app-server': {
     homeEnv: 'CODEX_HOME',
@@ -168,6 +169,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     shutdownGraceMs: 3_000,
     modelBinding: 'session_config',
     modelConfigCategory: 'model',
+    supportsMcp: true, mcpTransports: ['stdio', 'http', 'sse'],
     promptDeliveries: ['preamble'],
     defaultProfile: true,
     installHint: 'npm install --prefix "${KIKI_HOME}/tools/claude-agent-acp" --save-exact @agentclientprotocol/claude-agent-acp@0.84.0',
@@ -181,7 +183,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
         failed: 'claude --version exited with code {code}.' },
     ],
     permission: { via: 'session_mode', manual: 'default', auto: 'acceptEdits', yolo: 'bypassPermissions' },
-    revision: '2026-09-30.1',
+    revision: '2026-10-16.1',
   },
   'gemini-acp': {
     label: 'Gemini CLI',

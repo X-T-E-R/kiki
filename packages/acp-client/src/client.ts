@@ -290,6 +290,9 @@ export class AcpProcessClient {
   #openResult: AcpOpenSessionResult | undefined;
   #observedModeId: string | undefined;
   #modeWaiter: ((mode: string) => void) | undefined;
+  #grokMcpSetupObserved = false;
+  readonly #grokMcpReadySessions = new Set<string>();
+  #grokMcpReadyWaiter: ((sessionId: string) => void) | undefined;
   #activeTurn: ActiveTurn | undefined;
   #pendingEventReservations: Array<{
     readonly active: ActiveTurn;
@@ -755,7 +758,18 @@ export class AcpProcessClient {
     app.onNotification(methods.client.session.update, ({ params }) => {
       this.#handleSessionUpdate(params);
     });
+    this.#grokMcpSetupObserved = false;
+    this.#grokMcpReadySessions.clear();
     if (this.#descriptor.id === 'grok-acp') {
+      app.onNotification<unknown>('_x.ai/session/setup', (params) => params, ({ params }) => {
+        if (objectValue(params)?.['phase'] === 'mcp_merge') this.#grokMcpSetupObserved = true;
+      });
+      app.onNotification<unknown>('_x.ai/mcp_initialized', (params) => params, ({ params }) => {
+        const sessionId = objectValue(params)?.['sessionId'];
+        if (typeof sessionId !== 'string') return;
+        this.#grokMcpReadySessions.add(sessionId);
+        this.#grokMcpReadyWaiter?.(sessionId);
+      });
       for (const method of ['_x.ai/session_notification', '_x.ai/session/update']) {
         app.onNotification<unknown>(method, (params) => params, ({ params }) => { this.#handleSessionUpdate(params, method); });
       }
@@ -873,6 +887,21 @@ export class AcpProcessClient {
     this.#capabilities = initialize.agentCapabilities ?? {};
 
     const opened = await this.#openRemoteSession(options, deadline);
+    if (this.#grokMcpSetupObserved && (options.mcpServers?.length ?? 0) > 0 && !this.#grokMcpReadySessions.has(opened.sessionId)) {
+      let rejectReady!: (error: Error) => void;
+      const onDisconnect = (): void => rejectReady(new AcpClientError(AcpClientErrorCode.Disconnected, 'ACP disconnected before MCP initialization'));
+      const ready = new Promise<void>((resolve, reject) => {
+        rejectReady = reject;
+        this.#grokMcpReadyWaiter = (sessionId) => { if (sessionId === opened.sessionId) resolve(); };
+        if (connection.signal.aborted) onDisconnect();
+        else connection.signal.addEventListener('abort', onDisconnect, { once: true });
+      });
+      try { await this.#requestDuringStartup(ready, deadline, options.signal); }
+      finally {
+        this.#grokMcpReadyWaiter = undefined;
+        connection.signal.removeEventListener('abort', onDisconnect);
+      }
+    }
     this.#setState('configuring');
     let configOptions = [...opened.configOptions];
     for (const selection of options.configOptions ?? []) {

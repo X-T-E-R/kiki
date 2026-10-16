@@ -3,9 +3,11 @@ import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 const RECEIPT = '.kiki-mcp-owner.json';
-const pluginName = sessionId => {
-  if (!/^[a-f0-9-]{36}$/i.test(sessionId)) throw Error('Invalid AGY MCP session ID');
-  return `kiki-acp-${sessionId}`;
+const pluginName = (sessionId, namespace) => {
+  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(sessionId)) throw Error('Invalid AGY MCP session ID');
+  const compact = `k${Buffer.from(sessionId.replaceAll('-', ''), 'hex').toString('base64url')}`;
+  if (namespace !== undefined && namespace !== compact && namespace !== `kiki-acp-${sessionId}`) throw Error('AGY MCP plugin namespace does not match its owning session');
+  return namespace ?? compact;
 };
 function processAlive(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return true;
@@ -29,8 +31,8 @@ async function removeOwned(path, state, expectedReceipt) {
   await rmdir(path);
 }
 
-export async function registerProjectMcpPlugin({ cwd, sessionId, nodePath, handlerPath, servers }) {
-  const name = pluginName(sessionId);
+export async function registerProjectMcpPlugin({ cwd, sessionId, namespace, nodePath, handlerPath, servers }) {
+  const name = pluginName(sessionId, namespace);
   const path = resolve(cwd, '.agents', 'plugins', name);
   const env = {};
   const mcpServers = Object.fromEntries(servers.map((server, index) => {
@@ -77,9 +79,11 @@ export async function registerProjectMcpPlugin({ cwd, sessionId, nodePath, handl
 }
 
 export async function recoverProjectMcpPlugin({ cwd, sessionId }) {
-  const path = resolve(cwd, '.agents', 'plugins', pluginName(sessionId));
-  const receipt = await optional(resolve(path, RECEIPT));
-  if (receipt === undefined) return { status: 'no-owned-registration', path };
+  const paths = [pluginName(sessionId), `kiki-acp-${sessionId}`].map(name => resolve(cwd, '.agents', 'plugins', name));
+  const registrations = (await Promise.all(paths.map(async path => ({ path, receipt: await optional(resolve(path, RECEIPT)) })))).filter(entry => entry.receipt !== undefined);
+  if (registrations.length === 0) return { status: 'no-owned-registration', path: paths[0] };
+  if (registrations.length > 1) throw Error('Multiple AGY MCP ownership receipts exist for this session; preserve both for scoped recovery');
+  const { path, receipt } = registrations[0];
   const state = JSON.parse(receipt);
   if (state.version !== 1 || state.sessionId !== sessionId || !state.files ||
       Object.keys(state.files).sort().join(',') !== 'mcp_config.json,plugin.json') throw Error('Invalid AGY MCP ownership receipt; preserve the plugin');

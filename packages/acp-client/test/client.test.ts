@@ -44,6 +44,7 @@ function burstProcess(
   dispose: ReturnType<typeof vi.fn<() => void>>,
   count: number,
   endAfterResponse = false,
+  beforeOpen?: (stdout: PassThrough) => void,
 ): HostProcessLike {
   const stdout = new PassThrough();
   const stderr = new PassThrough();
@@ -67,6 +68,7 @@ function burstProcess(
         if (request.id !== undefined && request.method === 'initialize') {
           writeResponse(request.id, { protocolVersion: 1, agentCapabilities: {} });
         } else if (request.id !== undefined && request.method === 'session/new') {
+          beforeOpen?.(stdout);
           writeResponse(request.id, { sessionId: 'session-burst', configOptions: [] });
         } else if (request.id !== undefined && request.method === 'session/prompt') {
           for (let index = 0; index < count; index += 1) {
@@ -357,5 +359,65 @@ describe('AcpProcessClient limits and observers', () => {
     expect(calls[0]?.options).not.toHaveProperty('envUnset');
     expect(calls[0]?.options?.['env']).toBeUndefined();
     expect(calls[0]?.options?.['cwd']).toBeUndefined();
+  });
+});
+
+
+describe('Grok session MCP readiness', () => {
+  const mcpServers = [{ name: 'fixture', command: 'node', args: [], env: [] }];
+  const notify = (stdout: PassThrough, method: string, params: unknown): void => {
+    stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method, params })}\n`);
+  };
+  const setup = (stdout: PassThrough): void => notify(stdout, '_x.ai/session/setup', { method: 'session/new', phase: 'mcp_merge', sessionId: null });
+
+  it('holds the first prompt until the owning session reports MCP initialized', async () => {
+    const beforeOpen = vi.fn(setup);
+    const child = burstProcess(vi.fn(), 0, false, beforeOpen);
+    const client = new AcpProcessClient({ spawn: async () => child }, { id: 'grok-acp', command: 'fixture', shutdownGraceMs: 20 }, { platform: 'linux' });
+    let opened = false;
+    const options = { cwd: '/workspace', mcpServers };
+    const opening = client.openSession(options).then((result) => { opened = true; return result; });
+    try {
+      await vi.waitFor(() => expect(beforeOpen).toHaveBeenCalledOnce());
+      expect(opened).toBe(false);
+      notify(child.stdout as PassThrough, '_x.ai/mcp_initialized', { sessionId: 'another-session', mcpToolCount: 1 });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(opened).toBe(false);
+      notify(child.stdout as PassThrough, '_x.ai/mcp_initialized', { sessionId: 'session-burst', mcpToolCount: 1 });
+      await opening;
+      const turn = await client.startTurn({ session: options, signal: new AbortController().signal, prompt: 'Use the connected fixture' });
+      expect((await turn.completion).response.stopReason).toBe('end_turn');
+    } finally { await client.shutdown(); }
+  });
+
+  it('retains readiness that arrived before the session response', async () => {
+    const child = burstProcess(vi.fn(), 0, false, (stdout) => {
+      setup(stdout);
+      notify(stdout, '_x.ai/mcp_initialized', { sessionId: 'session-burst', mcpToolCount: 1 });
+    });
+    const client = new AcpProcessClient({ spawn: async () => child }, { id: 'grok-acp', command: 'fixture', shutdownGraceMs: 20 }, { platform: 'linux' });
+    try { expect((await client.openSession({ cwd: '/workspace', mcpServers })).sessionId).toBe('session-burst'); }
+    finally { await client.shutdown(); }
+  });
+
+  it.each(['no-vendor-event', 'no-requested-servers', 'other-engine'])('preserves %s startup without an MCP-ready event', async (condition) => {
+    const child = burstProcess(vi.fn(), 0, false, condition === 'no-vendor-event' ? undefined : setup);
+    const client = new AcpProcessClient({ spawn: async () => child }, { id: condition === 'other-engine' ? 'fixture' : 'grok-acp', command: 'fixture', shutdownGraceMs: 20 }, { platform: 'linux' });
+    try {
+      expect((await client.openSession({ cwd: '/workspace', mcpServers: condition === 'no-requested-servers' ? [] : mcpServers })).sessionId).toBe('session-burst');
+    } finally { await client.shutdown(); }
+  });
+
+  it.each(['cancel', 'timeout'])('bounds the MCP-ready wait by startup %s', async (condition) => {
+    const beforeOpen = vi.fn(setup);
+    const child = burstProcess(vi.fn(), 0, false, beforeOpen);
+    const client = new AcpProcessClient({ spawn: async () => child }, { id: 'grok-acp', command: 'fixture', startupTimeoutMs: condition === 'timeout' ? 100 : 5000, shutdownGraceMs: 20 }, { platform: 'linux' });
+    const controller = new AbortController();
+    const opening = client.openSession({ cwd: '/workspace', mcpServers, signal: controller.signal });
+    const rejected = expect(opening).rejects.toMatchObject({ code: condition === 'cancel' ? 'executor.cancelled' : 'executor.startup_timeout' });
+    try {
+      if (condition === 'cancel') { await vi.waitFor(() => expect(beforeOpen).toHaveBeenCalledOnce()); controller.abort(); }
+      await rejected;
+    } finally { await client.shutdown(); }
   });
 });

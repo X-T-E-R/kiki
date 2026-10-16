@@ -130,6 +130,23 @@ describe('external native harness adapters', () => {
     await expect(acquireHarnessMcp({ ...context, agent: { ...context.agent, id: 'child' }, binding: { ...context.binding, allowKikiSubagents: true } }, '/workspace')).rejects.toThrow('stdio MCP');
   });
 
+  it.each(['claude-acp', 'grok-acp'])('automatically leases %s native child tools without selecting a vendor agent', async (executorId) => {
+    const acquire = vi.fn(async () => ({ server: { name: 'kiki-harness' }, dispose() {} }));
+    const execution = resolveExecutionBinding({ executor: executorId }, undefined, undefined, undefined);
+    const context = { agent: { id: 'child', accessor: { get: (id: unknown) =>
+      String(id) === 'agentScopeContext' ? { parentAgentId: 'parent-fixture' }
+        : String(id) === 'sessionContext' ? { sessionId: 'session-fixture' } : { acquire } } },
+      binding: { execution }, descriptor: { id: executorId, ...BUILTIN_AGENT_EXECUTORS[executorId]! } } as unknown as AgentExecutorContext;
+    expect(execution.effective.native_agent).toBeUndefined();
+    expect(await acquireHarnessMcp(context, '/workspace')).toBeDefined();
+    expect(acquire).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'session-fixture', agentId: 'child', nativeTools: true, executorId,
+    }));
+    const off = resolveExecutionBinding({ executor: executorId, overrides: { inject_kiki_mcp: false } }, undefined, undefined, execution);
+    expect(await acquireHarnessMcp({ ...context, binding: { execution: off } }, '/workspace')).toBeUndefined();
+    expect(acquire).toHaveBeenCalledTimes(1);
+  });
+
   it('automatically leases native tools for an MCP-compatible child under its exact identity', async () => {
     const acquire = vi.fn(async () => ({ server: { name: 'kiki-harness' }, dispose() {} }));
     const context = { agent: { id: 'child', accessor: { get: (id: unknown) =>
@@ -276,14 +293,14 @@ describe('Kiki MCP injection switch', () => {
   it('reports builtin bridge support from descriptor facts and does not treat an undeclared vendor as available', () => {
     const supportOf = (id: keyof typeof BUILTIN_AGENT_EXECUTORS) => kikiMcpSupport({ id, ...BUILTIN_AGENT_EXECUTORS[id]! });
     const supported = Object.keys(BUILTIN_AGENT_EXECUTORS).filter((id) => supportOf(id as keyof typeof BUILTIN_AGENT_EXECUTORS).state === 'supported').sort();
-    expect(supported).toEqual(['agy-cli', 'antigravity-acp', 'codex-app-server', 'kimi-acp']);
+    expect(supported).toEqual(['agy-cli', 'antigravity-acp', 'claude-acp', 'codex-app-server', 'grok-acp', 'kimi-acp']);
     expect(supportOf('agy-cli').fact).toContain('supports_mcp is true');
     expect(supportOf('agy-cli').fact).toContain('stdio');
     expect(supportOf('codex-app-server').fact).toContain('process flags');
     expect(supportOf('openclaw-acp')).toMatchObject({ state: 'unsupported' });
     expect(supportOf('openclaw-acp').fact).toContain('mcpServers');
     expect(supportOf('pi-acp').fact).toContain('does not forward Kiki MCP servers');
-    expect(supportOf('claude-acp').state).toBe('undeclared');
+    expect(supportOf('claude-acp').state).toBe('supported');
     expect(supportOf('gemini-acp').state).toBe('undeclared');
     expect(supportOf('deepseek-acp').state).toBe('undeclared');
     expect(kikiMcpSupport({ id: 'http-only', protocol: 'acp-v1', supportsMcp: true, mcpTransports: ['http'] })).toEqual({

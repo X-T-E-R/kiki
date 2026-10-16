@@ -291,6 +291,7 @@ export class AgyBridge {
       throw new Error('This native conversation used the former custom MCP agent; retain its original adapter for recovery or create a new native main session');
     }
     const mcpBinding = records.findLast(record => record.type === 'mcp_plugin_registered');
+    if (mcpBinding && typeof mcpBinding.name !== 'string') throw new Error('AGY native load has no audited MCP plugin namespace; preserve its original adapter for recovery');
     if (mcpBinding && JSON.stringify(params.mcpServers?.map(server => server.name) ?? []) !== JSON.stringify(mcpBinding.servers)) {
       throw new Error('AGY native load requires fresh MCP connections matching its original server names');
     }
@@ -322,6 +323,7 @@ export class AgyBridge {
       session.model = model;
       session.effort = effort;
       session.conversationId = init.conversationId;
+      session.mcpNamespace = mcpBinding?.name;
       session.releaseResume = release;
       return { configOptions: configOptions(session) };
     } catch (error) { await release(); this.sessions.delete(params.sessionId); throw error; }
@@ -407,8 +409,8 @@ export class AgyBridge {
 
   async registerMcpPlugin(session) {
     if (!session.mcpServers.length || session.mcpPlugin) return;
-    session.mcpPlugin = await registerProjectMcpPlugin({ cwd: session.cwd, sessionId: session.id, nodePath: process.execPath,
-      handlerPath: fileURLToPath(import.meta.url), servers: session.mcpServers });
+    session.mcpPlugin = await registerProjectMcpPlugin({ cwd: session.cwd, sessionId: session.id, namespace: session.mcpNamespace,
+      nodePath: process.execPath, handlerPath: fileURLToPath(import.meta.url), servers: session.mcpServers });
     await this.audit(session, 'mcp_plugin_registered', { name: session.mcpPlugin.name, path: session.mcpPlugin.path,
       servers: session.mcpServers.map(server => server.name), nativeAgent: 'engine-default' });
   }
@@ -723,7 +725,11 @@ export async function runSessionMcp(key) {
   for (const name of Object.keys(env)) if (name.startsWith('KIKI_AGY_')) delete env[name];
   const child = spawn(server.command, server.args, { env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
   const closed = new Promise(done => child.once('close', done));
-  child.once('error', error => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });
+  const output = createInterface({ input: child.stdout });
+  let failure;
+  const fail = error => { failure ??= error; output.close(); };
+  child.once('error', fail);
+  child.stdin.on('error', fail);
   const lists = new Set();
   const input = createInterface({ input: process.stdin });
   input.on('line', line => {
@@ -732,21 +738,32 @@ export async function runSessionMcp(key) {
   });
   input.once('close', () => child.stdin.end());
   child.stderr.pipe(process.stderr);
-  process.once('SIGTERM', () => { void terminate(child); });
-  process.once('SIGINT', () => { void terminate(child); });
-  let ready = false;
-  for await (const line of createInterface({ input: child.stdout })) {
-    let frame;
-    try { frame = JSON.parse(line); } catch {}
-    if (!ready && lists.has(frame?.id) && Array.isArray(frame?.result?.tools)) {
-      const acknowledged = await requestHookPermission({ type: 'mcp_ready', key }, process.env, 10_000);
-      if (acknowledged.decision !== 'allow') { await terminate(child); throw Error('The session MCP readiness was not admitted by its owning adapter'); }
-      ready = true;
+  const stop = () => { void terminate(child); };
+  process.once('SIGTERM', stop);
+  process.once('SIGINT', stop);
+  try {
+    let ready = false;
+    for await (const line of output) {
+      let frame;
+      try { frame = JSON.parse(line); } catch {}
+      if (!ready && lists.has(frame?.id) && Array.isArray(frame?.result?.tools)) {
+        const acknowledged = await requestHookPermission({ type: 'mcp_ready', key }, process.env, 10_000);
+        if (acknowledged.decision !== 'allow') throw Error('The session MCP readiness was not admitted by its owning adapter');
+        ready = true;
+      }
+      process.stdout.write(line + '\n');
     }
-    process.stdout.write(line + '\n');
+    if (failure) throw failure;
+    process.exitCode = await closed ?? 1;
+  } finally {
+    input.close();
+    process.stdin.pause();
+    output.close();
+    process.removeListener('SIGTERM', stop);
+    process.removeListener('SIGINT', stop);
+    if (child.pid !== undefined) await terminate(child);
+    await closed;
   }
-  const code = await closed;
-  process.exitCode = code ?? 1;
 }
 
 export async function runBridge({ sdkPath, cliPath, cliPrefix = [], auditDir, model = DEFAULT } = {}) {

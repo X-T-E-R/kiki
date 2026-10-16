@@ -339,6 +339,44 @@ describe('native harness tool parity', () => {
 });
 
 
+it.each(['claude-acp', 'grok-acp'])('exposes callable native tools through the default %s child lease', { timeout: 60_000 }, async (executorId) => {
+  const home = await mkdtemp(join(tmpdir(), 'kiki-builtin-child-mcp-'));
+  await writeFile(join(home, 'config.toml'), '[search]\nenabled = false\n[subagent]\nautomatic_notification = false\n');
+  const server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+  let lease: Awaited<ReturnType<IHarnessMcpService['acquire']>> | undefined;
+  try {
+    const endpoint = `http://127.0.0.1:${server.port}`;
+    const response = await fetch(`${endpoint}/api/sessions`, { method: 'POST', headers: authHeaders(server, { 'content-type': 'application/json' }), body: JSON.stringify({ metadata: { cwd: home } }) });
+    const sessionId = ((await response.json()) as { data: { id: string } }).data.id;
+    const session = (await resumeSessionById(server.core.accessor, sessionId))!;
+    await ensureMainAgent(session);
+    const child = await session.accessor.get(IAgentLifecycleService).create({ agentId: 'native-child', delegator: { kind: 'agent', agentId: 'main' } });
+    const profile = child.accessor.get(IAgentProfileService);
+    const binding = { ...profile.data(), execution: resolveExecutionBinding({ executor: executorId }, undefined, undefined, undefined) };
+    profile.applyBindingSnapshot(binding);
+    child.accessor.get(IAgentPermissionModeService).setMode('yolo');
+    lease = await acquireHarnessMcp({ agent: child, binding, descriptor: server.core.accessor.get(IAgentExecutorRegistry).get(executorId)! }, home);
+    if (lease === undefined || !('command' in lease.server)) throw new Error('Expected default child stdio bridge');
+    expect(binding.execution.effective.native_agent).toBeUndefined();
+    const context = createContextKlient({ endpoint, token: lease.server.env.find((entry) => entry.name === 'KIKI_DELEGATION_TOKEN')!.value });
+    expect((await context.catalog()).tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(['MemoryRead', 'AgentNotify']));
+    expect((await context.call({ name: 'MemoryRead', arguments: { id: 'm_missing' } })).output).toContain('missing');
+    expect((await context.call({ name: 'AgentNotify', arguments: { message: 'The native child connection is ready.' } })).isError).not.toBe(true);
+    const queued = await server.core.accessor.get(IAgentCollaborationMessageStore).nextQueued(sessionId, 'main');
+    expect(queued?.message).toMatchObject({ sourceAgentId: child.id, targetAgentId: 'main', content: 'The native child connection is ready.' });
+    profile.applyBindingSnapshot({ ...binding, disallowedTools: ['MemoryRead'] });
+    expect((await context.call({ name: 'MemoryRead', arguments: { id: 'm_missing' } })).isError).toBe(true);
+    const off = { ...binding, execution: resolveExecutionBinding({ executor: executorId, overrides: { inject_kiki_mcp: false } }, undefined, undefined, binding.execution) };
+    profile.applyBindingSnapshot(off);
+    expect(await acquireHarnessMcp({ agent: child, binding: off, descriptor: server.core.accessor.get(IAgentExecutorRegistry).get(executorId)! }, home)).toBeUndefined();
+    await expect(context.catalog()).rejects.toThrow();
+  } finally {
+    lease?.dispose();
+    await server.close();
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
 it('applies engine profile and session injection choices to the real HTTP tool bridge for main and child bindings', { timeout: 60_000 }, async () => {
   const home = await mkdtemp(join(tmpdir(), 'kiki-injection-defaults-'));
   await writeFile(join(home, 'config.toml'), `[search]\nenabled = false\n[agent_executors.bridge-fixture]\nprotocol = "acp-v1"\ncommand = ${JSON.stringify(process.execPath)}\nsupports_mcp = true\n[agent_executor_overrides.bridge-fixture.env]\nFIXTURE_CREDENTIAL = "credential-sentinel"\n[agent_executor_overrides.bridge-fixture.defaults]\ninject_kiki_mcp = false\n`);
@@ -542,6 +580,57 @@ it.skipIf(!process.env['KIKI_AGY_LIVE_SMOKE'])('live AGY session uses the source
     await bridge.close(); record('adapter_closed', {});
     lease?.dispose(); await server.close();
     await writeFile(join(workspace, 'events.json'), JSON.stringify(events, null, 2));
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+
+it('leases a directly executable SEA or npm MCP command and preserves unknown-host and explicit source launches', { timeout: 60_000 }, async () => {
+  const launches = await import('@kiki/agent-core-v2/os/backends/node-local/kikiCliPath');
+  const home = await mkdtemp(join(tmpdir(), 'kiki-mcp-launch-'));
+  await writeFile(join(home, 'config.toml'), '[search]\nenabled = false\n');
+  const entry = join(home, 'main.mjs');
+  const cli = fileURLToPath(new URL('../../../apps/kimi-code/src/main.ts', import.meta.url));
+  const loader = new URL('../../../build/register-raw-text-loader.mjs', import.meta.url).href;
+  await writeFile(entry, `import {spawn} from 'node:child_process';
+const child=spawn(process.execPath,${JSON.stringify(['--import', pathToFileURL(require.resolve('tsx/esm')).href, '--import', loader, cli])}.concat(process.argv.slice(2)),{stdio:'inherit',env:{...process.env,TSX_TSCONFIG_PATH:${JSON.stringify(fileURLToPath(new URL('../../../apps/kimi-code/tsconfig.dev.json', import.meta.url)))}}});
+child.once('error',error=>{console.error(error.message);process.exitCode=1;});child.once('close',code=>{process.exitCode=code??1;});
+`);
+  const server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+  const resolveLaunch = vi.spyOn(launches, 'resolveKikiCliLaunch');
+  let lease: Awaited<ReturnType<IHarnessMcpService['acquire']>> | undefined;
+  const client = new Client({ name: 'native-launch-fixture', version: '1' });
+  try {
+    const endpoint = `http://127.0.0.1:${server.port}`;
+    const created = await fetch(`${endpoint}/api/sessions`, { method: 'POST', headers: authHeaders(server, { 'content-type': 'application/json' }), body: JSON.stringify({ metadata: { cwd: home } }) });
+    const sessionId = ((await created.json()) as { data: { id: string } }).data.id;
+    const session = (await resumeSessionById(server.core.accessor, sessionId))!;
+    await ensureMainAgent(session);
+    const child = await session.accessor.get(IAgentLifecycleService).create({ agentId: 'native-launch-child', delegator: { kind: 'agent', agentId: 'main' } });
+    child.accessor.get(IAgentPermissionModeService).setMode('yolo');
+    const acquire = () => server.core.accessor.get(IHarnessMcpService).acquire({ sessionId, agentId: child.id, workspacePath: home, nativeTools: true });
+    resolveLaunch.mockResolvedValue({ kind: 'executable', executable: 'C:/example/kiki-server.exe' });
+    lease = await acquire();
+    expect(lease.server).toMatchObject({ command: 'C:/example/kiki-server.exe', args: ['mcp', '--workspace', home, '--attached'] });
+    lease.dispose();
+    resolveLaunch.mockResolvedValue(undefined);
+    lease = await acquire();
+    expect(lease.server).toMatchObject({ command: 'kiki', args: ['mcp', '--workspace', home, '--attached'] });
+    lease.dispose();
+    resolveLaunch.mockResolvedValue({ kind: 'node', nodePath: process.execPath, entryPath: entry });
+    lease = await acquire();
+    expect(lease.server).toMatchObject({ command: process.execPath, args: [entry, 'mcp', '--workspace', home, '--attached'] });
+    if (!('command' in lease.server)) throw new Error('Expected stdio native launch');
+    const env = Object.fromEntries(lease.server.env.map(({ name, value }) => [name, value]));
+    await client.connect(new StdioClientTransport({ command: lease.server.command, args: lease.server.args,
+      env: { ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)), ...env } }));
+    expect((await client.listTools()).tools.map(tool => tool.name)).toContain('kiki_MemoryRead');
+    const read = await client.callTool({ name: 'kiki_MemoryRead', arguments: { id: 'm_missing' } });
+    expect(read.isError).not.toBe(true);
+    expect(JSON.stringify(read.content)).toContain('missing');
+    expect(resolveLaunch).toHaveBeenCalledWith(expect.objectContaining({ execPath: process.execPath, argv: process.argv }));
+  } finally {
+    await client.close(); lease?.dispose(); resolveLaunch.mockRestore(); await server.close();
     await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });

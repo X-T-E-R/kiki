@@ -1110,15 +1110,20 @@ test('session stdio MCP uses a native plugin without replacing main, passes env 
   }];
   try {
     const id = (await b.newSession({ cwd: root, mcpServers })).sessionId;
-    const pluginPath = join(root, '.agents', 'plugins', `kiki-acp-${id}`);
     await turn(b, id, 'hello mcp', []);
+    const pluginPath = b.session(id).mcpPlugin.path;
     assert.equal(launch.args.includes('--agent'), false);
     assert.equal(b.session(id).init.init.agent, undefined);
     const key = `KIKI_AGY_MCP_${id.replaceAll('-', '_')}_0`;
     assert.ok(launch.env[key]);
     assert.deepEqual(JSON.parse(launch.env[key]), mcpServers[0]);
     const manifest = JSON.parse(await readFile(join(pluginPath, 'plugin.json'), 'utf8'));
-    assert.equal(manifest.name, `kiki-acp-${id}`);
+    assert.equal(manifest.name.length, 23);
+    assert.equal(Buffer.from(manifest.name.slice(1), 'base64url').toString('hex'), id.replaceAll('-', ''));
+    assert.match(`mcp_${manifest.name}_neutral-session-ping_ping`, /^[a-zA-Z0-9_-]{1,64}$/);
+    for (const tool of ['kiki_MemoryRead', 'kiki_AgentNotify', 'kiki_BrowserConnections']) {
+      assert.match(`mcp_${manifest.name}_kiki-harness_${tool}`, /^[a-zA-Z0-9_-]{1,64}$/);
+    }
     const fileContent = await readFile(join(pluginPath, 'mcp_config.json'), 'utf8');
     assert.match(fileContent, /--mcp-stdio/);
     assert.equal(fileContent.includes('test-value'), false);
@@ -1172,7 +1177,7 @@ test('native MCP plugin ownership preserves conflicts and edits, isolates sessio
     assert.equal((await recoverProjectMcpPlugin({ cwd: root, sessionId: state.sessionId })).status, 'owned-registration-recovered');
     await assert.rejects(readFile(receiptPath), { code: 'ENOENT' });
     const userId = randomUUID();
-    const userPath = join(root, '.agents', 'plugins', `kiki-acp-${userId}`);
+    const userPath = join(root, '.agents', 'plugins', `k${Buffer.from(userId.replaceAll('-', ''), 'hex').toString('base64url')}`);
     await mkdir(userPath);
     await writeFile(join(userPath, 'plugin.json'), '{"disabled":true}');
     await assert.rejects(registerProjectMcpPlugin(options(userId)), /already exists/);
@@ -1220,7 +1225,7 @@ test('MCP off does not register a plugin and native disabled discovery never fal
     await assert.rejects(turn(b, unready, 'hello', []), /did not activate and initialize/);
     assert.equal(b.session(unready).mcpBound.size, 1); assert.equal(b.session(unready).mcpReady.size, 0);
     await b.close();
-    await assert.rejects(readFile(join(root, '.agents', 'plugins', `kiki-acp-${disabled}`, 'plugin.json')), { code: 'ENOENT' });
+    await assert.rejects(readFile(join(b.session(disabled).mcpPlugin.path, 'plugin.json')), { code: 'ENOENT' });
   } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
 });
 
@@ -1320,4 +1325,98 @@ test('agy models columns are raw ids; a listed id can be selected and an unknown
   assert.throws(() => none.setConfig({ sessionId: noneId, configId: 'model', value: 'fixture-alpha-high' }), /not in the vendor catalog/);
   none.setConfig({ sessionId: noneId, configId: 'model', value: 'engine-default' });
   await none.close();
+});
+
+
+test('native MCP load retains the exact compact or legacy namespace from its own audit', async () => {
+  const { mkdtemp, readFile, rm, appendFile } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  for (const legacy of [false, true]) {
+    const root = await mkdtemp(join(tmpdir(), 'agy-mcp-load-'));
+    const auditDir = join(root, 'audit');
+    const first = bridge('gemini-3.8-flash-medium'); first.auditDir = auditDir;
+    const loaded = bridge('gemini-3.8-flash-medium'); loaded.auditDir = auditDir;
+    const mcpServers = [{ name: 'fixture', command: process.execPath, args: [], env: [] }];
+    const id = (await first.newSession({ cwd: root, mcpServers })).sessionId;
+    if (legacy) first.session(id).mcpNamespace = `kiki-acp-${id}`;
+    try {
+      await turn(first, id, 'initial fixture', []);
+      const namespace = first.session(id).mcpPlugin.name;
+      await first.close();
+      await loaded.loadSession({ sessionId: id, cwd: root, mcpServers });
+      assert.equal(loaded.session(id).mcpNamespace, namespace);
+      await turn(loaded, id, 'continued fixture', []);
+      assert.equal(loaded.session(id).mcpPlugin.name, namespace);
+      assert.equal(launchArgs(loaded.session(id)).includes('--agent'), false);
+      await loaded.close();
+      const auditPath = join(auditDir, `${id}.ndjson`);
+      const registrations = (await readFile(auditPath, 'utf8')).trim().split('\n').map(JSON.parse).filter(row => row.type === 'mcp_plugin_registered');
+      assert.deepEqual(registrations.map(row => row.name), [namespace, namespace]);
+      await appendFile(auditPath, JSON.stringify({ type: 'mcp_plugin_registered', servers: ['fixture'] }) + '\n');
+      const missing = bridge(); missing.auditDir = auditDir;
+      await assert.rejects(missing.loadSession({ sessionId: id, cwd: root, mcpServers }), /no audited MCP plugin namespace/);
+      await missing.close();
+      await assert.rejects(readFile(join(auditDir, `${id}.resume-lock`)), { code: 'ENOENT' });
+    } finally { await first.close(); await loaded.close(); await rm(root, { recursive: true, force: true }); }
+  }
+});
+
+test('legacy MCP recovery preserves live leases, validates namespaces and recovers only the exact owned plugin', async () => {
+  const { mkdtemp, readFile, writeFile, rm } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const { randomUUID } = await import('node:crypto');
+  const { registerProjectMcpPlugin, recoverProjectMcpPlugin } = await import('./agy-mcp-plugin.mjs');
+  const root = await mkdtemp(join(tmpdir(), 'agy-legacy-plugin-'));
+  const sessionId = randomUUID();
+  const options = { cwd: root, sessionId, namespace: `kiki-acp-${sessionId}`, nodePath: process.execPath,
+    handlerPath: fileURLToPath(new URL('./agy-cli-acp.mjs', import.meta.url)), servers: [] };
+  try {
+    await assert.rejects(registerProjectMcpPlugin({ ...options, namespace: `kiki-acp-${randomUUID()}` }), /does not match its owning session/);
+    await assert.rejects(registerProjectMcpPlugin({ ...options, sessionId: '-'.repeat(36) }), /Invalid AGY MCP session ID/);
+    const legacy = await registerProjectMcpPlugin(options);
+    assert.equal((await recoverProjectMcpPlugin({ cwd: root, sessionId })).status, 'owned-session-still-live');
+    const dead = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' });
+    await new Promise((done, reject) => { dead.once('error', reject); dead.once('close', done); });
+    const receiptPath = join(legacy.path, '.kiki-mcp-owner.json');
+    const state = JSON.parse(await readFile(receiptPath, 'utf8'));
+    state.adapterPid = dead.pid;
+    await writeFile(receiptPath, JSON.stringify(state));
+    const compact = await registerProjectMcpPlugin({ ...options, namespace: undefined });
+    await assert.rejects(recoverProjectMcpPlugin({ cwd: root, sessionId }), /Multiple AGY MCP ownership receipts/);
+    await compact.close();
+    assert.deepEqual(await recoverProjectMcpPlugin({ cwd: root, sessionId }), { status: 'owned-registration-recovered', path: legacy.path });
+    await assert.rejects(readFile(receiptPath), { code: 'ENOENT' });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+
+test('session MCP bootstrap closes after spawn failure or early exit even while its caller keeps stdin open', async () => {
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  for (const missing of [true, false]) {
+    const root = await mkdtemp(join(tmpdir(), 'agy-bootstrap-exit-'));
+    const b = bridge();
+    let child;
+    try {
+      const id = (await b.newSession({ cwd: root, mcpServers: [{ name: 'fixture', command: missing ? join(root, 'missing-cli.exe') : process.execPath, args: missing ? [] : ['-e', 'process.exit(7)'], env: [] }] })).sessionId;
+      const s = b.session(id);
+      await b.syncPermissionHook(s); await b.registerMcpPlugin(s);
+      const key = Object.keys(s.mcpPlugin.env)[0];
+      child = spawn(process.execPath, [fileURLToPath(new URL('./agy-cli-acp.mjs', import.meta.url)), '--mcp-stdio', key], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...s.permissionIdentity, ...s.mcpPlugin.env } });
+      let stdout = '', stderr = '';
+      child.stdout.on('data', bytes => { stdout += bytes; });
+      child.stderr.on('data', bytes => { stderr += bytes; });
+      const ended = new Promise((done, reject) => { child.once('error', reject); child.once('close', done); });
+      const timer = setTimeout(() => { child.kill(); }, 5000);
+      try {
+        child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26' } }) + '\n');
+        assert.equal(await ended, missing ? 1 : 7);
+        assert.equal(stdout, '');
+        if (missing) assert.match(stderr, /spawn .*missing-cli\.exe ENOENT/);
+        else assert.equal(stderr, '');
+        assert.equal(s.mcpBound.size, 1);
+        assert.equal(s.mcpReady.size, 0);
+      } finally { clearTimeout(timer); }
+    } finally { child?.stdin.destroy(); await b.close(); await rm(root, { recursive: true, force: true }); }
+  }
 });
