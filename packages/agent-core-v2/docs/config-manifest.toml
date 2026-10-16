@@ -271,12 +271,13 @@ usage_preference = "avoid"
 # ##########################################################################
 
 [cron]
-# (schema uses transforms; fields below come from the registered default)
 debug = false
 no_jitter = false
 no_stale = false
 disabled = false
 manual_tick = false
+# clock: string
+# poll_interval_ms: integer | null
 
 # ##########################################################################
 # defaultPermissionMode (config.toml: default_permission_mode)

@@ -3321,6 +3321,50 @@ describe('ConfigService persistence guards', () => {
     expect((error as Error2).code).toBe(ErrorCodes.CONFIG_PERSIST_BLOCKED);
   }
 
+  it('resolves partial cron defaults beneath live env overrides without persisting either', async () => {
+    const toml = '[cron]\nmanual_tick = true\ndebug = true\n';
+    const env: NodeJS.ProcessEnv = {};
+    const { config, disposables, storage } = await createGuardedConfig(toml, env);
+    try {
+      const expected = { ...DEFAULT_CRON_CONFIG, manualTick: true, debug: true };
+      expect(config.get(CRON_SECTION)).toEqual(expected);
+      env['KIKI_CRON_DEBUG'] = '0';
+      env['KIKI_CRON_NO_JITTER'] = '1';
+      env['KIKI_CRON_NO_STALE'] = '0';
+      env['KIKI_DISABLE_CRON'] = '1';
+      env['KIKI_CRON_MANUAL_TICK'] = '0';
+      expect(config.get(CRON_SECTION)).toEqual({
+        debug: false, noJitter: true, noStale: false, disabled: true, manualTick: false,
+      });
+      for (const key of Object.keys(env)) delete env[key];
+      expect(config.get(CRON_SECTION)).toEqual(expected);
+      expect(config.inspect(CRON_SECTION).userValue).toEqual({ manualTick: true, debug: true });
+      await config.reload();
+      expect(config.get(CRON_SECTION)).toEqual(expected);
+      expect(await stored(storage)).toBe(toml);
+    } finally {
+      await disposables.dispose();
+    }
+  });
+
+  it('rejects malformed cron values and retains the last valid config on reload', async () => {
+    const { config, disposables, storage, ix } = await createGuardedConfig('[cron]\nmanual_tick = true\n');
+    try {
+      const registry = ix.get(IConfigRegistry);
+      for (const invalid of [null, [], true, { manualTick: 'true' }, { debug: 1 }, { noJitter: null }, { noStale: 'false' }, { disabled: 0 }, { clock: 1 }, { pollIntervalMs: -1 }, { pollIntervalMs: 0.5 }]) {
+        expect(() => registry.validate(CRON_SECTION, invalid)).toThrow();
+      }
+      expect(registry.validate(CRON_SECTION, { pollIntervalMs: null })).toEqual({ ...DEFAULT_CRON_CONFIG, pollIntervalMs: null });
+      await overwrite(storage, '[cron]\nmanual_tick = "invalid"\n');
+      await config.reload();
+      expect(config.get(CRON_SECTION)).toEqual({ ...DEFAULT_CRON_CONFIG, manualTick: true });
+      expect(config.diagnostics()).toEqual(expect.arrayContaining([expect.objectContaining({ domain: CRON_SECTION, severity: 'warning' })]));
+      expect(await stored(storage)).toBe('[cron]\nmanual_tick = "invalid"\n');
+    } finally {
+      await disposables.dispose();
+    }
+  });
+
   it('reconciles missed watch events, retries a half-written file and stops on disposal', async () => {
     vi.useFakeTimers();
     const { config, disposables, storage, ix } = await createGuardedConfig('[thinking]\nenabled = true\n');

@@ -1358,6 +1358,25 @@ include = ["memory_snapshot"]
     }
   });
 
+  it.each([
+    ['', { debug: false, noJitter: false, noStale: false, disabled: false, manualTick: false }],
+    ['[cron]\n', { debug: false, noJitter: false, noStale: false, disabled: false, manualTick: false }],
+    ['[cron]\nmanualTick = true\n', { debug: false, noJitter: false, noStale: false, disabled: false, manualTick: true }],
+    ['[cron]\nmanual_tick = true\n', { debug: false, noJitter: false, noStale: false, disabled: false, manualTick: true }],
+    ['[cron]\ndebug = true\nno_jitter = false\nno_stale = true\ndisabled = false\nmanual_tick = true\nclock = "system"\npoll_interval_ms = 0\n', { debug: true, noJitter: false, noStale: true, disabled: false, manualTick: true, clock: 'system', pollIntervalMs: 0 }],
+    ['[cron]\ndebug = false\nno_jitter = true\nno_stale = false\ndisabled = true\nmanual_tick = false\n', { debug: false, noJitter: true, noStale: false, disabled: true, manualTick: false }],
+  ])('reads cron defaults and explicit settings through GET without rewriting %j', async (toml, expected) => {
+    for (const key of ['KIKI_CRON_DEBUG', 'KIKI_CRON_NO_JITTER', 'KIKI_CRON_NO_STALE', 'KIKI_DISABLE_CRON', 'KIKI_CRON_MANUAL_TICK', 'KIKI_CRON_CLOCK', 'KIKI_CRON_POLL_INTERVAL_MS']) {
+      vi.stubEnv(key, undefined);
+    }
+    await boot(toml);
+    const config = (server as RunningServer).core.accessor.get(IConfigService);
+    expect(config.get('cron')).toEqual(expected);
+    expect(config.diagnostics().filter((diagnostic) => diagnostic.domain === 'cron')).toEqual([]);
+    expect((await getConfig()).cron).toEqual(expected);
+    expect(await readFile(join(home as string, 'config.toml'), 'utf8')).toBe(toml);
+  });
+
   it('keeps cron operational settings non-writable through POST /config', async () => {
     await boot();
 

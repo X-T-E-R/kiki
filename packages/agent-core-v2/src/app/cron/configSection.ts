@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 import { type ConfigStripEnv, type EnvBindings, envBindings } from '#/app/config/config';
 import { registerConfigSection } from '#/app/config/configSectionContributions';
 
@@ -21,7 +23,15 @@ export const DEFAULT_CRON_CONFIG: CronConfig = {
   manualTick: false,
 };
 
-const cronConfigSchema = { parse: (value: unknown): CronConfig => value as CronConfig };
+const cronConfigSchema = z.object({
+  debug: z.boolean().default(DEFAULT_CRON_CONFIG.debug),
+  noJitter: z.boolean().default(DEFAULT_CRON_CONFIG.noJitter),
+  noStale: z.boolean().default(DEFAULT_CRON_CONFIG.noStale),
+  disabled: z.boolean().default(DEFAULT_CRON_CONFIG.disabled),
+  manualTick: z.boolean().default(DEFAULT_CRON_CONFIG.manualTick),
+  clock: z.string().optional(),
+  pollIntervalMs: z.number().int().min(0).nullable().optional(),
+});
 
 const on = (raw: string): boolean => raw === '1';
 
