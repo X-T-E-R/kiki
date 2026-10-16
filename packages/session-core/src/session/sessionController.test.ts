@@ -1801,22 +1801,60 @@ describe('SessionController transcript authority', () => {
 
   it('waits for a pending resync before starting an older read', async () => {
     const { controller, client } = await openTranscriptController();
-    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(2)], olderCursor: 'cursor-2' }), 1, true));
+    try {
+      controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(2)], olderCursor: 'cursor-2' }), 1, true));
+      const heldSnapshot = deferred<SessionSnapshotResponse>();
+      const heldPage = deferred<AgentTranscriptResponse>();
+      client.snapshot.mockReturnValueOnce(heldSnapshot.promise);
+      client.getAgentTranscript.mockReturnValueOnce(heldPage.promise);
+      const resync = controller.resync();
+      await waitFor(() => controller.getState().resyncing);
+      const older = controller.loadOlderHistory();
+      await Promise.resolve();
+      expect(client.getAgentTranscript).not.toHaveBeenCalled();
+      heldSnapshot.resolve(snapshot());
+      await resync;
+      heldPage.resolve({ agent_id: 'main', items: [historyTurn(1)], has_more: false, coverage: { kind: 'full', hasMoreOlder: false } });
+      await expect(older).resolves.toEqual({ kind: 'exhausted', changed: true });
+      expect(client.getAgentTranscript).toHaveBeenCalledTimes(1);
+    } finally { controller.close(); }
+  });
+
+  it('cancels an already-aborted older read while resync is in flight', async () => {
+    const { controller, client } = await openTranscriptController();
     const heldSnapshot = deferred<SessionSnapshotResponse>();
-    const heldPage = deferred<AgentTranscriptResponse>();
     client.snapshot.mockReturnValueOnce(heldSnapshot.promise);
-    client.getAgentTranscript.mockReturnValueOnce(heldPage.promise);
     const resync = controller.resync();
     await waitFor(() => controller.getState().resyncing);
+    const abort = new AbortController();
+    abort.abort();
+    try {
+      await expect(controller.loadOlderHistory('main', abort.signal)).resolves.toEqual({ kind: 'cancelled', changed: false });
+      expect(client.getAgentTranscript).not.toHaveBeenCalled();
+    } finally {
+      heldSnapshot.resolve(snapshot());
+      await resync;
+      controller.close();
+    }
+  });
+
+  it.each(['close', 'suspend'] as const)('cancels an older waiter immediately when %s interrupts a queued rewrite resync', async (action) => {
+    const { controller, client } = await openTranscriptController();
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(2)], olderCursor: 'cursor-2' }), 1, true));
+    const heldSnapshot = deferred<SessionSnapshotResponse>();
+    client.snapshot.mockReturnValueOnce(heldSnapshot.promise);
+    const resync = controller.resync();
+    await waitFor(() => controller.getState().resyncing);
+    void controller.resync({ rewrite: true });
     const older = controller.loadOlderHistory();
     await Promise.resolve();
     expect(client.getAgentTranscript).not.toHaveBeenCalled();
+    if (action === 'close') controller.close();
+    else controller.suspend();
+    await expect(older).resolves.toEqual({ kind: 'cancelled', changed: false });
+    expect(client.getAgentTranscript).not.toHaveBeenCalled();
     heldSnapshot.resolve(snapshot());
     await resync;
-    heldPage.resolve({ agent_id: 'main', items: [historyTurn(1)], has_more: false, coverage: { kind: 'full', hasMoreOlder: false } });
-    await expect(older).resolves.toEqual({ kind: 'exhausted', changed: true });
-    expect(client.getAgentTranscript).toHaveBeenCalledTimes(1);
-    controller.close();
   });
 
   it('accepts a repaired orphan at the same cursor after an empty preparing page and then reaches earlier turns', async () => {

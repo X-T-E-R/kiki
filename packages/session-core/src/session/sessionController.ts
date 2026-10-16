@@ -1112,7 +1112,7 @@ export class SessionController {
     const status = (): 'ready' | 'failed' | 'cancelled' => this.closed || this.isSuspended || signal?.aborted
       ? 'cancelled'
       : this.state.resyncFailed ? 'failed' : 'ready';
-    if (!this.resyncInFlight) return Promise.resolve(status());
+    if (signal?.aborted || this.closed || this.isSuspended || !this.resyncInFlight) return Promise.resolve(status());
     return new Promise((resolve) => {
       let settled = false;
       const finish = (): void => {
