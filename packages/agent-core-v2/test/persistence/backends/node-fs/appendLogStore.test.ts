@@ -97,6 +97,54 @@ describe('AppendLogStore', () => {
     expect(await collect<Rec>(SCOPE, KEY)).toEqual([{ n: 1 }, { n: 2 }, { n: 3 }]);
   });
 
+  it('projects committed batches with exact positions without rereading the written payload', async () => {
+    const observed: { start: number; end: number; generation: string; records: unknown[] }[] = [];
+    record.registerProjection({
+      key: KEY,
+      prepare: (_scope, records) => records.map((value) => value),
+      commit: async (position, records) => {
+        expect(await storage.size(SCOPE, KEY)).toBe(position.end);
+        observed.push({ start: position.start, end: position.end, generation: position.generation, records });
+      },
+      onError: () => { throw new Error('unexpected projection failure'); },
+    });
+    record.append(SCOPE, KEY, { n: 1 });
+    record.append(SCOPE, KEY, { text: '中文' });
+    await record.flush(SCOPE, KEY);
+    record.append(SCOPE, KEY, { n: 2 });
+    await record.flush(SCOPE, KEY);
+    expect(observed).toEqual([
+      { start: 0, end: Buffer.byteLength('{"n":1}\n{"text":"中文"}\n'), generation: 'legacy', records: [{ n: 1 }, { text: '中文' }] },
+      { start: Buffer.byteLength('{"n":1}\n{"text":"中文"}\n'), end: Buffer.byteLength('{"n":1}\n{"text":"中文"}\n{"n":2}\n'), generation: 'legacy', records: [{ n: 2 }] },
+    ]);
+  });
+
+  it('does not reject canonical success when derived projection fails', async () => {
+    const errors: unknown[] = [];
+    record.registerProjection({ key: KEY, prepare: () => 1, commit: async () => { throw new Error('projection unavailable'); }, onError: (error) => { errors.push(error); } });
+    record.append(SCOPE, KEY, { n: 1 });
+    await record.flush();
+    expect(await collect<Rec>(SCOPE, KEY)).toEqual([{ n: 1 }]);
+    expect(errors).toHaveLength(1);
+  });
+
+  it('changes the durable generation before a managed rewrite, including a failed rewrite', async () => {
+    record.append(SCOPE, KEY, { n: 1 });
+    await record.flush();
+    expect(await record.generation(SCOPE, KEY)).toBe('legacy');
+    await record.rewrite(SCOPE, KEY, [{ n: 2 }]);
+    const generation = await record.generation(SCOPE, KEY);
+    expect(generation).not.toBe('legacy');
+    const write = storage.write.bind(storage);
+    storage.write = async (scope, key, value, options) => {
+      if (key === KEY) throw new Error('rewrite failed');
+      return write(scope, key, value, options);
+    };
+    await expect(record.rewrite(SCOPE, KEY, [{ n: 3 }])).rejects.toThrow('rewrite failed');
+    expect(await record.generation(SCOPE, KEY)).not.toBe(generation);
+    expect(new TextDecoder().decode(await storage.read(SCOPE, KEY))).toBe('{"n":2}\n');
+  });
+
   it('batches many appends into a single durable append', async () => {
     const spy = { count: 0 };
     const original = storage.append.bind(storage);
@@ -570,8 +618,10 @@ describe('AppendLogStore', () => {
     let writeAttempts = 0;
     const originalWrite = storage.write.bind(storage);
     storage.write = async (...args) => {
-      writeAttempts++;
-      if (writeAttempts === 1) throw failure;
+      if (args[1] === KEY) {
+        writeAttempts++;
+        if (writeAttempts === 1) throw failure;
+      }
       return originalWrite(...args);
     };
     record.append<Rec>(SCOPE, KEY, { n: 2 });

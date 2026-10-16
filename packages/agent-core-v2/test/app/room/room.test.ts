@@ -58,6 +58,8 @@ class MemoryDocuments implements IAtomicDocumentStore {
 
 class MemoryAppendLog implements IAppendLogStore {
   readonly _serviceBrand = undefined;
+  registerProjection(): { dispose(): void } { return { dispose() {} }; }
+  async generation(): Promise<string> { return 'legacy'; }
   readonly onDidWrite = Event.None as Event<AppendLogWrite>;
   private readonly values = new Map<string, RoomLogEntry[]>();
   reads = 0;

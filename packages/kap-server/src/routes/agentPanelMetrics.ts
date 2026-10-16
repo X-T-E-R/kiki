@@ -305,6 +305,7 @@ async function scanPersistedAgentPanelMetrics(
   const startedAt = Date.now();
   const rows = await usageRuntime(core).service.readAgentUsage(workspaceId, sessionId, agentIds, {
     signal,
+    summaryOnly: true,
     maxRecords: complete ? undefined : requestedLimits?.maxRecords ?? PERSISTED_METRICS_SCAN_MAX_RECORDS,
     maxBytes: complete ? undefined : requestedLimits?.maxBytes ?? PERSISTED_METRICS_SCAN_MAX_BYTES,
     deadlineAt: complete ? undefined : startedAt + (requestedLimits?.wallTimeMs ?? PERSISTED_METRICS_SCAN_WALL_TIME_MS),
@@ -313,8 +314,10 @@ async function scanPersistedAgentPanelMetrics(
   let partial = false;
   for (const id of agentIds) {
     const row = rows[id];
-    const state = emptyPersistedUsage(row?.complete !== true);
-    for (const record of row?.records ?? []) applyPersistedUsageRecord(state, record);
+    const state: PersistedUsage = row?.totals === undefined
+      ? emptyPersistedUsage(row?.complete !== true)
+      : { ...row.totals, usage: { ...row.totals.usage }, byModel: { ...row.totals.byModel }, partial: row.totals.partial || !row.complete, complete: row.complete };
+    if (row?.totals === undefined) for (const record of row?.records ?? []) applyPersistedUsageRecord(state, record);
     usages[id] = state;
     partial ||= row?.complete !== true;
   }

@@ -948,6 +948,8 @@ function reassertServiceOverrides(
 
 class PersistenceAppendLogStore implements IAppendLogStore {
   declare readonly _serviceBrand: undefined;
+  registerProjection(): { dispose(): void } { return { dispose() {} }; }
+  async generation(): Promise<string> { return 'legacy'; }
   readonly onDidWrite: IAppendLogStore['onDidWrite'] = Event.None as IAppendLogStore['onDidWrite'];
   private readonly history: WireRecord[] = [];
   private readSeeded = false;

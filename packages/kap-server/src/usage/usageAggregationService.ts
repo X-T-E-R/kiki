@@ -3,6 +3,12 @@ import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 
 import {
   AGENT_WIRE_RECORD_KEY,
+  normalizeUsageFact as normalizeRecord,
+  parseUsageJson,
+  type UsageFact,
+  type UsageFactTotals,
+  IUsageFactStore,
+  IAppendLogStore,
   IFileSystemStorageService,
   IRetainedUsageService,
   ISessionIndex,
@@ -14,7 +20,6 @@ import {
   type Scope,
   type SessionSummary,
   type TokenUsage,
-  type WireRecord,
 } from '@kiki/agent-core-v2';
 import type { UsageAggregateWire, UsageQuery, UsageResponse, UsageRescanStatus } from '@kiki/protocol';
 
@@ -34,7 +39,8 @@ const PERSISTENCE_VERSION = 1;
 const BOUNDARY_BYTES = 4 * 1024;
 const DEFAULT_LIMITS: UsageAggregationLimits = {
   sessionScanLimit: 500,
-  wireRecordBudget: 200_000,
+  wireRecordBudget: Infinity,
+  usageFactBudget: 200_000,
   deadlineMs: 10_000,
   cacheTtlMs: 0,
   cacheMaxEntries: 500,
@@ -48,6 +54,7 @@ const DEFAULT_LIMITS: UsageAggregationLimits = {
 export interface UsageAggregationLimits {
   readonly sessionScanLimit: number;
   readonly wireRecordBudget: number;
+  readonly usageFactBudget: number;
   readonly deadlineMs: number;
   readonly cacheTtlMs: number;
   readonly cacheMaxEntries: number;
@@ -58,21 +65,7 @@ export interface UsageAggregationLimits {
   readonly drilldownTurnLimit: number;
 }
 
-export interface NormalizedUsageRecord {
-  readonly invalid?: boolean;
-  readonly upstreamModelId?: string;
-  readonly sourceAgentId?: string;
-  readonly time: number;
-  readonly model: string;
-  readonly usage: TokenUsage;
-  readonly usageKnown?: boolean;
-  readonly turnId?: number;
-  readonly agentId?: string;
-  readonly parentAgentId?: string;
-  readonly provider?: string;
-  readonly modelAlias?: string;
-  readonly profileName?: string;
-}
+export type NormalizedUsageRecord = UsageFact;
 
 export interface UsageExportSource {
   readonly key: string;
@@ -110,6 +103,7 @@ interface PreparedSession {
 }
 
 interface WireCheckpoint {
+  readonly generation?: string;
   readonly offset: number;
   readonly size: number;
   readonly mtimeMs: number;
@@ -128,18 +122,22 @@ interface SessionLoadResult {
   readonly session: SessionRecords;
   readonly persisted: PersistentSessionRecords;
   readonly scannedRecordCount: number;
+  readonly scannedFactCount?: number;
   readonly incompleteReason: UsageResponse['reliability']['incomplete_reason'];
   readonly targetedAgentIds?: readonly string[];
 }
 
 export interface AgentUsageProjection {
   readonly records: readonly NormalizedUsageRecord[];
+  readonly totals?: UsageFactTotals;
   readonly complete: boolean;
 }
 
 export interface AgentUsageReadOptions {
   readonly signal?: AbortSignal;
   readonly maxRecords?: number;
+  readonly maxFacts?: number;
+  readonly summaryOnly?: boolean;
   readonly maxBytes?: number;
   readonly deadlineAt?: number;
 }
@@ -147,6 +145,7 @@ export interface AgentUsageReadOptions {
 interface ScanBudget {
   readonly signal?: AbortSignal;
   remainingRecords: number;
+  remainingFacts?: number;
   readonly deadlineAt: number;
   sourcesComplete: boolean;
   incompleteReason: UsageResponse['reliability']['incomplete_reason'];
@@ -380,19 +379,44 @@ export class UsageAggregationService {
     }
     options.signal?.throwIfAborted();
     const ids = [...new Set(agentIds)];
+    const rows: Record<string, AgentUsageProjection> = {};
+    if (options.summaryOnly) {
+      const facts = this.core.accessor.get(IUsageFactStore);
+      const storage = this.core.accessor.get(IFileSystemStorageService);
+      const logs = this.core.accessor.get(IAppendLogStore);
+      const sessionScope = sessionScopeOf(workspacePersistenceScope('sessions', workspaceId), sessionId);
+      for (const id of ids) {
+        options.signal?.throwIfAborted();
+        if (this.now() >= (options.deadlineAt ?? Infinity)) break;
+        const scope = agentScopeOf(sessionScope, id);
+        const generation = await logs.generation(scope, AGENT_WIRE_RECORD_KEY);
+        const [size, mtimeMs, projected] = await Promise.all([storage.size(scope, AGENT_WIRE_RECORD_KEY), storage.mtime(scope, AGENT_WIRE_RECORD_KEY), facts.summary(scope, options.signal)]);
+        const checkpoint = projected.checkpoint;
+        if (checkpoint?.valid && checkpoint.offset === (size ?? 0) && checkpoint.size === (size ?? 0) && checkpoint.mtimeMs === (mtimeMs ?? 0) && checkpoint.generation === generation && projected.totals !== undefined && await logs.generation(scope, AGENT_WIRE_RECORD_KEY) === generation) {
+          rows[id] = { records: [], totals: projected.totals, complete: true };
+        }
+      }
+    }
+    const missing = ids.filter((id) => rows[id] === undefined);
+    if (missing.length === 0) return rows;
     const flight = this.loadSessionIncremental(
       summary, options.maxRecords ?? Infinity, options.deadlineAt ?? Infinity,
-      undefined, false, undefined, ids, options,
+      undefined, false, undefined, missing, options,
     );
     this.sessionFlights.set(key, flight);
     try {
       const result = await flight;
       this.cacheSession(key, result.persisted, false);
-      const rows: Record<string, AgentUsageProjection> = {};
-      for (const id of ids) {
+      const grouped = new Map<string | undefined, NormalizedUsageRecord[]>();
+      for (const record of result.session.records) {
+        const records = grouped.get(record.sourceAgentId) ?? [];
+        records.push(record);
+        grouped.set(record.sourceAgentId, records);
+      }
+      for (const id of missing) {
         const checkpoint = result.persisted.agents[id];
         rows[id] = {
-          records: result.session.records.filter((record) => record.sourceAgentId === id),
+          records: grouped.get(id) ?? [],
           complete: result.session.complete && checkpoint?.valid === true && checkpoint.offset === checkpoint.size,
         };
       }
@@ -516,6 +540,7 @@ export class UsageAggregationService {
     const budget: ScanBudget = {
       signal,
       remainingRecords: this.limits.wireRecordBudget,
+      remainingFacts: this.limits.usageFactBudget,
       deadlineAt: now + this.limits.deadlineMs,
       sourcesComplete: true,
       incompleteReason: null,
@@ -532,8 +557,9 @@ export class UsageAggregationService {
       const prepared = await Promise.all(batch.map(async (summary) => {
         const key = sessionKey(summary);
         const cached = this.readCachedSession(key, query.range);
+        const indexedRange = query.range.startAt !== undefined && query.range.endAt !== undefined ? query.range : undefined;
         const persisted = cached?.persisted ?? await this.readPersistentSession(
-          this.core.accessor.get(IFileSystemStorageService), key,
+          this.core.accessor.get(IFileSystemStorageService), key, indexedRange, signal,
         );
         const revision = this.revisionOf(key);
         const current = await this.cacheIsCurrent(summary, persisted, this.rescan.state !== 'running');
@@ -548,7 +574,7 @@ export class UsageAggregationService {
             view: true,
           };
         }
-        return { persisted, current, view: cached?.view ?? false };
+        return { persisted, current, view: cached?.view ?? indexedRange !== undefined };
       }));
       for (const [index, summary] of batch.entries()) {
         if (index > 0 && this.now() >= budget.deadlineAt) {
@@ -573,10 +599,11 @@ export class UsageAggregationService {
       const anonymous = await retainedUsage.listEphemeralUsage({
         workspaceIds: query.workspaceIds.length === 0 ? undefined : query.workspaceIds,
         deadlineAt: budget.deadlineAt,
-        recordLimit: budget.remainingRecords,
+        recordLimit: budget.remainingFacts ?? Infinity,
+        signal: budget.signal,
       });
       ephemeralUsage = anonymous.items;
-      budget.remainingRecords -= anonymous.scannedRecords;
+      if (budget.remainingFacts !== undefined) budget.remainingFacts -= anonymous.scannedRecords;
       if (!anonymous.complete) budget.sourcesComplete = false;
       if (anonymous.incompleteReason !== undefined) budget.incompleteReason = anonymous.incompleteReason;
     }
@@ -651,7 +678,7 @@ export class UsageAggregationService {
     const revision = this.sessionFlights.has(cacheKey) ? undefined : this.revisionOf(cacheKey);
     let flight = this.sessionFlights.get(cacheKey);
     if (flight === undefined) {
-      flight = this.loadSessionIncremental(summary, budget.remainingRecords, budget.deadlineAt, undefined, preserveMissingSources, prepared?.view ? undefined : prepared?.persisted, undefined, { signal: budget.signal });
+      flight = this.loadSessionIncremental(summary, budget.remainingRecords, budget.deadlineAt, undefined, preserveMissingSources, prepared?.view ? undefined : prepared?.persisted, undefined, { signal: budget.signal, maxFacts: budget.remainingFacts });
       this.sessionFlights.set(cacheKey, flight);
       const clearFlight = (): void => {
         if (this.sessionFlights.get(cacheKey) === flight) this.sessionFlights.delete(cacheKey);
@@ -676,6 +703,7 @@ export class UsageAggregationService {
       return undefined;
     }
     budget.remainingRecords -= result.scannedRecordCount;
+    if (budget.remainingFacts !== undefined) budget.remainingFacts -= result.scannedFactCount ?? 0;
     if (result.incompleteReason !== null) budget.incompleteReason = result.incompleteReason;
     this.cacheSessionRange(cacheKey, result.persisted, result.session.complete, range);
     if (revision !== undefined) this.rememberVerified(cacheKey, result.persisted, revision);
@@ -699,11 +727,12 @@ export class UsageAggregationService {
         const checkpoint = persisted.agents[agentId];
         if (checkpoint === undefined || !checkpoint.valid || checkpoint.offset !== checkpoint.size) return false;
         const wireScope = agentScopeOf(sessionScope, agentId);
-        const [size, mtimeMs] = await Promise.all([
+        const [size, mtimeMs, generation] = await Promise.all([
           storage.size(wireScope, AGENT_WIRE_RECORD_KEY),
           storage.mtime(wireScope, AGENT_WIRE_RECORD_KEY),
+          this.core.accessor.get(IAppendLogStore).generation(wireScope, AGENT_WIRE_RECORD_KEY),
         ]);
-        return (size ?? 0) === checkpoint.size && (mtimeMs ?? 0) === checkpoint.mtimeMs;
+        return (size ?? 0) === checkpoint.size && (mtimeMs ?? 0) === checkpoint.mtimeMs && generation === (checkpoint.generation ?? 'legacy');
       }));
       if (current.some((value) => !value)) return false;
     }
@@ -721,156 +750,176 @@ export class UsageAggregationService {
     options: AgentUsageReadOptions = {},
   ): Promise<SessionLoadResult> {
     const storage = this.core.accessor.get(IFileSystemStorageService);
+    const facts = this.core.accessor.get(IUsageFactStore);
+    const logs = this.core.accessor.get(IAppendLogStore);
     const cacheKey = sessionKey(summary);
-    const persisted = this.readCachedSession(cacheKey)?.persisted ?? prepared ?? await this.readPersistentSession(storage, cacheKey);
-    const workspaceScope = workspacePersistenceScope('sessions', summary.workspaceId);
-    const sessionScope = sessionScopeOf(workspaceScope, summary.id);
+    const persisted = this.readCachedSession(cacheKey)?.persisted ?? prepared ?? await this.readPersistentSession(storage, cacheKey, undefined, options.signal, targetedAgentIds);
+    const sessionScope = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
     options.signal?.throwIfAborted();
     const agentIds = targetedAgentIds ?? await storage.list(`${sessionScope}/agents`);
     const agentSet = new Set(agentIds);
     if (preserveMissingSources && Object.keys(persisted.agents).some((agent) => !agentSet.has(agent))) return { session: { summary, records: persisted.records, complete: false, deleted: false }, persisted, scannedRecordCount: 0, incompleteReason: null };
-    let records = targetedAgentIds === undefined ? persisted.records.filter(
-      (record) => record.sourceAgentId === undefined || agentSet.has(record.sourceAgentId),
-    ) : [...persisted.records];
+    const recordsByAgent = new Map<string | undefined, NormalizedUsageRecord[]>();
+    for (const record of persisted.records) {
+      if (targetedAgentIds === undefined && record.sourceAgentId !== undefined && !agentSet.has(record.sourceAgentId)) continue;
+      const records = recordsByAgent.get(record.sourceAgentId) ?? [];
+      records.push(record);
+      recordsByAgent.set(record.sourceAgentId, records);
+    }
     const agents: Record<string, WireCheckpoint> = targetedAgentIds === undefined ? {} : { ...persisted.agents };
+    const sources = new Map<string, { size?: number; mtimeMs: number; generation: string; stable: boolean }>();
+    for (let offset = 0; offset < agentIds.length; offset += AGENT_STAT_CONCURRENCY) {
+      options.signal?.throwIfAborted();
+      await Promise.all(agentIds.slice(offset, offset + AGENT_STAT_CONCURRENCY).map(async (agentId) => {
+        const scope = agentScopeOf(sessionScope, agentId);
+        const generation = await logs.generation(scope, AGENT_WIRE_RECORD_KEY);
+        const [size, mtimeMs] = await Promise.all([storage.size(scope, AGENT_WIRE_RECORD_KEY), storage.mtime(scope, AGENT_WIRE_RECORD_KEY)]);
+        const stable = await logs.generation(scope, AGENT_WIRE_RECORD_KEY) === generation;
+        sources.set(agentId, { size, mtimeMs: mtimeMs ?? 0, generation, stable });
+      }));
+    }
     let scannedRecordCount = 0;
     let incompleteReason: UsageResponse['reliability']['incomplete_reason'] = null;
     let complete = true;
+    let stored = true;
+    let scannedFactCount = 0;
     let remainingBytes = options.maxBytes ?? Infinity;
-
     for (const agentId of agentIds) {
       options.signal?.throwIfAborted();
-      if (this.now() >= deadlineAt || remainingBytes <= 0) {
-        incompleteReason = 'deadline';
-        complete = false;
-        break;
-      }
-      if (scannedRecordCount >= recordLimit) {
-        incompleteReason = 'record_budget';
-        complete = false;
-        break;
-      }
+      if (this.now() >= deadlineAt || remainingBytes <= 0) { incompleteReason = 'deadline'; complete = false; break; }
+      if (scannedRecordCount >= recordLimit) { incompleteReason = 'record_budget'; complete = false; break; }
       const wireScope = agentScopeOf(sessionScope, agentId);
-      const [sizeValue, mtimeValue] = await Promise.all([
-        storage.size(wireScope, AGENT_WIRE_RECORD_KEY),
-        storage.mtime(wireScope, AGENT_WIRE_RECORD_KEY),
-      ]);
-      const size = sizeValue ?? 0;
-      const mtimeMs = mtimeValue ?? 0;
+      const source = sources.get(agentId)!;
+      if (!source.stable) { recordsByAgent.delete(agentId); complete = false; continue; }
+      const size = source.size ?? 0;
+      const { mtimeMs, generation } = source;
+      const snapshot = await facts.read(wireScope, undefined, options.signal);
       let checkpoint = persisted.agents[agentId];
-      if (preserveMissingSources && sizeValue === undefined && (checkpoint?.size ?? 0) > 0) return { session: { summary, records: persisted.records, complete: false, deleted: false }, persisted, scannedRecordCount: 0, incompleteReason: null };
-      if (checkpoint !== undefined && checkpoint.offset === size &&
-        checkpoint.size === size && checkpoint.mtimeMs === mtimeMs) {
-        agents[agentId] = checkpoint;
-        if (!checkpoint.valid) complete = false;
+      if (snapshot.checkpoint !== undefined && snapshot.checkpoint.generation === generation && snapshot.checkpoint.offset > size && (await storage.size(wireScope, AGENT_WIRE_RECORD_KEY) ?? 0) > size) {
+        recordsByAgent.delete(agentId);
+        complete = false;
         continue;
       }
-      let reset = checkpoint !== undefined && size < checkpoint.offset;
-      if (
-        checkpoint !== undefined &&
-        !reset &&
-        (size !== checkpoint.size || mtimeMs !== checkpoint.mtimeMs)
-      ) {
-        const boundaryHash = await this.boundaryHash(storage, wireScope, checkpoint.offset);
-        reset = boundaryHash !== checkpoint.boundaryHash ||
-          (size === checkpoint.offset && mtimeMs !== checkpoint.mtimeMs);
+      let hasFacts = false;
+      if (snapshot.checkpoint !== undefined && snapshot.checkpoint.offset <= size && snapshot.checkpoint.generation === generation) {
+        checkpoint = snapshot.checkpoint;
+        recordsByAgent.set(agentId, [...snapshot.records]);
+        hasFacts = true;
       }
-      if (reset) {
-        records = records.filter((record) => record.sourceAgentId !== agentId);
-        checkpoint = undefined;
+      if (preserveMissingSources && source.size === undefined && (checkpoint?.size ?? 0) > 0) return { session: { summary, records: persisted.records, complete: false, deleted: false }, persisted, scannedRecordCount, incompleteReason: null };
+      let reset = checkpoint !== undefined && (size < checkpoint.offset || (checkpoint.generation ?? 'legacy') !== generation);
+      if (checkpoint !== undefined && !reset && (size !== checkpoint.size || mtimeMs !== checkpoint.mtimeMs)) {
+        const boundaryHash = await this.boundaryHash(storage, wireScope, checkpoint.offset);
+        reset = boundaryHash !== checkpoint.boundaryHash || (size === checkpoint.offset && mtimeMs !== checkpoint.mtimeMs);
+      }
+      if (reset) { recordsByAgent.set(agentId, []); checkpoint = undefined; hasFacts = false; }
+      if (checkpoint !== undefined && checkpoint.offset === size && checkpoint.size === size && checkpoint.mtimeMs === mtimeMs) {
+        const current = { ...checkpoint, generation };
+        agents[agentId] = current;
+        if (!current.valid) complete = false;
+        if (!hasFacts) {
+          try { await facts.commit(wireScope, 0, current, recordsByAgent.get(agentId) ?? []); }
+          catch { stored = false; complete = false; }
+        }
+        continue;
       }
       const offset = checkpoint?.offset ?? 0;
-      const tail = await readWireTail(
-        storage,
-        wireScope,
-        offset,
-        Math.min(size, offset + remainingBytes),
-        recordLimit - scannedRecordCount,
-        deadlineAt,
-        this.now,
-        onScannedRecord,
-        agentId,
-        options.signal,
-      );
-      remainingBytes -= Math.min(size - offset, remainingBytes);
-      if (tail.offset < size) complete = false;
-      scannedRecordCount += tail.scannedRecordCount;
-      for (const record of tail.records) records.push(record);
-      const nextOffset = tail.offset;
-      agents[agentId] = {
-        offset: nextOffset,
-        size,
-        mtimeMs,
-        boundaryHash: await this.boundaryHash(storage, wireScope, nextOffset),
-        valid: (checkpoint?.valid ?? true) && tail.valid,
+      let committedOffset = hasFacts ? offset : 0;
+      let committedFacts = 0;
+      let lastPrefix: WireCheckpoint | undefined;
+      const commitPrefix = async (end: number, tailRecords: readonly NormalizedUsageRecord[], valid: boolean): Promise<void> => {
+        options.signal?.throwIfAborted();
+        if (await logs.generation(wireScope, AGENT_WIRE_RECORD_KEY) !== generation) { complete = false; stored = false; return; }
+        const prefix = { generation, offset: end, size, mtimeMs, boundaryHash: await this.boundaryHash(storage, wireScope, end), valid: (checkpoint?.valid ?? true) && valid };
+        lastPrefix = prefix;
+        const records = hasFacts ? tailRecords.slice(committedFacts) : [...recordsByAgent.get(agentId) ?? [], ...tailRecords];
+        try {
+          await facts.commit(wireScope, committedOffset, prefix, records);
+          committedOffset = end;
+          committedFacts = tailRecords.length;
+          hasFacts = true;
+        } catch { stored = false; complete = false; }
       };
-      if (!tail.complete) complete = false;
-      if (!agents[agentId].valid) complete = false;
-      if (tail.incompleteReason !== null) {
-        incompleteReason = tail.incompleteReason;
-        break;
-      }
-    }
-
-    for (const agentId of agentIds) {
-      if (agents[agentId] === undefined && persisted.agents[agentId] !== undefined) {
-        agents[agentId] = persisted.agents[agentId];
-      }
-    }
-    const next: PersistentSessionRecords = {
-      version: PERSISTENCE_VERSION,
-      sessionKey: cacheKey,
-      records,
-      agents,
-    };
-    const changed = records.length !== persisted.records.length ||
-      Object.keys(agents).length !== Object.keys(persisted.agents).length ||
-      agentIds.some((agentId) => {
-        const previous = persisted.agents[agentId];
-        const current = agents[agentId];
-        return current !== undefined && (previous === undefined ||
-          current.offset !== previous.offset || current.size !== previous.size ||
-          current.mtimeMs !== previous.mtimeMs || current.boundaryHash !== previous.boundaryHash);
-      });
-    options.signal?.throwIfAborted();
-    let stored = !changed;
-    if (changed) {
-      try {
-        await storage.write(
-          PERSISTENCE_SCOPE,
-          persistenceKey(cacheKey),
-          Buffer.from(JSON.stringify(next)),
-          { atomic: true },
-        );
-        stored = true;
-      } catch {
+      const tail = await readWireTail(storage, wireScope, offset, Math.min(size, offset + remainingBytes), recordLimit - scannedRecordCount, deadlineAt, this.now, onScannedRecord, agentId, options.signal, (options.maxFacts ?? Infinity) - scannedFactCount, commitPrefix);
+      remainingBytes -= Math.min(size - offset, remainingBytes);
+      scannedRecordCount += tail.scannedRecordCount;
+      scannedFactCount += tail.scannedFactCount;
+      if (!tail.complete || tail.offset < size) complete = false;
+      if (await logs.generation(wireScope, AGENT_WIRE_RECORD_KEY) !== generation) {
+        recordsByAgent.delete(agentId);
         complete = false;
+        continue;
       }
+      if (tail.offset !== committedOffset || !hasFacts) await commitPrefix(tail.offset, tail.records, tail.valid);
+      const next = lastPrefix?.offset === tail.offset ? lastPrefix : { generation, offset: tail.offset, size, mtimeMs, boundaryHash: checkpoint?.boundaryHash ?? '', valid: (checkpoint?.valid ?? true) && tail.valid };
+      const records = [...recordsByAgent.get(agentId) ?? [], ...tail.records];
+      recordsByAgent.set(agentId, records);
+      agents[agentId] = next;
+      if (!next.valid) complete = false;
+      if (tail.incompleteReason !== null) { incompleteReason = tail.incompleteReason; break; }
     }
-    return {
-      session: { summary, records, complete, deleted: false },
-      persisted: stored ? next : persisted,
-      scannedRecordCount,
-      incompleteReason,
-      targetedAgentIds,
-    };
+    for (const agentId of agentIds) {
+      if (agents[agentId] === undefined && persisted.agents[agentId] !== undefined) agents[agentId] = persisted.agents[agentId];
+    }
+    const records = [...recordsByAgent.values()].flat();
+    const next: PersistentSessionRecords = { version: PERSISTENCE_VERSION, sessionKey: cacheKey, records, agents };
+    return { session: { summary, records, complete, deleted: false }, persisted: stored ? next : persisted, scannedRecordCount, scannedFactCount, incompleteReason, targetedAgentIds };
   }
 
   private async readPersistentSession(
     storage: IFileSystemStorageService,
     cacheKey: string,
+    range?: RangeBounds,
+    signal?: AbortSignal,
+    targetedAgentIds?: readonly string[],
   ): Promise<PersistentSessionRecords> {
-    try {
-      const bytes = await storage.read(PERSISTENCE_SCOPE, persistenceKey(cacheKey));
-      if (bytes === undefined) return emptyPersistentSession(cacheKey);
-      const parsed = parsePersistentSession(
-        JSON.parse(Buffer.from(bytes).toString('utf8')),
-        cacheKey,
-      );
-      return parsed ?? emptyPersistentSession(cacheKey);
-    } catch {
-      return emptyPersistentSession(cacheKey);
+    const [workspaceId, sessionId] = cacheKey.split('\0');
+    const scope = sessionScopeOf(workspacePersistenceScope('sessions', workspaceId!), sessionId!);
+    const facts = this.core.accessor.get(IUsageFactStore);
+    const logs = this.core.accessor.get(IAppendLogStore);
+    const agentIds = targetedAgentIds ?? await storage.list(`${scope}/agents`);
+    const agents: Record<string, WireCheckpoint> = {};
+    const records: NormalizedUsageRecord[] = [];
+    for (let start = 0; start < agentIds.length; start += CHECKPOINT_READ_CONCURRENCY) {
+      signal?.throwIfAborted();
+      const snapshots = await Promise.all(agentIds.slice(start, start + CHECKPOINT_READ_CONCURRENCY).map(async (agentId) => ({ agentId, snapshot: await facts.read(agentScopeOf(scope, agentId), range, signal) })));
+      for (const { agentId, snapshot } of snapshots) {
+        if (snapshot.checkpoint === undefined) continue;
+        agents[agentId] = snapshot.checkpoint;
+        for (const record of snapshot.records) records.push(record);
+      }
     }
+    if (Object.keys(agents).length !== agentIds.length) {
+      let legacy: PersistentSessionRecords | undefined;
+      try {
+        const bytes = await storage.read(PERSISTENCE_SCOPE, persistenceKey(cacheKey));
+        if (bytes !== undefined) legacy = parsePersistentSession(JSON.parse(Buffer.from(bytes).toString('utf8')), cacheKey);
+      } catch {}
+      if (legacy !== undefined) {
+        const grouped = new Map<string, NormalizedUsageRecord[]>();
+        for (const record of legacy.records) {
+          if (record.sourceAgentId === undefined) continue;
+          const group = grouped.get(record.sourceAgentId) ?? [];
+          group.push(record);
+          grouped.set(record.sourceAgentId, group);
+        }
+        for (const agentId of agentIds) {
+          const checkpoint = legacy.agents[agentId];
+          if (agents[agentId] !== undefined || checkpoint === undefined) continue;
+          const wireScope = agentScopeOf(scope, agentId);
+          const generation = await logs.generation(wireScope, AGENT_WIRE_RECORD_KEY);
+          if (generation !== (checkpoint.generation ?? 'legacy')) continue;
+          const sourceRecords = grouped.get(agentId) ?? [];
+          agents[agentId] = { ...checkpoint, generation };
+          for (const record of sourceRecords) if (range === undefined || record.invalid || inRange(record.time, range)) records.push(record);
+          const [size, mtimeMs] = await Promise.all([storage.size(wireScope, AGENT_WIRE_RECORD_KEY), storage.mtime(wireScope, AGENT_WIRE_RECORD_KEY)]);
+          if (size === checkpoint.size && mtimeMs === checkpoint.mtimeMs) {
+            await facts.commit(wireScope, 0, { ...checkpoint, generation }, sourceRecords);
+          }
+        }
+      }
+    }
+    return { version: PERSISTENCE_VERSION, sessionKey: cacheKey, records, agents };
   }
 
   private async boundaryHash(
@@ -893,9 +942,10 @@ export class UsageAggregationService {
     const retained = await this.core.accessor.get(IRetainedUsageService).listDeletedSessions({
       workspaceIds: query.workspaceIds.length === 0 ? undefined : query.workspaceIds,
       deadlineAt: budget.deadlineAt,
-      recordLimit: budget.remainingRecords,
+      recordLimit: budget.remainingFacts ?? Infinity,
+      signal: budget.signal,
     });
-    budget.remainingRecords -= retained.scannedRecords;
+    if (budget.remainingFacts !== undefined) budget.remainingFacts -= retained.scannedRecords;
     if (!retained.complete) budget.sourcesComplete = false;
     if (retained.incompleteReason !== undefined) {
       budget.incompleteReason = retained.incompleteReason;
@@ -1320,6 +1370,7 @@ interface WireTailResult {
   readonly records: readonly NormalizedUsageRecord[];
   readonly offset: number;
   readonly scannedRecordCount: number;
+  readonly scannedFactCount: number;
   readonly valid: boolean;
   readonly complete: boolean;
   readonly incompleteReason: UsageResponse['reliability']['incomplete_reason'];
@@ -1348,20 +1399,26 @@ async function readWireTail(
   onScannedRecord?: () => void,
   sourceAgentId?: string,
   signal?: AbortSignal,
+  factLimit = Infinity,
+  onCheckpoint?: (offset: number, records: readonly NormalizedUsageRecord[], valid: boolean) => Promise<void>,
 ): Promise<WireTailResult> {
   if (startOffset >= size) {
     return {
       records: [],
       offset: startOffset,
       scannedRecordCount: 0,
+      scannedFactCount: 0,
       valid: true,
       complete: true,
       incompleteReason: null,
     };
   }
-  let pending = Buffer.alloc(0);
+  let lineChunks: Buffer[] = [];
+  let lineBytes = 0;
   let offset = startOffset;
+  let committedAt = startOffset;
   let scannedRecordCount = 0;
+  let scannedFactCount = 0;
   let valid = true;
   let readFailed = false;
   let yieldAt = performance.now() + 8;
@@ -1375,14 +1432,24 @@ async function readWireTail(
       scope,
       AGENT_WIRE_RECORD_KEY,
       { start: startOffset, end: size - 1 },
-      { signal: readSignal, chunkBytes: 64 << 10 },
+      { signal: readSignal, chunkBytes: 1 << 20 },
     )) {
       signal?.throwIfAborted();
-      const chunk = Buffer.from(chunkValue);
-      pending = pending.length === 0 ? chunk : Buffer.concat([pending, chunk]);
+      const chunk = Buffer.from(chunkValue.buffer, chunkValue.byteOffset, chunkValue.byteLength);
+      let start = 0;
       for (;;) {
-        const newline = pending.indexOf(0x0a);
-        if (newline < 0) break;
+        const newline = chunk.indexOf(0x0a, start);
+        if (lineBytes + (newline < 0 ? chunk.length : newline) - start > 8 * 1024 * 1024) {
+          incompleteReason = 'record_budget';
+          break;
+        }
+        if (newline < 0) {
+          if (start < chunk.length) {
+            lineChunks.push(chunk.subarray(start));
+            lineBytes += chunk.length - start;
+          }
+          break;
+        }
         if (now() >= deadlineAt) {
           incompleteReason = 'deadline';
           break;
@@ -1391,29 +1458,44 @@ async function readWireTail(
           incompleteReason = 'record_budget';
           break;
         }
-        const line = pending.subarray(0, newline);
+        const part = chunk.subarray(start, newline);
+        const line = lineChunks.length === 0 ? part : Buffer.concat([...lineChunks, part], lineBytes + part.length);
         if (line.length > 0) {
           try {
-            const raw = JSON.parse(line.toString('utf8')) as WireRecord;
-            if (raw.type === 'usage.record') {
+            const raw = parseUsageJson(line.toString('utf8'));
+            if (raw !== undefined) {
+              if (scannedFactCount >= factLimit) { incompleteReason = 'record_budget'; break; }
+              scannedFactCount++;
               const record = normalizeRecord(raw, sourceAgentId);
               if (record === undefined) valid = false;
               else records.push(record);
             }
           } catch {
+            if (scannedFactCount >= factLimit) { incompleteReason = 'record_budget'; break; }
+            scannedFactCount++;
             valid = false;
           }
         }
-        pending = pending.subarray(newline + 1);
-        offset += newline + 1;
+        offset += line.length + 1;
+        start = newline + 1;
+        lineChunks = [];
+        lineBytes = 0;
         scannedRecordCount += 1;
         onScannedRecord?.();
+        if (offset - committedAt >= 16 * 1024 * 1024) {
+          await onCheckpoint?.(offset, records, valid);
+          committedAt = offset;
+        }
         if (scannedRecordCount % 1024 === 0 || (scannedRecordCount % 128 === 0 && performance.now() >= yieldAt)) {
           await yieldToEventLoop(undefined, { signal: readSignal });
           yieldAt = performance.now() + 8;
         }
       }
       if (incompleteReason !== null) break;
+      if (performance.now() >= yieldAt) {
+        await yieldToEventLoop(undefined, { signal: readSignal });
+        yieldAt = performance.now() + 8;
+      }
     }
   } catch {
     signal?.throwIfAborted();
@@ -1427,6 +1509,7 @@ async function readWireTail(
     records,
     offset,
     scannedRecordCount,
+    scannedFactCount,
     valid,
     complete: !readFailed && incompleteReason === null && offset === size,
     incompleteReason,
@@ -1449,10 +1532,6 @@ async function readRange(
     chunks.push(Buffer.from(chunk));
   }
   return Buffer.concat(chunks);
-}
-
-function emptyPersistentSession(cacheKey: string): PersistentSessionRecords {
-  return { version: PERSISTENCE_VERSION, sessionKey: cacheKey, records: [], agents: {} };
 }
 
 function parsePersistentSession(
@@ -1571,37 +1650,6 @@ function startOfWeek(time: number, offsetMinutes: number): number {
   return day - daysSinceMonday * DAY_MS;
 }
 
-function normalizeRecord(raw: WireRecord, sourceAgentId?: string): NormalizedUsageRecord | undefined {
-  const usage = raw['usage'];
-  const model = raw['model'];
-  if (typeof raw.time !== 'number' || !Number.isFinite(raw.time) || raw.time < 0) return undefined;
-  if (typeof model !== 'string' || model.length === 0) return undefined;
-  if (usage === null || typeof usage !== 'object' || Array.isArray(usage)) return undefined;
-  const value = usage as Record<string, unknown>;
-  const inputOther = nonnegativeFinite(value['inputOther']);
-  const output = nonnegativeFinite(value['output']);
-  const inputCacheRead = nonnegativeFinite(value['inputCacheRead']);
-  const inputCacheCreation = nonnegativeFinite(value['inputCacheCreation']);
-  const invalid = inputOther === undefined || output === undefined || inputCacheRead === undefined || inputCacheCreation === undefined;
-  const usageKnown = raw['usageKnown'];
-  if (usageKnown !== undefined && typeof usageKnown !== 'boolean') return undefined;
-  return {
-    time: raw.time,
-    model,
-    upstreamModelId: optionalString(raw['upstreamModelId']),
-    sourceAgentId,
-    invalid: invalid || undefined,
-    usage: invalid ? emptyUsage() : { inputOther: inputOther ?? 0, output: output ?? 0, inputCacheRead: inputCacheRead ?? 0, inputCacheCreation: inputCacheCreation ?? 0 },
-    usageKnown,
-    turnId: nonnegativeInteger(raw['turnId']),
-    agentId: optionalString(raw['agentId']),
-    parentAgentId: optionalString(raw['parentAgentId']),
-    provider: optionalString(raw['provider']),
-    modelAlias: optionalString(raw['modelAlias']),
-    profileName: optionalString(raw['profileName']),
-  };
-}
-
 function normalizeRetainedRecord(record: RetainedUsageRecord): NormalizedUsageRecord {
   return {
     time: record.time,
@@ -1623,10 +1671,6 @@ function nonnegativeFinite(value: unknown): number | undefined {
 
 function nonnegativeInteger(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined;
-}
-
-function optionalString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
 function inRange(time: number, range: RangeBounds): boolean {

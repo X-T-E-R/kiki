@@ -41,10 +41,28 @@ export interface AppendLogWrite {
   readonly key: string;
 }
 
+export interface AppendLogCommit extends AppendLogWrite {
+  readonly generation: string;
+  readonly start: number;
+  readonly end: number;
+  readonly boundaryHash: string;
+  readonly rewrite: boolean;
+}
+
+/** Projection work is bounded by the writer: prepare retains only derived data, commit runs after canonical success, and failures never reject a successful canonical write. */
+export interface AppendLogProjection<T> {
+  readonly key: string;
+  prepare(scope: string, records: readonly unknown[]): T;
+  commit(position: AppendLogCommit, value: T): Promise<void>;
+  onError(error: unknown): void;
+}
+
 export interface IAppendLogStore {
   readonly _serviceBrand: undefined;
 
   readonly onDidWrite: Event<AppendLogWrite>;
+  registerProjection<T>(projection: AppendLogProjection<T>): IDisposable;
+  generation(scope: string, key: string): Promise<string>;
 
   append<R>(scope: string, key: string, record: R, options?: AppendLogOptions): void;
   read<R>(scope: string, key: string, options?: AppendLogReadOptions): AsyncIterable<R>;

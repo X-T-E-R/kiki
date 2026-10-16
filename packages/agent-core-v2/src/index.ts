@@ -68,6 +68,7 @@ export * from '#/app/git/worktreeConfig';
 export * from '#/app/git/worktreeEvents';
 export * from '#/app/retainedUsage/retainedUsage';
 export * from '#/app/retainedUsage/retainedUsageService';
+export * from '#/app/usageFacts/usageFactStore';
 export * from '#/app/runtimeHost/index';
 
 export * from '#/_base/log/log';
@@ -467,6 +468,8 @@ import '#/features/staleGuard/staleGuardFeature';
 import '#/wire/retiredTowerEvents';
 export * from '#/agent/usage/usage';
 export * from '#/agent/usage/usageService';
+export * from '#/agent/usage/usageFact';
+export * from '#/agent/usage/usageJson';
 export * from '#/agent/toolDedupe/toolDedupe';
 export * from '#/agent/toolDedupe/toolDedupeService';
 export * from '#/agent/agentsMdReminder/agentsMdReminder';

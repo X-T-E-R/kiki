@@ -4,6 +4,9 @@ import {
   IAgentTokenCountingService,
   IAgentUsageService,
   IAppendLogStore,
+  IUsageFactStore,
+  summarizeUsageFacts,
+  type UsageFactSnapshot,
   IFileSystemStorageService,
   ILogService,
   IInstantiationService,
@@ -140,6 +143,7 @@ function persistedFixture(
   } as unknown as IFileSystemStorageService;
   const listeners = new Set<(event: { scope: string; key: string }) => void>();
   const appendLog = {
+    generation: async () => 'legacy',
     onDidWrite: (listener: (event: { scope: string; key: string }) => void) => {
       listeners.add(listener);
       return { dispose: () => { listeners.delete(listener); } };
@@ -151,9 +155,25 @@ function persistedFixture(
     error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn(),
     child: vi.fn(), setLevel: vi.fn(), flush: vi.fn(),
   };
+  const facts: IUsageFactStore = {
+    _serviceBrand: undefined,
+    async read(scope) {
+      const bytes = documents.get(`facts/${scope}`);
+      return bytes === undefined ? { records: [] } : JSON.parse(Buffer.from(bytes).toString('utf8')) as UsageFactSnapshot;
+    },
+    async summary(scope, signal) {
+      const snapshot = await facts.read(scope, undefined, signal);
+      return { checkpoint: snapshot.checkpoint, totals: summarizeUsageFacts(snapshot.records) };
+    },
+    async commit(scope, start, checkpoint, records) {
+      const previous = await facts.read(scope);
+      documents.set(`facts/${scope}`, Buffer.from(JSON.stringify({ checkpoint, records: [...(start === 0 ? [] : previous.records), ...records] })));
+    },
+  };
   const core = {
     accessor: {
       get: (identifier: unknown) => {
+        if (identifier === IUsageFactStore) return facts;
         if (identifier === IFileSystemStorageService) return storage;
         if (identifier === IAppendLogStore) return appendLog;
         if (identifier === ILogService) return log;

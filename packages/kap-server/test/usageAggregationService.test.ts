@@ -3,6 +3,9 @@ import { join } from 'node:path';
 import {
   AppendLogStore,
   IAppendLogStore,
+  IUsageFactStore,
+  summarizeUsageFacts,
+  type UsageFactSnapshot,
   ILogService,
   IFileSystemStorageService,
   IRetainedUsageService,
@@ -160,7 +163,7 @@ function fixture(
     read: async (storageScope: string, key: string) => {
       const value = persisted.get(`${storageScope}/${key}`);
       if (value !== undefined) {
-        checkpointReads.set(key, (checkpointReads.get(key) ?? 0) + value.byteLength);
+        if (storageScope === 'cache/usage-aggregation-v1') checkpointReads.set(key, (checkpointReads.get(key) ?? 0) + value.byteLength);
         onCheckpointRead(value.byteLength);
       }
       return value;
@@ -207,6 +210,25 @@ function fixture(
     refreshNow: async () => false,
     status: () => ({ source: 'empty', keys: 0 }),
   };
+  const facts: IUsageFactStore = {
+    _serviceBrand: undefined,
+    async read(scope, range) {
+      const bytes = await storage.read('facts', scope);
+      if (bytes === undefined) return { records: [] };
+      const snapshot = JSON.parse(Buffer.from(bytes).toString('utf8')) as UsageFactSnapshot;
+      return { ...snapshot, records: snapshot.records.filter((record) => record.invalid || ((range?.startAt === undefined || record.time >= range.startAt) && (range?.endAt === undefined || record.time < range.endAt))) };
+    },
+    async summary(scope, signal) {
+      const snapshot = await facts.read(scope, undefined, signal);
+      return { checkpoint: snapshot.checkpoint, totals: summarizeUsageFacts(snapshot.records) };
+    },
+    async commit(scope, start, checkpoint, records) {
+      const bytes = persisted.get(`facts/${scope}`);
+      const previous = bytes === undefined ? undefined : JSON.parse(Buffer.from(bytes).toString('utf8')) as UsageFactSnapshot;
+      const priorRecords = start === 0 ? [] : previous?.records ?? [];
+      await storage.write('facts', scope, Buffer.from(JSON.stringify({ checkpoint, records: [...priorRecords, ...records] })));
+    },
+  };
   const core = {
     accessor: {
       get: (identifier: unknown) => {
@@ -214,6 +236,8 @@ function fixture(
         if (identifier === IFileSystemStorageService) return storage;
         if (identifier === IRetainedUsageService) return retainedUsage;
         if (identifier === IModelPricingService) return pricing;
+        if (identifier === IUsageFactStore) return facts;
+        if (identifier === IAppendLogStore) return { generation: async () => 'legacy' };
         throw new Error('unexpected service');
       },
     },
@@ -635,7 +659,7 @@ describe('UsageAggregationService cache budgets', () => {
     f.setWire(scope('w', 's'), [usageRecord(day - 9 * 86_400_000), usageRecord(day), usageRecord(day + 1)]);
     listener('w\0s');
     expect((await query(f.service, input)).summary.tokens.output).toBe(3);
-    expect(metadataReads - baseline).toBe(6);
+    expect(metadataReads - baseline).toBe(7);
     const afterAppend = metadataReads;
     await query(f.service, input);
     expect(metadataReads).toBe(afterAppend);
@@ -742,26 +766,26 @@ describe('UsageAggregationService cache budgets', () => {
     f.setAgentIds(['main', 'child']);
     f.setWire('sessions/w/s/agents/child', [usageRecord(day + 3)]);
     expect((await query(f.service, { range: 'today' })).summary.tokens.output).toBe(4);
-    expect(f.persistedRecordCounts()).toEqual([4]);
+    expect(f.persistedRecordCounts()).toEqual([3, 1]);
     const exported: number[] = [];
     expect((await f.service.readExportSources(async (source) => { exported.push(source.records.length); })).complete).toBe(true);
     expect(exported).toEqual([4]);
     f.service.startFullRescan();
     expect((await finishRescan(f.service)).state).toBe('completed');
-    expect(f.persistedRecordCounts()).toEqual([4]);
+    expect(f.persistedRecordCounts()).toEqual([3, 1]);
     expect((await query(f.restart())).summary.tokens.output).toBe(5);
   });
 
-  it('reloads complete checkpoints on uncovered ranges and after range parts are evicted', async () => {
+  it('reloads complete facts on uncovered ranges and after range parts are evicted without reading wire', async () => {
     const day = Date.UTC(2026, 9, 6);
     const f = fixture([summary('s', 'w')], { [scope('w', 's')]: [usageRecord(day), usageRecord(day - 86_400_000), usageRecord(day - 9 * 86_400_000)] }, () => day, { cacheMaxEntryRecords: 1, cacheMaxEntries: 2 });
     await query(f.service, { range: 'today' });
     expect((await query(f.service, { range: 'last_7_days' })).summary.tokens.output).toBe(2);
-    const before = [...f.checkpointReads.values()].reduce((sum, value) => sum + value, 0);
+    const before = [...f.readBytes.values()].reduce((sum, value) => sum + value, 0);
     const warm = await query(f.service, { range: 'last_7_days' });
     expect(warm.reliability.complete).toBe(true);
     expect(warm.summary.tokens.output).toBe(2);
-    expect([...f.checkpointReads.values()].reduce((sum, value) => sum + value, 0)).toBeGreaterThan(before);
+    expect([...f.readBytes.values()].reduce((sum, value) => sum + value, 0)).toBe(before);
     expect((await query(f.service)).summary.tokens.output).toBe(3);
     expect(f.persistedRecordCounts()).toEqual([3]);
     expect(f.service.cacheStatus().entries).toBeLessThanOrEqual(2);
@@ -832,6 +856,42 @@ describe('UsageAggregationService cache budgets', () => {
     expect(second.summary.tokens.output).toBe(2);
     expect(service.cacheStatus()).toEqual({ entries: 1, records: 2 });
     expect(reads.get(wireScope)).toBeGreaterThanOrEqual(2);
+  });
+
+  it('budgets usage facts independently of non-usage raw rows, including explicit unknown and invalid facts', async () => {
+    const wireScope = scope('w', 's');
+    const raw = Array.from({ length: 200_001 }, (_, time) => ({ type: 'message', time } as WireRecord));
+    const first = { ...usageRecord(1), usageKnown: false };
+    const invalid = { ...usageRecord(2), usage: { inputOther: -1, output: 0, inputCacheRead: 0, inputCacheCreation: 0 } };
+    const f = fixture([summary('s', 'w')], { [wireScope]: [...raw, first, invalid, usageRecord(3)] }, () => 0, { usageFactBudget: 1 });
+    const one = await query(f.service);
+    expect(one.reliability).toMatchObject({ complete: false, incomplete_reason: 'record_budget', usage_coverage: { known_records: 0, missing_records: 1 } });
+    const two = await query(f.service);
+    expect(two.reliability.complete).toBe(false);
+    expect(two.summary.tokens.output).toBe(0);
+    const three = await query(f.restart());
+    expect(three.reliability).toMatchObject({ complete: false, incomplete_reason: null });
+    expect(three.reliability.usage_coverage).toMatchObject({ known_records: 1, missing_records: 1 });
+    expect(three.summary.tokens.output).toBe(1);
+    expect(three.summary.tokens_unknown).toBe(true);
+  });
+
+  it('keeps a committed bounded prefix after the final waiter cancels', async () => {
+    const controller = new AbortController();
+    const wireScope = scope('w', 's');
+    const large = Array.from({ length: 80 }, (_, time) => ({ type: 'message', time, text: 'x'.repeat(256 * 1024) } as WireRecord));
+    const f = fixture([summary('s', 'w')], { [wireScope]: [...large, usageRecord(1)] }, () => 0);
+    const pending = f.service.query({}, controller.signal);
+    const poll = setInterval(() => {
+      if (f.persistedRecordCounts().length > 0) controller.abort(new DOMException('left page', 'AbortError'));
+    }, 0);
+    try { await expect(pending).rejects.toMatchObject({ name: 'AbortError' }); }
+    finally { clearInterval(poll); }
+    f.readOffsets.length = 0;
+    const final = await query(f.restart());
+    expect(final.reliability.complete).toBe(true);
+    expect(final.summary.tokens.output).toBe(1);
+    expect(f.readOffsets[0]).toBeGreaterThanOrEqual(16 * 1024 * 1024);
   });
 
   it.each([128, 1024])('does not skip usage when the deadline aborts the %i-record yield', async (boundary) => {
