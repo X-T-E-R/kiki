@@ -1538,7 +1538,7 @@ async function readWireTail(
         try {
           if (line !== undefined) {
             if (!invalid) { line.parser.write(line.decoder.decode()); raw = line.parser.finish(); }
-          } else if (stop > start) raw = parseUsageJson(chunk.toString('utf8', start, stop));
+          } else if (stop > start) raw = parseUsageJson(chunk.subarray(start, stop));
         } catch { invalid = true; }
         if (invalid || raw !== undefined) {
           if (scannedFactCount >= factLimit) { incompleteReason = 'record_budget'; line = undefined; break; }

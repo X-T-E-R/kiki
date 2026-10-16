@@ -3,17 +3,19 @@ import type { WireRecord } from '#/wire/record';
 const stringRun = /(?:[^"\\\u0000-\u001f]+|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})){1,256}/y;
 const numberToken = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y;
 
-/** Validates the whole JSON value without materializing large non-usage bodies. Duplicate keys follow JSON.parse's last-key-wins rule. */
-export function parseUsageJson(text: string): WireRecord | undefined {
+/** Validates the whole JSON value without materializing large non-usage bodies. Byte input validates ASCII syntax before decoding a matching usage record as UTF-8. Duplicate keys follow JSON.parse's last-key-wins rule. */
+export function parseUsageJson(input: string | Uint8Array): WireRecord | undefined {
+  const bytes = typeof input === 'string' ? undefined : Buffer.from(input.buffer, input.byteOffset, input.byteLength);
+  const text = typeof input === 'string' ? input : bytes!.toString(input.byteLength <= 2048 ? 'utf8' : 'latin1');
   if (text.length <= 2048) {
     const raw = JSON.parse(text) as WireRecord;
     if (raw === null) throw new SyntaxError('Invalid usage source JSON');
     return raw.type === 'usage.record' ? raw : undefined;
   }
   let position = 0;
-  let type: string | undefined;
+  let usageType = false;
   let rootObject = false;
-  let rootKey = '';
+  let rootKeyIsType = false;
   const stack: number[] = [];
   const fail = (): never => { throw new SyntaxError('Invalid usage source JSON'); };
   const whitespace = (): void => {
@@ -23,22 +25,30 @@ export function parseUsageJson(text: string): WireRecord | undefined {
       position++;
     }
   };
-  const string = (): string => {
-    const start = position++;
+  const string = (): void => {
+    position++;
     for (;;) {
-      if (text[position] === '"') return text.slice(start, ++position);
+      if (text[position] === '"') { position++; return; }
       stringRun.lastIndex = position;
       if (!stringRun.test(text)) return fail();
       position = stringRun.lastIndex;
     }
   };
+  const matchesString = (start: number, expected: string): boolean => {
+    const length = position - start;
+    if (length === expected.length + 2 && text.startsWith(expected, start + 1)) return true;
+    if (length < expected.length + 2 || length > expected.length * 6 + 2) return false;
+    const encoded = text.slice(start, position);
+    return encoded.includes('\\') && JSON.parse(encoded) === expected;
+  };
   const value = (captureType: boolean): void => {
     whitespace();
     const token = text[position];
-    if (captureType) type = undefined;
+    if (captureType) usageType = false;
     if (token === '"') {
-      const encoded = string();
-      if (captureType) type = JSON.parse(encoded) as string;
+      const start = position;
+      string();
+      if (captureType) usageType = matchesString(start, 'usage.record');
     } else if (token === '{' || token === '[') {
       position++;
       stack.push(token === '{' ? 0 : 5);
@@ -65,12 +75,13 @@ export function parseUsageJson(text: string): WireRecord | undefined {
       stack.pop();
     } else if (state === 0 || state === 4) {
       if (token !== '"') return fail();
-      const key = string();
-      if (rootObject && top === 0) rootKey = JSON.parse(key) as string;
+      const start = position;
+      string();
+      if (rootObject && top === 0) rootKeyIsType = matchesString(start, 'type');
       whitespace();
       if (text[position++] !== ':') return fail();
       stack[top] = 3;
-      value(rootObject && top === 0 && rootKey === 'type');
+      value(rootObject && top === 0 && rootKeyIsType);
     } else if (state === 5 || state === 6) {
       stack[top] = 7;
       value(false);
@@ -86,7 +97,7 @@ export function parseUsageJson(text: string): WireRecord | undefined {
   }
   whitespace();
   if (position !== text.length || text.trim() === 'null') return fail();
-  return rootObject && type === 'usage.record' ? JSON.parse(text) as WireRecord : undefined;
+  return rootObject && usageType ? JSON.parse(bytes === undefined ? text : bytes.toString('utf8')) as WireRecord : undefined;
 }
 
 const usageFields = new Set(['type', 'time', 'model', 'usage', 'usageKnown', 'turnId', 'agentId', 'parentAgentId', 'provider', 'modelAlias', 'profileName', 'upstreamModelId', 'sourceAgentId', 'invalid']);

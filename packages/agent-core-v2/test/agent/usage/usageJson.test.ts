@@ -1,12 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { parseUsageJson, UsageJsonStream } from '#/agent/usage/usageJson';
 import { normalizeUsageFact } from '#/agent/usage/usageFact';
 import type { WireRecord } from '#/wire/record';
 
 const usage = { type: 'usage.record', time: 1, model: 'example', usage: { inputOther: 1, output: 2, inputCacheRead: 3, inputCacheCreation: 4 } };
 
-describe.each([0, 2100])('usage JSON validation (padding %i)', (padding) => {
-  const parse = (text: string) => parseUsageJson(' '.repeat(padding) + text);
+describe.each([{ padding: 0, bytes: false }, { padding: 2100, bytes: false }, { padding: 0, bytes: true }, { padding: 2100, bytes: true }])('usage JSON validation ($padding padding, bytes $bytes)', ({ padding, bytes }) => {
+  const parse = (text: string) => parseUsageJson(bytes ? Buffer.from(' '.repeat(padding) + text) : ' '.repeat(padding) + text);
   it('selects only the final top-level type, including escaped keys and values', () => {
     const body = JSON.stringify(usage).slice(1);
     for (const text of [JSON.stringify(usage), `{ "body": {"type":"other"}, ${body}`, `{ "type":"other", ${body}`, JSON.stringify(usage).replace('"type"', '"t\\u0079pe"').replace('usage.record', 'usage\\u002erecord')]) {
@@ -34,6 +34,57 @@ describe.each([0, 2100])('usage JSON validation (padding %i)', (padding) => {
     expect(parse(deep)).toBeUndefined();
     expect(parse(JSON.stringify({ type: 'other', body: 'x'.repeat(8 * 1024 * 1024) }))).toBeUndefined();
     expect(parse(JSON.stringify({ type: 'other', body: '\n\\"'.repeat(100_000) }))).toBeUndefined();
+  });
+});
+
+describe('usage JSON string selection', () => {
+  it('preserves fully escaped type strings, duplicate keys and validation beyond matching lengths', () => {
+    const escaped = (value: string) => value.replaceAll(/./g, (char) => `\\u${char.codePointAt(0)!.toString(16).padStart(4, '0')}`);
+    const key = escaped('type'), value = escaped('usage.record');
+    const text = `{"${key}":"${value}","body":"${'x'.repeat(3000)}",${JSON.stringify(usage).slice(1)}`;
+    expect(parseUsageJson(text)).toEqual(JSON.parse(text));
+    expect(parseUsageJson(`{"body":"${'x'.repeat(3000)}",${JSON.stringify(usage).slice(1, -1)},"${key}":"${value}"}`)).toEqual(JSON.parse(text));
+    for (const tail of ['false', 'null', '{}', JSON.stringify('usage.record'.repeat(1000))]) {
+      expect(parseUsageJson(`{"body":"${'x'.repeat(3000)}",${JSON.stringify(usage).slice(1, -1)},"${key}":${tail}}`)).toBeUndefined();
+    }
+    expect(parseUsageJson(JSON.stringify({ ['type' + 'x'.repeat(5000)]: 'usage.record', type: 'other' }))).toBeUndefined();
+    expect(() => parseUsageJson(`{"${'k'.repeat(5000)}":"\\x20","type":"other"}`)).toThrow(SyntaxError);
+  });
+
+  it('does not decode plain root keys through JSON.parse', () => {
+    const text = JSON.stringify({ type: 'other', time: 1, irrelevant: 'x'.repeat(5000), model: 'example', nested: { type: 'usage.record' } });
+    const native = JSON.parse;
+    const spy = vi.spyOn(JSON, 'parse').mockImplementation((value: string) => native(value) as unknown);
+    try {
+      expect(parseUsageJson(text)).toBeUndefined();
+      expect(spy).not.toHaveBeenCalled();
+    } finally { spy.mockRestore(); }
+  });
+});
+
+describe('usage JSON byte selection', () => {
+  it('materializes selected Unicode values from original UTF-8, including typed-array offsets', () => {
+    const value = { ...usage, model: '模型🙂', body: '示例\n\\"'.repeat(1000) };
+    const text = JSON.stringify(value).replace('"type"', '"t\\u0079pe"').replace('usage.record', 'usage\\u002erecord');
+    const padded = Buffer.from('prefix' + text + 'suffix');
+    const bytes = new Uint8Array(padded.buffer, padded.byteOffset + 6, padded.byteLength - 12);
+    expect(parseUsageJson(bytes)).toEqual(value);
+    expect(parseUsageJson(Buffer.from(text.slice(0, -1) + ',"type":"其他"}'))).toBeUndefined();
+  });
+
+  it('keeps UTF-8 replacement and JSON syntax behavior for every raw byte', () => {
+    for (const type of ['other', 'usage.record']) {
+      for (const field of ['type', 'body']) {
+        for (let byte = 0; byte < 256; byte++) {
+          const bytes = Buffer.concat([Buffer.from(`{"padding":"${'x'.repeat(2100)}","type":"${type}","${field}":"`), Buffer.from([byte]), Buffer.from('"}')]);
+          const decoded = bytes.toString('utf8');
+          let native: typeof usage;
+          try { native = JSON.parse(decoded) as typeof usage; }
+          catch { expect(() => parseUsageJson(bytes)).toThrow(SyntaxError); continue; }
+          expect(parseUsageJson(bytes)).toEqual(native.type === 'usage.record' ? native : undefined);
+        }
+      }
+    }
   });
 });
 
