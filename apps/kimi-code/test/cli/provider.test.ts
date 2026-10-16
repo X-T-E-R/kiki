@@ -553,9 +553,9 @@ describe('kimi provider list', () => {
       type: 'openai',
       baseUrl: 'https://url-user:url-password@api.example.test/v1?api_key=url-token',
       apiKey: 'synthetic-provider-key',
-      headers: { Authorization: 'Bearer synthetic-header-token', 'X-Api-Key': 'synthetic-custom-key', 'X-Region': 'example-region' },
+      customHeaders: { Authorization: 'Bearer synthetic-header-token', 'X-Api-Key': 'synthetic-custom-key', 'X-Region': 'example-region' },
       source: { kind: 'apiJson', url: 'https://registry.example.test/models?token=synthetic-registry-token', apiKey: 'synthetic-source-key' },
-    } as KimiConfig['providers'][string];
+    } satisfies KimiConfig['providers'][string];
     const { harness, current, setConfigCalls } = makeHarness(configured);
     const { deps, stdout, stderr } = makeDeps(harness);
     await handleProviderList(deps, { json });
@@ -566,7 +566,8 @@ describe('kimi provider list', () => {
     if (json) {
       const parsed = JSON.parse(stdout.join(''));
       expect(parsed.providers.manual.type).toBe('openai');
-      expect(parsed.providers.manual.headers['X-Region']).toBe('example-region');
+      expect(parsed.providers.manual.customHeaders['X-Region']).toBe('example-region');
+      expect(parsed.providers.manual).not.toHaveProperty('headers');
       expect(parsed.providers.manual.apiKey).toBe('[REDACTED]');
       expect(parsed.providers.manual.source.apiKey).toBe('[REDACTED]');
       expect(parsed.models['kohub/a']).toEqual(config.models!['kohub/a']);

@@ -177,7 +177,7 @@ export async function handleProviderList(
   if (opts.json) {
     const providers = Object.fromEntries(Object.entries(config.providers).map(([id, provider]) => [id, {
       ...redact(provider),
-      headers: provider.headers === undefined ? undefined : sanitizeProviderHeaders(provider.headers),
+      customHeaders: provider.customHeaders === undefined ? undefined : sanitizeProviderHeaders(provider.customHeaders),
     }]));
     deps.stdout.write(
       `${JSON.stringify(redact({ providers, models: config.models ?? {} }), (_key, value: unknown) => typeof value === 'string' ? sanitizeProviderUrl(value) : value, 2)}\n`,
