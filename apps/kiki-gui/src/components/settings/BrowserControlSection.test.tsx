@@ -1579,7 +1579,7 @@ describe('BrowserControlSection', () => {
 
       connectPreset.mockResolvedValueOnce({
         ...codexWithCandidates,
-        state: 'ready',
+        state: 'needs_user_action',
         reason: 'approval_unproven',
         connectionId: 'codex-browser',
         browserId: 'codex-browser-use-pipe-1',
@@ -1588,6 +1588,9 @@ describe('BrowserControlSection', () => {
       await act(async () => { query<HTMLButtonElement>('[data-browser-route="codex-browser"] [data-browser-route-connect]')?.click(); });
       await settle();
       expect(connectPreset).toHaveBeenCalledTimes(2);
+      expect(query('[data-browser-route="codex-browser"] [data-feedback-tone="info"]')?.textContent).toContain('saved');
+      expect(query('[data-browser-route="codex-browser"] [data-feedback-tone="error"]')).toBeNull();
+      expect(query('[data-browser-route="codex-browser"] [data-browser-route-connected]')).toBeNull();
     });
 
     it('handles late-arriving candidates cleanly when refetched', async () => {

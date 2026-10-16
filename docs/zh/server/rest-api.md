@@ -449,7 +449,7 @@ Kiki 根据 OpenSSH 配置和路径展开结果确定 `UserKnownHostsFile` 的�
 
 ### 浏览器引导预设
 
-预设为 `kimi-webbridge`、`independent-browser` 和 `codex-browser`。`kimi-webbridge` 与 `independent-browser` 管理本地组件，而 `codex-browser` 发现正在运行的扩展管道候选列表（`candidates`，最多 20 项）并配合所选管道进行连接保存，不会声称由 Kiki 安装或控制外部应用。`kimi-webbridge` 的连接与打开都指向一条固定的本地桥，不接受候选列表。Codex 管道和独立浏览器 profile 是另外的接法，不会因此多出 Kimi WebBridge 实例。
+预设为 `kimi-webbridge`、`independent-browser` 和 `codex-browser`。`kimi-webbridge` 与 `independent-browser` 管理本地组件，而 `codex-browser` 将匹配的端点名称列为尚未验证的候选项（`candidates`，最多 20 项），并保存明确选定的管道。桌面应用工具也使用同一名称前缀，因此发现名称不代表扩展连接已验证；仅凭空列表也不能判断扩展未启用。Kiki 不安装外部应用。`kimi-webbridge` 的连接与打开都指向一条固定的本地桥，不接受候选列表。Codex 管道和独立浏览器 profile 是另外的接法，不会因此多出 Kimi WebBridge 实例。
 
 | 方法与路径 | 说明 |
 | --- | --- |
@@ -462,7 +462,7 @@ Kiki 根据 OpenSSH 配置和路径展开结果确定 `UserKnownHostsFile` 的�
 | `POST /api/browser/setup/{preset}:shortcut` | 在 Windows 服务机桌面创建独立浏览器快捷方式 |
 | `POST /api/browser/setup/{preset}:cancel` | 取消配置 |
 
-`:connect` 接受可选的 `connectionId`（稳定连接 ID）、`browserId`（所选管道标识符，例如 `codex-browser-use-...`）、`name` 与 `setDefault`；`:open` 接受可选的 `connectionId`；`:shortcut` 接受可选的 `connectionId` 和快捷方式名称 `name`；`:update` 使用空对象。所有操作返回配置状态，应读取 `state`、`reason`、`error`、`steps`、`actions`、`candidates` 以及已保存的 `browserId`，而非仅凭 HTTP 成功判断操作完成。保存候选管道后返回 `state: "ready"` 与 `reason: "approval_unproven"`，表示连接目标已保存，但首次使用仍需用户在 Codex 桌面端或浏览器扩展中完成批准，并不代表连接已进入 `connected` 或已获批准状态。已停用的连接返回 `connection_disabled`，不会改用其他 profile；窗口激活失败返回 `state: "failed"`。
+`:connect` 接受可选的 `connectionId`（稳定连接 ID）、`browserId`（所选管道标识符，例如 `codex-browser-use-...`）、`name` 与 `setDefault`；`:open` 接受可选的 `connectionId`；`:shortcut` 接受可选的 `connectionId` 和快捷方式名称 `name`；`:update` 使用空对象。所有操作返回配置状态，应读取 `state`、`reason`、`error`、`steps`、`actions`、`candidates` 以及已保存的 `browserId`，而非仅凭 HTTP 成功判断操作完成。保存候选管道后返回 `state: "needs_user_action"` 与 `reason: "approval_unproven"`，表示目标已配置，但浏览器握手尚未验证。保存不会打开管道或消费权限请求。只有浏览器控制服务确认握手后，预设才进入 `connected`；连接失败仍保留错误。真正的权限请求仍交给当前权限处理方。已停用的连接返回 `connection_disabled`，不会改用其他 profile；窗口激活失败返回 `state: "failed"`。
 
 更新只替换磁盘上的文件，不切换已运行的浏览器或桥接程序。`reason: "disk_updated"` 表示磁盘文件已更新；`"disk_updated_running_unchanged"` 还明确表示正在运行的 WebBridge 程序未切换。两者均不表示运行中的进程已升级。
 

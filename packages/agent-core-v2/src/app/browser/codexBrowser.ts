@@ -68,7 +68,7 @@ export async function openCodexBrowser(input: { runtimeRoot: string; browserId: 
     throw new BrowserError('browser.unsupported', 'This installed runtime does not match the Windows @oai/cua-repl launch contract');
   }
   const bin = runtime.path.join(root, 'bin');
-  const env = {
+  const env: Record<string, string> = {
     CUA_REPL_NODE_REPL_PATH: runtime.path.join(bin, 'node_repl.exe'),
     CUA_REPL_ENABLED_SURFACES: 'browser',
     CUA_REPL_BROWSER_ENV: 'codex-app',
@@ -76,6 +76,8 @@ export async function openCodexBrowser(input: { runtimeRoot: string; browserId: 
     NODE_REPL_TRUSTED_CODE_PATHS: bin,
     NODE_REPL_TRUSTED_SERVICES: JSON.stringify({ browser: runtime.path.join(bin, 'node_modules', '@oai', 'browser-desktop', 'scripts', 'browser-service.mjs') }),
   };
+  const cli = await resolveCodexBrowserCli(runtime, root);
+  if (cli !== undefined) env['CODEX_CLI_PATH'] = cli;
   const client = new StdioMcpClient({ transport: 'stdio', command: runtime.path.join(root, 'bin', 'node.exe'),
     args: [runtime.path.join(packageRoot, 'bin', 'cua-repl.mjs')], env, executor: 'local' }, {
     runtimeResolver: codexBrowserRuntimeResolver(input.resolver, env), workspaceId: runtime.identity.workspaceId,
@@ -85,12 +87,26 @@ export async function openCodexBrowser(input: { runtimeRoot: string; browserId: 
   try {
     await client.connect();
     const tools = await client.listTools();
-    const adapter = new OfficialCodexBrowser(client, input.browserId, tools);
+    const adapter = new OfficialCodexBrowser(client, input.browserId, tools, () => client.stderrSnapshot());
     return { client: adapter.client, official: adapter, runtime, session: `codex-browser-${randomUUID()}`, namespace: 'official-cua-repl',
       version: `@oai/cua-repl ${pkg['version']} (${manifest['runtime_archive_version']})`, close: async () => {
         try { await adapter.prepareClose(); } finally { await client.close(); }
       } };
   } catch (error) { await client.close(); throw error; }
+}
+
+export async function resolveCodexBrowserCli(runtime: Runtime, runtimeRoot: string): Promise<string | undefined> {
+  const candidate = runtime.path.join(runtime.path.dirname(runtimeRoot), 'codex.exe');
+  let stat;
+  try { stat = await runtime.fs?.stat(candidate); }
+  catch (cause) {
+    const code = object(cause)?.['code'];
+    if (code === 'os.fs.not_found' || code === 'ENOENT') return undefined;
+    throw new BrowserError('browser.requires_action', 'Kiki could not inspect the Codex CLI beside the selected browser runtime. Check access to that installation.', { cause });
+  }
+  if (stat === undefined) throw new BrowserError('browser.execution_failed', 'The official browser runtime requires the Kiki host filesystem');
+  if (!stat.isFile) throw new BrowserError('browser.unsupported', 'The Codex CLI beside the selected browser runtime is not a file');
+  return candidate;
 }
 
 export const CODEX_BRIDGE_ADOPTION = {
@@ -106,7 +122,7 @@ export const CODEX_BRIDGE_ADOPTION = {
 export const CODEX_BRIDGE_PIN: Readonly<Record<string, string>> = CODEX_BRIDGE_FILE_SHA256;
 const CODEX_BRIDGE_BINARY = /^(?:codex-browser-bridge)(?:\.exe)?$/i;
 const CODEX_BRIDGE_PIPE = /^codex-browser-use(?:-|\\)[A-Za-z0-9][A-Za-z0-9-]{7,80}$/;
-const CODEX_BRIDGE_RECOVERY = 'Start Codex or ChatGPT desktop so its extension publishes a codex-browser-use pipe. Browser setup lists those names. Choose one explicit pipe. Kiki does not register a native host, restart the browser, dial an unselected pipe, or substitute another CDP browser.';
+const CODEX_BRIDGE_RECOVERY = 'Choose an explicit endpoint from Browser setup. The codex-browser-use prefix is also used by desktop app tools; only a browser handshake verifies the connection. Kiki does not register a native host, restart the browser, dial an unselected pipe, or substitute another CDP browser.';
 const CODEX_BRIDGE_FLOOR = ['codex_list_tabs', 'codex_create_tab', 'codex_close_tab', 'codex_navigate', 'codex_name_session', 'codex_finalize', 'codex_get_info'];
 
 export function codexBridgePipeName(value: string): boolean {
@@ -378,7 +394,14 @@ export class BridgeCodexBrowser implements CodexBrowserBackend {
           this.uncertain = true;
           throw new BrowserError('browser.execution_failed', `The bridge did not confirm ${tool}. Kiki did not send it again.`);
         }
-        if (result.isError) throw new BrowserError('browser.execution_failed', 'The bridge rejected the action. Kiki did not send it again.');
+        if (result.isError) {
+          const code = /json-rpc error (-32600|-32601|-32602):/.exec(bridgeText(result))?.[1];
+          if (code !== undefined) {
+            const rpcClass = code === '-32600' ? 'invalid_request' : code === '-32601' ? 'method_not_found' : 'invalid_params';
+            throw new BrowserError('browser.execution_failed', `The selected official pipe rejected ${tool} with JSON-RPC ${code}. Check compatibility between the official browser host and runtime. Kiki did not send the action again.`, { details: { reason: 'protocol_rejected', tool, method: tool === 'codex_get_info' ? 'getInfo' : undefined, failureStage: 'native_request', rpcCode: Number(code), rpcClass } });
+          }
+          throw new BrowserError('browser.execution_failed', 'The bridge rejected the action. Kiki did not send it again.', { details: { reason: 'bridge_rejected', tool, failureStage: 'tool_call', rpcClass: 'unknown' } });
+        }
         return result;
       }, (error: unknown) => { this.uncertain = true; throw error; })
       .finally(() => { if (this.sentWork === work) this.sentWork = undefined; });
@@ -395,6 +418,13 @@ function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
+const OFFICIAL_BROKER_FAILURE = /app_server_request_failed|failed to start codex app-server|Codex app-server is unavailable/;
+
+/** Empty discovery does not establish extension or authentication state. */
+export function officialBrowserEmptyInventoryReason(stderr: string): 'broker-unavailable' | 'no-connection' {
+  return OFFICIAL_BROKER_FAILURE.test(stderr) ? 'broker-unavailable' : 'no-connection';
+}
+
 export class OfficialCodexBrowser implements CodexBrowserBackend {
   readonly client: MCPClient;
   private readonly js: MCPToolDefinition;
@@ -407,7 +437,7 @@ export class OfficialCodexBrowser implements CodexBrowserBackend {
   private closing = false;
   private closeWork?: Promise<void>;
   private sequence = 0;
-  constructor(private readonly transport: MCPClient, private readonly browserId: string, tools: readonly MCPToolDefinition[]) {
+  constructor(private readonly transport: MCPClient, private readonly browserId: string, tools: readonly MCPToolDefinition[], private readonly stderr: () => string = () => '') {
     const js = tools.find((tool) => tool.name === 'js');
     const reset = tools.find((tool) => tool.name === 'js_reset');
     if (js === undefined || reset === undefined || !tools.some((tool) => tool.name === 'turn_ended')) {
@@ -468,7 +498,13 @@ export class OfficialCodexBrowser implements CodexBrowserBackend {
     const provider = result.map(object).find((item) => item?.['id'] === this.browserId);
     if (provider === undefined) {
       const available = result.map(object).filter((item) => item?.['type'] === 'extension').map((item) => ({ id: item!['id'], name: item!['name'], profileName: item!['profileName'] }));
-      throw new BrowserError('browser.requires_action', `The configured extension browser is not available. Enable its ChatGPT extension and Codex connection yourself, then save an exact browserId. Available extension browsers: ${JSON.stringify(available)}`);
+      if (available.length === 0 && officialBrowserEmptyInventoryReason(this.stderr()) === 'broker-unavailable') {
+        throw new BrowserError('browser.requires_action', 'The official Codex app-server request failed. Check the selected installation and its broker status before reconnecting.', { details: { reason: 'broker_unavailable' } });
+      }
+      if (available.length === 0) {
+        throw new BrowserError('browser.requires_action', 'The official runtime returned no selectable extension connection. Check the official browser host and runtime connection diagnostics before reconnecting.', { details: { reason: 'no_connection' } });
+      }
+      throw new BrowserError('browser.requires_action', `The configured browser id is not in the discovered extension set. Select an exact browserId. Available extension browsers: ${JSON.stringify(available)}`);
     }
     if (provider['type'] !== 'extension') throw new BrowserError('browser.unsupported', 'The selected official provider is not an extension connection; Kiki will not substitute CDP or an in-app browser');
   }

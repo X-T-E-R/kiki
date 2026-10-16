@@ -384,10 +384,13 @@ export class BrowserSetupService implements IBrowserSetupService {
     const pathsPresent = install !== 'missing' && await this.regularFile(paths.binary);
     const installed = install === 'installed' || pathsPresent;
     const installing = this.preparing.has('codex-browser');
-    const error = this.errors.get('codex-browser');
     const saved = await this.savedCodex(installed ? paths.binary : undefined, pipes.names);
     const feature = this.flags.enabled('native_browser');
     const blocked = feature ? undefined : this.featureBlock();
+    const connection = saved.id === undefined ? undefined : await this.control.status(saved.id);
+    const error = this.errors.get('codex-browser') ?? connection?.error;
+    const failed = connection?.state === 'failed';
+    const connected = connection?.state === 'ready' || connection?.state === 'running';
     const verified = install === 'installed';
     const steps: BrowserSetupStep[] = [{
       id: 'driver', state: verified ? 'ready' : installed ? 'warning' : 'missing', reason: verified ? undefined : install === 'mismatch' ? 'artifact_unverified' : 'artifact_missing',
@@ -398,20 +401,20 @@ export class BrowserSetupService implements IBrowserSetupService {
           : `codex-browser-bridge ${CODEX_BRIDGE_ADOPTION.version} ${CODEX_BRIDGE_ADOPTION.license} is not installed at ${paths.binary}. Prepare downloads the pinned ${CODEX_BRIDGE_ADOPTION.marker} release and checks SHA-256. The pin is ${CODEX_BRIDGE_ADOPTION.pinConsumer}. A local source build is not this component.`,
     }, {
       id: 'desktop-app', state: 'warning', reason: 'external_pipe',
-      detail: 'The extension pipe comes from Codex or ChatGPT desktop. Kiki consumes that existing bridge and does not ask the desktop app for a separate approval. A real protocol elicitation goes to the current permission consumer in browserElicitation. Kiki does not register a native host, restart the browser, or dial an unselected pipe.',
+      detail: 'The codex-browser-use name prefix is shared by browser and desktop app-tool endpoints. A candidate is not a verified extension connection. Saving it does not open a pipe or approve browser access.',
     }];
     if (blocked !== undefined) steps.push({ id: 'feature', state: 'user_action', ...blocked });
     if (pipes.error !== undefined) steps.push({ id: 'detect', state: 'warning', reason: 'pipe_discovery_failed', detail: 'Pipe name discovery failed. No pipe was opened.' });
-    else if (pipes.names.length === 0) steps.push({ id: 'detect', state: 'user_action', reason: 'choose_connection', detail: 'No codex-browser-use pipe is listed. Start the desktop app and connect its extension. Discovery reads pipe names only and does not open a pipe.' });
-    else steps.push({ id: 'detect', state: saved.count > 0 ? 'ready' : 'user_action', reason: saved.count > 0 ? undefined : 'choose_connection', detail: `${pipes.names.length} Codex extension pipes are listed in candidates. Check each browser to allow. Discovery does not open a pipe.` });
-    const state = installing ? 'preparing' : error !== undefined ? 'failed' : !installed ? 'not_prepared' : !feature ? 'needs_user_action' : saved.count > 0 ? 'ready' : 'needs_user_action';
+    else if (pipes.names.length === 0) steps.push({ id: 'detect', state: 'user_action', reason: 'choose_connection', detail: 'No matching endpoint name is listed. Discovery reads names only; it does not establish the extension connection state.' });
+    else steps.push({ id: 'detect', state: connected ? 'ready' : saved.count > 0 ? 'warning' : 'user_action', reason: connected ? undefined : saved.count > 0 ? 'approval_unproven' : 'choose_connection', detail: connected ? 'The selected connection completed the browser handshake.' : `${pipes.names.length} unverified endpoint candidates are listed. A saved selection still needs a browser handshake through the current permission consumer.` });
+    const state = installing ? 'preparing' : error !== undefined || failed ? 'failed' : !installed ? 'not_prepared' : !feature ? 'needs_user_action' : connected ? 'connected' : 'needs_user_action';
     return {
       preset: 'codex-browser', displayName: 'Codex / ChatGPT browser extension', controlSurface: 'browser-connection', supported: true,
       state, executionHost: hostname(), sourceUrl: CODEX_BRIDGE_ADOPTION.repository,
-      reason: !installed ? install === 'mismatch' ? 'artifact_mismatch' : 'artifact_missing' : !feature ? blocked?.reason : saved.count === 0 ? 'choose_connection' : undefined,
+      reason: !installed ? install === 'mismatch' ? 'artifact_mismatch' : 'artifact_missing' : !feature ? blocked?.reason : failed ? connection.failure?.reason : saved.count === 0 ? 'choose_connection' : connected ? undefined : 'approval_unproven',
+      connection, error,
       steps, candidates: pipes.names.map((browserId) => ({ browserId })),
       ...(saved.id !== undefined && saved.browserId !== undefined ? { connectionId: saved.id, browserId: saved.browserId } : {}),
-      ...(error !== undefined ? { error } : {}),
       actions: [
         { id: 'prepare' }, { id: 'choose_connection' },
         ...(installed && feature ? [{ id: 'connect' as const }] : []),
@@ -432,11 +435,12 @@ export class BrowserSetupService implements IBrowserSetupService {
     if (occupant !== undefined && occupant.type !== 'codex-extension') return { ...current, state: 'needs_user_action', reason: 'connection_conflict', actions: [{ id: 'choose_connection' }] };
     const pipe = input.browserId !== undefined ? codexBridgeSelection(input.browserId, names) : occupant?.type === 'codex-extension' ? codexBridgeSelection(occupant.browserId, names) : undefined;
     if (pipe === undefined) return { ...current, state: 'needs_user_action', reason: 'choose_connection' };
+    if (occupant?.enabled === false) return { ...current, state: 'needs_user_action', reason: 'connection_disabled' };
     await this.control.upsert(id, { type: 'codex-extension', name: input.name ?? occupant?.name ?? 'Codex browser extension', enabled: true, runtimeRoot: codexBridgeResourcePaths(this.bootstrap.homeDir).binary, browserId: pipe });
     if (input.setDefault === true) await this.connections.setDefault(id);
     this.errors.delete('codex-browser');
     const next = await this.codexStatus();
-    return { ...next, connectionId: id, browserId: pipe, state: 'ready', reason: undefined };
+    return { ...next, connectionId: id, browserId: pipe };
   }
 
   private async discoverCodexPipes(): Promise<{ names: string[]; error?: string }> {

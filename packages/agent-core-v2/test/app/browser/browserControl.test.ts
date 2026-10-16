@@ -8,7 +8,9 @@ import { BrowserControlService } from '#/app/browser/browserControlService';
 import { IBrowserBackendFactory, type BrowserBackend } from '#/app/browser/browserBackend';
 import type { BrowserResolvedConnection } from '#/app/browser/browserConfig';
 import type { MCPToolResult } from '#/mcpCore/types';
-import { BridgeCodexBrowser, OfficialCodexBrowser, codexTurnMetadata, type BrowserRequestContext } from '#/app/browser/codexBrowser';
+import { BridgeCodexBrowser, OfficialCodexBrowser, codexTurnMetadata, officialBrowserEmptyInventoryReason, resolveCodexBrowserCli, type BrowserRequestContext } from '#/app/browser/codexBrowser';
+import { FakeRuntime } from '#/runtime/fakeRuntime';
+import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { isBrowserOperation } from '#/app/browser/browserControlService';
 import { BrowserError } from '#/app/browser/errors';
 import { browserElicitation } from '#/agent/tools/browser/browserElicitation';
@@ -351,6 +353,35 @@ describe('donor schema projection', () => {
 });
 
 
+describe('official Codex browser launcher', () => {
+  function host() {
+    const fs = new HostFileSystem();
+    const runtime = Object.assign(new FakeRuntime({ workspaceId: 'fixture', runtimeId: 'local', generation: 'official-launcher' }, { pathClass: 'win32' }), { fs });
+    return { runtime, stat: vi.spyOn(fs, 'stat') };
+  }
+
+  it('resolves only the CLI beside the selected installed runtime', async () => {
+    const f = host();
+    f.stat.mockResolvedValue({ isFile: true, isDirectory: false, size: 1 });
+    expect(await resolveCodexBrowserCli(f.runtime, 'C:\\Apps\\Codex\\resources\\cua_node')).toBe('C:\\Apps\\Codex\\resources\\codex.exe');
+    expect(f.stat).toHaveBeenCalledExactlyOnceWith('C:\\Apps\\Codex\\resources\\codex.exe');
+  });
+
+  it('preserves inherited CLI discovery for standalone runtimes with no sibling executable', async () => {
+    const f = host();
+    f.stat.mockRejectedValue(Object.assign(new Error('missing'), { code: 'os.fs.not_found' }));
+    expect(await resolveCodexBrowserCli(f.runtime, 'C:\\Apps\\cua_node')).toBeUndefined();
+    expect(f.stat).toHaveBeenCalledOnce();
+  });
+
+  it('reports installation access errors instead of silently selecting a different CLI', async () => {
+    const f = host();
+    f.stat.mockRejectedValue(Object.assign(new Error('denied'), { code: 'EACCES' }));
+    await expect(resolveCodexBrowserCli(f.runtime, 'C:\\Apps\\cua_node')).rejects.toMatchObject({ code: 'browser.requires_action' });
+    expect(f.stat).toHaveBeenCalledOnce();
+  });
+});
+
 describe('official Codex browser adapter', () => {
   const context: BrowserRequestContext = { caller, turnId: 7, toolCallId: 'fixture-call', elicit: async () => ({ action: 'cancel' }) };
   const catalog = [{ name: 'js', description: 'Official browser JavaScript', inputSchema: { type: 'object', properties: { code: { type: 'string' } }, required: ['code'] } },
@@ -366,6 +397,21 @@ describe('official Codex browser adapter', () => {
     expect(callTool).not.toHaveBeenCalled();
     await expect(adapter.connect(context)).rejects.toMatchObject({ code: 'browser.unsupported' });
     expect(callTool).toHaveBeenCalledOnce();
+  });
+
+  it('keeps an empty extension list distinct from an app-server broker failure', async () => {
+    const callTool = vi.fn(async (_name: string, args: Record<string, unknown>) => {
+      const marker = /KIKI_BROWSER_RESULT_\d+:/.exec(String(args['code']))![0];
+      return { isError: false, content: [{ type: 'text', text: `${marker}[]` }] };
+    });
+    const extension = new OfficialCodexBrowser({ callTool, listTools: async () => catalog, ping: async () => undefined }, 'missing', catalog, () => '');
+    await expect(extension.connect(context)).rejects.toMatchObject({ code: 'browser.requires_action', details: { reason: 'no_connection' } });
+    const broker = new OfficialCodexBrowser({ callTool, listTools: async () => catalog, ping: async () => undefined }, 'missing', catalog, () => 'auth_fetch_failure_reason=app_server_request_failed auth_method=missing');
+    await expect(broker.connect(context)).rejects.toMatchObject({ code: 'browser.requires_action', details: { reason: 'broker_unavailable' } });
+    expect(officialBrowserEmptyInventoryReason('')).toBe('no-connection');
+    expect(officialBrowserEmptyInventoryReason('Codex auth token is unavailable')).toBe('no-connection');
+    expect(officialBrowserEmptyInventoryReason('auth_method=missing')).toBe('no-connection');
+    expect(officialBrowserEmptyInventoryReason('Codex app-server is unavailable')).toBe('broker-unavailable');
   });
 
   it('preserves official js schema, Kiki metadata, tab identity and image/raw result without replay', async () => {
@@ -505,6 +551,30 @@ describe('Codex extension bridge adapter', () => {
     await adapter.connect(context);
     expect(callTool.mock.calls.map(([name]) => name)).toEqual(['codex_get_info', 'codex_name_session']);
     expect(callTool).toHaveBeenLastCalledWith('codex_name_session', { name: 'kiki:fixture-session:main' }, undefined, expect.objectContaining({ meta: codexTurnMetadata(context) }));
+  });
+
+  it('reports native protocol rejection without exposing its payload or replaying discovery', async () => {
+    const callTool = vi.fn(async (): Promise<MCPToolResult> => ({ isError: true, content: [{ type: 'text', text: 'json-rpc error -32600: Invalid request; private diagnostic payload' }] }));
+    const adapter = bridgeAdapter(callTool);
+    const error = await adapter.connect(context).catch((cause: unknown) => cause);
+    expect(error).toMatchObject({ code: 'browser.execution_failed', details: { reason: 'protocol_rejected', tool: 'codex_get_info', method: 'getInfo', failureStage: 'native_request', rpcCode: -32600, rpcClass: 'invalid_request' } });
+    expect(String(error)).toContain('Check compatibility');
+    expect(JSON.stringify(error)).not.toContain('private diagnostic payload');
+    expect(callTool).toHaveBeenCalledOnce();
+  });
+
+  it('classifies the native numeric code before message wording and leaves a code-free rejection unknown', async () => {
+    const numbered = vi.fn(async (): Promise<MCPToolResult> => ({ isError: true, content: [{ type: 'text', text: 'json-rpc error -32602: Invalid request; private diagnostic payload' }] }));
+    const codedError = await bridgeAdapter(numbered).connect(context).catch((cause: unknown) => cause);
+    expect(codedError).toMatchObject({ details: { rpcCode: -32602, rpcClass: 'invalid_params' } });
+    expect(numbered).toHaveBeenCalledOnce();
+    const unnumbered = vi.fn(async (): Promise<MCPToolResult> => ({ isError: true, content: [{ type: 'text', text: 'Invalid request; private diagnostic payload' }] }));
+    const unknownError = await bridgeAdapter(unnumbered).connect(context).catch((cause: unknown) => cause);
+    expect(unknownError).toMatchObject({ details: { reason: 'bridge_rejected', tool: 'codex_get_info', failureStage: 'tool_call', rpcClass: 'unknown' } });
+    expect(unknownError).not.toHaveProperty('details.rpcCode');
+    expect(unknownError).not.toHaveProperty('details.method');
+    expect(JSON.stringify(unknownError)).not.toContain('private diagnostic payload');
+    expect(unnumbered).toHaveBeenCalledOnce();
   });
 
   it('creates an isolated tab, reads DOM, fills, clicks once, and accepts only a real image', async () => {

@@ -433,12 +433,12 @@ function BrowserRoute({ preset, active, onSelect }: {
         return;
       }
       if (action === 'connect') {
-        if (res?.state !== 'connected' && res?.state !== 'ready') {
-          setFeedback({ tone: 'error', text: res?.error ?? t('st.browser.outcome.connectIncomplete') });
+        if (res?.reason === 'approval_unproven' && (res.state === 'needs_user_action' || res.state === 'ready')) {
+          setFeedback({ tone: 'info', text: t('st.browser.route.done.savedApprovalUnproven') });
           return;
         }
-        if (res?.reason === 'approval_unproven') {
-          setFeedback({ tone: 'info', text: t('st.browser.route.done.savedApprovalUnproven') });
+        if (res?.state !== 'connected' && res?.state !== 'ready') {
+          setFeedback({ tone: 'error', text: res?.error ?? t('st.browser.outcome.connectIncomplete') });
           return;
         }
         if (res?.state === 'connected') {
