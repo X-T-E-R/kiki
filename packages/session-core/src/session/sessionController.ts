@@ -241,6 +241,7 @@ export class SessionController {
   private frameHandle: unknown = null;
   private hiddenFrameTimer: ReturnType<typeof setTimeout> | null = null;
   private resyncInFlight = false;
+  private readonly resyncIdleWaiters = new Set<() => void>();
   private rosterRefreshInFlight = false;
   private rosterReadQueued = false;
   private rosterReadInFlight = false;
@@ -575,6 +576,7 @@ export class SessionController {
   suspend(): void {
     if (this.closed || this.isSuspended) return;
     this.isSuspended = true;
+    this.resolveResyncIdleWaiters();
     for (const controller of this.snapshotControllers) controller.abort();
     this.snapshotControllers.clear();
     this.clearResyncTimer();
@@ -656,6 +658,7 @@ export class SessionController {
 
   close(): void {
     this.closed = true;
+    this.resolveResyncIdleWaiters();
     for (const controller of this.snapshotControllers) controller.abort();
     this.snapshotControllers.clear();
     this.agentViews.clear();
@@ -1099,6 +1102,32 @@ export class SessionController {
   private rewriteResyncQueued = false;
   private hardResyncQueued = false;
 
+  private resolveResyncIdleWaiters(): void {
+    const waiters = [...this.resyncIdleWaiters];
+    this.resyncIdleWaiters.clear();
+    for (const resolve of waiters) resolve();
+  }
+
+  private waitForResyncIdle(signal?: AbortSignal): Promise<'ready' | 'failed' | 'cancelled'> {
+    const status = (): 'ready' | 'failed' | 'cancelled' => this.closed || this.isSuspended || signal?.aborted
+      ? 'cancelled'
+      : this.state.resyncFailed ? 'failed' : 'ready';
+    if (!this.resyncInFlight) return Promise.resolve(status());
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        this.resyncIdleWaiters.delete(finish);
+        signal?.removeEventListener('abort', finish);
+        resolve(status());
+      };
+      this.resyncIdleWaiters.add(finish);
+      signal?.addEventListener('abort', finish, { once: true });
+      if (!this.resyncInFlight) finish();
+    });
+  }
+
   async resync(options: { rewrite?: boolean } = {}): Promise<void> {
     if (this.closed || this.isSuspended) return;
     const rewrite = options.rewrite === true;
@@ -1173,16 +1202,20 @@ export class SessionController {
       }
     } finally {
       this.resyncInFlight = false;
+      let rerunQueued = false;
       if (!this.closed) {
         if (this.hardResyncQueued) {
+          rerunQueued = true;
           this.hardResyncQueued = false;
           this.rewriteResyncQueued = false;
           queueMicrotask(() => void this.resync());
         } else if (this.rewriteResyncQueued) {
+          rerunQueued = true;
           this.rewriteResyncQueued = false;
           queueMicrotask(() => void this.resync({ rewrite: true }));
         }
       }
+      if (!rerunQueued) this.resolveResyncIdleWaiters();
     }
   }
 
@@ -1490,10 +1523,22 @@ export class SessionController {
 
   loadOlderHistory(agentId: string = MAIN_AGENT_ID, signal?: AbortSignal): Promise<OlderLoadResult> {
     if (this.closed || this.isSuspended) return Promise.resolve({ kind: 'cancelled', changed: false });
-    return this.olderLoads.request(agentId, (sharedSignal) => this.loadOlderTranscript(agentId, sharedSignal), signal);
+    const start = (): Promise<OlderLoadResult> =>
+      this.olderLoads.request(agentId, (sharedSignal) => this.loadOlderTranscript(agentId, sharedSignal), signal);
+    if (!this.resyncInFlight) return start();
+    return this.waitForResyncIdle(signal).then((resyncStatus) => {
+      if (resyncStatus === 'cancelled') return { kind: 'cancelled', changed: false };
+      if (resyncStatus === 'failed') return { kind: 'failed', changed: false };
+      return start();
+    });
   }
 
   private async loadOlderTranscript(agentId: string, signal: AbortSignal): Promise<OlderLoadResult> {
+    if (this.resyncInFlight) {
+      const resyncStatus = await this.waitForResyncIdle(signal);
+      if (resyncStatus === 'cancelled') return { kind: 'cancelled', changed: false };
+      if (resyncStatus === 'failed') return { kind: 'failed', changed: false };
+    }
     if (!this.flushPendingTranscriptBatch(agentId)) return { kind: 'cancelled', changed: false };
     const store = this.ensureAgentTranscript(agentId);
     const generation = this.historyGeneration.get(agentId) ?? 0;
