@@ -202,6 +202,20 @@ describe('UsageFactStore', () => {
     expect((await facts.read(SCOPE)).records).toEqual(records);
   });
 
+  it('bounds summary index preparation while allowing an explicit unbounded settle to finish', async () => {
+    const records = Array.from({ length: 20 }, (_, index) => normalizeUsageFact(fact(index), 'main')!);
+    await facts.commit(SCOPE, 0, { generation: 'legacy', offset: 20, size: 20, mtimeMs: 1, boundaryHash: '', valid: true }, records);
+    const budget = { remainingRecords: 3 };
+    expect(await facts.summary(SCOPE, undefined, { budget })).toEqual({ readComplete: false });
+    expect(budget.remainingRecords).toBe(0);
+    expect(await query.get(COLLECTION, 'head')).toBeUndefined();
+    const complete = await facts.summary(SCOPE);
+    expect(complete.readComplete).not.toBe(false);
+    expect(complete.checkpoint?.offset).toBe(20);
+    expect(complete.totals?.records).toBe(20);
+    expect(complete.totals?.usage.output).toBe(40);
+  });
+
   it('shares one fact allowance across concurrent source reads', async () => {
     const records = Array.from({ length: 300 }, (_, index) => normalizeUsageFact(fact(index, false), 'main')!);
     const scopes = [SCOPE, 'sessions/example/session/agents/child'];

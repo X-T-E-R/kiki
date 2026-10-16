@@ -1598,6 +1598,46 @@ describe('shared agent and history usage projection', () => {
     expect((await f.service.readAgentUsage('w', 's', ['main']))['main']?.records).toHaveLength(2);
   });
 
+  it('bounds a stalled panel summary preparation by the caller deadline without falling back to wire', async () => {
+    const f = fixture([summary('s', 'w')], { [scope('w', 's')]: [usageRecord(10)] }, () => 100);
+    let aborted = false;
+    vi.spyOn(f.facts, 'summary').mockImplementationOnce(async (_scope, signal, options) => {
+      expect(options?.budget?.remainingRecords).toBe(200_000);
+      return new Promise((_resolve, reject) => {
+        signal!.addEventListener('abort', () => { aborted = true; reject(signal!.reason); }, { once: true });
+      });
+    });
+    const started = performance.now();
+    const rows = await f.service.readAgentUsage('w', 's', ['main'], { summaryOnly: true, maxRecords: 1, deadlineAt: 130 });
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(aborted).toBe(true);
+    expect(rows['main']).toEqual({ records: [], complete: false });
+    expect(f.reads.size).toBe(0);
+    expect(f.service.cacheStatus().records).toBe(0);
+  });
+
+  it('keeps a partial panel summary uncached and leaves full settle without a new fact limit', async () => {
+    const f = fixture([summary('s', 'w')], { [scope('w', 's')]: [usageRecord(10), usageRecord(11)] }, () => 100);
+    await f.service.readAgentUsage('w', 's', ['main']);
+    const service = f.restart();
+    const summarize = f.facts.summary.bind(f.facts);
+    const spy = vi.spyOn(f.facts, 'summary').mockImplementationOnce(async (_scope, _signal, options) => {
+      expect(options?.budget?.remainingRecords).toBe(3);
+      options!.budget!.remainingRecords = 0;
+      return { readComplete: false };
+    });
+    const partial = await service.readAgentUsage('w', 's', ['main'], { summaryOnly: true, maxRecords: 1, maxFacts: 3, deadlineAt: 1000 });
+    expect(partial['main']).toEqual({ records: [], complete: false });
+    expect(service.cacheStatus().records).toBe(0);
+    spy.mockImplementationOnce(async (scope, signal, options) => {
+      expect(options?.budget).toBeUndefined();
+      return summarize(scope, signal);
+    });
+    const complete = await service.readAgentUsage('w', 's', ['main'], { summaryOnly: true });
+    expect(complete['main']?.complete).toBe(true);
+    expect(complete['main']?.totals?.usage.output).toBe(2);
+  });
+
   it('applies the ordinary deadline while persistent facts are stalled before wire recovery', async () => {
     const f = fixture([summary('s', 'w')], { [scope('w', 's')]: [usageRecord(10)] }, () => 100, { deadlineMs: 30 });
     let aborted = false;

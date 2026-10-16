@@ -48,7 +48,7 @@ export interface UsageFactRange {
 export interface IUsageFactStore {
   readonly _serviceBrand: undefined;
   read(scope: string, range?: UsageFactRange, signal?: AbortSignal, options?: UsageFactReadOptions): Promise<UsageFactSnapshot>;
-  summary(scope: string, signal?: AbortSignal): Promise<{ checkpoint?: UsageFactCheckpoint; totals?: UsageFactTotals }>;
+  summary(scope: string, signal?: AbortSignal, options?: UsageFactReadOptions): Promise<{ checkpoint?: UsageFactCheckpoint; totals?: UsageFactTotals; readComplete?: boolean }>;
   commit(scope: string, start: number, checkpoint: UsageFactCheckpoint, records: readonly UsageFact[]): Promise<void>;
 }
 
@@ -224,11 +224,17 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
     }), signal);
   }
 
-  summary(scope: string, signal?: AbortSignal): Promise<{ checkpoint?: UsageFactCheckpoint; totals?: UsageFactTotals }> {
-    return this.exclusive(scope, async () => {
-      const head = await this.prepareIndex(scope, signal);
-      return { checkpoint: head?.checkpoint, totals: head?.totals };
-    });
+  summary(scope: string, signal?: AbortSignal, options: UsageFactReadOptions = {}): Promise<{ checkpoint?: UsageFactCheckpoint; totals?: UsageFactTotals; readComplete?: boolean }> {
+    return abortable(this.exclusive(scope, async () => {
+      try {
+        const head = await this.prepareIndex(scope, signal, options.budget);
+        return { checkpoint: head?.checkpoint, totals: head?.totals };
+      } catch (error) {
+        signal?.throwIfAborted();
+        if (!(error instanceof FactBudgetReached)) throw error;
+        return { readComplete: false };
+      }
+    }), signal);
   }
 
   private async prepareIndex(scope: string, signal?: AbortSignal, budget?: UsageFactReadBudget): Promise<IndexHead | undefined> {

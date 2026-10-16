@@ -371,41 +371,66 @@ export class UsageAggregationService {
     agentIds: readonly string[],
     options: AgentUsageReadOptions = {},
   ): Promise<Readonly<Record<string, AgentUsageProjection>>> {
+    options.signal?.throwIfAborted();
+    const deadline = new AbortController();
+    const duration = (options.deadlineAt ?? Infinity) - this.now();
+    const timer = Number.isFinite(duration) ? setTimeout(() => { deadline.abort(new DOMException('Agent usage deadline', 'TimeoutError')); }, Math.max(0, duration)) : undefined;
+    timer?.unref();
+    const factSignal = options.signal === undefined ? deadline.signal : AbortSignal.any([options.signal, deadline.signal]);
+    const bounded = Number.isFinite(duration) || options.maxFacts !== undefined || options.maxRecords !== undefined || options.maxBytes !== undefined;
+    const factBudget = bounded ? { remainingRecords: options.maxFacts ?? this.limits.usageFactBudget ?? Infinity } : undefined;
+    const rows: Record<string, AgentUsageProjection> = {};
+    try {
+      await waitForSource(this.readAgentUsageSources(workspaceId, sessionId, agentIds, { ...options, factSignal, factBudget }, rows), factSignal);
+    } catch (error) {
+      options.signal?.throwIfAborted();
+      if (!deadline.signal.aborted) throw error;
+    } finally { if (timer !== undefined) clearTimeout(timer); }
+    for (const id of agentIds) rows[id] ??= { records: [], complete: false };
+    return rows;
+  }
+
+  private async readAgentUsageSources(
+    workspaceId: string,
+    sessionId: string,
+    agentIds: readonly string[],
+    options: AgentUsageReadOptions & { factSignal?: AbortSignal; factBudget?: UsageFactReadBudget },
+    rows: Record<string, AgentUsageProjection>,
+  ): Promise<Readonly<Record<string, AgentUsageProjection>>> {
     const summary: SessionSummary = { id: sessionId, workspaceId, createdAt: 0, updatedAt: 0, archived: false };
     const key = sessionKey(summary);
-    options.signal?.throwIfAborted();
     for (;;) {
       const pending = this.sessionFlights.get(key);
       if (pending === undefined) break;
       try {
-        await waitForSource(pending, options.signal);
+        await waitForSource(pending, options.factSignal);
       } catch (error) {
-        options.signal?.throwIfAborted();
-        if (!(error instanceof Error) || error.name !== 'AbortError') throw error;
+        options.factSignal?.throwIfAborted();
+        if (!(error instanceof Error) || (error.name !== 'AbortError' && error.name !== 'TimeoutError')) throw error;
       }
     }
-    options.signal?.throwIfAborted();
+    options.factSignal?.throwIfAborted();
     const ids = [...new Set(agentIds)];
-    const rows: Record<string, AgentUsageProjection> = {};
     if (options.summaryOnly) {
       const facts = this.core.accessor.get(IUsageFactStore);
       const storage = this.core.accessor.get(IFileSystemStorageService);
       const logs = this.core.accessor.get(IAppendLogStore);
       const sessionScope = sessionScopeOf(workspacePersistenceScope('sessions', workspaceId), sessionId);
       for (const id of ids) {
-        options.signal?.throwIfAborted();
-        if (this.now() >= (options.deadlineAt ?? Infinity)) break;
+        options.factSignal?.throwIfAborted();
+        if (this.now() >= (options.deadlineAt ?? Infinity)) return rows;
         const scope = agentScopeOf(sessionScope, id);
-        const generation = await logs.generation(scope, AGENT_WIRE_RECORD_KEY);
-        const [size, mtimeMs, projected] = await Promise.all([storage.size(scope, AGENT_WIRE_RECORD_KEY), storage.mtime(scope, AGENT_WIRE_RECORD_KEY), facts.summary(scope, options.signal)]);
+        const generation = await waitForSource(logs.generation(scope, AGENT_WIRE_RECORD_KEY), options.factSignal);
+        const [size, mtimeMs, projected] = await waitForSource(Promise.all([storage.size(scope, AGENT_WIRE_RECORD_KEY), storage.mtime(scope, AGENT_WIRE_RECORD_KEY), facts.summary(scope, options.factSignal, { budget: options.factBudget })]), options.factSignal);
+        if (projected.readComplete === false) return rows;
         const checkpoint = projected.checkpoint;
-        if (checkpoint?.valid && checkpoint.offset === (size ?? 0) && checkpoint.size === (size ?? 0) && checkpoint.mtimeMs === (mtimeMs ?? 0) && checkpoint.generation === generation && projected.totals !== undefined && await logs.generation(scope, AGENT_WIRE_RECORD_KEY) === generation) {
+        if (checkpoint?.valid && checkpoint.offset === (size ?? 0) && checkpoint.size === (size ?? 0) && checkpoint.mtimeMs === (mtimeMs ?? 0) && checkpoint.generation === generation && projected.totals !== undefined && await waitForSource(logs.generation(scope, AGENT_WIRE_RECORD_KEY), options.factSignal) === generation) {
           rows[id] = { records: [], totals: projected.totals, complete: true };
         }
       }
     }
     const missing = ids.filter((id) => rows[id] === undefined);
-    if (missing.length === 0) return rows;
+    if (missing.length === 0 || this.now() >= (options.deadlineAt ?? Infinity) || (options.factBudget?.remainingRecords ?? Infinity) <= 0) return rows;
     const flight = this.loadSessionIncremental(
       summary, options.maxRecords ?? Infinity, options.deadlineAt ?? Infinity,
       undefined, false, undefined, missing, options,
@@ -413,7 +438,8 @@ export class UsageAggregationService {
     this.sessionFlights.set(key, flight);
     try {
       const result = await flight;
-      this.cacheSession(key, result.persisted, false);
+      options.factSignal?.throwIfAborted();
+      if (result.persisted.readComplete !== false) this.cacheSession(key, result.persisted, false);
       const grouped = new Map<string | undefined, NormalizedUsageRecord[]>();
       for (const record of result.session.records) {
         const records = grouped.get(record.sourceAgentId) ?? [];
