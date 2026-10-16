@@ -143,7 +143,7 @@ describe('external native harness adapters', () => {
       sessionId: 'session-fixture', agentId: 'child', nativeTools: true, executorId,
     }));
     const off = resolveExecutionBinding({ executor: executorId, overrides: { inject_kiki_mcp: false } }, undefined, undefined, execution);
-    expect(await acquireHarnessMcp({ ...context, binding: { execution: off } }, '/workspace')).toBeUndefined();
+    expect(await acquireHarnessMcp({ ...context, binding: { ...context.binding, execution: off } }, '/workspace')).toBeUndefined();
     expect(acquire).toHaveBeenCalledTimes(1);
   });
 
