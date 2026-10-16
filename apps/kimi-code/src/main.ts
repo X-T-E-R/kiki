@@ -138,6 +138,7 @@ function bootstrap(): void {
     if (queryWorker) process.env['KIKI_SQLITE_QUERY_WORKER_PATH'] = queryWorker;
     process.env['KIKI_SQLITE_INDEXER_SEA'] = '1';
   } else {
+    delete process.env['KIKI_SQLITE_INDEXER_SEA'];
     const indexer = fileURLToPath(new URL('./sqlite-indexer.mjs', import.meta.url));
     const queryWorker = fileURLToPath(new URL('./sqlite-query-worker.mjs', import.meta.url));
     if (existsSync(indexer) && existsSync(queryWorker)) {
