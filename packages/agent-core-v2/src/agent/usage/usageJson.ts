@@ -141,6 +141,10 @@ export class UsageJsonStream {
     while (position < text.length) {
       const char = text[position]!;
       if (this.token === 'string') {
+        if (!this.captureString && !this.escape && this.unicodeLeft === 0) {
+          stringRun.lastIndex = position;
+          if (stringRun.test(text)) { position = stringRun.lastIndex; continue; }
+        }
         if (this.unicodeLeft > 0) {
           if (!/[0-9a-fA-F]/.test(char)) this.fail();
           this.unicode += char;
