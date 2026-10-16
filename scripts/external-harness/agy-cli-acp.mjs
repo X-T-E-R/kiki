@@ -102,12 +102,15 @@ export function vendorModelIds(output) {
   return values;
 }
 
+function safeDiagnosticLine(text) {
+  const line = text.trim();
+  if (line.length === 0 || /(?:token|bearer|api[_-]?key|secret|authorization|password)/iu.test(line) || /[A-Za-z0-9+/_-]{32,}={0,2}/u.test(line) || /[\u0000-\u0008\u000b-\u001f\u007f]/u.test(line)) return undefined;
+  return line.slice(0, 180);
+}
+
 export function catalogDiagnostic(text) {
   const line = String(text).split(/\r?\n/u).map(part => part.trim()).find(Boolean) ?? '';
-  if (line.length === 0 || /(?:token|bearer|api[_-]?key|secret|authorization|password)/iu.test(line) || /[A-Za-z0-9+/_-]{32,}={0,2}/u.test(line)) {
-    return 'AGY model catalog probe failed';
-  }
-  return line.slice(0, 180);
+  return safeDiagnosticLine(line) ?? 'AGY model catalog probe failed';
 }
 
 export function readVendorModelCatalog({ cliPath, cliPrefix = [], spawnProcess = spawn, stopProcess, timeoutMs = CATALOG_TIMEOUT_MS, maxOutputBytes = CATALOG_MAX_BYTES } = {}) {
@@ -466,6 +469,8 @@ export class AgyBridge {
     session.exited = new Promise(done => child.once('close', done));
     const decoder = new StringDecoder('utf8');
     let buffer = '';
+    let stderr = Buffer.alloc(0);
+    let stderrTruncated = false;
     let delivery = Promise.resolve();
     const fail = error => {
       session.broken = true;
@@ -489,15 +494,28 @@ export class AgyBridge {
     child.stderr.on('data', chunk => {
       const text = chunk.toString();
       if (/auto-denied|soft.denied|permission.*denied/i.test(text)) session.denied = true;
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      stderrTruncated ||= stderr.length + bytes.length > 8192;
+      const tail = Buffer.concat([stderr, bytes.subarray(Math.max(0, bytes.length - 8192))]);
+      stderr = tail.subarray(Math.max(0, tail.length - 8192));
       process.stderr.write(chunk);
     });
     child.stdin.on('error', fail);
     child.on('error', fail);
     child.once('close', (code, signal) => {
+      const lines = stderr.toString('utf8').split(/\r?\n/u);
+      if (stderrTruncated) lines.shift();
+      const diagnostic = lines.map(safeDiagnosticLine).findLast(line => line !== undefined);
+      stderr = Buffer.alloc(0);
       session.cleanup = delivery.finally(async () => {
         session.broken = true;
         if (session.active) {
-          session.active.reject(new Error(`AGY exited before terminal result (${code ?? signal})`));
+          const message = `AGY exited before terminal result (code: ${code ?? 'none'}, signal: ${signal ?? 'none'})${diagnostic === undefined ? '' : `: ${diagnostic}`}`;
+          const error = new Error(message);
+          error.code = 'AGY_EARLY_EXIT';
+          error.details = { exitCode: code ?? null, signal: signal ?? null, diagnostic };
+          session.failure = message;
+          session.active.reject(error);
           session.active = undefined;
         }
         for (const controller of session.permissionRequests) controller.abort(new Error('AGY process ended'));

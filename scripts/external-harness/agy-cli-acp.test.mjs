@@ -132,6 +132,76 @@ test('malformed NDJSON and unexpected CLI exit fail current turn and leave no li
   }
 });
 
+test('real ACP early exits retain bounded safe diagnostics without mixing sessions or cancellation', { timeout: 15000 }, async () => {
+  const require = createRequire(new URL('../../packages/acp-client/package.json', import.meta.url));
+  const sdkPath = process.env.AGY_TEST_ACP_SDK_PATH ?? require.resolve('@agentclientprotocol/sdk');
+  const vendorScript = `
+    if (process.argv.includes('models')) process.exit(0);
+    process.stdin.once('data', bytes => {
+      const name = JSON.parse(bytes.toString()).message.content;
+      const errors = {
+        known: 'Fixture service unavailable: upstream refused the request.\\n',
+        secret: 'Authorization: Bearer fixture-credential\\napi_key=fixture-key\\n' + 'x'.repeat(64) + '\\n',
+        empty: '',
+        bounded: 'Old leading diagnostic.\\n' + 'y'.repeat(16384) + '\\nFixture service unavailable after verbose output.\\n',
+        truncated: 'password=' + 'z'.repeat(16384),
+        hang: 'Cancellation diagnostic must not become an early-exit error.\\n'
+      };
+      process.stderr.write(errors[name], () => {
+        if (name !== 'hang') process.exit(1);
+      });
+    });
+    process.stdin.once('end', () => process.exit(0));
+    process.stdin.resume();
+  `;
+  const adapterScript = `import { runBridge } from ${JSON.stringify(new URL('./agy-cli-acp.mjs', import.meta.url).href)}; await runBridge(${JSON.stringify({ sdkPath, cliPath: process.execPath, cliPrefix: ['-e', vendorScript, '--'] })});`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', adapterScript], { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+  const closed = new Promise((done, reject) => { child.once('error', reject); child.once('close', (code, signal) => done({ code, signal })); });
+  const responses = new Map();
+  let cancellationReady;
+  const ready = new Promise(done => { cancellationReady = done; });
+  child.stderr.on('data', bytes => { if (bytes.toString().includes('Cancellation diagnostic')) cancellationReady(); });
+  const reader = createInterface({ input: child.stdout });
+  reader.on('line', line => {
+    const frame = JSON.parse(line);
+    if (frame.id !== undefined) { responses.get(frame.id)?.(frame); responses.delete(frame.id); }
+  });
+  let nextId = 0;
+  const request = (method, params) => {
+    const id = ++nextId;
+    return new Promise(done => { responses.set(id, done); child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n'); });
+  };
+  try {
+    assert.ok((await request('initialize', { protocolVersion: 1, clientCapabilities: {} })).result);
+    const ids = {};
+    for (const name of ['known', 'secret', 'empty', 'bounded', 'truncated', 'hang']) ids[name] = (await request('session/new', { cwd, mcpServers: [] })).result.sessionId;
+    const failed = await Promise.all(['known', 'secret', 'empty', 'bounded', 'truncated'].map(async name => {
+      const frame = await request('session/prompt', { sessionId: ids[name], prompt: [{ type: 'text', text: name }] });
+      assert.equal(frame.error.code, -32603);
+      assert.equal(frame.error.data.adapterCode, 'AGY_EARLY_EXIT');
+      assert.equal(frame.error.data.details.exitCode, 1);
+      assert.equal(frame.error.data.details.signal, null);
+      return [name, frame.error];
+    }));
+    const errors = Object.fromEntries(failed);
+    assert.match(errors.known.message, /code: 1, signal: none.*Fixture service unavailable: upstream refused the request/);
+    assert.equal(errors.known.data.details.diagnostic, 'Fixture service unavailable: upstream refused the request.');
+    for (const name of ['secret', 'empty', 'truncated']) {
+      assert.equal(errors[name].message, 'AGY exited before terminal result (code: 1, signal: none)');
+      assert.equal(errors[name].data.details.diagnostic, undefined);
+    }
+    assert.equal(errors.bounded.data.details.diagnostic, 'Fixture service unavailable after verbose output.');
+    assert.doesNotMatch(JSON.stringify(errors), /fixture-credential|fixture-key|xxxxxxxx|yyyyyyyy|zzzzzzzz|Old leading/);
+    assert(JSON.stringify(errors).length < 2000);
+    const pending = request('session/prompt', { sessionId: ids.hang, prompt: [{ type: 'text', text: 'hang' }] });
+    await ready;
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'session/cancel', params: { sessionId: ids.hang } }) + '\n');
+    assert.equal((await pending).result.stopReason, 'cancelled');
+  } finally { child.stdin.end(); }
+  assert.deepEqual(await closed, { code: 0, signal: null });
+  reader.close();
+});
+
 test('cancel settles the owned session after the injected process stopper and never implicitly resumes', async () => {
   const b = bridge(); const id = await session(b); const messages = [];
   const pending = turn(b, id, 'tool-hang', messages);
