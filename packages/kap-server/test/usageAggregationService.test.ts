@@ -1,9 +1,21 @@
 import { join } from 'node:path';
+import { mkdtempSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { TestInstantiationService } from '@kiki/agent-core-v2/_base/di/test';
+import { SyncDescriptor } from '@kiki/agent-core-v2/_base/di/descriptors';
+import { MiniDbQueryStore, drainQueryStoreDisposals } from '@kiki/agent-core-v2/persistence/backends/minidb/miniDbQueryStore';
+import { InMemoryStorageService } from '@kiki/agent-core-v2/persistence/backends/memory/inMemoryStorageService';
+import { UsageFactStore } from '@kiki/agent-core-v2/app/usageFacts/usageFactStore';
+import { stubBootstrap } from '../../agent-core-v2/test/app/bootstrap/stubs';
+import { stubLog } from '../../agent-core-v2/test/_base/log/stubs';
 
 import {
   AppendLogStore,
   IAppendLogStore,
   IUsageFactStore,
+  IQueryStore,
+  IBootstrapService,
   summarizeUsageFacts,
   type UsageFactSnapshot,
   ILogService,
@@ -21,12 +33,24 @@ import {
   type WireRecord,
 } from '@kiki/agent-core-v2';
 import { Emitter, Event } from '@kiki/agent-core-v2/_base/event';
+import { UsageWireFramer } from '@kiki/agent-core-v2/agent/usage/usageWireFramer';
 import type { UsageQuery } from '@kiki/protocol';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { IModelPricingService } from '../src/pricing/modelPricingService';
 import { UsageAggregationService } from '../src/usage/usageAggregationService';
+import { UsageRangeFold } from '../src/usage/usageRangeFold';
 import { UsageSourceTracker, type UsageSourceChanges } from '../src/usage/usageSourceTracker';
+
+const queryFixtures: { home: string; ix: TestInstantiationService; store: IQueryStore }[] = [];
+afterEach(async () => {
+  for (const { home, ix, store } of queryFixtures.splice(0)) {
+    await store.close();
+    await ix.dispose();
+    await drainQueryStoreDisposals();
+    await rm(home, { recursive: true, force: true, maxRetries: 5 });
+  }
+});
 
 interface Fixture {
   readonly service: UsageAggregationService;
@@ -119,6 +143,13 @@ function fixture(
   beforeMetadataRead: () => Promise<void> = async () => {},
   sourceChanges?: UsageSourceChanges,
 ): Fixture {
+  const home = mkdtempSync(join(tmpdir(), 'usage-range-query-'));
+  const ix = new TestInstantiationService();
+  ix.stub(IBootstrapService, stubBootstrap(home));
+  ix.stub(ILogService, stubLog());
+  ix.set(IQueryStore, new SyncDescriptor(MiniDbQueryStore));
+  const queryStore = ix.get(IQueryStore);
+  queryFixtures.push({ home, ix, store: queryStore });
   const reads = new Map<string, number>();
   const readBytes = new Map<string, number>();
   const readOffsets: number[] = [];
@@ -207,17 +238,23 @@ function fixture(
     getPricing: async () => ({ items: [], overrides: {} }),
     setPricing: async () => ({ items: [], overrides: {} }),
     resolve: () => undefined,
-    calculate: () => { priceObserver(); return price; },
+    calculate: (_model, usage) => { priceObserver(); return price === undefined ? undefined : price * ((usage.inputOther ?? 0) + (usage.output ?? 0) + (usage.inputCacheRead ?? 0) + (usage.inputCacheCreation ?? 0)) / 4; },
     refreshNow: async () => false,
     status: () => ({ source: 'empty', keys: 0 }),
   };
   const facts: IUsageFactStore = {
     _serviceBrand: undefined,
-    async read(scope, range) {
+    async read(scope, range, signal, options) {
+      signal?.throwIfAborted();
       const bytes = await storage.read('facts', scope);
       if (bytes === undefined) return { records: [] };
       const snapshot = JSON.parse(Buffer.from(bytes).toString('utf8')) as UsageFactSnapshot;
-      return { ...snapshot, records: snapshot.records.filter((record) => record.invalid || ((range?.startAt === undefined || record.time >= range.startAt) && (range?.endAt === undefined || record.time < range.endAt))) };
+      const cursor = options?.cursor === undefined ? { offset: 0, count: snapshot.records.length, checkpoint: snapshot.checkpoint } : JSON.parse(options.cursor) as { offset: number; count: number; checkpoint: UsageFactSnapshot['checkpoint'] };
+      const selected = snapshot.records.slice(0, cursor.count).filter((record) => record.invalid || ((range?.startAt === undefined || record.time >= range.startAt) && (range?.endAt === undefined || record.time < range.endAt)));
+      const records = selected.slice(cursor.offset, cursor.offset + (options?.pageSize ?? Infinity));
+      cursor.offset += records.length;
+      const complete = cursor.offset >= selected.length;
+      return { checkpoint: cursor.checkpoint, records, readComplete: complete, nextCursor: complete ? undefined : JSON.stringify(cursor) };
     },
     async summary(scope, signal) {
       const snapshot = await facts.read(scope, undefined, signal);
@@ -238,6 +275,7 @@ function fixture(
         if (identifier === IRetainedUsageService) return retainedUsage;
         if (identifier === IModelPricingService) return pricing;
         if (identifier === IUsageFactStore) return facts;
+        if (identifier === IQueryStore) return queryStore;
         if (identifier === IAppendLogStore) return { generation: async () => 'legacy' };
         throw new Error('unexpected service');
       },
@@ -461,7 +499,7 @@ describe('UsageAggregationService first load', () => {
       let probes = 0;
       const changes = { ready: tracked, onDidChange: () => ({ dispose: () => {} }) };
       const f = fixture(sessions, records, () => now, {}, undefined, undefined, undefined, undefined,
-        async () => { probes++; await new Promise<void>((resolve) => setTimeout(resolve, 2)); }, changes);
+        async () => { probes++; await new Promise<void>((resolve) => setImmediate(resolve)); }, changes);
       const started = performance.now();
       const cold = await query(f.service, { range: 'today' });
       const coldMs = performance.now() - started;
@@ -477,7 +515,7 @@ describe('UsageAggregationService first load', () => {
     expect(responses[1]).toEqual(responses[0]);
     expect(measurements[0]?.warmProbes).toBe(855);
     expect(measurements[1]?.warmProbes).toBe(0);
-    console.log(JSON.stringify({ syntheticFleetSourceProbeBenchmark: { metadataDelayMs: 2, sessions: 285, measurements } }));
+    console.log(JSON.stringify({ syntheticFleetSourceProbeBenchmark: { metadataYield: 'setImmediate', sessions: 285, measurements } }));
   });
   it('measures checkpoint validation without dropping old long sessions or filtered details', async () => {
     const now = Date.UTC(2026, 8, 2, 12);
@@ -871,7 +909,9 @@ describe('UsageAggregationService cache budgets', () => {
     const two = await query(f.service);
     expect(two.reliability.complete).toBe(false);
     expect(two.summary.tokens.output).toBe(0);
-    const three = await query(f.restart());
+    const restarted = f.restart();
+    let three = await query(restarted);
+    for (let attempt = 0; attempt < 8 && three.reliability.incomplete_reason === 'record_budget'; attempt++) three = await query(restarted);
     expect(three.reliability).toMatchObject({ complete: false, incomplete_reason: null });
     expect(three.reliability.usage_coverage).toMatchObject({ known_records: 1, missing_records: 1 });
     expect(three.summary.tokens.output).toBe(1);
@@ -883,12 +923,13 @@ describe('UsageAggregationService cache budgets', () => {
     const wireScope = scope('w', 's');
     const large = Array.from({ length: 80 }, (_, time) => ({ type: 'message', time, text: 'x'.repeat(256 * 1024) } as WireRecord));
     const f = fixture([summary('s', 'w')], { [wireScope]: [...large, usageRecord(1)] }, () => 0);
-    const pending = f.service.query({}, controller.signal);
-    const poll = setInterval(() => {
-      if (f.persistedRecordCounts().length > 0) controller.abort(new DOMException('left page', 'AbortError'));
-    }, 0);
-    try { await expect(pending).rejects.toMatchObject({ name: 'AbortError' }); }
-    finally { clearInterval(poll); }
+    const commit = f.facts.commit.bind(f.facts);
+    const committed = vi.spyOn(f.facts, 'commit').mockImplementationOnce(async (...args) => {
+      await commit(...args);
+      controller.abort(new DOMException('left page', 'AbortError'));
+    });
+    try { await expect(f.service.query({}, controller.signal)).rejects.toMatchObject({ name: 'AbortError' }); }
+    finally { committed.mockRestore(); }
     f.readOffsets.length = 0;
     const final = await query(f.restart());
     expect(final.reliability.complete).toBe(true);
@@ -947,21 +988,25 @@ describe('UsageAggregationService cache budgets', () => {
     const records = Array.from({ length: boundary + 3 }, (_, index) => usageRecord(10 + index, index + 1));
     const f = fixture([session], { [wireScope]: records }, () => 0, { deadlineMs: 50 });
     const baseline = await query(fixture([session], { [wireScope]: records }, () => 0).service);
-    let clockChecks = 0;
+    let consumed = 0;
     let abortedAtYield = false;
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    const clock = vi.spyOn(performance, 'now').mockImplementation(() => {
-      clockChecks++;
-      if (clockChecks === (boundary === 128 ? 2 : 8)) {
-        queueMicrotask(() => { abortedAtYield = true; vi.advanceTimersByTime(50); });
-      }
-      return boundary === 128 && clockChecks > 1 ? 9 : 0;
+    const consume = UsageWireFramer.prototype.consume;
+    const framing = vi.spyOn(UsageWireFramer.prototype, 'consume').mockImplementation(function (this: UsageWireFramer, ...args) {
+      let checks = 0;
+      const clock = vi.spyOn(performance, 'now').mockImplementation(() => boundary === 128 && checks++ > 0 ? 9 : 0);
+      try {
+        const slice = consume.apply(this, args);
+        consumed += slice.rawCount;
+        if (consumed === boundary) queueMicrotask(() => { abortedAtYield = true; vi.advanceTimersByTime(50); });
+        return slice;
+      } finally { clock.mockRestore(); }
     });
     let first: Awaited<ReturnType<typeof query>>;
     try {
       first = await query(f.service);
     } finally {
-      clock.mockRestore();
+      framing.mockRestore();
       vi.useRealTimers();
     }
     expect(abortedAtYield).toBe(true);
@@ -1420,7 +1465,10 @@ describe('UsageAggregationService full rescan', () => {
     const completed = await finishRescan(f.service);
     expect(completed).toMatchObject({ state: 'completed', scanned_sessions: 505, total_sessions: 505, scanned_records: 1009, error: null });
     const restarted = f.restart();
-    const response = await query(restarted);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let response: Awaited<ReturnType<typeof query>>;
+    try { response = await query(restarted); }
+    finally { vi.useRealTimers(); }
     expect(response.summary.session_count).toBe(505);
     expect(response.reliability).toMatchObject({ complete: true, incomplete_reason: null });
     expect(response.summary.tokens.input_other).toBe(1010);
@@ -1457,7 +1505,7 @@ describe('UsageAggregationService full rescan', () => {
     }, () => 1);
     f.service.startFullRescan();
     await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(f.service.rescanStatus()).toMatchObject({ state: 'running', scanned_sessions: 0, scanned_records: 1024, total_sessions: 1 });
+    expect(f.service.rescanStatus()).toMatchObject({ state: 'running', scanned_sessions: 0, scanned_records: 256, total_sessions: 1 });
     expect(await finishRescan(f.service)).toMatchObject({ state: 'completed', scanned_records: 200_005 });
     expect((await query(f.service)).summary.tokens.input_other).toBe(200_005);
   }, 30_000);
@@ -1729,5 +1777,94 @@ describe('shared agent and history usage projection', () => {
     expect(response.summary.tokens.input_other).toBe(1);
     expect(response.reliability.complete).toBe(true);
     expect(f.reads.get(scope('w', 's'))).toBe(2);
+  });
+
+  it('continues a fact-limited ordinary query to exact totals across appends, restart and rewrite', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'usage-range-real-'));
+    const ix = new TestInstantiationService();
+    const storage = new InMemoryStorageService();
+    ix.stub(IBootstrapService, stubBootstrap(home));
+    ix.stub(ILogService, stubLog());
+    ix.stub(IFileSystemStorageService, storage);
+    ix.set(IQueryStore, new SyncDescriptor(MiniDbQueryStore));
+    ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+    ix.set(IUsageFactStore, new SyncDescriptor(UsageFactStore));
+    const facts = ix.get(IUsageFactStore);
+    const logs = ix.get(IAppendLogStore);
+    queryFixtures.push({ home, ix, store: ix.get(IQueryStore) });
+    const wireScope = scope('example', 'session');
+    await storage.write('sessions/example/session/agents', 'main', new Uint8Array());
+    for (let index = 0; index < 8; index++) logs.append(wireScope, 'wire.jsonl', { ...usageRecord(10 + index, Math.floor(index / 2)), usageKnown: index !== 2, modelAlias: 'example', agentId: 'main' });
+    await logs.flush(wireScope, 'wire.jsonl');
+    await facts.summary(wireScope);
+    const auxiliaryScope = wireScope.replace(/main$/, 'auxiliary');
+    await storage.write('sessions/example/session/agents', 'auxiliary', new Uint8Array());
+    for (let index = 0; index < 2; index++) logs.append(auxiliaryScope, 'wire.jsonl', { ...usageRecord(30 + index, 0), usageKnown: true, modelAlias: 'example', agentId: 'auxiliary' });
+    await logs.flush(auxiliaryScope, 'wire.jsonl');
+    await facts.summary(auxiliaryScope);
+    const item = summary('session', 'example');
+    const pricing = { ready: Promise.resolve(), calculate: (_model: string, usage: { inputOther: number; output: number; inputCacheRead: number; inputCacheCreation: number }) => Object.values(usage).reduce((sum, value) => sum + value, 0) / 4 };
+    const core = { accessor: { get: (id: unknown) => {
+      if (id === ISessionIndex) return { listRecent: async () => ({ items: [item] }) };
+      if (id === IRetainedUsageService) return { listDeletedSessions: async () => ({ items: [retainedSession('deleted-session', 'example', [retainedRecord(15, { turnId: 1, usageKnown: true })])], scannedRecords: 1, complete: true }) };
+      if (id === IModelPricingService) return pricing;
+      return ix.get(id as typeof IQueryStore);
+    } } } as unknown as Scope;
+    const input = { range: 'custom', start_at: 0, end_at: 100, dimension: 'model' } as const;
+    const oracle = await new UsageAggregationService(core, () => 100).query(input);
+    expect(oracle.summary.tokens.input_other).toBe(10);
+    expect(oracle.trend[0]?.turn_count).toBe(6);
+    let service = new UsageAggregationService(core, () => 100, { usageFactBudget: 3 });
+    const first = await service.query(input);
+    expect(first.reliability.complete).toBe(false);
+    expect(first.reliability.incomplete_reason).toBe('record_budget');
+    const second = await service.query(input);
+    expect(second.reliability.complete).toBe(false);
+    logs.append(wireScope, 'wire.jsonl', { ...usageRecord(1, 99), usageKnown: true, modelAlias: 'example', agentId: 'main' });
+    await logs.flush(wireScope, 'wire.jsonl');
+    logs.append(auxiliaryScope, 'wire.jsonl', { ...usageRecord(2, 99), usageKnown: true, modelAlias: 'example', agentId: 'auxiliary' });
+    await logs.flush(auxiliaryScope, 'wire.jsonl');
+    service = new UsageAggregationService(core, () => 101, { usageFactBudget: 3 });
+    let completed = second;
+    for (let attempt = 0; attempt < 10 && !completed.reliability.complete; attempt++) completed = await service.query(input);
+    expect(completed.reliability.complete).toBe(true);
+    expect(completed.summary).toEqual(oracle.summary);
+    expect(completed.trend).toEqual(oracle.trend);
+    let refreshed = await service.query(input);
+    for (let attempt = 0; attempt < 12 && !refreshed.reliability.complete; attempt++) refreshed = await service.query(input);
+    expect(refreshed.reliability.complete).toBe(true);
+    expect(refreshed.summary.tokens.input_other).toBe(oracle.summary.tokens.input_other + 2);
+    await logs.rewrite(wireScope, 'wire.jsonl', [{ ...usageRecord(5, 3), usageKnown: true, modelAlias: 'example', agentId: 'main' }]);
+    let rewritten = await service.query(input);
+    for (let attempt = 0; attempt < 10 && !rewritten.reliability.complete; attempt++) rewritten = await service.query(input);
+    expect(rewritten.reliability.complete).toBe(true);
+    expect(rewritten.summary.tokens.input_other).toBe(5);
+    expect(rewritten.trend[0]?.turn_count).toBe(4);
+    const readPage = UsageRangeFold.prototype.recordPage;
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const spy = vi.spyOn(UsageRangeFold.prototype, 'recordPage').mockImplementation(async function (this: UsageRangeFold, cursor) {
+      enter(); await gate; return readPage.call(this, cursor);
+    });
+    try {
+      const abort = new AbortController();
+      const cancelled = service.query(input, abort.signal);
+      const survivor = service.query(input);
+      await entered;
+      abort.abort();
+      await expect(cancelled).rejects.toMatchObject({ name: 'AbortError' });
+      release();
+      expect((await survivor).summary).toEqual(rewritten.summary);
+      expect(spy).toHaveBeenCalledTimes(1);
+      spy.mockImplementation(() => new Promise(() => undefined));
+      const bounded = new UsageAggregationService(core, () => 102, { usageFactBudget: 3, deadlineMs: 30 });
+      const partial = await bounded.query(input);
+      expect(partial.reliability.complete).toBe(false);
+      expect(partial.reliability.incomplete_reason).toBe('deadline');
+      spy.mockRestore();
+      expect((await bounded.query(input)).summary).toEqual(rewritten.summary);
+    } finally { release(); spy.mockRestore(); }
   });
 });

@@ -179,6 +179,44 @@ describe('UsageFactStore', () => {
     expect(result.filter((row) => row.invalid)).toHaveLength(1);
   });
 
+  it('freezes paged range ordinals across backdated appends and rejects a rewritten generation', async () => {
+    for (const value of [fact(1), fact(2, false), fact(3)]) logs.append(SCOPE, KEY, value);
+    await logs.flush(SCOPE, KEY);
+    const first = await facts.read(SCOPE, { startAt: 0, endAt: 10 }, undefined, { pageSize: 0 });
+    expect(first.records).toHaveLength(0);
+    expect(first.nextCursor).toBeDefined();
+    logs.append(SCOPE, KEY, fact(0));
+    await logs.flush(SCOPE, KEY);
+    const records = [...first.records];
+    let cursor = first.nextCursor;
+    for (let pass = 0; cursor !== undefined && pass < 5; pass++) {
+      const next = await facts.read(SCOPE, { startAt: 0, endAt: 10 }, undefined, { pageSize: 1, cursor });
+      expect(next.records.length).toBeLessThanOrEqual(1);
+      expect(next.checkpoint).toEqual(first.checkpoint);
+      records.push(...next.records);
+      cursor = next.nextCursor;
+    }
+    expect(cursor).toBeUndefined();
+    expect(records.map((record) => record.time)).toEqual([1, 2, 3]);
+    expect((await facts.read(SCOPE)).records).toHaveLength(4);
+    await logs.rewrite(SCOPE, KEY, [fact(9)]);
+    await expect(facts.read(SCOPE, { startAt: 0, endAt: 10 }, undefined, { cursor: first.nextCursor, pageSize: 1 })).rejects.toThrow('Usage fact cursor changed');
+  });
+
+  it('rebuilds the earlier query-view format from facts without changing the journal', async () => {
+    logs.append(SCOPE, KEY, fact(1));
+    await logs.flush(SCOPE, KEY);
+    const expected = await facts.read(SCOPE);
+    const head = await query.get<Record<string, unknown>>(COLLECTION, 'head');
+    await query.put(COLLECTION, 'head', { ...head, version: 1 });
+    const before = await storage.read(`cache/usage-facts-v1/${ID}`, 'facts.jsonl');
+    const read = vi.spyOn(storage, 'readStream');
+    expect(await facts.read(SCOPE)).toEqual(expected);
+    expect(await query.get(COLLECTION, 'head')).toMatchObject({ version: 2 });
+    expect(await storage.read(`cache/usage-facts-v1/${ID}`, 'facts.jsonl')).toEqual(before);
+    expect(read.mock.calls.every(([, key]) => key === 'facts.jsonl')).toBe(true);
+  });
+
   it('resumes multi-page index construction within fact allowances without publishing its source checkpoint early', async () => {
     const records = Array.from({ length: 900 }, (_, index) => normalizeUsageFact(fact(index), 'main')!);
     await facts.commit(SCOPE, 0, { generation: 'legacy', offset: 900, size: 900, mtimeMs: 1, boundaryHash: '', valid: true }, records);

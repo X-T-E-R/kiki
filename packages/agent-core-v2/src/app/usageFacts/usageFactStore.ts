@@ -38,6 +38,7 @@ export interface UsageFactReadBudget {
 export interface UsageFactReadOptions {
   readonly budget?: UsageFactReadBudget;
   readonly cursor?: string;
+  readonly pageSize?: number;
 }
 
 export interface UsageFactRange {
@@ -62,7 +63,8 @@ interface FactBatch {
 }
 
 interface IndexHead {
-  readonly version: 1;
+  readonly version: 2;
+  readonly epoch: number;
   readonly ledgerOffset: number;
   readonly recordCount: number;
   readonly totals: UsageFactTotals;
@@ -88,6 +90,9 @@ interface ReadCursor {
   startAt?: number;
   endAt?: number;
   ledgerOffset: number;
+  epoch: number;
+  recordCount: number;
+  checkpoint: UsageFactCheckpoint;
   phase: 'all' | 'range' | 'invalid';
   offset: number;
   page?: string;
@@ -100,6 +105,10 @@ const PAGE_SIZE = 256;
 
 class InvalidFactJournal extends Error {}
 class FactBudgetReached extends Error {}
+
+export class UsageFactCursorChangedError extends Error {
+  constructor() { super('Usage fact cursor changed'); }
+}
 
 export class UsageFactStore extends Disposable implements IUsageFactStore {
   declare readonly _serviceBrand: undefined;
@@ -176,35 +185,42 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
       const records: UsageFact[] = [];
       let head: IndexHead | undefined;
       let cursor: ReadCursor | undefined;
+      let remainingPage = options.pageSize ?? Infinity;
+      if (!(remainingPage >= 0)) throw new RangeError('Usage fact page must be nonnegative');
       try {
         head = await this.prepareIndex(scope, signal, options.budget);
         if (head?.checkpoint === undefined) return { records };
         const ranged = range?.startAt !== undefined || range?.endAt !== undefined;
-        cursor = options.cursor === undefined ? { source: collection, startAt: range?.startAt, endAt: range?.endAt, ledgerOffset: head.ledgerOffset, phase: ranged ? 'range' : 'all', offset: 0 } : JSON.parse(options.cursor) as ReadCursor;
-        if (cursor === null || cursor.source !== collection || cursor.startAt !== range?.startAt || cursor.endAt !== range?.endAt || cursor.ledgerOffset !== head.ledgerOffset ||
-          !['all', 'range', 'invalid'].includes(cursor.phase) || !Number.isSafeInteger(cursor.offset) || cursor.offset < 0 || cursor.offset > head.recordCount ||
-          (cursor.page !== undefined && typeof cursor.page !== 'string')) throw new Error('Usage fact cursor changed');
+        cursor = options.cursor === undefined ? { source: collection, startAt: range?.startAt, endAt: range?.endAt, ledgerOffset: head.ledgerOffset, epoch: head.epoch, recordCount: head.recordCount, checkpoint: head.checkpoint, phase: ranged ? 'range' : 'all', offset: 0 } : JSON.parse(options.cursor) as ReadCursor;
+        if (cursor === null || cursor.source !== collection || cursor.startAt !== range?.startAt || cursor.endAt !== range?.endAt || cursor.ledgerOffset > head.ledgerOffset || cursor.epoch !== head.epoch ||
+          cursor.checkpoint?.generation !== head.checkpoint.generation || cursor.checkpoint.offset > head.checkpoint.offset ||
+          !Number.isSafeInteger(cursor.recordCount) || cursor.recordCount < 0 || cursor.recordCount > head.recordCount ||
+          !['all', 'range', 'invalid'].includes(cursor.phase) || !Number.isSafeInteger(cursor.offset) || cursor.offset < 0 || cursor.offset > cursor.recordCount ||
+          (cursor.page !== undefined && typeof cursor.page !== 'string')) throw new UsageFactCursorChangedError();
         if (cursor.phase === 'all') {
-          while (cursor.offset < head.recordCount) {
+          while (cursor.offset < cursor.recordCount) {
             signal?.throwIfAborted();
             const start = cursor.offset;
-            const count = allowance(options.budget, Math.min(PAGE_SIZE, head.recordCount - start));
+            const count = allowance(options.budget, Math.min(PAGE_SIZE, remainingPage, cursor.recordCount - start));
             const keys = Array.from({ length: count }, (_value, index) => `fact:${start + index}`);
-            const rows = await abortable(this.query.getMany<UsageFact & { kind: string }>(collection, keys), signal);
+            const rows = await abortable(this.query.getMany<UsageFact & { kind: string; ordinal: number }>(collection, keys), signal);
             if (rows.size !== keys.length) throw new Error('Incomplete usage fact index');
-            for (const key of keys) { const { kind: _kind, ...fact } = rows.get(key)!; records.push(fact); }
+            for (const key of keys) { const { kind: _kind, ordinal: _ordinal, ...fact } = rows.get(key)!; records.push(fact); }
             cursor.offset += count;
+            remainingPage -= count;
             await yieldToEventLoop(undefined, { signal });
           }
         } else {
           for (;;) {
             signal?.throwIfAborted();
-            const limit = allowance(options.budget, PAGE_SIZE);
-            let read = this.query.query<UsageFact & { kind: string }>(collection).where(cursor.phase === 'invalid' ? { kind: 'fact', invalid: true } : { kind: 'fact' }).limit(limit).cursor(cursor.page);
+            const limit = allowance(options.budget, Math.min(PAGE_SIZE, remainingPage));
+            const filter = cursor.phase === 'invalid' ? { kind: 'fact', invalid: true, ordinal: { $lt: cursor.recordCount } } : { kind: 'fact', ordinal: { $lt: cursor.recordCount } };
+            let read = this.query.query<UsageFact & { kind: string; ordinal: number }>(collection).where(filter).limit(limit).cursor(cursor.page);
             if (cursor.phase === 'range') read = read.whereColumn('time', { gte: range?.startAt, lt: range?.endAt });
             const page = await abortable(read.execute(), signal);
             if (options.budget !== undefined) options.budget.remainingRecords += limit - page.items.length;
-            for (const { kind: _kind, ...fact } of page.items) {
+            remainingPage -= page.items.length;
+            for (const { kind: _kind, ordinal: _ordinal, ...fact } of page.items) {
               if (cursor.phase === 'range' || (range?.startAt !== undefined && fact.time < range.startAt) || (range?.endAt !== undefined && fact.time >= range.endAt)) records.push(fact);
             }
             cursor.page = page.nextCursor;
@@ -215,11 +231,11 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
             await yieldToEventLoop(undefined, { signal });
           }
         }
-        return { checkpoint: head.checkpoint, records };
+        return { checkpoint: cursor.checkpoint, records };
       } catch (error) {
         signal?.throwIfAborted();
         if (!(error instanceof FactBudgetReached)) throw error;
-        return { checkpoint: head?.checkpoint, records, readComplete: false, nextCursor: cursor === undefined ? undefined : JSON.stringify(cursor) };
+        return { checkpoint: cursor?.checkpoint ?? head?.checkpoint, records, readComplete: false, nextCursor: cursor === undefined ? options.cursor : JSON.stringify(cursor) };
       }
     }), signal);
   }
@@ -252,7 +268,7 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
     }
     this.indexing.delete(scope);
     let head = await abortable(this.query.get<IndexHead>(collection, HEAD), signal);
-    if (head !== undefined && (head.version !== 1 || head.ledgerOffset > size || !await this.verifyIndex(collection, head, signal, budget))) {
+    if (head !== undefined && (head.version !== 2 || head.ledgerOffset > size || !await this.verifyIndex(collection, head, signal, budget))) {
       await this.query.dropCollection(collection);
       head = undefined;
     }
@@ -323,7 +339,7 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
           recordCount = 0;
           totals = summarizeUsageFacts([]);
         }
-        progress.copying = { version: 1, ledgerOffset: progress.offset, recordCount, checkpoint, totals };
+        progress.copying = { version: 2, epoch: checkpoint === undefined ? progress.offset : progress.head!.epoch, ledgerOffset: progress.offset, recordCount, checkpoint, totals };
       }
       if (batch.start === (progress.copying.checkpoint?.offset ?? 0)) {
         while (progress.copied < progress.staged) {
@@ -333,7 +349,7 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
           const rows = await abortable(this.query.getMany<UsageFact>(stage, keys), signal);
           if (rows.size !== count) throw new InvalidFactJournal('Incomplete staged usage facts');
           const facts = keys.map((key) => rows.get(key)!);
-          await this.query.batch(facts.map((fact, index) => ({ kind: 'put', collection, key: `fact:${progress.copying!.recordCount + index}`, value: { ...fact, kind: 'fact' }, columns: { time: fact.time } })));
+          await this.query.batch(facts.map((fact, index) => ({ kind: 'put', collection, key: `fact:${progress.copying!.recordCount + index}`, value: { ...fact, kind: 'fact', ordinal: progress.copying!.recordCount + index }, columns: { time: fact.time } })));
           progress.copying = { ...progress.copying, recordCount: progress.copying.recordCount + count, totals: summarizeUsageFacts(facts, progress.copying.totals) };
           progress.copied += count;
           await yieldToEventLoop(undefined, { signal });
@@ -434,6 +450,7 @@ function validFact(record: UsageFact): boolean {
 }
 
 function allowance(budget: UsageFactReadBudget | undefined, requested: number): number {
+  if (requested <= 0) throw new FactBudgetReached();
   if (budget === undefined) return requested;
   const count = Math.min(requested, budget.remainingRecords);
   if (count <= 0) throw new FactBudgetReached();
