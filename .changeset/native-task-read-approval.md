@@ -2,4 +2,4 @@
 "@kiki/cli": patch
 ---
 
-Fix approval of read-only native background-task queries.
+Fix native AGY tool approvals and explicit permission mode recovery.

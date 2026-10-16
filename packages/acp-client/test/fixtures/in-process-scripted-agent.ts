@@ -25,6 +25,7 @@ export interface InProcessAgentScript {
   readonly stopReason?: StopReason;
   readonly hangPrompt?: boolean;
   readonly modeUpdate?: string;
+  readonly sessionResponseMeta?: Record<string, unknown>;
 }
 
 export interface InProcessAgentHistory {
@@ -104,7 +105,7 @@ export function createInProcessScriptedAgent(
     .onRequest(methods.agent.session.new, ({ params }) => {
       history.methods.push('session/new');
       history.sessionNewParams.push(params);
-      return { sessionId, configOptions };
+      return { sessionId, configOptions, _meta: script.sessionResponseMeta };
     })
     .onRequest(methods.agent.session.fork, ({ params }) => {
       history.methods.push('session/fork');
@@ -127,7 +128,7 @@ export function createInProcessScriptedAgent(
           update,
         });
       }
-      return { configOptions };
+      return { configOptions, _meta: script.sessionResponseMeta };
     })
     .onRequest(methods.agent.session.setConfigOption, ({ params }) => {
       history.methods.push('session/set_config_option');

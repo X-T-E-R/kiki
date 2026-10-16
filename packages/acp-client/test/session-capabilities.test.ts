@@ -83,6 +83,22 @@ async function openWithScriptedAgent(
 }
 
 describe('AcpProcessClient session capability negotiation', () => {
+  it.each(['new', 'load'] as const)('preserves actual request and response metadata for %s and live reuse', async (mode) => {
+    const sessionMeta = { 'kiki.permission': { requestId: 'this-open', override: { mode: 'yolo', source: 'runtime' } } };
+    const responseMeta = { 'kiki.permission': { sessionId: 'session-in-process', openMode: mode, applied: sessionMeta['kiki.permission'] } };
+    const { client, opened } = await openWithScriptedAgent({ capabilities: { loadSession: true }, sessionResponseMeta: responseMeta }, {
+      sessionMeta, sessionRef: mode === 'load' ? { executorId: 'fixture', version: 1, ref: { sessionId: 'session-in-process' } } : undefined,
+    });
+    try {
+      expect(opened.mode).toBe(mode);
+      expect(opened.sessionRequestMeta).toEqual(sessionMeta);
+      expect(opened.sessionResponseMeta).toEqual(responseMeta);
+      const live = await client.openSession({ cwd: 'C:/workspace', sessionMeta: { 'kiki.permission': { requestId: 'not-sent-on-live-open' } } });
+      expect(live.mode).toBe('live');
+      expect(live.sessionRequestMeta).toEqual(sessionMeta);
+      expect(live.sessionResponseMeta).toEqual(responseMeta);
+    } finally { await client.shutdown(); }
+  });
   it.each(['partial', 'explicit', 'explicit-null', 'other-session', 'next-turn'] as const)(
     'preserves scoped permission tool facts for %s requests', async (scenario) => {
       const script: InProcessAgentScript = {

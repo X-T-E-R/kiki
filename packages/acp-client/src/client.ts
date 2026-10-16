@@ -92,6 +92,7 @@ interface OpenResponse {
   readonly configOptions: readonly SessionConfigOption[];
   readonly currentModeId?: string;
   readonly availableModes?: readonly string[];
+  readonly sessionMeta?: Readonly<Record<string, unknown>>;
 }
 
 class LineBuffer {
@@ -950,6 +951,8 @@ export class AcpProcessClient {
       currentModeId: opened.currentModeId,
       availableModes: opened.availableModes,
       sessionRef,
+      sessionRequestMeta: options.sessionMeta === undefined ? undefined : structuredClone(options.sessionMeta),
+      sessionResponseMeta: opened.sessionMeta,
       loadReplayObserved: this.#loadReplayCount > 0,
       quarantinedUpdateCount: this.#loadReplayCount,
     };
@@ -1024,6 +1027,7 @@ export class AcpProcessClient {
           configOptions: sessionConfigOptionsFromResponse(response),
           currentModeId: response.modes?.currentModeId,
           availableModes: response.modes?.availableModes.map((mode) => mode.id),
+          sessionMeta: response._meta ?? undefined,
         };
       } catch (error) {
         if (!isFallbackSessionError(error)) throw error;
@@ -1047,6 +1051,7 @@ export class AcpProcessClient {
           configOptions: sessionConfigOptionsFromResponse(response),
           currentModeId: response.modes?.currentModeId,
           availableModes: response.modes?.availableModes.map((mode) => mode.id),
+          sessionMeta: response._meta ?? undefined,
         };
       } catch (error) {
         if (!isFallbackSessionError(error)) throw error;
@@ -1077,6 +1082,7 @@ export class AcpProcessClient {
       configOptions: sessionConfigOptionsFromResponse(response),
       currentModeId: response.modes?.currentModeId,
       availableModes: response.modes?.availableModes.map((mode) => mode.id),
+      sessionMeta: response._meta ?? undefined,
     };
   }
 

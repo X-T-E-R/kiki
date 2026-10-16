@@ -117,6 +117,7 @@ interface FakeHarnessOptions {
   readonly inheritPermission?: boolean;
   readonly vendorDefaultOption?: boolean;
   readonly permissionToolCall?: Parameters<AcpPermissionHandler>[0]['toolCall'];
+  readonly permissionRequestMeta?: Record<string, unknown>;
   readonly permissionGate?: IAgentPermissionGate['authorize'];
   readonly permissionMapping?: AgentExecutorContext['descriptor']['permissionModeMapping'] | null;
   readonly profileDelivery?: AgentExecutorContext['descriptor']['profileDelivery'];
@@ -138,6 +139,7 @@ interface FakeHarnessOptions {
   readonly deferTurnCompletion?: boolean;
   readonly mcpServers?: Readonly<Record<string, McpServerConfig>>;
   readonly supportsMcp?: boolean;
+  readonly hostPermissionReceipt?: (input: AcpOpenSessionOptions) => Readonly<Record<string, unknown>> | undefined;
 }
 
 function asyncEvents(events: readonly NormalizedExecutorEvent[]): AsyncIterable<NormalizedExecutorEvent> {
@@ -374,6 +376,8 @@ function createHarness(options: FakeHarnessOptions = {}) {
     capabilities: options.capabilities ?? {},
     configOptions: configured,
     sessionRef: { executorId: 'example-acp', version: 1, ref: { sessionId: 'remote-2' } },
+    sessionRequestMeta: opens.at(-1)?.sessionMeta,
+    sessionResponseMeta: opens.length === 0 ? undefined : options.hostPermissionReceipt?.(opens.at(-1)!),
     loadReplayObserved: options.loadReplayObserved ?? false,
     quarantinedUpdateCount: options.loadReplayObserved === true ? 2 : 0,
   });
@@ -415,6 +419,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
         const decision = await permissionHandler(
           {
             sessionId: 'remote-2',
+            _meta: options.permissionRequestMeta,
             toolCall: options.permissionToolCall ?? {
               toolCallId: 'permission-tool',
               title: 'Apply patch',
@@ -2829,6 +2834,55 @@ describe('ACP external executor', () => {
       expect(harness.starts).toHaveLength(0);
     } finally { await harness.session.shutdown(); }
   });
+
+  it.each(['new', 'load'] as const)('applies an explicit host gate receipt on %s without changing the saved descriptor', async (mode) => {
+    const authorize = vi.fn<IAgentPermissionGate['authorize']>(async (context) => context.toolCall.name === 'TaskList'
+      ? { veto: { isError: true, output: 'Explicit deny' }, permissionDecision: 'rejected' } : undefined);
+    const harness = createHarness({ mode, permissionMapping: null, permissionMode: 'yolo',
+      prior: mode === 'load' ? { executorId: 'example-acp', descriptorRevision: 'r1',
+        sessionRef: { executorId: 'example-acp', version: 1, ref: { sessionId: 'remote-2' } } } : undefined,
+      hostPermissionReceipt: (input) => ({ 'kiki.permission': { version: 1, sessionId: 'remote-2', openMode: mode,
+        gate: 'pre-tool-hook', applied: structuredClone(input.sessionMeta?.['kiki.permission']) } }),
+      permissionToolCall: { toolCallId: 'native-task', title: 'manage_task', kind: 'read', rawInput: { Action: 'list' } },
+      permissionRequestMeta: { 'kiki.tool': { name: 'TaskList', nativeName: 'manage_task', input: { Action: 'list' } } },
+      permissionGate: authorize,
+    });
+    try {
+      const turn = await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+      await turn.completion;
+      expect(harness.starts).toHaveLength(1);
+      expect(harness.permissionDecisions).toEqual([{ outcome: 'selected', optionId: 'reject' }]);
+      expect(authorize.mock.calls.map(([context]) => context.toolCall.name)).toEqual(['manage_task', 'TaskList']);
+      expect(harness.opens[0]?.sessionMeta?.['kiki.permission']).toMatchObject({ override: { mode: 'yolo', source: 'runtime' }, hostGate: true });
+      expect(harness.events.filter((event) => event instanceof ExecutorSessionUpdated).every((event) => event.descriptorRevision === 'r1')).toBe(true);
+    } finally { await harness.session.shutdown(); }
+  });
+
+  it.each(['session', 'mode', 'source', 'policy', 'workspace', 'nonce', 'gate', 'version', 'openMode', 'missing'] as const)(
+    'rejects an unapplied or mismatched host gate receipt: %s', async (mismatch) => {
+      const harness = createHarness({ mode: 'load', permissionMapping: null, permissionMode: 'yolo',
+        hostPermissionReceipt: (input) => {
+          const applied = structuredClone(input.sessionMeta?.['kiki.permission']) as Record<string, unknown>;
+          const receipt: Record<string, unknown> = { version: 1, sessionId: 'remote-2', openMode: 'load', gate: 'pre-tool-hook', applied };
+          if (mismatch === 'missing') return undefined;
+          if (mismatch === 'session') receipt['sessionId'] = 'other-session';
+          if (mismatch === 'mode') applied['override'] = { mode: 'auto', source: 'runtime' };
+          if (mismatch === 'source') applied['override'] = { mode: 'yolo', source: 'ambient' };
+          if (mismatch === 'policy') applied['policyIdentity'] = 'other-policy';
+          if (mismatch === 'workspace') applied['workspace'] = { cwd: '/other', additionalDirectories: [] };
+          if (mismatch === 'nonce') applied['requestId'] = 'previous-load';
+          if (mismatch === 'gate') receipt['gate'] = 'echo-only';
+          if (mismatch === 'version') receipt['version'] = 2;
+          if (mismatch === 'openMode') receipt['openMode'] = 'new';
+          return { 'kiki.permission': receipt };
+        },
+      });
+      try {
+        await expect(harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal })).rejects.toThrow('cannot verify yolo');
+        expect(harness.starts).toHaveLength(0);
+      } finally { await harness.session.shutdown(); }
+    },
+  );
 
   it('records dropped additional directories when the harness does not declare support for them', async () => {
     const harness = createHarness({

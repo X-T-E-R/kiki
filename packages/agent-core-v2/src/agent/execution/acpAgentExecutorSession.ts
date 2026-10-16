@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 
 import { createControlledPromise } from '@antfu/utils';
 import {
@@ -258,7 +259,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       losses.add('additional_directories_dropped');
     }
     const prior = externalStateForGeneration(this.#states.get(externalExecutorKey), this.context.binding.execution?.generation);
-    const configured = await this.#configure(opened, options.signal, losses);
+    const configured = await this.#configure(opened, options.signal, losses, sessionOptions.sessionMeta?.['kiki.permission']);
     const negotiated: NegotiatedExecutorCapabilities = {
       models: advertisedSelectValues(configured.configOptions, 'model'),
       thinkingLevels: advertisedSelectValues(configured.configOptions, 'thought_level'),
@@ -631,7 +632,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       additionalDirectories: roots.additionalDirs,
       mcpServers: servers,
       sessionMeta: { ...this.#harnessMcp?.sessionMeta,
-        'kiki.permission': externalPermissionMeta(this.context, roots.workDir, roots.additionalDirs) },
+        'kiki.permission': { ...externalPermissionMeta(this.context, roots.workDir, roots.additionalDirs), requestId: randomUUID() } },
       sessionRef:
         agentExecutorBindingMatches(this.context.binding, state.bindingFingerprint) && state.sessionRef !== undefined
           ? sessionRefWithLocalSource(state.sessionRef, state.sessionRef.ref['localSource'])
@@ -650,6 +651,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     opened: AcpOpenSessionResult,
     signal: AbortSignal,
     losses: Set<ExecutorLossCode>,
+    permission: unknown,
   ): Promise<AcpOpenSessionResult> {
     const modelBinding = this.context.descriptor.modelBinding ?? 'session_config';
     if (modelBinding !== 'session_config' && modelBinding !== 'argv') {
@@ -731,6 +733,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
           manual: declared.manual, auto: declared.auto, yolo: declared.yolo }
       : undefined);
     const mode = externalPermissionMode(this.context);
+    if (mode !== undefined && declared === undefined && mapping === undefined && appliedHostPermission(opened, permission)) return configured;
     const vendorMode = externalPermissionConstraints(this.context) || mode === 'review' ? 'manual' : mode ?? 'manual';
     if (mapping !== undefined) {
       const permission = permissionConfig(configured.configOptions, mapping, vendorMode);
@@ -902,6 +905,21 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       return { outcome: 'cancelled' };
     }
   }
+}
+
+function appliedHostPermission(opened: AcpOpenSessionResult, expected: unknown): boolean {
+  const current = objectOf(expected);
+  const requested = objectOf(opened.sessionRequestMeta?.['kiki.permission']);
+  const receipt = objectOf(opened.sessionResponseMeta?.['kiki.permission']);
+  if (current?.['hostGate'] !== true || objectOf(current['override']) === undefined ||
+      requested?.['hostGate'] !== true || typeof requested['requestId'] !== 'string' || requested['requestId'].length === 0 ||
+      receipt?.['version'] !== 1 || receipt['sessionId'] !== opened.sessionId || receipt['gate'] !== 'pre-tool-hook' ||
+      !['new', 'load'].includes(String(receipt['openMode'])) ||
+      opened.mode !== 'live' && receipt['openMode'] !== opened.mode ||
+      !isDeepStrictEqual(receipt['applied'], requested)) return false;
+  const { requestId: currentRequestId, ...currentPolicy } = current;
+  const { requestId: appliedRequestId, ...appliedPolicy } = requested;
+  return (opened.mode === 'live' || currentRequestId === appliedRequestId) && isDeepStrictEqual(currentPolicy, appliedPolicy);
 }
 
 function sessionIdFromState(ref: ExecutorSessionRefEnvelope | undefined): string | undefined {

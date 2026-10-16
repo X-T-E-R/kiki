@@ -277,6 +277,70 @@ test('native task reads project exact actions without hiding the native policy i
   } finally { s.active = undefined; await b.close(); }
 });
 
+test('new and native load acknowledge explicit permissions only after the real hook gate is ready', async () => {
+  const { mkdtemp, readFile, rm, mkdir, writeFile } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-permission-receipt-'));
+  const auditDir = join(root, 'audit');
+  const first = bridge('gemini-3.8-flash-medium');
+  first.auditDir = auditDir;
+  const loaded = bridge('gemini-3.8-flash-medium');
+  loaded.auditDir = auditDir;
+  const permission = { version: 1, requestId: 'new-request', hostGate: true, override: { mode: 'yolo', source: 'runtime' },
+    policyIdentity: 'fixture-policy', workspace: { cwd: root, additionalDirectories: [] } };
+  const params = { cwd: root, mcpServers: [], _meta: { 'kiki.permission': permission } };
+  const client = { notify: async () => {}, request: async () => ({ outcome: { outcome: 'selected', optionId: 'reject_once' } }) };
+  try {
+    const ambient = await first.newSession({ ...params, _meta: { 'kiki.permission': { ...permission, override: undefined } } });
+    assert.equal(ambient._meta['kiki.permission'], undefined);
+    assert.equal(first.session(ambient.sessionId).permissionChannel, undefined);
+    assert.ok(!launchArgs(first.session(ambient.sessionId)).includes('--dangerously-skip-permissions'));
+    const created = await first.newSession(params);
+    const id = created.sessionId;
+    assert.deepEqual(created._meta['kiki.permission'], { version: 1, sessionId: id, openMode: 'new', gate: 'pre-tool-hook', applied: permission });
+    assert.ok(first.session(id).permissionChannel);
+    assert.ok(JSON.parse(await readFile(join(root, '.agents', 'hooks.json'), 'utf8'))['kiki-agy-permission-bridge']);
+    await first.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'hello' }] }, client);
+    const launch = (await readFile(join(auditDir, `${id}.ndjson`), 'utf8')).trim().split('\n').map(JSON.parse).find(record => record.type === 'launch');
+    assert.ok(launch.args.includes('--dangerously-skip-permissions'));
+    await assert.rejects(first.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'must-not-run' }],
+      _meta: { 'kiki.permission': { ...permission, override: undefined } } }, client), /load its native conversation before restoring vendor permissions/);
+    assert.equal(first.session(id).permission.override, undefined);
+    assert.equal(first.session(id).hostGate, true);
+    const { requestHookPermission } = await import('./agy-permission-hook.mjs');
+    assert.equal((await requestHookPermission({ conversationId: 'fixture-conversation', stepIdx: 9,
+      toolCall: { name: 'manage_task', args: { Action: 'list' } } }, first.session(id).permissionIdentity)).decision, 'deny');
+    const prompts = (await readFile(join(auditDir, `${id}.ndjson`), 'utf8')).trim().split('\n').map(JSON.parse).filter(record => record.type === 'prompt_sent');
+    assert.equal(prompts.length, 1);
+    await first.close();
+    const loadPermission = { ...permission, requestId: 'fresh-load-request' };
+    const resumed = await loaded.loadSession({ ...params, sessionId: id, _meta: { 'kiki.permission': loadPermission } });
+    assert.deepEqual(resumed._meta['kiki.permission'], { version: 1, sessionId: id, openMode: 'load', gate: 'pre-tool-hook', applied: loadPermission });
+    await assert.rejects(loaded.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'hook-deny' }] }, client), /Kiki rejected/);
+    await loaded.close();
+    await assert.rejects(readFile(join(root, '.agents', 'hooks.json')), { code: 'ENOENT' });
+    const restored = bridge('gemini-3.8-flash-medium');
+    restored.auditDir = auditDir;
+    try {
+      const inherited = await restored.loadSession({ ...params, sessionId: id,
+        _meta: { 'kiki.permission': { ...permission, requestId: 'restore-vendor-request', override: undefined } } });
+      assert.equal(inherited._meta['kiki.permission'], undefined);
+      await restored.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'continued' }] }, client);
+      assert.equal(restored.session(id).init.conversation_id, 'fixture-conversation');
+      const restoredLaunch = (await readFile(join(auditDir, `${id}.ndjson`), 'utf8')).trim().split('\n').map(JSON.parse).findLast(record => record.type === 'launch');
+      assert.ok(!restoredLaunch.args.includes('--dangerously-skip-permissions'));
+      assert.equal(restoredLaunch.args[restoredLaunch.args.indexOf('--conversation') + 1], 'fixture-conversation');
+    } finally { await restored.close(); }
+    await mkdir(join(root, '.agents'), { recursive: true });
+    await writeFile(join(root, '.agents', 'hooks.json'), '{"kiki-agy-permission-bridge":{}}');
+    const failed = bridge('gemini-3.8-flash-medium');
+    try {
+      await assert.rejects(failed.newSession(params), /already owned/);
+      assert.equal(failed.sessions.size, 0);
+    } finally { await failed.close(); }
+  } finally { await first.close(); await loaded.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 test('owned permission channel rejects bad nonce and disconnects, unrelated AGY keeps default policy', async () => {
   const { openPermissionChannel, requestHookPermission } = await import('./agy-permission-hook.mjs');
   assert.deepEqual(await requestHookPermission({}, {}), { decision: 'ask' });

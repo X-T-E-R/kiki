@@ -268,8 +268,20 @@ export class AgyBridge {
       child: undefined, active: undefined, broken: false, init: undefined, exited: undefined, toolIds: new Map(), toolDetails: new Map() };
     this.permissionSnapshot(session, params._meta?.['kiki.permission']);
     this.sessions.set(session.id, session);
-    await this.audit(session, event, { cwd: session.cwd, additionalDirectories: dirs, delivery: event === 'session_new' ? 'first_user_preamble' : 'native_conversation', systemOverride: false });
-    return { sessionId: session.id, configOptions: configOptions(session) };
+    try {
+      if (session.hostGate && session.permission.override && typeof session.permission.requestId === 'string' && session.permission.requestId.length > 0) {
+        await this.syncPermissionHook(session);
+        session.permissionReceipt = { version: 1, sessionId: session.id, openMode: event === 'session_new' ? 'new' : 'load',
+          gate: 'pre-tool-hook', applied: structuredClone(session.permission) };
+      }
+      await this.audit(session, event, { cwd: session.cwd, additionalDirectories: dirs, delivery: event === 'session_new' ? 'first_user_preamble' : 'native_conversation', systemOverride: false });
+      return { sessionId: session.id, configOptions: configOptions(session), _meta: { 'kiki.permission': session.permissionReceipt } };
+    } catch (error) {
+      await session.permissionChannel?.close();
+      await session.permissionRegistration?.close();
+      this.sessions.delete(session.id);
+      throw error;
+    }
   }
 
   async loadSession(params) {
@@ -325,7 +337,7 @@ export class AgyBridge {
       session.conversationId = init.conversationId;
       session.mcpNamespace = mcpBinding?.name;
       session.releaseResume = release;
-      return { configOptions: configOptions(session) };
+      return { configOptions: configOptions(session), _meta: { 'kiki.permission': session.permissionReceipt } };
     } catch (error) { await release(); this.sessions.delete(params.sessionId); throw error; }
   }
 
@@ -384,6 +396,11 @@ export class AgyBridge {
       || permission.workspace?.cwd !== session.cwd
       || JSON.stringify(permission.workspace?.additionalDirectories ?? []) !== JSON.stringify(session.additionalDirectories))) {
       throw new Error('AGY permission bridge requires a matching frozen Kiki permission context');
+    }
+    if (session.nativePermissionBypass && (!hostGate || permission?.override?.mode !== 'yolo')) {
+      session.permission = permission === undefined ? undefined : structuredClone(permission);
+      session.hostGate = true;
+      throw new Error('AGY was launched with explicit permission bypass; close this process and load its native conversation before restoring vendor permissions');
     }
     session.permission = permission === undefined ? undefined : structuredClone(permission);
     session.hostGate = hostGate;
@@ -445,6 +462,7 @@ export class AgyBridge {
       throw error;
     }
     session.child = child;
+    session.nativePermissionBypass = args.includes('--dangerously-skip-permissions');
     session.exited = new Promise(done => child.once('close', done));
     const decoder = new StringDecoder('utf8');
     let buffer = '';
