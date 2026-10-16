@@ -241,6 +241,7 @@ export class SessionController {
   private frameHandle: unknown = null;
   private hiddenFrameTimer: ReturnType<typeof setTimeout> | null = null;
   private resyncInFlight = false;
+  private resyncGeneration = 0;
   private readonly resyncIdleWaiters = new Set<() => void>();
   private rosterRefreshInFlight = false;
   private rosterReadQueued = false;
@@ -1138,6 +1139,7 @@ export class SessionController {
       return;
     }
     this.resyncInFlight = true;
+    this.resyncGeneration += 1;
     for (const agentId of this.agentTranscripts.keys()) this.bumpHistoryGeneration(agentId);
     if (rewrite) this.rewriteResyncQueued = false;
     this.clearResyncTimer();
@@ -1523,8 +1525,17 @@ export class SessionController {
 
   loadOlderHistory(agentId: string = MAIN_AGENT_ID, signal?: AbortSignal): Promise<OlderLoadResult> {
     if (this.closed || this.isSuspended) return Promise.resolve({ kind: 'cancelled', changed: false });
-    const start = (): Promise<OlderLoadResult> =>
-      this.olderLoads.request(agentId, (sharedSignal) => this.loadOlderTranscript(agentId, sharedSignal), signal);
+    const start = (): Promise<OlderLoadResult> => {
+      const resyncGeneration = this.resyncGeneration;
+      return this.olderLoads.request(agentId, (sharedSignal) => this.loadOlderTranscript(agentId, sharedSignal), signal).then((result) => {
+        if (result.kind !== 'cancelled' || signal?.aborted || this.closed || this.isSuspended || resyncGeneration === this.resyncGeneration) return result;
+        return this.waitForResyncIdle(signal).then((resyncStatus) => {
+          if (resyncStatus === 'cancelled') return { kind: 'cancelled', changed: false };
+          if (resyncStatus === 'failed') return { kind: 'failed', changed: false };
+          return start();
+        });
+      });
+    };
     if (!this.resyncInFlight) return start();
     return this.waitForResyncIdle(signal).then((resyncStatus) => {
       if (resyncStatus === 'cancelled') return { kind: 'cancelled', changed: false };

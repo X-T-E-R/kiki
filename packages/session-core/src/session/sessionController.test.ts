@@ -1820,6 +1820,28 @@ describe('SessionController transcript authority', () => {
     } finally { controller.close(); }
   });
 
+  it('retries an older read cancelled by a later resync', async () => {
+    const { controller, client } = await openTranscriptController();
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(2)], olderCursor: 'cursor-2' }), 1, true));
+    const firstPage = deferred<AgentTranscriptResponse>();
+    const secondPage = deferred<AgentTranscriptResponse>();
+    client.getAgentTranscript.mockReturnValueOnce(firstPage.promise).mockReturnValueOnce(secondPage.promise);
+    const older = controller.loadOlderHistory();
+    await waitFor(() => client.getAgentTranscript.mock.calls.length === 1);
+    const heldSnapshot = deferred<SessionSnapshotResponse>();
+    client.snapshot.mockReturnValueOnce(heldSnapshot.promise);
+    const resync = controller.resync();
+    await waitFor(() => controller.getState().resyncing);
+    firstPage.resolve({ agent_id: 'main', items: [historyTurn(1)], has_more: false, coverage: { kind: 'full', hasMoreOlder: false } });
+    heldSnapshot.resolve(snapshot());
+    await resync;
+    await waitFor(() => client.getAgentTranscript.mock.calls.length === 2);
+    secondPage.resolve({ agent_id: 'main', items: [historyTurn(1)], has_more: false, coverage: { kind: 'full', hasMoreOlder: false } });
+    try {
+      await expect(older).resolves.toEqual({ kind: 'exhausted', changed: true });
+    } finally { controller.close(); }
+  });
+
   it('cancels an already-aborted older read while resync is in flight', async () => {
     const { controller, client } = await openTranscriptController();
     const heldSnapshot = deferred<SessionSnapshotResponse>();
