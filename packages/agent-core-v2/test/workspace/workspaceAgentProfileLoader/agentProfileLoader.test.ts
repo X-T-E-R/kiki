@@ -74,7 +74,8 @@ import { resolveSubagentDispatch, resolveSubagentTarget } from '#/app/agentProfi
 import { IModelService } from '#/kosong/model/model';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
-import { createTestAgent } from '../../harness';
+import { createTestAgent, sessionService } from '../../harness';
+import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { parseAgentRouteFileText } from '#/workspace/workspaceAgentProfileLoader/internal/agentRouteFile';
 import { resolveAgentSourceGraph } from '#/workspace/workspaceAgentProfileLoader/internal/agentSourceGraph';
 import type { AgentFileDefinition } from '#/workspace/workspaceAgentProfileLoader/internal/types';
@@ -1953,6 +1954,68 @@ describe('agent profile loaders + session catalog', () => {
         expect(stack.catalog.get('exp-agent')?.description).toBe('explicit');
         const explicitEntry = stack.registry.entries().find((e) => e.sourceId === 'explicit');
         expect(explicitEntry?.contribution.profiles.map((p) => p.name)).toContain('exp-agent');
+      });
+    });
+  });
+
+  it.each(['tools: []', 'tools: [Read]', 'tools: [broken'])(
+    'rejects a tool-only refresh after an unpublished SYSTEM.md edit: %s', async (declaration) => {
+      await withFixture(async (fixture) => {
+        const systemPath = join(fixture.homeDir, 'SYSTEM.md');
+        await writeFile(systemPath, '---\nsystem_prompt_mode: append\n---\nSOURCE');
+        await withStack(fixture, { fsWatch: fsWatchStub() }, async (stack) => {
+          await stack.ready();
+          const current = stack.catalog.getDefault();
+          const ctx = createTestAgent({ cwd: fixture.workDir }, sessionService(ISessionAgentProfileCatalog, stack.catalog));
+          try {
+            const profile = ctx.get(IAgentProfileService);
+            await profile.applyProfile(current);
+            const saved = profile.data();
+            profile.applyBindingSnapshot({ ...saved, toolPolicyBase: undefined, activeToolNames: ['Read'],
+              boundProfile: { ...saved.boundProfile!, tools: ['Read'], toolsSource: undefined }, systemPrompt: 'SAVED CONTEXT' });
+            const preview = await profile.inspectToolPolicy();
+            const before = profile.data();
+            expect(preview.canRefresh).toBe(true);
+            expect(preview.currentTools).toContain('BrowserConnections');
+            await writeFile(systemPath, `---\n${declaration}\n---\nSOURCE`);
+            expect(stack.catalog.getDefault()).toBe(current);
+            await expect(profile.refreshToolPolicy(preview.revision!)).rejects.toThrow(/changed or is unavailable|could not be verified/);
+            expect(profile.data()).toEqual(before);
+            if (declaration === 'tools: [broken') {
+              expect(stack.catalog.getDefault().tools).toContain('BrowserConnections');
+              expect(stack.registry.entries().find((entry) => entry.sourceId === 'user')?.contribution.skipped)
+                .toEqual(expect.arrayContaining([expect.objectContaining({ path: systemPath, code: 'agent_profile.system_invalid' })]));
+            } else {
+              expect(stack.catalog.getDefault().tools).toEqual(declaration === 'tools: []' ? [] : ['Read']);
+            }
+          } finally { await ctx.dispose(); }
+        });
+      });
+    },
+  );
+
+  it('applies a tool-only refresh from the unchanged authoritative SYSTEM.md without touching other binding fields', async () => {
+    await withFixture(async (fixture) => {
+      await writeFile(join(fixture.homeDir, 'SYSTEM.md'), '---\nsystem_prompt_mode: append\n---\nSOURCE');
+      await withStack(fixture, { fsWatch: fsWatchStub() }, async (stack) => {
+        await stack.ready();
+        const ctx = createTestAgent({ cwd: fixture.workDir }, sessionService(ISessionAgentProfileCatalog, stack.catalog));
+        try {
+          const profile = ctx.get(IAgentProfileService);
+          await profile.applyProfile(stack.catalog.getDefault());
+          const saved = profile.data();
+          profile.applyBindingSnapshot({ ...saved, toolPolicyBase: undefined, activeToolNames: ['Read'],
+            boundProfile: { ...saved.boundProfile!, tools: ['Read'], toolsSource: undefined }, systemPrompt: 'SAVED CONTEXT', disallowedTools: ['Write'] });
+          const preview = await profile.inspectToolPolicy();
+          const before = profile.data();
+          await profile.refreshToolPolicy(preview.revision!);
+          const after = profile.data();
+          expect(after.activeToolNames).toContain('BrowserConnections');
+          expect(after.disallowedTools).toContain('Write');
+          for (const key of ['systemPrompt', 'modelAlias', 'thinkingLevel', 'permissionMode', 'renderGeneration', 'spawnPolicy', 'dispatchDecision'] as const) {
+            expect(after[key]).toEqual(before[key]);
+          }
+        } finally { await ctx.dispose(); }
       });
     });
   });

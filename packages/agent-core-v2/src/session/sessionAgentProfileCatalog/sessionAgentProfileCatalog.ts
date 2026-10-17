@@ -62,6 +62,7 @@ export interface ISessionAgentProfileCatalog {
   inspect(name: string): AgentProfileInspection | undefined;
   load(): Promise<void>;
   reload(): Promise<void>;
+  refreshSource?(profile: AgentProfile): Promise<void>;
 }
 
 export const ISessionAgentProfileCatalog =

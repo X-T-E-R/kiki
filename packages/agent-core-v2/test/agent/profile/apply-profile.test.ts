@@ -132,7 +132,7 @@ describe('AgentProfileService.applyProfile', () => {
     const catalog = {
       _serviceBrand: undefined, ready: Promise.resolve(), onDidChange: Event.None as SessionAgentProfileCatalog['onDidChange'], get: () => current, getDefault: () => current,
       list: () => [current], listRoutes: () => [], routeDiagnostics: () => [], resolveSelection: () => ({ profile: current, baseProfile: current }),
-      inspect: () => undefined, load: async () => {}, reload: async () => {},
+      inspect: () => undefined, load: async () => {}, reload: async () => {}, refreshSource: async () => {},
     } satisfies SessionAgentProfileCatalog;
     const { profile: svc } = buildContext(sessionService(ISessionAgentProfileCatalog, catalog));
     await svc.applyProfile(current);
@@ -163,7 +163,7 @@ describe('AgentProfileService.applyProfile', () => {
     const catalog = {
       _serviceBrand: undefined, ready: Promise.resolve(), onDidChange: Event.None as SessionAgentProfileCatalog['onDidChange'], get: () => current, getDefault: () => current,
       list: () => [current], listRoutes: () => [], routeDiagnostics: () => [], resolveSelection: () => ({ profile: current, baseProfile: current }),
-      inspect: () => undefined, load: async () => {}, reload: async () => {},
+      inspect: () => undefined, load: async () => {}, reload: async () => {}, refreshSource: async () => {},
     } satisfies SessionAgentProfileCatalog;
     const { profile: svc } = buildContext(sessionService(ISessionAgentProfileCatalog, catalog));
     await svc.applyProfile(current);

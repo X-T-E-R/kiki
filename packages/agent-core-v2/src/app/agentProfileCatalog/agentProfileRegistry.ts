@@ -22,7 +22,8 @@ export interface IAgentProfileRegistry {
 
   entries(): readonly AgentProfileRegistration[];
   register(registration: AgentProfileRegistration): IDisposable;
-  registerSourceReadiness(sourceId: string, workspaceKey: string | undefined, ready: Promise<void>): IDisposable;
+  registerSourceReadiness(sourceId: string, workspaceKey: string | undefined, ready: Promise<void>, refresh?: (sourcePath: string | undefined) => Promise<void>): IDisposable;
+  refreshSource(sourceId: string, workspaceKey: string, sourcePath: string | undefined): Promise<void>;
   hasSourceReadiness(workspaceKey: string): boolean;
   whenSourcesReady(workspaceKey: string): Promise<void>;
 }

@@ -41,6 +41,7 @@ export class AgentProfileRegistryService
   private readonly sourceReadiness = new Map<string, Set<{
     readonly sourceId: string;
     readonly ready: Promise<void>;
+    readonly refresh?: (sourcePath: string | undefined) => Promise<void>;
   }>>();
   private readonly sourceReadinessRevision = new Map<string, number>();
   private readonly onDidChangeSourceReadiness = this._register(new Emitter<string>());
@@ -91,10 +92,11 @@ export class AgentProfileRegistryService
     sourceId: string,
     workspaceKey: string | undefined,
     ready: Promise<void>,
+    refresh?: (sourcePath: string | undefined) => Promise<void>,
   ): IDisposable {
     const key = workspaceKey ?? '';
     const sources = this.sourceReadiness.get(key) ?? new Set();
-    const source = { sourceId, ready };
+    const source = { sourceId, ready, refresh };
     sources.add(source);
     this.sourceReadiness.set(key, sources);
     this.bumpSourceReadiness(key);
@@ -108,6 +110,18 @@ export class AgentProfileRegistryService
         this.bumpSourceReadiness(key);
       },
     };
+  }
+
+  async refreshSource(sourceId: string, workspaceKey: string, sourcePath: string | undefined): Promise<void> {
+    const sources = [...(this.sourceReadiness.get('') ?? []), ...(this.sourceReadiness.get(workspaceKey) ?? [])]
+      .filter((source) => source.sourceId === sourceId);
+    for (const source of sources) {
+      if (source.refresh === undefined) throw new Error('The agent profile source does not support authoritative refresh');
+      await source.refresh(sourcePath);
+      if (![...(this.sourceReadiness.get('') ?? []), ...(this.sourceReadiness.get(workspaceKey) ?? [])].includes(source)) {
+        throw new Error('The agent profile source was withdrawn during refresh');
+      }
+    }
   }
 
   hasSourceReadiness(workspaceKey: string): boolean {

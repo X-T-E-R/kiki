@@ -283,6 +283,21 @@ export class SessionAgentProfileCatalogService
     if (this.reproject()) this.onDidChangeEmitter.fire('catalog');
   }
 
+  async refreshSource(profile: AgentProfile): Promise<void> {
+    await this.ready;
+    const owner = this.inspect(profile.name);
+    if (owner?.profile.definitionId !== profile.definitionId || owner === undefined) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'The current profile source is unavailable for tool refresh');
+    }
+    try {
+      await this.registry.refreshSource(owner.sourceId, this.seed.workspaceKey, profile.sourcePath);
+      if (!this.reproject()) throw new Error('The current profile catalog could not be projected');
+    } catch (cause) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'The current profile source could not be verified. No tool policy was applied.', { cause });
+    }
+    this.onDidChangeEmitter.fire(owner.sourceId);
+  }
+
   private relevantEntries(): AgentProfileRegistration[] {
     const key = this.seed.workspaceKey;
     return [

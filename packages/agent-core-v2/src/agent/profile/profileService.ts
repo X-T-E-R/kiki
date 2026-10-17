@@ -2911,7 +2911,11 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   async refreshToolPolicy(revision: string): Promise<import('./profile').ProfileToolPolicyStatus> {
     const previous = this.profileState;
-    await this.catalog.reload();
+    await this.catalog.ready;
+    if (this.catalog.refreshSource === undefined) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'The current profile source cannot be verified for tool refresh. No tool policy was applied.');
+    }
+    await this.catalog.refreshSource(this.catalog.getDefault());
     const status = await this.inspectToolPolicy();
     if (!status.canRefresh || status.revision !== revision || status.definitionId === undefined || status.source === undefined) {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'The current profile tool policy changed or is unavailable. Read it again before applying.');
