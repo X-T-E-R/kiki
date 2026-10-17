@@ -219,7 +219,7 @@ describe('QuestionDialogComponent', () => {
 
     dialog.handleInput('3');
     let out = strip(dialog.render(80).join('\n'));
-    expect(out).toContain('→ [3] Custom:');
+    expect(out).toContain('❯ [3] Custom:');
     expect(out).not.toContain('Type your own answer');
 
     dialog.handleInput('H');
@@ -292,8 +292,141 @@ describe('QuestionDialogComponent', () => {
     dialog.handleInput('\u001B[D');
 
     const out = dialog.render(80).join('\n');
-    expect(out).toContain(currentTheme.boldFg('success', '  → [1] A'));
-    expect(out).not.toContain(currentTheme.fg('primary', '  → [1] A'));
+    expect(out).toContain(currentTheme.boldFg('success', '  ❯ [1] A'));
+    expect(out).not.toContain(currentTheme.fg('primary', '  ❯ [1] A'));
+  });
+
+  it('aligns hint bars and the cursor pointer with the shared dialog style', () => {
+    const pending = makePending([
+      {
+        question: 'Q1?',
+        multi_select: false,
+        options: [{ label: 'A1' }, { label: 'B1' }],
+      },
+      {
+        question: 'Q2?',
+        multi_select: false,
+        options: [{ label: 'A2' }, { label: 'B2' }],
+      },
+    ]);
+    const { dialog } = makeDialog(pending);
+
+    const raw = dialog.render(80).join('\n');
+    const out = strip(raw);
+    expect(out).toContain('↑↓ navigate · 1-3/Enter choose · ←→/Tab switch · Esc cancel');
+    expect(out).toContain('❯ [1] A1');
+    expect(out).not.toContain('→ [1] A1');
+    expect(out).not.toContain('↵');
+    expect(raw).toContain(
+      currentTheme.fg('textMuted', '  ↑↓ navigate · 1-3/Enter choose · ←→/Tab switch · Esc cancel'),
+    );
+  });
+
+  it('keeps the cancel path visible at narrow widths', () => {
+    const pending = makePending([
+      {
+        question: 'Q1?',
+        multi_select: false,
+        options: [{ label: 'A1' }, { label: 'B1' }],
+      },
+      {
+        question: 'Q2?',
+        multi_select: false,
+        options: [{ label: 'A2' }, { label: 'B2' }],
+      },
+    ]);
+    const { dialog } = makeDialog(pending);
+
+    const out = strip(dialog.render(64).join('\n'));
+    expect(out).toContain('Enter choose');
+    expect(out).toContain('Esc cancel');
+  });
+
+  it('wraps the hint at segment boundaries so every key survives very narrow widths', () => {
+    const pending = makePending([
+      {
+        question: 'Q1?',
+        multi_select: false,
+        options: [{ label: 'A1' }, { label: 'B1' }],
+      },
+      {
+        question: 'Q2?',
+        multi_select: false,
+        options: [{ label: 'A2' }, { label: 'B2' }],
+      },
+    ]);
+    const { dialog } = makeDialog(pending);
+
+    for (const width of [30, 40]) {
+      const out = strip(dialog.render(width).join('\n'));
+      expect(out).toContain('↑↓ navigate');
+      expect(out).toContain('1-3/Enter choose');
+      expect(out).toContain('←→/Tab switch');
+      expect(out).toContain('Esc cancel');
+    }
+
+    dialog.handleInput('3');
+    const editing = strip(dialog.render(30).join('\n'));
+    expect(editing).toContain('type answer');
+    expect(editing).toContain('Enter save');
+    expect(editing).toContain('Tab switch');
+    expect(editing).toContain('Esc cancel');
+
+    dialog.handleInput('H');
+    dialog.handleInput('i');
+    dialog.handleInput('\r');
+    dialog.handleInput('1');
+    const review = strip(dialog.render(30).join('\n'));
+    expect(review).toContain('1-2/Enter confirm');
+    expect(review).toContain('Esc cancel');
+  });
+
+  it('advertises Space toggle and marks the cursor row for multi-select questions', () => {
+    const pending = makePending([
+      {
+        question: 'Pick many?',
+        multi_select: true,
+        options: [{ label: 'A' }, { label: 'B' }],
+      },
+    ]);
+    const { dialog } = makeDialog(pending);
+
+    const out = strip(dialog.render(80).join('\n'));
+    expect(out).toContain('1-3/Space toggle');
+    expect(out).toContain('❯ [ ] A');
+    expect(out).toContain('Esc cancel');
+  });
+
+  it('shows the editing hint while typing an Other answer', () => {
+    const pending = makePending([
+      {
+        question: 'Pick one?',
+        multi_select: false,
+        other_label: 'Custom',
+        options: [{ label: 'A' }, { label: 'B' }],
+      },
+    ]);
+    const { dialog } = makeDialog(pending);
+
+    dialog.handleInput('3');
+    const out = strip(dialog.render(80).join('\n'));
+    expect(out).toContain('type answer · Enter save · Tab switch · Esc cancel');
+  });
+
+  it('shows confirm and cancel keys on the review-tab hint', () => {
+    const pending = makePending([
+      {
+        question: 'Pick one?',
+        multi_select: false,
+        options: [{ label: 'A' }, { label: 'B' }],
+      },
+    ]);
+    const { dialog } = makeDialog(pending);
+
+    dialog.handleInput('\t');
+    const out = strip(dialog.render(80).join('\n'));
+    expect(out).toContain('↑↓ navigate · 1-2/Enter confirm · ←→/Tab switch · Esc cancel');
+    expect(out).toContain('❯ [1] Submit');
   });
 
   it('stretches the border to the full available width', () => {

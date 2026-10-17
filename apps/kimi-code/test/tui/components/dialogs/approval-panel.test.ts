@@ -1,5 +1,6 @@
 import { CURSOR_MARKER } from '@kiki/pi-tui';
-import { describe, expect, it } from 'vitest';
+import chalk from 'chalk';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 import { ApprovalPanelComponent } from '#/tui/components/dialogs/approval-panel';
 import type {
@@ -7,8 +8,13 @@ import type {
   FileContentDisplayBlock,
   PendingApproval,
 } from '#/tui/interactions/types';
+import { currentTheme } from '#/tui/theme';
 
 import { captureProcessWrite } from '../../../helpers/process';
+
+beforeAll(() => {
+  chalk.level = 3;
+});
 
 function strip(text: string): string {
   return text.replaceAll(/\u001B\[[0-9;]*m/g, '');
@@ -57,8 +63,95 @@ describe('ApprovalPanelComponent', () => {
   it('renders only numeric approval shortcuts in the hint', () => {
     const { dialog } = makeDialog();
     const out = strip(dialog.render(80).join('\n'));
-    expect(out).toContain('1/2/3/4 choose');
+    expect(out).toContain('1-4/Enter confirm');
     expect(out).not.toContain('y/a/n/f');
+  });
+
+  it('aligns the hint bar and selection pointer with the shared dialog style', () => {
+    const { dialog } = makeDialog();
+    const raw = dialog.render(80).join('\n');
+    const out = strip(raw);
+    expect(out).toContain('↑↓ navigate · 1-4/Enter confirm · Esc reject');
+    expect(out).toContain('❯ 1. Approve once');
+    expect(out).not.toContain('▶');
+    expect(out).not.toContain('↵');
+    expect(raw).toContain(
+      currentTheme.fg('textMuted', '↑↓ navigate · 1-4/Enter confirm · Esc reject'),
+    );
+  });
+
+  it('keeps the reject path visible at narrow widths when a preview is offered', () => {
+    const pending: PendingApproval = {
+      data: {
+        id: 'approval_narrow',
+        tool_call_id: 'tool_narrow',
+        tool_name: 'Edit',
+        action: 'edit',
+        description: '',
+        display: [
+          {
+            type: 'diff',
+            path: 'src/foo.ts',
+            old_text: 'old',
+            new_text: 'new',
+          },
+        ],
+        choices: [
+          { label: 'Approve once', response: 'approved' },
+          { label: 'Reject', response: 'rejected' },
+        ],
+      },
+    };
+    const dialog = new ApprovalPanelComponent(pending, () => {});
+
+    const out = strip(dialog.render(60).join('\n'));
+    expect(out).toContain('Esc reject');
+    expect(out).toContain('Enter confirm');
+  });
+
+  it('wraps the hint at segment boundaries so every key survives very narrow widths', () => {
+    const pending: PendingApproval = {
+      data: {
+        id: 'approval_wrap',
+        tool_call_id: 'tool_wrap',
+        tool_name: 'Edit',
+        action: 'edit',
+        description: '',
+        display: [
+          {
+            type: 'diff',
+            path: 'src/foo.ts',
+            old_text: 'old',
+            new_text: 'new',
+          },
+        ],
+        choices: [
+          { label: 'Approve once', response: 'approved' },
+          { label: 'Approve for this session', response: 'approved_for_session' },
+          { label: 'Reject', response: 'rejected' },
+          { label: 'Reject with feedback', response: 'rejected', requires_feedback: true },
+        ],
+      },
+    };
+    const dialog = new ApprovalPanelComponent(pending, () => {});
+
+    for (const width of [30, 40]) {
+      const out = strip(dialog.render(width).join('\n'));
+      expect(out).toContain('↑↓ navigate');
+      expect(out).toContain('1-4/Enter confirm');
+      expect(out).toContain('Esc reject');
+      expect(out).toContain('Ctrl+E preview');
+    }
+  });
+
+  it('keeps the feedback hint intact at very narrow widths', () => {
+    const { dialog } = makeDialog();
+    dialog.handleInput('4');
+
+    const out = strip(dialog.render(30).join('\n'));
+    expect(out).toContain('type feedback');
+    expect(out).toContain('Enter submit');
+    expect(out).toContain('Esc reject');
   });
 
   it('renders choice descriptions beneath the label when present', () => {
@@ -167,7 +260,8 @@ describe('ApprovalPanelComponent', () => {
     dialog.handleInput('4');
 
     const out = strip(dialog.render(80).join('\n'));
-    expect(out).toContain('▶ 4. Reject with feedback');
+    expect(out).toContain('❯ 4. Reject with feedback');
+    expect(out).toContain('type feedback · Enter submit · Esc reject');
     expect(out).not.toContain('\n  > ');
   });
 
@@ -294,7 +388,7 @@ describe('ApprovalPanelComponent', () => {
     const before = strip(dialog.render(120).join('\n'));
     expect(before).toContain('+30');
     expect(before).toContain('-30');
-    expect(before).toContain('ctrl+e preview');
+    expect(before).toContain('Ctrl+E preview');
     expect(before).not.toContain('new30'); // compact view stays compact
 
     dialog.handleInput('\u0005'); // Ctrl+E
@@ -302,7 +396,7 @@ describe('ApprovalPanelComponent', () => {
     // The panel itself does not expand; it delegates to the host.
     const after = strip(dialog.render(120).join('\n'));
     expect(after).not.toContain('new30');
-    expect(after).toContain('ctrl+e preview');
+    expect(after).toContain('Ctrl+E preview');
     expect(previewCalls).toEqual([diffBlock]);
     // The unrelated forward-only callback must not fire for ctrl+e.
     expect(toolOutputToggles).toBe(0);
@@ -335,7 +429,7 @@ describe('ApprovalPanelComponent', () => {
 
     const after = strip(dialog.render(120).join('\n'));
     expect(globalToggleCalls).toBe(1);
-    expect(after).toContain('ctrl+e preview');
+    expect(after).toContain('Ctrl+E preview');
     expect(after).not.toContain('new30');
   });
 
@@ -399,8 +493,8 @@ describe('ApprovalPanelComponent', () => {
     expect(collapsed).toContain('const x1 = 1;');
     expect(collapsed).toContain('const x10 = 10;');
     expect(collapsed).not.toContain('const x25 = 25;');
-    expect(collapsed).toContain('20 more lines hidden (ctrl+e to preview)');
-    expect(collapsed).toContain('ctrl+e preview');
+    expect(collapsed).toContain('20 more lines hidden (Ctrl+E to preview)');
+    expect(collapsed).toContain('Ctrl+E preview');
 
     dialog.handleInput('\u0005'); // Ctrl+E hands off to the host preview.
     const after = strip(dialog.render(120).join('\n'));

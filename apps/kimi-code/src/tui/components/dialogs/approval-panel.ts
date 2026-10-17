@@ -15,6 +15,7 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
 } from '@kiki/pi-tui';
+import { SELECT_POINTER } from '#/tui/constant/symbols';
 import { currentTheme } from '#/tui/theme';
 import { highlightLines, langFromPath } from '#/tui/components/media/code-highlight';
 import { renderDiffLinesClustered } from '#/tui/components/media/diff-preview';
@@ -111,7 +112,7 @@ function renderDisplayBlock(
     case 'diff':
       return renderDiffLinesClustered(block.old_text, block.new_text, block.path, {
         contextLines: 3,
-        expandKeyHint: 'ctrl+e to preview',
+        expandKeyHint: 'Ctrl+E to preview',
         maxLines: DIFF_SUMMARY_MAX_LINES,
       });
     case 'file_content': {
@@ -126,7 +127,7 @@ function renderDisplayBlock(
       if (remaining > 0) {
         lines.push(
           s.dim(
-            `     … ${String(remaining)} more line${remaining > 1 ? 's' : ''} hidden (ctrl+e to preview)`,
+            `     … ${String(remaining)} more line${remaining > 1 ? 's' : ''} hidden (Ctrl+E to preview)`,
           ),
         );
       }
@@ -328,17 +329,16 @@ export class ApprovalPanelComponent extends Container implements Focusable {
     const blockStyles = makeBlockStyles();
     const borderColor = (text: string) => currentTheme.fg('borderFocus', text);
     const borderColorBold = (text: string) => currentTheme.boldFg('borderFocus', text);
-    const selectColorBold = (text: string) => currentTheme.boldFg('accent', text);
+    const selectColor = (text: string) => currentTheme.fg('primary', text);
+    const selectColorBold = (text: string) => currentTheme.boldFg('primary', text);
     const dim = (text: string) => currentTheme.fg('textDim', text);
+    const muted = (text: string) => currentTheme.fg('textMuted', text);
     const strong = (text: string) => currentTheme.fg('textStrong', text);
     const horizontalBar = borderColor('─'.repeat(width));
     const indent = (s: string): string => `  ${s}`;
 
     const title = headerFor(data.tool_name);
-    const lines: string[] = [
-      horizontalBar,
-      indent(`${borderColorBold('▶')} ${borderColorBold(title)}`),
-    ];
+    const lines: string[] = [horizontalBar, indent(borderColorBold(title))];
 
     const dedupedBlocks = data.display.filter(
       (block) => !isDuplicateBriefBlock(block, data.description),
@@ -378,7 +378,7 @@ export class ApprovalPanelComponent extends Container implements Focusable {
       if (this.feedbackMode && option.requires_feedback === true && isSelected) {
         lines.push(indent(this.renderInlineFeedbackLine(width - 2, labelWithNum)));
       } else if (isSelected) {
-        lines.push(indent(`${selectColorBold('▶')} ${selectColorBold(labelWithNum)}`));
+        lines.push(indent(`${selectColor(SELECT_POINTER)} ${selectColorBold(labelWithNum)}`));
       } else {
         lines.push(indent(strong(`  ${labelWithNum}`)));
       }
@@ -397,17 +397,19 @@ export class ApprovalPanelComponent extends Container implements Focusable {
     }
 
     lines.push('');
-    if (this.feedbackMode) {
-      lines.push(indent(dim('Type feedback · ↵ submit.')));
-    } else {
-      const expandHint = hasPreviewable ? ' · ctrl+e preview' : '';
-      lines.push(
-        indent(
-          dim(
-            `↑/↓ select · ${buildNumericHint(data.choices.length)} choose · ↵ confirm${expandHint}`,
-          ),
-        ),
-      );
+    const numeric = buildNumericHint(data.choices.length);
+    const hintParts = this.feedbackMode
+      ? ['type feedback', 'Enter submit', 'Esc reject']
+      : [
+          '↑↓ navigate',
+          numeric.length > 0 ? `${numeric}/Enter confirm` : 'Enter confirm',
+          'Esc reject',
+          ...(hasPreviewable ? ['Ctrl+E preview'] : []),
+        ];
+    // Wrap at segment boundaries: right-truncating a single hint line hid the
+    // reject key on narrow terminals.
+    for (const hintLine of layoutHintLines(hintParts, width - 2)) {
+      lines.push(indent(muted(hintLine)));
     }
     lines.push(horizontalBar);
 
@@ -441,7 +443,7 @@ export class ApprovalPanelComponent extends Container implements Focusable {
   }
 
   private renderInlineFeedbackLine(width: number, labelWithNum: string): string {
-    const prefix = `${currentTheme.boldFg('accent', '▶')} ${currentTheme.boldFg('accent', labelWithNum)}  `;
+    const prefix = `${currentTheme.fg('primary', SELECT_POINTER)} ${currentTheme.boldFg('primary', labelWithNum)}  `;
     const inputWidth = Math.max(4, width - visibleWidth(prefix) + 2);
     const inputLine = this.feedbackInput.render(inputWidth)[0] ?? '> ';
     const inlineInput = inputLine.startsWith('> ') ? inputLine.slice(2) : inputLine;
@@ -455,6 +457,25 @@ export class ApprovalPanelComponent extends Container implements Focusable {
 }
 
 function buildNumericHint(count: number): string {
-  if (count <= 0) return '↵';
-  return Array.from({ length: Math.min(count, 9) }, (_, idx) => String(idx + 1)).join('/');
+  const capped = Math.min(count, 9);
+  if (capped <= 0) return '';
+  return capped === 1 ? '1' : `1-${String(capped)}`;
+}
+
+/** Greedy word-wrap for hint segments: packs whole ` · `-joined segments per
+ * line so narrow terminals wrap the hint instead of truncating away keys. */
+function layoutHintLines(parts: string[], width: number): string[] {
+  const lines: string[] = [];
+  let current = '';
+  for (const part of parts) {
+    const candidate = current.length === 0 ? part : `${current} · ${part}`;
+    if (visibleWidth(candidate) <= width) {
+      current = candidate;
+      continue;
+    }
+    if (current.length > 0) lines.push(current);
+    current = part;
+  }
+  if (current.length > 0) lines.push(current);
+  return lines;
 }

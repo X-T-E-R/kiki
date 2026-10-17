@@ -17,6 +17,7 @@ import {
   wrapTextWithAnsi,
 } from '@kiki/pi-tui';
 
+import { SELECT_POINTER } from '#/tui/constant/symbols';
 import { currentTheme } from '#/tui/theme';
 import type {
   PendingQuestion,
@@ -67,6 +68,24 @@ function appendWrapped(
   for (let i = 1; i < wrapped.length; i++) {
     lines.push(styleLine(`${continuationPrefix}${wrapped[i] ?? ''}`));
   }
+}
+
+/** Greedy word-wrap for hint segments: packs whole ` · `-joined segments per
+ * line so narrow terminals wrap the hint instead of truncating away keys. */
+function layoutHintLines(parts: string[], width: number): string[] {
+  const lines: string[] = [];
+  let current = '';
+  for (const part of parts) {
+    const candidate = current.length === 0 ? part : `${current} · ${part}`;
+    if (visibleWidth(candidate) <= width) {
+      current = candidate;
+      continue;
+    }
+    if (current.length > 0) lines.push(current);
+    current = part;
+  }
+  if (current.length > 0) lines.push(current);
+  return lines;
 }
 
 export class QuestionDialogComponent extends Container implements Focusable {
@@ -449,6 +468,7 @@ export class QuestionDialogComponent extends Container implements Focusable {
 
     const accent = (text: string) => currentTheme.fg('primary', text);
     const dim = (text: string) => currentTheme.fg('textDim', text);
+    const muted = (text: string) => currentTheme.fg('textMuted', text);
     const success = (text: string) => currentTheme.fg('success', text);
 
     const renderWidth = Math.max(1, width);
@@ -457,9 +477,6 @@ export class QuestionDialogComponent extends Container implements Focusable {
     lines.push('');
 
     appendWrapped(lines, ' ? ', '   ', question.question, renderWidth, accent);
-    if (this.isEditingOther()) {
-      lines.push(dim('   Type your answer, then press Enter to save.'));
-    }
 
     if (question.body !== undefined && question.body.trim().length > 0) {
       lines.push('');
@@ -501,16 +518,16 @@ export class QuestionDialogComponent extends Container implements Focusable {
       let prefix: string;
       if (question.multi_select) {
         const checked = isSelected ? '✓' : ' ';
-        prefix = `  [${checked}] `;
+        prefix = isCursor ? `  ${SELECT_POINTER} [${checked}] ` : `    [${checked}] `;
         if (isSelected && isCursor) tone = (s) => currentTheme.boldFg('success', s);
         else if (isSelected) tone = success;
         else if (isCursor) tone = accent;
         else tone = dim;
       } else if (isSelected && this.isAnswered(questionIdx)) {
-        prefix = isCursor ? `  → [${String(num)}] ` : `    [${String(num)}] `;
+        prefix = isCursor ? `  ${SELECT_POINTER} [${String(num)}] ` : `    [${String(num)}] `;
         tone = isCursor ? (s) => currentTheme.boldFg('success', s) : success;
       } else if (isCursor) {
-        prefix = `  → [${String(num)}] `;
+        prefix = `  ${SELECT_POINTER} [${String(num)}] `;
         tone = accent;
       } else {
         prefix = `    [${String(num)}] `;
@@ -530,14 +547,16 @@ export class QuestionDialogComponent extends Container implements Focusable {
 
     if (visibleEnd < options.length || visibleStart > 0) {
       lines.push(
-        dim(
+        muted(
           `   showing ${String(visibleStart + 1)}-${String(visibleEnd)} of ${String(options.length)}`,
         ),
       );
     }
 
     lines.push('');
-    lines.push(this.buildQuestionHint(dim, questionIdx));
+    for (const hintLine of layoutHintLines(this.questionHintParts(questionIdx), renderWidth - 2)) {
+      lines.push(muted(`  ${hintLine}`));
+    }
     lines.push(accent('─'.repeat(renderWidth)));
 
     return lines.map((line) => truncateToWidth(line, width));
@@ -546,6 +565,7 @@ export class QuestionDialogComponent extends Container implements Focusable {
   private renderSubmitTab(width: number): string[] {
     const accent = (text: string) => currentTheme.fg('primary', text);
     const dim = (text: string) => currentTheme.fg('textDim', text);
+    const muted = (text: string) => currentTheme.fg('textMuted', text);
     const text = (t: string) => currentTheme.fg('text', t);
     const warning = (text: string) => currentTheme.fg('warning', text);
 
@@ -594,14 +614,16 @@ export class QuestionDialogComponent extends Container implements Focusable {
       if (label === undefined) continue;
       const num = i + 1;
       if (i === this.submitActionIdx) {
-        lines.push(accent(`  → [${String(num)}] ${label}`));
+        lines.push(accent(`  ${SELECT_POINTER} [${String(num)}] ${label}`));
       } else {
         lines.push(dim(`    [${String(num)}] ${label}`));
       }
     }
 
     lines.push('');
-    lines.push(this.buildSubmitHint(dim));
+    for (const hintLine of layoutHintLines(this.submitHintParts(), renderWidth - 2)) {
+      lines.push(muted(`  ${hintLine}`));
+    }
     lines.push(accent('─'.repeat(renderWidth)));
 
     return lines.map((line) => truncateToWidth(line, width));
@@ -632,36 +654,35 @@ export class QuestionDialogComponent extends Container implements Focusable {
     lines.push(` ${tabs.join('  ')}`);
   }
 
-  private buildQuestionHint(dim: (s: string) => string, questionIdx: number): string {
+  private questionHintParts(questionIdx: number): string[] {
     if (this.isEditingOther()) {
-      const parts: string[] = [
+      return [
         'type answer',
-        '↵ save',
-        ...(this.totalTabs() > 1 ? ['tab switch'] : []),
-        'esc cancel',
+        'Enter save',
+        ...(this.totalTabs() > 1 ? ['Tab switch'] : []),
+        'Esc cancel',
       ];
-      return dim(`  ${parts.join('  ')}`);
     }
 
     const optionCount = Math.min(this.displayOptions(questionIdx).length, NUMBER_KEYS.length);
     const numberHint = optionCount <= 1 ? '1' : `1-${String(optionCount)}`;
     const question = this.request.data.questions[questionIdx];
-    if (question === undefined) return dim('  esc cancel');
+    if (question === undefined) return ['Esc cancel'];
 
     const parts: string[] = [
-      '↑↓ select',
-      `${numberHint} / ↵ ${question.multi_select ? 'toggle' : 'choose'}`,
+      '↑↓ navigate',
+      question.multi_select ? `${numberHint}/Space toggle` : `${numberHint}/Enter choose`,
     ];
-    if (this.totalTabs() > 1) parts.push('←/→/tab switch');
-    parts.push('esc cancel');
-    return dim(`  ${parts.join('  ')}`);
+    if (this.totalTabs() > 1) parts.push('←→/Tab switch');
+    parts.push('Esc cancel');
+    return parts;
   }
 
-  private buildSubmitHint(dim: (s: string) => string): string {
-    const parts: string[] = ['↑↓ select', '1/2 choose', '↵ confirm'];
-    if (this.totalTabs() > 1) parts.push('←/→/tab switch');
-    parts.push('esc cancel');
-    return dim(`  ${parts.join('  ')}`);
+  private submitHintParts(): string[] {
+    const parts: string[] = ['↑↓ navigate', '1-2/Enter confirm'];
+    if (this.totalTabs() > 1) parts.push('←→/Tab switch');
+    parts.push('Esc cancel');
+    return parts;
   }
 
   private computeVisibleStart(cursor: number, total: number): number {
@@ -749,12 +770,12 @@ export class QuestionDialogComponent extends Container implements Focusable {
     let prefix: string;
     if (question.multi_select) {
       const checked = isSelected ? '✓' : ' ';
-      const body = `  [${checked}] ${option.label}: `;
+      const body = `  ${SELECT_POINTER} [${checked}] ${option.label}: `;
       prefix = isSelected
         ? currentTheme.boldFg('success', body)
         : currentTheme.fg('primary', body);
     } else {
-      const body = `  → [${String(num)}] ${option.label}: `;
+      const body = `  ${SELECT_POINTER} [${String(num)}] ${option.label}: `;
       prefix =
         isSelected && this.isAnswered(questionIdx)
           ? currentTheme.boldFg('success', body)
