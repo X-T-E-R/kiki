@@ -774,6 +774,21 @@ describe('Composer execution control', () => {
     expect(trigger.disabled).toBe(false);
   });
 
+  it('keeps the execution label accessible while collapsing it to the icon at narrow toolbar widths', async () => {
+    const { container } = await renderComposer({
+      agentProfile: 'agent',
+      onChangeAgentProfile: () => {},
+      execution: NATIVE_AGENT,
+      onChangeExecution: () => {},
+      model: 'fixture/kiki-pro',
+    });
+    const trigger = await waitForTrigger(container);
+    const label = trigger.querySelector<HTMLElement>(':scope > span.truncate');
+    expect(label?.textContent).toContain('fixture/kiki-pro');
+    expect(label?.className).toContain('@max-[24rem]/toolbar:sr-only');
+    expect(trigger.title).not.toBe('');
+  });
+
   it('names the native engine as the product and lists only enabled main profiles', async () => {
     const { container } = await renderComposer({
       agentProfile: 'agent',

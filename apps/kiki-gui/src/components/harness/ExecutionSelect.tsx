@@ -451,7 +451,7 @@ export function ExecutionSelect({
           size={14}
           className={STATUS_SEGMENT_ICON_CLASS}
         />
-        <span className="min-w-0 truncate">
+        <span className="min-w-0 truncate @max-[24rem]/toolbar:sr-only">
           {/* The profile chip on the left already says the switch applies on
               the next message. The model chip keeps the pending accent, title,
               and cancel, and names only the model and effort. */}
