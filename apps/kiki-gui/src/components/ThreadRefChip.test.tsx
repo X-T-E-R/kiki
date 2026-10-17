@@ -4,12 +4,24 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Session, WorkspaceCatalogEntry } from '@kiki/protocol';
 
 import { I18nProvider } from '../i18n';
 import { ThreadRefText } from './ThreadRefChip';
+
+const getSession = vi.fn<(id: string) => Promise<Session>>();
+/** The room calls the new-room dialog makes; wired into the mocked client's klient.rest. */
+const roomRest = vi.hoisted(() => ({
+  createFromThreads: vi.fn(),
+  searchThreads: vi.fn(),
+}));
+
+vi.mock('../state/connection', () => ({
+  useOptionalConnection: () => ({ client: { getSession } }),
+  useConnection: () => ({ client: { getSession, klient: { rest: { rooms: roomRest } } } }),
+}));
 
 const ID = 'session_0f8e2a4c-1b3d-4e5f-8a9b-0c1d2e3f4a5b';
 const roots: Root[] = [];
@@ -67,6 +79,7 @@ async function render(text: string, sessions: Session[]) {
         <I18nProvider>
           <MemoryRouter initialEntries={['/s/session_here']}>
             <Routes>
+              <Route path="/s/:id" element={<><ThreadRefText text={text} projectSegment={(segment) => segment} /><Where /></>} />
               <Route path="*" element={<><ThreadRefText text={text} projectSegment={(segment) => segment} /><Where /></>} />
             </Routes>
           </MemoryRouter>
@@ -114,5 +127,62 @@ describe('ThreadRefText', () => {
     const chip = container.querySelector(`[data-thread-ref-chip="${ID}"]`)!;
     expect(chip.textContent).toContain('Thread 0f8e2a4c');
     expect(chip.getAttribute('data-thread-ref-status')).toBe('unknown');
+  });
+});
+
+async function settle(): Promise<void> {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+describe('ThreadRefChip room menu', () => {
+  beforeEach(() => {
+    roomRest.createFromThreads.mockReset();
+    roomRest.searchThreads.mockReset();
+    roomRest.searchThreads.mockResolvedValue({ threads: [] });
+  });
+
+  async function openChipMenu(container: HTMLDivElement): Promise<HTMLElement> {
+    const chip = container.querySelector(`[data-thread-ref-chip="${ID}"]`);
+    if (chip === null) throw new Error('chip not rendered');
+    await act(async () => { chip.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })); });
+    const menu = document.querySelector<HTMLElement>('[data-thread-ref-chip-menu]');
+    if (menu === null) throw new Error('chip menu did not open');
+    return menu;
+  }
+
+  it('opens the new-thread-room dialog from the menu and creates the room', async () => {
+    roomRest.createFromThreads.mockResolvedValue({ id: 'room_example', name: 'Project room' });
+    const container = await render(`look at /s/${ID}.`, [record({ id: 'session_here', title: 'Current thread' }), record()]);
+    const menu = await openChipMenu(container);
+    expect(menu.querySelector('[data-menu-item="room-with-threads"]')?.textContent).toBe('Open a room with these threads');
+    await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="room-with-threads"]')!.click(); });
+    // The menu closes and the dialog actually mounts — the regression this
+    // covers had the menu's close unmount the dialog state in the same batch.
+    expect(document.querySelector('[data-thread-ref-chip-menu]')).toBeNull();
+    expect(document.querySelector('[data-new-thread-room]')).not.toBeNull();
+    expect(document.querySelectorAll('[data-new-thread-room-member]')).toHaveLength(2);
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-new-thread-room-submit]')!.click(); });
+    await settle();
+    expect(roomRest.createFromThreads).toHaveBeenCalledWith(expect.objectContaining({ sessionIds: ['session_here', ID] }));
+    expect(document.querySelector('[data-new-thread-room]')).toBeNull();
+    expect(container.querySelector('[data-where]')?.textContent).toBe('/rooms/room_example');
+  });
+
+  it('closes the dialog on cancel and the chip menu still opens afterwards', async () => {
+    const container = await render(`look at /s/${ID}.`, [record()]);
+    const menu = await openChipMenu(container);
+    await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="room-with-threads"]')!.click(); });
+    expect(document.querySelector('[data-new-thread-room]')).not.toBeNull();
+    const cancel = [...document.querySelectorAll<HTMLButtonElement>('[data-new-thread-room] button')]
+      .find((button) => button.textContent === 'Cancel');
+    expect(cancel).toBeDefined();
+    await act(async () => { cancel!.click(); });
+    expect(document.querySelector('[data-new-thread-room]')).toBeNull();
+    expect(container.querySelector(`[data-thread-ref-chip="${ID}"]`)).not.toBeNull();
+    const again = await openChipMenu(container);
+    await act(async () => { again.querySelector<HTMLButtonElement>('[data-menu-item="room-with-threads"]')!.click(); });
+    expect(document.querySelector('[data-new-thread-room]')).not.toBeNull();
   });
 });

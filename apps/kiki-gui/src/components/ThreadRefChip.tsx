@@ -194,39 +194,59 @@ export function ThreadRefChip({
   );
 }
 
-/** The chip's context menu; the menu and its dialog mount only once opened. */
+/**
+ * The chip's context menu and the dialog its entry opens. The dialog state
+ * lives here on the chip, not inside the menu: MiniContextMenu closes (and
+ * unmounts) before it runs an entry, so a dialog owned by the menu would be
+ * discarded in the same batch and never mount.
+ */
 function useChipRoomMenu(entry: ThreadRefEntry, group: readonly ThreadRefEntry[] | undefined) {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [newRoom, setNewRoom] = useState(false);
   const onContextMenu = (event: React.MouseEvent) => {
     event.preventDefault();
     setMenu({ x: event.clientX, y: event.clientY });
   };
-  const overlay = menu === null ? null : <ChipRoomMenu x={menu.x} y={menu.y} entry={entry} group={group} onClose={() => { setMenu(null); }} />;
+  const overlay = (
+    <>
+      {menu === null ? null : (
+        <ChipRoomMenu x={menu.x} y={menu.y} onClose={() => { setMenu(null); }}
+          onNewRoom={() => { setMenu(null); setNewRoom(true); }} />
+      )}
+      {newRoom ? <ChipNewRoomDialog entry={entry} group={group} onClose={() => { setNewRoom(false); }} /> : null}
+    </>
+  );
   return { onContextMenu, overlay };
 }
 
-function ChipRoomMenu({ x, y, entry, group, onClose }: {
+function ChipRoomMenu({ x, y, onClose, onNewRoom }: {
   readonly x: number;
   readonly y: number;
+  readonly onClose: () => void;
+  readonly onNewRoom: () => void;
+}) {
+  const { t } = useI18n();
+  const commsEnabled = useThreadCommsEnabled();
+  return (
+    <MiniContextMenu x={x} y={y} ariaLabel={t('room.withThreads')} overlayId="thread-ref-chip-menu" dataAttribute="data-thread-ref-chip-menu"
+      onClose={onClose}
+      entries={commsEnabled === false
+        ? [{ key: 'room-comms-off', label: t('room.commsOffShort'), run: () => undefined }]
+        : [{ key: 'room-with-threads', label: t('room.withThreads'), run: onNewRoom }]} />
+  );
+}
+
+/** The menu's new-room dialog: the same thread set the menu computed from. */
+function ChipNewRoomDialog({ entry, group, onClose }: {
   readonly entry: ThreadRefEntry;
   readonly group: readonly ThreadRefEntry[] | undefined;
   readonly onClose: () => void;
 }) {
-  const { t } = useI18n();
   const { id: currentId } = useParams();
-  const [dialog, setDialog] = useState(false);
-  const commsEnabled = useThreadCommsEnabled();
   const current = useThreadRefDirectory(currentId === undefined ? [] : [currentId]).lookup(currentId ?? '').session;
   const linked = [...(group ?? [entry]), entry].flatMap((item) => item.session === undefined ? [] : [item.session]);
   const threads = roomEligibleThreads([...new Map([...(current === undefined ? [] : [current]), ...linked].map((item) => [item.id, item])).values()]);
-  if (dialog) return <NewThreadRoomDialog threads={threads} onClose={onClose} />;
-  return (
-    <MiniContextMenu x={x} y={y} ariaLabel={t('room.withThreads')} overlayId="thread-ref-chip-menu" dataAttribute="data-thread-ref-chip-menu"
-      onClose={() => { if (!dialog) onClose(); }}
-      entries={commsEnabled === false
-        ? [{ key: 'room-comms-off', label: t('room.commsOffShort'), run: () => undefined }]
-        : [{ key: 'room-with-threads', label: t('room.withThreads'), run: () => { setDialog(true); } }]} />
-  );
+  return <NewThreadRoomDialog threads={threads} onClose={onClose} />;
 }
 
 /**
