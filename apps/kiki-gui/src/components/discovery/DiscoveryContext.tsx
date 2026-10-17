@@ -31,6 +31,7 @@ import {
   type DiscoveryActionPort,
   type DiscoveryAnchor,
   type DiscoveryContext as CoreDiscoveryContext,
+  type DiscoveryDestination,
   type DiscoveryEvent,
   type DiscoveryExampleId,
   type DiscoveryNavigationPort,
@@ -80,6 +81,18 @@ export function resolveAnchorElement(id: string): HTMLElement | null {
 export function detectActiveAnchors(): readonly DiscoveryAnchor[] {
   if (typeof document === 'undefined') return [];
   return ALL_DISCOVERY_ANCHORS.filter((anchor) => resolveAnchorElement(anchor) !== null);
+}
+
+/**
+ * The usage station's anchor lives on the history panel's filter bar, while a
+ * bare `/usage` visit intentionally opens the realtime governance view — so
+ * navigating to that anchor has to ask for the panel that actually mounts it.
+ */
+export function discoveryDestinationHref(destination: DiscoveryDestination): string {
+  if (destination.anchor === 'usage-filter' && !/[?&]panel=/.test(destination.href)) {
+    return `${destination.href}${destination.href.includes('?') ? '&' : '?'}panel=history`;
+  }
+  return destination.href;
 }
 
 export function detectActiveData(): DiscoveryDataState | undefined {
@@ -325,7 +338,7 @@ export function DiscoveryProvider({
     navigate: async (destination, signal) => {
       if (signal?.aborted || unmountedRef.current) return 'cancelled';
 
-      const targetHref = destination.href;
+      const targetHref = discoveryDestinationHref(destination);
       const currentLoc = dataRouter ? dataRouter.state.location : location;
       const isAlreadyCommitted = isLocationCommitted(currentLoc, targetHref) &&
         (!dataRouter || (dataRouter.state.navigation.state === 'idle' && !hasRouterErrors(dataRouter.state)));

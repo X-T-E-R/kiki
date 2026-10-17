@@ -56,7 +56,7 @@ import { useConnection } from '../state/connection';
 import { ConfirmDialog } from './ConfirmDialog';
 import { PAGE_WIDTH, PageHeader } from './PageChrome';
 import { RelativeTime } from './RelativeTime';
-import { Toggle } from './controls';
+import { InlineError, Toggle } from './controls';
 import { useDirtyGuard, useDirtyReporter } from './dirtyGuard';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 import { SearchableSelect } from './SearchableSelect';
@@ -248,7 +248,7 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
         <>
           <div className="shrink-0 px-4 pt-1 pb-2 lg:px-6">
             <div className={`mx-auto flex w-full ${PAGE_WIDTH.split} flex-wrap items-center gap-x-4 gap-y-2 border-b border-hairline pb-2.5`}>
-              <div role="group" aria-label={t('memory.scope.aria')} data-memory-scope-kind={mode} className="flex w-full min-w-0 items-center gap-0.5 rounded-[9px] border border-hairline bg-paper p-0.5 md:w-auto">
+              <div role="group" aria-label={t('memory.scope.aria')} data-anchor="memory-scope" data-memory-scope-kind={mode} className="flex w-full min-w-0 items-center gap-0.5 rounded-[9px] border border-hairline bg-paper p-0.5 md:w-auto">
                 <button
                   type="button"
                   data-memory-kind="global"
@@ -581,9 +581,9 @@ function MemoryScopeView({
       }
     />
   ) : selected !== undefined ? (
-    <div role="status" className="text-[13px] text-ink-soft">
-      {selectedDetail.isError ? errorText(locale, selectedDetail.error) : t('memory.loading')}
-      {selectedDetail.isError ? <button type="button" onClick={() => { void selectedDetail.refetch(); }} className={SECONDARY_BUTTON}>{t('common.retry')}</button> : null}
+    <div role={selectedDetail.isError ? undefined : 'status'} className="text-[13px] text-ink-soft">
+      {selectedDetail.isError ? <InlineError error={selectedDetail.error} /> : t('memory.loading')}
+      {selectedDetail.isError ? <button type="button" onClick={() => { void selectedDetail.refetch(); }} className={`mt-2 ${SECONDARY_BUTTON}`}>{t('common.retry')}</button> : null}
     </div>
   ) : null;
 

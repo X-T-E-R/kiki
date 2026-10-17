@@ -10,6 +10,7 @@ import { I18nProvider } from '../i18n';
 import { USAGE_FILTERS_STORAGE_KEY, type UsageResponseWire } from '../lib/usageV2';
 import { UsagePage } from './UsagePage';
 import { usagePanelFromSearch } from './UsageNavigation';
+import { detectActiveAnchors, resolveAnchorElement } from './discovery/DiscoveryContext';
 import { subscribeUsageFreshness } from '../lib/usageFreshness';
 import { writeLastSessionId } from '@kiki/session-core/settings';
 import type { Klient } from '@kiki/klient';
@@ -356,6 +357,7 @@ describe('UsagePage (V2)', () => {
     expect(container.querySelector('[data-governance-active]')?.textContent).toBe('3');
     expect(container.querySelector('[data-governance-empty]')).not.toBeNull();
     expect(container.querySelector('[data-usage-filters]')).toBeNull();
+    expect(resolveAnchorElement('usage-filter')).toBeNull();
     expect(mainCalls()).toHaveLength(0);
     expect(listWorkspaces).not.toHaveBeenCalled();
     expect(listWorkspaceCatalog).not.toHaveBeenCalled();
@@ -370,6 +372,15 @@ describe('UsagePage (V2)', () => {
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(mainCalls().length).toBeGreaterThan(0);
     await openReliability(container);
+    await act(async () => { root.unmount(); });
+  });
+
+  it('exposes the history filter bar as the discovery tour usage-filter anchor', async () => {
+    const { container, root } = await renderPage('/usage?panel=history');
+    const filters = container.querySelector('[data-usage-filters]');
+    expect(filters).not.toBeNull();
+    expect(resolveAnchorElement('usage-filter')).toBe(filters);
+    expect(detectActiveAnchors()).toContain('usage-filter');
     await act(async () => { root.unmount(); });
   });
 

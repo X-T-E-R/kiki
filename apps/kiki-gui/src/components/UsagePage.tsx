@@ -308,7 +308,7 @@ function FilterBar({
   const selectClass = `h-8 max-w-44 appearance-none truncate rounded-md border border-hairline bg-paper pr-7 pl-3 text-[13px] cursor-pointer pointer-coarse:h-11`;
 
   return (
-    <div data-usage-filters className="flex flex-wrap items-center gap-x-5 gap-y-2.5 border-b border-hairline pt-1 pb-3">
+    <div data-anchor="usage-filter" data-usage-filters className="flex flex-wrap items-center gap-x-5 gap-y-2.5 border-b border-hairline pt-1 pb-3">
       <AxisGroup
         label={t('usage.axis.range')}
         dataAxis="range"

@@ -17,6 +17,7 @@ import type { ToolBlock } from '@kiki/session-core/session';
 import { MemoryToolRow } from './MemoryToolRow';
 import { parseMemoryReadResult, parseMemorySearchSummary, parseMemoryWriteResult } from './memory/memoryReceipt';
 import { DirtyGuardContext, useDirtyGuardState } from './dirtyGuard';
+import { detectActiveAnchors, resolveAnchorElement } from './discovery/DiscoveryContext';
 
 const listBots = vi.hoisted(() => vi.fn(async () => [] as { personaId: string; name: string; homeSessionId: string; hidden: boolean; pinned: boolean }[]));
 vi.mock('../lib/botRooms', () => ({ BOTS_QUERY_KEY: ['bots'], useBotRoomApi: () => ({ listBots }) }));
@@ -1802,4 +1803,13 @@ it('MemoryPage M1 layout places status in header, keeps fixed split columns with
   const coverage = container.querySelector('[data-memory-coverage]')!;
   expect(coverage.className).toContain('text-amber-ink');
   expect(coverage.className).not.toContain('text-danger');
+});
+
+it('MemoryPage discovery anchor exposes the scope group as the memory-scope tour target', async () => {
+  seedMemories({ 'global::': [] });
+  const container = await renderPage('/memory');
+  const scope = container.querySelector('[data-memory-scope-kind]');
+  expect(scope).not.toBeNull();
+  expect(resolveAnchorElement('memory-scope')).toBe(scope);
+  expect(detectActiveAnchors()).toContain('memory-scope');
 });

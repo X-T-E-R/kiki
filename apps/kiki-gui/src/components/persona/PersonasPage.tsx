@@ -31,9 +31,8 @@ import { useConnection } from '../../state/connection';
 import { useAskKiki, useAskKikiWorkspace, AskKikiButton } from '../askKiki';
 import { Icon } from '../icons';
 import { PAGE_WIDTH, PageHeader } from '../PageChrome';
-import { Toggle } from '../controls';
+import { InlineError, Toggle } from '../controls';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
-import { errorText } from '@kiki/session-core/i18n';
 import { segmentClass } from '../WorkspaceScopeControl';
 import { SettingsPageScopeContext } from '../settings/SectionCard';
 import { PersonaAvatar, personaAvatarOf } from './PersonaAvatar';
@@ -43,7 +42,7 @@ import { PersonaConversationsSection } from './PersonaConversationsSection';
 import { matchesPersona, sortPersonas, usePersonaList } from './usePersonas';
 
 export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: () => void }) {
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
   const [params, setParams] = useSearchParams();
   const [search, setSearch] = useState('');
   const [showArchived, setShowArchived] = useState(false);
@@ -118,8 +117,8 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
           ) : listQuery.isError ? (
             <div data-persona-error className="py-4">
               <p className="text-[13px] font-medium text-danger">{t('persona.loadFailed')}</p>
-              <p className="mt-1 font-mono text-[11px] text-danger">{errorText(locale, listQuery.error)}</p>
-              <button type="button" onClick={() => { void listQuery.refetch(); }} className="mt-2 text-[12px] font-medium text-danger underline">
+              <div className="mt-1"><InlineError error={listQuery.error} /></div>
+              <button type="button" onClick={() => { void listQuery.refetch(); }} className={`mt-3 ${SECONDARY_BUTTON}`}>
                 {t('common.retry')}
               </button>
             </div>
