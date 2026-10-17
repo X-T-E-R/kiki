@@ -181,6 +181,7 @@ function fixtureStamp(day: number, hour = 10): string {
 const FIXTURE_NOW_MS = new Date(2026, 9, 6, 12).getTime();
 
 const containers: HTMLDivElement[] = [];
+const roots: Root[] = [];
 const reactActEnvironment = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT: boolean;
 };
@@ -225,11 +226,27 @@ beforeEach(() => {
   // Workspace folds and the list scroll persist across mounts.
   localStorage.removeItem('kiki.sidebar.workspaceGroups');
   localStorage.removeItem('kiki.sidebar.topLevelThreads');
+  // Layout preferences (collapse, secondary-nav fold) are per-test state;
+  // without this a test that expands a section leaks it into the next one's
+  // "preference unset" premise.
+  localStorage.removeItem('kiki.layout');
   configureSpaceStorage(null);
 });
 
 afterEach(() => {
+  // Unmount every root a test mounted: portaled dialogs keep their window
+  // keydown listeners alive otherwise (removing the container is not enough),
+  // and a leaked modal eats the next test's trusted Escape. Roots a test
+  // already unmounted itself are skipped.
+  for (const root of roots.splice(0)) {
+    try {
+      act(() => { root.unmount(); });
+    } catch {
+      // The test unmounted this root itself.
+    }
+  }
   for (const container of containers.splice(0)) container.remove();
+  document.body.innerHTML = '';
   resetSessionSeen();
 });
 
@@ -262,6 +279,7 @@ async function mount(
   document.body.append(container);
   containers.push(container);
   const root = createRoot(container);
+  roots.push(root);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   if (cachedSessions.length > 0) client.setQueryData(['sessions', 'cached'], { pages: [{ items: cachedSessions }] });
   const { sessionGroups: rawGroups, initialEntries, ...rest } = overrides;
@@ -1646,6 +1664,100 @@ describe('Sidebar session menu location & link group', () => {
   });
 });
 
+describe('Sidebar session menu keyboard focus', () => {
+  const listed = (): { sessions: Session[]; sessionGroups: SessionGroup[] } => {
+    const one = session('one');
+    return { sessions: [one], sessionGroups: [{ key: 'today', label: 'Today', items: [one] }] };
+  };
+
+  /** Opens the row menu the way Shift+F10 would: a control in the row holds
+   * focus, and the contextmenu bubbles up from the row's title. */
+  async function openMenuFromFocusedRow(container: HTMLDivElement, id: string): Promise<{ menu: HTMLElement; origin: HTMLButtonElement }> {
+    const origin = container.querySelector<HTMLButtonElement>(`[data-session-row="${id}"] [data-session-pin-toggle]`);
+    if (origin === null) throw new Error('row control not rendered');
+    await act(async () => { origin.focus(); });
+    const title = container.querySelector(`[data-session-row="${id}"] [data-session-title]`);
+    await act(async () => { title?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })); });
+    const menu = container.querySelector<HTMLElement>('[data-session-menu]');
+    if (menu === null) throw new Error('session menu did not open');
+    return { menu, origin };
+  }
+
+  const menuItem = (menu: HTMLElement, text: string): HTMLButtonElement => {
+    const found = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((item) => item.textContent === text);
+    if (found === undefined) throw new Error(`menu item ${text} not rendered`);
+    return found;
+  };
+
+  const key = async (target: EventTarget, keyName: string): Promise<void> => {
+    await act(async () => { target.dispatchEvent(new KeyboardEvent('keydown', { key: keyName, bubbles: true })); });
+  };
+
+  it('moves focus to the first entry on open and cycles with arrows, Home and End', async () => {
+    const { container } = await mount(listed());
+    const { menu } = await openMenuFromFocusedRow(container, 'one');
+    // Same enabled-item list the menu's own key handler walks.
+    const items = [...menu.querySelectorAll<HTMLButtonElement>('button:not([disabled])')];
+    expect(items.length).toBeGreaterThan(2);
+    expect(document.activeElement).toBe(items[0]);
+    await key(items[0]!, 'ArrowDown');
+    expect(document.activeElement).toBe(items[1]);
+    await key(document.activeElement!, 'End');
+    expect(document.activeElement).toBe(items[items.length - 1]);
+    // Arrows wrap around both ends.
+    await key(document.activeElement!, 'ArrowDown');
+    expect(document.activeElement).toBe(items[0]);
+    await key(document.activeElement!, 'ArrowUp');
+    expect(document.activeElement).toBe(items[items.length - 1]);
+    await key(document.activeElement!, 'Home');
+    expect(document.activeElement).toBe(items[0]);
+  });
+
+  it('Escape closes the menu and hands focus back to the row control that had it', async () => {
+    const { container } = await mount(listed());
+    const { menu, origin } = await openMenuFromFocusedRow(container, 'one');
+    expect(menu.contains(document.activeElement)).toBe(true);
+    await key(window, 'Escape');
+    expect(container.querySelector('[data-session-menu]')).toBeNull();
+    expect(document.activeElement).toBe(origin);
+  });
+
+  it('an outside pointerdown closes the menu without pulling focus back', async () => {
+    const threads = [session('one'), session('two')];
+    const { container } = await mount({ sessions: threads, sessionGroups: [{ key: 'today', label: 'Today', items: threads }] });
+    const { menu, origin } = await openMenuFromFocusedRow(container, 'one');
+    expect(menu.contains(document.activeElement)).toBe(true);
+    const elsewhere = container.querySelector('[data-session-row="two"] [data-session-pin-toggle]');
+    if (elsewhere === null) throw new Error('second row control not rendered');
+    await act(async () => { elsewhere.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true })); });
+    expect(container.querySelector('[data-session-menu]')).toBeNull();
+    // The pointer's own target keeps its focus course; the opener is not re-focused.
+    expect(document.activeElement).not.toBe(origin);
+  });
+
+  it('activating an entry closes the menu and hands focus back to the row control', async () => {
+    const { container } = await mount(listed());
+    const { menu, origin } = await openMenuFromFocusedRow(container, 'one');
+    await act(async () => { menuItem(menu, 'Pin to top').click(); });
+    expect(container.querySelector('[data-session-menu]')).toBeNull();
+    expect(document.activeElement).toBe(origin);
+  });
+
+  it('an entry that opens a dialog leaves focus with the dialog, not the row', async () => {
+    const { container } = await mount(listed());
+    const { menu, origin } = await openMenuFromFocusedRow(container, 'one');
+    await act(async () => { menuItem(menu, 'Rename…').click(); });
+    expect(container.querySelector('[data-session-menu]')).toBeNull();
+    const input = document.body.querySelector<HTMLElement>('[data-autofocus]');
+    expect(input).not.toBeNull();
+    // The dialog's own autofocus lands after the menu's post-commit check, so
+    // the row control is never re-focused on top of it.
+    await settle();
+    expect(document.activeElement).toBe(input);
+    expect(document.activeElement).not.toBe(origin);
+  });
+});
+
 describe('mergeSearchPages', () => {
   it('appends pages in server order and keeps a duplicate re-ranked across a page boundary', () => {
     const p1 = hit({ session_id: 'x', turn: 0 });
@@ -2362,6 +2474,25 @@ describe('Sidebar room rows', () => {
     expect(container.querySelector('[data-room-menu]')).toBeNull();
   });
 
+  it('opens with focus on the first entry and Escape hands it back to the row control', async () => {
+    roomRest.get.mockResolvedValue(roomDocument(roomSummary({ id: 'room_1' })));
+    const { container } = await mount(listedRoom(roomSummary({ id: 'room_1' })));
+    // A control in the row holds focus, the way Shift+F10 would open the menu.
+    const origin = container.querySelector<HTMLButtonElement>('[data-room-pin-toggle]');
+    if (origin === null) throw new Error('room row control not rendered');
+    await act(async () => { origin.focus(); });
+    const menu = await openRoomMenu(container);
+    const first = menu.querySelector<HTMLButtonElement>('button:not([disabled])');
+    if (first === null) throw new Error('room menu has no enabled entry');
+    expect(document.activeElement).toBe(first);
+    await act(async () => { first.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); });
+    expect(menu.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).not.toBe(first);
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); });
+    expect(container.querySelector('[data-room-menu]')).toBeNull();
+    expect(document.activeElement).toBe(origin);
+  });
+
   it('lists members / budget / pause ahead of the shared lifecycle entries', async () => {
     const room = roomSummary({ id: 'room_1' });
     // Hold the room document back so the pause entry shows its waiting state.
@@ -2612,8 +2743,10 @@ it('keeps time-group headings in nonshrinking normal flow instead of overlaying 
 describe('sidebar secondary navigation', () => {
   it('keeps secondary navigation compact and folded by default (when preference unset) while pinned items stay visible', async () => {
     await act(async () => {
-      // Preference unset: layoutPrefs.sidebarNavSectionCollapsed defaults to true
-      writeLayoutPreferences({ sidebarCollapsed: false });
+      // Folded by default. Written explicitly because the layout store keeps
+      // an in-memory snapshot: an earlier test's expand survives a bare
+      // localStorage clear, so the "unset" premise has to be re-published.
+      writeLayoutPreferences({ sidebarCollapsed: false, sidebarNavSectionCollapsed: true });
     });
     const { container } = await mount();
 

@@ -9,6 +9,8 @@ import { setActiveOutputLayerClient } from './useOutputLayerClient';
 import { I18nProvider } from '../../i18n';
 import { OUTPUT_LAYER_DEFAULT_PRESETS, OUTPUT_LAYER_DEFAULT_SETTINGS, type OutputLayerConfiguration, type OutputLayerPreset } from './types';
 
+(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
 const fixture = vi.hoisted(() => ({ connection: null as any, configuration: vi.fn(), configure: vi.fn() }));
 vi.mock('../../state/connection', () => ({ useOptionalConnection: () => fixture.connection, useConnection: () => fixture.connection }));
 let container: HTMLDivElement;
@@ -19,6 +21,8 @@ const savedPreset: OutputLayerPreset = { id: 'saved', label: '我的翻译', ins
 
 beforeEach(() => {
   localStorage.clear();
+  // The modal's copy is i18n'd; pin zh so the assertions below read the Chinese strings.
+  localStorage.setItem('kiki.locale', 'zh');
   setActiveOutputLayerClient(null);
   serverConfiguration = { enabled: true, presets: [savedPreset], templates: [...OUTPUT_LAYER_DEFAULT_PRESETS], settings: { ...OUTPUT_LAYER_DEFAULT_SETTINGS } };
   fixture.configuration.mockReset().mockImplementation(async () => serverConfiguration);
@@ -61,6 +65,16 @@ async function save() { await act(async () => button('保存预设').click()); }
 async function budgetInput() {
   await act(async () => button('高级参数').click());
   return document.body.querySelector<HTMLInputElement>('input[placeholder="不限制"]')!;
+}
+/** The control a visible or sr-only label names, via htmlFor → id. */
+function labeled(labelText: string): HTMLElement {
+  const labelEl = Array.from(document.body.querySelectorAll('label')).find((item) => item.textContent === labelText);
+  if (!labelEl) throw new Error(`Missing label ${labelText}`);
+  const id = labelEl.getAttribute('for');
+  if (!id) throw new Error(`label "${labelText}" is not associated (no htmlFor)`);
+  const control = document.getElementById(id);
+  if (!control) throw new Error(`label "${labelText}" points at missing control #${id}`);
+  return control;
 }
 
 describe('OutputPresetModal', () => {
@@ -159,5 +173,31 @@ describe('OutputPresetModal', () => {
     await act(async () => resolve(serverConfiguration));
     expect(callbacks.onSaved).not.toHaveBeenCalled(); expect(callbacks.onClose).not.toHaveBeenCalled();
     expect(outputLayerStore.getConfiguration('different-home:modal-server:__all__')).toEqual(nextConfiguration);
+  });
+
+  it('names all nine fields through associated labels (visible or sr-only)', async () => {
+    await renderModal();
+    expect(labeled('预设名称').tagName).toBe('INPUT');
+    expect(labeled('提示词指令').tagName).toBe('TEXTAREA');
+    // The custom-model pair appears in custom mode; both controls carry sr-only labels.
+    await act(async () => { document.body.querySelectorAll<HTMLInputElement>('input[name="modelMode"]')[1]!.click(); });
+    expect(labeled('已有连接').tagName).toBe('SELECT');
+    expect(labeled('自定义模型 ID').tagName).toBe('INPUT');
+    await act(async () => button('高级参数').click());
+    expect(labeled('单组字符数 (Unicode)').tagName).toBe('INPUT');
+    expect(labeled('向前预加载组数').tagName).toBe('INPUT');
+    expect(labeled('向后预加载组数').tagName).toBe('INPUT');
+    expect(labeled('单次输出预算 (Tokens)').tagName).toBe('INPUT');
+    expect(labeled('历史预算 (Tokens)').tagName).toBe('INPUT');
+  });
+
+  it('shows save validation only in the alert box, never as standing copy', async () => {
+    await renderModal({ preset: { ...savedPreset, modelId: undefined, connectionId: 'existing' } });
+    // Half-filled custom pair: no standing warning or credential hint before any save attempt.
+    expect(document.body.textContent).not.toContain('自定义模型需要同时选择已有连接并填写模型 ID');
+    expect(document.body.textContent).not.toContain('复用 Kiki');
+    await save();
+    const alert = document.body.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain('自定义模型需要同时选择已有连接并填写模型 ID');
   });
 });

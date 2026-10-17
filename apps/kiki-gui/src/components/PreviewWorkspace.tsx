@@ -29,7 +29,7 @@
  * retargets the shared rail at the active panel tab's agent.
  */
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useNavVisitId } from '../lib/useNavSnapshot';
 
 import { appendToDraft, mentionToken } from '@kiki/session-core/composer';
@@ -40,6 +40,7 @@ import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
 import type { KikiClient } from '../lib/client';
 import { runToastAction } from '../lib/toasts';
+import { registerOverlay } from '../lib/uiBusy';
 import { useOptionalConnection } from '../state/connection';
 import {
   HostFileEditorController,
@@ -570,6 +571,7 @@ function PreviewFileTab({
   return (
     <div
       role="tab"
+      tabIndex={0}
       aria-selected={active}
       title={path}
       draggable
@@ -589,11 +591,19 @@ function PreviewFileTab({
         onDrop();
       }}
       onClick={onActivate}
+      onKeyDown={(event) => {
+        // Inner buttons (mention, close) keep their own activation.
+        if (event.target !== event.currentTarget) return;
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onActivate();
+        }
+      }}
       onContextMenu={(event) => {
         event.preventDefault();
         onContextMenu(event.clientX, event.clientY);
       }}
-      className={`group flex h-7 max-w-40 min-w-0 shrink-0 cursor-pointer items-center gap-1 rounded-t-md border border-b-0 px-2 text-[11.5px] select-none ${
+      className={`group flex h-7 max-w-40 min-w-0 shrink-0 cursor-pointer items-center gap-1 rounded-t-md border border-b-0 px-2 text-[11.5px] select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
         active
           ? 'border-hairline bg-paper font-medium text-ink'
           : 'border-transparent text-ink-faint hover:text-ink-soft'
@@ -664,6 +674,7 @@ function PreviewSkillTab({
   return (
     <div
       role="tab"
+      tabIndex={0}
       aria-selected={active}
       title={`${t('cap.source.builtin')} · ${name} / SKILL.md`}
       draggable
@@ -683,11 +694,19 @@ function PreviewSkillTab({
         onDrop();
       }}
       onClick={onActivate}
+      onKeyDown={(event) => {
+        // The inner close button keeps its own activation.
+        if (event.target !== event.currentTarget) return;
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onActivate();
+        }
+      }}
       onContextMenu={(event) => {
         event.preventDefault();
         onContextMenu(event.clientX, event.clientY);
       }}
-      className={`group flex h-7 max-w-48 min-w-0 shrink-0 cursor-pointer items-center gap-1 rounded-t-md border border-b-0 px-2 text-[11.5px] select-none ${
+      className={`group flex h-7 max-w-48 min-w-0 shrink-0 cursor-pointer items-center gap-1 rounded-t-md border border-b-0 px-2 text-[11.5px] select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
         active ? 'border-hairline bg-paper font-medium text-ink' : 'border-transparent text-ink-faint hover:text-ink-soft'
       }`}
     >
@@ -816,11 +835,31 @@ function TabContextMenu({
   const host = useHost();
   const { t } = useI18n();
   const remoteScope = useOptionalConnection()?.scopeId.startsWith('ssh:') ?? false;
+  const menuRef = useRef<HTMLDivElement>(null);
+  // Whatever held focus when the menu opened; Escape and item activation hand
+  // it back (an outside pointerdown never does — the pointer's own target
+  // takes focus). Registered as an overlay so the global Escape-to-abort
+  // yields to this menu like every other transient layer.
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    menuRef.current?.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus();
+  }, []);
+
+  const restoreTriggerFocus = () => {
+    const trigger = returnFocusRef.current;
+    if (trigger === null || trigger === document.body || !trigger.isConnected) return;
+    trigger.focus();
+  };
   const closeRef = useRef(onCloseMenu);
   closeRef.current = onCloseMenu;
   useEffect(() => {
+    const unregister = registerOverlay('preview-tab-menu');
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeRef.current();
+      if (event.key !== 'Escape') return;
+      const owned = menuRef.current?.contains(document.activeElement) === true;
+      closeRef.current();
+      if (owned) restoreTriggerFocus();
     };
     const onPointerDown = (event: PointerEvent) => {
       if (
@@ -833,13 +872,14 @@ function TabContextMenu({
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('pointerdown', onPointerDown, true);
     return () => {
+      unregister();
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('pointerdown', onPointerDown, true);
     };
   }, []);
 
   const itemClass =
-    'w-full rounded-md px-3 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper';
+    'w-full rounded-md px-3 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper';
   const pick = (run: () => void) => {
     onCloseMenu();
     run();
@@ -853,8 +893,35 @@ function TabContextMenu({
 
   return (
     <div
+      ref={menuRef}
       data-preview-tab-menu
       role="menu"
+      aria-label={t('preview.tabMenuAria')}
+      onKeyDown={(event) => {
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Home' && event.key !== 'End') return;
+        const items = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('button:not([disabled])') ?? [])];
+        if (items.length === 0) return;
+        event.preventDefault();
+        const index = items.indexOf(document.activeElement as HTMLButtonElement);
+        const next = event.key === 'Home' ? 0
+          : event.key === 'End' ? items.length - 1
+          : event.key === 'ArrowDown' ? (index + 1) % items.length
+          : (index - 1 + items.length) % items.length;
+        items[next]?.focus();
+      }}
+      onClick={(event) => {
+        // Focus returns to the opener only after the click's commit lands: a
+        // tab close can unmount the opener (nothing to restore), and checking
+        // post-commit never steals from a surface the action raised.
+        if (!(event.target instanceof HTMLElement) || event.target.closest('[role="menuitem"]') === null) return;
+        const menuNode = menuRef.current;
+        queueMicrotask(() => {
+          if (menuNode === null || menuNode.isConnected) return;
+          const active = document.activeElement;
+          if (active !== null && active !== document.body && active instanceof HTMLElement && active.isConnected) return;
+          restoreTriggerFocus();
+        });
+      }}
       className="anim-enter fixed z-50 w-52 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgb(var(--kiki-shadow-ink)/0.3)]"
       style={{ left: menu.x, top: menu.y }}
     >

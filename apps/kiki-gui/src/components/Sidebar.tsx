@@ -2500,11 +2500,23 @@ function RoomListMenu({
   });
   const paused = roomQuery.data?.paused;
   const menuRef = useRef<HTMLDivElement>(null);
+  // Focus holder to hand back to on Escape / item activation — whatever was
+  // focused when the menu opened. Outside-pointer closes do not restore: the
+  // pointer's own target takes the focus.
+  const returnFocusRef = useRef<HTMLElement | null>(null);
   const [size, setSize] = useState<{ width: number; height: number } | undefined>(undefined);
   useLayoutEffect(() => {
+    returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const node = menuRef.current;
     if (node !== null) setSize({ width: node.offsetWidth, height: node.offsetHeight });
+    node?.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus();
   }, []);
+
+  const restoreTriggerFocus = () => {
+    const trigger = returnFocusRef.current;
+    if (trigger === null || trigger === document.body || !trigger.isConnected) return;
+    trigger.focus();
+  };
   const position = clampOverlayPosition(
     x,
     y,
@@ -2516,7 +2528,10 @@ function RoomListMenu({
   useEffect(() => {
     const unregister = registerOverlay('room-list-menu');
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeRef.current();
+      if (event.key !== 'Escape') return;
+      const owned = menuRef.current?.contains(document.activeElement) === true;
+      closeRef.current();
+      if (owned) restoreTriggerFocus();
     };
     const onPointerDown = (event: PointerEvent) => {
       if (!(event.target instanceof HTMLElement) || event.target.closest('[data-room-menu]') === null) {
@@ -2538,13 +2553,40 @@ function RoomListMenu({
   };
 
   const itemClass =
-    'w-full rounded-md px-3 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper';
+    'w-full rounded-md px-3 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper';
   return (
     <div
       ref={menuRef}
       data-room-menu
       role="menu"
       aria-label={t('room.menu')}
+      onKeyDown={(event) => {
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Home' && event.key !== 'End') return;
+        const items = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('button:not([disabled])') ?? [])];
+        if (items.length === 0) return;
+        event.preventDefault();
+        const index = items.indexOf(document.activeElement as HTMLButtonElement);
+        const next = event.key === 'Home' ? 0
+          : event.key === 'End' ? items.length - 1
+          : event.key === 'ArrowDown' ? (index + 1) % items.length
+          : (index - 1 + items.length) % items.length;
+        items[next]?.focus();
+      }}
+      onClick={(event) => {
+        // Item activation hands focus back to the opener — but only after
+        // the click's commit has landed: an in-place toggle (pin/pause keeps
+        // this menu open) keeps its focus, and a surface the action opened
+        // focuses itself on mount. Checking post-commit restores exactly
+        // when neither happened.
+        if (!(event.target instanceof HTMLElement) || event.target.closest('[role="menuitem"]') === null) return;
+        const menuNode = menuRef.current;
+        queueMicrotask(() => {
+          if (menuNode === null || menuNode.isConnected) return;
+          const active = document.activeElement;
+          if (active !== null && active !== document.body && active instanceof HTMLElement && active.isConnected) return;
+          restoreTriggerFocus();
+        });
+      }}
       className="anim-enter fixed z-50 w-44 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgb(var(--kiki-shadow-ink)/0.3)]"
       style={{ left: position.left, top: position.top }}
     >
@@ -3334,12 +3376,26 @@ function SessionMenu({
   const { t } = useI18n();
   const archived = session.archived === true;
   const menuRef = useRef<HTMLDivElement>(null);
+  // Focus holder to hand back to on Escape / item activation — whatever was
+  // focused when the menu opened (a row's inner button for a Shift+F10 that
+  // bubbled up, never an assumed row container). Outside-pointer closes do
+  // not restore: the pointer's own target takes the focus.
+  const returnFocusRef = useRef<HTMLElement | null>(null);
   const [size, setSize] = useState<{ width: number; height: number } | undefined>(undefined);
-  // Layout effect: the clamped position lands before the first paint.
+  // Layout effect: the clamped position lands before the first paint, and the
+  // first item takes focus with it so the menu is keyboard-operable at once.
   useLayoutEffect(() => {
+    returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const node = menuRef.current;
     if (node !== null) setSize({ width: node.offsetWidth, height: node.offsetHeight });
+    node?.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus();
   }, []);
+
+  const restoreTriggerFocus = () => {
+    const trigger = returnFocusRef.current;
+    if (trigger === null || trigger === document.body || !trigger.isConnected) return;
+    trigger.focus();
+  };
   const position = clampOverlayPosition(
     x,
     y,
@@ -3354,7 +3410,10 @@ function SessionMenu({
   useEffect(() => {
     const unregister = registerOverlay('session-menu');
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeRef.current();
+      if (event.key !== 'Escape') return;
+      const owned = menuRef.current?.contains(document.activeElement) === true;
+      closeRef.current();
+      if (owned) restoreTriggerFocus();
     };
     const onPointerDown = (event: PointerEvent) => {
       if (!(event.target instanceof HTMLElement) || event.target.closest('[data-session-menu]') === null) {
@@ -3383,12 +3442,39 @@ function SessionMenu({
   };
 
   const itemClass =
-    'w-full rounded-md px-3 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper';
+    'w-full rounded-md px-3 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper';
   return (
     <div
       ref={menuRef}
       data-session-menu
       role="menu"
+      onKeyDown={(event) => {
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Home' && event.key !== 'End') return;
+        const items = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('button:not([disabled])') ?? [])];
+        if (items.length === 0) return;
+        event.preventDefault();
+        const index = items.indexOf(document.activeElement as HTMLButtonElement);
+        const next = event.key === 'Home' ? 0
+          : event.key === 'End' ? items.length - 1
+          : event.key === 'ArrowDown' ? (index + 1) % items.length
+          : (index - 1 + items.length) % items.length;
+        items[next]?.focus();
+      }}
+      onClick={(event) => {
+        // Item activation hands focus back to the opener — but only after
+        // the click's commit has landed: an in-place toggle (pin/unpin keeps
+        // this menu open) keeps its focus, and a dialog the action opened
+        // (rename, join-room) focuses itself on mount. Checking post-commit
+        // restores exactly when neither happened.
+        if (!(event.target instanceof HTMLElement) || event.target.closest('[role="menuitem"]') === null) return;
+        const menuNode = menuRef.current;
+        queueMicrotask(() => {
+          if (menuNode === null || menuNode.isConnected) return;
+          const active = document.activeElement;
+          if (active !== null && active !== document.body && active instanceof HTMLElement && active.isConnected) return;
+          restoreTriggerFocus();
+        });
+      }}
       className="anim-enter fixed z-50 w-44 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgb(var(--kiki-shadow-ink)/0.3)]"
       style={{ left: position.left, top: position.top }}
     >

@@ -29,6 +29,7 @@ import { MediaPartList, MediaPreviewProvider, PreviewToggleButton, useMediaPrevi
 import { ToolCard } from './ToolCard';
 import { Markdown } from './Markdown';
 import { PreviewWorkspace, isHtmlPreviewPath, relativeToCwd } from './PreviewWorkspace';
+import { anyOverlayOpen } from '../lib/uiBusy';
 import { ConversationShell, useRegisterSeat } from './ConversationShell';
 import { useRailMode } from './rail-variants/shell';
 
@@ -1838,5 +1839,123 @@ describe('PreviewWorkspace HTML document preview', () => {
     await settle();
     expect(htmlPreviewMock.open).toHaveBeenCalledTimes(2);
     expect(probe.container.querySelector('[data-preview-html]')).not.toBeNull();
+  });
+});
+
+
+describe('PreviewWorkspace tab keyboard & menu focus', () => {
+  beforeAll(() => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  });
+  afterAll(() => {
+    delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+  });
+  beforeEach(() => {
+    connectionMock.activeClient = {
+      ...(connectionMock.defaultClient as object),
+      readBuiltinSkill: async () => '# Example skill\n\nReading text.',
+    };
+  });
+  afterEach(() => {
+    for (const root of roots.splice(0)) {
+      act(() => { root.unmount(); });
+    }
+    for (const container of containers.splice(0)) container.remove();
+    document.body.innerHTML = '';
+  });
+
+  function renderWorkspace(options: {
+    tabs: readonly (string | { kind: 'skill'; name: string })[];
+    active: string;
+    onActivate?: (key: string) => void;
+  }) {
+    const probe = makeRoot();
+    const onActivate = options.onActivate ?? vi.fn();
+    return renderSettled(
+      probe.root,
+      <PreviewWorkspace
+        tabs={options.tabs}
+        active={options.active}
+        dirtyPaths={new Set()}
+        width={400}
+        onActivate={onActivate}
+        onClose={vi.fn()}
+        onCloseOthers={vi.fn()}
+        onCloseAll={vi.fn()}
+        onMove={vi.fn()}
+        onCollapse={vi.fn()}
+        onWidthChange={vi.fn()}
+        onOpenImage={vi.fn()}
+        reportDirty={vi.fn()}
+        scrollPositions={{}}
+        onScrollPosition={vi.fn()}
+      />,
+    ).then(() => ({ probe, onActivate }));
+  }
+
+  it('file tabs take keyboard focus and Enter / Space activate them', async () => {
+    const onActivate = vi.fn();
+    await renderWorkspace({
+      tabs: ['/work/src/server.ts', '/work/docs/design.md'],
+      active: '/work/docs/design.md',
+      onActivate,
+    });
+    const tab = workspace().querySelector<HTMLElement>('[data-preview-tab="/work/src/server.ts"]')!;
+    expect(tab.getAttribute('tabindex')).toBe('0');
+    await act(async () => { tab.focus(); });
+    expect(document.activeElement).toBe(tab);
+    await act(async () => { tab.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+    expect(onActivate).toHaveBeenCalledWith('/work/src/server.ts');
+    await act(async () => { tab.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true })); });
+    expect(onActivate).toHaveBeenCalledTimes(2);
+  });
+
+  it('skill tabs activate from the keyboard the same way', async () => {
+    const onActivate = vi.fn();
+    await renderWorkspace({
+      tabs: [{ kind: 'skill', name: 'example' }, '/work/docs/design.md'],
+      active: '/work/docs/design.md',
+      onActivate,
+    });
+    const tab = workspace().querySelector<HTMLElement>('[data-preview-tab="skill:builtin:example"]')!;
+    expect(tab.getAttribute('tabindex')).toBe('0');
+    await act(async () => { tab.focus(); });
+    await act(async () => { tab.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+    expect(onActivate).toHaveBeenCalledWith('skill:builtin:example');
+  });
+
+  it('Enter on the inner close button is not read as a tab activation', async () => {
+    const onActivate = vi.fn();
+    await renderWorkspace({
+      tabs: ['/work/src/server.ts', '/work/docs/design.md'],
+      active: '/work/docs/design.md',
+      onActivate,
+    });
+    const closeButton = workspace().querySelector<HTMLElement>('[data-preview-tab="/work/src/server.ts"] button[aria-label]')!;
+    await act(async () => { closeButton.focus(); });
+    await act(async () => { closeButton.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+    expect(onActivate).not.toHaveBeenCalled();
+  });
+
+  it('tab menu opens with focus inside, cycles, and Escape hands focus back to the tab', async () => {
+    await renderWorkspace({
+      tabs: ['/work/src/server.ts', '/work/docs/design.md'],
+      active: '/work/src/server.ts',
+    });
+    const tab = workspace().querySelector<HTMLElement>('[data-preview-tab="/work/docs/design.md"]')!;
+    await act(async () => { tab.focus(); });
+    await act(async () => { tab.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })); });
+    const menu = document.querySelector<HTMLElement>('[data-preview-tab-menu]')!;
+    expect(menu).not.toBeNull();
+    expect(anyOverlayOpen()).toBe(true);
+    const items = [...menu.querySelectorAll<HTMLButtonElement>('button:not([disabled])')];
+    expect(items.length).toBeGreaterThan(1);
+    expect(document.activeElement).toBe(items[0]);
+    await act(async () => { items[0]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); });
+    expect(document.activeElement).toBe(items[1]);
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); });
+    expect(document.querySelector('[data-preview-tab-menu]')).toBeNull();
+    expect(anyOverlayOpen()).toBe(false);
+    expect(document.activeElement).toBe(tab);
   });
 });

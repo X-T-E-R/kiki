@@ -54,7 +54,7 @@ export function OutputPresetModal({
   const [saveError, setSaveError] = useState<string | null>(null);
 
   const [templateId, setTemplateId] = useState(initialTemplate?.id ?? '');
-  const [label, setLabel] = useState(preset?.label ?? initialTemplate?.label ?? '新预设');
+  const [label, setLabel] = useState(preset?.label ?? initialTemplate?.label ?? t('outputPreset.defaultLabel'));
   const [instruction, setInstruction] = useState(preset?.instruction ?? initialTemplate?.instruction ?? '');
   const [modelMode, setModelMode] = useState<'catalog' | 'custom'>(
     preset?.connectionId || preset?.customModelId ? 'custom' : 'catalog',
@@ -101,9 +101,9 @@ export function OutputPresetModal({
     return [
       {
         value: '',
-        label: '未选择模型 (保持原文，不触发处理)',
-        group: '未设置',
-        keywords: 'none empty 未选择 留空',
+        label: t('outputPreset.noModelLabel'),
+        group: t('outputPreset.noModelGroup'),
+        keywords: t('outputPreset.noModelKeywords'),
       },
       ...buildCatalogModelOptions(items, t, {
         groupLabel: providerGroupLabel,
@@ -118,17 +118,17 @@ export function OutputPresetModal({
     if (saving) return;
     setSaveError(null);
     if (isCustomIncomplete) {
-      setSaveError('自定义模型需要同时选择已有连接并填写模型 ID。');
+      setSaveError(t('outputPreset.errorCustomPair'));
       return;
     }
     const trimmedMaxTokens = maxOutputTokens.trim();
     const nextMaxTokens = trimmedMaxTokens === '' ? undefined : Number(trimmedMaxTokens);
     if (nextMaxTokens !== undefined && (!Number.isFinite(nextMaxTokens) || !Number.isInteger(nextMaxTokens) || nextMaxTokens <= 0)) {
-      setSaveError('输出上限必须是正整数；留空则不额外限制。');
+      setSaveError(t('outputPreset.errorMaxTokens'));
       return;
     }
     if (!label.trim() || !instruction.trim()) {
-      setSaveError('请填写预设名称和提示词。');
+      setSaveError(t('outputPreset.errorRequired'));
       return;
     }
     const nextPreset: OutputLayerPreset = {
@@ -157,7 +157,7 @@ export function OutputPresetModal({
       onClose();
     } catch (err: unknown) {
       if (mounted.current && activeContext.current === savingContext) {
-        setSaveError(err instanceof Error ? err.message : '保存失败，请重试');
+        setSaveError(err instanceof Error ? err.message : t('outputPreset.errorSave'));
       }
     } finally {
       if (mounted.current && activeContext.current === savingContext) setSaving(false);
@@ -176,7 +176,7 @@ export function OutputPresetModal({
       onClose();
     } catch (err: unknown) {
       if (mounted.current && activeContext.current === deletingContext) {
-        setSaveError(err instanceof Error ? err.message : '删除失败，请重试');
+        setSaveError(err instanceof Error ? err.message : t('outputPreset.errorDelete'));
       }
     } finally {
       if (mounted.current && activeContext.current === deletingContext) setSaving(false);
@@ -185,7 +185,7 @@ export function OutputPresetModal({
 
   return (
     <Dialog
-      ariaLabel={isEditing ? '编辑输出层预设' : '添加输出层预设'}
+      ariaLabel={isEditing ? t('outputPreset.editAria') : t('outputPreset.addAria')}
       overlayId={overlayId}
       panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.md}`}
       onClose={onClose}
@@ -198,14 +198,14 @@ export function OutputPresetModal({
               <Icon name="sliders" size={16} />
             </span>
             <h2 className="text-[15px] font-semibold text-ink">
-              {isEditing ? '编辑预设' : '新增预设'}
+              {isEditing ? t('outputPreset.editTitle') : t('outputPreset.addTitle')}
             </h2>
           </div>
           <button
             type="button"
             onClick={onClose}
             className="flex h-7 w-7 items-center justify-center rounded-md text-ink-faint hover:bg-ink/[0.04] hover:text-ink"
-            aria-label="关闭"
+            aria-label={t('common.close')}
           >
             <Icon name="close" size={14} />
           </button>
@@ -213,10 +213,10 @@ export function OutputPresetModal({
 
         {!isEditing && templates.length > 0 ? (
           <div>
-            <label htmlFor={`${overlayId}-template`} className="mb-1 block text-[12px] font-medium text-ink-soft">内置模板</label>
+            <label htmlFor={`${overlayId}-template`} className="mb-1 block text-[12px] font-medium text-ink-soft">{t('outputPreset.templateLabel')}</label>
             <select
               id={`${overlayId}-template`}
-              aria-label="内置模板"
+              aria-label={t('outputPreset.templateLabel')}
               className={INPUT}
               value={templateId}
               onChange={(event) => {
@@ -241,20 +241,21 @@ export function OutputPresetModal({
 
         {/* Preset Label */}
         <div>
-          <label className="mb-1 block text-[12px] font-medium text-ink-soft">预设名称</label>
+          <label htmlFor={`${overlayId}-name`} className="mb-1 block text-[12px] font-medium text-ink-soft">{t('outputPreset.nameLabel')}</label>
           <input
+            id={`${overlayId}-name`}
             type="text"
             value={label}
             onChange={(e) => setLabel(e.target.value)}
             className={INPUT}
-            placeholder="例如：流式翻译"
+            placeholder={t('outputPreset.namePlaceholder')}
           />
         </div>
 
         {/* Model Selection */}
         <div>
           <div className="mb-1 flex items-center justify-between">
-            <label className="text-[12px] font-medium text-ink-soft">处理模型</label>
+            <label className="text-[12px] font-medium text-ink-soft">{t('outputPreset.modelLabel')}</label>
             <div className="flex items-center gap-2 text-[11px] text-ink-faint">
               <label className="flex items-center gap-1 cursor-pointer">
                 <input
@@ -263,7 +264,7 @@ export function OutputPresetModal({
                   checked={modelMode === 'catalog'}
                   onChange={() => setModelMode('catalog')}
                 />
-                从模型目录选择
+                {t('outputPreset.modeCatalog')}
               </label>
               <label className="flex items-center gap-1 cursor-pointer">
                 <input
@@ -272,7 +273,7 @@ export function OutputPresetModal({
                   checked={modelMode === 'custom'}
                   onChange={() => setModelMode('custom')}
                 />
-                已有连接自定义模型 ID
+                {t('outputPreset.modeCustom')}
               </label>
             </div>
           </div>
@@ -282,17 +283,19 @@ export function OutputPresetModal({
               value={modelId}
               options={modelOptions}
               onChange={setModelId}
-              ariaLabel="选择模型"
+              ariaLabel={t('outputPreset.selectModelAria')}
             />
           ) : (
             <div className="grid grid-cols-2 gap-2">
               <div>
+                <label htmlFor={`${overlayId}-connection`} className="sr-only">{t('outputPreset.connectionLabel')}</label>
                 <select
+                  id={`${overlayId}-connection`}
                   value={connectionId}
                   onChange={(e) => setConnectionId(e.target.value)}
                   className={INPUT}
                 >
-                  <option value="">选择连接 / 提供商...</option>
+                  <option value="">{t('outputPreset.connectionPlaceholder')}</option>
                   {(providersQuery.data?.items ?? []).map((provider) => (
                     <option key={provider.id} value={provider.id}>
                       {provider.id} ({provider.type})
@@ -301,36 +304,30 @@ export function OutputPresetModal({
                 </select>
               </div>
               <div>
+                <label htmlFor={`${overlayId}-custom-model`} className="sr-only">{t('outputPreset.customModelLabel')}</label>
                 <input
+                  id={`${overlayId}-custom-model`}
                   type="text"
                   value={customModelId}
                   onChange={(e) => setCustomModelId(e.target.value)}
                   className={INPUT}
-                  placeholder="输入自定义模型 ID (如 gemini-2.0-flash)"
+                  placeholder={t('outputPreset.customModelPlaceholder')}
                 />
               </div>
             </div>
-          )}
-          {isCustomIncomplete ? (
-            <p className="mt-1 text-[11px] text-danger">
-              自定义模型需要同时选择已有连接并填写模型 ID。
-            </p>
-          ) : (
-            <p className="mt-1 text-[11px] text-ink-faint">
-              复用 Kiki 已有连接凭证，无需重复输入 API Key。
-            </p>
           )}
         </div>
 
         {/* System Instruction */}
         <div>
-          <label className="mb-1 block text-[12px] font-medium text-ink-soft">提示词指令</label>
+          <label htmlFor={`${overlayId}-instruction`} className="mb-1 block text-[12px] font-medium text-ink-soft">{t('outputPreset.instructionLabel')}</label>
           <textarea
+            id={`${overlayId}-instruction`}
             rows={3}
             value={instruction}
             onChange={(e) => setInstruction(e.target.value)}
             className={`${INPUT} resize-none font-mono text-[12px]`}
-            placeholder="提示词指令..."
+            placeholder={t('outputPreset.instructionPlaceholder')}
           />
         </div>
 
@@ -346,15 +343,16 @@ export function OutputPresetModal({
               size={12}
               className={showAdvanced ? 'rotate-90 transition-transform' : 'transition-transform'}
             />
-            高级参数 (分组大小、预加载与 Token 预算)
+            {t('outputPreset.advancedToggle')}
           </button>
 
           {showAdvanced ? (
             <div className="mt-2.5 space-y-3 rounded-lg border border-hairline bg-paper/60 p-3">
               <div className="grid grid-cols-3 gap-3">
                 <div>
-                  <label className="mb-1 block text-[11px] font-medium text-ink-soft">单组字符数 (Unicode)</label>
+                  <label htmlFor={`${overlayId}-group-chars`} className="mb-1 block text-[11px] font-medium text-ink-soft">{t('outputPreset.groupCharsLabel')}</label>
                   <input
+                    id={`${overlayId}-group-chars`}
                     type="number"
                     value={groupChars}
                     onChange={(e) => setGroupChars(parseInt(e.target.value, 10) || 600)}
@@ -362,11 +360,12 @@ export function OutputPresetModal({
                     min={80}
                     max={2000}
                   />
-                  <span className="mt-0.5 block text-[10px] text-ink-faint">默认 600</span>
+                  <span className="mt-0.5 block text-[10px] text-ink-faint">{t('outputPreset.groupCharsHint')}</span>
                 </div>
                 <div>
-                  <label className="mb-1 block text-[11px] font-medium text-ink-soft">向前预加载组数</label>
+                  <label htmlFor={`${overlayId}-preload-before`} className="mb-1 block text-[11px] font-medium text-ink-soft">{t('outputPreset.preloadBeforeLabel')}</label>
                   <input
+                    id={`${overlayId}-preload-before`}
                     type="number"
                     value={preloadBefore}
                     onChange={(e) => {
@@ -377,11 +376,12 @@ export function OutputPresetModal({
                     min={0}
                     max={5}
                   />
-                  <span className="mt-0.5 block text-[10px] text-ink-faint">默认 1</span>
+                  <span className="mt-0.5 block text-[10px] text-ink-faint">{t('outputPreset.preloadHint')}</span>
                 </div>
                 <div>
-                  <label className="mb-1 block text-[11px] font-medium text-ink-soft">向后预加载组数</label>
+                  <label htmlFor={`${overlayId}-preload-after`} className="mb-1 block text-[11px] font-medium text-ink-soft">{t('outputPreset.preloadAfterLabel')}</label>
                   <input
+                    id={`${overlayId}-preload-after`}
                     type="number"
                     value={preloadAfter}
                     onChange={(e) => {
@@ -392,28 +392,30 @@ export function OutputPresetModal({
                     min={0}
                     max={5}
                   />
-                  <span className="mt-0.5 block text-[10px] text-ink-faint">默认 1</span>
+                  <span className="mt-0.5 block text-[10px] text-ink-faint">{t('outputPreset.preloadHint')}</span>
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="mb-1 block text-[11px] font-medium text-ink-soft">单次输出预算 (Tokens)</label>
+                  <label htmlFor={`${overlayId}-max-output`} className="mb-1 block text-[11px] font-medium text-ink-soft">{t('outputPreset.maxOutputLabel')}</label>
                   <input
+                    id={`${overlayId}-max-output`}
                     type="text"
                     inputMode="numeric"
                     value={maxOutputTokens}
                     onChange={(e) => setMaxOutputTokens(e.target.value)}
                     className={SMALL_INPUT + ' w-full'}
-                    placeholder="不限制"
+                    placeholder={t('outputPreset.maxOutputPlaceholder')}
                   />
                   <span className="mt-0.5 block text-[10px] text-ink-faint">
-                    单组最大输出 tokens（默认不限制）
+                    {t('outputPreset.maxOutputHint')}
                   </span>
                 </div>
                 <div>
-                  <label className="mb-1 block text-[11px] font-medium text-ink-soft">历史预算 (Tokens)</label>
+                  <label htmlFor={`${overlayId}-history`} className="mb-1 block text-[11px] font-medium text-ink-soft">{t('outputPreset.historyLabel')}</label>
                   <input
+                    id={`${overlayId}-history`}
                     type="number"
                     value={historyTokens}
                     onChange={(e) => {
@@ -425,7 +427,7 @@ export function OutputPresetModal({
                     max={1048576}
                   />
                   <span className="mt-0.5 block text-[10px] text-ink-faint">
-                    历史上下文上限，0 为关闭（默认 16,384）
+                    {t('outputPreset.historyHint')}
                   </span>
                 </div>
               </div>
@@ -434,7 +436,7 @@ export function OutputPresetModal({
         </div>
 
         {saveError ? (
-          <div className="rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
+          <div role="alert" className="rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
             {saveError}
           </div>
         ) : null}
@@ -451,13 +453,13 @@ export function OutputPresetModal({
                   saving ? 'opacity-50 cursor-not-allowed' : ''
                 }`}
               >
-                删除预设
+                {t('outputPreset.delete')}
               </button>
             ) : null}
           </div>
           <div className="flex items-center gap-2">
             <button type="button" onClick={onClose} disabled={saving} className={SECONDARY_BUTTON}>
-              取消
+              {t('common.cancel')}
             </button>
             <button
               type="button"
@@ -465,7 +467,7 @@ export function OutputPresetModal({
               disabled={saving}
               className={`${PRIMARY_BUTTON} ${saving ? 'opacity-50 cursor-not-allowed' : ''}`}
             >
-              {saving ? '保存中...' : '保存预设'}
+              {saving ? t('outputPreset.saving') : t('outputPreset.save')}
             </button>
           </div>
         </div>
