@@ -1,5 +1,5 @@
 ---
-"@kiki/gui": patch
+"@kiki/cli": patch
 ---
 
-Merge the agent rail's capabilities into one block with Tools, Skills, Subagents, and Plugins tabs: tools from every source (built-in, MCP, plugin, user) group together, and the Plugins tab keeps the session's own switches.
+Group rail capabilities into Tools, Skills, Subagents, and Plugins tabs.
