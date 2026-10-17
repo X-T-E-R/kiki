@@ -807,18 +807,19 @@ export async function runBridge({ sdkPath, cliPath, cliPrefix = [], auditDir, mo
   const acp = await import(pathToFileURL(sdkPath).href);
   const bridge = new AgyBridge({ cliPath, cliPrefix, auditDir, model });
   await bridge.loadVendorModels();
+  const sessionRequest = handler => async ctx => {
+    try { return await handler(ctx); }
+    catch (error) {
+      throw new acp.RequestError(-32603, error instanceof Error ? error.message : String(error),
+        { adapterCode: error?.code, details: error?.details });
+    }
+  };
   const connection = acp.agent({ name: 'agy-cli-acp', version: '0.1.0' })
     .onRequest('initialize', () => bridge.initialize(acp.PROTOCOL_VERSION))
-    .onRequest('session/new', ctx => bridge.newSession(ctx.params))
-    .onRequest('session/load', ctx => bridge.loadSession(ctx.params))
+    .onRequest('session/new', sessionRequest(ctx => bridge.newSession(ctx.params)))
+    .onRequest('session/load', sessionRequest(ctx => bridge.loadSession(ctx.params)))
     .onRequest('session/set_config_option', ctx => bridge.setConfig(ctx.params))
-    .onRequest('session/prompt', async ctx => {
-      try { return await bridge.prompt(ctx.params, ctx.client); }
-      catch (error) {
-        throw new acp.RequestError(-32603, error instanceof Error ? error.message : String(error),
-          { adapterCode: error?.code, details: error?.details });
-      }
-    })
+    .onRequest('session/prompt', sessionRequest(ctx => bridge.prompt(ctx.params, ctx.client)))
     .onNotification('session/cancel', ctx => bridge.cancel(ctx.params))
     .connect(acp.ndJsonStream(Writable.toWeb(process.stdout), Readable.toWeb(process.stdin)));
   let shuttingDown = false;

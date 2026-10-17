@@ -1197,6 +1197,57 @@ test('real ACP session/load restores exact native argv after adapter EOF without
 });
 
 
+test('real ACP startup and recovery errors retain actionable reasons without starting or replaying a conversation', { timeout: 15000 }, async () => {
+  const { mkdtemp, readFile, readdir, rm } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-acp-startup-'));
+  const auditDir = join(root, 'audit');
+  const catalogCalls = join(root, 'catalog-calls.ndjson');
+  const sdkPath = process.env.AGY_TEST_ACP_SDK_PATH ?? createRequire(new URL('../../packages/acp-client/package.json', import.meta.url)).resolve('@agentclientprotocol/sdk');
+  const catalogScript = `require('node:fs').appendFileSync(${JSON.stringify(catalogCalls)}, JSON.stringify(process.argv.slice(1)) + '\\n'); if (process.argv[1] !== 'models') process.exit(1);`;
+  const script = `import { runBridge } from ${JSON.stringify(new URL('./agy-cli-acp.mjs', import.meta.url).href)}; await runBridge(${JSON.stringify({ sdkPath, cliPath: process.execPath, cliPrefix: ['-e', catalogScript, '--'], auditDir })});`;
+  function transport() {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script], { cwd: root,
+      env: { ...process.env, HOME: root, USERPROFILE: root, APPDATA: root, LOCALAPPDATA: root, KIKI_HOME: root }, stdio: ['pipe', 'pipe', 'pipe'] });
+    const closed = new Promise((done, reject) => { child.once('error', reject); child.once('close', code => done(code)); });
+    const replies = new Map(); const frames = []; let id = 0; let stderr = '';
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    const reader = createInterface({ input: child.stdout });
+    reader.on('line', line => { const frame = JSON.parse(line); frames.push(frame); if (frame.id !== undefined) { replies.get(frame.id)?.(frame); replies.delete(frame.id); } });
+    return { frames, request(method, params) { const next = ++id; return new Promise(done => { replies.set(next, done); child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: next, method, params }) + '\n'); }); }, async close() { child.stdin.end(); assert.equal(await closed, 0, stderr); reader.close(); } };
+  }
+  let first; let second;
+  try {
+    first = transport();
+    assert.ok((await first.request('initialize', { protocolVersion: 1, clientCapabilities: {} })).result);
+    const rejected = await first.request('session/new', { cwd: root, mcpServers: [], _meta: { systemPromptOverride: 'replacement' } });
+    assert.equal(rejected.error.code, -32603);
+    assert.equal(rejected.error.message, 'System replacement is unsupported; use explicit Kiki preamble delivery');
+    const denied = await first.request('session/new', { cwd: root, mcpServers: [], _meta: { 'kiki.permission': { hostGate: true } } });
+    assert.equal(denied.error.code, -32603);
+    assert.match(denied.error.message, /frozen Kiki permission context/);
+    const created = await first.request('session/new', { cwd: root, mcpServers: [] });
+    const sessionId = created.result.sessionId;
+    await first.close(); first = undefined;
+    const auditPath = join(auditDir, `${sessionId}.ndjson`);
+    const original = await readFile(auditPath, 'utf8');
+    assert.deepEqual(original.trim().split('\n').map(JSON.parse).map(record => record.type), ['session_new', 'close']);
+    second = transport();
+    assert.ok((await second.request('initialize', { protocolVersion: 1, clientCapabilities: {} })).result);
+    const failed = await second.request('session/load', { sessionId, cwd: root, mcpServers: [] });
+    assert.equal(failed.error.code, -32603);
+    assert.equal(failed.error.message, 'AGY session has no confirmed native conversation to load; retain the failed attempt and create a new session');
+    assert.equal(failed.error.data.adapterCode, undefined);
+    assert.equal(failed.result, undefined);
+    assert.equal(second.frames.some(frame => frame.method === 'session/update'), false);
+    await second.close(); second = undefined;
+    assert.equal(await readFile(auditPath, 'utf8'), original);
+    assert.deepEqual(await readdir(auditDir), [`${sessionId}.ndjson`]);
+    assert.deepEqual((await readFile(catalogCalls, 'utf8')).trim().split('\n').map(JSON.parse), [['models'], ['models']]);
+    await assert.rejects(readFile(join(root, '.agents', 'hooks.json')), { code: 'ENOENT' });
+  } finally { await first?.close(); await second?.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 test('cancel and ACP close during permission setup cannot launch a late vendor process or leave its registration', async () => {
   for (const action of ['cancel', 'close']) {
     const b = bridge(); const id = await session(b);
