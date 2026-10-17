@@ -147,7 +147,7 @@ import { API_CODES, ApiError } from '@kiki/session-core/transport';
 import { recordConnectionEvent } from '../state/connectionDiagnostics';
 import type { UsageResponseWire } from './usageV2';
 
-export { API_CODES, ApiError } from '@kiki/session-core/transport';
+export { API_CODES, ApiError, isUnconfirmedTransportError } from '@kiki/session-core/transport';
 
 export function isSessionIndexBuildingError(error: unknown): boolean {
   return error instanceof ApiError && error.code === API_CODES.SESSION_INDEX_BUILDING;
@@ -1266,6 +1266,8 @@ export class KikiClient {
           data: error.data ?? null,
           details: error.details,
           request_id: error.requestId,
+          source: error.source,
+          reason: error.reason,
         });
       }
       throw error;

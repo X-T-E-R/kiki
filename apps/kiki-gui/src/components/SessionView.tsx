@@ -161,7 +161,7 @@ import {
   loadAgentProfileCatalog,
   type AgentProfileCatalogMode,
 } from '../lib/agentProfileCatalog';
-import { API_CODES, ApiError, isSessionNotFoundMessage, type ModelSwitchMode, type UpdateAgentGoalInput } from '../lib/client';
+import { API_CODES, ApiError, isSessionNotFoundMessage, isUnconfirmedTransportError, type ModelSwitchMode, type UpdateAgentGoalInput } from '../lib/client';
 import { invalidatePluginQueries } from '../lib/pluginFreshness';
 import { locateInTimeline, locateSpawnTarget, normalizeTurnId } from '../lib/timelineLocate';
 import { getReadingSnapshot, timelineSnapshotKey } from '../lib/navViewState';
@@ -1407,14 +1407,20 @@ export function recoverFailedSubmission(
 /**
  * A failed send clears the pending profile pick only when the SERVER answered
  * with a business rejection (e.g. route-locked) — the pick was definitively
- * refused. Network failures (-1) and timeouts (API_CODES.TIMEOUT) prove
- * nothing about the pick: keep the selection (and the draft) so the user can
- * retry deliberately; nothing is resent automatically.
+ * refused. Transport-source failures and timeouts prove nothing about the
+ * pick: keep the selection (and the draft) so the user can retry deliberately;
+ * nothing is resent automatically.
  */
 export function shouldClearPendingProfileOnSendError(error: unknown): boolean {
-  return (
-    error instanceof ApiError && error.code !== -1 && error.code !== API_CODES.TIMEOUT
-  );
+  return error instanceof ApiError && !isUnconfirmedTransportError(error) && error.code !== API_CODES.TIMEOUT;
+}
+
+export type SessionSendNowOutcome = Awaited<ReturnType<SessionController['sendPromptNow']>>['outcome'];
+
+export function sendNowOutcomeNotice(outcome: SessionSendNowOutcome): 'server' | 'turn-ended' | undefined {
+  if (outcome === 'held') return 'server';
+  if (outcome === 'queued') return 'turn-ended';
+  return undefined;
 }
 
 /**
@@ -3095,10 +3101,11 @@ export function SessionView({
               }
               releaseComposition();
               completeControls();
-              if (result.outcome === 'restoring' || result.outcome === 'held') {
+              const outcomeNotice = sendNowOutcomeNotice(result.outcome);
+              if (outcomeNotice === 'server') {
                 pushToast({ tone: 'info', text: t('sv.submissionRecovery.server') });
               }
-              if (result.outcome === 'queued') {
+              if (outcomeNotice === 'turn-ended') {
                 // The turn ended while it was on the way: it runs next, from
                 // the queue — say so instead of letting it look lost.
                 pushToast({ tone: 'info', text: t('sv.steerTurnEnded') });
@@ -3278,7 +3285,7 @@ export function SessionView({
           .catch((error: unknown) => {
             restoreCapturedSubmission();
             const isApi = error instanceof ApiError;
-            const transportUnconfirmed = !isApi || error.code === API_CODES.TIMEOUT;
+            const transportUnconfirmed = !isApi || isUnconfirmedTransportError(error) || error.code === API_CODES.TIMEOUT;
             if (transportUnconfirmed) {
               // Keep the captured identity visible and retryable. A timeout or
               // fetch failure has unknown delivery; any retry must reuse the

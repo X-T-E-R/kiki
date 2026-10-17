@@ -101,6 +101,7 @@ import {
   SessionRouteView,
   shouldClearModeOverride,
   shouldClearPendingProfileOnSendError,
+  sendNowOutcomeNotice,
   shouldCloseSessionChromeOnEscape,
   shouldHandleGlobalAbortOnEscape,
   shouldHandleApprovalShortcut,
@@ -1543,22 +1544,43 @@ describe('executionSwitchName', () => {
 });
 
 describe('shouldClearPendingProfileOnSendError', () => {
-  it('keeps the pending pick (and draft) on network failure and timeout', () => {
+  it('keeps the pending pick (and draft) for transport-source failures and timeout', () => {
     expect(
-      shouldClearPendingProfileOnSendError(new ApiError({ code: -1, msg: 'network down', data: null })),
+      shouldClearPendingProfileOnSendError(new ApiError({
+        code: -1, msg: 'network down', data: null, source: 'transport', reason: 'transport.network',
+      })),
     ).toBe(false);
     expect(
       shouldClearPendingProfileOnSendError(
-        new ApiError({ code: API_CODES.TIMEOUT, msg: 'timed out', data: null }),
+        new ApiError({ code: API_CODES.TIMEOUT, msg: 'timed out', data: null, source: 'transport', reason: 'transport.timeout' }),
       ),
     ).toBe(false);
     expect(shouldClearPendingProfileOnSendError(new Error('boom'))).toBe(false);
+  });
+
+  it('does not reinterpret a server-origin negative code as transport failure', () => {
+    expect(
+      shouldClearPendingProfileOnSendError(new ApiError({ code: -1, msg: 'server rejected', data: null, source: 'server' })),
+    ).toBe(true);
   });
 
   it('clears the pick only on a definitive server-side business rejection', () => {
     expect(
       shouldClearPendingProfileOnSendError(new ApiError({ code: 40001, msg: 'route locked', data: null })),
     ).toBe(true);
+  });
+});
+
+describe('sendNowOutcomeNotice', () => {
+  it('does not toast for a healthy durable restoring acknowledgement', () => {
+    expect(sendNowOutcomeNotice('restoring')).toBeUndefined();
+    expect(sendNowOutcomeNotice('started')).toBeUndefined();
+    expect(sendNowOutcomeNotice('steered')).toBeUndefined();
+  });
+
+  it('keeps user-actionable held recovery and turn-ended queue notices', () => {
+    expect(sendNowOutcomeNotice('held')).toBe('server');
+    expect(sendNowOutcomeNotice('queued')).toBe('turn-ended');
   });
 });
 

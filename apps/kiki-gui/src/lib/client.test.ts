@@ -8,6 +8,7 @@ import {
   API_CODES,
   ApiError,
   isSessionIndexBuildingError,
+  isUnconfirmedTransportError,
   isSessionNotFoundMessage,
   KikiClient,
   MEMORY_REVISION_CONFLICT,
@@ -664,6 +665,49 @@ describe('KikiClient transport error mapping', () => {
     // failure; it has to survive the RPCError -> ApiError hop.
     expect((failure as ApiError).details).toEqual(details);
     expect((failure as ApiError).requestId).toBe('req-server-50001');
+    expect((failure as ApiError).source).toBe('server');
+    expect(isUnconfirmedTransportError(failure)).toBe(false);
+  });
+
+  it('preserves a rejected HTTP fetch as an unconfirmed transport source through KikiClient.run', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch'); }));
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
+    try {
+      const failure = await client.meta().catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(ApiError);
+      expect(failure).toMatchObject({ code: -1, source: 'transport', reason: 'transport.network' });
+      expect(isUnconfirmedTransportError(failure)).toBe(true);
+    } finally {
+      await client.klient.close();
+    }
+  });
+
+  it('preserves a rejected HTTP fetch through the session prompt adapter', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch'); }));
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
+    try {
+      const failure = await client.sessions.submitPrompt('s1', {
+        content: [{ type: 'text', text: 'transport probe' }],
+      }).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(ApiError);
+      expect(failure).toMatchObject({ code: -1, source: 'transport', reason: 'transport.network' });
+      expect(isUnconfirmedTransportError(failure)).toBe(true);
+    } finally {
+      await client.klient.close();
+    }
+  });
+
+  it('does not classify a server negative code as an unconfirmed transport error', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ code: -1, msg: 'server.rejected', data: null })));
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
+    try {
+      const failure = await client.meta().catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(ApiError);
+      expect(failure).toMatchObject({ code: -1, source: 'server' });
+      expect(isUnconfirmedTransportError(failure)).toBe(false);
+    } finally {
+      await client.klient.close();
+    }
   });
 
   it('maps an actual transport deadline to the GUI timeout code and text', async () => {
@@ -681,6 +725,8 @@ describe('KikiClient transport error mapping', () => {
 
     expect(failure).toBeInstanceOf(ApiError);
     expect((failure as ApiError).code).toBe(API_CODES.TIMEOUT);
+    expect((failure as ApiError).source).toBe('transport');
+    expect((failure as ApiError).reason).toBe('transport.timeout');
     expect((failure as ApiError).message).toContain('Request timed out after 5ms');
     const requestId = new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get('x-request-id');
     expect(requestId).toMatch(/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/);

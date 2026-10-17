@@ -356,7 +356,7 @@ export class HttpChannel implements KlientChannel {
         if (timedOutPhase !== undefined) throw timeoutError();
         if (this.closed && controller.signal.aborted) throw new Error('http closed', { cause: error });
         if (error instanceof RPCError) throw error;
-        throw new RPCError(-1, error instanceof Error ? error.message : 'Connection failed');
+        throw new RPCError(-1, error instanceof Error ? error.message : 'Connection failed', undefined, 'transport.network', undefined, undefined, 'transport');
       }
       acceptRequestId(response.headers.get('x-request-id'));
       phase = 'body';
@@ -369,7 +369,7 @@ export class HttpChannel implements KlientChannel {
         if (timedOutPhase !== undefined) throw timeoutError();
         if (this.closed && controller.signal.aborted) throw new Error('http closed', { cause: error });
         if (error instanceof TypeError && !controller.signal.aborted) {
-          throw new RPCError(-1, error.message);
+          throw new RPCError(-1, error.message, undefined, 'transport.network', undefined, undefined, 'transport');
         }
         throw error;
       }
@@ -387,6 +387,8 @@ export class HttpChannel implements KlientChannel {
       details,
       HTTP_TRANSPORT_TIMEOUT_REASON,
       details.request_id,
+      undefined,
+      'transport',
     );
   }
 

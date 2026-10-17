@@ -28,9 +28,9 @@ describe('session command runtime admission', () => {
   it('preserves deadline details and identity across the session error adapter', async () => {
     const requestId = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
     const details = { method: 'GET', path: '/api/sessions/s1', phase: 'headers', timeoutMs: 100, elapsedMs: 101, request_id: requestId };
-    const failure = new RPCError(50001, 'call timed out after 100ms', details, 'transport.timeout', requestId);
+    const failure = new RPCError(50001, 'call timed out after 100ms', details, 'transport.timeout', requestId, undefined, 'transport');
     const transport = createSessionTransport({ session: () => ({ resume: async () => true, commands: { read: async () => { throw failure; } } as never }) });
-    await expect(transport.getSession('s1')).rejects.toMatchObject({ name: 'ApiError', details, requestId });
+    await expect(transport.getSession('s1')).rejects.toMatchObject({ name: 'ApiError', details, requestId, source: 'transport', reason: 'transport.timeout' });
   });
   it.each(resumeActions)('awaits resume before $command and never while reading', async ({ command, args, invoke }) => {
     let settle!: (value: boolean) => void;

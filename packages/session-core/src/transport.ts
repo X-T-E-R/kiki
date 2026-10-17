@@ -33,20 +33,36 @@ import type {
 } from '@kiki/protocol';
 import type { GoalMeta, TranscriptGradeSpec } from '@kiki/transcript';
 
+export type ApiErrorSource = 'server' | 'transport';
+
 export class ApiError extends Error {
   readonly code: number;
   readonly requestId: string | undefined;
   readonly data: unknown;
   /** Structured error context from the envelope (e.g. shortcut conflicts). */
   readonly details: unknown;
+  /** Whether the failure came from the server envelope or the client transport. */
+  readonly source: ApiErrorSource;
+  /** Stable transport/server reason when the adapter supplied one. */
+  readonly reason: string | undefined;
 
-  constructor(envelope: { code: number; msg: string; data: unknown; request_id?: string; details?: unknown }) {
+  constructor(envelope: {
+    code: number;
+    msg: string;
+    data: unknown;
+    request_id?: string;
+    details?: unknown;
+    source?: ApiErrorSource;
+    reason?: string;
+  }) {
     super(`${envelope.msg} (code ${envelope.code})`);
     this.name = 'ApiError';
     this.code = envelope.code;
     this.data = envelope.data;
     this.details = envelope.details;
     this.requestId = envelope.request_id;
+    this.source = envelope.source ?? 'server';
+    this.reason = envelope.reason;
   }
 }
 
@@ -75,6 +91,10 @@ export const API_CODES = {
   SESSION_CURSOR_MISMATCH: 40937,
   SESSION_INDEX_BUILDING: 40939,
 } as const;
+
+export function isUnconfirmedTransportError(error: unknown): boolean {
+  return error instanceof ApiError && error.source === 'transport';
+}
 
 export const DEFAULT_TRANSCRIPT_GRADES: TranscriptGradeSpec = {
   '*': 'off',
