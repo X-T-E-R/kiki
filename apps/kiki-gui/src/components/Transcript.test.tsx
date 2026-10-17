@@ -1410,6 +1410,98 @@ describe('timeline annotations', () => {
   });
 });
 
+describe('reasoning completion chrome', () => {
+  const reasoningRecords: Parameters<typeof replayAgentWire>[1] = [
+    { type: 'turn.prompt', turnId: 1, promptId: 'example-notification', origin: { kind: 'peer_thread' }, input: [{ type: 'text', text: 'Recorded notification' }], time: 1000 },
+    { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: '1', step: 1, uuid: 'example-step-1' }, time: 1100 },
+    { type: 'context.append_loop_event', event: { type: 'content.part', turnId: '1', step: 1, stepUuid: 'example-step-1', uuid: 'example-think-1', part: { type: 'think', think: '', encrypted: 'example-signature' } }, time: 1200 },
+    { type: 'context.append_loop_event', event: { type: 'tool.call', turnId: '1', step: 1, stepUuid: 'example-step-1', uuid: 'example-call', toolCallId: 'example-tool', name: 'ExampleTool', args: {} }, time: 1300 },
+    { type: 'context.append_loop_event', event: { type: 'tool.result', parentUuid: 'example-step-1', toolCallId: 'example-tool', result: { output: 'Recorded tool result' } }, time: 1400 },
+    { type: 'context.append_loop_event', event: { type: 'step.end', turnId: '1', step: 1, uuid: 'example-step-1', finishReason: 'tool_use', providerFinishReason: 'completed' }, time: 1500 },
+    { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: '1', step: 2, uuid: 'example-step-2' }, time: 1600 },
+    { type: 'context.append_loop_event', event: { type: 'content.part', turnId: '1', step: 2, stepUuid: 'example-step-2', uuid: 'example-think-2', part: { type: 'think', think: '', encrypted: 'example-signature' } }, time: 1700 },
+  ];
+  const thinkingEnd = { type: 'context.append_loop_event', event: { type: 'step.end', turnId: '1', step: 2, uuid: 'example-step-2', finishReason: 'end_turn', providerFinishReason: 'completed' }, time: 1800 };
+  const emptyContinuation: Parameters<typeof replayAgentWire>[1] = [
+    thinkingEnd,
+    { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: '1', step: 3, uuid: 'example-step-3' }, time: 1900 },
+    { type: 'context.append_loop_event', event: { type: 'step.end', turnId: '1', step: 3, uuid: 'example-step-3', finishReason: 'end_turn', providerFinishReason: 'completed', usage: { inputOther: 10, output: 4, inputCacheRead: 0, inputCacheCreation: 0 } }, time: 2000 },
+    { type: 'turn.ended', turnId: 1, reason: 'completed', durationMs: 1000, time: 2001 },
+  ];
+
+  it.each([false, true])('labels a signed reasoning then empty completion as finished without inventing a reply (cold=%s)', async (cold) => {
+    const snapshot = replayAgentWire('main', [...reasoningRecords, ...emptyContinuation], cold);
+    const state = projectAgentTranscriptView(createViewState('example-session'), 'main', snapshot);
+    expect(state.busy).toBe(false);
+    expect(state.turnTail?.state).toBe('completed');
+    expect(state.blocks.some((block) => block.kind === 'assistant')).toBe(false);
+    expect(state.blocks.filter((block) => block.kind === 'thinking').every((block) => !block.streaming)).toBe(true);
+    const container = await renderTranscript([...state.blocks], undefined, state);
+    const fold = container.querySelector('[data-history-fold] button');
+    if (fold !== null) await act(async () => { click(fold); });
+    expect(container.querySelector('.thinking-row')?.textContent).toContain('Thought');
+    expect(container.querySelector('.thinking-row')?.textContent).not.toContain('Thinking');
+    expect(container.querySelector('[data-streaming]')).toBeNull();
+    expect(container.querySelector('[data-turn-status]')).toBeNull();
+    expect(container.querySelector('[data-turn-tail-state="completed"]')?.textContent).toContain('Turn finished');
+  });
+
+  it('keeps long reasoning live until its actual terminal event', async () => {
+    const snapshot = replayAgentWire('main', reasoningRecords);
+    const state = projectAgentTranscriptView(createViewState('example-session'), 'main', snapshot);
+    expect(state.busy).toBe(true);
+    const container = await renderTranscript([...state.blocks], undefined, state);
+    expect(container.querySelector('.thinking-row[data-streaming]')?.textContent).toContain('Thinking…');
+    expect(container.querySelector('[data-turn-tail]')).toBeNull();
+    expect(container.textContent).not.toContain('Turn finished');
+  });
+
+  it('keeps tool continuation working instead of treating step completion as turn completion', async () => {
+    const snapshot = replayAgentWire('main', reasoningRecords.slice(0, -1));
+    const state = projectAgentTranscriptView(createViewState('example-session'), 'main', snapshot);
+    expect(state.busy).toBe(true);
+    const container = await renderTranscript([...state.blocks], undefined, state);
+    expect(container.querySelector('[data-turn-status]')?.textContent).toContain('Working');
+    expect(container.querySelector('[data-turn-tail]')).toBeNull();
+  });
+
+  it.each(['failed', 'cancelled'] as const)('keeps a %s reasoning turn distinct from successful completion', async (reason) => {
+    const snapshot = replayAgentWire('main', [
+      ...reasoningRecords,
+      { type: 'context.append_loop_event', event: { type: 'step.end', turnId: '1', step: 2, uuid: 'example-step-2', finishReason: reason === 'failed' ? 'error' : 'interrupted' }, time: 1800 },
+      { type: 'turn.ended', turnId: 1, reason, time: 1801 },
+    ], true);
+    const state = projectAgentTranscriptView(createViewState('example-session'), 'main', snapshot);
+    expect(state.busy).toBe(false);
+    const container = await renderTranscript([...state.blocks], undefined, state);
+    expect(container.querySelector(`[data-turn-tail-state="${reason}"]`)).not.toBeNull();
+    expect(container.querySelector('[data-streaming]')).toBeNull();
+    expect(container.textContent).not.toContain('Turn finished');
+  });
+
+  it('retains normal final text and its actual completion', async () => {
+    const snapshot = replayAgentWire('main', [
+      ...reasoningRecords,
+      { type: 'context.append_loop_event', event: { type: 'content.part', turnId: '1', step: 2, stepUuid: 'example-step-2', uuid: 'example-answer', part: { type: 'text', text: 'Recorded reply' } }, time: 1750 },
+      thinkingEnd,
+      { type: 'turn.ended', turnId: 1, reason: 'completed', time: 1801 },
+    ], true);
+    const state = projectAgentTranscriptView(createViewState('example-session'), 'main', snapshot);
+    const container = await renderTranscript([...state.blocks], undefined, state);
+    expect(container.textContent).toContain('Recorded reply');
+    expect(container.querySelector('[data-turn-tail-state="completed"]')?.textContent).toContain('Turn finished');
+    expect(container.querySelector('[data-streaming]')).toBeNull();
+  });
+
+  it('does not infer completion from an unknown legacy tail state', async () => {
+    const { root, container } = makeRoot();
+    await renderSettled(root, <TurnTailLine tail={{ turnId: 't1', endedAt: new Date().toISOString(), durationMs: undefined, ttftMs: undefined, usage: undefined, tokensPerSecond: undefined }} />);
+    expect(container.textContent).not.toContain('Turn finished');
+    expect(translate('zh', 'transcript.thought')).toBe('思考记录');
+    expect(translate('zh', 'transcript.turnFinished')).toBe('本轮已结束');
+  });
+});
+
 describe('live and event chrome', () => {
   // Cold start of the queue fixture is several seconds and used to run inside
   // the first row-actions test. That test's 5s budget then expired while the

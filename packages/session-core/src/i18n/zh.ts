@@ -1524,6 +1524,8 @@ export const zh = {
   'transcript.floorTickAria': '跳转到第 {index} 条消息：{preview}',
   'transcript.orphanedSubagent': '来自已被编辑截断的分支',
   'transcript.thinking': '思考',
+  'transcript.thought': '思考记录',
+  'transcript.turnFinished': '本轮已结束',
   'transcript.systemReminder': '系统提醒',
   'transcript.reminder.directive': '提醒 · 长期指令',
   'transcript.reminder.renew': '提醒 · 即将换窗',

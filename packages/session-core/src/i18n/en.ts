@@ -1538,6 +1538,8 @@ export const en = {
   'transcript.floorTickAria': 'Go to message {index}: {preview}',
   'transcript.orphanedSubagent': 'From a branch removed by an edit',
   'transcript.thinking': 'Thinking',
+  'transcript.thought': 'Thought',
+  'transcript.turnFinished': 'Turn finished',
   'transcript.systemReminder': 'System reminder',
   'transcript.reminder.directive': 'Reminder · standing instruction',
   'transcript.reminder.renew': 'Reminder · context renewal ahead',
