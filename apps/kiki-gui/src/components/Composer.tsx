@@ -2034,6 +2034,15 @@ export function Composer({
   const sendTimingFocusRef = useRef<'first' | 'last' | null>(null);
   const sendTimingAvailable =
     sendTimingDefault !== undefined && busy && !busySendsNow && !queueEditing && canSend && !takenOver;
+  // A pending engine/profile switch cannot join the running turn (the active
+  // turn cannot rebind), so "send now" silently degrades to an ordinary queue
+  // entry. While one is pending, name the real result where the choice is
+  // made: the timing menu omits the send-now row (same omission as an unwired
+  // steer path) and the button title says the message queues and carries the
+  // switch. The working-line hint keeps teaching the key — the pending chip
+  // beside it already names the switch — and the ⌘/Ctrl+Enter path itself
+  // keeps working: it queues.
+  const sendNowDegrades = executionPending;
 
   const clearSendTimingTimers = () => {
     if (sendTimingOpenTimerRef.current !== null) {
@@ -3026,6 +3035,9 @@ export function Composer({
               ref={textareaRef}
               data-composer-input
               rows={1}
+              // The accessible name stays fixed; the placeholder below carries
+              // the per-state hint (busy, disabled, reply) and keeps changing.
+              aria-label={t('composer.inputAria')}
               enterKeyHint={coarsePointer ? 'enter' : undefined}
               // A catalog/seat rerender can precede the browser's IME input
               // event. Never restore an older controlled prop over preedit text.
@@ -3176,7 +3188,7 @@ export function Composer({
               }}
               timing={sendTimingAvailable && sendTimingDefault !== undefined ? {
                 defaultTiming: sendTimingDefault,
-                canSendNow: onSendNow !== undefined,
+                canSendNow: onSendNow !== undefined && !sendNowDegrades,
                 onPick: (choice: SendTimingChoice) => {
                   if (choice === 'default') send();
                   else if (choice === 'now') send(true);
@@ -3339,6 +3351,8 @@ export function Composer({
                       ? t(sendShortcut === 'cmd-enter' ? 'composer.queueEditConfirmTitleCmdEnter' : 'composer.queueEditConfirmTitle')
                       : sendDisabled && !disabled && sendDisabledTitle !== undefined
                         ? sendDisabledTitle
+                        : busy && sendNowDegrades
+                          ? t(sendShortcut === 'cmd-enter' ? 'composer.queueTitlePendingSwitchCmdEnter' : 'composer.queueTitlePendingSwitch')
                         : busy && busySendsNow
                           ? t(sendShortcut === 'cmd-enter' ? 'composer.sendNowTitleCmdEnter' : 'composer.sendNowTitle')
                         : busy
@@ -3408,7 +3422,7 @@ export function Composer({
                     <p className={POPOVER_LABEL_CLASS}>{t('composer.sendTimingAria')}</p>
                     <SendTimingRows
                       defaultTiming={sendTimingDefault}
-                      canSendNow={onSendNow !== undefined}
+                      canSendNow={onSendNow !== undefined && !sendNowDegrades}
                       onPick={(choice) => {
                         closeSendTiming();
                         if (choice === 'default') send();

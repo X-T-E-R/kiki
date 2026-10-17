@@ -457,6 +457,76 @@ describe('switching profile while a turn is running', () => {
     await sendNextMessage(container);
     expect((sendPrompt.mock.calls[0]?.[0] as { profile?: string }).profile).toBeUndefined();
   });
+
+  it('names the real queue-with-switch result on the send affordances while the switch waits', async () => {
+    const { container } = await mount();
+    await type('carry the switch', container);
+
+    const sendButton = () => [...ui(container).querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.getAttribute('aria-label') === 'Queue prompt');
+    const openTimingMenu = async () => {
+      await act(async () => {
+        ui(container).querySelector('[data-send-timing-root]')!
+          .dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      });
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 300); }); });
+    };
+    const closeTimingMenu = async () => {
+      await act(async () => { document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true })); });
+    };
+
+    // Ordinary busy baseline: the plain queue name and a real send-now row.
+    expect(sendButton()?.getAttribute('title')).toBe('Queue this prompt (Enter)');
+    await openTimingMenu();
+    expect(ui(container).querySelector('[data-send-timing="now"]')).not.toBeNull();
+    await closeTimingMenu();
+
+    await click(profileTrigger(container));
+    await settle();
+    await click(profileRow(container, 'reviewer'));
+    await click(dialogButton(container, 'Switch engine'));
+    await settle();
+
+    // Pending switch: the button title names the consequence and the timing
+    // menu lists only the choices that exist (no send-now row). The key
+    // itself still works — into the queue, carrying the switch.
+    expect(sendButton()?.getAttribute('title')).toBe('Queue this prompt (Enter) — the pending switch applies with this message');
+    await openTimingMenu();
+    expect(ui(container).querySelector('[data-send-timing="now"]')).toBeNull();
+    await closeTimingMenu();
+
+    await act(async () => {
+      composerInput(container)?.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter', ctrlKey: true, shiftKey: settingsSnapshot().sendShortcut !== 'enter', bubbles: true,
+      }));
+    });
+    await settle();
+    await settle();
+    expect(sendPrompt).toHaveBeenCalledTimes(1);
+    expect(sendPrompt.mock.calls[0]?.[0]).toMatchObject({ execution: { executor: 'native', profile: 'reviewer' } });
+    expect(sendPromptNow).not.toHaveBeenCalled();
+    expect(steerQueued).not.toHaveBeenCalled();
+  });
+
+  it('restores the plain send names when the pending pick is reverted', async () => {
+    const { container } = await mount();
+    await type('carry the switch', container);
+    const sendButton = () => [...ui(container).querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.getAttribute('aria-label') === 'Queue prompt');
+
+    await click(profileTrigger(container));
+    await settle();
+    await click(profileRow(container, 'reviewer'));
+    await click(dialogButton(container, 'Switch engine'));
+    await settle();
+    expect(sendButton()?.getAttribute('title')).toBe('Queue this prompt (Enter) — the pending switch applies with this message');
+
+    await click(profileTrigger(container));
+    await settle();
+    await click(profileRow(container, 'agent'));
+    await settle();
+    expect(sendButton()?.getAttribute('title')).toBe('Queue this prompt (Enter)');
+  });
 });
 
 function catalogModel(id: string, displayName: string) {

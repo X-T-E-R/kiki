@@ -11,7 +11,7 @@ import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-quer
 import { fsSearchRequestBody, type FsSearchPageArgs } from '../lib/fsSearchFeed';
 import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom';
 
-import type { DeferredAppendTiming, MessageContent, PermissionMode, PromptPlanGate, PromptSubmission, Session } from '@kiki/protocol';
+import type { DeferredAppendTiming, MessageContent, PermissionMode, PromptPlanGate, PromptSubmission, Session, SessionPendingInteraction } from '@kiki/protocol';
 import { mediaFromContentParts } from '@kiki/session-core/composer/media';
 
 import { AgentWorkspace, HEADER_ICON_BUTTON, PanelIcon, ResyncStatusBanner, WorkspaceHeader, type AgentWorkspaceNavigation } from './agent-workspace';
@@ -1749,6 +1749,41 @@ export function PreviewFocusBridge({ onFocusedAgent }: { onFocusedAgent: (agentI
     onFocusedAgent(focused);
   }, [focused, onFocusedAgent]);
   return null;
+}
+
+/**
+ * The session's one screen-reader announcer, mounted by exactly one of the two
+ * mutually exclusive view branches (agent workspace / main session) so the
+ * same state machine never double-mounts. Priority: a pending approval or
+ * question always wins (it waits on the user); while busy, a growing queue is
+ * named alongside the working state so sending-into-queue is confirmed;
+ * idle and empty stays silent. The text is a pure function of these three
+ * props — no timers or relative time, so a re-render of unchanged state can
+ * never re-announce.
+ */
+function SessionAnnouncer({
+  pendingInteraction,
+  busy,
+  queuedItemCount,
+}: {
+  readonly pendingInteraction: SessionPendingInteraction;
+  readonly busy: boolean;
+  readonly queuedItemCount: number;
+}) {
+  const { t, tp } = useI18n();
+  return (
+    <div aria-live="polite" aria-atomic="true" className="sr-only" data-session-announcer="">
+      {pendingInteraction === 'approval'
+        ? t('sv.ariaAwaitingApproval')
+        : pendingInteraction === 'question'
+          ? t('sv.ariaAwaitingAnswer')
+          : busy
+            ? queuedItemCount > 0
+              ? `${t('sv.ariaWorking')} · ${tp('composer.queueStack.count', queuedItemCount)}`
+              : t('sv.ariaWorking')
+            : ''}
+    </div>
+  );
 }
 
 export function SessionView({
@@ -4908,15 +4943,11 @@ boundExecution,
           historyBack
           locateSpawnInMenu
         />
-        <div aria-live="polite" aria-atomic="true" className="sr-only">
-          {state.pendingInteraction === 'approval'
-            ? t('sv.ariaAwaitingApproval')
-            : state.pendingInteraction === 'question'
-              ? t('sv.ariaAwaitingAnswer')
-              : state.busy
-                ? t('sv.ariaWorking')
-                : ''}
-        </div>
+        <SessionAnnouncer
+          pendingInteraction={state.pendingInteraction}
+          busy={state.busy}
+          queuedItemCount={queuedItemCount}
+        />
         <ConfirmDialog
           open={confirmUndo}
           overlayId="confirm-undo"
@@ -5098,15 +5129,11 @@ boundExecution,
           )
         : null}
 
-      <div aria-live="polite" aria-atomic="true" className="sr-only">
-        {state.pendingInteraction === 'approval'
-          ? t('sv.ariaAwaitingApproval')
-          : state.pendingInteraction === 'question'
-            ? t('sv.ariaAwaitingAnswer')
-            : state.busy
-              ? t('sv.ariaWorking')
-              : ''}
-      </div>
+      <SessionAnnouncer
+        pendingInteraction={state.pendingInteraction}
+        busy={state.busy}
+        queuedItemCount={queuedItemCount}
+      />
 
       <ConfirmDialog
         open={confirmUndo}

@@ -4541,6 +4541,96 @@ describe('Composer send-timing menu', () => {
   });
 });
 
+describe('Composer with a pending engine/profile switch', () => {
+  // A confirmed switch waits for the next message and the running turn cannot
+  // rebind, so "send now" would silently queue. While one is pending the
+  // composer names the real result on the send button title and drops the
+  // send-now row from the timing menu; the working-line hint keeps its
+  // key-teaching text (the pending chip on the same row already names the
+  // switch), and neither the key nor the button change what they do.
+
+  const PENDING_TITLE = 'Queue this prompt (Enter) — the pending switch applies with this message';
+
+  it('names the queue-with-switch result on the send button title', async () => {
+    const { container } = await renderComposer({ value: 'hello', busy: true, executionPending: true, onSendNow: vi.fn() });
+    const button = container.querySelector<HTMLButtonElement>('button[data-send-ready]')!;
+    expect(button.getAttribute('title')).toBe(PENDING_TITLE);
+    // The accessible name stays the plain action; the consequence is the title's.
+    expect(button.getAttribute('aria-label')).toBe('Queue prompt');
+  });
+
+  it('omits the send-now row from the timing menu and keeps the real queue choices', async () => {
+    const { container } = await renderComposer({ busy: true, value: 'hello', executionPending: true, sendTimingDefault: 'agent_idle', onSendNow: vi.fn() });
+    await act(async () => {
+      container.querySelector('[data-send-timing-root]')!
+        .dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+    const rows = [...container.querySelectorAll<HTMLElement>('[data-send-timing-menu] [data-menu-row]')]
+      .map((row) => row.textContent);
+    expect(container.querySelector('[data-send-timing="now"]')).toBeNull();
+    expect(rows).toEqual([
+      'SendDefault timing: after this turn',
+      'Send after subagentsStarts once the running subagents finish',
+      'Send after tasksStarts once every running task finishes; resident services excluded',
+    ]);
+  });
+
+  it('keeps the send-now key working — it fires onSendNow, which queues with the switch', async () => {
+    const onSend = vi.fn();
+    const onSendNow = vi.fn();
+    const { container } = await renderComposer({
+      value: 'hello', busy: true, executionPending: true, onSend, onSendNow,
+      working: { lastResponseAt: undefined },
+    });
+    // The hint keeps teaching the key; the pending chip beside it names the switch.
+    expect(container.querySelector('[data-composer-send-now-hint]')?.textContent)
+      .toContain('⌘/Ctrl+Enter sends now');
+
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    await pressKey(textarea, { key: 'Enter', ctrlKey: true });
+    await settle();
+    expect(onSendNow).toHaveBeenCalledWith('hello', []);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('keeps the plain wording without a pending rebind — the naming keys on executionPending alone', async () => {
+    // Model/effort-only touches never set executionPending (SessionView derives
+    // it from pendingProfile/pendingExecution only), so a plain busy composer is
+    // exactly what those cases look like here: unchanged names, real now-row.
+    const { container } = await renderComposer({
+      value: 'hello', busy: true, sendTimingDefault: 'agent_idle', onSendNow: vi.fn(),
+    });
+    const button = container.querySelector<HTMLButtonElement>('button[data-send-ready]')!;
+    expect(button.getAttribute('title')).toBe('Queue this prompt (Enter)');
+    await act(async () => {
+      container.querySelector('[data-send-timing-root]')!
+        .dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+    expect(container.querySelector('[data-send-timing="now"]')).not.toBeNull();
+  });
+
+  it('keeps the plain send name while idle: the message starts the new turn at once', async () => {
+    const { container } = await renderComposer({ value: 'hello', busy: false, executionPending: true, onSendNow: vi.fn() });
+    const button = container.querySelector<HTMLButtonElement>('button[data-send-ready]')!;
+    expect(button.getAttribute('title')).toBe('Send (Enter)');
+    expect(button.getAttribute('aria-label')).toBe('Send message');
+  });
+});
+
+describe('Composer input accessible name', () => {
+  it('stays fixed while the placeholder drifts with state', async () => {
+    const { container, rerender } = await renderComposer({ value: '', busy: false });
+    const input = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    expect(input.getAttribute('aria-label')).toBe('Message input');
+    expect(input.getAttribute('placeholder')).toBe('What should Kiki work on…');
+    await rerender({ value: '', busy: true });
+    expect(input.getAttribute('aria-label')).toBe('Message input');
+    expect(input.getAttribute('placeholder')).not.toBe('What should Kiki work on…');
+  });
+});
+
 describe('session SSH stays resident and rides no message', () => {
   it('preselects on /new without attempting a session join, handing the host to the draft only', async () => {
     meta.mockResolvedValue({ experimental_flags: { native_ssh: true } });

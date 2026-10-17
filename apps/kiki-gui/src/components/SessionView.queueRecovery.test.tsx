@@ -3,14 +3,14 @@ import { act, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../i18n';
 import { ConversationShell } from './ConversationShell';
 import { SessionRouteView } from './SessionView';
 import { SubmissionRecovery } from './SubmissionRecovery';
 import { preserveSubmission, readUnconfirmedSubmissions, readDraft, writeDraft, resetDraftMemoryForTests, readComposerState, writeComposerState, createQuote, selectionCarryoverPresentation } from '@kiki/session-core/composer';
 import { createViewState, type UserBlock } from '@kiki/session-core/session';
-import { emptySessionUsage, type PromptItem } from '@kiki/protocol';
+import { emptySessionUsage, type PromptItem, type SessionPendingInteraction } from '@kiki/protocol';
 import { ApiError } from '@kiki/session-core/transport';
 
 const fixture = vi.hoisted(() => ({ controller: undefined as object | undefined, autoCompact: true, dependencies: undefined as Promise<void> | undefined, queued: true, partialPrompts: false, structureUnread: false, durableIngress: undefined as readonly PromptItem[] | undefined, acquires: 0, releases: 0, persistenceHints: [] as unknown[], loadEntities: vi.fn(async () => true), loadContent: vi.fn(async () => true), readMedia: vi.fn(), readPreview: vi.fn(), pushToast: vi.fn() }));
@@ -868,4 +868,108 @@ it('cancels pending queued previews, restores the parked draft and rejects late 
   await act(async () => { pending[2]!.resolve(preview); });
   expect(readDraft('session-example')).toBe('parked draft');
   expect(readComposerState('session-example').quotes).toEqual([savedQuote]);
+});
+
+describe('the session announcer', () => {
+  const announcer = () => container.querySelector<HTMLElement>('[data-session-announcer]');
+  const queuedBlock = (id: string) => ({
+    kind: 'user' as const, id, promptId: id, promptStatus: 'queued' as const,
+    text: `queued ${id}`, createdAt: '2026-01-01T00:00:00Z',
+  });
+
+  function stubController(initial: { busy: boolean; queuedIds: readonly string[]; pendingInteraction?: SessionPendingInteraction }) {
+    const listeners = new Set<() => void>();
+    let state = {
+      ...createViewState('session-example'), loaded: true, transcriptReady: true,
+      session: { id: 'session-example', title: 'Announcer example', workspace_id: 'workspace-example', ephemeral: false,
+        metadata: { cwd: '/example' }, agent_config: { profile: 'agent' }, profile: 'agent', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
+      busy: initial.busy,
+      pendingInteraction: initial.pendingInteraction ?? ('none' as const),
+      blocks: initial.queuedIds.map(queuedBlock),
+      queuedPromptIds: [...initial.queuedIds],
+    };
+    const publish = (patch: { busy?: boolean; queuedIds?: readonly string[]; pendingInteraction?: SessionPendingInteraction }) => {
+      const queuedIds = patch.queuedIds ?? state.queuedPromptIds;
+      state = { ...state,
+        busy: patch.busy ?? state.busy,
+        pendingInteraction: patch.pendingInteraction ?? state.pendingInteraction,
+        blocks: queuedIds.map(queuedBlock),
+        queuedPromptIds: [...queuedIds],
+      };
+      for (const listener of listeners) listener();
+    };
+    fixture.controller = {
+      subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+      subscribeInterruptedPrompt: () => () => {},
+      subscribeAgent: () => () => {},
+      getState: () => state,
+      getAgentState: () => state,
+      getForest: () => ({ roots: [], byId: {} }),
+      getDurableIngress: () => [],
+      open: async () => {}, close() {}, setFocusedAgent() {}, refreshSession: async () => {}, retainHistoryRead: () => () => {},
+      contentRefsFor: () => [],
+    };
+    return { publish };
+  }
+
+  async function mountSession(route = '/s/session-example'): Promise<void> {
+    root = createRoot(container);
+    await act(async () => root!.render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <I18nProvider><MemoryRouter initialEntries={[route]}><Routes>
+          <Route element={<ConversationShell />}><Route path="/s/:id/*" element={<SessionRouteView sessionId="session-example" sessions={[]} onToggleSidebar={() => {}} />} /></Route>
+        </Routes></MemoryRouter></I18nProvider>
+      </QueryClientProvider>));
+    for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  }
+
+  it('announces working with the live queue count, and the count tracks the canonical queue', async () => {
+    const { publish } = stubController({ busy: true, queuedIds: ['q-1'] });
+    await mountSession();
+    expect(announcer()?.textContent).toBe('Kiki is working · 1 queued');
+    expect(container.querySelector('[data-queue-count]')?.textContent).toContain('1');
+
+    await act(async () => {
+      publish({ queuedIds: ['q-1', 'q-2'] });
+      await new Promise(resolve => setTimeout(resolve, 20));
+    });
+    // The enqueue is confirmed in the same breath as the working state, and the
+    // number is the session's canonical queue — the same one the strip shows.
+    expect(announcer()?.textContent).toBe('Kiki is working · 2 queued');
+    expect(container.querySelector('[data-queue-count]')?.textContent).toContain('2');
+  });
+
+  it('keeps a pending approval above the queue', async () => {
+    stubController({ busy: true, queuedIds: ['q-1'], pendingInteraction: 'approval' });
+    await mountSession();
+    expect(announcer()?.textContent).toBe('Awaiting approval');
+  });
+
+  it('says plain working while busy with an empty queue, and repeats nothing on a same-state render', async () => {
+    const { publish } = stubController({ busy: true, queuedIds: [] });
+    await mountSession();
+    expect(announcer()?.textContent).toBe('Kiki is working');
+    // A re-render over unchanged state (a timer tick elsewhere in the view)
+    // must not produce a new announcement: the text is a pure state function.
+    await act(async () => {
+      publish({});
+      await new Promise(resolve => setTimeout(resolve, 20));
+    });
+    expect(announcer()?.textContent).toBe('Kiki is working');
+  });
+
+  it('stays silent while idle with an empty queue', async () => {
+    stubController({ busy: false, queuedIds: [] });
+    await mountSession();
+    expect(announcer()?.textContent).toBe('');
+  });
+
+  it('mounts exactly one announcer in the main view branch', async () => {
+    stubController({ busy: true, queuedIds: ['q-1'] });
+    await mountSession();
+    expect(container.querySelectorAll('[data-session-announcer]')).toHaveLength(1);
+    // The agent-workspace branch mounts the same component from its own early
+    // return, so the two can never coexist; mounting that branch needs the full
+    // workspace surface and is left to the GUI slot rather than jsdom.
+  });
 });

@@ -47,6 +47,7 @@ import {
   subscribeOnboardingOpenRequests,
 } from './components/OnboardingWizard';
 import { ActivityPage, useSessionSeen } from './components/ActivityPage';
+import { AppConnectionBanner } from './components/AppConnectionBanner';
 import { ArchivedSessionsPage } from './components/ArchivedSessionsPage';
 import { useConversationList } from './lib/useConversationList';
 import { RoomLinkRedirect } from './lib/conversationRoutes';
@@ -788,23 +789,7 @@ export function App() {
           raised sheet (the conversation route splits into its own sheets). */}
       <div className="app-stage">
         {wsStatus !== 'open' && !isSettingsRoute ? (
-          <div data-app-banner className="shrink-0 border-b border-amber-rule/40 bg-amber-card px-4 py-1.5 text-center text-[12px] font-medium text-amber-ink">
-            <span>{wsStatus === 'connecting' ? t('app.reconnecting') : t('app.disconnected')}</span>
-            {wsStatus === 'closed' ? (
-              <>
-                {' · '}
-                <button
-                  type="button"
-                  onClick={() => { socket.nudge(); }}
-                  className="rounded-sm border border-amber-ink/40 px-1.5 py-px font-semibold transition-colors hover:bg-amber-ink/10"
-                >
-                  {t('app.reconnectNow')}
-                </button>
-                {' · '}
-                <span className="font-normal">{t('app.disconnectedSendHint')}</span>
-              </>
-            ) : null}
-          </div>
+          <AppConnectionBanner wsStatus={wsStatus} onReconnect={() => { socket.nudge(); }} />
         ) : null}
         <RestartBanner />
         <div className="app-sheet">
