@@ -162,6 +162,105 @@ describe('send now (steer) — main agent', () => {
     controller.close();
   });
 
+  it.each(['queued', 'steered'] as const)('hands a late durable %s receipt to the queue or canonical frame without claiming consumption', async (delivery) => {
+    const { controller, client } = await open();
+    controller.setEphemeralHint(false);
+    await deliver(controller, resetEvent('main', userTurnSnapshot({ streaming: true }), 1));
+    client.submitPrompt.mockResolvedValue({ ...queuedReceipt('late-now'), admission: 'restoring' });
+    const read = vi.fn(async () => ({ ...queuedReceipt('late-now'), admission: 'admitted', delivery_state: delivery }));
+    Object.assign(client, { getDurableIngress: read });
+    await controller.sendPromptNow({ promptId: 'late-now', text: STEER_TEXT });
+    await deliver(controller, opsEvent('main', [queuedOp('late-now')], 2));
+    expect(controller.getState().queuedPromptIds).not.toContain('late-now');
+    await vi.waitFor(() => { expect(controller.getDurableIngress()[0]?.admission).toBe('admitted'); });
+    if (delivery === 'queued') {
+      expect(controller.getPendingSteers()).toEqual([]);
+      expect(controller.getState().queuedPromptIds).toContain('late-now');
+      expect(steerRows(controller.getState())).toEqual([]);
+    } else {
+      expect(controller.getPendingSteers()).toEqual([expect.objectContaining({ promptId: 'late-now', phase: 'waiting' })]);
+      expect(steerRows(controller.getState())).toEqual([expect.objectContaining({ promptId: 'late-now', steerStatus: 'waiting' })]);
+      await deliver(controller, opsEvent('main', [steeredOp('late-now'), ...deliveredOps('late-now')], 3));
+      expect(controller.getPendingSteers()).toEqual([]);
+      expect(steerRows(controller.getState())).toEqual([expect.objectContaining({ userMessageId: 'late-now', turnId: 't1' })]);
+    }
+    expect(client.submitPrompt).toHaveBeenCalledTimes(1);
+    expect(client.steerPrompt).not.toHaveBeenCalled();
+    expect(client.abortPrompt).not.toHaveBeenCalled();
+    controller.close();
+  });
+
+  it('pauses receipt observation while suspended, stops at held, and never resumes or cancels the request', async () => {
+    vi.useFakeTimers();
+    const { controller, client } = await open();
+    try {
+      controller.setEphemeralHint(false);
+      client.submitPrompt.mockResolvedValue({ ...queuedReceipt('held-now'), admission: 'restoring' });
+      const read = vi.fn(async () => ({ ...queuedReceipt('held-now'), admission: 'held' }));
+      Object.assign(client, { getDurableIngress: read });
+      await controller.sendPromptNow({ promptId: 'held-now', text: STEER_TEXT });
+      controller.suspend();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(read).not.toHaveBeenCalled();
+      await controller.resume();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(read).toHaveBeenCalledExactlyOnceWith('session_test', 'held-now', 'main');
+      expect(controller.getDurableIngress()[0]?.admission).toBe('held');
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(controller.getPendingSteers()).toEqual([expect.objectContaining({ promptId: 'held-now' })]);
+      expect(client.submitPrompt).toHaveBeenCalledTimes(1);
+      expect(client.steerPrompt).not.toHaveBeenCalled();
+      expect(client.abortPrompt).not.toHaveBeenCalled();
+    } finally { controller.close(); vi.useRealTimers(); }
+  });
+
+  it('stops pending receipt reads on close without cancelling server-owned delivery', async () => {
+    vi.useFakeTimers();
+    const { controller, client } = await open();
+    try {
+      controller.setEphemeralHint(false);
+      client.submitPrompt.mockResolvedValue({ ...queuedReceipt('closed-now'), admission: 'restoring' });
+      const read = vi.fn();
+      Object.assign(client, { getDurableIngress: read });
+      await controller.sendPromptNow({ promptId: 'closed-now', text: STEER_TEXT });
+      controller.close();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(read).not.toHaveBeenCalled();
+      expect(client.submitPrompt).toHaveBeenCalledTimes(1);
+      expect(client.abortPrompt).not.toHaveBeenCalled();
+    } finally { controller.close(); vi.useRealTimers(); }
+  });
+
+  it('serializes receipt reads across now IDs and ignores an in-flight result from before suspension', async () => {
+    vi.useFakeTimers();
+    const { controller, client } = await open();
+    try {
+      controller.setEphemeralHint(false);
+      client.submitPrompt.mockImplementation(async (_sid: string, body: { prompt_id: string }) => ({ ...queuedReceipt(body.prompt_id), admission: 'restoring' }));
+      const first = deferred<ReturnType<typeof queuedReceipt> & { admission: string }>();
+      const read = vi.fn().mockImplementationOnce(() => first.promise).mockResolvedValue({ ...queuedReceipt('serial-b'), admission: 'admitted', delivery_state: 'queued' });
+      Object.assign(client, { getDurableIngress: read });
+      await controller.sendPromptNow({ promptId: 'serial-a', text: STEER_TEXT });
+      await controller.sendPromptNow({ promptId: 'serial-b', text: STEER_TEXT });
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(read).toHaveBeenCalledExactlyOnceWith('session_test', 'serial-a', 'main');
+      controller.suspend();
+      await controller.resume();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(read).toHaveBeenCalledTimes(1);
+      first.resolve({ ...queuedReceipt('serial-a'), admission: 'held' });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(controller.getDurableIngress().find(item => item.prompt_id === 'serial-a')?.admission).toBe('restoring');
+      await vi.advanceTimersByTimeAsync(500);
+      expect(read).toHaveBeenNthCalledWith(2, 'session_test', 'serial-b', 'main');
+      expect(controller.getPendingSteers().map(item => item.promptId)).toEqual(['serial-a']);
+      expect(client.submitPrompt).toHaveBeenCalledTimes(2);
+      expect(client.steerPrompt).not.toHaveBeenCalled();
+      expect(client.abortPrompt).not.toHaveBeenCalled();
+    } finally { controller.close(); vi.useRealTimers(); }
+  });
+
   it('keeps ordinary durable submission free of immediate delivery intent', async () => {
     const { controller, client } = await open();
     controller.setEphemeralHint(false);
@@ -355,6 +454,42 @@ describe('send now (steer) — main agent', () => {
     await expect(controller.sendPromptNow({ text: STEER_TEXT })).resolves.toMatchObject({ outcome: 'started' });
     expect(client.steerPrompt).not.toHaveBeenCalled();
     expect(controller.getPendingSteers()).toEqual([]);
+    controller.close();
+  });
+
+  it.each(['abort', 'network', 'timeout', 'invalid_response'])('preserves the same send-now identity after an unconfirmed %s transport failure without replay', async (reason) => {
+    const { controller, client } = await open();
+    controller.setEphemeralHint(false);
+    await deliver(controller, resetEvent('main', userTurnSnapshot({ streaming: true }), 1));
+    const failure = new ApiError({ code: -1, msg: 'Result unavailable', data: null, source: 'transport', reason });
+    client.submitPrompt.mockRejectedValue(failure);
+    const onAcknowledged = vi.fn();
+    const error = await controller.sendPromptNow({ promptId: 'uncertain-now', text: STEER_TEXT, onAcknowledged }).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(SendNowError);
+    expect((error as SendNowError).reason).toBe('unknown');
+    expect((error as SendNowError).cause).toBe(failure);
+    expect(controller.getPendingSteers()).toEqual([expect.objectContaining({ promptId: 'uncertain-now', text: STEER_TEXT, phase: 'waiting' })]);
+    expect(onAcknowledged).not.toHaveBeenCalled();
+    expect(client.submitPrompt).toHaveBeenCalledTimes(1);
+    expect(client.steerPrompt).not.toHaveBeenCalled();
+    expect(client.abortPrompt).not.toHaveBeenCalled();
+    await deliver(controller, opsEvent('main', [steeredOp('uncertain-now'), ...deliveredOps('uncertain-now')], 2));
+    expect(controller.getPendingSteers()).toEqual([]);
+    expect(steerRows(controller.getState())).toEqual([expect.objectContaining({ userMessageId: 'uncertain-now', turnId: 't1' })]);
+    controller.close();
+    expect(client.submitPrompt).toHaveBeenCalledTimes(1);
+    expect(client.abortPrompt).not.toHaveBeenCalled();
+  });
+
+  it('removes the echo after a confirmed server rejection without cancelling or resubmitting', async () => {
+    const { controller, client } = await open();
+    controller.setEphemeralHint(false);
+    client.submitPrompt.mockRejectedValue(new ApiError({ code: 40001, msg: 'Invalid request', data: null }));
+    const error = await controller.sendPromptNow({ promptId: 'rejected-now', text: STEER_TEXT }).catch((caught: unknown) => caught);
+    expect((error as SendNowError).reason).toBe('submit');
+    expect(controller.getPendingSteers()).toEqual([]);
+    expect(client.submitPrompt).toHaveBeenCalledTimes(1);
+    expect(client.abortPrompt).not.toHaveBeenCalled();
     controller.close();
   });
 

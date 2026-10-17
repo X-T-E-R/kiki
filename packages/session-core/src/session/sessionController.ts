@@ -42,6 +42,7 @@ import {
   API_CODES,
   ApiError,
   DEFAULT_TRANSCRIPT_GRADES,
+  isUnconfirmedTransportError,
   transcriptGradesForFocus,
   type AgentTranscriptResponse,
   type SessionCursor,
@@ -325,6 +326,10 @@ export class SessionController {
   private readonly entityPageCursors = new Map<string, string | null>();
   private latestSnapshot: SessionSnapshotResponse | undefined;
   private durableIngressReadInFlight: Promise<void> | undefined;
+  private readonly durableSteerReads = new Map<string, { agentId: string; promptId: string }>();
+  private durableSteerReadTimer: ReturnType<typeof setTimeout> | undefined;
+  private durableSteerReadInFlight = false;
+  private durableSteerReadGeneration = 0;
   private readonly catchupReplay = new Map<
     string,
     { readonly ops: readonly TranscriptOperation[]; readonly cursor: TranscriptCursor }
@@ -577,6 +582,7 @@ export class SessionController {
   suspend(): void {
     if (this.closed || this.isSuspended) return;
     this.isSuspended = true;
+    this.pauseDurableSteerReads();
     this.resolveResyncIdleWaiters();
     for (const controller of this.snapshotControllers) controller.abort();
     this.snapshotControllers.clear();
@@ -609,6 +615,7 @@ export class SessionController {
   resume(): Promise<void> {
     if (this.closed || !this.isSuspended) return Promise.resolve();
     this.isSuspended = false;
+    this.scheduleDurableSteerRead();
     if (!this.state.loaded) return this.open();
     if (this.state.resyncFailed) return this.resync();
     this.transcriptGrades = this.requestedTranscriptGrades();
@@ -659,6 +666,8 @@ export class SessionController {
 
   close(): void {
     this.closed = true;
+    this.pauseDurableSteerReads();
+    this.durableSteerReads.clear();
     this.resolveResyncIdleWaiters();
     for (const controller of this.snapshotControllers) controller.abort();
     this.snapshotControllers.clear();
@@ -1265,7 +1274,13 @@ export class SessionController {
     }
   };
 
-  private setDurableIngress(records: readonly PromptItem[]): void {
+  private setDurableIngress(records: readonly PromptItem[], agentId = MAIN_AGENT_ID): void {
+    for (const record of records) {
+      if (record.admission === 'failed' || record.admission === 'cancelled' ||
+          (record.admission === 'admitted' && record.delivery_state === 'queued')) {
+        this.clearPendingSteer(agentId, record.prompt_id);
+      }
+    }
     const previous = this.state.durableIngress ?? [];
     if (previous.length === records.length && previous.every((item, index) => {
       const next = records[index];
@@ -1276,6 +1291,53 @@ export class SessionController {
         item.admission_error?.message === next.admission_error?.message;
     })) return;
     this.setState({ ...this.state, version: this.state.version + 1, durableIngress: [...records] });
+  }
+
+  private observeDurableSteer(agentId: string, promptId: string): void {
+    if (this.client.getDurableIngress === undefined || this.closed) return;
+    const key = JSON.stringify([agentId, promptId]);
+    if (this.durableSteerReads.has(key)) return;
+    this.durableSteerReads.set(key, { agentId, promptId });
+    this.scheduleDurableSteerRead();
+  }
+
+  private scheduleDurableSteerRead(): void {
+    if (this.durableSteerReads.size === 0 || this.durableSteerReadTimer !== undefined || this.durableSteerReadInFlight || this.closed || this.isSuspended) return;
+    this.durableSteerReadTimer = setTimeout(() => {
+      this.durableSteerReadTimer = undefined;
+      void this.readDurableSteer();
+    }, 500);
+  }
+
+  private async readDurableSteer(): Promise<void> {
+    const first = this.durableSteerReads.entries().next().value;
+    if (first === undefined || this.closed || this.isSuspended) return;
+    const [key, target] = first;
+    if (this.findPendingSteer(target.agentId, target.promptId) === undefined) {
+      this.durableSteerReads.delete(key);
+      this.scheduleDurableSteerRead();
+      return;
+    }
+    const generation = this.durableSteerReadGeneration;
+    this.durableSteerReadInFlight = true;
+    try {
+      const result = await this.client.getDurableIngress!(this.sessionId, target.promptId, target.agentId);
+      if (this.closed || this.isSuspended || generation !== this.durableSteerReadGeneration) return;
+      this.setDurableIngress([...this.getDurableIngress().filter(item => item.prompt_id !== result.prompt_id), result], target.agentId);
+      if (result.admission !== 'restoring') this.durableSteerReads.delete(key);
+    } catch {
+      // Retry only the receipt read; a missing response never replays the submission.
+    } finally {
+      this.durableSteerReadInFlight = false;
+      if (this.durableSteerReads.delete(key) && !this.closed) this.durableSteerReads.set(key, target);
+      this.scheduleDurableSteerRead();
+    }
+  }
+
+  private pauseDurableSteerReads(): void {
+    this.durableSteerReadGeneration += 1;
+    if (this.durableSteerReadTimer !== undefined) clearTimeout(this.durableSteerReadTimer);
+    this.durableSteerReadTimer = undefined;
   }
 
   async refreshDurableIngress(): Promise<void> {
@@ -3563,6 +3625,11 @@ export class SessionController {
         plan_gate: input.planGate,
       });
     } catch (error) {
+      if (isUnconfirmedTransportError(error)) {
+        const retained = this.findPendingSteer(agentId, promptId);
+        if (retained !== undefined) this.setPendingSteer(agentId, { ...retained, phase: 'waiting' });
+        throw new SendNowError('unknown', error);
+      }
       this.clearPendingSteer(agentId, promptId);
       throw new SendNowError('submit', error);
     }
@@ -3576,7 +3643,7 @@ export class SessionController {
       this.setDurableIngress([
         ...(this.state.durableIngress ?? []).filter((item) => item.prompt_id !== result.prompt_id),
         result,
-      ]);
+      ], agentId);
     }
     if (admissionRejected) {
       this.clearPendingSteer(agentId, promptId);
@@ -3585,6 +3652,7 @@ export class SessionController {
     if (admission === 'restoring' || admission === 'held') {
       const retained = this.findPendingSteer(agentId, promptId);
       if (retained !== undefined) this.setPendingSteer(agentId, { ...retained, phase: 'waiting' });
+      if (admission === 'restoring') this.observeDurableSteer(agentId, promptId);
       return { promptId: result.prompt_id, outcome: admission };
     }
     if (durable) {

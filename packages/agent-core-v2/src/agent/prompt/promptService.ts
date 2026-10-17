@@ -2094,6 +2094,12 @@ export class AgentPromptService implements IAgentPromptService {
         }
       }
       return selected.map((item) => item.handle);
+    } catch (error) {
+      if (selected.some(item => this.pending.includes(item))) {
+        this.recoveryHold = true;
+        this.publishQueueHoldChanged();
+      }
+      throw error;
     } finally {
       for (const item of selected) this.steeringPromptIds.delete(item.id);
       if (this.active === undefined) void this.startNext();

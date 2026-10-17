@@ -554,9 +554,10 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
       const live = core.accessor.get(ISessionManager).get(session_id);
       const liveAgent = req.body.delivery_mode === 'steer'
         ? live?.accessor.get(IAgentLifecycleService).get(req.body.agent_id ?? MAIN_AGENT_ID) : undefined;
-      const steerTargetTurnId = ingressExecution === undefined
-        ? liveAgent?.accessor.get(IAgentLoopService).status().activeTurnId ?? null
-        : ingressExecution.steerTargetTurnId ?? null;
+      const steerTarget = ingressExecution === undefined
+        ? { turnId: liveAgent?.accessor.get(IAgentLoopService).status().activeTurnId,
+          promptId: liveAgent?.accessor.get(IAgentPromptService).list().active?.id }
+        : ingressExecution.steerTarget;
       let preparedMedia: PromptMediaPreparation | undefined;
       let reservation: PromptReservation | undefined;
       let lease: SessionOperationLease | undefined;
@@ -571,7 +572,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
       try {
         if (req.body.admission === 'durable' && ingressExecution === undefined) {
           const body = { ...req.body, admission: undefined };
-          sendResult(await ingress.submit(session_id, body, promptPayloadFingerprint(body), steerTargetTurnId));
+          sendResult(await ingress.submit(session_id, body, promptPayloadFingerprint(body), steerTarget));
           return;
         }
         lease = await acquireSessionOperation(core, session_id, 'operation', signal);
@@ -584,10 +585,12 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         const retryPromptId = req.body.prompt_id;
         signal?.throwIfAborted();
         const retryFingerprint = retryPromptId === undefined ? undefined : ingressExecution?.fingerprint ?? promptPayloadFingerprint(req.body);
+        let replayedSubmission = false;
         const submit = async () => {
         if (retryPromptId !== undefined && retryFingerprint !== undefined) {
           const receipt = await promptRetryFor(resolved.prompt).lookup(retryPromptId, retryFingerprint);
           if (receipt !== undefined) {
+            replayedSubmission = true;
             retryContentRanges = receipt.contentRanges;
             return projectPromptRetryReceipt(retryPromptId, receipt, req.body.content);
           }
@@ -740,9 +743,17 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         const submitAndDeliver = async () => {
           const result = await submit();
           if (req.body.delivery_mode !== 'steer' || !resolved.prompt.list().pending.some(item => item.id === result.prompt_id)) return result;
+          if (replayedSubmission && (resolved.profile.data().executorId ?? 'native') !== 'native') {
+            if (resolved.prompt.list().hold?.reason === 'recovery') {
+              throw new Error2(ErrorCodes.REQUEST_INVALID, 'The external delivery result is unknown. Check the executor result before explicitly releasing the held prompt queue.');
+            }
+            return { ...result, delivery_state: 'queued' as const };
+          }
           signal?.throwIfAborted();
           const activeTurnId = resolved.accessor.get(IAgentLoopService).status().activeTurnId;
-          if (activeTurnId !== undefined && activeTurnId !== steerTargetTurnId) {
+          const activePromptId = resolved.prompt.list().active?.id;
+          if ((activeTurnId !== undefined && activeTurnId !== steerTarget?.turnId) ||
+              (activePromptId !== undefined && activePromptId !== steerTarget?.promptId)) {
             return { ...result, delivery_state: 'queued' as const };
           }
           try {

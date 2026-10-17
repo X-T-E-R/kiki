@@ -490,7 +490,8 @@ describe('server-v2 /api prompts', () => {
       expect(before.selection.profile).toBeUndefined();
       expect(before.effective.permission_mode).toBeUndefined();
       const first = await controller.sendPrompt({ promptId: 'direct-first', text: 'FIRST_USER' });
-      expect(first.status).toBe('running');
+      expect(first.status).toBe('queued');
+      await vi.waitFor(() => { expect(main.accessor.get(IAgentPromptService).list().active?.id).toBe('direct-first'); });
       const nextChoice = executionChoice({ executor: 'example-acp', overrides: { model: null, thinking: null, permission_mode: null,
         kiki_context: [], allow_kiki_subagents: false } });
       const nextSelection = resolveProfileSwitchSubmission({ pendingProfile: undefined, boundProfile: 'agent',
@@ -525,6 +526,7 @@ describe('server-v2 /api prompts', () => {
       expect(requests.find((request) => request.body['prompt_id'] === 'direct-inherit')?.body).toEqual({
         prompt_id: 'direct-inherit', content: [{ type: 'text', text: 'INHERIT_USER' }],
       });
+      await vi.waitFor(() => { expect(runs).toHaveLength(3); });
       await main.accessor.get(IAgentExecutionService).settled();
       expect(profile.data().execution).toEqual(after);
       expect(bindings).toHaveLength(2);
@@ -748,7 +750,7 @@ describe('server-v2 /api prompts', () => {
     expect(modelSwitchActionSchema.safeParse({ action: 'cancel', mode: 'fresh' }).success).toBe(false);
   });
 
-  it.each(['model', 'effort'] as const)('GUI client Send now applies a pending %s at the first safe HTTP request boundary', async change => {
+  it.each(['model', 'effort', 'prompt-binding'] as const)('GUI client Send now applies a pending %s at the first safe HTTP request boundary', async change => {
     const bodies: Record<string, unknown>[] = [];
     let entered!: () => void;
     const firstRequest = new Promise<void>(resolve => { entered = resolve; });
@@ -782,9 +784,14 @@ describe('server-v2 /api prompts', () => {
       await main.accessor.get(IAgentProfileService).bind({ profile: 'agent', model: 'stub', thinking: 'low' });
       await client.submitPrompt(id, { prompt_id: 'safe-http-active', content: [{ type: 'text', text: 'Work already in progress.' }] });
       await firstRequest;
-      const selected = await client.klient.session(id).agent('main').switchModel({ operationId: 'safe-http-choice', model: change === 'model' ? 'stub-alt' : 'stub', thinking: 'high', mode: 'direct' });
-      expect(selected.state).toBe('pending');
-      const dependent = await client.submitPrompt(id, { prompt_id: 'safe-http-original', after_model_switch: 'safe-http-choice', content: [{ type: 'text', text: 'Unique original GUI question after selection.' }] });
+      if (change !== 'prompt-binding') {
+        const selected = await client.klient.session(id).agent('main').switchModel({ operationId: 'safe-http-choice', model: change === 'model' ? 'stub-alt' : 'stub', thinking: 'high', mode: 'direct' });
+        expect(selected.state).toBe('pending');
+      }
+      const dependent = await client.submitPrompt(id, { prompt_id: 'safe-http-original',
+        after_model_switch: change === 'prompt-binding' ? undefined : 'safe-http-choice',
+        model: change === 'prompt-binding' ? 'stub-alt' : undefined, thinking: change === 'prompt-binding' ? 'high' : undefined,
+        content: [{ type: 'text', text: 'Unique original GUI question after selection.' }] });
       expect(dependent.status).toBe('queued');
       await client.steerPrompt(id, dependent.prompt_id);
       expect(bodies).toHaveLength(1);
@@ -792,13 +799,14 @@ describe('server-v2 /api prompts', () => {
       release();
       await main.accessor.get(IAgentLoopService).settled();
       expect(bodies).toHaveLength(2);
-      expect(bodies.map(body => body['model'])).toEqual(['stub', change === 'model' ? 'stub-alt' : 'stub']);
+      expect(bodies.map(body => body['model'])).toEqual(['stub', change === 'effort' ? 'stub' : 'stub-alt']);
       expect(bodies.map(body => body['reasoning_effort'])).toEqual(['low', 'high']);
       expect(JSON.stringify(bodies[1])).toContain('Unique original GUI question after selection.');
       const journal = [];
       for await (const record of main.accessor.get(IWireService).readJournal()) journal.push(record);
       expect(journal.filter(record => record.type === 'turn.steer' && record['promptId'] === 'safe-http-original')).toHaveLength(1);
-      expect(journal.filter(record => record.type === 'agent.model_switch')).toHaveLength(1);
+      expect(journal.filter(record => record.type === 'agent.model_switch')).toHaveLength(change === 'prompt-binding' ? 0 : 1);
+      expect(main.accessor.get(IAgentProfileService).data()).toMatchObject({ modelAlias: change === 'effort' ? 'stub' : 'stub-alt', thinkingLevel: 'high' });
       expect(main.accessor.get(IAgentPromptService).list().pending).toEqual([]);
     } finally {
       release();
@@ -1556,6 +1564,71 @@ describe('server-v2 /api prompts', () => {
     } finally { gate.resolve(); resume.mockRestore(); prompt.abort('boundary-now'); }
   });
 
+  it.each(['same-target', 'changed-target', 'unknown-result'] as const)('durable send-now anchors external delivery and never replays an unknown executor action, scenario=%s', async (scenario) => {
+    server!.core.accessor.get(IAgentProfileRegistry).register({ sourceId: 'external-immediate-fixture', priority: 50,
+      contribution: { profiles: [normalizeAgentProfile({ name: 'external-immediate', definitionId: 'fixture:external-immediate',
+        executor: 'grok-acp', modelAlias: 'grok-raw', systemPrompt: () => 'EXTERNAL_IMMEDIATE' })] } });
+    const registry = server!.core.accessor.get(IAgentExecutorRegistry);
+    const originalResolve = registry.resolveExecutable.bind(registry);
+    const held = holdExternalSession();
+    const run = vi.fn(held.session.run);
+    const steer = vi.fn(async () => {
+      if (scenario === 'unknown-result') throw new Error('Executor accepted the note but its response was lost.');
+      return true;
+    });
+    const executor = vi.spyOn(registry, 'resolveExecutable').mockImplementation(async (executorId, options): Promise<ResolvedAgentExecutor> => executorId === 'grok-acp' ? {
+      descriptor: { ...registry.get(executorId)!, command: process.execPath, revision: 'fixture' },
+      options: registry.resolve(executorId, options ?? {}).options,
+      provider: { id: 'immediate-fixture', protocol: 'acp-v1', validateOptions: value => value as Record<string, string | number | boolean>,
+        validateBinding: binding => ({ ok: true, binding }), create: () => ({ ...held.session, run, steer }) as unknown as AgentExecutorSession },
+    } : originalResolve(executorId, options));
+    const gate = promiseGate<void>();
+    let resume: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      const id = await createSession(home!);
+      const root = `/api/sessions/${id}/prompts`;
+      const active = await call('POST', root, { prompt_id: 'external-original', profile: 'external-immediate', content: [{ type: 'text', text: 'Original external turn.' }] });
+      expect(active.body.code, active.body.msg).toBe(0);
+      const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+      const prompt = main.accessor.get(IAgentPromptService);
+      await vi.waitFor(() => expect(prompt.list().active?.id).toBe('external-original'));
+      expect(main.accessor.get(IAgentLoopService).status().activeTurnId).toBeUndefined();
+      const manager = server!.core.accessor.get(ISessionManager);
+      const originalResume = manager.resume.bind(manager);
+      resume = vi.spyOn(manager, 'resume').mockImplementation(async (...args) => { await gate.promise; return originalResume(...args); });
+      expect((await call('POST', root, { admission: 'durable', delivery_mode: 'steer', prompt_id: 'external-now', content: [{ type: 'text', text: 'Immediate external note.' }] })).body).toMatchObject({ code: 0, data: { admission: 'restoring' } });
+      if (scenario === 'changed-target') {
+        held.finish();
+        await vi.waitFor(() => expect(prompt.list().active).toBeUndefined());
+        resume.mockRestore();
+        expect((await call('POST', root, { prompt_id: 'external-replacement', content: [{ type: 'text', text: 'Different external turn.' }] })).body.code).toBe(0);
+        await vi.waitFor(() => expect(prompt.list().active?.id).toBe('external-replacement'));
+      }
+      gate.resolve();
+      if (scenario === 'unknown-result') {
+        await vi.waitFor(async () => expect((await call('GET', `${root}/external-now?admission=durable`)).body).toMatchObject({ data: { admission: 'held' } }));
+        expect(steer).toHaveBeenCalledTimes(1);
+        expect(prompt.list().hold).toMatchObject({ reason: 'recovery' });
+        expect((await call('POST', `${root}/external-now:resume?admission=durable`)).body.code).toBe(0);
+        await vi.waitFor(async () => expect((await call('GET', `${root}/external-now?admission=durable`)).body).toMatchObject({ data: {
+          admission: 'held', admission_error: { message: expect.stringContaining('external delivery result is unknown') },
+        } }));
+        held.finish();
+        await main.accessor.get(IAgentExecutionService).settled();
+        await vi.waitFor(() => { expect(prompt.list().active).toBeUndefined(); });
+        expect((await call('POST', root, { prompt_id: 'after-unknown', content: [{ type: 'text', text: 'Do not release the held queue.' }] })).body).toMatchObject({ code: 0, data: { status: 'queued' } });
+        expect(run).toHaveBeenCalledTimes(1);
+        expect(steer).toHaveBeenCalledTimes(1);
+        expect(prompt.list().pending.map(item => item.id)).toContain('external-now');
+        expect(prompt.list().hold).toMatchObject({ reason: 'recovery' });
+        return;
+      }
+      await vi.waitFor(async () => expect((await call('GET', `${root}/external-now?admission=durable`)).body).toMatchObject({ data: { admission: 'admitted' } }));
+      expect(steer).toHaveBeenCalledTimes(scenario === 'changed-target' ? 0 : 1);
+      expect(prompt.list().pending.some(item => item.id === 'external-now')).toBe(scenario !== 'same-target');
+    } finally { gate.resolve(); resume?.mockRestore(); held.finish(); executor.mockRestore(); }
+  });
+
   it('durable send-now respects a steering veto without injecting or leaving a runnable prompt', async () => {
     const id = await createSession(home!);
     await createHeldMainAgent(id);
@@ -1977,7 +2050,7 @@ describe('server-v2 /api prompts', () => {
       .drain(new Error('test cleanup'));
   });
 
-  it('rejects Send now when a queued model or thinking selection differs from the active turn', async () => {
+  it('accepts a queued model and thinking change without mutating the active request before its safe boundary', async () => {
     const id = await createSession(home as string);
     await createHeldMainAgent(id);
 
@@ -2004,7 +2077,7 @@ describe('server-v2 /api prompts', () => {
     expect(profile.data()).toEqual(activeBinding);
 
     const steered = await call('POST', `/api/sessions/${id}/prompts/${queued.body.data.prompt_id}:steer`);
-    expect(steered.body.code).toBe(40001);
+    expect(steered.body.code).toBe(0);
     expect(profile.data()).toEqual(activeBinding);
     expect(prompt.list().pending.map((item) => item.id)).toContain(queued.body.data.prompt_id);
     prompt.abort(queued.body.data.prompt_id);

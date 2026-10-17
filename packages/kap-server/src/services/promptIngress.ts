@@ -29,7 +29,7 @@ interface Entry {
   readonly owner: string;
   readonly admission: Admission;
   readonly stage: 'restoring' | 'submitting';
-  readonly steerTargetTurnId?: number | null;
+  readonly steerTarget?: { readonly turnId?: number; readonly promptId?: string };
   readonly cancelRequested?: boolean;
   readonly error?: PromptItem['admission_error'];
   readonly result?: PromptIngressResult;
@@ -41,7 +41,7 @@ export interface PromptIngressExecution {
   readonly fingerprint: string;
   readonly files: IFileService;
   readonly signal: AbortSignal;
-  readonly steerTargetTurnId?: number | null;
+  readonly steerTarget?: { readonly turnId?: number; readonly promptId?: string };
   beforeSubmit(): Promise<void>;
 }
 interface Consumer {
@@ -121,7 +121,7 @@ export class PromptIngress {
       admission_content_truncated: full ? undefined : true };
   }
 
-  async submit(sessionId: string, body: PromptSubmission, fingerprint: string, steerTargetTurnId?: number | null): Promise<PromptItem> {
+  async submit(sessionId: string, body: PromptSubmission, fingerprint: string, steerTarget?: PromptIngressExecution['steerTarget']): Promise<PromptItem> {
     if (this.closed) throw new Error2(ErrorCodes.REQUEST_INVALID, 'The server is stopping. Retry this request after reconnecting.');
     if (body.prompt_id === undefined || body.prompt_id.length > 256) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Durable admission requires a prompt_id of 1–256 characters.');
     if (body.content.every(part => part.type === 'text' && part.text.trim() === '')) throw new Error2(ErrorCodes.REQUEST_INVALID, 'A prompt must contain text or an attachment.');
@@ -153,7 +153,7 @@ export class PromptIngress {
       await this.documents().set<Index>(`${target.scope}/prompt-ingress`, INDEX_KEY, { next: ordinal + 1 });
       const created: Entry = { version: 1, key, ordinal, agentId, body: { prompt_id: body.prompt_id, append_timing: body.append_timing, content: this.preview(content) }, fingerprint,
         createdAt: new Date().toISOString(), owner: this.owner, admission: 'restoring', stage: 'restoring',
-        steerTargetTurnId: body.delivery_mode === 'steer' ? steerTargetTurnId ?? null : undefined };
+        steerTarget: body.delivery_mode === 'steer' ? steerTarget : undefined };
       await this.publish(target, created);
       return created;
     });
@@ -265,7 +265,7 @@ export class PromptIngress {
           return;
         }
         const result = await this.consumer.submit(target.sessionId, { body: await this.payload(target, key), fingerprint: entry.fingerprint, files: this.files(target), signal: controller.signal,
-          steerTargetTurnId: entry.steerTargetTurnId,
+          steerTarget: entry.steerTarget,
           beforeSubmit: async () => {
             await this.locked(target, async () => {
               entry = (await this.read(target, key))!;
