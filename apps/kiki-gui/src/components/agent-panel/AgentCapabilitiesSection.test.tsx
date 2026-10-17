@@ -23,6 +23,7 @@ import {
   type CapabilitiesStatus,
   type CapabilityPluginsSlot,
 } from './AgentCapabilitiesSection';
+import type { CapabilityGapKind } from './mapCapabilities';
 import type { AgentSubagentTarget, AgentSkillCapability, AgentToolCapability } from './types';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -206,6 +207,7 @@ async function render(
     plugins?: CapabilityPluginsSlot;
     capabilitiesStatus?: CapabilitiesStatus;
     onRetryCapabilities?: () => void;
+    capabilityGaps?: readonly CapabilityGapKind[];
   } = {},
 ): Promise<void> {
   await act(async () => {
@@ -827,6 +829,25 @@ describe('the plugins tab and the read states', () => {
     // A read in flight is not a failure: there is nothing to retry.
     expect(container.querySelector('[data-rail-capabilities-retry]')).toBeNull();
     expect(container.querySelector('[data-capability-tab-button="tools"]')!.textContent).not.toContain('16');
+  });
+
+  it('keeps the answered tabs when one field is missing; only the missing tab carries the quiet line', async () => {
+    const retry = vi.fn();
+    await render(TOOLS, SKILLS, { capabilityGaps: ['skills'], onRetryCapabilities: retry });
+    // The answered tabs keep their badges and content; the missing one
+    // invents no count.
+    expect(container.querySelector('[data-capability-tab-button="tools"]')!.textContent).toContain('16');
+    expect(container.querySelector('[data-capability-tab-button="skills"]')!.textContent).not.toContain('1');
+    expect(container.querySelector('[data-capability-group-chip]')).not.toBeNull();
+    // The line sits inside the skills tab alone, and its retry reaches the read.
+    await tab('skills');
+    const line = container.querySelector<HTMLElement>('[data-rail-capabilities-unavailable]')!;
+    expect(line.textContent).toContain('暂时读不到能力信息');
+    await click(line.querySelector('[data-rail-capabilities-retry]')!);
+    expect(retry).toHaveBeenCalledOnce();
+    await tab('tools');
+    expect(container.querySelector('[data-rail-capabilities-unavailable]')).toBeNull();
+    expect(container.querySelector('[data-capability-group-chip]')).not.toBeNull();
   });
 
   it('drops the plugins tab when the slot leaves while it is on screen', async () => {

@@ -39,6 +39,7 @@ import { usageSessionDeepLink } from '../lib/usageV2';
 import { aggregateTreeCacheHitRate, aggregateTreeCacheReadTokens, aggregateTreeCacheWriteTokens } from './agent-panel/cacheRate';
 import {
   agentCapabilitiesErrorText,
+  capabilityFieldGaps,
   capabilityReasonText,
   isCapabilityUnsupportedError,
   mapPanelSkills,
@@ -778,14 +779,18 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     </div>;
   }
   if (part === 'profile') {
-    const counts = data?.tools !== undefined && data.skills !== undefined
+    // A partial answer still shows what it knows: the section mounts once any
+    // optional capability field arrived, and the missing kinds get their own
+    // quiet line inside their tabs. An answer with neither optional field
+    // falls through to the server's own unavailable reason, as before.
+    const counts = data !== undefined && (data.tools !== undefined || data.skills !== undefined)
       ? capabilityCounts(mappedTools, mappedSkills, subagentTargets)
       : undefined;
     // Hover detail on the folded line; the tabs carry the counts when open.
     // Tools count every source — MCP and plugin tools included.
-    const summary = counts === undefined ? undefined : [
-      `${t('inspector.cap.tools')} ${counts.toolsOn}`,
-      `${t('inspector.cap.skills')} ${counts.skills}`,
+    const summary = data === undefined || counts === undefined ? undefined : [
+      ...(data.tools === undefined ? [] : [`${t('inspector.cap.tools')} ${counts.toolsOn}`]),
+      ...(data.skills === undefined ? [] : [`${t('inspector.cap.skills')} ${counts.skills}`]),
       `${t('inspector.cap.subagents')} ${counts.subagents}`,
     ].join(' · ');
     // A failed read is one quiet line inside the card, never a banner.
@@ -796,6 +801,8 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
         subagentTargets={subagentTargets}
         draftScope={draftScope}
         callerProfile={profileName === '' ? undefined : profileName}
+        capabilityGaps={data === undefined ? undefined : capabilityFieldGaps(data)}
+        onRetryCapabilities={() => { void capabilities.refetch(); }}
       />
     ) : capabilities.isPending ? (
       <p role="status" className="text-[12px] text-ink-faint">{t('inspector.cap.loading')}</p>

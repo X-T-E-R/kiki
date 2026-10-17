@@ -111,6 +111,27 @@ export function agentCapabilitiesErrorText(error: unknown, t: Translate): string
   return error instanceof Error ? error.message : String(error);
 }
 
+/** A capability kind whose field was absent from an otherwise good answer. */
+export type CapabilityGapKind = 'tools' | 'skills' | 'subagents';
+
+/**
+ * The fields a good answer did not carry. Absent optional fields (tools,
+ * skills) are a partial answer, not a verdict that the scope is unoffered:
+ * the wire marks "not offered" with an explicit unsupported error, while
+ * `available: false` only says dispatch is degraded — live answers ship it
+ * with the full tools/skills inventory. So the tabs that answered keep their
+ * content and the missing ones get the quiet line and retry. `targets` is
+ * required by the schema; a host that omits it gets the same treatment rather
+ * than a silent zero.
+ */
+export function capabilityFieldGaps(data: AgentCapabilitiesResponse): readonly CapabilityGapKind[] {
+  return [
+    ...(data.tools === undefined ? ['tools' as const] : []),
+    ...(data.skills === undefined ? ['skills' as const] : []),
+    ...(data.targets === undefined ? ['subagents' as const] : []),
+  ];
+}
+
 export function mapPanelSubagentTargets(
   targets: readonly AgentCapabilityTarget[] | undefined,
 ): AgentSubagentTarget[] {

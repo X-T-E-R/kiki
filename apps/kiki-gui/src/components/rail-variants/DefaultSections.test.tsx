@@ -12,9 +12,12 @@
  * (tools/skills/subagents) and the plugin-usage read. A failed capability read
  * leaves one quiet line inside each of the three capability tabs while the
  * plugins tab keeps working; a failed plugin read is one quiet line inside the
- * plugins tab while the other three keep theirs. A server that answers a scope
- * unsupported simply has no such tab, and a server without either scope has no
- * block at all.
+ * plugins tab while the other three keep theirs. A capability answer that
+ * omits a field is partial, not absent: the tabs that answered keep their
+ * content and only the missing kind carries the quiet line with a retry. Only
+ * an explicit unsupported error closes a scope — a server that answers one
+ * unsupported simply has no such tab, and a server without either scope has
+ * no block at all.
  */
 
 import { act } from 'react';
@@ -71,7 +74,13 @@ const full: AgentCapabilitiesResponse = {
   ],
 };
 
-/** The old-server shape: an answer without the capability fields. */
+/**
+ * The degraded shape: the server's own "capabilities unavailable" answer
+ * (`available: false`, no optional fields), the way a session that is not
+ * live or a fixture without a capability seed responds. It is a partial
+ * answer — not proof the scope is unoffered, which only an explicit
+ * unsupported error says.
+ */
 const withoutCapabilities: AgentCapabilitiesResponse = {
   context: 'live',
   owner: { profile: 'agent', agent_id: 'main' },
@@ -131,12 +140,14 @@ afterEach(async () => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = false;
 });
 
+let queryClient: QueryClient;
+
 async function render() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await act(async () => {
     root.render(
       <MemoryRouter>
-        <QueryClientProvider client={client}>
+        <QueryClientProvider client={queryClient}>
           <I18nProvider>
             <CapabilitiesBlock sessionId="sess-1" agentId="main" />
           </I18nProvider>
@@ -295,8 +306,8 @@ describe('CapabilitiesBlock', () => {
     expect(container.querySelector('[data-capability-tab-button="plugins"]')).toBeNull();
   });
 
-  it('is the plugins chapter alone, without a tab strip, when the server has no capability scope', async () => {
-    readCapabilities.mockResolvedValue(withoutCapabilities);
+  it('is the plugins chapter alone, without a tab strip, when the capability scope is explicitly unsupported', async () => {
+    readCapabilities.mockRejectedValue(unsupported());
     getUsage.mockResolvedValue(pluginAnswer());
     await render();
     await settle();
@@ -311,11 +322,127 @@ describe('CapabilitiesBlock', () => {
   });
 
   it('has no block at all when the server offers neither scope', async () => {
-    readCapabilities.mockResolvedValue(withoutCapabilities);
+    readCapabilities.mockRejectedValue(unsupported());
     getUsage.mockRejectedValue(unsupported());
     await render();
     await settle();
     expect(container.querySelector('[data-rail-capabilities]')).toBeNull();
+  });
+
+  it('keeps tools and subagents when the answer omits only the skills field', async () => {
+    readCapabilities.mockResolvedValue({
+      context: 'live',
+      owner: { profile: 'agent', agent_id: 'main' },
+      available: true,
+      tools: full.tools,
+      targets: full.targets,
+    });
+    getUsage.mockResolvedValue(pluginAnswer());
+    await render();
+    await settle();
+    // The folded head reports the kinds that answered, not a zero for skills.
+    const head = container.querySelector<HTMLElement>('[data-rail-capabilities] [aria-expanded]')!;
+    expect(head.textContent).toContain('工具 4');
+    expect(head.textContent).toContain('子智能体 2');
+    expect(head.textContent).not.toContain('技能');
+    await openFold();
+    // The tools tab kept its content; the skills tab carries the quiet line.
+    expect(container.querySelectorAll('[data-capability-tab-button]')).toHaveLength(4);
+    expect(container.querySelectorAll('[data-capability-group-chip]').length).toBeGreaterThan(0);
+    await tab('subagents');
+    expect(container.textContent).toContain('explore');
+    await tab('skills');
+    const line = container.querySelector<HTMLElement>('[data-rail-capabilities-unavailable]')!;
+    expect(line.getAttribute('role')).toBe('status');
+    expect(line.className).toContain('text-ink-faint');
+    // The retry re-reads, and a complete answer closes the gap.
+    readCapabilities.mockResolvedValue(full);
+    await act(async () => { line.querySelector<HTMLButtonElement>('[data-rail-capabilities-retry]')!.click(); });
+    await settle();
+    expect(readCapabilities).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-rail-capabilities-unavailable]')).toBeNull();
+    expect(container.textContent).toContain('api-diff');
+  });
+
+  it('keeps skills and subagents when the answer omits only the tools field', async () => {
+    readCapabilities.mockResolvedValue({
+      context: 'live',
+      owner: { profile: 'agent', agent_id: 'main' },
+      available: true,
+      skills: full.skills,
+      targets: full.targets,
+    });
+    getUsage.mockResolvedValue(pluginAnswer());
+    await render();
+    await settle();
+    const head = container.querySelector<HTMLElement>('[data-rail-capabilities] [aria-expanded]')!;
+    expect(head.textContent).toContain('技能 4');
+    expect(head.textContent).toContain('子智能体 2');
+    expect(head.textContent).not.toContain('工具');
+    await openFold();
+    // The tools tab carries the quiet line; the skills tab kept its content.
+    expect(container.querySelector('[data-rail-capabilities-unavailable]')).not.toBeNull();
+    expect(container.querySelector('[data-capability-tab-button="tools"]')!.textContent).not.toContain('6');
+    await tab('skills');
+    expect(container.textContent).toContain('api-diff');
+    expect(container.querySelector('[data-rail-capabilities-unavailable]')).toBeNull();
+  });
+
+  it('reads a degraded answer with neither optional field as partial, not as an absent scope', async () => {
+    readCapabilities.mockResolvedValue(withoutCapabilities);
+    getUsage.mockResolvedValue(pluginAnswer());
+    await render();
+    await settle();
+    // The block stays with its tabs: tools and skills get the quiet line,
+    // subagents shows the answered (empty) list, plugins works.
+    const head = container.querySelector<HTMLElement>('[data-rail-capabilities] [aria-expanded]')!;
+    expect(head.textContent).toContain('子智能体 0');
+    expect(head.textContent).toContain('插件 1');
+    expect(head.textContent).not.toContain('工具');
+    expect(head.textContent).not.toContain('技能');
+    await openFold();
+    expect(container.querySelectorAll('[data-capability-tab-button]')).toHaveLength(4);
+    expect(container.querySelector('[data-rail-capabilities-unavailable]')).not.toBeNull();
+    await tab('subagents');
+    expect(container.textContent).toContain('这个智能体不能派发子智能体。');
+    await tab('plugins');
+    expect(container.querySelector('[data-rail-plugin="demo"]')).not.toBeNull();
+  });
+
+  it('shows the full inventory when available:false ships with the fields, as a live dispatch-off answer does', async () => {
+    readCapabilities.mockResolvedValue({
+      ...full,
+      available: false,
+      unavailable_reason: 'AgentRun is not active for this agent',
+      unavailable_reason_code: 'agent_run_inactive',
+    });
+    getUsage.mockResolvedValue(pluginAnswer());
+    await render();
+    await settle();
+    // available:false is a dispatch flag, not a scope verdict: every tab keeps
+    // its content and the head keeps every count.
+    const head = container.querySelector<HTMLElement>('[data-rail-capabilities] [aria-expanded]')!;
+    expect(head.textContent).toContain('工具 4 · 技能 4 · 子智能体 2 · 插件 1');
+    await openFold();
+    expect(container.querySelectorAll('[data-capability-tab-button]')).toHaveLength(4);
+    expect(container.querySelectorAll('[data-capability-group-chip]').length).toBeGreaterThan(0);
+    expect(container.querySelector('[data-rail-capabilities-unavailable]')).toBeNull();
+  });
+
+  it('keeps the last good answer through a failed background refetch', async () => {
+    readCapabilities.mockResolvedValue(full);
+    getUsage.mockResolvedValue(pluginAnswer());
+    await render();
+    await settle();
+    await openFold();
+    expect(container.querySelectorAll('[data-capability-group-chip]').length).toBeGreaterThan(0);
+    readCapabilities.mockRejectedValue(new Error('network down'));
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['agentCapabilities'] }); });
+    await settle();
+    // Stale data keeps rendering: no quiet line, no lost tabs.
+    expect(container.querySelectorAll('[data-capability-group-chip]').length).toBeGreaterThan(0);
+    expect(container.querySelector('[data-rail-capabilities-unavailable]')).toBeNull();
+    expect(container.querySelectorAll('[data-capability-tab-button]')).toHaveLength(4);
   });
 
   it('stays hidden while the first reads are in flight', async () => {

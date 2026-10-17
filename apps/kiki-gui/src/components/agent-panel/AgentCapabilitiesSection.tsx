@@ -32,7 +32,7 @@ import {
 import { GroupPreviewCard, type GroupPreviewAnchor } from './GroupPreviewCard';
 import { SkillChipCluster, type SkillFoldState } from './SkillChipCluster';
 import { ToolGroupDetail } from './ToolGroupDetail';
-import { capabilityReasonText } from './mapCapabilities';
+import { capabilityReasonText, type CapabilityGapKind } from './mapCapabilities';
 import { scrollHostOf } from './scrollHost';
 import { capabilitySourceLabel, SOURCE_TONE_CLASS, type SourceLabel } from './sourceLabel';
 import {
@@ -83,6 +83,12 @@ export interface AgentCapabilitiesSectionProps {
    */
   readonly capabilitiesStatus?: CapabilitiesStatus;
   readonly onRetryCapabilities?: () => void;
+  /**
+   * Fields absent from an otherwise good answer: those tabs get the same
+   * quiet line and retry as a failed read while the answered tabs keep their
+   * content, and the gapped tab's badge stays empty rather than claiming zero.
+   */
+  readonly capabilityGaps?: readonly CapabilityGapKind[];
 }
 
 export interface CapabilityCounts {
@@ -351,6 +357,7 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
   plugins,
   capabilitiesStatus = 'ready',
   onRetryCapabilities,
+  capabilityGaps,
 }: AgentCapabilitiesSectionProps) {
   const { t, tp } = useI18n();
   const baseId = useId();
@@ -503,10 +510,17 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
 
   const toolTotal = groups.reduce((sum, group) => sum + group.counts.total, 0);
   const capReady = capabilitiesStatus === 'ready';
+  // A field that never arrived keeps its tab on the failed line; the tabs
+  // that answered are not dragged into it.
+  const statusOf = (kind: CapabilityGapKind): CapabilitiesStatus =>
+    capReady && capabilityGaps?.includes(kind) === true ? 'failed' : capabilitiesStatus;
+  const toolsStatus = statusOf('tools');
+  const skillsStatus = statusOf('skills');
+  const subagentsStatus = statusOf('subagents');
   const tabs: { id: CapabilityTab; label: string; count: number | undefined }[] = [
-    { id: 'tools', label: t('inspector.cap.tools'), count: capReady ? toolTotal : undefined },
-    { id: 'skills', label: t('inspector.cap.skills'), count: capReady ? skills.length : undefined },
-    { id: 'subagents', label: t('inspector.cap.subagents'), count: capReady ? subagentTargets.length : undefined },
+    { id: 'tools', label: t('inspector.cap.tools'), count: toolsStatus === 'ready' ? toolTotal : undefined },
+    { id: 'skills', label: t('inspector.cap.skills'), count: skillsStatus === 'ready' ? skills.length : undefined },
+    { id: 'subagents', label: t('inspector.cap.subagents'), count: subagentsStatus === 'ready' ? subagentTargets.length : undefined },
     ...(plugins === undefined ? [] : [{ id: 'plugins' as const, label: t('inspector.cap.plugins'), count: plugins.available }]),
   ];
   const current = tabs.find((entry) => entry.id === tab) ?? tabs[0]!;
@@ -688,14 +702,14 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
         ) : null}
 
         {tab === 'tools' ? (
-          !capReady ? <CapabilitiesGap status={capabilitiesStatus} onRetry={onRetryCapabilities} />
+          toolsStatus !== 'ready' ? <CapabilitiesGap status={toolsStatus} onRetry={onRetryCapabilities} />
             : tools.length === 0 ? <Empty>{t('inspector.cap.noToolsReported')}</Empty>
               : matches.length === 0 ? noGroupMatch
                 : cluster()
         ) : null}
 
         {tab === 'skills' ? (
-          !capReady ? <CapabilitiesGap status={capabilitiesStatus} onRetry={onRetryCapabilities} />
+          skillsStatus !== 'ready' ? <CapabilitiesGap status={skillsStatus} onRetry={onRetryCapabilities} />
             : skills.length === 0 ? <Empty>{t('inspector.cap.noSkills')}</Empty> : skillGroups.length === 0 ? <Empty>{t('inspector.cap.noMatch')}</Empty> : (
             <div data-capability-list="skills" className="space-y-1">
               {skillGroups.map(([scope, , list]) => {
@@ -734,7 +748,7 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
         ) : null}
 
         {tab === 'subagents' ? (
-          !capReady ? <CapabilitiesGap status={capabilitiesStatus} onRetry={onRetryCapabilities} />
+          subagentsStatus !== 'ready' ? <CapabilitiesGap status={subagentsStatus} onRetry={onRetryCapabilities} />
             : subagentTargets.length === 0 ? <Empty>{t('inspector.cap.noSubagents')}</Empty> : shownTargets.length === 0 ? <Empty>{t('inspector.cap.noMatch')}</Empty> : (
             <ul data-capability-list="subagents">
               {capped(shownTargets, openGroups.has('subagents'), filtering).shown.map((target, index) => {

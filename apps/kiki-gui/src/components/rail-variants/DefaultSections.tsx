@@ -15,7 +15,7 @@ import { AgentCapabilitiesSection, capabilityCounts } from '../agent-panel/Agent
 import { AgentDetailDrawer } from '../agent-panel/AgentDetailDrawer';
 import { agentTrail } from '../agent-panel/agentRoster';
 import { INSPECTOR_HEAD, InspectorChevron } from '../agent-panel/InspectorSection';
-import { isCapabilityUnsupportedError, mapPanelSkills, mapPanelSubagentTargets, mapPanelTools } from '../agent-panel/mapCapabilities';
+import { isCapabilityUnsupportedError, capabilityFieldGaps, mapPanelSkills, mapPanelSubagentTargets, mapPanelTools } from '../agent-panel/mapCapabilities';
 import { capabilitySourceLabel, SOURCE_TONE_CLASS } from '../agent-panel/sourceLabel';
 import type { AgentIdentity, DetailDrawerTarget } from '../agent-panel/types';
 import { availableCount } from '../capabilities/pluginUsage';
@@ -455,8 +455,10 @@ export const ActivityFeed = memo(function ActivityFeed({ blocks, forest, onOpenF
  * capability read leaves the tools, skills and subagents tabs one quiet line
  * each with a text retry while the plugins tab keeps working, and a failed
  * plugin read is one quiet line inside the plugins tab while the other three
- * keep theirs. A server that answers either scope unsupported simply has no
- * such tab — and a server without either has no block at all.
+ * keep theirs. A partial capability answer keeps the tabs that arrived and
+ * gives only the missing kind that quiet line. A server that answers either
+ * scope unsupported simply has no such tab — and a server without either has
+ * no block at all.
  */
 export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { sessionId: string; agentId: string; workspaceId?: string; cwd?: string }) {
   const { t } = useI18n();
@@ -482,12 +484,15 @@ export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { se
   const skills = useMemo(() => mapPanelSkills(read.data?.skills), [read.data?.skills]);
   const targets = useMemo(() => mapPanelSubagentTargets(read.data?.targets), [read.data?.targets]);
   const data = read.data;
-  // Capability fields absent from the answer is the old-server shape: the same
-  // silent gap as an explicit unsupported, not a failure to retry.
-  const capUnsupported = isCapabilityUnsupportedError(read.error)
-    || (data !== undefined && (data.tools === undefined || data.skills === undefined));
+  // Only the wire's own "not offered here" word closes the scope: an explicit
+  // unsupported error. `available: false` is a degraded answer, not that
+  // verdict — live responses ship it with the full inventory when dispatch is
+  // policy-off — and absent fields are a partial answer: the tabs that
+  // answered keep their content, the missing ones get the quiet retry.
+  const capUnsupported = isCapabilityUnsupportedError(read.error);
   const capFailed = data === undefined && read.isError && !isCapabilityUnsupportedError(read.error);
   const capPending = data === undefined && !read.isError;
+  const gaps = data === undefined || capUnsupported ? undefined : capabilityFieldGaps(data);
   const pluginsUnsupported = isCapabilityUnsupportedError(pluginRead.error);
   const pluginsPending = pluginRead.data === undefined && !pluginRead.isError;
 
@@ -499,11 +504,11 @@ export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { se
   const segments: string[] = [];
   if (data !== undefined && !capUnsupported) {
     const counts = capabilityCounts(tools, skills, targets);
-    segments.push(
-      `${t('inspector.cap.tools')} ${counts.toolsOn}`,
-      `${t('inspector.cap.skills')} ${counts.skills}`,
-      `${t('inspector.cap.subagents')} ${counts.subagents}`,
-    );
+    // Each segment stands on its own field: a partial answer still reports
+    // the kinds it knows instead of claiming zeros for the missing ones.
+    if (data.tools !== undefined) segments.push(`${t('inspector.cap.tools')} ${counts.toolsOn}`);
+    if (data.skills !== undefined) segments.push(`${t('inspector.cap.skills')} ${counts.skills}`);
+    if (data.targets !== undefined) segments.push(`${t('inspector.cap.subagents')} ${counts.subagents}`);
   }
   if (pluginRead.data !== undefined) {
     segments.push(`${t('inspector.cap.plugins')} ${availableCount(pluginRead.data.plugins)}`);
@@ -525,6 +530,7 @@ export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { se
       callerProfile={data?.profile?.name}
       capabilitiesStatus={capFailed ? 'failed' : capPending ? 'loading' : 'ready'}
       onRetryCapabilities={() => { void read.refetch(); }}
+      capabilityGaps={gaps}
       plugins={pluginsUnsupported ? undefined : {
         available: pluginRead.data === undefined ? undefined : availableCount(pluginRead.data.plugins),
         content: <SessionPluginsPanel sessionId={sessionId} />,
