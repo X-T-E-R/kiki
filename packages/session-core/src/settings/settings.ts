@@ -2009,10 +2009,10 @@ export function aiTabLabelKey(tab: AiSettingsTab): I18nKey {
 }
 
 /**
- * The "Connection" entry is one navigation leaf with two stable tabs: the
- * live server session stays on "current", while ways for others to reach
- * this Kiki (external clients, tunnels) live on "external". Tab ids double
- * as the `?tab=` deep-link parameter.
+ * The "Connection" entry is a single page again: the live server session is
+ * its only content after the Cloudflare card moved to Connection services.
+ * The remaining tab id doubles as the `?tab=` deep-link parameter; a bare
+ * `?tab=external` bookmark follows the moved card.
  */
 export const CONNECTION_SETTINGS_TABS = ['current'] as const;
 export type ConnectionSettingsTab = (typeof CONNECTION_SETTINGS_TABS)[number];

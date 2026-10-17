@@ -158,7 +158,15 @@ export function handlePlugins(server, res, path, method, body) {
     if (panelDoc[3] === 'bridge' && method === 'POST') {
       server.pluginBridgeCalls ??= [];
       server.pluginBridgeCalls.push({ pluginId, panelId, body });
-      if (body?.method === 'session.summary') {
+      if (body?.method === 'plugin.call') {
+        // Scenario `pluginCallResponses[pluginId][action]` — the resident
+        // plugin backend's answer (e.g. the Cloudflare status the external
+        // connection card renders).
+        const answers = server.scenario?.data.pluginCallResponses?.[pluginId] ?? {};
+        const answer = answers[body?.action];
+        if (answer === undefined) server.envelope(res, null, 40404, `Fixture plugin.call has no answer for ${pluginId}/${String(body?.action)}`);
+        else server.envelope(res, { result: structuredClone(answer) });
+      } else if (body?.method === 'session.summary') {
         server.envelope(res, { result: { id: body.session_id, title: 'Fixture session' } });
       } else if (body?.method === 'session.sendMessage') {
         server.envelope(res, { result: { accepted: true } });

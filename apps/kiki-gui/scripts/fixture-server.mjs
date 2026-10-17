@@ -1302,6 +1302,38 @@ class FixtureServer {
   }
 
   /**
+   * Remote connections: the inbound gate with its grants and the outbound
+   * rows. Read-mostly — the settings screenshot walks need the populated
+   * shape, not the write paths; scenario `remoteConnections` seeds
+   * { inbound: { enabled?, configuredEnabled?, grants? }, connections? }.
+   */
+  remoteConnectionsRoute(res, path, method, body) {
+    const data = this.scenario?.data.remoteConnections ?? {};
+    const rest = path.slice('/remote-connections'.length) || '/';
+    if (rest === '/inbound' && method === 'GET') {
+      const inbound = data.inbound ?? {};
+      return this.envelope(res, {
+        enabled: inbound.enabled ?? false,
+        configuredEnabled: inbound.configuredEnabled ?? inbound.enabled ?? false,
+        grants: structuredClone(inbound.grants ?? []),
+      });
+    }
+    if (rest === '/inbound' && method === 'PUT') {
+      const inbound = data.inbound ?? (data.inbound = {});
+      inbound.configuredEnabled = body?.enabled === true;
+      inbound.enabled = inbound.configuredEnabled;
+      return this.envelope(res, { enabled: inbound.enabled, configuredEnabled: inbound.configuredEnabled, grants: structuredClone(inbound.grants ?? []) });
+    }
+    if (rest === '/' && method === 'GET') {
+      return this.envelope(res, { connections: structuredClone(data.connections ?? []) });
+    }
+    if (rest === '/handshake' && method === 'GET') {
+      return this.envelope(res, {});
+    }
+    return this.envelope(res, null, 40404, 'Remote connections fixture route not found');
+  }
+
+  /**
    * 0.3.3 external clients. The scenario owns the state; this route applies
    * the one write the GUI can make from the settings page (create, update,
    * revoke, respond) to that state, so a screenshot walk exercises the real
@@ -3080,6 +3112,12 @@ class FixtureServer {
     // state is reachable without inventing a second scenario.
     if (path.startsWith('/external-clients')) {
       return this.externalClientsRoute(res, path, method, body);
+    }
+    // Remote connections (inbound gate + grants; outbound rows). Scenario
+    // `remoteConnections` seeds { inbound: { enabled?, configuredEnabled?,
+    // grants?: [{ id, label, status, source }] }, connections?: [...] }.
+    if (path.startsWith('/remote-connections')) {
+      return this.remoteConnectionsRoute(res, path, method, body);
     }
     // kap-server local executor sessions: scenario `localSessions[executorId]`
     // = { root, exists, truncated, unreadable_files, resume_enabled, items,
