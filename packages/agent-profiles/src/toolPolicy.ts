@@ -18,8 +18,12 @@ export function isMcpToolName(name: string): boolean {
   return name.startsWith('mcp__');
 }
 
-export function isToolExplicitlyNamed(tools: readonly string[] | undefined, name: string): boolean {
-  return tools !== undefined && (tools.includes(name) ||
+export function isBrowserOperationToolName(name: string): boolean {
+  return /^browser__(?:agent_browser_[a-z0-9_]+|codex_[a-z0-9_]+)$/.test(name);
+}
+
+export function isToolExplicitlyNamed(tools: readonly string[] | undefined, name: string, source: ToolSource = 'builtin'): boolean {
+  return tools !== undefined && ((source === 'builtin' && tools.includes('browser__*') && isBrowserOperationToolName(name)) || tools.includes(name) ||
     (canonicalToolName(name) !== undefined && tools.includes(canonicalToolName(name)!)) ||
     legacyToolNames(name).some((legacy) => tools.includes(legacy)));
 }
@@ -34,13 +38,13 @@ export function isToolActive(
   );
   for (const allowPolicy of allowPolicies) {
     const allowed = allowPolicy.includes('*') || (source !== 'mcp'
-      ? isToolExplicitlyNamed(allowPolicy, name)
+      ? isToolExplicitlyNamed(allowPolicy, name, source)
       : allowPolicy.filter((pattern) => isMcpToolName(pattern)).some((pattern) => picomatch.isMatch(name, pattern)));
     if (!allowed) return false;
   }
   if (policy.disallowedTools === undefined) return true;
   if (source !== 'mcp') {
-    return !(policy.disallowedTools.includes(name) ||
+    return !((policy.disallowedTools.includes('browser__*') && isBrowserOperationToolName(name)) || policy.disallowedTools.includes(name) ||
       (canonicalToolName(name) !== undefined && policy.disallowedTools.includes(canonicalToolName(name)!)) ||
       (legacyToolNames(name).length > 0 &&
         legacyToolNames(name).every((legacy) => policy.disallowedTools!.includes(legacy))));

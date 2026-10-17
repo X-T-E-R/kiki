@@ -54,6 +54,22 @@ describe('shared profile tool matching', () => {
     }
   });
 
+  it('allows only the explicit browser operation namespace and preserves exact and namespace denies', () => {
+    const name = 'browser__codex_browser_js';
+    for (const active of [isToolActive, engineToolActive]) {
+      expect(active({ tools: ['browser__*'] }, name)).toBe(true);
+      expect(active({ tools: ['BrowserConnections', 'BrowserTabs'] }, name)).toBe(false);
+      expect(active({ tools: [] }, name)).toBe(false);
+      expect(active({ tools: ['browser__*'], disallowedTools: [name] }, name)).toBe(false);
+      expect(active({ tools: ['*'], disallowedTools: ['browser__*'] }, name)).toBe(false);
+      expect(active({ tools: ['browser__*'], toolAllowPolicies: [['Read']] }, name)).toBe(false);
+      for (const invalid of ['browser__Read', 'browser__codex_', 'browser__codex_test-X', 'other__codex_browser_js', 'Bash']) {
+        expect(active({ tools: ['browser__*'] }, invalid)).toBe(false);
+      }
+      expect(active({ tools: ['browser__*'] }, name, 'plugin')).toBe(false);
+    }
+  });
+
   it('uses parser normalization for null, empty and singleton wildcard without treating arbitrary raw stars as a glob', () => {
     for (const [field, expected] of [['tools: null', true], ['tools: []', false], ['tools: ["*"]', true]] as const) {
       const parsed = parseAgentFileText({ path: '/fixture/example.md', source: 'user',

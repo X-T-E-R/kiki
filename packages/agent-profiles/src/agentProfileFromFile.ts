@@ -30,6 +30,7 @@ export function agentProfileFromFile(
     permissionMode: definition.permissionMode,
     main: definition.main,
     tools: definition.tools,
+    toolsSource: 'declared',
     disallowedTools: definition.disallowedTools,
     disabledToolGroups: definition.disabledToolGroups,
     canSpawnSubagents: definition.canSpawnSubagents,

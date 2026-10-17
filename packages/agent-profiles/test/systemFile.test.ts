@@ -117,8 +117,16 @@ describe('loadSystemMdProfile', () => {
     expect(profile?.sourcePath).toBe(join(home, SYSTEM_MD_FILENAME));
     expect(profile?.description).toBe('builtin default description');
     expect(profile?.tools).toEqual(['Read', 'Skill', 'Bash']);
+    expect(profile?.toolsSource).toBe('inherited-default');
     expect(profile?.disallowedTools).toEqual(['Write']);
     expect(profile?.systemPrompt({})).toBe('You are a custom main agent.');
+  });
+
+  it.each(['[]', '[Read, Skill, Bash]'])('marks an explicit tools %s as declared even when equal to the default', async (tools) => {
+    await writeFile(join(home, SYSTEM_MD_FILENAME), `---\ntools: ${tools}\n---\nPrompt`);
+    const profile = await loadProfile(hostFs, BUILTIN_DEFAULT, () => {});
+    expect(profile?.toolsSource).toBe('declared');
+    expect(profile?.tools).toEqual(tools === '[]' ? [] : BUILTIN_DEFAULT.tools);
   });
 
   it('empties ${skills} when the builtin default disables the Skill tool', async () => {

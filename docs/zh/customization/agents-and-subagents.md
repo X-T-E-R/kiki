@@ -371,7 +371,23 @@ preferred_models: [fast-model]
 
 `allowed_models`、`deny_models`、`allowed_efforts` 在所有作用域都按字面硬语义执行，没有旧的软模式。如果某个列表本来只是建议，请在它出现的每个作用域改名为 `preferred_models`、`discouraged_models` 或 `preferred_efforts`，真正的硬边界保持不变。恢复一个超出硬规则的已保存绑定会被拒绝——选一个许可值或修改规则后重试。
 
-工具名精确匹配且区分大小写；以 `mcp__` 开头的条目按 glob 匹配 MCP 工具。以下三种写法永远匹配不到任何工具，并在 profile 生效时给出警告：`mcp__` 模式之外的通配符（`disallowedTools` 里单独的 `*` 什么也禁不掉）、不是完整 `mcp__<服务器>__<工具>` 的 `mcp__` 字面量（`mcp__github` 匹配不到任何工具，匹配整个服务器要用 `mcp__github__*`），以及已注册或内置工具都没有的名字（通常是笔误，如把 `Read` 写成 `read`）。
+工具名精确匹配且区分大小写；以 `mcp__` 开头的条目按 glob 匹配 MCP 工具。`browser__*` 是唯一的内置命名空间选择项，只匹配名称合法的浏览器 donor 操作，不匹配任意内置工具。以下三种写法永远匹配不到任何工具，并在 profile 生效时给出警告：其他 `mcp__` 模式之外的通配符（`disallowedTools` 里单独的 `*` 什么也禁不掉）、不是完整 `mcp__<服务器>__<工具>` 的 `mcp__` 字面量（`mcp__github` 匹配不到任何工具，匹配整个服务器要用 `mcp__github__*`），以及已注册或内置工具都没有的名字（通常是笔误，如把 `Read` 写成 `read`）。
+
+已记录为继承内置工具集的 main 绑定会随新增内置能力更新。作者声明的 `tools` 列表仍按显式选择保留，包括 `[]` 或与当前默认完全相同的名单。没有工具来源元数据的旧绑定保持冻结，直到你在[浏览器控制设置](../guides/settings.md#浏览器控制)中明确应用当前 profile 的工具设置。
+
+浏览器与电脑控制对 subagent 默认关闭。在 profile 的 `tools` 中加入以下选择，即可保留普通工具并选择这两个组：
+
+```yaml
+tools: ["*", BrowserConnections, BrowserTabs, "browser__*", "mcp__kiki-computer__*"]
+```
+
+如果已安装的电脑 MCP 服务不叫 `kiki-computer`，请换成它的实际名字。只为一次任务开放时，把同样的数组传给 `AgentRun.tools`，不必改 profile：
+
+```json
+{"profile":"general","description":"Check owned test page","prompt":"Use only the authorized localhost test page.","tools":["*","BrowserConnections","BrowserTabs","browser__*"],"background":true}
+```
+
+只有获准的桌面任务才加入 `"mcp__kiki-computer__*"`。覆盖只属于该子 Agent 绑定；resume 省略 `tools` 会保留它，传 `tools: []` 收回全部业务工具，传 `tools: ["*"]` 则移除这些 opt-in。选择工具不会越过 profile 或祖先 deny、全局／工作区／会话策略、控制开关、浏览器允许集合或真实审批请求。
 
 正文即 Agent 的系统提示词，每次构建时作为模板渲染：`${var}` 占位符替换为实时上下文值，未知变量保持原样，单独的 `$` 没有特殊含义，上下文缺失的变量渲染为空字符串。`${parent_prompt}`（别名 `${base_prompt}`）嵌入这份文件的隐式父提示词：Agent 文件里是有效默认提示词，`SYSTEM.md` 里是内置默认，route 里是基础 profile。`${builtin_prompt}` 始终是内置默认，即使存在 `SYSTEM.md`。若文件替换了默认提示词但仍要保留 plugin 贡献的指令，把 `${plugin_sections}` 放在它们该出现的位置。变量表见下文 SYSTEM.md 一节。
 

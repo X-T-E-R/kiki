@@ -119,6 +119,11 @@ export interface AgentFacade {
   setThinking(level: string): Promise<void>;
   getModelCapabilities(): Promise<ModelCapability>;
   getAgentsMdWarning(): Promise<string | undefined>;
+  /** Preview this main binding's saved tools and the current profile source; never expands a legacy binding implicitly. */
+  inspectToolPolicy(): ReturnType<IAgentProfileService['inspectToolPolicy']>;
+  /** Explicit tool-only refresh using the preview revision. Rejects source/binding drift and preserves prompt, model, history and deny ceilings. */
+  refreshToolPolicy(revision: string): ReturnType<IAgentProfileService['refreshToolPolicy']>;
+  isToolEnabled(name: string, source?: 'builtin' | 'user' | 'mcp' | 'plugin'): Promise<boolean>;
   getPermission(): Promise<PermissionMode>;
   /** Defaults to broadcasting to live agents; false changes only this agent's mode. */
   setPermission(mode: PermissionMode, options?: { broadcast?: boolean }): Promise<void>;
@@ -246,6 +251,9 @@ export function createAgentFacade(call: ScopedCaller, scope: ScopeRef): AgentFac
       call(scope, 'agentProfileService', 'getModelCapabilities', []) as Promise<ModelCapability>,
     getAgentsMdWarning: () =>
       call(scope, 'agentProfileService', 'getAgentsMdWarning', []) as Promise<string | undefined>,
+    inspectToolPolicy: () => call(scope, 'agentProfileService', 'inspectToolPolicy', []) as ReturnType<AgentFacade['inspectToolPolicy']>,
+    refreshToolPolicy: (revision) => call(scope, 'agentProfileService', 'refreshToolPolicy', [revision]) as ReturnType<AgentFacade['refreshToolPolicy']>,
+    isToolEnabled: (name, source) => call(scope, 'agentToolPolicyService', 'isToolActive', [name, source]) as Promise<boolean>,
     getPermission: () => call(scope, 'agentPermissionModeService', 'mode', []) as Promise<PermissionMode>,
     setPermission: (mode, options) =>
       call(scope, 'agentPermissionModeService', options?.broadcast === false ? 'setMode' : 'setModeAndBroadcast', [mode]) as Promise<void>,

@@ -194,7 +194,23 @@ export const agentShellCommandContract = {
   cancel: { input: z.tuple([z.string()]), output: noResult },
 } satisfies ServiceContract;
 
+export const profileToolPolicyStatusSchema = z.object({
+  definitionId: z.string().optional(),
+  source: z.enum(['declared', 'inherited-default', 'builtin-default']).optional(),
+  activeTools: z.array(z.string()).readonly().optional(),
+  currentTools: z.array(z.string()).readonly().optional(),
+  revision: z.string().optional(),
+  canRefresh: z.boolean(),
+  reason: z.enum(['main_only', 'binding_restricted', 'source_changed', 'source_unavailable']).optional(),
+});
+
+export const agentToolPolicyContract = {
+  isToolActive: { input: z.tuple([z.string(), z.enum(['builtin', 'user', 'mcp', 'plugin']).optional()]), output: z.boolean() },
+} satisfies ServiceContract;
+
 export const agentProfileContract = {
+  inspectToolPolicy: { input: z.tuple([]), output: profileToolPolicyStatusSchema },
+  refreshToolPolicy: { input: z.tuple([z.string().min(1)]), output: profileToolPolicyStatusSchema },
   getModel: { input: z.tuple([]), output: z.string() },
   setModel: { input: z.tuple([z.string()]), output: setModelResultSchema },
   setEffort: { input: z.tuple([z.string()]), output: setEffortResultSchema },

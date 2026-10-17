@@ -3555,7 +3555,7 @@ export interface AgentStateSnapshot {
     hash: string;
   } | undefined;
   // src/agent/profile/profileOps.ts
-  // replayable · durable — folds: ProfileBind, ConfigUpdate, AgentModelSwitch
+  // replayable · durable — folds: ProfileBind, ConfigUpdate, ToolsSetActiveTools, ToolsResetActiveTools, ToolsPolicyRefreshed, AgentModelSwitch
   'profile': /* ProfileModelState — packages/agent-core-v2/src/agent/profile/profileOps.ts */ {
     readonly driver?: 'external';
     readonly toolOverride?: /* ToolBindingOverride — packages/agent-core-v2/src/agent/profile/profile.ts */ {
@@ -4013,6 +4013,7 @@ export interface AgentStateSnapshot {
             readonly mergeStderr?: boolean;
             readonly timeout?: number;
             readonly ownedProcessTree?: boolean;
+            readonly ownedProcessLifetime?: 'process' | 'owner';
           }) => Promise</* IHostProcess — packages/agent-core-v2/src/os/interface/hostProcess.ts */ {
             readonly _serviceBrand: undefined;
             readonly pid: number;
@@ -4378,6 +4379,7 @@ export interface AgentStateSnapshot {
       readonly permissionMode?: 'manual' | 'auto' | 'review' | 'yolo';
       readonly main?: boolean;
       readonly tools?: readonly string[];
+      readonly toolsSource?: 'declared' | 'inherited-default' | 'builtin-default';
       readonly toolAllowPolicies?: readonly (readonly string[])[];
       readonly disallowedTools?: readonly string[];
       readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'memory' | 'board' | 'cron' | 'history' | 'task' | 'fsRead' | 'fsWrite' | 'goal' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
@@ -6977,7 +6979,7 @@ export interface AgentStateSnapshot {
     };
     readonly toolAllowPolicies?: readonly (readonly string[])[];
   };
-  // replayable · durable — folds: ToolsSetActiveTools, ToolsResetActiveTools, ProfileBind
+  // replayable · durable — folds: ToolsSetActiveTools, ToolsResetActiveTools, ToolsPolicyRefreshed, ProfileBind
   'profile.activeTools': /* ActiveToolsState — packages/agent-core-v2/src/agent/profile/profileOps.ts */ readonly string[] | undefined;
   // src/agent/profile/profileService.ts
   'profile.activeToolNamesOverlay': readonly string[] | undefined;

@@ -70,6 +70,16 @@ export interface ToolBindingOverride {
   readonly disallowedTools?: readonly string[];
 }
 
+export interface ProfileToolPolicyStatus {
+  readonly definitionId?: string;
+  readonly source?: AgentProfile['toolsSource'];
+  readonly activeTools?: readonly string[];
+  readonly currentTools?: readonly string[];
+  readonly revision?: string;
+  readonly canRefresh: boolean;
+  readonly reason?: 'main_only' | 'binding_restricted' | 'source_changed' | 'source_unavailable';
+}
+
 export interface ProfileToolPolicyBase {
   readonly tools?: readonly string[];
   readonly toolAllowPolicies?: readonly (readonly string[])[];
@@ -317,6 +327,8 @@ export interface IAgentProfileService {
   syncBindingMetadata(): Promise<void>;
   publishBindingAdvisories(): void;
   republishStatus(): void;
+  inspectToolPolicy(): Promise<ProfileToolPolicyStatus>;
+  refreshToolPolicy(revision: string): Promise<ProfileToolPolicyStatus>;
   getModel(): string;
   useProfile(profile: ResolvedAgentProfile, context: SystemPromptContext): void;
   applyProfile(profile: ResolvedAgentProfile, options?: ApplyProfileOptions): Promise<void>;

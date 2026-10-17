@@ -18,6 +18,7 @@ import { useInstantSave } from './useInstantSave';
 import { BrowserConnectionCard } from './browserControl/BrowserConnectionCard';
 import { BrowserSetupWizard } from './browserControl/BrowserSetupWizard';
 import { WebBridgeReadiness } from './browserControl/WebBridgeReadiness';
+import { BrowserToolPolicy } from './browserControl/BrowserToolPolicy';
 
 export function BrowserControlSection() {
   const { t } = useI18n();
@@ -146,6 +147,7 @@ function BrowserMasterCard() {
             {t('st.browser.toolPolicyPartial')}
           </p>
         ) : null}
+        <BrowserToolPolicy enabled={isEnabled} />
 
         <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-hairline text-[12px] text-ink-soft">
           <span data-browser-allowed-total>

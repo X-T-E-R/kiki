@@ -24,7 +24,7 @@
 // cross-reducers), blobs (the folding states whose blob codec offloads inline
 // media to blob storage), owner (the source file declaring the class).
 
-// Index (88 record types)
+// Index (89 record types)
 //   agent_message.delivered            agentCollaboration.messageReceipts                                                                                                                                                   src/session/agentCollaboration/messageEvents.ts
 //   agent.model_switch                 contextMemory, contextMemory.revision, contextWindowEpoch, modelSwitch.completions, profile, tokenCounting                                                                           src/agent/modelSwitch/modelSwitchEvent.ts
 //   auto_compact.override_changed      autoCompactOverride                                                                                                                                                                  src/agent/fullCompaction/autoCompactOps.ts
@@ -99,9 +99,10 @@
 //   token_counting.measured            tokenCounting                                                                                                                                                                        src/agent/tokenCounting/tokenCountingOps.ts
 //   token_counting.rebased             tokenCounting                                                                                                                                                                        src/agent/tokenCounting/tokenCountingOps.ts
 //   token_counting.truncated           tokenCounting                                                                                                                                                                        src/agent/tokenCounting/tokenCountingOps.ts
+//   tools.policy_refreshed             profile, profile.activeTools                                                                                                                                                         src/agent/profile/profileOps.ts
 //   tools.register_user_tool           userTool                                                                                                                                                                             src/agent/userTool/userToolOps.ts
-//   tools.reset_active_tools           profile.activeTools                                                                                                                                                                  src/agent/profile/profileOps.ts
-//   tools.set_active_tools             profile.activeTools                                                                                                                                                                  src/agent/profile/profileOps.ts
+//   tools.reset_active_tools           profile, profile.activeTools                                                                                                                                                         src/agent/profile/profileOps.ts
+//   tools.set_active_tools             profile, profile.activeTools                                                                                                                                                         src/agent/profile/profileOps.ts
 //   tools.unregister_user_tool         userTool                                                                                                                                                                             src/agent/userTool/userToolOps.ts
 //   tools.update_store                 todo, todo.continuityClock                                                                                                                                                           src/session/todo/todoOps.ts
 //   tower_mode.enter                   (none)                                                                                                                                                                               src/wire/retiredTowerEvents.ts
@@ -1409,6 +1410,21 @@ interface TokenCountingTruncatedPayload {
 }
 
 /**
+ * states: profile, profile.activeTools
+ * owner: src/agent/profile/profileOps.ts
+ */
+interface ToolsPolicyRefreshedPayload {
+  _name: 'tools.policy_refreshed';
+  definitionId: string;
+  revision: string;
+  names?: string[];
+  source: 'declared' | 'inherited-default' | 'builtin-default';
+  disallowedTools: string[];
+  toolAllowPolicies: string[][];
+  disabledToolGroups: 'agent' | 'board' | 'cron' | 'fsRead' | 'fsWrite' | 'goal' | 'history' | 'memory' | 'message' | 'plan' | 'question' | 'shell' | 'skill' | 'task' | 'thread' | 'toolSelect' | 'web'[];
+}
+
+/**
  * states: userTool
  * owner: src/agent/userTool/userToolOps.ts
  * payload type: UserToolRegistration
@@ -1422,7 +1438,7 @@ interface ToolsRegisterUserToolPayload {
 }
 
 /**
- * states: profile.activeTools
+ * states: profile, profile.activeTools
  * owner: src/agent/profile/profileOps.ts
  */
 interface ToolsResetActiveToolsPayload {
@@ -1430,7 +1446,7 @@ interface ToolsResetActiveToolsPayload {
 }
 
 /**
- * states: profile.activeTools
+ * states: profile, profile.activeTools
  * owner: src/agent/profile/profileOps.ts
  */
 interface ToolsSetActiveToolsPayload {
@@ -1712,6 +1728,7 @@ interface WirePayloadMap {
   "token_counting.measured": TokenCountingMeasuredPayload;
   "token_counting.rebased": TokenCountingRebasedPayload;
   "token_counting.truncated": TokenCountingTruncatedPayload;
+  "tools.policy_refreshed": ToolsPolicyRefreshedPayload;
   "tools.register_user_tool": ToolsRegisterUserToolPayload;
   "tools.reset_active_tools": ToolsResetActiveToolsPayload;
   "tools.set_active_tools": ToolsSetActiveToolsPayload;

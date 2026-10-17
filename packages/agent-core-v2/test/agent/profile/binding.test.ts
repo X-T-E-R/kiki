@@ -61,6 +61,7 @@ import { ISessionToolPolicy } from '#/session/sessionToolPolicy/sessionToolPolic
 import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';
 import { IWireService } from '#/wire/wire';
 import { IEventBus } from '#/app/event/eventBus';
+import { IAgentLoopService } from '#/agent/loop/loop';
 import { WarningIssued } from '#/agent/profile/profileOps';
 import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
 import type { ExecutableTool, ToolExecution, ToolResult, ToolSource } from '#/tool/toolContract';
@@ -3294,6 +3295,41 @@ describe('AgentProfileService.bind', () => {
     expect(get.mock.calls.map((call) => call[0])).toEqual([{ kind: 'persona', personaId: 'reader-persona' }, { kind: 'persona_workspace', personaId: 'reader-persona', workspaceId: 'test-workspace' }]);
     expect(profile.data().personaId).toBeUndefined();
     expect(await ctx.get(IAgentMemorySnapshot).get()).toBe('');
+  });
+
+  it.each(['profile', 'dispatch'] as const)('makes browser and computer opt-in usable through %s selection and revocable on resume', async (selection) => {
+    const names = ['*', 'BrowserConnections', 'BrowserTabs', 'browser__*', 'mcp__kiki-computer__*'];
+    const original = resumeProfile({ tools: selection === 'profile' ? names : ['Read'] });
+    ctx = createTestAgent({ ...nativeResumeOptions(), autoConfigure: false, cwd: homeDir },
+      agentService(IAgentScopeContext, makeAgentScopeContext({ agentId: 'agent-tools', parentAgentId: 'main', agentScope: 'agents/agent-tools' })),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(original)), hostEnvironmentServices(homeDir, hostPathClass));
+    await ctx.get(ISessionMetadata).registerAgent('agent-tools', { type: 'sub', parentAgentId: 'main' });
+    const profile = ctx.get(IAgentProfileService);
+    await profile.bind({ profile: original.name, delegationPosition: 'sub', toolOverride: selection === 'dispatch' ? { tools: names } : undefined });
+    await ctx.rpc.setPermission({ mode: 'yolo' });
+    await ctx.get(IAgentToolActivationService).activate();
+    const registry = ctx.get(IAgentToolRegistryService);
+    expect(registry.resolve('BrowserConnections')).toBeDefined();
+    expect(registry.resolve('BrowserTabs')).toBeDefined();
+    const browser = new PolicyProbeTool('browser__codex_browser_js', 'builtin');
+    const computer = new PolicyProbeTool('mcp__kiki-computer__click', 'mcp');
+    registry.register(browser, { source: 'builtin' });
+    registry.register(Object.assign(computer, { subagentDefault: 'opt-in' as const }), { source: 'mcp' });
+    await ctx.get(IAgentLoopService).hooks.onWillBeginStep.run({ turnId: 1, step: 1, firstStepOfTurn: true, signal: new AbortController().signal });
+    for (const tool of [browser, computer]) {
+      expect(ctx.get(IAgentToolPolicyService).isToolActive(tool.name, tool.source)).toBe(true);
+      expect((await executeDirectToolCall(ctx, tool.name)).isError).not.toBe(true);
+      expect(tool.calls).toBe(1);
+    }
+    await commitResumeBinding(await profile.prepareResumeBinding({ toolOverride: { tools: [] } }));
+    await ctx.get(IAgentLoopService).hooks.onWillBeginStep.run({ turnId: 2, step: 1, firstStepOfTurn: true, signal: new AbortController().signal });
+    for (const tool of [browser, computer]) {
+      expect(ctx.get(IAgentToolPolicyService).isToolActive(tool.name, tool.source)).toBe(false);
+      const results: ToolExecutionResult[] = [];
+      for await (const result of ctx.get(IAgentToolExecutorService).execute([{ type: 'function', id: `revoked_${tool.name}`, name: tool.name, arguments: '{}' }], { signal: new AbortController().signal, turnId: 2 })) results.push(result);
+      expect(results[0]?.result).toMatchObject({ isError: true, output: `Tool "${tool.name}" is disabled by the active tool policy` });
+      expect(tool.calls).toBe(1);
+    }
   });
 
   it('replaces child tool defaults, commits resume overrides, withdraws stale tools and restores the saved layers', async () => {

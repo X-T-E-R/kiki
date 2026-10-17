@@ -1,4 +1,4 @@
-import { isToolActive, isToolExplicitlyNamed, isMcpToolName, type ToolSource } from './toolPolicy';
+import { isToolActive, isToolExplicitlyNamed, isMcpToolName, isBrowserOperationToolName, type ToolSource } from './toolPolicy';
 
 export const SUBAGENT_OPT_IN_TOOL_NAMES = [
   'AskUserQuestion', 'Cron', 'CronCreate', 'CronDelete', 'CronList',
@@ -44,7 +44,8 @@ export interface SubagentToolPolicy {
 export function subagentToolDefault(name: string, source: ToolSource = 'builtin'): SubagentToolDefault {
   if (source !== 'builtin') return 'allowed';
   if ((SUBAGENT_MAIN_ONLY_TOOL_NAMES as readonly string[]).includes(name)) return 'main-only';
-  if ((SUBAGENT_OPT_IN_TOOL_NAMES as readonly string[]).includes(name)) return 'opt-in';
+  if (name === 'BrowserConnections' || name === 'BrowserTabs' || isBrowserOperationToolName(name)
+    || (SUBAGENT_OPT_IN_TOOL_NAMES as readonly string[]).includes(name)) return 'opt-in';
   return 'allowed';
 }
 
@@ -59,7 +60,7 @@ export function isSubagentToolAllowed(
   const access = defaultAccess ?? baseAccess;
   if (access === 'allowed') return true;
   const explicitlyAllows = (tools: readonly string[] | undefined): boolean => {
-    if (source !== 'mcp') return isToolExplicitlyNamed(tools, name);
+    if (source !== 'mcp') return isToolExplicitlyNamed(tools, name, source);
     const patterns = tools?.filter(isMcpToolName);
     return patterns !== undefined && patterns.length > 0 && isToolActive({ tools: patterns }, name, source);
   };

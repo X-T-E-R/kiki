@@ -1786,9 +1786,10 @@ describe('AgentRun and dispatch parity golden', () => {
   it('passes call-layer tools and the frozen caller memory view through launch and saved-child resume', async () => {
     const { lane } = mainProfileLane();
     Object.assign(lane.handles.get('main')!.accessor.get(IAgentProfileService).data(), { memoryReadContext: { id: 'caller-reader', shared: [] } });
-    const initial = await lane.runInternal({ profile: 'solo', name: 'tool_child', tools: ['*', 'ThreadRead'], disallowed_tools: ['Bash'], prompt: 'work', description: 'Tool child', background: true });
+    const tools = ['*', 'ThreadRead', 'BrowserConnections', 'BrowserTabs', 'browser__*', 'mcp__kiki-computer__*'];
+    const initial = await lane.runInternal({ profile: 'solo', name: 'tool_child', tools, disallowed_tools: ['Bash'], prompt: 'work', description: 'Tool child', background: true });
     expect(initial.isError).not.toBe(true);
-    expect(lane.lifecycleCreate.mock.calls[0]![0]!.binding).toMatchObject({ toolOverride: { tools: ['*', 'ThreadRead'], disallowedTools: ['Bash'] }, memoryReadContext: { id: 'caller-reader', shared: [] } });
+    expect(lane.lifecycleCreate.mock.calls[0]![0]!.binding).toMatchObject({ toolOverride: { tools, disallowedTools: ['Bash'] }, memoryReadContext: { id: 'caller-reader', shared: [] } });
     await complete(lane, 0);
     const resumed = await lane.runInternal({ resume: 'tool_child', tools: [], disallowed_tools: [], prompt: 'continue', description: 'Clear call layer', background: true });
     expect(resumed.isError).not.toBe(true);

@@ -125,6 +125,77 @@ describe('AgentProfileService.applyProfile', () => {
     return { ctx, profile: ctx.get(IAgentProfileService) };
   }
 
+  it('refreshes only tools of an explicitly selected legacy main binding and preserves other state and ceilings', async () => {
+    const current = normalizeAgentProfile({ name: 'agent', definitionId: 'system-fixture', toolsSource: 'inherited-default',
+      tools: ['Read', 'BrowserConnections', 'BrowserTabs', 'browser__*'], disallowedTools: ['Write'],
+      disabledToolGroups: ['shell'], toolAllowPolicies: [['Read', 'BrowserConnections']], systemPrompt: () => 'CURRENT SOURCE' });
+    const catalog = {
+      _serviceBrand: undefined, ready: Promise.resolve(), onDidChange: Event.None as SessionAgentProfileCatalog['onDidChange'], get: () => current, getDefault: () => current,
+      list: () => [current], listRoutes: () => [], routeDiagnostics: () => [], resolveSelection: () => ({ profile: current, baseProfile: current }),
+      inspect: () => undefined, load: async () => {}, reload: async () => {},
+    } satisfies SessionAgentProfileCatalog;
+    const { profile: svc } = buildContext(sessionService(ISessionAgentProfileCatalog, catalog));
+    await svc.applyProfile(current);
+    const original = svc.data();
+    svc.applyBindingSnapshot({ ...original, toolPolicyBase: undefined, activeToolNames: ['Read'], disallowedTools: ['Bash'], toolAllowPolicies: [['Read', 'BrowserConnections', 'BrowserTabs']],
+      boundProfile: { ...original.boundProfile!, tools: ['Read'], toolsSource: undefined }, systemPrompt: 'SAVED CONTEXT' });
+    expect(svc.getActiveToolNames()).toEqual(['Read']);
+    const before = svc.data();
+    const status = await svc.inspectToolPolicy();
+    expect(status.canRefresh).toBe(true);
+    await expect(svc.refreshToolPolicy('stale')).rejects.toThrow('changed or is unavailable');
+    expect(svc.data()).toEqual(before);
+    await svc.refreshToolPolicy(status.revision!);
+    expect(svc.getActiveToolNames()).toContain('BrowserConnections');
+    expect(svc.data().disallowedTools).toEqual(['Bash', 'Write']);
+    expect(svc.data().toolAllowPolicies).toContainEqual(['Read', 'BrowserConnections']);
+    expect(svc.data().toolAllowPolicies).toContainEqual(['Read', 'BrowserConnections', 'BrowserTabs']);
+    expect(svc.data().disabledToolGroups).toEqual(['shell']);
+    const after = svc.data();
+    for (const key of ['systemPrompt', 'renderGeneration', 'modelAlias', 'thinkingLevel', 'permissionMode', 'spawnPolicy', 'dispatchDecision'] as const) {
+      expect(after[key]).toEqual(before[key]);
+    }
+  });
+
+  it('rejects a tool-only refresh when the current source changes after preview', async () => {
+    let current = normalizeAgentProfile({ name: 'agent', definitionId: 'system-fixture', toolsSource: 'inherited-default',
+      tools: ['Read', 'BrowserConnections'], systemPrompt: () => 'CURRENT SOURCE' });
+    const catalog = {
+      _serviceBrand: undefined, ready: Promise.resolve(), onDidChange: Event.None as SessionAgentProfileCatalog['onDidChange'], get: () => current, getDefault: () => current,
+      list: () => [current], listRoutes: () => [], routeDiagnostics: () => [], resolveSelection: () => ({ profile: current, baseProfile: current }),
+      inspect: () => undefined, load: async () => {}, reload: async () => {},
+    } satisfies SessionAgentProfileCatalog;
+    const { profile: svc } = buildContext(sessionService(ISessionAgentProfileCatalog, catalog));
+    await svc.applyProfile(current);
+    const status = await svc.inspectToolPolicy();
+    const before = svc.data();
+    current = { ...current, toolsSource: 'declared', tools: [] };
+    await expect(svc.refreshToolPolicy(status.revision!)).rejects.toThrow('changed or is unavailable');
+    expect(svc.data()).toEqual(before);
+    current = { ...current, definitionId: 'different-source' };
+    await expect(svc.refreshToolPolicy(status.revision!)).rejects.toThrow('changed or is unavailable');
+    expect(svc.data()).toEqual(before);
+  });
+
+  it.each([undefined, 'declared'] as const)('does not silently widen a saved %s tool source', async (source) => {
+    const { profile: svc } = buildContext();
+    await svc.applyProfile(normalizeAgentProfile({ name: 'agent', tools: ['Read'], toolsSource: source, systemPrompt: () => 'SAVED' }));
+    const snapshot = svc.data();
+    svc.applyBindingSnapshot({ ...snapshot, toolPolicyBase: undefined, boundProfile: { ...snapshot.boundProfile!, toolsSource: source } });
+    expect(svc.getActiveToolNames()).toEqual(['Read']);
+  });
+
+  it('keeps a runtime explicit empty selection instead of reverting to inherited defaults', async () => {
+    const { profile: svc } = buildContext();
+    await svc.applyProfile(normalizeAgentProfile({ name: 'agent', tools: ['Read'], systemPrompt: () => 'SAVED' }));
+    const snapshot = svc.data();
+    svc.applyBindingSnapshot({ ...snapshot, toolPolicyBase: undefined, boundProfile: { ...snapshot.boundProfile!, toolsSource: 'inherited-default' } });
+    expect(svc.getActiveToolNames()).toContain('BrowserConnections');
+    svc.update({ activeToolNames: [] });
+    expect(svc.getActiveToolNames()).toEqual([]);
+    expect(svc.data().boundProfile?.toolsSource).toBe('declared');
+  });
+
   it('keeps a fresh binding byte-stable while clock and directory snapshots change', async () => {
     const { ctx: host, profile: svc } = buildContext();
     const { IAgentStateService } = await import('#/agent/state/agentState');

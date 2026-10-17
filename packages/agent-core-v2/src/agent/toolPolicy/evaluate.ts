@@ -112,6 +112,7 @@ export function findInactiveToolPatterns(
       }
       continue;
     }
+    if (pattern === 'browser__*') continue;
     if (GLOB_MAGIC.test(pattern)) {
       issues.push({ pattern, kind: 'wildcard-not-mcp' });
       continue;

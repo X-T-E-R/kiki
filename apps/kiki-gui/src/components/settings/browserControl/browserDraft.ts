@@ -102,9 +102,9 @@ export function draftIssues(draft: BrowserDraft, takenIds: readonly string[]): B
     const executablePath = draft.executablePath.trim();
     if (profilePath !== '' && !isAbsolutePath(profilePath)) issues.profilePath = 'st.browser.pathInvalid';
     if (executablePath !== '' && !isAbsolutePath(executablePath)) issues.executablePath = 'st.browser.pathInvalid';
-  } else if (draft.endpoint.mode === 'clear' || (draft.endpoint.mode === 'set' && draft.endpoint.value.trim() === '')) {
+  } else if (draft.type === 'agent-browser-cdp' && (draft.endpoint.mode === 'clear' || (draft.endpoint.mode === 'set' && draft.endpoint.value.trim() === ''))) {
     issues.endpoint = 'st.browser.endpointRequired';
-  } else if (draft.endpoint.mode === 'keep' && draft.original?.type !== 'agent-browser-cdp') {
+  } else if (draft.type === 'agent-browser-cdp' && draft.endpoint.mode === 'keep' && draft.original?.type !== 'agent-browser-cdp') {
     issues.endpoint = 'st.browser.endpointRequired';
   }
   return issues;
@@ -122,6 +122,10 @@ export function browserConnectionInput(draft: BrowserDraft): BrowserConnectionIn
   const name = draft.name.trim();
   const driverPath = draft.driverPath.trim();
   const driver = driverPath === '' ? undefined : driverPath;
+  if (draft.type === 'codex-extension') {
+    if (draft.original?.runtimeRoot === undefined || draft.original.browserId === undefined) throw new Error('st.browser.invalid');
+    return { type: 'codex-extension', name, enabled: draft.enabled, runtimeRoot: draft.original.runtimeRoot, browserId: draft.original.browserId };
+  }
   if (draft.type === 'agent-browser-profile') {
     const profilePath = draft.profilePath.trim();
     const executablePath = draft.executablePath.trim();

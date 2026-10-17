@@ -371,7 +371,23 @@ This permits the default `fast-model` and the menu entry `review-model`, and not
 
 `allowed_models`, `deny_models` and `allowed_efforts` enforce their literal hard meaning everywhere; there is no legacy soft mode. If one of your lists was only advice, rename it to `preferred_models`, `discouraged_models` or `preferred_efforts` in every scope where it appears, and keep real boundaries as they are. A saved binding outside the hard rules is rejected on resume — pick a permitted value or revise the rule, then retry.
 
-Tool names match exactly and case-sensitively; entries starting with `mcp__` match MCP tools as globs. Three shapes match nothing and produce a warning when the profile takes effect: a wildcard outside an `mcp__` pattern (a bare `*` in `disallowedTools` disables nothing), an `mcp__` literal that is not a full `mcp__<server>__<tool>` name (`mcp__github` matches nothing — use `mcp__github__*` for the whole server), and a name no registered or built-in tool has, usually a typo such as `read` for `Read`.
+Tool names match exactly and case-sensitively; entries starting with `mcp__` match MCP tools as globs. `browser__*` is the one built-in namespace selector: it matches browser operations with valid donor names, not arbitrary built-in tools. Three shapes match nothing and produce a warning when the profile takes effect: any other wildcard outside an `mcp__` pattern (a bare `*` in `disallowedTools` disables nothing), an `mcp__` literal that is not a full `mcp__<server>__<tool>` name (`mcp__github` matches nothing — use `mcp__github__*` for the whole server), and a name no registered or built-in tool has, usually a typo such as `read` for `Read`.
+
+Main bindings with recorded inheritance from the shipped tool set follow added built-in capabilities. An authored `tools` list stays explicit, including `[]` or a list identical to the current default. Older bindings without tool-source metadata stay frozen until you explicitly apply the current profile’s tool settings in [Browser control settings](../guides/settings.md#browser-control).
+
+Browser and computer control are opt-in for subagents. Add these entries to a profile’s `tools` to keep ordinary tools and select both groups:
+
+```yaml
+tools: ["*", BrowserConnections, BrowserTabs, "browser__*", "mcp__kiki-computer__*"]
+```
+
+Use the installed computer MCP server’s actual name if it is not `kiki-computer`. For a single task, pass the same array in `AgentRun.tools` instead of editing the profile:
+
+```json
+{"profile":"general","description":"Check owned test page","prompt":"Use only the authorized localhost test page.","tools":["*","BrowserConnections","BrowserTabs","browser__*"],"background":true}
+```
+
+Add `"mcp__kiki-computer__*"` only for an authorized desktop task. The override belongs to that child binding; omitted `tools` on resume preserves it, while `tools: []` revokes all business tools and `tools: ["*"]` removes these opt-ins. Neither entry bypasses profile or ancestor denies, global/workspace/session policy, the control switches, allowed browser connections or real approval requests.
 
 The body is the agent's system prompt, rendered as a template each time the prompt is built: `${var}` placeholders substitute live context values, an unknown variable stays verbatim, a bare `$` is never special, and a variable with no value renders as an empty string. `${parent_prompt}` (alias `${base_prompt}`) embeds the implicit parent for this file: the effective default system prompt in an agent file, the built-in default inside `SYSTEM.md`, or the base profile in a route. `${builtin_prompt}` is always the built-in default, even when `SYSTEM.md` exists. If the file replaces the default prompt but should still honor instructions from enabled plugins, place `${plugin_sections}` where those belong. The full variable list is in the SYSTEM.md section below.
 

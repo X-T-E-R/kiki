@@ -9,6 +9,9 @@ tools:
   - Grep
   - Glob
   - Bash
+  - BrowserConnections
+  - BrowserTabs
+  - browser__*
   - TaskList
   - TaskOutput
   - TaskStop

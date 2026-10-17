@@ -77,6 +77,19 @@ describe('browser connection configuration', () => {
     await expect(store.setAllowed(['missing'])).rejects.toMatchObject({ code: 'browser.not_found' });
   });
 
+  it('reopens an existing CDP choice without interpreting its id as a different provider', async () => {
+    const { home, store } = await fixture();
+    await store.upsert('kimi-webbridge', { type: 'agent-browser-cdp', name: 'edge-kimi', enabled: true,
+      endpoint: { action: 'set', value: 'http://127.0.0.1:9222' } });
+    await store.setDefault('kimi-webbridge');
+    await store.setAllowed(['kimi-webbridge']);
+    const reopened = open(home);
+    expect(await reopened.resolve('kimi-webbridge')).toMatchObject({ id: 'kimi-webbridge', name: 'edge-kimi', type: 'agent-browser-cdp', endpointSecret: 'http://127.0.0.1:9222' });
+    await reopened.upsert('kimi-webbridge', { type: 'agent-browser-cdp', name: 'edge-kimi', enabled: true, endpoint: { action: 'keep' } });
+    expect(await open(home).list()).toMatchObject({ defaultBrowser: 'kimi-webbridge', allowedBrowsers: ['kimi-webbridge'],
+      connections: [{ id: 'kimi-webbridge', type: 'agent-browser-cdp', name: 'edge-kimi', endpointConfigured: true }] });
+  });
+
   it('stores CDP URL only in existing credentials and supports explicit keep/reveal/delete', async () => {
     const { home, store } = await fixture();
     const value = 'wss://user:YOUR_API_KEY@browser.example.test/devtools/private-path?token=YOUR_API_KEY';

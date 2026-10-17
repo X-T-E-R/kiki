@@ -24,6 +24,8 @@ import type { BrowserCatalogResponse, BrowserConnection, BrowserPresetId, Browse
 import { I18nProvider } from '../../i18n';
 import { DirtyGuardContext, type DirtyGuardValue } from '../dirtyGuard';
 import { BrowserControlSection } from './BrowserControlSection';
+import { writeLastSessionId } from '@kiki/session-core/settings';
+import type { AgentFacade } from '@kiki/klient';
 
 const connection = { scopeId: 'local', sshLabel: null as string | null };
 
@@ -67,6 +69,11 @@ const getConfig = vi.fn(async () => ({
 }));
 const patchConfig = vi.fn(async (patch: unknown) => patch);
 const setBrowserControlEnabled = vi.fn(async (enabled: boolean) => ({ browser_control: { enabled } }));
+const inspectToolPolicy = vi.fn<AgentFacade['inspectToolPolicy']>();
+const refreshToolPolicy = vi.fn<AgentFacade['refreshToolPolicy']>();
+const isToolEnabled = vi.fn<AgentFacade['isToolEnabled']>();
+const policyAgent = vi.fn(() => ({ inspectToolPolicy, refreshToolPolicy, isToolEnabled }));
+const policySession = vi.fn(() => ({ agent: policyAgent }));
 
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({
@@ -77,7 +84,7 @@ vi.mock('../../state/connection', () => ({
       getConfig,
       patchConfig,
       setBrowserControlEnabled,
-      klient: { rest: { browser: { list, upsert, remove, setDefault, status, check, connect, disconnect, tabs, catalog, setupPresets, setupStatus, prepare, connectPreset, openPreset, updatePreset, createShortcut, cancelSetup } } },
+      klient: { session: policySession, rest: { browser: { list, upsert, remove, setDefault, status, check, connect, disconnect, tabs, catalog, setupPresets, setupStatus, prepare, connectPreset, openPreset, updatePreset, createShortcut, cancelSetup } } },
     },
     scopeId: connection.scopeId,
     sshLabel: connection.sshLabel,
@@ -288,8 +295,10 @@ function setInput(selector: string, value: string) {
   const input = query<HTMLInputElement | HTMLTextAreaElement>(selector);
   if (input === null) throw new Error(`No element for ${selector}`);
   const prototype = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-  Object.getOwnPropertyDescriptor(prototype, 'value')?.set?.call(input, value);
-  input.dispatchEvent(new Event('input', { bubbles: true }));
+  act(() => {
+    Object.getOwnPropertyDescriptor(prototype, 'value')?.set?.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
 }
 
 /** The save button of the draft footer, which is the bar's first button. */
@@ -312,6 +321,9 @@ beforeEach(() => {
   connection.scopeId = 'local';
   connection.sshLabel = null;
   vi.resetAllMocks();
+  writeLastSessionId(undefined);
+  policyAgent.mockImplementation(() => ({ inspectToolPolicy, refreshToolPolicy, isToolEnabled }));
+  policySession.mockImplementation(() => ({ agent: policyAgent }));
   localStorage.setItem('kiki.locale', 'en');
   reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
   list.mockResolvedValue({ connections: [] });
@@ -1298,6 +1310,48 @@ describe('BrowserControlSection', () => {
     expect(query('[data-settings-draft]')?.hasAttribute('hidden')).toBe(true);
   });
 
+  it('preserves an existing CDP id, type, default and allow selection after save and returning to settings', async () => {
+    const row = cdpRow({ id: 'kimi-webbridge', name: 'edge-kimi' });
+    list.mockResolvedValue({ connections: [row], defaultBrowser: row.id, allowedBrowsers: [row.id], allowedBrowsersConfigured: true });
+    upsert.mockImplementation(async (_id, input) => {
+      Object.assign(row, { name: (input as { name: string }).name });
+      return { connection: row };
+    });
+    await render();
+    await settleUntil('[data-browser-connection="kimi-webbridge"]');
+    await click('[data-browser-connection="kimi-webbridge"]');
+    setInput('[data-browser-name-input]', 'External browser');
+    await settle();
+    await save();
+    expect(upsert).toHaveBeenCalledWith('kimi-webbridge', expect.objectContaining({ type: 'agent-browser-cdp', endpoint: { action: 'keep' } }));
+    await act(async () => { root.unmount(); });
+    queries.clear();
+    root = createRoot(container);
+    await render();
+    await settleUntil('[data-browser-connection="kimi-webbridge"]');
+    expect(query('[data-browser-connection="kimi-webbridge"]')?.textContent).toContain('External browser');
+    expect(query('[data-browser-allowed-total]')?.textContent).toContain('1 browsers currently allowed');
+    expect(setDefault).not.toHaveBeenCalled();
+    expect(patchConfig).not.toHaveBeenCalled();
+  });
+
+  it('keeps official extension bindings when editing a saved connection instead of serializing them as CDP', async () => {
+    const row = { id: 'official-browser', name: 'Official browser', enabled: true, type: 'codex-extension' as const,
+      runtimeRoot: 'C:\\example\\official-runtime', browserId: 'browser-fixture', status: browserStatus({ browser: 'official-browser' }) };
+    list.mockResolvedValue({ connections: [row] });
+    upsert.mockResolvedValue({ connection: row });
+    await render();
+    await settleUntil('[data-browser-connection="official-browser"]');
+    await click('[data-browser-connection="official-browser"]');
+    expect(query('[data-browser-official-binding]')?.textContent).toContain(row.browserId);
+    expect(query('[data-secret-field]')).toBeNull();
+    setInput('[data-browser-name-input]', 'Renamed official browser');
+    await settle();
+    await save();
+    expect(upsert).toHaveBeenCalledWith('official-browser', { type: 'codex-extension', name: 'Renamed official browser', enabled: true,
+      runtimeRoot: row.runtimeRoot, browserId: row.browserId });
+  });
+
   it('offers no visible-window switch on a borrowed browser, and stores none', async () => {
     list.mockResolvedValue({ connections: [cdpRow()] });
     upsert.mockResolvedValue({
@@ -1662,8 +1716,8 @@ describe('BrowserControlSection', () => {
         });
         return {
           ...codexWithCandidates,
-          state: 'ready',
-          reason: undefined,
+          state: 'needs_user_action',
+          reason: 'approval_unproven',
           connectionId: 'codex-browser',
           browserId: 'codex-browser-use-pipe-2',
         };
@@ -1875,6 +1929,43 @@ describe('BrowserControlSection', () => {
   });
 
   describe('Browser control master enabled switch and tool policy', () => {
+    it('shows a stale current conversation selection and applies tools only after explicit confirmation', async () => {
+      writeLastSessionId('session-fixture');
+      getConfig.mockResolvedValue({ browser_control: { enabled: true, allowedBrowsers: [], allowedBrowsersConfigured: false }, tools: {} });
+      inspectToolPolicy.mockResolvedValue({ canRefresh: true, activeTools: ['Read'], currentTools: ['Read', 'BrowserConnections', 'BrowserTabs', 'browser__*'], revision: 'source-v1' });
+      isToolEnabled.mockResolvedValue(false);
+      refreshToolPolicy.mockImplementation(async () => {
+        inspectToolPolicy.mockResolvedValue({ canRefresh: true, activeTools: ['BrowserConnections'], currentTools: ['BrowserConnections'], revision: 'source-v1' });
+        isToolEnabled.mockResolvedValue(true);
+        return { canRefresh: true };
+      });
+      await render();
+      await settleUntil('[data-browser-refresh-tool-policy]');
+      expect(container.textContent).toContain('older tool selection');
+      expect(refreshToolPolicy).not.toHaveBeenCalled();
+      await click('[data-browser-refresh-tool-policy]');
+      const confirm = document.querySelector<HTMLButtonElement>('[role="alertdialog"] [data-confirm-action="confirm"]');
+      expect(confirm).toBeDefined();
+      await act(async () => { confirm?.click(); });
+      await settle();
+      expect(refreshToolPolicy).toHaveBeenCalledWith('source-v1');
+      expect(policySession).toHaveBeenCalledWith('session-fixture');
+      expect(policyAgent).toHaveBeenCalledWith('main');
+      expect(query('[data-browser-session-tool-policy]')).toBeNull();
+    });
+
+    it('reports a current explicit restricted selection without offering automatic widening', async () => {
+      writeLastSessionId('session-fixture');
+      getConfig.mockResolvedValue({ browser_control: { enabled: true, allowedBrowsers: [], allowedBrowsersConfigured: false }, tools: {} });
+      inspectToolPolicy.mockResolvedValue({ canRefresh: true, source: 'declared', activeTools: [], currentTools: [], revision: 'source-v1' });
+      isToolEnabled.mockResolvedValue(false);
+      await render();
+      await settleUntil('[data-browser-session-tool-policy]');
+      expect(container.textContent).toContain('tool settings restrict browser control');
+      expect(query('[data-browser-refresh-tool-policy]')).toBeNull();
+      expect(refreshToolPolicy).not.toHaveBeenCalled();
+    });
+
     it('renders master enabled switch, toggles switch calling client contract, and retains connections', async () => {
       getConfig.mockResolvedValue({
         browser_control: { enabled: true, allowedBrowsers: ['work'], allowedBrowsersConfigured: true },

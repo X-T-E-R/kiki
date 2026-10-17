@@ -223,6 +223,7 @@ function BrowserRoute({ preset, active, onSelect }: {
     setFeedback(null);
     try {
       let connectionId = item.connectionId;
+      let savedPending = false;
       if (nextChecked && connectionId === undefined) {
         if (preset.preset !== 'codex-browser') {
           setFeedback({ tone: 'error', text: t('st.browser.reason.chooseConnection') });
@@ -238,7 +239,9 @@ function BrowserRoute({ preset, active, onSelect }: {
           browserId: item.browserId,
         });
         const blocked = created.reason === 'connection_conflict' || created.reason === 'connection_disabled' || created.reason === 'choose_connection';
-        const usable = (created.state === 'ready' || created.state === 'connected') && !blocked && created.connectionId !== undefined;
+        savedPending = created.state === 'needs_user_action' && created.reason === 'approval_unproven';
+        const usable = (created.state === 'ready' || created.state === 'connected' || savedPending)
+          && !blocked && created.error === undefined && created.connectionId !== undefined;
         if (!usable) {
           setFeedback({
             tone: 'error',
@@ -303,6 +306,7 @@ function BrowserRoute({ preset, active, onSelect }: {
       await queryClient.invalidateQueries({ queryKey: browserKeys.connections(scopeId) });
       await queryClient.invalidateQueries({ queryKey: browserKeys.presets(scopeId) });
       await queryClient.invalidateQueries({ queryKey: ['config', scopeId] });
+      if (savedPending) setFeedback({ tone: 'info', text: t('st.browser.route.done.savedApprovalUnproven') });
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {

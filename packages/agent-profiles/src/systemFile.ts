@@ -87,7 +87,7 @@ function loadUpgradedSystemMd(
     forceOverride: true,
   });
   const main = definition.main ?? builtinDefault.main;
-  return agentProfileFromFile(
+  const profile = agentProfileFromFile(
     {
       ...definition,
       main,
@@ -106,6 +106,7 @@ function loadUpgradedSystemMd(
     (context) => builtinDefault.renderSystemPrompt(context),
     (context) => builtinDefault.renderSystemPrompt(context),
   );
+  return { ...profile, toolsSource: Object.hasOwn(parsed.data, 'tools') ? 'declared' : 'inherited-default' };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

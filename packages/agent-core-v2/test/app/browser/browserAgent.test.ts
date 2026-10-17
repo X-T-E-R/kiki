@@ -286,7 +286,7 @@ describe('native browser agent selection, schema and local file channel', () => 
     ix.stub(IFlagService, { enabled: () => nativeBrowser });
     ix.stub(IConfigService, { onDidSectionChange: sections.event, get: <T>() => ({ allowedBrowsers: allowed, connections: Object.fromEntries(connections.map((entry) => [entry.id, entry])) }) as T });
     const denied: string[] = [];
-    ix.stub(IAgentToolPolicyService, { isToolActiveForDisclosure: (name) => isToolActive({ disallowedTools: denied }, name) });
+    ix.stub(IAgentToolPolicyService, { isToolActiveForDisclosure: (name) => isToolActive({ tools: ['browser__*'], disallowedTools: denied }, name) });
     ix.set(IAgentToolRegistryService, new SyncDescriptor(AgentToolRegistryService));
     ix.set(IEventBus, new SyncDescriptor(EventBusService));
     const readCatalog = vi.fn(async (id: string) => { expect(['alpha', 'beta']).toContain(id); return catalog; });

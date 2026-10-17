@@ -160,6 +160,25 @@ describe('progressive tool disclosure end-to-end', () => {
     await ctx.dispose();
   });
 
+  it('discloses and executes only valid browser namespace tools under the same selection', async () => {
+    registration?.dispose();
+    registration = undefined;
+    const name = 'browser__codex_browser_js';
+    const browser = new StubMcpTool(name);
+    const rejected = new StubMcpTool('browser__unrelated_admin');
+    ctx.get(IAgentToolRegistryService).register(browser, { source: 'builtin' });
+    ctx.get(IAgentToolRegistryService).register(rejected, { source: 'builtin' });
+    ctx.configure({ provider: OPENAI_PROVIDER, modelCapabilities: DISCLOSURE_CAPABILITIES, tools: ['browser__*'] });
+    ctx.mockNextResponse({ type: 'function', id: 'call-browser', name, arguments: '{}' });
+    ctx.mockNextResponse({ type: 'text', text: 'done' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'use the mock browser operation' }] });
+    await ctx.untilTurnEnd();
+    expect(browser.calls).toBe(1);
+    expect(rejected.calls).toBe(0);
+    expect(toolNames(ctx.llmCalls[0]!.tools)).toContain(name);
+    expect(toolNames(ctx.llmCalls[0]!.tools)).not.toContain(rejected.name);
+  });
+
   it('does not reannounce unchanged loadable tools on consecutive steps in one turn', async () => {
     ctx.mockNextResponse(selectToolsCall('select-alpha', [MCP_ALPHA]));
     ctx.mockNextResponse({ type: 'function', id: 'call-alpha', name: MCP_ALPHA, arguments: '{}' });

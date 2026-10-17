@@ -67,7 +67,7 @@ const NATIVE_BROWSER_FLAG_HOME = experimentalSectionForFlag(NATIVE_BROWSER_FLAG)
 const NATIVE_BROWSER_FLAG_TRIP = `/settings/${NATIVE_BROWSER_FLAG_HOME}#${experimentalCardId(NATIVE_BROWSER_FLAG_HOME)}`;
 
 function typeLabel(t: ReturnType<typeof useI18n>['t'], type: BrowserConnectionType): string {
-  return t(type === 'agent-browser-cdp' ? 'st.browser.type.cdp' : 'st.browser.type.profile');
+  return t(type === 'codex-extension' ? 'st.browser.type.codex-extension' : type === 'agent-browser-cdp' ? 'st.browser.type.cdp' : 'st.browser.type.profile');
 }
 
 /**
@@ -77,6 +77,7 @@ function typeLabel(t: ReturnType<typeof useI18n>['t'], type: BrowserConnectionTy
  * that tells two CDP connections apart.
  */
 function locationLabel(t: ReturnType<typeof useI18n>['t'], row: BrowserConnectionRow): string {
+  if (row.type === 'codex-extension') return row.browserId ?? t('st.browser.location.unknown');
   if (row.type === 'agent-browser-profile') return t('st.browser.location.server');
   return endpointHost(row.endpointDisplay) ?? t('st.browser.location.unknown');
 }
@@ -455,7 +456,9 @@ export function BrowserConnectionCard() {
             <span className={FORM_LABEL} id="browser-type-label">{t('st.browser.fieldType')}</span>
             <SettingsSelect<BrowserConnectionType> id="browser-type" variant="form"
               ariaLabel={t('st.browser.fieldType')} value={draft.type} dataAttr="data-browser-type"
-              choices={[
+              choices={draft.original?.type === 'codex-extension' ? [
+                { value: 'codex-extension', label: t('st.browser.type.codexExtensionLong'), hint: t('st.browser.type.codexExtensionHint') },
+              ] : [
                 { value: 'agent-browser-profile', label: t('st.browser.type.profileLong'), hint: t('st.browser.type.profileHint') },
                 { value: 'agent-browser-cdp', label: t('st.browser.type.cdpLong'), hint: t('st.browser.type.cdpHint') },
               ]}
@@ -469,7 +472,12 @@ export function BrowserConnectionCard() {
 
         {draft.original !== undefined && draft.original.type !== draft.type ? <Hint>{t('st.browser.typeChangeHint')}</Hint> : null}
 
-        {draft.type === 'agent-browser-profile' ? (
+        {draft.type === 'codex-extension' ? (
+          <dl className="space-y-2 text-[12px]" data-browser-official-binding>
+            <dt className={FORM_LABEL}>{t('st.browser.runtimeRoot')}</dt><dd className="break-all font-mono text-ink-soft">{draft.original?.runtimeRoot}</dd>
+            <dt className={FORM_LABEL}>{t('st.browser.browserId')}</dt><dd className="break-all font-mono text-ink-soft">{draft.original?.browserId}</dd>
+          </dl>
+        ) : draft.type === 'agent-browser-profile' ? (
           <div className="space-y-4">
             <div className="space-y-1" data-browser-headed>
               <Toggle label={t('st.browser.fieldHeaded')} checked={draft.headed}

@@ -206,6 +206,7 @@ import {
   profileKey,
   ToolsResetActiveTools,
   ToolsSetActiveTools,
+  ToolsPolicyRefreshed,
   WarningIssued,
   type ActiveToolsState,
   type ConfigUpdatePayload,
@@ -283,8 +284,15 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     return (
       this.profileState.toolOverride?.tools ??
       this.activeToolNamesOverlay ??
-      (this.states.get(profileActiveToolsKey) as ActiveToolsState)
+      this.baseActiveToolNames
     );
+  }
+
+  private get baseActiveToolNames(): ActiveToolsState {
+    const source = this.profileState.boundProfile?.toolsSource;
+    if (this.agentScope.agentId === 'main' && this.agentScope.parentAgentId === undefined
+      && (source === 'inherited-default' || source === 'builtin-default')) return this.builtinProfiles.getDefault().tools;
+    return this.states.get(profileActiveToolsKey) as ActiveToolsState;
   }
 
   private activeProfile: ResolvedAgentProfile | undefined;
@@ -2599,7 +2607,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       (normalizeRequestedThinkingEffort(lockedThinkingEffort) ?? lockedThinkingEffort.trim().toLowerCase()) !== thinking.effective;
     const routeDetached = this.routeId !== undefined && (routeModelDetached || routeEffortDetached);
     const toolPolicyBase = {
-      tools: this.states.get(profileActiveToolsKey) as ActiveToolsState,
+      tools: this.baseActiveToolNames,
       toolAllowPolicies: this.profileState.toolAllowPolicies,
       disallowedTools: this.profileState.disallowedTools,
     };
@@ -2873,6 +2881,55 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       }));
       return false;
     }
+  }
+
+  async inspectToolPolicy(): Promise<import('./profile').ProfileToolPolicyStatus> {
+    await this.catalog.ready;
+    const binding = this.profileState;
+    const activeTools = this.activeToolNames;
+    const definitionId = binding.profileDefinitionId;
+    if (this.agentScope.agentId !== 'main' || this.agentScope.parentAgentId !== undefined) {
+      return { definitionId, activeTools, canRefresh: false, reason: 'main_only' };
+    }
+    if (this.isExternalExecutor || binding.boundProfile === undefined || binding.toolOverride !== undefined
+      || binding.routeId !== undefined || binding.boundProfile.fileSources !== undefined || binding.appliedLease !== undefined) {
+      return { definitionId, activeTools, canRefresh: false, reason: 'binding_restricted' };
+    }
+    const profile = this.catalog.getDefault();
+    if (profile.definitionId === undefined || profile.toolsSource === undefined) {
+      return { definitionId, activeTools, canRefresh: false, reason: 'source_unavailable' };
+    }
+    if (profile.definitionId !== definitionId || this.catalog.sourceRejection?.(profile) !== undefined) {
+      return { definitionId, activeTools, canRefresh: false, reason: 'source_changed' };
+    }
+    const revision = createHash('sha256').update(JSON.stringify({ definitionId, source: profile.toolsSource, tools: profile.tools,
+      fileDefinition: profile.fileDefinition, sourcePath: profile.sourcePath,
+      disallowedTools: profile.disallowedTools, toolAllowPolicies: profile.toolAllowPolicies,
+      disabledToolGroups: profile.disabledToolGroups })).digest('hex');
+    return { definitionId, source: profile.toolsSource, activeTools, currentTools: profile.tools, revision, canRefresh: true };
+  }
+
+  async refreshToolPolicy(revision: string): Promise<import('./profile').ProfileToolPolicyStatus> {
+    const previous = this.profileState;
+    await this.catalog.reload();
+    const status = await this.inspectToolPolicy();
+    if (!status.canRefresh || status.revision !== revision || status.definitionId === undefined || status.source === undefined) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'The current profile tool policy changed or is unavailable. Read it again before applying.');
+    }
+    const profile = this.catalog.getDefault();
+    await this.assertProfileToolPatterns(profile);
+    if (this.profileState !== previous || this.catalog.getDefault() !== profile) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'The active binding or tool source changed. No tool policy was applied.');
+    }
+    await this.dispatcher.dispatch(new ToolsPolicyRefreshed({
+      definitionId: status.definitionId, revision, names: status.currentTools, source: status.source,
+      disallowedTools: [...new Set([...(previous.disallowedTools ?? []), ...(profile.disallowedTools ?? [])])],
+      toolAllowPolicies: [...(previous.toolAllowPolicies ?? []), ...(profile.toolAllowPolicies ?? [])],
+      disabledToolGroups: [...new Set([...(previous.disabledToolGroups ?? []), ...(profile.disabledToolGroups ?? [])])],
+    }));
+    this.activeToolNamesOverlay = undefined;
+    this.emitStatusUpdated();
+    return this.inspectToolPolicy();
   }
 
   getActiveToolNames(): readonly string[] | undefined {

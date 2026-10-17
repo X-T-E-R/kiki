@@ -179,6 +179,7 @@ export interface AgentProfile extends AgentModelParameters, AgentModelConstraint
   readonly permissionMode?: AgentPermissionMode;
   readonly main?: boolean;
   readonly tools?: readonly string[];
+  readonly toolsSource?: 'declared' | 'inherited-default' | 'builtin-default';
   readonly toolAllowPolicies?: readonly (readonly string[])[];
   readonly disallowedTools?: readonly string[];
   readonly disabledToolGroups?: readonly ToolGroupId[];
