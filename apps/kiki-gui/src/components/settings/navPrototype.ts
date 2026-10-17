@@ -9,10 +9,12 @@
  * `taskflow`: eight task-semantic groups. Leaves, routes and tabs are the
  * shipped ones; only group membership, group labels and in-group order move.
  *
- * `objects`: taskflow plus the one scheme-B merge with independent value —
- * Request identity joins the AI page as a fourth tab (provider → model →
- * defaults → identity is one outbound-request path), so its leaf leaves the
- * rail and `/settings/identity` redirects to `/settings/ai?tab=identity`.
+ * `objects`: taskflow with exactly one difference — Request identity joins
+ * the AI page as a fourth tab (provider → model → defaults → identity is one
+ * outbound-request path), so its leaf leaves the rail and
+ * `/settings/identity` redirects to `/settings/ai?tab=identity`. Every other
+ * group, label and in-group order is identical to `taskflow`, so the two
+ * candidates differ by a single variable.
  */
 
 import {
@@ -36,7 +38,8 @@ export const TASKFLOW_NAV_TREE: readonly SettingsNavNode[] = [
 
 export const OBJECTS_NAV_TREE: readonly SettingsNavNode[] = [
   { kind: 'group', id: 'device', labelKey: 'st.group.device', sections: ['general', 'appearance', 'shortcuts'] },
-  { kind: 'group', id: 'models-agents', labelKey: 'st.group.modelsAgents', sections: ['ai', 'agents', 'subagents'] },
+  { kind: 'group', id: 'models-accounts', labelKey: 'st.group.modelsAccounts', sections: ['ai'] },
+  { kind: 'group', id: 'agents', labelKey: 'st.group.agents', sections: ['agents', 'subagents'] },
   { kind: 'group', id: 'sessions-work', labelKey: 'st.group.sessionsWork', sections: ['sessions', 'workspaces', 'memory', 'tasks'] },
   { kind: 'group', id: 'rules-alerts', labelKey: 'st.group.rulesAlerts', sections: ['permissions', 'notifications', 'hooks'] },
   { kind: 'group', id: 'capabilities', labelKey: 'st.group.capabilities', sections: ['plugins', 'skills', 'mcp', 'search', 'browser-control', 'computer-control'] },

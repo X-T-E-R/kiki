@@ -17,6 +17,8 @@ import {
   SETTINGS_SEARCH_SPEC,
   buildSettingsSearchIndex,
   settingsSectionLabels,
+  type SettingsNavGroupSpec,
+  type SettingsNavNode,
 } from '@kiki/session-core/settings';
 import { I18nProvider } from '../../i18n';
 import {
@@ -101,7 +103,7 @@ describe('candidate nav trees', () => {
     expect(sectionsOf('connection-spaces')).toEqual(['connection', 'spaces', 'ssh', 'connection-services']);
   });
 
-  it('objects folds identity into the AI page and keeps the other 26 leaves', () => {
+  it('objects folds identity into the AI page and differs from taskflow by exactly that leaf', () => {
     const { placed, missing, duplicated } = navTreeCoverage(OBJECTS_NAV_TREE);
     expect(placed).toHaveLength(26);
     expect(missing).toEqual(['identity']);
@@ -109,6 +111,19 @@ describe('candidate nav trees', () => {
     expect(objectsSectionTarget('identity')).toBe('ai?tab=identity');
     expect(objectsSectionTarget('permissions')).toBeNull();
     expect(objectsSectionTarget('ai')).toBeNull();
+    // Single-variable contract: same groups in the same order as taskflow;
+    // the only structural difference is identity leaving models-accounts.
+    const groupsOf = (tree: readonly SettingsNavNode[]) =>
+      tree.filter((node): node is SettingsNavGroupSpec => node.kind === 'group');
+    expect(groupsOf(OBJECTS_NAV_TREE).map((node) => node.id))
+      .toEqual(groupsOf(TASKFLOW_NAV_TREE).map((node) => node.id));
+    for (const node of TASKFLOW_NAV_TREE) {
+      if (node.kind !== 'group' || node.id === 'models-accounts') continue;
+      const twin = OBJECTS_NAV_TREE.find((candidate) => candidate.kind === 'group' && candidate.id === node.id);
+      expect(twin).toMatchObject({ labelKey: node.labelKey, sections: node.sections });
+    }
+    const accounts = OBJECTS_NAV_TREE.find((node) => node.kind === 'group' && node.id === 'models-accounts');
+    expect(accounts?.kind === 'group' ? accounts.sections : []).toEqual(['ai']);
   });
 
   it('every shipped destination also exists in both candidates', () => {
@@ -126,7 +141,7 @@ describe('candidate nav trees', () => {
     expect(prototypeGroupForSection('permissions', TASKFLOW_NAV_TREE)?.id).toBe('rules-alerts');
     expect(prototypeGroupForSection('hooks', TASKFLOW_NAV_TREE)?.id).toBe('rules-alerts');
     expect(prototypeGroupForSection('identity', TASKFLOW_NAV_TREE)?.id).toBe('models-accounts');
-    expect(prototypeGroupForSection('identity', OBJECTS_NAV_TREE)?.id).toBe('models-agents');
+    expect(prototypeGroupForSection('identity', OBJECTS_NAV_TREE)?.id).toBe('models-accounts');
     expect(prototypeGroupForSection('about', OBJECTS_NAV_TREE)?.id).toBe('system');
   });
 
@@ -223,7 +238,7 @@ describe('SettingsNav under the experiment', () => {
     expect(active.getAttribute('aria-current')).toBe('page');
   });
 
-  it('objects drops the identity leaf and keeps the rest reachable', async () => {
+  it('objects drops the identity leaf and keeps taskflow grouping otherwise', async () => {
     writeIaPrototypeMode('objects');
     const container = await render(
       <SettingsNav active="ai" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />,
@@ -236,8 +251,11 @@ describe('SettingsNav under the experiment', () => {
     const groups = [...container.querySelectorAll('[data-settings-nav-group]')]
       .map((group) => group.getAttribute('data-settings-nav-group'));
     expect(groups).toEqual([
-      'device', 'models-agents', 'sessions-work', 'rules-alerts',
-      'capabilities', 'connection-spaces', 'system',
+      'device', 'models-accounts', 'agents', 'sessions-work',
+      'rules-alerts', 'capabilities', 'connection-spaces', 'system',
     ]);
+    const accountsLeaves = [...container.querySelectorAll('[data-settings-nav-group="models-accounts"] [data-settings-nav-leaf]')]
+      .map((leaf) => leaf.getAttribute('data-settings-nav-leaf'));
+    expect(accountsLeaves).toEqual(['ai']);
   });
 });
