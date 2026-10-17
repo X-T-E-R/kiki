@@ -155,7 +155,7 @@ export class CompactionComponent extends Container {
           : '';
       const shortcutHint =
         this.summary !== undefined && this.summary.length > 0
-          ? currentTheme.dim(` (Ctrl-O to ${this.expanded ? 'hide' : 'show'} compaction summary)`)
+          ? currentTheme.dim(` (Ctrl+O to ${this.expanded ? 'hide' : 'show'} compaction summary)`)
           : '';
       return `${bullet}${label}${detail}${shortcutHint}`;
     }

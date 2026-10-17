@@ -814,7 +814,7 @@ describe('dispatchInput /goal integration', () => {
 
     await vi.waitFor(() => {
       expect(host.showError).toHaveBeenCalledWith(
-        'Cannot /goal while streaming — press Esc or Ctrl-C first.',
+        'Cannot /goal while streaming — press Esc or Ctrl+C first.',
       );
     });
     expect(session.createGoal).not.toHaveBeenCalled();
@@ -836,7 +836,7 @@ describe('dispatchInput /goal integration', () => {
 
     await vi.waitFor(() => {
       expect(host.showError).toHaveBeenCalledWith(
-        'Cannot /goal while streaming — press Esc or Ctrl-C first.',
+        'Cannot /goal while streaming — press Esc or Ctrl+C first.',
       );
     });
     expect(session.createGoal).not.toHaveBeenCalled();
@@ -859,7 +859,7 @@ describe('dispatchInput /goal integration', () => {
 
     await vi.waitFor(() => {
       expect(host.showError).toHaveBeenCalledWith(
-        'Cannot /goal while streaming — press Esc or Ctrl-C first.',
+        'Cannot /goal while streaming — press Esc or Ctrl+C first.',
       );
     });
     expect(session.createGoal).not.toHaveBeenCalled();

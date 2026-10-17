@@ -161,7 +161,7 @@ export class TodoPanelComponent implements Component {
       }
       if (this.todos.length > MAX_VISIBLE) {
         lines.push(
-          chalk.hex(c.textDim)(`  all ${String(this.todos.length)} items · ctrl+t to collapse`),
+          chalk.hex(c.textDim)(`  all ${String(this.todos.length)} items · Ctrl+T to collapse`),
         );
       }
     } else {
@@ -173,7 +173,7 @@ export class TodoPanelComponent implements Component {
         const distribution = formatHiddenCounts(hiddenCounts);
         const suffix = distribution.length > 0 ? ` (${distribution})` : '';
         lines.push(
-          chalk.hex(c.textDim)(`  … +${hidden} more${suffix} · ctrl+t to expand`),
+          chalk.hex(c.textDim)(`  … +${hidden} more${suffix} · Ctrl+T to expand`),
         );
       }
     }

@@ -204,7 +204,7 @@ describe('handleAddDirCommand', () => {
     await handleAddDirCommand(host, '../shared');
 
     expect(host.showError).toHaveBeenCalledWith(
-      'Cannot /add-dir while streaming — press Esc or Ctrl-C first.',
+      'Cannot /add-dir while streaming — press Esc or Ctrl+C first.',
     );
     expect(getMountedPanel()).toBeNull();
     expect(session.addAdditionalDir).not.toHaveBeenCalled();

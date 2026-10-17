@@ -1977,7 +1977,7 @@ export class ToolCallComponent extends Container {
         this.addChild(
           new Text(
             currentTheme.dim(
-              `... (${String(remaining)} more lines, ${String(allLines.length)} total, ctrl+o to expand)`,
+              `... (${String(remaining)} more lines, ${String(allLines.length)} total, Ctrl+O to expand)`,
             ),
             2,
             0,

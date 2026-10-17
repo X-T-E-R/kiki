@@ -35,7 +35,7 @@ describe('ShellExecutionComponent', () => {
     expect(collapsedOutput).toContain('line1');
     expect(collapsedOutput).toContain('line3');
     expect(collapsedOutput).not.toContain('line4');
-    expect(collapsedOutput).toContain('... (2 more lines, ctrl+o to expand)');
+    expect(collapsedOutput).toContain('... (2 more lines, Ctrl+O to expand)');
 
     const expanded = new ShellExecutionComponent({
       result: {
@@ -49,7 +49,7 @@ describe('ShellExecutionComponent', () => {
     const expandedOutput = expanded.render(100).map(strip).join('\n');
     expect(expandedOutput).toContain('line4');
     expect(expandedOutput).toContain('line5');
-    expect(expandedOutput).not.toContain('ctrl+o to expand');
+    expect(expandedOutput).not.toContain('Ctrl+O to expand');
   });
 
   it('renders unbounded command preview when previewLines is undefined', () => {

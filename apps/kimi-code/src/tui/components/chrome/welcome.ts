@@ -14,7 +14,7 @@ import type { AppState } from '#/tui/types';
 import { currentTheme } from '#/tui/theme';
 
 const LOGIN_HINT = 'Run /login to get started.';
-const DISCOVERY_HINT = 'Type / for commands · /help for shortcuts · Shift-Enter for a newline';
+const DISCOVERY_HINT = 'Type / for commands · /help for shortcuts · Shift+Enter for a newline';
 const MODEL_UNSET_HINT = 'not set';
 
 export class WelcomeComponent implements Component {

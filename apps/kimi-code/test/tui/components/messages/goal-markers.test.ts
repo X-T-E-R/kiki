@@ -92,18 +92,18 @@ describe('GoalMarkerComponent', () => {
     const marker = new GoalMarkerComponent('Goal: no progress', 'still spinning', 'warning');
     const collapsed = strip(marker.render(80));
     expect(collapsed).toContain('Goal: no progress');
-    expect(collapsed).toContain('(ctrl+o)');
+    expect(collapsed).toContain('(Ctrl+O)');
     expect(collapsed).not.toContain('still spinning');
 
     marker.setExpanded(true);
     const expanded = strip(marker.render(80));
     expect(expanded).toContain('still spinning');
-    expect(expanded).not.toContain('(ctrl+o)');
+    expect(expanded).not.toContain('(Ctrl+O)');
   });
 
   it('renders a single line when there is no reason', () => {
     const marker = new GoalMarkerComponent('Goal paused', undefined, 'textDim');
     expect(marker.render(80)).toHaveLength(1);
-    expect(strip(marker.render(80))).not.toContain('(ctrl+o)');
+    expect(strip(marker.render(80))).not.toContain('(Ctrl+O)');
   });
 });

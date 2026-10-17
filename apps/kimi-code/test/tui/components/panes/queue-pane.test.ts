@@ -22,7 +22,7 @@ describe('QueuePaneComponent', () => {
 
     expect(output).toContain('❯ first message');
     expect(output).toContain('❯ /skill:review src/app.ts');
-    expect(output).toContain('ctrl-s to steer immediately');
+    expect(output).toContain('Ctrl+S to steer immediately');
   });
 
   it('renders compaction hint when waiting for compaction', () => {
@@ -49,7 +49,7 @@ describe('QueuePaneComponent', () => {
     const output = stripAnsi(component.render(120).join('\n'));
 
     expect(output).toContain('will send after current task');
-    expect(output).not.toContain('ctrl-s to steer immediately');
+    expect(output).not.toContain('Ctrl+S to steer immediately');
   });
 
   it('truncates long messages to a single line', () => {
@@ -104,7 +104,7 @@ describe('QueuePaneComponent', () => {
     });
 
     const output = stripAnsi(component.render(120).join('\n'));
-    expect(output).not.toContain('ctrl-s to steer immediately');
+    expect(output).not.toContain('Ctrl+S to steer immediately');
     expect(output).toContain('will send after current task');
   });
 
@@ -117,6 +117,6 @@ describe('QueuePaneComponent', () => {
     });
 
     const output = stripAnsi(component.render(120).join('\n'));
-    expect(output).toContain('ctrl-s to steer immediately');
+    expect(output).toContain('Ctrl+S to steer immediately');
   });
 });

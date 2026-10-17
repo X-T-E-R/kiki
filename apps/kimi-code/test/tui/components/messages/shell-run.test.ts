@@ -90,7 +90,7 @@ describe('ShellRunComponent finished collapse', () => {
     const c = create();
     c.finish(rows(30), '', false);
     const rendered = stripTheme(c.render(80).join('\n'));
-    expect(rendered).toContain('... (20 more lines, ctrl+o to expand)');
+    expect(rendered).toContain('... (20 more lines, Ctrl+O to expand)');
     expect(rendered).toContain('row-01');
     expect(rendered).toContain('row-10');
     expect(rendered).not.toContain('row-11');
@@ -116,7 +116,7 @@ describe('ShellRunComponent finished collapse', () => {
 
     c.setExpanded(false);
     const collapsed = stripTheme(c.render(80).join('\n'));
-    expect(collapsed).toContain('... (20 more lines, ctrl+o to expand)');
+    expect(collapsed).toContain('... (20 more lines, Ctrl+O to expand)');
     expect(collapsed).not.toContain('row-11');
   });
 
@@ -128,7 +128,7 @@ describe('ShellRunComponent finished collapse', () => {
     const expanded = stripTheme(c.render(80).join('\n'));
     expect(expanded).toContain('row-01');
     expect(expanded).toContain('row-10');
-    expect(expanded).toContain('(ctrl+b to run in background)');
+    expect(expanded).toContain('(Ctrl+B to run in background)');
     expect(expanded).not.toContain('+5 lines');
 
     c.setExpanded(false);
@@ -168,7 +168,7 @@ describe('ShellRunComponent finished collapse', () => {
     const c = create();
     c.finish(rows(30), 'boom', true);
     const collapsed = stripTheme(c.render(80).join('\n'));
-    expect(collapsed).toContain('... (21 more lines, ctrl+o to expand)');
+    expect(collapsed).toContain('... (21 more lines, Ctrl+O to expand)');
 
     c.setExpanded(true);
     const expanded = stripTheme(c.render(80).join('\n'));

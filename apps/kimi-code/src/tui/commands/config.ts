@@ -460,7 +460,7 @@ async function performModelSwitch(
     session = host.session;
   }
   if (host.state.appState.streamingPhase !== 'idle') {
-    host.showError('Cannot switch models while streaming — press Esc or Ctrl-C first.');
+    host.showError('Cannot switch models while streaming — press Esc or Ctrl+C first.');
     return;
   }
 

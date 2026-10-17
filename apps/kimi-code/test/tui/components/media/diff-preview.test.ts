@@ -152,7 +152,7 @@ describe('renderDiffLinesClustered', () => {
     expect(text).toContain('+100');
     expect(text).toContain('-100');
     expect(text).toMatch(/old\d+|new\d+/);
-    expect(text).toContain('ctrl+o to expand');
+    expect(text).toContain('Ctrl+O to expand');
   });
 
   it('respects oldStart and newStart for line numbers', () => {
@@ -186,7 +186,7 @@ describe('renderDiffLinesClustered', () => {
     );
     expect(text).toContain('L2X');
     expect(text).toMatch(/more change/);
-    expect(text).toContain('ctrl+o to expand');
+    expect(text).toContain('Ctrl+O to expand');
     expect(text).not.toContain('L41X');
   });
 });

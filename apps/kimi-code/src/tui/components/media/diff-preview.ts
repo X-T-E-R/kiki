@@ -143,7 +143,7 @@ export function renderDiffLines(
   if (hidden > 0) {
     output.push(
       s.meta(
-        `     … ${String(hidden)} more change${hidden > 1 ? 's' : ''} hidden (ctrl+o to expand)`,
+        `     … ${String(hidden)} more change${hidden > 1 ? 's' : ''} hidden (Ctrl+O to expand)`,
       ),
     );
   }
@@ -227,7 +227,7 @@ function formatDiffRow(line: DiffLine, s: DiffStyles): string {
  * Render a diff with surrounding context, eliding unchanged middle
  * regions between change clusters with a `… N unchanged lines …`
  * separator. When `maxLines` is set, the body is capped at a cluster
- * boundary and a `ctrl+o to expand` footer is appended.
+ * boundary and a `Ctrl+O to expand` footer is appended.
  *
  * Used by Edit's call preview where we want to show *what changed*
  * with enough context to read the change, but not the whole file.
@@ -304,7 +304,7 @@ export function renderDiffLinesClustered(
   if (truncated) {
     const hidden = changedCount - shownChanges;
     if (hidden > 0) {
-      const hint = opts.expandKeyHint ?? 'ctrl+o';
+      const hint = opts.expandKeyHint ?? 'Ctrl+O';
       output.push(
         s.meta(
           `     … ${String(hidden)} more change${hidden > 1 ? 's' : ''} hidden (${hint} to expand)`,

@@ -31,9 +31,9 @@ describe('HelpPanelComponent', () => {
     const out = strip(panel.render(80).join('\n'));
     expect(out).toMatch(/help/);
     expect(out).toMatch(/Keyboard shortcuts/);
-    expect(out).toMatch(/Shift-Tab/);
-    expect(out).toMatch(/Ctrl-O/);
-    expect(out).toMatch(/Shift-Enter \/ Ctrl-J/);
+    expect(out).toMatch(/Shift\+Tab/);
+    expect(out).toMatch(/Ctrl\+O/);
+    expect(out).toMatch(/Shift\+Enter \/ Ctrl\+J/);
     expect(out).toMatch(/Slash commands/);
     expect(out).toMatch(/\/exit \(\/quit, \/q\)/);
     expect(out).toMatch(/Exit/);

@@ -139,14 +139,14 @@ describe('ToolCallComponent', () => {
     expect(collapsed).toContain('line2');
     expect(collapsed).toContain('line3');
     expect(collapsed).not.toContain('line4');
-    expect(collapsed).toContain('... (2 more lines, ctrl+o to expand)');
+    expect(collapsed).toContain('... (2 more lines, Ctrl+O to expand)');
 
     component.setExpanded(true);
 
     const expanded = strip(component.render(100).join('\n'));
     expect(expanded).toContain('line4');
     expect(expanded).toContain('line5');
-    expect(expanded).not.toContain('ctrl+o to expand');
+    expect(expanded).not.toContain('Ctrl+O to expand');
   });
 
   it('renders live Bash output while the command is running', () => {
@@ -1304,7 +1304,7 @@ describe('ToolCallComponent', () => {
     expect(out).toContain('bash-line-9');
     expect(out).not.toContain('bash-line-7');
     // No ctrl+o promise for the subagent window.
-    expect(out).not.toContain('ctrl+o');
+    expect(out).not.toContain('Ctrl+O');
 
     // The global ctrl+o expand toggle must NOT expand the window.
     component.setExpanded(true);
@@ -1356,7 +1356,7 @@ describe('ToolCallComponent', () => {
     expect(out).toContain('mcp-line-3');
     expect(out).toContain('mcp-line-4');
     expect(out).not.toContain('mcp-line-2');
-    expect(out).not.toContain('ctrl+o');
+    expect(out).not.toContain('Ctrl+O');
   });
 
   it('renders failed single subagents with the dedicated header and error text', () => {
@@ -1655,7 +1655,7 @@ describe('ToolCallComponent', () => {
     // Line numbers should reflect actual file positions.
     expect(out).toContain('  21');
     expect(out).toContain('  30');
-    expect(out).not.toContain('ctrl+o to expand');
+    expect(out).not.toContain('Ctrl+O to expand');
   });
 
   it('switches a streaming tool call to Truncated when the step ended with max_tokens', () => {
@@ -1720,7 +1720,7 @@ describe('ToolCallComponent', () => {
     expect(out).not.toContain('old20');
     expect(out).not.toContain('new20');
     expect(out).not.toMatch(/^\s*\d+\s+[+-]\s/m);
-    expect(out).not.toContain('ctrl+o to expand');
+    expect(out).not.toContain('Ctrl+O to expand');
   });
 
   it('caps the Write preview between finalized args and result to keep transcript height stable', () => {
@@ -1748,7 +1748,7 @@ describe('ToolCallComponent', () => {
     expect(out).toContain('line10');
     expect(out).not.toContain('line11');
     expect(out).not.toContain('line25');
-    expect(out).toContain('ctrl+o to expand');
+    expect(out).toContain('Ctrl+O to expand');
   });
 
   it('snaps a long Write preview to the collapsed cap when the result arrives', () => {
@@ -1775,7 +1775,7 @@ describe('ToolCallComponent', () => {
     const after = strip(component.render(100).join('\n'));
     expect(after).toContain('line1');
     expect(after).not.toContain('line25');
-    expect(after).toContain('ctrl+o to expand');
+    expect(after).toContain('Ctrl+O to expand');
   });
 
   it('refreshes the header when file_path arrives in a later streaming delta', () => {
@@ -1922,14 +1922,14 @@ describe('ToolCallComponent', () => {
     expect(collapsed).toContain('line1');
     expect(collapsed).toContain('line10');
     expect(collapsed).not.toContain('line25');
-    expect(collapsed).toContain('ctrl+o to expand');
+    expect(collapsed).toContain('Ctrl+O to expand');
 
     component.setExpanded(true);
 
     const expanded = strip(component.render(100).join('\n'));
     expect(expanded).toContain('line25');
     expect(expanded).toContain('line30');
-    expect(expanded).not.toContain('ctrl+o to expand');
+    expect(expanded).not.toContain('Ctrl+O to expand');
   });
 
   it('renders unknown Write file extensions as plain text without stderr noise', () => {

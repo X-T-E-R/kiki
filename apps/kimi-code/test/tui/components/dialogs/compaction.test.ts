@@ -50,7 +50,7 @@ describe('CompactionComponent', () => {
 
       expect(text).toContain('Compaction complete');
       expect(text).not.toContain('Tip:');
-      expect(text).not.toContain('Ctrl-O');
+      expect(text).not.toContain('Ctrl+O');
     } finally {
       component.dispose();
     }
@@ -80,14 +80,14 @@ describe('CompactionComponent', () => {
 
       expect(collapsed).toContain('Compaction complete');
       expect(collapsed).toContain('120 → 24 tokens');
-      expect(collapsed).toContain('Ctrl-O to show compaction summary');
+      expect(collapsed).toContain('Ctrl+O to show compaction summary');
       expect(collapsed).not.toContain('Keep the src/tui compaction notes.');
 
       component.setExpanded(true);
       const expanded = component.render(120).map(strip).join('\n');
 
       expect(expanded).toContain('Compaction complete');
-      expect(expanded).toContain('Ctrl-O to hide compaction summary');
+      expect(expanded).toContain('Ctrl+O to hide compaction summary');
       expect(expanded).toContain('Keep the src/tui compaction notes.');
     } finally {
       component.dispose();
@@ -104,8 +104,8 @@ describe('CompactionComponent', () => {
       const text = component.render(120).map(strip).join('\n');
 
       expect(text).toContain('Compaction complete');
-      expect(text).toContain('Ctrl-O to show compaction summary');
-      expect(text).not.toContain('Ctrl-O to hide compaction summary');
+      expect(text).toContain('Ctrl+O to show compaction summary');
+      expect(text).not.toContain('Ctrl+O to hide compaction summary');
       expect(text).not.toContain('Keep the src/tui compaction notes.');
     } finally {
       component.dispose();

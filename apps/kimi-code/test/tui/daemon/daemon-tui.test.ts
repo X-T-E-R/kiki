@@ -331,7 +331,7 @@ describe('DaemonTUI commands', () => {
       '/tasks [stop|output] [task-id]', 'Browse background tasks',
       '/help (/h, /?)', 'Disabled in daemon TUI',
       'Export the session as a ZIP archive; use kiki export', 'Local docs:',
-      'type / in the input box', 'Ctrl--',
+      'type / in the input box', 'Ctrl+-',
       'Prompt steering shortcut is disabled in daemon TUI',
       'Backgrounding the active turn is disabled in daemon TUI',
     ]) expect(frames.some((frame) => frame.includes(text)), text).toBe(true);
