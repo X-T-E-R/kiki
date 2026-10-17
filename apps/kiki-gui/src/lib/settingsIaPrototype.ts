@@ -13,13 +13,13 @@
  * tab (the one scheme-B merge with independent value).
  */
 
-export const SETTINGS_IA_MODES = ['taskflow', 'objects'] as const;
+export const SETTINGS_IA_MODES = ['taskflow', 'objects', 'purpose'] as const;
 export type SettingsIaMode = (typeof SETTINGS_IA_MODES)[number];
 
 const MODE_STORAGE_KEY = 'kiki.settingsIaPrototype';
 
 export function isSettingsIaMode(value: unknown): value is SettingsIaMode {
-  return value === 'taskflow' || value === 'objects';
+  return value === 'taskflow' || value === 'objects' || value === 'purpose';
 }
 
 export function readIaPrototypeMode(storage: Pick<Storage, 'getItem'> = localStorage): SettingsIaMode | null {

@@ -20,7 +20,7 @@ import {
   iaPrototypeModeSnapshot,
   subscribeIaPrototypeMode,
 } from '../lib/settingsIaPrototype';
-import { navTreeForMode, objectsSectionTarget, prototypeGroupForSection } from './settings/navPrototype';
+import { navTreeForMode, objectsSectionTarget, prototypeGroupForSection, purposeSectionLabelKey } from './settings/navPrototype';
 import { useConnection } from '../state/connection';
 import { useDirtyGuard, useGuardedNavigate } from './dirtyGuard';
 import { AboutSection } from './settings/AboutSection';
@@ -452,7 +452,8 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   const activeGroup = active === null ? undefined
     : iaMode === null ? settingsGroupForSection(active)
     : prototypeGroupForSection(active, navTreeForMode(iaMode));
-  const activeLabelKey = active === null ? undefined : SECTIONS.find((candidate) => candidate.id === active)?.labelKey;
+  const activeLabelKey = active === null ? undefined
+    : (purposeSectionLabelKey(active, navTreeForMode(iaMode)) ?? SECTIONS.find((candidate) => candidate.id === active)?.labelKey);
   // One installed plugin's own settings page, or the installed list. The
   // section's card hash targets the list, so a bookmark to the Plugins leaf
   // lands on the list even when the query still names a plugin.

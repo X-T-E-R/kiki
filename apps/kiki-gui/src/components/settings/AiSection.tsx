@@ -14,7 +14,7 @@ import { useGuardedNavigate } from '../dirtyGuard';
 import { DefaultModelBar } from './DefaultModelBar';
 import { IdentitySection } from './IdentitySection';
 import { DefaultsTab, ModelsTab } from './ModelsSection';
-import { OBJECTS_AI_TABS } from './navPrototype';
+import { OBJECTS_AI_TABS, PURPOSE_AI_PROVIDERS_TAB_LABEL_KEY } from './navPrototype';
 import { ConnectionsTab } from './ProvidersSection';
 
 /**
@@ -81,7 +81,7 @@ export function AiSection() {
                   : 'border-transparent text-ink-soft hover:text-ink'
               }`}
             >
-              {t(aiTabLabelKey(candidate as AiSettingsTab))}
+              {t(iaMode === 'purpose' && candidate === 'providers' ? PURPOSE_AI_PROVIDERS_TAB_LABEL_KEY : aiTabLabelKey(candidate as AiSettingsTab))}
             </button>
           );
         })}

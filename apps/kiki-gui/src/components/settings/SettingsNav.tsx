@@ -18,10 +18,11 @@ import {
   iaPrototypeModeSnapshot,
   subscribeIaPrototypeMode,
   writeIaPrototypeMode,
+  type SettingsIaMode,
 } from '../../lib/settingsIaPrototype';
 import { Icon } from '../icons';
 import { useOptionalInstalledPlugins } from '../capabilities/usePlugins';
-import { navTreeForMode, prototypeGroupForSection } from './navPrototype';
+import { navTreeForMode, prototypeGroupForSection, purposeSectionLabelKey } from './navPrototype';
 import { SECTIONS, type SectionId } from './sections';
 import { SettingsSegmented } from './SettingsPrimitives';
 
@@ -170,7 +171,7 @@ export function SettingsNavTree({
   // a plugin the list would not.
   const installed = useOptionalInstalledPlugins();
   const plugins = installed.plugins;
-  const labelFor = (id: string) => SECTIONS.find((section) => section.id === id)?.labelKey;
+  const labelFor = (id: string) => purposeSectionLabelKey(id, tree) ?? SECTIONS.find((section) => section.id === id)?.labelKey;
   const activeCanonical = active !== null ? canonicalNavSection(active, activeTab) : null;
 
   const subscribeErrors = useCallback((listener: () => void) => queryClient.getQueryCache().subscribe(listener), [queryClient]);
@@ -288,11 +289,12 @@ export function SettingsNavTree({
               ariaLabel={t('st.ia.prototype')}
               dataAttr="data-ia-mode"
               value={iaMode}
-              onChange={(next) => { writeIaPrototypeMode(next === 'current' ? null : next === 'objects' ? 'objects' : 'taskflow'); }}
+              onChange={(next) => { writeIaPrototypeMode(next === 'current' ? null : next as SettingsIaMode); }}
               choices={[
                 { value: 'current', label: t('st.ia.current') },
                 { value: 'taskflow', label: t('st.ia.taskflow') },
                 { value: 'objects', label: t('st.ia.objects') },
+                { value: 'purpose', label: t('st.ia.purpose') },
               ]}
             />
           </div>

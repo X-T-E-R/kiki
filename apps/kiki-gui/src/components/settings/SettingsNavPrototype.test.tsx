@@ -29,11 +29,13 @@ import {
 } from '../../lib/settingsIaPrototype';
 import {
   OBJECTS_NAV_TREE,
+  PURPOSE_NAV_TREE,
   TASKFLOW_NAV_TREE,
   navTreeCoverage,
   navTreeForMode,
   objectsSectionTarget,
   prototypeGroupForSection,
+  purposeSectionLabelKey,
 } from './navPrototype';
 import { SettingsNav } from './SettingsNav';
 
@@ -149,6 +151,27 @@ describe('candidate nav trees', () => {
     expect(navTreeForMode(null)).toBe(SETTINGS_NAV_TREE);
     expect(navTreeForMode('taskflow')).toBe(TASKFLOW_NAV_TREE);
     expect(navTreeForMode('objects')).toBe(OBJECTS_NAV_TREE);
+    expect(navTreeForMode('purpose')).toBe(PURPOSE_NAV_TREE);
+  });
+
+  it('purpose keeps all 27 leaves exactly once in seven purpose groups, identity demoted to last', () => {
+    const { placed, missing, duplicated } = navTreeCoverage(PURPOSE_NAV_TREE);
+    expect(placed).toHaveLength(27);
+    expect(missing).toEqual([]);
+    expect(duplicated).toEqual([]);
+    expect(PURPOSE_NAV_TREE.filter((node) => node.kind === 'group').map((group) => group.id)).toEqual([
+      'device', 'models-agents', 'sessions-work', 'capabilities', 'rules', 'connection', 'advanced',
+    ]);
+    const sectionsOf = (id: string) =>
+      (PURPOSE_NAV_TREE.find((node) => node.kind === 'group' && node.id === id) as SettingsNavGroupSpecLike).sections;
+    expect(sectionsOf('models-agents')).toEqual(['ai', 'agents', 'subagents', 'identity']);
+    expect(sectionsOf('rules')).toEqual(['permissions', 'hooks']);
+    // Workspaces and spaces deliberately stay in different groups.
+    expect(sectionsOf('sessions-work')).toContain('workspaces');
+    expect(sectionsOf('connection')).toContain('spaces');
+    expect(purposeSectionLabelKey('connection', PURPOSE_NAV_TREE)).toBe('st.section.serverConnection');
+    expect(purposeSectionLabelKey('connection', TASKFLOW_NAV_TREE)).toBeUndefined();
+    expect(purposeSectionLabelKey('connection', SETTINGS_NAV_TREE)).toBeUndefined();
   });
 });
 
@@ -257,5 +280,38 @@ describe('SettingsNav under the experiment', () => {
     const accountsLeaves = [...container.querySelectorAll('[data-settings-nav-group="models-accounts"] [data-settings-nav-leaf]')]
       .map((leaf) => leaf.getAttribute('data-settings-nav-leaf'));
     expect(accountsLeaves).toEqual(['ai']);
+  });
+
+  it('purpose renders seven purpose groups with disambiguated leaf labels', async () => {
+    writeIaPrototypeMode('purpose');
+    const container = await render(
+      <SettingsNav active="connection" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />,
+    );
+    const groups = [...container.querySelectorAll('[data-settings-nav-group]')];
+    expect(groups.map((group) => group.getAttribute('data-settings-nav-group'))).toEqual([
+      'device', 'models-agents', 'sessions-work', 'capabilities', 'rules', 'connection', 'advanced',
+    ]);
+    expect(groups.map((group) => group.querySelector('p')?.textContent)).toEqual([
+      'App', 'Models & agents', 'Sessions & work', 'Capabilities', 'Permissions & rules', 'Connection & remote', 'Advanced',
+    ]);
+    const leaf = (id: string) => container.querySelector(`[data-settings-nav-leaf="${id}"]`)?.textContent;
+    expect(leaf('connection')).toBe('Server connection');
+    expect(leaf('connection-services')).toBe('Access from elsewhere');
+    expect(leaf('tasks')).toBe('Tasks & background');
+    // Untouched leaves keep the shipped label.
+    expect(leaf('permissions')).toBe('Permissions');
+    const modelsAgents = [...container.querySelectorAll('[data-settings-nav-group="models-agents"] [data-settings-nav-leaf]')]
+      .map((node) => node.getAttribute('data-settings-nav-leaf'));
+    expect(modelsAgents).toEqual(['ai', 'agents', 'subagents', 'identity']);
+    expect(container.querySelector('[data-settings-nav-leaf="connection"]')!.getAttribute('aria-current')).toBe('page');
+  });
+
+  it('purpose label overrides never leak into the shipped nav', async () => {
+    const container = await render(
+      <SettingsNav active="connection" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />,
+    );
+    expect(container.querySelector('[data-settings-nav-leaf="connection"]')?.textContent).not.toBe('Server connection');
+    expect(container.querySelector('[data-settings-nav-leaf="connection-services"]')?.textContent).not.toBe('Access from elsewhere');
+    expect(container.querySelector('[data-settings-nav-leaf="tasks"]')?.textContent).not.toBe('Tasks & background');
   });
 });
