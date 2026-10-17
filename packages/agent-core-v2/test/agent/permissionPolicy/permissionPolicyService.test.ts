@@ -191,6 +191,96 @@ describe('AgentPermissionPolicyService chain', () => {
     expect(JSON.stringify(meta)).not.toContain('"pattern"');
   });
 
+  it('projects external FetchURL subjects through the real gate without losing URL or generic rules', async () => {
+    const input = { url: 'https://DOCS.Example.test.:443/reference?q=one#part' };
+    const tool = externalToolPermission({ name: 'FetchURL', input })!;
+    const display = { kind: 'external_permission' as const, options: [], summary: 'FetchURL', detail: input };
+    const decide = () => authorizeExternalTool(externalContext(), tool, 1, 'url-read', signal, display);
+    mode = 'yolo';
+    expect(await decide()).toBe('allow');
+    for (const scope of ['user', 'turn-override', 'project'] as const) {
+      rules = [{ decision: 'allow', scope: 'user', pattern: 'FetchURL' },
+        { decision: 'deny', scope, pattern: 'FetchURL(https://docs.example.test/reference*)' }];
+      expect(await decide()).toBe('deny');
+    }
+    rules = [{ decision: 'deny', scope: 'user', pattern: 'FetchURL' },
+      { decision: 'allow', scope: 'turn-override', pattern: 'FetchURL(https://docs.example.test/**)' }];
+    expect(await decide()).toBe('deny');
+    mode = 'manual';
+    rules = [{ decision: 'ask', scope: 'user', pattern: 'FetchURL(https://docs.example.test/reference*)' }];
+    expect(await decide()).toBe('cancelled');
+    rules = [{ decision: 'allow', scope: 'user', pattern: 'FetchURL(https://docs.example.test/reference*)' }];
+    expect(await decide()).toBe('allow');
+    const inherited = externalContext(true);
+    rules = [{ decision: 'ask', scope: 'turn-override', pattern: 'FetchURL(https://docs.example.test/reference*)' }];
+    expect(await authorizeExternalTool(inherited, tool, 1, 'url-inherit-ask', signal, display)).toBe('cancelled');
+    rules = [{ decision: 'allow', scope: 'turn-override', pattern: 'FetchURL(https://docs.example.test/reference*)' }];
+    expect(await authorizeExternalTool(inherited, tool, 1, 'url-inherit-allow', signal, display)).toBe('allow');
+    rules = [];
+    expect(await authorizeExternalTool(inherited, tool, 1, 'url-inherit', signal, display)).toBe('inherit');
+  });
+
+  it('rejects malformed external FetchURL, forged URL aliases, cancellation and excluded tool names', async () => {
+    mode = 'yolo';
+    const context = externalContext();
+    const display = { kind: 'external_permission' as const, options: [], summary: 'URL read', detail: {} };
+    for (const input of [{}, { url: 'not-a-url' }, { url: 'file:///etc/passwd' }, { url: 'javascript:alert(1)' },
+      { url: 'https://user:password@example.test/' }, { url: 'https://example.test/\nother' },
+      { url: 'https://example.test/', source: { kind: 'url', url: 'https://other.example.test/' } }]) {
+      expect(externalToolPermission({ name: 'FetchURL', input })).toBeUndefined();
+      expect(await authorizeExternalTool(context, { name: 'FetchURL', input }, 1, 'bad-url', signal, display)).toBe('deny');
+    }
+    for (const value of [{ name: 'Bash', nativeName: 'read_url_content', input: { url: 'https://example.test/' } },
+      { name: 'FetchURL', nativeName: 'execute_url', input: { url: 'https://example.test/' } },
+      { name: 'FetchURL', nativeName: 'read_url_content', input: { url: 'https://example.test/', command: 'example-command' } },
+      { name: 'read_url_content', input: { Url: 'https://example.test/', Action: 'execute' } }]) expect(externalToolPermission(value)).toBeUndefined();
+    const tool = externalToolPermission({ name: 'FetchURL', input: { url: 'https://example.test/' } })!;
+    const aborted = AbortSignal.abort();
+    await expect(authorizeExternalTool(context, tool, 1, 'cancelled-url', aborted, display)).rejects.toBeDefined();
+    const restricted = { ...context, binding: { ...context.binding, toolOverride: { tools: ['FetchURL'] } } };
+    for (const name of ['unknown_url_tool', 'execute_url', 'Bash']) expect(await authorizeExternalTool(restricted,
+      { name, input: { url: 'https://example.test/' } }, 1, 'not-url-read', signal, display)).toBe('deny');
+  });
+
+  it('carries native URL reads from the adapter into the real host gate and only grants read_url', async () => {
+    mode = 'manual';
+    const { AgyBridge } = await import(new URL('../../../../../scripts/external-harness/agy-cli-acp.mjs', import.meta.url).href);
+    const bridge = new AgyBridge({ cliPath: process.execPath });
+    const cwd = process.cwd();
+    const { sessionId } = await bridge.newSession({ cwd, mcpServers: [], _meta: { 'kiki.permission': {
+      version: 1, hostGate: true, override: { mode: 'manual', source: 'runtime' }, policyIdentity: 'fixture-url', workspace: { cwd, additionalDirectories: [] } } } });
+    const session = bridge.session(sessionId);
+    session.init = { conversation_id: 'fixture-url' };
+    const base = externalContext();
+    const context = { ...base, binding: { ...base.binding, toolOverride: { tools: ['FetchURL'] } } };
+    let decisionContext = context;
+    session.active = { client: { request: async (_method: string, raw: unknown) => {
+      const request = JSON.parse(JSON.stringify(raw));
+      const tool = externalToolPermission(request._meta['kiki.tool'])!;
+      expect(tool).toMatchObject({ name: 'FetchURL', nativeName: 'read_url_content', input: { url: 'https://docs.example.test/reference' } });
+      expect(request.toolCall.rawInput).toEqual({ Url: 'https://docs.example.test/reference' });
+      const decision = await authorizeExternalTool(decisionContext, tool, 1, request.toolCall.toolCallId, signal,
+        { kind: 'external_permission', summary: request.toolCall.title, options: [], detail: request });
+      return { outcome: decision === 'cancelled' ? { outcome: 'cancelled' } : { outcome: 'selected', optionId: decision === 'allow' ? 'allow_once' : 'reject_once' } };
+    } } };
+    const input = { conversationId: 'fixture-url', stepIdx: 1, toolCall: { name: 'read_url_content', args: { Url: 'https://docs.example.test/reference' } } };
+    try {
+      expect(await bridge.requestPermission(session, input)).toMatchObject({ decision: 'allow', permissionOverrides: ['read_url(docs.example.test)'] });
+      expect(externalToolPermission({ name: 'read_url_content', input: input.toolCall.args })).toEqual({ name: 'FetchURL', nativeName: 'read_url_content', input: { url: input.toolCall.args.Url } });
+      for (const name of ['FetchURL', 'read_url_content']) {
+        rules = [{ decision: 'deny', scope: 'user', pattern: `${name}(https://docs.example.test/*)` }];
+        expect(await bridge.requestPermission(session, input)).toMatchObject({ decision: 'deny' });
+        rules = [{ decision: 'ask', scope: 'turn-override', pattern: `${name}(https://docs.example.test/*)` }];
+        expect(await bridge.requestPermission(session, input)).toMatchObject({ decision: 'deny' });
+        rules = [];
+        decisionContext = { ...context, binding: { ...context.binding, disallowedTools: [name] } };
+        expect(await bridge.requestPermission(session, input)).toMatchObject({ decision: 'deny' });
+        decisionContext = context;
+      }
+      expect(session.child).toBeUndefined();
+    } finally { session.active = undefined; await bridge.close(); }
+  });
+
   it.each(['Read', 'Write'] as const)('applies real external %s path deny to any member of a file batch under yolo', async (name) => {
     mode = 'yolo';
     const context = externalContext();

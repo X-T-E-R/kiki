@@ -30,7 +30,18 @@ export function launchArgs(session) {
   return args;
 }
 
+function readUrlTarget(args) {
+  if (!args || Object.keys(args).some(key => key !== 'Url') || typeof args.Url !== 'string' ||
+    !/^https?:\/\//iu.test(args.Url) || /[\s\\\u0000-\u001F\u007F]/u.test(args.Url)) throw new Error('AGY URL reads require one credential-free HTTP(S) Url');
+  let url;
+  try { url = new URL(args.Url); } catch { throw new Error('AGY URL reads require one credential-free HTTP(S) Url'); }
+  if (!url.hostname || url.username || url.password) throw new Error('AGY URL reads require one credential-free HTTP(S) Url');
+  if (url.hostname.endsWith('.')) url.hostname = url.hostname.slice(0, -1);
+  return url;
+}
+
 export function canonicalTool(name, args, cwd) {
+  if (name === 'read_url_content') return { name: 'FetchURL', nativeName: name, kind: 'fetch', input: { url: readUrlTarget(args).href } };
   if (name === 'manage_task' && Object.keys(args).every(key => ['Action', 'TaskId', 'Input'].includes(key)) &&
     ['TaskId', 'Input'].every(key => args[key] === undefined || typeof args[key] === 'string')) {
     if (args.Action === 'list') return { name: 'TaskList', nativeName: name, kind: 'read', input: args };
@@ -50,6 +61,7 @@ export function canonicalTool(name, args, cwd) {
 
 /** Official PreToolUse resource strings for this call only; never a cached grant. */
 export function toolPermissionResources(name, args) {
+  if (name === 'read_url_content') return [`read_url(${readUrlTarget(args).hostname})`];
   let action; let target;
   if (name === 'run_command') { action = 'command'; target = args.CommandLine; }
   else if (['write_to_file', 'replace_file_content', 'multi_replace_file_content'].includes(name)) { action = 'write_file'; target = args.TargetFile; }

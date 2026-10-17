@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { isToolActive, type ToolActivationPolicy } from '@kiki/agent-profiles/toolPolicy';
+import { canonicalFetchUrl, fetchInputSchema } from '@nb-corp/nb-search';
 import type { AgentExecutorContext } from '#/app/agentExecutor/agentExecutor';
 import { declaredExternalToolPolicy } from '#/agent/profile/toolBinding';
 import { IAgentPermissionGate } from '#/agent/permissionGate/permissionGate';
@@ -12,7 +13,7 @@ import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceCo
 import { runtimeShellPathBridge } from '#/runtime/runtimeWorkspaceView';
 import { resolveRealPathAccess } from '#/tool/path-access';
 import { matchesBashRuleSubject } from '#/tool/bash-rule-match';
-import { matchesPathRuleSubject } from '#/tool/rule-match';
+import { literalRulePattern, matchesPathRuleSubject, matchesStringRuleSubject } from '#/tool/rule-match';
 import type { RunnableToolExecution, ToolAccesses } from '#/tool/toolContract';
 import type { ToolInputDisplay } from '#/tool/toolInputDisplay';
 
@@ -27,6 +28,25 @@ function nativeTaskReadName(input: Readonly<Record<string, unknown>>): string | 
       ['TaskId', 'Input'].some((key) => input[key] !== undefined && typeof input[key] !== 'string')) return undefined;
   if (input['Action'] === 'list') return 'TaskList';
   if (input['Action'] === 'status' && typeof input['TaskId'] === 'string' && input['TaskId'].length > 0) return 'TaskOutput';
+  return undefined;
+}
+
+function fetchUrlSubject(input: Readonly<Record<string, unknown>>): string | undefined {
+  try {
+    const parsed = fetchInputSchema.safeParse(input);
+    if (!parsed.success || parsed.data.action !== 'run' || parsed.data.source.kind !== 'url') return undefined;
+    const value = parsed.data.source.url;
+    if (!/^https?:\/\//iu.test(value) || /[\s\\\u0000-\u001F\u007F]/u.test(value)) return undefined;
+    const url = canonicalFetchUrl(value);
+    return ['http:', 'https:'].includes(url.protocol) && url.hostname !== '' && url.username === '' && url.password === '' ? url.href : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function nativeReadName(name: string, input: Readonly<Record<string, unknown>>): string | undefined {
+  if (name === 'manage_task') return nativeTaskReadName(input);
+  if (name === 'read_url_content' && Object.keys(input).every((key) => key === 'url') && fetchUrlSubject(input) !== undefined) return 'FetchURL';
   return undefined;
 }
 
@@ -85,9 +105,15 @@ export function externalToolPermission(value: unknown): ExternalToolPermission |
       typeof tool['input'] !== 'object' || Array.isArray(tool['input'])) return undefined;
   const input = tool['input'] as Record<string, unknown>;
   if (tool['nativeName'] !== undefined) {
-    if (tool['nativeName'] !== 'manage_task' || tool['name'] !== nativeTaskReadName(input)) return undefined;
-    return { name: tool['name'], nativeName: 'manage_task', input };
+    if (typeof tool['nativeName'] !== 'string' || tool['name'] !== nativeReadName(tool['nativeName'], input)) return undefined;
+    return { name: tool['name'], nativeName: tool['nativeName'], input };
   }
+  if (tool['name'] === 'read_url_content') {
+    const urlInput = { url: input['Url'] };
+    if (Object.keys(input).some((key) => key !== 'Url') || fetchUrlSubject(urlInput) === undefined) return undefined;
+    return { name: 'FetchURL', nativeName: 'read_url_content', input: urlInput };
+  }
+  if (tool['name'] === 'FetchURL') return fetchUrlSubject(input) === undefined ? undefined : { name: 'FetchURL', input };
   const taskRead = tool['name'] === 'manage_task' ? nativeTaskReadName(input) : undefined;
   if (taskRead !== undefined) return { name: taskRead, nativeName: 'manage_task', input };
   const names: Readonly<Record<string, string>> = { RunCommand: 'Bash', run_command: 'Bash', view_file: 'Read',
@@ -107,8 +133,8 @@ export async function authorizeExternalTool(
   display: ToolInputDisplay,
 ): Promise<'allow' | 'deny' | 'inherit' | 'cancelled'> {
   signal.throwIfAborted();
-  if (tool.nativeName !== undefined &&
-      (tool.nativeName !== 'manage_task' || tool.name !== nativeTaskReadName(tool.input))) return 'deny';
+  if (tool.nativeName !== undefined && tool.name !== nativeReadName(tool.nativeName, tool.input)) return 'deny';
+  if (tool.name === 'FetchURL' && fetchUrlSubject(tool.input) === undefined) return 'deny';
   if (!externalPermissionHostGate(context)) return 'inherit';
   const override = externalPermissionOverride(context);
   if (override !== undefined) context.agent.accessor.get(IAgentPermissionModeService).setMode(override.mode, 'ambient');
@@ -150,6 +176,12 @@ async function resolveExternalExecution(context: AgentExecutorContext, tool: Ext
     if (typeof command !== 'string' || command.length === 0) return undefined;
     return { approvalRule: `Bash(${command})`, matchesRule: (rule, mode) => matchesBashRuleSubject(rule, command, mode),
       display, description: command, execute: unreachable };
+  }
+  if (name === 'FetchURL') {
+    const subject = fetchUrlSubject(input);
+    if (subject === undefined) return undefined;
+    return { accesses: [], approvalRule: literalRulePattern(name, subject),
+      matchesRule: (rule) => matchesStringRuleSubject(rule, subject), display, description: `Fetch: ${subject.slice(0, 100)}`, execute: unreachable };
   }
   const operation = name === 'Write' || name === 'Edit' ? 'write' : name === 'Glob' || name === 'Grep' ? 'search' : 'read';
   if (!['Read', 'ReadMediaFile', 'Write', 'Edit', 'Glob', 'Grep'].includes(name)) {

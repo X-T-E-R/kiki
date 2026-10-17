@@ -347,6 +347,46 @@ test('native task reads project exact actions without hiding the native policy i
   } finally { s.active = undefined; await b.close(); }
 });
 
+test('URL reads project only FetchURL and a host-approved read_url domain through the authenticated hook', async () => {
+  const { canonicalTool, toolPermissionResources } = await import('./agy-cli-acp.mjs');
+  const { openPermissionChannel, requestHookPermission } = await import('./agy-permission-hook.mjs');
+  const b = new AgyBridge({ cliPath: process.execPath });
+  const id = (await b.newSession({ cwd, mcpServers: [], _meta: { 'kiki.permission': {
+    version: 1, hostGate: true, override: { mode: 'yolo', source: 'runtime' }, policyIdentity: 'fixture-policy', workspace: { cwd, additionalDirectories: [] } } } })).sessionId;
+  const s = b.session(id);
+  s.init = { conversation_id: 'fixture-url' };
+  let captured; let calls = 0; let outcome = { outcome: 'selected', optionId: 'allow_once' };
+  s.active = { client: { request: async (_method, request) => { captured = request; calls++; return { outcome }; } } };
+  const channel = await openPermissionChannel(input => b.requestPermission(s, input));
+  const input = { conversationId: 'fixture-url', stepIdx: 1, toolCall: { name: 'read_url_content', args: { Url: 'https://DOCS.Example.test.:443/reference?q=one#part' } } };
+  try {
+    assert.deepEqual(await requestHookPermission(input, channel.env), {
+      decision: 'allow', reason: 'Approved by the current Kiki permission gate', permissionOverrides: ['read_url(docs.example.test)'] });
+    assert.equal(captured.toolCall.kind, 'fetch');
+    assert.deepEqual(captured.toolCall.rawInput, input.toolCall.args);
+    assert.deepEqual(captured._meta['kiki.tool'], { name: 'FetchURL', nativeName: 'read_url_content', input: { url: 'https://docs.example.test/reference?q=one#part' } });
+    for (const args of [{}, { Url: 'not-a-url' }, { Url: 'file:///etc/passwd' }, { Url: 'javascript:alert(1)' },
+      { Url: 'https://user:password@example.test/' }, { Url: 'https://example.test/\nother' },
+      { Url: 'https://example.test/', CommandLine: 'example-command' }]) {
+      assert.equal((await requestHookPermission({ ...input, toolCall: { name: 'read_url_content', args } }, channel.env)).decision, 'deny');
+    }
+    assert.equal(calls, 1);
+    assert.equal((await requestHookPermission({ ...input, conversationId: 'other' }, channel.env)).decision, 'deny');
+    assert.equal(calls, 1);
+    outcome = { outcome: 'selected', optionId: 'reject_once' };
+    assert.equal((await requestHookPermission(input, channel.env)).decision, 'deny');
+    outcome = { outcome: 'cancelled' };
+    assert.equal((await requestHookPermission(input, channel.env)).decision, 'deny');
+    outcome = { outcome: 'selected', optionId: 'kiki.vendor_default' };
+    assert.deepEqual(await requestHookPermission(input, channel.env), { decision: 'ask' });
+    for (const name of ['execute_url', 'browser_subagent', 'unknown_url_tool']) {
+      assert.deepEqual(canonicalTool(name, input.toolCall.args, cwd), { name, kind: 'other', input: input.toolCall.args });
+      assert.equal(toolPermissionResources(name, input.toolCall.args), undefined);
+    }
+    assert.deepEqual(toolPermissionResources('read_url_content', { Url: 'http://docs.example.test:8080/path' }), ['read_url(docs.example.test)']);
+  } finally { s.active = undefined; await channel.close(); await b.close(); }
+});
+
 test('new and native load acknowledge explicit permissions only after the real hook gate is ready', async () => {
   const { mkdtemp, readFile, rm, mkdir, writeFile } = await import('node:fs/promises');
   const { join } = await import('node:path');
