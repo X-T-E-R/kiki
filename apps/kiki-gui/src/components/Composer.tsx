@@ -2038,9 +2038,10 @@ export function Composer({
   // turn cannot rebind), so "send now" silently degrades to an ordinary queue
   // entry. While one is pending, name the real result where the choice is
   // made: the timing menu omits the send-now row (same omission as an unwired
-  // steer path) and the button title says the message queues and carries the
-  // switch. The working-line hint keeps teaching the key — the pending chip
-  // beside it already names the switch — and the ⌘/Ctrl+Enter path itself
+  // steer path), the button title says the message queues and carries the
+  // switch, and the working-line hint is omitted too — its "sends now"
+  // wording would promise what the key no longer does. The pending chip
+  // beside it already names the switch, and the ⌘/Ctrl+Enter path itself
   // keeps working: it queues.
   const sendNowDegrades = executionPending;
 
@@ -3448,7 +3449,7 @@ export function Composer({
                 <ComposerWorkingLine
                   lastResponseAt={working.lastResponseAt}
                   queued={working.queued}
-                  sendNowHint={text.trim() !== '' && onSendNow !== undefined && !busySendsNow && !queueEditing && !takenOver
+                  sendNowHint={text.trim() !== '' && onSendNow !== undefined && !busySendsNow && !queueEditing && !takenOver && !sendNowDegrades
                     ? t(sendShortcut === 'cmd-enter' ? 'composer.sendNowHintCmdEnter' : 'composer.sendNowHint')
                     : undefined}
                 />

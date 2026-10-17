@@ -475,8 +475,11 @@ describe('switching profile while a turn is running', () => {
       await act(async () => { document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true })); });
     };
 
-    // Ordinary busy baseline: the plain queue name and a real send-now row.
+    // Ordinary busy baseline: the plain queue name, a real send-now row, and
+    // the key-teaching hint on the working line.
     expect(sendButton()?.getAttribute('title')).toBe('Queue this prompt (Enter)');
+    expect(ui(container).querySelector('[data-composer-send-now-hint]')?.textContent)
+      .toContain('sends now');
     await openTimingMenu();
     expect(ui(container).querySelector('[data-send-timing="now"]')).not.toBeNull();
     await closeTimingMenu();
@@ -488,9 +491,11 @@ describe('switching profile while a turn is running', () => {
     await settle();
 
     // Pending switch: the button title names the consequence and the timing
-    // menu lists only the choices that exist (no send-now row). The key
+    // menu lists only the choices that exist (no send-now row). The visible
+    // hint leaves the working line rather than promise "sends now". The key
     // itself still works — into the queue, carrying the switch.
     expect(sendButton()?.getAttribute('title')).toBe('Queue this prompt (Enter) — the pending switch applies with this message');
+    expect(ui(container).querySelector('[data-composer-send-now-hint]')).toBeNull();
     await openTimingMenu();
     expect(ui(container).querySelector('[data-send-timing="now"]')).toBeNull();
     await closeTimingMenu();
@@ -520,12 +525,15 @@ describe('switching profile while a turn is running', () => {
     await click(dialogButton(container, 'Switch engine'));
     await settle();
     expect(sendButton()?.getAttribute('title')).toBe('Queue this prompt (Enter) — the pending switch applies with this message');
+    expect(ui(container).querySelector('[data-composer-send-now-hint]')).toBeNull();
 
     await click(profileTrigger(container));
     await settle();
     await click(profileRow(container, 'agent'));
     await settle();
     expect(sendButton()?.getAttribute('title')).toBe('Queue this prompt (Enter)');
+    expect(ui(container).querySelector('[data-composer-send-now-hint]')?.textContent)
+      .toContain('sends now');
   });
 });
 

@@ -4544,10 +4544,11 @@ describe('Composer send-timing menu', () => {
 describe('Composer with a pending engine/profile switch', () => {
   // A confirmed switch waits for the next message and the running turn cannot
   // rebind, so "send now" would silently queue. While one is pending the
-  // composer names the real result on the send button title and drops the
-  // send-now row from the timing menu; the working-line hint keeps its
-  // key-teaching text (the pending chip on the same row already names the
-  // switch), and neither the key nor the button change what they do.
+  // composer names the real result on the send button title, drops the
+  // send-now row from the timing menu, and omits the working-line hint whose
+  // "sends now" wording would promise what the key no longer does (the
+  // pending chip on the same row already names the switch). Neither the key
+  // nor the button change what they do.
 
   const PENDING_TITLE = 'Queue this prompt (Enter) — the pending switch applies with this message';
 
@@ -4583,15 +4584,29 @@ describe('Composer with a pending engine/profile switch', () => {
       value: 'hello', busy: true, executionPending: true, onSend, onSendNow,
       working: { lastResponseAt: undefined },
     });
-    // The hint keeps teaching the key; the pending chip beside it names the switch.
-    expect(container.querySelector('[data-composer-send-now-hint]')?.textContent)
-      .toContain('⌘/Ctrl+Enter sends now');
+    // The hint's "sends now" wording would promise what the key no longer
+    // does, so it leaves the row; the pending chip beside it names the switch.
+    expect(container.querySelector('[data-composer-send-now-hint]')).toBeNull();
 
     const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
     await pressKey(textarea, { key: 'Enter', ctrlKey: true });
     await settle();
     expect(onSendNow).toHaveBeenCalledWith('hello', []);
     expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('restores the send-now hint once the pending switch is reverted', async () => {
+    const seat = {
+      value: 'hello', busy: true, onSendNow: vi.fn(),
+      working: { lastResponseAt: undefined },
+    };
+    const { container, rerender } = await renderComposer({ ...seat, executionPending: true });
+    expect(container.querySelector('[data-composer-send-now-hint]')).toBeNull();
+
+    await rerender({ ...seat, executionPending: false });
+    await settle();
+    expect(container.querySelector('[data-composer-send-now-hint]')?.textContent)
+      .toContain('⌘/Ctrl+Enter sends now');
   });
 
   it('keeps the plain wording without a pending rebind — the naming keys on executionPending alone', async () => {
