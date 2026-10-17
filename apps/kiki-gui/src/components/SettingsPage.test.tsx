@@ -118,6 +118,9 @@ const client = {
   getWorkspaceMemorySettings: vi.fn(async (id: string) => ({ workspace_id: id, enabled: null, effective_enabled: true })),
   patchWorkspaceMemorySettings: vi.fn(async (id: string, enabled: boolean | null) => ({ workspace_id: id, enabled, effective_enabled: enabled !== false })),
   patchConfig: vi.fn(async () => ({})),
+  requestIdentity: {
+    get: vi.fn(async () => ({ profiles: [], usage: [], observations: [], tracks: [], manifest_url: null })),
+  },
 };
 
 const connectionMock = vi.hoisted(() => ({ token: '', url: 'http://127.0.0.1:8080', applyConnection: vi.fn() }));
@@ -1032,6 +1035,11 @@ describe('SettingsPage search locating', () => {
       await vi.waitFor(() => {
         expect(location()).toBe('/settings/ai?ia=objects&tab=identity#st-card-identity-usage');
         expect(container.querySelector('[data-ai-tab="identity"]')?.getAttribute('aria-selected')).toBe('true');
+      });
+      // The locate-and-flash handshake keys on the page that mounts the card;
+      // a re-homed deep link must flash exactly like a shipped one.
+      await vi.waitFor(() => {
+        expect(container.querySelector('#st-card-identity-usage')?.className).toContain('settings-card-flash');
       });
       // The card canonicalization (shipped tree: the card belongs to the
       // standalone identity leaf) and the prototype redirect (objects: that

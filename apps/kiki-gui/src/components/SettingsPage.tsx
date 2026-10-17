@@ -368,8 +368,13 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     // again when the reader comes back: the snapshot outranks the older target.
     const visit = getCurrentVisit();
     if (visit !== null && getUiSnapshot<{ scrollTop?: number }>(visit.visitId)?.scrollTop !== undefined) return;
-    setCardRequest({ cardId, section: resolution.section, locationKey: key, nonce: Date.now() });
-  }, [hash, resolution.section, key]);
+    // The request keys on the page that must mount the card. In objects mode
+    // the resolver still names the shipped leaf (identity) while the card
+    // actually mounts on its host page (ai) — the handshake must use the
+    // mapped page or the flash never fires on a re-homed deep link.
+    if (active === null) return;
+    setCardRequest({ cardId, section: active, locationKey: key, nonce: Date.now() });
+  }, [hash, active, key]);
 
   // Locating one card is a handshake, not a deadline: `/settings/<section>#
   // st-card-…` and a search hit both ask for a card id, and the page waits until
