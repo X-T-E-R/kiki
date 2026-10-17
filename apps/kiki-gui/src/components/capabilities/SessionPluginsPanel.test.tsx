@@ -1,15 +1,17 @@
 // @vitest-environment jsdom
 
 /**
- * The rail's plugin list for the session in focus. What matters here is that
- * the row names the workspace the *server* resolved, that a switch writes the
- * session scope and never the workspace, that a pending or failed save keeps
- * the reader's choice on screen instead of snapping back, that a plugin whose
- * global default is off can still be turned on locally, and that a server
- * without the capability simply contributes nothing.
+ * The session's plugin list, rendered as the plugins tab's panel. What matters
+ * here is that the row names the workspace the *server* resolved, that a
+ * switch writes the session scope and never the workspace, that a pending or
+ * failed save keeps the reader's choice on screen instead of snapping back,
+ * that a plugin whose global default is off can still be turned on locally,
+ * and that a server without the capability simply contributes nothing.
  *
- * The fixtures declare the four-level usage contract (home → global →
- * workspace → session); they are the contract under test, not a stand-in.
+ * The fold and the tab strip are the capabilities block's; this panel renders
+ * its list directly. The fixtures declare the four-level usage contract
+ * (home → global → workspace → session); they are the contract under test,
+ * not a stand-in.
  */
 
 import { act } from 'react';
@@ -21,7 +23,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PluginUsageItem, PluginUsageResponse } from '@kiki/protocol';
 
 import { I18nProvider } from '../../i18n';
-import { WorkspacePluginsSection } from './WorkspacePluginsSection';
+import { SessionPluginsPanel } from './SessionPluginsPanel';
 
 const { getUsage, setUsage } = vi.hoisted(() => ({ getUsage: vi.fn(), setUsage: vi.fn() }));
 
@@ -88,7 +90,7 @@ async function render(sessionId = 'sess-a', client = new QueryClient({ defaultOp
       <MemoryRouter>
         <QueryClientProvider client={client}>
           <I18nProvider>
-            <WorkspacePluginsSection sessionId={sessionId} />
+            <SessionPluginsPanel sessionId={sessionId} />
           </I18nProvider>
         </QueryClientProvider>
       </MemoryRouter>,
@@ -100,46 +102,32 @@ async function settle() {
   for (let i = 0; i < 6; i++) await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
 }
 
-/** Expand the chapter, unless this render already left it expanded. */
-async function open() {
-  const head = container.querySelector<HTMLButtonElement>('[data-rail-plugins] [aria-expanded]')!;
-  if (head.getAttribute('aria-expanded') === 'false') {
-    await act(async () => { head.click(); });
-    await settle();
-  }
-}
-
-describe('WorkspacePluginsSection', () => {
+describe('SessionPluginsPanel', () => {
   it('names the workspace the server resolved, not the window cwd', async () => {
     getUsage.mockResolvedValue(answer());
     await render();
     await settle();
-    await open();
     const scope = container.querySelector('[data-rail-plugins-scope]')!;
     expect(scope.textContent).toBe('本工作区 · Alpha');
     // The session resolves the workspace; no cwd or agent id rides along.
     expect(getUsage).toHaveBeenCalledWith({ session_id: 'sess-a' });
   });
 
-  it('is called Plugins and says its switches are about this conversation', async () => {
+  it('says its switches are about this conversation', async () => {
     getUsage.mockResolvedValue(answer());
     await render();
     await settle();
-    const head = container.querySelector('[data-rail-plugins] [aria-expanded]')!;
-    expect(head.textContent).toContain('插件');
-    expect(head.textContent).not.toContain('工作区插件');
-    await open();
     expect(container.querySelector('[data-rail-plugins-hint]')!.textContent).toContain('当前对话');
   });
 
-  it('stays folded until the reader opens it, and the switch still works inside', async () => {
+  it('renders the session rows in place, without a fold of its own', async () => {
     getUsage.mockResolvedValue(answer());
     await render();
     await settle();
-    // Folded by default: the rail contributes the chapter, not a wall of rows.
-    expect(container.querySelector('[data-rail-plugin="demo"]')).toBeNull();
-    await open();
+    // The fold and the tab strip belong to the capabilities block; the panel
+    // itself is the list.
     expect(container.querySelector('[data-rail-plugin="demo"]')).not.toBeNull();
+    expect(container.querySelector('[data-rail-plugins] [aria-expanded]')).toBeNull();
   });
 
   it('reads a session row from its own session override, not the workspace one', async () => {
@@ -148,7 +136,6 @@ describe('WorkspacePluginsSection', () => {
     }));
     await render();
     await settle();
-    await open();
     const row = container.querySelector<HTMLElement>('[data-rail-plugin="demo"]')!;
     expect(row.dataset['override']).toBe('on');
     expect(row.dataset['effective']).toBe('true');
@@ -167,7 +154,6 @@ describe('WorkspacePluginsSection', () => {
     }));
     await render();
     await settle();
-    await open();
     const row = container.querySelector<HTMLElement>('[data-rail-plugin="demo"]')!;
     expect(row.dataset['effective']).toBe('false');
     expect(row.querySelector<HTMLInputElement>('input[type=checkbox]')!.checked).toBe(false);
@@ -188,7 +174,6 @@ describe('WorkspacePluginsSection', () => {
     setUsage.mockResolvedValue(answer({ revision: 8, plugins: [item({ override: 'inherit', session_override: 'off', effective: false })] }));
     await render();
     await settle();
-    await open();
     expect(container.querySelector('[data-rail-plugin="demo"] [data-rail-plugin-restore]')).toBeNull();
 
     // Turning it off for this conversation is what makes restore a choice.
@@ -204,7 +189,6 @@ describe('WorkspacePluginsSection', () => {
     getUsage.mockResolvedValue(answer({ plugins: [item({ session_override: 'off', effective: false })] }));
     await render();
     await settle();
-    await open();
     const restore = container.querySelector<HTMLButtonElement>('[data-rail-plugin="demo"] [data-rail-plugin-restore]')!;
     await act(async () => { restore.click(); });
     await settle();
@@ -221,7 +205,6 @@ describe('WorkspacePluginsSection', () => {
     }));
     await render();
     await settle();
-    await open();
     const row = container.querySelector<HTMLElement>('[data-rail-plugin="demo"]')!;
     expect(row.dataset['effective']).toBe('false');
     await act(async () => { row.querySelector<HTMLInputElement>('input[type=checkbox]')!.click(); });
@@ -241,7 +224,6 @@ describe('WorkspacePluginsSection', () => {
     }));
     await render();
     await settle();
-    await open();
     expect(container.querySelector('[data-rail-plugin="a"] [data-rail-plugin-source]')!.textContent).toBe('当前对话');
     expect(container.querySelector('[data-rail-plugin="b"] [data-rail-plugin-source]')!.textContent).toBe('本工作区');
     expect(container.querySelector('[data-rail-plugin="c"] [data-rail-plugin-source]')!.textContent).toBe('全局默认');
@@ -254,7 +236,6 @@ describe('WorkspacePluginsSection', () => {
     }));
     await render();
     await settle();
-    await open();
     const row = container.querySelector('[data-rail-plugin="demo"]')!;
     expect(row.getAttribute('data-effective')).toBe('false');
     const reason = row.querySelector('[data-rail-plugin-reason="home_disabled"]')!;
@@ -270,7 +251,6 @@ describe('WorkspacePluginsSection', () => {
     getUsage.mockResolvedValue(answer({ plugins: [item({ app_service: true, session_override: 'off', effective: false })] }));
     await render();
     await settle();
-    await open();
     const row = container.querySelector('[data-rail-plugin="demo"]')!;
     const tag = row.querySelector('[data-rail-plugin-app-service]')!;
     // Named for what it is — one home-level service shared by the space's
@@ -287,7 +267,6 @@ describe('WorkspacePluginsSection', () => {
     getUsage.mockResolvedValue(answer({ plugins: [item({ session_override: 'inherit', effective: true })] }));
     await render();
     await settle();
-    await open();
     const row = container.querySelector<HTMLElement>('[data-rail-plugin="demo"]')!;
     const toggle = row.querySelector<HTMLInputElement>('input[type=checkbox]')!;
     await act(async () => { toggle.click(); });
@@ -310,7 +289,6 @@ describe('WorkspacePluginsSection', () => {
     getUsage.mockResolvedValue(answer({ plugins: [item({ session_override: 'inherit', effective: true })] }));
     await render();
     await settle();
-    await open();
     const row = container.querySelector<HTMLElement>('[data-rail-plugin="demo"]')!;
     await act(async () => { row.querySelector<HTMLInputElement>('input[type=checkbox]')!.click(); });
     await settle();
@@ -329,7 +307,6 @@ describe('WorkspacePluginsSection', () => {
     getUsage.mockResolvedValue(answer({ apply_state: 'failed', errors: ['one plugin did not apply'], plugins: [item()] }));
     await render();
     await settle();
-    await open();
     expect(container.querySelector('[data-rail-plugins-failed]')!.textContent).toContain('one plugin did not apply');
   });
 
@@ -346,7 +323,6 @@ describe('WorkspacePluginsSection', () => {
     getUsage.mockRejectedValue(new Error('network down'));
     await render();
     await settle();
-    await open();
     const line = container.querySelector('[data-rail-plugins-unavailable]')!;
     expect(line.textContent).toContain('暂时读不到当前对话的插件使用情况。');
     expect(line.querySelector('button')!.textContent).toBe('重试');
@@ -356,22 +332,7 @@ describe('WorkspacePluginsSection', () => {
     getUsage.mockResolvedValue(answer({ plugins: [] }));
     await render();
     await settle();
-    await open();
     expect(container.querySelector('[data-rail-plugins-empty]')!.textContent).toContain('还没有安装插件');
-  });
-
-  it('counts only what is actually usable here while folded', async () => {
-    getUsage.mockResolvedValue(answer({
-      plugins: [
-        item({ id: 'a', effective: true }),
-        item({ id: 'b', effective: false }),
-        item({ id: 'c', effective: false, reason: 'home_disabled' }),
-      ],
-    }));
-    await render();
-    await settle();
-    const head = container.querySelector('[data-rail-plugins] [aria-expanded]')!;
-    expect(head.textContent).toContain('此处可用 1');
   });
 });
 
@@ -385,7 +346,6 @@ describe('a save that lands after the reader moved on', () => {
     getUsage.mockResolvedValue(answer({ plugins: [item({ session_override: 'inherit', effective: true })] }));
     await render('sess-a');
     await settle();
-    await open();
     const row = container.querySelector<HTMLElement>('[data-rail-plugin="demo"]')!;
     await act(async () => { row.querySelector<HTMLInputElement>('input[type=checkbox]')!.click(); });
     await settle();
@@ -398,7 +358,6 @@ describe('a save that lands after the reader moved on', () => {
     }));
     await render('sess-b');
     await settle();
-    await open();
 
     await act(async () => { rejectA(new Error('session A is read-only')); });
     await settle();
@@ -421,7 +380,6 @@ describe('a save that lands after the reader moved on', () => {
     getUsage.mockResolvedValue(answer({ plugins: [item({ session_override: 'inherit', effective: true })] }));
     await render('sess-a');
     await settle();
-    await open();
     const row = container.querySelector<HTMLElement>('[data-rail-plugin="demo"]')!;
     await act(async () => { row.querySelector<HTMLInputElement>('input[type=checkbox]')!.click(); });
     await settle();
@@ -432,7 +390,6 @@ describe('a save that lands after the reader moved on', () => {
     }));
     await render('sess-b');
     await settle();
-    await open();
     const before = container.querySelector('[data-rail-plugin="demo"]')!.getAttribute('data-effective');
 
     await act(async () => {
@@ -468,7 +425,6 @@ describe('a save that lands after the reader moved on', () => {
     getUsage.mockResolvedValue(answer());
     await render('sess-a', client);
     await settle();
-    await open();
     await act(async () => { container.querySelector<HTMLInputElement>('[data-rail-plugin="demo"] input')!.click(); });
     await settle();
     getUsage.mockResolvedValue(answer({ target: { workspace_id: 'ws-b', name: 'Beta', root: 'C:/work/beta', session_id: 'sess-b' }, plugins: [item({ id: 'other' })] }));
@@ -500,7 +456,6 @@ describe('a save that lands after the reader moved on', () => {
     setUsage.mockResolvedValue(answer({ plugins: [item({ session_override: 'inherit', effective: true })] }));
     await render('sess-b');
     await settle();
-    await open();
     const restore = container.querySelector<HTMLButtonElement>('[data-rail-plugin="demo"] [data-rail-plugin-restore]')!;
     await act(async () => { restore.click(); });
     await settle();

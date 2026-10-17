@@ -782,11 +782,11 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
       ? capabilityCounts(mappedTools, mappedSkills, subagentTargets)
       : undefined;
     // Hover detail on the folded line; the tabs carry the counts when open.
+    // Tools count every source — MCP and plugin tools included.
     const summary = counts === undefined ? undefined : [
       `${t('inspector.cap.tools')} ${counts.toolsOn}`,
       `${t('inspector.cap.skills')} ${counts.skills}`,
       `${t('inspector.cap.subagents')} ${counts.subagents}`,
-      `${t('inspector.cap.extensions')} ${counts.extensions}`,
     ].join(' · ');
     // A failed read is one quiet line inside the card, never a banner.
     const capabilityBody = counts !== undefined ? (

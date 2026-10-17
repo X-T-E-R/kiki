@@ -1,18 +1,24 @@
 /**
  * What the agent can use, as four tabs under the profile card: Tools, Skills,
- * Subagents, Extensions. Tools and extensions are one chip per group — a
- * built-in category, one MCP server, one plugin, or the user's own tools —
- * each carrying `on/total` and the five reported states, so a full agent
- * never grows the rail by one row per tool. Skills stay chips by scope and
- * subagents stay rows. A chip only ever opens its group; the group's complete
- * member list (and the one tool inside it) is where a tool is read.
+ * Subagents, Plugins. Tools are one chip per group — a built-in category, one
+ * MCP server, one plugin, or the user's own tools, all in one cluster ordered
+ * by the reported list — each carrying `on/total` and the five reported
+ * states, so a full agent never grows the rail by one row per tool. Skills
+ * stay chips by scope and subagents stay rows. A chip only ever opens its
+ * group; the group's complete member list (and the one tool inside it) is
+ * where a tool is read.
  *
- * The two ways in are deliberately different. Hover or keyboard focus shows
- * one short preview in a floating layer anchored to the chip, so passing the
- * pointer over the cluster never moves anything on the page. A click expands
- * the group in place, directly under the chips, so the reader keeps the
- * cluster, the tab strip and the surrounding sections in view while the
- * group's membership is open below it.
+ * The plugins tab is not read here: the host injects it as a slot (`plugins`),
+ * so the session's plugin answer and its failures stay with the surface that
+ * owns the session — the rail — and a host without one (the wide panel)
+ * simply has no fourth tab.
+ *
+ * The two ways into a group are deliberately different. Hover or keyboard
+ * focus shows one short preview in a floating layer anchored to the chip, so
+ * passing the pointer over the cluster never moves anything on the page. A
+ * click expands the group in place, directly under the chips, so the reader
+ * keeps the cluster, the tab strip and the surrounding sections in view while
+ * the group's membership is open below it.
  */
 
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -44,7 +50,21 @@ import type {
 
 export { extensionOwner };
 
-export type CapabilityTab = 'tools' | 'skills' | 'subagents' | 'extensions';
+export type CapabilityTab = 'tools' | 'skills' | 'subagents' | 'plugins';
+
+/**
+ * The plugins tab, injected by the host. `available` is the session's own
+ * count — how many plugins this conversation can actually use — and stays
+ * undefined until the host's read answers, so the tab shows no number rather
+ * than a guess. `content` is the whole tab panel, states included.
+ */
+export interface CapabilityPluginsSlot {
+  readonly available?: number;
+  readonly content: ReactNode;
+}
+
+/** How the read behind the three capability tabs went; the plugins slot answers for itself. */
+export type CapabilitiesStatus = 'ready' | 'loading' | 'failed';
 
 export interface AgentCapabilitiesSectionProps {
   readonly tools: readonly AgentToolCapability[];
@@ -54,6 +74,15 @@ export interface AgentCapabilitiesSectionProps {
   /** The profile these capabilities belong to; drill-ins resolve targets through it. */
   readonly callerProfile?: string;
   readonly initialTab?: CapabilityTab;
+  /** The session's plugins, as a tab. Absent: the tab strip keeps three kinds. */
+  readonly plugins?: CapabilityPluginsSlot;
+  /**
+   * When the read behind tools/skills/subagents failed or is still in flight,
+   * those tabs say so in one quiet line each instead of claiming emptiness;
+   * the plugins tab is unaffected either way.
+   */
+  readonly capabilitiesStatus?: CapabilitiesStatus;
+  readonly onRetryCapabilities?: () => void;
 }
 
 export interface CapabilityCounts {
@@ -61,32 +90,25 @@ export interface CapabilityCounts {
   readonly tools: number;
   readonly skills: number;
   readonly subagents: number;
-  readonly extensions: number;
 }
 
-/** The numbers the collapsed profile card shows. */
+/** The numbers the collapsed profile card shows. Tools count every source, MCP and plugin tools included. */
 export function capabilityCounts(
   tools: readonly AgentToolCapability[],
   skills: readonly AgentSkillCapability[],
   subagentTargets: readonly AgentSubagentTarget[],
 ): CapabilityCounts {
   let toolsOn = 0;
-  let own = 0;
-  let extensions = 0;
+  let total = 0;
   for (const group of toolGroups(tools)) {
-    if (group.extension) {
-      extensions += 1;
-      continue;
-    }
     toolsOn += group.counts.on;
-    own += group.counts.total;
+    total += group.counts.total;
   }
   return {
     toolsOn,
-    tools: own,
+    tools: total,
     skills: skills.length,
     subagents: subagentTargets.length,
-    extensions,
   };
 }
 
@@ -139,6 +161,30 @@ function CapRow({ name, detail, trailing, muted = false, onOpen, ...data }: {
 
 function Empty({ children }: { children: ReactNode }) {
   return <p className="px-2 py-2 text-[12.5px] text-ink-faint">{children}</p>;
+}
+
+/**
+ * The capability read's own state line, inside whichever tab it belongs to:
+ * one grey sentence and a text retry, never an alert and never a fake empty
+ * list. The plugins tab answers for itself through its own slot.
+ */
+function CapabilitiesGap({ status, onRetry }: { status: 'loading' | 'failed'; onRetry?: () => void }) {
+  const { t } = useI18n();
+  return (
+    <p role="status" data-rail-capabilities-unavailable className="px-2 py-2 text-[12px] leading-relaxed text-ink-faint">
+      {status === 'loading' ? t('inspector.cap.reading') : t('rail.capabilities.unavailable')}
+      {status === 'failed' && onRetry !== undefined ? (
+        <button
+          type="button"
+          data-rail-capabilities-retry
+          onClick={onRetry}
+          className="ml-1.5 rounded font-medium text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
+        >
+          {t('common.retry')}
+        </button>
+      ) : null}
+    </p>
+  );
 }
 
 /** Rows shown per group before the rest fold into "M more". */
@@ -302,6 +348,9 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
   draftScope,
   callerProfile,
   initialTab = 'tools',
+  plugins,
+  capabilitiesStatus = 'ready',
+  onRetryCapabilities,
 }: AgentCapabilitiesSectionProps) {
   const { t, tp } = useI18n();
   const baseId = useId();
@@ -329,15 +378,8 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
   const previewId = `${baseId}-group-preview`;
 
   const groups = useMemo(() => toolGroups(tools), [tools]);
-  const split = useMemo(() => {
-    const toolTab: ToolGroup[] = [];
-    const extensionTab: ToolGroup[] = [];
-    for (const group of groups) (group.extension ? extensionTab : toolTab).push(group);
-    return { toolTab, extensionTab };
-  }, [groups]);
   const titleOf = useCallback((group: ToolGroup) => toolGroupTitle(t, group), [t]);
-  const tabGroups = tab === 'extensions' ? split.extensionTab : split.toolTab;
-  const matches = useMemo(() => matchToolGroups(tabGroups, query, titleOf), [tabGroups, query, titleOf]);
+  const matches = useMemo(() => matchToolGroups(groups, query, titleOf), [groups, query, titleOf]);
   const openGroup = openGroupKey === null ? null : groups.find((group) => group.key === openGroupKey) ?? null;
   const previewGroup = preview === null ? undefined : groups.find((group) => group.key === preview.key);
 
@@ -459,19 +501,26 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
     ] as const).filter(([, , list]) => list.length > 0);
   }, [skills, query, t]);
 
-  const toolTotal = split.toolTab.reduce((sum, group) => sum + group.counts.total, 0);
-  const tabs: { id: CapabilityTab; label: string; count: number }[] = [
-    { id: 'tools', label: t('inspector.cap.tools'), count: toolTotal },
-    { id: 'skills', label: t('inspector.cap.skills'), count: skills.length },
-    { id: 'subagents', label: t('inspector.cap.subagents'), count: subagentTargets.length },
-    { id: 'extensions', label: t('inspector.cap.extensions'), count: split.extensionTab.length },
+  const toolTotal = groups.reduce((sum, group) => sum + group.counts.total, 0);
+  const capReady = capabilitiesStatus === 'ready';
+  const tabs: { id: CapabilityTab; label: string; count: number | undefined }[] = [
+    { id: 'tools', label: t('inspector.cap.tools'), count: capReady ? toolTotal : undefined },
+    { id: 'skills', label: t('inspector.cap.skills'), count: capReady ? skills.length : undefined },
+    { id: 'subagents', label: t('inspector.cap.subagents'), count: capReady ? subagentTargets.length : undefined },
+    ...(plugins === undefined ? [] : [{ id: 'plugins' as const, label: t('inspector.cap.plugins'), count: plugins.available }]),
   ];
-  const current = tabs.find((entry) => entry.id === tab)!;
+  const current = tabs.find((entry) => entry.id === tab) ?? tabs[0]!;
+  // The host's plugin slot can leave while its tab is on screen (a refetch that
+  // answers unsupported): land back on the first tab rather than on nothing.
+  useEffect(() => {
+    if (tab === 'plugins' && plugins === undefined) setTab('tools');
+  }, [tab, plugins]);
   // The threshold follows every reported tool, not just the ones that are on:
-  // a group with fifty tools must still be searchable.
-  const searchable = tab === 'tools' || tab === 'extensions'
+  // a group with fifty tools must still be searchable. The plugins tab carries
+  // its own panel and no filter here.
+  const searchable = capReady && (tab === 'tools'
     ? tools.length > CAP_SHOWN
-    : current.count > CAP_SHOWN;
+    : tab !== 'plugins' && (current.count ?? 0) > CAP_SHOWN);
   const onTabKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
     event.preventDefault();
@@ -530,7 +579,7 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
               </button>
             </li>
           ) : null}
-          {groupsExpanded && !filtering && tabGroups.length > TOOL_GROUPS_SHOWN ? (
+          {groupsExpanded && !filtering && groups.length > TOOL_GROUPS_SHOWN ? (
             <li>
               <button
                 type="button"
@@ -555,7 +604,7 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
               group={openGroup}
               groupKey={openGroupKey}
               title={openGroup === null ? knownTitles.current.get(openGroupKey) ?? openGroupKey : titleOf(openGroup)}
-              tabLabel={(openGroup?.extension ?? (tab === 'extensions')) ? t('inspector.cap.extensions') : t('inspector.cap.tools')}
+              tabLabel={t('inspector.cap.tools')}
               inlineDetail
               onBack={closeToolGroup}
             />
@@ -599,7 +648,7 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
               type="button"
               role="tab"
               aria-selected={selected}
-              aria-controls={`${baseId}-panel`}
+              aria-controls={entry.id === 'plugins' ? `${baseId}-panel-plugins` : `${baseId}-panel`}
               tabIndex={selected ? 0 : -1}
               data-capability-tab-button={entry.id}
               onClick={() => { chooseTab(entry.id); }}
@@ -608,15 +657,18 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
               }`}
             >
               {/* The label gives way first; a count never truncates and no tab
-                  is clipped whole in the rail's narrowest column. */}
+                  is clipped whole in the rail's narrowest column. A read without
+                  an answer yet shows no number rather than a guess. */}
               <span className="min-w-0 truncate">{entry.label}</span>
-              <span className={`shrink-0 text-[11px] tabular-nums ${selected ? 'text-ink-soft' : 'text-ink-faint'}`}>{entry.count}</span>
+              {entry.count !== undefined ? (
+                <span className={`shrink-0 text-[11px] tabular-nums ${selected ? 'text-ink-soft' : 'text-ink-faint'}`}>{entry.count}</span>
+              ) : null}
             </button>
           );
         })}
       </div>
 
-      <div id={`${baseId}-panel`} role="tabpanel" aria-labelledby={`${baseId}-tab-${tab}`} className="-mx-2 mt-1.5">
+      <div id={`${baseId}-panel`} role="tabpanel" aria-labelledby={`${baseId}-tab-${tab}`} hidden={tab === 'plugins'} className="-mx-2 mt-1.5">
         {/* Past a handful of tools a tab offers a filter, by groups; skills and
             subagents keep their row lists. */}
         {searchable ? (
@@ -629,27 +681,22 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
               value={query}
               onChange={(event) => { setQuery(event.target.value); setPreview(null); }}
               onKeyDown={(event) => { if (event.key === 'Escape' && query !== '') { event.stopPropagation(); setQuery(''); } }}
-              placeholder={tab === 'tools' || tab === 'extensions' ? t('inspector.cap.search') : t('inspector.cap.filter', { tab: current.label })}
+              placeholder={tab === 'tools' ? t('inspector.cap.search') : t('inspector.cap.filter', { tab: current.label })}
               className="h-7 w-full rounded-md border border-hairline bg-transparent pr-2 pl-7 text-[12px] text-ink placeholder:text-ink-faint transition-colors hover:border-hairline-strong focus:border-hairline-strong focus-visible:outline-2 focus-visible:outline-offset-[-1px] focus-visible:outline-selected-ink pointer-coarse:h-9"
             />
           </label>
         ) : null}
 
         {tab === 'tools' ? (
-          tools.length === 0 ? <Empty>{t('inspector.cap.noToolsReported')}</Empty>
-            : split.toolTab.length === 0 ? <Empty>{t('inspector.cap.noOwnTools')}</Empty>
+          !capReady ? <CapabilitiesGap status={capabilitiesStatus} onRetry={onRetryCapabilities} />
+            : tools.length === 0 ? <Empty>{t('inspector.cap.noToolsReported')}</Empty>
               : matches.length === 0 ? noGroupMatch
                 : cluster()
         ) : null}
 
-        {tab === 'extensions' ? (
-          split.extensionTab.length === 0 ? <Empty>{t('inspector.cap.noExtensions')}</Empty>
-            : matches.length === 0 ? noGroupMatch
-              : cluster()
-        ) : null}
-
         {tab === 'skills' ? (
-          skills.length === 0 ? <Empty>{t('inspector.cap.noSkills')}</Empty> : skillGroups.length === 0 ? <Empty>{t('inspector.cap.noMatch')}</Empty> : (
+          !capReady ? <CapabilitiesGap status={capabilitiesStatus} onRetry={onRetryCapabilities} />
+            : skills.length === 0 ? <Empty>{t('inspector.cap.noSkills')}</Empty> : skillGroups.length === 0 ? <Empty>{t('inspector.cap.noMatch')}</Empty> : (
             <div data-capability-list="skills" className="space-y-1">
               {skillGroups.map(([scope, , list]) => {
                 const key = `skills:${scope}`;
@@ -687,7 +734,8 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
         ) : null}
 
         {tab === 'subagents' ? (
-          subagentTargets.length === 0 ? <Empty>{t('inspector.cap.noSubagents')}</Empty> : shownTargets.length === 0 ? <Empty>{t('inspector.cap.noMatch')}</Empty> : (
+          !capReady ? <CapabilitiesGap status={capabilitiesStatus} onRetry={onRetryCapabilities} />
+            : subagentTargets.length === 0 ? <Empty>{t('inspector.cap.noSubagents')}</Empty> : shownTargets.length === 0 ? <Empty>{t('inspector.cap.noMatch')}</Empty> : (
             <ul data-capability-list="subagents">
               {capped(shownTargets, openGroups.has('subagents'), filtering).shown.map((target, index) => {
                 const allowed = target.launchAllowed !== false && target.defaultsAvailable;
@@ -712,6 +760,16 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
           )
         ) : null}
       </div>
+
+      {/* The host owns the session's plugin answer; this section only gives it
+          a tab. The panel stays mounted across tab switches — hidden, not
+          unmounted — so arrowing across the strip never re-fires its read and
+          a choice still being applied keeps its row state. */}
+      {plugins !== undefined ? (
+        <div id={`${baseId}-panel-plugins`} role="tabpanel" aria-labelledby={`${baseId}-tab-plugins`} hidden={tab !== 'plugins'} className="-mx-2 mt-1.5">
+          {plugins.content}
+        </div>
+      ) : null}
 
       {/* The one preview is a floating layer: portaled out of the column so
           hovering a chip cannot move the cluster or anything after it. */}

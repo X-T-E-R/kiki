@@ -17,7 +17,12 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../../i18n';
-import { AgentCapabilitiesSection, SKILL_ROWS } from './AgentCapabilitiesSection';
+import {
+  AgentCapabilitiesSection,
+  SKILL_ROWS,
+  type CapabilitiesStatus,
+  type CapabilityPluginsSlot,
+} from './AgentCapabilitiesSection';
 import type { AgentSubagentTarget, AgentSkillCapability, AgentToolCapability } from './types';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -194,13 +199,21 @@ function clusterHeight(): number {
   return container.querySelector<HTMLElement>('[data-capability-skill-cluster]')?.offsetHeight ?? 0;
 }
 
-async function render(tools: readonly AgentToolCapability[], skills: readonly AgentSkillCapability[] = SKILLS): Promise<void> {
+async function render(
+  tools: readonly AgentToolCapability[],
+  skills: readonly AgentSkillCapability[] = SKILLS,
+  options: {
+    plugins?: CapabilityPluginsSlot;
+    capabilitiesStatus?: CapabilitiesStatus;
+    onRetryCapabilities?: () => void;
+  } = {},
+): Promise<void> {
   await act(async () => {
     root.render(
       <I18nProvider>
         {/* The rail host: one scroll region, the value this slice must restore. */}
         <div data-agent-panel-scroll>
-          <AgentCapabilitiesSection tools={tools} skills={skills} subagentTargets={TARGETS} />
+          <AgentCapabilitiesSection tools={tools} skills={skills} subagentTargets={TARGETS} {...options} />
         </div>
       </I18nProvider>,
     );
@@ -251,7 +264,9 @@ async function tab(id: string): Promise<void> {
 describe('capability tool groups', () => {
   it('reads one chip per category with on/total, and keeps switched-off tools out of no list', async () => {
     await render(TOOLS);
-    expect(container.querySelectorAll('[data-capability-group-chip]')).toHaveLength(5);
+    // One tools tab, every source in it: built-in categories, MCP servers,
+    // plugins and the user's own tools are one cluster.
+    expect(container.querySelectorAll('[data-capability-group-chip]')).toHaveLength(8);
     expect(chip('builtin:os/backends').dataset['capabilityGroupCount']).toBe('6/7');
     // Approval-required is on: WebSearch waits for approval, FetchURL is on.
     expect(chip('builtin:nbSearch').dataset['capabilityGroupCount']).toBe('2/2');
@@ -306,8 +321,8 @@ describe('capability tool groups', () => {
 
   it('opens every member of an extension group, not just its first tool', async () => {
     await render(TOOLS);
-    await tab('extensions');
-    expect(container.querySelectorAll('[data-capability-group-chip]')).toHaveLength(3);
+    // MCP servers and plugins are groups of the one tools tab: there is no
+    // separate extensions tab to switch to.
     expect(chip('mcp:github').dataset['capabilityGroupCount']).toBe('1/2');
     await click(chip('mcp:github'));
     expect(container.querySelector('[data-tool-group-item="mcp__github__search_issues"]')).not.toBeNull();
@@ -415,7 +430,7 @@ describe('capability tool groups', () => {
     // Back collapses it and leaves the chips as they were.
     await click(container.querySelector<HTMLButtonElement>('[data-tool-group-back]')!);
     expect(container.querySelector('[data-capability-group-expanded]')).toBeNull();
-    expect(container.querySelectorAll('[data-capability-group-chip]')).toHaveLength(5);
+    expect(container.querySelectorAll('[data-capability-group-chip]')).toHaveLength(8);
   });
 
   it('keeps one group open at a time and marks the open chip', async () => {
@@ -434,9 +449,10 @@ describe('capability tool groups', () => {
     expect(container.querySelector('[data-capability-group-expanded]')).not.toBeNull();
     // The panel expands in place, so a group left open across a tab switch
     // would sit in the other tab's cluster and read as that tab's detail.
-    await tab('extensions');
+    await tab('skills');
     expect(container.querySelector('[data-capability-group-expanded]')).toBeNull();
-    // The other tab's own chips open normally afterwards.
+    // Back on the tools tab, its own chips open normally afterwards.
+    await tab('tools');
     await click(chip('mcp:github'));
     expect(container.querySelector('[data-capability-group-expanded="mcp:github"]')).not.toBeNull();
   });
@@ -455,7 +471,7 @@ describe('capability tool groups', () => {
     await type(container.querySelector<HTMLInputElement>('[data-capability-filter="tools"]')!, 'zzz');
     expect(text('[data-capability-group-nomatch]')).toContain('没有匹配的工具或分组');
     await click(container.querySelector<HTMLButtonElement>('[data-capability-search-clear]')!);
-    expect(container.querySelectorAll('[data-capability-group-chip]')).toHaveLength(5);
+    expect(container.querySelectorAll('[data-capability-group-chip]')).toHaveLength(8);
   });
 
   it('keeps the in-group filter while a single tool is open, and restores the chip', async () => {
@@ -499,10 +515,10 @@ describe('capability tool groups', () => {
     await render(TOOLS);
     const query = () => container.querySelector<HTMLInputElement>('[data-capability-filter="tools"]');
     await type(query()!, 'Write');
-    await tab('extensions');
+    await tab('skills');
     await tab('tools');
     expect(query()?.value).toBe('');
-    expect(container.querySelectorAll('[data-capability-group-chip]')).toHaveLength(5);
+    expect(container.querySelectorAll('[data-capability-group-chip]')).toHaveLength(8);
     await type(query()!, 'Write');
     const tablist = container.querySelector<HTMLDivElement>('[role="tablist"]')!;
     await act(async () => {
@@ -512,7 +528,7 @@ describe('capability tool groups', () => {
       tablist.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
     });
     expect(query()?.value).toBe('');
-    expect(container.querySelectorAll('[data-capability-group-chip]')).toHaveLength(5);
+    expect(container.querySelectorAll('[data-capability-group-chip]')).toHaveLength(8);
   });
 
   it('restores the host scroll offset and the focused row on the way back', async () => {
@@ -726,5 +742,102 @@ describe('the skills fold', () => {
     expect(clusters).toHaveLength(2);
     expect(clusters[1]!.dataset['capabilitySkillFolded']).toBe('');
     expect(clusters[0]!.dataset['capabilitySkillFolded']).toBeUndefined();
+  });
+});
+
+
+describe('the plugins tab and the read states', () => {
+  const pluginsSlot = (available?: number): CapabilityPluginsSlot => ({
+    available,
+    content: <div data-test-plugins-panel>the session’s plugins</div>,
+  });
+  /** The tabpanel the plugins tab button controls. */
+  const pluginsTabPanel = () =>
+    container.querySelector('[data-test-plugins-panel]')?.closest('[role="tabpanel"]') as HTMLElement | null;
+
+  it('keeps three tabs when the host injects no plugins slot', async () => {
+    await render(TOOLS);
+    expect(container.querySelectorAll('[data-capability-tab-button]')).toHaveLength(3);
+    expect(container.querySelector('[data-capability-tab-button="plugins"]')).toBeNull();
+  });
+
+  it('adds the plugins tab with the session’s own count as its badge', async () => {
+    await render(TOOLS, SKILLS, { plugins: pluginsSlot(3) });
+    const pluginsTab = container.querySelector<HTMLButtonElement>('[data-capability-tab-button="plugins"]')!;
+    expect(pluginsTab.textContent).toContain('插件');
+    // The badge is the session's usable count, not the installed count.
+    expect(pluginsTab.textContent).toContain('3');
+    // Tools count every reported tool, MCP and plugin tools included.
+    expect(container.querySelector('[data-capability-tab-button="tools"]')!.textContent).toContain('16');
+    await tab('plugins');
+    expect(container.querySelector('[data-test-plugins-panel]')).not.toBeNull();
+    expect(pluginsTabPanel()!.hasAttribute('hidden')).toBe(false);
+    // The tab button names the panel it controls, and the selection is stated.
+    expect(pluginsTab.getAttribute('aria-controls')).toBe(pluginsTabPanel()!.id);
+    expect(pluginsTab.getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('keeps the panel mounted across tab switches, hidden rather than remounted', async () => {
+    await render(TOOLS, SKILLS, { plugins: pluginsSlot(1) });
+    await tab('plugins');
+    const before = container.querySelector('[data-test-plugins-panel]');
+    expect(before).not.toBeNull();
+    await tab('tools');
+    // Same element, still mounted: crossing the strip never re-fires the
+    // panel's own read, and a choice mid-apply keeps its row.
+    expect(container.querySelector('[data-test-plugins-panel]')).toBe(before);
+    expect(pluginsTabPanel()!.hasAttribute('hidden')).toBe(true);
+    await tab('plugins');
+    expect(container.querySelector('[data-test-plugins-panel]')).toBe(before);
+    expect(pluginsTabPanel()!.hasAttribute('hidden')).toBe(false);
+  });
+
+  it('reaches the plugins tab by arrow keys as a first-class tab', async () => {
+    await render(TOOLS, SKILLS, { plugins: pluginsSlot(1) });
+    const tablist = container.querySelector<HTMLDivElement>('[role="tablist"]')!;
+    // Left from the first tab wraps to the last.
+    await act(async () => { tablist.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true })); });
+    expect(container.querySelector('[data-agent-capabilities-section]')!.getAttribute('data-capability-tab')).toBe('plugins');
+    expect(container.querySelector('[data-test-plugins-panel]')).not.toBeNull();
+  });
+
+  it('says the read failed in one quiet line per capability tab, with a retry, while the plugins tab answers for itself', async () => {
+    const retry = vi.fn();
+    await render(TOOLS, SKILLS, { capabilitiesStatus: 'failed', onRetryCapabilities: retry, plugins: pluginsSlot(2) });
+    // No counts are invented for the tabs whose read failed.
+    expect(container.querySelector('[data-capability-tab-button="tools"]')!.textContent).not.toContain('16');
+    expect(container.querySelector('[data-capability-tab-button="plugins"]')!.textContent).toContain('2');
+    const line = container.querySelector<HTMLElement>('[data-rail-capabilities-unavailable]')!;
+    expect(line.textContent).toContain('暂时读不到能力信息');
+    await click(line.querySelector('button')!);
+    expect(retry).toHaveBeenCalledOnce();
+    await tab('skills');
+    expect(container.querySelector('[data-rail-capabilities-unavailable]')).not.toBeNull();
+    await tab('subagents');
+    expect(container.querySelector('[data-rail-capabilities-unavailable]')).not.toBeNull();
+    // The plugins tab is a different read: it is not dragged into the failure.
+    await tab('plugins');
+    expect(container.querySelector('[data-rail-capabilities-unavailable]')).toBeNull();
+    expect(container.querySelector('[data-test-plugins-panel]')).not.toBeNull();
+  });
+
+  it('reads the in-flight state without inventing counts', async () => {
+    await render(TOOLS, SKILLS, { capabilitiesStatus: 'loading' });
+    expect(text('[data-rail-capabilities-unavailable]')).toContain('正在读取能力');
+    // A read in flight is not a failure: there is nothing to retry.
+    expect(container.querySelector('[data-rail-capabilities-retry]')).toBeNull();
+    expect(container.querySelector('[data-capability-tab-button="tools"]')!.textContent).not.toContain('16');
+  });
+
+  it('drops the plugins tab when the slot leaves while it is on screen', async () => {
+    await render(TOOLS, SKILLS, { plugins: pluginsSlot(1) });
+    await tab('plugins');
+    expect(container.querySelector('[data-agent-capabilities-section]')!.getAttribute('data-capability-tab')).toBe('plugins');
+    // A refetch that answers unsupported removes the tab: land back on tools,
+    // not on nothing.
+    await render(TOOLS, SKILLS);
+    expect(container.querySelector('[data-capability-tab-button="plugins"]')).toBeNull();
+    expect(container.querySelector('[data-agent-capabilities-section]')!.getAttribute('data-capability-tab')).toBe('tools');
+    expect(container.querySelector('[data-capability-group-chip]')).not.toBeNull();
   });
 });

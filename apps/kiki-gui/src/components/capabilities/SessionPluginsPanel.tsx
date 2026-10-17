@@ -1,14 +1,15 @@
 /**
- * 插件 — the rail's plugin list for the session in focus.
+ * 插件 — the session's plugin list, as the plugins tab of the rail's
+ * capabilities block.
  *
  * This is where the reader decides what this conversation may use. It is
  * deliberately *not* plugin management: installs, credentials and the home
  * master switch stay in the plugins page, and nothing here navigates away to
  * do a job this list can do in place.
  *
- * The shape follows the rest of the rail — a folded chapter, hairline rows, no
- * cards — because the reader's other decisions are made here too, and a
- * differently-styled panel would read as a different product.
+ * The panel is tab content, not a folded chapter of its own: the surrounding
+ * capabilities block carries the fold and the tab strip, so what is left here
+ * is the list itself — hairline rows, no cards, the rail's own voice.
  *
  * What it shows is the *session's* answer, not the workspace's, and the answer
  * is honest about the four levels that stack into it:
@@ -40,7 +41,6 @@ import { errorText, type I18nKey, type Locale } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { isCapabilityUnsupportedError } from '../agent-panel/mapCapabilities';
-import { InspectorSection } from '../agent-panel/InspectorSection';
 import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
 import { FOCUS_RING } from '../rail-variants/shell';
 import { Spinner } from '../icons';
@@ -51,7 +51,6 @@ import { CapabilityIcon } from './CapabilityIcon';
 import { InstallFlow, type InstallRequest } from './InstallFlow';
 import { AddSourceDialog } from './AddSourceDialog';
 import {
-  availableCount,
   isStaleRevision,
   isStaleScope,
   isStaleTarget,
@@ -70,7 +69,7 @@ import { PLUGIN_QUERY_KEYS, useInvalidatePlugins, usePluginMarketplace } from '.
 
 type UsageRead = UseQueryResult<PluginUsageResponse, Error>;
 
-export function WorkspacePluginsSection({ sessionId }: { readonly sessionId: string }) {
+export function SessionPluginsPanel({ sessionId }: { readonly sessionId: string }) {
   const { t, locale } = useI18n();
   const location = useLocation();
   const { client } = useConnection();
@@ -199,43 +198,39 @@ export function WorkspacePluginsSection({ sessionId }: { readonly sessionId: str
 
   return (
     <>
-      <InspectorSection
-        title={t('rail.plugins.title')}
-        summary={t('rail.plugins.summary', { count: availableCount(items) })}
-        defaultOpen={false}
-        data-rail-plugins=""
-      >
-        <div className="space-y-1.5 pt-0.5">
-          <ScopeLine scope={scope} onBrowse={() => { setBrowse(true); }} onAddFromSource={() => { setAdding(true); }} />
-          {/* One line, and the boundary it implies lives on the management
-              link: in a narrow rail a paragraph of scope prose costs more
-              than it tells the reader. */}
-          {scope !== undefined ? (
-            <p className="text-[11.5px] leading-4 text-ink-faint" data-rail-plugins-hint>{t('rail.plugins.hint')}</p>
-          ) : null}
+      {/* Tab content, not a chapter: the capabilities block owns the fold and
+          the tab strip; the hook keeps its name for the surfaces that look
+          for this list. */}
+      <div data-rail-plugins="" className="space-y-1.5 px-2 pt-0.5">
+        <ScopeLine scope={scope} onBrowse={() => { setBrowse(true); }} onAddFromSource={() => { setAdding(true); }} />
+        {/* One line, and the boundary it implies lives on the management
+            link: in a narrow rail a paragraph of scope prose costs more
+            than it tells the reader. */}
+        {scope !== undefined ? (
+          <p className="text-[11.5px] leading-4 text-ink-faint" data-rail-plugins-hint>{t('rail.plugins.hint')}</p>
+        ) : null}
 
-          <UsageStatus read={read} />
+        <UsageStatus read={read} />
 
-          <ul className="space-y-px">
-            {items.map((item) => (
-              <PluginUsageRow
-                key={item.id}
-                item={item}
-                pending={pending[rowKey(item.id)]}
-                failure={failures[rowKey(item.id)]}
-                busy={write.isPending && write.variables?.pluginId === item.id}
-                settingsSearch={location.search}
-                onToggle={onToggle}
-                onRestore={onRestore}
-              />
-            ))}
-          </ul>
+        <ul className="space-y-px">
+          {items.map((item) => (
+            <PluginUsageRow
+              key={item.id}
+              item={item}
+              pending={pending[rowKey(item.id)]}
+              failure={failures[rowKey(item.id)]}
+              busy={write.isPending && write.variables?.pluginId === item.id}
+              settingsSearch={location.search}
+              onToggle={onToggle}
+              onRestore={onRestore}
+            />
+          ))}
+        </ul>
 
-          {items.length === 0 && read.isSuccess ? (
-            <p className="pt-0.5 text-[12px] leading-relaxed text-ink-faint" data-rail-plugins-empty>{t('rail.plugins.empty')}</p>
-          ) : null}
-        </div>
-      </InspectorSection>
+        {items.length === 0 && read.isSuccess ? (
+          <p className="pt-0.5 text-[12px] leading-relaxed text-ink-faint" data-rail-plugins-empty>{t('rail.plugins.empty')}</p>
+        ) : null}
+      </div>
 
       {browse ? (
         <PluginCatalogDialog

@@ -39,7 +39,7 @@ import { isCapabilityUnsupportedError } from '../../agent-panel/mapCapabilities'
 import { CapabilityIcon } from '../../capabilities/CapabilityIcon';
 import { InstallFlow, type InstallRequest } from '../../capabilities/InstallFlow';
 import { AddSourceDialog } from '../../capabilities/AddSourceDialog';
-import { PluginCatalogDialog } from '../../capabilities/WorkspacePluginsSection';
+import { PluginCatalogDialog } from '../../capabilities/SessionPluginsPanel';
 import { useInvalidatePlugins } from '../../capabilities/usePlugins';
 import {
   isStaleRevision,

@@ -1,14 +1,15 @@
 /**
  * The agent rail's capability block, read as groups (fixture `tool-groups`).
  * One walk proves the whole read: a chip per built-in category, MCP server,
- * plugin and user-registered tool; `x/y` from the reported states (approval
- * counts as on, unknown never reads as off); the cluster's fold past the cap
- * and its one hover preview; a group opening its complete membership, keeping
- * the in-group filter and the focus across a single tool; the main search
- * finding a switched-off tool without moving a denominator; the extension tab
- * showing every member of a server; and the same panel inside the narrow
- * drawer with no second layer. Every job records the palette its tokens
- * resolve to, because a brightness flag alone does not repaint this build.
+ * plugin and user-registered tool, all in the one tools tab; `x/y` from the
+ * reported states (approval counts as on, unknown never reads as off); the
+ * cluster's fold past the cap and its one hover preview; a group opening its
+ * complete membership, keeping the in-group filter and the focus across a
+ * single tool; the main search finding a switched-off tool without moving a
+ * denominator; an extension group unfolded from the cluster's tail showing
+ * every member of a server; and the same panel inside the narrow drawer with
+ * no second layer. Every job records the palette its tokens resolve to,
+ * because a brightness flag alone does not repaint this build.
  *
  * Screenshots land in KIKI_PROOF_OUTPUT_DIR as `tg-<state>` plus the runner's
  * per-view suffix.
@@ -114,10 +115,14 @@ export function createToolGroupsWalker({ page, shot, view, webUrl, fixtureUrl, f
     await openRail();
     await openCapabilities();
 
-    // One chip per group: 17 built-in/source groups plus the user's own read as
-    // its own group. Eighteen is well under the cap, so nothing folds.
-    await expectCount(chips(), 18, 'tools tab chips');
-    await expectCount(rail().locator('[data-capability-groups-more]'), 0, 'fold control');
+    // One chip per group, every source in the same tab: 18 built-in/user
+    // groups, seven MCP servers and two plugins are 27 over the 24 cap, so
+    // exactly three sit behind the fold.
+    await expectCount(chips(), 24, 'tools tab chips');
+    await expectCount(rail().locator('[data-capability-groups-more]'), 1, 'fold control');
+    if (await rail().locator('[data-capability-groups-more]').getAttribute('data-capability-groups-more') !== '3') {
+      throw new Error('three groups must sit behind the fold');
+    }
     // The compression is real: no per-tool rows survive on the tools tab.
     await expectCount(rail().locator('[data-capability-list="tools"] [data-capability-item]'), 0, 'tools tab rows');
     await expectCount(rail().locator('[data-capability-list="tools"]'), 0, 'tools tab list');
@@ -265,14 +270,15 @@ export function createToolGroupsWalker({ page, shot, view, webUrl, fixtureUrl, f
     await expectText(rail().locator('[data-capability-group-nomatch]'), C.noMatch, 'no-match copy');
     await shot('tg-search-empty');
     await rail().locator('[data-capability-search-clear]').click();
-    await expectCount(chips(), 18, 'chips after clearing');
+    await expectCount(chips(), 24, 'chips after clearing');
 
-    // Extensions: one chip per provider, every member listed, two providers
-    // sharing a tool short name kept apart.
-    await openTab('extensions');
-    // Seven servers (one of them with no reported owner), two plugins.
-    await expectCount(chips(), 9, 'extension groups');
-    await expectCount(rail().locator('[data-capability-groups-more]'), 0, 'extension fold');
+    // Extensions are groups of this same tab, past the fold: one chip per
+    // provider, every member listed, two providers sharing a tool short name
+    // kept apart.
+    await rail().locator('[data-capability-groups-more]').click();
+    // Seven servers (one of them with no reported owner), two plugins, and the
+    // eighteen built-in/user groups the walk began with.
+    await expectCount(chips(), 27, 'all groups unfolded');
     await openChip('mcp:github');
     const github = rail().locator('[data-tool-group-detail="mcp:github"]');
     await github.waitFor({ timeout: 5_000 });
@@ -287,7 +293,7 @@ export function createToolGroupsWalker({ page, shot, view, webUrl, fixtureUrl, f
     const longName = rail().locator('[data-tool-group-detail="mcp:modelcontextprotocol-filesystem-server-prod"]');
     await longName.waitFor({ timeout: 5_000 });
     await expectCount(longName.locator('[data-tool-group-item]'), 2, 'long-named server members');
-    await shot('tg-extensions');
+    await shot('tg-extension-groups');
     await rail().locator('[data-tool-group-back]').click();
     // A server whose owner was never reported gets its own explicit group.
     if (await chip('mcp:unknown').count() !== 1) throw new Error('an unreported MCP owner needs its own group');
@@ -339,7 +345,7 @@ export function createToolGroupsWalker({ page, shot, view, webUrl, fixtureUrl, f
     await page.waitForTimeout(120);
     const afterGroup = await host.evaluate((node) => node.scrollTop);
     if (afterGroup !== before) throw new Error(`returning from a group moved the rail scroll: ${before} -> ${afterGroup}`);
-    await expectCount(chips(), 18, 'narrow-rail chips');
+    await expectCount(chips(), 24, 'narrow-rail chips');
   }
 
   /**
@@ -360,7 +366,7 @@ export function createToolGroupsWalker({ page, shot, view, webUrl, fixtureUrl, f
     if (palette.includes('#FFFDFA')) throw new Error(`the palette is still Paper light: ${palette}`);
     await openRail();
     await openCapabilities();
-    await expectCount(chips(), 18, 'dark chips');
+    await expectCount(chips(), 24, 'dark chips');
     await chip('builtin:os/backends').hover();
     // The card is portaled to the body, so it is not inside the rail column.
     await page.locator('[data-capability-group-preview="builtin:os/backends"]').waitFor({ timeout: 5_000 });
@@ -481,7 +487,7 @@ export function createToolGroupsWalker({ page, shot, view, webUrl, fixtureUrl, f
     await openRail();
     await openCapabilities();
     await expectCount(rail().locator('[data-tool-group-detail]'), 0, 'group view on the next agent');
-    await expectCount(chips(), 18, 'chips on the next agent');
+    await expectCount(chips(), 24, 'chips on the next agent');
     if (await rail().locator('[data-capability-filter="tools"]').inputValue() !== '') {
       throw new Error("the previous agent's search carried over");
     }

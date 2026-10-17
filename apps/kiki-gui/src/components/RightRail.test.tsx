@@ -35,10 +35,6 @@ vi.mock('./persona/PersonaSettingsUpdate', () => ({
   PersonaSettingsUpdate: () => <div data-rail-persona-settings />,
 }));
 
-vi.mock('./capabilities/WorkspacePluginsSection', () => ({
-  WorkspacePluginsSection: () => null,
-}));
-
 vi.mock('./AgentPanelContainer', () => ({
   AgentPanelContainer: ({ part = 'all', agentId, overviewMode, renderOverview }: {
     part?: string; agentId: string; overviewMode?: string;

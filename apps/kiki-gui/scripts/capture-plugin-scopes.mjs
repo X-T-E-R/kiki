@@ -37,10 +37,12 @@ const scenarios = [
         await page.waitForTimeout(500);
       };
 
-      // 1 · The rail on a live conversation. Folded by default; open it.
-      await go(`/s/${SID}`, '[data-rail-plugins]');
-      const head = page.locator('[data-rail-plugins] [aria-expanded]').first();
-      if (await head.getAttribute('aria-expanded') === 'false') await head.click();
+      // 1 · The rail on a live conversation. The plugins list is the plugins
+      // tab of the 能力 block now: open the fold, then the tab.
+      await go(`/s/${SID}`, '[data-rail-capabilities]');
+      const capHead = page.locator('[data-rail-capabilities] [aria-expanded]').first();
+      if (await capHead.getAttribute('aria-expanded') === 'false') await capHead.click();
+      await page.locator('[data-rail-capabilities] [data-capability-tab-button="plugins"]').click();
       await page.waitForSelector('[data-rail-plugin="kiki-notes"]', { timeout: 15_000 });
       await page.waitForTimeout(400);
 
@@ -139,9 +141,10 @@ const scenarios = [
       // because agreeing between two surfaces is the point. The row is put on
       // screen before the shot, so the after image lines up with the before
       // one instead of showing a clipped edge.
-      await go(`/s/${SID}`, '[data-rail-plugins]');
-      const railHead = page.locator('[data-rail-plugins] [aria-expanded]').first();
+      await go(`/s/${SID}`, '[data-rail-capabilities]');
+      const railHead = page.locator('[data-rail-capabilities] [aria-expanded]').first();
       if (await railHead.getAttribute('aria-expanded') === 'false') await railHead.click();
+      await page.locator('[data-rail-capabilities] [data-capability-tab-button="plugins"]').click();
       await page.waitForSelector('[data-rail-plugin="office"]', { timeout: 15_000 });
       const railOffice = page.locator('[data-rail-plugin="office"]');
       const railChecked = await railOffice.locator('input[type=checkbox]').isChecked();

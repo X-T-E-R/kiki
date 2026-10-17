@@ -45,8 +45,6 @@ vi.mock('./rail-variants/DefaultSections', async (importOriginal) => ({
   CapabilitiesBlock: () => null,
 }));
 
-vi.mock('./capabilities/WorkspacePluginsSection', () => ({ WorkspacePluginsSection: () => null }));
-
 vi.mock('./AgentPanelContainer', () => ({
   AgentPanelContainer: ({ state }: { state: { todos: readonly { title: string }[] } }) =>
     <div data-panel-props>{state.todos.map((todo) => todo.title).join('\n')}</div>,

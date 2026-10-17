@@ -66,6 +66,40 @@ export default {
   // rail reads the same place the workspace page shows.
   sessions: [sessionRecord(SID, { workspace_id: WSID, title: 'Fixture: plugin scopes' })],
   snapshots: { [SID]: { messages: [], has_more: false } },
+  // The rail's capabilities block reads the agent panel as well as the plugin
+  // usage; seeding it keeps the block in its shipped four-tab shape, so the
+  // plugins chapter is proven as the plugins tab, not as the fallback a
+  // capability-less server would get.
+  agentPanel: {
+    context: 'live',
+    live: true,
+    owner: { profile: 'agent', agent_id: 'main' },
+    available: true,
+    profile: {
+      name: 'agent',
+      description: 'Fixture general-purpose agent.',
+      source: 'builtin',
+      model: 'fixture/kiki-pro',
+      thinking_effort: 'high',
+      profile_source: 'registered',
+      subagent_policy: 'advisory',
+      tools: ['Read', 'Grep', 'Bash', 'plugin__kiki_notes__save_note', 'mcp__research__search', 'mcp__research__fetch'],
+    },
+    targets: [],
+    tools: [
+      { name: 'Read', source: 'builtin', category: 'os/backends', state: 'enabled' },
+      { name: 'Grep', source: 'builtin', category: 'os/backends', state: 'enabled' },
+      { name: 'Bash', source: 'builtin', category: 'os/backends', state: 'enabled' },
+      // The session-enabled plugins contribute their tools to the same read:
+      // kiki-notes' tool and research's two MCP tools are on here.
+      { name: 'plugin__kiki_notes__save_note', source: 'plugin', category: 'plugin', state: 'enabled' },
+      { name: 'mcp__research__search', source: 'mcp', category: 'mcp', state: 'enabled' },
+      { name: 'mcp__research__fetch', source: 'mcp', category: 'mcp', state: 'enabled' },
+    ],
+    skills: [
+      { name: 'release-checklist', description: 'Walk the release checklist for this repository.', source: 'project', scope: 'workspace', path: 'C:/fixture/.kimi/skills/release-checklist/SKILL.md', state: 'enabled' },
+    ],
+  },
   workspaces: [
     {
       id: WSID,

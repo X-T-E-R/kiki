@@ -1,26 +1,34 @@
 // @vitest-environment jsdom
 
 /**
- * The rail's 能力 block (DefaultSections CapabilitiesBlock): folded is the
- * head's per-kind counts and nothing else, because the names behind them read
- * as a wall of slugs rather than a summary — they live in the block's own
- * detail, where each carries its scope and state. A failed read (or an answer
- * without the capability fields) keeps the block as a plain title, one grey
- * status line and a text retry — "can't be read right now", never an alert and
- * never a silent gap.
+ * The rail's 能力 block (DefaultSections CapabilitiesBlock): the one folded
+ * entry for everything the focused agent can use — tools, skills, subagent
+ * targets and the session's plugins. Folded is the head's per-kind counts and
+ * nothing else, because the names behind them read as a wall of slugs rather
+ * than a summary — they live in the block's own detail, where each carries its
+ * scope and state.
+ *
+ * The block reads two answers that fail independently: the agent-panel read
+ * (tools/skills/subagents) and the plugin-usage read. A failed capability read
+ * leaves one quiet line inside each of the three capability tabs while the
+ * plugins tab keeps working; a failed plugin read is one quiet line inside the
+ * plugins tab while the other three keep theirs. A server that answers a scope
+ * unsupported simply has no such tab, and a server without either scope has no
+ * block at all.
  */
 
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AgentCapabilitiesResponse } from '@kiki/protocol';
+import type { AgentCapabilitiesResponse, PluginUsageItem, PluginUsageResponse } from '@kiki/protocol';
 import { I18nProvider } from '../../i18n';
 import { buildAgentForest, type NoticeBlock } from '@kiki/session-core/session';
 import { translate } from '@kiki/session-core/i18n';
 import { ActivityFeed, CapabilitiesBlock } from './DefaultSections';
 
-const { readCapabilities } = vi.hoisted(() => ({ readCapabilities: vi.fn() }));
+const { readCapabilities, getUsage } = vi.hoisted(() => ({ readCapabilities: vi.fn(), getUsage: vi.fn() }));
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({
     klient: {
@@ -29,6 +37,11 @@ vi.mock('../../state/connection', () => ({
           read: (query: unknown, options: { signal: AbortSignal }) => readCapabilities(query, options.signal),
         },
       },
+    },
+    client: {
+      getPluginUsage: (target: unknown) => getUsage(target),
+      setPluginUsage: () => Promise.reject(new Error('writes are not under test here')),
+      listPluginMarketplace: () => Promise.resolve({ entries: [] }),
     },
   }),
   useOptionalControllerRegistry: () => null,
@@ -58,11 +71,52 @@ const full: AgentCapabilitiesResponse = {
   ],
 };
 
+/** The old-server shape: an answer without the capability fields. */
+const withoutCapabilities: AgentCapabilitiesResponse = {
+  context: 'live',
+  owner: { profile: 'agent', agent_id: 'main' },
+  available: false,
+  unavailable_reason: 'This fixture does not seed agent capability policy.',
+  targets: [],
+} as AgentCapabilitiesResponse;
+
+const unsupported = () => Object.assign(new Error('unsupported procedure'), { code: 12 });
+
+function plugin(overrides: Partial<PluginUsageItem> = {}): PluginUsageItem {
+  return {
+    id: 'demo',
+    displayName: 'Demo Plugin',
+    version: '1.0.0',
+    home_enabled: true,
+    global_enabled: true,
+    state: 'ok',
+    override: 'inherit',
+    effective: true,
+    app_service: false,
+    skillCount: 1,
+    mcpServerCount: 0,
+    ...overrides,
+  } as PluginUsageItem;
+}
+
+function pluginAnswer(overrides: Partial<PluginUsageResponse> = {}): PluginUsageResponse {
+  return {
+    home_id: 'home-1',
+    target: { workspace_id: 'ws-a', name: 'Alpha', root: 'C:/work/alpha' },
+    revision: 7,
+    apply_state: 'applied',
+    errors: [],
+    plugins: [plugin()],
+    ...overrides,
+  } as PluginUsageResponse;
+}
+
 let root: Root;
 let container: HTMLDivElement;
 
 beforeEach(() => {
   readCapabilities.mockReset();
+  getUsage.mockReset();
   localStorage.clear();
   localStorage.setItem('kiki.locale', 'zh');
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -81,11 +135,13 @@ async function render() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await act(async () => {
     root.render(
-      <QueryClientProvider client={client}>
-        <I18nProvider>
-          <CapabilitiesBlock sessionId="sess-1" agentId="main" />
-        </I18nProvider>
-      </QueryClientProvider>,
+      <MemoryRouter>
+        <QueryClientProvider client={client}>
+          <I18nProvider>
+            <CapabilitiesBlock sessionId="sess-1" agentId="main" />
+          </I18nProvider>
+        </QueryClientProvider>
+      </MemoryRouter>,
     );
   });
 }
@@ -94,36 +150,72 @@ async function settle() {
   for (let i = 0; i < 5; i++) await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
 }
 
+/** The folded head, opened. */
+async function openFold(): Promise<HTMLElement> {
+  const head = container.querySelector<HTMLElement>('[data-rail-capabilities] [aria-expanded]')!;
+  await act(async () => { head.click(); });
+  return head;
+}
+
+async function tab(id: string) {
+  const button = container.querySelector<HTMLButtonElement>(`[data-capability-tab-button="${id}"]`);
+  if (button === null) throw new Error(`no tab ${id}`);
+  await act(async () => { button.click(); });
+}
+
 describe('CapabilitiesBlock', () => {
-  it('folds to the counts head alone, and expands onto the named detail', async () => {
+  it('folds to the counts head alone, and expands onto the four tabs', async () => {
     readCapabilities.mockResolvedValue(full);
+    getUsage.mockResolvedValue(pluginAnswer());
     await render();
     await settle();
     const block = container.querySelector('[data-rail-capabilities]')!;
     // Folded: the head keeps the per-kind counts, the tabs stay unmounted.
+    // Tools count every source that is on — three built-ins and the connected
+    // MCP server — and the plugins segment is the session's usable count.
     const head = block.querySelector<HTMLButtonElement>('[aria-expanded]')!;
     expect(head.getAttribute('aria-expanded')).toBe('false');
-    expect(head.textContent).toContain('工具 3 · 技能 4 · 子智能体 2 · 扩展 2');
+    expect(head.textContent).toContain('工具 4 · 技能 4 · 子智能体 2 · 插件 1');
+    expect(head.textContent).not.toContain('扩展');
     expect(block.querySelector('[data-agent-capabilities-section]')).toBeNull();
     // No name pile-up above the fold. Those slugs are a wall of ids, and the
     // detail below carries each one with its scope and state.
     expect(block.querySelector('[data-rail-capabilities-preview]')).toBeNull();
     expect(block.textContent).not.toContain('api-diff');
     expect(block.textContent).not.toContain('release-notes');
-    expect(block.textContent).not.toContain('+1');
-    // Open: the full tabs mount, where every name is readable on purpose —
-    // each behind its own tab, with its scope and state.
-    await act(async () => { head.click(); });
+    // Open: the four tabs mount, and every name is readable on purpose — each
+    // behind its own tab, with its scope and state.
+    await openFold();
     expect(block.querySelector('[data-agent-capabilities-section]')).not.toBeNull();
-    expect(block.querySelector('[data-capability-tab-button="skills"]')).not.toBeNull();
-    const skills = block.querySelector<HTMLButtonElement>('[data-capability-tab-button="skills"]')!;
-    await act(async () => { skills.click(); });
+    expect(block.querySelectorAll('[data-capability-tab-button]')).toHaveLength(4);
+    await tab('skills');
     expect(block.textContent).toContain('api-diff');
     expect(block.textContent).toContain('release-notes');
+    // The plugins tab is the session's list, rows and all.
+    await tab('plugins');
+    expect(block.querySelector('[data-rail-plugin="demo"]')).not.toBeNull();
     // Close: the block is the counts head again, and nothing more.
-    await act(async () => { head.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-rail-capabilities] [aria-expanded]')!.click(); });
     expect(block.querySelector('[data-agent-capabilities-section]')).toBeNull();
     expect(block.textContent).not.toContain('api-diff');
+  });
+
+  it('counts on the plugins tab badge only what this session can actually use', async () => {
+    readCapabilities.mockResolvedValue(full);
+    getUsage.mockResolvedValue(pluginAnswer({
+      plugins: [
+        plugin({ id: 'a', effective: true }),
+        plugin({ id: 'b', effective: false }),
+        plugin({ id: 'c', effective: false, home_enabled: false, reason: 'home_disabled' }),
+      ],
+    }));
+    await render();
+    await settle();
+    await openFold();
+    // Three installed, one usable here: the badge carries the old chapter's
+    // "此处可用 N" semantics, not the installed count.
+    expect(container.querySelector('[data-capability-tab-button="plugins"]')!.textContent).toContain('1');
+    expect(container.querySelector('[data-capability-tab-button="plugins"]')!.textContent).not.toContain('3');
   });
 
   it('keeps every usable name reachable in the detail, disabled ones out of the counts', async () => {
@@ -135,6 +227,7 @@ describe('CapabilitiesBlock', () => {
       skills: [],
       targets: [],
     });
+    getUsage.mockResolvedValue(pluginAnswer());
     await render();
     await settle();
     // Built-ins alone: 3 of 4 enabled (Grep is off), and no name line at all.
@@ -145,20 +238,26 @@ describe('CapabilitiesBlock', () => {
     expect(container.querySelector('[data-agent-capabilities-section]')).not.toBeNull();
   });
 
-  it('shows a quiet status line with a text retry when the read fails, and recovers', async () => {
+  it('keeps the failed capability read to one quiet line inside each of its tabs, and recovers', async () => {
     readCapabilities.mockRejectedValueOnce(new Error('fixture offline'));
+    getUsage.mockResolvedValue(pluginAnswer());
     await render();
     await settle();
     const block = container.querySelector('[data-rail-capabilities]')!;
-    // The block stays: title, one grey line, a text retry. No alert, no fold.
+    // The block stays a fold: the plugins half is still true, so the head has
+    // no fake counts and no alert, and the failure is told where it belongs.
     expect(block.textContent).toContain('能力');
+    expect(block.querySelector('[role="alert"]')).toBeNull();
+    await openFold();
     const status = block.querySelector('[data-rail-capabilities-unavailable]')!;
     expect(status.getAttribute('role')).toBe('status');
     expect(status.className).toContain('text-ink-faint');
     expect(status.className).not.toMatch(/danger|amber|attention/);
     expect(status.textContent).toContain('暂时读不到能力信息。');
-    expect(block.querySelector('[role="alert"]')).toBeNull();
-    expect(block.querySelector('[aria-expanded]')).toBeNull();
+    // The plugins tab is a different read and is not dragged into the failure.
+    await tab('plugins');
+    expect(block.querySelector('[data-rail-plugin="demo"]')).not.toBeNull();
+    await tab('tools');
     const retry = block.querySelector<HTMLButtonElement>('[data-rail-capabilities-retry]')!;
     expect(retry.textContent).toBe('重试');
     readCapabilities.mockResolvedValue(full);
@@ -166,28 +265,62 @@ describe('CapabilitiesBlock', () => {
     await settle();
     expect(readCapabilities).toHaveBeenCalledTimes(2);
     expect(container.querySelector('[data-rail-capabilities-unavailable]')).toBeNull();
-    // Back to a working folded block: counts, no alert, nothing left over.
-    expect(container.querySelector('[data-rail-capabilities]')?.textContent).toContain('工具 3');
-    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelectorAll('[data-capability-group-chip]').length).toBeGreaterThan(0);
   });
 
-  it('shows the same quiet line when the answer lacks the capability fields', async () => {
-    readCapabilities.mockResolvedValue({
-      context: 'live',
-      owner: { profile: 'agent', agent_id: 'main' },
-      available: false,
-      unavailable_reason: 'This fixture does not seed agent capability policy.',
-      targets: [],
-    });
+  it('tells a failed plugin read inside the plugins tab only', async () => {
+    readCapabilities.mockResolvedValue(full);
+    getUsage.mockRejectedValue(new Error('network down'));
     await render();
     await settle();
-    const status = container.querySelector('[data-rail-capabilities-unavailable]')!;
-    expect(status.textContent).toContain('暂时读不到能力信息。');
-    expect(container.querySelector('[data-rail-capabilities-retry]')).not.toBeNull();
+    await openFold();
+    // The three capability tabs work; only the plugins tab carries the line.
+    expect(container.querySelectorAll('[data-capability-group-chip]').length).toBeGreaterThan(0);
+    await tab('plugins');
+    const line = container.querySelector('[data-rail-plugins-unavailable]')!;
+    expect(line.textContent).toContain('暂时读不到当前对话的插件使用情况。');
+    expect(line.querySelector('button')!.textContent).toBe('重试');
   });
 
-  it('stays hidden while the first read is in flight', async () => {
+  it('has no plugins tab when the server does not offer plugin usage', async () => {
+    readCapabilities.mockResolvedValue(full);
+    getUsage.mockRejectedValue(unsupported());
+    await render();
+    await settle();
+    const head = container.querySelector<HTMLElement>('[data-rail-capabilities] [aria-expanded]')!;
+    expect(head.textContent).toContain('工具 4');
+    expect(head.textContent).not.toContain('插件');
+    await act(async () => { head.click(); });
+    expect(container.querySelectorAll('[data-capability-tab-button]')).toHaveLength(3);
+    expect(container.querySelector('[data-capability-tab-button="plugins"]')).toBeNull();
+  });
+
+  it('is the plugins chapter alone, without a tab strip, when the server has no capability scope', async () => {
+    readCapabilities.mockResolvedValue(withoutCapabilities);
+    getUsage.mockResolvedValue(pluginAnswer());
+    await render();
+    await settle();
+    const head = container.querySelector<HTMLElement>('[data-rail-capabilities] [aria-expanded]')!;
+    expect(head.textContent).toContain('能力');
+    expect(head.textContent).toContain('插件 1');
+    expect(head.textContent).not.toContain('工具');
+    await act(async () => { head.click(); });
+    // One kind only: the list itself, with no strip that would hold one tab.
+    expect(container.querySelector('[role="tablist"]')).toBeNull();
+    expect(container.querySelector('[data-rail-plugin="demo"]')).not.toBeNull();
+  });
+
+  it('has no block at all when the server offers neither scope', async () => {
+    readCapabilities.mockResolvedValue(withoutCapabilities);
+    getUsage.mockRejectedValue(unsupported());
+    await render();
+    await settle();
+    expect(container.querySelector('[data-rail-capabilities]')).toBeNull();
+  });
+
+  it('stays hidden while the first reads are in flight', async () => {
     readCapabilities.mockReturnValue(new Promise(() => {}));
+    getUsage.mockReturnValue(new Promise(() => {}));
     await render();
     await settle();
     expect(container.querySelector('[data-rail-capabilities]')).toBeNull();

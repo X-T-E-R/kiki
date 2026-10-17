@@ -138,12 +138,15 @@ try {
     await page.waitForTimeout(400);
   };
   const openRail = async () => {
-    const head = page.locator('[data-rail-plugins] [aria-expanded]').first();
+    // The plugins list is the plugins tab of the 能力 block: open the fold,
+    // then the tab.
+    const head = page.locator('[data-rail-capabilities] [aria-expanded]').first();
     if (await head.getAttribute('aria-expanded') === 'false') await head.click();
+    await page.locator('[data-rail-capabilities] [data-capability-tab-button="plugins"]').click();
   };
 
   // 1 · One plugin, two surfaces, before and after one pick.
-  await go(`/s/${SID}`, '[data-rail-plugins]');
+  await go(`/s/${SID}`, '[data-rail-capabilities]');
   await openRail();
   await page.waitForSelector('[data-rail-plugin="office"]', { timeout: 15_000 });
   await page.locator('[data-rail-plugin="office"]').scrollIntoViewIfNeeded();
@@ -175,7 +178,7 @@ try {
   await page.keyboard.press('Escape');
   await page.keyboard.press('Escape');
 
-  await go(`/s/${SID}`, '[data-rail-plugins]');
+  await go(`/s/${SID}`, '[data-rail-capabilities]');
   await openRail();
   await page.waitForSelector('[data-rail-plugin="office"]', { timeout: 15_000 });
   await page.locator('[data-rail-plugin="office"]').scrollIntoViewIfNeeded();
