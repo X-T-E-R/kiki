@@ -68,6 +68,7 @@ export type GoalInitialStatus = z.infer<typeof goalInitialStatusSchema>;
 
 export const promptSubmissionSchema = z.object({
   admission: z.literal('durable').optional(),
+  delivery_mode: z.literal('steer').optional(),
   content: z.array(messageContentSchema).min(1),
   metadata: z.record(z.string(), z.unknown()).optional(),
   agent_id: z.string().min(1).optional(),
@@ -123,6 +124,7 @@ export type PromptAdmissionState = z.infer<typeof promptAdmissionStateSchema>;
 
 export const promptItemSchema = z.object({
   admission: promptAdmissionStateSchema.optional(),
+  delivery_state: z.enum(['queued', 'steered']).optional(),
   admission_error: z.object({ code: z.number().int(), message: z.string() }).optional(),
   admission_content_truncated: z.boolean().optional(),
   runtime_controls: transcriptPromptRuntimeControlsSchema.optional(),

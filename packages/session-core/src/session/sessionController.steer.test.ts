@@ -148,6 +148,30 @@ describe('submission preservation degradation', () => {
 });
 
 describe('send now (steer) — main agent', () => {
+  it.each(['restoring', 'held', 'admitted'] as const)('persists the steer intent for a saved session and never duplicates server delivery after %s', async (admission) => {
+    const { controller, client } = await open();
+    controller.setEphemeralHint(false);
+    client.submitPrompt.mockImplementation(async (_sid: string, body: { prompt_id: string }) => ({
+      ...queuedReceipt(body.prompt_id), admission, delivery_state: admission === 'admitted' ? 'steered' : undefined,
+    }));
+    const sent = await controller.sendPromptNow({ promptId: 'saved-now', text: STEER_TEXT });
+    expect(sent).toEqual({ promptId: 'saved-now', outcome: admission === 'admitted' ? 'steered' : admission });
+    expect(client.submitPrompt).toHaveBeenCalledWith('session_test', expect.objectContaining({ admission: 'durable', delivery_mode: 'steer', prompt_id: 'saved-now' }));
+    expect(client.steerPrompt).not.toHaveBeenCalled();
+    expect(controller.getPendingSteers()).toEqual([expect.objectContaining({ promptId: 'saved-now', phase: 'waiting' })]);
+    controller.close();
+  });
+
+  it('keeps ordinary durable submission free of immediate delivery intent', async () => {
+    const { controller, client } = await open();
+    controller.setEphemeralHint(false);
+    client.submitPrompt.mockResolvedValue({ ...queuedReceipt('ordinary'), admission: 'restoring' });
+    await controller.sendPrompt({ promptId: 'ordinary', text: STEER_TEXT });
+    expect(client.submitPrompt.mock.calls[0]![1].delivery_mode).toBeUndefined();
+    expect(client.steerPrompt).not.toHaveBeenCalled();
+    controller.close();
+  });
+
   it('promotes a queued prompt on the same row through sending → waiting → delivery', async () => {
     const { controller, client } = await open();
     const promptId = 'queued-send-now';

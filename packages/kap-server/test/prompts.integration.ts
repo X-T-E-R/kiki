@@ -915,6 +915,7 @@ describe('server-v2 /api prompts', () => {
         signal.throwIfAborted();
       }, { before: 'context-injector' });
       const active = await client.submitPrompt(id, { content: [{ type: 'text', text: 'Start the turn.' }], profile: 'agent', model: 'stub' });
+      await vi.waitFor(() => expect(main.accessor.get(IAgentPromptService).list().active?.id).toBe(active.prompt_id));
       const queued = await client.submitPrompt(id, { prompt_id: 'queued-send-now', content: [{ type: 'text', text: 'Check the queued message.' }] });
       expect(queued.status).toBe('queued');
       await client.steerPrompt(id, queued.prompt_id);
@@ -930,9 +931,9 @@ describe('server-v2 /api prompts', () => {
       const live = await client.klient.session(id).view.transcript.page({ agentId: 'main' });
       const rows = agentTranscriptToBlocks(live).filter((block) => block.kind === 'user' && block.text === 'Check the queued message.');
       expect(rows).toEqual([expect.objectContaining({ id: `user-${queued.prompt_id}`, userMessageId: queued.prompt_id, turnId: expect.any(String) })]);
-      expect(active.status).toBe('running');
       const turns = live.items.filter((item) => item.kind === 'turn');
       expect(turns).toHaveLength(1);
+      expect(turns[0]?.promptId).toBe(active.prompt_id);
       expect(rows[0]?.kind === 'user' ? rows[0].turnId : undefined).toBe(turns[0]?.turnId);
       await closeSessionById(server!.core.accessor, id);
       const cold = await client.klient.session(id).view.transcript.page({ agentId: 'main' });
@@ -1413,6 +1414,170 @@ describe('server-v2 /api prompts', () => {
     }
   });
 
+  it.each([false, true])('durable send-now survives the restoring ack and client close, consuming once after a boundary, uncertain=%s', async (uncertain) => {
+    const requests: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
+    const provider = createHttpServer((request, response) => {
+      let body = '';
+      request.setEncoding('utf8');
+      request.on('data', chunk => { body += String(chunk); });
+      request.on('end', () => {
+        requests.push(JSON.parse(body));
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(`data: ${JSON.stringify({ id: `chatcmpl-immediate-${requests.length}`,
+          choices: [{ index: 0, delta: { content: 'Received.' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        })}\n\ndata: [DONE]\n\n`);
+      });
+    });
+    await new Promise<void>(resolve => provider.listen(0, '127.0.0.1', resolve));
+    const address = provider.address();
+    if (address === null || typeof address === 'string') throw new Error('provider did not bind');
+    const client = new KikiClient({ baseUrl: base, token: bearerToken(server!) });
+    const step = promiseGate<void>();
+    const restore = promiseGate<void>();
+    let controller: SessionController | undefined;
+    let resume: ReturnType<typeof vi.spyOn> | undefined;
+    let persistence: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      await server!.core.accessor.get(IModelCatalogMutationService).updateProvider('stub', { base_url: `http://127.0.0.1:${address.port}/v1` });
+      await server!.core.accessor.get(IModelCatalogMutationService).updateModel('stub', { max_context_size: 100000 });
+      const id = await createSession(home!);
+      await createMainAgent(id);
+      const session = getLiveSessionById(server!.core.accessor, id)!;
+      const main = session.accessor.get(IAgentLifecycleService).get('main')!;
+      const prompt = main.accessor.get(IAgentPromptService);
+      const loop = main.accessor.get(IAgentLoopService);
+      loop.hooks.onWillBeginStep.register('hold-durable-immediate', async ({ step: ordinal, signal }) => {
+        if (ordinal === 1) await step.promise;
+        signal.throwIfAborted();
+      }, { before: 'context-injector' });
+      await client.submitPrompt(id, { prompt_id: 'immediate-active', profile: 'agent', model: 'stub', content: [{ type: 'text', text: 'Start this turn.' }] });
+      await vi.waitFor(() => expect(loop.status().activeTurnId).toBeDefined());
+      const targetTurn = loop.status().activeTurnId;
+      const manager = server!.core.accessor.get(ISessionManager);
+      const original = manager.resume.bind(manager);
+      resume = vi.spyOn(manager, 'resume').mockImplementation(async (...args) => { await restore.promise; return original(...args); });
+      const docs = server!.core.accessor.get(IAtomicDocumentStore);
+      const set = docs.set.bind(docs);
+      let fail = uncertain;
+      persistence = vi.spyOn(docs, 'set').mockImplementation(async (...args) => {
+        if (args[0].endsWith('/prompt-ingress/results') && fail) { fail = false; throw new Error('Interrupted immediate receipt publication'); }
+        return set(...args);
+      });
+      controller = new SessionController(client.sessions, client.klient.session(id).view, id);
+      controller.setEphemeralHint(false);
+      const text = 'Read the immediate note once.';
+      const sent = await controller.sendPromptNow({ promptId: 'durable-immediate', text });
+      expect(sent).toEqual({ promptId: 'durable-immediate', outcome: 'restoring' });
+      controller.close();
+      expect(requests).toEqual([]);
+      expect(prompt.list().pending).toEqual([]);
+      const root = `/api/sessions/${id}/prompts`;
+      restore.resolve();
+      if (uncertain) {
+        await vi.waitFor(async () => expect((await call('GET', `${root}/durable-immediate?admission=durable`)).body).toMatchObject({ data: { admission: 'held' } }));
+        expect((await call('POST', `${root}/durable-immediate:resume?admission=durable`)).body.code).toBe(0);
+      }
+      await vi.waitFor(async () => expect((await call('GET', `${root}/durable-immediate?admission=durable`)).body).toMatchObject({ data: { admission: 'admitted', status: 'queued' } }));
+      expect(loop.status().activeTurnId).toBe(targetTurn);
+      expect(prompt.list().pending).toEqual([]);
+      expect(main.accessor.get(IAgentContextMemoryService).get().filter(message => message.id === sent.promptId)).toEqual([]);
+      const duplicate = await client.submitPrompt(id, { admission: 'durable', delivery_mode: 'steer', prompt_id: sent.promptId, content: [{ type: 'text', text }] });
+      expect(duplicate.admission).toBe('admitted');
+      expect((await call('POST', root, { admission: 'durable', prompt_id: sent.promptId, content: [{ type: 'text', text }] })).body.code).toBe(40938);
+      step.resolve();
+      await loop.settled();
+      expect(requests).toHaveLength(2);
+      expect(JSON.stringify(requests[0]!.messages)).not.toContain(text);
+      expect(requests[1]!.messages.filter(message => message.role === 'user' && JSON.stringify(message.content).includes(text))).toHaveLength(1);
+      expect(main.accessor.get(IAgentContextMemoryService).get().filter(message => message.id === sent.promptId)).toEqual([
+        expect.objectContaining({ id: sent.promptId, role: 'user', content: [{ type: 'text', text }] }),
+      ]);
+      await main.accessor.get(IWireService).flush();
+      const records = (await readFile(join(session.accessor.get(ISessionContext).sessionDir, 'agents/main/wire.jsonl'), 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line));
+      expect(records.filter(record => record.type === 'prompt.enqueued' && record.promptId === sent.promptId)).toHaveLength(1);
+      expect(records.filter(record => record.type === 'turn.steer' && record.promptId === sent.promptId)).toEqual([expect.objectContaining({ turnId: targetTurn })]);
+      const transcript = await client.klient.session(id).view.transcript.page({ agentId: 'main' });
+      expect(transcript.items.filter(item => item.kind === 'turn')).toHaveLength(1);
+      expect(agentTranscriptToBlocks(transcript).filter(block => block.kind === 'user' && block.text === text)).toHaveLength(1);
+    } finally {
+      controller?.close(); restore.resolve(); step.resolve(); resume?.mockRestore(); persistence?.mockRestore();
+      await client.klient.close();
+      await new Promise<void>((resolve, reject) => provider.close(error => error ? reject(error) : resolve()));
+    }
+  }, 30_000);
+
+  it.each(['ended-target', 'binding-change', 'profile-change', 'ordinary'] as const)('durable send-now keeps the normal queue boundary for %s', async (scenario) => {
+    server!.core.accessor.get(IAgentProfileRegistry).register({ sourceId: 'immediate-boundary-fixture', priority: 50,
+      contribution: { profiles: [normalizeAgentProfile({ name: 'queued-example', definitionId: 'fixture:queued-example', systemPrompt: () => 'QUEUED_EXAMPLE' })] } });
+    const id = await createSession(home!);
+    await createHeldMainAgent(id);
+    const session = getLiveSessionById(server!.core.accessor, id)!;
+    const main = session.accessor.get(IAgentLifecycleService).get('main')!;
+    const prompt = main.accessor.get(IAgentPromptService);
+    const loop = main.accessor.get(IAgentLoopService);
+    const root = `/api/sessions/${id}/prompts`;
+    await call('POST', root, { prompt_id: 'boundary-active', content: [{ type: 'text', text: 'Keep the target busy.' }] });
+    const target = loop.status().activeTurnId;
+    const manager = server!.core.accessor.get(ISessionManager);
+    const original = manager.resume.bind(manager);
+    const gate = promiseGate<void>();
+    const resume = vi.spyOn(manager, 'resume').mockImplementation(async (...args) => { await gate.promise; return original(...args); });
+    try {
+      const saved = await call('POST', root, { admission: 'durable', prompt_id: 'boundary-now',
+        delivery_mode: scenario === 'ordinary' ? undefined : 'steer',
+        permission_mode: scenario === 'binding-change' ? 'yolo' : undefined,
+        profile: scenario === 'profile-change' ? 'queued-example' : undefined,
+        content: [{ type: 'text', text: 'Keep this request distinct.' }] });
+      expect(saved.body).toMatchObject({ code: 0, data: { admission: 'restoring' } });
+      if (scenario === 'ended-target') {
+        prompt.abort('boundary-active');
+        await loop.settled();
+        resume.mockRestore();
+        await call('POST', root, { prompt_id: 'unrelated-turn', content: [{ type: 'text', text: 'A different turn.' }] });
+        expect(loop.status().activeTurnId).not.toBe(target);
+      }
+      gate.resolve();
+      await vi.waitFor(async () => expect((await call('GET', `${root}/boundary-now?admission=durable`)).body).toMatchObject({ data: { admission: 'admitted', status: 'queued' } }));
+      expect(prompt.list().pending.map(item => item.id)).toContain('boundary-now');
+      expect(main.accessor.get(IAgentPermissionModeService).mode).not.toBe('yolo');
+      expect(main.accessor.get(IAgentProfileService).data().profileName).toBe('agent');
+      expect(main.accessor.get(IAgentContextMemoryService).get().some(message => message.id === 'boundary-now')).toBe(false);
+      await main.accessor.get(IWireService).flush();
+      const records = (await readFile(join(session.accessor.get(ISessionContext).sessionDir, 'agents/main/wire.jsonl'), 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line));
+      expect(records.filter(record => record.type === 'prompt.steered' && record.promptIds?.includes('boundary-now'))).toEqual([]);
+      if (scenario === 'ended-target') {
+        const unrelated = loop.status().activeTurnId;
+        prompt.abort('unrelated-turn');
+        await vi.waitFor(() => expect(prompt.list().active?.id).toBe('boundary-now'));
+        expect(loop.status().activeTurnId).not.toBe(target);
+        expect(loop.status().activeTurnId).not.toBe(unrelated);
+      }
+    } finally { gate.resolve(); resume.mockRestore(); prompt.abort('boundary-now'); }
+  });
+
+  it('durable send-now respects a steering veto without injecting or leaving a runnable prompt', async () => {
+    const id = await createSession(home!);
+    await createHeldMainAgent(id);
+    const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+    const prompt = main.accessor.get(IAgentPromptService);
+    const root = `/api/sessions/${id}/prompts`;
+    await call('POST', root, { content: [{ type: 'text', text: 'Hold this turn.' }] });
+    await vi.waitFor(() => expect(main.accessor.get(IAgentLoopService).status().activeTurnId).toBeDefined());
+    const hook = prompt.hooks.onBeforeSubmitPrompt.register('veto-immediate-message', async (context, next) => {
+      if (context.isSteer) context.block = true;
+      await next();
+    });
+    try {
+      const body = { admission: 'durable', delivery_mode: 'steer', prompt_id: 'vetoed-now', content: [{ type: 'text', text: 'Blocked by the steering hook.' }] };
+      expect((await call('POST', root, body)).body).toMatchObject({ code: 0, data: { admission: 'restoring' } });
+      await vi.waitFor(async () => expect((await call('GET', `${root}/vetoed-now?admission=durable`)).body).toMatchObject({ data: { admission: 'admitted', status: 'blocked' } }));
+      expect(prompt.list().pending).toEqual([]);
+      expect(main.accessor.get(IAgentContextMemoryService).get().some(message => message.id === 'vetoed-now')).toBe(false);
+      expect((await call('POST', root, body)).body).toMatchObject({ code: 0, data: { status: 'blocked' } });
+    } finally { await hook.dispose(); }
+  });
+
   it('durable ingress saves and cancels while cold restore is stalled, then holds across restart', async () => {
     const id = await createSession(home!);
     await closeSessionById(server!.core.accessor, id);
@@ -1420,7 +1585,7 @@ describe('server-v2 /api prompts', () => {
     const restoreGate = promiseGate<undefined>();
     const resume = vi.spyOn(manager, 'resume').mockReturnValue(restoreGate.promise);
     const root = `/api/sessions/${id}/prompts`;
-    const body = { admission: 'durable', prompt_id: 'saved-before-restore', content: [{ type: 'text', text: 'A saved draft '.repeat(200) }] };
+    const body = { admission: 'durable', delivery_mode: 'steer', prompt_id: 'saved-before-restore', content: [{ type: 'text', text: 'A saved draft '.repeat(200) }] };
     try {
       const saved = await call<{ admission: string; prompt_id: string }>('POST', `${root}?receipt=true`, body);
       expect(saved.body).toMatchObject({ code: 0, data: { admission: 'restoring', status: 'queued', prompt_id: body.prompt_id } });
@@ -1510,7 +1675,7 @@ describe('server-v2 /api prompts', () => {
       return set(...args);
     });
     const root = `/api/sessions/${id}/prompts`;
-    const body = { admission: 'durable', prompt_id: 'uncertain-ingress', content: [{ type: 'text', text: 'Run once' }] };
+    const body = { admission: 'durable', delivery_mode: 'steer', prompt_id: 'uncertain-ingress', content: [{ type: 'text', text: 'Run once' }] };
     const session = getLiveSessionById(server!.core.accessor, id)!;
     const prompt = session.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentPromptService);
     try {

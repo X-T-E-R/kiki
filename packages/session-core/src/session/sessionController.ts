@@ -1270,7 +1270,7 @@ export class SessionController {
     if (previous.length === records.length && previous.every((item, index) => {
       const next = records[index];
       return next !== undefined && item.prompt_id === next.prompt_id && item.status === next.status &&
-        item.admission === next.admission && item.revision === next.revision &&
+        item.admission === next.admission && item.delivery_state === next.delivery_state && item.revision === next.revision &&
         item.admission_content_truncated === next.admission_content_truncated &&
         item.admission_error?.code === next.admission_error?.code &&
         item.admission_error?.message === next.admission_error?.message;
@@ -3549,6 +3549,7 @@ export class SessionController {
     try {
       result = await this.client.submitPrompt(this.sessionId, {
         admission: durable ? 'durable' : undefined,
+        delivery_mode: durable ? 'steer' : undefined,
         content,
         prompt_id: promptId,
         ...(agentId === MAIN_AGENT_ID ? {} : { agent_id: agentId }),
@@ -3585,6 +3586,12 @@ export class SessionController {
       const retained = this.findPendingSteer(agentId, promptId);
       if (retained !== undefined) this.setPendingSteer(agentId, { ...retained, phase: 'waiting' });
       return { promptId: result.prompt_id, outcome: admission };
+    }
+    if (durable) {
+      const retained = this.findPendingSteer(agentId, promptId);
+      if (retained !== undefined) this.setPendingSteer(agentId, { ...retained, phase: 'waiting' });
+      return { promptId: result.prompt_id, outcome: result.delivery_state === 'steered' ? 'steered'
+        : result.status === 'queued' ? 'queued' : 'started' };
     }
     if (result.status !== 'queued') {
       // Idle by the time it landed: the prompt opened its own turn, which is

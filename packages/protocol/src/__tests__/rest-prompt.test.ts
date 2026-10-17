@@ -34,6 +34,15 @@ describe('promptSubmissionSchema', () => {
     expect(parsed.plan_mode).toBeUndefined();
   });
 
+  it('preserves immediate delivery intent and distinguishes admission from steering assignment', () => {
+    const body = { admission: 'durable', delivery_mode: 'steer', prompt_id: 'immediate-example', content: [{ type: 'text', text: 'Apply this note.' }] };
+    expect(promptSubmissionSchema.parse(body)).toEqual(body);
+    expect(promptSubmissionSchema.safeParse({ ...body, delivery_mode: 'unknown' }).success).toBe(false);
+    const receipt = { prompt_id: body.prompt_id, user_message_id: body.prompt_id, status: 'queued', admission: 'admitted',
+      delivery_state: 'steered', content: body.content, created_at: '2026-01-01T00:00:00.000Z' };
+    expect(promptSubmitResultSchema.parse(receipt)).toEqual(receipt);
+  });
+
   it('preserves the prompt-bound model switch mode with model and effort', () => {
     const body = { content: [{ type: 'text', text: 'Continue on this binding.' }], model: 'example/model', thinking: 'high', model_switch_mode: 'compact' };
     expect(promptSubmissionSchema.parse(body)).toEqual(body);

@@ -41,6 +41,7 @@ import {
   promptRetryFor,
   bundledSkillActivations,
   ISessionContext,
+  ISessionManager,
   ITelemetryService,
   applyPromptMetadataUpdate,
   isError2,
@@ -550,6 +551,12 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
   ): Promise<void> {
       const signal = ingressExecution?.signal ?? requestSignal;
       const { session_id } = req.params;
+      const live = core.accessor.get(ISessionManager).get(session_id);
+      const liveAgent = req.body.delivery_mode === 'steer'
+        ? live?.accessor.get(IAgentLifecycleService).get(req.body.agent_id ?? MAIN_AGENT_ID) : undefined;
+      const steerTargetTurnId = ingressExecution === undefined
+        ? liveAgent?.accessor.get(IAgentLoopService).status().activeTurnId ?? null
+        : ingressExecution.steerTargetTurnId ?? null;
       let preparedMedia: PromptMediaPreparation | undefined;
       let reservation: PromptReservation | undefined;
       let lease: SessionOperationLease | undefined;
@@ -564,7 +571,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
       try {
         if (req.body.admission === 'durable' && ingressExecution === undefined) {
           const body = { ...req.body, admission: undefined };
-          sendResult(await ingress.submit(session_id, body, promptPayloadFingerprint(body)));
+          sendResult(await ingress.submit(session_id, body, promptPayloadFingerprint(body), steerTargetTurnId));
           return;
         }
         lease = await acquireSessionOperation(core, session_id, 'operation', signal);
@@ -730,8 +737,25 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
           throw error;
         }
         };
-        const result = retryPromptId === undefined || retryFingerprint === undefined ? await submit()
-          : await promptRetryFor(resolved.prompt).run(retryPromptId, retryFingerprint, submit);
+        const submitAndDeliver = async () => {
+          const result = await submit();
+          if (req.body.delivery_mode !== 'steer' || !resolved.prompt.list().pending.some(item => item.id === result.prompt_id)) return result;
+          signal?.throwIfAborted();
+          const activeTurnId = resolved.accessor.get(IAgentLoopService).status().activeTurnId;
+          if (activeTurnId !== undefined && activeTurnId !== steerTargetTurnId) {
+            return { ...result, delivery_state: 'queued' as const };
+          }
+          try {
+            const [handle] = await resolved.prompt.steer([result.prompt_id]);
+            return { ...result, status: handle?.state === 'blocked' ? 'blocked' as const : result.status,
+              delivery_state: handle?.state === 'steered' ? 'steered' as const : 'queued' as const };
+          } catch (error) {
+            if (!isError2(error) || (error.code !== ErrorCodes.PROMPT_NOT_FOUND && error.code !== ErrorCodes.REQUEST_INVALID)) throw error;
+            return { ...result, delivery_state: 'queued' as const };
+          }
+        };
+        const result = retryPromptId === undefined || retryFingerprint === undefined ? await submitAndDeliver()
+          : await promptRetryFor(resolved.prompt).run(retryPromptId, retryFingerprint, submitAndDeliver);
         sendResult(result);
       } catch (error) {
         if (!enqueued) await preparedMedia?.discard();

@@ -343,7 +343,9 @@ Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的�
 
 通过 `GET /api/sessions/{session_id}/prompts?admission=durable` 读取 `ingress`。将 `ingress_next_cursor` 作为下一页的 `cursor`，直到不再返回游标；即使某一页没有所选 Agent 的条目，也应继续翻页。每页最多扫描 64 个已保存请求，文本预览最长 1024 个字符，并带 `admission_content_truncated: true`。没有文本的已保存请求预览为 `[Attachment]`。原文使用单项读取接口。这两种读取都不加载冷 Agent。目标为子 Agent 时，提交正文及每次查询、操作都须带同一 `agent_id`。
 
-`admission: "admitted"` 表示 Agent 已受理请求，`status` 是其回执状态。`failed` 带有 `admission_error`，原文与附件仍保留。重启后或投递结果不确定的请求转为 `held`，等待显式 `:resume`；服务端会先核对原回执，回执查询失败不会触发再次启动。使用 `:abort` 取消；`aborted: false` 且 admission 为 `held` 表示取消仍待核对，`cancelled` 才确认取消。要修改已保存请求，应先取消，再使用新 ID 提交。
+`admission: "admitted"` 表示 Agent 已受理请求，`status` 是保存的回执状态，不代表当前队列位置或模型已经消费。立即发送时，可选的 `delivery_state: "steered"` 表示核心已将消息分配给目标轮次，`"queued"` 表示仍在等待投递，也包括等待模型切换边界的情况。分配或受理都不证明消息已进入模型请求；应以转录中的实际投递帧及后续请求为准。
+
+`failed` 带有 `admission_error`，原文与附件仍保留。重启后或投递结果不确定的请求转为 `held`，等待显式 `:resume`；服务端会先核对原回执，回执查询失败不会触发再次启动。使用 `:abort` 取消；`aborted: false` 且 admission 为 `held` 表示取消仍待核对，`cancelled` 才确认取消。要修改已保存请求，应先取消，再使用新 ID 提交。
 
 提交提示词后若响应丢失，重试时保持可选的 `prompt_id` 和完整请求体不变。匹配的重试返回原受理回执，不会重复提交，main agent、附件和内嵌 Skill 提交也遵循此规则。输入改变时须使用新 `prompt_id`；复用已受理 ID 携带不同输入会返回 `40938`。较早的受理请求若没有可重放回执，应检查队列或历史，不要自动再次发送。
 
@@ -351,7 +353,9 @@ Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的�
 
 顶层 `profile`、`model` 与 `thinking` 选择也随提示词保存。与 `model` 一起携带 `model_switch_mode: "direct" | "compact" | "fresh"`，即可将已确认的上下文选择附在同一条消息上：保留当前上下文、先生成摘要，或重建新的上下文窗口。该选择不能同时改变 `profile` 或 `execution`。提示词列表项通过可选的 `runtime_controls` 返回保存的设置，其中模式使用 camelCase `modelSwitchMode`。队列恢复后设置仍保留，不会创建独立的控制队列项；保存的选择或受理回执都不证明真实请求已使用目标模型。
 
-立即发送会把普通选中提示词追加到活跃轮次；没有活跃轮次时，则按队列顺序分别启动新轮次。原生提示词携带模型、思考强度或上下文选择时，会在当前模型响应与工具结果完整落入历史后的第一个安全步骤边界应用选择，随后消费同一条消息一次。绑定提交前取消或摘要失败不会改变绑定与上下文，也不会用旧模型发送该消息。不支持的外部上下文重建会失败，不会悄悄变成直接切换。main agent 的前台子任务等待可以转入后台，子任务不会被取消。
+要立即发送新消息，在提交正文中加入 `delivery_mode: "steer"`；省略则保持普通发送。选择持久受理时，服务端会保存这一意图，并在返回 `restoring` 后继续投递，客户端断开也不影响。目标是请求到达时正在运行的轮次；若它在受理前结束、另一轮已经启动，消息仍排队等待独立轮次，不会插入后来的轮次。没有活跃轮次时，沿用原有的新轮次启动路径。需要独立轮次的 profile、execution 或运行控制变更仍保留在队列中。
+
+立即发送会在安全步骤边界把普通选中提示词追加到活跃轮次。原生提示词携带模型、思考强度或上下文选择时，会在当前模型响应与工具结果完整落入历史后应用选择，随后消费同一条消息一次。绑定提交前取消或摘要失败不会改变绑定与上下文，也不会用旧模型发送该消息。不支持的外部上下文重建会失败，不会悄悄变成直接切换。main agent 的前台子任务等待可以转入后台，子任务不会被取消。
 
 仅当消息明确依赖已有的显式切换操作时，使用 `after_model_switch`。不要同时携带新的模型、思考强度、profile、execution 或上下文选择：服务端会拒绝混合选择，不会静默换成旧依赖的绑定。独立的手动压缩通过 `compaction.started`、`compaction.completed` 或 `compaction.cancelled` 报告自身进度；它不会受理或执行待发送消息的模型选择。
 
