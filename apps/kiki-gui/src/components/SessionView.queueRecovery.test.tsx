@@ -10,10 +10,10 @@ import { SessionRouteView } from './SessionView';
 import { SubmissionRecovery } from './SubmissionRecovery';
 import { preserveSubmission, readUnconfirmedSubmissions, readDraft, writeDraft, resetDraftMemoryForTests, readComposerState, writeComposerState, createQuote, selectionCarryoverPresentation } from '@kiki/session-core/composer';
 import { createViewState } from '@kiki/session-core/session';
-import { emptySessionUsage } from '@kiki/protocol';
+import { emptySessionUsage, type PromptItem } from '@kiki/protocol';
 import { ApiError } from '@kiki/session-core/transport';
 
-const fixture = vi.hoisted(() => ({ controller: undefined as object | undefined, autoCompact: true, dependencies: undefined as Promise<void> | undefined, queued: true, partialPrompts: false, structureUnread: false, acquires: 0, releases: 0, persistenceHints: [] as unknown[], loadEntities: vi.fn(async () => true), loadContent: vi.fn(async () => true), readMedia: vi.fn(), readPreview: vi.fn(), pushToast: vi.fn() }));
+const fixture = vi.hoisted(() => ({ controller: undefined as object | undefined, autoCompact: true, dependencies: undefined as Promise<void> | undefined, queued: true, partialPrompts: false, structureUnread: false, durableIngress: undefined as readonly PromptItem[] | undefined, acquires: 0, releases: 0, persistenceHints: [] as unknown[], loadEntities: vi.fn(async () => true), loadContent: vi.fn(async () => true), readMedia: vi.fn(), readPreview: vi.fn(), pushToast: vi.fn() }));
 vi.mock('../lib/toasts', () => ({ pushToast: fixture.pushToast }));
 /** A snapshot field the header shows, cut in the window — the composer's remainder. */
 const STRUCTURE_REF = { source: { kind: 'snapshot' as const, id: '' }, revision: 'rev-1', path: ['session', 'title'], kind: 'text' as const, offset: 12, total: 40 };
@@ -56,6 +56,7 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
       session: { id: 'session-example', title: 'Queue recovery example', workspace_id: 'workspace-example', metadata: { cwd: '/example' }, agent_config: { profile: 'agent' }, profile: 'agent', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
       blocks: fixture.queued ? [{ kind: 'user' as const, id: 'queued-example', promptId: 'queued-example', promptStatus: 'queued' as const, text: 'retain this queued message', createdAt: '2026-01-01T00:00:00Z' }] : [],
       queuedPromptIds: fixture.queued ? ['queued-example'] : [],
+      durableIngress: fixture.durableIngress,
       contentRefs: fixture.structureUnread ? [STRUCTURE_REF] : undefined,
       globalCoverage: fixture.partialPrompts ? { version: 1 as const,
         tasks: { returned: 0, total: 0, hasMore: false }, attachments: { returned: 0, total: 0, hasMore: false },
@@ -89,6 +90,7 @@ beforeEach(() => {
   fixture.queued = true;
   fixture.partialPrompts = false;
   fixture.structureUnread = false;
+  fixture.durableIngress = undefined;
   fixture.acquires = 0;
   fixture.releases = 0;
   fixture.persistenceHints = [];
@@ -119,6 +121,30 @@ it('keeps a queued composer seat mounted when real auto-compaction status is ava
   for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
   expect(container.querySelector('textarea[data-composer]')).not.toBeNull();
   expect(container.querySelector('[data-queue-count]')?.textContent).toContain('1');
+});
+
+it('does not render historical durable receipts as footer message notices', async () => {
+  fixture.queued = false;
+  fixture.durableIngress = [
+    {
+      admission: 'admitted', prompt_id: 'already-admitted', user_message_id: 'message-admitted', status: 'queued',
+      content: [{ type: 'text', text: 'already on the server' }], created_at: '2026-01-01T00:00:00Z',
+    },
+    {
+      admission: 'held', prompt_id: 'waiting-recovery', user_message_id: 'message-held', status: 'queued',
+      content: [{ type: 'text', text: 'waiting for recovery' }], created_at: '2026-01-01T00:00:01Z',
+    },
+  ];
+  root = createRoot(container);
+  await act(async () => root!.render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <I18nProvider><MemoryRouter initialEntries={['/s/session-example']}><Routes>
+        <Route element={<ConversationShell />}><Route path="/s/:id" element={<SessionRouteView sessionId="session-example" sessions={[]} onToggleSidebar={() => {}} />} /></Route>
+      </Routes></MemoryRouter></I18nProvider>
+    </QueryClientProvider>));
+  for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  expect(container.querySelector('[data-durable-ingress]')).toBeNull();
+  expect(container.querySelector('[data-submission-status]')).toBeNull();
 });
 
 it('updates a late saved-session classification without reacquiring the controller or dropping the draft', async () => {
@@ -424,6 +450,7 @@ it.each([false, true])('accepts a send before delayed presentation dependencies 
     await new Promise(resolve => setTimeout(resolve, 40));
   });
   expect([...container.querySelectorAll('[data-user-message]')].filter(row => row.textContent === 'Send without waiting for history')).toHaveLength(1);
+  expect(container.querySelector('[data-submission-pending]')).toBeNull();
   await act(async () => {
     if (hasBaseline) { releaseHistory({ session_id: 'session-example', agent_id: 'main', items: [turn(1, 'Older message')], tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [], has_more: false, coverage: { kind: 'unknown', hasMoreOlder: true }, read: { source: 'cold', readiness: 'partial' } }); await loading; }
     releaseDependencies();

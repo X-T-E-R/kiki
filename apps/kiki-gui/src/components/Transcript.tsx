@@ -186,7 +186,7 @@ import { ThreadRefText } from './ThreadRefChip';
 import { useThreadRefDirectory } from '../lib/threadRefs';
 import { resolveSubagentToolCalls, type SubagentToolCalls } from './subagentToolCalls';
 import { activityOutcomeLabels, DURATION_WORTH_SHOWING_MS, ToolCard } from './ToolCard';
-import { DisclosureChevron, Icon, OutcomeMark } from './icons';
+import { DisclosureChevron, Icon, OutcomeMark, Spinner } from './icons';
 import { Wordmark } from './Wordmark';
 import { useContentContinuation, useTranscriptDetail, useTranscriptController } from './transcriptDetail';
 import { ContentContinuation, frameContentSource, MESSAGE_TEXT_ROOTS, OUTPUT_ROOTS, SHELL_COMMAND_ROOTS, TASK_COMMAND_ROOTS, TASK_OUTPUT_ROOTS, TURN_STEP_ROOTS } from './ContentContinuation';
@@ -333,6 +333,7 @@ export interface SenderIdentity {
 const UserMessage = memo(function UserMessage({
   block,
   onCancelQueued: _onCancelQueued,
+  onRetryPending,
   rowActions,
   annotations,
   senderIdentities,
@@ -340,6 +341,7 @@ const UserMessage = memo(function UserMessage({
 }: {
   block: UserBlock;
   onCancelQueued?: (promptId: string) => void;
+  onRetryPending?: (promptId: string) => void;
   rowActions?: TranscriptRowActions;
   /** Timeline annotations anchored to this message's text (identity-stable). */
   annotations?: readonly TimelineAnnotation[];
@@ -502,6 +504,23 @@ const UserMessage = memo(function UserMessage({
     (segment: string) => <ThreadRefText text={segment} projectSegment={projectUserText} />,
     [],
   );
+  const optimisticStatusLabel = block.optimisticStatus === 'offline'
+    ? t('transcript.sendUnconfirmed')
+    : block.optimisticStatus === 'server'
+      ? block.optimisticRetryable ? t('transcript.serverHeld') : t('transcript.serverSyncing')
+      : t('transcript.sending');
+  const optimisticStatusTitle = block.optimisticStatus === 'sending'
+    ? block.optimisticSlow
+      ? t(block.optimisticPreserved ? 'transcript.sendingSlowTitle' : 'transcript.sendingSlowNoBackupTitle')
+      : undefined
+    : block.optimisticStatus === 'offline'
+      ? t(block.optimisticPreserved ? 'transcript.sendUnconfirmedTitle' : 'transcript.sendUnconfirmedNoBackupTitle')
+      : block.optimisticRetryable ? t('transcript.serverHeldTitle') : t('transcript.serverSyncingTitle');
+  const optimisticStatusIcon = block.optimisticStatus === 'offline'
+    ? <Icon name="warning" size={12} />
+    : block.optimisticStatus === 'server' && block.optimisticRetryable
+      ? <Icon name="hold" size={12} />
+      : <Spinner label={optimisticStatusLabel} size={12} />;
   return (
     <div
       ref={tapActions.rowRef}
@@ -718,8 +737,26 @@ const UserMessage = memo(function UserMessage({
       ) : null}
 
       {block.optimisticStatus !== undefined ? (
-        <span role="status" data-optimistic-status={block.optimisticStatus} className="mt-1 mr-1 text-[11px] text-ink-faint">
-          {t(block.optimisticStatus === 'slow' ? 'transcript.stillSending' : 'transcript.sending')}
+        <span
+          role="status"
+          data-optimistic-status={block.optimisticStatus}
+          data-optimistic-slow={block.optimisticSlow === true ? '' : undefined}
+          title={optimisticStatusTitle}
+          className={`mt-1 mr-1 flex items-center gap-1.5 text-[11px] ${block.optimisticStatus === 'offline' || block.optimisticRetryable ? 'text-amber-ink' : 'text-ink-faint'}`}
+        >
+          {optimisticStatusIcon}
+          <span>{optimisticStatusLabel}</span>
+          {block.optimisticRetryable && block.promptId !== undefined && onRetryPending !== undefined ? (
+            <button
+              type="button"
+              data-pending-retry
+              aria-label={t('transcript.retryEarlier')}
+              onClick={(event) => { event.stopPropagation(); onRetryPending(block.promptId!); }}
+              className="font-medium text-selected-ink underline decoration-dotted hover:decoration-solid focus-visible:outline-2 focus-visible:outline-selected-ink"
+            >
+              {t('transcript.retryEarlier')}
+            </button>
+          ) : null}
         </span>
       ) : null}
       {block.steerStatus !== undefined ? (
@@ -2295,6 +2332,7 @@ const BlockView = memo(function BlockView({
   onAnswerQuestion,
   onDismissQuestion,
   onCancelQueued,
+  onRetryPending,
   agentNames,
   senderIdentities,
   approvalShortcutHints,
@@ -2322,6 +2360,7 @@ const BlockView = memo(function BlockView({
   onAnswerQuestion: (questionId: string, answers: Record<string, QuestionAnswer>) => Promise<void>;
   onDismissQuestion: (questionId: string) => Promise<void>;
   onCancelQueued?: (promptId: string) => void;
+  onRetryPending?: (promptId: string) => void;
   /** subagentId → display name, for tagging child-origin interaction cards. */
   agentNames?: ReadonlyMap<string, string>;
   /** senderAgentId → role profile / model, for the injected-message label. */
@@ -2362,6 +2401,7 @@ const BlockView = memo(function BlockView({
         <UserMessage
           block={block}
           onCancelQueued={readOnly ? undefined : onCancelQueued}
+          onRetryPending={readOnly ? undefined : onRetryPending}
           rowActions={liveRowActions}
           annotations={annotations}
           senderIdentities={senderIdentities}
@@ -3051,6 +3091,7 @@ type TranscriptRowProps = {
   onAnswerQuestion: (questionId: string, answers: Record<string, QuestionAnswer>) => Promise<void>;
   onDismissQuestion: (questionId: string) => Promise<void>;
   onCancelQueued?: (promptId: string) => void;
+  onRetryPending?: (promptId: string) => void;
   onOpenAgent?: (agentId: string) => void;
   /** Scroll back to a subagent's dispatch card (the end row's "Dispatch ↑"). */
   onLocateDispatch?: (agentId: string) => void;
@@ -3114,6 +3155,7 @@ const TranscriptRow = memo(
     onAnswerQuestion,
     onDismissQuestion,
     onCancelQueued,
+    onRetryPending,
     onOpenAgent,
     onLocateDispatch,
     blockOrder,
@@ -3156,6 +3198,7 @@ const TranscriptRow = memo(
             onAnswerQuestion={onAnswerQuestion}
             onDismissQuestion={onDismissQuestion}
             onCancelQueued={onCancelQueued}
+            onRetryPending={onRetryPending}
             agentNames={agentNames}
             senderIdentities={senderIdentities}
             approvalShortcutHints={approvalShortcutHints}
@@ -3194,6 +3237,7 @@ const TranscriptRow = memo(
     prev.agentId === next.agentId &&
     prev.readOnly === next.readOnly &&
     prev.approvalShortcutHints === next.approvalShortcutHints &&
+    prev.onRetryPending === next.onRetryPending &&
     (!nodeUsesAgentNames(prev.node) || prev.agentNames === next.agentNames) &&
     (prev.node.kind !== 'user' || prev.senderIdentities === next.senderIdentities) &&
     subagentBranchEqual(prev.node, prev.forest, next.forest) &&
@@ -3544,6 +3588,7 @@ export function Transcript({
   onAnswerQuestion,
   onDismissQuestion,
   onCancelQueued,
+  onRetryPending,
   onRetryLoad,
   readOnly = false,
   forest,
@@ -3575,6 +3620,7 @@ export function Transcript({
   onAnswerQuestion: (questionId: string, answers: Record<string, QuestionAnswer>) => Promise<void>;
   onDismissQuestion: (questionId: string) => Promise<void>;
   onCancelQueued?: (promptId: string) => void;
+  onRetryPending?: (promptId: string) => void;
   onRetryLoad?: () => void;
   readOnly?: boolean;
   forest?: AgentForest;
@@ -5060,6 +5106,7 @@ export function Transcript({
                         onAnswerQuestion={onAnswerQuestion}
                         onDismissQuestion={onDismissQuestion}
                         onCancelQueued={onCancelQueued}
+                        onRetryPending={onRetryPending}
                         onOpenAgent={onOpenAgent}
                         onLocateDispatch={handleLocateDispatch}
                         blockOrder={blockOrder}

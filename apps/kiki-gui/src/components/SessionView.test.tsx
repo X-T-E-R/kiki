@@ -1578,9 +1578,9 @@ describe('sessionHasStartedConversation', () => {
 });
 
 describe('optimistic submission', () => {
-  it('shows a sending bubble immediately, changes to a still-sending status, and removes it on settle', () => {
+  it('shows a compact sending status and keeps its slow state in the tooltip', () => {
     const state = createViewState('session');
-    const pending = { id: 'local-1', text: 'New message', createdAt: '2026-08-23T00:00:00.000Z', slow: false };
+    const pending = { id: 'local-1', text: 'New message', createdAt: '2026-08-23T00:00:00.000Z', slow: false, preserved: true, retryable: false, status: 'sending' as const };
     const render = (slow: boolean) => renderToStaticMarkup(<MemoryRouter><I18nProvider>
       <Transcript
         state={{ ...state, loaded: true, transcriptReady: true, blocks: withOptimisticUserBlock(state.blocks, { ...pending, slow }) }}
@@ -1592,12 +1592,39 @@ describe('optimistic submission', () => {
     </I18nProvider></MemoryRouter>);
     expect(render(false)).toContain('data-optimistic-status="sending"');
     expect(render(false)).toContain('New message');
-    expect(render(true)).toContain('data-optimistic-status="slow"');
+    expect(render(true)).toContain('data-optimistic-slow=""');
     expect(withOptimisticUserBlock(state.blocks, undefined)).toBe(state.blocks);
   });
 
+  it('keeps unknown delivery and held recovery on the message object with an action only when held', () => {
+    const state = createViewState('session');
+    const render = (status: 'offline' | 'server', retryable: boolean) => renderToStaticMarkup(<MemoryRouter><I18nProvider>
+      <Transcript
+        state={{ ...state, loaded: true, transcriptReady: true, blocks: withOptimisticUserBlock(state.blocks, {
+          id: 'pending-message', text: 'Needs retry', createdAt: '2026-08-23T00:00:00Z', slow: true,
+          preserved: true, retryable, status,
+        }) }}
+        onLoadOlder={async () => false}
+        onResolveApproval={async () => {}}
+        onAnswerQuestion={async () => {}}
+        onDismissQuestion={async () => {}}
+        onRetryPending={() => {}}
+      />
+    </I18nProvider></MemoryRouter>);
+    const offline = render('offline', true);
+    expect(offline).toContain('data-optimistic-status="offline"');
+    expect(offline).toContain('data-pending-retry');
+    expect(offline).not.toContain('stillSending');
+    const held = render('server', true);
+    expect(held).toContain('data-optimistic-status="server"');
+    expect(held).toContain('data-pending-retry');
+    const syncing = render('server', false);
+    expect(syncing).toContain('data-optimistic-status="server"');
+    expect(syncing).not.toContain('data-pending-retry');
+  });
+
   it.each(['queued', 'running', undefined] as const)('replaces the pending echo on a canonical %s event before the REST receipt', (promptStatus) => {
-    const pending = { id: 'prompt-new', text: 'Repeated text', createdAt: '2026-08-23T00:00:00Z', slow: true };
+    const pending = { id: 'prompt-new', text: 'Repeated text', createdAt: '2026-08-23T00:00:00Z', slow: true, preserved: true, retryable: false, status: 'sending' as const };
     const blocks: readonly Block[] = [{ kind: 'user', id: 'message-new', promptId: pending.id,
       text: pending.text, createdAt: pending.createdAt, promptStatus }];
     expect(withOptimisticUserBlock(blocks, pending)).toBe(blocks);

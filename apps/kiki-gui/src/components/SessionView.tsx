@@ -1354,12 +1354,13 @@ function PromptRecordsRemainder({ continuation }: { readonly continuation: NonNu
 
 export function withOptimisticUserBlock(
   blocks: readonly Block[],
-  pending: { id: string; text: string; createdAt: string; slow: boolean } | undefined,
+  pending: { id: string; text: string; createdAt: string; slow: boolean; preserved: boolean; retryable: boolean; status: 'sending' | 'offline' | 'server' } | undefined,
 ): readonly Block[] {
   if (pending === undefined || blocks.some(block => block.kind === 'user' && block.promptId === pending.id)) return blocks;
   return [...blocks, {
     kind: 'user', id: `optimistic-${pending.id}`, promptId: pending.id, text: pending.text,
-    createdAt: pending.createdAt, optimisticStatus: pending.slow ? 'slow' : 'sending',
+    createdAt: pending.createdAt, optimisticStatus: pending.status, optimisticSlow: pending.slow,
+    optimisticPreserved: pending.preserved, optimisticRetryable: pending.retryable,
   } satisfies UserBlock];
 }
 
@@ -1926,10 +1927,13 @@ export function SessionView({
     contentKey: string;
     createdAt: string;
     slow: boolean;
-    status: 'sending' | 'offline' | 'server' | 'executing' | 'failed' | 'cancelled';
+    preserved: boolean;
+    retryable: boolean;
+    status: 'sending' | 'offline' | 'server';
   } | undefined>();
   const pendingSubmissionRef = useRef(pendingSubmission);
   pendingSubmissionRef.current = pendingSubmission;
+  const pendingRetryRef = useRef<{ readonly id: string; readonly run: () => void } | undefined>(undefined);
   const pendingSendRef = useRef(false);
   useEffect(() => {
     if (pendingSubmission === undefined || pendingSubmission.slow) return;
@@ -2235,19 +2239,25 @@ export function SessionView({
     if (pending === undefined) return;
     const ingress = state.durableIngress?.find((item) => item.prompt_id === pending.id);
     const row = state.blocks.find((block): block is UserBlock => block.kind === 'user' && block.promptId === pending.id);
-    const nextStatus = ingress?.admission === 'failed'
-      ? 'failed'
-      : ingress?.admission === 'cancelled'
-        ? 'cancelled'
-        : row !== undefined && row.promptStatus !== 'queued' || state.activePromptId === pending.id
-          ? 'executing'
-          : ingress?.admission === 'restoring' || ingress?.admission === 'admitted' || ingress?.admission === 'held'
-            ? 'server'
-            : undefined;
-    if (nextStatus !== undefined && nextStatus !== pending.status) {
-      setPendingSubmission({ ...pending, status: nextStatus, slow: false });
+    const admission = ingress?.admission;
+    if (admission === 'failed' || admission === 'cancelled') {
+      setPendingSubmission((current) => current?.id === pending.id ? undefined : current);
+      return;
     }
-  }, [state.activePromptId, state.blocks, state.durableIngress]);
+    // An active prompt id alone is not a visible hand-off: keep the local body
+    // until the timeline row or queue projection actually owns this prompt.
+    const canonical = row !== undefined || state.queuedPromptIds.includes(pending.id);
+    if (canonical) {
+      setPendingSubmission((current) => current?.id === pending.id ? undefined : current);
+      return;
+    }
+    const serverState = admission === 'restoring' || admission === 'admitted' || admission === 'held'
+      ? { status: 'server' as const, retryable: admission === 'held' }
+      : undefined;
+    if (serverState !== undefined && (pending.status !== serverState.status || pending.retryable !== serverState.retryable)) {
+      setPendingSubmission({ ...pending, ...serverState, slow: false });
+    }
+  }, [pendingSubmission?.id, pendingSubmission?.status, pendingSubmission?.retryable, state.blocks, state.durableIngress, state.queuedPromptIds]);
 
   // Which projection of the timeline this session shows (remembered per
   // session; a `message` delivery opens in the message view) and the delivery
@@ -3114,7 +3124,7 @@ export function SessionView({
         }
         const contentKey = JSON.stringify(content);
         const retryablePending = pendingSubmissionRef.current;
-        const retryableStatus = retryablePending?.status === 'offline' || retryablePending?.status === 'failed';
+        const retryableStatus = retryablePending?.status === 'offline';
         const submissionId = retryableStatus && retryablePending.text === echoText && retryablePending.contentKey === contentKey
           ? retryablePending.id
           : crypto.randomUUID();
@@ -3146,8 +3156,11 @@ export function SessionView({
         let accepted = false;
         const submitCaptured = (first = false): Promise<void> | undefined => {
           const currentPending = pendingSubmissionRef.current;
+          const ingress = (controller.getDurableIngress?.() ?? []).find((item) => item.prompt_id === submissionId);
+          const resume = !first && (ingress?.admission === 'failed' || ingress?.admission === 'held') && controller.resumeDurableIngress !== undefined;
+          const retryingHeld = resume && currentPending?.status === 'server';
           if (!composerOwnerActive.current || (!first && (accepted || pendingSendRef.current))) return;
-          if (!first && (currentPending?.status === 'server' || currentPending?.status === 'executing' || currentPending?.status === 'cancelled')) return;
+          if (!first && currentPending?.status === 'server' && !retryingHeld) return;
           pendingSendRef.current = true;
           let compositionReleased = false;
           const releaseComposition = (force = false) => {
@@ -3168,9 +3181,16 @@ export function SessionView({
                 (current) => current.filter((item) => !sentIds.has(item.id)));
             }
           };
-          setPendingSubmission({ id: submissionId, text: echoText, contentKey, createdAt: new Date().toISOString(), slow: false, status: 'sending' });
-          const ingress = (controller.getDurableIngress?.() ?? []).find((item) => item.prompt_id === submissionId);
-          const resume = !first && (ingress?.admission === 'failed' || ingress?.admission === 'held') && controller.resumeDurableIngress !== undefined;
+          setPendingSubmission({
+            id: submissionId,
+            text: echoText,
+            contentKey,
+            createdAt: new Date().toISOString(),
+            slow: false,
+            preserved: currentPending?.id === submissionId ? currentPending.preserved : true,
+            retryable: false,
+            status: 'sending',
+          });
           const request = resume
             ? controller.resumeDurableIngress(submissionId, {
               admission: 'durable', content: submission.content, prompt_id: submission.promptId,
@@ -3183,6 +3203,7 @@ export function SessionView({
             : controller.sendPrompt({
               ...submission,
               onPreservation: (persisted) => {
+                setPendingSubmission((current) => current?.id === submissionId ? { ...current, preserved: persisted } : current);
                 if (persisted) releaseComposition(first);
                 else pushToast({ tone: 'info', text: t('sv.submissionRecovery.degraded') });
               },
@@ -3206,9 +3227,11 @@ export function SessionView({
                   (current) => restoreSentAnnotations(current, sentQuotes),
                   (current) => restoreSentAnnotations(current, sentAnnotations));
               }
-              setPendingSubmission((current) => current?.id === submissionId
-                ? { ...current, slow: true, status: result.admission === 'cancelled' ? 'cancelled' : 'failed' }
-                : current);
+              setPendingSubmission((current) => current?.id === submissionId ? undefined : current);
+              pushToast({
+                tone: result.admission === 'cancelled' ? 'info' : 'error',
+                text: t(result.admission === 'cancelled' ? 'sv.submissionRecovery.cancelled' : 'sv.submissionRecovery.failed'),
+              });
               return;
             }
             accepted = true;
@@ -3254,18 +3277,20 @@ export function SessionView({
               // fetch failure has unknown delivery; any retry must reuse the
               // same promptId so the server can deduplicate an accepted request.
               setPendingSubmission((current) => current?.id === submissionId
-                ? { ...current, slow: true, status: 'offline' }
+                ? { ...current, slow: true, retryable: true, status: 'offline' }
                 : current);
-            } else if (resume) {
+              return;
+            }
+            if (resume) {
               setPendingSubmission((current) => current?.id === submissionId
-                ? { ...current, slow: true, status: 'failed' }
+                ? { ...current, slow: true, retryable: true, status: 'server' }
                 : current);
             } else {
               setPendingSubmission((current) => current?.id === submissionId ? undefined : current);
             }
             pushToast({
-              tone: transportUnconfirmed ? 'info' : 'error',
-              text: transportUnconfirmed ? t('sv.submissionRecovery.title') : error instanceof Error ? error.message : String(error),
+              tone: 'error',
+              text: error instanceof Error ? error.message : String(error),
               code: isApi ? error.code : undefined,
               requestId: isApi ? error.requestId : undefined,
               detail: error instanceof Error ? error.stack : undefined,
@@ -3281,6 +3306,7 @@ export function SessionView({
             setPendingSubmission((current) => current?.id === submissionId && current.status === 'sending' ? undefined : current);
           });
         };
+        pendingRetryRef.current = { id: submissionId, run: () => { void submitCaptured(); } };
         return submitCaptured(true);
       },
       activateSkill: (
@@ -4215,6 +4241,10 @@ boundExecution,
     };
   }, [controller, editHoldPromptId]);
   const handleRetryLoad = useCallback(() => void controller?.retryOpen(), [controller]);
+  const retryPendingSubmission = useCallback((promptId: string) => {
+    const pending = pendingRetryRef.current;
+    if (pending?.id === promptId) pending.run();
+  }, []);
 
 
   // Submit the prompt or skill that was drafted on /new, now that the live
@@ -4547,29 +4577,16 @@ boundExecution,
     const blockId = collectDraftAnnotationTargets(mainTranscriptBlocks, [annotation]).keys().next().value;
     if (blockId !== undefined) navigateTimeline({ kind: 'annotation', blockId, annotationId: annotation.id }, { sessionId });
   }, [mainTranscriptBlocks, navigateTimeline, sessionId]);
-  // Missing canonical records are reading work, not queued messages. Keep their
-  // continuation in the footer even when there is no queue header to open.
+  // The composer footer carries connection facts and reading continuation only;
+  // each message keeps its own send lifecycle on the timeline.
   const composerStatusNotice = useMemo(() => {
     const connectionNotice = wsStatus === 'connecting' ? t('app.reconnecting') : wsStatus === 'closed' ? t('app.disconnected') : undefined;
-    const pendingNotice = pendingSubmission?.status === 'offline' ? t('sv.submissionRecovery.title')
-      : pendingSubmission?.status === 'server' ? t('sv.submissionRecovery.server')
-        : pendingSubmission?.status === 'executing' ? t('sv.submissionRecovery.executing')
-          : pendingSubmission?.status === 'failed' ? t('sv.submissionRecovery.failed')
-            : pendingSubmission?.status === 'cancelled' ? t('sv.submissionRecovery.cancelled') : undefined;
-    const ingress = state.durableIngress ?? [];
-    const failedIngress = ingress.some((item) => item.admission === 'failed');
-    const retainedIngress = ingress.some((item) => item.admission === 'restoring' || item.admission === 'admitted' || item.admission === 'held');
-    const ingressNotice = pendingNotice === undefined
-      ? failedIngress ? t('sv.submissionRecovery.failed') : retainedIngress ? t('sv.submissionRecovery.server') : undefined
-      : undefined;
-    if (!hasPromptContinuation && connectionNotice === undefined && pendingNotice === undefined && ingressNotice === undefined) return undefined;
+    if (!hasPromptContinuation && connectionNotice === undefined) return undefined;
     return <>
       {hasPromptContinuation && promptCoverage !== undefined ? <PromptRecordsRemainder continuation={{ coverage: promptCoverage, status: promptEntityLoad, onRequest: handleLoadPromptEntities }} /> : null}
       {connectionNotice === undefined ? null : <span className="truncate">{connectionNotice}</span>}
-      {pendingNotice === undefined ? null : <span data-submission-pending className="truncate">{pendingNotice}</span>}
-      {ingressNotice === undefined ? null : <span data-durable-ingress className="truncate">{ingressNotice}</span>}
     </>;
-  }, [hasPromptContinuation, promptCoverage, promptEntityLoad, handleLoadPromptEntities, pendingSubmission?.status, state.durableIngress, wsStatus, t]);
+  }, [hasPromptContinuation, promptCoverage, promptEntityLoad, handleLoadPromptEntities, wsStatus, t]);
 
   const composerBusy = canAbortActiveTurn(state);
   // The working line under the composer: only while the agent itself is
@@ -4977,6 +4994,7 @@ boundExecution,
             onDismissQuestion: handleDismissQuestion,
             onCancelQueued: handleCancelQueuedChips,
             onRetryLoad: handleRetryLoad,
+            onRetryPending: retryPendingSubmission,
             forest,
             onOpenAgent: openAgent,
             rowActions: transcriptRowActions,

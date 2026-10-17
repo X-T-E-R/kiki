@@ -37,7 +37,10 @@ export interface UserBlock {
   readonly promptId?: string;
   readonly userMessageId?: string;
   readonly clientRequestId?: string;
-  readonly optimisticStatus?: 'sending' | 'slow';
+  readonly optimisticStatus?: 'sending' | 'offline' | 'server';
+  readonly optimisticSlow?: boolean;
+  readonly optimisticPreserved?: boolean;
+  readonly optimisticRetryable?: boolean;
   /**
    * "Send now" (steer) lifecycle of a message sent into a running turn:
    * `sending` until the server accepts it, `waiting` while it sits between
