@@ -2,7 +2,7 @@ import { visibleWidth, type TUI } from '@kiki/pi-tui';
 import chalk from 'chalk';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { ToolCallComponent } from '#/tui/components/messages/tool-call';
+import { extractKeyArgument, ToolCallComponent } from '#/tui/components/messages/tool-call';
 import { STATUS_BULLET } from '#/tui/constant/symbols';
 import { darkColors } from '#/tui/theme/colors';
 
@@ -836,6 +836,108 @@ describe('ToolCallComponent', () => {
     expect(out).toContain('final-file.ts');
     expect(out).toContain('…');
     expect(out).not.toContain('apps/kimi-code/src/tui/components/messages/tool-renderers/long-pa…');
+  });
+
+  describe('key argument truncation', () => {
+    it('caps a CJK query by terminal cells instead of UTF-16 length', () => {
+      // 70 CJK characters = 140 cells; a UTF-16 budget of 60 would let 60
+      // characters (120 cells) through and wrap the header.
+      const keyArg = extractKeyArgument('WebSearch', { query: '中文搜索关键词'.repeat(10) });
+      expect(keyArg).not.toBeNull();
+      expect(visibleWidth(keyArg!)).toBeLessThanOrEqual(60);
+      expect(keyArg!.endsWith('…')).toBe(true);
+      expect(keyArg!.startsWith('中')).toBe(true);
+    });
+
+    it('never splits an emoji at the cut', () => {
+      // 40 emoji = 80 UTF-16 code units; slicing at 57 code units used to
+      // break a surrogate pair.
+      const keyArg = extractKeyArgument('WebSearch', { query: '😀'.repeat(40) }) ?? '';
+      expect(visibleWidth(keyArg)).toBeLessThanOrEqual(60);
+      expect(keyArg.endsWith('…')).toBe(true);
+      const kept = keyArg.slice(0, -1);
+      expect(kept.length > 0 && [...kept].every((ch) => ch === '😀')).toBe(true);
+    });
+
+    it('caps mixed CJK and ASCII by cells', () => {
+      const keyArg = extractKeyArgument('Grep', { pattern: `搜索${'abc'.repeat(40)}` }) ?? '';
+      expect(visibleWidth(keyArg)).toBeLessThanOrEqual(60);
+      expect(keyArg.endsWith('…')).toBe(true);
+      expect(keyArg.startsWith('搜')).toBe(true);
+    });
+
+    it('keeps short and 60-cell ASCII arguments unchanged', () => {
+      expect(extractKeyArgument('WebSearch', { query: 'hello world' })).toBe('hello world');
+      expect(extractKeyArgument('WebSearch', { query: 'a'.repeat(60) })).toBe('a'.repeat(60));
+    });
+
+    it('truncates long ASCII arguments to the same 60-cell budget with an ellipsis', () => {
+      const keyArg = extractKeyArgument('WebSearch', { query: 'a'.repeat(100) });
+      expect(keyArg).toBe(`${'a'.repeat(59)}…`);
+      expect(visibleWidth(keyArg!)).toBe(60);
+    });
+
+    it('keeps the tail of a long CJK path recognizable', () => {
+      const path = '项目/源码/组件/界面/消息/工具调用/渲染/输出/最终/深层/目标文件.ts';
+      const keyArg = extractKeyArgument('Read', { path }) ?? '';
+      expect(keyArg.startsWith('…')).toBe(true);
+      expect(keyArg.endsWith('目标文件.ts')).toBe(true);
+      expect(visibleWidth(keyArg)).toBeLessThanOrEqual(60);
+    });
+
+    it('keeps the tail of a long emoji path without broken characters', () => {
+      const path = `${'dir/'.repeat(30)}📦/目标.ts`;
+      const keyArg = extractKeyArgument('Read', { path }) ?? '';
+      expect(keyArg.startsWith('…')).toBe(true);
+      expect(keyArg.endsWith('目标.ts')).toBe(true);
+      expect(visibleWidth(keyArg)).toBeLessThanOrEqual(60);
+      expect(keyArg).not.toContain('\uFFFD');
+    });
+
+    it('keeps the header on one row for a long CJK query', () => {
+      const component = new ToolCallComponent(
+        {
+          id: 'call_cjk_query',
+          name: 'WebSearch',
+          args: { query: '中文搜索关键词'.repeat(10) },
+        },
+        undefined,
+      );
+
+      // spacer + header; before cell budgeting the 120-cell summary wrapped
+      // the header onto a second row.
+      const lines = component.render(100);
+      expect(lines).toHaveLength(2);
+      expect(strip(lines[1] ?? '')).toContain('…');
+    });
+
+    it('keeps a long CJK subagent description on a single header row', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(10_000);
+      const component = new ToolCallComponent(
+        {
+          id: 'call_agent_cjk',
+          name: 'AgentRun',
+          args: { description: '调查项目里所有的中文测试文件并汇总结果'.repeat(3) },
+        },
+        undefined,
+      );
+      component.onSubagentSpawned({
+        agentId: 'sub_cjk_1',
+        agentName: 'explore',
+        runInBackground: false,
+      });
+
+      // spacer + header + summary line + two-row active window; a 120-cell
+      // description used to wrap the header and grow the card by a row.
+      const lines = component.render(120);
+      expect(lines).toHaveLength(5);
+      const header = strip(lines[1] ?? '');
+      expect(header).toContain('Explore Agent Queued (');
+      expect(header).toContain('…');
+
+      component.dispose();
+    });
   });
 
   it('shows Read paths relative to the active workspace', () => {
