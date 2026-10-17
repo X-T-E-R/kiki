@@ -1320,3 +1320,45 @@ describe('SettingsPage search locating', () => {
     }
   });
 });
+
+describe('SettingsPage mobile drawer', () => {
+  it('owns Escape while open: the drawer closes, the event is consumed before the app-level settings Escape, and focus returns to the trigger', async () => {
+    const container = await renderSettings('/settings/general');
+    const trigger = container.querySelector<HTMLElement>('[data-settings-nav-trigger]')!;
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(trigger.getAttribute('aria-haspopup')).toBe('dialog');
+    trigger.focus();
+
+    await click(trigger);
+    const drawer = document.querySelector<HTMLElement>('[data-settings-nav-drawer]');
+    expect(drawer).not.toBeNull();
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    expect(trigger.getAttribute('aria-controls')).toBe('settings-nav-drawer');
+    // Focus moved into the drawer, onto the leaf that names the open page.
+    expect(drawer!.contains(document.activeElement)).toBe(true);
+    expect((document.activeElement as HTMLElement | null)?.getAttribute('data-settings-nav-leaf')).toBe('general');
+    expect(drawer!.querySelector('[data-settings-nav-leaf="permissions"]')).not.toBeNull();
+
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    await act(async () => { window.dispatchEvent(escape); });
+    // The app-level "Escape leaves settings" handler (App.tsx) skips exactly
+    // when defaultPrevented is set — assert the contract, not App's absence.
+    expect(escape.defaultPrevented).toBe(true);
+    expect(document.querySelector('[data-settings-nav-drawer]')).toBeNull();
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(trigger);
+    // Still on the same settings page: nothing navigated away.
+    expect(container.querySelector('[data-settings-page-title]')).not.toBeNull();
+  });
+
+  it('returns focus to the trigger when the drawer closes through its close control', async () => {
+    const container = await renderSettings('/settings/general');
+    const trigger = container.querySelector<HTMLElement>('[data-settings-nav-trigger]')!;
+    trigger.focus();
+    await click(trigger);
+    const close = document.querySelector<HTMLElement>('[data-settings-nav-drawer] button[aria-label]')!;
+    await click(close);
+    expect(document.querySelector('[data-settings-nav-drawer]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+});

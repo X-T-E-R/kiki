@@ -165,6 +165,11 @@ function SpaceBand() {
  * Narrow-viewport navigation: the old flat <select> could not express the
  * group hierarchy, so the current location is a button that opens a drawer
  * holding the same grouped tree the desktop rail shows.
+ *
+ * The drawer owns Escape while it is open the same way Dialog does: a
+ * capture-phase window listener that prevents and stops the event, so the
+ * app-level "Escape leaves settings" handler (App.tsx) never sees it. Focus
+ * moves to the active leaf on open and returns to the trigger on close.
  */
 function MobileSettingsDrawer({
   active,
@@ -182,13 +187,34 @@ function MobileSettingsDrawer({
   onNavigate: (section: SectionId) => void;
 }) {
   const { t } = useI18n();
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    if (!open) return;
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      closeRef.current();
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    const drawer = document.querySelector('[data-settings-nav-drawer]');
+    const activeLeaf = drawer?.querySelector<HTMLElement>('[data-settings-nav-leaf][aria-current="page"]');
+    (activeLeaf ?? drawer?.querySelector<HTMLElement>('button'))?.focus();
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true);
+      previous?.focus();
+    };
+  }, [open]);
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label={t('st.nav.browse')}>
+    <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label={t('st.nav.browse')} id="settings-nav-drawer" data-settings-nav-drawer>
       <button
         type="button"
         aria-label={t('common.close')}
-        onClick={onClose}
+        onClick={() => { closeRef.current(); }}
         className="absolute inset-0 bg-shell/20"
       />
       <div className="absolute inset-y-0 left-0 flex w-[280px] flex-col overflow-y-auto overscroll-y-contain bg-canvas p-3 shadow-[var(--kiki-sheet-shadow)]">
@@ -506,6 +532,9 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
                   <button
                     type="button"
                     data-settings-nav-trigger
+                    aria-haspopup="dialog"
+                    aria-expanded={drawerOpen}
+                    aria-controls="settings-nav-drawer"
                     onClick={() => { setDrawerOpen(true); }}
                     className="mt-2 flex h-11 w-full items-center justify-between gap-2 rounded-md px-2 text-[13px] text-ink outline-none transition-colors hover:bg-ink/[0.04]"
                   >
