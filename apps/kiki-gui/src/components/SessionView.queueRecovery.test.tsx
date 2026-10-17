@@ -9,7 +9,7 @@ import { ConversationShell } from './ConversationShell';
 import { SessionRouteView } from './SessionView';
 import { SubmissionRecovery } from './SubmissionRecovery';
 import { preserveSubmission, readUnconfirmedSubmissions, readDraft, writeDraft, resetDraftMemoryForTests, readComposerState, writeComposerState, createQuote, selectionCarryoverPresentation } from '@kiki/session-core/composer';
-import { createViewState } from '@kiki/session-core/session';
+import { createViewState, type UserBlock } from '@kiki/session-core/session';
 import { emptySessionUsage, type PromptItem } from '@kiki/protocol';
 import { ApiError } from '@kiki/session-core/transport';
 
@@ -78,7 +78,23 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
   return { ...actual, SessionController: function SessionControllerFixture() { return fixture.controller ?? new Controller(); } };
 });
 vi.mock('./TerminalPanel', () => ({ TerminalPanel: () => null }));
-vi.mock('./Transcript', async (original) => ({ ...(await original<typeof import('./Transcript')>()), Transcript: ({ state }: { state: import('@kiki/session-core/session').SessionViewState }) => <div data-transcript>{state.blocks.filter(block => block.kind === 'user' && block.promptStatus !== 'queued').map(block => <div key={block.id} data-user-message={block.id}>{block.kind === 'user' ? block.text : ''}</div>)}</div> }));
+vi.mock('./Transcript', async (original) => ({
+  ...(await original<typeof import('./Transcript')>()),
+  Transcript: ({
+    state, onRetryPending,
+  }: {
+    state: import('@kiki/session-core/session').SessionViewState;
+    onRetryPending?: (promptId: string) => void;
+  }) => {
+    const users = state.blocks.filter((block): block is UserBlock => block.kind === 'user');
+    return <div data-transcript>
+      {users.filter(block => block.promptStatus !== 'queued').map(block => <div key={block.id} data-user-message={block.id}>{block.text}</div>)}
+      {users.filter(block => block.optimisticStatus !== undefined).map(block => <span key={`status-${block.id}`} data-optimistic-status={block.optimisticStatus} />)}
+      {users.filter(block => block.optimisticRetryable && block.promptId !== undefined).map(block => <button key={`retry-${block.id}`} type="button" data-pending-retry onClick={() => onRetryPending?.(block.promptId!)}>Retry</button>)}
+      {(state.durableIngress ?? []).filter(item => item.admission === 'held').map(item => <button key={`held-${item.prompt_id}`} type="button" data-pending-retry onClick={() => onRetryPending?.(item.prompt_id)}>Retry held</button>)}
+    </div>;
+  },
+}));
 vi.mock('./SelectionQuoteButton', () => ({ SelectionQuoteButton: ({ onQuote, onAnnotate }: { onQuote: (quote: string) => void; onAnnotate: (quote: string, comment: string) => void }) => <><button data-fixture-quote onClick={() => onQuote('new passage')}>Quote new passage</button><button data-fixture-annotation onClick={() => onAnnotate('new annotated passage', 'keep this note')}>Annotate new passage</button></> }));
 vi.mock('./mediaPreview', () => ({ PreviewToggleButton: () => null, useMediaPreview: () => undefined, MediaPreviewProvider: ({ children }: { children: ReactNode }) => <>{children}</> }));
 vi.mock('./RightRail', () => ({ RightRail: () => null }));
@@ -145,6 +161,146 @@ it('does not render historical durable receipts as footer message notices', asyn
   for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
   expect(container.querySelector('[data-durable-ingress]')).toBeNull();
   expect(container.querySelector('[data-submission-status]')).toBeNull();
+});
+
+it('clicking a held message retries the same durable prompt exactly once', async () => {
+  const promptId = 'held-prompt';
+  const held = {
+    admission: 'held' as const, prompt_id: promptId, user_message_id: 'held-message', status: 'queued' as const,
+    content: [{ type: 'text' as const, text: 'held body' }], created_at: '2026-01-01T00:00:00Z',
+  };
+  const resumed = { ...held, admission: 'admitted' as const, status: 'running' as const };
+  let sentPromptId = promptId;
+  const listeners = new Set<() => void>();
+  let state = {
+    ...createViewState('session-example'), loaded: true, transcriptReady: true,
+    session: { id: 'session-example', title: 'Held prompt', workspace_id: 'workspace-example', ephemeral: false,
+      metadata: { cwd: '/example' }, agent_config: { profile: 'agent' }, profile: 'agent', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
+  };
+  const publish = (durableIngress: readonly PromptItem[]) => {
+    state = { ...state, durableIngress };
+    for (const listener of listeners) listener();
+  };
+  const sendPrompt = vi.fn(async (input: { promptId?: string; onPreservation?: (persisted: boolean) => void }) => {
+    sentPromptId = input.promptId ?? promptId;
+    const sent = { ...held, prompt_id: sentPromptId, user_message_id: `${sentPromptId}-message` };
+    input.onPreservation?.(true);
+    await Promise.resolve();
+    publish([sent]);
+    await Promise.resolve();
+    publish([sent]);
+    return sent;
+  });
+  const resumeDurableIngress = vi.fn(async (id: string, _body: unknown) => {
+    const sent = { ...resumed, prompt_id: id, user_message_id: `${id}-message` };
+    publish([sent]);
+    return sent;
+  });
+  const controller = {
+    subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+    subscribeInterruptedPrompt: () => () => {},
+    subscribeAgent: () => () => {},
+    getState: () => state,
+    getAgentState: () => state,
+    getForest: () => ({ roots: [], byId: {} }),
+    getDurableIngress: () => state.durableIngress ?? [],
+    sendPrompt,
+    resumeDurableIngress,
+    open: async () => {}, close() {}, setFocusedAgent() {}, refreshSession: async () => {}, retainHistoryRead: () => () => {},
+    contentRefsFor: () => [],
+  };
+  fixture.controller = controller;
+  root = createRoot(container);
+  await act(async () => root!.render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <I18nProvider><MemoryRouter initialEntries={['/s/session-example']}><Routes>
+        <Route element={<ConversationShell />}><Route path="/s/:id" element={<SessionRouteView sessionId="session-example" sessions={[]} onToggleSidebar={() => {}} />} /></Route>
+      </Routes></MemoryRouter></I18nProvider>
+    </QueryClientProvider>));
+  for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  const input = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'held body');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!.click(); });
+  await act(async () => { await Promise.resolve(); await new Promise(resolve => setTimeout(resolve, 20)); });
+  expect(sendPrompt).toHaveBeenCalledTimes(1);
+  expect(controller.getState().durableIngress).toHaveLength(1);
+  expect(container.querySelector('[data-transcript]')).not.toBeNull();
+  const retry = container.querySelector<HTMLButtonElement>('[data-pending-retry]');
+  expect(retry).not.toBeNull();
+  await act(async () => { retry!.click(); });
+  expect(resumeDurableIngress).toHaveBeenCalledTimes(1);
+  expect(resumeDurableIngress.mock.calls[0]?.[0]).toBe(sentPromptId);
+  expect(resumeDurableIngress.mock.calls[0]?.[1]).toMatchObject({ admission: 'durable', prompt_id: sentPromptId });
+  expect(sendPrompt).toHaveBeenCalledTimes(1);
+});
+
+it('keeps the admitted body pending until a canonical projection takes over', async () => {
+  const promptId = 'delayed-projection';
+  const admitted = {
+    admission: 'admitted' as const, prompt_id: promptId, user_message_id: 'delayed-message', status: 'running' as const,
+    content: [{ type: 'text' as const, text: 'delayed body' }], created_at: '2026-01-01T00:00:00Z',
+  };
+  let sentPromptId = promptId;
+  const listeners = new Set<() => void>();
+  let state = {
+    ...createViewState('session-example'), loaded: true, transcriptReady: true,
+    session: { id: 'session-example', title: 'Delayed projection', workspace_id: 'workspace-example', ephemeral: false,
+      metadata: { cwd: '/example' }, agent_config: { profile: 'agent' }, profile: 'agent', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
+  };
+  const publish = (patch: Partial<typeof state>) => {
+    state = { ...state, ...patch };
+    for (const listener of listeners) listener();
+  };
+  let finish!: () => void;
+  const sendPrompt = vi.fn((input: { promptId?: string; onPreservation?: (persisted: boolean) => void }) => {
+    sentPromptId = input.promptId ?? promptId;
+    const sent = { ...admitted, prompt_id: sentPromptId, user_message_id: `${sentPromptId}-message` };
+    input.onPreservation?.(true);
+    return new Promise<PromptItem>(resolve => {
+      finish = () => { publish({ durableIngress: [sent] }); resolve(sent); };
+    });
+  });
+  const controller = {
+    subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+    subscribeInterruptedPrompt: () => () => {},
+    subscribeAgent: () => () => {},
+    getState: () => state,
+    getAgentState: () => state,
+    getForest: () => ({ roots: [], byId: {} }),
+    getDurableIngress: () => state.durableIngress ?? [],
+    sendPrompt,
+    open: async () => {}, close() {}, setFocusedAgent() {}, refreshSession: async () => {}, retainHistoryRead: () => () => {},
+    contentRefsFor: () => [],
+  };
+  fixture.controller = controller;
+  root = createRoot(container);
+  await act(async () => root!.render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <I18nProvider><MemoryRouter initialEntries={['/s/session-example']}><Routes>
+        <Route element={<ConversationShell />}><Route path="/s/:id" element={<SessionRouteView sessionId="session-example" sessions={[]} onToggleSidebar={() => {}} />} /></Route>
+      </Routes></MemoryRouter></I18nProvider>
+    </QueryClientProvider>));
+  for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  const input = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'delayed body');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!.click(); });
+  const request = sendPrompt.mock.results[0]!.value as Promise<PromptItem>;
+  await act(async () => { finish(); await request; await Promise.resolve(); });
+  expect(container.querySelector('[data-optimistic-status]')).not.toBeNull();
+  await act(async () => {
+    publish({
+      blocks: [{ kind: 'user', id: 'canonical-delayed', promptId: sentPromptId, text: 'delayed body', promptStatus: 'running', createdAt: '2026-01-01T00:00:01Z' }],
+    });
+    await new Promise(resolve => setTimeout(resolve, 20));
+  });
+  expect(container.querySelector('[data-optimistic-status]')).toBeNull();
+  expect(container.querySelector('[data-user-message="canonical-delayed"]')?.textContent).toContain('delayed body');
 });
 
 it('updates a late saved-session classification without reacquiring the controller or dropping the draft', async () => {

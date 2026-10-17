@@ -1934,6 +1934,7 @@ export function SessionView({
   const pendingSubmissionRef = useRef(pendingSubmission);
   pendingSubmissionRef.current = pendingSubmission;
   const pendingRetryRef = useRef<{ readonly id: string; readonly run: () => void } | undefined>(undefined);
+  const pendingRecoveryRef = useRef<{ readonly id: string; readonly restore: () => void } | undefined>(undefined);
   const pendingSendRef = useRef(false);
   useEffect(() => {
     if (pendingSubmission === undefined || pendingSubmission.slow) return;
@@ -2241,13 +2242,26 @@ export function SessionView({
     const row = state.blocks.find((block): block is UserBlock => block.kind === 'user' && block.promptId === pending.id);
     const admission = ingress?.admission;
     if (admission === 'failed' || admission === 'cancelled') {
+      if (pendingSendRef.current) return;
+      const recoveryEntry = pendingRecoveryRef.current?.id === pending.id ? pendingRecoveryRef.current : undefined;
+      pendingRecoveryRef.current = undefined;
+      if (recoveryEntry === undefined) {
+        setPendingSubmission((current) => current?.id === pending.id ? undefined : current);
+        return;
+      }
+      recoveryEntry.restore();
       setPendingSubmission((current) => current?.id === pending.id ? undefined : current);
+      pushToast({
+        tone: admission === 'cancelled' ? 'info' : 'error',
+        text: t(admission === 'cancelled' ? 'sv.submissionRecovery.cancelled' : 'sv.submissionRecovery.failed'),
+      });
       return;
     }
     // An active prompt id alone is not a visible hand-off: keep the local body
     // until the timeline row or queue projection actually owns this prompt.
     const canonical = row !== undefined || state.queuedPromptIds.includes(pending.id);
     if (canonical) {
+      if (pendingRecoveryRef.current?.id === pending.id) pendingRecoveryRef.current = undefined;
       setPendingSubmission((current) => current?.id === pending.id ? undefined : current);
       return;
     }
@@ -2257,7 +2271,7 @@ export function SessionView({
     if (serverState !== undefined && (pending.status !== serverState.status || pending.retryable !== serverState.retryable)) {
       setPendingSubmission({ ...pending, ...serverState, slow: false });
     }
-  }, [pendingSubmission?.id, pendingSubmission?.status, pendingSubmission?.retryable, state.blocks, state.durableIngress, state.queuedPromptIds]);
+  }, [pendingSubmission?.id, pendingSubmission?.status, pendingSubmission?.retryable, state.blocks, state.durableIngress, state.queuedPromptIds, t]);
 
   // Which projection of the timeline this session shows (remembered per
   // session; a `message` delivery opens in the message view) and the delivery
@@ -3134,6 +3148,23 @@ export function SessionView({
         const sentIds = new Set(sentAnnotations.map((annotation) => annotation.id));
         const sentQuotes = quotes;
         const sentQuoteIds = new Set(sentQuotes.map((item) => item.id));
+        const restoreCapturedSubmission = () => {
+          if (composerOwnerActive.current) {
+            setAnnotations((current) => restoreSentAnnotations(current, sentAnnotations));
+            setQuotes((current) => restoreSentAnnotations(current, sentQuotes));
+            const recovery = recoverFailedSubmission(draftRef.current, attachmentsRef.current, stripThreadRefContext(text), composerAttachments);
+            if (recovery !== undefined) {
+              updateDraft(recovery.text);
+              updateAttachments(recovery.attachments);
+            }
+          } else {
+            recoverSubmittedDraft(sessionId, stripThreadRefContext(text), composerAttachments);
+            updateStoredSelectionCarryovers(sessionId,
+              (current) => restoreSentAnnotations(current, sentQuotes),
+              (current) => restoreSentAnnotations(current, sentAnnotations));
+          }
+        };
+        pendingRecoveryRef.current = { id: submissionId, restore: restoreCapturedSubmission };
         // Returned to the composer: it holds its send latch until this round
         // settles, which is what blocks a rapid duplicate send (and releases
         // for a retry when the submit fails).
@@ -3158,8 +3189,9 @@ export function SessionView({
           const currentPending = pendingSubmissionRef.current;
           const ingress = (controller.getDurableIngress?.() ?? []).find((item) => item.prompt_id === submissionId);
           const resume = !first && (ingress?.admission === 'failed' || ingress?.admission === 'held') && controller.resumeDurableIngress !== undefined;
-          const retryingHeld = resume && currentPending?.status === 'server';
-          if (!composerOwnerActive.current || (!first && (accepted || pendingSendRef.current))) return;
+          const retryingHeld = resume && ingress?.admission === 'held' && currentPending?.id === submissionId;
+          if (!composerOwnerActive.current || (!first && pendingSendRef.current)) return;
+          if (!first && accepted && !retryingHeld) return;
           if (!first && currentPending?.status === 'server' && !retryingHeld) return;
           pendingSendRef.current = true;
           let compositionReleased = false;
@@ -3187,7 +3219,7 @@ export function SessionView({
             contentKey,
             createdAt: new Date().toISOString(),
             slow: false,
-            preserved: currentPending?.id === submissionId ? currentPending.preserved : true,
+            preserved: currentPending?.id === submissionId ? currentPending.preserved : false,
             retryable: false,
             status: 'sending',
           });
@@ -3213,21 +3245,9 @@ export function SessionView({
           .then((result) => {
             const admissionRejected = result.admission === 'failed' || result.admission === 'cancelled';
             if (admissionRejected) {
-              if (composerOwnerActive.current) {
-                setAnnotations((current) => restoreSentAnnotations(current, sentAnnotations));
-                setQuotes((current) => restoreSentAnnotations(current, sentQuotes));
-                const recovery = recoverFailedSubmission(draftRef.current, attachmentsRef.current, stripThreadRefContext(text), composerAttachments);
-                if (recovery !== undefined) {
-                  updateDraft(recovery.text);
-                  updateAttachments(recovery.attachments);
-                }
-              } else {
-                recoverSubmittedDraft(sessionId, stripThreadRefContext(text), composerAttachments);
-                updateStoredSelectionCarryovers(sessionId,
-                  (current) => restoreSentAnnotations(current, sentQuotes),
-                  (current) => restoreSentAnnotations(current, sentAnnotations));
-              }
+              restoreCapturedSubmission();
               setPendingSubmission((current) => current?.id === submissionId ? undefined : current);
+              pendingRecoveryRef.current = undefined;
               pushToast({
                 tone: result.admission === 'cancelled' ? 'info' : 'error',
                 text: t(result.admission === 'cancelled' ? 'sv.submissionRecovery.cancelled' : 'sv.submissionRecovery.failed'),
@@ -3256,20 +3276,7 @@ export function SessionView({
             completeControls();
           })
           .catch((error: unknown) => {
-            if (composerOwnerActive.current) {
-              setAnnotations((current) => restoreSentAnnotations(current, sentAnnotations));
-              setQuotes((current) => restoreSentAnnotations(current, sentQuotes));
-              const recovery = recoverFailedSubmission(draftRef.current, attachmentsRef.current, stripThreadRefContext(text), composerAttachments);
-              if (recovery !== undefined) {
-                updateDraft(recovery.text);
-                updateAttachments(recovery.attachments);
-              }
-            } else {
-              recoverSubmittedDraft(sessionId, stripThreadRefContext(text), composerAttachments);
-              updateStoredSelectionCarryovers(sessionId,
-                (current) => restoreSentAnnotations(current, sentQuotes),
-                (current) => restoreSentAnnotations(current, sentAnnotations));
-            }
+            restoreCapturedSubmission();
             const isApi = error instanceof ApiError;
             const transportUnconfirmed = !isApi || error.code === API_CODES.TIMEOUT;
             if (transportUnconfirmed) {
@@ -3285,8 +3292,10 @@ export function SessionView({
               setPendingSubmission((current) => current?.id === submissionId
                 ? { ...current, slow: true, retryable: true, status: 'server' }
                 : current);
+              pendingRecoveryRef.current = undefined;
             } else {
               setPendingSubmission((current) => current?.id === submissionId ? undefined : current);
+              pendingRecoveryRef.current = undefined;
             }
             pushToast({
               tone: 'error',
@@ -3303,7 +3312,6 @@ export function SessionView({
           })
           .finally(() => {
             pendingSendRef.current = false;
-            setPendingSubmission((current) => current?.id === submissionId && current.status === 'sending' ? undefined : current);
           });
         };
         pendingRetryRef.current = { id: submissionId, run: () => { void submitCaptured(); } };
