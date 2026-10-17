@@ -21,7 +21,7 @@
  * the group's membership is open below it.
  */
 
-import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { useI18n } from '../../i18n';
 import { Icon } from '../icons';
@@ -377,6 +377,7 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
   const hoverTimer = useRef<number | undefined>(undefined);
   const chips = useRef(new Map<string, HTMLButtonElement>());
   const clusterBox = useRef<HTMLUListElement | null>(null);
+  const expandedBox = useRef<HTMLDivElement | null>(null);
   const knownTitles = useRef(new Map<string, string>());
   const restoreChip = useRef<string | null>(null);
   const restoreTarget = useRef<HTMLElement | null>(null);
@@ -482,6 +483,25 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
     restoreChip.current = openGroupKey;
     setOpenGroupKey(null);
   };
+  // Opening a group adds the detail under the chips; with a long cluster that
+  // lands below the fold, and the browser's own focus scroll only fetches a
+  // sliver of the Back row. Bring the header and the first member into the
+  // host's view instead — only the host region scrolls, never the page, and a
+  // detail that already reads stays put.
+  useLayoutEffect(() => {
+    if (openGroupKey === null) return;
+    const box = expandedBox.current;
+    const host = scrollHostOf(box);
+    if (box === null || host === null) return;
+    const boxRect = box.getBoundingClientRect();
+    const hostRect = host.getBoundingClientRect();
+    // The Back row, the group title and the first member: the slice that
+    // tells the click did something. A short detail only asks for itself.
+    const readingSlice = Math.min(128, boxRect.height);
+    const alreadyReads = boxRect.top >= hostRect.top && hostRect.bottom - boxRect.top >= readingSlice;
+    if (alreadyReads) return;
+    host.scrollTop += boxRect.top - hostRect.top - 8;
+  }, [openGroupKey]);
   // Back from a group returns the reader to the chip they came from and puts
   // the host scroll back where it was.
   useEffect(() => {
@@ -610,6 +630,7 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
             purpose, and only here. The hover path adds nothing at all. */}
         {openGroupKey !== null ? (
           <div
+            ref={expandedBox}
             data-capability-group-expanded={openGroupKey}
             className="mt-1.5 border-t border-hairline px-2 pt-2.5"
           >

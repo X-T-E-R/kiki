@@ -89,7 +89,7 @@ afterEach(async () => {
 
 /** The column's width and the chip row's height, in CSS pixels. */
 const LAYOUT_DEFAULT = { width: 300, rowHeight: 32, chipsPerRow: 4 };
-let layout: { width: number; rowHeight: number; chipsPerRow: number } = LAYOUT_DEFAULT;
+let layout: { width: number; rowHeight: number; chipsPerRow: number; hostHeight?: number; expandedTop?: number; expandedHeight?: number } = LAYOUT_DEFAULT;
 
 /** The box a cluster or a list would report, from the same row model. */
 function measuredOffset(this: HTMLElement): number {
@@ -116,7 +116,7 @@ function measuredOffset(this: HTMLElement): number {
  * zeroes those offsets cannot reproduce the fold that actually shipped, so the
  * numbers here carry them.
  */
-function installLayout(shape: { width: number; rowHeight: number; chipsPerRow: number }): void {
+function installLayout(shape: { width: number; rowHeight: number; chipsPerRow: number; hostHeight?: number; expandedTop?: number; expandedHeight?: number }): void {
   layout = shape;
   vi.stubGlobal('ResizeObserver', class {
     constructor(callback: (entries: readonly unknown[]) => void) { resizeCallbacks.push(callback); }
@@ -140,6 +140,17 @@ function installLayout(shape: { width: number; rowHeight: number; chipsPerRow: n
   Object.defineProperty(HTMLElement.prototype, 'getBoundingClientRect', {
     configurable: true,
     value(this: HTMLElement) {
+      // The host's own scroll region: a real window the detail opens under.
+      if (this.matches('[data-agent-panel-scroll]')) {
+        const height = layout.hostHeight ?? 320;
+        return { left: 0, top: PAGE_TOP, right: layout.width, bottom: PAGE_TOP + height, width: layout.width, height, x: 0, y: PAGE_TOP, toJSON: () => ({}) };
+      }
+      // The opened group's detail, at the depth the test declares for it.
+      if (this.matches('[data-capability-group-expanded]')) {
+        const top = layout.expandedTop ?? PAGE_TOP;
+        const height = layout.expandedHeight ?? 200;
+        return { left: 12, top, right: 12 + layout.width, bottom: top + height, width: layout.width, height, x: 12, y: top, toJSON: () => ({}) };
+      }
       const list = this.closest<HTMLElement>('[data-capability-skill-cluster]');
       if (this.matches('[data-capability-group-list]')) {
         return { left: 8, top: PAGE_TOP, right: 8 + layout.width, bottom: PAGE_TOP + layout.rowHeight, width: layout.width, height: layout.rowHeight, x: 8, y: PAGE_TOP, toJSON: () => ({}) };
@@ -549,6 +560,31 @@ describe('capability tool groups', () => {
     await click(container.querySelector<HTMLButtonElement>('[data-tool-group-back]')!);
     expect(host().scrollTop).toBe(80);
     expect(document.activeElement).toBe(chip('builtin:nbSearch'));
+  });
+
+  it('brings the opened detail into view when a long cluster leaves only a sliver', async () => {
+    installLayout({ ...LAYOUT_DEFAULT, expandedTop: 340 });
+    await render(TOOLS);
+    hostScroll(0);
+    await click(chip('builtin:os/backends'));
+    // The host window is 40..360 and the detail landed at 340: a 20px sliver,
+    // the review's exact failure. The host scrolls the header to its top —
+    // 340 - 40 - 8 — and nothing else moves.
+    expect(host().scrollTop).toBe(292);
+    expect(document.activeElement).toBe(container.querySelector('[data-tool-group-back]'));
+    // The way back still lands on the same row of chips at the same offset.
+    await click(container.querySelector<HTMLButtonElement>('[data-tool-group-back]')!);
+    expect(host().scrollTop).toBe(0);
+    expect(document.activeElement).toBe(chip('builtin:os/backends'));
+  });
+
+  it('leaves the host scroll alone when the opened detail already reads', async () => {
+    installLayout({ ...LAYOUT_DEFAULT, expandedTop: 120 });
+    await render(TOOLS);
+    hostScroll(60);
+    await click(chip('builtin:os/backends'));
+    // 120..320 against the 40..360 window: header and members already read.
+    expect(host().scrollTop).toBe(60);
   });
 
   it('keeps skills as their own chips and leaves their list alone', async () => {
