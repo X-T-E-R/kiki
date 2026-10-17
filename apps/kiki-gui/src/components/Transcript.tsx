@@ -1043,7 +1043,7 @@ const ThinkingMessage = memo(function ThinkingMessage({ block }: { block: Thinki
       glyph={<Icon name="think" />}
       label={
         <span className="font-normal text-ink-faint italic">
-          {block.streaming ? `${t('transcript.thinking')}…` : t('transcript.thought')}
+          {t('transcript.thinking')}{block.streaming ? '…' : ''}
         </span>
       }
       detail={summary === '' ? undefined : <span className="text-ink-faint/80 italic">{summary}</span>}
@@ -3502,10 +3502,6 @@ export const TurnTailLine = memo(function TurnTailLine({
           ) : isCancelled ? (
             <span data-turn-tail-cancellation={cancellation} className="text-[12px] font-semibold text-amber-ink">
               {t(CANCELLATION_LABEL_KEY[cancellation])}
-            </span>
-          ) : tail.state === 'completed' ? (
-            <span className="text-[12px] font-medium text-ink-soft">
-              {t('transcript.turnFinished')}
             </span>
           ) : null}
           {isCancelled && onResume !== undefined ? (

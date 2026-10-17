@@ -1429,7 +1429,7 @@ describe('reasoning completion chrome', () => {
     { type: 'turn.ended', turnId: 1, reason: 'completed', durationMs: 1000, time: 2001 },
   ];
 
-  it.each([false, true])('labels a signed reasoning then empty completion as finished without inventing a reply (cold=%s)', async (cold) => {
+  it.each([false, true])('settles a signed reasoning then empty completion without inventing a reply (cold=%s)', async (cold) => {
     const snapshot = replayAgentWire('main', [...reasoningRecords, ...emptyContinuation], cold);
     const state = projectAgentTranscriptView(createViewState('example-session'), 'main', snapshot);
     expect(state.busy).toBe(false);
@@ -1439,11 +1439,14 @@ describe('reasoning completion chrome', () => {
     const container = await renderTranscript([...state.blocks], undefined, state);
     const fold = container.querySelector('[data-history-fold] button');
     if (fold !== null) await act(async () => { click(fold); });
-    expect(container.querySelector('.thinking-row')?.textContent).toContain('Thought');
-    expect(container.querySelector('.thinking-row')?.textContent).not.toContain('Thinking');
+    expect(container.querySelector('.thinking-row')?.textContent).toContain('Thinking');
+    expect(container.querySelector('.thinking-row')?.textContent).not.toContain('Thinking…');
     expect(container.querySelector('[data-streaming]')).toBeNull();
     expect(container.querySelector('[data-turn-status]')).toBeNull();
-    expect(container.querySelector('[data-turn-tail-state="completed"]')?.textContent).toContain('Turn finished');
+    // A settled turn reads from its facts alone: end time and duration, no
+    // completion label.
+    expect(container.querySelector('[data-turn-tail-state="completed"]')?.textContent).toContain('Ran for 1.0s');
+    expect(container.querySelector('[data-turn-tail-state="completed"]')?.textContent).not.toContain('Turn finished');
   });
 
   it('keeps long reasoning live until its actual terminal event', async () => {
@@ -1489,7 +1492,7 @@ describe('reasoning completion chrome', () => {
     const state = projectAgentTranscriptView(createViewState('example-session'), 'main', snapshot);
     const container = await renderTranscript([...state.blocks], undefined, state);
     expect(container.textContent).toContain('Recorded reply');
-    expect(container.querySelector('[data-turn-tail-state="completed"]')?.textContent).toContain('Turn finished');
+    expect(container.querySelector('[data-turn-tail-state="completed"]')?.textContent).not.toContain('Turn finished');
     expect(container.querySelector('[data-streaming]')).toBeNull();
   });
 
@@ -1497,8 +1500,6 @@ describe('reasoning completion chrome', () => {
     const { root, container } = makeRoot();
     await renderSettled(root, <TurnTailLine tail={{ turnId: 't1', endedAt: new Date().toISOString(), durationMs: undefined, ttftMs: undefined, usage: undefined, tokensPerSecond: undefined }} />);
     expect(container.textContent).not.toContain('Turn finished');
-    expect(translate('zh', 'transcript.thought')).toBe('思考记录');
-    expect(translate('zh', 'transcript.turnFinished')).toBe('本轮已结束');
   });
 });
 

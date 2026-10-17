@@ -4,7 +4,7 @@ The desktop app and the browser UI are the same interface, and a session in eith
 
 ## Conversation view
 
-This is the session timeline: assistant messages, tool calls, approvals, questions, and background-task notices. **Thinking…** marks streaming reasoning; **Thought** is a saved reasoning entry. The latest turn's status line says **Turn finished** when that turn ends successfully, even if it produces no reply.
+This is the session timeline: assistant messages, tool calls, approvals, questions, and background-task notices.
 
 Messages from another agent or conversation state their source above the body. Copying or quoting one uses the body without repeating that source label; editing keeps the original source prefix. A source label you type yourself stays literal. Context injected after a user message stays after that message when you reopen or continue loading the conversation.
 
