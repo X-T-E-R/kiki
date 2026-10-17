@@ -72,8 +72,9 @@ import {
 } from './attachments';
 import { DaemonClient, type DaemonPersonaSummary } from './client';
 import {
+  DAEMON_HELP_DISCOVERY_NOTE,
   daemonAutocompleteCommands,
-  daemonCommandHelp,
+  daemonHelpCommands,
   daemonSkillCommands,
   parseDaemonSlashInput,
   resolveDaemonCommand,
@@ -1435,7 +1436,8 @@ export class DaemonTUI {
         return;
       case 'help':
         this.mountEditorReplacement(new HelpPanelComponent({
-          content: `${daemonCommandHelp()}\n\nLocal docs: ${resolve(resolveDaemonHome(), 'docs')} (en/ or zh/)`,
+          commands: daemonHelpCommands(),
+          note: `${DAEMON_HELP_DISCOVERY_NOTE}\nLocal docs: ${resolve(resolveDaemonHome(), 'docs')} (en/ or zh/)`,
           maxVisible: () => Math.max(1, this.state.terminal.rows - 10),
           onClose: () => {
             this.restoreEditor();

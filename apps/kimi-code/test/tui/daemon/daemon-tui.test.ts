@@ -329,7 +329,7 @@ describe('DaemonTUI commands', () => {
     }
     for (const text of [
       '/tasks [stop|output] [task-id]', 'Browse background tasks',
-      '/help (/h, /?)', 'Disabled in daemon TUI:',
+      '/help (/h, /?)', 'Disabled in daemon TUI',
       'Export the session as a ZIP archive; use kiki export', 'Local docs:',
       'type / in the input box', 'Ctrl--',
       'Prompt steering shortcut is disabled in daemon TUI',
@@ -1416,7 +1416,7 @@ describe('DaemonTUI commands', () => {
     const help = focus.mock.lastCall?.[0];
     if (help === undefined || help === null) throw new Error('Help was not focused');
     expect(help).not.toBe(tui.state.editor);
-    expect(tui.state.editorContainer.render(80).join('\n')).toContain('Supported:');
+    expect(tui.state.editorContainer.render(80).join('\n')).toContain('Sessions & history');
     help.handleInput?.('\u001B');
     expect(focus.mock.lastCall?.[0]).toBe(tui.state.editor);
     await internal.handleSlash('/config');

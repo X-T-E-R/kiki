@@ -196,10 +196,15 @@ export function daemonAutocompleteCommands(
   skills: ReadonlyMap<string, DaemonSkillCommand>,
   agentProfiles: ReadonlyMap<string, string>,
 ): SlashAutocompleteCommand[] {
+  // Supported commands are the norm and carry no badge; only disabled entries
+  // are marked so the status signal is not drowned in uniform noise.
   const builtins = DAEMON_COMMANDS.map((definition) => ({
     name: definition.name,
     aliases: [...definition.aliases],
-    description: `[${definition.status} in daemon TUI] ${definition.description}`,
+    description:
+      definition.status === 'disabled'
+        ? `[disabled] ${definition.description}`
+        : definition.description,
     argumentHint: definition.argumentHint,
   }));
   const dynamic = [
@@ -219,11 +224,32 @@ export function daemonAutocompleteCommands(
   return [...builtins, ...dynamic];
 }
 
-export function daemonCommandHelp(): string {
-  const supported = SUPPORTED_COMMANDS.map(formatCommand).join('\n\n');
-  const disabled = DISABLED_COMMANDS.map(formatCommand).join('\n\n');
-  return `Supported:\n\n${supported}\n\nDisabled in daemon TUI:\n\n${disabled}\n\nSkills and agent profiles: type / in the input box to browse the current catalog.`;
+/** Display model for the interactive `/help` panel (grouped, coloured layout). */
+export interface DaemonHelpCommand {
+  readonly name: string;
+  readonly aliases: readonly string[];
+  readonly description: string;
+  readonly argumentHint?: string;
+  readonly disabled: boolean;
 }
+
+export function daemonHelpCommands(): DaemonHelpCommand[] {
+  return DAEMON_COMMANDS.map((definition) => ({
+    name: definition.name,
+    aliases: definition.aliases,
+    description: definition.description,
+    argumentHint: definition.argumentHint,
+    disabled: definition.status === 'disabled',
+  }));
+}
+
+/**
+ * Discovery note shown under the `/help` command list: skill and agent-profile
+ * commands are dynamic, so the panel points at the `/` autocomplete catalog
+ * instead of snapshotting them.
+ */
+export const DAEMON_HELP_DISCOVERY_NOTE =
+  'Skills and agent profiles: type / in the input box to browse the current catalog.';
 
 function command(
   name: DaemonCommandName,
@@ -241,10 +267,4 @@ function disabled(
   description: string,
 ): DaemonCommandDefinition {
   return { name, aliases, description, status: 'disabled' };
-}
-
-function formatCommand(command: DaemonCommandDefinition): string {
-  const aliases = command.aliases.map((alias) => `/${alias}`).join(', ');
-  const usage = `/${command.name}${command.argumentHint === undefined ? '' : ` ${command.argumentHint}`}`;
-  return `${usage}${aliases === '' ? '' : ` (${aliases})`}\n  ${command.description}`;
 }

@@ -14,6 +14,7 @@ import type { AppState } from '#/tui/types';
 import { currentTheme } from '#/tui/theme';
 
 const LOGIN_HINT = 'Run /login to get started.';
+const DISCOVERY_HINT = 'Type / for commands · /help for shortcuts · Shift-Enter for a newline';
 const MODEL_UNSET_HINT = 'not set';
 
 export class WelcomeComponent implements Component {
@@ -36,7 +37,7 @@ export class WelcomeComponent implements Component {
       const title = chalk.bold.hex(currentTheme.palette.primary)('Welcome to Kiki!');
       const prompt = isLoggedOut
         ? chalk.hex(currentTheme.palette.warning)(LOGIN_HINT)
-        : chalk.hex(currentTheme.palette.textDim)('Send /help for help information.');
+        : chalk.hex(currentTheme.palette.textDim)(DISCOVERY_HINT);
       const model = isLoggedOut
         ? chalk.hex(currentTheme.palette.warning)(MODEL_UNSET_HINT)
         : (effectiveActiveModel?.displayName ?? effectiveActiveModel?.model ?? this.state.model);
@@ -62,7 +63,7 @@ export class WelcomeComponent implements Component {
     const dim = chalk.hex(currentTheme.palette.textDim);
     const labelStyle = chalk.bold.hex(currentTheme.palette.textDim);
     const rightRow1 = truncateToWidth(
-      dim(isLoggedOut ? LOGIN_HINT : 'Send /help for help information.'),
+      dim(isLoggedOut ? LOGIN_HINT : DISCOVERY_HINT),
       textWidth,
       '…',
     );

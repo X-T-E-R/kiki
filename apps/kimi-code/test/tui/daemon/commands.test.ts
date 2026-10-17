@@ -4,8 +4,9 @@ import { executeWebCommand } from '#/tui/daemon/web-command';
 
 import {
   DAEMON_COMMANDS,
+  DAEMON_HELP_DISCOVERY_NOTE,
   daemonAutocompleteCommands,
-  daemonCommandHelp,
+  daemonHelpCommands,
   daemonSkillCommands,
   parseDaemonSlashInput,
   resolveDaemonCommand,
@@ -86,34 +87,52 @@ describe('daemon command registry', () => {
     expect(commands).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: 'help', aliases: ['h', '?'] }),
+        // Supported commands carry their plain description — no status badge.
         expect.objectContaining({
           name: 'settings',
           aliases: ['config'],
-          description: expect.stringContaining('supported'),
+          description: 'Inspect or update daemon configuration',
         }),
         expect.objectContaining({
           name: 'export-view',
-          description: '[supported in daemon TUI] Export loaded user and assistant text as Markdown',
+          description: 'Export loaded user and assistant text as Markdown',
+        }),
+        // Only disabled entries are marked, so the status signal stands out.
+        expect.objectContaining({
+          name: 'add-dir',
+          description: expect.stringMatching(/^\[disabled\] /),
         }),
         expect.objectContaining({ name: 'skill:ReviewSkill', description: 'Review changes' }),
         expect.objectContaining({ name: 'Reviewer', argumentHint: '<prompt>' }),
       ]),
     );
-    expect(daemonCommandHelp()).toContain('Supported:');
-    expect(daemonCommandHelp()).toContain('Export loaded user and assistant text as Markdown');
-    expect(daemonCommandHelp()).toContain('Disabled in daemon TUI:');
+    const supported = commands.filter((item) =>
+      DAEMON_COMMANDS.some(
+        (definition) => definition.name === item.name && definition.status === 'supported',
+      ),
+    );
+    for (const item of supported) expect(item.description).not.toContain('supported in daemon TUI');
   });
 
-  it('generates help usage, aliases, and descriptions from the active catalog', () => {
-    const help = daemonCommandHelp();
+  it('exposes the full catalog to /help with usage, aliases, and disabled flags', () => {
+    const entries = daemonHelpCommands();
+    expect(entries).toHaveLength(DAEMON_COMMANDS.length);
     for (const command of DAEMON_COMMANDS) {
-      expect(help).toContain(`/${command.name}${command.argumentHint === undefined ? '' : ` ${command.argumentHint}`}`);
-      expect(help).toContain(`\n  ${command.description}`);
-      for (const alias of command.aliases) expect(help).toContain(`/${alias}`);
+      const entry = entries.find((candidate) => candidate.name === command.name);
+      expect(entry, command.name).toMatchObject({
+        aliases: command.aliases,
+        description: command.description,
+        disabled: command.status === 'disabled',
+      });
+      expect(entry?.argumentHint).toBe(command.argumentHint);
     }
-    expect(help).toContain('/undo\n  Withdraw the last prompt');
-    expect(help).not.toContain('/undo [');
-    expect(help).toContain('type / in the input box');
+    expect(entries.find((entry) => entry.name === 'undo')).toMatchObject({
+      aliases: [],
+      argumentHint: undefined,
+      disabled: false,
+    });
+    expect(entries.find((entry) => entry.name === 'export-md')?.disabled).toBe(true);
+    expect(DAEMON_HELP_DISCOVERY_NOTE).toContain('type / in the input box');
   });
 
   it('keeps the required daemon parity commands supported', () => {
