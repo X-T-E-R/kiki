@@ -10,12 +10,20 @@ import {
   searchSettings,
   settingsSectionLabels,
   type SettingsNavGroupSpec,
+  type SettingsNavNode,
   type SettingsSearchEntry,
 } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
+import {
+  iaPrototypeModeSnapshot,
+  subscribeIaPrototypeMode,
+  writeIaPrototypeMode,
+} from '../../lib/settingsIaPrototype';
 import { Icon } from '../icons';
 import { useOptionalInstalledPlugins } from '../capabilities/usePlugins';
+import { navTreeForMode, prototypeGroupForSection } from './navPrototype';
 import { SECTIONS, type SectionId } from './sections';
+import { SettingsSegmented } from './SettingsPrimitives';
 
 const LEAF_QUERY_PREFIXES: Readonly<Record<string, readonly unknown[]>> = {
   ai: ['config'],
@@ -37,6 +45,7 @@ export function SettingsSearch({
   onSearchHit,
   className = '',
   idle,
+  navTree = SETTINGS_NAV_TREE,
 }: {
   /** Changes on every Ctrl+, so a repeat press refocuses; null means no focus. */
   focusToken: string | null;
@@ -44,11 +53,22 @@ export function SettingsSearch({
   className?: string;
   /** Navigation shown while the field is empty; hits replace it while typing. */
   idle?: React.ReactNode;
+  /** Candidate tree the breadcrumb group line follows (IA experiment). */
+  navTree?: readonly SettingsNavNode[];
 }) {
   const { t } = useI18n();
   const [query, setQuery] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
-  const index = useMemo(() => buildSettingsSearchIndex(settingsSectionLabels(t), t), [t]);
+  const index = useMemo(() => {
+    const base = buildSettingsSearchIndex(settingsSectionLabels(t), t, navTree);
+    // A leaf the candidate tree re-homes (identity in `objects` mode) borrows
+    // its host leaf's group, so the breadcrumb never loses a line.
+    return base.map((entry) => {
+      if (entry.groupLabel !== '') return entry;
+      const group = prototypeGroupForSection(entry.section, navTree);
+      return group === undefined ? entry : { ...entry, groupLabel: t(group.labelKey) };
+    });
+  }, [t, navTree]);
   const results = useMemo(() => searchSettings(index, query), [index, query]);
   const searching = query.trim() !== '';
 
@@ -123,6 +143,7 @@ export function SettingsNavTree({
   activePluginId,
   onNavigate,
   onAfterNavigate,
+  tree: treeProp,
 }: {
   /** Null on the unknown-section page: tree stays visible, nothing highlighted. */
   active: SectionId | null;
@@ -136,9 +157,13 @@ export function SettingsNavTree({
   onNavigate: (section: SectionId) => void;
   /** Drawer hosts pass a close hook; the desktop rail leaves it unset. */
   onAfterNavigate?: () => void;
+  /** Candidate tree (IA experiment); unset means follow the prototype switch. */
+  tree?: readonly SettingsNavNode[];
 }) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
+  const iaMode = useSyncExternalStore(subscribeIaPrototypeMode, iaPrototypeModeSnapshot, () => null);
+  const tree = treeProp ?? navTreeForMode(iaMode);
   // The Plugins group lists what is installed, so the reader can jump straight
   // to one plugin's settings without going back through the list first. It
   // reads the query the list reads, so it costs nothing extra and never shows
@@ -191,7 +216,7 @@ export function SettingsNavTree({
     { tab: 'advanced', labelKey: 'st.nbSearch.tab.advanced' },
   ];
 
-  const groups = SETTINGS_NAV_TREE.filter(
+  const groups = tree.filter(
     (node): node is SettingsNavGroupSpec => node.kind === 'group' && node.sections.length > 0,
   );
 
@@ -255,6 +280,24 @@ export function SettingsNavTree({
           </div>
         </div>
       ))}
+      {iaMode !== null ? (
+        <div className="mt-2 border-t border-hairline pt-3" data-settings-ia-picker>
+          <p className="px-2 pb-1.5 text-[12px] text-ink-faint">{t('st.ia.prototype')}</p>
+          <div className="px-2">
+            <SettingsSegmented<string>
+              ariaLabel={t('st.ia.prototype')}
+              dataAttr="data-ia-mode"
+              value={iaMode}
+              onChange={(next) => { writeIaPrototypeMode(next === 'current' ? null : next === 'objects' ? 'objects' : 'taskflow'); }}
+              choices={[
+                { value: 'current', label: t('st.ia.current') },
+                { value: 'taskflow', label: t('st.ia.taskflow') },
+                { value: 'objects', label: t('st.ia.objects') },
+              ]}
+            />
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -275,12 +318,15 @@ export function SettingsNav({
   onSearchHit: (entry: SettingsSearchEntry) => void;
 }) {
   const { t } = useI18n();
+  const iaMode = useSyncExternalStore(subscribeIaPrototypeMode, iaPrototypeModeSnapshot, () => null);
+  const tree = navTreeForMode(iaMode);
   return (
     <nav aria-label={t('st.nav.browse')} className="flex h-full w-full flex-col overflow-y-auto overscroll-y-contain px-3 pb-4 pt-3 lg:w-[232px]">
       <SettingsSearch
         focusToken={searchFocusToken}
         onSearchHit={onSearchHit}
-        idle={<SettingsNavTree active={active} activeTab={activeTab} activePluginId={activePluginId} onNavigate={onNavigate} />}
+        navTree={tree}
+        idle={<SettingsNavTree active={active} activeTab={activeTab} activePluginId={activePluginId} onNavigate={onNavigate} tree={tree} />}
       />
     </nav>
   );

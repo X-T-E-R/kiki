@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import {
@@ -15,6 +15,12 @@ import {
 } from '@kiki/session-core/settings';
 import { useI18n } from '../i18n';
 import { prefersReducedMotion } from '../lib/motion';
+import {
+  captureIaPrototypeFromSearch,
+  iaPrototypeModeSnapshot,
+  subscribeIaPrototypeMode,
+} from '../lib/settingsIaPrototype';
+import { navTreeForMode, objectsSectionTarget, prototypeGroupForSection } from './settings/navPrototype';
 import { useConnection } from '../state/connection';
 import { useDirtyGuard, useGuardedNavigate } from './dirtyGuard';
 import { AboutSection } from './settings/AboutSection';
@@ -220,6 +226,13 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   // the app (the /new readiness card) can point at the exact control instead
   // of dropping the user at the top of a long section.
   const { hash, search, state, key } = useLocation();
+  const iaMode = useSyncExternalStore(subscribeIaPrototypeMode, iaPrototypeModeSnapshot, () => null);
+
+  // The IA experiment switch arrives as `?ia=taskflow|objects|off` on any
+  // settings URL and is then held by the prototype store; in-settings
+  // navigation carries no query, so the URL alone cannot keep the mode.
+  useEffect(() => { captureIaPrototypeFromSearch(search); }, [search]);
+
   const resolution = resolveSettingsRoute(section, hash);
   const active: SectionId | null =
     resolution.status === 'ok' ? (resolution.section as SectionId) : null;
@@ -274,6 +287,17 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     const query = params.toString();
     void rawNavigate(`/settings/${resolution.section}${query === '' ? '' : `?${query}`}${targetHash}`, { replace: true });
   }, [resolution, section, search, hash, rawNavigate]);
+
+  // IA experiment, `objects` mode: a leaf the candidate tree re-homes
+  // (identity → the AI page's fourth tab) redirects in place, like the
+  // canonicalization above — replace, never push, bypassing the dirty guard:
+  // this fires on arrival, before the page can hold a draft.
+  useEffect(() => {
+    if (iaMode !== 'objects' || resolution.status !== 'ok') return;
+    const target = objectsSectionTarget(resolution.section);
+    if (target === null) return;
+    void rawNavigate(`/settings/${target}${hash}`, { replace: true });
+  }, [iaMode, resolution, hash, rawNavigate]);
 
   // Import history is a built-in session surface with exactly one address. The
   // redirect that carries an old `/capabilities?view=import` bookmark here
@@ -370,7 +394,9 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     guardedNavigate(`${target}#${entry.cardId}`);
   };
 
-  const activeGroup = active === null ? undefined : settingsGroupForSection(active);
+  const activeGroup = active === null ? undefined
+    : iaMode === null ? settingsGroupForSection(active)
+    : prototypeGroupForSection(active, navTreeForMode(iaMode));
   const activeLabelKey = active === null ? undefined : SECTIONS.find((candidate) => candidate.id === active)?.labelKey;
   // One installed plugin's own settings page, or the installed list. The
   // section's card hash targets the list, so a bookmark to the Plugins leaf
@@ -475,6 +501,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
               <SettingsSearch
                 focusToken={searchFocusToken}
                 onSearchHit={onSearchHit}
+                navTree={navTreeForMode(iaMode)}
                 idle={
                   <button
                     type="button"

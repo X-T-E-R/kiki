@@ -2188,10 +2188,13 @@ export function settingsSectionSupportsSpace(sectionId: string): boolean {
   return SETTINGS_SECTION_META[sectionId]?.scopes.includes('space') ?? false;
 }
 
-export function settingsGroupForSection(sectionId: string): SettingsNavGroupSpec | undefined {
+export function settingsGroupForSection(
+  sectionId: string,
+  tree: readonly SettingsNavNode[] = SETTINGS_NAV_TREE,
+): SettingsNavGroupSpec | undefined {
   if (!SETTINGS_SECTIONS.some((s) => s.id === sectionId)) return undefined;
   const canonical = SETTINGS_NAV_SECTION_MAP[sectionId] ?? sectionId;
-  return SETTINGS_NAV_TREE.find(
+  return tree.find(
     (node): node is SettingsNavGroupSpec =>
       node.kind === 'group' && (node.sections.includes(sectionId) || node.sections.includes(canonical)),
   );
@@ -2486,10 +2489,11 @@ export function settingsSectionLabels(
 export function buildSettingsSearchIndex(
   sectionLabels: Readonly<Record<string, string>>,
   t: (key: I18nKey) => string,
+  navTree: readonly SettingsNavNode[] = SETTINGS_NAV_TREE,
 ): SettingsSearchEntry[] {
   return SETTINGS_SEARCH_SPEC.map((entry) => {
     const title = t(entry.titleKey);
-    const group = settingsGroupForSection(entry.section);
+    const group = settingsGroupForSection(entry.section, navTree);
     const groupLabel = group === undefined ? '' : t(group.labelKey);
     const sectionLabel = sectionLabels[entry.section] ?? entry.section;
     return {
