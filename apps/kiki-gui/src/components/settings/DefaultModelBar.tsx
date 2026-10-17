@@ -7,7 +7,6 @@ import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { OAUTH_METHODS_QUERY_KEY } from '../AccountSignIn';
 import { FeedbackLine, SavedTick, type Feedback } from '../controls';
-import { useGuardedNavigate } from '../dirtyGuard';
 import { Icon } from '../icons';
 import { buildCatalogModelOptions } from '../modelSelectOptions';
 import { vendorLabelFor } from '../providerPresets';
@@ -24,14 +23,10 @@ const BAR_PICKER =
  * Models & providers. It applies on pick through the same queue the star in
  * the model list uses, so a pick here and a star there land in order and the
  * screen always shows what the server saved.
- *
- * The second line is a glance at the other jobs' models and a way to them; it
- * is left out on the Defaults tab, where those rows are right underneath.
  */
-export function DefaultModelBar({ tab }: { tab: AiSettingsTab }) {
+export function DefaultModelBar({ tab: _tab }: { tab?: AiSettingsTab } = {}) {
   const { client } = useConnection();
   const { t, locale } = useI18n();
-  const navigate = useGuardedNavigate();
   const queryClient = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
@@ -58,11 +53,6 @@ export function DefaultModelBar({ tab }: { tab: AiSettingsTab }) {
     const provider = (providersQuery.data?.items ?? []).find((item) => item.id === providerId);
     return account ?? vendorLabelFor(provider?.base_url) ?? providerId;
   };
-  const modelName = (id: string | undefined): string | undefined => {
-    if (id === undefined || id === '') return undefined;
-    const item = models.find((candidate) => candidate.id === id);
-    return item?.display_name ?? id;
-  };
 
   const pick = async (modelId: string) => {
     const item = models.find((candidate) => candidate.id === modelId);
@@ -78,13 +68,6 @@ export function DefaultModelBar({ tab }: { tab: AiSettingsTab }) {
       setBusy(false);
     }
   };
-
-  const others = [
-    { id: 'title', label: t('st.defaults.row.title'), value: modelName(config?.session_title?.model) },
-    { id: 'fast', label: t('st.defaults.row.fast'), value: modelName(config?.fast_model) },
-    { id: 'subagent', label: t('st.defaults.row.subagent'), value: modelName(config?.subagent?.defaultModel) },
-  ];
-  const toDefaults = () => { navigate('/settings/ai?tab=defaults#st-card-global-defaults'); };
 
   return (
     <div data-default-model-bar data-default-model-line
@@ -115,21 +98,6 @@ export function DefaultModelBar({ tab }: { tab: AiSettingsTab }) {
           </div>
           <SavedTick show={tick} />
         </div>
-        {tab === 'defaults' ? null : (
-          <button type="button" data-default-model-others onClick={toDefaults}
-            className="group -mx-1.5 flex min-h-8 min-w-0 items-center gap-1 rounded-md px-1.5 text-left text-[12px] text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink sm:ml-auto">
-            <span className="hidden min-w-0 truncate md:inline">
-              {others.map((row, index) => (
-                <span key={row.id} data-default-model-other={row.id}>
-                  {index > 0 ? <span aria-hidden> · </span> : null}
-                  {row.label} <span className={row.value === undefined ? '' : 'text-ink-soft'}>{row.value ?? t('st.defaults.row.fastUnset')}</span>
-                </span>
-              ))}
-            </span>
-            <span className="md:hidden">{t('st.ai.tab.defaults')}</span>
-            <Icon name="chevron" size={12} className="shrink-0" />
-          </button>
-        )}
       </div>
       <div className="pt-1 empty:hidden" data-default-origin="new-session">
         <OriginBadge config={config} domain="default_model" keyPath={[]} label={t('st.defaults.row.newSession')} />

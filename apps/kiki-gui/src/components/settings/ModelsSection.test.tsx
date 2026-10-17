@@ -814,7 +814,7 @@ describe('GlobalDefaultsCard', () => {
     expect(empty.textContent).not.toContain('fast model');
   });
 
-  it('picks the new-session default model in DefaultModelBar and hides the other-jobs summary on the defaults tab', async () => {
+  it('picks the new-session default model in DefaultModelBar', async () => {
     const secondModel: ModelCatalogItem = {
       id: 'kimi-code/kimi-k1',
       provider_id: 'managed:kimi-code',
@@ -841,7 +841,7 @@ describe('GlobalDefaultsCard', () => {
           <QueryClientProvider client={client}>
             <I18nProvider>
               <DirtyGuardContext.Provider value={{ dirty: false, reportDirty: () => {}, navigate: () => {} }}>
-                <DefaultModelBar tab="defaults" />
+                <DefaultModelBar />
                 <GlobalDefaultsCard />
               </DirtyGuardContext.Provider>
             </I18nProvider>
