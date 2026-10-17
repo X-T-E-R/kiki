@@ -1341,7 +1341,10 @@ describe('settings search index', () => {
     for (const tab of CONNECTION_SETTINGS_TABS) {
       expect(connectionEntries.some((entry) => entry.tab === tab), tab).toBe(true);
     }
-    expect(connectionTabForCard('st-card-conn-external')).toBe('external');
+    // The Cloudflare card moved to connection-services; the leaf has one
+    // sub-page again, and a bare `?tab=external` bookmark follows the card
+    // (the GUI redirects it to the card's new home).
+    expect(connectionTabForCard('st-card-conn-external')).toBeUndefined();
     expect(connectionTabForCard('st-card-conn-unknown')).toBeUndefined();
   });
 
@@ -1385,6 +1388,11 @@ describe('settings nav groups (IA v2)', () => {
     expect(sectionsOf('capabilities')).toEqual(['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks']);
     expect(sectionsOf('advanced')).toEqual(['developer', 'labs', 'about']);
     expect(resolveSettingsRoute('external-clients', '')).toMatchObject({ section: 'connection-services' });
+    // The four retired combined pages resolve instead of landing on "unknown setting".
+    expect(resolveSettingsRoute('extensions', '')).toMatchObject({ section: 'skills' });
+    expect(resolveSettingsRoute('environment-tools', '')).toMatchObject({ section: 'search' });
+    expect(resolveSettingsRoute('remote', '')).toMatchObject({ section: 'connection' });
+    expect(resolveSettingsRoute('system', '')).toMatchObject({ section: 'developer' });
     expect(settingsGroupForSection('external-clients')).toBeUndefined();
     expect(settingsGroupForSection('workspaces')?.id).toBe('work');
     expect(settingsGroupForSection('spaces')?.id).toBe('connection');
@@ -1689,7 +1697,7 @@ describe('settings route resolver', () => {
     // the dissolved st-card-communication hash follows its hand-written alias
     // to the communication leaf's thread card.
     expect(resolveSettingsRoute('runtime', '#st-card-cron'))
-      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-cron', tab: undefined });
+      .toEqual({ status: 'ok', section: 'tasks', cardId: 'st-card-cron', tab: undefined });
     expect(resolveSettingsRoute('runtime', '#st-card-communication'))
       .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-agent-messaging', tab: undefined });
     expect(resolveSettingsRoute('runtime', '#st-card-resource-limits'))

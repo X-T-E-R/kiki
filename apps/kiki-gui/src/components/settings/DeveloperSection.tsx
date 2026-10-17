@@ -3,7 +3,6 @@ import { TokenCountingCard } from './CommunicationSection';
 import { ResourceLimitsCard } from './EngineLimitSettings';
 import { RetryPolicyCard } from './RetryPolicyCard';
 import { SessionResidencyCard } from './SessionResidencyCard';
-import { CronRuntimeCard } from './TaskRuntimeSettings';
 
 /**
  * Developer: engine knobs a person tunes on purpose, then the raw JSON escape
@@ -18,7 +17,6 @@ export function DeveloperSection() {
       <SessionResidencyCard />
       <TokenCountingCard />
       <AdvancedSection />
-      <CronRuntimeCard />
     </>
   );
 }

@@ -5,17 +5,12 @@ import { useQueryClient } from '@tanstack/react-query';
 import { errorText, issueText } from '@kiki/session-core/i18n';
 import {
   clearRestartRequirement,
-  CONNECTION_SETTINGS_DEFAULT_TAB,
-  CONNECTION_SETTINGS_TABS,
-  connectionTabLabelKey,
   MAX_REQUEST_TIMEOUT_SECONDS,
   MIN_REQUEST_TIMEOUT_SECONDS,
-  normalizeConnectionTab,
   readSettings,
   validateRequestTimeoutSeconds,
   validateReadingTimeoutSeconds,
   writeSettings,
-  type ConnectionSettingsTab,
 } from '@kiki/session-core/settings';
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
@@ -32,46 +27,20 @@ import { SettingField } from './fields';
 import { KEEP_SECRET, SecretField, type SecretDraft } from './SecretField';
 import { CommitInput, SettingsDraftFooter } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
-import { ExternalConnectionSection } from './ExternalConnectionSection';
 
 export function ConnectionSection() {
-  const { t } = useI18n();
   const navigate = useGuardedNavigate();
   const { search } = useLocation();
-  const tab = normalizeConnectionTab(new URLSearchParams(search).get('tab')) ?? CONNECTION_SETTINGS_DEFAULT_TAB;
-
-  const selectTab = (next: ConnectionSettingsTab) => {
-    if (next === tab) return;
-    const params = new URLSearchParams(search);
-    params.set('tab', next);
-    navigate(`/settings/connection?${params.toString()}`);
-  };
-
+  // The external tab's Cloudflare card moved to the Connection services page;
+  // a bookmarked `?tab=external` follows it and lands on the card itself.
+  useEffect(() => {
+    if (new URLSearchParams(search).get('tab') === 'external') {
+      navigate('/settings/connection-services#st-card-conn-external', { replace: true });
+    }
+  }, [search, navigate]);
   return (
     <div className="space-y-4">
-      <div role="tablist" aria-label={t('st.section.connection')} className="flex gap-1 border-b border-hairline">
-        {CONNECTION_SETTINGS_TABS.map((candidate) => {
-          const active = candidate === tab;
-          return (
-            <button
-              key={candidate}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              data-connection-tab={candidate}
-              onClick={() => { selectTab(candidate); }}
-              className={`-mb-px min-h-8 border-b-2 px-3 py-1.5 text-[13px] transition-colors ${
-                active
-                  ? 'border-ink font-medium text-ink'
-                  : 'border-transparent text-ink-soft hover:text-ink'
-              }`}
-            >
-              {t(connectionTabLabelKey(candidate))}
-            </button>
-          );
-        })}
-      </div>
-      {tab === 'external' ? <ExternalConnectionSection /> : <CurrentConnectionContent />}
+      <CurrentConnectionContent />
     </div>
   );
 }

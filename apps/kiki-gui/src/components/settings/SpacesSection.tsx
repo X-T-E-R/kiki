@@ -48,8 +48,6 @@ import { SpaceRowMenu, type SpaceMenuItem } from './spaces/SpaceRowMenu';
 import { SpaceCredentialsCard } from './spaces/SubspaceCards';
 import { SpaceSettingsDetail } from './spaces/SpaceSettingsDetail';
 import { RemoteConnectionsSection } from './RemoteConnectionsSection';
-import { InboundConnectionsSection } from './InboundConnectionsSection';
-import { WebAccessSection } from './WebAccessSection';
 
 /**
  * Settings → Spaces (§9.1). The main space manages the list; a space sees the
@@ -71,8 +69,6 @@ export function SpacesSection() {
       {controlClient === null ? <Hint>{t('st.spaces.loading')}</Hint> : <>
         <SpaceListCard sub={sub} client={controlClient} target={controlTarget} openLocalSpace={openLocalSpace} />
         <RemoteConnectionsSection />
-        <InboundConnectionsSection />
-        <WebAccessSection />
         {sub ? <SpaceCredentialsCard client={controlClient} onEnterMain={() => openLocalSpace(MAIN_SPACE_ID, mode)} /> : null}
         {sub ? <CurrentSpaceSettings target={controlTarget} /> : null}
       </>}

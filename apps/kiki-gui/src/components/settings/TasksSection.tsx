@@ -1,6 +1,11 @@
-import { TaskPolicyCard } from './TaskRuntimeSettings';
+import { CronRuntimeCard, TaskPolicyCard } from './TaskRuntimeSettings';
 
-/** Background-task limits. Plan defaults live on Sessions. */
+/** Background-task limits and cron diagnostics. Plan defaults live on Sessions. */
 export function TasksSection() {
-  return <TaskPolicyCard />;
+  return (
+    <>
+      <TaskPolicyCard />
+      <CronRuntimeCard />
+    </>
+  );
 }

@@ -629,15 +629,53 @@ describe('SettingsPage batch-3 leaves', () => {
     const container = await renderSettings('/settings/runtime');
     expect(container.querySelector('#st-card-runtime')).toBeNull();
     expect(container.querySelector('#st-card-task-policy')).not.toBeNull();
-    expect(container.querySelector('#st-card-cron')).toBeNull();
+    expect(container.querySelector('#st-card-cron')).not.toBeNull();
     expect(container.querySelector('#st-card-tools')).toBeNull();
+  });
+
+  it.each([
+    ['/settings/extensions', '#st-card-caps'],
+    ['/settings/environment-tools', '[data-settings-page-title]'],
+    ['/settings/remote', '#st-card-conn-server'],
+    ['/settings/system', '#st-card-resource-limits'],
+  ] as const)('keeps the retired combined page %s resolving', async (path, cardSelector) => {
+    localStorage.setItem('kiki.locale', 'en');
+    const container = await renderSettings(path);
+    expect(container.querySelector('[data-settings-page-title]')?.textContent).not.toContain('does not exist');
+    expect(container.querySelector(cardSelector)).not.toBeNull();
+  });
+
+  it('follows the retired connection external tab to the moved Cloudflare card', async () => {
+    localStorage.setItem('kiki.locale', 'en');
+    // Inbound connections read through the HTTP facade; without it the pane
+    // boundary catches the throw and the page shows no cards at all.
+    client.klient.rest = { connections: { list: async () => [], handshake: async () => ({}) } };
+    try {
+      const container = await renderSettings('/settings/connection?tab=external', { guarded: true });
+      await vi.waitFor(() => {
+        expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/connection-services#st-card-conn-external');
+      });
+      await vi.waitFor(() => {
+        expect(container.querySelector('#st-card-conn-external')).not.toBeNull();
+        expect(container.querySelector('#st-card-external-clients')).not.toBeNull();
+        expect(container.querySelector('#st-card-web-access')).not.toBeNull();
+        expect(container.querySelector('#st-card-inbound-connections')).not.toBeNull();
+        expect(container.querySelector('#st-card-host-skill')).not.toBeNull();
+      });
+    } finally {
+      client.klient.rest = undefined;
+    }
   });
 
   it('mounts the split runtime content on its new leaves', async () => {
     const tasks = await renderSettings('/settings/tasks');
     expect(tasks.querySelector('#st-card-task-policy')).not.toBeNull();
     expect(tasks.querySelector('#st-card-task-policy')!.textContent).toContain('Everyday background-task limits.');
-    expect(tasks.querySelector('#st-card-cron')).toBeNull();
+    expect(tasks.querySelector('#st-card-cron [data-settings-diagnostics]')).not.toBeNull();
+    const diagnosticsScope = tasks.querySelector('#st-card-cron [data-settings-panel-scope]');
+    expect(diagnosticsScope?.getAttribute('data-settings-panel-scope')).toBe('readOnly');
+    expect(diagnosticsScope?.textContent).toBe('diagnostic view');
+    expect(tasks.querySelector('#st-card-cron input, #st-card-cron [role="switch"]')).toBeNull();
 
     const sessions = await renderSettings('/settings/communication');
     const messaging = sessions.querySelector('#st-card-agent-messaging')!;
@@ -650,11 +688,7 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(developer.querySelector('#st-card-token-counting')).not.toBeNull();
     expect(developer.querySelector('#st-card-resource-limits')).not.toBeNull();
     expect(developer.querySelector('#st-card-resource-limits')!.textContent).toContain('Workspace idle reclamation (s)');
-    expect(developer.querySelector('#st-card-cron [data-settings-diagnostics]')).not.toBeNull();
-    const diagnosticsScope = developer.querySelector('#st-card-cron [data-settings-panel-scope]');
-    expect(diagnosticsScope?.getAttribute('data-settings-panel-scope')).toBe('readOnly');
-    expect(diagnosticsScope?.textContent).toBe('diagnostic view');
-    expect(developer.querySelector('#st-card-cron input, #st-card-cron [role="switch"]')).toBeNull();
+    expect(developer.querySelector('#st-card-cron')).toBeNull();
 
     const agents = await renderSettings('/settings/agents');
     await flush();
@@ -771,7 +805,7 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(card.textContent).toContain('Advanced configuration for permissions, loop controls, and background tasks. Validated on save.');
     expect(card.textContent).not.toContain('kap-server');
     const order = [...container.querySelectorAll('[data-settings-card]')].map((node) => node.id);
-    expect(order).toEqual(['st-card-resource-limits', 'st-card-retry', 'st-card-session-residency', 'st-card-token-counting', 'st-card-advanced', 'st-card-cron', 'st-card-exp-developer']);
+    expect(order).toEqual(['st-card-resource-limits', 'st-card-retry', 'st-card-session-residency', 'st-card-token-counting', 'st-card-advanced', 'st-card-exp-developer']);
 
     const writes = client.patchConfig.mock.calls.length;
     await setTextarea(card.querySelector('textarea')!, '{');

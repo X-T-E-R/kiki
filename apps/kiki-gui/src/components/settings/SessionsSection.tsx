@@ -377,7 +377,7 @@ function ImportHistoryCard() {
   const enabled = useImportHistoryEnabled(client, scopeId).enabled === true;
   if (!enabled) return null;
   return (
-    <SectionCard id="sessions-import" title={t('cap.import.entry')}>
+    <SectionCard id="st-card-import-history" title={t('cap.import.entry')}>
       <p className="mt-1 max-w-[62ch] text-[13px] leading-5 text-ink-soft">
         {t('cap.import.settingsHint')}
       </p>
