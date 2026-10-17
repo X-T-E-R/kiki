@@ -60,7 +60,7 @@ export function GeneralSection() {
   return (
     <>
       <SectionCard id="st-card-language" title={t('st.language.title')}>
-        <SettingField label={t('st.language.title')} labelId="language-label" help={t('st.language.hint')}>
+        <SettingField label={t('st.language.title')} labelId="language-label">
           <SettingsSegmented<Locale>
             ariaLabelledBy="language-label"
             dataAttr="data-locale-choice"
