@@ -30,7 +30,7 @@ export default {
     mode: 'persistent',
     url: 'https://kiki.example.test',
     sessions: [
-      { id: 'was_phone', label: 'Pixel 8 — Chrome', createdAgoMs: 86_400_000, lastUsedAgoMs: 3_600_000 },
+      { id: 'a1b2c3d4-1111-4111-8111-a1b2c3d4e5f6', label: 'Pixel 8 — Chrome', createdAgoMs: 86_400_000, lastUsedAgoMs: 3_600_000 },
     ],
   },
   externalClients: {
@@ -50,8 +50,8 @@ export default {
       enabled: true,
       configuredEnabled: true,
       grants: [
-        { id: 'grant_laptop', label: 'Laptop Kiki', status: 'approved', source: { homeId: 'home_fixture_laptop' } },
-        { id: 'grant_old', label: 'Old desktop', status: 'revoked', source: { homeId: 'home_fixture_old' } },
+        { id: 'grant_laptop', label: 'Laptop Kiki', status: 'approved', source: { homeId: 'home_fixture_laptop', hostId: 'host_fixture_laptop' } },
+        { id: 'grant_old', label: 'Old desktop', status: 'revoked', source: { homeId: 'home_fixture_old', hostId: 'host_fixture_old' } },
       ],
     },
     connections: [],
@@ -73,5 +73,18 @@ export default {
       tunnels: { items: [] },
       accounts: { items: [] },
     },
+  },
+  pluginImport: {
+    hostShipped: { 'kiki-history': true },
+    sources: [
+      {
+        schemaVersion: 1,
+        id: 'claude-code',
+        label: 'Claude Code',
+        formatVersion: 'claude-code.history.v1',
+        pluginId: 'kiki-history',
+      },
+    ],
+    homes: {},
   },
 };

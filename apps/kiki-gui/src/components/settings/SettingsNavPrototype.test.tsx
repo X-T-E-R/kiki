@@ -210,8 +210,6 @@ describe('search breadcrumbs under a candidate tree', () => {
     const objects = buildSettingsSearchIndex(labels, t, OBJECTS_NAV_TREE);
     const identity = objects.find((entry) => entry.section === 'identity')!;
     expect(identity.groupLabel).toBe('');
-    // SettingsSearch fills the gap from prototypeGroupForSection; every other
-    // entry already carries its candidate group.
     expect(identity.sectionLabel).toBe('st.section.identity');
     expect(objects.find((entry) => entry.section === 'plugins')!.groupLabel).toBe('st.group.capabilities');
   });
@@ -227,91 +225,15 @@ describe('search breadcrumbs under a candidate tree', () => {
 });
 
 describe('SettingsNav under the experiment', () => {
-  it('renders the shipped tree and no picker while the experiment is off', async () => {
+  it('renders the purpose tree and no picker', async () => {
     const container = await render(
       <SettingsNav active="ai" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />,
     );
-    const groups = [...container.querySelectorAll('[data-settings-nav-group]')]
-      .map((group) => group.getAttribute('data-settings-nav-group'));
-    expect(groups).toEqual(['device', 'models-agents', 'work', 'capabilities', 'connection', 'advanced']);
-    expect(container.querySelector('[data-settings-ia-picker]')).toBeNull();
-  });
-
-  it('taskflow renders eight task groups and the picker', async () => {
-    writeIaPrototypeMode('taskflow');
-    const container = await render(
-      <SettingsNav active="permissions" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />,
-    );
-    const groups = [...container.querySelectorAll('[data-settings-nav-group]')];
-    expect(groups.map((group) => group.getAttribute('data-settings-nav-group'))).toEqual([
-      'device', 'models-accounts', 'agents', 'sessions-work',
-      'rules-alerts', 'capabilities', 'connection-spaces', 'system',
-    ]);
-    expect(groups.map((group) => group.querySelector('p')?.textContent)).toEqual([
-      'App', 'Models & accounts', 'Agents', 'Sessions & work',
-      'Rules & alerts', 'Capabilities', 'Connection & spaces', 'System',
-    ]);
-    const leavesOf = (id: string) => [...container.querySelectorAll(`[data-settings-nav-group="${id}"] [data-settings-nav-leaf]`)]
-      .map((leaf) => leaf.getAttribute('data-settings-nav-leaf'));
-    expect(leavesOf('rules-alerts')).toEqual(['permissions', 'notifications', 'hooks']);
-    expect(leavesOf('models-accounts')).toEqual(['ai', 'identity']);
-    expect(container.querySelector('[data-settings-ia-picker]')).not.toBeNull();
-    // The active leaf still highlights under its new group.
-    const active = container.querySelector('[data-settings-nav-leaf="permissions"]')!;
-    expect(active.getAttribute('aria-current')).toBe('page');
-  });
-
-  it('objects drops the identity leaf and keeps taskflow grouping otherwise', async () => {
-    writeIaPrototypeMode('objects');
-    const container = await render(
-      <SettingsNav active="ai" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />,
-    );
-    const leaves = [...container.querySelectorAll('[data-settings-nav-leaf]')]
-      .map((leaf) => leaf.getAttribute('data-settings-nav-leaf'));
-    expect(leaves).toHaveLength(26);
-    expect(leaves).not.toContain('identity');
-    expect(leaves).toContain('ai');
     const groups = [...container.querySelectorAll('[data-settings-nav-group]')]
       .map((group) => group.getAttribute('data-settings-nav-group'));
     expect(groups).toEqual([
-      'device', 'models-accounts', 'agents', 'sessions-work',
-      'rules-alerts', 'capabilities', 'connection-spaces', 'system',
-    ]);
-    const accountsLeaves = [...container.querySelectorAll('[data-settings-nav-group="models-accounts"] [data-settings-nav-leaf]')]
-      .map((leaf) => leaf.getAttribute('data-settings-nav-leaf'));
-    expect(accountsLeaves).toEqual(['ai']);
-  });
-
-  it('purpose renders seven purpose groups with disambiguated leaf labels', async () => {
-    writeIaPrototypeMode('purpose');
-    const container = await render(
-      <SettingsNav active="connection" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />,
-    );
-    const groups = [...container.querySelectorAll('[data-settings-nav-group]')];
-    expect(groups.map((group) => group.getAttribute('data-settings-nav-group'))).toEqual([
       'device', 'models-agents', 'sessions-work', 'capabilities', 'rules', 'connection', 'advanced',
     ]);
-    expect(groups.map((group) => group.querySelector('p')?.textContent)).toEqual([
-      'App', 'Models & agents', 'Sessions & work', 'Capabilities', 'Permissions & rules', 'Connection & remote', 'Advanced',
-    ]);
-    const leaf = (id: string) => container.querySelector(`[data-settings-nav-leaf="${id}"]`)?.textContent;
-    expect(leaf('connection')).toBe('Server connection');
-    expect(leaf('connection-services')).toBe('Access from elsewhere');
-    expect(leaf('tasks')).toBe('Tasks & background');
-    // Untouched leaves keep the shipped label.
-    expect(leaf('permissions')).toBe('Permissions');
-    const modelsAgents = [...container.querySelectorAll('[data-settings-nav-group="models-agents"] [data-settings-nav-leaf]')]
-      .map((node) => node.getAttribute('data-settings-nav-leaf'));
-    expect(modelsAgents).toEqual(['ai', 'agents', 'subagents', 'identity']);
-    expect(container.querySelector('[data-settings-nav-leaf="connection"]')!.getAttribute('aria-current')).toBe('page');
-  });
-
-  it('purpose label overrides never leak into the shipped nav', async () => {
-    const container = await render(
-      <SettingsNav active="connection" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />,
-    );
-    expect(container.querySelector('[data-settings-nav-leaf="connection"]')?.textContent).not.toBe('Server connection');
-    expect(container.querySelector('[data-settings-nav-leaf="connection-services"]')?.textContent).not.toBe('Access from elsewhere');
-    expect(container.querySelector('[data-settings-nav-leaf="tasks"]')?.textContent).not.toBe('Tasks & background');
+    expect(container.querySelector('[data-settings-ia-picker]')).toBeNull();
   });
 });

@@ -2937,7 +2937,6 @@ export const zh = {
   'st.font.placeholderMono': '例如 Fira Code、更纱黑体 Mono SC',
   'st.font.present': '已安装 {name}，正在使用。',
   'st.font.missing': '未检测到 {name}，当前使用后备字体。',
-  'st.font.typeHint': '输入字体名称，输入即生效。',
   'st.font.sample.sans': '设置、会话与按钮 · Settings and sessions 0123',
   'st.font.sample.mono': 'const answer = items.filter((x) => x !== null); // 注释',
   'st.font.sample.prose': '长回答读起来像一页印刷品。A long answer reads like a printed page.',

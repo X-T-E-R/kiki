@@ -1361,11 +1361,11 @@ describe('settings search index', () => {
   });
 });
 
-describe('settings nav groups (IA v2)', () => {
-  it('lists six intent groups with dedicated pages and knows which pages stay on this device', () => {
+describe('settings nav groups (IA purpose)', () => {
+  it('lists seven purpose groups with dedicated pages and knows which pages stay on this device', () => {
     const groups = SETTINGS_NAV_TREE.filter((node) => node.kind === 'group');
     expect(groups.map((group) => group.id))
-      .toEqual(['device', 'models-agents', 'work', 'capabilities', 'connection', 'advanced']);
+      .toEqual(['device', 'models-agents', 'sessions-work', 'capabilities', 'rules', 'connection', 'advanced']);
     expect(groups.every((group) => group.sections.length > 0)).toBe(true);
     expect(SETTINGS_NAV_TREE.every((node) => node.kind === 'group')).toBe(true);
     expect(settingsSectionIsDeviceOnly('appearance')).toBe(true);
@@ -1375,17 +1375,18 @@ describe('settings nav groups (IA v2)', () => {
     expect(settingsSectionIsDeviceOnly('nope')).toBe(false);
   });
 
-  it('places each of the 27 dedicated leaves once across the six groups', () => {
+  it('places each of the 27 dedicated leaves once across the seven groups', () => {
     const placed = SETTINGS_NAV_TREE.flatMap((node) => node.kind === 'group' ? node.sections : [node.section]);
     expect(placed).toHaveLength(27);
     expect(new Set(placed).size).toBe(27);
     expect(new Set(placed)).toEqual(new Set(SETTINGS_SECTIONS.map((section) => section.id)));
     const sectionsOf = (id: string) => (SETTINGS_NAV_TREE.find((node) => node.kind === 'group' && node.id === id) as { sections: readonly string[] }).sections;
-    expect(sectionsOf('device')).toEqual(['general', 'appearance', 'shortcuts']);
-    expect(sectionsOf('connection')).toEqual(['connection', 'ssh', 'connection-services', 'spaces']);
-    expect(sectionsOf('models-agents')).toEqual(['ai', 'identity', 'agents', 'subagents']);
-    expect(sectionsOf('work')).toEqual(['sessions', 'workspaces', 'notifications', 'memory', 'permissions', 'tasks']);
-    expect(sectionsOf('capabilities')).toEqual(['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks']);
+    expect(sectionsOf('device')).toEqual(['general', 'appearance', 'shortcuts', 'notifications']);
+    expect(sectionsOf('models-agents')).toEqual(['ai', 'agents', 'subagents', 'identity']);
+    expect(sectionsOf('sessions-work')).toEqual(['sessions', 'workspaces', 'memory', 'tasks']);
+    expect(sectionsOf('capabilities')).toEqual(['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control']);
+    expect(sectionsOf('rules')).toEqual(['permissions', 'hooks']);
+    expect(sectionsOf('connection')).toEqual(['connection', 'spaces', 'ssh', 'connection-services']);
     expect(sectionsOf('advanced')).toEqual(['developer', 'labs', 'about']);
     expect(resolveSettingsRoute('external-clients', '')).toMatchObject({ section: 'connection-services' });
     // The four retired combined pages resolve instead of landing on "unknown setting".
@@ -1394,7 +1395,7 @@ describe('settings nav groups (IA v2)', () => {
     expect(resolveSettingsRoute('remote', '')).toMatchObject({ section: 'connection' });
     expect(resolveSettingsRoute('system', '')).toMatchObject({ section: 'developer' });
     expect(settingsGroupForSection('external-clients')).toBeUndefined();
-    expect(settingsGroupForSection('workspaces')?.id).toBe('work');
+    expect(settingsGroupForSection('workspaces')?.id).toBe('sessions-work');
     expect(settingsGroupForSection('spaces')?.id).toBe('connection');
     expect(placed.at(-1)).toBe('about');
     for (const retired of ['runtime', 'experimental', 'capabilities', 'advanced', 'automation', 'communication']) {

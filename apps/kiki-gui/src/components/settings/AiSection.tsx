@@ -1,5 +1,4 @@
 import { useLocation } from 'react-router-dom';
-import { useSyncExternalStore } from 'react';
 
 import {
   AI_SETTINGS_DEFAULT_TAB,
@@ -9,12 +8,9 @@ import {
   type AiSettingsTab,
 } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
-import { iaPrototypeModeSnapshot, subscribeIaPrototypeMode } from '../../lib/settingsIaPrototype';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { DefaultModelBar } from './DefaultModelBar';
-import { IdentitySection } from './IdentitySection';
 import { DefaultsTab, ModelsTab } from './ModelsSection';
-import { OBJECTS_AI_TABS, PURPOSE_AI_PROVIDERS_TAB_LABEL_KEY } from './navPrototype';
 import { ConnectionsTab } from './ProvidersSection';
 
 /**
@@ -25,8 +21,6 @@ import { ConnectionsTab } from './ProvidersSection';
 const AI_TAB_ORDER: readonly AiSettingsTab[] = (['providers', 'models', 'defaults'] as const)
   .filter((candidate) => (AI_SETTINGS_TABS as readonly string[]).includes(candidate));
 
-type AiPageTab = AiSettingsTab | 'identity';
-
 /**
  * The merged "Models & providers" entry (settings redesign batch 2, §3.3 /
  * §7.1): one navigation leaf, three stable tabs — Connections (OAuth, API
@@ -36,25 +30,17 @@ type AiPageTab = AiSettingsTab | 'identity';
  * from wherever the reader lands. The active tab is the `?tab=` query so deep
  * links, search hits, and the legacy `/settings/models` / `/settings/providers`
  * redirects all land on the right one; unknown values fall back to the default tab.
- *
- * IA experiment, `objects` mode: a fourth tab, Identity, mounts the request-
- * identity page in place (provider → model → defaults → identity is one
- * outbound-request path). `/settings/identity` redirects here while the mode
- * is on; with the mode off the tab list and routes are exactly the shipped ones.
  */
 export function AiSection() {
   const { t } = useI18n();
   const navigate = useGuardedNavigate();
   const { search } = useLocation();
-  const iaMode = useSyncExternalStore(subscribeIaPrototypeMode, iaPrototypeModeSnapshot, () => null);
-  const tabOrder: readonly AiPageTab[] = iaMode === 'objects' ? OBJECTS_AI_TABS : AI_TAB_ORDER;
   const rawTab = new URLSearchParams(search).get('tab');
-  const tab: AiPageTab = normalizeAiTab(rawTab)
-    ?? (iaMode === 'objects' && rawTab === 'identity' ? 'identity' : AI_SETTINGS_DEFAULT_TAB);
+  const tab: AiSettingsTab = normalizeAiTab(rawTab) ?? AI_SETTINGS_DEFAULT_TAB;
 
   // Tab switches go through the guarded navigator: an unsaved provider draft
   // on the Connections tab arms the same leave-guard as a section switch.
-  const selectTab = (next: AiPageTab) => {
+  const selectTab = (next: AiSettingsTab) => {
     if (next === tab) return;
     const params = new URLSearchParams(search);
     params.set('tab', next);
@@ -63,9 +49,9 @@ export function AiSection() {
 
   return (
     <div className="space-y-4">
-      <DefaultModelBar tab={tab === 'identity' ? 'defaults' : tab} />
+      <DefaultModelBar tab={tab} />
       <div role="tablist" aria-label={t('st.section.ai')} className="flex gap-1 border-b border-hairline">
-        {tabOrder.map((candidate) => {
+        {AI_TAB_ORDER.map((candidate) => {
           const active = candidate === tab;
           return (
             <button
@@ -81,13 +67,12 @@ export function AiSection() {
                   : 'border-transparent text-ink-soft hover:text-ink'
               }`}
             >
-              {t(iaMode === 'purpose' && candidate === 'providers' ? PURPOSE_AI_PROVIDERS_TAB_LABEL_KEY : aiTabLabelKey(candidate as AiSettingsTab))}
+              {t(aiTabLabelKey(candidate))}
             </button>
           );
         })}
       </div>
-      {tab === 'identity' ? <IdentitySection />
-        : tab === 'providers' ? <ConnectionsTab />
+      {tab === 'providers' ? <ConnectionsTab />
         : tab === 'defaults' ? <DefaultsTab />
         : <ModelsTab />}
     </div>

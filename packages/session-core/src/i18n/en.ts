@@ -2966,7 +2966,6 @@ export const en = {
   'st.font.placeholderMono': 'e.g. Fira Code, Sarasa Mono SC',
   'st.font.present': '{name} is installed and in use.',
   'st.font.missing': '{name} is not detected on this device. Fallback font is in use.',
-  'st.font.typeHint': 'Type a family name; it applies as you type.',
   'st.font.sample.sans': 'Settings, sessions and buttons · 设置、会话与按钮 0123',
   'st.font.sample.mono': 'const answer = items.filter((x) => x !== null); // 注释',
   'st.font.sample.prose': 'A long answer reads like a printed page. 长回答读起来像一页印刷品。',

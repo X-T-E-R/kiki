@@ -26,7 +26,6 @@ import { SectionCard, SettingsCardMountContext } from './settings/SectionCard';
 import { SettingsPaneBoundary } from './settings/SettingsPaneBoundary';
 import { clearNavHistory, getUiSnapshot, recordNavigation, saveUiSnapshot } from '../lib/navHistory';
 import { commitText, pickOption } from './settings/testControls';
-import { writeIaPrototypeMode } from '../lib/settingsIaPrototype';
 
 const WORKSPACES = {
   items: [
@@ -1058,31 +1057,6 @@ describe('SettingsPage search locating', () => {
       }
     } finally {
       scrollIntoView.mockRestore();
-    }
-  });
-
-  it('objects mode: an identity deep link with a card hash lands on the ai tab and stays', async () => {
-    localStorage.setItem('kiki.locale', 'en');
-    const container = await renderSettings('/settings/identity?ia=objects#st-card-identity-usage', { guarded: true });
-    try {
-      const location = () => container.querySelector('[data-test-location]')?.textContent;
-      await vi.waitFor(() => {
-        expect(location()).toBe('/settings/ai?ia=objects&tab=identity#st-card-identity-usage');
-        expect(container.querySelector('[data-ai-tab="identity"]')?.getAttribute('aria-selected')).toBe('true');
-      });
-      // The locate-and-flash handshake keys on the page that mounts the card;
-      // a re-homed deep link must flash exactly like a shipped one.
-      await vi.waitFor(() => {
-        expect(container.querySelector('#st-card-identity-usage')?.className).toContain('settings-card-flash');
-      });
-      // The card canonicalization (shipped tree: the card belongs to the
-      // standalone identity leaf) and the prototype redirect (objects: that
-      // leaf is an ai tab) must converge, not chase each other.
-      await flush();
-      await flush();
-      expect(location()).toBe('/settings/ai?ia=objects&tab=identity#st-card-identity-usage');
-    } finally {
-      writeIaPrototypeMode(null);
     }
   });
 

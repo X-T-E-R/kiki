@@ -866,7 +866,7 @@ export function ExternalClientsSection() {
     <>
       <WebAccessSection />
       <InboundConnectionsSection />
-      <SectionCard id="st-card-external-clients" title={t('st.section.connectionServices')}>
+      <SectionCard id="st-card-external-clients" title={t('st.section.externalClients')}>
       <div data-external-clients className="space-y-3">
         {api === undefined ? (
           <div role="alert" data-xc-unsupported className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2">

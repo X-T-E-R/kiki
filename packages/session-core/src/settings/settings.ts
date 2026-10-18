@@ -2005,6 +2005,7 @@ export function normalizeAiTab(value: string | null | undefined): AiSettingsTab 
 }
 
 export function aiTabLabelKey(tab: AiSettingsTab): I18nKey {
+  if (tab === 'providers') return 'st.ai.tab.providersAccounts';
   return `st.ai.tab.${tab}` as I18nKey;
 }
 
@@ -2104,9 +2105,9 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'general', labelKey: 'st.section.general' },
   { id: 'appearance', labelKey: 'st.section.appearance' },
   { id: 'shortcuts', labelKey: 'st.section.shortcuts' },
-  { id: 'connection', labelKey: 'st.section.connection' },
+  { id: 'connection', labelKey: 'st.section.serverConnection' },
   { id: 'ssh', labelKey: 'st.section.ssh' },
-  { id: 'connection-services', labelKey: 'st.section.connectionServices' },
+  { id: 'connection-services', labelKey: 'st.section.externalAccess' },
   { id: 'spaces', labelKey: 'st.section.spaces' },
   { id: 'ai', labelKey: 'st.section.ai' },
   { id: 'identity', labelKey: 'st.section.identity' },
@@ -2117,7 +2118,7 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'notifications', labelKey: 'st.section.notifications' },
   { id: 'memory', labelKey: 'st.section.memory' },
   { id: 'permissions', labelKey: 'st.section.permissions' },
-  { id: 'tasks', labelKey: 'st.section.tasks' },
+  { id: 'tasks', labelKey: 'st.section.tasksBackground' },
   { id: 'skills', labelKey: 'st.section.skills' },
   { id: 'mcp', labelKey: 'st.section.mcp' },
   { id: 'plugins', labelKey: 'st.section.plugins' },
@@ -2130,7 +2131,7 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'about', labelKey: 'st.section.about' },
 ];
 
-// ---- grouped navigation (settings IA v2: six intent groups) ----
+// ---- grouped navigation (settings IA: seven purpose groups) ----
 
 export interface SettingsNavGroupSpec {
   readonly kind: 'group';
@@ -2147,19 +2148,17 @@ export interface SettingsNavLeafSpec {
 export type SettingsNavNode = SettingsNavGroupSpec | SettingsNavLeafSpec;
 
 /**
- * Group order follows how a person actually uses Kiki: this app's own
- * preferences, then connecting and choosing models, then how work runs, what
- * the agent can reach, and finally reaching this Kiki from elsewhere and
- * maintenance. Inbound access (`connection-services`: outside clients calling
- * this machine) sits with SSH and the server connection, not with the outbound
- * model connections it used to share a group and a name with.
+ * Group order follows user purpose: app preferences, models and agents,
+ * sessions and ongoing work, reaching external tools/capabilities,
+ * security permissions and rules, server/space connections, and advanced maintenance.
  */
 export const SETTINGS_NAV_TREE: readonly SettingsNavNode[] = [
-  { kind: 'group', id: 'device', labelKey: 'st.group.device', sections: ['general', 'appearance', 'shortcuts'] },
-  { kind: 'group', id: 'models-agents', labelKey: 'st.group.modelsAgents', sections: ['ai', 'identity', 'agents', 'subagents'] },
-  { kind: 'group', id: 'work', labelKey: 'st.group.work', sections: ['sessions', 'workspaces', 'notifications', 'memory', 'permissions', 'tasks'] },
-  { kind: 'group', id: 'capabilities', labelKey: 'st.group.capabilities', sections: ['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks'] },
-  { kind: 'group', id: 'connection', labelKey: 'st.group.connection', sections: ['connection', 'ssh', 'connection-services', 'spaces'] },
+  { kind: 'group', id: 'device', labelKey: 'st.group.device', sections: ['general', 'appearance', 'shortcuts', 'notifications'] },
+  { kind: 'group', id: 'models-agents', labelKey: 'st.group.modelsAgents', sections: ['ai', 'agents', 'subagents', 'identity'] },
+  { kind: 'group', id: 'sessions-work', labelKey: 'st.group.sessionsWork', sections: ['sessions', 'workspaces', 'memory', 'tasks'] },
+  { kind: 'group', id: 'capabilities', labelKey: 'st.group.capabilities', sections: ['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control'] },
+  { kind: 'group', id: 'rules', labelKey: 'st.group.permissionsRules', sections: ['permissions', 'hooks'] },
+  { kind: 'group', id: 'connection', labelKey: 'st.group.connection', sections: ['connection', 'spaces', 'ssh', 'connection-services'] },
   { kind: 'group', id: 'advanced', labelKey: 'st.group.advanced', sections: ['developer', 'labs', 'about'] },
 ];
 
@@ -2387,7 +2386,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'connection', tab: 'current', cardId: 'st-card-conn-disconnect', titleKey: 'st.conn.disconnectTitle', keywordKeys: ['st.conn.disconnectBody', 'sidebar.disconnect'] },
   { section: 'connection', tab: 'current', cardId: 'st-card-conn-log', titleKey: 'st.conn.logTitle', keywordKeys: ['st.conn.logBody', 'st.conn.logCopy'], synonyms: ['connection log', '连接日志', 'disconnect', '断线', 'heartbeat', '心跳', 'close code'] },
   { section: 'connection-services', cardId: 'st-card-conn-external', titleKey: 'st.conn.ext.title', keywordKeys: ['st.conn.ext.intro', 'st.conn.ext.notInstalled'], synonyms: ['cloudflare', 'tunnel', '隧道', 'external connection', '外部连接'] },
-  { section: 'connection-services', cardId: 'st-card-external-clients', titleKey: 'st.section.connectionServices', keywordKeys: ['st.xc.localTitle', 'st.xc.remoteTitle', 'st.xc.listenerTitle', 'st.xc.authTitle', 'st.xc.intro', 'st.xc.workspace', 'st.xc.tools'], synonyms: ['external client', '外部客户端', 'mcp client', 'stdio client', 'connection services', '连接服务', 'remote access', '远程接入', 'ChatGPT', 'chatgpt', '客户端', 'client', '连接客户端', 'stdio', '反向', 'reverse mcp', '外部调用'] },
+  { section: 'connection-services', cardId: 'st-card-external-clients', titleKey: 'st.section.externalClients', keywordKeys: ['st.xc.localTitle', 'st.xc.remoteTitle', 'st.xc.listenerTitle', 'st.xc.authTitle', 'st.xc.intro', 'st.xc.workspace', 'st.xc.tools'], synonyms: ['external client', '外部客户端', 'mcp client', 'stdio client', 'connection services', '连接服务', 'remote access', '远程接入', 'ChatGPT', 'chatgpt', '客户端', 'client', '连接客户端', 'stdio', '反向', 'reverse mcp', '外部调用'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-auth', titleKey: 'st.connections.addTitle', keywordKeys: ['st.auth.signIn', 'st.account.signIn', 'st.connect.accountTitle'], synonyms: ['提供商', '供应商', 'provider', '认证', '登录', 'sign in', '账号', 'account', '订阅', 'subscription'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-providers', titleKey: 'st.providers.title', keywordKeys: ['st.providers.empty', 'st.images.acceptedTypes', 'st.images.convertUnsupported', 'st.quota.intro', 'st.quota.refresh'], synonyms: ['提供商', '供应商', 'provider', 'image policy', '图片策略', '图片类型', '图片转换', 'accepted image types', 'convert unsupported', '额度', '配额', 'quota', 'limit', '限额', 'Kimi Code', '订阅', 'subscription'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-providers-add', titleKey: 'st.providers.addTitle', keywordKeys: ['st.wizard.chooseTemplate', 'st.fetchModels.button'], synonyms: ['提供商', '供应商', 'provider'] },

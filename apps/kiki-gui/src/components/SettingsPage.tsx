@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import {
   AI_SETTINGS_DEFAULT_TAB,
+  SETTINGS_NAV_TREE,
   SETTINGS_SECTION_META,
   experimentalTabForSection,
   pluginSettingsIdFromQuery,
@@ -15,12 +16,6 @@ import {
 } from '@kiki/session-core/settings';
 import { useI18n } from '../i18n';
 import { prefersReducedMotion } from '../lib/motion';
-import {
-  captureIaPrototypeFromSearch,
-  iaPrototypeModeSnapshot,
-  subscribeIaPrototypeMode,
-} from '../lib/settingsIaPrototype';
-import { navTreeForMode, objectsSectionTarget, prototypeGroupForSection, purposeSectionLabelKey } from './settings/navPrototype';
 import { useConnection } from '../state/connection';
 import { useDirtyGuard, useGuardedNavigate } from './dirtyGuard';
 import { AboutSection } from './settings/AboutSection';
@@ -252,22 +247,10 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   // the app (the /new readiness card) can point at the exact control instead
   // of dropping the user at the top of a long section.
   const { hash, search, state, key } = useLocation();
-  const iaMode = useSyncExternalStore(subscribeIaPrototypeMode, iaPrototypeModeSnapshot, () => null);
-
-  // The IA experiment switch arrives as `?ia=taskflow|objects|off` on any
-  // settings URL and is then held by the prototype store; in-settings
-  // navigation carries no query, so the URL alone cannot keep the mode.
-  useEffect(() => { captureIaPrototypeFromSearch(search); }, [search]);
 
   const resolution = resolveSettingsRoute(section, hash);
-  // IA experiment, `objects` mode: a re-homed leaf (identity) renders its host
-  // page, so a card-hash deep link that resolves to the standalone leaf still
-  // lands on the host's tab instead of resurrecting the leaf's own page.
-  const activeSection = resolution.status !== 'ok' ? null
-    : iaMode === 'objects'
-      ? (objectsSectionTarget(resolution.section)?.split('?')[0] ?? resolution.section)
-      : resolution.section;
-  const active: SectionId | null = activeSection as SectionId | null;
+  const active: SectionId | null =
+    resolution.status === 'ok' ? (resolution.section as SectionId) : null;
   const pageScope = active === null ? 'server'
     : settingsSectionSupportsSpace(active) && inSpace ? 'space'
     : settingsSectionIsDeviceOnly(active) ? 'app'
@@ -311,14 +294,6 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     const params = new URLSearchParams(search);
     const sectionMoved = resolution.section !== section
       && !(section === undefined && resolution.section === 'general');
-    // IA experiment, `objects` mode: the resolver still owns the shipped tree,
-    // so a card hash on the AI page points back at the standalone identity
-    // leaf — but that leaf now lives here as a tab. Stay, or the two redirects
-    // chase each other (identity → ai?tab=identity → identity → …).
-    if (iaMode === 'objects' && sectionMoved) {
-      const rehomed = objectsSectionTarget(resolution.section);
-      if (rehomed !== null && rehomed.split('?')[0] === section) return;
-    }
     const tabMoved = resolution.tab !== undefined && params.get('tab') !== resolution.tab;
     const targetHash = resolution.cardId !== undefined ? `#${resolution.cardId}` : hash;
     const cardMoved = targetHash !== hash;
@@ -326,28 +301,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     if (resolution.tab !== undefined) params.set('tab', resolution.tab);
     const query = params.toString();
     void rawNavigate(`/settings/${resolution.section}${query === '' ? '' : `?${query}`}${targetHash}`, { replace: true });
-  }, [resolution, section, search, hash, iaMode, rawNavigate]);
-
-  // IA experiment, `objects` mode: a leaf the candidate tree re-homes
-  // (identity → the AI page's fourth tab) redirects in place, like the
-  // canonicalization above — replace, never push, bypassing the dirty guard:
-  // this fires on arrival, before the page can hold a draft. The existing
-  // query is carried so the `ia` switch (and server/token deep-link params)
-  // survive the hop.
-  useEffect(() => {
-    if (iaMode !== 'objects' || resolution.status !== 'ok') return;
-    const target = objectsSectionTarget(resolution.section);
-    if (target === null) return;
-    const [targetSection, targetQuery] = target.split('?');
-    // A card hash can make the resolver name the re-homed leaf (identity)
-    // while the URL is already on the host page (ai): re-firing the redirect
-    // there navigates to the URL it is already at, forever.
-    if (section === targetSection) return;
-    const params = new URLSearchParams(search);
-    for (const [key, value] of new URLSearchParams(targetQuery ?? '')) params.set(key, value);
-    const query = params.toString();
-    void rawNavigate(`/settings/${targetSection}${query === '' ? '' : `?${query}`}${hash}`, { replace: true });
-  }, [iaMode, resolution, section, search, hash, rawNavigate]);
+  }, [resolution, section, search, hash, rawNavigate]);
 
   // Import history is a built-in session surface with exactly one address. The
   // redirect that carries an old `/capabilities?view=import` bookmark here
@@ -449,11 +403,8 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     guardedNavigate(`${target}#${entry.cardId}`);
   };
 
-  const activeGroup = active === null ? undefined
-    : iaMode === null ? settingsGroupForSection(active)
-    : prototypeGroupForSection(active, navTreeForMode(iaMode));
-  const activeLabelKey = active === null ? undefined
-    : (purposeSectionLabelKey(active, navTreeForMode(iaMode)) ?? SECTIONS.find((candidate) => candidate.id === active)?.labelKey);
+  const activeGroup = active === null ? undefined : settingsGroupForSection(active);
+  const activeLabelKey = active === null ? undefined : SECTIONS.find((candidate) => candidate.id === active)?.labelKey;
   // One installed plugin's own settings page, or the installed list. The
   // section's card hash targets the list, so a bookmark to the Plugins leaf
   // lands on the list even when the query still names a plugin.
@@ -557,7 +508,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
               <SettingsSearch
                 focusToken={searchFocusToken}
                 onSearchHit={onSearchHit}
-                navTree={navTreeForMode(iaMode)}
+                navTree={SETTINGS_NAV_TREE}
                 idle={
                   <button
                     type="button"

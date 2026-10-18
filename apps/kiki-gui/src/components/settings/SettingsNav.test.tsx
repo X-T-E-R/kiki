@@ -74,6 +74,30 @@ async function click(element: Element): Promise<void> {
 const noop = () => {};
 
 describe('SettingsNav grouped tree', () => {
+  it('ignores stored prototype mode or search query, renders no picker, keeps the 7 groups, and uses real names for renamed leaves', async () => {
+    localStorage.setItem('kiki.settings.ia-prototype', 'taskflow');
+    try {
+      const container = await render(
+        <SettingsNav active="connection" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />,
+      );
+      // No experimental picker rendered
+      expect(container.querySelector('[data-settings-ia-picker]')).toBeNull();
+
+      // Groups stay the 7 purpose groups
+      const groups = [...container.querySelectorAll('[data-settings-nav-group]')];
+      expect(groups.map((group) => group.getAttribute('data-settings-nav-group')))
+        .toEqual(['device', 'models-agents', 'sessions-work', 'capabilities', 'rules', 'connection', 'advanced']);
+
+      // Assert leaf labels for connection, connection-services, and tasks
+      const leafText = (id: string) => container.querySelector(`[data-settings-nav-leaf="${id}"]`)?.textContent?.trim();
+      expect(leafText('connection')).toBe('Server connection');
+      expect(leafText('connection-services')).toBe('Access from elsewhere');
+      expect(leafText('tasks')).toBe('Tasks & background');
+    } finally {
+      localStorage.removeItem('kiki.settings.ia-prototype');
+    }
+  });
+
   it('draws one continuous list of intent groups, every leaf reachable', async () => {
     const container = await render(
       <SettingsNav active="ai" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />,
@@ -86,19 +110,20 @@ describe('SettingsNav grouped tree', () => {
     expect(container.textContent).not.toMatch(/This device|All sessions|127\.0\.0\.1/);
     const groups = [...container.querySelectorAll('[data-settings-nav-group]')];
     expect(groups.map((group) => group.getAttribute('data-settings-nav-group')))
-      .toEqual(['device', 'models-agents', 'work', 'capabilities', 'connection', 'advanced']);
+      .toEqual(['device', 'models-agents', 'sessions-work', 'capabilities', 'rules', 'connection', 'advanced']);
     expect(groups.map((group) => group.querySelector('p')?.textContent))
-      .toEqual(['App', 'Models & agents', 'How work runs', 'Capabilities', 'Connection & remote', 'Advanced']);
+      .toEqual(['App', 'Models & agents', 'Sessions & work', 'Capabilities', 'Permissions & rules', 'Connection & remote', 'Advanced']);
     for (const group of groups) expect(group.querySelector(':scope > button')).toBeNull();
     const leaves = (index: number) => [...groups[index]!.querySelectorAll('[data-settings-nav-leaf]')].map((leaf) => leaf.getAttribute('data-settings-nav-leaf'));
-    expect(leaves(0)).toEqual(['general', 'appearance', 'shortcuts']);
-    expect(leaves(1)).toEqual(['ai', 'identity', 'agents', 'subagents']);
-    expect(leaves(2)).toEqual(['sessions', 'workspaces', 'notifications', 'memory', 'permissions', 'tasks']);
-    expect(leaves(3)).toEqual(['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks']);
+    expect(leaves(0)).toEqual(['general', 'appearance', 'shortcuts', 'notifications']);
+    expect(leaves(1)).toEqual(['ai', 'agents', 'subagents', 'identity']);
+    expect(leaves(2)).toEqual(['sessions', 'workspaces', 'memory', 'tasks']);
+    expect(leaves(3)).toEqual(['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control']);
+    expect(leaves(4)).toEqual(['permissions', 'hooks']);
     // Spaces and external services sit with the ways of reaching a server;
     // workspaces with the sessions that run in them.
-    expect(leaves(4)).toEqual(['connection', 'ssh', 'connection-services', 'spaces']);
-    expect(leaves(5)).toEqual(['developer', 'labs', 'about']);
+    expect(leaves(5)).toEqual(['connection', 'spaces', 'ssh', 'connection-services']);
+    expect(leaves(6)).toEqual(['developer', 'labs', 'about']);
   });
 
   it('highlights only the active leaf and navigates on click', async () => {
