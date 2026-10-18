@@ -50,7 +50,6 @@ import { ISessionMetadata, isExternalClientMain } from '#/session/sessionMetadat
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
-import { IWireService } from '#/wire/wire';
 import { OrderedHookSlot } from '#/hooks';
 import type { AgentTaskNotificationDeliveryContext } from './task';
 import {
@@ -318,7 +317,6 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     undoParticipants: IAgentConversationUndoParticipantRegistry,
     @ILogService private readonly log: ILogService,
     @IAgentStateService private readonly states: IAgentStateService,
-    @IWireService private readonly wire: IWireService,
   ) {
     super();
     this.states.contributeState(taskKey);
@@ -1267,9 +1265,9 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     const persistence = this.persistence;
     const needsOutcome = [...this.ghosts.values()].some((info) =>
       !TERMINAL_STATUSES.has(info.status) && info.kind === 'agent' && info.agentId !== undefined);
-    const outcomeRead = needsOutcome ? await readCommittedAgentRunOutcomes(this.wire) : undefined;
+    const outcomeRead = needsOutcome ? await readCommittedAgentRunOutcomes(this.sessionMetadata) : undefined;
     if (outcomeRead?.ok === false) {
-      this.log.error('agent run outcome journal could not be read; unconfirmed tasks stay lost', {
+      this.log.error('agent run outcome metadata could not be read; unconfirmed tasks stay lost', {
         error: outcomeRead.error,
       });
     }

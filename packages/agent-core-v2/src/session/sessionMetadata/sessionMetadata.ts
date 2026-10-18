@@ -29,6 +29,7 @@ export interface AgentMeta {
   readonly completedAt?: number;
   readonly resultSummary?: string;
   readonly error?: string;
+  readonly taskId?: string;
   readonly usage?: TokenUsage;
   readonly contextTokens?: number;
   readonly toolCallCount?: number;

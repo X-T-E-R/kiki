@@ -644,6 +644,7 @@ export interface SessionStateSnapshot {
       readonly completedAt?: number;
       readonly resultSummary?: string;
       readonly error?: string;
+      readonly taskId?: string;
       readonly usage?: /* TokenUsage — packages/agent-core-v2/src/kosong/contract/usage.ts */ {
         inputOther: number;
         output: number;

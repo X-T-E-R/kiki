@@ -1,7 +1,4 @@
-import { event2FromRecord } from '#/app/event/event2';
-import { SubagentCompleted, SubagentFailed } from '#/session/subagent/mirrorAgentRun';
-import type { WireRecord } from '#/wire/record';
-import type { IWireService } from '#/wire/wire';
+import type { AgentMeta, ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 
 import { EMPTY_AGENT_RECEIPT_REASON } from '#/agent/tools/agent/subagent-task';
 
@@ -19,59 +16,65 @@ export type AgentRunOutcomeRead =
   | { readonly ok: false; readonly error: unknown };
 
 export async function readCommittedAgentRunOutcomes(
-  wire: Pick<IWireService, 'readJournal'>,
+  metadata: Pick<ISessionMetadata, 'read'> | undefined,
 ): Promise<AgentRunOutcomeRead> {
-  const outcomes = new Map<string, CommittedAgentRunOutcome>();
+  if (metadata === undefined) return { ok: true, outcomes: new Map() };
   try {
-    for await (const record of wire.readJournal()) {
-      const outcome = outcomeFromRecord(record);
-      if (outcome !== undefined) outcomes.set(outcome.taskId, outcome);
-    }
-    return { ok: true, outcomes };
+    const data = await metadata.read();
+    return { ok: true, outcomes: outcomesFromAgentRegistry(data.agents) };
   } catch (error) {
     return { ok: false, error };
   }
 }
 
-function outcomeFromRecord(record: WireRecord): CommittedAgentRunOutcome | undefined {
-  if (record.type === SubagentCompleted.type) {
-    const event = event2FromRecord(SubagentCompleted, record);
-    if (!(event instanceof SubagentCompleted) || event.taskId === undefined) return undefined;
-    const endedAt = finiteTime(record.time);
-    if (event.resultSummary.trim().length > 0) {
+export function outcomesFromAgentRegistry(
+  agents: Readonly<Record<string, AgentMeta>> | undefined,
+): ReadonlyMap<string, CommittedAgentRunOutcome> {
+  const outcomes = new Map<string, CommittedAgentRunOutcome>();
+  if (agents === undefined) return outcomes;
+  for (const [agentId, meta] of Object.entries(agents)) {
+    const outcome = outcomeFromAgent(agentId, meta);
+    if (outcome !== undefined) outcomes.set(outcome.taskId, outcome);
+  }
+  return outcomes;
+}
+
+function outcomeFromAgent(agentId: string, meta: AgentMeta): CommittedAgentRunOutcome | undefined {
+  if (typeof meta.taskId !== 'string' || meta.taskId.length === 0) return undefined;
+  const endedAt = finiteTime(meta.completedAt);
+  if (meta.status === 'completed') {
+    const summary = meta.resultSummary ?? '';
+    if (summary.trim().length > 0) {
       return {
-        taskId: event.taskId,
-        subagentId: event.subagentId,
+        taskId: meta.taskId,
+        subagentId: agentId,
         status: 'completed',
-        finalOutput: event.resultSummary,
+        finalOutput: summary,
         endedAt,
       };
     }
     return {
-      taskId: event.taskId,
-      subagentId: event.subagentId,
+      taskId: meta.taskId,
+      subagentId: agentId,
       status: 'failed',
       stopReason: EMPTY_AGENT_RECEIPT_REASON,
       endedAt,
     };
   }
-  if (record.type === SubagentFailed.type) {
-    const event = event2FromRecord(SubagentFailed, record);
-    if (!(event instanceof SubagentFailed) || event.taskId === undefined) return undefined;
-    const endedAt = finiteTime(record.time);
-    if (event.error === 'terminated') {
-      return {
-        taskId: event.taskId,
-        subagentId: event.subagentId,
-        status: 'killed',
-        endedAt,
-      };
-    }
+  if (meta.status === 'cancelled' || (meta.status === 'failed' && meta.error === 'terminated')) {
     return {
-      taskId: event.taskId,
-      subagentId: event.subagentId,
+      taskId: meta.taskId,
+      subagentId: agentId,
+      status: 'killed',
+      endedAt,
+    };
+  }
+  if (meta.status === 'failed') {
+    return {
+      taskId: meta.taskId,
+      subagentId: agentId,
       status: 'failed',
-      stopReason: event.error,
+      stopReason: meta.error,
       endedAt,
     };
   }

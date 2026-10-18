@@ -318,6 +318,7 @@ function agentMetaEquals(a: AgentMeta, b: AgentMeta): boolean {
     a.completedAt === b.completedAt &&
     a.resultSummary === b.resultSummary &&
     a.error === b.error &&
+    a.taskId === b.taskId &&
     JSON.stringify(a.usage) === JSON.stringify(b.usage) &&
     a.contextTokens === b.contextTokens &&
     a.toolCallCount === b.toolCallCount &&
