@@ -67,6 +67,16 @@ Business domains **do not implement persistence themselves** — they depend on 
 
 Business code must not `import 'node:fs'`, write SQL, hand-roll append-logs / atomic writes, or hold file handles. Generic Stores are named by **access pattern** (`IAppendLogStore`, `IAtomicDocumentStore`); only domain-unique Stores are named after the domain (`ISessionIndex`). See `.agents/skills/agent-core-dev/persistence.md` for the full layering rules and decision tree.
 
+### Append commitment
+
+`StorageError.details.committed` on an append says whether `writeFile` for that batch had started. It does not mean the batch is durable.
+
+- `false`: `writeFile` had not started. On the file backend, `open` is retried at most 4 times, 10ms apart, and only before `writeFile`. `EBUSY`, `EPERM`, and `EACCES` remain retriable after that; `ENOSPC` does not. `AppendLogStore` keeps the pending batch, retries it once on a microtask, then stops. A later explicit `flush`, or `AgentLoopService.recoverPersistence`, writes that same batch. Neither call spins.
+- `true`: `writeFile` had started. The bytes may already be on disk, and `sync` or `close` may still have failed. Do not retry the batch. A later explicit flush must not write it again. This is not a durable success.
+- any other value, including omission: the error does not say whether bytes were written. The store keeps one historical microtask retry. That retry can append the same batch twice. Do not treat this path as exactly-once.
+
+A failed turn-end save stays failed until the same `TurnEnded` is durable. `recoverPersistence` retries on delays of 100ms, 500ms, and 2000ms, then stops. The next `AgentLoopService.enqueue` or `AgentPromptService.enqueue` calls it again when `persistenceFailure` is set. Recovery writes the pending record; it does not replay the model or tool calls. `GET /api/healthz` returns `{ ok: true }` and does not report this failure. `GET /api/desktop-lifecycle` can show the session in `work_pending`; `POST /api/desktop-lifecycle` drains and stops the service.
+
 `IUsageFactStore` (`src/app/usageFacts/`, eager App scope) projects canonical append commits into `cache/usage-facts-v1` through `IAppendLogStore`; the structural `IQueryStore` view provides time filtering and unpriced per-agent/model totals. Commit coverage carries source generation, byte offset and boundary proof; non-usage batches advance it without rereading their bodies. Managed rewrites change generation before replacing wire. Derived failures never reject successful canonical writes, and a missing prefix must be recovered before later batches count as covered. The fact journal rebuilds a lost query view without conversation bodies; the aggregation consumer owns bounded legacy recovery and valid v1 migration. Repeated usage facts retain separate ordinals, including genuine zero and unknown usage.
 
 ## MCP management plane
