@@ -120,7 +120,7 @@ function emittedOffset(doc: Text, cmPos: number, separators: readonly string[]):
     const line = doc.line(i);
     if (cmPos <= line.to) return emitted + (cmPos - line.from);
     emitted += line.to - line.from;
-    if (i < lineCount) emitted += separators[i - 1].length;
+    if (i < lineCount) emitted += separators[i - 1]!.length;
   }
   return emitted;
 }
