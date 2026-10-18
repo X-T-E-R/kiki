@@ -472,7 +472,7 @@ function BackfillForm({ entry, onRun, onPreview, onClose }: {
       </div>
       <label className="flex items-center gap-2 text-[12px] text-ink-soft">
         <input type="checkbox" checked={bounded} onChange={(event) => { setBounded(event.target.checked); }} />
-        {t('usage.customRange.end')}
+        {t('usage.export.form.historyBounded')}
       </label>
       {invalid ? <p role="alert" className="text-[12px] text-danger">{t('usage.export.handoff.cutoffInvalid')}</p> : null}
     </div>

@@ -179,11 +179,11 @@ export function UsageSessionPanel({
           </p>
         ) : query.isError ? (
           <div className="rounded-lg border border-danger/30 bg-danger/5 p-3">
-            <p className="text-[13px] text-danger">{t('usage.sessions.loadFailed')}</p>
+            <p className="text-[13px] font-medium text-danger">{t('usage.sessions.loadFailed')}</p>
             <button
               type="button"
               onClick={() => { void query.refetch(); }}
-              className="mt-2 h-8 rounded-md border border-danger/40 px-3 text-[13px] text-danger hover:bg-danger/5 pointer-coarse:min-h-11"
+              className={`mt-2 ${SECONDARY_BUTTON}`}
             >
               {t('common.retry')}
             </button>

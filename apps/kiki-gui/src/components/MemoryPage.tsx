@@ -238,7 +238,20 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
           </button>
         </div>
       </PageHeader>
-      {!globalEnabled ? (
+      {settings === undefined && settingsQuery.isPending ? (
+        <p data-memory-loading role="status" className={`mx-auto flex w-full ${PAGE_WIDTH.split} items-center gap-2 px-4 py-12 text-[13px] text-ink-faint lg:px-6`}>
+          <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
+          {t('memory.loading')}
+        </p>
+      ) : settings === undefined && settingsQuery.isError ? (
+        <div data-memory-settings-error role="alert" className={`mx-auto w-full ${PAGE_WIDTH.split} px-4 py-8 lg:px-6`}>
+          <p className="text-[13px] font-medium text-danger">{t('memory.loadFailed')}</p>
+          <div className="mt-1"><InlineError error={settingsQuery.error} /></div>
+          <button type="button" onClick={() => { void settingsQuery.refetch(); }} className={`mt-3 ${SECONDARY_BUTTON}`}>
+            {t('common.retry')}
+          </button>
+        </div>
+      ) : !globalEnabled ? (
         <MemoryIntro
           loading={settingsQuery.isPending}
           busy={globalToggle.isPending}
@@ -357,14 +370,21 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
           </div>
           {scopeError !== null ? (
             <div role="alert" className={`mx-auto w-full ${PAGE_WIDTH.split} px-4 py-6 text-[13px] text-danger lg:px-6`}>
-              <p>{t('memory.loadFailed')}</p>
-              <p className="mt-1">{errorText(locale, scopeError)}</p>
-              <button type="button" data-memory-scope-retry disabled={((memorySources.rangeError !== null || (mode === 'workspace' && missingObject)) && workspaceDirectory.isFetching) || (mode === 'persona' && personasQuery.isError && personasQuery.isFetching)}
+              <p className="font-medium text-danger">{t('memory.loadFailed')}</p>
+              <div className="mt-1"><InlineError error={scopeError} /></div>
+              <button
+                type="button"
+                data-memory-scope-retry
+                disabled={((memorySources.rangeError !== null || (mode === 'workspace' && missingObject)) && workspaceDirectory.isFetching) || (mode === 'persona' && personasQuery.isError && personasQuery.isFetching)}
                 onClick={() => {
                   if (mode === 'persona' && personasQuery.isError) void personasQuery.refetch();
                   if (memorySources.rangeError !== null || (mode === 'workspace' && missingObject)) void workspaceDirectory.refetch();
                   memorySources.retry();
-                }} className="mt-2 underline">{t('common.retry')}</button>
+                }}
+                className={`mt-3 ${SECONDARY_BUTTON}`}
+              >
+                {t('common.retry')}
+              </button>
             </div>
           ) : (missingObject && objectLoading) || memorySources.loading ? (
             <p data-memory-scope-loading role="status" className={`mx-auto flex w-full ${PAGE_WIDTH.split} items-center gap-2 px-4 py-8 text-[13px] text-ink-faint lg:px-6`}>
@@ -982,10 +1002,15 @@ function MemoryDetail({
       <section data-memory-history aria-labelledby={`memory-history-${entry.id}`}>
         <h3 id={`memory-history-${entry.id}`} className={FIELD_LABEL}>{t('memory.history')}</h3>
         {journalQuery.isPending ? <p role="status" className="mt-1.5 text-[12px] text-ink-faint">{t('memory.loading')}</p>
-          : journalQuery.isError ? <div role="alert" className="mt-1.5 text-[12px] text-danger">
-            <p>{t('memory.loadFailed')}</p>
-            <button type="button" onClick={() => { void journalQuery.refetch(); }} className="mt-1 underline">{t('common.retry')}</button>
-          </div>
+          : journalQuery.isError ? (
+            <div role="alert" className="mt-2 space-y-1">
+              <p className="text-[12px] font-medium text-danger">{t('memory.loadFailed')}</p>
+              <InlineError error={journalQuery.error} />
+              <button type="button" onClick={() => { void journalQuery.refetch(); }} className={`mt-2 ${SECONDARY_BUTTON}`}>
+                {t('common.retry')}
+              </button>
+            </div>
+          )
           : history.length === 0 ? <p className="mt-1.5 text-[12px] text-ink-faint">{t('memory.history.empty')}</p>
           : <ul className="mt-1.5 space-y-px">
             {[...history].reverse().map((record) => (
@@ -1353,7 +1378,14 @@ function MemoryInbox({
               <button type="button" data-memory-inbox-read onClick={() => { setExpandedId(expandedId === entry.id ? null : entry.id); }} className="mt-1 text-[12px] text-ink-soft underline">{t('memory.tool.view')}</button>
             ) : null}
             {expandedId === entry.id && expanded.isPending ? <p role="status" className="text-[12px] text-ink-faint">{t('memory.loading')}</p> : null}
-            {expandedId === entry.id && expanded.isError ? <button type="button" onClick={() => { void expanded.refetch(); }} className="text-[12px] text-danger underline">{errorText(locale, expanded.error)} · {t('common.retry')}</button> : null}
+            {expandedId === entry.id && expanded.isError ? (
+              <div className="mt-1 space-y-1">
+                <InlineError error={expanded.error} />
+                <button type="button" onClick={() => { void expanded.refetch(); }} className={`mt-1.5 ${SECONDARY_BUTTON}`}>
+                  {t('common.retry')}
+                </button>
+              </div>
+            ) : null}
             {entry.reason !== '' ? (
               <p className="mt-0.5 text-[12px] text-ink-faint">{t('memory.tool.reason')}: {entry.reason}</p>
             ) : null}

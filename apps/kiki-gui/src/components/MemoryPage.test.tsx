@@ -1273,6 +1273,15 @@ describe('MemoryPage editor draft', () => {
 });
 
 describe('MemoryPage global switch', () => {
+  it('renders load failure instead of turning-off intro when settings query fails', async () => {
+    seedMemories({ 'global::': [] });
+    vi.mocked(client.getMemorySettings).mockRejectedValue(new Error('Network offline'));
+    const { container } = await mountPage('/memory', []);
+    expect(container.querySelector('[data-memory-settings-error]')).not.toBeNull();
+    expect(container.querySelector('[data-memory-intro]')).toBeNull();
+    expect(container.querySelector('[data-memory-enable]')).toBeNull();
+  });
+
   it('marks every workspace effective read stale after this page turns memory on', async () => {
     // The settings card holds a computed `effective_enabled` per workspace.
     // This page is the other entry that writes the global switch, so its save

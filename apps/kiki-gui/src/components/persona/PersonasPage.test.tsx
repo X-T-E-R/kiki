@@ -34,6 +34,8 @@ const listCronTasks = vi.fn();
 const listSessions = vi.fn();
 const listRooms = vi.fn();
 const listAgentCapabilities = vi.fn();
+const previewPersonaImport = vi.fn();
+const importPersonaCard = vi.fn();
 
 // No `runAction` here on purpose: this file models a page that is not dirty, so
 // the handoff creates and leaves without a prompt. The cancel-the-leave order is
@@ -56,6 +58,8 @@ vi.mock('../../state/connection', () => {
       listCronTasks,
       listSessions,
       listAgentCapabilities,
+      previewPersonaImport,
+      importPersonaCard,
       klient: { rest: { personas: {}, rooms: { list: listRooms } } },
     },
     scopeId: 'local',
@@ -267,6 +271,68 @@ describe('handing a new persona to Kiki', () => {
     for (let index = 0; index < 6; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(createSession).toHaveBeenCalledTimes(2);
     expect(navigate).toHaveBeenCalledWith('/s/persona-ask-retry', { state: { createdSession: { id: 'persona-ask-retry', scopeId: 'local' } } });
+  });
+
+  it('reports persona import memory failure accurately with view action in toast', async () => {
+    const { PersonaImportDialog } = await import('./PersonaImportDialog');
+    previewPersonaImport.mockResolvedValue({
+      definition: { id: 'imported-bot', name: 'Imported Bot', description: 'Bot description' },
+      avatar: null,
+      greetings: [],
+      examples: 'Example dialogue',
+      memoryEntries: [{ title: 'Memory 1', body: 'Body 1' }],
+      lorebookCount: 3,
+      ignoredFields: [],
+    });
+    importPersonaCard.mockResolvedValue({
+      snapshot: { definition: { id: 'imported-bot', name: 'Imported Bot' } },
+      memory: { status: 'failed', count: 3, error: 'Database locked' },
+    });
+    const onImported = vi.fn();
+    const onClose = vi.fn();
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mounted.push(root);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <MemoryRouter>
+              <PersonaImportDialog takenIds={new Set()} onClose={onClose} onImported={onImported} />
+            </MemoryRouter>
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+
+    const file = new File(['{}'], 'card.json', { type: 'application/json' });
+    const input = document.body.querySelector<HTMLInputElement>('input[type="file"]')!;
+    expect(input).not.toBeNull();
+    await act(async () => {
+      Object.defineProperty(input, 'files', { value: [file] });
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    for (let i = 0; i < 6; i++) await act(async () => { await new Promise((res) => setTimeout(res, 0)); });
+
+    const importBtn = document.body.querySelector<HTMLButtonElement>('[data-persona-import-confirm]');
+    expect(importBtn).not.toBeNull();
+    await act(async () => { importBtn!.click(); });
+    for (let i = 0; i < 6; i++) await act(async () => { await new Promise((res) => setTimeout(res, 0)); });
+
+    const toasts = (await import('../../lib/toasts')).getToasts();
+    const lastToast = toasts.at(-1);
+    expect(lastToast).toBeDefined();
+    expect(lastToast?.tone).toBe('error');
+    expect(lastToast?.text).toContain('已导入「Imported Bot」，但记忆未能写入');
+    expect(lastToast?.detail).toBe('Database locked');
+    expect(lastToast?.retry?.label).toBe('查看记忆');
+
+    // Clicking the retry action calls navigate to /memory?persona=imported-bot
+    expect(typeof lastToast?.retry?.run).toBe('function');
   });
 
 });

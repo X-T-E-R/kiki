@@ -248,10 +248,32 @@ describe('opening and abandoning the form', () => {
     const name = q<HTMLInputElement>('[data-usage-export-form-name]')!;
     await type(name, 'my receiver');
     await click(q('[data-usage-export-form-cancel]'));
+    // Dirty form prompts with discard confirmation
+    expect(q('[role="alertdialog"]')).not.toBeNull();
+    const confirmBtn = q<HTMLButtonElement>('[role="alertdialog"] [data-confirm-action="confirm"]')!;
+    await click(confirmBtn);
+    expect(q('[data-usage-export-form]')).toBeNull();
     expect(usageExport.status).toHaveBeenCalledTimes(1);
     for (const call of ['saveDraft', 'preview', 'testProtocol', 'enable', 'syncNow', 'backfill']) {
       expect(usageExport[call as keyof typeof usageExport]).not.toHaveBeenCalled();
     }
+  });
+
+  it('prompts before discarding dirty form on cancel and stays on cancel confirmation', async () => {
+    await render();
+    await click(q('[data-usage-export-add]'));
+    const name = q<HTMLInputElement>('[data-usage-export-form-name]')!;
+    await type(name, 'edited destination');
+    await click(q('[data-usage-export-form-cancel]'));
+    expect(q('[role="alertdialog"]')).not.toBeNull();
+    // Dismiss the confirm dialog
+    const cancelConfirmBtn = [...document.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')].find(
+      (b) => b.getAttribute('data-confirm-action') !== 'confirm'
+    )!;
+    await click(cancelConfirmBtn);
+    expect(q('[role="alertdialog"]')).toBeNull();
+    expect(q('[data-usage-export-form]')).not.toBeNull();
+    expect(q<HTMLInputElement>('[data-usage-export-form-name]')!.value).toBe('edited destination');
   });
 });
 

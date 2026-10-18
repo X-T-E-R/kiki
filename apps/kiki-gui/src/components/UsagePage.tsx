@@ -1165,7 +1165,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
               <button
                 type="button"
                 onClick={() => void usageQuery.refetch()}
-                className="h-8 rounded-md border border-danger/40 px-3 text-[12.5px] font-medium text-danger hover:bg-danger/5 pointer-coarse:min-h-11"
+                className={SECONDARY_BUTTON}
               >
                 {t('common.reload')}
               </button>
