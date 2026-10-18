@@ -1,69 +1,62 @@
-import { QueryClient } from '@tanstack/react-query';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+// @vitest-environment jsdom
 
-import { SESSION_FIRST_PAGE_POLL_INTERVAL_MS, isEditableTarget } from './App';
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { MemoryRouter } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { App, SESSION_FIRST_PAGE_POLL_INTERVAL_MS, isEditableTarget } from './App';
+import { HostProvider, browserHost } from './host';
+import { I18nProvider } from './i18n';
+import { PageHeader } from './components/PageChrome';
+import { canAbortActiveTurn, shouldHandleGlobalAbortOnEscape } from './components/SessionView';
+import { anyOverlayOpen } from './lib/uiBusy';
+import { clearNavHistory } from './lib/navHistory';
+import { configureSpaceStorage } from './lib/spaceStorage';
 import { retryRootReadModelDelay, retryRootReadModelQuery } from './lib/readModelRetry';
 import { resolveFallbackPhase } from './components/ConversationShell';
 import { ApiError } from './lib/client';
 import { shouldGuardNavigation } from './components/dirtyGuard';
 import { handleGlobalConnectionFrame, refreshSessionAttention } from './state/connection';
 
-// App pulls the whole route tree; only the SessionView branch needs xterm
-// (no `self` under node) and none of it is under test here.
-vi.mock('./components/SessionView', () => ({ SessionRouteView: () => null }));
+const appHarness = vi.hoisted(() => ({ connection: null as unknown }));
 
-/**
- * `isEditableTarget` decides which global shortcuts yield to the focused
- * input surface (Ctrl+Tab session hopping) and which stay app-wide. Node has
- * no DOM classes, so the test stubs the minimum set the helper consults.
- */
-const eventTargetStub = {
-  addEventListener: () => {},
-  dispatchEvent: () => false,
-  removeEventListener: () => {},
-};
-
-class FakeInput implements EventTarget {
-  readonly addEventListener = eventTargetStub.addEventListener;
-  readonly dispatchEvent = eventTargetStub.dispatchEvent;
-  readonly removeEventListener = eventTargetStub.removeEventListener;
-}
-class FakeTextArea extends FakeInput {}
-class FakeSelect extends FakeInput {}
-class FakeElement implements EventTarget {
-  readonly addEventListener = eventTargetStub.addEventListener;
-  readonly dispatchEvent = eventTargetStub.dispatchEvent;
-  readonly removeEventListener = eventTargetStub.removeEventListener;
-  isContentEditable = false;
-}
-class FakeEditableDiv extends FakeElement {
-  override isContentEditable = true;
-}
-class FakePlainDiv extends FakeElement {}
-
-beforeAll(() => {
-  vi.stubGlobal('HTMLInputElement', FakeInput);
-  vi.stubGlobal('HTMLTextAreaElement', FakeTextArea);
-  vi.stubGlobal('HTMLSelectElement', FakeSelect);
-  vi.stubGlobal('HTMLElement', FakeElement);
-});
-
-afterAll(() => {
-  vi.unstubAllGlobals();
-});
+vi.mock('./state/connection', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./state/connection')>(),
+  useConnection: () => appHarness.connection,
+  useOptionalConnection: () => appHarness.connection,
+  useOptionalControllerRegistry: () => null,
+}));
+vi.mock('./components/SessionView', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./components/SessionView')>(),
+  SessionRouteView: () => null,
+}));
+// Keep the real page trigger, App shell and Sidebar; omit unrelated route data.
+vi.mock('./components/UsagePage', () => ({
+  UsagePage: ({ onToggleSidebar }: { onToggleSidebar: () => void }) =>
+    <PageHeader title="Usage" onToggleSidebar={onToggleSidebar} />,
+}));
+vi.mock('./components/TerminalPanel', () => ({ TerminalPanel: () => null }));
+vi.mock('./lib/skins/useUserSkins', () => ({ useUserSkins: () => {} }));
+vi.mock('./lib/skins/useAppearancePacks', () => ({ useAppearancePacks: () => {} }));
 
 describe('isEditableTarget', () => {
   it('recognizes every editable focus surface', () => {
-    expect(isEditableTarget(new FakeInput())).toBe(true);
-    expect(isEditableTarget(new FakeTextArea())).toBe(true);
-    expect(isEditableTarget(new FakeSelect())).toBe(true);
-    expect(isEditableTarget(new FakeEditableDiv())).toBe(true);
+    expect(isEditableTarget(document.createElement('input'))).toBe(true);
+    expect(isEditableTarget(document.createElement('textarea'))).toBe(true);
+    expect(isEditableTarget(document.createElement('select'))).toBe(true);
+    const editable = document.createElement('div');
+    Object.defineProperty(editable, 'isContentEditable', { value: true });
+    expect(isEditableTarget(editable)).toBe(true);
   });
 
   it('lets plain surfaces through so global shortcuts keep working', () => {
-    expect(isEditableTarget(new FakePlainDiv())).toBe(false);
+    const plain = document.createElement('div');
+    Object.defineProperty(plain, 'isContentEditable', { value: false });
+    expect(isEditableTarget(plain)).toBe(false);
     expect(isEditableTarget(null)).toBe(false);
-    expect(isEditableTarget({ ...eventTargetStub })).toBe(false);
+    expect(isEditableTarget(new EventTarget())).toBe(false);
   });
 });
 
@@ -210,5 +203,188 @@ describe('connection-level model catalog refresh', () => {
 
     expect(handleGlobalConnectionFrame({ type: 'turn.ended' }, queryClient)).toBe(false);
     expect(queryClient.invalidateQueries).not.toHaveBeenCalled();
+  });
+});
+
+describe('App sidebar Escape wiring', () => {
+  let root: Root;
+  let container: HTMLDivElement;
+  let queryClient: QueryClient;
+  let unmounted: boolean;
+
+  beforeEach(() => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    vi.stubGlobal('matchMedia', (media: string) => ({
+      media,
+      matches: media === '(max-width: 767px)',
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }));
+    localStorage.clear();
+    sessionStorage.clear();
+    localStorage.setItem('kiki.locale', 'en');
+    configureSpaceStorage(null);
+    clearNavHistory();
+    window.history.replaceState(null, '');
+    appHarness.connection = {
+      scopeId: 'local',
+      meta: { server_home_id: 'main', capabilities: {}, open_in_apps: [] },
+      wsStatus: 'open',
+      localClient: null,
+      client: {
+        getAuth: async () => ({ ready: true }),
+        listModels: async () => ({ items: [] }),
+        listSessions: async () => ({ items: [], has_more: false }),
+        listWorkspaceCatalog: async () => ({ items: [] }),
+        listEphemeralSessions: async () => ({ items: [] }),
+        listPersonas: async () => [],
+        pluginNavigation: async () => ({}),
+        readShortcuts: async () => ({}),
+        getRequestGovernance: async () => ({
+          domainId: 'example', runtimeEpoch: 'example', seq: 1,
+          asOf: '2026-01-01T00:00:00Z', active: 0, queued: 0,
+          coverage: { native: 'managed', external: 'unmanaged' },
+          dimensions: [], rules: [], waiting: [],
+        }),
+        klient: {
+          rest: { rooms: { listItems: async () => [] } },
+          events: { on: () => ({ dispose: () => {} }) },
+        },
+      },
+    };
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+    unmounted = false;
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+    expect(anyOverlayOpen()).toBe(false);
+  });
+
+  afterEach(async () => {
+    if (!unmounted) await unmountApp();
+    queryClient.clear();
+    container.remove();
+    appHarness.connection = null;
+    clearNavHistory();
+    localStorage.clear();
+    sessionStorage.clear();
+    window.history.replaceState(null, '');
+    vi.unstubAllGlobals();
+    expect(anyOverlayOpen()).toBe(false);
+  });
+
+  async function mountApp() {
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <HostProvider host={browserHost}>
+              <MemoryRouter initialEntries={['/usage']}>
+                <App />
+              </MemoryRouter>
+            </HostProvider>
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+  }
+
+  async function withHistoryPop<T>(action: () => Promise<T>): Promise<T> {
+    let onPop: () => void = () => {};
+    const popped = new Promise<void>((resolve) => { onPop = resolve; });
+    window.addEventListener('popstate', onPop, { once: true });
+    try {
+      const result = await action();
+      await popped;
+      return result;
+    } finally {
+      window.removeEventListener('popstate', onPop);
+    }
+  }
+
+  async function unmountApp() {
+    const unmount = async () => { await act(async () => { root.unmount(); }); };
+    if (container.querySelector('#app-sidebar.open') !== null) await withHistoryPop(unmount);
+    else await unmount();
+    unmounted = true;
+  }
+
+  function element<T extends HTMLElement>(selector: string): T {
+    const found = container.querySelector<T>(selector);
+    if (found === null) throw new Error(`Missing App element: ${selector}`);
+    return found;
+  }
+
+  async function openDrawerAndFilter() {
+    const trigger = element<HTMLButtonElement>('button[aria-controls="app-sidebar"]');
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(element('#app-sidebar').hasAttribute('inert')).toBe(true);
+    expect(anyOverlayOpen()).toBe(false);
+    await act(async () => { trigger.click(); });
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    expect(element('#app-sidebar').classList.contains('open')).toBe(true);
+    expect(element('#app-sidebar').hasAttribute('inert')).toBe(false);
+    expect(anyOverlayOpen()).toBe(true);
+    expect(anyOverlayOpen(['app-sidebar'])).toBe(false);
+    await act(async () => { element<HTMLButtonElement>('[data-filter-menu-toggle]').click(); });
+    expect(container.querySelector('[data-filter-menu]')).not.toBeNull();
+    expect(anyOverlayOpen(['app-sidebar'])).toBe(true);
+    return trigger;
+  }
+
+  async function escape() {
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    let overlayOpen = false;
+    await act(async () => {
+      window.dispatchEvent(event);
+      // Read before React's effect cleanup: this is what a later global
+      // abort listener would see during the same native event dispatch.
+      overlayOpen = anyOverlayOpen();
+    });
+    return { event, overlayOpen };
+  }
+
+  it('lets the real filter menu consume the first Escape and the real App drawer effect consume the second', async () => {
+    await mountApp();
+    const trigger = await openDrawerAndFilter();
+    const running = { busy: true, abortablePromptId: 'example-prompt', abortableTurnId: undefined };
+    expect(canAbortActiveTurn(running)).toBe(true);
+
+    const first = await escape();
+    expect(first.event.defaultPrevented).toBe(true);
+    expect(container.querySelector('[data-filter-menu]')).toBeNull();
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    expect(element('#app-sidebar').classList.contains('open')).toBe(true);
+    expect(anyOverlayOpen()).toBe(true);
+    expect(anyOverlayOpen(['app-sidebar'])).toBe(false);
+
+    const second = await withHistoryPop(escape);
+    expect(second.event.defaultPrevented).toBe(true);
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(element('#app-sidebar').classList.contains('open')).toBe(false);
+    expect(element('#app-sidebar').hasAttribute('inert')).toBe(true);
+    expect(anyOverlayOpen()).toBe(false);
+
+    // Exercise the production abort predicate, not a copied SessionView listener.
+    for (const { event, overlayOpen } of [first, second]) {
+      expect(shouldHandleGlobalAbortOnEscape({
+        key: event.key, defaultPrevented: event.defaultPrevented, overlayOpen,
+        terminalFocused: false, terminalOpen: false, inFormField: false,
+      })).toBe(false);
+    }
+    const third = await escape();
+    expect(third.event.defaultPrevented).toBe(false);
+    expect(shouldHandleGlobalAbortOnEscape({
+      key: third.event.key, defaultPrevented: third.event.defaultPrevented, overlayOpen: third.overlayOpen,
+      terminalFocused: false, terminalOpen: false, inFormField: false,
+    })).toBe(true);
+  });
+
+  it('unregisters the real App drawer and filter layers on unmount without leaving an Escape consumer', async () => {
+    await mountApp();
+    await openDrawerAndFilter();
+    await unmountApp();
+    expect(anyOverlayOpen()).toBe(false);
+    expect((await escape()).event.defaultPrevented).toBe(false);
   });
 });
