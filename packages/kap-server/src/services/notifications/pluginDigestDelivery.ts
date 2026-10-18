@@ -4,7 +4,7 @@ import {
 } from '@nb-im/core';
 import type { NotificationsConfig } from '@kiki/agent-core-v2/app/notifications/configSection';
 import {
-  parsePluginImRequest, pluginImReceipt,
+  parsePluginImRequest, pluginImCaller, pluginImReceipt,
   type PluginImCapabilities, type PluginImErrorKind, type PluginImRoute, type PluginImSendReceipt, type PluginImSendRequest,
 } from '@kiki/agent-core-v2';
 
@@ -106,24 +106,40 @@ function fingerprint(settings: NotificationsConfig, runtime: Runtime, channelId:
   ]);
 }
 
-export function ensurePluginDigestReceipts(db: { exec(sql: string): void }): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS plugin_digest_receipts (
-    account_ref TEXT NOT NULL,
-    idempotency_key TEXT NOT NULL,
-    fingerprint TEXT NOT NULL,
-    channel_id TEXT NOT NULL,
-    text_hash TEXT NOT NULL,
-    state TEXT NOT NULL,
-    diagnostic_code TEXT,
-    error_kind TEXT,
-    PRIMARY KEY (account_ref, idempotency_key)
-  )`);
+const DIGEST_RECEIPTS = `CREATE TABLE plugin_digest_receipts (
+  plugin_id TEXT NOT NULL,
+  account_ref TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  text_hash TEXT NOT NULL,
+  state TEXT NOT NULL,
+  diagnostic_code TEXT,
+  error_kind TEXT,
+  PRIMARY KEY (plugin_id, account_ref, idempotency_key)
+)`;
+
+export function ensurePluginDigestReceipts(db: { exec(sql: string): void; prepare(sql: string): { all(): unknown[] } }): void {
+  const present = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'plugin_digest_receipts'`).all();
+  if (present.length === 0) {
+    db.exec(DIGEST_RECEIPTS);
+    return;
+  }
+  const names = db.prepare('PRAGMA table_info(plugin_digest_receipts)').all().flatMap((row) => {
+    if (!record(row)) return [];
+    const name = row['name'];
+    return typeof name === 'string' ? [name] : [];
+  });
+  if (!names.includes('plugin_id') || !names.includes('account_ref') || !names.includes('state')) {
+    db.exec('DROP TABLE plugin_digest_receipts');
+    db.exec(DIGEST_RECEIPTS);
+  }
 }
 
-function readReceipt(runtime: Runtime, account: string, key: string): ReceiptRow | undefined {
+function readReceipt(runtime: Runtime, pluginId: string, account: string, key: string): ReceiptRow | undefined {
   const row = runtime.outbox.db.prepare(
     `SELECT fingerprint, channel_id, text_hash, state, diagnostic_code, error_kind FROM plugin_digest_receipts
-     WHERE account_ref = ? AND idempotency_key = ?`).get(account, key);
+     WHERE plugin_id = ? AND account_ref = ? AND idempotency_key = ?`).get(pluginId, account, key);
   if (!record(row)) return undefined;
   const fingerprint = row['fingerprint'];
   const channelId = row['channel_id'];
@@ -187,13 +203,14 @@ export class PluginDigestDelivery {
     return routes;
   }
 
-  send(value: unknown, signal: AbortSignal): Promise<PluginImSendReceipt> {
+  send(value: unknown, signal: AbortSignal, pluginId: string): Promise<PluginImSendReceipt> {
     const parsed = parsePluginImRequest(value);
     if (!parsed.ok) return Promise.resolve(parsed.receipt);
+    if (!pluginImCaller(pluginId)) return Promise.resolve(failed('im_unsupported', 'dependency_missing'));
     if (signal.aborted) return Promise.resolve(pluginImReceipt('cancelled', { diagnosticCode: 'cancelled' }));
     const request = parsed.request;
     const textHash = createHash('sha256').update(request.text).digest('hex');
-    const identity = `${request.accountRef}\n${request.idempotencyKey}`;
+    const identity = `${pluginId}\n${request.accountRef}\n${request.idempotencyKey}`;
     const current = this.inflight.get(identity);
     if (current !== undefined) {
       if (current.textHash !== textHash || current.channelId !== request.channelId || current.routeRevision !== request.routeRevision) {
@@ -204,11 +221,11 @@ export class PluginDigestDelivery {
     let settle: (receipt: PluginImSendReceipt) => void = () => {};
     const promise = new Promise<PluginImSendReceipt>((resolve) => { settle = resolve; });
     this.inflight.set(identity, { promise, textHash, channelId: request.channelId, routeRevision: request.routeRevision });
-    void this.deliver(request, textHash, signal).then(settle, () => settle(pluginImReceipt('unknown', { diagnosticCode: 'send_outcome_unknown', errorKind: 'unknown' })));
+    void this.deliver(pluginId, request, textHash, signal).then(settle, () => settle(pluginImReceipt('unknown', { diagnosticCode: 'send_outcome_unknown', errorKind: 'unknown' })));
     return promise.finally(() => { this.inflight.delete(identity); });
   }
 
-  private async deliver(request: PluginImSendRequest, textHash: string, signal: AbortSignal): Promise<PluginImSendReceipt> {
+  private async deliver(pluginId: string, request: PluginImSendRequest, textHash: string, signal: AbortSignal): Promise<PluginImSendReceipt> {
     const runtime = this.deps.runtime();
     const settings = this.deps.settings();
     if (signal.aborted) return pluginImReceipt('cancelled', { diagnosticCode: 'cancelled' });
@@ -223,7 +240,7 @@ export class PluginDigestDelivery {
     const routeRevision = fingerprint(settings, runtime, request.channelId);
     if (routeRevision === undefined || routeRevision !== request.routeRevision) return failed('route_changed', 'configuration');
     ensurePluginDigestReceipts(runtime.outbox.db);
-    const existing = readReceipt(runtime, request.accountRef, request.idempotencyKey);
+    const existing = readReceipt(runtime, pluginId, request.accountRef, request.idempotencyKey);
     if (existing !== undefined) {
       if (existing.fingerprint !== routeRevision || existing.channel_id !== request.channelId || existing.text_hash !== textHash) {
         return failed('idempotency_conflict', 'configuration');
@@ -232,17 +249,17 @@ export class PluginDigestDelivery {
     }
     runtime.outbox.db.prepare(
       `INSERT INTO plugin_digest_receipts
-       (account_ref, idempotency_key, fingerprint, channel_id, text_hash, state, diagnostic_code)
-       VALUES (?, ?, ?, ?, ?, 'armed', NULL)`).run(request.accountRef, request.idempotencyKey, routeRevision, request.channelId, textHash);
+       (plugin_id, account_ref, idempotency_key, fingerprint, channel_id, text_hash, state, diagnostic_code)
+       VALUES (?, ?, ?, ?, ?, ?, 'armed', NULL)`).run(pluginId, request.accountRef, request.idempotencyKey, routeRevision, request.channelId, textHash);
     const clearArmed = () => {
       runtime.outbox.db.prepare(
-        `DELETE FROM plugin_digest_receipts WHERE account_ref = ? AND idempotency_key = ? AND state = 'armed'`)
-        .run(request.accountRef, request.idempotencyKey);
+        `DELETE FROM plugin_digest_receipts WHERE plugin_id = ? AND account_ref = ? AND idempotency_key = ? AND state = 'armed'`)
+        .run(pluginId, request.accountRef, request.idempotencyKey);
     };
     const store = (receipt: PluginImSendReceipt) => {
       runtime.outbox.db.prepare(
-        `UPDATE plugin_digest_receipts SET state = ?, diagnostic_code = ?, error_kind = ? WHERE account_ref = ? AND idempotency_key = ?`)
-        .run(receipt.status, receipt.diagnosticCode ?? null, receipt.errorKind ?? null, request.accountRef, request.idempotencyKey);
+        `UPDATE plugin_digest_receipts SET state = ?, diagnostic_code = ?, error_kind = ? WHERE plugin_id = ? AND account_ref = ? AND idempotency_key = ?`)
+        .run(receipt.status, receipt.diagnosticCode ?? null, receipt.errorKind ?? null, pluginId, request.accountRef, request.idempotencyKey);
       return receipt;
     };
     let dispatched = false;

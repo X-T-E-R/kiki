@@ -39,8 +39,9 @@ import type { PluginInfo } from './types';
 import { sourceSchema, sourceValues, sourceActive, sourceDefaults, scriptSources, scriptDefinition, scriptEnvironmentKey, type MediaSettingValues } from './mediaSourceSettings';
 import type { PluginImBridge } from './pluginImBridge';
 export {
-  parsePluginImRequest, pluginImReceipt, sanitizePluginImCapabilities, sanitizePluginImReceipt, sanitizePluginImRoutes,
-  type PluginImBridge, type PluginImCapabilities, type PluginImErrorKind, type PluginImRoute, type PluginImSendReceipt, type PluginImSendRequest, type PluginImSendStatus,
+  parsePluginImRequest, pluginImCaller, pluginImReceipt, sanitizePluginImCapabilities, sanitizePluginImReceipt, sanitizePluginImRoutes,
+  PLUGIN_IM_DIGEST_MAX_UTF8_BYTES,
+  type PluginImBridge, type PluginImCaller, type PluginImCapabilities, type PluginImErrorKind, type PluginImRoute, type PluginImSendReceipt, type PluginImSendRequest, type PluginImSendStatus,
 } from './pluginImBridge';
 
 export interface PluginToolRegistration {

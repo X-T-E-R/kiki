@@ -846,7 +846,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   core.accessor.get(IPluginHostService).attachOutboundIm({
     capabilities: (signal) => startedNotifications.pluginImCapabilities(signal),
     listRoutes: (signal) => startedNotifications.pluginImRoutes(signal),
-    send: (request, signal) => startedNotifications.pluginImSend(request, signal),
+    send: (request, signal, caller) => startedNotifications.pluginImSend(request, signal, caller.pluginId),
   });
   const externalDelegationEnabled = core.accessor
     .get(IFlagService)

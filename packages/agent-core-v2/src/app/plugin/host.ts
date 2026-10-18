@@ -383,7 +383,7 @@ export class PluginHost {
       if (!parsed.ok) return parsed.receipt;
       if (controller.signal.aborted) return pluginImReceipt('cancelled', { diagnosticCode: 'cancelled' });
       if (bridge === undefined) return pluginImReceipt('failed', { diagnosticCode: 'im_unsupported', errorKind: 'dependency_missing', retryable: true });
-      return sanitizePluginImReceipt(await bridge.send(parsed.request, controller.signal));
+      return sanitizePluginImReceipt(await bridge.send(parsed.request, controller.signal, { pluginId: this.id }));
     }).then(
       (result) => { this.imCalls.delete(callId); if (!this.stopped) this.send({ method: 'im-result', params: { callId, result } }); },
       () => {

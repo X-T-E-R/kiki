@@ -107,6 +107,9 @@ export type PluginImErrorKind =
   | 'protocol'
   | 'unknown';
 
+/** UTF-8 byte budget for one digest. Not a per-provider chat limit, and not `string.length`. */
+export const PLUGIN_IM_DIGEST_MAX_UTF8_BYTES = 16 * 1024;
+
 export interface PluginImSendRequest {
   readonly channelId: string;
   readonly routeRevision: string;

@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -20,7 +21,7 @@ import { PluginUsageService } from '#/app/pluginUsage/pluginUsageService';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IProviderService } from '#/kosong/provider/provider';
 import { LifecycleScope } from '#/app/scopes';
-import type { PluginImBridge, PluginImSendRequest } from '#/app/plugin/pluginImBridge';
+import { PLUGIN_IM_DIGEST_MAX_UTF8_BYTES, type PluginImBridge, type PluginImSendRequest } from '#/app/plugin/pluginImBridge';
 import { stubBootstrap } from '../bootstrap/stubs';
 import { stubProviderService } from '../provider/stubs';
 
@@ -90,10 +91,13 @@ describe('plugin IM digest bridge', () => {
     const secret = 'super-secret-token-value';
     const digest = 'New mail from ada@example.test';
     const calls: string[] = [];
+    const callers: string[] = [];
     const bridge = {
       capabilities: async () => ({ outbound: true, inbound: true }),
       listRoutes: async () => [{ channelId: 'ops', providerId: 'http', routeRevision: 'ab'.repeat(32), label: 'Ops', token: secret }],
-      send: async (request: PluginImSendRequest) => {
+      send: async (request: PluginImSendRequest, _signal: AbortSignal, caller: { readonly pluginId: string }) => {
+        expect(Object.hasOwn(request, 'pluginId')).toBe(false);
+        callers.push(caller.pluginId);
         calls.push(request.text);
         return { status: 'unknown', retryable: true, diagnosticCode: 'send_outcome_unknown', errorKind: 'unknown', text: request.text };
       },
@@ -108,9 +112,22 @@ describe('plugin IM digest bridge', () => {
     expect(receipt).toEqual({ status: 'unknown', retryable: false, diagnosticCode: 'send_outcome_unknown', errorKind: 'unknown' });
     expect(JSON.stringify(receipt)).not.toContain(digest);
     expect(calls).toEqual([digest]);
+    expect(callers).toEqual(['fixture-im']);
+    expect(await panel('send', { ...request, pluginId: 'other-plugin' })).toMatchObject({ status: 'unknown', retryable: false });
+    expect(callers).toEqual(['fixture-im', 'fixture-im']);
+    expect(calls).toEqual([digest, digest]);
     expect(await panel('cancel-send', request)).toEqual({ status: 'cancelled', retryable: false, diagnosticCode: 'cancelled' });
-    expect(calls).toEqual([digest]);
-    expect(await panel('send', { ...request, text: 'x'.repeat(2001) })).toMatchObject({ status: 'failed', diagnosticCode: 'bad_format', retryable: true });
-    expect(calls).toEqual([digest]);
+    expect(calls).toEqual([digest, digest]);
+    const limit = 'x'.repeat(PLUGIN_IM_DIGEST_MAX_UTF8_BYTES);
+    expect(await panel('send', { ...request, text: limit })).toMatchObject({ status: 'unknown', retryable: false });
+    expect(calls.at(-1)).toBe(limit);
+    expect(await panel('send', { ...request, text: `${limit}y` })).toMatchObject({
+      status: 'failed', diagnosticCode: 'too_long', errorKind: 'too_long', retryable: true,
+    });
+    const cjk = '你'.repeat(Math.floor(PLUGIN_IM_DIGEST_MAX_UTF8_BYTES / Buffer.byteLength('你')) + 1);
+    expect(cjk.length).toBeLessThan(PLUGIN_IM_DIGEST_MAX_UTF8_BYTES);
+    expect(Buffer.byteLength(cjk)).toBeGreaterThan(PLUGIN_IM_DIGEST_MAX_UTF8_BYTES);
+    expect(await panel('send', { ...request, text: cjk })).toMatchObject({ diagnosticCode: 'too_long', errorKind: 'too_long' });
+    expect(calls.at(-1)).toBe(limit);
   });
 });

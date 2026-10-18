@@ -338,8 +338,8 @@ export class NotificationService {
   pluginImRoutes(signal: AbortSignal): Promise<readonly PluginImRoute[]> {
     return Promise.resolve(this.digests.routes(signal));
   }
-  pluginImSend(request: PluginImSendRequest, signal: AbortSignal): Promise<PluginImSendReceipt> {
-    return this.trackDigest(this.digests.send(request, signal));
+  pluginImSend(request: PluginImSendRequest, signal: AbortSignal, pluginId: string): Promise<PluginImSendReceipt> {
+    return this.trackDigest(this.digests.send(request, signal, pluginId));
   }
 
   sendTest(channelId: string): DeliveryView {

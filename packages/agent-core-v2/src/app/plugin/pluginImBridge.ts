@@ -1,3 +1,5 @@
+import { Buffer } from 'node:buffer';
+
 export interface PluginImCapabilities {
   readonly outbound: boolean;
   readonly inbound: false;
@@ -46,10 +48,14 @@ export interface PluginImSendReceipt {
   readonly errorKind?: PluginImErrorKind;
 }
 
+export interface PluginImCaller {
+  readonly pluginId: string;
+}
+
 export interface PluginImBridge {
   capabilities(signal: AbortSignal): Promise<PluginImCapabilities>;
   listRoutes(signal: AbortSignal): Promise<readonly PluginImRoute[]>;
-  send(request: PluginImSendRequest, signal: AbortSignal): Promise<PluginImSendReceipt>;
+  send(request: PluginImSendRequest, signal: AbortSignal, caller: PluginImCaller): Promise<PluginImSendReceipt>;
 }
 
 const KINDS = new Set<PluginImErrorKind>([
@@ -61,7 +67,11 @@ const CODE = /^[a-z][a-z0-9_]{0,63}$/u;
 const ID = /^[A-Za-z0-9_.:-]{1,120}$/u;
 const KEY = /^[A-Za-z0-9_.:-]{1,200}$/u;
 const REVISION = /^[a-f0-9]{64}$/u;
-const TEXT_MAX = 2000;
+export const PLUGIN_IM_DIGEST_MAX_UTF8_BYTES = 16 * 1024;
+
+export function pluginImCaller(pluginId: string): boolean {
+  return ID.test(pluginId);
+}
 
 export function pluginImReceipt(
   status: PluginImSendStatus,
@@ -90,8 +100,11 @@ export function parsePluginImRequest(value: unknown): { ok: true; request: Plugi
   if (typeof routeRevision !== 'string' || !REVISION.test(routeRevision)) return { ok: false, receipt: bad };
   if (typeof idempotencyKey !== 'string' || !KEY.test(idempotencyKey)) return { ok: false, receipt: bad };
   if (typeof accountRef !== 'string' || !ID.test(accountRef)) return { ok: false, receipt: bad };
-  if (typeof text !== 'string' || text.length < 1 || text.length > TEXT_MAX || text.trim().length === 0) return { ok: false, receipt: bad };
+  if (typeof text !== 'string' || text.length < 1 || text.trim().length === 0) return { ok: false, receipt: bad };
   if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u.test(text)) return { ok: false, receipt: bad };
+  if (Buffer.byteLength(text, 'utf8') > PLUGIN_IM_DIGEST_MAX_UTF8_BYTES) {
+    return { ok: false, receipt: pluginImReceipt('failed', { diagnosticCode: 'too_long', errorKind: 'too_long', retryable: true }) };
+  }
   return { ok: true, request: { channelId, routeRevision, idempotencyKey, accountRef, text } };
 }
 

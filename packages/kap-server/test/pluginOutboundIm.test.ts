@@ -1,10 +1,12 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IConfigService, ISessionManager, type Scope } from '@kiki/agent-core-v2';
 import type { PluginImSendRequest } from '@kiki/agent-core-v2';
 import { NotificationService } from '../src/services/notifications/notificationService';
+import { ensurePluginDigestReceipts } from '../src/services/notifications/pluginDigestDelivery';
 
 const transport = vi.hoisted(() => ({
   posts: [] as Array<{ body: string; authorization?: string }>,
@@ -36,6 +38,7 @@ vi.mock('@nb-im/core', async (original) => {
 });
 
 const scenes = { work_complete: false, question_pending: false };
+const mailPlugin = 'kiki-mail';
 const signal = () => new AbortController().signal;
 
 function quietNow(): { start: string; end: string; time_zone: string } {
@@ -64,7 +67,9 @@ describe('plugin digest delivery', () => {
     errors.length = 0;
   });
   afterEach(async () => {
-    await service?.close();
+    const current = service;
+    service = undefined as unknown as NotificationService;
+    await current?.close();
     if (home) await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
@@ -135,7 +140,7 @@ describe('plugin digest delivery', () => {
     expect(routes).toEqual([{ channelId: 'mail', providerId: 'http', label: 'Ops', routeRevision: routes[0]?.routeRevision }]);
     expect(routes[0]?.routeRevision).toMatch(/^[a-f0-9]{64}$/u);
     expect(JSON.stringify(routes)).not.toContain(secret);
-    const sent = await service.pluginImSend(request(routes[0]!.routeRevision), signal());
+    const sent = await service.pluginImSend(request(routes[0]!.routeRevision), signal(), mailPlugin);
     expect(sent).toEqual({ status: 'accepted', retryable: false });
     expect(JSON.stringify(sent)).not.toContain(secret);
     expect(JSON.stringify(sent)).not.toContain(digest);
@@ -164,28 +169,28 @@ describe('plugin digest delivery', () => {
     await service.updateSettings({ ...global, enabled: false });
     expect(await service.pluginImCapabilities(signal())).toEqual({ outbound: true, inbound: false });
     expect(await service.pluginImRoutes(signal())).toEqual([]);
-    expect(await service.pluginImSend(request(revision), signal())).toMatchObject({ status: 'failed', diagnosticCode: 'notifications_disabled', retryable: false });
+    expect(await service.pluginImSend(request(revision), signal(), mailPlugin)).toMatchObject({ status: 'failed', diagnosticCode: 'notifications_disabled', retryable: false });
     await service.updateSettings({ ...global, quiet_hours: quietNow() });
     const quietRevision = (await service.pluginImRoutes(signal()))[0]!.routeRevision;
-    expect((await service.pluginImSend(request(quietRevision), signal())).status).toBe('accepted');
+    expect((await service.pluginImSend(request(quietRevision), signal(), mailPlugin)).status).toBe('accepted');
     expect(transport.posts).toHaveLength(1);
     await service.upsertChannel('mail', {
       provider_instance_id: 'hook', enabled: false, revision: 'v1', target: {}, directions: ['send'], scenes, label: 'Ops',
     });
     expect(await service.pluginImRoutes(signal())).toEqual([]);
-    expect(await service.pluginImSend(request(quietRevision), signal())).toMatchObject({ diagnosticCode: 'route_disabled' });
+    expect(await service.pluginImSend(request(quietRevision), signal(), mailPlugin)).toMatchObject({ diagnosticCode: 'route_disabled' });
     await service.upsertChannel('mail', {
       provider_instance_id: 'hook', enabled: true, revision: 'v2', target: {}, directions: ['send'], scenes, label: 'Ops',
     });
-    expect(await service.pluginImSend(request(quietRevision), signal())).toMatchObject({ diagnosticCode: 'route_changed' });
+    expect(await service.pluginImSend(request(quietRevision), signal(), mailPlugin)).toMatchObject({ diagnosticCode: 'route_changed' });
     expect(transport.posts).toHaveLength(1);
     const next = (await service.pluginImRoutes(signal()))[0]!.routeRevision;
     expect(next).not.toBe(quietRevision);
     await service.setCredential('bearer', secret);
-    expect(await service.pluginImSend(request(next), signal())).toMatchObject({ diagnosticCode: 'route_changed' });
+    expect(await service.pluginImSend(request(next), signal(), mailPlugin)).toMatchObject({ diagnosticCode: 'route_changed' });
     const rotated = (await service.pluginImRoutes(signal()))[0]!.routeRevision;
-    expect(await service.pluginImSend(request(rotated), signal())).toMatchObject({ status: 'failed', diagnosticCode: 'idempotency_conflict' });
-    expect((await service.pluginImSend(request(rotated, { idempotencyKey: 'mail-2' }), signal())).status).toBe('accepted');
+    expect(await service.pluginImSend(request(rotated), signal(), mailPlugin)).toMatchObject({ status: 'failed', diagnosticCode: 'idempotency_conflict' });
+    expect((await service.pluginImSend(request(rotated, { idempotencyKey: 'mail-2' }), signal(), mailPlugin)).status).toBe('accepted');
     expect(transport.posts).toHaveLength(2);
     expect(JSON.stringify(await service.pluginImRoutes(signal()))).not.toContain(secret);
     expect(errors).toEqual([]);
@@ -195,29 +200,29 @@ describe('plugin digest delivery', () => {
     await boot();
     await httpChannel();
     const revision = (await service.pluginImRoutes(signal()))[0]!.routeRevision;
-    expect((await service.pluginImSend(request(revision), signal())).status).toBe('accepted');
-    expect((await service.pluginImSend(request(revision), signal())).status).toBe('accepted');
-    expect((await service.pluginImSend(request(revision, { accountRef: 'account-b' }), signal())).status).toBe('accepted');
+    expect((await service.pluginImSend(request(revision), signal(), mailPlugin)).status).toBe('accepted');
+    expect((await service.pluginImSend(request(revision), signal(), mailPlugin)).status).toBe('accepted');
+    expect((await service.pluginImSend(request(revision, { accountRef: 'account-b' }), signal(), mailPlugin)).status).toBe('accepted');
     expect(transport.posts).toHaveLength(2);
     transport.mode = 'status';
     transport.status = 401;
-    const denied = await service.pluginImSend(request(revision, { idempotencyKey: 'mail-denied' }), signal());
+    const denied = await service.pluginImSend(request(revision, { idempotencyKey: 'mail-denied' }), signal(), mailPlugin);
     expect(denied).toMatchObject({ status: 'failed', diagnosticCode: 'webhook_auth', retryable: false });
     expect(JSON.stringify(denied)).not.toContain(digest);
-    await service.pluginImSend(request(revision, { idempotencyKey: 'mail-denied' }), signal());
+    await service.pluginImSend(request(revision, { idempotencyKey: 'mail-denied' }), signal(), mailPlugin);
     transport.status = 500;
-    const unclear = await service.pluginImSend(request(revision, { idempotencyKey: 'mail-unknown' }), signal());
+    const unclear = await service.pluginImSend(request(revision, { idempotencyKey: 'mail-unknown' }), signal(), mailPlugin);
     expect(unclear).toMatchObject({ status: 'unknown', retryable: false, diagnosticCode: 'webhook_response_unknown' });
-    await service.pluginImSend(request(revision, { idempotencyKey: 'mail-unknown' }), signal());
+    await service.pluginImSend(request(revision, { idempotencyKey: 'mail-unknown' }), signal(), mailPlugin);
     expect(transport.posts).toHaveLength(4);
-    const conflict = await service.pluginImSend(request(revision, { idempotencyKey: 'mail-unknown', text: 'A different digest' }), signal());
+    const conflict = await service.pluginImSend(request(revision, { idempotencyKey: 'mail-unknown', text: 'A different digest' }), signal(), mailPlugin);
     expect(conflict).toMatchObject({ status: 'failed', diagnosticCode: 'idempotency_conflict' });
     expect(transport.posts).toHaveLength(4);
     await service.close();
     transport.posts = [];
     const restarted = await boot(errors, true);
     const again = (await restarted.pluginImRoutes(signal()))[0]!.routeRevision;
-    expect(await restarted.pluginImSend(request(again, { idempotencyKey: 'mail-unknown' }), signal())).toMatchObject({ status: 'unknown', retryable: false });
+    expect(await restarted.pluginImSend(request(again, { idempotencyKey: 'mail-unknown' }), signal(), mailPlugin)).toMatchObject({ status: 'unknown', retryable: false });
     expect(transport.posts).toHaveLength(0);
   });
 
@@ -228,7 +233,7 @@ describe('plugin digest delivery', () => {
     let release = () => {};
     transport.hold = new Promise<void>((resolve) => { release = resolve; });
     const controller = new AbortController();
-    const cancelled = service.pluginImSend(request(revision, { idempotencyKey: 'mail-cancel' }), controller.signal);
+    const cancelled = service.pluginImSend(request(revision, { idempotencyKey: 'mail-cancel' }), controller.signal, mailPlugin);
     await vi.waitFor(() => expect(transport.entered).toBe(1));
     controller.abort();
     release();
@@ -236,15 +241,15 @@ describe('plugin digest delivery', () => {
     expect(transport.posts).toHaveLength(0);
     const aborted = new AbortController();
     aborted.abort();
-    expect(await service.pluginImSend(request(revision, { idempotencyKey: 'mail-cancel' }), aborted.signal)).toMatchObject({ status: 'cancelled' });
+    expect(await service.pluginImSend(request(revision, { idempotencyKey: 'mail-cancel' }), aborted.signal, mailPlugin)).toMatchObject({ status: 'cancelled' });
     expect(transport.entered).toBe(1);
     let releaseSend = () => {};
     transport.hold = new Promise<void>((resolve) => { releaseSend = resolve; });
     transport.entered = 0;
-    const first = service.pluginImSend(request(revision, { idempotencyKey: 'mail-join' }), signal());
+    const first = service.pluginImSend(request(revision, { idempotencyKey: 'mail-join' }), signal(), mailPlugin);
     await vi.waitFor(() => expect(transport.entered).toBe(1));
-    const second = service.pluginImSend(request(revision, { idempotencyKey: 'mail-join' }), signal());
-    const other = service.pluginImSend(request(revision, { idempotencyKey: 'mail-join', text: 'other digest' }), signal());
+    const second = service.pluginImSend(request(revision, { idempotencyKey: 'mail-join' }), signal(), mailPlugin);
+    const other = service.pluginImSend(request(revision, { idempotencyKey: 'mail-join', text: 'other digest' }), signal(), mailPlugin);
     await expect(other).resolves.toMatchObject({ diagnosticCode: 'idempotency_conflict' });
     expect(transport.entered).toBe(1);
     releaseSend();
@@ -254,9 +259,85 @@ describe('plugin digest delivery', () => {
     expect(transport.posts[0]?.body).toContain(digest);
     expect(transport.posts[0]?.body).not.toContain('other digest');
     transport.mode = 'throw';
-    const thrown = await service.pluginImSend(request(revision, { idempotencyKey: 'mail-throw' }), signal());
+    const thrown = await service.pluginImSend(request(revision, { idempotencyKey: 'mail-throw' }), signal(), mailPlugin);
     expect(thrown).toMatchObject({ status: 'unknown', retryable: false });
     expect(JSON.stringify(thrown)).not.toContain(transport.marker);
     expect(errors).toEqual([]);
+  });
+
+  it('lets two plugins send the same account key once each and keeps both receipts across restart', async () => {
+    await boot();
+    await httpChannel();
+    const revision = (await service.pluginImRoutes(signal()))[0]!.routeRevision;
+    let release = () => {};
+    transport.hold = new Promise<void>((resolve) => { release = resolve; });
+    const mail = service.pluginImSend(request(revision), signal(), mailPlugin);
+    const calendar = service.pluginImSend(request(revision), signal(), 'kiki-calendar');
+    await vi.waitFor(() => expect(transport.entered).toBe(2));
+    release();
+    await expect(mail).resolves.toMatchObject({ status: 'accepted', retryable: false });
+    await expect(calendar).resolves.toMatchObject({ status: 'accepted', retryable: false });
+    expect(transport.posts).toHaveLength(2);
+    await service.close();
+    transport.posts = [];
+    transport.entered = 0;
+    const restarted = await boot(errors, true);
+    const again = (await restarted.pluginImRoutes(signal()))[0]!.routeRevision;
+    expect((await restarted.pluginImSend(request(again), signal(), mailPlugin)).status).toBe('accepted');
+    expect((await restarted.pluginImSend(request(again), signal(), 'kiki-calendar')).status).toBe('accepted');
+    expect(transport.posts).toHaveLength(0);
+  });
+
+  it('keeps an armed receipt as unknown across restart and does not send again', async () => {
+    await boot();
+    await httpChannel();
+    const revision = (await service.pluginImRoutes(signal()))[0]!.routeRevision;
+    let release = () => {};
+    transport.hold = new Promise<void>((resolve) => { release = resolve; });
+    const pending = service.pluginImSend(request(revision, { idempotencyKey: 'mail-armed' }), signal(), mailPlugin);
+    await vi.waitFor(() => expect(transport.entered).toBe(1));
+    const snap = join(home, 'armed.sqlite').replaceAll('\\', '/');
+    const reader = new DatabaseSync(join(home, 'notifications', 'outbox.sqlite'));
+    const armed = reader.prepare(
+      `SELECT state FROM plugin_digest_receipts WHERE plugin_id = ? AND account_ref = ? AND idempotency_key = ?`,
+    ).get(mailPlugin, 'account-a', 'mail-armed') as { state?: string } | undefined;
+    expect(armed?.state).toBe('armed');
+    reader.exec(`VACUUM INTO '${snap}'`);
+    reader.close();
+    release();
+    await expect(pending).resolves.toMatchObject({ status: 'accepted' });
+    await service.close();
+    await rm(join(home, 'notifications'), { recursive: true, force: true });
+    await mkdir(join(home, 'notifications'), { recursive: true });
+    await copyFile(snap, join(home, 'notifications', 'outbox.sqlite'));
+    transport.posts = [];
+    transport.entered = 0;
+    const restarted = await boot(errors, true);
+    const again = (await restarted.pluginImRoutes(signal()))[0]!.routeRevision;
+    expect(await restarted.pluginImSend(request(again, { idempotencyKey: 'mail-armed' }), signal(), mailPlugin)).toMatchObject({
+      status: 'unknown', retryable: false, diagnosticCode: 'send_outcome_unknown',
+    });
+    expect(transport.posts).toHaveLength(0);
+  });
+
+  it('drops digest receipts that were stored before plugin identity existed', () => {
+    const db = new DatabaseSync(':memory:');
+    db.exec(`CREATE TABLE plugin_digest_receipts (
+      account_ref TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      text_hash TEXT NOT NULL,
+      state TEXT NOT NULL,
+      PRIMARY KEY (account_ref, idempotency_key)
+    )`);
+    db.prepare(`INSERT INTO plugin_digest_receipts
+      (account_ref, idempotency_key, fingerprint, channel_id, text_hash, state)
+      VALUES ('account-a', 'mail-1', 'f', 'mail', 'h', 'accepted')`).run();
+    ensurePluginDigestReceipts(db);
+    const columns = db.prepare('PRAGMA table_info(plugin_digest_receipts)').all() as Array<{ name: string }>;
+    expect(columns.map((column) => column.name)).toContain('plugin_id');
+    expect(db.prepare('SELECT COUNT(*) AS n FROM plugin_digest_receipts').get()).toEqual({ n: 0 });
+    db.close();
   });
 });
