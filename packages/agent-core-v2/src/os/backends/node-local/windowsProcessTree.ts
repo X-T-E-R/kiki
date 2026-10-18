@@ -10,8 +10,7 @@ import { BufferedReadable } from '#/_base/execEnv/bufferedReadable';
 import { HostProcessError, HostProcessErrorCode, type IHostProcess } from '#/os/interface/hostProcess';
 
 const CONTROL_TIMEOUT_MS = 5_000;
-const RELEASE_EXIT_CAPABILITY = 'release-exit-v1';
-const RELEASE_CONFIRMED_EXIT = 5;
+const RELEASE_EXIT_CAPABILITY = 'release-exit-v2';
 
 function quoteArgument(value: string): string {
   return `"${value.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')}"`;
@@ -108,7 +107,7 @@ class WindowsProcessTree implements IHostProcess {
     child.on('exit', (code, signal) => {
       this.helperGone = true;
       this.helperExited.resolve();
-      if (code === RELEASE_CONFIRMED_EXIT && this.releaseExitCapable && signal == null) this.releaseConfirmed = true;
+      if (code === 0 && this.releaseExitCapable && this.releaseAttempted && signal == null) this.releaseConfirmed = true;
       if (this.disposed) return;
       if (this.releaseConfirmed && this.pendingCommand === 'release' && this.response !== undefined) {
         this.response.resolve('released');

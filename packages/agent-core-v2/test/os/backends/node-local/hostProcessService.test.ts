@@ -307,8 +307,8 @@ describe.skipIf(process.platform !== 'win32')('Windows owned process tree', () =
         ['/nologo', '/target:exe', '/platform:anycpu', `/out:${fixtureHelper}`, fixtureSource], { timeout: 30_000, windowsHide: true });
       return fixtureHelper;
     };
-    previousProtocolHelper = await compileFixture('previous-protocol', canonical.replace(' + ":release-exit-v1"', '').replace('return releaseCompleted ? ReleaseConfirmedExit : 0;', 'return 0;'));
-    unknownReleaseExitHelper = await compileFixture('unknown-release-exit', canonical.replace('return releaseCompleted ? ReleaseConfirmedExit : 0;', 'return releaseCompleted ? 1 : 0;'));
+    previousProtocolHelper = await compileFixture('previous-protocol', canonical.replace(' + ":release-exit-v2"', '').replace('return releaseCompleted ? 0 : UnreleasedExit;', 'return 0;'));
+    unknownReleaseExitHelper = await compileFixture('unknown-release-exit', canonical.replace('return releaseCompleted ? 0 : UnreleasedExit;', 'return 1;'));
     deadPipeReleaseHelper = await compileFixture('dead-pipe-release', canonical.replace('Send(writer, "released")', 'throw new IOException("injected release ack failure")'));
     await writeFile(join(directory, 'owner.mjs'), `
       import { HostProcessService } from ${JSON.stringify(new URL('../../../../src/os/backends/node-local/hostProcessService.ts', import.meta.url).href)};
@@ -567,6 +567,7 @@ describe.skipIf(process.platform !== 'win32')('Windows owned process tree', () =
     const pids = await readPids(file);
     try {
       await proc.dispose();
+      expect((proc as unknown as { child: { exitCode: number | null } }).child.exitCode).toBe(0);
       expect(pids.filter(alive).length).toBe(3);
       await expect(proc.kill()).rejects.toMatchObject({ code: 'os.process.kill_failed', details: { cleanupComplete: false, phase: 'control' } });
     } finally {
@@ -671,7 +672,7 @@ describe.skipIf(process.platform !== 'win32')('Windows owned process tree', () =
     const run = await dropReleaseAck(join(directory, 'release-exit-confirmed.txt'));
     try {
       await vi.waitFor(() => {
-        expect(run.helper.exitCode).toBe(5);
+        expect(run.helper.exitCode).toBe(0);
         expect(tasks.getTask(run.taskId)).toMatchObject({ status: 'completed', exitCode: 0 });
         expect(tasks.getTask(run.taskId)?.endedAt).toEqual(expect.any(Number));
       });
@@ -708,7 +709,7 @@ describe.skipIf(process.platform !== 'win32')('Windows owned process tree', () =
     const taskId = tasks.registerTask(new ProcessTask(proc, 'ffprobe', 'media info'), { detached: true });
     try {
       await vi.waitFor(() => {
-        expect(raw.child.exitCode).toBe(5);
+        expect(raw.child.exitCode).toBe(0);
         expect(tasks.getTask(taskId)).toMatchObject({ status: 'completed', exitCode: 0 });
       });
       expect(writes).toBe(1);
@@ -782,7 +783,7 @@ describe.skipIf(process.platform !== 'win32')('Windows owned process tree', () =
     try {
       await vi.waitFor(() => {
         expect(alive(helperPid!)).toBe(false);
-        expect(raw.child.exitCode).not.toBe(5);
+        expect(raw.child.exitCode).not.toBe(0);
         expect(tasks.getTask(taskId)).toMatchObject({ status: 'running', exitCode: 0, endedAt: null });
         expect(tasks.getTask(taskId)?.stopReason).toContain('"cleanupComplete":false');
       });

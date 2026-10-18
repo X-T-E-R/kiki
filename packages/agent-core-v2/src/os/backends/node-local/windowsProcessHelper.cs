@@ -102,7 +102,7 @@ public static class WindowsProcessHelper
     public static int Main(string[] args)
     {
         if (args.Length != 1) return 2;
-        const int ReleaseConfirmedExit = 5;
+        const int UnreleasedExit = 6;
         bool releaseCompleted = false;
         IntPtr job = IntPtr.Zero;
         ProcessInfo child = new ProcessInfo();
@@ -152,7 +152,7 @@ public static class WindowsProcessHelper
                         output.Dispose();
                         errorPipe.Dispose();
                         Check(ResumeThread(child.thread) != 0xffffffff, "ResumeThread");
-                        Send(writer, "ready:" + child.pid + (ownerLifetime ? ":owner-v1" : "") + ":release-exit-v1");
+                        Send(writer, "ready:" + child.pid + (ownerLifetime ? ":owner-v1" : "") + ":release-exit-v2");
                         waiter = new Thread(() =>
                         {
                             WaitForSingleObject(child.process, 0xffffffff);
@@ -231,11 +231,11 @@ public static class WindowsProcessHelper
                     catch (Exception error) { Failure(writer, "launch", error); }
                 }
             }
-            return releaseCompleted ? ReleaseConfirmedExit : 0;
+            return releaseCompleted ? 0 : UnreleasedExit;
         }
         catch (Exception error)
         {
-            if (releaseCompleted && error is IOException) return ReleaseConfirmedExit;
+            if (releaseCompleted && error is IOException) return 0;
             return 4;
         }
         finally
