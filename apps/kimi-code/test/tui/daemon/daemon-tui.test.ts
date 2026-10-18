@@ -154,7 +154,7 @@ function driver(
     showSessionPicker(scope?: 'cwd' | 'all'): Promise<void>;
     respondApproval(block: unknown, response: unknown): Promise<void>;
     respondQuestion(block: unknown, response: unknown): Promise<void>;
-    showStatus: ReturnType<typeof vi.fn>;
+    showStatus: ReturnType<typeof vi.fn<(message: string, options?: 'normal' | 'error' | ShowStatusOptions) => void>>;
   };
   internal.controller = controller;
   const addImage = internal.imageAttachments.addImage.bind(internal.imageAttachments);
@@ -2236,7 +2236,7 @@ describe('DaemonTUI commands', () => {
         controllerState.blocks.push({ kind: 'tool', id: 'tool-1', status: 'running', progressText: '10%', startedAt: Date.now() });
         vi.advanceTimersByTime(1_000);
         expect(frame()).toContain('last response 0s ago');
-        controllerState.blocks.at(-1)!.progressText = '90%';
+        controllerState.blocks.at(-1)!['progressText'] = '90%';
         vi.advanceTimersByTime(1_000);
         expect(frame()).toContain('last response 0s ago');
 
