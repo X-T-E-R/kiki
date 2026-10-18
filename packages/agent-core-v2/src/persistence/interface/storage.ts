@@ -106,12 +106,12 @@ function mapErrno(errno: string | undefined): StorageIoErrorCode {
   }
 }
 
-export function toStorageIoError(error: unknown, ctx: { path: string; op: string }): StorageError {
+export function toStorageIoError(error: unknown, ctx: { path: string; op: string; committed?: boolean }): StorageError {
   if (error instanceof StorageError) return error;
   const errno = readErrno(error);
   const code = mapErrno(errno);
   return new StorageError(code, `storage ${ctx.op} failed: ${REASONS[code]}`, {
-    details: { path: ctx.path, op: ctx.op, errno },
+    details: { path: ctx.path, op: ctx.op, errno, committed: ctx.committed },
     cause: error,
   });
 }

@@ -440,6 +440,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     const queue = new StepRequestQueue();
     const steps = new Map<string, MutableStep>();
     void ready.catch(() => undefined);
+    void result.catch(() => undefined);
     const turn: MutableTurn = {
       id,
       state: 'queued',

@@ -4,7 +4,7 @@ import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { TestInstantiationService } from '#/_base/di/test';
 import { AppendLogCorruptedError, IAppendLogStore, type AppendLogTruncation } from '#/persistence/interface/appendLogStore';
-import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 
@@ -201,7 +201,78 @@ describe('AppendLogStore', () => {
     expect(logs.size).toBe(0);
   });
 
-  it('later flush reports an ambiguous auto-flush failure after one retried drain', async () => {
+  function uncommittedBusy(): StorageError {
+    return new StorageError(StorageErrors.codes.STORAGE_IO_FAILED, 'storage append failed: unrecognized I/O error', {
+      details: { path: `${SCOPE}/${KEY}`, op: 'append', errno: 'EBUSY', committed: false },
+      cause: Object.assign(new Error('EBUSY'), { code: 'EBUSY', syscall: 'open' }),
+    });
+  }
+
+  it('retries an uncommitted EBUSY batch and writes it once', async () => {
+    let attempts = 0;
+    const original = storage.append.bind(storage);
+    storage.append = async (...args) => {
+      attempts += 1;
+      if (attempts === 1) throw uncommittedBusy();
+      await original(...args);
+    };
+    record.append(SCOPE, KEY, { n: 1 });
+    record.append(SCOPE, KEY, { n: 2 });
+    await expect(record.flush(SCOPE, KEY)).rejects.toBeInstanceOf(StorageError);
+    await record.flush(SCOPE, KEY);
+    expect(attempts).toBe(2);
+    expect(new TextDecoder().decode(await storage.read(SCOPE, KEY))).toBe('{"n":1}\n{"n":2}\n');
+    expect(await collect<Rec>(SCOPE, KEY)).toEqual([{ n: 1 }, { n: 2 }]);
+  });
+
+  it('writes an uncommitted EBUSY batch once after more than eight explicit flushes', async () => {
+    let attempts = 0;
+    let blocked = true;
+    const original = storage.append.bind(storage);
+    storage.append = async (...args) => {
+      attempts += 1;
+      if (blocked) throw uncommittedBusy();
+      await original(...args);
+    };
+    record.append(SCOPE, KEY, { n: 1 });
+    record.append(SCOPE, KEY, { n: 2 });
+    for (let i = 0; i < 12; i += 1) {
+      await expect(record.flush(SCOPE, KEY)).rejects.toBeInstanceOf(StorageError);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(attempts).toBeGreaterThan(8);
+    const stalled = attempts;
+    await expect(record.flush(SCOPE, KEY)).rejects.toBeInstanceOf(StorageError);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(attempts).toBeGreaterThan(stalled);
+    expect(await storage.read(SCOPE, KEY)).toBeUndefined();
+    blocked = false;
+    await record.flush(SCOPE, KEY);
+    expect(new TextDecoder().decode(await storage.read(SCOPE, KEY))).toBe('{"n":1}\n{"n":2}\n');
+    expect(await collect<Rec>(SCOPE, KEY)).toEqual([{ n: 1 }, { n: 2 }]);
+  });
+
+  it('does not retry an uncommitted append failure that is not transient', async () => {
+    let attempts = 0;
+    const failure = new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'storage append failed: no space left on device', {
+      details: { path: `${SCOPE}/${KEY}`, op: 'append', errno: 'ENOSPC', committed: false },
+    });
+    let reportFailure!: (error: unknown) => void;
+    const reportedFailure = new Promise<unknown>((resolve) => {
+      reportFailure = resolve;
+    });
+    storage.append = async () => {
+      attempts += 1;
+      throw failure;
+    };
+    record.append(SCOPE, KEY, { n: 1 }, { onError: reportFailure });
+    expect(await reportedFailure).toBe(failure);
+    await expect(record.flush(SCOPE, KEY)).rejects.toBe(failure);
+    expect(attempts).toBe(1);
+    expect(await storage.read(SCOPE, KEY)).toBeUndefined();
+  });
+
+  it('does not retry an append that already wrote before it threw', async () => {
     const failure = new Error('append failed after commit');
     let markAppendStarted!: () => void;
     const appendStarted = new Promise<void>((resolve) => {
@@ -217,27 +288,29 @@ describe('AppendLogStore', () => {
     });
     let appendAttempts = 0;
     const originalAppend = storage.append.bind(storage);
+    const committedFailure = new StorageError(StorageErrors.codes.STORAGE_IO_FAILED, 'storage append failed: unrecognized I/O error', {
+      details: { path: `${SCOPE}/${KEY}`, op: 'append', errno: 'EIO', committed: true },
+      cause: failure,
+    });
     storage.append = async (...args) => {
       appendAttempts++;
       markAppendStarted();
       await appendGate;
       await originalAppend(...args);
-      throw failure;
+      throw committedFailure;
     };
 
     record.append(SCOPE, KEY, { n: 1 }, { onError: reportFailure });
     record.append(SCOPE, KEY, { n: 2 });
     await appendStarted;
     releaseAppend();
-    expect(await reportedFailure).toBe(failure);
+    expect(await reportedFailure).toBe(committedFailure);
 
-    await expect(record.flush()).rejects.toBe(failure);
-    expect(appendAttempts).toBe(2);
-    expect(new TextDecoder().decode(await storage.read(SCOPE, KEY))).toBe(
-      '{"n":1}\n{"n":2}\n{"n":1}\n{"n":2}\n',
-    );
-    await expect(record.flush()).rejects.toBe(failure);
-    expect(appendAttempts).toBe(2);
+    await expect(record.flush()).rejects.toBe(committedFailure);
+    expect(appendAttempts).toBe(1);
+    expect(new TextDecoder().decode(await storage.read(SCOPE, KEY))).toBe('{"n":1}\n{"n":2}\n');
+    await expect(record.flush()).rejects.toBe(committedFailure);
+    expect(appendAttempts).toBe(1);
   });
 
   it('reacquire after final release waits for retiring storage before fresh I/O', async () => {

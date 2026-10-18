@@ -8,7 +8,7 @@ import { join } from 'pathe';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { cleanupExpiredSessionLocks, isSessionLockActive } from '#/persistence/backends/node-fs/fileLock';
-import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
+import { FileStorageService, openAppendAfterTransientDenial } from '#/persistence/backends/node-fs/fileStorageService';
 
 const isWin = process.platform === 'win32';
 const encoder = new TextEncoder();
@@ -89,6 +89,88 @@ describe('FileStorageService — error translation', () => {
       code: 'storage.io_failed',
       details: { op: 'write', errno: expect.any(String) },
     });
+  });
+});
+
+describe('FileStorageService — transient append open', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'fss-ebusy-'));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  });
+
+  it('opens once after transient denials and does not repeat a non-transient error', async () => {
+    const handle = { close: async () => {} } as never;
+    let busy = 0;
+    const opened = await openAppendAfterTransientDenial(async () => {
+      busy += 1;
+      if (busy < 3) throw Object.assign(new Error('busy'), { code: 'EBUSY', syscall: 'open' });
+      return handle;
+    }, 4, 0);
+    expect(opened).toBe(handle);
+    expect(busy).toBe(3);
+
+    let other = 0;
+    await expect(openAppendAfterTransientDenial(async () => {
+      other += 1;
+      throw Object.assign(new Error('io'), { code: 'EIO' });
+    }, 4, 0)).rejects.toMatchObject({ code: 'EIO' });
+    expect(other).toBe(1);
+  });
+
+  it('retries a transient open and writes the appended bytes once', async () => {
+    const fs = await import('node:fs/promises');
+    let opens = 0;
+    const svc = new FileStorageService(dir, undefined, undefined, true, async (path) => {
+      opens += 1;
+      if (opens < 3) throw Object.assign(new Error('busy'), { code: 'EBUSY', syscall: 'open' });
+      return fs.open(path, 'a');
+    });
+    await svc.append('agents/main', 'wire.jsonl', encoder.encode('{"n":1}\n'));
+    expect(opens).toBe(3);
+    expect(await readFile(join(dir, 'agents/main', 'wire.jsonl'), 'utf8')).toBe('{"n":1}\n');
+  });
+
+  it('exhausts a transient open without writing and marks the append uncommitted', async () => {
+    let opens = 0;
+    const svc = new FileStorageService(dir, undefined, undefined, true, async () => {
+      opens += 1;
+      throw Object.assign(new Error('busy'), { code: 'EBUSY', syscall: 'open' });
+    });
+    await expect(svc.append('agents/main', 'wire.jsonl', encoder.encode('{"n":1}\n'))).rejects.toMatchObject({
+      code: 'storage.io_failed',
+      details: { op: 'append', errno: 'EBUSY', committed: false },
+    });
+    expect(opens).toBe(4);
+    await expect(readFile(join(dir, 'agents/main', 'wire.jsonl'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('does not retry an append after the write has started', async () => {
+    let opens = 0;
+    let writes = 0;
+    const bytes = encoder.encode('{"n":1}\n');
+    const svc = new FileStorageService(dir, undefined, undefined, true, async () => {
+      opens += 1;
+      return {
+        writeFile: async (data: Uint8Array) => {
+          writes += 1;
+          expect(Buffer.from(data)).toEqual(Buffer.from(bytes));
+          throw Object.assign(new Error('io after write'), { code: 'EIO' });
+        },
+        sync: async () => { throw new Error('sync should not run'); },
+        close: async () => {},
+      } as unknown as Awaited<ReturnType<typeof import('node:fs/promises').open>>;
+    });
+    await expect(svc.append('agents/main', 'wire.jsonl', bytes)).rejects.toMatchObject({
+      code: 'storage.io_failed',
+      details: { op: 'append', errno: 'EIO', committed: true },
+    });
+    expect(opens).toBe(1);
+    expect(writes).toBe(1);
   });
 });
 

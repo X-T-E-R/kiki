@@ -17,8 +17,30 @@ import {
 } from '#/persistence/interface/appendLogStore';
 
 const textEncoder = new TextEncoder();
+const TRANSIENT_APPEND_ERRNOS = new Set(['EBUSY', 'EPERM', 'EACCES']);
 
 const pendingRetirements = new Set<Promise<void>>();
+
+function appendCommitted(error: unknown): boolean | undefined {
+  if (error === null || typeof error !== 'object') return undefined;
+  const committed = (error as { details?: { committed?: unknown } }).details?.committed;
+  return typeof committed === 'boolean' ? committed : undefined;
+}
+
+function isUncommittedTransientAppend(error: unknown): boolean {
+  if (appendCommitted(error) !== false || error === null || typeof error !== 'object') return false;
+  const errno = (error as { details?: { errno?: unknown } }).details?.errno;
+  if (typeof errno === 'string' && TRANSIENT_APPEND_ERRNOS.has(errno)) return true;
+  return (error as { code?: unknown }).code === 'storage.locked';
+}
+
+function mayRetryAppendFailure(error: unknown, isRetry: boolean): boolean {
+  if (isRetry) return false;
+  const committed = appendCommitted(error);
+  if (committed === true) return false;
+  if (committed === false) return isUncommittedTransientAppend(error);
+  return true;
+}
 
 export async function drainAppendLogRetirements(): Promise<void> {
   while (pendingRetirements.size > 0) {
@@ -286,7 +308,12 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
   private flushState(scope: string, key: string, state: LogState, retryFailure = false): Promise<void> {
     if (state.flushPromise !== undefined) return state.flushPromise;
     if (!retryFailure && state.storageFailure !== undefined) {
-      return Promise.reject(state.storageFailure.error);
+      const failure = state.storageFailure.error;
+      if (!isUncommittedTransientAppend(failure) || state.pending.length === 0) {
+        return Promise.reject(failure);
+      }
+      state.storageFailure = undefined;
+      state.storageFailureRetriable = false;
     }
     const wroteBox = { value: false };
     return this.ownFlush(
@@ -404,8 +431,7 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
       } catch (error) {
         state.position = undefined;
         state.storageFailure ??= { error };
-        const retriableStickyFailure = !isRetry;
-        state.storageFailureRetriable = retriableStickyFailure;
+        state.storageFailureRetriable = mayRetryAppendFailure(state.storageFailure.error, isRetry);
         throw state.storageFailure.error;
       }
       if (state.position !== undefined && start !== undefined) {

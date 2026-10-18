@@ -32,6 +32,10 @@ import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import { IEventBus } from '#/app/event/eventBus';
 import { userCancellationReason } from '#/_base/utils/abort';
+import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
+import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
+import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
 
 import {
   agentService,
@@ -363,6 +367,133 @@ describe('Agent loop', () => {
     expect((await ctx.persistedWireRecords()).filter((entry) => entry.type === 'turn.ended')).toHaveLength(1);
     await subscription.dispose();
     ctx.wire.flush = originalFlush;
+  });
+
+  function ebusyAppendError(): StorageError {
+    return new StorageError(StorageErrors.codes.STORAGE_IO_FAILED, 'storage append failed: unrecognized I/O error', {
+      details: { path: 'agents/main/wire.jsonl', op: 'append', errno: 'EBUSY', committed: false },
+      cause: Object.assign(new Error('EBUSY: resource busy or locked, open'), { code: 'EBUSY', syscall: 'open' }),
+    });
+  }
+
+  it('does not leave a detached EBUSY turn-end rejection unhandled', async () => {
+    profile.update({ activeToolNames: [] });
+    const originalFlush = ctx.wire.flush.bind(ctx.wire);
+    let failing = true;
+    ctx.wire.flush = async () => {
+      if (failing && loop.status().finalizing) throw ebusyAppendError();
+      await originalFlush();
+    };
+    const unhandled: unknown[] = [];
+    const onUnhandled = (error: unknown): void => { unhandled.push(error); };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      ctx.mockNextResponse({ type: 'text', text: 'computed once' });
+      const receipt = loop.enqueue(new MessageStepRequest({ role: 'user', content: [{ type: 'text', text: 'compute' }], toolCalls: [] }, { admission: 'newTurn' }));
+      const turn = (await receipt.assigned).turn;
+      await vi.waitFor(() => {
+        expect(loop.status().persistenceFailure?.executionOutcome).toBe('completed');
+      });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(unhandled).toEqual([]);
+      expect(ctx.llmCalls).toHaveLength(1);
+      expect(loop.status()).toMatchObject({ state: 'running', finalizing: true });
+      await expect(turn.result).rejects.toMatchObject({ details: { executionOutcome: 'completed', persistenceOutcome: 'failed' } });
+      failing = false;
+      expect(await loop.recoverPersistence()).toBe(true);
+      expect(loop.status().persistenceFailure).toBeUndefined();
+      expect(ctx.llmCalls).toHaveLength(1);
+      expect((await ctx.persistedWireRecords()).filter((entry) => entry.type === 'turn.ended')).toHaveLength(1);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+      ctx.wire.flush = originalFlush;
+    }
+  });
+
+  it('does not leave a prompted EBUSY turn-end rejection unhandled before the prompt observes it', async () => {
+    profile.update({ activeToolNames: [] });
+    const prompts = ctx.get(IAgentPromptService);
+    const originalFlush = ctx.wire.flush.bind(ctx.wire);
+    let failing = true;
+    ctx.wire.flush = async () => {
+      if (failing && loop.status().finalizing) throw ebusyAppendError();
+      await originalFlush();
+    };
+    const unhandled: unknown[] = [];
+    const onUnhandled = (error: unknown): void => { unhandled.push(error); };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      ctx.mockNextResponse({ type: 'text', text: 'computed once' });
+      const handle = await prompts.enqueue({ id: 'ebusy-prompt', message: { role: 'user', content: [{ type: 'text', text: 'compute' }], toolCalls: [] } });
+      await vi.waitFor(() => {
+        expect(loop.status().persistenceFailure?.executionOutcome).toBe('completed');
+      });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(unhandled).toEqual([]);
+      expect(ctx.llmCalls).toHaveLength(1);
+      expect(prompts.list().active?.id).toBe(handle.id);
+      failing = false;
+      expect(await loop.recoverPersistence()).toBe(true);
+      expect((await handle.completion).state).toBe('completed');
+      expect(ctx.llmCalls).toHaveLength(1);
+      expect((await ctx.persistedWireRecords()).filter((entry) => entry.type === 'turn.ended')).toHaveLength(1);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+      ctx.wire.flush = originalFlush;
+    }
+  });
+
+  it('recovers an uncommitted wire append after more than eight EBUSY failures without replaying the model', async () => {
+    const storage = new InMemoryStorageService();
+    const local = createTestAgent(
+      permissionModeServices('manual'),
+      appService(IFileSystemStorageService, storage),
+      appService(IAppendLogStore, new AppendLogStore(storage)),
+    );
+    const localLoop = local.get(IAgentLoopService);
+    local.get(IAgentProfileService).update({ activeToolNames: [] });
+    const prompts = local.get(IAgentPromptService);
+    const scope = local.get(IAgentScopeContext).scope();
+    const originalAppend = storage.append.bind(storage);
+    let attempts = 0;
+    let blocked = true;
+    storage.append = async (storageScope, key, data, options) => {
+      if (blocked && key === 'wire.jsonl' && localLoop.status().finalizing) {
+        attempts += 1;
+        throw ebusyAppendError();
+      }
+      await originalAppend(storageScope, key, data, options);
+    };
+    try {
+      local.mockNextResponse({ type: 'text', text: 'computed once' });
+      const handle = await prompts.enqueue({ id: 'ebusy-store', message: { role: 'user', content: [{ type: 'text', text: 'compute' }], toolCalls: [] } });
+      await vi.waitFor(() => {
+        expect(localLoop.status().persistenceFailure?.executionOutcome).toBe('completed');
+      }, { timeout: 5_000 });
+      for (let i = 0; i < 12; i += 1) {
+        expect(await localLoop.recoverPersistence()).toBe(false);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      expect(attempts).toBeGreaterThan(8);
+      expect(local.llmCalls).toHaveLength(1);
+      const stalled = attempts;
+      expect(await localLoop.recoverPersistence()).toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(attempts).toBeGreaterThan(stalled);
+      blocked = false;
+      expect(await localLoop.recoverPersistence()).toBe(true);
+      expect((await handle.completion).state).toBe('completed');
+      expect(local.llmCalls).toHaveLength(1);
+      const persisted = await local.persistedWireRecords();
+      expect(persisted.filter((entry) => entry.type === 'turn.ended')).toHaveLength(1);
+      const wire = await storage.read(scope, 'wire.jsonl');
+      const lines = new TextDecoder().decode(wire).trim().split('\n');
+      expect(new Set(lines).size).toBe(lines.length);
+    } finally {
+      blocked = false;
+      storage.append = originalAppend;
+      await local.dispose();
+    }
   });
 
   it('bounds finalization retry timers and recovers on the next prompt after a longer storage outage', async () => {
