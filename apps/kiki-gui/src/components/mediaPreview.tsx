@@ -183,6 +183,7 @@ export function MediaPreviewProvider({
     const selected = images.findIndex((entry) => entry.id === id);
     if (selected < 0) return;
     setImage(null);
+    setAttachment(null);
     setGallery({ images, selected, client: clientIdentity, sessionId, scopeAgentId: snapshotAgentId, seededId: initialSrc === undefined ? undefined : id, seededSrc: initialSrc });
   }, [clientIdentity, imagesFor, sessionId, snapshotAgentId]);
   const [attachment, setAttachment] = useState<{ item: MediaRef; client: unknown; sessionId?: string; agentId: string; galleryAgentId: string } | null>(null);
@@ -355,7 +356,17 @@ export function MediaPreviewProvider({
       openGalleryImage,
       registerGalleryImage,
       openFile,
-      openAttachment: (item, galleryAgentId = snapshotAgentId) => { setAttachment({ item, client: clientIdentity, sessionId, agentId: snapshotAgentId, galleryAgentId }); },
+      openAttachment: (item, galleryAgentId = snapshotAgentId) => {
+        const isImage = item.kind === 'image' || item.mime?.startsWith('image/') === true;
+        const id = galleryImageId(item, galleryAgentId);
+        if (isImage && id !== undefined) {
+          openGalleryImage(item, galleryAgentId);
+        } else {
+          setImage(null);
+          setGallery(null);
+          setAttachment({ item, client: clientIdentity, sessionId, agentId: snapshotAgentId, galleryAgentId });
+        }
+      },
       openAgentPanel,
       openBuiltinSkill,
       previewTabCount: tabsState.tabs.length,
@@ -478,14 +489,31 @@ import { attachmentName, MediaLoadFailure, useSessionMedia } from './mediaParts'
 import { safeImagePreviewName } from './imagePreviewName';
 
 function GalleryLightbox({ image, sessionId, remote = false, seededSrc, index, count, onSelect, onClose }: { image: GalleryImage; sessionId?: string; remote?: boolean; seededSrc?: string; index: number; count: number; onSelect: (index: number) => void; onClose: () => void }) {
+  const connection = useOptionalConnection();
+  const client = connection?.client;
   const [retry, setRetry] = useState({ id: image.id, attempt: 0 });
   const canonical = seededSrc === undefined && (image.item.fileId !== undefined || image.item.path !== undefined);
   const load = useSessionMedia(image.item, sessionId, canonical, false, retry.id === image.id ? retry.attempt : 0);
   const src = seededSrc ?? (canonical ? load.status === 'ready' ? load.url : undefined : image.item.url);
+
+  const onSaveOriginal = useMemo(() => {
+    if (client === undefined || (image.item.path === undefined && (sessionId === undefined || image.item.fileId === undefined))) return undefined;
+    return async (sink: HostSaveSink, signal: AbortSignal, onProgress: (bytes: number, total?: number) => void) => {
+      const consume: import('@kiki/klient').HttpRestMediaSink = async (chunk, progress) => {
+        await sink.write(chunk);
+        onProgress(progress.bytes, progress.totalBytes);
+      };
+      const options = { ...client.readingOptions(), signal };
+      if (image.item.path !== undefined) await client.downloadHostFile(image.item.path, consume, options);
+      else await client.downloadSessionMedia(sessionId!, image.item.fileId!, consume, options);
+    };
+  }, [client, sessionId, image.item.path, image.item.fileId]);
+
   return <MediaLightbox src={src} identity={image.id} name={safeImagePreviewName({ name: image.item.name, metadataName: load.status === 'ready' ? load.name : undefined, path: image.item.path })}
     sourcePath={image.item.path} linkUrl={httpImageLink(image.item.url)} outcomeKey={mediaOutcomeKey({ ...image.item, sessionId })} remote={remote}
     loading={canonical && load.status === 'loading'} failed={canonical && load.status === 'failed'}
     onRetry={() => { setRetry((current) => ({ id: image.id, attempt: current.id === image.id ? current.attempt + 1 : 1 })); }}
+    onSaveOriginal={onSaveOriginal}
     index={index} count={count} onSelect={onSelect} onClose={onClose} />;
 }
 

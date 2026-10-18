@@ -151,7 +151,7 @@ describe('lightbox viewing', () => {
     // 2. Click toggles to actual size
     act(() => { zoomButton()?.click(); });
     expect(viewport()?.getAttribute('data-lightbox-viewport')).toBe('actual');
-    expect(zoomButton()?.textContent).toBe('Fit width');
+    expect(zoomButton()?.textContent).toBe('Fit to screen');
 
     // 3. Image click toggles back to fit
     act(() => { img1.click(); });

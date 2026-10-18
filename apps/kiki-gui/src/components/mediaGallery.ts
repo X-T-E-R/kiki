@@ -17,10 +17,12 @@ export function galleryImageId(item: MediaRef, agentId: string): string | undefi
 }
 
 export function canonicalGalleryItem(item: MediaRef, agentId: string): MediaRef {
-  return item.blobHash === undefined ? item : {
-    ...item,
+  const isImage = item.kind === 'image' || item.mime?.startsWith('image/') === true;
+  const normalized: MediaRef = isImage && item.kind !== 'image' ? { ...item, kind: 'image' } : item;
+  return normalized.blobHash === undefined ? normalized : {
+    ...normalized,
     path: undefined,
-    fileId: item.fileId ?? `blobref:${agentId}:${item.blobHash}`,
+    fileId: normalized.fileId ?? `blobref:${agentId}:${normalized.blobHash}`,
   };
 }
 
@@ -29,7 +31,8 @@ export function blockGalleryImages(blocks: readonly Block[], agentId: string): G
   return blocks.flatMap((block, messageIndex) => {
     if (!('media' in block) || block.media === undefined) return [];
     return block.media.flatMap((item, attachmentIndex) => {
-      if (item.kind !== 'image' || item.detail !== undefined) return [];
+      const isImage = item.kind === 'image' || item.mime?.startsWith('image/') === true;
+      if (!isImage || item.detail !== undefined) return [];
       const id = galleryImageId(item, agentId);
       return id === undefined ? [] : [{ id, agentId, order: [messageIndex, 1, attachmentIndex], item: canonicalGalleryItem(item, agentId) }];
     });

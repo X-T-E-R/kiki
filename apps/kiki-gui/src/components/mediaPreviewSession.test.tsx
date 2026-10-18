@@ -476,16 +476,13 @@ describe('sent image loading and recovery', () => {
     await renderSettled(root, <MediaPreviewProvider sessionId="session"><MediaPartList media={[{ kind: 'image', fileId: 'saved', mime: 'image/png', name: 'saved.png' }]} /></MediaPreviewProvider>);
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-media-broken]')?.click(); });
     expect(mocks.readSessionMediaBytes).toHaveBeenCalledTimes(1);
-    expect(document.querySelector('[data-attachment-preview] [data-media-broken="read"]')).not.toBeNull();
-    await act(async () => { document.querySelector<HTMLButtonElement>('[data-attachment-preview] [data-media-broken]')?.click(); });
+    expect(document.querySelector('[data-lightbox-viewport] [role="alert"]')).not.toBeNull();
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-lightbox-viewport] button')?.click(); });
     expect(mocks.readSessionMediaBytes).toHaveBeenCalledTimes(2);
-    const attachmentDialog = [...document.querySelectorAll('[role="dialog"]')]
-      .find((dialog) => dialog.querySelector('[data-attachment-preview]') !== null);
-    expect(attachmentDialog?.querySelector('[data-attachment-preview] img')).not.toBeNull();
-    expect(attachmentDialog?.className).not.toContain('bg-panel');
-    expect(attachmentDialog?.className).not.toContain('p-4');
-    await act(async () => { attachmentDialog?.querySelector('[data-attachment-preview] img')?.closest('button')?.click(); });
-    expect([...document.querySelectorAll('[role="dialog"]')].some((dialog) => dialog.getAttribute('aria-label') === 'saved.png')).toBe(true);
+    const lightboxDialog = [...document.querySelectorAll('[role="dialog"]')]
+      .find((dialog) => dialog.querySelector('[data-lightbox-viewport]') !== null);
+    expect(lightboxDialog?.querySelector('[data-lightbox-viewport] img')).not.toBeNull();
+    expect(lightboxDialog?.getAttribute('aria-label')).toBe('saved.png');
   });
 });
 
