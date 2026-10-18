@@ -2367,8 +2367,10 @@ export function Composer({
   // composer remounted on route changes anyway. With the resident shell seat
   // the node survives — so a blur CAUSED by the disable (element already
   // disabled at blur time) arms a one-shot refocus when the composer
-  // re-enables. A deliberate click-away while enabled never arms it, and a
-  // cold session open (never focused) has nothing to restore.
+  // re-enables. The focusin that lands on the document is that platform
+  // fallback, so it does not cancel the arm; a focusin on any other control
+  // does. A deliberate click-away while enabled never arms it, and a cold
+  // session open (never focused) has nothing to restore.
   //
   // The arming listener is NATIVE: Chromium fires `blur` but not `focusout`
   // when disabling a focused element, and React's onBlur is focusout-based —
@@ -2381,7 +2383,9 @@ export function Composer({
       if (textarea.disabled) refocusOnEnableRef.current = true;
     };
     const cancelOnFocusElsewhere = (event: globalThis.FocusEvent) => {
-      if (event.target !== textarea) refocusOnEnableRef.current = false;
+      const target = event.target;
+      if (target === textarea || target === document.body || target === document.documentElement) return;
+      refocusOnEnableRef.current = false;
     };
     textarea.addEventListener('blur', armOnDisableBlur);
     document.addEventListener('focusin', cancelOnFocusElsewhere);

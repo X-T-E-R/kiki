@@ -564,12 +564,15 @@ describe('Composer disable focus continuity', () => {
     await act(async () => { textarea.focus(); });
     await harness.rerender({ disabled: true });
     // jsdom neither force-blurs on disable nor lets disabled inputs blur.
-    // Model Chromium's BODY fallback and its native blur with disabled=true.
+    // Chromium moves focus to the body and fires blur (not focusout) while
+    // the control is already disabled, then focusin on the body. The body
+    // event is the platform fallback, not a control the user chose.
     await act(async () => {
       textarea.disabled = false;
       textarea.blur();
       textarea.disabled = true;
       textarea.dispatchEvent(new FocusEvent('blur'));
+      document.body.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
     });
     expect(document.activeElement).toBe(document.body);
     return { ...harness, textarea };
@@ -590,6 +593,26 @@ describe('Composer disable focus continuity', () => {
     const active = document.activeElement;
     await rerender({ disabled: false });
     expect(document.activeElement).toBe(active);
+  });
+
+  it('restores the same input when the session id arrives after that blur', async () => {
+    const { container, rerender, textarea } = await disableFocusedInput();
+    await rerender({ disabled: true, sessionId: 'session-new', value: '' });
+    expect(container.querySelector('textarea[data-composer]')).toBe(textarea);
+    expect(document.activeElement).not.toBe(textarea);
+    await rerender({ disabled: false, sessionId: 'session-new', value: '' });
+    expect(container.querySelector('textarea[data-composer]')).toBe(textarea);
+    expect(document.activeElement).toBe(textarea);
+  });
+
+  it('does not pull the caret back when another control was chosen before the session id arrives', async () => {
+    const { container, rerender } = await disableFocusedInput();
+    const button = document.createElement('button');
+    container.append(button);
+    await act(async () => { button.focus(); });
+    await rerender({ disabled: false, sessionId: 'session-new', value: '' });
+    expect(document.activeElement).toBe(button);
+    expect(container.querySelector('textarea[data-composer]')).not.toBeNull();
   });
 
   it('does not autofocus a cold input or restore a deliberate enabled blur', async () => {
