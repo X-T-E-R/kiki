@@ -443,6 +443,47 @@ describe('Agent loop', () => {
     }
   });
 
+  it('does not leave an idle prompt injection turn-end rejection unhandled when the caller drops the turn result', async () => {
+    profile.update({ activeToolNames: [] });
+    const prompts = ctx.get(IAgentPromptService);
+    const originalFlush = ctx.wire.flush.bind(ctx.wire);
+    let failing = true;
+    ctx.wire.flush = async () => {
+      if (failing && loop.status().finalizing) throw ebusyAppendError();
+      await originalFlush();
+    };
+    const unhandled: unknown[] = [];
+    const onUnhandled = (error: unknown): void => { unhandled.push(error); };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      ctx.mockNextResponse({ type: 'text', text: 'computed once' });
+      const turn = await prompts.inject({
+        role: 'user',
+        content: [{ type: 'text', text: 'background note' }],
+        toolCalls: [],
+        origin: { kind: 'injection', variant: 'shell_command_backgrounded' },
+      });
+      await vi.waitFor(() => {
+        expect(loop.status().persistenceFailure?.executionOutcome).toBe('completed');
+      });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(unhandled).toEqual([]);
+      expect(turn?.id).toBe(loop.status().activeTurnId);
+      expect(prompts.list().active).toBeUndefined();
+      expect(prompts.list().pending).toEqual([]);
+      expect(ctx.llmCalls).toHaveLength(1);
+      expect(loop.status()).toMatchObject({ state: 'running', finalizing: true });
+      failing = false;
+      expect(await loop.recoverPersistence()).toBe(true);
+      expect(loop.status().persistenceFailure).toBeUndefined();
+      expect(ctx.llmCalls).toHaveLength(1);
+      expect((await ctx.persistedWireRecords()).filter((entry) => entry.type === 'turn.ended')).toHaveLength(1);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+      ctx.wire.flush = originalFlush;
+    }
+  });
+
   it('recovers an uncommitted wire append after more than eight EBUSY failures without replaying the model', async () => {
     const storage = new InMemoryStorageService();
     const local = createTestAgent(
