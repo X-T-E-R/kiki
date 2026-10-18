@@ -45,6 +45,8 @@ The AGY adapter registers session-local stdio servers through `registerMcpPlugin
 
 Native load reuses the namespace in that session's `mcp_plugin_registered` audit record, including the older `kiki-acp-<UUID>` form. It requires fresh connections with the original server names. A recorded MCP binding without a namespace fails load instead of guessing a replacement. Owned-plugin recovery checks both namespace forms for that session; live owners, changed files and multiple ownership receipts are preserved for scoped recovery. Closing the session removes only its unchanged owned plugin.
 
+The adapter records `prompt_sent` only after Node's `stdin.write` callback succeeds. This proves completion of the local stream write, not that AGY parsed or executed the prompt. Keep process launch, local delivery, and the native result separate when recovering a session; neither a launch record nor an absent delivery receipt authorizes replay.
+
 The server generates the MCP bridge command with the existing `resolveKikiCliLaunch` resolver. A SEA host uses its running executable directly; a confirmed built `main.mjs` host uses its Node executable plus that entry. Neither route depends on a shell shim. Development and embedded hosts that cannot identify their CLI retain the existing `kiki` PATH command; callers supplying a source launcher must keep its Node loader arguments. An AGY bootstrap spawn failure closes its stdio bridge and reports the launch error instead of remaining connected to an open stdin stream.
 
 ## Verification
@@ -53,5 +55,5 @@ The server generates the MCP bridge command with the existing `resolveKikiCliLau
 - Same file, `source-owned adapter installation`: selected install, truncated write, failed restore, record-update failure, rollback record failure, a production read that is not not-found, an unreadable previous snapshot, and the production manifest.
 - `packages/kap-server/test/agentProfiles.integration.ts`: `lists managed adapter releases without installing and rejects unknown adapter IDs`; `installs and rolls back the selected source-owned adapter without changing executor config`.
 - `apps/kimi-code/test/native/external-harness-assets.test.ts`: the four production scripts through the SEA manifest, npm dist, and extraction.
-- `scripts/external-harness/agy-cli-acp.test.mjs`: namespace length, exact compact and legacy native load, ownership recovery, and bootstrap failure with an open caller stdin.
+- `scripts/external-harness/agy-cli-acp.test.mjs`: namespace length, exact compact and legacy native load, ownership recovery, bootstrap failure with an open caller stdin, and local delivery receipts for accepted, cancelled, and failed writes.
 - `packages/kap-server/test/harnessMcp.integration.ts`: generated SEA, npm and unknown-host lease commands, with a real stdio bridge call through the generated npm command.
