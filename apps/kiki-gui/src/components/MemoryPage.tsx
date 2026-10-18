@@ -227,9 +227,11 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
     <div data-memory-page className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
       <PageHeader title={t('memory.title')} onToggleSidebar={onToggleSidebar} width="split">
         <div data-memory-status className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-ink-soft" role="status">
-          {settingsQuery.isPending ? (
+          {settingsQuery.isPending && settings === undefined ? (
             <span>{t('memory.loading')}</span>
-          ) : settingsQuery.isError ? null : (
+          ) : settingsQuery.isError && settings === undefined ? null : settingsQuery.isError ? (
+            <span>{t('st.memory.loadFailed', { detail: errorText(locale, settingsQuery.error) })}</span>
+          ) : (
             <span>{t(globalEnabled ? 'st.memory.enabled' : 'st.memory.disabled')}</span>
           )}
           {globalEnabled && scope !== undefined && workspaceOverride === false ? (

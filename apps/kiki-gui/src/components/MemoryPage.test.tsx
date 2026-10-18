@@ -9,7 +9,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { PersonaSnapshot, Session, Workspace, WorkspaceCatalogEntry } from '@kiki/protocol';
 import { I18nProvider } from '../i18n';
 import { KikiClient, MEMORY_TYPES, type MemoryEntry, type MemoryJournalRecord, type MemorySettings } from '../lib/client';
-import { MemoryPage } from './MemoryPage';
+import { MemoryPage, MEMORY_SETTINGS_QUERY_KEY } from './MemoryPage';
 import { getToasts } from '../lib/toasts';
 import { memorySourceTargets } from './useMemorySources';
 import { memorySnapshot } from './MemoryHistory';
@@ -1277,12 +1277,41 @@ describe('MemoryPage global switch', () => {
     seedMemories({ 'global::': [] });
     vi.mocked(client.getMemorySettings).mockRejectedValue(new Error('Network offline'));
     const { container } = await mountPage('/memory', []);
-    expect(container.querySelector('[data-memory-settings-error]')).not.toBeNull();
+    const errorBlock = container.querySelector('[data-memory-settings-error]');
+    expect(errorBlock).not.toBeNull();
+    expect(errorBlock?.textContent).toContain('Network offline');
     expect(container.querySelector('[data-memory-intro]')).toBeNull();
     expect(container.querySelector('[data-memory-enable]')).toBeNull();
-    // Header status does not duplicate the error string
+    // Header status node is present and does not duplicate the error string
     const headerStatus = container.querySelector('header [data-memory-status]');
-    expect(headerStatus?.textContent).not.toContain('Network offline');
+    expect(headerStatus).not.toBeNull();
+    expect(headerStatus!.textContent).not.toContain('Network offline');
+  });
+
+  it('keeps single error in header when background refetch fails with cached settings preserved in body', async () => {
+    seedMemories({ 'global::': [] });
+    vi.mocked(client.getMemorySettings).mockResolvedValueOnce(enabledSettings);
+    const { container, queryClient } = await mountPage('/memory', []);
+    // Initial mount succeeds with settings enabled and active view present
+    expect(container.querySelector('header [data-memory-status]')?.textContent).toContain('On');
+    expect(container.querySelector('[data-memory-settings-error]')).toBeNull();
+
+    // Background refetch rejects: query has cached data so body stays intact, error reports in header
+    vi.mocked(client.getMemorySettings).mockRejectedValueOnce(new Error('Background sync failed'));
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: MEMORY_SETTINGS_QUERY_KEY }).catch(() => {});
+    });
+    await flush();
+
+    // Body still renders cached content without settings error block
+    expect(container.querySelector('[data-memory-settings-error]')).toBeNull();
+    // Header status node provides the single failure feedback
+    const headerStatus = container.querySelector('header [data-memory-status]');
+    expect(headerStatus).not.toBeNull();
+    expect(headerStatus!.textContent).toContain('Background sync failed');
+    // Whole page has only one error notification in header, no second error in body
+    const allAlerts = container.querySelectorAll('[role="alert"]');
+    expect(allAlerts.length).toBe(0);
   });
 
   it('marks every workspace effective read stale after this page turns memory on', async () => {
