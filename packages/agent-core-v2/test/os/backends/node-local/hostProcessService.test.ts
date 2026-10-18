@@ -561,6 +561,162 @@ describe.skipIf(process.platform !== 'win32')('Windows owned process tree', () =
     }
   });
 
+  it('keeps an exited command running after control EPIPE, then repeated stops do not write the destroyed pipe', async () => {
+    const proc = await spawnOwned(process.execPath, ['-e', 'process.exit(0)']);
+    expect(await proc.wait()).toBe(0);
+    const control = (proc as unknown as { control: { write: (chunk: string, cb?: (error?: Error | null) => void) => boolean; destroy: () => void } }).control;
+    const epipe = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+    let writes = 0;
+    vi.spyOn(control, 'write').mockImplementation((chunk, cb) => {
+      writes += 1;
+      if (writes === 1) {
+        cb?.(epipe);
+        queueMicrotask(() => control.destroy());
+        return false;
+      }
+      throw new Error(`control write after EPIPE (${String(chunk)})`);
+    });
+    const taskId = tasks.registerTask(new ProcessTask(proc, 'ffprobe', 'media info'), { detached: true });
+    await vi.waitFor(() => {
+      expect(tasks.getTask(taskId)).toMatchObject({ status: 'running', exitCode: 0, endedAt: null });
+      expect(tasks.getTask(taskId)?.stopReason).toContain('write EPIPE');
+      expect(tasks.getTask(taskId)?.stopReason).toContain('"cleanupComplete":false');
+      expect(tasks.getTask(taskId)?.stopReason).toContain('"phase":"control"');
+      expect(tasks.getTask(taskId)?.stopReason).toContain('"controlClosed":true');
+    });
+    expect(writes).toBe(1);
+    const helperPid = (proc as unknown as { child: { pid?: number } }).child.pid;
+    expect(helperPid).toEqual(expect.any(Number));
+    await vi.waitFor(() => { expect(alive(helperPid!)).toBe(false); }, { timeout: 5_000 });
+    await expect(tasks.stop(taskId)).rejects.toMatchObject({ code: 'os.process.kill_failed', details: { cleanupComplete: false, phase: 'control', controlClosed: true } });
+    expect(tasks.getTask(taskId)).toMatchObject({ status: 'running', exitCode: 0, endedAt: null });
+    await expect(tasks.stop(taskId)).rejects.toMatchObject({ code: 'os.process.kill_failed', details: { cleanupComplete: false, phase: 'control', controlClosed: true } });
+    expect(writes).toBe(1);
+    expect(tasks.getTask(taskId)?.status).toBe('running');
+  }, 15_000);
+
+  it('keeps cleanup unconfirmed when a release attempt loses its ack and residents survive', async () => {
+    const file = join(directory, 'release-ack-lost.txt');
+    const command = `${quote(process.execPath.replaceAll('\\', '/'))} ${quote(join(directory, 'tree.cjs').replaceAll('\\', '/'))} ${quote(file.replaceAll('\\', '/'))} >/dev/null 2>&1 & sleep 0.4`;
+    const proc = await spawnOwned('C:/Program Files/Git/bin/bash.exe', ['-c', command]);
+    proc.stdin.end();
+    expect(await proc.wait()).toBe(0);
+    const pids = await readPids(file);
+    expect(pids.filter(alive).length).toBe(3);
+    const control = (proc as unknown as {
+      control: {
+        write: (chunk: string, cb?: (error?: Error | null) => void) => boolean;
+        on: (event: 'data', listener: (chunk: string) => void) => void;
+        listeners: (event: 'data') => Array<(chunk: string) => void>;
+        removeAllListeners: (event: 'data') => void;
+      };
+    }).control;
+    const deliver = control.write.bind(control);
+    const listeners = control.listeners('data');
+    let pending = '';
+    control.removeAllListeners('data');
+    control.on('data', (chunk) => {
+      pending += String(chunk);
+      let newline: number;
+      let kept = '';
+      while ((newline = pending.indexOf('\n')) >= 0) {
+        const line = pending.slice(0, newline);
+        pending = pending.slice(newline + 1);
+        if (line.trim() === 'released') continue;
+        kept += `${line}\n`;
+      }
+      if (kept.length === 0) return;
+      for (const listener of listeners) listener.call(control, kept);
+    });
+    let writes = 0;
+    const held: Array<(error?: Error | null) => void> = [];
+    vi.spyOn(control, 'write').mockImplementation((chunk, cb) => {
+      writes += 1;
+      if (writes > 1) throw new Error(`control write after release attempt (${String(chunk)})`);
+      if (cb !== undefined) held.push(cb);
+      return deliver(chunk, () => {});
+    });
+    const taskId = tasks.registerTask(new ProcessTask(proc, 'ffprobe', 'media info'), { detached: true });
+    const helperPid = (proc as unknown as { child: { pid?: number } }).child.pid;
+    try {
+      await vi.waitFor(() => {
+        expect(tasks.getTask(taskId)).toMatchObject({ status: 'running', exitCode: 0, endedAt: null });
+        expect(tasks.getTask(taskId)?.stopReason).toContain('"cleanupComplete":false');
+        expect(tasks.getTask(taskId)?.stopReason).toContain('"phase":"control"');
+      });
+      expect(writes).toBe(1);
+      await vi.waitFor(() => { expect(alive(helperPid!)).toBe(false); }, { timeout: 5_000 });
+      expect(pids.filter(alive).length).toBe(3);
+      for (const callback of held) callback();
+      expect(tasks.getTask(taskId)?.status).toBe('running');
+      expect(pids.filter(alive).length).toBe(3);
+      await expect(proc.kill()).rejects.toMatchObject({ code: 'os.process.kill_failed', details: { cleanupComplete: false, phase: 'control', controlClosed: true } });
+      await expect(tasks.stop(taskId)).rejects.toMatchObject({ code: 'os.process.kill_failed', details: { cleanupComplete: false, phase: 'control', controlClosed: true } });
+      await expect(tasks.stop(taskId)).rejects.toMatchObject({ code: 'os.process.kill_failed', details: { cleanupComplete: false, phase: 'control', controlClosed: true } });
+      expect(writes).toBe(1);
+      expect(tasks.getTask(taskId)?.status).toBe('running');
+      expect(pids.filter(alive).length).toBe(3);
+    } finally {
+      for (const pid of pids) if (alive(pid)) process.kill(pid, 'SIGKILL');
+    }
+  }, 15_000);
+
+  it('finishes kill and retain through the job when the helper exits before any release', async () => {
+    const commandFor = (file: string): string => `${quote(process.execPath.replaceAll('\\', '/'))} ${quote(join(directory, 'tree.cjs').replaceAll('\\', '/'))} ${quote(file.replaceAll('\\', '/'))} >/dev/null 2>&1 & sleep 0.4`;
+    const open = async (file: string, owner: boolean): Promise<{ proc: IHostProcess; pids: number[]; writes: { count: number } }> => {
+      const proc = await spawnOwned('C:/Program Files/Git/bin/bash.exe', ['-c', commandFor(file)], owner ? { ownedProcessLifetime: 'owner' } : {});
+      proc.stdin.end();
+      expect(await proc.wait()).toBe(0);
+      const pids = await readPids(file);
+      expect(pids.filter(alive).length).toBe(3);
+      const control = (proc as unknown as { control: { write: (chunk: string, cb?: (error?: Error | null) => void) => boolean; destroy: () => void } }).control;
+      const writes = { count: 0 };
+      vi.spyOn(control, 'write').mockImplementation(() => {
+        writes.count += 1;
+        throw new Error('unexpected control write');
+      });
+      control.destroy();
+      return { proc, pids, writes };
+    };
+    const killed = await open(join(directory, 'never-release.txt'), false);
+    try {
+      const helperPid = (killed.proc as unknown as { child: { pid?: number } }).child.pid;
+      await vi.waitFor(async () => { await killed.proc.kill(); }, { timeout: 5_000 });
+      expect(alive(helperPid!)).toBe(false);
+      expect(killed.writes.count).toBe(0);
+      await vi.waitFor(() => { expect(killed.pids.filter(alive)).toEqual([]); }, { timeout: 5_000 });
+      await killed.proc.dispose();
+      expect(killed.writes.count).toBe(0);
+    } finally {
+      for (const pid of killed.pids) if (alive(pid)) process.kill(pid, 'SIGKILL');
+    }
+    const retained = await open(join(directory, 'never-retain.txt'), true);
+    try {
+      const helperPid = (retained.proc as unknown as { child: { pid?: number } }).child.pid;
+      await vi.waitFor(async () => { await retained.proc.dispose(); }, { timeout: 5_000 });
+      expect(alive(helperPid!)).toBe(false);
+      expect(retained.writes.count).toBe(0);
+      await vi.waitFor(() => { expect(retained.pids.filter(alive)).toEqual([]); }, { timeout: 5_000 });
+    } finally {
+      for (const pid of retained.pids) if (alive(pid)) process.kill(pid, 'SIGKILL');
+    }
+  }, 20_000);
+
+  it('does not treat root exit as a clean tree while a job descendant is still alive', async () => {
+    const file = join(directory, 'live-descendant.txt');
+    const command = `${quote(process.execPath.replaceAll('\\', '/'))} ${quote(join(directory, 'tree.cjs').replaceAll('\\', '/'))} ${quote(file.replaceAll('\\', '/'))} >/dev/null 2>&1 & sleep 0.4`;
+    const proc = await spawnOwned('C:/Program Files/Git/bin/bash.exe', ['-c', command]);
+    proc.stdin.end();
+    expect(await proc.wait()).toBe(0);
+    const pids = await readPids(file);
+    expect(proc.exitCode).toBe(0);
+    expect(alive(proc.pid)).toBe(false);
+    expect(pids.some(alive)).toBe(true);
+    await proc.kill();
+    expect(pids.filter(alive)).toEqual([]);
+    await proc.dispose();
+  });
+
   it('keeps a failed termination nonterminal with a typed diagnostic and reaps the tree on retry', async () => {
     vi.stubEnv('KIKI_WINDOWS_PROCESS_HELPER', failingKillHelper);
     const proc = await spawnOwned(process.execPath, ['-e', 'process.stdout.write("ready");setTimeout(()=>{},15000)']);

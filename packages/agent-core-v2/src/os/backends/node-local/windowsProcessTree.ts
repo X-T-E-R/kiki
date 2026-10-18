@@ -61,6 +61,10 @@ class WindowsProcessTree implements IHostProcess {
   private disposed = false;
   private code: number | null = null;
   private rootPid = -1;
+  private controlClosed = false;
+  private helperGone = false;
+  private releaseAttempted = false;
+  private pendingCommand: 'kill' | 'release' | 'retain' | undefined;
 
   constructor(private readonly child: ChildProcess, private readonly control: Socket, input: Socket, output: Socket, error: Socket, mergeStderr: boolean, private readonly ownerLifetime: boolean) {
     this.stdin = new Writable({
@@ -82,12 +86,26 @@ class WindowsProcessTree implements IHostProcess {
         this.receive(line);
       }
     });
-    control.on('error', (error) => { this.fail(error); });
-    control.on('close', () => { if (!this.disposed) this.fail(new Error('Windows process helper control channel closed.')); });
+    control.on('error', (error) => {
+      this.markControlClosed();
+      this.fail(error, false);
+      this.settlePendingControlLoss(error);
+    });
+    control.on('close', () => {
+      this.markControlClosed();
+      if (this.disposed) return;
+      const error = new Error('Windows process helper control channel closed.');
+      this.fail(error, false);
+      this.settlePendingControlLoss(error);
+    });
     child.on('error', (error) => { this.fail(error); });
     child.on('exit', (code, signal) => {
+      this.helperGone = true;
       this.helperExited.resolve();
-      if (!this.disposed) this.fail(new Error(`Windows process helper exited unexpectedly (code ${String(code)}, signal ${String(signal)}).`));
+      if (this.disposed) return;
+      const recovered = this.pendingCommand === undefined ? undefined : this.responseAfterControlLoss(this.pendingCommand);
+      if (recovered !== undefined) this.response?.resolve(recovered);
+      this.fail(new Error(`Windows process helper exited unexpectedly (code ${String(code)}, signal ${String(signal)}).`), recovered === undefined);
     });
   }
 
@@ -167,8 +185,10 @@ class WindowsProcessTree implements IHostProcess {
     if (!this.disposed) {
       await this.killPromise;
       if (this.cleanupFailure !== undefined) throw this.cleanupFailure;
-      const response = await this.request('release');
-      if (response !== 'released') throw this.decodeError(response);
+      if (!this.helperGone || this.releaseAttempted) {
+        const response = await this.request('release');
+        if (response !== 'released') throw this.decodeError(response);
+      }
       this.disposed = true;
       this.control.destroy();
       this.closeStreams();
@@ -179,14 +199,60 @@ class WindowsProcessTree implements IHostProcess {
 
   private async request(command: 'kill' | 'release' | 'retain'): Promise<string> {
     if (this.response !== undefined) throw this.killError('control', 'Windows process ownership operation is already in progress. Retry TaskStop.');
+    if (this.helperGone || this.controlClosed || this.control.destroyed || this.control.writable === false) {
+      this.markControlClosed();
+      const recovered = this.responseAfterControlLoss(command);
+      if (recovered !== undefined) return recovered;
+      throw this.closedControlError();
+    }
     const response = deferred<string>();
     this.response = response;
-    this.control.write(`${command}\n`, (error) => { if (error) response.reject(this.killError('control', error.message, {}, error)); });
+    this.pendingCommand = command;
+    if (command === 'release') this.releaseAttempted = true;
+    try {
+      this.control.write(`${command}\n`, (error) => {
+        if (!error) return;
+        this.markControlClosed();
+        this.settlePendingControlLoss(error);
+      });
+    } catch (error) {
+      this.markControlClosed();
+      const recovered = this.responseAfterControlLoss(command);
+      this.pendingCommand = undefined;
+      this.response = undefined;
+      if (recovered !== undefined) return recovered;
+      const message = error instanceof Error ? error.message : String(error);
+      throw this.killError('control', message, { controlClosed: true }, error);
+    }
     try {
       return await this.withDeadline(response.promise, 'deadline');
     } finally {
       if (this.response === response) this.response = undefined;
+      if (this.pendingCommand === command) this.pendingCommand = undefined;
     }
+  }
+
+  private markControlClosed(): void {
+    this.controlClosed = true;
+  }
+
+  private closedControlError(cause?: unknown): HostProcessError {
+    const message = cause instanceof Error ? cause.message : 'Windows process helper control channel is closed.';
+    return this.killError('control', message, { controlClosed: true }, cause);
+  }
+
+  private responseAfterControlLoss(command: 'kill' | 'release' | 'retain'): string | undefined {
+    if (!this.helperGone || this.releaseAttempted || command === 'release') return undefined;
+    return 'active:0';
+  }
+
+  private settlePendingControlLoss(error: Error): void {
+    const response = this.response;
+    const command = this.pendingCommand;
+    if (response === undefined || command === undefined) return;
+    const recovered = this.responseAfterControlLoss(command);
+    if (recovered !== undefined) response.resolve(recovered);
+    else response.reject(this.closedControlError(error));
   }
 
   private receive(line: string): void {
@@ -209,10 +275,10 @@ class WindowsProcessTree implements IHostProcess {
     } else this.response?.resolve(line);
   }
 
-  private fail(error: Error): void {
+  private fail(error: Error, rejectResponse = true): void {
     this.ready.reject(error);
     this.exited.reject(this.killError('control', error.message, {}, error));
-    this.response?.reject(this.killError('control', error.message, {}, error));
+    if (rejectResponse) this.response?.reject(this.killError('control', error.message, {}, error));
   }
 
   private decodeError(line: string): HostProcessError {
