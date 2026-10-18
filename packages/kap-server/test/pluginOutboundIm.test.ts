@@ -320,9 +320,12 @@ describe('plugin digest delivery', () => {
     expect(transport.posts).toHaveLength(0);
   });
 
-  it('drops digest receipts that were stored before plugin identity existed', () => {
-    const db = new DatabaseSync(':memory:');
-    db.exec(`CREATE TABLE plugin_digest_receipts (
+  it('preserves unscoped digest receipts and does not resend them', async () => {
+    home = await mkdtemp(join(tmpdir(), 'kiki-plugin-im-'));
+    stored = undefined;
+    await mkdir(join(home, 'notifications'), { recursive: true });
+    const seeded = new DatabaseSync(join(home, 'notifications', 'outbox.sqlite'));
+    seeded.exec(`CREATE TABLE plugin_digest_receipts (
       account_ref TEXT NOT NULL,
       idempotency_key TEXT NOT NULL,
       fingerprint TEXT NOT NULL,
@@ -331,13 +334,77 @@ describe('plugin digest delivery', () => {
       state TEXT NOT NULL,
       PRIMARY KEY (account_ref, idempotency_key)
     )`);
-    db.prepare(`INSERT INTO plugin_digest_receipts
+    const insert = seeded.prepare(`INSERT INTO plugin_digest_receipts
       (account_ref, idempotency_key, fingerprint, channel_id, text_hash, state)
-      VALUES ('account-a', 'mail-1', 'f', 'mail', 'h', 'accepted')`).run();
-    ensurePluginDigestReceipts(db);
-    const columns = db.prepare('PRAGMA table_info(plugin_digest_receipts)').all() as Array<{ name: string }>;
-    expect(columns.map((column) => column.name)).toContain('plugin_id');
-    expect(db.prepare('SELECT COUNT(*) AS n FROM plugin_digest_receipts').get()).toEqual({ n: 0 });
+      VALUES (?, ?, 'legacy-fingerprint', 'mail', ?, ?)`);
+    insert.run('account-a', 'mail-accepted', 'legacy-hash-accepted', 'accepted');
+    insert.run('account-a', 'mail-armed', 'legacy-hash-armed', 'armed');
+    seeded.close();
+    await boot(errors, true);
+    await httpChannel(service, secret);
+    const revision = (await service.pluginImRoutes(signal()))[0]!.routeRevision;
+    expect(await service.pluginImSend(request(revision, { idempotencyKey: 'mail-accepted' }), signal(), mailPlugin)).toMatchObject({
+      status: 'unknown', retryable: false, diagnosticCode: 'send_outcome_unknown',
+    });
+    expect(await service.pluginImSend(request(revision, { idempotencyKey: 'mail-armed' }), signal(), 'kiki-calendar')).toMatchObject({
+      status: 'unknown', retryable: false, diagnosticCode: 'send_outcome_unknown',
+    });
+    expect(transport.posts).toHaveLength(0);
+    expect((await service.pluginImSend(request(revision, { idempotencyKey: 'mail-new' }), signal(), 'kiki-calendar')).status).toBe('accepted');
+    expect(transport.posts).toHaveLength(1);
+    const current = service;
+    service = undefined as unknown as NotificationService;
+    await current.close();
+    const reader = new DatabaseSync(join(home, 'notifications', 'outbox.sqlite'));
+    try {
+      expect(reader.prepare(`SELECT idempotency_key, fingerprint, text_hash, state
+        FROM plugin_digest_receipts_unscoped ORDER BY idempotency_key`).all()).toEqual([
+        { idempotency_key: 'mail-accepted', fingerprint: 'legacy-fingerprint', text_hash: 'legacy-hash-accepted', state: 'accepted' },
+        { idempotency_key: 'mail-armed', fingerprint: 'legacy-fingerprint', text_hash: 'legacy-hash-armed', state: 'armed' },
+      ]);
+      expect(reader.prepare(`SELECT idempotency_key FROM plugin_digest_receipts ORDER BY idempotency_key`).all()).toEqual([
+        { idempotency_key: 'mail-new' },
+      ]);
+    } finally {
+      reader.close();
+    }
+  });
+
+  it('keeps a damaged digest table unchanged', () => {
+    const db = new DatabaseSync(':memory:');
+    db.exec('CREATE TABLE plugin_digest_receipts (noise TEXT)');
+    db.prepare(`INSERT INTO plugin_digest_receipts (noise) VALUES ('keep-me')`).run();
+    expect(ensurePluginDigestReceipts(db)).toBe('unavailable');
+    expect(db.prepare('SELECT noise FROM plugin_digest_receipts').get()).toEqual({ noise: 'keep-me' });
+    expect(db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'plugin_digest_receipts_unscoped'`).all()).toEqual([]);
     db.close();
+  });
+
+  it('does not leave an empty digest table when legacy rename is interrupted', () => {
+    const raw = new DatabaseSync(':memory:');
+    raw.exec(`CREATE TABLE plugin_digest_receipts (
+      account_ref TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      state TEXT NOT NULL,
+      PRIMARY KEY (account_ref, idempotency_key)
+    )`);
+    raw.prepare(`INSERT INTO plugin_digest_receipts (account_ref, idempotency_key, state) VALUES ('account-a', 'mail-1', 'accepted')`).run();
+    const db = {
+      exec(sql: string) {
+        if (sql.startsWith('CREATE TABLE plugin_digest_receipts (')) throw new Error('interrupted');
+        raw.exec(sql);
+      },
+      prepare(sql: string) {
+        return raw.prepare(sql);
+      },
+    };
+    expect(ensurePluginDigestReceipts(db)).toBe('unavailable');
+    expect(raw.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'plugin_digest_receipts_unscoped'`).all()).toEqual([]);
+    expect(raw.prepare('SELECT account_ref, idempotency_key, state FROM plugin_digest_receipts').get()).toEqual({
+      account_ref: 'account-a', idempotency_key: 'mail-1', state: 'accepted',
+    });
+    const columns = raw.prepare('PRAGMA table_info(plugin_digest_receipts)').all() as Array<{ name: string }>;
+    expect(columns.some((column) => column.name === 'plugin_id')).toBe(false);
+    raw.close();
   });
 });

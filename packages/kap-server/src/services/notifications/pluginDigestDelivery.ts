@@ -118,22 +118,61 @@ const DIGEST_RECEIPTS = `CREATE TABLE plugin_digest_receipts (
   error_kind TEXT,
   PRIMARY KEY (plugin_id, account_ref, idempotency_key)
 )`;
+const CURRENT_RECEIPT_COLUMNS = [
+  'plugin_id', 'account_ref', 'idempotency_key', 'fingerprint', 'channel_id', 'text_hash', 'state',
+  'diagnostic_code', 'error_kind',
+];
+const LEGACY_RECEIPT_COLUMNS = ['account_ref', 'idempotency_key', 'state'];
+const UNSCOPED_RECEIPTS = 'plugin_digest_receipts_unscoped';
 
-export function ensurePluginDigestReceipts(db: { exec(sql: string): void; prepare(sql: string): { all(): unknown[] } }): void {
-  const present = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'plugin_digest_receipts'`).all();
-  if (present.length === 0) {
-    db.exec(DIGEST_RECEIPTS);
-    return;
-  }
-  const names = db.prepare('PRAGMA table_info(plugin_digest_receipts)').all().flatMap((row) => {
+interface ReceiptDb {
+  exec(sql: string): void;
+  prepare(sql: string): { all(): unknown[] };
+}
+
+function columnNames(db: ReceiptDb, table: string): string[] {
+  return db.prepare(`PRAGMA table_info(${table})`).all().flatMap((row) => {
     if (!record(row)) return [];
     const name = row['name'];
     return typeof name === 'string' ? [name] : [];
   });
-  if (!names.includes('plugin_id') || !names.includes('account_ref') || !names.includes('state')) {
-    db.exec('DROP TABLE plugin_digest_receipts');
+}
+
+export function ensurePluginDigestReceipts(db: ReceiptDb): 'ready' | 'unavailable' {
+  const present = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'plugin_digest_receipts'`).all();
+  if (present.length === 0) {
     db.exec(DIGEST_RECEIPTS);
+    return 'ready';
   }
+  const names = columnNames(db, 'plugin_digest_receipts');
+  if (CURRENT_RECEIPT_COLUMNS.every((name) => names.includes(name))) return 'ready';
+  const legacy = !names.includes('plugin_id') && LEGACY_RECEIPT_COLUMNS.every((name) => names.includes(name));
+  if (!legacy || db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = '${UNSCOPED_RECEIPTS}'`).all().length > 0) {
+    return 'unavailable';
+  }
+  let started = false;
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    started = true;
+    db.exec(`ALTER TABLE plugin_digest_receipts RENAME TO ${UNSCOPED_RECEIPTS}`);
+    db.exec(DIGEST_RECEIPTS);
+    db.exec('COMMIT');
+    return 'ready';
+  } catch {
+    if (started) {
+      try { db.exec('ROLLBACK'); } catch { return 'unavailable'; }
+    }
+    return 'unavailable';
+  }
+}
+
+function legacyKey(runtime: Runtime, account: string, key: string): boolean {
+  const tables = runtime.outbox.db.prepare(
+    `SELECT name FROM sqlite_master WHERE type = 'table' AND name = '${UNSCOPED_RECEIPTS}'`).all();
+  if (tables.length === 0) return false;
+  const row = runtime.outbox.db.prepare(
+    `SELECT state FROM ${UNSCOPED_RECEIPTS} WHERE account_ref = ? AND idempotency_key = ?`).get(account, key);
+  return row !== undefined && row !== null;
 }
 
 function readReceipt(runtime: Runtime, pluginId: string, account: string, key: string): ReceiptRow | undefined {
@@ -239,13 +278,16 @@ export class PluginDigestDelivery {
     if (missingCredential(settings, channel.provider_instance_id, instance)) return failed('credential_unavailable', 'configuration');
     const routeRevision = fingerprint(settings, runtime, request.channelId);
     if (routeRevision === undefined || routeRevision !== request.routeRevision) return failed('route_changed', 'configuration');
-    ensurePluginDigestReceipts(runtime.outbox.db);
+    if (ensurePluginDigestReceipts(runtime.outbox.db) !== 'ready') return failed('im_unsupported', 'dependency_missing');
     const existing = readReceipt(runtime, pluginId, request.accountRef, request.idempotencyKey);
     if (existing !== undefined) {
       if (existing.fingerprint !== routeRevision || existing.channel_id !== request.channelId || existing.text_hash !== textHash) {
         return failed('idempotency_conflict', 'configuration');
       }
       return projectRow(existing);
+    }
+    if (legacyKey(runtime, request.accountRef, request.idempotencyKey)) {
+      return pluginImReceipt('unknown', { diagnosticCode: 'send_outcome_unknown', errorKind: 'unknown' });
     }
     runtime.outbox.db.prepare(
       `INSERT INTO plugin_digest_receipts
