@@ -33,6 +33,7 @@ import {
 } from '../../lib/usageV2';
 import { SidePanel } from '../SidePanel';
 import { ThreadTitle } from '../ThreadTitle';
+import { SECONDARY_BUTTON } from '../ui';
 import { KnownSubtotalMarker, formatPercent } from './usageShared';
 
 const PAGE_SIZE = 25;

@@ -75,6 +75,7 @@ import {
 } from '../lib/usageV2';
 import { useConnection } from '../state/connection';
 import { Toggle } from './controls';
+import { SECONDARY_BUTTON } from './ui';
 import { PAGE_WIDTH, PageHeader } from './PageChrome';
 import { PricingPanel } from './usage/PricingPanel';
 import { UsageRescanControl } from './usage/UsageRescanControl';

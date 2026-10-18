@@ -84,7 +84,6 @@ export function ProviderQuotaPanel() {
       ) : isError ? (
         <div className="rounded-xl border border-danger/30 bg-danger/5 p-4 text-[12.5px] text-danger">
           <p className="font-medium">{t('usage.quota.status.error')}</p>
-          <p className="mt-1 text-[11.5px] text-ink-soft">{t('usage.quota.refresh')}: {t('st.help.label')}</p>
         </div>
       ) : sources.length === 0 ? (
         <div className="rounded-xl border border-hairline bg-panel px-4 py-12 text-center text-[13px] text-ink-faint" data-quota-empty>

@@ -244,6 +244,7 @@ export function UsageExportForm({ entry, onClose, onSaved, onUpdated }: {
   const initialFormState = useMemo(() => initialForm(nowMs, entry), [nowMs, entry]);
   const destinationIdRef = useRef<string | undefined>(entry?.destination.id);
   const [state, setState] = useState<FormState>(() => initialFormState);
+  const [savedBaseline, setSavedBaseline] = useState<FormState>(() => initialFormState);
   const [busy, setBusy] = useState<'save' | 'test' | 'preview' | 'enable' | 'auth' | null>(null);
   const [credentialStored, setCredentialStored] = useState(entry !== undefined && entry.destination.credential_storage !== 'none');
   const [accountFingerprint, setAccountFingerprint] = useState<string | undefined>(entry?.destination.account_fingerprint ?? undefined);
@@ -255,13 +256,14 @@ export function UsageExportForm({ entry, onClose, onSaved, onUpdated }: {
   const [showSecret, setShowSecret] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
 
-  const dirty = formDirty(state, initialFormState);
+  const dirty = formDirty(state, savedBaseline);
   const draftId = `usage-export-form:${destinationIdRef.current ?? 'new'}`;
   useDirtyReporter(draftId, dirty);
   const guard = useDirtyGuard();
 
   const handleClose = () => {
-    if (!dirty || busyNow) {
+    if (busyNow && busy !== 'auth') return;
+    if (!dirty) {
       onClose();
       return;
     }
@@ -305,6 +307,7 @@ export function UsageExportForm({ entry, onClose, onSaved, onUpdated }: {
     destinationIdRef.current = saved.id;
     onUpdated();
     setState((current) => (current.id === saved.id ? current : { ...current, id: saved.id }));
+    setSavedBaseline((current) => ({ ...state, id: saved.id }));
     return saved.id;
   };
 
@@ -319,6 +322,7 @@ export function UsageExportForm({ entry, onClose, onSaved, onUpdated }: {
   const onVibeConnected = async () => {
     setPreview(null);
     setState((current) => ({ ...current, secret: '' }));
+    setSavedBaseline((current) => ({ ...current, secret: '' }));
     const currentId = destinationIdRef.current ?? state.id;
     if (api !== undefined && currentId) {
       try {

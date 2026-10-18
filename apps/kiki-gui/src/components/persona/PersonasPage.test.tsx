@@ -16,6 +16,11 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PersonaDefinition, PersonaSnapshot, PersonaSummary } from '@kiki/protocol';
+const mockNavigate = vi.fn();
+vi.mock('react-router-dom', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('react-router-dom')>()),
+  useNavigate: () => mockNavigate,
+}));
 import { readDraft, resetDraftMemoryForTests, writeDraft } from '@kiki/session-core/composer';
 import { clearToasts } from '../../lib/toasts';
 
@@ -333,6 +338,10 @@ describe('handing a new persona to Kiki', () => {
 
     // Clicking the retry action calls navigate to /memory?persona=imported-bot
     expect(typeof lastToast?.retry?.run).toBe('function');
+    await act(async () => {
+      lastToast?.retry?.run();
+    });
+    expect(mockNavigate).toHaveBeenCalledWith('/memory?persona=imported-bot');
   });
 
 });

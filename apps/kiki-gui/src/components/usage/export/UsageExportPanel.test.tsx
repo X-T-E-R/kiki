@@ -275,6 +275,82 @@ describe('opening and abandoning the form', () => {
     expect(q('[data-usage-export-form]')).not.toBeNull();
     expect(q<HTMLInputElement>('[data-usage-export-form-name]')!.value).toBe('edited destination');
   });
+
+  it('delegates discard confirmation to DirtyGuardContext provider when present and keeps content on cancel', async () => {
+    const confirmDiscardMock = vi.fn((_id: string, _action: () => void) => {});
+    const dirtyGuardValue = {
+      dirty: false,
+      reportDirty: vi.fn(),
+      navigate: vi.fn(),
+      confirmDiscard: confirmDiscardMock,
+    };
+    const { DirtyGuardContext } = await import('../../dirtyGuard');
+
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = createRoot(container);
+    roots.push(root);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={client}>
+          <DirtyGuardContext.Provider value={dirtyGuardValue}>
+            <I18nProvider><Harness bump={(fn) => { forceRef = fn; }} /></I18nProvider>
+          </DirtyGuardContext.Provider>
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+
+    await click(q('[data-usage-export-add]'));
+    const name = q<HTMLInputElement>('[data-usage-export-form-name]')!;
+    await type(name, 'guarded destination');
+    await click(q('[data-usage-export-form-cancel]'));
+
+    expect(confirmDiscardMock).toHaveBeenCalledOnce();
+    expect(confirmDiscardMock.mock.calls[0]![0]).toBe('usage-export-form:new');
+    // confirmDiscard didn't run the discard action, so the form is still open and input kept
+    expect(q('[data-usage-export-form]')).not.toBeNull();
+    expect(q<HTMLInputElement>('[data-usage-export-form-name]')!.value).toBe('guarded destination');
+  });
+
+  it('closes without discard prompt after saving draft successfully, and keeps draft if save fails', async () => {
+    usageExport.saveDraft.mockRejectedValueOnce(new Error('Save failed')).mockResolvedValueOnce({ id: ID_A });
+    await render();
+    await click(q('[data-usage-export-add]'));
+    const form = q<HTMLFormElement>('form [data-usage-export-form-preview]')!.closest('form')!;
+    const name = q<HTMLInputElement>('[data-usage-export-form-name]')!;
+    await type(name, 'destination for save');
+    await click(document.querySelector('[data-axis="export-kind"] [data-axis-value="webhook"]'));
+    await type(q<HTMLInputElement>('[data-usage-export-form-endpoint]')!, 'https://usage.example.test/ingest');
+
+    // Attempt preview which saves draft first and fails
+    await act(async () => { form.requestSubmit(); });
+    await flush();
+    expect(q('[data-usage-export-form]')).not.toBeNull();
+    expect(q<HTMLInputElement>('[data-usage-export-form-name]')!.value).toBe('destination for save');
+
+    // Closing after failed save still prompts because changes were not saved
+    await click(q('[data-usage-export-form-cancel]'));
+    expect(q('[role="alertdialog"]')).not.toBeNull();
+    const cancelConfirmBtn = [...document.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')].find(
+      (b) => b.getAttribute('data-confirm-action') !== 'confirm'
+    )!;
+    await click(cancelConfirmBtn);
+    expect(q('[data-usage-export-form]')).not.toBeNull();
+
+    // Now successful preview (which saves draft first)
+    await act(async () => { form.requestSubmit(); });
+    await flush();
+    expect(usageExport.saveDraft).toHaveBeenCalledTimes(2);
+
+    // Closing immediately after successful save should not prompt for discard
+    await click(q('[data-usage-export-form-cancel]'));
+    expect(q('[role="alertdialog"]')).toBeNull();
+    expect(q('[data-usage-export-form]')).toBeNull();
+  });
 });
 
 const authPending = {
