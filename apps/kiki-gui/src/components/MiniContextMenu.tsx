@@ -80,6 +80,7 @@ export function MiniContextMenu({
     const unregister = registerOverlay(overlayId);
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
+      event.preventDefault();
       // Hand focus back only when the menu still owns it; focus that the user
       // moved elsewhere (a Tab out of this transient layer) is left alone.
       const owned = menuRef.current?.contains(document.activeElement) === true;

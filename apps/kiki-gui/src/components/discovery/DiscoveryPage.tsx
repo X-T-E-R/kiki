@@ -15,6 +15,7 @@ import {
   discoveryRouteProgress,
 } from '@kiki/session-core/discovery';
 import { useI18n } from '../../i18n';
+import { useSidebarContext } from '../sidebarContext';
 import { Icon } from '../icons';
 import { WorkspaceHeader } from '../agent-workspace';
 import { useDiscovery } from './DiscoveryContext';
@@ -114,6 +115,8 @@ export function DiscoveryPage({
     navigate(MODEL_SETTINGS_HREF);
   };
 
+  const { sidebarOpen } = useSidebarContext();
+
   return (
     <div className="flex h-full w-full flex-col overflow-y-auto bg-canvas text-ink" data-discovery-page>
       <WorkspaceHeader main>
@@ -121,6 +124,8 @@ export function DiscoveryPage({
           type="button"
           onClick={onToggleSidebar}
           aria-label={t('sv.openMenuAria')}
+          aria-expanded={sidebarOpen}
+          aria-controls="app-sidebar"
           className="-ml-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-panel hover:text-ink md:hidden"
         >
           <Icon name="menu" size={16} />

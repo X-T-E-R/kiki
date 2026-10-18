@@ -100,4 +100,16 @@ describe('navigation composer focus ownership', () => {
     await flush();
     expect(document.activeElement).toBe(other);
   });
+  it('does not steal focus from an already-focused search input when route arrives', async () => {
+    const searchInput = document.createElement('input');
+    searchInput.dataset['searchBox'] = 'true';
+    document.body.append(searchInput);
+    searchInput.focus();
+    expect(document.activeElement).toBe(searchInput);
+
+    await act(async () => root.render(<Focus session="d" />));
+    endpoint.dataset['composerSession'] = 'd';
+    await flush();
+    expect(document.activeElement).toBe(searchInput);
+  });
 });

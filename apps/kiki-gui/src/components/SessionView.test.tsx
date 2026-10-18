@@ -1867,6 +1867,20 @@ describe('shouldHandleGlobalAbortOnEscape', () => {
     expect(abortActive).toHaveBeenCalledTimes(1);
   });
 
+  it('does not abort a running main turn when Escape was consumed by mobile sidebar drawer', () => {
+    const running = { ...createViewState('session-test'), busy: true, abortablePromptId: 'p-main' };
+    const abortActive = vi.fn();
+    // Case 1: mobile drawer registered in uiBusy overlayOpen
+    if (canAbortActiveTurn(running) && shouldHandleGlobalAbortOnEscape({ ...ready, overlayOpen: true })) {
+      abortActive();
+    }
+    // Case 2: mobile drawer consumed Escape via defaultPrevented
+    if (canAbortActiveTurn(running) && shouldHandleGlobalAbortOnEscape({ ...ready, defaultPrevented: true })) {
+      abortActive();
+    }
+    expect(abortActive).not.toHaveBeenCalled();
+  });
+
   it('uses an in-flight engine id rather than requiring a visible user prompt', () => {
     const idle = createViewState('session-test');
     expect(canAbortActiveTurn(idle)).toBe(false);

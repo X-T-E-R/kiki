@@ -13,6 +13,7 @@ import { useSearchParams } from 'react-router-dom';
 import type { Workspace } from '@kiki/protocol';
 
 import { useI18n } from '../i18n';
+import { useSidebarContext } from './sidebarContext';
 import { Icon } from './icons';
 import { NavBackButton } from './NavBackButton';
 
@@ -37,12 +38,15 @@ export function PageHeader({
   children?: ReactNode;
 }) {
   const { t } = useI18n();
+  const { sidebarOpen } = useSidebarContext();
   const content = (
     <>
       <button
         type="button"
         onClick={onToggleSidebar}
         aria-label={t('sv.openMenuAria')}
+        aria-expanded={sidebarOpen}
+        aria-controls="app-sidebar"
         className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-panel hover:text-ink md:hidden"
       >
         <Icon name="menu" size={16} />

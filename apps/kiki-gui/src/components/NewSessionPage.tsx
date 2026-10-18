@@ -32,6 +32,7 @@ import { PersonaAvatar, personaAvatarOf } from './persona/PersonaAvatar';
 import { usePersonaList } from './persona/usePersonas';
 import { EphemeralOption } from './EphemeralOption';
 import { LocalSessionsEntry } from './localSessions/LocalSessionsEntry';
+import { useSidebarContext } from './sidebarContext';
 import { useI18n } from '../i18n';
 import { useImportHistoryEnabled } from '../lib/importHistory';
 import { useMediaQuery } from '../lib/layoutHooks';
@@ -421,6 +422,8 @@ function NewSessionPageContent({
   );
   useRegisterSeat(seat);
 
+  const { sidebarOpen } = useSidebarContext();
+
   return (
     <>
       {slots.header !== null
@@ -430,6 +433,8 @@ function NewSessionPageContent({
                 type="button"
                 onClick={onToggleSidebar}
                 aria-label={t('sv.openMenuAria')}
+                aria-expanded={sidebarOpen}
+                aria-controls="app-sidebar"
                 className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-hairline text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink md:hidden pointer-coarse:h-11 pointer-coarse:w-11"
               >
                 <Icon name="menu" size={16} />

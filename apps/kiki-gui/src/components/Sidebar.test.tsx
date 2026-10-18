@@ -34,6 +34,9 @@ import { nestSessionThreads, sessionRelationOf } from '../lib/sessionThreads';
 import { requestSessionSearch } from '../lib/sidebarSearch';
 import { configureSpaceStorage } from '../lib/spaceStorage';
 import { readWorkspaceGroupMemory, writeWorkspaceGroupMemory } from '../lib/sidebarGroupMemory';
+import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
+import { createViewState } from '@kiki/session-core/session';
+import { canAbortActiveTurn, shouldHandleGlobalAbortOnEscape } from './SessionView';
 import {
   mergeSearchPages,
   searchNextPageParam,
@@ -88,6 +91,7 @@ vi.mock('../state/connection', () => ({
       listPersonas,
       archiveSession,
       restoreSession: vi.fn(async () => { throw new Error('not stubbed'); }),
+      updateSessionProfile: vi.fn(async () => ({ ok: true })),
       klient: { rest: { rooms: roomRest } },
     },
     scopeId: connectionScope.id,
@@ -1500,6 +1504,74 @@ describe('Sidebar filters', () => {
     expect(entries[0]?.closest('[data-sidebar-empty]')).not.toBeNull();
     await act(async () => { (entries[0] as HTMLButtonElement).click(); });
     expect(onFiltersChange).toHaveBeenCalledWith({ status: [], workspaces: [], archived: 'include' });
+  });
+
+  it('layers Escape so that an open menu inside drawer consumes first, drawer closes second, and turn abort is 0', async () => {
+    let sidebarOpen = true;
+    const closeDrawer = () => { sidebarOpen = false; };
+    const unregisterDrawer = registerOverlay('app-sidebar');
+
+    const abortActive = vi.fn();
+    const running = { ...createViewState('session-test'), busy: true, abortablePromptId: 'p-main' };
+
+    // App drawer global Escape handler
+    const appDrawerKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      if (anyOverlayOpen(['app-sidebar'])) return;
+      event.preventDefault();
+      closeDrawer();
+    };
+
+    // SessionView global Escape turn-abort handler
+    const sessionViewKeyDown = (event: KeyboardEvent) => {
+      if (!shouldHandleGlobalAbortOnEscape({
+        key: event.key,
+        defaultPrevented: event.defaultPrevented,
+        overlayOpen: anyOverlayOpen(),
+        terminalFocused: false,
+        terminalOpen: false,
+        inFormField: false,
+      })) return;
+      if (canAbortActiveTurn(running)) {
+        event.preventDefault();
+        abortActive();
+      }
+    };
+
+    window.addEventListener('keydown', appDrawerKeyDown);
+    window.addEventListener('keydown', sessionViewKeyDown);
+
+    try {
+      const { container } = await mount({ ...listed(), workspaceOptions: [wsA, wsB] });
+      const menu = await openFilterMenu(container);
+      expect(container.querySelector('[data-filter-menu]')).not.toBeNull();
+      expect(sidebarOpen).toBe(true);
+
+      // First Escape: consumed by useAnchoredMenu ('sidebar-filter-menu').
+      // It sets defaultPrevented, closes the menu, and appDrawerKeyDown yields because
+      // anyOverlayOpen(['app-sidebar']) is true.
+      await act(async () => {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      });
+
+      // Filter menu is closed, but drawer stays open!
+      expect(container.querySelector('[data-filter-menu]')).toBeNull();
+      expect(sidebarOpen).toBe(true);
+      expect(abortActive).not.toHaveBeenCalled();
+
+      // Second Escape: now no inner overlay is open. appDrawerKeyDown fires, preventsDefault,
+      // and closes the drawer. SessionView global abort sees defaultPrevented / drawer overlay and yields.
+      await act(async () => {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      });
+
+      expect(sidebarOpen).toBe(false);
+      expect(abortActive).not.toHaveBeenCalled();
+    } finally {
+      unregisterDrawer();
+      window.removeEventListener('keydown', appDrawerKeyDown);
+      window.removeEventListener('keydown', sessionViewKeyDown);
+    }
   });
 });
 

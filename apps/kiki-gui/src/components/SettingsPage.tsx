@@ -21,6 +21,7 @@ import { useDirtyGuard, useGuardedNavigate } from './dirtyGuard';
 import { AboutSection } from './settings/AboutSection';
 import { DesktopLogCard } from './settings/DesktopLogCard';
 import { AppearanceSection } from './settings/AppearanceSection';
+import { useSidebarContext } from './sidebarContext';
 import { Icon } from './icons';
 import { AgentsSection } from './settings/AgentsSection';
 import { AiSection } from './settings/AiSection';
@@ -484,13 +485,22 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   // section label alone would not say which one.
   const activeLabel = workspaceDetailName ?? (activeLabelKey === undefined ? undefined : t(activeLabelKey));
 
+  const { sidebarOpen } = useSidebarContext();
+
   return (
     <SettingsCardMountContext.Provider value={locateCard}>
     <SettingsFlashContext.Provider value={flashCard?.cardId ?? null}>
     <SettingsWorkspaceScopeContext.Provider value={setWorkspaceScopeName}>
       <WorkspaceDetailNameContext.Provider value={setWorkspaceDetailName}>
       <header className="flex h-12 shrink-0 items-center gap-2 px-4 lg:px-6">
-        <button type="button" onClick={onToggleSidebar} aria-label={t('sv.openMenuAria')} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink md:hidden">
+        <button
+          type="button"
+          onClick={onToggleSidebar}
+          aria-label={t('sv.openMenuAria')}
+          aria-expanded={sidebarOpen}
+          aria-controls="app-sidebar"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink md:hidden"
+        >
           <Icon name="menu" size={16} />
         </button>
         <NavBackButton />

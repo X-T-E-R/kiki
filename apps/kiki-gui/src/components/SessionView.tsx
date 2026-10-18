@@ -48,6 +48,7 @@ import { TerminalPanel } from './TerminalPanel';
 import { useStableForest, type TranscriptRowActions } from './Transcript';
 import { mergeLoadedAttachments } from './RowActions';
 import { Icon } from './icons';
+import { useSidebarContext } from './sidebarContext';
 import { MessageViewContext, type MessageViewContextValue } from './message/messageViewContext';
 import { isTimelineViewShortcut, useTimelineView, type TimelineView } from './message/messageViewMode';
 import { TimelineMenuRows, TimelineViewSwitch } from './message/TimelineViewSwitch';
@@ -448,12 +449,16 @@ function Header({
   const runningTasks = state.tasks.filter((task) => task.status === 'running').length;
   const isNarrow = useMediaQuery('(max-width: 639px)');
 
+  const { sidebarOpen } = useSidebarContext();
+
   return (
     <WorkspaceHeader main>
       <button
         type="button"
         onClick={onToggleSidebar}
         aria-label={t('sv.openMenuAria')}
+        aria-expanded={sidebarOpen}
+        aria-controls="app-sidebar"
         data-sidebar-menu=""
         className="relative -ml-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-panel hover:text-ink md:hidden"
       >

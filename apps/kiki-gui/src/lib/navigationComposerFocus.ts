@@ -7,6 +7,21 @@ function composerKey(node: HTMLTextAreaElement): string {
   return `${node.dataset['composerSession']}\0${node.dataset['composerAgent'] ?? 'main'}`;
 }
 
+export function shouldYieldComposerFocus(active: Element | null): boolean {
+  if (anyOverlayOpen()) return true;
+  if (active === null || active === document.body) return false;
+  if (active.closest('.xterm') !== null) return true;
+  if (
+    active instanceof HTMLInputElement ||
+    active instanceof HTMLSelectElement ||
+    (active instanceof HTMLElement && active.isContentEditable) ||
+    (active instanceof HTMLTextAreaElement && !active.matches('textarea[data-composer], textarea[data-composer-session]'))
+  ) {
+    return true;
+  }
+  return false;
+}
+
 /** One focus request per conversation endpoint, consumed or cancelled by user focus. */
 export function useNavigationComposerFocus(scopeId: string, sessionId: string | undefined, agentId = 'main'): void {
   const carets = useRef(new Map<string, Caret>());
@@ -26,7 +41,7 @@ export function useNavigationComposerFocus(scopeId: string, sessionId: string | 
   }, [scopeId]);
 
   useEffect(() => {
-    if (sessionId === undefined || anyOverlayOpen() || document.activeElement?.closest('.xterm')) return;
+    if (sessionId === undefined || shouldYieldComposerFocus(document.activeElement)) return;
     let finished = false;
     let frame = 0;
     const observer = new MutationObserver(() => schedule());
@@ -34,12 +49,17 @@ export function useNavigationComposerFocus(scopeId: string, sessionId: string | 
       finished = true;
       observer.disconnect();
       cancelAnimationFrame(frame);
-      document.removeEventListener('focusin', cancel, true);
+      document.removeEventListener('focusin', onFocusIn, true);
+    };
+    const onFocusIn = (event: FocusEvent) => {
+      const target = event.target;
+      if (target instanceof Element && target.matches('textarea[data-composer-session]')) return;
+      cancel();
     };
     const attempt = () => {
       frame = 0;
       if (finished) return;
-      if (anyOverlayOpen() || document.activeElement?.closest('.xterm')) { cancel(); return; }
+      if (shouldYieldComposerFocus(document.activeElement)) { cancel(); return; }
       const node = [...document.querySelectorAll<HTMLTextAreaElement>('textarea[data-composer-session]')]
         .find((element) => element.dataset['composerSession'] === sessionId && element.dataset['composerAgent'] === agentId);
       if (node === undefined || node.disabled || node.getClientRects().length === 0 || getComputedStyle(node).visibility === 'hidden') return;
@@ -52,7 +72,7 @@ export function useNavigationComposerFocus(scopeId: string, sessionId: string | 
       if (!finished && frame === 0) frame = requestAnimationFrame(attempt);
     }
     observer.observe(document.body, { childList: true, subtree: true, attributes: true });
-    document.addEventListener('focusin', cancel, true);
+    document.addEventListener('focusin', onFocusIn, true);
     schedule();
     return cancel;
   }, [scopeId, sessionId, agentId]);

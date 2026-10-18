@@ -863,6 +863,7 @@ function TabContextMenu({
     const unregister = registerOverlay('preview-tab-menu');
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
+      event.preventDefault();
       const owned = menuRef.current?.contains(document.activeElement) === true;
       closeRef.current();
       if (owned) restoreTriggerFocus();

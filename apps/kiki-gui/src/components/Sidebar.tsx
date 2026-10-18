@@ -502,6 +502,8 @@ export function Sidebar({
   onSortBy,
   navBadges,
   className,
+  id,
+  inert,
   onClose,
   nowMs,
 }: {
@@ -533,6 +535,8 @@ export function Sidebar({
   /** Opens the new-session draft (the /new page stays the no-session landing). */
   onNewSession: () => void;
   className?: string;
+  id?: string;
+  inert?: boolean;
   /** Phone-drawer exit (a ✕ in the wordmark row); absent where the sidebar is docked. */
   onClose?: () => void;
   /** Current time reference for time grouping and the recency projection;
@@ -1188,6 +1192,8 @@ export function Sidebar({
     // draggable.
     return (
       <aside
+        id={id}
+        inert={inert}
         className={className ?? 'app-sidebar'}
         style={{ '--kiki-sidebar-width': '56px' } as React.CSSProperties}
         data-session-sidebar
@@ -1201,6 +1207,8 @@ export function Sidebar({
 
   return (
     <aside
+      id={id}
+      inert={inert}
       className={className ?? 'app-sidebar'}
       style={{ '--kiki-sidebar-width': `${sidebarWidthValue}px` } as React.CSSProperties}
       data-session-sidebar
@@ -2529,6 +2537,7 @@ function RoomListMenu({
     const unregister = registerOverlay('room-list-menu');
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
+      event.preventDefault();
       const owned = menuRef.current?.contains(document.activeElement) === true;
       closeRef.current();
       if (owned) restoreTriggerFocus();
@@ -3070,22 +3079,41 @@ function MenuMark({ on }: { on: boolean }) {
   );
 }
 
-/** Shared anchored-popover plumbing: measured clamp, Escape, outside click. */
+/** Shared anchored-popover plumbing: measured clamp, Escape, outside click, focus entry/arrow nav/restore. */
 function useAnchoredMenu(anchor: HTMLElement | null, onClose: () => void, overlayId: string, selector: string) {
   const menuRef = useRef<HTMLDivElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
   const [size, setSize] = useState<{ width: number; height: number } | undefined>(undefined);
   useLayoutEffect(() => {
+    returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const node = menuRef.current;
     if (node !== null) setSize({ width: node.offsetWidth, height: node.offsetHeight });
+    node?.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus();
   }, []);
+
+  const restoreTriggerFocus = () => {
+    const trigger = returnFocusRef.current;
+    if (trigger === null || trigger === document.body || !trigger.isConnected) return;
+    trigger.focus();
+  };
+
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+
   useEffect(() => {
     const unregister = registerOverlay(overlayId);
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      const owned = menuRef.current?.contains(document.activeElement) === true;
+      closeRef.current();
+      if (owned) restoreTriggerFocus();
     };
     // The triggers are excluded so their own click can toggle the menu shut.
     const onPointerDown = (event: PointerEvent) => {
-      if (!(event.target instanceof HTMLElement) || event.target.closest(selector) === null) onClose();
+      if (!(event.target instanceof HTMLElement) || event.target.closest(selector) === null) {
+        closeRef.current();
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('pointerdown', onPointerDown, true);
@@ -3094,7 +3122,7 @@ function useAnchoredMenu(anchor: HTMLElement | null, onClose: () => void, overla
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('pointerdown', onPointerDown, true);
     };
-  }, [onClose, overlayId, selector]);
+  }, [overlayId, selector]);
   const rect = anchor?.getBoundingClientRect();
   const position = clampOverlayPosition(
     (rect?.right ?? MENU_WIDTH) - MENU_WIDTH,
@@ -3102,7 +3130,19 @@ function useAnchoredMenu(anchor: HTMLElement | null, onClose: () => void, overla
     size ?? { width: MENU_WIDTH, height: 0 },
     { width: window.innerWidth, height: window.innerHeight },
   );
-  return { menuRef, style: { left: position.left, top: position.top, width: MENU_WIDTH } };
+  const onMenuKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Home' && event.key !== 'End') return;
+    const items = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('button:not([disabled])') ?? [])];
+    if (items.length === 0) return;
+    event.preventDefault();
+    const index = items.indexOf(document.activeElement as HTMLButtonElement);
+    const next = event.key === 'Home' ? 0
+      : event.key === 'End' ? items.length - 1
+      : event.key === 'ArrowDown' ? (index + 1) % items.length
+      : (index - 1 + items.length) % items.length;
+    items[next]?.focus();
+  };
+  return { menuRef, onMenuKeyDown, style: { left: position.left, top: position.top, width: MENU_WIDTH } };
 }
 
 const MENU_PANEL =
@@ -3125,7 +3165,7 @@ function SidebarViewMenu({
   onSortBy: (sortBy: SessionSortOrder) => void;
 }) {
   const { t } = useI18n();
-  const { menuRef, style } = useAnchoredMenu(anchor, onClose, 'sidebar-view-menu', '[data-view-menu], [data-view-menu-toggle]');
+  const { menuRef, onMenuKeyDown, style } = useAnchoredMenu(anchor, onClose, 'sidebar-view-menu', '[data-view-menu], [data-view-menu-toggle]');
   const layoutPrefs = useLayoutPreferences();
   const pinnedSet = useMemo(() => new Set<SidebarNavKey>(layoutPrefs.pinnedNavItems), [layoutPrefs.pinnedNavItems]);
   const groups: readonly { value: 'time' | 'workspace' | 'none'; label: string }[] = [
@@ -3140,7 +3180,7 @@ function SidebarViewMenu({
     title: t('sidebar.sortTitle'),
   };
   return (
-    <div ref={menuRef} data-view-menu role="menu" aria-label={t('sidebar.viewMenu')} style={style} className={MENU_PANEL}>
+    <div ref={menuRef} onKeyDown={onMenuKeyDown} data-view-menu role="menu" aria-label={t('sidebar.viewMenu')} style={style} className={MENU_PANEL}>
       <p className={MENU_HEADING}>{t('sidebar.viewGroupHeading')}</p>
       {groups.map((option) => (
         <button
@@ -3234,7 +3274,7 @@ function SidebarFilterMenu({
   onManageWorkspaces: () => void;
 }) {
   const { t } = useI18n();
-  const { menuRef, style } = useAnchoredMenu(anchor, onClose, 'sidebar-filter-menu', '[data-filter-menu], [data-filter-menu-toggle]');
+  const { menuRef, onMenuKeyDown, style } = useAnchoredMenu(anchor, onClose, 'sidebar-filter-menu', '[data-filter-menu], [data-filter-menu-toggle]');
   const statuses: readonly { value: SessionStatusFilter; label: string }[] = [
     { value: 'running', label: t('sidebar.statusRunning') },
     { value: 'needs-me', label: t('sidebar.statusNeedsMe') },
@@ -3248,7 +3288,7 @@ function SidebarFilterMenu({
     { value: 'only', label: t('sidebar.archivedOnly') },
   ];
   return (
-    <div ref={menuRef} data-filter-menu data-view-menu-filters role="menu" aria-label={t('sidebar.filterMenu')} style={style} className={MENU_PANEL}>
+    <div ref={menuRef} onKeyDown={onMenuKeyDown} data-filter-menu data-view-menu-filters role="menu" aria-label={t('sidebar.filterMenu')} style={style} className={MENU_PANEL}>
       <p className={MENU_HEADING}>{t('sidebar.filterStatusHeading')}</p>
       {statuses.map((option) => (
         <button
@@ -3411,6 +3451,7 @@ function SessionMenu({
     const unregister = registerOverlay('session-menu');
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
+      event.preventDefault();
       const owned = menuRef.current?.contains(document.activeElement) === true;
       closeRef.current();
       if (owned) restoreTriggerFocus();

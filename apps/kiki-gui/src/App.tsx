@@ -107,7 +107,7 @@ import { browserOwnsShortcut, isEditableTarget, matchesShortcutAction } from './
 import { useNavigationComposerFocus } from './lib/navigationComposerFocus';
 import { useShortcutPreferencesSync } from './lib/useShortcutPreferences';
 import { handleFindShortcut, QUICK_SWITCHER_EVENT, type FindRoute } from './lib/timelineFind';
-import { anyOverlayOpen } from './lib/uiBusy';
+import { anyOverlayOpen, registerOverlay } from './lib/uiBusy';
 import { startVisiblePoll } from './lib/visiblePoll';
 import { useAwayNotifications } from './lib/useAwayNotifications';
 import { resolveWindowTitle, type WindowRoute } from './lib/windowTitle';
@@ -126,6 +126,7 @@ import {
 import { requestScopeNavigation } from './lib/navScope';
 import { activeSpace, parseActiveSpacePayload } from './lib/spaceStorage';
 import { NavHistoryBridge } from './components/NavBackButton';
+import { SidebarContext } from './components/sidebarContext';
 import { retryRootReadModelDelay, retryRootReadModelQuery } from './lib/readModelRetry';
 
 export const SESSION_FIRST_PAGE_POLL_INTERVAL_MS = 15_000;
@@ -734,17 +735,28 @@ export function App() {
   // Close mobile sidebar on route change.
   useEffect(() => {
     setSidebarOpen(false);
-  }, [activeSessionId, isNewRoute, isSettingsRoute, isUsageRoute, isCronRoute, isMemoryRoute, isActivityRoute]);
+  }, [location.pathname, location.search]);
 
   // Escape closes the mobile sidebar drawer (the backdrop swallows pointer
   // events, so the key must be handled globally while it is open).
+  // Registers with uiBusy so SessionView global abort yields, and prevents
+  // default so 1 Escape closes the drawer without aborting a running turn.
+  // When another layer inside the drawer is open (such as view/filter menu),
+  // anyOverlayOpen(['app-sidebar']) yields so that inner layer consumes Escape first.
   useEffect(() => {
     if (!sidebarOpen) return;
+    const unregister = registerOverlay('app-sidebar');
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setSidebarOpen(false);
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      if (anyOverlayOpen(['app-sidebar'])) return;
+      event.preventDefault();
+      setSidebarOpen(false);
     };
     window.addEventListener('keydown', onKeyDown);
-    return () => { window.removeEventListener('keydown', onKeyDown); };
+    return () => {
+      unregister();
+      window.removeEventListener('keydown', onKeyDown);
+    };
   }, [sidebarOpen]);
 
   const activeSession = sessions.find((session) => session.id === activeSessionId);
@@ -758,6 +770,7 @@ export function App() {
   );
 
   return (
+    <SidebarContext.Provider value={{ sidebarOpen, toggleSidebar: () => { setSidebarOpen((v) => !v); }, closeSidebar }}>
     <DirtyGuardContext.Provider value={dirtyGuardValue}>
       <NavHistoryBridge>
       <DiscoveryProvider
@@ -767,6 +780,8 @@ export function App() {
       >
       <div className="flex h-full overflow-hidden bg-canvas">
       <Sidebar
+        id="app-sidebar"
+        inert={drawerStage && !sidebarOpen}
         className={`app-sidebar ${sidebarOpen ? 'open' : ''}`}
         activeSessionId={activeSessionId}
         sessions={sessions}
@@ -974,5 +989,6 @@ export function App() {
       </DiscoveryProvider>
       </NavHistoryBridge>
     </DirtyGuardContext.Provider>
+    </SidebarContext.Provider>
   );
 }
