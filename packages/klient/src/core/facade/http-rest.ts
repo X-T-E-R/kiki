@@ -462,6 +462,9 @@ export interface HttpRestFacade {
     media(sessionId: string, fileId: string, options?: HttpRestMediaOptions): Promise<HttpRestBinaryFile>;
     mediaPreview(sessionId: string, fileId: string, options?: HttpRestMediaOptions): Promise<HttpRestBinaryFile>;
     downloadMedia(sessionId: string, fileId: string, sink: HttpRestMediaSink, options?: HttpRestMediaOptions): Promise<HttpRestMediaReceipt>;
+    /** Canonical session audio or video. `url` is a bearer-free Range resource; close it when the element is done. */
+    openMediaPlayback(sessionId: string, fileId: string, options?: HttpRestRequestOptions): Promise<import('../../contract/session/media-playback.js').SessionMediaPlayback>;
+    closeMediaPlayback(previewId: string, options?: HttpRestRequestOptions): Promise<void>;
     export(sessionId: string): Promise<HttpRestSessionArchive>;
   };
 

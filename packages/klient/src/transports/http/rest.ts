@@ -16,6 +16,7 @@ import { createUsageExportFacade } from './usage-export.js';
 import { createProviderQuotaFacade } from './provider-quota.js';
 import { createExternalClientsFacade } from './external-clients.js';
 import { listAgentTasksQuerySchema, listAgentTasksResponseSchema } from '../../contract/session/agent-tasks.js';
+import { sessionMediaPlaybackSchema } from '../../contract/session/media-playback.js';
 import type {
   ActivateSkillRequest,
   AuthSummary,
@@ -330,6 +331,13 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         { method: 'GET', expectBinary: true, signal: options?.signal, timeoutMs: options?.timeoutMs ?? 0, headers: mediaHeaders(options) },
         (response) => consumeMedia(response, sink, options?.signal),
       ),
+      openMediaPlayback: async (sessionId, fileId, options) => sessionMediaPlaybackSchema.parse(await transport.json(
+        `/sessions/${encodeURIComponent(sessionId)}/media-playback`,
+        { method: 'POST', body: { file_id: fileId }, signal: options?.signal, timeoutMs: options?.timeoutMs ?? 15_000 },
+      )),
+      closeMediaPlayback: async (previewId, options) => {
+        await transport.json<null>(`/sessions/media-playback/${encodeURIComponent(previewId)}`, { method: 'DELETE', signal: options?.signal, timeoutMs: options?.timeoutMs ?? 10_000 });
+      },
       export: (sessionId: string) => transport.raw(
         `/sessions/${encodeURIComponent(sessionId)}/export`,
         { method: 'POST', body: {}, timeoutMs: 0, expectBinary: true, jsonErrorOnSuccess: true },

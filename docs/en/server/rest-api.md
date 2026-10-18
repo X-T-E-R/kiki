@@ -626,9 +626,11 @@ In-session file operations go through `POST /api/sessions/{session_id}/fs:{actio
 | `POST /api/fs:mkdir` | Create a directory by absolute path |
 | `POST /api/fs:media-preview` | Create a temporary host audio/video playback URL (authenticated loopback connection) |
 | `DELETE /api/fs:media-preview/{preview_id}` | Revoke a host-media playback URL (bearer token required) |
-| `GET /media-preview/{preview_id}` | Stream the granted host file without a bearer header; supports Range |
+| `POST /api/sessions/{session_id}/media-playback` | Create a temporary playback URL for a canonical session audio or video file (authenticated loopback connection) |
+| `DELETE /api/sessions/media-playback/{preview_id}` | Revoke a session playback URL (bearer token required) |
+| `GET /media-preview/{preview_id}` | Stream the granted host file or canonical session file without a bearer header; supports Range |
 
-For host audio/video, send `{ "path": "<absolute file path>" }` to `POST /api/fs:media-preview`. The response envelope contains `preview_id`, `url`, `mime`, `size`, and `expires_at` (Unix milliseconds). Pass `url` directly to the media element; possession of this URL permits reading that file until it expires after 30 minutes, is revoked, or the server stops. Close the preview with `DELETE /api/fs:media-preview/{preview_id}`. These routes are registered only when server authentication is enabled; creation requires a loopback client and host name, and at most 64 grants may be open at once. They take host paths, not session media IDs; use the session media endpoint for historical attachments. Supported codecs still depend on the browser or WebView.
+For host audio/video, send `{ "path": "<absolute file path>" }` to `POST /api/fs:media-preview`. The response envelope contains `preview_id`, `url`, `mime`, `size`, and `expires_at` (Unix milliseconds). Pass `url` directly to the media element; possession of this URL permits reading that file until it expires after 30 minutes, is revoked, or the server stops. Close the preview with `DELETE /api/fs:media-preview/{preview_id}`. These routes are registered only when server authentication is enabled; creation requires a loopback client and host name, and at most 64 grants may be open at once. Host creation takes an absolute path, not a session media ID. For a historical attachment, send `{ "file_id": "<canonical file id>" }` to `POST /api/sessions/{session_id}/media-playback`. The response uses the same fields, and `GET /media-preview/{preview_id}` streams that canonical file. A host path on that request is rejected, and a missing canonical file is not read from the host filesystem. Revoke it with `DELETE /api/sessions/media-playback/{preview_id}`. An unsatisfiable Range receives 416. The same loopback, 30-minute, and 64-grant limits apply to host and session grants together. Supported codecs still depend on the browser or WebView. The authenticated `GET /api/sessions/{session_id}/media/{file_id}` download remains for other reads.
 
 The session `fs:{action}` workspace API accepts workspace-relative paths only and rejects absolute paths and symlink escapes. This GUI boundary does not restrict the separate agent `Read` tool's explicit absolute paths. `/api/fs:content` is for an authenticated user's preview, not an agent file tool: do not expose the bearer token or disable authentication on an untrusted network.
 
@@ -816,7 +818,7 @@ The following endpoints stream binary bodies instead of a JSON payload. Their HT
 | `GET /api/sessions/{session_id}/media/{file_id}` | Read session media, including saved tool-result blobs | Yes | Yes |
 | `GET /api/fs:content` | User-directed host-file preview by absolute path, including sensitive files (bearer token required; not an agent tool permission endpoint) | Yes | Yes |
 | `POST /api/sessions/{session_id}/export` | Export the session with diagnostics (zip stream) | No | No |
-| `GET /media-preview/{preview_id}` | Stream a temporary host-media playback grant | Yes | No (`private, no-store`) |
+| `GET /media-preview/{preview_id}` | Stream a temporary host or session playback grant | Yes; unsatisfiable Range is 416 | No (`private, no-store`) |
 
 Indexed sessions serve canonical media and staged uploads without restoring the session. Canonical bytes and filenames take precedence over a staged-upload copy. Admitted browser origins can read `ETag`, `Content-Disposition`, and `Content-Range` for revalidation, filenames, and range receipts; this does not change origin admission or authentication.
 

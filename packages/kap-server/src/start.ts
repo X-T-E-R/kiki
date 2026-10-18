@@ -1010,7 +1010,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   });
   if (opts.disableAuth !== true) {
     registerHtmlPreviewRoutes(app, core, remoteConnections);
-    registerHostMediaPreviewRoutes(app, core);
+    registerHostMediaPreviewRoutes(app, core, transcriptService);
   }
   const wssBroker = registerRemoteConnectionRoutes(app, admission, remoteConnections, registration.serverId, () => authTokenService.getToken(), sshRemote);
   threadBridge = await registerSpaceThreadBridge(app, core, admission, remoteConnections, transcriptService, shutdownController.signal);

@@ -222,7 +222,7 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
   app.get(canonicalIdRoute.path, canonicalIdRoute.options, canonicalIdRoute.handler as unknown as Parameters<SessionMediaRouteHost['get']>[2]);
 }
 
-async function openSessionMedia(core: Scope, sessionId: string, fileId: string, service?: TranscriptService, signal?: AbortSignal): Promise<{ readonly sessionExists: boolean; readonly file?: SessionMediaFile; readonly operation?: SessionOperationLease }> {
+export async function openSessionMedia(core: Scope, sessionId: string, fileId: string, service?: TranscriptService, signal?: AbortSignal): Promise<{ readonly sessionExists: boolean; readonly file?: SessionMediaFile; readonly operation?: SessionOperationLease }> {
   if (fileId.startsWith('raw:')) return { sessionExists: true, file: service === undefined ? undefined : await openContentOriginal(service, sessionId, fileId) };
   if (fileId.startsWith('inline-content:') || fileId.startsWith('inline:')) {
     return { sessionExists: true, file: service === undefined ? undefined : await publishedInlineMediaReader(service, sessionId, signal)(fileId) };
