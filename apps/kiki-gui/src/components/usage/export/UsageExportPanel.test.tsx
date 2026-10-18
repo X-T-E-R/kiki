@@ -331,6 +331,10 @@ describe('opening and abandoning the form', () => {
     await flush();
     expect(q('[data-usage-export-form]')).not.toBeNull();
     expect(q<HTMLInputElement>('[data-usage-export-form-name]')!.value).toBe('destination for save');
+    // Error is rendered in the sticky footer near save/close action
+    const footerError = document.querySelector('footer [role="alert"]');
+    expect(footerError).not.toBeNull();
+    expect(footerError?.textContent).toContain('Save failed');
 
     // Closing after failed save still prompts because changes were not saved
     await click(q('[data-usage-export-form-cancel]'));

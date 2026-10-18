@@ -416,14 +416,22 @@ export function UsageExportForm({ entry, onClose, onSaved, onUpdated }: {
         width="lg"
         data={{ 'data-usage-export-form': entry === undefined ? 'create' : 'edit' }}
         footer={(
-          <>
-            <button type="button" data-usage-export-form-save disabled={busyNow || seamMissing} onClick={() => void onSave()} className={SECONDARY_BUTTON}>
-              {t(busy === 'save' ? 'usage.export.form.saving' : 'usage.export.form.save')}
-            </button>
-            <button type="button" data-usage-export-form-cancel disabled={busyNow && busy !== 'auth'} onClick={handleClose} className="ml-auto h-8 rounded-md px-2 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50">
-              {t('common.close')}
-            </button>
-          </>
+          <div className="flex w-full min-w-0 flex-col gap-2">
+            {invalid !== null ? <p role="alert" data-usage-export-form-invalid className="text-[12px] text-danger">{t(invalid)}</p> : null}
+            <FeedbackLine feedback={feedback} />
+            {error !== null ? <InlineError error={error} /> : null}
+            {category !== null && category !== 'generic' ? (
+              <p data-usage-export-form-category className="font-mono text-[11.5px] text-ink-faint">{category}</p>
+            ) : null}
+            <div className="flex items-center gap-2">
+              <button type="button" data-usage-export-form-save disabled={busyNow || seamMissing} onClick={() => void onSave()} className={SECONDARY_BUTTON}>
+                {t(busy === 'save' ? 'usage.export.form.saving' : 'usage.export.form.save')}
+              </button>
+              <button type="button" data-usage-export-form-cancel disabled={busyNow && busy !== 'auth'} onClick={handleClose} className="ml-auto h-8 rounded-md px-2 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50">
+                {t('common.close')}
+              </button>
+            </div>
+          </div>
         )}
       >
         <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void onPreview(); }}>
@@ -692,12 +700,6 @@ export function UsageExportForm({ entry, onClose, onSaved, onUpdated }: {
               {t(busy === 'preview' ? 'usage.export.form.previewing' : 'usage.export.form.preview')}
             </button>
           </div>
-          {invalid !== null ? <p role="alert" data-usage-export-form-invalid className="text-[12px] text-danger">{t(invalid)}</p> : null}
-          <FeedbackLine feedback={feedback} />
-          {error !== null ? <InlineError error={error} /> : null}
-          {category !== null && category !== 'generic' ? (
-            <p data-usage-export-form-category className="font-mono text-[11.5px] text-ink-faint">{category}</p>
-          ) : null}
         </section>
 
         {preview !== null ? (

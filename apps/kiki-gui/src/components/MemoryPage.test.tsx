@@ -1273,13 +1273,16 @@ describe('MemoryPage editor draft', () => {
 });
 
 describe('MemoryPage global switch', () => {
-  it('renders load failure instead of turning-off intro when settings query fails', async () => {
+  it('renders load failure instead of turning-off intro when settings query fails, without repeating error in header', async () => {
     seedMemories({ 'global::': [] });
     vi.mocked(client.getMemorySettings).mockRejectedValue(new Error('Network offline'));
     const { container } = await mountPage('/memory', []);
     expect(container.querySelector('[data-memory-settings-error]')).not.toBeNull();
     expect(container.querySelector('[data-memory-intro]')).toBeNull();
     expect(container.querySelector('[data-memory-enable]')).toBeNull();
+    // Header status does not duplicate the error string
+    const headerStatus = container.querySelector('header [data-memory-status]');
+    expect(headerStatus?.textContent).not.toContain('Network offline');
   });
 
   it('marks every workspace effective read stale after this page turns memory on', async () => {
