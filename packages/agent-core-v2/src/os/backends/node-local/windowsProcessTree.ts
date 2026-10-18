@@ -10,6 +10,8 @@ import { BufferedReadable } from '#/_base/execEnv/bufferedReadable';
 import { HostProcessError, HostProcessErrorCode, type IHostProcess } from '#/os/interface/hostProcess';
 
 const CONTROL_TIMEOUT_MS = 5_000;
+const RELEASE_EXIT_CAPABILITY = 'release-exit-v1';
+const RELEASE_CONFIRMED_EXIT = 5;
 
 function quoteArgument(value: string): string {
   return `"${value.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')}"`;
@@ -64,6 +66,9 @@ class WindowsProcessTree implements IHostProcess {
   private controlClosed = false;
   private helperGone = false;
   private releaseAttempted = false;
+  private releaseExitCapable = false;
+  private releaseConfirmed = false;
+  private releaseWriteError: Error | undefined;
   private pendingCommand: 'kill' | 'release' | 'retain' | undefined;
 
   constructor(private readonly child: ChildProcess, private readonly control: Socket, input: Socket, output: Socket, error: Socket, mergeStderr: boolean, private readonly ownerLifetime: boolean) {
@@ -89,11 +94,12 @@ class WindowsProcessTree implements IHostProcess {
     control.on('error', (error) => {
       this.markControlClosed();
       this.fail(error, false);
+      if (this.releaseConfirmed || this.awaitingReleaseProof()) return;
       this.settlePendingControlLoss(error);
     });
     control.on('close', () => {
       this.markControlClosed();
-      if (this.disposed) return;
+      if (this.disposed || this.releaseConfirmed || this.awaitingReleaseProof()) return;
       const error = new Error('Windows process helper control channel closed.');
       this.fail(error, false);
       this.settlePendingControlLoss(error);
@@ -102,10 +108,17 @@ class WindowsProcessTree implements IHostProcess {
     child.on('exit', (code, signal) => {
       this.helperGone = true;
       this.helperExited.resolve();
+      if (code === RELEASE_CONFIRMED_EXIT && this.releaseExitCapable && signal == null) this.releaseConfirmed = true;
       if (this.disposed) return;
+      if (this.releaseConfirmed && this.pendingCommand === 'release' && this.response !== undefined) {
+        this.response.resolve('released');
+        return;
+      }
       const recovered = this.pendingCommand === undefined ? undefined : this.responseAfterControlLoss(this.pendingCommand);
       if (recovered !== undefined) this.response?.resolve(recovered);
-      this.fail(new Error(`Windows process helper exited unexpectedly (code ${String(code)}, signal ${String(signal)}).`), recovered === undefined);
+      const pendingError = this.pendingCommand === 'release' ? this.releaseWriteError : undefined;
+      this.fail(pendingError ?? new Error(`Windows process helper exited unexpectedly (code ${String(code)}, signal ${String(signal)}).`), recovered === undefined && pendingError === undefined);
+      if (pendingError !== undefined && recovered === undefined) this.response?.reject(this.closedControlError(pendingError));
     });
   }
 
@@ -185,7 +198,7 @@ class WindowsProcessTree implements IHostProcess {
     if (!this.disposed) {
       await this.killPromise;
       if (this.cleanupFailure !== undefined) throw this.cleanupFailure;
-      if (!this.helperGone || this.releaseAttempted) {
+      if (!this.releaseConfirmed && (!this.helperGone || this.releaseAttempted)) {
         const response = await this.request('release');
         if (response !== 'released') throw this.decodeError(response);
       }
@@ -213,6 +226,10 @@ class WindowsProcessTree implements IHostProcess {
       this.control.write(`${command}\n`, (error) => {
         if (!error) return;
         this.markControlClosed();
+        if (command === 'release' && this.awaitingReleaseProof()) {
+          this.releaseWriteError = error;
+          return;
+        }
         this.settlePendingControlLoss(error);
       });
     } catch (error) {
@@ -241,8 +258,12 @@ class WindowsProcessTree implements IHostProcess {
     return this.killError('control', message, { controlClosed: true }, cause);
   }
 
+  private awaitingReleaseProof(): boolean {
+    return this.pendingCommand === 'release' && this.releaseExitCapable && !this.releaseConfirmed && !this.helperGone;
+  }
+
   private responseAfterControlLoss(command: 'kill' | 'release' | 'retain'): string | undefined {
-    if (!this.helperGone || this.releaseAttempted || command === 'release') return undefined;
+    if (!this.helperGone || this.releaseAttempted || this.releaseConfirmed || command === 'release') return undefined;
     return 'active:0';
   }
 
@@ -257,10 +278,11 @@ class WindowsProcessTree implements IHostProcess {
 
   private receive(line: string): void {
     if (line.startsWith('ready:')) {
-      const [, pid, capability] = line.split(':');
-      if (this.ownerLifetime && capability !== 'owner-v1') {
+      const fields = line.split(':');
+      this.releaseExitCapable = fields.includes(RELEASE_EXIT_CAPABILITY);
+      if (this.ownerLifetime && fields[2] !== 'owner-v1') {
         this.ready.reject(new Error('Windows process helper does not support owner lifetime. Rebuild or reinstall Kiki with its matching native assets.'));
-      } else this.ready.resolve(Number(pid));
+      } else this.ready.resolve(Number(fields[1]));
     } else if (line.startsWith('exit:')) {
       this.code = Number(line.slice(5));
       this.exited.resolve(this.code);

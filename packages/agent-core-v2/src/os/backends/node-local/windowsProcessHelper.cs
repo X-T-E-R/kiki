@@ -102,6 +102,8 @@ public static class WindowsProcessHelper
     public static int Main(string[] args)
     {
         if (args.Length != 1) return 2;
+        const int ReleaseConfirmedExit = 5;
+        bool releaseCompleted = false;
         IntPtr job = IntPtr.Zero;
         ProcessInfo child = new ProcessInfo();
         Thread waiter = null;
@@ -150,7 +152,7 @@ public static class WindowsProcessHelper
                         output.Dispose();
                         errorPipe.Dispose();
                         Check(ResumeThread(child.thread) != 0xffffffff, "ResumeThread");
-                        Send(writer, "ready:" + child.pid + (ownerLifetime ? ":owner-v1" : ""));
+                        Send(writer, "ready:" + child.pid + (ownerLifetime ? ":owner-v1" : "") + ":release-exit-v1");
                         waiter = new Thread(() =>
                         {
                             WaitForSingleObject(child.process, 0xffffffff);
@@ -217,7 +219,9 @@ public static class WindowsProcessHelper
                                 {
                                     limits.limits.flags = 0;
                                     Check(SetInformationJobObject(job, 9, ref limits, Marshal.SizeOf(limits)), "ReleaseJob");
-                                    Send(writer, "released");
+                                    releaseCompleted = true;
+                                    try { Send(writer, "released"); }
+                                    catch (IOException) { }
                                     break;
                                 }
                                 catch (Exception error) { Failure(writer, "release", error); }
@@ -227,9 +231,13 @@ public static class WindowsProcessHelper
                     catch (Exception error) { Failure(writer, "launch", error); }
                 }
             }
-            return 0;
+            return releaseCompleted ? ReleaseConfirmedExit : 0;
         }
-        catch { return 4; }
+        catch (Exception error)
+        {
+            if (releaseCompleted && error is IOException) return ReleaseConfirmedExit;
+            return 4;
+        }
         finally
         {
             stopWatching.Set();

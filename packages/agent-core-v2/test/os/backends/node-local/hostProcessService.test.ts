@@ -256,6 +256,9 @@ describe.skipIf(process.platform !== 'win32')('Windows owned process tree', () =
   let failingKillHelper: string;
   let failingReleaseHelper: string;
   let legacyHelper: string;
+  let previousProtocolHelper: string;
+  let unknownReleaseExitHelper: string;
+  let deadPipeReleaseHelper: string;
   let tasks: IAgentTaskService;
   let svc: IHostProcessService;
   let disposables: DisposableStore;
@@ -296,6 +299,17 @@ describe.skipIf(process.platform !== 'win32')('Windows owned process tree', () =
     await writeFile(legacySource, canonical.replace('if (launch.Length != 4 && !ownerLifetime)', 'if (launch.Length != 4)'));
     await promisify(execFile)(join(process.env['SystemRoot'] ?? 'C:\\Windows', 'Microsoft.NET/Framework/v4.0.30319/csc.exe'),
       ['/nologo', '/target:exe', '/platform:anycpu', `/out:${legacyHelper}`, legacySource], { timeout: 30_000, windowsHide: true });
+    const compileFixture = async (name: string, sourceText: string): Promise<string> => {
+      const fixtureSource = join(directory, `${name}.cs`);
+      const fixtureHelper = join(directory, `${name}.exe`);
+      await writeFile(fixtureSource, sourceText);
+      await promisify(execFile)(join(process.env['SystemRoot'] ?? 'C:\\Windows', 'Microsoft.NET/Framework/v4.0.30319/csc.exe'),
+        ['/nologo', '/target:exe', '/platform:anycpu', `/out:${fixtureHelper}`, fixtureSource], { timeout: 30_000, windowsHide: true });
+      return fixtureHelper;
+    };
+    previousProtocolHelper = await compileFixture('previous-protocol', canonical.replace(' + ":release-exit-v1"', '').replace('return releaseCompleted ? ReleaseConfirmedExit : 0;', 'return 0;'));
+    unknownReleaseExitHelper = await compileFixture('unknown-release-exit', canonical.replace('return releaseCompleted ? ReleaseConfirmedExit : 0;', 'return releaseCompleted ? 1 : 0;'));
+    deadPipeReleaseHelper = await compileFixture('dead-pipe-release', canonical.replace('Send(writer, "released")', 'throw new IOException("injected release ack failure")'));
     await writeFile(join(directory, 'owner.mjs'), `
       import { HostProcessService } from ${JSON.stringify(new URL('../../../../src/os/backends/node-local/hostProcessService.ts', import.meta.url).href)};
       const service = new HostProcessService();
@@ -595,24 +609,34 @@ describe.skipIf(process.platform !== 'win32')('Windows owned process tree', () =
     expect(tasks.getTask(taskId)?.status).toBe('running');
   }, 15_000);
 
-  it('keeps cleanup unconfirmed when a release attempt loses its ack and residents survive', async () => {
-    const file = join(directory, 'release-ack-lost.txt');
+  const dropReleaseAck = async (file: string): Promise<{
+    proc: IHostProcess;
+    pids: number[];
+    taskId: string;
+    writes: { count: number };
+    dropped: { released: number };
+    held: Array<(error?: Error | null) => void>;
+    helper: { pid?: number; exitCode: number | null };
+  }> => {
     const command = `${quote(process.execPath.replaceAll('\\', '/'))} ${quote(join(directory, 'tree.cjs').replaceAll('\\', '/'))} ${quote(file.replaceAll('\\', '/'))} >/dev/null 2>&1 & sleep 0.4`;
     const proc = await spawnOwned('C:/Program Files/Git/bin/bash.exe', ['-c', command]);
     proc.stdin.end();
     expect(await proc.wait()).toBe(0);
     const pids = await readPids(file);
     expect(pids.filter(alive).length).toBe(3);
-    const control = (proc as unknown as {
+    const raw = proc as unknown as {
       control: {
         write: (chunk: string, cb?: (error?: Error | null) => void) => boolean;
         on: (event: 'data', listener: (chunk: string) => void) => void;
         listeners: (event: 'data') => Array<(chunk: string) => void>;
         removeAllListeners: (event: 'data') => void;
       };
-    }).control;
+      child: { pid?: number; exitCode: number | null };
+    };
+    const control = raw.control;
     const deliver = control.write.bind(control);
     const listeners = control.listeners('data');
+    const dropped = { released: 0 };
     let pending = '';
     control.removeAllListeners('data');
     control.on('data', (chunk) => {
@@ -622,40 +646,151 @@ describe.skipIf(process.platform !== 'win32')('Windows owned process tree', () =
       while ((newline = pending.indexOf('\n')) >= 0) {
         const line = pending.slice(0, newline);
         pending = pending.slice(newline + 1);
-        if (line.trim() === 'released') continue;
+        if (line.trim() === 'released') {
+          dropped.released += 1;
+          continue;
+        }
         kept += `${line}\n`;
       }
       if (kept.length === 0) return;
       for (const listener of listeners) listener.call(control, kept);
     });
-    let writes = 0;
+    const writes = { count: 0 };
     const held: Array<(error?: Error | null) => void> = [];
     vi.spyOn(control, 'write').mockImplementation((chunk, cb) => {
-      writes += 1;
-      if (writes > 1) throw new Error(`control write after release attempt (${String(chunk)})`);
+      writes.count += 1;
+      if (writes.count > 1) throw new Error(`control write after release attempt (${String(chunk)})`);
       if (cb !== undefined) held.push(cb);
       return deliver(chunk, () => {});
     });
     const taskId = tasks.registerTask(new ProcessTask(proc, 'ffprobe', 'media info'), { detached: true });
-    const helperPid = (proc as unknown as { child: { pid?: number } }).child.pid;
+    return { proc, pids, taskId, writes, dropped, held, helper: raw.child };
+  };
+
+  it('confirms release from the helper exit code when the wire ack is lost and keeps residents', async () => {
+    const run = await dropReleaseAck(join(directory, 'release-exit-confirmed.txt'));
     try {
       await vi.waitFor(() => {
-        expect(tasks.getTask(taskId)).toMatchObject({ status: 'running', exitCode: 0, endedAt: null });
-        expect(tasks.getTask(taskId)?.stopReason).toContain('"cleanupComplete":false');
-        expect(tasks.getTask(taskId)?.stopReason).toContain('"phase":"control"');
+        expect(run.helper.exitCode).toBe(5);
+        expect(tasks.getTask(run.taskId)).toMatchObject({ status: 'completed', exitCode: 0 });
+        expect(tasks.getTask(run.taskId)?.endedAt).toEqual(expect.any(Number));
+      });
+      expect(run.dropped.released).toBe(1);
+      expect(run.writes.count).toBe(1);
+      expect(run.pids.filter(alive).length).toBe(3);
+      for (const callback of run.held) callback(Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
+      expect(tasks.getTask(run.taskId)?.status).toBe('completed');
+      await expect(run.proc.kill()).rejects.toMatchObject({ code: 'os.process.kill_failed', details: { cleanupComplete: false, phase: 'control' } });
+      expect(run.writes.count).toBe(1);
+      expect(run.pids.filter(alive).length).toBe(3);
+    } finally {
+      for (const pid of run.pids) if (alive(pid)) process.kill(pid, 'SIGKILL');
+    }
+  }, 15_000);
+
+  it('confirms release when the helper throws IOException while sending the acknowledgement', async () => {
+    vi.stubEnv('KIKI_WINDOWS_PROCESS_HELPER', deadPipeReleaseHelper);
+    const file = join(directory, 'dead-pipe-release.txt');
+    const command = `${quote(process.execPath.replaceAll('\\', '/'))} ${quote(join(directory, 'tree.cjs').replaceAll('\\', '/'))} ${quote(file.replaceAll('\\', '/'))} >/dev/null 2>&1 & sleep 0.4`;
+    const proc = await spawnOwned('C:/Program Files/Git/bin/bash.exe', ['-c', command]);
+    proc.stdin.end();
+    expect(await proc.wait()).toBe(0);
+    const pids = await readPids(file);
+    expect(pids.filter(alive).length).toBe(3);
+    const raw = proc as unknown as { control: { write: (chunk: string, cb?: (error?: Error | null) => void) => boolean }; child: { exitCode: number | null } };
+    const deliver = raw.control.write.bind(raw.control);
+    let writes = 0;
+    vi.spyOn(raw.control, 'write').mockImplementation((chunk, cb) => {
+      writes += 1;
+      if (writes > 1) throw new Error(`control write after release (${String(chunk)})`);
+      return deliver(chunk, cb);
+    });
+    const taskId = tasks.registerTask(new ProcessTask(proc, 'ffprobe', 'media info'), { detached: true });
+    try {
+      await vi.waitFor(() => {
+        expect(raw.child.exitCode).toBe(5);
+        expect(tasks.getTask(taskId)).toMatchObject({ status: 'completed', exitCode: 0 });
       });
       expect(writes).toBe(1);
-      await vi.waitFor(() => { expect(alive(helperPid!)).toBe(false); }, { timeout: 5_000 });
       expect(pids.filter(alive).length).toBe(3);
-      for (const callback of held) callback();
-      expect(tasks.getTask(taskId)?.status).toBe('running');
+      await expect(proc.kill()).rejects.toMatchObject({ code: 'os.process.kill_failed', details: { cleanupComplete: false, phase: 'control' } });
+      expect((await tasks.stop(taskId))?.status).toBe('completed');
+      expect((await tasks.stop(taskId))?.status).toBe('completed');
+      expect(writes).toBe(1);
       expect(pids.filter(alive).length).toBe(3);
-      await expect(proc.kill()).rejects.toMatchObject({ code: 'os.process.kill_failed', details: { cleanupComplete: false, phase: 'control', controlClosed: true } });
+    } finally {
+      for (const pid of pids) if (alive(pid)) process.kill(pid, 'SIGKILL');
+    }
+  }, 15_000);
+
+  it('does not confirm release from an older helper exit or an unknown exit code', async () => {
+    vi.stubEnv('KIKI_WINDOWS_PROCESS_HELPER', previousProtocolHelper);
+    const older = await dropReleaseAck(join(directory, 'old-helper-ack-lost.txt'));
+    try {
+      await vi.waitFor(() => {
+        expect(older.helper.exitCode).toBe(0);
+        expect(tasks.getTask(older.taskId)).toMatchObject({ status: 'running', exitCode: 0, endedAt: null });
+        expect(tasks.getTask(older.taskId)?.stopReason).toContain('"cleanupComplete":false');
+      });
+      expect(older.dropped.released).toBe(1);
+      expect(older.pids.filter(alive).length).toBe(3);
+      for (const callback of older.held) callback();
+      await expect(older.proc.kill()).rejects.toMatchObject({ code: 'os.process.kill_failed', details: { cleanupComplete: false, phase: 'control' } });
+      expect(tasks.getTask(older.taskId)?.status).toBe('running');
+      expect(older.writes.count).toBe(1);
+    } finally {
+      for (const pid of older.pids) if (alive(pid)) process.kill(pid, 'SIGKILL');
+    }
+    vi.stubEnv('KIKI_WINDOWS_PROCESS_HELPER', unknownReleaseExitHelper);
+    const unknown = await dropReleaseAck(join(directory, 'unknown-release-exit.txt'));
+    try {
+      await vi.waitFor(() => {
+        expect(unknown.helper.exitCode).toBe(1);
+        expect(tasks.getTask(unknown.taskId)).toMatchObject({ status: 'running', exitCode: 0, endedAt: null });
+        expect(tasks.getTask(unknown.taskId)?.stopReason).toContain('"cleanupComplete":false');
+      });
+      expect(unknown.dropped.released).toBe(1);
+      expect(unknown.pids.filter(alive).length).toBe(3);
+      await expect(unknown.proc.kill()).rejects.toMatchObject({ code: 'os.process.kill_failed', details: { cleanupComplete: false, phase: 'control' } });
+      expect(tasks.getTask(unknown.taskId)?.status).toBe('running');
+      expect(unknown.writes.count).toBe(1);
+    } finally {
+      for (const pid of unknown.pids) if (alive(pid)) process.kill(pid, 'SIGKILL');
+    }
+  }, 20_000);
+
+  it('does not confirm release when the helper is killed before its exit proof', async () => {
+    const file = join(directory, 'kill-before-ack.txt');
+    const command = `${quote(process.execPath.replaceAll('\\', '/'))} ${quote(join(directory, 'tree.cjs').replaceAll('\\', '/'))} ${quote(file.replaceAll('\\', '/'))} >/dev/null 2>&1 & sleep 0.4`;
+    const proc = await spawnOwned('C:/Program Files/Git/bin/bash.exe', ['-c', command]);
+    proc.stdin.end();
+    expect(await proc.wait()).toBe(0);
+    const pids = await readPids(file);
+    expect(pids.filter(alive).length).toBe(3);
+    const raw = proc as unknown as { control: { write: (chunk: string, cb?: (error?: Error | null) => void) => boolean }; child: { pid?: number; exitCode: number | null } };
+    const helperPid = raw.child.pid;
+    expect(helperPid).toEqual(expect.any(Number));
+    let writes = 0;
+    vi.spyOn(raw.control, 'write').mockImplementation((chunk, cb) => {
+      writes += 1;
+      if (writes > 1) throw new Error(`control write after kill (${String(chunk)})`);
+      process.kill(helperPid!, 'SIGKILL');
+      cb?.(Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
+      return false;
+    });
+    const taskId = tasks.registerTask(new ProcessTask(proc, 'ffprobe', 'media info'), { detached: true });
+    try {
+      await vi.waitFor(() => {
+        expect(alive(helperPid!)).toBe(false);
+        expect(raw.child.exitCode).not.toBe(5);
+        expect(tasks.getTask(taskId)).toMatchObject({ status: 'running', exitCode: 0, endedAt: null });
+        expect(tasks.getTask(taskId)?.stopReason).toContain('"cleanupComplete":false');
+      });
+      expect(writes).toBe(1);
       await expect(tasks.stop(taskId)).rejects.toMatchObject({ code: 'os.process.kill_failed', details: { cleanupComplete: false, phase: 'control', controlClosed: true } });
       await expect(tasks.stop(taskId)).rejects.toMatchObject({ code: 'os.process.kill_failed', details: { cleanupComplete: false, phase: 'control', controlClosed: true } });
       expect(writes).toBe(1);
       expect(tasks.getTask(taskId)?.status).toBe('running');
-      expect(pids.filter(alive).length).toBe(3);
     } finally {
       for (const pid of pids) if (alive(pid)) process.kill(pid, 'SIGKILL');
     }
