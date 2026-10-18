@@ -11,6 +11,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../../i18n';
+import { writeIaPrototypeMode } from '../../lib/settingsIaPrototype';
 import { SettingsNav } from './SettingsNav';
 import { UnknownSettingsSection } from './UnknownSection';
 
@@ -74,8 +75,8 @@ async function click(element: Element): Promise<void> {
 const noop = () => {};
 
 describe('SettingsNav grouped tree', () => {
-  it('ignores stored prototype mode or search query, renders no picker, keeps the 7 groups, and uses real names for renamed leaves', async () => {
-    localStorage.setItem('kiki.settings.ia-prototype', 'taskflow');
+  it('ignores stored prototype mode, renders no picker, keeps the 7 groups, and uses real names for renamed leaves', async () => {
+    writeIaPrototypeMode('objects');
     try {
       const container = await render(
         <SettingsNav active="connection" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />,
@@ -94,7 +95,7 @@ describe('SettingsNav grouped tree', () => {
       expect(leafText('connection-services')).toBe('Access from elsewhere');
       expect(leafText('tasks')).toBe('Tasks & background');
     } finally {
-      localStorage.removeItem('kiki.settings.ia-prototype');
+      writeIaPrototypeMode(null);
     }
   });
 
