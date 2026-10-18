@@ -1288,6 +1288,88 @@ test('real ACP startup and recovery errors retain actionable reasons without sta
   } finally { await first?.close(); await second?.close(); await rm(root, { recursive: true, force: true }); }
 });
 
+test('a user frame is delivered only after stdin accepts it; cancel and write failure leave no prompt receipt', async () => {
+  const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-prompt-delivery-'));
+  const auditDir = join(root, 'audit');
+  const promptRecords = async (id) => (await readFile(join(auditDir, `${id}.ndjson`), 'utf8')).trim().split('\n').map(JSON.parse)
+    .filter(record => record.type === 'prompt_sent');
+  const holdUserFrame = (b, onHold) => {
+    const original = b.spawnProcess;
+    b.spawnProcess = (exe, args, options) => {
+      const child = original(exe, args, options);
+      const write = child.stdin.write.bind(child.stdin);
+      child.stdin.write = (chunk, encoding, callback) => {
+        const done = typeof encoding === 'function' ? encoding : callback;
+        const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+        if (text.includes('"event":"user"')) return onHold(chunk, done, () => write(chunk, done));
+        return write(chunk, encoding, callback);
+      };
+      return child;
+    };
+  };
+  const owned = [];
+  try {
+    const cancelled = bridge();
+    owned.push(cancelled);
+    cancelled.auditDir = auditDir;
+    let releaseFrame;
+    const held = new Promise(done => { releaseFrame = done; });
+    let queued = false;
+    holdUserFrame(cancelled, (_chunk, done, write) => {
+      releaseFrame(error => {
+        if (error) { done(error); return; }
+        queued = true;
+        write();
+      });
+      return true;
+    });
+    const cancelledId = await session(cancelled);
+    const pending = turn(cancelled, cancelledId, 'must-not-record', []);
+    pending.catch(() => {});
+    const deliver = await held;
+    const stopping = cancelled.cancel({ sessionId: cancelledId });
+    deliver(Object.assign(new Error('stdin closed'), { code: 'EPIPE' }));
+    assert.deepEqual(await pending, { stopReason: 'cancelled' });
+    await stopping;
+    assert.equal(queued, false);
+    assert.deepEqual(await promptRecords(cancelledId), []);
+    const types = (await readFile(join(auditDir, `${cancelledId}.ndjson`), 'utf8')).trim().split('\n').map(JSON.parse).map(record => record.type);
+    assert.equal(types.includes('launch'), true);
+    assert.equal(types.includes('prompt_sent'), false);
+    await cancelled.close();
+
+    const failed = bridge();
+    owned.push(failed);
+    failed.auditDir = auditDir;
+    holdUserFrame(failed, (_chunk, done) => { done(Object.assign(new Error('stdin closed'), { code: 'EPIPE' })); return true; });
+    const failedId = await session(failed);
+    await assert.rejects(turn(failed, failedId, 'must-not-record', []), /stdin closed/);
+    assert.deepEqual(await promptRecords(failedId), []);
+    await failed.close();
+
+    const accepted = bridge();
+    owned.push(accepted);
+    accepted.auditDir = auditDir;
+    const originalAudit = accepted.audit.bind(accepted);
+    let auditedAfterAccept = false;
+    accepted.audit = async (target, type, data) => {
+      if (type === 'prompt_sent') auditedAfterAccept = queued;
+      return originalAudit(target, type, data);
+    };
+    holdUserFrame(accepted, (_chunk, _done, write) => { queued = true; return write(); });
+    const acceptedId = await session(accepted);
+    assert.equal((await turn(accepted, acceptedId, 'hello', [])).stopReason, 'end_turn');
+    assert.equal(auditedAfterAccept, true);
+    assert.equal((await promptRecords(acceptedId)).length, 1);
+    await accepted.close();
+  } finally {
+    for (const item of owned) await item.close().catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('cancel and ACP close during permission setup cannot launch a late vendor process or leave its registration', async () => {
   for (const action of ['cancel', 'close']) {
     const b = bridge(); const id = await session(b);

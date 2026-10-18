@@ -689,10 +689,15 @@ export class AgyBridge {
       try { await session.preparing; } finally { session.preparing = undefined; }
       if (session.broken) return await promise;
       const frame = JSON.stringify({ event: 'user', message: { content } }) + '\n';
+      try {
+        await new Promise((done, reject) => session.child.stdin.write(frame, error => error ? reject(error) : done()));
+      } catch (error) {
+        if (session.broken) return await promise;
+        throw error;
+      }
       await this.audit(session, 'prompt_sent', { bytes: Buffer.byteLength(frame),
         promptSha256: createHash('sha256').update(content).digest('hex'),
         frameSha256: createHash('sha256').update(frame).digest('hex'), delivery: 'unchanged_user_text' });
-      await new Promise((done, reject) => session.child.stdin.write(frame, error => error ? reject(error) : done()));
       return await promise;
     } catch (error) {
       if (session.active) { session.active = undefined; }
