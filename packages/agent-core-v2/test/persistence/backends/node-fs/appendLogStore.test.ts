@@ -313,6 +313,45 @@ describe('AppendLogStore', () => {
     expect(appendAttempts).toBe(1);
   });
 
+  it('later flush reports an ambiguous auto-flush failure after one retried drain', async () => {
+    const failure = new Error('append failed after commit');
+    let markAppendStarted!: () => void;
+    const appendStarted = new Promise<void>((resolve) => {
+      markAppendStarted = resolve;
+    });
+    let releaseAppend!: () => void;
+    const appendGate = new Promise<void>((resolve) => {
+      releaseAppend = resolve;
+    });
+    let reportFailure!: (error: unknown) => void;
+    const reportedFailure = new Promise<unknown>((resolve) => {
+      reportFailure = resolve;
+    });
+    let appendAttempts = 0;
+    const originalAppend = storage.append.bind(storage);
+    storage.append = async (...args) => {
+      appendAttempts++;
+      markAppendStarted();
+      await appendGate;
+      await originalAppend(...args);
+      throw failure;
+    };
+
+    record.append(SCOPE, KEY, { n: 1 }, { onError: reportFailure });
+    record.append(SCOPE, KEY, { n: 2 });
+    await appendStarted;
+    releaseAppend();
+    expect(await reportedFailure).toBe(failure);
+
+    await expect(record.flush()).rejects.toBe(failure);
+    expect(appendAttempts).toBe(2);
+    expect(new TextDecoder().decode(await storage.read(SCOPE, KEY))).toBe(
+      '{"n":1}\n{"n":2}\n{"n":1}\n{"n":2}\n',
+    );
+    await expect(record.flush()).rejects.toBe(failure);
+    expect(appendAttempts).toBe(2);
+  });
+
   it('reacquire after final release waits for retiring storage before fresh I/O', async () => {
     const failure = new Error('retiring append failed');
     let markAppendStarted!: () => void;
