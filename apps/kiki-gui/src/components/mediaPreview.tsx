@@ -57,6 +57,8 @@ import {
   type MediaPreviewApi,
 } from './mediaPreviewContext';
 
+import { useSessionMediaPlayback } from './useSessionMediaPlayback';
+
 export { useMediaPreview } from './mediaPreviewContext';
 
 // Filesystem paths are not URI/citation text: preserve percent escapes and colons.
@@ -551,7 +553,8 @@ function AttachmentPreviewDialog({
   const [attempt, setAttempt] = useState(0);
   const [failedUrl, setFailedUrl] = useState<string>();
   const viewable = item.kind !== 'file' || /^(?:image|video|audio)\//.test(item.mime ?? '') || item.mime === 'application/pdf' || /\.pdf$/i.test(item.name ?? '') || isTextPreview(item.mime ?? '', item.name ?? '');
-  const load = useSessionMedia(item, sessionId, viewable, false, attempt);
+  const playback = useSessionMediaPlayback(item, sessionId, client, remoteScope, attempt);
+  const load = useSessionMedia(item, sessionId, viewable && playback.status === 'fallback', false, attempt);
   const name = attachmentName(item, load.status === 'ready' ? load.name : undefined, item.kind === 'image' ? t('media.image') : t('media.attachment'));
   const downloadName = safeImagePreviewName({ name: item.name, metadataName: load.status === 'ready' ? load.name : undefined, path: item.path });
   const title = t('preview.openFile', { name });
@@ -598,6 +601,12 @@ function AttachmentPreviewDialog({
 
   if (!viewable) {
     body = <div className="flex min-h-48 items-center justify-center text-sm text-ink-faint">{t('preview.unsupported')}</div>;
+  } else if (playback.status === 'ready') {
+    body = playback.mime.startsWith('video/')
+      ? <video src={playback.url} controls onError={playback.fail} className="max-h-[72vh] max-w-full" />
+      : <audio src={playback.url} controls onError={playback.fail} className="w-full" />;
+  } else if (playback.status === 'failed') {
+    body = <MediaLoadFailure name={name} decode={false} onRetry={() => { setAttempt((value) => value + 1); }} />;
   } else if (load.status === 'loading') {
     body = <div className="flex min-h-48 items-center justify-center text-sm text-ink-faint">{t('preview.loading')}</div>;
   } else if (load.status === 'failed' || failedUrl === load.url) {
