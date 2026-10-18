@@ -620,6 +620,11 @@ Klient 提供 `rest.rooms.listItems()` 和 `global.rooms.listItems()`。`klient.
 | `GET /api/fs:home` | 用户主目录与最近工作区 |
 | `GET /api/fs:content` | 按绝对路径预览用户指定的本机文件（包括敏感文件；需要 bearer token，不走 Agent 工具审批） |
 | `POST /api/fs:mkdir` | 按绝对路径创建目录 |
+| `POST /api/fs:media-preview` | 创建本机音视频临时播放链接（已认证的回环连接） |
+| `DELETE /api/fs:media-preview/{preview_id}` | 撤销本机媒体播放链接（需要 bearer token） |
+| `GET /media-preview/{preview_id}` | 读取链接授权的本机文件，无需 bearer 请求头，支持 Range 分段 |
+
+预览本机音视频时，向 `POST /api/fs:media-preview` 发送 `{ "path": "<文件绝对路径>" }`。响应信封包含 `preview_id`、`url`、`mime`、`size` 和 `expires_at`（Unix 毫秒时间戳）。将 `url` 直接交给媒体元素；持有该链接即可读取对应文件，直到 30 分钟后过期、被撤销或服务停止。关闭预览时调用 `DELETE /api/fs:media-preview/{preview_id}`。这些路由只在服务开启认证时注册；创建链接要求客户端地址及主机名均为回环地址，同时最多保留 64 个链接。接口接受本机路径，不接受会话媒体 ID；历史附件仍通过会话媒体端点读取。可播放的编解码格式仍由浏览器或 WebView 决定。
 
 会话 `fs:{action}` 工作区 API 只接受工作区相对路径，拒绝绝对路径及符号链接逃逸。这条 GUI 边界不限制另一路 Agent `Read` 工具显式指定的绝对路径。`/api/fs:content` 供已认证用户主动预览，不走 Agent 文件工具审批；不要泄露 bearer token，也不要在不可信网络上关闭认证。
 
@@ -805,10 +810,11 @@ Klient 提供 `rest.rooms.listItems()` 和 `global.rooms.listItems()`。`klient.
 | `GET /api/sessions/{session_id}/media/{file_id}` | 读取会话媒体文件，包括已保存的工具结果 blob | 支持 | 支持 |
 | `GET /api/fs:content` | 按绝对路径预览用户指定的本机文件（包括敏感文件；需要 bearer token，不走 Agent 工具审批） | 支持 | 支持 |
 | `POST /api/sessions/{session_id}/export` | 导出会话与诊断信息（zip 流） | 不支持 | 不支持 |
+| `GET /media-preview/{preview_id}` | 读取临时播放链接授权的本机媒体 | 支持 | 不支持（`private, no-store`） |
 
 已建立索引的会话无需恢复会话即可读取规范媒体文件和暂存上传；规范文件的字节与文件名优先于暂存副本。获准访问的浏览器来源可以读取 `ETag`、`Content-Disposition` 和 `Content-Range`，分别用于缓存重验、文件名和分段响应；来源准入与鉴权规则不变。
 
-错误语义也不相同：`GET /api/files/{file_id}` 和会话媒体下载对查找和存储失败返回真实 404 / 500 状态码（文件端点的参数校验失败仍走 HTTP 200 信封），其余三个端点的失败走标准[响应信封](#响应信封)——客户端仍需检查信封中的 `code`。
+错误语义也不相同：`GET /api/files/{file_id}` 和会话媒体下载对查找和存储失败返回真实 404 / 500 状态码（文件端点的参数校验失败仍走 HTTP 200 信封）。`/media-preview/{preview_id}` 的链接不存在、已撤销或已过期时，返回 HTTP 404 和 JSON 错误信封。工作区下载、本机原始文件预览和导出的失败仍走标准[响应信封](#响应信封)，客户端须检查其中的 `code`。
 
 ## 下一步
 

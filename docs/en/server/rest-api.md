@@ -624,6 +624,11 @@ In-session file operations go through `POST /api/sessions/{session_id}/fs:{actio
 | `GET /api/fs:home` | The user's home directory and recent workspaces |
 | `GET /api/fs:content` | User-directed host-file preview by absolute path, including sensitive files (bearer token required; not an agent tool permission endpoint) |
 | `POST /api/fs:mkdir` | Create a directory by absolute path |
+| `POST /api/fs:media-preview` | Create a temporary host audio/video playback URL (authenticated loopback connection) |
+| `DELETE /api/fs:media-preview/{preview_id}` | Revoke a host-media playback URL (bearer token required) |
+| `GET /media-preview/{preview_id}` | Stream the granted host file without a bearer header; supports Range |
+
+For host audio/video, send `{ "path": "<absolute file path>" }` to `POST /api/fs:media-preview`. The response envelope contains `preview_id`, `url`, `mime`, `size`, and `expires_at` (Unix milliseconds). Pass `url` directly to the media element; possession of this URL permits reading that file until it expires after 30 minutes, is revoked, or the server stops. Close the preview with `DELETE /api/fs:media-preview/{preview_id}`. These routes are registered only when server authentication is enabled; creation requires a loopback client and host name, and at most 64 grants may be open at once. They take host paths, not session media IDs; use the session media endpoint for historical attachments. Supported codecs still depend on the browser or WebView.
 
 The session `fs:{action}` workspace API accepts workspace-relative paths only and rejects absolute paths and symlink escapes. This GUI boundary does not restrict the separate agent `Read` tool's explicit absolute paths. `/api/fs:content` is for an authenticated user's preview, not an agent file tool: do not expose the bearer token or disable authentication on an untrusted network.
 
@@ -811,10 +816,11 @@ The following endpoints stream binary bodies instead of a JSON payload. Their HT
 | `GET /api/sessions/{session_id}/media/{file_id}` | Read session media, including saved tool-result blobs | Yes | Yes |
 | `GET /api/fs:content` | User-directed host-file preview by absolute path, including sensitive files (bearer token required; not an agent tool permission endpoint) | Yes | Yes |
 | `POST /api/sessions/{session_id}/export` | Export the session with diagnostics (zip stream) | No | No |
+| `GET /media-preview/{preview_id}` | Stream a temporary host-media playback grant | Yes | No (`private, no-store`) |
 
 Indexed sessions serve canonical media and staged uploads without restoring the session. Canonical bytes and filenames take precedence over a staged-upload copy. Admitted browser origins can read `ETag`, `Content-Disposition`, and `Content-Range` for revalidation, filenames, and range receipts; this does not change origin admission or authentication.
 
-Error semantics differ as well: `GET /api/files/{file_id}` and session media downloads answer lookup and storage failures with real 404 / 500 statuses (file parameter validation still uses the HTTP 200 envelope), while the other three report failures through the standard [response envelope](#response-envelope) — clients must keep checking the envelope `code` on those endpoints.
+Error semantics differ as well: `GET /api/files/{file_id}` and session media downloads answer lookup and storage failures with real 404 / 500 statuses (file parameter validation still uses the HTTP 200 envelope). A missing, revoked, or expired `/media-preview/{preview_id}` grant returns HTTP 404 with a JSON error envelope. Workspace downloads, raw host-file previews, and exports use the standard [response envelope](#response-envelope) for failures — clients must keep checking its `code`.
 
 ## Next steps
 
