@@ -8,6 +8,10 @@ import { toolContributionSchema, type PluginTool } from './contributions';
 import type { ExecutableToolResult, ToolUpdate } from '#/tool/toolContract';
 import type { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { PluginToolOutput } from './toolOutput';
+import {
+  parsePluginImRequest, pluginImReceipt, sanitizePluginImCapabilities, sanitizePluginImReceipt, sanitizePluginImRoutes,
+  type PluginImBridge,
+} from './pluginImBridge';
 
 export const PLUGIN_RPC_VERSION = 1;
 const IDLE_MS = 90_000;
@@ -49,6 +53,7 @@ export class PluginHost {
   private idle?: ReturnType<typeof setTimeout>;
   private stopped = false;
   private activitySubscription?: { dispose(): void };
+  private readonly imCalls = new Map<number, AbortController>();
 
   constructor(
     readonly id: string,
@@ -56,7 +61,7 @@ export class PluginHost {
     private readonly definitions: readonly PluginTool[],
     private readonly sources: readonly SessionSourceDefinition[] = [],
     private readonly providers: readonly MediaProviderDefinition[] = [],
-    private readonly lifecycle?: { readonly resident: boolean; readonly updateSettings: (values: Record<string, string | number | boolean | null>) => Promise<unknown>; readonly observeActivity?: (listener: (activity: readonly import('./pluginActivity').PluginActivity[]) => void) => { dispose(): void }; readonly focusSession?: (sessionId: string) => void },
+    private readonly lifecycle?: { readonly resident: boolean; readonly updateSettings: (values: Record<string, string | number | boolean | null>) => Promise<unknown>; readonly observeActivity?: (listener: (activity: readonly import('./pluginActivity').PluginActivity[]) => void) => { dispose(): void }; readonly focusSession?: (sessionId: string) => void; readonly im?: () => PluginImBridge | undefined },
     private readonly kikiHome?: string,
   ) {}
 
@@ -299,6 +304,7 @@ export class PluginHost {
               return this.lifecycle.updateSettings(values);
             }).then((result) => this.send({ method: 'settings-result', params: { callId, result } }),
               () => this.send({ method: 'settings-result', params: { callId, error: 'Plugin settings could not be saved' } }));
+          } else if (this.acceptIm(message)) {
           } else if (message.method === 'app-focus-session') {
             const { callId, sessionId } = message.params ?? {};
             void Promise.resolve().then(() => {
@@ -358,6 +364,40 @@ export class PluginHost {
     catch (error) { this.ready = undefined; throw error; }
   }
 
+  private acceptIm(message: { method?: string; params?: { callId?: unknown; request?: unknown } }): boolean {
+    const method = message.method;
+    if (method !== 'im-capabilities' && method !== 'im-list-routes' && method !== 'im-send' && method !== 'im-cancel') return false;
+    const callId = message.params?.callId;
+    if (typeof callId !== 'number' || !Number.isSafeInteger(callId) || callId <= 0) return true;
+    if (method === 'im-cancel') {
+      this.imCalls.get(callId)?.abort();
+      return true;
+    }
+    const controller = new AbortController();
+    this.imCalls.set(callId, controller);
+    void Promise.resolve().then(async () => {
+      const bridge = this.lifecycle?.resident === true && !this.stopped ? this.lifecycle.im?.() : undefined;
+      if (method === 'im-capabilities') return sanitizePluginImCapabilities(bridge === undefined ? undefined : await bridge.capabilities(controller.signal));
+      if (method === 'im-list-routes') return sanitizePluginImRoutes(bridge === undefined ? undefined : await bridge.listRoutes(controller.signal));
+      const parsed = parsePluginImRequest(message.params?.request);
+      if (!parsed.ok) return parsed.receipt;
+      if (controller.signal.aborted) return pluginImReceipt('cancelled', { diagnosticCode: 'cancelled' });
+      if (bridge === undefined) return pluginImReceipt('failed', { diagnosticCode: 'im_unsupported', errorKind: 'dependency_missing', retryable: true });
+      return sanitizePluginImReceipt(await bridge.send(parsed.request, controller.signal));
+    }).then(
+      (result) => { this.imCalls.delete(callId); if (!this.stopped) this.send({ method: 'im-result', params: { callId, result } }); },
+      () => {
+        this.imCalls.delete(callId);
+        if (this.stopped) return;
+        const result = method === 'im-send'
+          ? pluginImReceipt('unknown', { diagnosticCode: 'send_outcome_unknown', errorKind: 'unknown' })
+          : method === 'im-list-routes' ? [] : { outbound: false, inbound: false };
+        this.send({ method: 'im-result', params: { callId, result } });
+      },
+    );
+    return true;
+  }
+
   private send(message: Record<string, unknown>): void {
     this.child?.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`);
   }
@@ -375,6 +415,8 @@ export class PluginHost {
     this.child = undefined;
     this.activitySubscription?.dispose();
     this.activitySubscription = undefined;
+    for (const controller of this.imCalls.values()) controller.abort();
+    this.imCalls.clear();
     this.registered.clear();
     this.registeredSources.clear();
     this.registeredProviders.clear();

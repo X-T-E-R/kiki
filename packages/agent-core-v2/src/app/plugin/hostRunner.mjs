@@ -104,6 +104,29 @@ let latestActivity = [];
 const activityListeners = new Set();
 const focusCalls = new Map();
 let nextFocusCall = 0;
+const imCalls = new Map();
+let nextImCall = 0;
+function imRpc(method, params, signal) {
+  const current = signal ?? new AbortController().signal;
+  if (current.aborted) {
+    if (method === 'im-send') return Promise.resolve({ status: 'cancelled', retryable: false, diagnosticCode: 'cancelled' });
+    return Promise.reject(new Error('cancelled'));
+  }
+  const callId = ++nextImCall;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { imCalls.delete(callId); reject(new Error('IM bridge timed out')); }, 20_000);
+    const finish = (settle, value) => { clearTimeout(timer); current.removeEventListener('abort', onAbort); settle(value); };
+    const onAbort = () => { send({ method: 'im-cancel', params: { callId } }); };
+    current.addEventListener('abort', onAbort, { once: true });
+    imCalls.set(callId, { resolve: (value) => finish(resolve, value), reject: (error) => finish(reject, error) });
+    send({ method, params: { callId, ...params } });
+  });
+}
+const im = {
+  capabilities(signal) { return imRpc('im-capabilities', {}, signal); },
+  listRoutes(signal) { return imRpc('im-list-routes', {}, signal); },
+  send(request, signal) { return imRpc('im-send', { request }, signal); },
+};
 function onActivity(listener) { activityListeners.add(listener); listener(latestActivity); return () => activityListeners.delete(listener); }
 function focusSession(sessionId) {
   const callId = ++nextFocusCall;
@@ -188,6 +211,13 @@ for await (const line of createInterface({ input: process.stdin })) {
     for (const listener of activityListeners) { try { listener(latestActivity); } catch {} }
     continue;
   }
+  if (message.method === 'im-result') {
+    const call = imCalls.get(message.params?.callId);
+    imCalls.delete(message.params?.callId);
+    if (message.params?.error !== undefined) call?.reject(new Error(message.params.error === 'cancelled' ? 'cancelled' : 'IM bridge failed'));
+    else call?.resolve(message.params?.result);
+    continue;
+  }
   if (message.method === 'app-focus-result') {
     const call = focusCalls.get(message.params?.callId);
     focusCalls.delete(message.params?.callId);
@@ -199,7 +229,7 @@ for await (const line of createInterface({ input: process.stdin })) {
     Promise.resolve().then(() => {
       if (typeof activate !== 'function') throw new Error('App plugin must export activate(context)');
       return activate({ settings: message.params?.settings ?? {}, userHome: message.params?.userHome,
-        dataDir: message.params?.dataDir, signal: lifetime.signal, updateSettings, onActivity, focusSession });
+        dataDir: message.params?.dataDir, signal: lifetime.signal, updateSettings, onActivity, focusSession, im });
     }).then((result) => send({ id: message.id, result }),
       (error) => send({ id: message.id, error: { code: -32000, message: String(error) } }));
     continue;

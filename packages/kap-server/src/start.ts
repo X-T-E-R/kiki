@@ -842,6 +842,12 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     (sessionId) => broadcaster.isSessionViewed(sessionId),
     () => logger.warn({ event_type: 'notification_operation_failed' }, 'notification operation failed'));
   await notifications.start();
+  const startedNotifications = notifications;
+  core.accessor.get(IPluginHostService).attachOutboundIm({
+    capabilities: (signal) => startedNotifications.pluginImCapabilities(signal),
+    listRoutes: (signal) => startedNotifications.pluginImRoutes(signal),
+    send: (request, signal) => startedNotifications.pluginImSend(request, signal),
+  });
   const externalDelegationEnabled = core.accessor
     .get(IFlagService)
     .enabled(EXTERNAL_DELEGATION_FLAG_ID);

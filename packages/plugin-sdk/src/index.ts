@@ -71,6 +71,63 @@ export function definePlugin(tools: readonly PluginTool[]) {
   };
 }
 
+/** Outbound-only bridge to a channel the user already configured. Old hosts omit it. */
+export interface PluginImCapabilities {
+  readonly outbound: boolean;
+  /** This host has no inbound IM contract. */
+  readonly inbound: false;
+}
+
+/** A sendable notification route. No credentials, endpoints, or message text. */
+export interface PluginImRoute {
+  readonly channelId: string;
+  readonly providerId: string;
+  readonly label?: string;
+  readonly routeRevision: string;
+}
+
+export type PluginImSendStatus =
+  | 'queued'
+  | 'accepted'
+  | 'failed'
+  | 'unknown'
+  | 'suppressed'
+  | 'cancelled';
+
+export type PluginImErrorKind =
+  | 'auth'
+  | 'forbidden'
+  | 'not_found'
+  | 'rate_limited'
+  | 'transient'
+  | 'too_long'
+  | 'bad_format'
+  | 'dependency_missing'
+  | 'configuration'
+  | 'protocol'
+  | 'unknown';
+
+export interface PluginImSendRequest {
+  readonly channelId: string;
+  readonly routeRevision: string;
+  readonly idempotencyKey: string;
+  readonly accountRef: string;
+  readonly text: string;
+}
+
+export interface PluginImSendReceipt {
+  readonly status: PluginImSendStatus;
+  readonly retryable: boolean;
+  readonly diagnosticCode?: string;
+  readonly errorKind?: PluginImErrorKind;
+}
+
+export interface PluginImBridge {
+  capabilities(signal: AbortSignal): Promise<PluginImCapabilities>;
+  listRoutes(signal: AbortSignal): Promise<readonly PluginImRoute[]>;
+  send(request: PluginImSendRequest, signal: AbortSignal): Promise<PluginImSendReceipt>;
+}
+
 /** Settings and owned lifetime supplied only to an explicitly App-activated plugin. */
 export interface PluginAppContext {
   readonly settings: Readonly<Record<string, unknown>>;
@@ -80,6 +137,8 @@ export interface PluginAppContext {
   updateSettings(values: Record<string, string | number | boolean | null>): Promise<unknown>;
   onActivity(listener: (activity: readonly PluginSessionActivity[]) => void): () => void;
   focusSession(sessionId: string): Promise<unknown>;
+  /** Absent on hosts that predate the digest bridge. */
+  readonly im?: PluginImBridge;
 }
 
 /** Privacy-filtered live activity; no prompts, tool arguments, paths or credentials. */

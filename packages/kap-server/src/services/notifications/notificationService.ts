@@ -15,6 +15,8 @@ import {
   Runtime, PROVIDERS, validateConfig, telegramProvider, wecomWebhookProvider, wecomHttps, createSafeHttpTransport,
   webhookProvider, type Config, type CredentialScope, type DeliveryView,
 } from '@nb-im/core';
+import type { PluginImCapabilities, PluginImRoute, PluginImSendReceipt, PluginImSendRequest } from '@kiki/agent-core-v2';
+import { ensurePluginDigestReceipts, PluginDigestDelivery } from './pluginDigestDelivery';
 
 type Settings = NotificationsConfig;
 type RuntimeState = { runtime: Runtime };
@@ -131,6 +133,13 @@ export class NotificationService {
   private readonly quietTimers = new Set<ReturnType<typeof setTimeout>>();
   private writes: Promise<unknown> = Promise.resolve();
   private stopped = false;
+  private pausing = false;
+  private readonly activeDigests = new Set<Promise<unknown>>();
+  private readonly digests = new PluginDigestDelivery({
+    settings: () => this.settings,
+    runtime: () => this.stopped || this.pausing ? undefined : this.state?.runtime,
+    stopped: () => this.stopped || this.pausing,
+  });
 
   constructor(private readonly core: Scope, private readonly homeDir: string,
     private readonly isViewing: (sessionId: string) => boolean,
@@ -173,6 +182,7 @@ export class NotificationService {
       }, (id) => this.epochs.get(id) ?? 'unavailable');
     runtime.outbox.db.exec('CREATE INDEX IF NOT EXISTS notifications_created_at_idx ON deliveries (created_at DESC, delivery_id DESC)');
     runtime.outbox.db.exec('CREATE INDEX IF NOT EXISTS notifications_channel_created_idx ON deliveries (channel_id, created_at DESC, delivery_id DESC)');
+    ensurePluginDigestReceipts(runtime.outbox.db);
     runtime.start(() => { this.onError(); });
     this.state = { runtime };
   }
@@ -194,10 +204,23 @@ export class NotificationService {
     return this.settings.credential_values[id]?.token;
   }
 
+  private trackDigest<T>(run: Promise<T>): Promise<T> {
+    this.activeDigests.add(run);
+    void run.finally(() => { this.activeDigests.delete(run); });
+    return run;
+  }
+
+  private async drainDigests(): Promise<void> {
+    while (this.activeDigests.size > 0) await Promise.allSettled([...this.activeDigests]);
+  }
+
   private mutate(change: (draft: Settings) => void): Promise<NotificationSettings> {
     let interrupted = false;
     const write = this.writes.then(async () => {
       if (this.stopped) throw new Error('notifications_stopped');
+      await this.drainDigests();
+      if (this.stopped) throw new Error('notifications_stopped');
+      this.pausing = true;
       const draft = structuredClone(this.settings);
       change(draft);
       validateSettings(draft);
@@ -225,9 +248,10 @@ export class NotificationService {
       }
       this.openRuntime();
       interrupted = false;
+      this.pausing = false;
       return this.getSettings();
     });
-    this.writes = write.catch(() => { if (interrupted) { this.state?.runtime.stop(); this.onError(); } });
+    this.writes = write.catch(() => { this.pausing = false; if (interrupted) { this.state?.runtime.stop(); this.onError(); } });
     return write;
   }
 
@@ -306,6 +330,16 @@ export class NotificationService {
       this.setHealth(id, 'connection_failed');
       return { result: 'failed', health: 'connection_failed', error_kind: 'transient' };
     }
+  }
+
+  pluginImCapabilities(signal: AbortSignal): Promise<PluginImCapabilities> {
+    return Promise.resolve(this.digests.capabilities(signal));
+  }
+  pluginImRoutes(signal: AbortSignal): Promise<readonly PluginImRoute[]> {
+    return Promise.resolve(this.digests.routes(signal));
+  }
+  pluginImSend(request: PluginImSendRequest, signal: AbortSignal): Promise<PluginImSendReceipt> {
+    return this.trackDigest(this.digests.send(request, signal));
   }
 
   sendTest(channelId: string): DeliveryView {
@@ -512,6 +546,7 @@ export class NotificationService {
     this.quietTimers.clear();
     for (const id of this.watched.keys()) this.unwatch(id);
     for (const sub of this.subscriptions) sub.dispose();
+    await this.drainDigests();
     await this.writes;
     const runtime = this.state?.runtime;
     runtime?.stop();

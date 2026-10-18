@@ -37,6 +37,11 @@ import { IPluginSettingsService } from './pluginSettingsService';
 import type { PluginTool } from './contributions';
 import type { PluginInfo } from './types';
 import { sourceSchema, sourceValues, sourceActive, sourceDefaults, scriptSources, scriptDefinition, scriptEnvironmentKey, type MediaSettingValues } from './mediaSourceSettings';
+import type { PluginImBridge } from './pluginImBridge';
+export {
+  parsePluginImRequest, pluginImReceipt, sanitizePluginImCapabilities, sanitizePluginImReceipt, sanitizePluginImRoutes,
+  type PluginImBridge, type PluginImCapabilities, type PluginImErrorKind, type PluginImRoute, type PluginImSendReceipt, type PluginImSendRequest, type PluginImSendStatus,
+} from './pluginImBridge';
 
 export interface PluginToolRegistration {
   readonly pluginId: string;
@@ -82,6 +87,7 @@ export interface IPluginHostService {
   requestSource(pluginId: string, sourceId: string, action: 'discover' | 'probe' | 'parse', args: unknown, signal: AbortSignal): Promise<unknown>;
   running(pluginId: string): boolean;
   navigation(): { readonly id: number; readonly pluginId: string; readonly sessionId: string; readonly at: number } | undefined;
+  attachOutboundIm(bridge: PluginImBridge | undefined): void;
 }
 
 export const IPluginHostService = createDecorator<IPluginHostService>('pluginHostService');
@@ -101,6 +107,11 @@ export class PluginHostService extends Service implements IPluginHostService {
   private readonly residentChains = new Map<string, Promise<void>>();
   private navigationRequest?: { readonly id: number; readonly pluginId: string; readonly sessionId: string; readonly at: number };
   private nextNavigationId = 0;
+  private outboundIm: PluginImBridge | undefined;
+
+  attachOutboundIm(bridge: PluginImBridge | undefined): void {
+    this.outboundIm = bridge;
+  }
 
   constructor(
     @IPluginService private readonly plugins: IPluginService,
@@ -418,7 +429,7 @@ export class PluginHostService extends Service implements IPluginHostService {
         focusSession: (sessionId) => {
           if (this.sessions?.get(sessionId) === undefined) throw new Error('Session is not live');
           this.navigationRequest = { id: ++this.nextNavigationId, pluginId: info.id, sessionId, at: Date.now() };
-        } }, this.bootstrap.homeDir);
+        }, im: () => this.outboundIm }, this.bootstrap.homeDir);
       this.hosts.set(info.id, host);
     }
     return host;
