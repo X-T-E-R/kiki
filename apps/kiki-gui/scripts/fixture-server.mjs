@@ -1306,6 +1306,7 @@ class FixtureServer {
    * rows. Read-mostly — the settings screenshot walks need the populated
    * shape, not the write paths; scenario `remoteConnections` seeds
    * { inbound: { enabled?, configuredEnabled?, grants? }, connections? }.
+   * GET / data is that connections array (RemoteConnection[]).
    */
   remoteConnectionsRoute(res, path, method, body) {
     const data = this.scenario?.data.remoteConnections ?? {};
@@ -1325,7 +1326,7 @@ class FixtureServer {
       return this.envelope(res, { enabled: inbound.enabled, configuredEnabled: inbound.configuredEnabled, grants: structuredClone(inbound.grants ?? []) });
     }
     if (rest === '/' && method === 'GET') {
-      return this.envelope(res, { connections: structuredClone(data.connections ?? []) });
+      return this.envelope(res, structuredClone(data.connections ?? []));
     }
     if (rest === '/handshake' && method === 'GET') {
       return this.envelope(res, {});

@@ -295,3 +295,33 @@ test('main theme fixture imports once and confirms Settings preview/apply, refre
     assert.equal(undone.detail.preference_authority, true);
   } finally { await server.stop(); }
 });
+
+test('remote-connection list data is the connection array', async () => {
+  const server = await startFixtureServer({ port: 0, scenario: 'settings-ia' });
+  const origin = `http://127.0.0.1:${server.http.address().port}`;
+  const headers = { authorization: 'Bearer kiki-fixture-token' };
+  const list = async () => (await fetch(`${origin}/api/remote-connections`, { headers })).json();
+  const record = {
+    id: '11111111-1111-4111-8111-111111111111',
+    label: 'Example remote',
+    enabled: true,
+    purposes: ['gui'],
+    state: 'online',
+  };
+  try {
+    const empty = await list();
+    assert.equal(empty.code, 0);
+    assert.equal(Array.isArray(empty.data), true);
+    assert.deepEqual(empty.data, []);
+    assert.equal(empty.data.connections, undefined);
+    server.scenario.data.remoteConnections = { connections: [record] };
+    const listed = await list();
+    assert.equal(listed.code, 0);
+    assert.equal(Array.isArray(listed.data), true);
+    assert.deepEqual(listed.data, [record]);
+    assert.equal(listed.data.connections, undefined);
+    assert.deepEqual(listed.data.filter((item) => item.purposes.includes('gui') && item.enabled && item.state !== 'disabled').map((item) => item.id), [record.id]);
+  } finally {
+    await server.stop();
+  }
+});
