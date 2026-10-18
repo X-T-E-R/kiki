@@ -43,11 +43,12 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+export const EMPTY_AGENT_RECEIPT_REASON =
+  'The agent ended without a final receipt. Inspect preserved work and the original turn, then resume the same agent with a new prompt ID and request a final receipt.';
+
 function requireAgentReceipt(outcome: SubagentCompletion, agentId: string): void {
   if (outcome.result.trim().length > 0) return;
-  throw new Error2(TaskErrors.codes.TASK_EMPTY_AGENT_RECEIPT,
-    'The agent ended without a final receipt. Inspect preserved work and the original turn, then resume the same agent with a new prompt ID and request a final receipt.',
-    { details: { agentId } });
+  throw new Error2(TaskErrors.codes.TASK_EMPTY_AGENT_RECEIPT, EMPTY_AGENT_RECEIPT_REASON, { details: { agentId } });
 }
 
 export function createSubagentExecutor(

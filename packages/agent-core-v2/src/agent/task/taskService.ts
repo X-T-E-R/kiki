@@ -50,6 +50,7 @@ import { ISessionMetadata, isExternalClientMain } from '#/session/sessionMetadat
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
+import { IWireService } from '#/wire/wire';
 import { OrderedHookSlot } from '#/hooks';
 import type { AgentTaskNotificationDeliveryContext } from './task';
 import {
@@ -68,6 +69,7 @@ import {
   type RegisterAgentTaskOptions,
 } from './task';
 import { resolveAgentTaskConfig } from './configSection';
+import { readCommittedAgentRunOutcomes } from './agentOutcome';
 import { AgentTaskPersistence } from './persist';
 import { runningSubagentStatus } from './runningSubagentStatus';
 import {
@@ -316,6 +318,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     undoParticipants: IAgentConversationUndoParticipantRegistry,
     @ILogService private readonly log: ILogService,
     @IAgentStateService private readonly states: IAgentStateService,
+    @IWireService private readonly wire: IWireService,
   ) {
     super();
     this.states.contributeState(taskKey);
@@ -1262,12 +1265,45 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private async markLoadedTasksLost(): Promise<readonly AgentTaskInfo[]> {
     const lostTasks: AgentTaskInfo[] = [];
     const persistence = this.persistence;
+    const needsOutcome = [...this.ghosts.values()].some((info) =>
+      !TERMINAL_STATUSES.has(info.status) && info.kind === 'agent' && info.agentId !== undefined);
+    const outcomeRead = needsOutcome ? await readCommittedAgentRunOutcomes(this.wire) : undefined;
+    if (outcomeRead?.ok === false) {
+      this.log.error('agent run outcome journal could not be read; unconfirmed tasks stay lost', {
+        error: outcomeRead.error,
+      });
+    }
+    const outcomes = outcomeRead?.ok === true ? outcomeRead.outcomes : undefined;
     for (const [taskId, info] of this.ghosts) {
       if (TERMINAL_STATUSES.has(info.status)) continue;
       if (info.kind === 'media' && this.mediaRecovery !== undefined) {
         const recovered = await this.mediaRecovery(info);
         if (recovered !== undefined) {
           this.registerTask(recovered, { taskId, detached: true });
+          continue;
+        }
+      }
+      if (info.kind === 'agent') {
+        const agentId = info.agentId;
+        const known = agentId === undefined ? undefined : outcomes?.get(taskId);
+        if (known !== undefined && known.subagentId === agentId) {
+          const updated: AgentTaskInfo = {
+            ...info,
+            status: known.status,
+            endedAt: known.endedAt ?? info.endedAt ?? Date.now(),
+            stopReason: known.stopReason,
+          };
+          try {
+            const receipt = await persistence.commitTerminalTask(updated, known.finalOutput);
+            const committed = { ...updated, receipt, receiptVerification: 'verified' as const };
+            this.ghosts.set(taskId, committed);
+            lostTasks.push(committed);
+          } catch (error) {
+            this.log.error('known agent outcome receipt persistence failed', { taskId, error });
+            this.ghosts.set(taskId, updated);
+            await persistence.writeTask(updated);
+            lostTasks.push(updated);
+          }
           continue;
         }
       }
