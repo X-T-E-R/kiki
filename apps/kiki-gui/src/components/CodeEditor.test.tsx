@@ -2,6 +2,7 @@
 
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { undo } from '@codemirror/commands';
 import { EditorView } from '@codemirror/view';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { CodeEditor } from './CodeEditor';
@@ -224,6 +225,51 @@ it('preserves mixed breaks across edits and restores the loaded bytes when the t
   const thisLine = view.state.doc.line(2).from;
   act(() => { view.dispatch({ changes: { from: thisLine, insert: 'Z' } }); });
   expect(controller.getState().draft).toBe('Xkeep\nZthis\r\norder\n');
+  controller.dispose();
+});
+
+it('saves mixed breaks outside two ranges in one transaction and undo restores the loaded bytes', async () => {
+  const original = 'Aaa\nBbb\r\nCcc\rDdd';
+  const edited = 'XXX\nBbb\r\nCcc\rYYY';
+  const disk = { content: original };
+  const writes: string[] = [];
+  const controller = new HostFileEditorController({
+    path: '/work/example.txt',
+    readFile: async () => disk.content,
+    writeFile: async (_path, text) => {
+      writes.push(text);
+      disk.content = text;
+    },
+    events: quietEvents(),
+  });
+  await controller.load();
+  const onChange = vi.fn((text: string) => { controller.setDraft(text); });
+  const view = await renderEditor({
+    value: controller.getState().draft,
+    generation: controller.getState().generation,
+    readOnly: false,
+    onChange,
+  });
+  const first = view.state.doc.line(1);
+  const last = view.state.doc.line(4);
+  act(() => {
+    view.dispatch({
+      changes: [
+        { from: first.from, to: first.to, insert: 'XXX' },
+        { from: last.from, to: last.to, insert: 'YYY' },
+      ],
+    });
+  });
+  expect(controller.getState()).toMatchObject({ dirty: true, draft: edited, savedText: original });
+  await controller.saveNow();
+  expect(writes).toEqual([edited]);
+  expect(disk.content).toBe(edited);
+
+  act(() => { undo(view); });
+  expect(controller.getState()).toMatchObject({ dirty: true, draft: original, savedText: edited });
+  await controller.saveNow();
+  expect(writes).toEqual([edited, original]);
+  expect(disk.content).toBe(original);
   controller.dispose();
 });
 

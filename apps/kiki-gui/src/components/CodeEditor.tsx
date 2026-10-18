@@ -15,17 +15,19 @@
  * Line breaks are saved bytes. A file that uses only `\n`, only `\r\n`, or
  * only `\r` sets CodeMirror's `lineSeparator` to that break, so `sliceDoc()`
  * and newly inserted breaks round-trip it. A file that mixes breaks keeps
- * CodeMirror's logical lines (every break is still its own line). `onChange`
- * then reapplies the breaks outside the edited span, and reports the loaded
- * bytes again when the logical lines match them. External replacement is a
- * remote transaction and does not call `onChange`; neither does a read-only
- * view. An untouched buffer therefore stays equal to the loaded bytes, and
- * saving it cannot rewrite line breaks or look like an external conflict.
+ * CodeMirror's logical lines. A user transaction is applied from its
+ * `ChangeSet`: bytes outside those ranges are copied unchanged, and each
+ * insertion is that change's own text joined with the editor line break.
+ * When the logical lines match the loaded generation again, `onChange`
+ * reports those loaded bytes. External replacement is a remote transaction
+ * and does not call `onChange`; neither does a read-only view. An untouched
+ * buffer therefore stays equal to the loaded bytes, and saving it cannot
+ * rewrite line breaks or look like an external conflict.
  */
 
 import { useEffect, useRef } from 'react';
 
-import { type Extension, Compartment, EditorState, Transaction } from '@codemirror/state';
+import { type ChangeSet, type Extension, Compartment, EditorState, Transaction, type Text } from '@codemirror/state';
 import {
   type ViewUpdate,
   EditorView,
@@ -106,47 +108,50 @@ function sameLogicalLines(left: string, right: string): boolean {
   return true;
 }
 
-/**
- * Rejoin `edited` (CodeMirror's logical lines) with the breaks in `baseline`.
- * Lines outside one edited span keep their original break. A new break uses
- * the break at the start of that span, or the file's first break.
- */
-function projectLineEndings(edited: string, baseline: string): string {
-  if (edited === baseline || sameLogicalLines(edited, baseline)) return baseline;
-  const next = logicalLines(edited);
-  const prev = logicalLines(baseline);
-  const separators = baseline.match(/\r\n|\r|\n/g) ?? [];
-  let prefix = 0;
-  while (prefix < next.length && prefix < prev.length && next[prefix] === prev[prefix]) prefix += 1;
-  let suffix = 0;
-  while (
-    suffix < next.length - prefix &&
-    suffix < prev.length - prefix &&
-    next[next.length - 1 - suffix] === prev[prev.length - 1 - suffix]
-  ) suffix += 1;
-  const insertedBreak = (prefix > 0 ? separators[prefix - 1] : undefined) ?? separators[0] ?? '\n';
-  const suffixStart = next.length - suffix;
-  let out = '';
-  for (let i = 0; i < next.length; i += 1) {
-    if (i > 0) {
-      if (i < prefix) out += separators[i - 1] ?? insertedBreak;
-      else if (i >= suffixStart) {
-        const prevIndex = prev.length - (next.length - i);
-        out += separators[prevIndex - 1] ?? insertedBreak;
-      } else out += insertedBreak;
-    }
-    out += next[i] ?? '';
-  }
-  return out;
+function lineSeparators(text: string): readonly string[] {
+  return text.match(/\r\n|\r|\n/g) ?? [];
 }
 
-function textFromUserEdit(state: EditorState, external: string, emitted: string): string {
-  const current = state.sliceDoc();
+/** CodeMirror counts every break as one; `emitted` may store a longer break. */
+function emittedOffset(doc: Text, cmPos: number, separators: readonly string[]): number {
+  let emitted = 0;
+  const lineCount = doc.lines;
+  for (let i = 1; i <= lineCount; i += 1) {
+    const line = doc.line(i);
+    if (cmPos <= line.to) return emitted + (cmPos - line.from);
+    emitted += line.to - line.from;
+    if (i < lineCount) emitted += separators[i - 1].length;
+  }
+  return emitted;
+}
+
+/** Copy `emitted` and replace only the ranges `changes` lists. */
+function spliceChanges(emitted: string, state: EditorState, changes: ChangeSet): string {
+  const separators = lineSeparators(emitted);
+  const join = state.lineBreak;
+  let out = '';
+  let cursor = 0;
+  changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+    const start = emittedOffset(state.doc, fromA, separators);
+    const end = emittedOffset(state.doc, toA, separators);
+    out += emitted.slice(cursor, start);
+    out += inserted.sliceString(0, inserted.length, join);
+    cursor = end;
+  });
+  return out + emitted.slice(cursor);
+}
+
+function textFromUserEdit(update: ViewUpdate, external: string, emitted: string): string {
+  const current = update.state.sliceDoc();
   if (current === external || sameLogicalLines(current, external)) return external;
   const kind = uniformLineBreak(emitted);
-  if (kind !== undefined && state.facet(EditorState.lineSeparator) === kind) return current;
-  const projected = projectLineEndings(current, emitted);
-  return sameLogicalLines(projected, external) ? external : projected;
+  if (kind !== undefined && update.startState.facet(EditorState.lineSeparator) === kind) return current;
+  let text = emitted;
+  for (const transaction of update.transactions) {
+    if (!transaction.docChanged || transaction.annotation(Transaction.remote) === true) continue;
+    text = spliceChanges(text, transaction.startState, transaction.changes);
+  }
+  return sameLogicalLines(text, external) ? external : text;
 }
 
 function documentMatches(state: EditorState, text: string): boolean {
@@ -237,7 +242,7 @@ export function CodeEditor({
           transaction.docChanged && transaction.annotation(Transaction.remote) !== true
         ));
         if (!userEdited) return;
-        const next = textFromUserEdit(update.state, externalTextRef.current, emittedTextRef.current);
+        const next = textFromUserEdit(update, externalTextRef.current, emittedTextRef.current);
         if (next === emittedTextRef.current) return;
         emittedTextRef.current = next;
         onChangeRef.current(next);
