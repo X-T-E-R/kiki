@@ -22,7 +22,7 @@
  * hosts, so every change refetches the session list (contract).
  */
 
-import { useEffect, useId, useState, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import type { SshHostAttachment } from '@kiki/session-core/composer';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
@@ -47,6 +47,8 @@ import { Icon } from '../icons';
 import { POPOVER_SURFACE_CLASS } from '../SearchableSelect';
 import { SSH_HOST_CHIP_CLASS, stateDotClass } from './SshBits';
 import { SshHostFormDialog } from './SshHostFormDialog';
+
+const NO_INFLIGHT_HOSTS: ReadonlySet<string> = new Set();
 
 const PANEL_ROW =
   'flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:opacity-50';
@@ -80,22 +82,37 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
   const available = enabled && flag.enabled === true && client.klient.rest !== undefined;
   const hostsQuery = useSshHosts(client, available);
   const sessionQuery = useSessionSshHosts(client, sessionId, available);
-  const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
+  // Join/leave flights keyed by the session that started them. The resident
+  // hook survives route changes, so a single set would disable the next
+  // conversation until the previous request settled, and its `finally` would
+  // clear a join the next conversation had already started.
+  const inflightRef = useRef(new Map<string, Set<string>>());
+  const [inflightBySession, setInflightBySession] = useState<ReadonlyMap<string, ReadonlySet<string>>>(() => new Map());
+  const sessionKeyRef = useRef(sessionId);
+  sessionKeyRef.current = sessionId;
+  const aliveRef = useRef(true);
   const [creating, setCreating] = useState(false);
   const [selected, setSelected] = useState<readonly SshHost[]>([]);
   const [listOpen, setListOpen] = useState(false);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => { aliveRef.current = false; };
+  }, []);
   useEffect(() => { setSelected([]); }, [sessionId]);
+  const pending = sessionId === undefined ? NO_INFLIGHT_HOSTS : inflightBySession.get(sessionId) ?? NO_INFLIGHT_HOSTS;
 
   const joined = sessionId === undefined ? selected.map((host) => ({ host, status: undefined })) : sessionQuery.data ?? [];
   const joinedIds = new Set(joined.map((entry) => entry.host.id));
 
-  const setBusy = (id: string, busy: boolean) => {
-    setPending((current) => {
-      const next = new Set(current);
-      if (busy) next.add(id);
-      else next.delete(id);
-      return next;
-    });
+  const setBusy = (key: string, id: string, busy: boolean) => {
+    const map = inflightRef.current;
+    const ids = new Set(map.get(key) ?? []);
+    if (busy) ids.add(id);
+    else ids.delete(id);
+    if (ids.size === 0) map.delete(key);
+    else map.set(key, ids);
+    if (!aliveRef.current) return;
+    setInflightBySession(new Map(map));
   };
 
   // The server's list is the truth the strip draws, so a change reads it back
@@ -107,23 +124,25 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
   };
 
   const toggle = async (host: SshHost, join: boolean) => {
-    if (pending.has(host.id)) return;
+    if (sessionId !== undefined && inflightRef.current.get(sessionId)?.has(host.id)) return;
     if (sessionId === undefined) {
       setSelected((current) => join ? [...current.filter((entry) => entry.id !== host.id), host] : current.filter((entry) => entry.id !== host.id));
       return;
     }
-    setBusy(host.id, true);
+    const key = sessionId;
+    setBusy(key, host.id, true);
     try {
-      if (join) await sshApi(client).addSessionHost(sessionId, host.id);
-      else await sshApi(client).removeSessionHost(sessionId, host.id);
+      if (join) await sshApi(client).addSessionHost(key, host.id);
+      else await sshApi(client).removeSessionHost(key, host.id);
       await refetchSession();
     } catch (error) {
+      if (!aliveRef.current || sessionKeyRef.current !== key) return;
       pushToast({
         tone: 'error',
         text: t(join ? 'composer.ssh.addFailed' : 'composer.ssh.removeFailed', { name: host.name, detail: errorText(locale, error) }),
       });
     } finally {
-      setBusy(host.id, false);
+      setBusy(key, host.id, false);
     }
   };
 
@@ -316,5 +335,7 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
   };
 
   const snapshot: readonly SshHostAttachment[] = available ? joined.map(({ host }) => ({ kind: 'ssh', id: host.id, name: host.name })) : [];
-  return { available, snapshot, pending: pending.size > 0 || (available && sessionId !== undefined && !sessionQuery.isSuccess), joinedCount: joined.length, renderPanel, resident, dialog, hosts: searchHosts, toggleHost };
+  // Reading the session host list is not a send. A live prompt does not carry
+  // `snapshot`; only a join or leave this session itself started still blocks.
+  return { available, snapshot, pending: pending.size > 0, joinedCount: joined.length, renderPanel, resident, dialog, hosts: searchHosts, toggleHost };
 }

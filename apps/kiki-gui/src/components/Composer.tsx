@@ -167,6 +167,20 @@ const SLASH_ACTION_DESCRIPTIONS: Record<SlashActionId, I18nKey> = {
 
 const MENTION_DEBOUNCE_MS = 250;
 const CATALOG_RETRY_INTERVAL_MS = 30_000;
+/**
+ * `/new` has no session id. Its in-flight create stays under this key and is
+ * never copied onto the session id the route later adopts.
+ */
+const DRAFT_SEND_OWNER = '\0composer-draft';
+
+function sendOwnerKey(sessionId: string | undefined): string {
+  return sessionId === undefined ? DRAFT_SEND_OWNER : `s:${sessionId}`;
+}
+
+type SendFlight = {
+  readonly owner: string;
+  readonly generation: number;
+};
 
 const isTransientCatalogError = (error: unknown): boolean =>
   error instanceof ApiError && (error.code === API_CODES.TIMEOUT || error.code === -1);
@@ -806,6 +820,19 @@ export function Composer({
   const [activeIndex, setActiveIndex] = useState(0);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const turnInFlightRef = useRef(false);
+  // In-flight submits stay with the session (or the /new draft) that started
+  // them. The visible latch is that owner's entry. A settle removes only its
+  // own generation, so it cannot release another session or a newer submit.
+  const sendFlightsRef = useRef(new Map<string, number>());
+  const sendGenerationRef = useRef(0);
+  // A slash-catalog wait has not been delivered yet. Leaving the session drops
+  // that owner's token so the refetch cannot submit later or clear the next
+  // session's own wait.
+  const slashFlightsRef = useRef(new Map<string, number>());
+  const slashGenerationRef = useRef(0);
+  const composerAliveRef = useRef(true);
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
   const sendNowRef = useRef(false);
   // One-shot queue-timing pick from the send-timing menu, consumed by the next
   // sendPrompt call (same latch shape as sendNowRef).
@@ -1085,13 +1112,28 @@ export function Composer({
   const isExternalClient = execution?.external_connection_id !== undefined;
   const selectionBlocked = !isExternalClient && (invalidFile || invalidProfile || invalidModel || invalidEffort || modelDomainState === 'blocked');
 
-  // The composer mount now survives route changes (the conversation shell owns
-  // it), so session-scoped transient UI must reset when the session under it
-  // changes: an open menu would otherwise filter A's catalog with B's draft.
+  // The composer mount survives route changes (the conversation shell owns
+  // it). Menus, the slash confirm, undo, and a painted submit error belong
+  // to the session that was on screen. An in-flight submit does not: the
+  // button follows the owner now shown, so B is not stuck on A's promise and
+  // returning to A while that promise is open keeps A's button disabled.
   const previousSessionIdRef = useRef(sessionId);
   useEffect(() => {
+    composerAliveRef.current = true;
+    return () => { composerAliveRef.current = false; };
+  }, []);
+  useEffect(() => {
     if (previousSessionIdRef.current === sessionId) return;
+    slashFlightsRef.current.delete(sendOwnerKey(previousSessionIdRef.current));
     previousSessionIdRef.current = sessionId;
+    const owner = sendOwnerKey(sessionId);
+    const inFlight = sendFlightsRef.current.has(owner);
+    turnInFlightRef.current = inFlight;
+    setTurnInFlight(inFlight);
+    const slashPending = slashFlightsRef.current.has(owner);
+    slashCatalogPendingRef.current = slashPending;
+    setSlashCatalogPending(slashPending);
+    setAttachmentError(null);
     setMenu(null);
     setSlashConfirm(null);
     setContextRebuildConfirm(false);
@@ -1424,16 +1466,24 @@ export function Composer({
 
   /**
    * Every real hand-off (prompt or skill activation) records the submitted
-   * text for ↑ recall and snapshots it so Ctrl+Z right after a send can
-   * resurrect the prompt. Local shortcut actions (/plan …) are not sent, so
-   * they never land here.
+   * text for ↑ recall under the session key captured when the send started.
+   * The error clear, recall cursor, and undo snapshot touch the resident
+   * composer. Those run only while this submit is still the visible
+   * generation: a VS Code prepare that resolves after a session switch must
+   * not seed the next draft's undo or clear its error. Local shortcut actions
+   * (`/plan` …) are not sent, so they never land here.
    */
-  const recordSubmission = () => {
-    setAttachmentError(null);
+  const recordSubmission = (surface: boolean) => {
     if (historyKey !== undefined) pushInputHistory(historyKey, text);
+    if (!surface) return;
+    setAttachmentError(null);
     historyIndexRef.current = null;
     pushUndoSnapshot({ text, cursor: lastCursorRef.current });
   };
+  const submissionVisible = (flight: SendFlight): boolean =>
+    composerAliveRef.current
+    && sendFlightsRef.current.get(flight.owner) === flight.generation
+    && sendOwnerKey(sessionIdRef.current) === flight.owner;
 
   const runAction = (action: SlashActionId) => {
     switch (action) {
@@ -1842,7 +1892,7 @@ export function Composer({
           }
           // `/btw <question>` goes to a side agent; the main turn never sees it.
           if (classified.item.action === 'btw' && classified.args !== '' && onSideQuestion !== undefined) {
-            recordSubmission();
+            recordSubmission(true);
             onChange('');
             onSideQuestion(classified.args);
             return;
@@ -1898,9 +1948,16 @@ export function Composer({
     }
     setMenu(null);
     if (text.trim().startsWith('/') && skillCatalogReady && !skillsQuery.isSuccess) {
+      const owner = sendOwnerKey(sessionId);
+      const generation = slashGenerationRef.current + 1;
+      slashGenerationRef.current = generation;
+      slashFlightsRef.current.set(owner, generation);
       slashCatalogPendingRef.current = true;
       setSlashCatalogPending(true);
       void refetchSkills({ cancelRefetch: false }).then((result) => {
+        if (!composerAliveRef.current || slashFlightsRef.current.get(owner) !== generation) return;
+        slashFlightsRef.current.delete(owner);
+        if (sendOwnerKey(sessionIdRef.current) !== owner) return;
         slashCatalogPendingRef.current = false;
         setSlashCatalogPending(false);
         const current = currentSlashDraftRef.current;
@@ -1918,22 +1975,34 @@ export function Composer({
   };
 
   /**
-   * Send-intent latch: the ref flips synchronously on the first trigger, so a
-   * rapid second click/Enter during the submit round trip (before the parent
-   * clears the draft or `busy` arrives) is a no-op instead of a duplicate
-   * send. The latch releases once the handler's promise settles — failure
-   * included, so the button comes back for a retry. `canSend` reads the state
-   * twin, disabling the button in the same render.
+   * Send-intent latch, owned by the session (or `/new` draft) that started
+   * it. The map updates synchronously, so a second Enter in that same session
+   * does not call `onSend` again. Switching away does not give the entry to
+   * the next session, and switching back while the promise is open keeps this
+   * session disabled. `busy` is the running turn, not this latch. The entry
+   * is removed when its own promise settles — failure included — and only
+   * when the generation still matches, so an older settle cannot release a
+   * newer submit. The visible button updates only when that owner is the one
+   * on screen. `canSend` reads the state twin.
    */
-  const runAgentTurn = (turn: () => Promise<void>) => {
-    if (turnInFlightRef.current) return;
+  const runAgentTurn = (turn: (flight: SendFlight) => Promise<void>) => {
+    const owner = sendOwnerKey(sessionId);
+    if (sendFlightsRef.current.has(owner)) return;
+    const generation = sendGenerationRef.current + 1;
+    sendGenerationRef.current = generation;
+    const flight: SendFlight = { owner, generation };
+    sendFlightsRef.current.set(owner, generation);
     turnInFlightRef.current = true;
     setTurnInFlight(true);
-    void turn()
+    void turn(flight)
       .catch((error: unknown) => {
+        if (!submissionVisible(flight)) return;
         setAttachmentError(errorText(locale, error));
       })
       .finally(() => {
+        if (!composerAliveRef.current || sendFlightsRef.current.get(flight.owner) !== flight.generation) return;
+        sendFlightsRef.current.delete(flight.owner);
+        if (sendOwnerKey(sessionIdRef.current) !== flight.owner) return;
         turnInFlightRef.current = false;
         setTurnInFlight(false);
       });
@@ -1977,15 +2046,19 @@ export function Composer({
         : onSend(prepared.text, sentAttachments, merged);
     };
     if (!vscodeRuntime) {
-      runAgentTurn(async () => {
-        recordSubmission();
+      runAgentTurn(async (flight) => {
+        recordSubmission(submissionVisible(flight));
         await deliver(content);
       });
       return;
     }
-    runAgentTurn(async () => {
+    // `preparePrompt` yields before the captured handler runs. The handler is
+    // the one from the session that started the send; it is not retargeted at
+    // whoever is on screen, and it is not dropped here. Resident draft
+    // mutations wait until this flight is still that visible generation.
+    runAgentTurn(async (flight) => {
       const prepared = await vscodeHost.preparePrompt(content, vscodeConversationId, true);
-      recordSubmission();
+      recordSubmission(submissionVisible(flight));
       await deliver(prepared);
     });
   };
@@ -1995,15 +2068,15 @@ export function Composer({
       ? [...attachments, ...ssh.snapshot]
       : attachments;
     if (!vscodeRuntime) {
-      runAgentTurn(async () => {
-        recordSubmission();
+      runAgentTurn(async (flight) => {
+        recordSubmission(submissionVisible(flight));
         await onActivateSkill?.(name, args, sentAttachments, text);
       });
       return;
     }
-    runAgentTurn(async () => {
+    runAgentTurn(async (flight) => {
       await vscodeHost.preparePrompt('', vscodeConversationId, false);
-      recordSubmission();
+      recordSubmission(submissionVisible(flight));
       await onActivateSkill?.(name, args, sentAttachments, text);
     });
   };
