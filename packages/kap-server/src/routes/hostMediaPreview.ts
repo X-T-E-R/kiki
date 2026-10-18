@@ -4,13 +4,18 @@ import { isAbsolute } from 'node:path';
 import { Readable } from 'node:stream';
 
 import { IHostFileSystem, type Scope } from '@kiki/agent-core-v2';
+import { MEDIA_SNIFF_BYTES, sniffMediaFromMagic } from '@kiki/agent-core-v2/agent/media/file-type';
+import type { SessionMediaFile } from '@kiki/agent-core-v2/agent/media/sessionMediaStore';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { parseRangeHeader, pickHeader } from '../lib/httpRange';
+import { requestLog } from '../lib/requestLog';
+import { createDeferredCleanup, type DeferredCleanup } from '../lib/sessionOperationLease';
 import { AdmissionError } from '../services/connections/admission';
 import { stripPort } from '../middleware/hostnames';
+import { withReplyCloseSignal } from '../procedures/requestSignal';
 import type { TranscriptService } from '../services/transcript/transcriptService';
 import { openSessionMedia } from './sessionMedia';
 
@@ -69,6 +74,95 @@ function playbackMime(mediaType: string, name: string): string | undefined {
   const typed = mediaType.toLowerCase();
   if (typed.startsWith('video/') || typed.startsWith('audio/')) return mediaType;
   return MEDIA_MIME[mediaExtension(name)];
+}
+
+function genericBinary(mediaType: string): boolean {
+  const typed = mediaType.toLowerCase().split(';', 1)[0]?.trim() ?? '';
+  return typed.length === 0 || typed === 'application/octet-stream';
+}
+
+function startsWithBytes(header: Uint8Array, bytes: readonly number[]): boolean {
+  if (header.byteLength < bytes.length) return false;
+  for (let index = 0; index < bytes.length; index += 1) if (header[index] !== bytes[index]) return false;
+  return true;
+}
+
+function includesAscii(header: Uint8Array, text: string): boolean {
+  const limit = header.byteLength - text.length;
+  for (let index = 0; index <= limit; index += 1) {
+    let found = true;
+    for (let offset = 0; offset < text.length; offset += 1) {
+      if (header[index + offset] !== text.charCodeAt(offset)) { found = false; break; }
+    }
+    if (found) return true;
+  }
+  return false;
+}
+
+function fourcc(header: Uint8Array, offset: number): string {
+  if (header.byteLength < offset + 4) return '';
+  return String.fromCharCode(header[offset]!, header[offset + 1]!, header[offset + 2]!, header[offset + 3]!);
+}
+
+function audioMimeFromMagic(header: Uint8Array): string | undefined {
+  if (startsWithBytes(header, [0x49, 0x44, 0x33])) return 'audio/mpeg';
+  if (header.byteLength >= 2 && header[0] === 0xff && (header[1]! & 0xe0) === 0xe0) {
+    const version = (header[1]! >> 3) & 0x03;
+    const layer = (header[1]! >> 1) & 0x03;
+    if (version !== 1 && layer !== 0) return 'audio/mpeg';
+  }
+  if (startsWithBytes(header, [0x66, 0x4c, 0x61, 0x43])) return 'audio/flac';
+  if (startsWithBytes(header, [0x4f, 0x67, 0x67, 0x53])) {
+    if (includesAscii(header, 'theora')) return 'video/ogg';
+    if (includesAscii(header, 'OpusHead') || includesAscii(header, 'vorbis')) return 'audio/ogg';
+    return undefined;
+  }
+  if (startsWithBytes(header, [0x52, 0x49, 0x46, 0x46]) && fourcc(header, 8) === 'WAVE') return 'audio/wav';
+  if (fourcc(header, 4) === 'ftyp') {
+    const brand = fourcc(header, 8).toLowerCase().replaceAll('\u0000', '').trim();
+    if (brand === 'm4a' || brand === 'm4b' || brand === 'm4p') return 'audio/mp4';
+  }
+  return undefined;
+}
+
+function sniffedPlaybackMime(chunk: Uint8Array): string | undefined {
+  const header = chunk.byteLength > MEDIA_SNIFF_BYTES ? chunk.subarray(0, MEDIA_SNIFF_BYTES) : chunk;
+  const sniffed = sniffMediaFromMagic(header);
+  if (sniffed?.kind === 'video') return sniffed.mimeType;
+  return audioMimeFromMagic(header);
+}
+
+async function projectedPlaybackMime(file: SessionMediaFile): Promise<string | undefined> {
+  const declared = playbackMime(file.mediaType, file.name);
+  if (declared !== undefined) return declared;
+  if (!genericBinary(file.mediaType) || file.size <= 0) return undefined;
+  const end = Math.min(MEDIA_SNIFF_BYTES - 1, file.size - 1);
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for await (const chunk of file.stream({ start: 0, end })) {
+    chunks.push(chunk);
+    size += chunk.byteLength;
+    if (size >= MEDIA_SNIFF_BYTES) break;
+  }
+  if (size === 0) return undefined;
+  const header = new Uint8Array(Math.min(size, MEDIA_SNIFF_BYTES));
+  let offset = 0;
+  for (const chunk of chunks) {
+    const take = Math.min(chunk.byteLength, header.byteLength - offset);
+    header.set(chunk.subarray(0, take), offset);
+    offset += take;
+    if (offset >= header.byteLength) break;
+  }
+  return sniffedPlaybackMime(header);
+}
+
+async function reportLeaseRelease(req: FastifyRequest, sessionId: string, fileId: string, dispose: (() => void | Promise<void>) | undefined): Promise<void> {
+  try {
+    await dispose?.();
+  } catch (error) {
+    requestLog(req)?.error({ session_id: sessionId, file_id: fileId, err: error }, 'session media cleanup failed');
+    throw error;
+  }
 }
 
 function requireLocalClient(req: FastifyRequest): void {
@@ -182,24 +276,32 @@ export function registerHostMediaPreviewRoutes(app: FastifyInstance, core: Scope
       return sendError(error, reply);
     }
   });
-  app.post('/api/sessions/:sessionId/media-playback', async (req, reply) => {
-    let opened: Awaited<ReturnType<typeof openSessionMedia>> | undefined;
-    try {
-      requireLocalClient(req);
-      const sessionId = (req.params as { sessionId: string }).sessionId;
-      if (sessionId.length === 0) throw new AdmissionError(400, 'invalid_media_preview_request');
-      const body = sessionOpenSchema.parse(req.body);
-      opened = await openSessionMedia(core, sessionId, body.file_id, transcriptService);
-      if (!opened.sessionExists || opened.file === undefined) throw new AdmissionError(404, 'media_preview_not_found');
-      const mime = playbackMime(opened.file.mediaType, opened.file.name);
-      if (mime === undefined) throw new AdmissionError(400, 'media_preview_type_unsupported');
-      return issue(req, reply, { kind: 'session', sessionId, fileId: body.file_id, mime, size: opened.file.size });
-    } catch (error) {
-      return sendError(error, reply);
-    } finally {
-      await opened?.operation?.dispose();
-    }
-  });
+  app.post('/api/sessions/:sessionId/media-playback', async (req, reply) => withReplyCloseSignal(
+    reply as unknown as Parameters<typeof withReplyCloseSignal>[0],
+    async (signal) => {
+      let opened: Awaited<ReturnType<typeof openSessionMedia>> | undefined;
+      let sessionId = '';
+      let fileId = '';
+      try {
+        requireLocalClient(req);
+        sessionId = (req.params as { sessionId: string }).sessionId;
+        if (sessionId.length === 0) throw new AdmissionError(400, 'invalid_media_preview_request');
+        const body = sessionOpenSchema.parse(req.body);
+        fileId = body.file_id;
+        opened = await openSessionMedia(core, sessionId, fileId, transcriptService, signal);
+        if (signal.aborted) return;
+        if (!opened.sessionExists || opened.file === undefined) throw new AdmissionError(404, 'media_preview_not_found');
+        const mime = await projectedPlaybackMime(opened.file);
+        if (mime === undefined) throw new AdmissionError(400, 'media_preview_type_unsupported');
+        return issue(req, reply, { kind: 'session', sessionId, fileId, mime, size: opened.file.size });
+      } catch (error) {
+        return sendError(error, reply);
+      } finally {
+        await reportLeaseRelease(req, sessionId, fileId, opened?.operation === undefined ? undefined : () => opened?.operation?.dispose());
+      }
+    },
+    req,
+  ));
   app.delete('/api/fs:media-preview/:previewId', async (req, reply) => {
     release((req.params as { previewId: string }).previewId);
     return reply.send(okEnvelope(null, req.id));
@@ -241,28 +343,43 @@ async function sendHost(hostFs: { stat(path: string): Promise<{ isFile: boolean;
 }
 
 async function sendSession(core: Scope, transcriptService: TranscriptService | undefined, grant: SessionGrant, req: FastifyRequest, reply: FastifyReply): Promise<unknown> {
-  const opened = await openSessionMedia(core, grant.sessionId, grant.fileId, transcriptService);
-  let streamed = false;
-  try {
-    if (!opened.sessionExists || opened.file === undefined) throw new AdmissionError(404, 'media_preview_not_found');
-    const file = opened.file;
-    reply.type(grant.mime);
-    const range = applyRange(reply, pickHeader(req.headers, 'range'), file.size);
-    if (range === 'unsatisfiable') return reply.send('');
-    const stream = Readable.from(file.stream(range === undefined || range === null ? undefined : { start: range.start, end: range.end }));
-    streamed = true;
-    let released = false;
-    const release = (): void => {
-      if (released) return;
-      released = true;
-      stream.destroy();
-      void opened.operation?.dispose();
-    };
-    reply.raw.once('close', release);
-    reply.raw.once('finish', release);
-    stream.once('close', () => { reply.raw.off('close', release); });
-    return reply.send(stream);
-  } finally {
-    if (!streamed) await opened.operation?.dispose();
-  }
+  return withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], async (signal) => {
+    const opened = await openSessionMedia(core, grant.sessionId, grant.fileId, transcriptService, signal);
+    let stream: Readable | undefined;
+    let responseCleanup: DeferredCleanup | undefined;
+    try {
+      if (signal.aborted) return;
+      if (!opened.sessionExists || opened.file === undefined) throw new AdmissionError(404, 'media_preview_not_found');
+      const file = opened.file;
+      reply.type(grant.mime);
+      const range = applyRange(reply, pickHeader(req.headers, 'range'), file.size);
+      if (range === 'unsatisfiable') return reply.send('');
+      const playback = Readable.from(file.stream(range === null ? undefined : { start: range.start, end: range.end }));
+      stream = playback;
+      responseCleanup = createDeferredCleanup(
+        () => opened.operation?.dispose(),
+        (error) => {
+          requestLog(req)?.error({ session_id: grant.sessionId, file_id: grant.fileId, err: error }, 'session media cleanup failed');
+          playback.destroy(error instanceof Error ? error : new Error(String(error)));
+        },
+      );
+      const release = (): void => { responseCleanup?.release(); };
+      playback.on('error', (error: unknown) => {
+        requestLog(req)?.warn({ session_id: grant.sessionId, file_id: grant.fileId, err: error }, 'session media stream error');
+        playback.destroy();
+        release();
+      });
+      playback.once('close', release);
+      reply.raw.once('finish', release);
+      reply.raw.once('close', () => { playback.destroy(); release(); });
+      return await reply.send(playback);
+    } catch (error) {
+      stream?.destroy();
+      responseCleanup?.release();
+      await responseCleanup?.wait();
+      throw error;
+    } finally {
+      if (stream === undefined) await reportLeaseRelease(req, grant.sessionId, grant.fileId, () => opened.operation?.dispose());
+    }
+  }, req);
 }
