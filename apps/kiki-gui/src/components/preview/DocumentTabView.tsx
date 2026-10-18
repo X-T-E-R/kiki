@@ -47,6 +47,8 @@ export interface DocumentTabViewProps {
    */
   readonly onOpenLocally?: () => void;
   readonly onDownload?: () => void;
+  /** False while the tab is hidden. An in-flight render is cancelled; a finished page stays. */
+  readonly active?: boolean;
 }
 
 /** The server's own words, so the view never invents a capability. */
@@ -122,7 +124,7 @@ function PageControl({ controller, response }: { controller: DocumentPreviewCont
   );
 }
 
-export function DocumentTabView({ source, sessionId, client: clientProp, onOpenPluginSettings, onOpenLocally, onDownload }: DocumentTabViewProps) {
+export function DocumentTabView({ source, sessionId, client: clientProp, onOpenPluginSettings, onOpenLocally, onDownload, active = true }: DocumentTabViewProps) {
   const { t, locale } = useI18n();
   // The client is a prop, not a context read: the tab already knows which
   // session owns the file, and a caller outside the live connection (a test, a
@@ -133,7 +135,7 @@ export function DocumentTabView({ source, sessionId, client: clientProp, onOpenP
       ? documentSourceFor({ path: source.path, runtimeId: source.runtimeId })
       : documentSourceFor({ fileId: source.fileId, name: source.name, mediaType: source.mediaType })
   ), [source]);
-  const controller = useDocumentPreview(client, sessionId, documentSource);
+  const controller = useDocumentPreview(client, sessionId, documentSource, {}, active);
   const { state } = controller;
   // The caption names what the user recognises. A session attachment's
   // file id is an internal handle, never something to put in front of them.

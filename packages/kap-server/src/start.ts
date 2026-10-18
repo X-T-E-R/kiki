@@ -107,6 +107,7 @@ import { RemoteConnectionManager } from './services/connections/manager';
 import { SshRemoteConnector } from './services/sshRemote/connector';
 import { registerRemoteConnectionRoutes, CONNECTION_BROKER_WS } from './routes/remoteConnections';
 import { registerHtmlPreviewRoutes } from './routes/htmlPreview';
+import { registerHostMediaPreviewRoutes } from './routes/hostMediaPreview';
 import { SpaceSummaryProjection } from './services/connections/spaceSummary';
 import { resolveLocalSpaceTransport } from './services/connections/localSpace';
 import { createAuthHook } from './middleware/auth';
@@ -1001,7 +1002,10 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     sessionViewBroadcaster: broadcaster,
     sessionViewTranscriptService: transcriptService,
   });
-  if (opts.disableAuth !== true) registerHtmlPreviewRoutes(app, core, remoteConnections);
+  if (opts.disableAuth !== true) {
+    registerHtmlPreviewRoutes(app, core, remoteConnections);
+    registerHostMediaPreviewRoutes(app, core);
+  }
   const wssBroker = registerRemoteConnectionRoutes(app, admission, remoteConnections, registration.serverId, () => authTokenService.getToken(), sshRemote);
   threadBridge = await registerSpaceThreadBridge(app, core, admission, remoteConnections, transcriptService, shutdownController.signal);
   registerUsageExportRoutes(app, usageExport.service);

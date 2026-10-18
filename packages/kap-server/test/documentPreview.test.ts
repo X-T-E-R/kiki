@@ -1,5 +1,8 @@
+import { stat, rm } from 'node:fs/promises';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import { OfficePreviewCleanupError } from '../src/services/documentPreview/officeCliPreview';
 import {
   DocumentPreviewDependencyError,
   DocumentPreviewService,
@@ -121,6 +124,27 @@ describe('document preview engine', () => {
     await expect(disabled.preview('session', file('report.docx', new Uint8Array([1]), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'), {}, signal)).resolves.toMatchObject({
       kind: 'missing_dependency', dependency: 'officecli', recovery: { kind: 'install-prerequisite', pluginId: 'kiki-office', prerequisiteId: 'officecli', consentRequired: true, pluginState: 'disabled' },
     });
+  });
+
+  it('removes the office scratch directory only after the owned render returns', async () => {
+    const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
+    let scratch: string | undefined;
+    const ready = new DocumentPreviewService({ renderOffice: async (request) => {
+      scratch = path.dirname(request.path);
+      return { bytes: png, mime: 'image/png', page: 1, pageCount: 1 };
+    } });
+    const result = await ready.preview('session', file('deck.pptx', new Uint8Array([1]), 'application/vnd.openxmlformats-officedocument.presentationml.presentation'), {}, signal);
+    expect(result).toMatchObject({ kind: 'ready', format: 'pptx' });
+    await expect(stat(scratch!)).rejects.toMatchObject({ code: 'ENOENT' });
+
+    let retained: string | undefined;
+    const unclean = new DocumentPreviewService({ renderOffice: async (request) => {
+      retained = path.dirname(request.path);
+      throw new OfficePreviewCleanupError('Document renderer cleanup was not confirmed.');
+    } });
+    await expect(unclean.preview('session', file('deck.pptx', new Uint8Array([1]), 'application/vnd.openxmlformats-officedocument.presentationml.presentation'), {}, signal)).rejects.toBeInstanceOf(OfficePreviewCleanupError);
+    expect((await stat(retained!)).isDirectory()).toBe(true);
+    await rm(retained!, { recursive: true, force: true });
   });
 
   it('rejects binary content in a text-labelled source instead of showing bytes as text', async () => {

@@ -152,6 +152,52 @@ describe('document preview source identity', () => {
 });
 
 
+it('lets an office preview advance without a page count and keeps the current page when the next render fails', async () => {
+  const ready = (page: number, count?: number) => ({
+    kind: 'ready' as const,
+    format: 'pptx' as const,
+    fidelity: 'rendered' as const,
+    renderer: 'officecli' as const,
+    source: {
+      kind: 'workspace' as const,
+      name: 'deck.pptx',
+      media_type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      size: 4,
+    },
+    navigation: { kind: 'page' as const, page, ...(count === undefined ? {} : { page_count: count }) },
+    assets: [{ asset_id: 'asset', mime: 'image/png', url: '/api/sessions/example-session/document-preview/assets/asset' }],
+    read_only: true as const,
+  });
+  const documentPreview = vi.fn()
+    .mockResolvedValueOnce(ready(1))
+    .mockRejectedValueOnce(new Error('page failed'))
+    .mockResolvedValueOnce(ready(2, 2));
+  const client = fakeClient({ documentPreview });
+  function Probe() {
+    const controller = useDocumentPreview(client, 'example-session', { kind: 'workspace', path: '/work/deck.pptx' });
+    const page = controller.state.kind === 'ready' && controller.state.response.kind === 'ready' && controller.state.response.navigation.kind === 'page'
+      ? controller.state.response.navigation.page
+      : 0;
+    return (
+      <div>
+        <span data-page>{page}</span>
+        <span data-forward>{String(controller.canStepForward)}</span>
+        <button type="button" data-next disabled={!controller.canStepForward} onClick={() => { controller.step(1); }}>next</button>
+      </div>
+    );
+  }
+  const container = await render(<Probe />);
+  expect(container.querySelector('[data-page]')?.textContent).toBe('1');
+  expect(container.querySelector('[data-forward]')?.textContent).toBe('true');
+  await click(container, '[data-next]');
+  expect(documentPreview).toHaveBeenCalledTimes(2);
+  expect(container.querySelector('[data-page]')?.textContent).toBe('1');
+  expect(container.querySelector('[data-forward]')?.textContent).toBe('true');
+  await click(container, '[data-next]');
+  expect(documentPreview).toHaveBeenCalledTimes(3);
+  expect(container.querySelector('[data-page]')?.textContent).toBe('2');
+});
+
 it('retains ready layout during page navigation but hides it on a source or session change', async () => {
   const response = (page: number) => ({
     kind: 'ready', format: 'pdf', fidelity: 'rendered', renderer: 'browser-pdf',

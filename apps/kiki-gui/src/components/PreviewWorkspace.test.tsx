@@ -1370,6 +1370,106 @@ describe('PreviewWorkspace media tabs', () => {
     },
   );
 
+  it('leaves unselected office and video tabs idle, then plays a video url and cancels it', async () => {
+    const documentPreview = vi.fn(async (_session?: string, _request?: unknown, _signal?: AbortSignal) => ({
+      kind: 'missing_dependency',
+      dependency: 'officecli',
+      source: { kind: 'workspace', name: 'deck.pptx', media_type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', size: 4 },
+      message: 'The kiki-office plugin is not installed.',
+      recovery: { kind: 'install-prerequisite', plugin_id: 'kiki-office', prerequisite_id: 'officecli', consent_required: true, plugin_state: 'not-installed' },
+      read_only: true,
+    }));
+    let resolveOpen: ((value: { preview_id: string; url: string; mime: string; size: number; expires_at: number }) => void) | undefined;
+    const openHostMediaPreview = vi.fn(() => new Promise<{ preview_id: string; url: string; mime: string; size: number; expires_at: number }>((resolve) => { resolveOpen = resolve; }));
+    const closeHostMediaPreview = vi.fn(async () => undefined);
+    const readHostFileBytes = vi.fn(async (_path?: string, _options?: { signal?: AbortSignal }) => ({ bytes: new Uint8Array([0, 0, 0, 24]), mime: 'video/mp4' }));
+    connectionMock.activeClient = {
+      ...(connectionMock.defaultClient as object),
+      documentPreview,
+      openHostMediaPreview,
+      closeHostMediaPreview,
+      readHostFileBytes,
+    };
+    const props = {
+      tabs: ['/work/docs/design.md', '/work/clips/intro.mp4', '/work/deck.pptx'],
+      active: '/work/docs/design.md',
+      dirtyPaths: new Set<string>(),
+      width: 400,
+      sessionId: 'session',
+      onActivate: vi.fn(),
+      onClose: vi.fn(),
+      onCloseOthers: vi.fn(),
+      onCloseAll: vi.fn(),
+      onMove: vi.fn(),
+      onCollapse: vi.fn(),
+      onWidthChange: vi.fn(),
+      onOpenImage: vi.fn(),
+      reportDirty: vi.fn(),
+    };
+    const probe = makeRoot();
+    await renderSettled(probe.root, <PreviewWorkspace {...props} />);
+    expect(documentPreview).not.toHaveBeenCalled();
+    expect(openHostMediaPreview).not.toHaveBeenCalled();
+    await renderSettled(probe.root, <PreviewWorkspace {...props} active="/work/clips/intro.mp4" />);
+    expect(openHostMediaPreview).toHaveBeenCalledTimes(1);
+    expect(documentPreview).not.toHaveBeenCalled();
+    await act(async () => {
+      resolveOpen?.({ preview_id: 'cap', url: 'http://127.0.0.1:9/media-preview/cap', mime: 'video/mp4', size: 8, expires_at: Date.now() + 60_000 });
+    });
+    const video = () => workspace().querySelector<HTMLVideoElement>('video[data-preview-video]');
+    expect(video()?.getAttribute('src')).toBe('http://127.0.0.1:9/media-preview/cap');
+    await act(async () => { video()?.dispatchEvent(new Event('error')); });
+    expect(readHostFileBytes).toHaveBeenCalledTimes(1);
+    expect(video()?.getAttribute('src')).toBe('blob:mock');
+    expect(closeHostMediaPreview).toHaveBeenCalledWith('cap');
+    await renderSettled(probe.root, <PreviewWorkspace {...props} active="/work/deck.pptx" />);
+    expect(documentPreview).toHaveBeenCalledTimes(1);
+    let rejectPreview: ((error: Error) => void) | undefined;
+    documentPreview.mockImplementation((_session?: string, _request?: unknown, previewSignal?: AbortSignal) => new Promise((_resolve, reject) => {
+      rejectPreview = reject;
+      previewSignal?.addEventListener('abort', () => { reject(new Error('cancelled')); });
+    }));
+    await renderSettled(probe.root, <PreviewWorkspace {...props} active="/work/docs/design.md" />);
+    expect(documentPreview.mock.calls.at(-1)?.[2]?.aborted).toBe(true);
+    await act(async () => { probe.root.unmount(); });
+    expect(readHostFileBytes.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
+    rejectPreview?.(new Error('cancelled'));
+  });
+
+  it('does not render a closed office tab when the same path is reopened unselected', async () => {
+    const documentPreview = vi.fn(async () => ({
+      kind: 'missing_dependency',
+      dependency: 'officecli',
+      source: { kind: 'workspace', name: 'deck.pptx', media_type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', size: 4 },
+      message: 'The kiki-office plugin is not installed.',
+      recovery: { kind: 'install-prerequisite', plugin_id: 'kiki-office', prerequisite_id: 'officecli', consent_required: true, plugin_state: 'not-installed' },
+      read_only: true,
+    }));
+    connectionMock.activeClient = { ...(connectionMock.defaultClient as object), documentPreview };
+    const base = {
+      dirtyPaths: new Set<string>(),
+      width: 400,
+      sessionId: 'session',
+      onActivate: vi.fn(),
+      onClose: vi.fn(),
+      onCloseOthers: vi.fn(),
+      onCloseAll: vi.fn(),
+      onMove: vi.fn(),
+      onCollapse: vi.fn(),
+      onWidthChange: vi.fn(),
+      onOpenImage: vi.fn(),
+      reportDirty: vi.fn(),
+    };
+    const probe = makeRoot();
+    await renderSettled(probe.root, <PreviewWorkspace {...base} tabs={['/work/docs/design.md', '/work/deck.pptx']} active="/work/docs/design.md" />);
+    expect(documentPreview).not.toHaveBeenCalled();
+    await renderSettled(probe.root, <PreviewWorkspace {...base} tabs={['/work/docs/design.md']} active="/work/docs/design.md" />);
+    await renderSettled(probe.root, <PreviewWorkspace {...base} tabs={['/work/docs/design.md', '/work/deck.pptx']} active="/work/docs/design.md" />);
+    expect(documentPreview).not.toHaveBeenCalled();
+    await renderSettled(probe.root, <PreviewWorkspace {...base} tabs={['/work/docs/design.md', '/work/deck.pptx']} active="/work/deck.pptx" />);
+    expect(documentPreview).toHaveBeenCalledTimes(1);
+  });
+
   it('places the opener pair beside the binary download, plus a caption reveal icon', async () => {
     hostMock.desktop = true;
     const probe = makeRoot();

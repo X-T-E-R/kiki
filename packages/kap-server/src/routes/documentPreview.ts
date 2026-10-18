@@ -1,4 +1,5 @@
-import { basename, dirname } from 'node:path';
+import { readFile, stat } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 
 import {
   Error2,
@@ -8,10 +9,12 @@ import {
   ISessionContext,
   ISessionWorkspaceContext,
   IPluginHostService,
+  IPluginSettingsService,
   IPluginService,
   type Scope,
 } from '@kiki/agent-core-v2';
 import { ISessionMediaStore } from '@kiki/agent-core-v2/agent/media/sessionMediaStore';
+import { IHostProcessService } from '@kiki/agent-core-v2/os/interface/hostProcess';
 import type { DocumentPreviewRequest, DocumentPreviewResponse } from '@kiki/protocol';
 import {
   documentPreviewAssetParamsSchema,
@@ -25,6 +28,12 @@ import { acquireSessionOperation } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
+import {
+  officePageCount,
+  officeScreenshotArgs,
+  officeSheetNames,
+  runOfficeCli,
+} from '../services/documentPreview/officeCliPreview';
 import {
   DocumentPreviewDependencyError,
   DocumentPreviewRequestError,
@@ -77,11 +86,8 @@ interface OpenedPreviewFile {
   readonly dispose: () => void | Promise<void>;
 }
 
-const officePreviewResultSchema = z.object({
-  output: z.unknown(),
-  isError: z.boolean().optional(),
-});
-const DATA_IMAGE_RE = /^data:image\/png;base64,([A-Za-z0-9+/]+={0,2})$/u;
+const MAX_OFFICE_PNG_BYTES = 8 * 1024 * 1024;
+const PNG_MAGIC = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 export function registerDocumentPreviewRoutes(app: DocumentPreviewRouteHost, core: Scope): void {
   let pluginHost: IPluginHostService | undefined;
@@ -102,7 +108,7 @@ export function registerDocumentPreviewRoutes(app: DocumentPreviewRouteHost, cor
           pluginState,
         );
       }
-      return renderOffice(host, request);
+      return renderOfficeDocument(core, request);
     };
   const service = new DocumentPreviewService({ renderOffice: renderOfficeAdapter });
 
@@ -201,82 +207,89 @@ async function officePluginState(core: Scope): Promise<'not-installed' | 'disabl
   }
 }
 
-async function renderOffice(
-  host: IPluginHostService,
-  request: { readonly path: string; readonly page: number; readonly sheet?: string; readonly range?: string; readonly signal: AbortSignal },
-): Promise<OfficePreviewResult> {
-  const scope = {
-    workspaceRoot: dirname(request.path),
-    approvedPaths: [request.path],
-    imageIn: true as const,
+export async function renderOfficeDocument(core: Scope, request: OfficePreviewRequest): Promise<OfficePreviewResult> {
+  const extension = request.path.toLowerCase().split('.').at(-1) ?? '';
+  const binary = await resolveOfficeBinary(core);
+  const processes = core.accessor.get(IHostProcessService);
+  const out = join(dirname(request.path), 'preview.png');
+  let sheets: readonly string[] | undefined;
+  let pageCount: number | undefined;
+  if (extension === 'xlsx') {
+    const outline = await runOfficeCli(binary, ['view', request.path, 'outline', '--max-lines', '200'], request.signal, 15_000, processes);
+    if (outline.spawnError === 'ENOENT') throw missingOfficeBinary();
+    if (outline.code === 0) sheets = officeSheetNames(outline.stdout);
+  } else {
+    const stats = await runOfficeCli(binary, ['view', request.path, 'stats', '--json'], request.signal, 15_000, processes);
+    if (stats.spawnError === 'ENOENT') throw missingOfficeBinary();
+    if (stats.code === 0) pageCount = officePageCount(stats.stdout, extension);
+    if (pageCount !== undefined && request.page > pageCount) {
+      throw new DocumentPreviewRequestError('page_out_of_range', `Page ${request.page} is outside 1-${pageCount}.`);
+    }
+  }
+  const range = extension === 'xlsx' ? sheetRange(request.sheet, request.range) : undefined;
+  const rendered = await runOfficeCli(binary, officeScreenshotArgs({
+    path: request.path,
+    out,
+    extension,
+    page: request.page,
+    range,
+  }), request.signal, 60_000, processes);
+  if (rendered.spawnError === 'ENOENT') throw missingOfficeBinary();
+  if (request.signal.aborted) throw request.signal.reason instanceof Error ? request.signal.reason : new Error('Document preview cancelled');
+  if (rendered.code !== 0) {
+    throw new DocumentPreviewRequestError('invalid_render', clip(rendered.stderr || rendered.stdout || 'The document page could not be rendered.'));
+  }
+  const info = await stat(out);
+  if (!info.isFile() || info.size <= 0 || info.size > MAX_OFFICE_PNG_BYTES) {
+    throw new DocumentPreviewRequestError('invalid_render', 'The document page could not be rendered.');
+  }
+  const bytes = new Uint8Array(await readFile(out));
+  if (!hasPrefix(bytes, PNG_MAGIC)) throw new DocumentPreviewRequestError('invalid_render', 'The document page could not be rendered.');
+  return {
+    bytes,
+    mime: 'image/png',
+    page: extension === 'xlsx' ? undefined : request.page,
+    pageCount,
+    sheet: request.sheet ?? sheets?.[0],
+    sheets,
+    sheetCount: sheets?.length,
   };
-  const sheets = request.path.toLowerCase().endsWith('.xlsx') ? await listOfficeSheets(host, request, scope) : undefined;
-  const range = request.sheet === undefined
-    ? request.range
-    : request.range === undefined
-      ? `${request.sheet}!A1:Z50`
-      : request.range.includes('!') ? request.range : `${request.sheet}!${request.range}`;
-  const result = officePreviewResultSchema.parse(await host.execute(
-    'kiki-office',
-    'office_preview',
-    { file: request.path, page: request.page, range },
-    request.signal,
-    undefined,
-    scope,
-  ));
-  if (result.isError === true) {
-    const detail = parsePluginError(result.output);
-    throw Object.assign(new Error(detail.message), { code: detail.code });
-  }
-  const parts = Array.isArray(result.output) ? result.output : [];
-  for (const part of parts) {
-    if (typeof part !== 'object' || part === null || !('type' in part)) continue;
-    const value = part as { type?: unknown; imageUrl?: { url?: unknown } };
-    if (value.type !== 'image_url' || typeof value.imageUrl?.url !== 'string') continue;
-    const match = DATA_IMAGE_RE.exec(value.imageUrl.url);
-    if (match === null) throw new Error('OfficeCLI returned a non-PNG preview asset');
-    const bytes = Buffer.from(match[1]!, 'base64');
-    return { bytes, mime: 'image/png', page: request.page, sheet: request.sheet, sheets, sheetCount: sheets?.length };
-  }
-  throw new Error(typeof result.output === 'string' ? result.output : 'OfficeCLI returned no preview asset');
 }
 
-async function listOfficeSheets(
-  host: IPluginHostService,
-  request: { readonly path: string; readonly signal: AbortSignal },
-  scope: { readonly workspaceRoot: string; readonly approvedPaths: readonly string[]; readonly imageIn: true },
-): Promise<readonly string[] | undefined> {
+async function resolveOfficeBinary(core: Scope): Promise<string> {
+  const fallback = process.platform === 'win32' ? 'officecli.exe' : 'officecli';
   try {
-    const result = officePreviewResultSchema.parse(await host.execute(
-      'kiki-office',
-      'office_view',
-      { file: request.path, mode: 'text', maxSheetRows: 1 },
-      request.signal,
-      undefined,
-      scope,
-    ));
-    if (typeof result.output !== 'string') return undefined;
-    const sheets = [...result.output.matchAll(/^=== Sheet: (.+?) ===$/gmu)].map((match) => match[1]!.trim()).filter(Boolean);
-    return sheets.length === 0 ? undefined : [...new Set(sheets)];
+    const values = await core.accessor.get(IPluginSettingsService).forExecution('kiki-office');
+    const configured = values['officecliPath'];
+    if (typeof configured === 'string' && configured.trim().length > 0) return configured.trim();
   } catch {
-    return undefined;
+    return fallback;
   }
+  return fallback;
 }
 
-function parsePluginError(output: unknown): { readonly code?: string; readonly message: string } {
-  if (typeof output !== 'string') return { message: 'OfficeCLI preview failed.' };
-  try {
-    const parsed = JSON.parse(output) as { error?: { code?: unknown; message?: unknown } };
-    return {
-      code: typeof parsed.error?.code === 'string' ? parsed.error.code : undefined,
-      message: typeof parsed.error?.message === 'string' ? parsed.error.message : output,
-    };
-  } catch {
-    return { message: output };
-  }
+function missingOfficeBinary(): DocumentPreviewDependencyError {
+  return new DocumentPreviewDependencyError('officecli', 'OfficeCLI is not installed.', 'enabled');
 }
 
-function toWireResponse(value: DocumentPreviewEngineResponse, sessionId: string): DocumentPreviewResponse {
+function sheetRange(sheet: string | undefined, range: string | undefined): string {
+  if (sheet === undefined) return range ?? 'A1:Z50';
+  if (range === undefined) return `${sheet}!A1:Z50`;
+  return range.includes('!') ? range : `${sheet}!${range}`;
+}
+
+function clip(value: string): string {
+  const text = value.replace(/\s+/gu, ' ').trim();
+  return text.length > 0 ? text.slice(0, 400) : 'The document page could not be rendered.';
+}
+
+function hasPrefix(bytes: Uint8Array, prefix: Uint8Array): boolean {
+  if (bytes.byteLength < prefix.byteLength) return false;
+  for (let index = 0; index < prefix.byteLength; index += 1) if (bytes[index] !== prefix[index]) return false;
+  return true;
+}
+
+export function toWireResponse(value: DocumentPreviewEngineResponse, sessionId: string): DocumentPreviewResponse {
   if (value.kind === 'ready') {
     return {
       kind: 'ready',
@@ -291,7 +304,13 @@ function toWireResponse(value: DocumentPreviewEngineResponse, sessionId: string)
       },
       navigation: value.navigation.kind === 'page'
         ? { kind: 'page', page: value.navigation.page, page_count: value.navigation.pageCount }
-        : { kind: 'sheet', sheet: value.navigation.sheet, sheet_index: value.navigation.sheetIndex, sheet_count: value.navigation.sheetCount },
+        : {
+            kind: 'sheet',
+            sheet: value.navigation.sheet,
+            sheets: value.navigation.sheets === undefined || value.navigation.sheets.length === 0 ? undefined : [...value.navigation.sheets],
+            sheet_index: value.navigation.sheetIndex !== undefined && value.navigation.sheetIndex > 0 ? value.navigation.sheetIndex : undefined,
+            sheet_count: value.navigation.sheetCount !== undefined && value.navigation.sheetCount > 0 ? value.navigation.sheetCount : undefined,
+          },
       assets: value.assets.map((asset) => ({
         asset_id: asset.assetId,
         mime: asset.mime,

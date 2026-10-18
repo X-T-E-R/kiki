@@ -38,7 +38,11 @@ import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { createMediaPreview, MediaPreviewUnavailableError } from '../services/mediaPreview';
 
 interface FsContentReply {
-  readonly raw: { readonly destroyed: boolean };
+  readonly raw: {
+    readonly destroyed: boolean;
+    once?(event: 'close', listener: () => void): unknown;
+    off?(event: 'close', listener: () => void): unknown;
+  };
   type(mime: string): FsContentReply;
   header(name: string, value: string | number): FsContentReply;
   code(status: number): FsContentReply;
@@ -288,7 +292,7 @@ async function handleFsContent(
     return;
   }
 
-  reply.type(guessMime(abs, isBinary));
+  reply.type(guessMime(abs, isBinary)).header('accept-ranges', 'bytes');
   const log = requestLog(req);
   const onStreamError = (stream: ReadStream) => (error: unknown) => {
     log?.warn({ path, err: error }, 'fs content stream error');
@@ -296,6 +300,12 @@ async function handleFsContent(
       stream.destroy();
     } catch {
     }
+  };
+  const bindStream = (stream: ReadStream): void => {
+    const stop = (): void => { stream.destroy(); };
+    reply.raw.once?.('close', stop);
+    stream.once('close', () => { reply.raw.off?.('close', stop); });
+    stream.on('error', onStreamError(stream));
   };
 
   const range = parseRangeHeader(pickHeader(req.headers, 'range'), st.size);
@@ -305,13 +315,13 @@ async function handleFsContent(
       .header('content-length', String(range.length))
       .header('content-range', `bytes ${range.start}-${range.end}/${st.size}`);
     const stream = createReadStream(abs, { start: range.start, end: range.end });
-    stream.on('error', onStreamError(stream));
+    bindStream(stream);
     return reply.send(stream) as unknown as void;
   }
 
   reply.code(200).header('content-length', String(st.size));
   const stream = createReadStream(abs);
-  stream.on('error', onStreamError(stream));
+  bindStream(stream);
   return reply.send(stream) as unknown as void;
 }
 

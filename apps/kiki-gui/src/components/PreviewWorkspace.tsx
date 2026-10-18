@@ -11,12 +11,12 @@
  * manager" — appears beside it, gated on the same host capability as the tab
  * context menu's entries; a reveal icon also rides the binary tab's caption
  * strip. Text files are editable where a write
- * channel exists (desktop); everything degrades to read-only otherwise. Every
- * tab's view stays mounted while hidden so editor buffers survive tab
- * switches. Collapsing the panel hides it in place for the same reason: the
- * mounted editor controller keeps its draft and its pending autosave, so
- * re-opening the panel never costs unsaved edits. Only closing the last tab
- * unmounts.
+ * channel exists (desktop); everything degrades to read-only otherwise. A file
+ * tab mounts the first time it is shown, then stays mounted while hidden so
+ * editor buffers, reading position and playback survive later switches.
+ * Collapsing the panel hides a tab that has already been shown: the mounted
+ * editor controller keeps its draft and its pending autosave, so re-opening
+ * the panel never costs unsaved edits. Only closing the tab unmounts it.
  *
  * Agent (panel) tabs render the same full AgentWorkspace as the agent route
  * page — identity header, timeline, actions and detail rail — chromed by
@@ -97,10 +97,10 @@ export interface PreviewWorkspaceProps {
   readonly scrollPositions?: Readonly<Record<string, { readonly top: number; readonly left?: number }>>;
   readonly onScrollPosition?: (key: string, position: { top: number; left?: number }) => void;
   /**
-   * Collapsed (not closed): the panel keeps every tab view — and the editor
-   * buffer behind it — mounted and hides itself instead. Unmounting here would
-   * dispose the host-file editor controller, dropping the draft and canceling
-   * its pending autosave. Defaults to false.
+   * Collapsed (not closed): a file tab that has already been shown stays
+   * mounted and hides itself. Unmounting here would dispose the host-file
+   * editor controller, dropping the draft and canceling its pending autosave.
+   * Defaults to false.
    */
   readonly hidden?: boolean;
   readonly overlay?: boolean;
@@ -197,6 +197,11 @@ export function PreviewWorkspace({
     () => tabs.map(normalizeTabInput),
     [tabs],
   );
+  const openTabKeys = useMemo(() => new Set(normalizedTabs.map((tab) => previewTabKey(tab))), [normalizedTabs]);
+  const [seenTabs, setSeenTabs] = useState<ReadonlySet<string>>(() => new Set());
+  const nextSeen = new Set([...seenTabs].filter((key) => openTabKeys.has(key)));
+  if (!hidden && active !== null && active !== '' && openTabKeys.has(active)) nextSeen.add(active);
+  if (nextSeen.size !== seenTabs.size || [...nextSeen].some((key) => !seenTabs.has(key))) setSeenTabs(nextSeen);
 
   // The shared rail owns the first Escape even if this listener runs before
   // SessionView's rail closer. The next unclaimed Escape exits fullscreen.
@@ -412,6 +417,7 @@ export function PreviewWorkspace({
             position={scrollPositions?.[key]}
             onScrollPosition={onScrollPosition === undefined ? undefined : (position) => { onScrollPosition(key, position); }} />;
         }
+        if (!seenTabs.has(key)) return null;
         return (
           <PreviewTabView
             key={key}
@@ -1330,6 +1336,7 @@ function PreviewTabView({
           source={{ kind: 'workspace', path }}
           sessionId={sessionId}
           client={connection?.client}
+          active={visible}
           onOpenLocally={openers === null ? undefined : () => { openers.open(path); }}
           onDownload={() => {
             const target = connection?.client;
@@ -1501,6 +1508,44 @@ function BinaryTabView({ path }: { readonly path: string }) {
   );
 }
 
+interface PlayableMedia {
+  readonly url: string;
+  readonly size: number;
+  readonly via: 'capability' | 'blob';
+  readonly release: () => void;
+}
+
+function loadPlayableBlob(client: KikiClient, path: string, signal: AbortSignal): Promise<PlayableMedia> {
+  return client.readHostFileBytes(path, { signal }).then(({ bytes, mime }) => {
+    if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : new Error('cancelled');
+    const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
+    return { url, size: bytes.byteLength, via: 'blob', release: () => { URL.revokeObjectURL(url); } };
+  });
+}
+
+/** Capability URL when this connection can mint one; otherwise the file bytes. */
+function loadPlayableMedia(client: KikiClient, path: string, signal: AbortSignal, forceBlob: boolean): Promise<PlayableMedia> {
+  const open = client.openHostMediaPreview;
+  if (!forceBlob && typeof open === 'function') {
+    return open.call(client, { path }, { signal }).then((opened) => {
+      if (signal.aborted) {
+        void client.closeHostMediaPreview(opened.preview_id);
+        throw signal.reason instanceof Error ? signal.reason : new Error('cancelled');
+      }
+      return {
+        url: opened.url,
+        size: opened.size,
+        via: 'capability' as const,
+        release: () => { void client.closeHostMediaPreview(opened.preview_id); },
+      };
+    }, (error: unknown) => {
+      if (signal.aborted) throw error;
+      return loadPlayableBlob(client, path, signal);
+    });
+  }
+  return loadPlayableBlob(client, path, signal);
+}
+
 /**
  * Video tab: the file's own bytes in a plain HTML5 player — native controls,
  * no frame around the picture, intrinsic size capped by the panel rather than
@@ -1508,16 +1553,19 @@ function BinaryTabView({ path }: { readonly path: string }) {
  * degrades to the binary fallback, whose opener buttons are the recovery.
  */
 /**
- * Audio tab: read the original host bytes once, then hand the resulting blob
- * URL to the browser's native player. A failed read stays actionable so the
- * same tab can retry; a browser decode failure uses the ordinary file fallback.
+ * Audio tab: play the host file through a short-lived media URL when the
+ * connection can mint one, otherwise from the original bytes. A failed read
+ * stays actionable so the same tab can retry; a browser decode failure uses
+ * the ordinary file fallback.
  */
 function AudioTabView({ path, scopeId }: { readonly path: string; readonly scopeId?: string }) {
   const { t } = useI18n();
   const client = useOptionalConnection()?.client;
   const name = basenameOf(path);
+  const mediaKey = `${scopeId ?? ''}\0${path}`;
   const [attempt, setAttempt] = useState(0);
   const [unplayable, setUnplayable] = useState(false);
+  const [blobFallbackKey, setBlobFallbackKey] = useState<string | undefined>(undefined);
   const [state, setState] = useState<
     | { readonly status: 'loading' }
     | { readonly status: 'error' }
@@ -1528,6 +1576,7 @@ function AudioTabView({ path, scopeId }: { readonly path: string; readonly scope
       readonly scopeId: string | undefined;
       readonly url: string;
       readonly size: number;
+      readonly via: 'capability' | 'blob';
     }
   >({ status: 'loading' });
 
@@ -1537,24 +1586,26 @@ function AudioTabView({ path, scopeId }: { readonly path: string; readonly scope
       setState({ status: 'error' });
       return;
     }
+    const abort = new AbortController();
+    let release: (() => void) | undefined;
     let cancelled = false;
-    let objectUrl: string | undefined;
     setState({ status: 'loading' });
-    client.readHostFileBytes(path).then(
-      ({ bytes, mime }) => {
-        if (cancelled) return;
-        objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
-        setState({ status: 'ready', client, path, scopeId, url: objectUrl, size: bytes.byteLength });
-      },
-      () => {
-        if (!cancelled) setState({ status: 'error' });
-      },
-    );
+    loadPlayableMedia(client, path, abort.signal, blobFallbackKey === mediaKey).then((ready) => {
+      if (cancelled) {
+        ready.release();
+        return;
+      }
+      release = ready.release;
+      setState({ status: 'ready', client, path, scopeId, url: ready.url, size: ready.size, via: ready.via });
+    }, () => {
+      if (!cancelled && !abort.signal.aborted) setState({ status: 'error' });
+    });
     return () => {
       cancelled = true;
-      if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
+      abort.abort();
+      release?.();
     };
-  }, [attempt, client, path, scopeId]);
+  }, [attempt, blobFallbackKey, client, mediaKey, path, scopeId]);
 
   const readyState = state.status === 'ready' && state.client === client && state.path === path && state.scopeId === scopeId
     ? state
@@ -1599,7 +1650,10 @@ function AudioTabView({ path, scopeId }: { readonly path: string; readonly scope
             preload="metadata"
             aria-label={name}
             data-preview-audio
-            onError={() => { setUnplayable(true); }}
+            onError={() => {
+              if (readyState.via === 'capability') setBlobFallbackKey(mediaKey);
+              else setUnplayable(true);
+            }}
             className="w-full max-w-2xl"
           />
         ) : null}
@@ -1613,11 +1667,16 @@ function VideoTabView({ path }: { readonly path: string }) {
   const client = useOptionalConnection()?.client;
   const name = basenameOf(path);
   const [unplayable, setUnplayable] = useState(false);
+  const [blobFallback, setBlobFallback] = useState(false);
   const [state, setState] = useState<
     | { readonly status: 'loading' }
     | { readonly status: 'error' }
-    | { readonly status: 'ready'; readonly url: string; readonly size: number }
+    | { readonly status: 'ready'; readonly url: string; readonly size: number; readonly via: 'capability' | 'blob' }
   >({ status: 'loading' });
+
+  useEffect(() => {
+    setBlobFallback(false);
+  }, [client, path]);
 
   useEffect(() => {
     setUnplayable(false);
@@ -1625,24 +1684,26 @@ function VideoTabView({ path }: { readonly path: string }) {
       setState({ status: 'error' });
       return;
     }
+    const abort = new AbortController();
+    let release: (() => void) | undefined;
     let cancelled = false;
-    let objectUrl: string | undefined;
     setState({ status: 'loading' });
-    client.readHostFileBytes(path).then(
-      ({ bytes, mime }) => {
-        if (cancelled) return;
-        objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
-        setState({ status: 'ready', url: objectUrl, size: bytes.byteLength });
-      },
-      () => {
-        if (!cancelled) setState({ status: 'error' });
-      },
-    );
+    loadPlayableMedia(client, path, abort.signal, blobFallback).then((ready) => {
+      if (cancelled) {
+        ready.release();
+        return;
+      }
+      release = ready.release;
+      setState({ status: 'ready', url: ready.url, size: ready.size, via: ready.via });
+    }, () => {
+      if (!cancelled && !abort.signal.aborted) setState({ status: 'error' });
+    });
     return () => {
       cancelled = true;
-      if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
+      abort.abort();
+      release?.();
     };
-  }, [client, path]);
+  }, [blobFallback, client, path]);
 
   if (unplayable) return <BinaryTabView path={path} />;
 
@@ -1674,7 +1735,10 @@ function VideoTabView({ path }: { readonly path: string }) {
             playsInline
             aria-label={name}
             data-preview-video
-            onError={() => { setUnplayable(true); }}
+            onError={() => {
+              if (state.status === 'ready' && state.via === 'capability') setBlobFallback(true);
+              else setUnplayable(true);
+            }}
             className="max-h-full max-w-full"
           />
         )}

@@ -18,7 +18,7 @@
  * an external viewer or a remote renderer.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { DocumentPreviewRequest, DocumentPreviewResponse, DocumentPreviewSource } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
@@ -95,11 +95,14 @@ export function useDocumentPreview(
   sessionId: string | undefined,
   source: DocumentPreviewSource | undefined,
   initial: { page?: number; sheet?: string } = {},
+  active = true,
 ): DocumentPreviewController {
   const { locale } = useI18n();
   const [cursor, setCursor] = useState<{ page?: number; sheet?: string; range?: string; offset?: number }>(initial);
   const [attempt, setAttempt] = useState(0);
   const [numPages, setNumPages] = useState<number | undefined>(undefined);
+  const settledKey = useRef<string | undefined>(undefined);
+  const displayedCursor = useRef<{ page?: number; sheet?: string } | undefined>(undefined);
 
   // The source is rebuilt on every parent render; keying the effect on its
   // contents keeps one fetch per actual source instead of one per render.
@@ -118,6 +121,12 @@ export function useDocumentPreview(
   useEffect(() => { setNumPages(undefined); }, [client, sessionId, sourceKey]);
 
   useEffect(() => {
+    settledKey.current = undefined;
+    displayedCursor.current = undefined;
+  }, [client, sessionId, sourceKey, attempt]);
+
+  useEffect(() => {
+    if (!active) return;
     if (client === undefined || sessionId === undefined || stableSource === undefined) {
       setState({
         kind: 'failed',
@@ -125,6 +134,8 @@ export function useDocumentPreview(
       });
       return;
     }
+    const key = JSON.stringify([sourceKey, cursor.page ?? null, cursor.sheet ?? null, cursor.range ?? null, cursor.offset ?? null, attempt]);
+    if (settledKey.current === key) return;
     const abort = new AbortController();
     setState((current) => current.kind === 'ready' ? current : { kind: 'loading' });
     const request: DocumentPreviewRequest = {
@@ -135,13 +146,25 @@ export function useDocumentPreview(
       offset: cursor.offset,
     };
     client.documentPreview(sessionId, request, abort.signal).then((response) => {
-      if (!abort.signal.aborted) setState({ kind: 'ready', response });
+      if (abort.signal.aborted) return;
+      settledKey.current = key;
+      displayedCursor.current = response.kind === 'ready'
+        ? response.navigation.kind === 'page'
+          ? { page: response.navigation.page }
+          : { sheet: response.navigation.sheet }
+        : undefined;
+      setState({ kind: 'ready', response });
     }, (error: unknown) => {
       if (abort.signal.aborted) return;
-      setState({ kind: 'failed', message: errorText(locale, error) });
+      const shown = displayedCursor.current;
+      if (shown !== undefined) {
+        settledKey.current = JSON.stringify([sourceKey, shown.page ?? null, shown.sheet ?? null, null, null, attempt]);
+        setCursor({ page: shown.page, sheet: shown.sheet });
+      }
+      setState((current) => current.kind === 'ready' ? current : { kind: 'failed', message: errorText(locale, error) });
     });
     return () => { abort.abort(); };
-  }, [client, cursor.offset, cursor.page, cursor.range, cursor.sheet, locale, sessionId, stableSource, setState]);
+  }, [active, attempt, client, cursor.offset, cursor.page, cursor.range, cursor.sheet, locale, sessionId, sourceKey, stableSource, setState]);
 
   const goTo = useCallback((next: { page?: number; sheet?: string; range?: string; offset?: number }) => {
     setCursor((previous) => ({ ...previous, ...next }));
@@ -150,9 +173,10 @@ export function useDocumentPreview(
   const bounds = useMemo(() => {
     if (state.kind !== 'ready') return { back: false, forward: false };
     const nav = navigationOf(state.response);
-    if (nav?.kind === 'page') {
+    if (nav?.kind === 'page' && state.response.kind === 'ready') {
       const count = nav.page_count ?? numPages;
-      return { back: (nav.page ?? 1) > 1, forward: count === undefined ? false : (nav.page ?? 1) < count };
+      const office = state.response.format === 'docx' || state.response.format === 'pptx';
+      return { back: (nav.page ?? 1) > 1, forward: count === undefined ? office : (nav.page ?? 1) < count };
     }
     if (nav?.kind === 'sheet') {
       const sheets = sheetsOf(state.response);

@@ -7,6 +7,8 @@ import { spawn } from 'node:child_process';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
+import { OfficePreviewCleanupError } from './officeCliPreview';
+
 export type DocumentPreviewFormat = 'pdf' | 'docx' | 'xlsx' | 'pptx';
 export type DocumentPreviewRenderer = 'browser-pdf' | 'poppler' | 'officecli';
 export type DocumentPreviewSourceKind = 'workspace' | 'session-media';
@@ -313,6 +315,7 @@ export class DocumentPreviewService {
     const page = options.page ?? 1;
     const directory = await mkdtemp(path.join(os.tmpdir(), 'kiki-document-preview-'));
     const target = path.join(directory, safeFilename(file.name, format));
+    let cleanupUnconfirmed = false;
     try {
       await materialize(file, target, signal);
       let rendered: OfficePreviewResult;
@@ -327,6 +330,7 @@ export class DocumentPreviewService {
             readOnly: true,
           };
         }
+        cleanupUnconfirmed = isCleanupUnconfirmed(error);
         throw error;
       }
       if (rendered.mime !== 'image/png' || !hasPrefix(rendered.bytes, PNG_MAGIC) || rendered.bytes.byteLength > MAX_ASSET_BYTES) {
@@ -346,7 +350,13 @@ export class DocumentPreviewService {
         assets: [asset], readOnly: true,
       };
     } finally {
-      await rm(directory, { recursive: true, force: true });
+      if (!cleanupUnconfirmed) {
+        try {
+          await rm(directory, { recursive: true, force: true });
+        } catch (rmError) {
+          throw new OfficePreviewCleanupError('Document preview scratch could not be removed.', { cause: rmError });
+        }
+      }
     }
   }
 
@@ -555,7 +565,12 @@ function joinBytes(chunks: readonly Uint8Array[], total: number): Uint8Array {
   return result;
 }
 
+function isCleanupUnconfirmed(error: unknown): boolean {
+  return error instanceof OfficePreviewCleanupError;
+}
+
 function isOfficeDependencyError(error: unknown): boolean {
+  if (error instanceof DocumentPreviewRequestError || error instanceof OfficePreviewCleanupError) return false;
   if (error instanceof DocumentPreviewDependencyError) return true;
   if (typeof error !== 'object' || error === null) return false;
   const code = 'code' in error ? String((error as { code?: unknown }).code) : '';

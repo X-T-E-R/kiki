@@ -134,6 +134,30 @@ describe('KikiClient reading deadline options', () => {
       expect(client.readingOptions()).toEqual({ timeoutMs: 0 });
     } finally { await client.klient.close(); }
   });
+  it('does not abort a document preview when the reading deadline is unlimited', async () => {
+    vi.stubGlobal('localStorage', { getItem: () => JSON.stringify({ readingTimeoutSeconds: 0 }) });
+    const body = {
+      kind: 'missing_dependency',
+      dependency: 'officecli',
+      source: { kind: 'workspace', name: 'deck.pptx', media_type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', size: 4 },
+      message: 'The kiki-office plugin is not installed.',
+      recovery: { kind: 'install-prerequisite', plugin_id: 'kiki-office', prerequisite_id: 'officecli', consent_required: true, plugin_state: 'not-installed' },
+      read_only: true,
+    };
+    const fetch = vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      await new Promise((resolve) => { setTimeout(resolve, 40); });
+      expect(init?.signal?.aborted).not.toBe(true);
+      return Response.json({ code: 0, msg: 'OK', data: body });
+    });
+    vi.stubGlobal('fetch', fetch);
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    const controller = new AbortController();
+    try {
+      await expect(client.documentPreview('session', { source: { kind: 'workspace', path: '/work/deck.pptx' } }, controller.signal)).resolves.toMatchObject({ kind: 'missing_dependency' });
+      expect(String(fetch.mock.calls[0]?.[0])).toContain('/api/sessions/session/document-preview');
+      expect(controller.signal.aborted).toBe(false);
+    } finally { await client.klient.close(); }
+  });
 });
 
 describe('KikiClient skill and text preview reading options', () => {

@@ -32,19 +32,21 @@ export function PreviewAssetImage({ client, url, alt, width, height }: PreviewAs
 
   useEffect(() => {
     if (client === undefined) return;
+    const abort = new AbortController();
     let cancelled = false;
     let created: string | undefined;
     setFailed(false);
     setObjectUrl(undefined);
-    client.readDocumentPreviewAsset(url).then(({ bytes, mime }) => {
+    client.readDocumentPreviewAsset(url, abort.signal).then(({ bytes, mime }) => {
       if (cancelled) return;
       created = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
       setObjectUrl(created);
     }, () => {
-      if (!cancelled) setFailed(true);
+      if (!cancelled && !abort.signal.aborted) setFailed(true);
     });
     return () => {
       cancelled = true;
+      abort.abort();
       if (created !== undefined) URL.revokeObjectURL(created);
     };
   }, [attempt, client, url]);

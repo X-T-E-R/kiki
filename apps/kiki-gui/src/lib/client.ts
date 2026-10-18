@@ -1965,6 +1965,40 @@ export class KikiClient {
     return this.run(this.rest.filesystem.closeHtmlPreview(previewId, options));
   }
 
+  /**
+   * Short-lived unauthenticated media URL for a host video or audio file.
+   * A `<video src>` cannot send this client's bearer, so the server mints a
+   * capability the element can fetch with Range. `timeoutMs: 0` is unlimited.
+   */
+  async openHostMediaPreview(input: { readonly path: string }, options?: { readonly signal?: AbortSignal }): Promise<{
+    readonly preview_id: string;
+    readonly url: string;
+    readonly mime: string;
+    readonly size: number;
+    readonly expires_at: number;
+  }> {
+    const data = await this.memoryRequest<unknown>('POST', '/fs:media-preview', { body: input, signal: options?.signal, timeoutMs: 15_000 });
+    if (typeof data !== 'object' || data === null) {
+      throw new ApiError({ code: API_CODES.INVALID_RESPONSE, msg: 'Media preview could not be opened', data: null });
+    }
+    const record = data as Record<string, unknown>;
+    if (typeof record['preview_id'] !== 'string' || typeof record['url'] !== 'string' || typeof record['mime'] !== 'string'
+      || typeof record['size'] !== 'number' || typeof record['expires_at'] !== 'number') {
+      throw new ApiError({ code: API_CODES.INVALID_RESPONSE, msg: 'Media preview could not be opened', data: null });
+    }
+    return {
+      preview_id: record['preview_id'],
+      url: absoluteMediaUrl(this.baseUrl, record['url']),
+      mime: record['mime'],
+      size: record['size'],
+      expires_at: record['expires_at'],
+    };
+  }
+
+  async closeHostMediaPreview(previewId: string): Promise<void> {
+    await this.memoryRequest('DELETE', `/fs:media-preview/${encodeURIComponent(previewId)}`, { timeoutMs: 10_000 });
+  }
+
   private cachedPreviewBytes(
     key: string,
     read: (etag: string | undefined, signal: AbortSignal) => Promise<{ bytes: Uint8Array; mime: string; name?: string; etag?: string; notModified?: boolean }>,
@@ -2880,13 +2914,15 @@ export class KikiClient {
     const headers: Record<string, string> = { accept: 'application/json' };
     if (this.token !== undefined) headers['authorization'] = `Bearer ${this.token}`;
     if (options.body !== undefined) headers['content-type'] = 'application/json';
+    const deadline = options.timeoutMs === 0 ? undefined : AbortSignal.timeout(options.timeoutMs ?? 30_000);
+    const signal = options.signal === undefined ? deadline : deadline === undefined ? options.signal : AbortSignal.any([options.signal, deadline]);
     let response: Response;
     try {
       response = await (this.transport?.fetch ?? fetch)(url, {
         method,
         headers,
         body: options.body === undefined ? undefined : JSON.stringify(options.body),
-        signal: options.signal === undefined ? AbortSignal.timeout(options.timeoutMs ?? 30_000) : AbortSignal.any([options.signal, AbortSignal.timeout(options.timeoutMs ?? 30_000)]),
+        signal,
       });
     } catch (error) {
       if (error instanceof DOMException && error.name === 'TimeoutError') {
@@ -3141,6 +3177,13 @@ export class KikiClient {
   deletePersonaAvatar(id: string): Promise<PersonaAvatarDeleteResponse> {
     return this.run(() => this.rest.personas.deleteAvatar(id));
   }
+}
+
+function absoluteMediaUrl(baseUrl: string, value: string): string {
+  if (/^https?:\/\//iu.test(value)) return value;
+  const root = baseUrl.replace(/\/+$/u, '');
+  const base = root === '' ? (globalThis.location?.origin ?? 'http://localhost') : root;
+  return new URL(value, `${base}/`).toString();
 }
 
 /** Persona error codes (`@kiki/protocol` error-codes). */
