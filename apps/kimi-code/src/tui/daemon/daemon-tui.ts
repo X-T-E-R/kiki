@@ -38,7 +38,10 @@ import {
   MEDIA_SETTLEMENT_RETRY_MAX_MS,
   MEDIA_STAGING_TTL_SECONDS,
 } from '#/tui/constant/media';
-import { CHROME_GUTTER } from '#/tui/constant/rendering';
+import {
+  ACTIVITY_TICK_INTERVAL_MS,
+  CHROME_GUTTER,
+} from '#/tui/constant/rendering';
 import { adaptApprovalRequest } from '#/tui/interactions/approval-adapter';
 import {
   adaptQuestionRequest,
@@ -83,6 +86,13 @@ import {
 } from './commands';
 import { resolveDaemonHome, type DaemonConnection } from './discovery';
 import { DaemonTranscriptRenderer } from './transcript-renderer';
+import {
+  formatBusyActivityMessage,
+  resolveStatusNoticePolicy,
+  TurnActivityTracker,
+  type ShowStatusOptions,
+  type StatusNotice,
+} from './activity-status-helper';
 
 export interface DaemonTUIStartupInput {
   readonly cliOptions: {
@@ -169,6 +179,11 @@ export class DaemonTUI {
   private readonly sideControllers = new Set<SessionController>();
   private readonly temporarySessionIds = new Set<string>();
   private stopped = false;
+  private sourceOverlayErrorActive = false;
+  private activeStatusNotice: StatusNotice | undefined;
+  private lastActivityKind: 'idle' | 'busy' | 'retry' | 'resyncing' | 'resyncFailed' = 'idle';
+  private activityTickTimer: ReturnType<typeof setInterval> | undefined;
+  private readonly turnActivityTracker = new TurnActivityTracker();
 
   constructor(private readonly connection: DaemonConnection, startup: DaemonTUIStartupInput) {
     this.startup = startup;
@@ -263,6 +278,11 @@ export class DaemonTUI {
     this.temporarySessionIds.clear();
     await cleanup(() => this.client.close());
     await cleanup(() => {
+      this.clearStatusNotice();
+      this.clearActivityTickTimer();
+      this.turnActivityTracker.reset();
+    });
+    await cleanup(() => {
       this.state.footer.dispose();
     });
     await cleanup(() => this.state.terminal.drainInput());
@@ -339,11 +359,17 @@ export class DaemonTUI {
         });
     };
     editor.onCtrlS = () => {
-      this.showStatus('Prompt steering shortcut is disabled in daemon TUI.', 'error');
+      this.showStatus('Prompt steering shortcut is disabled in daemon TUI.', {
+        tone: 'normal',
+        transient: true,
+      });
     };
     editor.onCtrlB = () => {
       if (this.controller?.getState().busy !== true) return false;
-      this.showStatus('Backgrounding the active turn is disabled in daemon TUI.', 'error');
+      this.showStatus('Backgrounding the active turn is disabled in daemon TUI.', {
+        tone: 'normal',
+        transient: true,
+      });
       return true;
     };
     editor.onToggleTodoExpand = () => {
@@ -554,6 +580,15 @@ export class DaemonTUI {
       });
       this.sourceOverlayReattachPending = false;
     }
+    if (this.sourceOverlayErrorActive) {
+      this.sourceOverlayErrorActive = false;
+      if (this.activeStatusNotice?.source === 'source-overlay') {
+        this.clearStatusNotice();
+        if (this.controller !== undefined) {
+          this.renderActivityState(this.controller.getState());
+        }
+      }
+    }
     this.sourceOverlayHeartbeatFailures = 0;
     this.scheduleSourceOverlayHeartbeat();
     return lease.lease_id;
@@ -570,7 +605,11 @@ export class DaemonTUI {
       this.sourceOverlayHeartbeat = undefined;
       void this.ensureSourceOverlayLease().catch((error: unknown) => {
         this.sourceOverlayHeartbeatFailures += 1;
-        this.showStatus(`Source overlay lease renewal failed: ${formatErrorMessage(error)}`, 'error');
+        this.sourceOverlayErrorActive = true;
+        this.showStatus(`Source overlay lease renewal failed: ${formatErrorMessage(error)}`, {
+          tone: 'error',
+          source: 'source-overlay',
+        });
         this.scheduleSourceOverlayHeartbeat(true);
       });
     }, delay);
@@ -691,6 +730,10 @@ export class DaemonTUI {
 
   private async openSession(sessionId: string): Promise<void> {
     const previous = this.controller;
+    this.clearStatusNotice();
+    this.clearActivityTickTimer();
+    this.turnActivityTracker.reset();
+    this.lastActivityKind = 'idle';
     if (previous !== undefined && previous.sessionId !== sessionId) {
       await this.clearAttachments();
       this.state.editor.setText('');
@@ -802,26 +845,117 @@ export class DaemonTUI {
     this.syncInteractionBlocks(view.blocks);
   }
 
-  private renderActivityState(view: SessionViewState): void {
-    let message: string | undefined;
-    let tone: 'normal' | 'error' = 'normal';
-    if (view.resyncFailed) {
-      message = 'Session resync failed. Run /reload to retry.';
-      tone = 'error';
-    } else if (view.resyncing) {
-      message = `Resyncing session (attempt ${String(view.resyncAttempt)})…`;
-    } else if (view.turnRetry !== undefined) {
-      message = `Retrying attempt ${String(view.turnRetry.failedAttempt + 1)}/${String(view.turnRetry.maxAttempts)} in ${String(view.turnRetry.delayMs)}ms`;
-    } else if (view.busy) {
-      const runningTasks = view.tasks.filter((task) => task.status === 'running').length;
-      message = runningTasks > 0 ? `Working · ${String(runningTasks)} tasks running` : 'Working…';
+  private clearStatusNotice(): void {
+    if (this.activeStatusNotice?.timer !== undefined) {
+      clearTimeout(this.activeStatusNotice.timer);
     }
-    if (message === undefined) {
+    this.activeStatusNotice = undefined;
+  }
+
+  private clearActivityTickTimer(): void {
+    if (this.activityTickTimer !== undefined) {
+      clearInterval(this.activityTickTimer);
+      this.activityTickTimer = undefined;
+    }
+  }
+
+  private syncActivityTickTimer(view: SessionViewState): void {
+    const shouldTick =
+      view.busy &&
+      !view.resyncFailed &&
+      !view.resyncing &&
+      view.turnRetry === undefined &&
+      view.turnStartedAt !== undefined &&
+      Number.isFinite(view.turnStartedAt) &&
+      view.turnStartedAt <= Date.now();
+
+    if (shouldTick) {
+      if (this.activityTickTimer !== undefined) return;
+      this.activityTickTimer = setInterval(() => {
+        if (this.controller === undefined || this.stopped) return;
+        this.renderActivityState(this.controller.getState());
+      }, ACTIVITY_TICK_INTERVAL_MS);
+      this.activityTickTimer.unref?.();
+      return;
+    }
+
+    this.clearActivityTickTimer();
+  }
+
+  private renderActivityState(view: SessionViewState): void {
+    this.syncActivityTickTimer(view);
+    const now = Date.now();
+    const trackerState = this.turnActivityTracker.update(
+      view.busy,
+      view.blocks ?? [],
+      view.turnStartedAt,
+      view.queuedPromptIds,
+      now,
+    );
+
+    let currentActivityKind: 'idle' | 'busy' | 'retry' | 'resyncing' | 'resyncFailed' = 'idle';
+    let activityMessage: string | undefined;
+    let activityTone: 'normal' | 'error' = 'normal';
+
+    if (view.resyncFailed) {
+      currentActivityKind = 'resyncFailed';
+      activityMessage = 'Session resync failed. Run /reload to retry.';
+      activityTone = 'error';
+    } else if (view.resyncing) {
+      currentActivityKind = 'resyncing';
+      activityMessage = `Resyncing session (attempt ${String(view.resyncAttempt)})…`;
+    } else if (view.turnRetry !== undefined) {
+      currentActivityKind = 'retry';
+      activityMessage = `Retrying attempt ${String(view.turnRetry.failedAttempt + 1)}/${String(view.turnRetry.maxAttempts)} in ${String(view.turnRetry.delayMs)}ms`;
+    } else if (view.busy) {
+      currentActivityKind = 'busy';
+      const runningTasks = view.tasks?.filter((task) => task.status === 'running').length ?? 0;
+      activityMessage = formatBusyActivityMessage({
+        runningTasks,
+        turnStartedAt: view.turnStartedAt,
+        hasResponded: trackerState.hasResponded,
+        lastResponseAt: trackerState.lastResponseAt,
+        now,
+      });
+    }
+
+    const activityTransition = this.lastActivityKind !== currentActivityKind;
+    this.lastActivityKind = currentActivityKind;
+
+    // Resync failed is absolute highest priority and preempts any status notice.
+    if (view.resyncFailed) {
+      this.clearStatusNotice();
       this.state.activityContainer.clear();
+      this.state.activityContainer.addChild(
+        new Text(currentTheme.fg('error', activityMessage!), 0, 0),
+      );
       this.state.ui.requestRender();
       return;
     }
-    this.showStatus(message, tone);
+
+    // New work/recovery supersedes notices; quiet refreshes leave them readable.
+    if (activityTransition && currentActivityKind !== 'idle') {
+      this.clearStatusNotice();
+    }
+
+    if (activityMessage === undefined) {
+      // Idle clears activity, not a result or error the user is still reading.
+      if (this.activeStatusNotice?.source === 'activity') {
+        this.clearStatusNotice();
+      }
+      if (this.activeStatusNotice === undefined) {
+        this.state.activityContainer.clear();
+        this.state.ui.requestRender();
+      }
+      return;
+    }
+
+    // If the active status notice is already from activity, allow it to update with new tick/wait text.
+    if (this.activeStatusNotice !== undefined && this.activeStatusNotice.source !== 'activity') {
+      return;
+    }
+
+    this.showStatus(activityMessage, { tone: activityTone, source: 'activity' });
   }
 
   private async handleInput(raw: string): Promise<void> {
@@ -1550,7 +1684,10 @@ export class DaemonTUI {
       .session(controller.sessionId)
       .agent('main')
       .compact(instruction === '' ? undefined : { instruction });
-    this.showStatus(started ? 'Context compaction started.' : 'Context compaction is already running.');
+    this.showStatus(
+      started ? 'Context compaction started.' : 'Context compaction is already running.',
+      { transient: true },
+    );
   }
 
   private async handleTasksCommand(args: string): Promise<void> {
@@ -1699,7 +1836,7 @@ export class DaemonTUI {
   private async login(provider: string | undefined): Promise<void> {
     const flow = await this.client.klient.global.auth.startLogin(provider);
     if (flow.status === 'authenticated') {
-      this.showStatus(`Authenticated with ${flow.provider}.`);
+      this.showStatus(`Authenticated with ${flow.provider}.`, { transient: true });
       return;
     }
     openUrl(flow.verification_uri_complete);
@@ -1710,7 +1847,7 @@ export class DaemonTUI {
 
   private async logout(provider: string | undefined): Promise<void> {
     const result = await this.client.klient.global.auth.logout(provider);
-    this.showStatus(`Logged out from ${result.provider}.`);
+    this.showStatus(`Logged out from ${result.provider}.`, { transient: true });
   }
 
   private async showMcpStatus(): Promise<void> {
@@ -1907,7 +2044,7 @@ export class DaemonTUI {
     );
     if (message?.kind !== 'assistant') throw new Error('No completed assistant message to copy.');
     await clipboard.setText(message.text);
-    this.showStatus('Copied the last assistant message.');
+    this.showStatus('Copied the last assistant message.', { transient: true });
   }
 
   private configureEditor(command: string): void {
@@ -2201,7 +2338,7 @@ export class DaemonTUI {
     if (this.activeSessionPicker !== undefined) {
       await this.showSessionPicker(this.state.sessionsScope);
     }
-    this.showStatus('Session deleted.');
+    this.showStatus('Session deleted.', { transient: true });
   }
 
   private async deleteCurrentSessionFromPicker(row: SessionRow): Promise<void> {
@@ -2333,7 +2470,49 @@ export class DaemonTUI {
     this.state.ui.requestRender();
   }
 
-  private showStatus(message: string, tone: 'normal' | 'error' = 'normal'): void {
+  private showStatus(
+    message: string,
+    options?: 'normal' | 'error' | ShowStatusOptions,
+  ): void {
+    // If resyncFailed is currently active, it has absolute top priority and cannot be overwritten.
+    const view = this.controller?.getState();
+    if (view?.resyncFailed) {
+      this.renderActivityState(view);
+      return;
+    }
+
+    const normalizedOptions: ShowStatusOptions =
+      typeof options === 'string'
+        ? { tone: options }
+        : options ?? {};
+    const tone = normalizedOptions.tone ?? 'normal';
+    const policy = resolveStatusNoticePolicy(tone, normalizedOptions);
+    this.clearStatusNotice();
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    if (policy.transient && policy.ttlMs !== undefined) {
+      timer = setTimeout(() => {
+        if (this.activeStatusNotice?.timer === timer) {
+          this.activeStatusNotice = undefined;
+          if (this.controller !== undefined) {
+            this.renderActivityState(this.controller.getState());
+          } else {
+            this.state.activityContainer.clear();
+            this.state.ui.requestRender();
+          }
+        }
+      }, policy.ttlMs);
+      timer.unref?.();
+    }
+
+    this.activeStatusNotice = {
+      message,
+      tone,
+      transient: policy.transient,
+      source: policy.source,
+      timer,
+    };
+
     this.state.activityContainer.clear();
     this.state.activityContainer.addChild(
       new Text(tone === 'error' ? currentTheme.fg('error', message) : currentTheme.dim(message), 0, 0),

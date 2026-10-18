@@ -82,9 +82,10 @@ The input box shows a `!` prompt on the left in shell mode (in the desktop GUI t
 
 ## During streaming output
 
+The activity row shows `Working…` while a turn is running. When its start time is known, waiting three seconds for the first output adds `waited …`. After output begins, `last response … ago` tracks its latest observed activity when a response timestamp is available. If session synchronization fails, the recovery message stays visible; run `/reload` to retry.
+
 The input box remains usable while the agent is thinking or calling tools, and supports the following extra actions:
 
-- **`Ctrl-S`**: inject the content in the input box into the running turn immediately, without waiting for it to finish
 - **`Esc` / `Ctrl-C`**: interrupt the current turn
 - **`Ctrl-O`**: globally toggle the collapsed/expanded state of tool output and compaction summaries
 
