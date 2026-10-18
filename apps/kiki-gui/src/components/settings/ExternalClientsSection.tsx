@@ -181,7 +181,7 @@ function draftToPatch(draft: ConnectionDraft, saved: ExternalClientConnection | 
   return patch;
 }
 
-const POLICY_FIELDS = ['mode', 'allowCommands', 'historyScope'] as const;
+const POLICY_FIELDS = ['workspace', 'mode', 'allowCommands', 'historyScope'] as const;
 
 export type PolicyChange = 'pause' | 'access' | 'none';
 
