@@ -4667,6 +4667,13 @@ describe('virtualized transcript scrolling', () => {
     await renderSettled(root, virtualTranscript({ ...state, blocks: [...virtualBlocks(20, 'older'), ...current] }, onLoadOlder));
     await settleVirtualizer();
     expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    // The page's own anchor restore is still converging on the rows it just
+    // prepended. A reader ends it by gesturing again, and a downward one must
+    // load nothing: without it the restore can pull the row back under the
+    // viewport after the next line, and the edge check would be measured
+    // against the restored row instead of the top the reader is looking at.
+    await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: 120, bubbles: true })); });
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
     await setTranscriptScroll(scroll, 0);
     expect(onLoadOlder).toHaveBeenCalledTimes(1);
     await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
