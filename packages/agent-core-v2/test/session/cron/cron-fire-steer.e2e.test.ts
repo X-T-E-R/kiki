@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Emitter, Event } from '#/_base/event';
 import { createServices } from '#/_base/di/test';
@@ -141,7 +141,8 @@ describe('cron-fired prompt admission', () => {
   let onWillCreate: Emitter<IAgentScopeHandle>;
   let mainHandle: IAgentScopeHandle | undefined;
 
-  beforeAll(async () => {
+  beforeEach(async () => {
+    mainHandle = undefined;
     const dir = mkdtempSync(join(tmpdir(), 'cron-steer-'));
     clockFile = join(dir, 'clock.txt');
     writeFileSync(clockFile, String(Date.now()));
@@ -193,7 +194,7 @@ describe('cron-fired prompt admission', () => {
     await ctx.rpc.setPermission({ mode: 'yolo' });
   });
 
-  afterAll(async () => {
+  afterEach(async () => {
     onWillCreate.dispose();
     await ctx.dispose();
   });
@@ -351,9 +352,14 @@ describe('cron-fired prompt admission', () => {
   it('coalesces idle ticks ahead of ordinary FIFO while queue mode keeps every fire', async () => {
     const prompts = ctx.get(IAgentPromptService);
     const cron = ctx.get(ISessionCronService);
+    const createdAt = Math.floor(cron.now() / 60_000) * 60_000;
+    writeFileSync(clockFile, String(createdAt));
     const idle = await cron.addTask({ cron: '* * * * *', prompt: 'idle priority' });
+    writeFileSync(clockFile, String(createdAt + 1));
     const other = await cron.addTask({ cron: '* * * * *', prompt: 'other idle job' });
+    writeFileSync(clockFile, String(createdAt + 2));
     const queued = await cron.addTask({ cron: '* * * * *', prompt: 'FIFO cron', deliveryMode: 'queue' });
+    expect([idle.createdAt, other.createdAt, queued.createdAt]).toEqual([createdAt, createdAt + 1, createdAt + 2]);
     expect(idle.deliveryMode).toBe('idle');
     const callsBefore = ctx.llmCalls.length;
     await ctx.rpc.setPermission({ mode: 'manual' });
