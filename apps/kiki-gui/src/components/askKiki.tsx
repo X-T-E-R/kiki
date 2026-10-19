@@ -138,26 +138,45 @@ export function buildAskKikiPrompt(skill: string, intent: string, context?: stri
   return context === undefined || context.trim() === '' ? line : `${line}\n${context}`;
 }
 
-// The composer is the shell's resident node, and the new session's snapshot
-// still has to load before it is mounted and enabled. A frame count cannot
-// cover that (a slow server is seconds, not frames), so this polls on a real
-// deadline and gives up quietly — focus is a convenience, never a blocker.
-const FOCUS_DEADLINE_MS = 4000;
-const FOCUS_POLL_MS = 80;
+/** The landing spot the handoff still owns, once it exists. */
+let pendingCaretLanding: (() => void) | null = null;
 
-function focusComposerWhenReady(): void {
-  const deadline = Date.now() + FOCUS_DEADLINE_MS;
-  const attempt = () => {
-    const textarea = document.querySelector<HTMLTextAreaElement>('textarea[data-composer]');
-    if (textarea !== null && !textarea.disabled) {
-      textarea.focus();
-      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-      return;
-    }
-    if (Date.now() >= deadline) return;
-    window.setTimeout(attempt, FOCUS_POLL_MS);
+/**
+ * The caret, once the new session's composer takes focus.
+ *
+ * Focus itself is the navigation's job: `useNavigationComposerFocus` in `App`
+ * already waits for the route's composer however long its snapshot takes, and
+ * it owns that wait — it is cancelled when the session changes, the user
+ * focuses something else, or the page goes away. A second poll from here would
+ * be the same wait with a worse owner: the page that asked is unmounted by the
+ * very navigation it is waiting on, so nothing could cancel it, and a detached
+ * timer is free to fire after its document is gone.
+ *
+ * What is left to this module is the one thing only the handoff knows: the
+ * draft it wrote. When that exact line takes focus with the caret still at the
+ * start, it belongs after the text, not in front of its `/skill` token. Nothing
+ * is scheduled: this listens once, ends on the first focus anywhere (the user's
+ * own choice wins), and touches nothing unless the focused node is this
+ * session's composer, still holding the untouched draft.
+ */
+function landCaretAfterHandoff(sessionId: string, draft: string): void {
+  pendingCaretLanding?.();
+  const doc = document;
+  if (doc.defaultView === null) return;
+  const finish = () => {
+    doc.removeEventListener('focusin', onFocusIn, true);
+    if (pendingCaretLanding === finish) pendingCaretLanding = null;
   };
-  attempt();
+  const onFocusIn = (event: FocusEvent) => {
+    const node = event.target;
+    finish();
+    if (!(node instanceof HTMLTextAreaElement) || !node.matches('textarea[data-composer]')) return;
+    if (node.dataset['composerSession'] !== sessionId || node.value !== draft) return;
+    if (node.selectionStart !== 0 || node.selectionEnd !== 0) return;
+    node.setSelectionRange(draft.length, draft.length);
+  };
+  pendingCaretLanding = finish;
+  doc.addEventListener('focusin', onFocusIn, true);
 }
 
 export function useAskKiki(): UseAskKiki {
@@ -175,12 +194,13 @@ export function useAskKiki(): UseAskKiki {
   const createAndDraft = useCallback(async (signal: AbortSignal, task: AskKikiTask, create: SessionCreate) => {
     const session = await client.createSession(create);
     signal.throwIfAborted();
-    writeDraft(session.id, buildAskKikiPrompt(task.skill, t(task.promptKey), task.context));
+    const draft = buildAskKikiPrompt(task.skill, t(task.promptKey), task.context);
+    writeDraft(session.id, draft);
     void queryClient.invalidateQueries({ queryKey: ['sessions'] });
     // This create just confirmed the target in this connection scope, so the
     // route's own guard may admit the session without re-validating it.
     queryClient.setQueryData(['space-view-target', scopeId, 'session', session.id], true);
-    return session.id;
+    return { sessionId: session.id, draft };
   }, [client, queryClient, scopeId, t]);
 
   const ask = useCallback((task: AskKikiTask) => {
@@ -192,9 +212,9 @@ export function useAskKiki(): UseAskKiki {
     // which the guard holds back until the user agrees to leave.
     const launch = async (signal: AbortSignal) => {
       const create = askKikiCreateBody(task.location);
-      const sessionId = await createAndDraft(signal, task, create);
-      void navigate(`/s/${sessionId}`, { state: { createdSession: { id: sessionId, scopeId } } });
-      focusComposerWhenReady();
+      const handedOff = await createAndDraft(signal, task, create);
+      void navigate(`/s/${handedOff.sessionId}`, { state: { createdSession: { id: handedOff.sessionId, scopeId } } });
+      landCaretAfterHandoff(handedOff.sessionId, handedOff.draft);
     };
     const run = guard?.runAction !== undefined
       ? guard.runAction(launch)

@@ -91,7 +91,13 @@ beforeEach(() => {
   document.body.append(container);
   root = createRoot(container);
 });
-afterEach(async () => { await act(async () => root.unmount()); container.remove(); query.clear(); });
+afterEach(async () => {
+  await act(async () => root.unmount());
+  // Any landing still waiting ends here: the focus listener gives up on a
+  // focus it does not own, which is exactly what a stray focusin is.
+  document.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+  container.remove(); query.clear();
+});
 
 async function mount(dirty: boolean) {
   await act(async () => root.render(
@@ -170,5 +176,94 @@ describe('the handoff leaves before it creates', () => {
 
     expect(client.createSession).toHaveBeenCalledTimes(2);
     expect(readDraft('hooks-ask-session')).toMatch(/^\/kiki-hooks /);
+  });
+});
+
+/**
+ * What the handoff still owns once it navigates away.
+ *
+ * Focus belongs to the navigation (`useNavigationComposerFocus` in App), which
+ * waits for the route's composer and is cancelled with it. The handoff must not
+ * start a wait of its own: the page that asked is unmounted by the navigation
+ * it is waiting on, so nothing could stop that timer, and a detached one is free
+ * to fire after its document is gone. The only thing left here is the line it
+ * wrote, so it may place the caret after that exact draft — once, on the focus
+ * that lands there, and never over a caret the user placed themselves.
+ */
+describe('what the handoff leaves behind after navigating', () => {
+  const composer = (sessionId: string, value: string) => {
+    const node = document.createElement('textarea');
+    node.setAttribute('data-composer', '');
+    node.dataset['composerSession'] = sessionId;
+    node.value = value;
+    document.body.append(node);
+    return node;
+  };
+  /** The browser's own focus signal, with the caret where focus left it. */
+  const focusWithCaretAt = (node: HTMLTextAreaElement, at: number) => {
+    node.setSelectionRange(at, at);
+    node.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+  };
+
+  it('reads nothing once the page that started it is gone', async () => {
+    await mount(false);
+    vi.useFakeTimers();
+    const query = vi.spyOn(document, 'querySelector');
+    query.mockClear();
+    try {
+      await act(async () => container.querySelector<HTMLButtonElement>('[data-hooks-ask-kiki]')!.click());
+      for (let i = 0; i < 5; i += 1) await act(async () => { await Promise.resolve(); });
+      expect(client.createSession, 'the handoff ran').toHaveBeenCalledTimes(1);
+      expect(rawNavigate).toHaveBeenCalledTimes(1);
+
+      await act(async () => root.unmount());
+      container.remove();
+      query.mockClear();
+
+      // The old deadline was 4s of 80ms polls; nothing may survive the page.
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      expect(query, 'no late read of a document the handoff no longer owns').not.toHaveBeenCalled();
+    } finally {
+      query.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('lands the caret after the handed-off line once that composer takes focus', async () => {
+    await mount(false);
+    await press();
+    const draft = readDraft('hooks-ask-session');
+    expect(draft).toMatch(/^\/kiki-hooks /);
+
+    const node = composer('hooks-ask-session', draft);
+    focusWithCaretAt(node, 0);
+
+    expect([node.selectionStart, node.selectionEnd]).toEqual([draft.length, draft.length]);
+  });
+
+  it('keeps a caret the user placed inside the line themselves', async () => {
+    await mount(false);
+    await press();
+    const draft = readDraft('hooks-ask-session');
+
+    const node = composer('hooks-ask-session', draft);
+    focusWithCaretAt(node, 3);
+
+    expect([node.selectionStart, node.selectionEnd]).toEqual([3, 3]);
+  });
+
+  it('gives up on the first focus it does not own, and never moves a later one', async () => {
+    await mount(false);
+    await press();
+    const draft = readDraft('hooks-ask-session');
+
+    // The user went somewhere else first: that focus is the end of the handoff.
+    const other = composer('someone-else', draft);
+    focusWithCaretAt(other, 0);
+    expect([other.selectionStart, other.selectionEnd]).toEqual([0, 0]);
+
+    const node = composer('hooks-ask-session', draft);
+    focusWithCaretAt(node, 0);
+    expect([node.selectionStart, node.selectionEnd]).toEqual([0, 0]);
   });
 });
