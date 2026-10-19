@@ -287,26 +287,32 @@ describe('session header discovery tour guide and dirty guard', () => {
     agentAnchor.setAttribute('data-anchor', 'agent-panel');
     document.body.append(agentAnchor);
     const root = createRoot(container);
-    await act(async () => {
-      root.render(
-        <MemoryRouter initialEntries={['/s/s1']}>
-          <I18nProvider>
-            <DiscoveryProvider activeSessionId="s1" sessionReachable initialState={activeState}>
-              <DiscoveryTourTag />
-            </DiscoveryProvider>
-          </I18nProvider>
-        </MemoryRouter>,
-      );
-    });
+    // The anchor is the only real control this station can point at, and a
+    // failed assertion must not leave it in the document for the next case:
+    // its "missing control" probe would then find it and pass for the wrong
+    // reason. Assertions still throw — the cleanup only runs first.
+    try {
+      await act(async () => {
+        root.render(
+          <MemoryRouter initialEntries={['/s/s1']}>
+            <I18nProvider>
+              <DiscoveryProvider activeSessionId="s1" sessionReachable initialState={activeState}>
+                <DiscoveryTourTag />
+              </DiscoveryProvider>
+            </I18nProvider>
+          </MemoryRouter>,
+        );
+      });
 
-    expect(container.querySelector('[data-discovery-tour-tag="expanded"]')).not.toBeNull();
-    // The tag puts readable space around the slash; that is the shipped copy.
-    expect(container.textContent).toContain('2 / 5');
-    expect(container.querySelector('[data-discovery-action="agent-panel"]')).not.toBeNull();
-
-    await act(async () => { root.unmount(); });
-    agentAnchor.remove();
-    container.remove();
+      expect(container.querySelector('[data-discovery-tour-tag="expanded"]')).not.toBeNull();
+      // The tag puts readable space around the slash; that is the shipped copy.
+      expect(container.textContent).toContain('2 / 5');
+      expect(container.querySelector('[data-discovery-action="agent-panel"]')).not.toBeNull();
+    } finally {
+      await act(async () => { root.unmount(); });
+      agentAnchor.remove();
+      container.remove();
+    }
   });
 
   it('supports collapse and leave controls from session header tour tag', async () => {
