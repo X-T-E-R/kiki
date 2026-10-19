@@ -18,6 +18,8 @@ import { IAgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMd
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
+import { IPluginService } from '#/app/plugin/plugin';
+import { stubPluginService } from '../../app/plugin/stubs';
 import { IPromptFieldRegistry } from '#/app/promptField/promptFieldRegistry';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
@@ -218,6 +220,7 @@ function buildHost(key: string): {
     new AgentTelemetryContextService(),
   );
   host.stub(IConfigService, createConfigStub());
+  host.stub(IPluginService, stubPluginService({ sessionStarts: [] }));
   host.stub(IAgentRuntimeService, { _serviceBrand: undefined, nativeSshEnabled: () => false });
   host.stub(IPromptFieldRegistry, {
     _serviceBrand: undefined,

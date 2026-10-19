@@ -42,7 +42,7 @@ function fixture(config: InteractionConfig = { askUserQuestion: 'background', as
   ix.set(ISessionQuestionService, new SyncDescriptor(SessionQuestionService));
   ix.stub(IConfigService, { get: <T>() => currentConfig as T });
   ix.stub(IModelService, { get: (id) => models[id], resolveId: (id) => id === 'alias-b' ? 'b' : id });
-  ix.stub(IAgentProfileService, { getModel: () => modelId });
+  ix.stub(IAgentProfileService, { getModel: () => modelId, getRecipeModelSettings: () => undefined });
   ix.set(IQuestionFrequencyGuard, new SyncDescriptor(QuestionFrequencyGuard));
   const guard = ix.get(IQuestionFrequencyGuard);
   const events = ix.get(IEventBus);

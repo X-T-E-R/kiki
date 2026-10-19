@@ -359,6 +359,7 @@ function registerSharedServices(
   reg.defineInstance(IAgentContextMemoryService, contextMemory);
   reg.definePartialInstance(IAgentProfileService, {
     getModelCapabilities: () => capabilities,
+    getRecipeModelSettings: () => undefined,
     resolveModelContext: modelContext,
   });
   reg.definePartialInstance(IModelCatalog, {
@@ -775,11 +776,12 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
     ]);
   });
 
-  it('does not let selection or restored schemas bypass the native subagent board default', () => {
+  it('does not let selection or restored schemas bypass an optional plugin tool subagent opt-in', () => {
     let allowedTools: string[] = [];
     const h = createHarness((reg) => {
       reg.definePartialInstance(IAgentProfileService, {
         getModelCapabilities: () => capabilities,
+        getRecipeModelSettings: () => undefined,
         resolveModelContext: modelContext,
         data: () => ({ modelCapabilities: capabilities, thinkingLevel: 'off', systemPrompt: '' }),
       });
@@ -793,7 +795,7 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
       }));
       reg.define(IAgentToolPolicyService, AgentToolPolicyService);
     });
-    disposables.add(h.registry.register(new EchoTool('BoardRead'), { source: 'builtin' }));
+    disposables.add(h.registry.register(Object.assign(new EchoTool('BoardRead'), { subagentDefault: 'opt-in' as const }), { source: 'plugin' }));
     h.contextMemory.history.push(schemaMessage('BoardRead'));
 
     expect(h.sut.load(['BoardRead'])).toEqual({ toLoad: [], alreadyAvailable: [], unknown: ['BoardRead'] });
@@ -801,7 +803,7 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
     expect(h.sut.shapeHistory(h.contextMemory.get())).toEqual([]);
 
     allowedTools = ['BoardRead'];
-    expect(h.sut.load(['BoardRead'])).toEqual({ toLoad: [], alreadyAvailable: [], unknown: ['BoardRead'] });
+    expect(h.sut.load(['BoardRead'])).toEqual({ toLoad: [], alreadyAvailable: ['BoardRead'], unknown: [] });
     expect(h.sut.shapeTools(h.registry.list()).map((tool) => tool.name)).toEqual(['BoardRead']);
     expect(h.sut.shapeHistory(h.contextMemory.get())[0]?.tools?.map((tool) => tool.name)).toEqual(['BoardRead']);
 

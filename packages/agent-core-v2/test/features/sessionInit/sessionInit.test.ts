@@ -106,7 +106,7 @@ describe('SessionInitService', () => {
         get: (id: unknown) => {
           if (id === IAgentPermissionModeService) return permissionMode;
           if (id === IAgentProfileService)
-            return { republishStatus, getEffectiveThinkingLevel: () => 'off' };
+            return { data: profile.data, republishStatus, getEffectiveThinkingLevel: () => 'off' };
           return undefined;
         },
       },
