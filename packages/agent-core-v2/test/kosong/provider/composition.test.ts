@@ -1052,15 +1052,50 @@ function vertexSse(): Response {
   return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
 }
 
+function fetchBodyText(
+  input: Parameters<typeof globalThis.fetch>[0],
+  init: Parameters<typeof globalThis.fetch>[1],
+): Promise<string | undefined> {
+  if (input instanceof Request) return input.clone().text();
+  const body = init?.body;
+  if (typeof body === 'string') return Promise.resolve(body);
+  if (body instanceof Uint8Array) return Promise.resolve(new TextDecoder().decode(body));
+  return Promise.resolve(undefined);
+}
+
 function capturedFetch(
   onRequest: (url: URL, headers: Headers) => void,
-): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> {
+): (
+  input: Parameters<typeof globalThis.fetch>[0],
+  init?: Parameters<typeof globalThis.fetch>[1],
+) => Promise<Response> {
   return (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
     const headers = new Headers(input instanceof Request ? input.headers : init?.headers);
     onRequest(url, headers);
     return Promise.resolve(vertexSse());
   };
+}
+
+function findThinkingConfig(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const found = findThinkingConfig(entry);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const direct = record['thinkingConfig'];
+  if (typeof direct === 'object' && direct !== null && !Array.isArray(direct)) {
+    return direct as Record<string, unknown>;
+  }
+  for (const entry of Object.values(record)) {
+    const found = findThinkingConfig(entry);
+    if (found !== undefined) return found;
+  }
+  return undefined;
 }
 
 describe('google-genai SDK route (intercepted fetch)', () => {
@@ -1193,7 +1228,7 @@ describe('google-genai SDK route (intercepted fetch)', () => {
     expect(authHeaders).not.toHaveBeenCalled();
   });
 
-  it('uses the location host template for a Vertex API key in us', async () => {
+  it('uses the multi-region rep host for a Vertex API key in us', async () => {
     const { seen, authHeaders } = await interceptSdk();
     const provider = new GoogleGenAIChatProvider({
       model: ARGON_MODEL,
@@ -1205,8 +1240,26 @@ describe('google-genai SDK route (intercepted fetch)', () => {
     for await (const part of stream) void part;
     expectVertexKey(
       seen[0]!,
-      'us-aiplatform.googleapis.com',
+      'aiplatform.us.rep.googleapis.com',
       `/v1/projects/example-project/locations/us/publishers/google/models/${ARGON_MODEL}:streamGenerateContent`,
+    );
+    expect(authHeaders).not.toHaveBeenCalled();
+  });
+
+  it('uses the multi-region rep host for a Vertex API key in eu', async () => {
+    const { seen, authHeaders } = await interceptSdk();
+    const provider = new GoogleGenAIChatProvider({
+      model: ARGON_MODEL,
+      vertexai: true,
+      project: 'example-project',
+      location: 'eu',
+    });
+    const stream = await provider.generate('', [], PROBE_HISTORY, { auth: { apiKey: VERTEX_KEY } });
+    for await (const part of stream) void part;
+    expectVertexKey(
+      seen[0]!,
+      'aiplatform.eu.rep.googleapis.com',
+      `/v1/projects/example-project/locations/eu/publishers/google/models/${ARGON_MODEL}:streamGenerateContent`,
     );
     expect(authHeaders).not.toHaveBeenCalled();
   });
@@ -1310,7 +1363,7 @@ describe('google-genai SDK route (intercepted fetch)', () => {
     expect(seen[0]!.authorization).toBe('Bearer local-adc-stub');
   });
 
-  it('uses the SDK rep host for project ADC in us', async () => {
+  it('uses the multi-region rep host for project ADC in us', async () => {
     const { seen } = await interceptSdk('Bearer local-adc-stub');
     const provider = new GoogleGenAIChatProvider({
       model: 'gemini-2.5-flash',
@@ -1323,6 +1376,24 @@ describe('google-genai SDK route (intercepted fetch)', () => {
     expect(seen[0]!.url.hostname).toBe('aiplatform.us.rep.googleapis.com');
     expect(seen[0]!.url.pathname).toBe(
       '/v1beta1/projects/example-project/locations/us/publishers/google/models/gemini-2.5-flash:streamGenerateContent',
+    );
+    expect(seen[0]!.keyHeader).toBeNull();
+    expect(seen[0]!.authorization).toBe('Bearer local-adc-stub');
+  });
+
+  it('uses the multi-region rep host for project ADC in eu', async () => {
+    const { seen } = await interceptSdk('Bearer local-adc-stub');
+    const provider = new GoogleGenAIChatProvider({
+      model: 'gemini-2.5-flash',
+      vertexai: true,
+      project: 'example-project',
+      location: 'eu',
+    });
+    const stream = await provider.generate('', [], PROBE_HISTORY);
+    for await (const part of stream) void part;
+    expect(seen[0]!.url.hostname).toBe('aiplatform.eu.rep.googleapis.com');
+    expect(seen[0]!.url.pathname).toBe(
+      '/v1beta1/projects/example-project/locations/eu/publishers/google/models/gemini-2.5-flash:streamGenerateContent',
     );
     expect(seen[0]!.keyHeader).toBeNull();
     expect(seen[0]!.authorization).toBe('Bearer local-adc-stub');
@@ -1383,6 +1454,111 @@ describe('google-genai SDK route (intercepted fetch)', () => {
     await expect(provider.generate('', [], PROBE_HISTORY)).rejects.toThrow(/project and location must both be set/);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(authHeaders).not.toHaveBeenCalled();
+  });
+
+  it('sends a thinking level for Gemini 4 and keeps thought text', async () => {
+    const bodies: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      (input: Parameters<typeof globalThis.fetch>[0], init?: Parameters<typeof globalThis.fetch>[1]) => {
+        return fetchBodyText(input, init).then((body) => {
+          bodies.push(body ?? '');
+          const payload = {
+            candidates: [{
+              content: { role: 'model', parts: [{ thought: true, text: 'step' }, { text: 'ok' }] },
+              finishReason: 'STOP',
+            }],
+          };
+          return new Response(`data: ${JSON.stringify(payload)}\n\n`, {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' },
+          });
+        });
+      },
+    );
+    const provider = new GoogleGenAIChatProvider({ model: ARGON_MODEL, vertexai: true });
+    const stream = await provider.generate('', [], PROBE_HISTORY, {
+      auth: { apiKey: VERTEX_KEY },
+      thinking: { effort: 'high' },
+    });
+    const parts = [];
+    for await (const part of stream) parts.push(part);
+    expect(parts).toContainEqual({ type: 'think', think: 'step' });
+    expect(parts).toContainEqual({ type: 'text', text: 'ok' });
+    const config = findThinkingConfig(JSON.parse(bodies[0] ?? '{}'));
+    expect(config?.['thinkingLevel']).toBe('HIGH');
+    expect(config?.['thinkingBudget']).toBeUndefined();
+    expect(config?.['includeThoughts']).toBe(true);
+  });
+
+  it('sends a thinking level for a fully qualified Gemini 4 model', async () => {
+    const bodies: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      (input: Parameters<typeof globalThis.fetch>[0], init?: Parameters<typeof globalThis.fetch>[1]) =>
+        fetchBodyText(input, init).then((body) => {
+          bodies.push(body ?? '');
+          return vertexSse();
+        }),
+    );
+    const model = `projects/example-project/locations/global/publishers/google/models/${ARGON_MODEL}`;
+    const provider = new GoogleGenAIChatProvider({
+      model,
+      vertexai: true,
+      project: 'example-project',
+      location: 'global',
+    });
+    const stream = await provider.generate('', [], PROBE_HISTORY, {
+      auth: { apiKey: VERTEX_KEY },
+      thinking: { effort: 'high' },
+    });
+    for await (const part of stream) void part;
+    const config = findThinkingConfig(JSON.parse(bodies[0] ?? '{}'));
+    expect(config?.['thinkingLevel']).toBe('HIGH');
+    expect(config?.['thinkingBudget']).toBeUndefined();
+  });
+
+  it('sends LOW for Gemini 4 when thinking is off', async () => {
+    const bodies: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      (input: Parameters<typeof globalThis.fetch>[0], init?: Parameters<typeof globalThis.fetch>[1]) =>
+        fetchBodyText(input, init).then((body) => {
+          bodies.push(body ?? '');
+          return vertexSse();
+        }),
+    );
+    const provider = new GoogleGenAIChatProvider({ model: ARGON_MODEL, vertexai: true });
+    const stream = await provider.generate('', [], PROBE_HISTORY, {
+      auth: { apiKey: VERTEX_KEY },
+      thinking: { effort: 'off' },
+    });
+    for await (const part of stream) void part;
+    const config = findThinkingConfig(JSON.parse(bodies[0] ?? '{}'));
+    expect(config?.['thinkingLevel']).toBe('LOW');
+    expect(config?.['thinkingBudget']).toBeUndefined();
+    expect(config?.['includeThoughts']).toBe(false);
+  });
+
+  it('keeps a thinking budget for gemini-2.5-flash', async () => {
+    const bodies: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      (input: Parameters<typeof globalThis.fetch>[0], init?: Parameters<typeof globalThis.fetch>[1]) =>
+        fetchBodyText(input, init).then((body) => {
+          bodies.push(body ?? '');
+          return vertexSse();
+        }),
+    );
+    const provider = new GoogleGenAIChatProvider({ model: 'gemini-2.5-flash' });
+    const stream = await provider.generate('', [], PROBE_HISTORY, {
+      auth: { apiKey: GEMINI_KEY },
+      thinking: { effort: 'high' },
+    });
+    for await (const part of stream) void part;
+    const config = findThinkingConfig(JSON.parse(bodies[0] ?? '{}'));
+    expect(config?.['thinkingBudget']).toBe(32_000);
+    expect(config?.['thinkingLevel']).toBeUndefined();
   });
 
   it('rejects a publishers model id when Vertex project and location are set', async () => {

@@ -226,7 +226,7 @@ type = "vertexai"
 api_key = "xxxxx"
 ```
 
-同时写了 `GOOGLE_CLOUD_PROJECT` 和 `GOOGLE_CLOUD_LOCATION` 时，同一把密钥发到项目资源上。`global` 使用 `https://aiplatform.googleapis.com/v1/projects/<project>/locations/global/publishers/google/models/<model>:streamGenerateContent`。其他 location 使用 `https://<location>-aiplatform.googleapis.com/v1/projects/<project>/locations/<location>/publishers/google/models/<model>:streamGenerateContent`。
+同时写了 `GOOGLE_CLOUD_PROJECT` 和 `GOOGLE_CLOUD_LOCATION` 时，同一把密钥发到项目资源上。主机与同一 location 的项目 ADC 相同。`global` 使用 `https://aiplatform.googleapis.com/v1/projects/<project>/locations/global/publishers/google/models/<model>:streamGenerateContent`。`us` 使用 `https://aiplatform.us.rep.googleapis.com`，`eu` 使用 `https://aiplatform.eu.rep.googleapis.com`，路径都是 `/v1/projects/<project>/locations/<location>/publishers/google/models/<model>:streamGenerateContent`。其他 location 使用 `https://<location>-aiplatform.googleapis.com` 和同一条项目路径。
 
 项目和区域要同时填写，或同时留空。只填其中一个会被拒绝。模型 ID 已经以 `projects/` 开头时按原样发送。模型 ID 以 `publishers/` 开头时，不能同时填写项目和区域。
 
@@ -234,7 +234,7 @@ api_key = "xxxxx"
 
 把项目 ID 和 location 写在供应商 env 子表里，并留空 API 密钥。在 shell 里 `export GOOGLE_CLOUD_PROJECT` 不会被读取。认证使用 Google Cloud 应用默认凭据：`gcloud auth application-default login`，或把 `GOOGLE_APPLICATION_CREDENTIALS` 指到服务账号 JSON 文件。
 
-请求使用 API 版本 `v1beta1`，路径以 `/v1beta1/projects/<project>/locations/<location>/` 开头。`global` 使用 `https://aiplatform.googleapis.com`。`us` 使用 `https://aiplatform.us.rep.googleapis.com`。其他 location 使用 `https://<location>-aiplatform.googleapis.com`。
+请求使用 API 版本 `v1beta1`，路径以 `/v1beta1/projects/<project>/locations/<location>/` 开头。`global` 使用 `https://aiplatform.googleapis.com`。`us` 使用 `https://aiplatform.us.rep.googleapis.com`。`eu` 使用 `https://aiplatform.eu.rep.googleapis.com`。其他 location 使用 `https://<location>-aiplatform.googleapis.com`。
 
 ```toml
 [providers.vertex]

@@ -735,9 +735,10 @@ export class GoogleGenAIChatProvider implements ChatProvider {
     return Object.keys(httpOptions).length > 0 ? httpOptions : undefined;
   }
 
-  private _vertexKeyBaseUrl(location: string): string {
+  private _vertexHost(location: string | undefined): string {
     if (this._baseUrl !== undefined) return this._baseUrl;
-    if (location === 'global') return 'https://aiplatform.googleapis.com';
+    if (location === undefined || location === 'global') return 'https://aiplatform.googleapis.com';
+    if (location === 'us' || location === 'eu') return `https://aiplatform.${location}.rep.googleapis.com`;
     return `https://${location}-aiplatform.googleapis.com`;
   }
 
@@ -755,14 +756,14 @@ export class GoogleGenAIChatProvider implements ChatProvider {
             apiKey: key,
             vertexai: true,
             apiVersion: 'v1',
-            httpOptions: this._httpOptions(auth, this._vertexKeyBaseUrl(coordinates.location)),
+            httpOptions: this._httpOptions(auth, this._vertexHost(coordinates.location)),
           });
         }
         return new GenAIClient({
           vertexai: true,
           project: coordinates.project,
           location: coordinates.location,
-          httpOptions: this._httpOptions(auth, this._baseUrl),
+          httpOptions: this._httpOptions(auth, this._vertexHost(coordinates.location)),
         });
       case 'absent':
         if (key === undefined) {
@@ -774,10 +775,7 @@ export class GoogleGenAIChatProvider implements ChatProvider {
           apiKey: key,
           vertexai: true,
           apiVersion: 'v1',
-          httpOptions: this._httpOptions(
-            auth,
-            this._baseUrl ?? 'https://aiplatform.googleapis.com',
-          ),
+          httpOptions: this._httpOptions(auth, this._vertexHost(undefined)),
         });
       case 'off':
         return new GenAIClient({
@@ -890,11 +888,12 @@ export class GoogleGenAIChatProvider implements ChatProvider {
 
   private _encodeThinking(effort: ThinkingEffort): ThinkingConfig {
     const thinkingConfig: ThinkingConfig = { includeThoughts: true };
+    const levelModel = this._model.includes('gemini-3') || this._model.includes('gemini-4');
 
-    if (this._model.includes('gemini-3')) {
+    if (levelModel) {
       switch (effort) {
         case 'off':
-          thinkingConfig.thinkingLevel = 'MINIMAL';
+          thinkingConfig.thinkingLevel = this._model.includes('gemini-4') ? 'LOW' : 'MINIMAL';
           thinkingConfig.includeThoughts = false;
           break;
         case 'low':

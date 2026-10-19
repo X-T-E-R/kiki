@@ -62,7 +62,7 @@ Key names per provider:
 | `OPENAI_BASE_URL` | OpenAI (`openai` and `openai_responses`) | `https://api.openai.com/v1` |
 | `GOOGLE_API_KEY` | Google GenAI (`google-genai`) | None |
 | `GOOGLE_GEMINI_BASE_URL` | Google GenAI (`google-genai`) | `https://generativelanguage.googleapis.com` |
-| `GOOGLE_VERTEX_BASE_URL` | Vertex AI (`vertexai`) | `https://aiplatform.googleapis.com` for an API key with no location or location `global`. `https://<location>-aiplatform.googleapis.com` for an API key with another location. Project ADC without a key uses the client host for that location. |
+| `GOOGLE_VERTEX_BASE_URL` | Vertex AI (`vertexai`) | `https://aiplatform.googleapis.com` when no location is set or the location is `global`. `https://aiplatform.us.rep.googleapis.com` for `us` and `https://aiplatform.eu.rep.googleapis.com` for `eu`. `https://<location>-aiplatform.googleapis.com` for another location. An API key and project ADC use the same host. |
 | `VERTEXAI_API_KEY` | Vertex AI (`vertexai`) | None |
 | `GOOGLE_CLOUD_PROJECT` | Vertex AI, together with `GOOGLE_CLOUD_LOCATION` | None |
 | `GOOGLE_CLOUD_LOCATION` | Vertex AI, together with `GOOGLE_CLOUD_PROJECT` | None |

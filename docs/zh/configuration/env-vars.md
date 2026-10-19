@@ -62,7 +62,7 @@ KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 | `OPENAI_BASE_URL` | OpenAI（`openai` 和 `openai_responses`） | `https://api.openai.com/v1` |
 | `GOOGLE_API_KEY` | Google GenAI（`google-genai`） | 无 |
 | `GOOGLE_GEMINI_BASE_URL` | Google GenAI（`google-genai`） | `https://generativelanguage.googleapis.com` |
-| `GOOGLE_VERTEX_BASE_URL` | Vertex AI（`vertexai`） | 无 location 或 location 为 `global` 的 API 密钥：`https://aiplatform.googleapis.com`。其他 location 的 API 密钥：`https://<location>-aiplatform.googleapis.com`。没有密钥的项目 ADC 使用该 location 的客户端主机。 |
+| `GOOGLE_VERTEX_BASE_URL` | Vertex AI（`vertexai`） | 未设 location 或 location 为 `global`：`https://aiplatform.googleapis.com`。`us`：`https://aiplatform.us.rep.googleapis.com`。`eu`：`https://aiplatform.eu.rep.googleapis.com`。其他 location：`https://<location>-aiplatform.googleapis.com`。API 密钥和项目 ADC 使用同一主机。 |
 | `VERTEXAI_API_KEY` | Vertex AI（`vertexai`） | 无 |
 | `GOOGLE_CLOUD_PROJECT` | Vertex AI，与 `GOOGLE_CLOUD_LOCATION` 一起设置 | 无 |
 | `GOOGLE_CLOUD_LOCATION` | Vertex AI，与 `GOOGLE_CLOUD_PROJECT` 一起设置 | 无 |

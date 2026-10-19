@@ -226,7 +226,7 @@ type = "vertexai"
 api_key = "xxxxx"
 ```
 
-With both `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION` set, that same key is sent on the project resource. Location `global` uses `https://aiplatform.googleapis.com/v1/projects/<project>/locations/global/publishers/google/models/<model>:streamGenerateContent`. Any other location uses `https://<location>-aiplatform.googleapis.com/v1/projects/<project>/locations/<location>/publishers/google/models/<model>:streamGenerateContent`.
+With both `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION` set, that same key is sent on the project resource. The host matches project ADC for the same location. Location `global` uses `https://aiplatform.googleapis.com/v1/projects/<project>/locations/global/publishers/google/models/<model>:streamGenerateContent`. Location `us` uses `https://aiplatform.us.rep.googleapis.com`, and location `eu` uses `https://aiplatform.eu.rep.googleapis.com`, each with `/v1/projects/<project>/locations/<location>/publishers/google/models/<model>:streamGenerateContent`. Any other location uses `https://<location>-aiplatform.googleapis.com` with that same project path.
 
 Set both coordinates or neither. Setting only one is rejected. A model id that already starts with `projects/` is sent unchanged. A model id that starts with `publishers/` is rejected when project and location are set.
 
@@ -234,7 +234,7 @@ Set both coordinates or neither. Setting only one is rejected. A model id that a
 
 Write the project ID and location in the provider env sub-table, and leave the API key unset. A shell `export GOOGLE_CLOUD_PROJECT` is not read. Sign in with Google Cloud application default credentials: `gcloud auth application-default login`, or set `GOOGLE_APPLICATION_CREDENTIALS` to a service account JSON file.
 
-Requests use API version `v1beta1` and a path that starts with `/v1beta1/projects/<project>/locations/<location>/`. Location `global` uses `https://aiplatform.googleapis.com`. Location `us` uses `https://aiplatform.us.rep.googleapis.com`. Other locations use `https://<location>-aiplatform.googleapis.com`.
+Requests use API version `v1beta1` and a path that starts with `/v1beta1/projects/<project>/locations/<location>/`. Location `global` uses `https://aiplatform.googleapis.com`. Location `us` uses `https://aiplatform.us.rep.googleapis.com`. Location `eu` uses `https://aiplatform.eu.rep.googleapis.com`. Other locations use `https://<location>-aiplatform.googleapis.com`.
 
 ```toml
 [providers.vertex]
