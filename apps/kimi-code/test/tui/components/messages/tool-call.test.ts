@@ -856,7 +856,7 @@ describe('ToolCallComponent', () => {
       expect(visibleWidth(keyArg)).toBeLessThanOrEqual(60);
       expect(keyArg.endsWith('…')).toBe(true);
       const kept = keyArg.slice(0, -1);
-      expect(kept.length > 0 && [...kept].every((ch) => ch === '😀')).toBe(true);
+      expect(kept).toMatch(/^(?:😀)+$/u);
     });
 
     it('caps mixed CJK and ASCII by cells', () => {
