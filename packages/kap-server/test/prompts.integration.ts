@@ -372,6 +372,9 @@ describe('server-v2 /api prompts', () => {
           expect(controlled?.content[0]).toEqual({ type: 'text', text: userInput });
           console.log(JSON.stringify({ route: 'prompts', request_id: submitted.body.request_id, remote_model: requests[0], bound_model: main.accessor.get(IAgentProfileService).getModel(), turn_result: loop.status().lastTurnResult, accepted_ms: acceptedAt - startedAt, completed_ms: Date.now() - startedAt }));
         } else {
+          const loop = main.accessor.get(IAgentLoopService);
+          await loop.settled();
+          expect(loop.status()).toMatchObject({ state: 'idle', lastTurnResult: 'completed' });
           await vi.waitFor(() => expect(prompts.lookup(submittedId)?.phase).toBe('terminal'));
           expect(prompts.lookup(submittedId)?.terminal).toMatchObject({ state: 'completed' });
         }
@@ -549,6 +552,7 @@ describe('server-v2 /api prompts', () => {
     await createMainAgent(id);
     const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
     await main.accessor.get(IAgentProfileService).bind({ profile: 'agent', model: 'stub', thinking: 'high' });
+    main.accessor.get(IAgentFullCompactionService).setContextStrategyOverride('summarize');
     const context = main.accessor.get(IAgentContextMemoryService);
     for (const [role, text] of [['user', 'Old request.'], ['assistant', 'Old response.']] as const) {
       context.append({ role, content: [{ type: 'text', text }], toolCalls: [] });
@@ -962,15 +966,26 @@ describe('server-v2 /api prompts', () => {
     await createHeldMainAgent(id);
     await closeSessionById(server!.core.accessor, id);
     const client = new KikiClient({ baseUrl: base, token: bearerToken(server!) });
-    const listener = server!.core.accessor.get(ISessionManager).onDidCreateSession!((event) => {
+    const manager = server!.core.accessor.get(ISessionManager);
+    const acquire = vi.spyOn(manager, 'acquire');
+    const entered = promiseGate<void>();
+    const release = promiseGate<void>();
+    const requests = vi.fn<IAgentLLMRequesterService['start']>(() => ({
+      trace: { traceId: 'fixture-cold-action' },
+      result: Promise.resolve({
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Cold action completed.' }], toolCalls: [] },
+        usage: { inputOther: 1, output: 1, inputCacheRead: 0, inputCacheCreation: 0 },
+        providerFinishReason: 'completed',
+      }),
+    }));
+    const listener = manager.onDidCreateSession!((event) => {
       if (event.sessionId !== id) return;
       event.waitUntil((async () => {
         const main = await ensureMainAgent(event.handle);
+        vi.spyOn(main.accessor.get(IAgentLLMRequesterService), 'start').mockImplementation(requests);
         main.accessor.get(IAgentLoopService).hooks.onWillBeginStep.register('hold-cold-action', async (ctx) => {
-          await new Promise<void>((resolve) => {
-            if (ctx.signal.aborted) resolve();
-            else ctx.signal.addEventListener('abort', () => resolve(), { once: true });
-          });
+          entered.resolve();
+          await release.promise;
           ctx.signal.throwIfAborted();
         }, { before: 'context-injector' });
       })());
@@ -980,19 +995,51 @@ describe('server-v2 /api prompts', () => {
       const shell = await view.snapshot();
       await view.transcript.page({ agentId: 'main' });
       expect(shell.session.busy).toBe(false);
+      expect(acquire).not.toHaveBeenCalled();
       expect(getLiveSessionById(server!.core.accessor, id)).toBeUndefined();
+      expect(requests).not.toHaveBeenCalled();
       if (firstAction === 'steer') {
         await expect(client.steerPrompt(id, 'missing-prompt')).rejects.toMatchObject({ code: 40402 });
         expect(getLiveSessionById(server!.core.accessor, id)).toBeDefined();
+        expect(requests).not.toHaveBeenCalled();
       }
       const active = await client.submitPrompt(id, { content: [{ type: 'text', text: 'Start after cold browsing' }] });
-      expect(getLiveSessionById(server!.core.accessor, id)).toBeDefined();
-      expect(active.status).toBe('running');
+      expect(acquire).toHaveBeenCalled();
+      const main = await ensureMainAgent(getLiveSessionById(server!.core.accessor, id)!);
+      const prompts = main.accessor.get(IAgentPromptService);
+      expect(active.status).toBe('queued');
+      await entered.promise;
+      await vi.waitFor(() => { expect(prompts.list().active?.id).toBe(active.prompt_id); });
+      expect(prompts.list().hold).toBeUndefined();
+      expect(prompts.listModelSwitches()).toEqual([]);
       const queued = await client.submitPrompt(id, { content: [{ type: 'text', text: 'Steer this queued prompt' }] });
       expect(queued.status).toBe('queued');
       await expect(client.steerPrompt(id, queued.prompt_id)).resolves.toMatchObject({ steered: true, prompt_ids: [queued.prompt_id] });
-      await client.abortPrompt(id, active.prompt_id);
+      expect(prompts.list().pending).toEqual([]);
+      expect(requests).not.toHaveBeenCalled();
+      release.resolve();
+      const loop = main.accessor.get(IAgentLoopService);
+      await loop.settled();
+      expect(loop.status()).toMatchObject({ state: 'idle', lastTurnResult: 'completed' });
+      await vi.waitFor(() => {
+        for (const promptId of [active.prompt_id, queued.prompt_id]) {
+          expect(prompts.lookup(promptId)).toMatchObject({ phase: 'terminal', terminal: { state: 'completed' } });
+        }
+      });
+      const turnId = prompts.lookup(active.prompt_id)?.turnId;
+      expect(turnId).toBeDefined();
+      expect(prompts.lookup(queued.prompt_id)?.turnId).toBe(turnId);
+      expect(requests.mock.calls.map(([input]) => input?.source)).toEqual([
+        { type: 'turn', turnId, step: 1 },
+        { type: 'turn', turnId, step: 2 },
+      ]);
+      expect(main.accessor.get(IAgentContextMemoryService).get()).toEqual(expect.arrayContaining([
+        expect.objectContaining({ role: 'user', content: [{ type: 'text', text: 'Start after cold browsing' }] }),
+        expect.objectContaining({ role: 'user', content: [{ type: 'text', text: 'Steer this queued prompt' }] }),
+      ]));
     } finally {
+      release.resolve();
+      acquire.mockRestore();
       listener.dispose();
       await client.klient.close();
     }
