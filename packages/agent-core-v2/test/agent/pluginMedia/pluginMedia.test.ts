@@ -4,6 +4,10 @@ import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { MediaJob } from '@kiki/protocol';
+import { createControlledPromise } from '@antfu/utils';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionDeliveryService } from '#/session/delivery/delivery';
+import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { IAgentPluginMediaService } from '#/agent/pluginMedia/pluginMedia';
 import { IPluginMediaService } from '#/app/pluginMedia/pluginMedia';
 import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
@@ -19,17 +23,71 @@ import { createTestAgent, homeDirServices, taskServices, type TestAgentContext }
 
 let root: string;
 let ctx: TestAgentContext;
+
+async function readyFixture(context: TestAgentContext): Promise<void> {
+  await Promise.all([
+    context.ready,
+    context.get(ISessionMetadata).ready,
+    context.get(ISessionDeliveryService).ready,
+  ]);
+}
+
 beforeEach(async () => {
   const scratch = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../../.tmp');
   await mkdir(scratch, { recursive: true });
   root = await mkdtemp(path.join(scratch, 'agent-media-'));
   ctx = createTestAgent(homeDirServices(root), taskServices());
+  await readyFixture(ctx);
 });
 afterEach(async () => {
   vi.restoreAllMocks();
   await ctx.dispose();
   await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 });
+it.each([false, true])('owns the initial metadata write before the media fixture becomes ready (failure: %s)', async (fail) => {
+  const directory = path.join(root, 'gated-metadata');
+  const started = createControlledPromise<void>();
+  const release = createControlledPromise<void>();
+  const failure = new Error('metadata write failed fixture');
+  const write = FileStorageService.prototype.write;
+  let target: string | undefined;
+  vi.spyOn(FileStorageService.prototype, 'write').mockImplementation(async function (this: FileStorageService, scope, key, data, options) {
+    if (path.resolve(this.pathFor(scope, key)) === target) {
+      started.resolve();
+      await release;
+      if (fail) throw failure;
+    }
+    await write.call(this, scope, key, data, options);
+  });
+  const fresh = createTestAgent(homeDirServices(directory), taskServices());
+  target = path.resolve(directory, fresh.get(ISessionContext).metaScope, 'state.json');
+  const metadata = fresh.get(ISessionMetadata);
+  const observed = metadata.ready.then(() => undefined, (error: unknown) => error);
+  let finished = false;
+  const initializing = readyFixture(fresh).then(
+    () => { finished = true; return undefined; },
+    (error: unknown) => { finished = true; return error; },
+  );
+  try {
+    await started;
+    await fresh.ready;
+    await Promise.resolve();
+    expect(finished).toBe(false);
+    release.resolve();
+    expect(await initializing).toBe(fail ? failure : undefined);
+    expect(await observed).toBe(fail ? failure : undefined);
+    if (!fail) {
+      const persisted = JSON.parse(await readFile(target, 'utf8')) as { id: string; agents: Record<string, unknown> };
+      expect(persisted).toMatchObject({ id: fresh.get(ISessionContext).sessionId, agents: {} });
+      expect(await metadata.read()).toMatchObject({ id: persisted.id, agents: persisted.agents });
+    }
+  } finally {
+    release.resolve();
+    await observed;
+    await fresh.dispose();
+  }
+});
+
 it('snapshots session file_id and admitted runtime paths to host staging while retaining URL references', async () => {
   const files = ctx.get(ISessionMediaStore);
   const data = Buffer.from('session-original-bytes');
