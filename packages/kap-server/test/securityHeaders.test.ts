@@ -13,6 +13,10 @@ function captureHeaders() {
   return { headers, reply };
 }
 
+function bareRequest(): never {
+  return { routeOptions: { config: {} } } as never;
+}
+
 function parseCsp(csp: string): Map<string, string[]> {
   const directives = new Map<string, string[]>();
   for (const part of csp.split(';')) {
@@ -28,7 +32,7 @@ describe('createSecurityHeadersHook', () => {
     const { headers, reply } = captureHeaders();
     const hook = createSecurityHeadersHook({ tls: false });
     const payload = { ok: true };
-    const result = await hook({} as never, reply as never, payload);
+    const result = await hook(bareRequest(), reply as never, payload);
     expect(result).toBe(payload);
     expect(headers.get('x-content-type-options')).toBe('nosniff');
     expect(headers.get('referrer-policy')).toBe('no-referrer');
@@ -38,7 +42,7 @@ describe('createSecurityHeadersHook', () => {
   it('allows inline styles while keeping inline scripts forbidden', async () => {
     const { headers, reply } = captureHeaders();
     const hook = createSecurityHeadersHook({ tls: false });
-    await hook({} as never, reply as never, 'payload');
+    await hook(bareRequest(), reply as never, 'payload');
     const csp = headers.get('content-security-policy');
     expect(csp).toBeDefined();
     const directives = parseCsp(csp ?? '');
@@ -54,11 +58,11 @@ describe('createSecurityHeadersHook', () => {
 
   it('emits HSTS only when TLS is terminated at the server', async () => {
     const plain = captureHeaders();
-    await createSecurityHeadersHook({ tls: false })({} as never, plain.reply as never, '');
+    await createSecurityHeadersHook({ tls: false })(bareRequest(), plain.reply as never, '');
     expect(plain.headers.has('strict-transport-security')).toBe(false);
 
     const tls = captureHeaders();
-    await createSecurityHeadersHook({ tls: true })({} as never, tls.reply as never, '');
+    await createSecurityHeadersHook({ tls: true })(bareRequest(), tls.reply as never, '');
     expect(tls.headers.get('strict-transport-security')).toBe('max-age=31536000');
   });
 });
