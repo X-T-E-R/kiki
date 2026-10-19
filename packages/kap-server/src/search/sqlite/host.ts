@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { setPriority } from 'node:os';
 import { resolve, sep } from 'node:path';
+import { isSea } from 'node:sea';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
 
@@ -57,6 +58,10 @@ export function seaIndexerArgs(database: string, execArgv: readonly string[]): s
     ...(execArgv.includes('--max-old-space-size=8192') ? ['--node-options=--max-old-space-size=384'] : []),
     INDEXER_COMMAND, database,
   ];
+}
+
+export function seaIndexerSelected(flag: string | undefined, runningInsideSea: boolean): boolean {
+  return flag === '1' && runningInsideSea;
 }
 
 export class SqliteSearchHost {
@@ -239,7 +244,7 @@ export class SqliteSearchHost {
 
   private startIndexer(): void {
     if (this.stopped || this.terminal || this.child || this.restart || this.retryAt > Date.now()) return;
-    const sea = process.env['KIKI_SQLITE_INDEXER_SEA'] === '1';
+    const sea = seaIndexerSelected(process.env['KIKI_SQLITE_INDEXER_SEA'], isSea());
     const entry = this.options.indexerEntry ?? process.env['KIKI_SQLITE_INDEXER_PATH'] ??
       fileURLToPath(new URL('./indexerDev.ts', import.meta.url));
     const source = entry.endsWith('.ts');
