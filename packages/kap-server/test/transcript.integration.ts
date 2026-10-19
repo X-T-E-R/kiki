@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -350,7 +350,7 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
       const again = await getJson<TranscriptContract>(
         `/api/sessions/${id}/transcript?agent_id=main`,
       );
-      expect(again.body.data.agents).toContainEqual({ agentId: 'main', type: 'main' });
+      expect(again.body.data.agents).toContainEqual({ agentId: 'main', type: 'main', createdAt: expect.any(String) });
     });
   });
 
@@ -525,6 +525,8 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
     await session.accessor.get(IAgentLifecycleService).create({ agentId: childId });
     const wirePath = childWirePath(id, childId);
     await mkdir(dirname(wirePath), { recursive: true });
+    const originalWire = await readFile(wirePath);
+    try {
     if (content === undefined) await rm(wirePath, { force: true });
     else await writeFile(wirePath, content, 'utf8');
 
@@ -553,6 +555,9 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
           expect(signals.some((signal) => signal.type === 'protocolError')).toBe(false);
         } finally { subscription.close(); }
       } finally { await klient.close(); }
+    }
+    } finally {
+      await writeFile(wirePath, originalWire);
     }
   });
 
@@ -767,7 +772,7 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
     );
     expect(body.code).toBe(0);
     expect(body.data.has_more).toBe(false);
-    expect(body.data.agents).toEqual([{ agentId: 'main', type: 'main' }]);
+    expect(body.data.agents).toEqual([{ agentId: 'main', type: 'main', createdAt: expect.any(String) }]);
     expect(body.data.pending_interactions).toEqual([]);
     expect(body.data.tool_call_count).toBe(1);
 
@@ -1031,7 +1036,7 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
     expect(none.body.code).toBe(0);
     expect(none.body.data.items).toEqual([]);
     expect(none.body.data.agents.map((a) => a.agentId)).not.toContain('nope');
-    expect(none.body.data.agents).toContainEqual({ agentId: 'main', type: 'main' });
+    expect(none.body.data.agents).toContainEqual({ agentId: 'main', type: 'main', createdAt: expect.any(String) });
   });
 
   it('returns 40401 for an unknown session', async () => {

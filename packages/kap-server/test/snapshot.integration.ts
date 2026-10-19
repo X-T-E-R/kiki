@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -522,6 +522,8 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
     const childId = `child-snapshot-r3-${label}`;
     await session.accessor.get(IAgentLifecycleService).create({ agentId: childId });
     const wirePath = childWirePath(sid, childId);
+    const originalWire = await readFile(wirePath);
+    try {
     if (content === undefined) await rm(wirePath, { force: true });
     else await writeFile(wirePath, content, 'utf8');
     emit(sid, {
@@ -539,6 +541,9 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
     const child = (snap.subagents ?? []).find((subagent) => subagent.id === childId);
     expect(child).toBeDefined();
     expect(child?.tool_call_count).toBe(count);
+    } finally {
+      await writeFile(wirePath, originalWire);
+    }
   });
 
   it('keeps the legacy snapshot readable and skips history work in transcript mode', async () => {
