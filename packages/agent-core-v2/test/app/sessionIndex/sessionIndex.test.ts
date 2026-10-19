@@ -1671,6 +1671,61 @@ describe('FileSessionIndex (read model)', () => {
     expect(await store.count({ workspaceIds: [workspaceId] })).toBe(2);
   });
 
+  it('drains a pending initial projection before disposing its query store', async () => {
+    const scanning = deferred<void>();
+    const resumeScan = deferred<void>();
+    class GatedStorage extends FileStorageService {
+      override async list(scope: string, prefix?: string): Promise<readonly string[]> {
+        const entries = await super.list(scope, prefix);
+        if (scope === `sessions/${workspaceId}`) {
+          scanning.resolve();
+          await resumeScan.promise;
+        }
+        return entries;
+      }
+    }
+    await seedSession('a', { title: 'a', createdAt: 1, updatedAt: 2 });
+    const watch = vi.spyOn(TestSessionIndexWatch.prototype, 'watch');
+    const store = build(new GatedStorage(homeDir));
+    const closeQueryStore = vi.spyOn(queryStore, 'close');
+    const exclusive = vi.spyOn(queryStore, 'withExclusive');
+    const preparing = store.prepare();
+    await scanning.promise;
+    const disposeIndex = vi.spyOn(store, 'dispose');
+    let disposed = false;
+    const closing = Promise.resolve(disposeHost?.()).then(() => { disposed = true; });
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(disposeIndex).toHaveBeenCalledOnce();
+      expect(disposed).toBe(false);
+      expect(closeQueryStore).not.toHaveBeenCalled();
+      resumeScan.resolve();
+      await preparing;
+      await closing;
+      disposeHost = undefined;
+      expect(watch).not.toHaveBeenCalled();
+      await drainSessionIndexMirror();
+      await drainQueryStoreDisposals();
+      expect(closeQueryStore).toHaveBeenCalledOnce();
+      expect(exclusive).toHaveBeenCalled();
+      exclusive.mockClear();
+      await fsp.rm(homeDir, { recursive: true, force: true });
+      await store.prepare();
+      await store.reprojectNow();
+      expect(exclusive).not.toHaveBeenCalled();
+      await expect(fsp.stat(homeDir)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      resumeScan.resolve();
+      await preparing;
+      await closing;
+      store.stopReconcileLoop();
+      disposeIndex.mockRestore();
+      watch.mockRestore();
+      closeQueryStore.mockRestore();
+      exclusive.mockRestore();
+    }
+  });
+
   it('keeps a queued summary visible to a page that races its flush', async () => {
     let pageGate: Promise<void> | undefined;
     let releasePage: () => void = () => {};
@@ -2373,9 +2428,10 @@ describe('FileSessionIndex (read model)', () => {
     const reconciliation = store.reconcileNow().catch((error: unknown) => error);
     try {
       await entered.promise;
-      if (stop === 'dispose') await store.dispose();
-      else enabled = false;
+      const disposing = stop === 'dispose' ? store.dispose() : undefined;
+      if (stop === 'disable') enabled = false;
       gate.resolve();
+      await disposing;
       expect(await reconciliation).toMatchObject({
         code: 'session.index_building',
         details: { operation: 'reconcile', reason: stop === 'dispose' ? 'disposed' : 'disabled' },

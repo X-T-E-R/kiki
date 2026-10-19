@@ -99,6 +99,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   private projectFlight: Promise<boolean> | undefined;
   private catchUpFlight: Promise<boolean> | undefined;
   private reconcileFlight: Promise<void> | undefined;
+  private disposeFlight: Promise<void> | undefined;
   private reconcileRequest = 0;
   private reuseReconcileFingerprints = true;
   private nextReconcileRetryAt = 0;
@@ -138,9 +139,28 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     });
   }
 
+  override dispose(): Promise<void> {
+    this.disposeFlight ??= this.disposeIndex();
+    return this.disposeFlight;
+  }
+
+  private async disposeIndex(): Promise<void> {
+    try {
+      await super.dispose();
+    } finally {
+      await Promise.allSettled([
+        this.prepareFlight,
+        this.projectFlight,
+        this.catchUpFlight,
+        this.reconcileFlight,
+      ]);
+    }
+  }
+
   /** The reconcile loop runs only while the read model is in play — starting
    *  it unconditionally would spin an interval for every flag-off host. */
   private ensureReconcileTimer(): void {
+    if (this._store.isDisposed) return;
     if (!this.reconcileTimer.isSet()) {
       this.reconcileTimer.cancelAndSet(() => void this.tick(), RECONCILE_INTERVAL_MS);
     }
@@ -186,7 +206,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   }
 
   async prepare(options?: { deadlineMs?: number }): Promise<SessionIndexStatus> {
-    if (!this.readModelEnabled()) return this.status();
+    if (this._store.isDisposed || !this.readModelEnabled()) return this.status();
     if (this.mirror.dirtyEpoch() !== undefined) {
       await this.ensureDirtyCatchUp();
       return this.status();
@@ -240,11 +260,13 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       } else {
         this.generation = manifest.seq;
         await this.ensureSchema(manifest.seq);
-        this.watchDebounce.cancelAndSet(() => {
-          void this.reconcileNow().catch((error: unknown) => {
-            this.log.warn('session index startup reconciliation failed', { error: String(error) });
-          });
-        }, 0);
+        if (!this._store.isDisposed) {
+          this.watchDebounce.cancelAndSet(() => {
+            void this.reconcileNow().catch((error: unknown) => {
+              this.log.warn('session index startup reconciliation failed', { error: String(error) });
+            });
+          }, 0);
+        }
       }
       const published = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
       if (published !== undefined) {
@@ -398,7 +420,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
 
   /** Test/ops hook: project a fresh generation now (single-flight). */
   async reprojectNow(): Promise<void> {
-    if (!this.readModelEnabled()) return;
+    if (this._store.isDisposed || !this.readModelEnabled()) return;
     await this.ensureProjection();
   }
 
