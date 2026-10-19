@@ -9,6 +9,7 @@ import {
   IAgentProfileService,
   IAppendLogStore,
   IConfigService,
+  IFileSystemStorageService,
   ISessionAgentProfileCatalog,
   ISessionContext,
   ISessionManager,
@@ -305,9 +306,9 @@ describe('disposed agent capability snapshots', () => {
       model: 'stub-alt', thinking_effort: 'high',
     });
     const appendLog = server!.core.accessor.get(IAppendLogStore);
-    const read = vi.spyOn(appendLog, 'read');
+    const readStream = vi.spyOn(server!.core.accessor.get(IFileSystemStorageService), 'readStream');
     expect((await readCapabilities(sessionId, child.id)).profile).toMatchObject({ model: 'stub-alt' });
-    expect(read).not.toHaveBeenCalled();
+    expect(readStream).not.toHaveBeenCalled();
     const scope = agentScopeOf(
       sessionScopeOf(
         workspacePersistenceScope('sessions', session.accessor.get(ISessionContext).workspaceId),
@@ -322,7 +323,7 @@ describe('disposed agent capability snapshots', () => {
     await appendLog.flush(scope, AGENT_WIRE_RECORD_KEY);
     const refreshed = await readCapabilities(sessionId, child.id);
     expect(refreshed.profile).toMatchObject({ model: 'stub', thinking_effort: 'low' });
-    expect(read).toHaveBeenCalledTimes(1);
+    expect(readStream).toHaveBeenCalledTimes(2);
   });
 
   it('replays actual request evidence for a disposed agent and keeps legacy anchor evidence unknown', async () => {

@@ -141,9 +141,16 @@ describe('settings wire round trips', () => {
       prompt_overrides: { fields: { tone: 'terse' } },
       overrides: { max_output_size: 4_000 },
     });
-    expect((await send<Record<string, unknown>>('GET', '/api/models/p%2Fm')).data).toMatchObject(fields);
+    const seen = await send<{ revision: string }>('GET', '/api/models/p%2Fm');
+    expect(seen.data).toMatchObject(fields);
+    const rejected = await send<Record<string, unknown>>('PATCH', '/api/models/p%2Fm', {
+      cognition: null, prompt_overrides: null,
+    });
+    expect(rejected.code).toBe(40001);
+    expect((await toml())['models']['p/m']).toHaveProperty('cognition');
 
     const cleared = await send<Record<string, unknown>>('PATCH', '/api/models/p%2Fm', {
+      base_revision: seen.data.revision,
       aliases: null, cognition: null, request_params: null, prompt_overrides: null, overrides: null, context_budget: null,
     });
     expect(cleared.code).toBe(0);

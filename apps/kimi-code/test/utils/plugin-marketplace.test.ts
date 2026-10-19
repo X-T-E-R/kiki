@@ -243,12 +243,12 @@ describe('loadPluginMarketplace', () => {
       expect.objectContaining({
         id: 'kimi-datasource',
         tier: 'official',
-        source: join(REPO_ROOT, 'plugins/official/kimi-datasource'),
+        source: 'https://code.kimi.com/kimi-code/plugins/official/kimi-datasource.zip',
       }),
     );
     expect(marketplace.plugins).toContainEqual(expect.objectContaining({
       id: 'kiki-office',
-      source: resolve(REPO_ROOT, '../kiki-plugins/plugins/official/kiki-office'),
+      source: 'https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-20261005.5/kiki-office-0.1.1.zip',
       engines: { kiki: '^0.4.0' },
     }));
   });

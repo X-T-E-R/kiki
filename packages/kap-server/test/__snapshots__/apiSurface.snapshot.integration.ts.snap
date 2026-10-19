@@ -50,6 +50,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "DELETE",
+      "/api/fs{media}-preview/{previewId}",
+    ],
+    [
+      "DELETE",
       "/api/homes/{id}",
     ],
     [
@@ -115,6 +119,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "DELETE",
       "/api/sessions/{session_id}/ssh/hosts/{host_id}",
+    ],
+    [
+      "DELETE",
+      "/api/sessions/media-playback/{previewId}",
     ],
     [
       "DELETE",
@@ -922,6 +930,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/media-preview/{previewId}",
+    ],
+    [
+      "GET",
       "/openapi.json",
     ],
     [
@@ -1171,6 +1183,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/fs:mkdir",
+    ],
+    [
+      "POST",
+      "/api/fs{media}-preview",
     ],
     [
       "POST",
@@ -1699,6 +1715,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/sessions/{session_id}/turns/{tail}",
+    ],
+    [
+      "POST",
+      "/api/sessions/{sessionId}/media-playback",
     ],
     [
       "POST",

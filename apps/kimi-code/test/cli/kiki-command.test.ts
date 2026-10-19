@@ -230,17 +230,18 @@ describe('kiki command helpers', () => {
     await program.parseAsync(['node', 'kiki', 'mcp', '--client', 'fixture', '--tools', '--home', home]);
 
     expect(ensureOptions).toEqual({ homeDir: resolveKikiHome(home) });
-    expect(request).toEqual({
-      method: 'POST',
-      path: '/api/external-clients/fixture/credential',
-      body: {},
-    });
+    expect(request).toBeUndefined();
     expect(bridge).toHaveBeenCalledOnce();
     expect(bridgeOptions).toBeDefined();
     const capturedBridge = bridgeOptions!;
     expect(capturedBridge).not.toHaveProperty('token');
     expect(capturedBridge.connectionId).toBe('fixture');
     await expect(capturedBridge.resolveCredential('unrelated-id')).resolves.toEqual(credential);
+    expect(request).toEqual({
+      method: 'POST',
+      path: '/api/external-clients/unrelated-id/credential',
+      body: {},
+    });
 
     const invalid = async (...args: string[]) => {
       const command = new Command().exitOverride();

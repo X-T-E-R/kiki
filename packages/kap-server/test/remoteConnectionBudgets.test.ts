@@ -8,7 +8,7 @@ import { gzipSync } from 'node:zlib';
 import Fastify from 'fastify';
 import { WebSocket, WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
-import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
+import { readBoundedJsonBody, SESSION_READ_BODY_BYTES } from '@kiki/klient/transports/http/bounded-body';
 import { ConnectionAdmission } from '../src/services/connections/admission';
 import { RemoteConnectionManager } from '../src/services/connections/manager';
 import { registerRemoteConnectionRoutes } from '../src/routes/remoteConnections';
@@ -42,24 +42,35 @@ async function fixture() {
   return { target, source, events, broker, manager, start };
 }
 describe('broker budgets against explicit adversarial transport fixtures', () => {
-  it('returns an operation-level 403 unchanged without replaying the write or pausing other calls', async () => {
+  it('forwards an allowlisted preview denial and reports other target denials as unapproved', async () => {
     const f = await fixture(); let writes = 0;
-    const rejected = { code: 40301, msg: 'operation_denied', data: null };
-    f.target.post('/api/sessions', async (_request, reply) => { writes++; return reply.code(403).send(rejected); });
+    const passed = { code: 40301, msg: 'html_preview_target_owner_grant_required', data: null };
+    const denied = { code: 40301, msg: 'operation_denied', data: null };
+    f.target.post('/api/fs:html-preview', async (_request, reply) => { writes++; return reply.code(403).send(passed); });
+    f.target.post('/api/sessions', async (_request, reply) => { writes++; return reply.code(403).send(denied); });
     f.target.get('/api/meta', async () => ({ code: 0, data: { readable: true } }));
     const { call, record } = await f.start();
-    const response = await call('call', { operation: 'sessionCreate', body: { cwd: '/example' } });
-    expect(response.status).toBe(403); expect(await response.json()).toEqual(rejected);
+    const preview = await call('call', { operation: 'htmlPreviewOpen', body: {} });
+    expect(preview.status).toBe(403); expect(await preview.json()).toEqual(passed);
     expect(writes).toBe(1); expect(f.manager.get(record.id).state).toBe('online');
     const reading = await call('call', { operation: 'meta' });
     expect(reading.status).toBe(200); expect(await reading.json()).toEqual({ code: 0, data: { readable: true } });
     expect(writes).toBe(1);
+    const response = await call('call', { operation: 'sessionCreate', body: { cwd: '/example' } });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ code: 40101, msg: 'connection_not_approved' });
+    expect(writes).toBe(2); expect(f.manager.get(record.id).state).not.toBe('online');
   });
   it('forwards a legal history response over the former HTTP cap and cancels an unfinished read', async () => {
     const f = await fixture(); let producerClosed = false;
-    const expected = { code: 0, msg: 'success', data: { items: [{ prompt: '界'.repeat(400000) }] } };
+    const envelope = (prompt: string) => ({ code: 0, msg: 'success', data: { items: [{ prompt }] } });
+    const overhead = Buffer.byteLength(JSON.stringify(envelope('')));
+    const expected = envelope('x'.repeat(SESSION_READ_BODY_BYTES - overhead));
+    const oversized = envelope('界'.repeat(400000));
     f.target.get('/api/klient/session-view/:sessionId/snapshot', async (request, reply) => {
-      if ((request.params as { sessionId: string }).sessionId !== 'slow') return expected;
+      const sessionId = (request.params as { sessionId: string }).sessionId;
+      if (sessionId === 'over') return oversized;
+      if (sessionId !== 'slow') return expected;
       return reply.type('application/json').send(Readable.from((async function* () {
         try { yield '{"code":0,"msg":"success","data":"';
           for (let index = 0; index < 100; index += 1) { await new Promise<void>((resolve) => setTimeout(resolve, 10)); yield 'x'.repeat(4096); }
@@ -69,7 +80,11 @@ describe('broker budgets against explicit adversarial transport fixtures', () =>
     });
     const { call } = await f.start();
     const response = await call('call', { operation: 'snapshot', params: { sessionId: 'fixture' } });
+    expect(Buffer.byteLength(JSON.stringify(expected))).toBe(SESSION_READ_BODY_BYTES);
     expect(response.status).toBe(200); expect(await response.json()).toEqual(expected);
+    const refused = await call('call', { operation: 'snapshot', params: { sessionId: 'over' } });
+    expect(refused.status).toBe(500);
+    expect(await refused.text()).toContain(`exceeded ${SESSION_READ_BODY_BYTES} decoded bytes`);
     const controller = new AbortController();
     const pending = call('call', { operation: 'snapshot', params: { sessionId: 'slow' } }, controller.signal);
     const failure = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
