@@ -78,6 +78,12 @@ interface TranscriptResponse {
   items: Array<{ kind: string; turnId?: string; state?: string }>;
 }
 
+function closeOwned(conn: Conn | undefined): Promise<void> {
+  if (conn === undefined) return Promise.resolve();
+  if (conn.ws.readyState === WebSocket.CONNECTING || conn.ws.readyState === WebSocket.OPEN) conn.ws.close();
+  return conn.closed;
+}
+
 function openConn(url: string, token: string): Promise<Conn> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url, [`kimi-code.bearer.${token}`]);
@@ -504,6 +510,10 @@ describe('server-v2 /api/ws resync', () => {
     'replays disconnected cursors and restores terminal transcript after an epoch change',
     { timeout: 20_000 },
     async () => {
+    let c1: Conn | undefined;
+    let c2: Conn | undefined;
+    let c3: Conn | undefined;
+    try {
     const sid = await createSession();
     await ensureMainAgent(sid);
     await seedMainAgentMessages(sid, [
@@ -512,7 +522,7 @@ describe('server-v2 /api/ws resync', () => {
     ]);
 
     const liveTranscript = new AgentTranscript('main');
-    const c1 = await openConn(wsUrl, server!.localOwnerToken);
+    c1 = await openConn(wsUrl, server!.localOwnerToken);
     await c1.next((f) => f.type === 'server_hello');
     c1.send({
       type: 'client_hello',
@@ -574,7 +584,7 @@ describe('server-v2 /api/ws resync', () => {
       { role: 'assistant', content: [{ type: 'text', text: 'second answer' }], toolCalls: [] },
     ]);
 
-    const c2 = await openConn(wsUrl, server!.localOwnerToken);
+    c2 = await openConn(wsUrl, server!.localOwnerToken);
     await c2.next((f) => f.type === 'server_hello');
     c2.send({
       type: 'client_hello',
@@ -645,7 +655,7 @@ describe('server-v2 /api/ws resync', () => {
     await boot();
     expect(await resumeSessionById(server!.core.accessor, sid)).toBeDefined();
 
-    const c3 = await openConn(wsUrl, server!.localOwnerToken);
+    c3 = await openConn(wsUrl, server!.localOwnerToken);
     await c3.next((f) => f.type === 'server_hello');
     c3.send({
       type: 'client_hello',
@@ -698,6 +708,11 @@ describe('server-v2 /api/ws resync', () => {
 
     c3.ws.close();
     await c3.closed;
+    } finally {
+      await closeOwned(c1);
+      await closeOwned(c2);
+      await closeOwned(c3);
+    }
   });
 
   it('delivers only the allowlisted agent events via agent_filter', async () => {
