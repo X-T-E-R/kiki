@@ -1,4 +1,5 @@
 import { ref, type LiveRef } from '#/_base/di/instantiation';
+import { ErrorCodes, Error2 } from '#/errors';
 import { Disposable } from '#/_base/di/lifecycle';
 import { ILogService } from '#/_base/log/log';
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
@@ -307,6 +308,39 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
       configuredOverlayNames.add(runtimeName);
       view.setServerEnabled(runtimeName, true);
     });
+    const registerDisabledServer = (
+      runtimeName: string,
+      config: McpServerConfig,
+      source?: 'global' | 'plugin' | 'caller',
+    ): Promise<void> => mutate(async () => {
+      if (config.enabled !== false) {
+        throw new Error2(
+          ErrorCodes.REQUEST_INVALID,
+          `MCP server "${runtimeName}" must stay disabled to be registered without a connection`,
+        );
+      }
+      await connect;
+      if (baseView instanceof FilteredMcpConnectionView && baseView.isBaselineHidden(runtimeName)) return;
+      if (baseView instanceof FilteredMcpConnectionView && baseView.isSessionHidden(runtimeName)) {
+        baseView.clearServerOverride(runtimeName);
+      }
+      if (source !== undefined) {
+        const previousSource = configuredSources.get(runtimeName);
+        configuredSources.set(runtimeName, source);
+        if (source === 'global') configuredGlobalNames.add(runtimeName);
+        else configuredGlobalNames.delete(runtimeName);
+        if (previousSource === 'caller' && source !== 'caller' && !initialCallerNames.has(runtimeName)) {
+          callerNames.delete(runtimeName);
+        }
+        if (source === 'caller') callerNames.add(runtimeName);
+      }
+      configuredOverrides.set(runtimeName, config);
+      overlayNames.add(runtimeName);
+      admittedOverlayNames.add(runtimeName);
+      view.replaceOverlayNames(overlayNames);
+      await sessionManager.connect(runtimeName, config);
+      configuredOverlayNames.add(runtimeName);
+    });
     const clearConfiguredServer = (runtimeName: string): Promise<void> => mutate(async () => {
       await connect;
       configuredOverrides.delete(runtimeName);
@@ -335,6 +369,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
         setServerEnabled: (name, enabled) => view.setServerEnabled(name, enabled),
         clearServerEnabledOverride: (name) => clearConfiguredServer(name).then(() => true),
         enableConfiguredServer,
+        registerDisabledServer,
       },
       update,
       enableConfiguredServer,

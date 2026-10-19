@@ -558,6 +558,38 @@ describe('WorkspaceMcpService', () => {
     await overlay.shutdown();
   });
 
+  it('registers a disabled overlay server on the session manager without spawning', async () => {
+    const spawn = vi.spyOn(HostProcessService.prototype, 'spawn');
+    const connect = vi.spyOn(McpConnectionManager.prototype, 'connect');
+    const service = createService();
+    manager = service.connectionManager();
+    await service.ready;
+    const overlay = service.sessionOverlay({});
+    await overlay.handle.ready;
+    const config: McpServerConfig = {
+      transport: 'stdio',
+      command: 'disabled-overlay-must-not-spawn',
+      enabled: false,
+    };
+    const register = overlay.handle.registerDisabledServer;
+    expect(register).toEqual(expect.any(Function));
+    await expect(register!('off-server', { ...config, enabled: true }, 'caller')).rejects.toThrow(/must stay disabled/);
+    expect(overlay.handle.connectionManager.get('off-server')).toBeUndefined();
+    expect(manager?.get('off-server')).toBeUndefined();
+
+    await register!('off-server', config, 'caller');
+    expect(overlay.configuredServers?.()).toEqual({ 'off-server': config });
+    expect(overlay.handle.connectionManager.get('off-server')).toMatchObject({
+      status: 'disabled',
+      toolCount: 0,
+    });
+    expect(manager?.get('off-server')).toBeUndefined();
+    expect(connect).toHaveBeenCalledWith('off-server', config);
+    expect(connect.mock.instances.some((instance) => instance === manager)).toBe(false);
+    expect(spawn.mock.calls.some((call) => call[0] === config.command)).toBe(false);
+    await overlay.shutdown();
+  });
+
   it('does not bypass a filtered plugin denial with an explicit overlay connection', async () => {
     const service = createService();
     manager = service.connectionManager();

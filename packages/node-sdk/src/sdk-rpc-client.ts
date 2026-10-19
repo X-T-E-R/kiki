@@ -2687,10 +2687,11 @@ export class SDKRpcClient extends SDKRpcClientBase {
   }
 
   /**
-   * Validate, optionally persist to the user-level file, then connect on this
-   * session's MCP overlay. `persist: true` records source `global` after the
-   * file write; otherwise the server stays a session-local `caller` and
-   * `mcp.json` is left untouched.
+   * Validate, optionally persist to the user-level file, then attach the
+   * server on this session's MCP overlay. `persist: true` records source
+   * `global` after the file write; otherwise the server stays a session-local
+   * `caller` and `mcp.json` is left untouched. `enabled: false` is recorded
+   * disabled and is not connected.
    */
   override async addSessionMcpServer(input: {
     readonly sessionId: string;
@@ -2704,13 +2705,16 @@ export class SDKRpcClient extends SDKRpcClientBase {
     // the same normalized identity, like v1's addSessionMcpServer does.
     const target = { ...parsed, name: normalizeServerName(parsed.name) };
     const config = mcpConfigWithoutName(target);
+    const source = input.persist === true ? 'global' : 'caller';
     if (input.persist === true) {
       const cwd = session.accessor.get(ISessionWorkspaceContext).workDir;
       await this.rejectProjectLayerPersistedMcpAdd(cwd, target.name);
       await this.mcpManagement((management) => management.add({ server: target, cwd }));
-      await this.connectExplicitSessionMcp(input.sessionId, target.name, config, 'global');
+    }
+    if (config.enabled === false) {
+      await this.registerDisabledSessionMcp(input.sessionId, target.name, config, source);
     } else {
-      await this.connectExplicitSessionMcp(input.sessionId, target.name, config, 'caller');
+      await this.connectExplicitSessionMcp(input.sessionId, target.name, config, source);
     }
     const entry = (await this.engineCall(() => agent.getMcpServers())).find(
       (candidate) => candidate.name === target.name,
@@ -2722,6 +2726,28 @@ export class SDKRpcClient extends SDKRpcClientBase {
       );
     }
     return entry as McpServerInfo;
+  }
+
+  /**
+   * A disabled add must not use `enableConfiguredServer`, which forces the
+   * entry on. A handle without disabled registration fails before any connect.
+   */
+  private async registerDisabledSessionMcp(
+    sessionId: string,
+    name: string,
+    config: ReturnType<typeof mcpConfigWithoutName>,
+    source: 'global' | 'caller',
+  ): Promise<void> {
+    const handle = this.requireLiveSession(sessionId).accessor.get(ISessionMcpHandle);
+    if (handle.registerDisabledServer === undefined) {
+      throw new KimiError(
+        ErrorCodes.REQUEST_INVALID,
+        `MCP server "${name}" is disabled and cannot be recorded on this session`,
+      );
+    }
+    await this.engineCall(() =>
+      handle.registerDisabledServer!(name, config as WorkspaceMcpServerConfig, source),
+    );
   }
 
   /**

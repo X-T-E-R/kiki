@@ -3,8 +3,10 @@ import { rm } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
 import { ConfigTarget, IConfigService, ISessionManager } from '@kiki/agent-core-v2';
 import { Error2, ErrorCodes } from '@kiki/agent-core-v2/errors';
+import { getLiveSessionById } from '@kiki/agent-core-v2/app/sessionManager/sessionLookup';
 import { ISessionIndex } from '@kiki/agent-core-v2/app/sessionIndex/sessionIndex';
 import { IAppendLogStore } from '@kiki/agent-core-v2/persistence/interface/appendLogStore';
+import { ISessionMetadata } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
 
 import { defineKlientConformance } from './helpers/conformance.js';
 import { createKlient } from '../src/transports/memory/index.js';
@@ -87,6 +89,60 @@ describe('memory dispatcher specifics', () => {
       const controller = new AbortController();
       controller.abort(new Error('cancelled metadata read'));
       await expect(dispatcher.call({ sessionId: created.id }, 'sessionMetadata', 'read', [], { signal: controller.signal })).rejects.toThrow('cancelled metadata read');
+      expect(manager.get(created.id)).toBeUndefined();
+      expect(resume).not.toHaveBeenCalled();
+    } finally {
+      await klient.close();
+      await app.dispose();
+      await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
+    }
+  });
+
+  it('reads a cold agent executor without resuming', async () => {
+    const { homeDir, app } = await makeEngine();
+    const klient = createKlient({ scope: app });
+    const dispatcher = createMemoryDispatcher(app);
+    try {
+      const created = await klient.global.sessions.create({ workDir: homeDir });
+      const live = getLiveSessionById(app.accessor, created.id);
+      if (live === undefined) throw new Error('created session was not live');
+      const metadata = live.accessor.get(ISessionMetadata);
+      await metadata.registerAgent('main', { executor: 'native' });
+      await metadata.registerAgent('null-exec', { executor: null as unknown as string });
+      const recorded = await metadata.read();
+      expect(recorded.agents?.['main']?.executor).toBe('native');
+      expect(recorded.agents?.['null-exec']?.executor).toBeNull();
+      await klient.session(created.id).close();
+      const manager = app.accessor.get(ISessionManager);
+      const resume = vi.spyOn(manager, 'resume');
+      expect(await klient.session(created.id).getAgentExecutor('main')).toBe('native');
+      expect(await dispatcher.call(
+        { sessionId: created.id },
+        'sessionMetadata',
+        'getAgentExecutor',
+        ['null-exec'],
+      )).toBeNull();
+      expect(await dispatcher.call(
+        { sessionId: created.id },
+        'sessionMetadata',
+        'getAgentExecutor',
+        ['missing-agent'],
+      )).toBeUndefined();
+      await expect(dispatcher.call(
+        { sessionId: 'missing-session' },
+        'sessionMetadata',
+        'getAgentExecutor',
+        ['main'],
+      )).rejects.toMatchObject({ code: 40404 });
+      const controller = new AbortController();
+      controller.abort(new Error('cancelled executor read'));
+      await expect(dispatcher.call(
+        { sessionId: created.id },
+        'sessionMetadata',
+        'getAgentExecutor',
+        ['main'],
+        { signal: controller.signal },
+      )).rejects.toThrow('cancelled executor read');
       expect(manager.get(created.id)).toBeUndefined();
       expect(resume).not.toHaveBeenCalled();
     } finally {

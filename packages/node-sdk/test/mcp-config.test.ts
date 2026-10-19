@@ -15,7 +15,8 @@ import {
   KimiHarness,
   SDKRpcClientBase,
 } from '#/index';
-import { afterEach, describe, expect, it } from 'vitest';
+import { HostProcessService } from '@kiki/agent-core-v2/os/backends/node-local/hostProcessService';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createFileMcpOAuthService } from './mcp-oauth-store';
 
@@ -440,6 +441,70 @@ describe('session MCP servers (live session adds)', () => {
         (await session.listMcpServers()).find((server) => server.name === 'persisted'),
       ).toMatchObject({ status: 'connected', toolCount: 4 });
     } finally {
+      await harness.close();
+    }
+  }, 20_000);
+
+  it('keeps an unpersisted disabled server on the owning session without spawning', async () => {
+    const homeDir = await makeTempDir();
+    const workDir = await makeTempDir();
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const spawn = vi.spyOn(HostProcessService.prototype, 'spawn');
+    const command = 'disabled-session-mcp-must-not-spawn';
+    try {
+      const session = await harness.createSession({ workDir });
+      const sibling = await harness.createSession({ workDir });
+      const added = await session.addMcpServer({
+        name: 'disabled-local',
+        transport: 'stdio',
+        command,
+        enabled: false,
+      });
+      expect(added).toMatchObject({
+        name: 'disabled-local',
+        transport: 'stdio',
+        status: 'disabled',
+        toolCount: 0,
+      });
+      expect(Object.hasOwn(added, 'source')).toBe(false);
+      expect((await session.listMcpServers()).find((server) => server.name === 'disabled-local'))
+        .toMatchObject({ status: 'disabled', toolCount: 0 });
+      expect((await sibling.listMcpServers()).map((server) => server.name)).not.toContain('disabled-local');
+      await expect(readFile(join(homeDir, 'mcp.json'), 'utf-8')).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(spawn.mock.calls.some((call) => call[0] === command)).toBe(false);
+    } finally {
+      spawn.mockRestore();
+      await harness.close();
+    }
+  }, 20_000);
+
+  it('persists a disabled server as disabled and does not spawn it', async () => {
+    const homeDir = await makeTempDir();
+    const workDir = await makeTempDir();
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const spawn = vi.spyOn(HostProcessService.prototype, 'spawn');
+    const command = 'disabled-session-mcp-must-not-spawn';
+    try {
+      const session = await harness.createSession({ workDir });
+      const added = await session.addMcpServer(
+        { name: 'disabled-persisted', transport: 'stdio', command, enabled: false },
+        { persist: true },
+      );
+      expect(added).toMatchObject({
+        name: 'disabled-persisted',
+        status: 'disabled',
+        toolCount: 0,
+      });
+      await expect(readMcpConfig(homeDir)).resolves.toEqual({
+        mcpServers: {
+          'disabled-persisted': { transport: 'stdio', command, enabled: false },
+        },
+      });
+      expect((await session.listMcpServers()).find((server) => server.name === 'disabled-persisted'))
+        .toMatchObject({ status: 'disabled', toolCount: 0 });
+      expect(spawn.mock.calls.some((call) => call[0] === command)).toBe(false);
+    } finally {
+      spawn.mockRestore();
       await harness.close();
     }
   }, 20_000);

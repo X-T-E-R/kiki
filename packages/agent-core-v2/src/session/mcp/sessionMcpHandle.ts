@@ -23,6 +23,15 @@ export interface ISessionMcpHandle {
     config: McpServerConfig,
     source?: 'global' | 'plugin' | 'caller',
   ): Promise<void>;
+  /**
+   * Record a disabled server on this session's own overlay. `config.enabled`
+   * must be `false`. The entry stays disabled and is not connected.
+   */
+  registerDisabledServer?(
+    runtimeName: string,
+    config: McpServerConfig,
+    source?: 'global' | 'plugin' | 'caller',
+  ): Promise<void>;
 }
 
 export const ISessionMcpHandle: ServiceIdentifier<ISessionMcpHandle> =
