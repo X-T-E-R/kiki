@@ -27,7 +27,7 @@ function turnRecords(turnId: number, output: unknown, callId = `call-${turnId}`)
     { type: 'turn.prompt', turnId, promptId: `prompt-${turnId}`, input: [{ type: 'text', text: `question ${turnId}` }], origin: { kind: 'user' }, time: 1000 },
     event({ type: 'step.begin', turnId, step: 1, uuid: step }),
     event({ type: 'content.part', turnId, stepUuid: step, uuid: `think-${turnId}`, part: { type: 'think', think: '完整思考' } }),
-    event({ type: 'tool.call', turnId, stepUuid: step, toolCallId: callId, name: 'Example', args: { target: turnId }, display: { type: 'diff', before: 'before', after: 'after' } }),
+    event({ type: 'tool.call', turnId, stepUuid: step, toolCallId: callId, name: 'Example', args: { target: turnId }, display: { kind: 'diff', path: 'example.ts', before: 'before', after: 'after' } }),
     event({ type: 'tool.progress', toolCallId: callId, update: { kind: 'custom', text: 'progress', customKind: 'phase', customData: { phase: 2 } } }),
     event({ type: 'tool.result', toolCallId: callId, result: { output, isError: true, errorCode: 'example_error' } }),
     event({ type: 'step.end', turnId, step: 1, uuid: step }),
@@ -80,7 +80,7 @@ describe('source-backed canonical detail', () => {
       expect(first.status).toBe('found');
       if (first.status !== 'found') throw new Error('missing target');
       expect(first.frame).toMatchObject({ state: 'error', output: media, errorCode: 'example_error',
-        display: { type: 'diff', before: 'before', after: 'after' },
+        display: { kind: 'diff', path: 'example.ts', before: 'before', after: 'after' },
         progress: { kind: 'custom', text: 'progress', customData: { phase: 2 } } });
       const source = { kind: 'turn' as const, id: 't100' };
       const complete = await f.service.readCanonicalEntity('s', 'main', source);

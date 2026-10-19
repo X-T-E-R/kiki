@@ -625,7 +625,7 @@ describe('TranscriptWireAdapter', () => {
     const event = (value: Record<string, unknown>): TranscriptWireRecord => ({ type: 'context.append_loop_event', event: value });
     const call = records[3]!;
     const original = call['event'] as Record<string, unknown>;
-    const enriched = { ...call, event: { ...original, display: { type: 'diff', before: 'a', after: 'b' } } };
+    const enriched = { ...call, event: { ...original, display: { kind: 'diff', path: 'a.ts', before: 'a', after: 'b' } } };
     const transcript = replay([
       ...records.slice(0, 3),
       event({ type: 'tool.progress', toolCallId: 'orphan', update: { kind: 'status', text: 'ignored' } }),
@@ -637,10 +637,13 @@ describe('TranscriptWireAdapter', () => {
     ]);
     expect(transcript.getToolCall('orphan')).toBeUndefined();
     expect(transcript.getToolCall('call-1')?.frame).toMatchObject({ state: 'done', output: '/repo',
-      display: { type: 'diff', before: 'a', after: 'b' },
+      display: { kind: 'diff', path: 'a.ts', before: 'a', after: 'b' },
       progress: { kind: 'custom', text: 'latest', customKind: 'phase', customData: { phase: 2 } } });
+    const legacy = { ...call, event: { ...original, display: { type: 'diff', before: 'a', after: 'b' } } };
+    expect(replay([...records.slice(0, 3), legacy, ...records.slice(4)]).getToolCall('call-1')?.frame.display)
+      .toEqual({ kind: 'command', command: 'pwd' });
     const absent = replay(records).getToolCall('call-1')?.frame;
-    expect(absent?.display).toBeUndefined();
+    expect(absent?.display).toEqual({ kind: 'command', command: 'pwd' });
     expect(absent?.progress).toBeUndefined();
     const terminal = replay([...records, event({ type: 'tool.progress', toolCallId: 'call-1',
       update: { kind: 'status', text: 'late update' } })]).getToolCall('call-1')?.frame;
