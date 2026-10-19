@@ -11,6 +11,7 @@ type ScriptedFrame = { id?: string; method?: string; params?: unknown };
 
 type ScriptedProcessOptions = {
   readonly modelPage?: (frame: ScriptedFrame, index: number) => unknown;
+  readonly highWaterMark?: number;
 };
 
 function scriptedProcess(
@@ -27,7 +28,9 @@ function scriptedProcess(
   readonly kill: ReturnType<typeof vi.fn>;
   exit(): void;
 } {
-  const stdout = new PassThrough();
+  const stdout = options.highWaterMark === undefined
+    ? new PassThrough()
+    : new PassThrough({ highWaterMark: options.highWaterMark });
   const stderr = new PassThrough();
   let exitCode: number | null = null;
   let resolveExit!: (code: number) => void;
@@ -194,7 +197,10 @@ describe('CodexAppServerClient limits and observers', () => {
   });
 
   it('pulls 1025 early notifications through a slow sink, preserves order and ACK, and applies producer backpressure', async () => {
-    const fixture = scriptedProcess();
+    // Node's default byte high-water mark is 16 KiB on Windows and 64 KiB
+    // elsewhere. These 1025 deltas fit in the larger duplex buffer, so this
+    // fixture pins a finite buffer below that payload.
+    const fixture = scriptedProcess(undefined, undefined, false, { highWaterMark: 16 * 1024 });
     const client = turnClient(fixture);
     await client.connect();
     const eventIds: string[] = [];
