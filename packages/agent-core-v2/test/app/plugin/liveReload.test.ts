@@ -3,8 +3,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as pluginStore from '#/app/plugin/store';
-import { DaemonTUI } from '../../../../../apps/kimi-code/src/tui/daemon/daemon-tui';
-import { DEFAULT_TUI_CONFIG } from '../../../../../apps/kimi-code/src/tui/config';
 
 import { _clearScopedRegistryForTests, registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { createScopedTestHost, stubPair, type ScopedTestHost } from '#/_base/di/test';
@@ -41,6 +39,10 @@ import { textOutput } from '../../tool/textOutput';
 import { stubBootstrap } from '../bootstrap/stubs';
 import { stubProviderService } from '../provider/stubs';
 
+const daemonModulePath = fileURLToPath(new URL('../../../../../apps/kimi-code/src/tui/daemon/daemon-tui.ts', import.meta.url));
+const configModulePath = fileURLToPath(new URL('../../../../../apps/kimi-code/src/tui/config.ts', import.meta.url));
+const { DaemonTUI } = await import(daemonModulePath);
+const { DEFAULT_TUI_CONFIG } = await import(configModulePath);
 const scratch = fileURLToPath(new URL('../../../../../.tmp/plugin-live-reload/', import.meta.url));
 let root: string;
 let host: ScopedTestHost;
