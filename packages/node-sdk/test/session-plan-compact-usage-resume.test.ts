@@ -349,6 +349,26 @@ describe('session event waiting', () => {
     vi.useFakeTimers();
     const failure = new Error('subscription failed');
     const controller = new AbortController();
+    const sdkTimers = new Set<number>();
+    let sawHelperTimer = false;
+    const fakeSetTimeout = globalThis.setTimeout;
+    const fakeClearTimeout = globalThis.clearTimeout;
+    // The wait timer is the only one this helper owns. Async advance yields to
+    // the native event loop, and a callback scheduled before the fake clock can
+    // then call the hijacked setTimeout. That adopted timer is not the wait.
+    globalThis.setTimeout = ((handler, timeout, ...args) => {
+      const handle = fakeSetTimeout(handler, timeout as number, ...args);
+      const owner = new Error('wait timer owner').stack ?? '';
+      if (owner.includes('waitForSDKEvent')) {
+        sawHelperTimer = true;
+        sdkTimers.add(Number(handle));
+      }
+      return handle;
+    }) as typeof setTimeout;
+    globalThis.clearTimeout = ((handle) => {
+      sdkTimers.delete(Number(handle));
+      fakeClearTimeout(handle);
+    }) as typeof clearTimeout;
     try {
       await expect(waitForSDKEvent(
         { onEvent: () => { throw failure; } },
@@ -356,10 +376,29 @@ describe('session event waiting', () => {
         undefined,
         controller.signal,
       )).rejects.toBe(failure);
+      expect(sawHelperTimer).toBe(true);
+      expect(sdkTimers.size).toBe(0);
       expect(vi.getTimerCount()).toBe(0);
       controller.abort();
       await vi.advanceTimersByTimeAsync(20_000);
+      expect(sdkTimers.size).toBe(0);
+    } finally {
+      globalThis.setTimeout = fakeSetTimeout;
+      globalThis.clearTimeout = fakeClearTimeout;
+      vi.useRealTimers();
+    }
+  });
+
+  it('consumes a wait-window timer and keeps a longer one', async () => {
+    vi.useFakeTimers();
+    try {
+      setTimeout(() => {}, 20_000);
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(20_000);
       expect(vi.getTimerCount()).toBe(0);
+      setTimeout(() => {}, 60_000);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(vi.getTimerCount()).toBe(1);
     } finally {
       vi.useRealTimers();
     }
