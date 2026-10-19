@@ -167,10 +167,16 @@ describe('harness context authority', () => {
       expect(await context.hook({ harness: 'codex', event: 'PreCompact' })).toEqual({ content: '' });
       expect((await context.hook({ harness: 'codex', event: 'UserPromptSubmit' }) as { content: string }).content).toContain('Keep the context contract stable');
       expect(await context.hook({ harness: 'codex', event: 'UserPromptSubmit' })).toEqual({ content: '' });
+      const notes = 'Keep the context contract stable';
+      const noteCopies = (): number => main.accessor.get(IAgentContextMemoryService).get()
+        .filter((message) => JSON.stringify(message.content ?? '').includes(notes)).length;
       const grokLease = await server.core.accessor.get(IHarnessMcpService).acquire({ sessionId, agentId: main.id, workspacePath: home, executorId: 'grok-acp', hooks: true });
       try {
-        expect(await grokLease.contextHook!('Stop')).toContain('Keep the context contract stable');
+        const beforeStop = noteCopies();
+        expect(await grokLease.contextHook!('Stop')).toContain(notes);
         expect(await grokLease.contextHook!('Stop')).toBe('');
+        expect(noteCopies()).toBe(beforeStop);
+        expect(main.accessor.get(IAgentContextMemoryService).get().filter((message) => message.origin?.kind === 'hook_result' && message.origin.event === 'kiki:grok:Stop')).toHaveLength(0);
       } finally { grokLease.dispose(); }
       await expect(grokLease.contextHook!('Stop')).rejects.toThrow('closed');
       const { TRANSCRIPT_COVERAGE_VERSION } = await import('@kiki/transcript');
