@@ -706,7 +706,17 @@ export class GoogleGenAIChatProvider implements ChatProvider {
     this._defaultHeaders = options.defaultHeaders;
     this._clientFactory = options.clientFactory;
     this._client =
-      this._vertexai || this._apiKey !== undefined ? this._buildClient(this._apiKey) : undefined;
+      this._vertexProject() !== undefined || this._apiKey !== undefined
+        ? this._buildClient(this._apiKey)
+        : undefined;
+  }
+
+  private _vertexProject(): { readonly project: string; readonly location: string } | undefined {
+    if (!this._vertexai) return undefined;
+    const project = presentString(this._project);
+    const location = presentString(this._location);
+    if (project === undefined || location === undefined) return undefined;
+    return { project, location };
   }
 
   private _buildClient(
@@ -721,16 +731,35 @@ export class GoogleGenAIChatProvider implements ChatProvider {
     if (this._baseUrl !== undefined) {
       httpOptions.baseUrl = this._baseUrl;
     }
+    const http = Object.keys(httpOptions).length > 0 ? httpOptions : undefined;
+    const vertexProject = this._vertexProject();
+    if (vertexProject !== undefined) {
+      return new GenAIClient({
+        apiKey: undefined,
+        vertexai: true,
+        project: vertexProject.project,
+        location: vertexProject.location,
+        httpOptions: http,
+      });
+    }
+    if (this._vertexai) {
+      if (apiKey === undefined || apiKey.length === 0) {
+        throw new ChatProviderError(
+          'GoogleGenAIChatProvider: apiKey is required for Vertex AI when GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION are not both set.',
+        );
+      }
+      return new GenAIClient({
+        apiKey,
+        vertexai: true,
+        project: undefined,
+        location: undefined,
+        httpOptions: http,
+      });
+    }
     return new GenAIClient({
       apiKey,
-      ...(this._vertexai
-        ? {
-            vertexai: true,
-            project: this._project,
-            location: this._location,
-          }
-        : {}),
-      httpOptions: Object.keys(httpOptions).length > 0 ? httpOptions : undefined,
+      vertexai: false,
+      httpOptions: http,
     });
   }
 
@@ -885,15 +914,26 @@ export class GoogleGenAIChatProvider implements ChatProvider {
     return resolveAuthBackedClient(
       { cachedClient: this._client, clientFactory: this._clientFactory },
       auth,
-      (a) => {
-        if (this._vertexai) return this._buildClient(this._apiKey, a);
+      (requestAuth) => {
+        if (this._vertexProject() !== undefined) return this._buildClient(undefined, requestAuth);
+        if (this._vertexai) {
+          const requestKey = requestAuth?.apiKey;
+          const apiKey =
+            requestKey !== undefined && requestKey.length > 0 ? requestKey : this._apiKey;
+          return this._buildClient(apiKey, requestAuth);
+        }
         return this._buildClient(
-          requireProviderApiKey('GoogleGenAIChatProvider', a, this._apiKey),
-          a,
+          requireProviderApiKey('GoogleGenAIChatProvider', requestAuth, this._apiKey),
+          requestAuth,
         );
       },
     );
   }
+}
+
+function presentString(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
 }
 
 const GEMINI_CATALOGUED_PREFIXES = [

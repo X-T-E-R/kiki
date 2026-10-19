@@ -200,7 +200,12 @@ export function attributeProviderOptions(
   for (const key of Object.keys(options)) {
     const path = `resolved.providerOptions.${key}`;
     if (key === 'vertexai') {
-      trace.record(path, { kind: 'env', detail: 'provider env bag supplies both vertex coordinates' });
+      trace.record(
+        path,
+        options.project !== undefined && options.location !== undefined
+          ? { kind: 'env', detail: 'provider env bag supplies both vertex coordinates' }
+          : { kind: 'config', detail: "provider type 'vertexai'" },
+      );
       continue;
     }
     if (key === 'project') {

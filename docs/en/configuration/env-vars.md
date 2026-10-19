@@ -60,12 +60,12 @@ Key names per provider:
 | `ANTHROPIC_BASE_URL` | Anthropic | Follows Anthropic SDK default |
 | `OPENAI_API_KEY` | OpenAI (`openai` and `openai_responses`) | None |
 | `OPENAI_BASE_URL` | OpenAI (`openai` and `openai_responses`) | `https://api.openai.com/v1` |
-| `GOOGLE_API_KEY` | Google GenAI, Vertex AI | None |
+| `GOOGLE_API_KEY` | Google GenAI (`google-genai`) | None |
 | `GOOGLE_GEMINI_BASE_URL` | Google GenAI (`google-genai`) | `https://generativelanguage.googleapis.com` |
-| `GOOGLE_VERTEX_BASE_URL` | Vertex AI (`vertexai`) | SDK regional default `*-aiplatform.googleapis.com` host |
-| `VERTEXAI_API_KEY` | Vertex AI | None |
-| `GOOGLE_CLOUD_PROJECT` | Vertex AI | None |
-| `GOOGLE_CLOUD_LOCATION` | Vertex AI | None |
+| `GOOGLE_VERTEX_BASE_URL` | Vertex AI (`vertexai`) | API-key route: `https://aiplatform.googleapis.com`. Project route: `https://<location>-aiplatform.googleapis.com` |
+| `VERTEXAI_API_KEY` | Vertex AI (`vertexai`) API-key route | None |
+| `GOOGLE_CLOUD_PROJECT` | Vertex AI project route | None |
+| `GOOGLE_CLOUD_LOCATION` | Vertex AI project route | None |
 
 ::: warning
 `GOOGLE_APPLICATION_CREDENTIALS` (path to a service account JSON file) is the only exception that goes through the system environment variable mechanism — it is read by the Google SDK directly via the standard ADC flow, and the CLI does not participate. All other key names must be placed in the `[providers.<name>.env]` sub-table to take effect — the secret ones in `credentials.toml`, the `*_BASE_URL` ones in `config.toml`.

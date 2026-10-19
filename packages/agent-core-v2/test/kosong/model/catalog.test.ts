@@ -682,6 +682,49 @@ describe('Model assembly (pure data)', () => {
     }
   });
 
+  it('resolves a vertexai provider onto Vertex options without moving a plain Gemini key', async () => {
+    const { host, catalog } = createHost({
+      providers: {
+        keyed: { type: 'vertexai', apiKey: 'vk-local-fixture' },
+        project: {
+          type: 'vertexai',
+          env: { GOOGLE_CLOUD_PROJECT: 'my-project', GOOGLE_CLOUD_LOCATION: 'us-central1' },
+        },
+        both: {
+          type: 'vertexai',
+          apiKey: 'vk-local-fixture',
+          env: { GOOGLE_CLOUD_PROJECT: 'my-project', GOOGLE_CLOUD_LOCATION: 'us-central1' },
+        },
+        gemini: { type: 'google-genai', apiKey: 'gk-local-fixture' },
+      },
+      models: {
+        keyed: { provider: 'keyed', model: 'gemini-2.5-flash', maxContextSize: 1000 },
+        project: { provider: 'project', model: 'gemini-2.5-flash', maxContextSize: 1000 },
+        both: { provider: 'both', model: 'gemini-2.5-flash', maxContextSize: 1000 },
+        gemini: { provider: 'gemini', model: 'gemini-2.5-flash', maxContextSize: 1000 },
+      },
+    });
+    try {
+      expect(catalog.get('keyed').protocol).toBe('google-genai');
+      expect(catalog.get('keyed').providerType).toBe('vertexai');
+      expect(catalog.get('keyed').providerOptions).toEqual({ vertexai: true });
+      expect(catalog.get('project').providerOptions).toEqual({
+        vertexai: true,
+        project: 'my-project',
+        location: 'us-central1',
+      });
+      expect(catalog.get('both').providerOptions).toEqual({
+        vertexai: true,
+        project: 'my-project',
+        location: 'us-central1',
+      });
+      expect(catalog.get('gemini').protocol).toBe('google-genai');
+      expect(catalog.get('gemini').providerOptions).toBeUndefined();
+    } finally {
+      await host.dispose();
+    }
+  });
+
   it('supports flat models with an inline baseUrl (provider synthesized from the origin)', async () => {
     const { host, catalog } = createHost({
       models: {

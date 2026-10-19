@@ -1,5 +1,7 @@
+import { createRequire } from 'node:module';
 import { createServer } from 'node:http';
 import { release as osRelease } from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { nativeSearchParameters, nativeFetchParameters } from '#/app/nbSearch/nativeInput';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -95,7 +97,15 @@ const ENV_KEYS = [
   'KIMI_API_KEY',
   'KIMI_BASE_URL',
   'GOOGLE_API_KEY',
+  'GEMINI_API_KEY',
   'VERTEXAI_API_KEY',
+  'GOOGLE_CLOUD_PROJECT',
+  'GOOGLE_CLOUD_LOCATION',
+  'GCLOUD_PROJECT',
+  'GOOGLE_GENAI_USE_VERTEXAI',
+  'GOOGLE_VERTEX_BASE_URL',
+  'GOOGLE_GEMINI_BASE_URL',
+  'GOOGLE_APPLICATION_CREDENTIALS',
 ] as const;
 
 let envSnapshot: Record<string, string | undefined>;
@@ -897,6 +907,22 @@ describe('google-genai vertex mode (providerOptions)', () => {
     });
     expect(Reflect.get(provider, '_apiKey')).toBe('google-env-key');
   });
+
+  it('reads VERTEXAI_API_KEY for the vertexai provider and ignores GOOGLE_API_KEY', () => {
+    expect(getProviderDefinition('vertexai')?.baseProtocol).toBe('google-genai');
+    expect(
+      resolveProviderEndpoint('vertexai', {
+        VERTEXAI_API_KEY: 'vertex-env-key',
+        GOOGLE_API_KEY: 'google-env-key',
+      }),
+    ).toEqual({ apiKey: 'vertex-env-key' });
+    expect(resolveProviderEndpoint('vertexai', { GOOGLE_API_KEY: 'google-env-key' })).toEqual({});
+    expect(
+      resolveProviderEndpoint('vertexai', {
+        GOOGLE_VERTEX_BASE_URL: 'https://vertex.example.test',
+      }),
+    ).toEqual({ baseUrl: 'https://vertex.example.test' });
+  });
 });
 
 describe('resolveProviderEndpoint', () => {
@@ -1003,6 +1029,142 @@ const THINK_HISTORY: Message[] = [
 async function drain(stream: StreamedMessage): Promise<void> {
   for await (const part of stream) void part;
 }
+
+const VERTEX_KEY = 'vk-local-fixture';
+const GEMINI_KEY = 'gk-local-fixture';
+
+type GoogleAuthCtor = {
+  prototype: { getRequestHeaders: (url?: string | URL) => Promise<Headers> };
+};
+
+async function loadGoogleAuth(): Promise<GoogleAuthCtor> {
+  const requireFromGenai = createRequire(import.meta.resolve('@google/genai'));
+  const authModule = await import(pathToFileURL(requireFromGenai.resolve('google-auth-library')).href) as {
+    GoogleAuth: GoogleAuthCtor;
+  };
+  return authModule.GoogleAuth;
+}
+
+function vertexSse(): Response {
+  const body =
+    'data: {"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}\n\n';
+  return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+}
+
+function capturedFetch(
+  onRequest: (url: URL, headers: Headers) => void,
+): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> {
+  return (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    const headers = new Headers(input instanceof Request ? input.headers : init?.headers);
+    onRequest(url, headers);
+    return Promise.resolve(vertexSse());
+  };
+}
+
+describe('google-genai SDK route (intercepted fetch)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('sends a Vertex API key to aiplatform without a project path or the Gemini host', async () => {
+    const seen: Array<{ url: URL; keyHeader: string | null }> = [];
+    const authHeaders = vi.spyOn((await loadGoogleAuth()).prototype, 'getRequestHeaders');
+    vi.stubGlobal(
+      'fetch',
+      capturedFetch((url, headers) => {
+        seen.push({ url, keyHeader: headers.get('x-goog-api-key') });
+      }),
+    );
+    const provider = new GoogleGenAIChatProvider({
+      model: 'gemini-2.5-flash',
+      vertexai: true,
+    });
+    const stream = await provider.generate('', [], PROBE_HISTORY, { auth: { apiKey: VERTEX_KEY } });
+    const parts = [];
+    for await (const part of stream) parts.push(part);
+    expect(parts).toContainEqual({ type: 'text', text: 'ok' });
+    expect(seen).toHaveLength(1);
+    const request = seen[0]!;
+    expect(request.url.hostname).toBe('aiplatform.googleapis.com');
+    expect(request.url.pathname).toBe(
+      '/v1beta1/publishers/google/models/gemini-2.5-flash:streamGenerateContent',
+    );
+    expect(request.url.searchParams.get('alt')).toBe('sse');
+    expect(request.url.pathname.includes('/projects/')).toBe(false);
+    expect(request.url.hostname.includes('generativelanguage')).toBe(false);
+    expect(request.url.href.includes(VERTEX_KEY)).toBe(false);
+    expect(request.keyHeader).toBe(VERTEX_KEY);
+    expect(authHeaders).not.toHaveBeenCalled();
+  });
+
+  it('keeps a Gemini API key on generativelanguage v1beta', async () => {
+    const seen: Array<{ url: URL; keyHeader: string | null }> = [];
+    vi.stubGlobal(
+      'fetch',
+      capturedFetch((url, headers) => {
+        seen.push({ url, keyHeader: headers.get('x-goog-api-key') });
+      }),
+    );
+    const provider = new GoogleGenAIChatProvider({ model: 'gemini-2.5-flash' });
+    const stream = await provider.generate('', [], PROBE_HISTORY, { auth: { apiKey: GEMINI_KEY } });
+    for await (const part of stream) void part;
+    expect(seen).toHaveLength(1);
+    const request = seen[0]!;
+    expect(request.url.hostname).toBe('generativelanguage.googleapis.com');
+    expect(request.url.pathname).toBe('/v1beta/models/gemini-2.5-flash:streamGenerateContent');
+    expect(request.url.pathname.includes('publishers/google')).toBe(false);
+    expect(request.url.href.includes(GEMINI_KEY)).toBe(false);
+    expect(request.keyHeader).toBe(GEMINI_KEY);
+  });
+
+  it('uses the project ADC route and does not send an API key when project and location are set', async () => {
+    const seen: Array<{ url: URL; keyHeader: string | null; authorization: string | null }> = [];
+    vi.spyOn((await loadGoogleAuth()).prototype, 'getRequestHeaders').mockResolvedValue(
+      new Headers({ authorization: 'Bearer local-adc-stub' }),
+    );
+    vi.stubGlobal(
+      'fetch',
+      capturedFetch((url, headers) => {
+        seen.push({
+          url,
+          keyHeader: headers.get('x-goog-api-key'),
+          authorization: headers.get('authorization'),
+        });
+      }),
+    );
+    const provider = new GoogleGenAIChatProvider({
+      model: 'gemini-2.5-flash',
+      apiKey: VERTEX_KEY,
+      vertexai: true,
+      project: 'my-project',
+      location: 'us-central1',
+    });
+    const stream = await provider.generate('', [], PROBE_HISTORY, { auth: { apiKey: VERTEX_KEY } });
+    for await (const part of stream) void part;
+    expect(seen).toHaveLength(1);
+    const request = seen[0]!;
+    expect(request.url.hostname).toBe('us-central1-aiplatform.googleapis.com');
+    expect(request.url.pathname).toBe(
+      '/v1beta1/projects/my-project/locations/us-central1/publishers/google/models/gemini-2.5-flash:streamGenerateContent',
+    );
+    expect(request.url.hostname.includes('generativelanguage')).toBe(false);
+    expect(request.url.href.includes(VERTEX_KEY)).toBe(false);
+    expect(request.keyHeader).toBeNull();
+    expect(request.authorization).toBe('Bearer local-adc-stub');
+  });
+
+  it('refuses a Vertex key route without calling fetch when no key and no project are set', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new GoogleGenAIChatProvider({
+      model: 'gemini-2.5-flash',
+      vertexai: true,
+    });
+    await expect(provider.generate('', [], PROBE_HISTORY)).rejects.toThrow(/apiKey is required for Vertex AI/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
 
 const CODEX_SSE_RESPONSE = [
   'event: response.created',

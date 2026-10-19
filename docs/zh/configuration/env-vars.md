@@ -60,12 +60,12 @@ KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 | `ANTHROPIC_BASE_URL` | Anthropic | Anthropic SDK 默认值 |
 | `OPENAI_API_KEY` | OpenAI（`openai` 和 `openai_responses`） | 无 |
 | `OPENAI_BASE_URL` | OpenAI（`openai` 和 `openai_responses`） | `https://api.openai.com/v1` |
-| `GOOGLE_API_KEY` | Google GenAI、Vertex AI | 无 |
+| `GOOGLE_API_KEY` | Google GenAI（`google-genai`） | 无 |
 | `GOOGLE_GEMINI_BASE_URL` | Google GenAI（`google-genai`） | `https://generativelanguage.googleapis.com` |
-| `GOOGLE_VERTEX_BASE_URL` | Vertex AI（`vertexai`） | SDK 默认的区域化 `*-aiplatform.googleapis.com` 地址 |
-| `VERTEXAI_API_KEY` | Vertex AI | 无 |
-| `GOOGLE_CLOUD_PROJECT` | Vertex AI | 无 |
-| `GOOGLE_CLOUD_LOCATION` | Vertex AI | 无 |
+| `GOOGLE_VERTEX_BASE_URL` | Vertex AI（`vertexai`） | API 密钥路线：`https://aiplatform.googleapis.com`。项目路线：`https://<location>-aiplatform.googleapis.com` |
+| `VERTEXAI_API_KEY` | Vertex AI（`vertexai`）的 API 密钥路线 | 无 |
+| `GOOGLE_CLOUD_PROJECT` | Vertex AI 项目路线 | 无 |
+| `GOOGLE_CLOUD_LOCATION` | Vertex AI 项目路线 | 无 |
 
 ::: warning
 `GOOGLE_APPLICATION_CREDENTIALS`（服务账号 JSON 路径）是唯一走系统环境变量的例外——它由 Google SDK 自身通过 ADC 流程读取，CLI 不参与。其他所有键名都必须写在 `[providers.<name>.env]` 子表里——密钥键在 `credentials.toml`，`*_BASE_URL` 键在 `config.toml`。

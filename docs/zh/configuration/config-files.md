@@ -256,7 +256,7 @@ KIMI_API_KEY = "sk-xxx"
 KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 ```
 
-优先级：`api_key` 字段 > `env` 子表键 > 两者都缺时启动报错。
+优先级：`api_key` 字段 > `env` 子表键 > 两者都缺时启动报错。`type = "vertexai"` 可以不填 `api_key`，只要 env 子表同时写了 `GOOGLE_CLOUD_PROJECT` 和 `GOOGLE_CLOUD_LOCATION`；见 [Vertex AI](./providers.md#vertexai)。
 
 ## `models`
 

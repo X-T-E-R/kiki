@@ -207,27 +207,50 @@ api_key = "xxxxx"
 
 ## `vertexai`
 
-与 `google-genai` 共用实现，`type = "vertexai"` 时切换到 Vertex AI 访问路径。
+与 [`google-genai`](#google-genai) 共用 Google GenAI 客户端，但请求留在 Vertex AI，不会改走 Gemini Developer API（`generativelanguage.googleapis.com`）。`vertexai` 是供应商类型，不是模型的 `protocol` 值。
 
-- 凭证键名：`VERTEXAI_API_KEY` ——写在 `[providers.vertexai.env]` 子表里，并与其他供应商 API 密钥一样存放在 `credentials.toml`；是不走下文 ADC 流程时的 API 密钥来源
+下面两种接法只选一种。项目和区域都写了时，Kiki 走项目路线，不发送 API 密钥。
 
-认证走 Google Cloud 标准 ADC 流程（`gcloud auth application-default login`，或 `GOOGLE_APPLICATION_CREDENTIALS` 指向的服务账号 JSON 文件）。**项目 ID 和区域必须写在 `[providers.vertexai.env]` 子表里**——在 shell 里 `export GOOGLE_CLOUD_PROJECT` 不起作用。
+### API 密钥
+
+把密钥写成 `credentials.toml` 里的 `api_key`，或写在供应商 `[providers.<name>.env]` 子表的 `VERTEXAI_API_KEY`。不要同时填写项目和区域。
+
+请求发往 `https://aiplatform.googleapis.com`，API 版本为 `v1beta1`，请求头是 `x-goog-api-key`。路径形如 `/v1beta1/publishers/google/models/<model>:streamGenerateContent`，不含项目和区域。
 
 ```toml
-[providers.vertexai]
+[providers.vertex]
+type = "vertexai"
+```
+
+```toml
+# ~/.kiki/credentials/credentials.toml
+[providers.vertex]
+api_key = "xxxxx"
+```
+
+### 项目 ADC
+
+把项目 ID 和区域写在供应商 env 子表里。在 shell 里 `export GOOGLE_CLOUD_PROJECT` 不会被读取。认证使用 Google Cloud 应用默认凭据：`gcloud auth application-default login`，或把 `GOOGLE_APPLICATION_CREDENTIALS` 指到服务账号 JSON 文件。
+
+不必填写 API 密钥。请求发往 `https://<location>-aiplatform.googleapis.com`，API 版本为 `v1beta1`，路径以 `/v1beta1/projects/<project>/locations/<location>/` 开头。如果同时还配置了 API 密钥，Kiki 仍走这条项目路线，并且不发送该密钥。
+
+```toml
+[providers.vertex]
 type = "vertexai"
 
-[providers.vertexai.env]
+[providers.vertex.env]
 GOOGLE_CLOUD_PROJECT = "my-gcp-project"
 GOOGLE_CLOUD_LOCATION = "us-central1"
 ```
 
 ```sh
-gcloud auth application-default login   # 一次性完成认证
+gcloud auth application-default login
 kiki
 ```
 
-如需让 Vertex 请求走自定义（如代理）端点，可设置 `base_url`（或 `GOOGLE_VERTEX_BASE_URL` 环境变量）；不填时使用 SDK 默认的区域化 `*-aiplatform.googleapis.com` 地址。与 `google-genai` 一样，只填主机根地址——SDK 会自行追加 `/v1beta1/publishers/google/models/…`。
+两种路线都可以用 `base_url`（或供应商 env 子表里的 `GOOGLE_VERTEX_BASE_URL`）改走自定义主机。只填主机根地址，客户端会自行追加 API 版本和路径。
+
+`google-genai` 是另一条路线。它的密钥是 Gemini Developer API 密钥（`GOOGLE_API_KEY`）；只有该供应商的 env 子表同时写了 `GOOGLE_CLOUD_PROJECT` 和 `GOOGLE_CLOUD_LOCATION` 时，才会改走上面的项目路线。
 
 ## OAuth 与凭证注入
 

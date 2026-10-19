@@ -86,6 +86,21 @@ describe('resolveModelAuthMaterial', () => {
         },
       }),
     ).toEqual({ apiKey: 'vertex-env-key' });
+    expect(
+      authMaterial({
+        model: { model: 'm' },
+        provider: {
+          type: 'vertexai',
+          env: { VERTEXAI_API_KEY: 'vertex-env-key', GOOGLE_API_KEY: 'google-env-key' },
+        },
+      }),
+    ).toEqual({ apiKey: 'vertex-env-key' });
+    expect(
+      authMaterial({
+        model: { model: 'm' },
+        provider: { type: 'vertexai', env: { GOOGLE_API_KEY: 'google-env-key' } },
+      }),
+    ).toEqual({});
   });
 
   it('returns empty material when nothing is configured', () => {

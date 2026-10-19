@@ -207,27 +207,50 @@ api_key = "xxxxx"
 
 ## `vertexai`
 
-Shares the same implementation as `google-genai`; setting `type = "vertexai"` switches to the Vertex AI access path.
+Uses the same Google GenAI client as [`google-genai`](#google-genai), but stays on Vertex AI. It does not call the Gemini Developer API (`generativelanguage.googleapis.com`). `vertexai` is a provider type, not a model `protocol` value.
 
-- Credential key name: `VERTEXAI_API_KEY` — written in the `[providers.vertexai.env]` sub-table, and stored in `credentials.toml` like every other provider API key; the API-key alternative to the ADC flow below
+Pick one of the two setups below. They are not combined: when both the project and the location are set, Kiki uses the project route and does not send the API key.
 
-Authentication follows the standard Google Cloud ADC flow (`gcloud auth application-default login`, or a `GOOGLE_APPLICATION_CREDENTIALS` service account JSON file). **The project ID and region must be written in the `[providers.vertexai.env]` sub-table** — exporting `GOOGLE_CLOUD_PROJECT` in your shell has no effect.
+### API key
+
+Store the key as `api_key` in `credentials.toml`, or as `VERTEXAI_API_KEY` in the provider `[providers.<name>.env]` sub-table. Leave the project and location unset.
+
+Requests go to `https://aiplatform.googleapis.com` with API version `v1beta1` and the `x-goog-api-key` header. The path looks like `/v1beta1/publishers/google/models/<model>:streamGenerateContent` and does not include a project or location.
 
 ```toml
-[providers.vertexai]
+[providers.vertex]
+type = "vertexai"
+```
+
+```toml
+# ~/.kiki/credentials/credentials.toml
+[providers.vertex]
+api_key = "xxxxx"
+```
+
+### Project ADC
+
+Write the project ID and region in the provider env sub-table. A shell `export GOOGLE_CLOUD_PROJECT` is not read. Sign in with Google Cloud application default credentials: `gcloud auth application-default login`, or set `GOOGLE_APPLICATION_CREDENTIALS` to a service account JSON file.
+
+No API key is required. Requests go to `https://<location>-aiplatform.googleapis.com` with API version `v1beta1`. The path starts with `/v1beta1/projects/<project>/locations/<location>/`. If an API key is also configured, Kiki still uses this project route and does not send the key.
+
+```toml
+[providers.vertex]
 type = "vertexai"
 
-[providers.vertexai.env]
+[providers.vertex.env]
 GOOGLE_CLOUD_PROJECT = "my-gcp-project"
 GOOGLE_CLOUD_LOCATION = "us-central1"
 ```
 
 ```sh
-gcloud auth application-default login   # one-time authentication
+gcloud auth application-default login
 kiki
 ```
 
-To route Vertex requests through a custom (e.g. proxied) endpoint, set `base_url` (or the `GOOGLE_VERTEX_BASE_URL` env var); when omitted, the SDK default regional `*-aiplatform.googleapis.com` host is used. As with `google-genai`, give the host root only — the SDK appends `/v1beta1/publishers/google/models/…` itself.
+To send either route through a custom host, set `base_url` (or `GOOGLE_VERTEX_BASE_URL` in the provider env sub-table). Give the host root only — the client appends the API version and path.
+
+`google-genai` is a separate route. Its key is a Gemini Developer API key (`GOOGLE_API_KEY`) unless that provider's env sub-table sets both `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION`, which selects the project route above.
 
 ## OAuth and credential injection
 

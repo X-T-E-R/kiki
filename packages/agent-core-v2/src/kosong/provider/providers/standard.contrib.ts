@@ -29,3 +29,10 @@ registerProviderDefinition({
     { endpoint: () => ({ apiKeyEnv: 'GOOGLE_API_KEY', baseUrlEnv: 'GOOGLE_GEMINI_BASE_URL' }) },
   ],
 });
+
+registerProviderDefinition({
+  id: 'vertexai',
+  baseProtocol: 'google-genai',
+  traits: [],
+  endpoint: { apiKeyEnv: 'VERTEXAI_API_KEY', baseUrlEnv: 'GOOGLE_VERTEX_BASE_URL' },
+});
