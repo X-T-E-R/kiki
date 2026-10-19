@@ -580,6 +580,9 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         if (req.body.prompt_id === undefined && req.body.skills !== undefined) {
           await assertActivatableSkills(session.accessor.get(ISessionSkillCatalog), req.body.skills);
         }
+        if (req.body.prompt_id === undefined) {
+          await assertPromptFileRefs(req.body.content, ingressExecution?.files ?? core.accessor.get(IFileService));
+        }
         const restoring = resolvePromptFromSession(core, session, req.body.agent_id);
         const resolved = await (signal === undefined ? restoring : abortable(restoring, signal));
         const retryPromptId = req.body.prompt_id;
