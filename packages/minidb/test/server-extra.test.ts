@@ -257,6 +257,50 @@ test('RESP parser: an inline line with no CRLF still errors at the cap and the n
   assert.deepEqual(describeItems([...parser.feed(Buffer.from('*1\r\n$4\r\nPING\r\n'))]), [['PING']]);
 });
 
+test('RESP parser: a complete inline line over the cap is rejected and a later PING recovers', () => {
+  const parser = new RespParser({ maxBuf: 16 });
+  const line = Buffer.from(`PING ${'x'.repeat(20)}\r\n`);
+  assert.ok(line.length > 16);
+  assert.throws(() => [...parser.feed(line)], /RESP request too large \(>16 bytes\)/);
+  assert.deepEqual(describeItems([...parser.feed(Buffer.from('PING\r\n'))]), [['PING']]);
+});
+
+test('RESP parser: an inline line completed by a later CRLF chunk over the cap is rejected and PING recovers', () => {
+  const parser = new RespParser({ maxBuf: 16 });
+  const head = Buffer.from(`PING ${'x'.repeat(10)}`);
+  assert.equal(head.length, 15);
+  assert.deepEqual([...parser.feed(head)], []);
+  assert.throws(() => [...parser.feed(Buffer.from(`${'x'.repeat(10)}\r\n`))], /RESP request too large \(>16 bytes\)/);
+  assert.deepEqual(describeItems([...parser.feed(Buffer.from('PING\r\n'))]), [['PING']]);
+});
+
+test('RESP parser: an inline line exactly at the cap is kept, and small lines sharing a chunk are kept', () => {
+  const exact = new RespParser({ maxBuf: 16 });
+  const line = Buffer.from(`PING ${'x'.repeat(9)}\r\n`);
+  assert.equal(line.length, 16);
+  assert.deepEqual(describeItems([...exact.feed(line)]), [['PING', 'x'.repeat(9)]]);
+
+  // 18 bytes in one chunk, three requests of 6. The cap is per unparsed request.
+  const pipelined = new RespParser({ maxBuf: 16 });
+  const chunk = Buffer.from('PING\r\nPING\r\nPING\r\n');
+  assert.equal(chunk.length, 18);
+  assert.deepEqual(describeItems([...pipelined.feed(chunk)]), [['PING'], ['PING'], ['PING']]);
+});
+
+test('RESP parser: a complete array frame over the cap is not returned as arguments', () => {
+  const parser = new RespParser({ maxBuf: 16 });
+  const frame = Buffer.from('*2\r\n$1\r\nA\r\n$1\r\nB\r\n');
+  assert.equal(frame.length, 18);
+  let items: Array<Buffer[] | { error: string }> = [];
+  try {
+    items = [...parser.feed(frame)];
+  } catch (error) {
+    assert.match((error as Error).message, /RESP request too large \(>16 bytes\)/);
+  }
+  assert.ok(items.every((item) => !Array.isArray(item)));
+  assert.deepEqual(describeItems([...parser.feed(Buffer.from('PING\r\n'))]), [['PING']]);
+});
+
 test('RESP: one bad command does not starve its pipelined siblings', async () => {
   const dir = await tmpDir();
   const srv = await startServer({ dir, port: 0, fsyncPolicy: 'no' });

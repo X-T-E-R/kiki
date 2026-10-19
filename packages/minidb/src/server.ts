@@ -64,9 +64,9 @@ export class RespParser {
       rest = rest.subarray(this.skipBytes);
       this.skipBytes = 0;
     }
-    if (rest.length) this.buf = this.buf.length ? Buffer.concat([this.buf, rest]) : rest;
+    if (rest.length > 0) this.buf = this.buf.length > 0 ? Buffer.concat([this.buf, rest]) : rest;
 
-    while (this.buf.length) {
+    while (this.buf.length > 0) {
       if (this.skipBulks > 0) {
         const skipped = this.consumeSkippedBulk();
         if (skipped === 'need') {
@@ -135,6 +135,7 @@ export class RespParser {
       throw new Error(this.tooLarge());
     }
     if (this.bulkTooBig(bodyAt, len)) {
+      // Same as tryParse: a length above 2^53 is not skipped precisely.
       if (!Number.isSafeInteger(len + 2)) {
         this.buf = Buffer.alloc(0);
         this.skipBytes = 0;
@@ -153,6 +154,14 @@ export class RespParser {
     if (this.buf[0] !== 0x2a /* '*' */) {
       const idx = this.buf.indexOf(CRLF);
       if (idx === -1) return 'need';
+      // One inline request, CRLF included. A finished line can exceed the cap
+      // without ever taking the incomplete-buffer path.
+      if (idx + 2 > this.maxBuf) {
+        this.buf = Buffer.alloc(0);
+        this.skipBytes = 0;
+        this.skipBulks = 0;
+        throw new Error(this.tooLarge());
+      }
       const line = this.buf.subarray(0, idx).toString();
       this.buf = this.buf.subarray(idx + 2);
       return line.split(' ').filter(Boolean).map((s) => Buffer.from(s));
@@ -173,7 +182,8 @@ export class RespParser {
       const len = Number(this.buf.subarray(pos, end).toString());
       pos = end + 2;
       if (this.bulkTooBig(pos, len)) {
-        // An inexact length cannot be skipped without drifting into the next command.
+        // Above 2^53, len+2 is not an exact byte count. Drop the buffer and
+        // report the cap; this path does not claim a precise skip.
         if (!Number.isSafeInteger(len + 2)) {
           this.buf = Buffer.alloc(0);
           this.skipBytes = 0;
@@ -187,6 +197,14 @@ export class RespParser {
       if (this.buf.length - pos < len + 2) return 'need';
       args.push(this.buf.subarray(pos, pos + len));
       pos += len + 2;
+    }
+    // A finished array is one request. Declared bulks already fail above; this
+    // still refuses a frame whose own bytes exceed the cap.
+    if (pos > this.maxBuf) {
+      this.buf = Buffer.alloc(0);
+      this.skipBytes = 0;
+      this.skipBulks = 0;
+      throw new Error(this.tooLarge());
     }
     this.buf = this.buf.subarray(pos);
     return args;
