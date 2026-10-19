@@ -465,6 +465,7 @@ function applyFrameUpsert(
   const hiddenFrame = frameIndex < 0 && op.frameIndex !== undefined && omittedFrames !== undefined
     && op.frameIndex < omittedFrames.offset;
   if (hiddenStep) return { state, changed: false, toolCallCountDelta: 0 };
+  if (hiddenFrame && op.place !== 'safety_boundary') return { state, changed: false, toolCallCountDelta: 0 };
   if (hiddenFrame && omittedFrames !== undefined) {
     const contentRefs = turn.contentRefs?.map((ref) => ref === omittedFrames
       ? { ...ref, offset: ref.offset + 1, total: ref.total + 1 }
