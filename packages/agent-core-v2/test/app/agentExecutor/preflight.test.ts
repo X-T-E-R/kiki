@@ -234,6 +234,7 @@ describe('AgentExecutorPreflightService', () => {
     const results = await services.get(IAgentExecutorPreflightService).run();
 
     expect([
+      'agy-cli',
       'antigravity-acp',
       'claude-acp',
       'cline-acp',
@@ -250,6 +251,17 @@ describe('AgentExecutorPreflightService', () => {
       'pi-acp',
       'qoder-acp',
     ]).toEqual(results.map((result) => result.id).sort());
+    const agy = results.find((result) => result.id === 'agy-cli');
+    expect(agy).toMatchObject({ status: 'unavailable', command: '' });
+    expect(agy?.selectedSource).toBeUndefined();
+    expect(agy?.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ severity: 'error', message: 'Configured source "kiki-managed" is unavailable.' }),
+      expect.objectContaining({
+        severity: 'info',
+        message: 'AGY CLI model ids come from `agy models`. The official ACP server remains the separate antigravity-acp executor.',
+      }),
+    ]));
+    expect(results.find((result) => result.id === 'antigravity-acp')?.id).toBe('antigravity-acp');
     expect(results.find((result) => result.id === 'codex-app-server')).toMatchObject({
       selectedSource: 'env',
       command: 'C:/tools/codex.exe',
