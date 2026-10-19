@@ -208,7 +208,7 @@ export class RemoteConnectionManager {
   }
   failed(id: string, error: unknown): void {
     const record = this.records.find((entry) => entry.id === id);
-    if (record === undefined || !record.enabled || this.stopped) return;
+    if (record === undefined || !record.enabled || this.stopped || record.state === 'identity_changed') return;
     this.stopSummary(id);
     if (record.summary !== undefined) record.summary.stale = true;
     const reason = error instanceof Error ? error.message : 'connection_failed'; record.lastError = reason;

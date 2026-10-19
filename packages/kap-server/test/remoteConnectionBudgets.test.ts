@@ -9,7 +9,7 @@ import Fastify from 'fastify';
 import { WebSocket, WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
 import { readBoundedJsonBody, SESSION_READ_BODY_BYTES } from '@kiki/klient/transports/http/bounded-body';
-import { ConnectionAdmission } from '../src/services/connections/admission';
+import { AdmissionError, ConnectionAdmission } from '../src/services/connections/admission';
 import { RemoteConnectionManager } from '../src/services/connections/manager';
 import { registerRemoteConnectionRoutes } from '../src/routes/remoteConnections';
 
@@ -206,5 +206,25 @@ describe('broker budgets against explicit adversarial transport fixtures', () =>
     client.send(JSON.stringify({ type: 'ping', data: 'x'.repeat(129 * 1024) }));
     expect((await closed)[0]).toBe(1009);
     await expect.poll(() => f.manager.list()[0]?.activeLeases).toBe(0);
+  });
+  it('keeps identity_changed after a later transport failure and pauses every purpose', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kiki-identity-sticky-'));
+    cleanups.push(() => rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }));
+    const manager = new RemoteConnectionManager(home, identity());
+    await manager.ready();
+    const record = await manager.registerBridgeTarget({ label: 'Drift', endpoint: 'http://127.0.0.1:9/', target: identity() });
+    const gui = manager.lease(record.id);
+    const bridge = manager.lease(record.id, undefined, 'bridge');
+    manager.failed(record.id, new AdmissionError(409, 'identity_changed'));
+    expect(manager.get(record.id).state).toBe('identity_changed');
+    expect(gui.signal.aborted).toBe(true);
+    expect(bridge.signal.aborted).toBe(true);
+    manager.failed(record.id, new Error('socket hang up'));
+    expect(manager.get(record.id).state).toBe('identity_changed');
+    expect(manager.get(record.id).lastError).toBe('identity_changed');
+    expect(gui.signal.aborted).toBe(true);
+    expect(bridge.signal.aborted).toBe(true);
+    expect(() => manager.lease(record.id)).toThrow(AdmissionError);
+    expect(() => manager.lease(record.id, undefined, 'bridge')).toThrow(AdmissionError);
   });
 });
