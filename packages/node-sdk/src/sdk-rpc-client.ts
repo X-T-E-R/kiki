@@ -136,6 +136,7 @@ import { IAppendLogStore } from '@kiki/agent-core-v2/persistence/interface/appen
 import { SessionIndexErrors } from '@kiki/agent-core-v2/app/sessionIndex/errors';
 import { AgentStatusUpdated } from '@kiki/agent-core-v2/agent/usage/usageEvents';
 import type { McpServerConfig as WorkspaceMcpServerConfig } from '@kiki/agent-core-v2/mcpCore/config-schema';
+import type { McpServerEntry } from '@kiki/agent-core-v2/mcpCore/connection-manager';
 import {
   bootstrap,
   DEFAULT_AGENT_PROFILE_NAME,
@@ -2712,10 +2713,20 @@ export class SDKRpcClient extends SDKRpcClientBase {
       await this.mcpManagement((management) => management.add({ server: target, cwd }));
     }
     if (config.enabled === false) {
-      await this.registerDisabledSessionMcp(input.sessionId, target.name, config, source);
-    } else {
-      await this.connectExplicitSessionMcp(input.sessionId, target.name, config, source);
+      const recorded = await this.registerDisabledSessionMcp(input.sessionId, target.name, config, source);
+      const listed = (await this.engineCall(() => agent.getMcpServers())).find(
+        (candidate) => candidate.name === target.name,
+      );
+      if (listed !== undefined) return listed as McpServerInfo;
+      if (recorded !== undefined && recorded.name === target.name && recorded.status === 'disabled') {
+        return recorded as McpServerInfo;
+      }
+      throw new KimiError(
+        ErrorCodes.MCP_SERVER_NOT_FOUND,
+        `MCP server "${target.name}" was not connected`,
+      );
     }
+    await this.connectExplicitSessionMcp(input.sessionId, target.name, config, source);
     const entry = (await this.engineCall(() => agent.getMcpServers())).find(
       (candidate) => candidate.name === target.name,
     );
@@ -2731,13 +2742,14 @@ export class SDKRpcClient extends SDKRpcClientBase {
   /**
    * A disabled add must not use `enableConfiguredServer`, which forces the
    * entry on. A handle without disabled registration fails before any connect.
+   * The recorded entry is the receipt when the session list still hides the name.
    */
   private async registerDisabledSessionMcp(
     sessionId: string,
     name: string,
     config: ReturnType<typeof mcpConfigWithoutName>,
     source: 'global' | 'caller',
-  ): Promise<void> {
+  ): Promise<McpServerEntry | undefined> {
     const handle = this.requireLiveSession(sessionId).accessor.get(ISessionMcpHandle);
     if (handle.registerDisabledServer === undefined) {
       throw new KimiError(
@@ -2745,7 +2757,7 @@ export class SDKRpcClient extends SDKRpcClientBase {
         `MCP server "${name}" is disabled and cannot be recorded on this session`,
       );
     }
-    await this.engineCall(() =>
+    return this.engineCall(() =>
       handle.registerDisabledServer!(name, config as WorkspaceMcpServerConfig, source),
     );
   }

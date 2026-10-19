@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import {
   createKimiHarness,
   KimiHarness,
+  SDKRpcClient,
   SDKRpcClientBase,
 } from '#/index';
 import { HostProcessService } from '@kiki/agent-core-v2/os/backends/node-local/hostProcessService';
@@ -503,6 +504,73 @@ describe('session MCP servers (live session adds)', () => {
       expect((await session.listMcpServers()).find((server) => server.name === 'disabled-persisted'))
         .toMatchObject({ status: 'disabled', toolCount: 0 });
       expect(spawn.mock.calls.some((call) => call[0] === command)).toBe(false);
+    } finally {
+      spawn.mockRestore();
+      await harness.close();
+    }
+  }, 20_000);
+
+  it('accepts a disabled add while the same global server stays off', async () => {
+    const homeDir = await makeTempDir();
+    const workDir = await makeTempDir();
+    await writeMcpConfig(homeDir, {
+      mcpServers: {
+        'example-server': {
+          transport: 'stdio',
+          command: process.execPath,
+          args: [stdioFixture],
+        },
+      },
+    });
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const spawn = vi.spyOn(HostProcessService.prototype, 'spawn');
+    const fixtureSpawns = (): number => spawn.mock.calls.filter((call) =>
+      call[0] === process.execPath && Array.isArray(call[1]) && call[1][0] === stdioFixture,
+    ).length;
+    try {
+      const session = await harness.createSession({ workDir });
+      const sibling = await harness.createSession({ workDir });
+      await vi.waitFor(async () => {
+        const entry = (await session.listMcpServers()).find((server) => server.name === 'example-server');
+        if (entry?.status !== 'connected') throw new Error(`example-server status ${entry?.status ?? 'missing'}`);
+      });
+      const agent = (harness as unknown as { readonly rpc: SDKRpcClient }).rpc.klient
+        .session(session.id)
+        .agent('main');
+      await agent.setMcpSessionOverride({
+        locator: { source: 'global', name: 'example-server' },
+        override: 'off',
+      });
+      expect((await session.listMcpServers()).map((server) => server.name)).not.toContain('example-server');
+      const siblingBefore = await sibling.listMcpServers();
+      expect(siblingBefore.map((server) => server.name)).toContain('example-server');
+      const fileBefore = await readFile(join(homeDir, 'mcp.json'), 'utf-8');
+      const spawnsBefore = fixtureSpawns();
+      const added = await session.addMcpServer({
+        name: 'example-server',
+        transport: 'stdio',
+        command: process.execPath,
+        args: [stdioFixture],
+        enabled: false,
+      });
+      expect(added).toMatchObject({
+        name: 'example-server',
+        transport: 'stdio',
+        status: 'disabled',
+        toolCount: 0,
+      });
+      expect(Object.hasOwn(added, 'source')).toBe(false);
+      expect((await session.listMcpServers()).map((server) => server.name)).not.toContain('example-server');
+      expect(await sibling.listMcpServers()).toEqual(siblingBefore);
+      expect(await readFile(join(homeDir, 'mcp.json'), 'utf-8')).toBe(fileBefore);
+      expect(fixtureSpawns()).toBe(spawnsBefore);
+      await expect(agent.listMcpSessionCapabilities()).resolves.toContainEqual(
+        expect.objectContaining({
+          locator: { source: 'global', name: 'example-server' },
+          override: 'off',
+          connection: 'disabled',
+        }),
+      );
     } finally {
       spawn.mockRestore();
       await harness.close();

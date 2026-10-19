@@ -213,7 +213,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
     const configuredOverrides = new Map<string, McpServerConfig>();
     const configuredOverlayNames = new Set<string>();
     let mutationTail: Promise<void> = Promise.resolve();
-    const mutate = (work: () => Promise<void>): Promise<void> => {
+    const mutate = <T>(work: () => Promise<T>): Promise<T> => {
       const next = mutationTail.catch(() => undefined).then(work);
       mutationTail = next.then(() => undefined, () => undefined);
       return next;
@@ -312,7 +312,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
       runtimeName: string,
       config: McpServerConfig,
       source?: 'global' | 'plugin' | 'caller',
-    ): Promise<void> => mutate(async () => {
+    ): Promise<McpServerEntry | undefined> => mutate(async () => {
       if (config.enabled !== false) {
         throw new Error2(
           ErrorCodes.REQUEST_INVALID,
@@ -320,7 +320,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
         );
       }
       await connect;
-      if (baseView instanceof FilteredMcpConnectionView && baseView.isBaselineHidden(runtimeName)) return;
+      if (baseView instanceof FilteredMcpConnectionView && baseView.isBaselineHidden(runtimeName)) return undefined;
       if (baseView instanceof FilteredMcpConnectionView && baseView.isSessionHidden(runtimeName)) {
         baseView.clearServerOverride(runtimeName);
       }
@@ -340,6 +340,8 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
       view.replaceOverlayNames(overlayNames);
       await sessionManager.connect(runtimeName, config);
       configuredOverlayNames.add(runtimeName);
+      const recorded = sessionManager.get(runtimeName);
+      return recorded?.status === 'disabled' ? recorded : undefined;
     });
     const clearConfiguredServer = (runtimeName: string): Promise<void> => mutate(async () => {
       await connect;
