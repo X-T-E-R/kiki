@@ -1,6 +1,7 @@
 import type { ModelCapability } from '#/kosong/contract/capability';
 import type { ToolCall } from '#/kosong/contract/message';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { FSWatcher } from 'chokidar';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -118,6 +119,7 @@ import {
 } from '#/app/mcpConfig/configSection';
 import { ILogService } from '#/_base/log/log';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
+import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { TomlAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
@@ -4026,11 +4028,10 @@ describe('explicit model generation migration', () => {
 
 
 describe('space config layers', () => {
-  async function fixture(baseText: string, homeText: string, env: Record<string, string> = {}, credentials: 'shared' | 'isolated' = 'shared', preset?: string) {
+  async function fixture(baseText: string, homeText: string, env: Record<string, string> = {}, credentials: 'shared' | 'isolated' = 'shared', preset?: string, baseStorage: IFileSystemStorageService = new InMemoryStorageService()) {
     const disposables = new DisposableStore();
     const ix = disposables.add(new TestInstantiationService());
     const homeStorage = new InMemoryStorageService();
-    const baseStorage = new InMemoryStorageService();
     const homeStore = new TomlAtomicDocumentStore(homeStorage);
     const baseStore = new TomlAtomicDocumentStore(baseStorage);
     await homeStore.setText('', 'config.toml', homeText);
@@ -4180,6 +4181,49 @@ describe('space config layers', () => {
       expect(f.config.get(BUILTIN_PRODUCT_SKILLS_SECTION)).toBe(true);
       expect(f.config.origins(BUILTIN_PRODUCT_SKILLS_SECTION)).toEqual({ '': 'env' });
     } finally { await f.disposables.dispose(); }
+  });
+
+  it('keeps config ready independent of watcher startup and reloads the base after the watcher becomes ready', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'config-delayed-watch-'));
+    const watchers: FSWatcher[] = [];
+    const add = vi.spyOn(FSWatcher.prototype, 'add').mockImplementation(function (this: FSWatcher) {
+      watchers.push(this);
+      return this;
+    });
+    vi.useFakeTimers();
+    let f: Awaited<ReturnType<typeof fixture>> | undefined;
+    try {
+      f = await fixture('default_model = "base-first"\n', '', {}, 'shared', undefined, new FileStorageService(root));
+      expect(watchers).toHaveLength(3);
+      expect(f.config.get(DEFAULT_MODEL_SECTION)).toBe('base-first');
+      expect(f.config.origins(DEFAULT_MODEL_SECTION)).toEqual({ '': 'base' });
+      const { config, disposables } = f;
+      const changes = Event.filter(config.onDidChangeConfiguration, (event) => event.domain === DEFAULT_MODEL_SECTION);
+      const changed = vi.fn();
+      disposables.add(changes(changed));
+      const reloaded = new Promise<void>((resolve) => {
+        disposables.add(Event.once(Event.filter(changes, (event) => event.source === 'reload'))(() => { resolve(); }));
+      });
+      writeFileSync(join(root, 'config.toml'), 'default_model = "base-second"\n');
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(f.config.get(DEFAULT_MODEL_SECTION)).toBe('base-first');
+      expect(changed).not.toHaveBeenCalled();
+      vi.useRealTimers();
+      for (const watcher of watchers) watcher.emit('ready');
+      await reloaded;
+      expect(f.config.get(DEFAULT_MODEL_SECTION)).toBe('base-second');
+      expect(f.config.origins(DEFAULT_MODEL_SECTION)).toEqual({ '': 'base' });
+      expect(changed).toHaveBeenCalledOnce();
+      await f.config.replace(DEFAULT_MODEL_SECTION, 'home-model');
+      expect(f.config.origins(DEFAULT_MODEL_SECTION)).toEqual({ '': 'home' });
+      expect(await f.homeStore.getText('', 'config.toml')).toContain('home-model');
+      expect(readFileSync(join(root, 'config.toml'), 'utf8')).toBe('default_model = "base-second"\n');
+    } finally {
+      await f?.disposables.dispose();
+      vi.useRealTimers();
+      add.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('retains the previous base on parse failure without blocking home writes, then reloads external changes', async () => {
