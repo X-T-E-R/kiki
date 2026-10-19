@@ -191,7 +191,7 @@ describe('plugin usage routes', () => {
       const cold = (await app.inject({ method: 'GET', url: '/plugins/usage?session_id=cold-session' })).json() as { data: PluginUsageResponse };
       expect(cold.data.plugins.find(plugin => plugin.id === 'demo')?.effective).toBe(true);
       expect(resume).toHaveBeenCalledTimes(1);
-      expect(resume).toHaveBeenCalledWith('cold-session', 'operation');
+      expect(resume).toHaveBeenCalledWith('cold-session', 'operation', undefined, undefined);
       expect(release).toHaveBeenCalledTimes(1);
     } finally { await container.dispose(); }
   });
