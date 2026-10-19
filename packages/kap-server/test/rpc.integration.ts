@@ -82,6 +82,21 @@ function rpc(
   return `/api/debug/session/${ids.sid}/agent/${ids.aid}/${String(service)}/${method}`;
 }
 
+const STUB_MODEL_TOML = [
+  'default_model = "stub"',
+  '[providers.stub]',
+  'type = "openai"',
+  'base_url = "http://127.0.0.1:9999"',
+  'api_key = "stub"',
+  '[models.stub]',
+  'provider = "stub"',
+  'model = "stub"',
+  'max_context_size = 1000',
+  'capabilities = ["thinking"]',
+  'support_efforts = ["low", "high"]',
+  'default_effort = "high"',
+].join('\n');
+
 describe('server-v2 /api/debug RPC', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
@@ -89,6 +104,7 @@ describe('server-v2 /api/debug RPC', () => {
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-rpc-'));
+    await writeFile(join(home, 'config.toml'), STUB_MODEL_TOML);
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent', debugEndpoints: true });
     base = `http://127.0.0.1:${server.port}`;
   });

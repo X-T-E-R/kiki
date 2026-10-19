@@ -42,6 +42,21 @@ interface SkillWire {
   disable_model_invocation?: boolean;
 }
 
+const STUB_MODEL_TOML = [
+  'default_model = "stub"',
+  '[providers.stub]',
+  'type = "openai"',
+  'base_url = "http://127.0.0.1:9999"',
+  'api_key = "stub"',
+  '[models.stub]',
+  'provider = "stub"',
+  'model = "stub"',
+  'max_context_size = 100000',
+  'capabilities = ["thinking"]',
+  'support_efforts = ["low", "high"]',
+  'default_effort = "high"',
+].join('\n');
+
 describe('server-v2 /api skills', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
@@ -49,6 +64,7 @@ describe('server-v2 /api skills', () => {
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-skills-'));
+    await writeFile(join(home, 'config.toml'), STUB_MODEL_TOML);
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     base = `http://127.0.0.1:${server.port}`;
   });
@@ -84,10 +100,10 @@ describe('server-v2 /api skills', () => {
     return { status: res.status, body: (await res.json()) as Envelope<T> };
   }
 
-  async function createSession(cwd: string = home as string): Promise<string> {
+  async function createSession(cwd: string = home as string, options?: { agentConfig?: boolean }): Promise<string> {
     const { body } = await postJson<{ id: string }>('/api/sessions', {
       metadata: { cwd },
-      agent_config: { permission_mode: 'manual' },
+      ...(options?.agentConfig === false ? {} : { agent_config: { permission_mode: 'manual' } }),
     });
     expect(body.code).toBe(0);
     return body.data.id;
@@ -222,14 +238,20 @@ describe('server-v2 /api skills', () => {
       const id = await createSession(root);
       const actual = await getJson<{ skills: SkillWire[] }>(`/api/sessions/${id}/skills`);
       expect(actual.body.data.skills.find((skill) => skill.name === 'directory-review')).toEqual(preview.body.data.skills.find((skill) => skill.name === 'directory-review'));
+      await server!.close();
+      server = undefined;
+      await writeFile(join(home!, 'config.toml'), '');
+      server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home!, logLevel: 'silent' });
+      base = `http://127.0.0.1:${server.port}`;
+      const unbound = await createSession(root);
       expect((await getJson<{ items: unknown[] }>('/api/models')).body.data.items).toEqual([]);
-      const rejected = await postJson(`/api/sessions/${id}/skills/directory-review:activate`, {
+      const rejected = await postJson(`/api/sessions/${unbound}/skills/directory-review:activate`, {
         prompt_id: 'unbound-first-skill', args: 'sample', user_input: '/directory-review sample',
       });
       expect(rejected.body.code).toBe(50001);
       expect(rejected.body.msg).toContain('model.not_configured');
       expect(rejected.body.msg).not.toContain('another turn is active');
-      const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+      const main = getLiveSessionById(server!.core.accessor, unbound)!.accessor.get(IAgentLifecycleService).get('main')!;
       expect(main.accessor.get(IAgentPromptService).lookup('unbound-first-skill')).toMatchObject({ phase: 'terminal', terminal: { state: 'failed', result: { error: { code: 'model.not_configured' } } } });
       const models = server!.core.accessor.get(IModelCatalogMutationService);
       await models.createProvider({ id: 'fixture', type: 'openai', base_url: 'http://127.0.0.1:1/v1', api_key: 'fixture' });
@@ -244,12 +266,12 @@ describe('server-v2 /api skills', () => {
         }),
       }));
       try {
-        const activation = await postJson(`/api/sessions/${id}/skills/directory-review:activate`, {
+        const activation = await postJson(`/api/sessions/${unbound}/skills/directory-review:activate`, {
           args: 'sample', user_input: '/directory-review sample',
         });
         expect(activation.body.code, activation.body.msg).toBe(0);
         await main.accessor.get(IAgentLoopService).settled();
-        const messages = await getJson<{ items: Array<{ role: string; content: Array<{ type: string; text?: string }> }> }>(`/api/sessions/${id}/messages`);
+        const messages = await getJson<{ items: Array<{ role: string; content: Array<{ type: string; text?: string }> }> }>(`/api/sessions/${unbound}/messages`);
         const sent = messages.body.data.items.filter((item) => item.role === 'user')
           .flatMap((item) => item.content.map((part) => part.text ?? '')).join('\n');
         expect(sent.match(/Say hello to sample\./g)).toHaveLength(1);
@@ -417,7 +439,7 @@ describe('server-v2 /api skills', () => {
         },
       );
       expect(body.code, body.msg).toBe(0);
-      expect(body.data).toEqual({ activated: true, skill_name: 'kiki-ops' });
+      expect(body.data).toEqual({ activated: true, skill_name: 'kiki-ops', prompt_id: 'child-skill-activation' });
       expect(mainActivation).not.toHaveBeenCalled();
       expect(childActivation).toHaveBeenCalledWith(expect.objectContaining({
         name: 'kiki-ops',
@@ -429,7 +451,7 @@ describe('server-v2 /api skills', () => {
     });
 
     it('rejects a missing child target without creating or borrowing main', async () => {
-      const id = await createSession();
+      const id = await createSession(home as string, { agentConfig: false });
       const session = getLiveSessionById(server!.core.accessor, id)!;
       const lifecycle = session.accessor.get(IAgentLifecycleService);
       const { body } = await postJson<null>(
@@ -479,6 +501,14 @@ describe('server-v2 /api skills', () => {
       let restoreRestoredActivation: (() => void) | undefined;
       const created = lifecycle.onDidCreate((handle) => {
         if (handle.id === child.id) {
+          vi.spyOn(handle.accessor.get(IAgentLLMRequesterService), 'start').mockImplementation(() => ({
+            trace: { traceId: 'cold-child-skill' },
+            result: Promise.resolve({
+              message: { role: 'assistant', content: [], toolCalls: [] },
+              usage: { inputOther: 1, output: 1, inputCacheRead: 0, inputCacheCreation: 0 },
+              providerFinishReason: 'completed',
+            }),
+          }));
           const service = handle.accessor.get(IAgentSkillService);
           const originalActivate = service.activate.bind(service);
           const activation = vi.spyOn(service, 'activate').mockImplementation(async (input) => {
@@ -507,6 +537,7 @@ describe('server-v2 /api skills', () => {
           `/api/sessions/${id}/skills/kiki-ops:activate`,
           body,
         );
+        expect(replay.body.code, replay.body.msg).toBe(0);
         expect(replay.body.data).toEqual(first.body.data);
         expect(restoredActivationCalls).toBe(1);
       } finally {
@@ -521,6 +552,14 @@ describe('server-v2 /api skills', () => {
       await createMainAgent(id);
       const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
       const activation = vi.spyOn(main.accessor.get(IAgentSkillService), 'activate');
+      vi.spyOn(main.accessor.get(IAgentLLMRequesterService), 'start').mockImplementation(() => ({
+        trace: { traceId: 'legacy-skill-retry' },
+        result: Promise.resolve({
+          message: { role: 'assistant', content: [], toolCalls: [] },
+          usage: { inputOther: 1, output: 1, inputCacheRead: 0, inputCacheCreation: 0 },
+          providerFinishReason: 'completed',
+        }),
+      }));
       const noteBytes = Buffer.from('legacy skill retry attachment');
       const form = new FormData();
       form.set('file', new Blob([Uint8Array.from(noteBytes).buffer], { type: 'text/plain' }), 'retry.txt');
@@ -542,6 +581,7 @@ describe('server-v2 /api skills', () => {
         } as never);
         expect((await deleted.json() as Envelope<{ deleted: boolean }>).data.deleted).toBe(true);
         const replay = await postJson<{ activated: boolean; skill_name: string }>(`/api/sessions/${id}/skills/kiki-ops:activate`, body);
+        expect(replay.body.code, replay.body.msg).toBe(0);
         expect(replay.body.data).toEqual(first.body.data);
         const explicitMainReplay = await postJson<{ activated: boolean; skill_name: string }>(
           `/api/sessions/${id}/skills/kiki-ops:activate`,
@@ -574,7 +614,7 @@ describe('server-v2 /api skills', () => {
       });
       expect(activated.body.code).toBe(0);
       const messages = await getJson<{ items: Array<{ role: string; metadata?: { origin?: { kind?: string; userInput?: string } }; content: Array<{ type: string; text?: string }> }> }>(`/api/sessions/${id}/messages`);
-      const user = messages.body.data.items.filter(message => message.role === 'user');
+      const user = messages.body.data.items.filter(message => message.role === 'user' && message.metadata?.origin?.kind === 'skill_activation');
       expect(user).toHaveLength(1);
       expect(user[0]?.metadata?.origin).toMatchObject({ kind: 'skill_activation', userInput });
       expect(user[0]?.content.some(part => part.text?.includes('<skill-loaded'))).toBe(true);
@@ -663,7 +703,7 @@ describe('server-v2 /api skills', () => {
       const messages = await getJson<{
         items: Array<{ role: string; content: Array<{ type: string; text?: string }> }>;
       }>(`/api/sessions/${id}/messages`);
-      const userMsg = messages.body.data.items.find((m) => m.role === 'user');
+      const userMsg = messages.body.data.items.find((m) => m.role === 'user' && m.content.some((part) => part.text?.includes('User activated the skill "kiki-ops"')));
       expect(userMsg).toBeDefined();
       expect(userMsg!.content[0]?.type).toBe('text');
       expect(userMsg!.content[0]?.text).toContain('User activated the skill "kiki-ops"');
