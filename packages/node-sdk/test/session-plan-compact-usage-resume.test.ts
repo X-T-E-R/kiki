@@ -356,8 +356,9 @@ describe('session event waiting', () => {
     // The wait timer is the only one this helper owns. Async advance yields to
     // the native event loop, and a callback scheduled before the fake clock can
     // then call the hijacked setTimeout. That adopted timer is not the wait.
-    globalThis.setTimeout = ((handler, timeout, ...args) => {
-      const handle = fakeSetTimeout(handler, timeout as number, ...args);
+    globalThis.setTimeout = ((...timerArgs: Parameters<typeof fakeSetTimeout>) => {
+      const [handler, timeout, ...args] = timerArgs;
+      const handle = fakeSetTimeout(handler, timeout, ...args);
       const owner = new Error('wait timer owner').stack ?? '';
       if (owner.includes('waitForSDKEvent')) {
         sawHelperTimer = true;
