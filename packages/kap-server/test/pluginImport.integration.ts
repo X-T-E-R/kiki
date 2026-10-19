@@ -302,9 +302,12 @@ it('keeps a published native session non-ephemeral when the ancillary session in
     try { await save(id); } catch (error) { observed = error; throw error; }
   });
   vi.spyOn(storage, 'moveDirectory').mockImplementation(async (...args) => { await move(...args); moved = true; });
-  vi.spyOn(logs, 'flush').mockImplementation(async () => {
-    if (moved) { moved = false; throw failure; }
-    await flush();
+  vi.spyOn(logs, 'flush').mockImplementation(async (...target: [] | [string, string]) => {
+    if (moved && target.length === 2 && target[0] === '' && target[1] === 'session_index.jsonl') {
+      moved = false;
+      throw failure;
+    }
+    await flush(...target);
   });
   const job = await importNative(target, input);
   expect(observed).toBe(failure);
