@@ -367,7 +367,7 @@ describe('EventDispatcherService', () => {
     dispatcher.undo(key, replacement.id);
     expect(agentState.get(key)).toEqual([1, 2, 3]);
     next = Array.from({ length: 3 }, () => 0);
-    delete next[1];
+    Reflect.deleteProperty(next, 1);
     await dispatcher.dispatch(new CounterSet({ value: 0 }));
     const sparse = dispatcher.history(key).at(-1)!;
     expect(sparse.patches).toHaveLength(1);

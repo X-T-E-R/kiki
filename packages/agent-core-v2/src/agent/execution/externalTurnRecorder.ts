@@ -146,7 +146,6 @@ export class ExternalTurnRecorder {
   #segment: Segment | undefined;
   #prompt = '';
   #promptId: string | undefined;
-  #modelContentRecorded = false;
   #outboundEchoSuppressed = false;
   #promptEchoSuppressed = false;
   readonly #userSegments: UserSegment[] = [];
@@ -204,7 +203,6 @@ export class ExternalTurnRecorder {
   async record(event: ExternalExecutorEvent): Promise<void> {
     if (!(event.type === 'message.delta' && event.role === 'user')) {
       this.#commitUserSegments();
-      if (isExternalModelActivity(event)) this.#modelContentRecorded = true;
     }
     switch (event.type) {
       case 'message.delta':
@@ -965,11 +963,6 @@ export class ExternalTurnRecorder {
     }
     return false;
   }
-}
-
-function isExternalModelActivity(event: ExternalExecutorEvent): boolean {
-  return event.type === 'message.delta' || event.type === 'thought.delta' || event.type === 'tool.call'
-    || event.type === 'tool.update' || event.type === 'tool.input.delta' || event.type === 'tool.interaction';
 }
 
 function preambleVariant(text: string, outbound: string | undefined, prompt: string): string | undefined {

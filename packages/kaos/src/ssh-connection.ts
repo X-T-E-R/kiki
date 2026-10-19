@@ -181,7 +181,7 @@ function errorDetails(error: unknown): Pick<SshConnectionReceipt, 'errorName' | 
     return {
       errorName: error.name,
       errorMessage: error.message,
-      ...(code === undefined ? reason === undefined ? {} : { errorCode: String(reason) } : { errorCode: code }),
+      errorCode: code ?? (typeof reason === 'string' || typeof reason === 'number' ? String(reason) : undefined),
     };
   }
   return { errorName: 'Error', errorMessage: String(error) };
@@ -472,7 +472,7 @@ export class SshConnectionManager {
       ...(failure === undefined ? {} : errorDetails(failure)), settledAt: Date.now(),
     });
     this.emit(hostId, slot, 'idle');
-    if (failure !== undefined) throw failure;
+    if (failure !== undefined) throw failure instanceof Error ? failure : new Error('SSH disconnect failed', { cause: failure });
   }
 
   private async reapIdle(): Promise<void> {

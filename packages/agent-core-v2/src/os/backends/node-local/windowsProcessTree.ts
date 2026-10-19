@@ -107,7 +107,7 @@ class WindowsProcessTree implements IHostProcess {
     child.on('exit', (code, signal) => {
       this.helperGone = true;
       this.helperExited.resolve();
-      if (code === 0 && this.releaseExitCapable && this.releaseAttempted && signal == null) this.releaseConfirmed = true;
+      if (code === 0 && this.releaseExitCapable && this.releaseAttempted && signal === null) this.releaseConfirmed = true;
       if (this.disposed) return;
       if (this.releaseConfirmed && this.pendingCommand === 'release' && this.response !== undefined) {
         this.response.resolve('released');
@@ -175,7 +175,7 @@ class WindowsProcessTree implements IHostProcess {
   private async finishProcess(): Promise<void> {
     if (this.disposed) return this.releaseOwnership();
     await this.killPromise;
-    if (this.cleanupFailure !== undefined) throw this.cleanupFailure;
+    if (this.cleanupFailure !== undefined) throw this.cleanupFailure instanceof Error ? this.cleanupFailure : new Error('Windows process cleanup failed', { cause: this.cleanupFailure });
     if (this.ownerLifetime && this.killPromise === undefined) {
       const response = await this.request('retain');
       if (!/^active:\d+$/.test(response)) throw this.decodeError(response);
@@ -196,7 +196,7 @@ class WindowsProcessTree implements IHostProcess {
   private async releaseOwnership(): Promise<void> {
     if (!this.disposed) {
       await this.killPromise;
-      if (this.cleanupFailure !== undefined) throw this.cleanupFailure;
+      if (this.cleanupFailure !== undefined) throw this.cleanupFailure instanceof Error ? this.cleanupFailure : new Error('Windows process cleanup failed', { cause: this.cleanupFailure });
       if (!this.releaseConfirmed && (!this.helperGone || this.releaseAttempted)) {
         const response = await this.request('release');
         if (response !== 'released') throw this.decodeError(response);

@@ -785,7 +785,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     let disposed = false;
     const failures: Array<{ readonly error: unknown; readonly domain: AgentFailureDomain }> = [];
     const collect = async (
-      operation: () => unknown | Promise<unknown>,
+      operation: () => unknown,
       domain: AgentFailureDomain,
     ): Promise<void> => {
       try {

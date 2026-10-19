@@ -1050,7 +1050,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     expect(target.messages).toHaveLength(1);
     expect(target.messages[0]?.content).toEqual([{ type: 'text', text: content }]);
     expect(await store.nextQueued('session-1', 'agent-target')).toBeUndefined();
-    service.dispose();
+    await service.dispose();
   });
 
   it('fails meaningfully when an idle child executor is permanently broken', async () => {
@@ -1932,18 +1932,20 @@ describe('agent collaboration mailbox lifecycle cleanup', () => {
       ),
     );
 
-    const page = await thread.readActivity(
-      { hostId: MAILBOX_HOST_ID, workspaceId: 'session-1', sessionId: 'agent-target' },
-      0,
-      10,
-    );
-    expect(page.activities).toEqual([
-      expect.objectContaining({
-        kind: 'message_undeliverable',
-        messageId: accepted.message.messageId,
-        reason: 'session deleted',
-      }),
-    ]);
+    await vi.waitFor(async () => {
+      const page = await thread.readActivity(
+        { hostId: MAILBOX_HOST_ID, workspaceId: 'session-1', sessionId: 'agent-target' },
+        0,
+        10,
+      );
+      expect(page.activities).toEqual([
+        expect.objectContaining({
+          kind: 'message_undeliverable',
+          messageId: accepted.message.messageId,
+          reason: 'session deleted',
+        }),
+      ]);
+    });
     await cleanup.dispose();
   });
 

@@ -55,7 +55,8 @@ export function compactionMarkerFates(items: readonly MarkerLike[]): ReadonlyMap
     const summary = summaryOf(payload);
     if (summary === undefined) continue;
     const durable = payload?.['type'] === 'context.apply_compaction';
-    const key = durable ? `${String(payload?.['time'] ?? item.markerId)}\0${summary}` : summary;
+    const time = payload?.['time'];
+    const key = durable ? `${typeof time === 'number' || typeof time === 'string' ? time : item.markerId}\0${summary}` : summary;
     const bySummary = keeperBySummary.get(summary);
     const keeper = keeperBySummary.get(key) ?? (durable && bySummary?.durable ? undefined : bySummary);
     if (keeper === undefined) {

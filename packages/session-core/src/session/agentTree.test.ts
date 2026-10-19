@@ -1771,7 +1771,7 @@ describe('applyNewestAgentPage / resetAgentHistoryCache', () => {
     expect(resetAgentHistoryCache(cache, 'agent-1')).toBe(cache);
   });
 });
-describe('executor identity projection', () => {
+describe('live executor identity projection', () => {
   it('keeps executor identity separate from model and profile hints across roster and live sources', () => {
     const forest = buildAgentForest(
       [live({ subagentId: 'agent-1', model: 'shared-model', executorId: 'claude-acp', executorProtocol: 'acp-v1' })],

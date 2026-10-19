@@ -3,6 +3,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as pluginStore from '#/app/plugin/store';
+import { DaemonTUI } from '../../../../../apps/kimi-code/src/tui/daemon/daemon-tui';
+import { DEFAULT_TUI_CONFIG } from '../../../../../apps/kimi-code/src/tui/config';
 
 import { _clearScopedRegistryForTests, registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { createScopedTestHost, stubPair, type ScopedTestHost } from '#/_base/di/test';
@@ -45,10 +47,7 @@ let host: ScopedTestHost;
 const cleanups: (() => Promise<void>)[] = [];
 const pluginSettingsListeners: Array<(event: { domain: string; value?: unknown; previousValue?: unknown }) => void> = [];
 
-async function daemonCommands(plugins: IPluginService) {
-  const modulePath = fileURLToPath(new URL('../../../../../apps/kimi-code/src/tui/daemon/daemon-tui.ts', import.meta.url));
-  const { DaemonTUI } = await import(modulePath);
-  const { DEFAULT_TUI_CONFIG } = await import(fileURLToPath(new URL('../../../../../apps/kimi-code/src/tui/config.ts', import.meta.url)));
+function daemonCommands(plugins: IPluginService) {
   const tui = new DaemonTUI({ url: 'http://127.0.0.1:1', token: 'fixture-token' }, {
     cliOptions: { continue: false, yolo: false, auto: false, plan: false, agentFiles: [], skillsDirs: [] },
     tuiConfig: DEFAULT_TUI_CONFIG, version: '0.0.0-test', workDir: root,
@@ -269,7 +268,7 @@ describe('plugin changes in an existing live agent', () => {
     await plugins.setPluginEnabled({ id: 'live-tool', enabled: true });
     await install(plugins, other, true);
     await plugins.setPluginEnabled({ id: 'other-tool', enabled: true });
-    const daemon = await daemonCommands(plugins);
+    const daemon = daemonCommands(plugins);
     const otherPid = JSON.parse(textOutput((await invoke(registry, 'other-tool', { value: 'before' })).output)).pid;
     const started = deferred();
     const gate = path.join(root, 'release');
@@ -280,8 +279,8 @@ describe('plugin changes in an existing live agent', () => {
     const changing = deferred();
     const listener = plugins.onWillChange(() => changing.resolve());
     let applied = false;
-    const update = daemon.handleSlash(`/plugins install ${source}`).then(() => { applied = true; });
-    await changing.promise;
+    const update = daemon.handleSlash(`/plugins install --trust ${source}`).then(() => { applied = true; });
+    await Promise.race([changing.promise, update.then(() => { throw new Error('Plugin install finished before entering the change gate'); })]);
     listener.dispose();
     expect(applied).toBe(false);
     expect(registry.list().find((tool) => tool.name === 'plugin__live_tool__echo')?.parameters).toEqual(definition(1).parameters);

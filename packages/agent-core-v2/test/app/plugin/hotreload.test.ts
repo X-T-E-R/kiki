@@ -186,7 +186,7 @@ describe('plugin hot reload lifecycle', () => {
     const releaseList = deferred<void>();
     const reloadStarted = deferred<void>();
     let finished = false;
-    plugins.onWillChange((event) => { event.finished.then(() => { finished = true; }); });
+    plugins.onWillChange((event) => { void event.finished.then(() => { finished = true; }); });
     plugins.onDidReload((event) => { reloadStarted.resolve(undefined); event.waitUntil(Promise.resolve()); });
     vi.spyOn(hosts, 'list').mockImplementation(async () => {
       listStarted.resolve(undefined);
@@ -228,7 +228,7 @@ describe('plugin hot reload lifecycle', () => {
     const changeFinished = deferred<void>();
     let finished = false;
     plugins.onWillChange((event) => {
-      event.finished.then(changeFinished.resolve);
+      void event.finished.then(changeFinished.resolve);
     });
     plugins.onDidReload((event) => {
       reloadStarted.resolve(undefined);

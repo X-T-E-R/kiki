@@ -319,24 +319,27 @@ function createImmutableFoldSink(initial: readonly ContextMessage[]): ImmutableF
       current = [...current, source === undefined ? message : { ...message, source }];
     },
     pushMessage: (message) => {
-      if (message.role === 'user' && message.id !== undefined) {
-        const index = current.findLastIndex((entry) => entry.role === 'user' && entry.id === message.id);
-        if (index >= 0) {
-          const previous = current[index]!;
-          const before = previous.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('');
-          const incoming = message.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('');
-          const content = before.length > 0 && !incoming.startsWith(before)
-            ? [...previous.content, ...message.content]
-            : message.content;
-          const next = current.slice();
-          next[index] = { ...previous, content, origin: message.origin ?? previous.origin };
-          current = next;
-          return;
-        }
+      const revision = findProviderMessageRevision(current, message);
+      if (revision !== undefined) {
+        const next = current.slice();
+        next[revision.index] = revision.message;
+        current = next;
+        return;
       }
       current = [...current, message];
     },
   };
+}
+
+export function findProviderMessageRevision(state: readonly ContextMessage[], message: ContextMessage): { index: number; message: ContextMessage } | undefined {
+  if (message.role !== 'user' || message.id === undefined || message.providerMessageId === undefined) return undefined;
+  const index = state.findLastIndex((entry) => entry.role === 'user' && entry.id === message.id && entry.providerMessageId === message.providerMessageId);
+  if (index < 0) return undefined;
+  const previous = state[index]!;
+  const before = previous.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('');
+  const incoming = message.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('');
+  const content = before.length > 0 && !incoming.startsWith(before) ? [...previous.content, ...message.content] : message.content;
+  return { index, message: { ...previous, content, origin: message.origin ?? previous.origin } };
 }
 
 function findOpenAssistantIndex(state: readonly ContextMessage[]): number {

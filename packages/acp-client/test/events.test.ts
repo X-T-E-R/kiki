@@ -87,7 +87,7 @@ describe('ACP normalized executor event mapper', () => {
       .toMatchObject({ toolCallId: 'remote-call', title: 'FetchURL', name: 'FetchURL', rawInput, rawOutput, content, locations });
   });
 
-  it('retains bounded opaque payload diagnostics without pretending support', () => {
+  it('redacts secret-looking fields in opaque content', () => {
     expect(mapAcpSessionUpdate({ sessionUpdate: 'agent_message_chunk', content: {
       type: 'future_block', body: { token: 'secret-looking-but-opaque' },
     } })).toEqual({ type: 'message.delta', role: 'assistant', messageId: undefined, content: {

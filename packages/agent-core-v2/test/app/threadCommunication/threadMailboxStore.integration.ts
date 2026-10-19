@@ -1137,7 +1137,7 @@ describe('runtime thread mailbox', () => {
       await expect(item.runtime.call('example.blocking', null, { timeoutMs: 20 })).rejects.toMatchObject({
         code: 'runtime.timeout', message: expect.stringMatching(/timerLagMs=[1-9]\d*.*ownerPhase=example_sync/),
       });
-    } finally { registration.dispose(); }
+    } finally { await registration.dispose(); }
   });
 
   it('removes aborted operations before they start in a partition queue', async () => {

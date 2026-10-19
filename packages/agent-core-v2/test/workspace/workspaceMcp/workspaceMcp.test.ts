@@ -681,7 +681,7 @@ describe('WorkspaceMcpService', () => {
       expect(disposers).toHaveLength(1);
       await overlay.handle.ready;
       const shutdown = vi.spyOn(overlay, 'shutdown');
-      disposers[0]!();
+      await disposers[0]!();
       expect(shutdown).toHaveBeenCalledTimes(1);
       await shutdown.mock.results[0]?.value;
     });

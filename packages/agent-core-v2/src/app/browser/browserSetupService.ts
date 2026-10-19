@@ -288,7 +288,7 @@ export class BrowserSetupService implements IBrowserSetupService {
       const current = await this.control.status(id);
       if (current.state !== 'ready') {
         const status = await this.control.connect(id);
-        return this.openResult(preset, id, status);
+        return await this.openResult(preset, id, status);
       }
       const invoked = await this.control.invoke({
         browser: id, caller: { sessionId: 'browser-setup', agentId: 'main' }, tool: 'agent_browser_open', args: {},
@@ -300,7 +300,7 @@ export class BrowserSetupService implements IBrowserSetupService {
         const status = await this.control.status(id);
         return { ...await this.status(preset), connectionId: id, connection: status, state: 'failed', error: message };
       }
-      return this.openResult(preset, id, await this.control.status(id));
+      return await this.openResult(preset, id, await this.control.status(id));
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Browser open failed';
       this.errors.set(preset, message);

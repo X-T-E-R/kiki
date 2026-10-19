@@ -33,7 +33,8 @@ import type { BrowserConnectionRecord } from '#/app/browser/browserConfig';
 const source = 'https://code.kimi.com/kimi-code/plugins/official/kimi-webbridge.zip';
 const sha256 = 'a'.repeat(64);
 const fixtures: TestInstantiationService[] = [];
-afterEach(async () => { for (const ix of fixtures.splice(0)) await ix.dispose(); vi.unstubAllGlobals(); });
+const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+afterEach(async () => { for (const ix of fixtures.splice(0)) await ix.dispose(); vi.unstubAllGlobals(); Object.defineProperty(process, 'platform', platform); });
 function fixture(options: { home?: string; hostProcess?: IHostProcessService; hostFs?: IHostFileSystem } = {}) {
   const ix = new TestInstantiationService(); fixtures.push(ix);
   let installed = false;
@@ -111,6 +112,7 @@ it('reads presets without installing or connecting and reports a missing Codex r
 });
 
 it('lists discovered Codex pipes without selecting or opening one', async () => {
+  Object.defineProperty(process, 'platform', { value: 'win32' });
   const pipe = 'codex-browser-use-11111111-2222-4333-8444-555555555555';
   const spawn = vi.fn(async () => ({ stdout: Readable.from([`${pipe}\r\nfirst-pipe\r\n`]), stderr: Readable.from(['']), wait: () => Promise.resolve(0), dispose: () => undefined }));
   const f = fixture({ hostProcess: { spawn } as never });
@@ -513,7 +515,7 @@ async function runPowerShell(host: HostProcessService, script: string, args: rea
     res.stdout.on('data', (chunk: Buffer | string) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
     res.stderr.on('data', (chunk: Buffer | string) => errors.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
     const code = await res.wait();
-    res.dispose();
+    await res.dispose();
     if (code !== 0) throw new Error(Buffer.concat(errors).toString('utf8') || `powershell exited ${code}`);
     return Buffer.concat(chunks).toString('utf8').trim();
   } finally {
@@ -541,6 +543,7 @@ async function seedCodexBridge(home: string): Promise<void> {
 }
 
 it('saves an explicit Codex pipe and does not treat that as a connection or an approval', async () => {
+  Object.defineProperty(process, 'platform', { value: 'win32' });
   const home = await mkdtemp(join(tmpdir(), 'kiki-codex-setup-'));
   try {
     await seedCodexBridge(home);
@@ -590,6 +593,7 @@ it('saves an explicit Codex pipe and does not treat that as a connection or an a
 });
 
 it('reports a ready Codex driver without a saved selection when the release lands during pipe discovery', async () => {
+  Object.defineProperty(process, 'platform', { value: 'win32' });
   const home = await mkdtemp(join(tmpdir(), 'kiki-codex-status-race-'));
   const pipe = 'codex-browser-use-11111111-2222-4333-8444-555555555555';
   try {

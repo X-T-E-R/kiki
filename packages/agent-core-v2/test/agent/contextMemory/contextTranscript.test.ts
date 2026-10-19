@@ -595,6 +595,16 @@ describe('live fold parity', () => {
     expect(transcript.foldedLength).toBe(3);
   });
 
+  it('revises split provider user text in both live and replayed context', () => {
+    const first = { ...userMessage('hello ', { kind: 'unknown' }), id: 'remote-user', providerMessageId: 'remote-user' };
+    const records = [appendMessage(first), ...assistantStep('s1', 'answer'), appendMessage({ ...first, content: [{ type: 'text' as const, text: 'hello world' }] })];
+    const live = foldLive(records);
+    const transcript = reduceContextTranscript(records);
+    expect(texts(transcript)).toEqual(['hello world', 'answer']);
+    expect(comparable(transcript.entries)).toEqual(comparable(live));
+    expect(transcript.foldedLength).toBe(2);
+  });
+
   it('keeps injections not owned by any removed prompt across undo', () => {
     const result = reduceContextTranscript([
       appendMessage(userMessage('note', { kind: 'injection', variant: 'test' })),

@@ -58,7 +58,7 @@ import { ISessionApprovalService } from '#/session/approval/approval';
 import { ISessionQuestionService } from '#/session/question/question';
 import { IAgentCollaborationMessagingService } from '#/session/agentCollaboration/messageMailbox';
 import { acpFormFields, acpFormResponse } from './acpElicitation';
-import { authorizeExternalTool, externalPermissionConstraints, externalPermissionHostGate, externalPermissionMeta, externalPermissionMode, externalToolPermission } from './externalPermission';
+import { authorizeExternalTool, externalPermissionConstraints, externalPermissionMeta, externalPermissionMode, externalToolPermission } from './externalPermission';
 import { ISessionInteractionService } from '#/session/interaction/interaction';
 import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';

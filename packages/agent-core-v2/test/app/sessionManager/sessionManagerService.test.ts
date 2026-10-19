@@ -580,7 +580,7 @@ describe('SessionManager', () => {
     const lease = await retained;
     expect(lease?.handle).toBe(fake.handle);
     expect(resume).toHaveBeenCalledTimes(1);
-    lease?.dispose();
+    await lease?.dispose();
     expect(manager.residencyReport().pinnedSessions).toBe(0);
     await manager.dispose();
   });

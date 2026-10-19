@@ -644,7 +644,7 @@ describe('AgentTranscriptLiveAdapter', () => {
         { type: 'text', text: 'Final body' },
       ]);
     } finally {
-      subscription.dispose();
+      await subscription.dispose();
       requesterSpy.mockRestore();
       providerSpy.mockRestore();
       await ctx.dispose();

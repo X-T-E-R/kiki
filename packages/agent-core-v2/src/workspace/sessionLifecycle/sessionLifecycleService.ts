@@ -976,7 +976,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) {
       const persistence = failures.find((failure) => isPersistenceFailure(failure));
-      throw persistence ?? new AggregateError(failures, 'Failed to drain one or more agents.');
+      if (persistence instanceof Error) throw persistence;
+      throw new AggregateError(failures, 'Failed to drain one or more agents.');
     }
   }
 

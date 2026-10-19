@@ -129,7 +129,7 @@ describe('Model assembly (pure data)', () => {
     const { host, catalog, models, providers } = createHost({ providers: { edge: provider }, models: records, defaultModel: 'chat', defaultProvider: 'edge' });
     const captured: Array<{ url: string; body: Record<string, unknown> }> = [];
     let fail = false;
-    const sse = (events: Array<Record<string, unknown>>) => new Response(events.map((event) => `event: ${event['type']}\ndata: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'Content-Type': 'text/event-stream' } });
+    const sse = (events: Array<Record<string, unknown>>) => new Response(events.map((event) => `event: ${event['type'] as string}\ndata: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'Content-Type': 'text/event-stream' } });
     const sink = vi.fn(async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
       const request = new Request(input, init);
       const body = await request.json() as Record<string, unknown>;
@@ -1985,6 +1985,6 @@ describe('transient models on configured connections', () => {
       expect(models.list()).toEqual({});
       expect(models.getDefaultModel()).toBeUndefined();
       expect(() => catalog.getConnectionRequester('missing', 'remote/custom-model', 65536)).toThrow('does not exist');
-    } finally { host.dispose(); }
+    } finally { await host.dispose(); }
   });
 });

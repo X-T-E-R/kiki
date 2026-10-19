@@ -143,7 +143,7 @@ describe('AgentExecutionService', () => {
         await service.settled();
       }
       expect(governance.agentSnapshot()).toMatchObject({ active: 0, queued: 0 });
-    } finally { await service.dispose(); ix.dispose(); }
+    } finally { await service.dispose(); await ix.dispose(); }
   });
   it('gates a real native main prompt before model work and releases at terminal', async () => {
     const ix = new TestInstantiationService();
@@ -172,7 +172,7 @@ describe('AgentExecutionService', () => {
       finalization.resolve();
       expect((await turn!.result).type).toBe('completed');
       expect(governance.agentSnapshot()).toMatchObject({ active: 0, queued: 0 });
-    } finally { occupied.release(); finalization.resolve(); await ctx.dispose(); ix.dispose(); }
+    } finally { occupied.release(); finalization.resolve(); await ctx.dispose(); await ix.dispose(); }
   });
 
   it('releases a late agent permit when cancellation wins admission without creating an external process', async () => {
@@ -192,7 +192,7 @@ describe('AgentExecutionService', () => {
     await rejected;
     expect(release).toHaveBeenCalledOnce();
     expect(registry.resolveExecutable).not.toHaveBeenCalled();
-    await service.dispose(); ix.dispose();
+    await service.dispose(); await ix.dispose();
   });
   it.each(['fingerprint', 'source_home', 'executor'] as const)('rejects imported local session %s drift before launching an executor', async (drift) => {
     const ix = new TestInstantiationService();

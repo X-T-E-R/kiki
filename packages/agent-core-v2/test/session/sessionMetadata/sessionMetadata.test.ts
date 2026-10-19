@@ -162,7 +162,7 @@ describe('SessionMetadata', () => {
     expect((await createFreshMetadata(ix).read()).agents?.['main']?.negotiated).toBeUndefined();
   });
 
-  it('persists activity recency without rewriting main prompt time or custom title', async () => {
+  it('preserves the higher activity recency after a later stale activity update', async () => {
     const meta = ix.get(ISessionMetadata);
     await meta.update({ title: 'Custom title', titleKind: 'custom', lastPrompt: 'Main prompt', updatedAt: 1_000 });
     await meta.update({ activityUpdatedAt: 5_000 }, { touchUpdatedAt: false });

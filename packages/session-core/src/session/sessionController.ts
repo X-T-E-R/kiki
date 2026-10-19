@@ -1341,7 +1341,7 @@ export class SessionController {
   }
 
   async refreshDurableIngress(): Promise<void> {
-    const read = this.client.listDurableIngress;
+    const read = this.client.listDurableIngress?.bind(this.client);
     if (read === undefined || !this.hasKnownSavedSession() || this.closed || this.isSuspended) return;
     if (this.durableIngressReadInFlight !== undefined) return this.durableIngressReadInFlight;
     let request!: Promise<void>;
@@ -1376,7 +1376,7 @@ export class SessionController {
   }
 
   async resumeDurableIngress(promptId: string, body: PromptSubmission, agentId = MAIN_AGENT_ID): Promise<PromptItem> {
-    const resume = this.client.resumeDurableIngress;
+    const resume = this.client.resumeDurableIngress?.bind(this.client);
     if (resume === undefined) throw new Error('Durable prompt recovery is unavailable on this transport');
     const result = await resume(this.sessionId, promptId, {
       ...body,
@@ -3495,7 +3495,7 @@ export class SessionController {
       queuedPromptMeta: {
         ...this.state.queuedPromptMeta,
         [promptId]: {
-          ...(current ?? {}),
+          ...current,
           appendTiming: result.append_timing ?? appendTiming,
           revision: result.revision,
         },

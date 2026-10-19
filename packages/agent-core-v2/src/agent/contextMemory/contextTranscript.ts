@@ -8,7 +8,7 @@ import {
   isFullyUndoable,
   readContextCompactedCount,
 } from './contextOps';
-import { createLoopEventFold, type LoopRecordedEvent } from './loopEventFold';
+import { createLoopEventFold, findProviderMessageRevision, type LoopRecordedEvent } from './loopEventFold';
 import type { ContextMessage, ContextMessageSource } from './types';
 
 export interface ContextTranscript {
@@ -26,6 +26,7 @@ export interface ContextTranscriptReducer {
 
 interface MutableMessage {
   id?: string;
+  providerMessageId?: string;
   role: ContextMessage['role'];
   content: ContentPart[];
   toolCalls: ToolCall[];
@@ -88,7 +89,13 @@ export function createContextTranscriptReducer(): ContextTranscriptReducer {
       push(toMutableEntry(message, time));
     },
     pushMessage: (message: ContextMessage, time: number | undefined) => {
-      push(toMutableEntry(message, time));
+      const revision = findProviderMessageRevision(logical.map((entry) => entry.message), message);
+      if (revision !== undefined) {
+        const entry = logical[revision.index]!;
+        entry.message = toMutableEntry(revision.message, entry.time).message;
+      } else {
+        push(toMutableEntry(message, time));
+      }
     },
   };
   let fold = createLoopEventFold(sink);
@@ -190,7 +197,8 @@ export function createContextTranscriptReducer(): ContextTranscriptReducer {
 function toMutableEntry(message: ContextMessage, time: number | undefined): MutableEntry {
   return {
     message: {
-      ...(message.id !== undefined ? { id: message.id } : {}),
+      id: message.id,
+      providerMessageId: message.providerMessageId,
       role: message.role,
       content: [...message.content],
       toolCalls: [...message.toolCalls],

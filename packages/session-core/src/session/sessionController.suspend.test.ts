@@ -96,7 +96,7 @@ describe('SessionController suspend / resume', () => {
     deliver({ ...summaryReset, grade: 'turn' });
     controller.suspend();
     controller.setFocusedAgent('child-1');
-    controller.resume();
+    await controller.resume();
     expect(attachments[1]!.input.transcriptSince?.['child-1']).toBeUndefined();
     expect(controller.getAgentState('child-1').transcriptReady).toBe(false);
     deliver(resetEvent('child-1', full, 3));
@@ -148,7 +148,7 @@ describe('SessionController suspend / resume', () => {
     await parked.controller.open();
     parked.deliver(resetEvent('main', userTurnSnapshot({ assistantText: 'Hello' }), 3));
     parked.controller.suspend();
-    parked.controller.resume();
+    await parked.controller.resume();
     parked.deliver(opsEvent('main', appendOps(5, ' world'), 4));
 
     const fresh = harness();
@@ -170,7 +170,7 @@ describe('SessionController suspend / resume', () => {
     void controller.open();
     controller.suspend();
     read.mockResolvedValueOnce(snapshot());
-    controller.resume();
+    await controller.resume();
     await vi.waitFor(() => { expect(attachments).toHaveLength(1); });
     expect(controller.getState().loaded).toBe(true);
     controller.close();

@@ -136,7 +136,7 @@ describe('print bootstrap scoped Cron scheduling', () => {
     let opened: ISessionScopeHandle | undefined;
     let main: IAgentScopeHandle | undefined;
     const created = new Emitter<never>();
-    const enqueue = vi.fn(async () => ({ state: 'pending' }));
+    const enqueueCron = vi.fn<IAgentPromptService['enqueueCron']>(async () => ({ state: 'pending' } as never));
     const acquire = vi.fn(async () => { throw new Error('Print must not resume cold owners'); });
     const resume = vi.fn(async () => { throw new Error('Print must not resume cold owners'); });
     const manager = {
@@ -165,7 +165,7 @@ describe('print bootstrap scoped Cron scheduling', () => {
       ] });
       const cron = session.accessor.get(ISessionCronService);
       main = { id: 'main', kind: LifecycleScope.Agent, dispose: () => {}, accessor: { get: <T,>(id: ServiceIdentifier<T>): T => {
-        if (id === IAgentPromptService) return { enqueue } as T;
+        if (id === IAgentPromptService) return { enqueueCron } as T;
         if (id === IEventDispatcher) return { dispatch: async () => {} } as T;
         throw new Error(`Unexpected agent service ${id.toString()}`);
       } } };
@@ -175,21 +175,21 @@ describe('print bootstrap scoped Cron scheduling', () => {
       await vi.advanceTimersByTimeAsync(250);
       if (fires > 0) await vi.waitFor(() => expect(vi.getTimerCount()).toBeGreaterThan(1));
       await vi.advanceTimersByTimeAsync(2_000);
-      if (fires > 0) await vi.waitFor(() => expect(enqueue).toHaveBeenCalledTimes(1));
-      else expect(enqueue).not.toHaveBeenCalled();
+      if (fires > 0) await vi.waitFor(() => expect(enqueueCron).toHaveBeenCalledTimes(1));
+      else expect(enqueueCron).not.toHaveBeenCalled();
       expect(inventory).not.toHaveBeenCalled();
       expect(acquire).not.toHaveBeenCalled();
       expect(resume).not.toHaveBeenCalled();
       expect(await store.get('workspace', cold.id)).toEqual(cold);
       if (fires > 0) {
-        expect(enqueue.mock.calls[0]).toEqual([expect.objectContaining({ message: expect.objectContaining({ origin: expect.objectContaining({ jobId: task.id }) }) })]);
+        expect(enqueueCron.mock.calls[0]).toEqual([expect.objectContaining({ origin: expect.objectContaining({ jobId: task.id }), prompt: 'print reminder' })]);
         expect(await store.get('workspace', task.id)).toBeUndefined();
         await cron.addTask({ cron: '* * * * *', prompt: 'remains saved after print exit', recurring: false });
       }
       await app.dispose();
       expect(vi.getTimerCount()).toBe(0);
       await vi.advanceTimersByTimeAsync(120_000);
-      expect(enqueue).toHaveBeenCalledTimes(fires);
+      expect(enqueueCron).toHaveBeenCalledTimes(fires);
     } finally {
       await app.dispose(); created.dispose(); vi.useRealTimers();
       await rm(home, { force: true, recursive: true, maxRetries: 3 });

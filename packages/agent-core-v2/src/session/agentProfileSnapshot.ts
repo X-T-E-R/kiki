@@ -149,7 +149,7 @@ export async function readPersistedAgentProfileSnapshot(
     flight = { size, mtimeMs, metadataKey, promise };
     flights.set(scope, flight);
   }
-  return await waitForPersistedAgentProfile(flight.promise, signal);
+  return waitForPersistedAgentProfile(flight.promise, signal);
 }
 
 async function waitForPersistedAgentProfile(

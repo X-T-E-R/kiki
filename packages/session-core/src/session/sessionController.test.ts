@@ -1203,7 +1203,7 @@ describe('SessionController pipeline', () => {
     } finally { controller.close(); }
   });
 
-  it('preserves captured bundled skills and controls across an unknown response retry', async () => {
+  it('assigns a new identity only to a new action after retrying captured bundled controls', async () => {
     const { controller, client } = await openController();
     const held = deferred<PromptSubmitResult>();
     const content: MessageContent[] = [{ type: 'text', text: 'review this',

@@ -861,8 +861,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         try {
           await this.releaseCompaction(active);
         } catch (error) {
-          if (active.committedResult === undefined) throw error;
-          this.log.error('failed to release compaction resources after commit', { error });
+          this.log.error('failed to release compaction resources', { error, committed: active.committedResult !== undefined });
         }
       }
     }

@@ -475,7 +475,7 @@ describe('AgentModelSteeringService', () => {
     const loop = ctx.get(IAgentLoopService);
     memory.append({ role: 'user', toolCalls: [], content: [{ type: 'text', text: 'Original input' }], origin: kind === 'user' ? { kind } : { kind, messageId: 'example-external', acceptedAt: 1 }, source: { turnId: 0, step: 1 } });
     memory.append({ role: 'assistant', toolCalls: [], content: [{ type: 'text', text: 'Previous answer' }] });
-    await ctx.get(IEventBus).publish(new TurnStarted({ turnId: 1, origin: { kind: 'retry' } }));
+    ctx.get(IEventBus).publish(new TurnStarted({ turnId: 1, origin: { kind: 'retry' } }));
     await runWillBeginStepHooks(loop, true);
     expect(steeringMessages(memory)).toHaveLength(kind === 'user' ? 1 : 0);
   });

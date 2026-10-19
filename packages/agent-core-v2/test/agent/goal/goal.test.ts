@@ -1293,7 +1293,7 @@ describe('AgentGoalService core workflow hooks', () => {
       arguments: JSON.stringify({ action: 'set_budget', value: 5, unit: 'turns' }),
     });
     expect(results[0]!.result.isError).toBe(true);
-    expect(String(results[0]!.result.output)).toContain('Invalid args for tool "Goal"');
+    expect(results[0]!.result.output).toContain('Invalid args for tool "Goal"');
     expect(goals.getGoal().goal).toMatchObject({
       goalId: created.goalId,
       controlRevision: created.controlRevision,

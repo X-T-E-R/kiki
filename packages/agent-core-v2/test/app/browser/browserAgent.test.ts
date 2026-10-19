@@ -174,9 +174,9 @@ describe('native browser agent selection, schema and local file channel', () => 
         ix.get(IEventBus).publish(new TurnEnded({ turnId, reason }));
         expect(endTurn).toHaveBeenLastCalledWith({ sessionId: 'fixture-session', agentId: 'main' }, turnId);
       }
-      (service as AgentBrowserService).dispose();
+      await (service as AgentBrowserService).dispose();
       await vi.waitFor(() => expect(endTurn).toHaveBeenLastCalledWith({ sessionId: 'fixture-session', agentId: 'main' }));
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
 
   it('covers bridge discovery, connect, registration, DOM, fill, click, image, and unload through BrowserConnections', async () => {
@@ -250,7 +250,7 @@ describe('native browser agent selection, schema and local file channel', () => 
       await service.connections({ action: 'tools', unload: ['codex_dom_snapshot', 'codex_fill', 'codex_click', 'codex_screenshot', 'codex_claim_tab'] });
       expect(registry.resolve('browser__codex_click')).toBeUndefined();
       expect(registry.resolve('browser__codex_screenshot')).toBeUndefined();
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
 
   it('keeps two same-source browsers distinct, leaves list available for an empty allow set, and restores SDK tools on the same scope', async () => {
@@ -301,7 +301,7 @@ describe('native browser agent selection, schema and local file channel', () => 
     try {
       const service = ix.get(IAgentBrowserService);
       const registry = ix.get(IAgentToolRegistryService);
-      const listed = JSON.parse(String((await service.connections({ action: 'list' })).output)) as { connections: { id: string }[]; defaultBrowser?: string };
+      const listed = JSON.parse((await service.connections({ action: 'list' })).output as string) as { connections: { id: string }[]; defaultBrowser?: string };
       expect(listed.connections.map((item) => item.id)).toEqual(['alpha', 'beta']);
       expect(listed.defaultBrowser).toBeUndefined();
       await service.connections({ action: 'tools', browser: 'alpha', tools: ['codex_navigate', 'codex_dom_snapshot', 'codex_screenshot'] });
@@ -321,15 +321,15 @@ describe('native browser agent selection, schema and local file channel', () => 
       expect(seen.filter((item) => item.startsWith('beta:'))).toEqual(['beta:codex_navigate', 'beta:codex_dom_snapshot', 'beta:codex_screenshot']);
       const pendingAlpha = await registry.resolve('browser__codex_navigate')!.resolveExecution({ browser: 'alpha', url: 'http://127.0.0.1/' });
       const unloaded = await service.connections({ action: 'tools', browser: 'alpha', unload: ['codex_navigate'] });
-      expect(JSON.parse(String(unloaded.output)).loaded).not.toContain('browser__codex_navigate');
+      expect(JSON.parse(unloaded.output as string).loaded).not.toContain('browser__codex_navigate');
       expect(registry.resolve('browser__codex_navigate')).toBeDefined();
       expect((await execute(pendingAlpha)).isError).toBe(true);
       expect((await execute(registry.resolve('browser__codex_navigate')!.resolveExecution({ browser: 'alpha', url: 'http://127.0.0.1/' }))).isError).toBe(true);
       expect((await execute(registry.resolve('browser__codex_navigate')!.resolveExecution({ browser: 'beta', url: 'http://127.0.0.1/' }))).isError).not.toBe(true);
       allowed = [];
-      expect(JSON.parse(String((await service.connections({ action: 'list' })).output)).connections).toHaveLength(2);
+      expect(JSON.parse((await service.connections({ action: 'list' })).output as string).connections).toHaveLength(2);
       expect((await service.connections({ action: 'status', browser: 'alpha' })).isError).not.toBe(true);
-      expect(String((await service.connections({ action: 'connect', browser: 'alpha' })).output)).toContain('not in the allowed set');
+      expect((await service.connections({ action: 'connect', browser: 'alpha' })).output).toContain('not in the allowed set');
       expect((await execute(registry.resolve('browser__codex_dom_snapshot')!.resolveExecution({ browser: 'beta' }))).isError).toBe(true);
       expect(invoke.mock.calls.filter(([call]) => call.tool === 'codex_dom_snapshot')).toHaveLength(2);
       sections.fire({ domain: BROWSER_CONFIG_SECTION, source: 'set', value: { allowedBrowsers: [] }, previousValue: {} });
@@ -394,10 +394,10 @@ describe('native browser agent selection, schema and local file channel', () => 
       readCatalog.mockImplementationOnce(async () => { await new Promise<void>((resolve) => { releaseClosed = resolve; }); return catalog; });
       const closed = service.connections({ action: 'tools', browser: 'alpha', tools: ['codex_screenshot'] });
       await vi.waitFor(() => expect(releaseClosed).toBeDefined());
-      (service as AgentBrowserService).dispose();
+      await (service as AgentBrowserService).dispose();
       releaseClosed();
       expect((await closed).isError).toBe(true);
       expect(registry.list()).toHaveLength(0);
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
 });

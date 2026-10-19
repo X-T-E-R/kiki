@@ -553,6 +553,40 @@ describe('FullCompaction', () => {
     await hook.dispose();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+  it.each([false, true])('preserves the compaction outcome when quiescence cleanup fails; committed=%s', async (committed) => {
+    const ctx = testAgent();
+    ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
+    await ctx.ready;
+    ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
+    ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
+    const loop = ctx.get(IAgentLoopService);
+    const acquire = loop.tryAcquireQuiescence.bind(loop);
+    const dispose = vi.fn(async () => { throw new Error('cleanup fixture failure'); });
+    vi.spyOn(loop, 'tryAcquireQuiescence').mockImplementationOnce(() => {
+      const lease = acquire()!;
+      return { dispose: async () => { await lease.dispose(); await dispose(); } };
+    });
+    const service = ctx.get(IAgentFullCompactionService);
+    const hook = service.hooks.onWillCompact.register('test-cleanup-failure', async (_task, next) => {
+      if (!committed) throw new Error('compaction fixture failure');
+      await next();
+    });
+    ctx.mockNextResponse({ type: 'text', text: 'Compacted summary.' });
+    try {
+      expect(service.begin({ source: 'manual', strategy: 'summarize' })).toBe(true);
+      const task = service.compacting!;
+      if (committed) await expect(task.promise).resolves.toMatchObject({ strategy: 'summarize' });
+      else await expect(task.promise).rejects.toThrow('compaction fixture failure');
+      expect(dispose).toHaveBeenCalledOnce();
+      expect(service.isCompacting()).toBe(false);
+      const lease = acquire();
+      expect(lease).toBeDefined();
+      await lease?.dispose();
+    } finally {
+      await hook.dispose();
+    }
+  });
+
   it('refreshes the active profile system prompt after compaction without resetting active tools', async () => {
     const homeDir = mkdtempSync(join(tmpdir(), 'kimi-compact-refresh-home-'));
     const workDir = mkdtempSync(join(tmpdir(), 'kimi-compact-refresh-work-'));

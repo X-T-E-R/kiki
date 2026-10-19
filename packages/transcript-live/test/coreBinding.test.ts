@@ -111,7 +111,7 @@ describe('descriptor birth', () => {
 });
 
 describe('bindSessionTranscript', () => {
-  it('hydrates running compaction from the durable checkpoint and completes the same row without live duplicates', () => {
+  it('hydrates running compaction from the durable checkpoint and completes the same row without live duplicates', async () => {
     const agents = new FakeAgents();
     const main = agents.add('main');
     const store = new TranscriptStore('compaction-session');
@@ -136,7 +136,7 @@ describe('bindSessionTranscript', () => {
     expect(projectAgentTranscriptView(createViewState('compaction-session'), 'main', transcript.snapshot()).blocks).toEqual([
       expect.objectContaining({ compactionPhase: 'completed', i18n: { key: 'transcript.marker.compactionSummarize' } }),
     ]);
-    binding.dispose();
+    await binding.dispose();
   });
 
   class FakeBus {
@@ -353,6 +353,8 @@ describe('bindSessionTranscript', () => {
   });
 
   it('replays Grok source-shaped extensions through decoder, recorder, live binding, cold replay and view', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
+    onTestFinished(() => clock.mockRestore());
     const agents = new FakeAgents();
     const main = agents.add('main');
     const store = new TranscriptStore('grok-session');
@@ -435,7 +437,7 @@ describe('bindSessionTranscript', () => {
     await vi.waitFor(() => expect(store.agents().find((agent) => agent.agentId === 'child')?.createdAt).toBe(new Date(1000).toISOString()));
   });
 
-  it('hydrates running compaction from the durable checkpoint and completes the same row without live duplicates', () => {
+  it('hydrates a legacy compaction checkpoint without a recorded strategy and completes the same row', async () => {
     const agents = new FakeAgents();
     const main = agents.add('main');
     const store = new TranscriptStore('compaction-session');
@@ -460,7 +462,7 @@ describe('bindSessionTranscript', () => {
     expect(projectAgentTranscriptView(createViewState('compaction-session'), 'main', transcript.snapshot()).blocks).toEqual([
       expect.objectContaining({ compactionPhase: 'completed', i18n: { key: 'transcript.marker.compaction' } }),
     ]);
-    binding.dispose();
+    await binding.dispose();
   });
 
   it('clears backfilled conversation entities before live paging can resurrect them', async () => {

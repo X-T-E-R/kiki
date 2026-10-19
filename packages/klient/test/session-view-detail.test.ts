@@ -18,9 +18,9 @@ describe('session view transcript detail', () => {
     let observed: AbortSignal | null | undefined;
     let requested: URL | undefined;
     const fetchMock: typeof fetch = async (input, init) => {
-      requested = new URL(String(input));
+      requested = new URL(input instanceof Request ? input.url : input);
       observed = init?.signal;
-      return await new Promise<Response>((_resolve, reject) => {
+      return new Promise<Response>((_resolve, reject) => {
         observed?.addEventListener('abort', () => reject(observed?.reason), { once: true });
       });
     };

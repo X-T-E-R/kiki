@@ -146,7 +146,7 @@ export class PluginHostService extends Service implements IPluginHostService {
         void this.reconcileResidents(event.affected).catch(() => {});
       });
       event.waitUntil((async () => {
-        await Promise.allSettled([...this.residentLifecycle]);
+        await Promise.allSettled(this.residentLifecycle);
         const ids = event.affected ?? [...new Set([...this.hosts.keys(), ...this.active.keys()])];
         await Promise.all(ids.map(async (id) => {
           await Promise.allSettled(this.active.get(id) ?? new Set<Promise<unknown>>());
@@ -172,7 +172,7 @@ export class PluginHostService extends Service implements IPluginHostService {
 
   async stopAll(): Promise<void> {
     this.closing = true;
-    await Promise.allSettled([...this.residentWork]);
+    await Promise.allSettled(this.residentWork);
     await Promise.allSettled([...this.active.values()].flatMap((requests) => [...requests]));
     const hosts = [...this.hosts.values()];
     this.hosts.clear();

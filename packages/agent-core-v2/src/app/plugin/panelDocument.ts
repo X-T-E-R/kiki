@@ -30,7 +30,7 @@ export async function panelDocument(root: string, panel: PluginPanel): Promise<s
     const bytes = await readFile(assetFile);
     if (bytes.byteLength > 512 * 1024) throw new Error('Invalid plugin panel asset');
     const references = new Set([`./${name}`, path.relative(path.dirname(file), assetFile).replaceAll('\\', '/')]);
-    for (const reference of [...references]) if (!reference.startsWith('.')) references.add(`./${reference}`);
+    for (const reference of references) if (!reference.startsWith('.')) references.add(`./${reference}`);
     for (const reference of references) {
       const escaped = reference.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       html = html.replace(new RegExp(`(["'])${escaped}\\1`, 'g'),

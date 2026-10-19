@@ -185,7 +185,7 @@ describe('SDK config TOML', () => {
     const config = parseConfigString(`[providers.edge]\ntype="openai"\napi_key="fixture-key"\n[models.example]\nprovider="edge"\nmodel="remote-example"\nmax_context_size=8192\nprotocol="${protocol}"\n`);
     expect(config.models?.['example']?.protocol).toBe(protocol);
     await writeConfigFile(path, config);
-    const saved = await readConfigFile(path);
+    const saved = readConfigFile(path);
     expect(saved.models?.['example']?.protocol).toBe(protocol);
     expect(saved.providers?.['edge']?.type).toBe('openai');
   });

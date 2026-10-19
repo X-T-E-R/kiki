@@ -81,7 +81,7 @@ export class ManagedAdapterService implements IManagedAdapterService {
   ) {}
 
   list(): Promise<readonly ManagedAdapterStatus[]> {
-    const ids = [...Object.keys(MANAGED_ADAPTER_RELEASES)];
+    const ids = Object.keys(MANAGED_ADAPTER_RELEASES);
     for (const descriptor of this.registry?.list() ?? []) {
       if (!ids.includes(descriptor.id) && sourceOwnedAdapterScript(descriptor) !== undefined) ids.push(descriptor.id);
     }
@@ -228,7 +228,7 @@ export class ManagedAdapterService implements IManagedAdapterService {
       const existing = await this.readProduction(targetDir);
       const matches = sameProduction(existing, bundle);
       if (matches && recorded?.active.version === SOURCE_OWNED_ADAPTER_VERSION && recorded.active.integrity === integrity) {
-        return this.status(id);
+        return await this.status(id);
       }
       const installId = randomUUID();
       const installation: ManagedAdapterInstallation = {

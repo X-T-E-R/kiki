@@ -483,7 +483,7 @@ describe('official Codex browser adapter', () => {
       expect((await f.control.disconnect('official')).state).toBe('disconnected');
       expect(close).toHaveBeenCalledOnce();
       expect(f.calls).toEqual([]);
-    } finally { f.ix.dispose(); }
+    } finally { await f.ix.dispose(); }
   });
 
   it('maps user allow/decline/cancel to MCP without Guardian or credential autoaccept', async () => {
@@ -690,7 +690,7 @@ describe('Codex extension bridge adapter', () => {
       expect(callTool.mock.calls.map(([name]) => name)).not.toContain('codex_finalize');
       expect(callTool.mock.calls.map(([name]) => name)).not.toContain('codex_claim_tab');
       expect(close).toHaveBeenCalledOnce();
-    } finally { f.ix.dispose(); }
+    } finally { await f.ix.dispose(); }
   });
 });
 

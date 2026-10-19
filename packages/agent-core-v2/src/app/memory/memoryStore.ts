@@ -225,7 +225,6 @@ export class MemoryStore extends Disposable implements IMemoryStore {
       const lock = await this.storage.acquireLock(base, 'memory-write', {
         leaseMs: 30_000, waitForMs: 5_000, owner: { kind: 'memory-write', scope: base, pid: process.pid },
       });
-      const before = await this.storage.size(base, 'journal.jsonl');
       try {
         signal?.throwIfAborted();
         const before = await this.storage.size(base, 'journal.jsonl');

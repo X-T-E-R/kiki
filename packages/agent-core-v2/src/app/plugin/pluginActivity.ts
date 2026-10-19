@@ -1,6 +1,8 @@
 import type { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity';
 import { DisposableStore, toDisposable, type IDisposable } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 
 export interface PluginActivity {
   readonly sessionId: string;
@@ -17,7 +19,11 @@ export function observePluginActivity(manager: ISessionManager, listener: (activ
   const reconcile = () => {
     const live = manager.list();
     const ids = new Set(live.map(handle => handle.id));
-    for (const [id, entry] of sessions) if (!ids.has(id)) { entry.subscription.dispose(); sessions.delete(id); }
+    for (const [id, entry] of sessions) if (!ids.has(id)) {
+      const disposed = entry.subscription.dispose();
+      if (isPromiseLike(disposed)) disposed.catch(onUnexpectedError);
+      sessions.delete(id);
+    }
     for (const handle of live) {
       if (sessions.has(handle.id)) continue;
       const view = handle.accessor.get(ISessionActivityView);
@@ -30,7 +36,11 @@ export function observePluginActivity(manager: ISessionManager, listener: (activ
   };
   if (manager.onDidCreateSession !== undefined) store.add(manager.onDidCreateSession(reconcile));
   if (manager.onDidCloseSession !== undefined) store.add(manager.onDidCloseSession(reconcile));
-  store.add(toDisposable(() => { for (const value of sessions.values()) value.subscription.dispose(); sessions.clear(); }));
+  store.add(toDisposable(async () => {
+    const subscriptions = [...sessions.values()];
+    sessions.clear();
+    for (const value of subscriptions) await value.subscription.dispose();
+  }));
   reconcile();
   return store;
 }

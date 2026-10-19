@@ -1882,7 +1882,7 @@ export class AgentPromptService implements IAgentPromptService {
           try { if (pending.length > 0) await this.steer(pending.map(candidate => candidate.id)); }
           finally { for (const candidate of pending) this.boundarySteeringIds.delete(candidate.id); }
           const remaining = fresh.filter(candidate => this.pending.includes(candidate) && !pending.includes(candidate));
-          queueMicrotask(() => this.scheduleSwitchBoundary(remaining));
+          queueMicrotask(() => { this.scheduleSwitchBoundary(remaining).catch(onUnexpectedError); });
           return;
         }
       } finally { for (const item of fresh) this.boundaryPromptIds.delete(item.id); }

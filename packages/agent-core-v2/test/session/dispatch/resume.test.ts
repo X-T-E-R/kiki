@@ -741,10 +741,10 @@ describe('dispatch resume after cancellation with deferred task notifications', 
       }) };
     });
     const compaction = ctx.get(IAgentFullCompactionService);
-    expect(compaction.begin({ source: 'manual' })).toBe(true);
+    expect(compaction.begin({ source: 'manual', strategy: 'summarize' })).toBe(true);
     const task = compaction.compacting!;
-    await requested;
     try {
+      await Promise.race([requested, task.promise.then(() => { throw new Error('Compaction completed before the summary request'); })]);
       expect(ctx.get(IAgentLoopService).status().state).toBe('idle');
       expect(compaction.isCompacting()).toBe(true);
       await expect(ctx.get(IAgentModelSwitchService).execute({ operationId: 'compacting-switch', model: OLD, mode: 'direct' })).rejects.toMatchObject({ code: ErrorCodes.TURN_AGENT_BUSY });

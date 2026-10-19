@@ -546,6 +546,7 @@ describe('model switch control queue with real engine', () => {
     expect(ctx.get(IAgentProfileService).getModel()).toBe(OLD);
   });
 
+  describe('queued control dependencies', () => {
   it('safe Send now retains a failed original delivery until an explicit normal retry', async () => {
     const ctx = await host();
     const svc = ctx.get(IAgentPromptService);
@@ -735,6 +736,8 @@ describe('model switch control queue with real engine', () => {
     expect(JSON.stringify(ctx.llmCalls[1])).toContain('complete-original-tool-result');
     expect(JSON.stringify(ctx.llmCalls[1])).toContain('Use the complete lookup result on my selected model.');
     expect(journal.filter(record => record.type === 'turn.steer' && record['promptId'] === dependent.id)).toHaveLength(1);
+  });
+
   });
 
   it.each([false, true])('safe Send now binds controls to its message without a switch queue item; cancel=%s', async cancel => {
@@ -1126,7 +1129,7 @@ describe('model switch control queue with real engine', () => {
     } finally { releaseRequest.resolve(); releaseMetadata.resolve(); }
   });
 
-  it.each(['direct', 'fresh', 'compact'] as const)('safe Send now preserves an in-flight provider request and applies %s before the next request', async mode => {
+  it.each(['direct', 'fresh', 'compact'] as const)('retains the streaming request while a legacy queued %s control waits for the next boundary', async mode => {
     const scripted = createScriptedGenerate();
     const streaming = deferred<void>();
     const release = deferred<void>();
@@ -1162,7 +1165,7 @@ describe('model switch control queue with real engine', () => {
     expect(svc.getModelSwitch('streaming-pending')).toMatchObject({ state: 'completed', mode });
   });
 
-  it('safe Send now accepts a pending switch and consumes the original message before an old-binding continuation', async () => {
+  it('consumes a pending switch at the held first-step boundary before an old-binding continuation', async () => {
     const ctx = await host();
     const svc = ctx.get(IAgentPromptService);
     const loop = ctx.get(IAgentLoopService);

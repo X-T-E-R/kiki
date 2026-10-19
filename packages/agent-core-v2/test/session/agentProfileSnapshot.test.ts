@@ -82,7 +82,7 @@ describe('readPersistedAgentProfileSnapshot', () => {
       },
       appendLog: {
         flush: async () => undefined,
-        read: async function* () { appendReads += 1; },
+        read: () => { appendReads += 1; return (async function* () { yield* []; })(); },
       },
     };
     const snapshot = await readPersistedAgentProfileSnapshot(host as never, 'workspace', 'session', 'main', { model: 'meta-model' });

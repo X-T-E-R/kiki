@@ -125,6 +125,7 @@ describe('conversation list and read state', () => {
     expect(groups[0]!.items[0]!.pending_interaction).toBe('none');
     expect(groupConversationItems(items, { groupBy: 'none', workspaces, filters: { ...filters, status: ['running'] }, nowMs: 0 })).toEqual([]);
   });
+  describe('recency with room filtering', () => {
   it('sorts and groups by own recency without changing aggregate session facts, with an old-server fallback', () => {
     const nowMs = new Date(2026, 9, 6, 12).getTime();
     const today = new Date(2026, 9, 6, 10).toISOString();
@@ -157,6 +158,7 @@ describe('conversation list and read state', () => {
     const time = groupConversationItems(items, { groupBy: 'time', workspaces, filters, nowMs });
     expect(time[0]?.key).toBe('today');
     expect(time[0]?.items[0]?.updated_at).toBe('2026-10-05T11:59:00Z');
+  });
   });
 });
 

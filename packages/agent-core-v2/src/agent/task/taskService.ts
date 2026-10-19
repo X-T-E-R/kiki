@@ -631,8 +631,8 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
 
     entry.handleSubscription = {
       async dispose() {
-        await outputSub.dispose();
-        await stateSub.dispose();
+        outputSub.dispose();
+        stateSub.dispose();
       },
     };
 
@@ -1054,7 +1054,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       entry.abortController.abort(options.abortReason);
     }
     await entry.stopCleanup;
-    if (descendantFailure !== undefined) throw descendantFailure;
+    if (descendantFailure !== undefined) throw descendantFailure instanceof Error ? descendantFailure : new Error(errorMessage(descendantFailure), { cause: descendantFailure });
 
     const graceMs = resolveAgentTaskConfig(this.config)?.killGracePeriodMs ?? SIGTERM_GRACE_MS;
     let graceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1082,7 +1082,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
         const forceStop =
           entry.forceStopFn ??
           (entry.task === undefined ? undefined : entry.task.forceStop?.bind(entry.task));
-        if (forceStop === undefined && entry.cleanupFailure !== undefined) throw entry.cleanupFailure;
+        if (forceStop === undefined && entry.cleanupFailure !== undefined) throw entry.cleanupFailure instanceof Error ? entry.cleanupFailure : new Error(errorMessage(entry.cleanupFailure), { cause: entry.cleanupFailure });
         await forceStop?.();
         entry.cleanupFailure = undefined;
       } catch (error) {
@@ -1107,7 +1107,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private async retainCleanupFailure(entry: ManagedTask, error: unknown): Promise<void> {
     entry.cleanupFailure = error;
     const diagnostic = error as { code?: unknown; details?: unknown } | null;
-    entry.stopReason = `Task cleanup is unconfirmed; retry TaskStop for the same task before replacing its work. ${String(diagnostic?.code ?? 'cleanup_failed')}: ${errorMessage(error)}${diagnostic?.details === undefined ? '' : `; details=${JSON.stringify(diagnostic.details)}`}`;
+    entry.stopReason = `Task cleanup is unconfirmed; retry TaskStop for the same task before replacing its work. ${typeof diagnostic?.code === 'string' || typeof diagnostic?.code === 'number' ? String(diagnostic.code) : 'cleanup_failed'}: ${errorMessage(error)}${diagnostic?.details === undefined ? '' : `; details=${JSON.stringify(diagnostic.details)}`}`;
     this.log.error('task cleanup failed; execution retained without terminal receipt', { taskId: entry.taskId, error });
     await this.persistLive(entry);
   }

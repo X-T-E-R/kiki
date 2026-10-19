@@ -1888,7 +1888,7 @@ describe('hidden prefix turn preview', () => {
     const content = vi.fn<NonNullable<SessionViewFacade['transcript']['content']>>(async (input, options) => {
       if (replacementSignal === undefined && content.mock.calls.length > 1) {
         replacementSignal = options?.signal;
-        return await new Promise((resolve, reject) => {
+        return new Promise((resolve, reject) => {
           releaseContent = () => { void read(input, options).then(resolve, reject); };
         });
       }

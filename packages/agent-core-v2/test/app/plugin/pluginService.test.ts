@@ -106,7 +106,7 @@ function workspaceUsage(blockedPluginId: string, enabled = true): IPluginUsageSe
       if (!enabled || workspaceId === undefined) return global;
       const workspace = workspaceId !== 'workspace-a' || pluginId !== blockedPluginId;
       if (!workspace) return false;
-      return sessionId === undefined ? global : (await snapshot(workspaceId, sessionId)).overrides[pluginId] ?? global;
+      return sessionId === undefined ? global : snapshot(workspaceId, sessionId).overrides[pluginId] ?? global;
     },
     readSession: async (workspaceId, sessionId) => snapshot(workspaceId, sessionId),
     applySession: async (value) => value,

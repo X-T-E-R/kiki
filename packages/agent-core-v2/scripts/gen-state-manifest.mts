@@ -374,6 +374,8 @@ class TypeRenderer {
         member,
         text: this.renderType(member, location, depth + 1),
       }));
+    const unknown = rendered.find(({ text }) => text.replace(/\/\*[\s\S]*?\*\//g, '').trim() === 'unknown');
+    if (unknown !== undefined) return unknown.text;
     const multi = rendered.length + (collapseBoolean ? 1 : 0) > 1;
     const parts = rendered.map(({ member, text }) =>
       multi && this.needsParensInUnion(member) ? `(${text})` : text,

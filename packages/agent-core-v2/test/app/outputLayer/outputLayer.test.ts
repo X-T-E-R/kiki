@@ -19,7 +19,7 @@ import { OutputLayerService } from '#/app/outputLayer/outputLayerService';
 import { OUTPUT_LAYER_DEFAULT_PRESETS, OUTPUT_LAYER_DEFAULT_SETTINGS, type OutputLayerRequest } from '@kiki/protocol';
 
 const containers: TestInstantiationService[] = [];
-afterEach(() => { for (const ix of containers.splice(0)) ix.dispose(); });
+afterEach(async () => { for (const ix of containers.splice(0)) await ix.dispose(); });
 
 function setup(usageEnabled = true) {
   const calls: { input: ModelRequestInput; params: ModelRequestParams; signal?: AbortSignal }[] = [];
