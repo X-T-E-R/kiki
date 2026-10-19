@@ -1088,7 +1088,7 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
     expect(readSpy).not.toHaveBeenCalled();
     expect(compactWarm.messages.items).toEqual([]);
     const snap = await snapshot(sid);
-    readSpy.mockRestore();
+    expect(readSpy).not.toHaveBeenCalled();
     expect(snap.session.id).toBe(sid);
     expect(snap.session.message_count).toBe(2);
     expect(snap.messages.items).toHaveLength(2);
@@ -1097,6 +1097,16 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
     expect((snap.messages.items[0]!.content[0] as { text: string }).text).toBe('hello-from-disk');
     expect((snap.messages.items[1]!.content[0] as { text: string }).text).toBe('hi-from-disk');
     expect(snap.epoch).toMatch(/^ep_/);
+    await writeFile(join(wireDir, 'wire.jsonl'), `${records.map((record) => JSON.stringify(record)).join('\n')}\n${JSON.stringify({
+      type: 'context.append_message',
+      message: { role: 'user', content: [{ type: 'text', text: 'changed-on-disk' }], toolCalls: [] },
+    })}\n`, 'utf-8');
+    readSpy.mockClear();
+    const changed = await snapshot(sid, 'transcript');
+    expect(readSpy).toHaveBeenCalled();
+    expect(changed.session.message_count).toBe(3);
+    expect(changed.messages.items).toEqual([]);
+    readSpy.mockRestore();
   });
 
   it('retains cold identity-only subagent relations without presenting them as active', async () => {

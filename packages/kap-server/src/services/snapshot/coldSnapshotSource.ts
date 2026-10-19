@@ -1,3 +1,6 @@
+import { stat } from 'node:fs/promises';
+import { join } from 'node:path';
+
 import {
   AGENT_WIRE_RECORD_KEY,
   IAppendLogStore,
@@ -43,6 +46,9 @@ export interface ColdMainWireProjection {
   readonly planActive: boolean;
 }
 
+const COLD_WIRE_CACHE_LIMIT = 32;
+const coldWireCaches = new WeakMap<Scope, Map<string, { fingerprint: string; projection: ColdMainWireProjection }>>();
+
 export async function readColdMainWireProjection(
   core: Scope,
   workspaceId: string,
@@ -57,6 +63,11 @@ export async function readColdMainWireProjection(
     ),
     'main',
   );
+  const path = join(core.accessor.get(IBootstrapService).homeDir, scope, AGENT_WIRE_RECORD_KEY);
+  const before = await wireFingerprint(path);
+  const cached = coldWireCaches.get(core)?.get(scope);
+  if (before !== undefined && cached?.fingerprint === before) return cached.projection;
+  signal?.throwIfAborted();
   const reducer = createContextTranscriptReducer();
   let permissionMode = permissionModeKey.initial() as PermissionMode;
   let plan: PlanState = { ...planKey.initial() };
@@ -65,11 +76,39 @@ export async function readColdMainWireProjection(
     permissionMode = foldPermission(permissionMode, record);
     plan = foldPlan(plan, record);
   }
-  return {
+  const projection = {
     transcript: reducer.result(),
     permissionMode,
     planActive: plan.active === true,
   };
+  const after = await wireFingerprint(path);
+  if (before !== undefined && before === after) rememberColdWire(core, scope, before, projection);
+  return projection;
+}
+
+async function wireFingerprint(path: string): Promise<string | undefined> {
+  try {
+    const info = await stat(path);
+    return `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}:${info.birthtimeMs}`;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  }
+}
+
+function rememberColdWire(core: Scope, scope: string, fingerprint: string, projection: ColdMainWireProjection): void {
+  let cache = coldWireCaches.get(core);
+  if (cache === undefined) {
+    cache = new Map();
+    coldWireCaches.set(core, cache);
+  }
+  if (cache.has(scope)) cache.delete(scope);
+  cache.set(scope, { fingerprint, projection });
+  while (cache.size > COLD_WIRE_CACHE_LIMIT) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
 }
 
 function foldPermission(permissionMode: PermissionMode, record: WireRecord): PermissionMode {
