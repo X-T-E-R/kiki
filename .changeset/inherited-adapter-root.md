@@ -2,4 +2,4 @@
 "@kiki/cli": patch
 ---
 
-A Kiki process that did not unpack its own external harness no longer keeps a parent process's adapter directory, so install uses this checkout's adapter files.
+A source checkout installs its own adapter files instead of an older copy left by another Kiki process.

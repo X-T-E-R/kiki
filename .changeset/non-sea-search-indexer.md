@@ -2,4 +2,4 @@
 "@kiki/cli": patch
 ---
 
-Search indexing on a normal Node launch uses the development indexer when a parent process left the packaged indexer flag set.
+Search indexing starts on a normal Node launch even when a packaged Kiki process left its indexer flag set.
