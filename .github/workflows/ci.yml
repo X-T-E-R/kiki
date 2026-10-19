@@ -63,6 +63,10 @@ jobs:
         run: |
           printf '["node-pty"]\n' > "$RUNNER_TEMP/ci-native-build-allowlist.json"
           pnpm --config.onlyBuiltDependenciesFile="$RUNNER_TEMP/ci-native-build-allowlist.json" --filter @kiki/agent-core-v2 rebuild node-pty
+      - name: Build GUI assets for rendering tests
+        run: pnpm --filter @kiki/gui run build
+      - name: Install rendering test browser
+        run: pnpm --filter @kiki/gui exec playwright install --with-deps chromium
       - run: pnpm run test --shard=${{ matrix.shard }}/5
 
   test-node-packages:
