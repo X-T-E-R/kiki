@@ -25,6 +25,14 @@ const S_IFMT = 0o170000;
 const S_IFDIR = 0o040000;
 const S_IFREG = 0o100000;
 
+function uninitializedSsh(): SSHKaos {
+  const instance = Object.create(SSHKaos.prototype) as SSHKaos;
+  (instance as unknown as { _osEnv: { osKind: string; osArch: string; osVersion: string; shellName: string; shellPath: string } })._osEnv = {
+    osKind: 'POSIX', osArch: 'unknown', osVersion: 'unknown', shellName: 'sh', shellPath: '/bin/sh',
+  };
+  return instance;
+}
+
 async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
   const chunks: Buffer[] = [];
   for await (const chunk of stream) {
@@ -332,7 +340,7 @@ describe('SSHKaos argument validation', () => {
   // the first pull rather than at call-time. We verify both the error class
   // (KaosValueError) and the fact that it rejects before touching SFTP.
   it('glob(caseSensitive: false) rejects with KaosValueError', async () => {
-    const instance = Object.create(SSHKaos.prototype) as SSHKaos;
+    const instance = uninitializedSsh();
     const internal = instance as unknown as { _cwd: string; _sftp: unknown };
     internal._cwd = '/tmp';
     internal._sftp = {};
@@ -380,7 +388,7 @@ describe('SSHKaos.chdir directory validation', () => {
   function makeFakeInstance(sftp: unknown, cwd: string): SSHKaos {
     // Bypass the real constructor (which requires a live ssh2 client) and
     // populate just the private fields that chdir touches.
-    const instance = Object.create(SSHKaos.prototype) as SSHKaos;
+    const instance = uninitializedSsh();
     const internal = instance as unknown as { _sftp: unknown; _cwd: string };
     internal._sftp = sftp;
     internal._cwd = cwd;
@@ -520,7 +528,7 @@ describe('SSHKaos SFTP error mapping', () => {
   }
 
   function makeFakeKaos(sftp: unknown): SSHKaos {
-    const instance = Object.create(SSHKaos.prototype) as SSHKaos;
+    const instance = uninitializedSsh();
     const internal = instance as unknown as { _sftp: unknown; _cwd: string; _home: string };
     internal._sftp = sftp;
     internal._cwd = '/';
@@ -614,7 +622,7 @@ describe('SSHKaos SFTP error mapping', () => {
         throw new Error('should not be called');
       },
     };
-    const instance = Object.create(SSHKaos.prototype) as SSHKaos;
+    const instance = uninitializedSsh();
     const internal = instance as unknown as { _sftp: unknown; _cwd: string };
     internal._sftp = sftp;
     internal._cwd = '/';
@@ -837,7 +845,7 @@ describe('SSHKaos mock success paths', () => {
   }
 
   function makeFakeKaos(sftp: unknown, cwd = '/'): SSHKaos {
-    const instance = Object.create(SSHKaos.prototype) as SSHKaos;
+    const instance = uninitializedSsh();
     const internal = instance as unknown as { _sftp: unknown; _cwd: string; _home: string };
     internal._sftp = sftp;
     internal._cwd = cwd;
@@ -1281,7 +1289,7 @@ describe('SSHKaos mock success paths', () => {
         throw new Error('stop');
       },
     };
-    const instance = Object.create(SSHKaos.prototype) as SSHKaos;
+    const instance = uninitializedSsh();
     const internal = instance as unknown as {
       _client: unknown;
       _cwd: string;
@@ -1309,7 +1317,7 @@ describe('SSHKaos mock success paths', () => {
 // fake SFTP wrappers so no live server is required.
 describe('SSHKaos mkdir existOk edge cases', () => {
   function makeFakeKaos(sftp: unknown): SSHKaos {
-    const instance = Object.create(SSHKaos.prototype) as SSHKaos;
+    const instance = uninitializedSsh();
     const internal = instance as unknown as { _sftp: unknown; _cwd: string };
     internal._sftp = sftp;
     internal._cwd = '/';
@@ -1447,7 +1455,7 @@ describe('SSHKaos.close lifecycle', () => {
   }
 
   function createCloseableKaos(): SSHKaos {
-    const instance = Object.create(SSHKaos.prototype) as SSHKaos;
+    const instance = uninitializedSsh();
     const internals = instance as unknown as {
       _client: FakeClient;
       _cwd: string;
