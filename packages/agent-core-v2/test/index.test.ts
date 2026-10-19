@@ -135,6 +135,8 @@ const V2_RECORD_TYPES: ReadonlySet<string> = new Set([
   'profile.dynamic_snapshot',
   'agent_message.delivered',
   'todo.continuity_decision',
+  'tools.policy_refreshed',
+  'executor.tool.display',
 ]);
 
 describe('v1 wire vocabulary', () => {
@@ -348,6 +350,10 @@ describe('conversation-time checkpoint registration', () => {
     'agentCollaboration.materializedMessages',
     'todo.continuityClock',
     'externalHooks.clock',
+    'promptAdmission',
+    'promptRetryReceipt',
+    'prompt.identity',
+    'prompt.queue',
   ]);
   const CONTEXT_OWNER_STATE = 'contextMemory';
   const CONTEXT_EVENTS: readonly Event2Class[] = [
@@ -420,6 +426,7 @@ describe('AgentRecords persistence metadata', () => {
     expect(persistence.records.map((record) => record.type)).toEqual([
       'metadata',
       'context.append_message',
+      'plugin.session_start',
     ]);
     expect(persistence.records[0]).toMatchObject({
       type: 'metadata',
@@ -477,7 +484,6 @@ describe('AgentRecords persistence metadata', () => {
         },
       } as unknown as WireRecord,
     );
-
     await ctx.restorePersisted();
 
     expect(persistence.rewrites).toHaveLength(1);

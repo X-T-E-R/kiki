@@ -587,7 +587,7 @@ describe('Codex app-server external executor', () => {
       expect(JSON.parse(JSON.stringify(harness.prompts[0]))).toEqual({ threadId: 'thread-new', model: 'gpt-test', effort: 'high', approvalPolicy: 'on-request', input: [{ type: 'text', text: 'ONLY_USER' }] });
     } finally { await session.shutdown(); }
   });
-  it('keeps legacy Codex defaults bare on start, after clearing controls, and on cold resume', async () => {
+  it('keeps legacy Codex defaults bare except for restoring inherited approval after clearing controls', async () => {
     const harness = createHarness({ unpinModel: true, thinkingEffort: 'off' });
     const binding = { ...harness.context.binding, systemPrompt: '', kikiContext: [], allowKikiSubagents: false };
     const session = harness.createSession({ ...harness.context, binding });
@@ -603,7 +603,7 @@ describe('Codex app-server external executor', () => {
       session.updateBinding(binding);
       await (await session.run({ kind: 'prompt', prompt: 'CLEARED_USER' }, { signal: new AbortController().signal })).completion;
       await session.settled();
-      expect(JSON.parse(JSON.stringify(harness.prompts[2]))).toEqual({ threadId: 'thread-new', input: [{ type: 'text', text: 'CLEARED_USER' }] });
+      expect(JSON.parse(JSON.stringify(harness.prompts[2]))).toEqual({ threadId: 'thread-new', approvalPolicy: 'untrusted', input: [{ type: 'text', text: 'CLEARED_USER' }] });
       await session.shutdown();
       const cold = harness.createSession({ ...harness.context, binding });
       try {
@@ -1506,7 +1506,7 @@ function realProtocolProcess() {
         if (frame.id === undefined) continue;
         let result: unknown = {};
         if (frame.method === 'model/list') result = { data: [{ id: 'gpt-test' }], nextCursor: null };
-        if (frame.method === 'thread/start' || frame.method === 'thread/resume') result = { thread: { id: 'thread-1' } };
+        if (frame.method === 'thread/start' || frame.method === 'thread/resume') result = { thread: { id: 'thread-1' }, approvalPolicy: 'untrusted' };
         if (frame.method === 'turn/start') result = { turn: { id: `turn-${++turnIndex}` } };
         stdout.write(`${JSON.stringify({ id: frame.id, result })}\n`);
       }
@@ -1545,6 +1545,10 @@ describe('real Codex client through execution settlement and capacity', () => {
       const completion = handle.completion.catch((error: unknown) => error);
       fixture.complete('failed', vendorError);
       expect(await completion).toMatchObject({ message });
+      await vi.waitFor(() => expect(fixture.kill).toHaveBeenCalled(), { interval: 1 });
+      fixture.exit();
+      await vi.waitFor(() => expect(fixture.dispose).toHaveBeenCalledOnce(), { interval: 1 });
+      fixture.releaseDispose();
       await harness.execution.settled();
       const result = await handle.turn.result;
       expect(result).toMatchObject({ type: 'failed', error: { message, code: 'remote', data: vendorError } });

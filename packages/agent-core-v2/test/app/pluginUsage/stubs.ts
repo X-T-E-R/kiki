@@ -18,7 +18,7 @@ export function stubPluginUsageService(): IPluginUsageService {
     readSession: async (workspaceId, sessionId) => ({ workspaceId, sessionId, revision: 0, overrides: {}, applyState: 'applied', errors: [] }),
     applySession: async (snapshot) => snapshot,
     set: async () => { throw new Error('Plugin usage overrides are not exercised by this fixture'); },
-    onDidChange: Event.None,
-    onDidApply: Event.None,
+    onDidChange: Event.None as IPluginUsageService['onDidChange'],
+    onDidApply: Event.None as IPluginUsageService['onDidApply'],
   };
 }

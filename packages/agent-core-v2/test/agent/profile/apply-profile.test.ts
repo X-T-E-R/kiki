@@ -235,8 +235,8 @@ describe('AgentProfileService.applyProfile', () => {
     expect(delta).not.toContain('## Scoped memory');
     await injector.reconcileAllAtSafeBoundary();
     expect(host.get(IAgentContextMemoryService).get().filter((message) => message.origin?.kind === 'injection' && message.origin.variant === 'runtime_snapshot')).toHaveLength(2);
-    const { ISessionContext } = await import('#/session/sessionContext/sessionContext');
-    Object.defineProperty(host.get(ISessionContext), 'cwd', { configurable: true, get: () => homeDir });
+    const { ISessionWorkspaceContext } = await import('#/session/workspaceContext/workspaceContext');
+    Object.defineProperty(host.get(ISessionWorkspaceContext), 'workDir', { configurable: true, get: () => homeDir });
     await writeFile(join(homeDir, 'new-cwd.txt'), 'new directory');
     await svc.refreshSystemPrompt();
     expect(states.get(dynamicPromptKey)?.context.cwdListing).toContain('new-cwd.txt');
@@ -643,7 +643,7 @@ describe('AgentProfileService.applyProfile', () => {
       const { profile: svc } = buildContext(
         agentService(
           IAgentRuntimeService,
-          mappedRuntimeService(fs, homeDir, (path) => mapping.get(path) ?? path),
+          mappedRuntimeService(fs, homeDir, (path) => mapping.get(path.replaceAll('\\', '/')) ?? path),
         ),
       );
 
@@ -1055,6 +1055,7 @@ function pluginStub(
     enabledSessionStarts: async () => [],
     enabledSystemPrompts: async () => sections.value,
     enabledMcpServers: async () => ({}),
+    mcpServerEntries: async () => [],
     enabledHooks: async () => [],
     listPluginCommands: async () => [],
     listPlugins: async () => [],

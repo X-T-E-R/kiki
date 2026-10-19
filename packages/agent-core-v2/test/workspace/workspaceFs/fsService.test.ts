@@ -90,6 +90,7 @@ function fakeFs(
     symlinkSet.add(abs);
     addAncestors(rel);
   }
+  const directoryEntries = new Map<string, HostDirEntry[]>();
   const isDir = (p: string): boolean => p === WORK_DIR || dirSet.has(p);
   const enoent = (p: string): NodeJS.ErrnoException => {
     const err = new Error(`ENOENT: ${p}`) as NodeJS.ErrnoException;
@@ -146,6 +147,8 @@ function fakeFs(
     },
     readdir: async (p) => {
       if (!isDir(p)) throw enoent(p);
+      const cached = directoryEntries.get(p);
+      if (cached !== undefined) return [...cached];
       const prefix = `${p}/`;
       const children = new Map<string, HostDirEntry>();
       const addDir = (name: string): void => {
@@ -176,9 +179,12 @@ function fakeFs(
       for (const d of dirSet) visit(d, 'dir');
       for (const f of fileMap.keys()) visit(f, 'file');
       for (const s of symlinkSet) visit(s, 'symlink');
-      return [...children.values()];
+      const entries = [...children.values()];
+      directoryEntries.set(p, entries);
+      return [...entries];
     },
     mkdir: async (p, options) => {
+      directoryEntries.clear();
       const recursive = options?.recursive ?? false;
       const exists = isDir(p) || fileMap.has(p);
       if (recursive) {

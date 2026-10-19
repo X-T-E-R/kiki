@@ -40,6 +40,10 @@ import { IShippedAgentProfileManager } from '#/app/shippedAgentProfiles/shippedA
 import { ISessionDeliveryService } from '#/session/delivery/delivery';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { IBuiltinAgentProfileLoader } from '#/app/agentProfileCatalog/builtinAgentProfileLoader';
+import { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
+import { IRecipeService } from '#/app/recipes/recipes';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import { stubPluginUsageService } from '../../app/pluginUsage/stubs';
 import {
   DEFAULT_AGENT_PROFILE_NAME,
   normalizeAgentProfile,
@@ -118,6 +122,10 @@ import { ISessionToolPolicy } from '#/session/sessionToolPolicy/sessionToolPolic
 import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';
 import { _clearAgentToolContributionsForTests } from '#/agent/toolRegistry/toolContribution';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
+import { IAgentPluginMediaService } from '#/agent/pluginMedia/pluginMedia';
+import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
+import { IMcpRegistryService } from '#/app/mcpRegistry/mcpRegistry';
 import '#/agent/toolActivation/toolActivationService';
 import { IAgentMediaToolsRegistrar } from '#/agent/media/mediaTools';
 import '#/agent/media/mediaToolsRegistrar';
@@ -301,6 +309,10 @@ describe('AgentLifecycleService', () => {
     } as unknown as ISessionWorkspaceContext);
     ix.stub(IPluginService, pluginServiceStub);
     ix.stub(IPluginHostService, { _serviceBrand: undefined, list: async () => [] });
+    ix.stub(IAgentPluginMediaService, {});
+    ix.stub(ISessionMediaStore, {});
+    ix.stub(IAgentToolPolicyService, { isToolActive: () => true });
+    ix.stub(IMcpRegistryService, { list: async () => [] });
     ix.stub(IFlagService, stubFlag(false));
     ix.stub(IConfigService, {
       ready: Promise.resolve(),
@@ -346,7 +358,8 @@ describe('AgentLifecycleService', () => {
       register: () => ({ dispose: () => {} }),
       resolve: () => undefined,
       list: () => [],
-    } as unknown as IAgentToolRegistryService);
+      listReferences: () => [],
+    } satisfies IAgentToolRegistryService);
     ix.stub(IAgentMediaToolsRegistrar, {
       _serviceBrand: undefined,
       refresh: () => {},
@@ -480,9 +493,16 @@ describe('AgentLifecycleService', () => {
     ix.stub(IProtocolAdapterRegistry, {
       _serviceBrand: undefined,
     } as IProtocolAdapterRegistry);
+    ix.stub(IRecipeService, { onDidChange: Event.None as IRecipeService['onDidChange'] });
+    ix.stub(IPluginUsageService, stubPluginUsageService());
+    ix.stub(IAgentProfileRegistry, {
+      onDidChange: Event.None as IAgentProfileRegistry['onDidChange'],
+      entries: () => [],
+    });
     ix.stub(IBuiltinAgentProfileLoader, {
       _serviceBrand: undefined,
-    } as IBuiltinAgentProfileLoader);
+      list: () => [],
+    });
     ix.stub(IPromptFieldRegistry, {
       _serviceBrand: undefined,
       onDidChange: Event.None as IPromptFieldRegistry['onDidChange'],
@@ -578,7 +598,6 @@ describe('AgentLifecycleService', () => {
       compacting: null,
     } as unknown as IAgentFullCompactionService);
     ix.set(IAgentLifecycleService, new SyncDescriptor(AgentLifecycleService));
-    disposables.add(ix.get(IAgentLifecycleService).onWillCreate(handle => { handle.accessor.get(IAgentProfileService); }));
   }
 
   beforeEach(createTestHost);
@@ -633,7 +652,8 @@ describe('AgentLifecycleService', () => {
       },
       resolve: (name: string) => tools.get(name),
       list: () => [],
-    } as unknown as IAgentToolRegistryService);
+      listReferences: () => [...tools.keys()].map((name) => ({ name, source: 'builtin' as const })),
+    } satisfies IAgentToolRegistryService);
     ix.stub(IAppendLogStore, recordingAppendLog([
       createWireMetadataRecord(1),
       {

@@ -429,12 +429,13 @@ describe('BuiltinSkillSource product-skill switch', () => {
   });
 
   it.each([
-    ['en', 'opens **History** by default', 'Live → Concurrency limits', 'Request details'],
-    ['zh', '默认打开「历史」', '实时 → 并发限制', '请求详情'],
-  ])('keeps the %s Usage guide on the history/live/external-sync sections and legacy limits route', (locale, defaultTab, rulePath, details) => {
+    ['en', 'the page opens **Live**', '**Concurrency limits**', 'Request details', '**Quotas:**'],
+    ['zh', '打开的是**实时**', '「并发限制」', '请求详情', '**额度（Quotas）：**'],
+  ])('keeps the %s Usage guide on the history/live/quotas/external-sync sections and legacy limits route', (locale, defaultTab, rulePath, details, quotas) => {
     const text = readFileSync(new URL(`../../../../../docs/${locale}/guides/settings.md`, import.meta.url), 'utf8');
     const usage = text.split('## Usage\n')[1]!.split('\n## ')[0]!;
-    expect(usage.match(/^- \*\*/gm)).toHaveLength(3);
+    expect(usage.match(/^- \*\*/gm)).toHaveLength(4);
+    expect(usage).toContain(quotas);
     expect(usage).toContain(defaultTab);
     expect(usage).toContain(details);
     expect(usage).toContain('/usage?panel=limits');
@@ -446,7 +447,7 @@ describe('BuiltinSkillSource product-skill switch', () => {
       const text = readFileSync(new URL(`../../../../../docs/${locale}/configuration/config-files.md`, import.meta.url), 'utf8');
       const section = text.split('## `[request_governance]`')[1]!.split('\n## ')[0]!;
       const examples = [...section.matchAll(/```toml\n([\s\S]*?)```/g)].map((match) => match[1]!);
-      expect(examples).toHaveLength(2);
+      expect(examples).toHaveLength(3);
       return RequestGovernanceConfigSchema.parse(requestGovernanceFromToml(parseToml(examples.join('\n'))['request_governance']));
     });
     expect(configurations[0]).toEqual(configurations[1]);
@@ -455,6 +456,7 @@ describe('BuiltinSkillSource product-skill switch', () => {
       rules: [
         { id: 'shared-provider', scope: 'global', providers: ['example-provider'], maxConcurrent: 2, overflow: 'queue', enabled: true },
         { id: 'session-model-children', scope: 'each_session', models: ['example-model'], subagentsOnly: true, maxConcurrent: 1, maxWaitMs: 60000 },
+        { id: 'executor-children', resource: 'agent_execution', executors: ['example-executor'], roles: ['subagent'], maxConcurrent: 2, overflow: 'queue' },
       ],
     });
   });

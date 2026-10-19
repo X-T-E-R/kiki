@@ -60,7 +60,9 @@ describe('Agent resume', () => {
 
     await ctx.restorePersisted();
 
-    expect(persistence.appended).toEqual([]);
+    expect(persistence.appended).toEqual([
+      { type: 'plugin.session_start', content: null, time: expect.any(Number) },
+    ]);
     expect(persistence.records.filter((record) => record.type === 'metadata')).toHaveLength(1);
   });
 
@@ -205,6 +207,7 @@ describe('Agent resume', () => {
         tools: Bash
         messages:
           user: text "Historical compacted summary."
+          user: text "<system-reminder>\\nThere are currently no active plugin session starts. This supersedes any earlier plugin_session_start reminder in this session.\\n</system-reminder>"
           user: text "Fresh prompt after resume"
           user: text <plan-mode-reminder>
     `);
@@ -381,7 +384,9 @@ describe('Agent resume', () => {
     ]);
     expect(textContent(ctx.project()[2])).toBe('lookup result');
     expect(textContent(ctx.project()[3])).toBe('Follow-up recorded before result');
-    expect(persistence.appended).toEqual([]);
+    expect(persistence.appended).toEqual([
+      { type: 'plugin.session_start', content: null, time: expect.any(Number) },
+    ]);
     await ctx.expectResumeMatches();
   });
 
@@ -414,7 +419,7 @@ describe('Agent resume', () => {
     expect(ctx.llmInputs()).toMatchInlineSnapshot(`
       call 1:
         system: <system-prompt>
-        tools: AgentList, AgentRun, AgentSend, AskUserQuestion, Bash, Cron, Edit, EnterPlanMode, ExitPlanMode, FetchURL, Glob, Goal, Grep, Read, Skill, TaskList, TaskOutput, TaskStop, TaskWait, ThreadCreate, TodoList, WebSearch, Write
+        tools: AgentList, AgentRun, AgentSend, AskUserQuestion, Bash, BrowserConnections, BrowserTabs, Cron, Edit, EnterPlanMode, ExitPlanMode, FetchURL, Glob, Goal, Grep, Read, Skill, TaskList, TaskOutput, TaskStop, TaskWait, ThreadCreate, TodoList, WebSearch, Write
         messages:
           user: text "Historical prompt before skill"
           assistant: []  calls call_resume_write:Write { "path": "result.txt" }, call_resume_skill:Skill { "skill": "review" }
@@ -764,6 +769,7 @@ describe('Agent resume', () => {
         },
       });
       expect(persistence.appended).toEqual([
+        { type: 'plugin.session_start', content: null, time: expect.any(Number) },
         expect.objectContaining({
           type: 'goal.update',
           status: 'paused',
@@ -815,6 +821,7 @@ describe('Agent resume', () => {
         wallClockMs: 5_000,
       });
       expect(persistence.appended).toEqual([
+        { type: 'plugin.session_start', content: null, time: expect.any(Number) },
         expect.objectContaining({
           type: 'goal.update',
           status: 'paused',

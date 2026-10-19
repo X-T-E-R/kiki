@@ -979,6 +979,8 @@ class PersistenceAppendLogStore implements IAppendLogStore {
 
   rewrite<R>(_scope: string, _key: string, records: readonly R[]): Promise<void> {
     this.persistence.rewrite(records as readonly WireRecord[]);
+    this.history.splice(0, this.history.length, ...(records as readonly WireRecord[]).map(cloneRecord));
+    this.readSeeded = true;
     return Promise.resolve();
   }
 
