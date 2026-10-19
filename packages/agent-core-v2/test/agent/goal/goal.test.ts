@@ -209,7 +209,7 @@ async function restoreGoalRecords(
   records: readonly WireRecord[],
 ): Promise<void> {
   goals.getGoal();
-  await ctx.restore(records as readonly WireRecord[]);
+  await ctx.restore([...(await ctx.persistedWireRecords()), ...records]);
 }
 
 function makeTurn(id: number): Turn {
@@ -788,7 +788,7 @@ describe('AgentGoalService', () => {
     });
 
     it('normalizes active replayed goals to paused', async () => {
-      records.length = 0;
+      const enqueue = vi.spyOn(ctx.get(IAgentLoopService), 'enqueue');
       await restoreGoalRecords(ctx, goals, [
         {
           type: 'goal.create',
@@ -801,6 +801,7 @@ describe('AgentGoalService', () => {
         status: 'paused',
         terminalReason: 'Paused after agent resume',
       });
+      expect(enqueue).not.toHaveBeenCalled();
       expect(goalRecords(records).filter((record) => record.type === 'goal.update')).toEqual([
         expect.objectContaining({
           type: 'goal.update',

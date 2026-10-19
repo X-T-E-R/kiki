@@ -206,7 +206,7 @@ describe('AgentTaskService — loadFromDisk + reconcile', () => {
         }),
       );
 
-      await ctx.restore([]);
+      await ctx.restore(await ctx.persistedWireRecords());
 
       expect(background.getTask('bash-restore0')).toMatchObject({
         taskId: 'bash-restore0',

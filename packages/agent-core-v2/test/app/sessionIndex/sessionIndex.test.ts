@@ -2850,6 +2850,7 @@ describe('FileSessionIndex (read model)', () => {
     const reprojecting = store.reprojectNow();
     await docs.entered;
 
+    await seedSession('c', { title: 'latest', createdAt: 3, updatedAt: 5 });
     mirror.record(summary('c', { title: 'first', createdAt: 3, updatedAt: 4 }));
     mirror.record(summary('c', { title: 'latest', createdAt: 3, updatedAt: 5 }));
     let settled = false;
@@ -2861,6 +2862,8 @@ describe('FileSessionIndex (read model)', () => {
     try {
       await vi.waitFor(() => expect(settled).toBe(true));
       expect(counted).toBe(2);
+      await mirror.drain();
+      expect(await store.count({ workspaceIds: [workspaceId] })).toBe(2);
     } finally {
       docs.release();
       await Promise.all([counting, reprojecting]);

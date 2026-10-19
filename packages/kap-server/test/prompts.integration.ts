@@ -2517,19 +2517,46 @@ describe('server-v2 /api prompts', () => {
     const wire = child.accessor.get(IWireService);
     const flush = wire.flush.bind(wire);
     let calls = 0;
-    vi.spyOn(wire, 'flush').mockImplementation(async () => {
+    const flushSpy = vi.spyOn(wire, 'flush').mockImplementation(async () => {
       if (++calls >= 2) throw new Error('storage flush failed');
       return flush();
+    });
+    const loop = child.accessor.get(IAgentLoopService);
+    const enqueueTurn = loop.enqueue.bind(loop);
+    const turnResults: Promise<unknown>[] = [];
+    const turnSpy = vi.spyOn(loop, 'enqueue').mockImplementation((...args) => {
+      const receipt = enqueueTurn(...args);
+      turnResults.push(receipt.assigned.then(({ turn }) => turn.result).then(
+        (result) => ({ result }),
+        (error: unknown) => ({ error }),
+      ));
+      return receipt;
     });
     const prompt = child.accessor.get(IAgentPromptService);
     const enqueue = vi.spyOn(prompt, 'enqueue');
     const payload = { agent_id: child.id, prompt_id: 'native-child-unflushed', content: [{ type: 'text', text: 'needs durability' }] };
-    const first = await call<null>('POST', `/api/sessions/${id}/prompts`, payload);
-    expect(first.body.code).not.toBe(0);
-    const retry = await call<null>('POST', `/api/sessions/${id}/prompts`, payload);
-    expect(retry.body.code).not.toBe(0);
-    expect(enqueue).toHaveBeenCalledTimes(1);
-    vi.restoreAllMocks();
+    try {
+      const first = await call<null>('POST', `/api/sessions/${id}/prompts`, payload);
+      expect(first.body.code).not.toBe(0);
+      const retry = await call<null>('POST', `/api/sessions/${id}/prompts`, payload);
+      expect(retry.body.code).not.toBe(0);
+      expect(enqueue).toHaveBeenCalledTimes(1);
+      expect(turnSpy).toHaveBeenCalledTimes(1);
+      expect(await Promise.all(turnResults)).toEqual([{
+        error: expect.objectContaining({
+          details: expect.objectContaining({ persistenceOutcome: 'failed' }),
+          cause: expect.objectContaining({ message: 'storage flush failed' }),
+        }),
+      }]);
+    } finally {
+      flushSpy.mockRestore();
+      enqueue.mockRestore();
+      turnSpy.mockRestore();
+      prompt.abort(payload.prompt_id);
+      expect(await loop.recoverPersistence()).toBe(true);
+      await loop.settled();
+      await Promise.all(turnResults);
+    }
   });
 
   it('never admits two simultaneous native child submissions of one key', async () => {
@@ -2922,10 +2949,11 @@ describe('server-v2 /api prompts', () => {
     const files = server!.core.accessor.get(IFileService);
     const originalGet = files.get.bind(files);
     const originalSave = files.save.bind(files);
-    let secondGets = 0;
     let compressedFileId: string | undefined;
+    let lateFailureInjected = false;
     const getSpy = vi.spyOn(files, 'get').mockImplementation(async (fileId) => {
-      if (fileId === second.id && ++secondGets === 2) {
+      if (fileId === second.id && compressedFileId !== undefined) {
+        lateFailureInjected = true;
         throw new Error('injected second-part failure');
       }
       return originalGet(fileId);
@@ -2945,11 +2973,14 @@ describe('server-v2 /api prompts', () => {
       });
 
       expect(submitted.body.code).not.toBe(0);
+      expect(lateFailureInjected).toBe(true);
       expect(compressedFileId).toBeDefined();
       if (compressedFileId === undefined) throw new Error('expected a compressed upload');
       await expect(originalGet(compressedFileId)).rejects.toMatchObject({
         code: 'file.not_found',
       });
+      expect((await originalGet(first.id)).meta.id).toBe(first.id);
+      expect((await originalGet(second.id)).meta.id).toBe(second.id);
     } finally {
       getSpy.mockRestore();
       saveSpy.mockRestore();
