@@ -576,7 +576,11 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope, transcri
           ? await runActivation()
           : await promptRetryFor(prompt).run(promptId, fingerprint, runActivation);
         requestLog(req)?.info({ session_id, skill_name: skillName }, 'skill activated');
-        reply.send(okEnvelope({ activated: true, skill_name: skillName }, req.id));
+        reply.send(okEnvelope({
+          activated: true,
+          skill_name: skillName,
+          ...(promptId === undefined ? {} : { prompt_id: promptId }),
+        }, req.id));
       } catch (err) {
         await preparedMedia?.discard();
         sendMappedError(reply, req.id, err);
@@ -669,9 +673,6 @@ function sendMappedError(
         return;
       case ErrorCodes.INTERNAL:
         reply.send(errEnvelope(ErrorCode.INTERNAL_ERROR, err.message, requestId, err.stack));
-        return;
-      case ErrorCodes.PROMPT_ID_CONFLICT:
-        reply.send(errEnvelope(ErrorCode.PROMPT_ID_CONFLICT, err.message, requestId, err.stack));
         return;
     }
   }
