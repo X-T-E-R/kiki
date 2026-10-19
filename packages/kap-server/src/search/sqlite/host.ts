@@ -233,13 +233,14 @@ export class SqliteSearchHost {
       clearTimeout(waiter.timer);
       waiter.reject(new Error('search host closed'));
     }
-    const readerExit = Promise.all(readers.map((reader) => reader.terminate()));
-    const childExit = child && child.exitCode === null ? new Promise<void>((resolve) => {
-      const deadline = setTimeout(() => child.kill(), 5000);
-      child.once('exit', () => { clearTimeout(deadline); resolve(); });
-      child.send({ type: 'close' } satisfies IndexerRequest, () => {});
-    }) : undefined;
-    await Promise.all([readerExit, childExit]);
+    await Promise.all(readers.map((reader) => reader.terminate()));
+    if (child && child.exitCode === null) {
+      await new Promise<void>((resolve) => {
+        const deadline = setTimeout(() => child.kill(), 5000);
+        child.once('exit', () => { clearTimeout(deadline); resolve(); });
+        child.send({ type: 'close' } satisfies IndexerRequest, (error) => { if (error) child.kill(); });
+      });
+    }
   }
 
   private startIndexer(): void {
@@ -351,7 +352,7 @@ export class SqliteSearchHost {
       this.options.onStateChange?.(this.snapshot());
       process.stderr.write(`search indexer exited code=${code} signal=${signal} reason=${this.reason} backoffMs=${terminal ? 0 : delay}\n`);
       if (terminal) return;
-      this.restart = setTimeout(() => { this.restart = undefined; this.startIndexer(); }, delay);
+      this.restart = setTimeout(() => { this.restart = undefined; this.retryAt = 0; this.startIndexer(); }, delay);
       this.restart.unref();
     };
     child.on('error', (error) => {

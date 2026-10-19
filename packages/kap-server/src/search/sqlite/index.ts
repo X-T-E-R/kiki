@@ -65,6 +65,7 @@ export interface SqliteIndexOptions {
   readonly afterBatch?: () => Promise<void>;
   readonly batchMaxDocs?: () => number;
   readonly batchMaxChars?: () => number;
+  readonly isStopped?: () => boolean;
 }
 
 export interface SqliteSyncStatus {
@@ -314,6 +315,7 @@ export class SqliteSearchIndex {
 
   private async syncSessionInner(session: SqliteSessionInput): Promise<void> {
     if (this.closed) throw new Error('search index is closed');
+    if (this.options.isStopped?.()) return;
     if (this.walStuck) { this.pendingSessions.set(session.id, session); return; }
     const id = await identity(session.dir);
     if (id === undefined) return;
@@ -347,6 +349,7 @@ export class SqliteSearchIndex {
     } catch (error) { db.exec('ROLLBACK'); throw error; }
     const files = await wireFiles(session.dir);
     for (const file of files) {
+      if (this.options.isStopped?.()) return;
       if (this.walStuck) { this.pendingSessions.set(session.id, session); return; }
       await this.syncFile(session, file.path, file.agentId);
     }

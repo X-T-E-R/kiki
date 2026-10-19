@@ -23,7 +23,7 @@ export async function openSearchDatabase(path: string): Promise<DatabaseSync> {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
     }
   }
-  const db = new DatabaseSync(actual);
+  const db = new DatabaseSync(actual, { timeout: 1000 });
   try {
     const applicationId = (db.prepare('PRAGMA application_id').get() as { application_id: number }).application_id;
     const version = (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
