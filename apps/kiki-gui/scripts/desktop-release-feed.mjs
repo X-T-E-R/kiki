@@ -86,14 +86,21 @@ export function selectFeedReleases(releases) {
   return { stable, beta };
 }
 
-async function fetchJson(url, fetchImpl) {
-  const response = await fetchImpl(url, {
-    headers: {
-      Accept: 'application/vnd.github+json',
-      'User-Agent': 'kiki-desktop-feed',
-    },
-  });
-  if (!response.ok) throw new Error(`Anonymous fetch failed for ${url}: HTTP ${response.status}`);
+export function feedRequestHeaders(token) {
+  const headers = {
+    Accept: 'application/vnd.github+json',
+    'User-Agent': 'kiki-desktop-feed',
+  };
+  if (typeof token === 'string' && token.length > 0) headers.Authorization = `Bearer ${token}`;
+  return headers;
+}
+
+async function fetchJson(url, fetchImpl, token) {
+  const response = await fetchImpl(url, { headers: feedRequestHeaders(token) });
+  if (!response.ok) {
+    const kind = typeof token === 'string' && token.length > 0 ? 'Release index fetch' : 'Anonymous fetch';
+    throw new Error(`${kind} failed for ${url}: HTTP ${response.status}`);
+  }
   return response.json();
 }
 
@@ -137,7 +144,11 @@ async function main() {
   const outputDir = values.get('output-dir');
   if (repository === undefined || !/^[^/]+\/[^/]+$/.test(repository)) throw new Error('--repository owner/name is required');
   if (outputDir === undefined || outputDir.trim() === '') throw new Error('--output-dir is required');
-  const releases = await fetchJson(`https://api.github.com/repos/${repository}/releases?per_page=100`, fetch);
+  const releases = await fetchJson(
+    `https://api.github.com/repos/${repository}/releases?per_page=100`,
+    fetch,
+    process.env.KIKI_FEED_INDEX_TOKEN,
+  );
   const feeds = await generateUpdaterFeeds(releases, fetch);
   writeUpdaterFeeds(outputDir, feeds);
 }

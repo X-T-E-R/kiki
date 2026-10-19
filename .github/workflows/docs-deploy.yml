@@ -42,6 +42,8 @@ jobs:
         run: node --test apps/kiki-gui/scripts/desktop-release-feed.test.mjs
 
       - name: Build feeds from anonymously accessible Releases
+        env:
+          KIKI_FEED_INDEX_TOKEN: ${{ github.token }}
         run: node apps/kiki-gui/scripts/desktop-release-feed.mjs --repository X-T-E-R/kiki --output-dir docs/.vitepress/dist/updater
 
       - name: Configure GitHub Pages
