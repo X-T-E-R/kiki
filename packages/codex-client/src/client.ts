@@ -1,3 +1,5 @@
+import type { Readable } from 'node:stream';
+
 import type { NormalizedExecutorEvent } from '@kiki/protocol';
 
 import { CodexClientError, CodexRemoteError } from '#/errors';
@@ -372,8 +374,13 @@ export class CodexAppServerClient {
 
   async #readStdout(process: HostProcessLike): Promise<void> {
     const fragments: string[] = [];
-    for await (const chunk of process.stdout) {
-      if (this.#transportEnded.signal.aborted) return;
+    const abort = this.#transportEnded.signal;
+    // Paused reads keep stdout's high-water mark in force. `for await` can
+    // drain the stream into an unbounded iterator queue while the event sink
+    // is still awaiting, so the producer never observes backpressure.
+    while (!abort.aborted) {
+      const chunk = await readPausedChunk(process.stdout, abort);
+      if (chunk === undefined) break;
       const text = String(chunk);
       let start = 0;
       for (let index = text.indexOf('\n'); index >= 0; index = text.indexOf('\n', start)) {
@@ -381,11 +388,12 @@ export class CodexAppServerClient {
         const raw = fragments.join('').replace(/\r$/, '');
         fragments.length = 0;
         await this.#consumeLine(raw);
-        if (this.#transportEnded.signal.aborted) return;
+        if (abort.aborted) return;
         start = index + 1;
       }
       if (start < text.length) fragments.push(text.slice(start));
     }
+    if (abort.aborted) return;
     if (fragments.length > 0) await this.#consumeLine(fragments.join('').replace(/\r$/, ''));
     if (this.#state !== 'closing' && this.#state !== 'closed' && this.#state !== 'broken') {
       await this.#break(new CodexClientError('closed', process.exitCode === null
@@ -667,6 +675,57 @@ export class CodexAppServerClient {
       } catch {}
     }
   }
+}
+
+/**
+ * One paused `read()`. Listeners are attached before the first pull so a
+ * chunk that is already buffered is not missed, and nothing switches stdout
+ * into flowing mode. Abort resolves without a chunk so the caller can return
+ * before treating the close as EOF. A stream error rejects.
+ */
+function readPausedChunk(stream: Readable, abort: AbortSignal): Promise<string | undefined> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (value: string | undefined, error?: unknown): void => {
+      if (settled) return;
+      settled = true;
+      abort.removeEventListener('abort', onAbort);
+      stream.off('readable', onReadable);
+      stream.off('end', onEnd);
+      stream.off('close', onClose);
+      stream.off('error', onError);
+      if (error !== undefined) reject(error);
+      else resolve(value);
+    };
+    const take = (): string | undefined | null => {
+      const chunk: unknown = stream.read();
+      if (chunk === null) return null;
+      return String(chunk);
+    };
+    const pull = (): void => {
+      if (abort.aborted) {
+        finish(undefined);
+        return;
+      }
+      const chunk = take();
+      if (chunk !== null) {
+        finish(chunk);
+        return;
+      }
+      if (stream.readableEnded || stream.destroyed) finish(undefined);
+    };
+    const onAbort = (): void => finish(undefined);
+    const onReadable = (): void => pull();
+    const onEnd = (): void => pull();
+    const onClose = (): void => pull();
+    const onError = (error: unknown): void => finish(undefined, error);
+    abort.addEventListener('abort', onAbort, { once: true });
+    stream.on('readable', onReadable);
+    stream.on('end', onEnd);
+    stream.on('close', onClose);
+    stream.on('error', onError);
+    pull();
+  });
 }
 
 function waitForResponse<T>(response: Promise<T>, method: string, timeoutMs?: number, signal?: AbortSignal): Promise<T> {

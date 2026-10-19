@@ -22,6 +22,7 @@ import { getLiveSessionById } from '@kiki/agent-core-v2/app/sessionManager/sessi
 import { IAgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycle';
 import { ISessionTodoService } from '@kiki/agent-core-v2/session/todo/sessionTodo';
 import { IAgentPromptService, reservePrompt } from '@kiki/agent-core-v2/agent/prompt/prompt';
+import { IModelService } from '@kiki/agent-core-v2/kosong/model/model';
 import { ISessionInteractionService } from '@kiki/agent-core-v2/session/interaction/interaction';
 import { ISessionActivityView } from '@kiki/agent-core-v2/session/sessionActivity/sessionActivity';
 import { ConfigTarget, IConfigService, IEventService, PluginChanged } from '@kiki/agent-core-v2';
@@ -42,6 +43,38 @@ export interface KlientConformanceTarget {
    */
   readonly app: TestEngine['app'];
   cleanup(): Promise<void>;
+}
+
+const TERMINAL_WIRE_MODEL = 'terminal-wire-model';
+
+/** Bind an explicit model and thinking effort so prompt launch reaches the terminal hook. */
+async function bindTerminalWireModel(
+  target: KlientConformanceTarget,
+  agent: { setModel(model: string): Promise<unknown>; setThinking(level: string): Promise<void> },
+): Promise<void> {
+  const models = target.app.accessor.get(IModelService);
+  if (models.get(TERMINAL_WIRE_MODEL) === undefined) {
+    await target.klient.global.kosong.addProvider({
+      id: TERMINAL_WIRE_MODEL,
+      model: TERMINAL_WIRE_MODEL,
+      protocol: 'openai',
+      baseUrl: 'http://127.0.0.1:1',
+      maxContextSize: 8192,
+      auth: { method: 'api-key', apiKey: 'test-key' },
+    });
+  }
+  const record = models.get(TERMINAL_WIRE_MODEL);
+  if (record === undefined) throw new Error('terminal-wire model was not registered');
+  if (record.defaultEffort !== 'high' || !record.supportEfforts?.includes('high')) {
+    await models.set(TERMINAL_WIRE_MODEL, {
+      ...record,
+      capabilities: ['thinking'],
+      supportEfforts: ['high'],
+      defaultEffort: 'high',
+    });
+  }
+  await agent.setModel(TERMINAL_WIRE_MODEL);
+  await agent.setThinking('high');
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs: number): Promise<void> {
@@ -1161,6 +1194,7 @@ export function defineKlientConformance(
       const created = await target.klient.global.sessions.create({ workDir: process.cwd() });
       const agent = target.klient.session(created.id).agent('main');
       await agent.getRuntime();
+      await bindTerminalWireModel(target, agent);
       const live = getLiveSessionById(target.app.accessor, created.id)!;
       const prompts = live.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentPromptService);
       const hook = prompts.hooks.onBeforeSubmitPrompt.register('conformance-terminal-block', async (event, next) => {
@@ -1184,6 +1218,7 @@ export function defineKlientConformance(
       const created = await target.klient.global.sessions.create({ workDir: process.cwd() });
       const agent = target.klient.session(created.id).agent('main');
       await agent.getRuntime();
+      await bindTerminalWireModel(target, agent);
       const live = getLiveSessionById(target.app.accessor, created.id)!;
       const prompts = live.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentPromptService);
       const hook = prompts.hooks.onBeforeSubmitPrompt.register('conformance-terminal-error', async () => {

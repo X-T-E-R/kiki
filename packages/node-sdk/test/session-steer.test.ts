@@ -62,6 +62,24 @@ describe('Session.steer', () => {
 
     try {
       const session = await harness.createSession({ id: 'ses_steer_wire', workDir });
+      await harness.setConfig({
+        providers: {
+          local: { type: 'kimi', apiKey: 'sk-test' },
+        },
+        models: {
+          'fake-model': {
+            provider: 'local',
+            model: 'fake-model',
+            maxContextSize: 262144,
+            capabilities: ['thinking'],
+            supportEfforts: ['low', 'high'],
+            defaultEffort: 'high',
+          },
+        },
+        defaultModel: 'fake-model',
+      });
+      await session.setModel('fake-model');
+      await session.setThinking('high');
 
       await session.steer('also do this');
 

@@ -77,6 +77,16 @@ import { ISessionBtwService } from '@kiki/agent-core-v2/features/btw/btw';
 import { ISessionInitService } from '@kiki/agent-core-v2/features/sessionInit/sessionInit';
 import { ISessionCronService } from '@kiki/agent-core-v2/session/cron/sessionCronService';
 import { ISessionTodoService } from '@kiki/agent-core-v2/session/todo/sessionTodo';
+import { ITaskBoardService } from '@kiki/agent-core-v2/app/taskBoard/taskBoard';
+
+/**
+ * Official plugins that are not part of the core service map. The dispatcher
+ * resolves one of these only when the host scope has registered the instance;
+ * an uninstalled plugin stays `unknown service`.
+ */
+export const pluginServiceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>> = {
+  taskBoardService: ITaskBoardService,
+};
 
 /** Wire service name (decorator id string) → token. */
 export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>> = {

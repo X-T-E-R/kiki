@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'v
 
 import {
   createKimiHarness,
+  KimiHarness,
   type Event,
   type KimiError,
   type SkillActivatedEvent,
@@ -126,9 +127,7 @@ describe('Session skills', () => {
       const unsubscribe = session.onEvent((event) => {
         events.push(event);
       });
-      // Model-less on purpose: the grouped surface (activation events, single
-      // turn) is what is under test, and the turn then fails on provider
-      // resolution afterwards — which the engine takes seconds to give up on.
+      await bindExplicitModel(harness, session);
       const ended = waitForSDKEvent(session, (event) => event.type === 'turn.ended');
 
       await session.promptWithSkills(
@@ -207,6 +206,7 @@ describe('Session skills', () => {
         session,
         (event) => event.type === 'session.meta.updated',
       );
+      await bindExplicitModel(harness, session);
       const ended = waitForSDKEvent(session, (event) => event.type === 'turn.ended');
 
       await session.activateSkill(' review ', ' src/app.ts ');
@@ -442,6 +442,30 @@ describe('KimiHarness workspace skills', () => {
     }
   });
 });
+
+async function bindExplicitModel(
+  harness: KimiHarness,
+  session: { setModel(model: string): Promise<void>; setThinking(effort: 'high'): Promise<void> },
+): Promise<void> {
+  await harness.setConfig({
+    providers: {
+      local: { type: 'kimi', apiKey: 'sk-test' },
+    },
+    models: {
+      'fake-model': {
+        provider: 'local',
+        model: 'fake-model',
+        maxContextSize: 262144,
+        capabilities: ['thinking'],
+        supportEfforts: ['low', 'high'],
+        defaultEffort: 'high',
+      },
+    },
+    defaultModel: 'fake-model',
+  });
+  await session.setModel('fake-model');
+  await session.setThinking('high');
+}
 
 async function writeSkill(workDir: string, name: string, lines: readonly string[]): Promise<void> {
   // Bound project discovery even when the temporary workspace is inside a checkout.

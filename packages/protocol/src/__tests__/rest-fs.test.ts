@@ -267,8 +267,8 @@ describe('fsSearchRequestSchema (W11.1)', () => {
 
 describe('fsSearchResponseSchema (W11.1)', () => {
   it('round-trips an empty response', () => {
-    expect(fsSearchResponseSchema.parse({ items: [], truncated: false }))
-      .toEqual({ items: [], truncated: false });
+    const response = { items: [], truncated: false, sort_scope: 'page' as const };
+    expect(fsSearchResponseSchema.parse(response)).toEqual(response);
   });
 
   it('round-trips a populated response', () => {
@@ -283,6 +283,7 @@ describe('fsSearchResponseSchema (W11.1)', () => {
         },
       ],
       truncated: true,
+      sort_scope: 'page' as const,
     };
     expect(fsSearchResponseSchema.parse(r)).toEqual(r);
   });

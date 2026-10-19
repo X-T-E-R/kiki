@@ -437,8 +437,8 @@ describe('MCP OAuth facade (host-controlled browser flow)', () => {
           runtimeName: 'plugin-status-plugin:remote',
           origin: 'plugin',
           editable: false,
-          enabled: false,
-          authStatus: 'not-applicable',
+          enabled: true,
+          authStatus: 'oauth-required',
         }),
       ]);
       expect(await readMcpConfig(homeDir)).toEqual({
@@ -448,8 +448,8 @@ describe('MCP OAuth facade (host-controlled browser flow)', () => {
       const collidingName = 'plugin-status-plugin:remote';
       // The management API rejects a user-level add shadowing the read-only
       // plugin entry, so the colliding runtime name is written directly.
-      // Uniqueness counts only enabled servers, so a disabled plugin inspect
-      // stays not-applicable even when a global shadow exists.
+      // An enabled OAuth plugin is probed; a second enabled server with the
+      // same runtime name makes that inspection unavailable.
       await writeMcpConfig(homeDir, {
         mcpServers: {
           global: { transport: 'http', url: statusServer.plainUrl },
@@ -463,8 +463,8 @@ describe('MCP OAuth facade (host-controlled browser flow)', () => {
       ).resolves.toEqual([
         expect.objectContaining({
           runtimeName: collidingName,
-          enabled: false,
-          authStatus: 'not-applicable',
+          enabled: true,
+          authStatus: 'unavailable',
         }),
       ]);
 

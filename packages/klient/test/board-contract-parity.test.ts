@@ -57,7 +57,25 @@ it('mirrors native request bounds instead of accepting arbitrary roots or patche
   expect(boardWriteSchema.parse(input)).toEqual(BoardWriteSchema.parse(input));
 });
 
-it.each(['memory', 'ipc'] as const)('routes board read/write/overview over %s to the host service and preserves conflict results', async (transport) => {
+it.each(['memory', 'ipc'] as const)('reports an uninstalled task board plugin as an unknown service over %s', async (transport) => {
+  const scope: ScopeLike = { accessor: { get(): never {
+    throw new Error("[invokeFunction] unknown service 'taskBoardService'");
+  } } };
+  const host = transport === 'ipc' ? await serveKlientIpc({ scope, socketPath: join(tmpdir(), `board-missing-${randomUUID()}.sock`) }) : undefined;
+  const client = host === undefined ? memory({ scope }) : ipc({ socketPath: host.socketPath });
+  try {
+    await expect(client.global.board.read({ action: 'list', workspaceId: 'workspace-one' })).rejects.toThrow(/unknown service: taskBoardService/);
+    await expect(client.global.board.write({
+      action: 'create', workspaceId: 'workspace-one', requestKey: 'request-one', title: 'Example',
+    })).rejects.toThrow(/unknown service: taskBoardService/);
+    await expect(client.global.board.overview()).rejects.toThrow(/unknown service: taskBoardService/);
+  } finally {
+    await client.close();
+    await host?.close();
+  }
+});
+
+it.each(['memory', 'ipc'] as const)('routes board read/write/overview over %s when the plugin service is registered and preserves conflict results', async (transport) => {
   const read = vi.fn(async () => ({ ok: true as const, value: { workspaceId: 'workspace-one', cards: [], issues: [] } }));
   const write = vi.fn(async () => ({ ok: false as const, error: { code: 'REVISION_CONFLICT', message: 'Reload before retrying.' } }));
   const overview = vi.fn(async () => ({ ok: true as const, value: [] }));

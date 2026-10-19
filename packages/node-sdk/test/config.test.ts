@@ -635,6 +635,8 @@ describe('KimiHarness config API', () => {
     // catalog, not a filtered subset. (secondary-model left the registry with
     // the model-inheritance removal.)
     expect(features.map((feature) => feature.id)).toEqual([
+      'plugin_app_lifecycle',
+      'recipes',
       'agent-profile-routes',
       'native_ssh',
       'session_idle_eviction',
@@ -642,10 +644,10 @@ describe('KimiHarness config API', () => {
       'auto_session_title',
       'native_browser',
       'local_session_resume',
+      'plugin_workspace_usage',
       'tool-select',
       'subagent_release_idle',
       'persistence_minidb_readmodel',
-      'task_board',
       'image_format_conversion',
       'external_delegation_mcp',
     ]);

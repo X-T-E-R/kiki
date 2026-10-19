@@ -79,12 +79,14 @@
  *   to the v1 wire shape (config flattened to the top level); the inspection
  *   and auth-status shapes are field-identical between the engines.
  * - `listMcpServers` / `getMcpStartupMetrics` / `reconnectMcpServer` /
- *   `addSessionMcpServer` → the klient agent facade's session-merged MCP
- *   capability. Explicit config connects still reject merged ephemeral views,
- *   and an unpersisted add remains visible to sibling sessions sharing the
- *   workspace manager (the v2 manager has no session-local `caller` scope).
- *   `listWorkspaceMcpServers` remains a workspace-host read through the
- *   engine accessor because no workspace MCP facade exists.
+ *   `addSessionMcpServer` → the live session MCP handle. The merged view has
+ *   no `connect()`, so an explicit config goes through
+ *   `enableConfiguredServer`: `caller` when the add stays session-local, and
+ *   `global` after `mcp.json` is written. A config-bearing reconnect omits
+ *   the source and keeps the one already recorded. A name-only reconnect
+ *   still uses the agent facade. `listWorkspaceMcpServers` remains a
+ *   workspace-host read through the engine accessor because no workspace MCP
+ *   facade exists.
  * - `onEvent` / `receiveEvent` → the base class registries, fed by a
  *   per-live-session wiring (`src/v2/session-wiring.ts`) that subscribes
  *   every live agent's `IEventBus` and translates each `DomainEvent` back
@@ -166,6 +168,7 @@ import {
   ISessionIndex,
   ISessionIndexMirror,
   ISessionManager,
+  ISessionMcpHandle,
   ISessionMetadata,
   ISessionWorkspaceContext,
   ITelemetryService,
@@ -2663,10 +2666,9 @@ export class SDKRpcClient extends SDKRpcClientBase {
   }
 
   /**
-   * The session-merged MCP agent facade preserves the manager's reconnect and
-   * explicit-config behavior. A merged ephemeral view still rejects the
-   * explicit-config path through the core service rather than being flattened
-   * into a generic JSON runtime surface.
+   * Name-only reconnect uses the merged view's `reconnect`. A replacement
+   * config is applied on the session overlay and keeps the recorded source.
+   * A disabled replacement is rejected before anything is applied.
    */
   override async reconnectMcpServer(input: ReconnectMcpServerRpcInput): Promise<void> {
     const agent = await this.agentFacade(input.sessionId);
@@ -2675,24 +2677,20 @@ export class SDKRpcClient extends SDKRpcClientBase {
       return;
     }
     const replacement = parseReconnectMcpServerConfig(input.name, input.config);
-    // Parity with v1's manager reconnect: a disabled replacement is rejected
-    // before anything is applied, not upserted over the live connection.
     if (replacement.enabled === false) {
       throw new KimiError(
         ErrorCodes.MCP_SERVER_DISABLED,
         `MCP server is disabled: ${input.name}`,
       );
     }
-    await this.engineCall(() =>
-      agent.connectMcpServer({ name: input.name, config: replacement }),
-    );
+    await this.connectExplicitSessionMcp(input.sessionId, input.name, replacement);
   }
 
   /**
-   * v1's `addSessionMcpServer`: validate, optionally persist to the user-level
-   * file, then connect through the agent MCP facade. The v2 entry carries no
-   * `source`/`config` tags, and an unpersisted add remains visible to sibling
-   * sessions sharing the workspace manager; both are existing engine gaps.
+   * Validate, optionally persist to the user-level file, then connect on this
+   * session's MCP overlay. `persist: true` records source `global` after the
+   * file write; otherwise the server stays a session-local `caller` and
+   * `mcp.json` is left untouched.
    */
   override async addSessionMcpServer(input: {
     readonly sessionId: string;
@@ -2705,14 +2703,15 @@ export class SDKRpcClient extends SDKRpcClientBase {
     // The store trims names; keep the manager entry and the persisted key on
     // the same normalized identity, like v1's addSessionMcpServer does.
     const target = { ...parsed, name: normalizeServerName(parsed.name) };
+    const config = mcpConfigWithoutName(target);
     if (input.persist === true) {
       const cwd = session.accessor.get(ISessionWorkspaceContext).workDir;
       await this.rejectProjectLayerPersistedMcpAdd(cwd, target.name);
       await this.mcpManagement((management) => management.add({ server: target, cwd }));
+      await this.connectExplicitSessionMcp(input.sessionId, target.name, config, 'global');
+    } else {
+      await this.connectExplicitSessionMcp(input.sessionId, target.name, config, 'caller');
     }
-    await this.engineCall(() =>
-      agent.connectMcpServer({ name: target.name, config: mcpConfigWithoutName(target) }),
-    );
     const entry = (await this.engineCall(() => agent.getMcpServers())).find(
       (candidate) => candidate.name === target.name,
     );
@@ -2723,6 +2722,27 @@ export class SDKRpcClient extends SDKRpcClientBase {
       );
     }
     return entry as McpServerInfo;
+  }
+
+  /**
+   * The merged connection view has no `connect()`. Explicit configs use the
+   * session overlay. A handle without that method falls back to the agent
+   * facade, which is the cross-owner rejection when the overlay is absent.
+   */
+  private async connectExplicitSessionMcp(
+    sessionId: string,
+    name: string,
+    config: ReturnType<typeof mcpConfigWithoutName>,
+    source?: 'global' | 'caller',
+  ): Promise<void> {
+    const handle = this.requireLiveSession(sessionId).accessor.get(ISessionMcpHandle);
+    const enable = handle.enableConfiguredServer;
+    if (enable !== undefined) {
+      await this.engineCall(() => enable.call(handle, name, config as WorkspaceMcpServerConfig, source));
+      return;
+    }
+    const agent = await this.agentFacade(sessionId);
+    await this.engineCall(() => agent.connectMcpServer({ name, config }));
   }
 }
 

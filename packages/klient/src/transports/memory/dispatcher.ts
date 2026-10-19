@@ -46,7 +46,7 @@ import { Readable } from 'node:stream';
 
 import type { CallOptions, EventSourceRef, IDisposable, ScopeRef } from '../../core/channel.js';
 import { RPCError, toRPCError } from '../../core/errors.js';
-import { IEventService, serviceTokens } from './serviceRegistry.js';
+import { IEventService, pluginServiceTokens, serviceTokens } from './serviceRegistry.js';
 
 /** Structural minimum of an engine `Scope` / `IScopeHandle`. */
 export interface ScopeLike {
@@ -181,10 +181,38 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
 
   function resolveService(resolved: ResolvedScope, service: string): Record<string, unknown> {
     const token = serviceTokens[service];
-    if (token === undefined) {
+    if (token !== undefined) {
+      return resolved.like.accessor.get(token) as Record<string, unknown>;
+    }
+    const pluginToken = pluginServiceTokens[service];
+    if (pluginToken !== undefined) return resolveInstalledPlugin(resolved, service, pluginToken);
+    throw new RPCError(REQUEST_INVALID, `unknown service: ${service}`);
+  }
+
+  function resolveInstalledPlugin(
+    resolved: ResolvedScope,
+    service: string,
+    token: ServiceIdentifier<unknown>,
+  ): Record<string, unknown> {
+    let instance: unknown;
+    try {
+      instance = resolved.like.accessor.get(token);
+    } catch (error) {
+      if (isUninstalledPlugin(error, token)) {
+        throw new RPCError(REQUEST_INVALID, `unknown service: ${service}`);
+      }
+      throw error;
+    }
+    if (instance == null || typeof instance !== 'object') {
       throw new RPCError(REQUEST_INVALID, `unknown service: ${service}`);
     }
-    return resolved.like.accessor.get(token) as Record<string, unknown>;
+    return instance as Record<string, unknown>;
+  }
+
+  function isUninstalledPlugin(error: unknown, token: ServiceIdentifier<unknown>): boolean {
+    return error instanceof Error
+      && error.message.includes('unknown service')
+      && error.message.includes(String(token));
   }
 
   /** Mirrors kap-server's WS `eventMap` per scope kind. */

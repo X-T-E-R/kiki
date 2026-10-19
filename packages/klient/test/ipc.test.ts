@@ -5,6 +5,9 @@ import { createConnection } from 'node:net';
 import { once } from 'node:events';
 
 import { ConfigTarget, IConfigService, IMcpManagementService, ISessionIndex, ISessionManager } from '@kiki/agent-core-v2';
+import { IModelService } from '@kiki/agent-core-v2/kosong/model/model';
+import type { ProtocolAdapterConfig } from '@kiki/agent-core-v2/kosong/protocol/protocol';
+import { ProtocolAdapterRegistry } from '@kiki/agent-core-v2/kosong/provider/protocolAdapterRegistry';
 import { describe, expect, it, vi } from 'vitest';
 
 import { defineKlientConformance } from './helpers/conformance.js';
@@ -101,6 +104,7 @@ describe('ipc transport specifics', () => {
     const klient = createKlient({ socketPath });
     const raw = new IpcChannel({ socketPath });
     const created = await klient.global.sessions.create({ workDir: homeDir, title: 'ipc target' });
+    let provider: { mockRestore(): void } | undefined;
     try {
       const summary = await klient.global.sessions.get(created.id);
       expect(summary).toBeDefined();
@@ -115,6 +119,52 @@ describe('ipc transport specifics', () => {
       });
       const cursor = baseline.threads[0]?.cursor;
       expect(cursor).toEqual(expect.any(String));
+
+      await klient.global.kosong.addProvider({
+        id: 'ipc-thread-model',
+        model: 'ipc-thread-model',
+        protocol: 'openai',
+        baseUrl: 'http://127.0.0.1:1',
+        maxContextSize: 8192,
+        auth: { method: 'api-key', apiKey: 'test-key' },
+      });
+      const models = app.accessor.get(IModelService);
+      const record = models.get('ipc-thread-model');
+      if (record === undefined) throw new Error('ipc-thread model was not registered');
+      await models.set('ipc-thread-model', {
+        ...record,
+        capabilities: ['thinking'],
+        supportEfforts: ['high'],
+        defaultEffort: 'high',
+      });
+      const agent = klient.session(created.id).agent('main');
+      await agent.setModel('ipc-thread-model');
+      await agent.setThinking('high');
+      provider = vi.spyOn(ProtocolAdapterRegistry.prototype, 'createChatProvider').mockImplementation(
+        (config: ProtocolAdapterConfig) =>
+          ({
+            name: config.providerType ?? 'fake',
+            modelName: config.modelName,
+            thinkingEffort: null,
+            async generate() {
+              return {
+                id: 'fake-response',
+                usage: {
+                  inputOther: 0,
+                  output: 1,
+                  inputCacheRead: 0,
+                  inputCacheCreation: 0,
+                },
+                finishReason: 'completed',
+                rawFinishReason: 'stop',
+                traceId: null,
+                async *[Symbol.asyncIterator]() {
+                  yield { type: 'text', text: 'ok' };
+                },
+              };
+            },
+          }) as ReturnType<ProtocolAdapterRegistry['createChatProvider']>,
+      );
 
       await expect(
         raw.call({}, 'threadCommunicationService', 'sendPeerThreadMessage', [
@@ -146,9 +196,12 @@ describe('ipc transport specifics', () => {
       ).resolves.toMatchObject({ timedOut: false });
       const read = await klient.global.threads.read({ thread: target, limit: 10 });
       const turn = read.turns.find((item) => item.input === 'raw external input');
-      expect(turn).toMatchObject({ origin: 'user' });
+      // A raw sendMessage is an external client turn. The forged source on
+      // the frame is not a peer, so the turn carries no peer metadata.
+      expect(turn).toMatchObject({ origin: 'external' });
       expect(turn?.peer).toBeUndefined();
     } finally {
+      provider?.mockRestore();
       await klient.session(created.id).close();
       await raw.close();
       await klient.close();
