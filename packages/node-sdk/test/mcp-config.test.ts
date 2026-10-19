@@ -326,7 +326,9 @@ describe('standalone MCP check (connection result)', () => {
       const result = await harness.testMcpServer('missing');
 
       expect(result.success).toBe(false);
-      expect(result.output).toMatch(/ENOENT|not found|spawn/i);
+      // Linux reports a missing spawn as ENOENT. Windows reports the same
+      // failed CreateProcess without that token.
+      expect(result.output).toMatch(/ENOENT|not found|spawn|CreateProcess/i);
     } finally {
       await harness.close();
     }
@@ -341,29 +343,33 @@ describe('session MCP servers (live session adds)', () => {
 
     try {
       const session = await harness.createSession({ workDir });
-      // persist defaults to false: a session-local `caller` entry, nothing
-      // written to the user-level file.
+      const sibling = await harness.createSession({ workDir });
+      // persist defaults to false: the overlay records source `caller` and
+      // writes nothing. The returned entry is the connection snapshot and
+      // has no source field.
       const added = await session.addMcpServer({
         name: 'session-server',
         transport: 'stdio',
         command: process.execPath,
         args: [stdioFixture],
       });
-      // No `source` on a session entry: the engine's connection manager does
-      // not track where a running server came from, so the SDK has nothing
-      // honest to tag it with (recorded gap on `addSessionMcpServer`).
       expect(added).toMatchObject({
         name: 'session-server',
         transport: 'stdio',
         status: 'connected',
         toolCount: 4,
       });
+      expect(Object.hasOwn(added, 'source')).toBe(false);
+      expect((await sibling.listMcpServers()).map((server) => server.name)).not.toContain(
+        'session-server',
+      );
       await expect(readFile(join(homeDir, 'mcp.json'), 'utf-8')).rejects.toMatchObject({
         code: 'ENOENT',
       });
 
-      // The "name + full config" reconnect channel replaces the running
-      // config — the narrowed tool filter shows up in the entry.
+      // A config-bearing reconnect replaces the running config on this
+      // session and keeps the caller scope: the sibling still cannot see it,
+      // and mcp.json is still absent.
       await session.reconnectMcpServer('session-server', {
         name: 'session-server',
         transport: 'stdio',
@@ -375,9 +381,29 @@ describe('session MCP servers (live session adds)', () => {
         (server) => server.name === 'session-server',
       );
       expect(narrowed).toMatchObject({ status: 'connected', toolCount: 1 });
+      expect(Object.hasOwn(narrowed ?? {}, 'source')).toBe(false);
+      expect((await sibling.listMcpServers()).map((server) => server.name)).not.toContain(
+        'session-server',
+      );
+      await expect(readFile(join(homeDir, 'mcp.json'), 'utf-8')).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
 
-      // persist: true also writes the user-level file — the file content below
-      // is what proves it, since the entry itself carries no source tag.
+      await expect(
+        session.reconnectMcpServer('session-server', {
+          name: 'session-server',
+          transport: 'stdio',
+          command: process.execPath,
+          args: [stdioFixture],
+          enabled: false,
+        }),
+      ).rejects.toThrow(/MCP server is disabled: session-server/);
+      expect(
+        (await session.listMcpServers()).find((server) => server.name === 'session-server'),
+      ).toMatchObject({ status: 'connected', toolCount: 1 });
+
+      // persist: true writes the user-level file under this name. The list
+      // entry still has no source field; the file is the global record.
       const persisted = await session.addMcpServer(
         {
           name: 'persisted',
@@ -388,11 +414,31 @@ describe('session MCP servers (live session adds)', () => {
         { persist: true },
       );
       expect(persisted).toMatchObject({ name: 'persisted', status: 'connected' });
-      await expect(readMcpConfig(homeDir)).resolves.toEqual({
+      expect(Object.hasOwn(persisted, 'source')).toBe(false);
+      const written = {
         mcpServers: {
           persisted: { transport: 'stdio', command: process.execPath, args: [stdioFixture] },
         },
-      });
+      };
+      await expect(readMcpConfig(homeDir)).resolves.toEqual(written);
+      // The store rejects a second add of the same name and does not replace
+      // the existing file or report a successful connect.
+      await expect(
+        session.addMcpServer(
+          {
+            name: 'persisted',
+            transport: 'stdio',
+            command: process.execPath,
+            args: [stdioFixture],
+            enabledTools: ['echo'],
+          },
+          { persist: true },
+        ),
+      ).rejects.toThrow(/already exists/);
+      await expect(readMcpConfig(homeDir)).resolves.toEqual(written);
+      expect(
+        (await session.listMcpServers()).find((server) => server.name === 'persisted'),
+      ).toMatchObject({ status: 'connected', toolCount: 4 });
     } finally {
       await harness.close();
     }

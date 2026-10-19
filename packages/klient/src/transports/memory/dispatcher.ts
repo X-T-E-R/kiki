@@ -203,7 +203,7 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
       }
       throw error;
     }
-    if (instance == null || typeof instance !== 'object') {
+    if (instance === null || instance === undefined || typeof instance !== 'object') {
       throw new RPCError(REQUEST_INVALID, `unknown service: ${service}`);
     }
     return instance as Record<string, unknown>;

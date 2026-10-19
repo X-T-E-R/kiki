@@ -2736,9 +2736,10 @@ export class SDKRpcClient extends SDKRpcClientBase {
     source?: 'global' | 'caller',
   ): Promise<void> {
     const handle = this.requireLiveSession(sessionId).accessor.get(ISessionMcpHandle);
-    const enable = handle.enableConfiguredServer;
-    if (enable !== undefined) {
-      await this.engineCall(() => enable.call(handle, name, config as WorkspaceMcpServerConfig, source));
+    if (handle.enableConfiguredServer !== undefined) {
+      await this.engineCall(() =>
+        handle.enableConfiguredServer!(name, config as WorkspaceMcpServerConfig, source),
+      );
       return;
     }
     const agent = await this.agentFacade(sessionId);

@@ -379,9 +379,8 @@ export class CodexAppServerClient {
     // drain the stream into an unbounded iterator queue while the event sink
     // is still awaiting, so the producer never observes backpressure.
     while (!abort.aborted) {
-      const chunk = await readPausedChunk(process.stdout, abort);
-      if (chunk === undefined) break;
-      const text = String(chunk);
+      const text = await readPausedChunk(process.stdout, abort);
+      if (text === undefined) break;
       let start = 0;
       for (let index = text.indexOf('\n'); index >= 0; index = text.indexOf('\n', start)) {
         fragments.push(text.slice(start, index));
@@ -697,10 +696,13 @@ function readPausedChunk(stream: Readable, abort: AbortSignal): Promise<string |
       if (error !== undefined) reject(error);
       else resolve(value);
     };
-    const take = (): string | undefined | null => {
+    const take = (): string | null => {
       const chunk: unknown = stream.read();
       if (chunk === null) return null;
-      return String(chunk);
+      if (typeof chunk === 'string') return chunk;
+      if (chunk instanceof Uint8Array) return Buffer.from(chunk).toString('utf8');
+      finish(undefined, new CodexClientError('protocol', 'Codex stdout chunk is not text'));
+      return null;
     };
     const pull = (): void => {
       if (abort.aborted) {
@@ -714,11 +716,11 @@ function readPausedChunk(stream: Readable, abort: AbortSignal): Promise<string |
       }
       if (stream.readableEnded || stream.destroyed) finish(undefined);
     };
-    const onAbort = (): void => finish(undefined);
-    const onReadable = (): void => pull();
-    const onEnd = (): void => pull();
-    const onClose = (): void => pull();
-    const onError = (error: unknown): void => finish(undefined, error);
+    const onAbort = (): void => { finish(undefined); };
+    const onReadable = (): void => { pull(); };
+    const onEnd = (): void => { pull(); };
+    const onClose = (): void => { pull(); };
+    const onError = (error: unknown): void => { finish(undefined, error); };
     abort.addEventListener('abort', onAbort, { once: true });
     stream.on('readable', onReadable);
     stream.on('end', onEnd);
