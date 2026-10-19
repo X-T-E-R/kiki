@@ -1575,12 +1575,25 @@ include = ["memory_snapshot"]
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: space, logLevel: 'silent' });
     base = `http://127.0.0.1:${server.port}`;
     expect((await getConfig()).origins?.['default_model']?.['']).toBe('base');
-    await writeFile(join(root, 'config.toml'), 'default_model = "base-second"\n');
-    await expect.poll(async () => (await getConfig()).default_model).toBe('base-second');
-    await patchConfig({ default_model: 'home-model' });
-    expect((await getConfig()).origins?.['default_model']?.['']).toBe('home');
-    expect(await readFile(join(root, 'config.toml'), 'utf8')).toContain('base-second');
-    expect(await readFile(join(space, 'config.toml'), 'utf8')).toContain('home-model');
+    const config = server.core.accessor.get(IConfigService);
+    let finishReload!: () => void;
+    const reloaded = new Promise<void>((resolve) => { finishReload = resolve; });
+    const subscription = config.onDidChangeConfiguration((event) => {
+      if (event.domain === 'defaultModel' && event.source === 'reload' && config.get('defaultModel') === 'base-second') {
+        finishReload();
+      }
+    });
+    try {
+      await writeFile(join(root, 'config.toml'), 'default_model = "base-second"\n');
+      await reloaded;
+      expect((await getConfig()).default_model).toBe('base-second');
+      await patchConfig({ default_model: 'home-model' });
+      expect((await getConfig()).origins?.['default_model']?.['']).toBe('home');
+      expect(await readFile(join(root, 'config.toml'), 'utf8')).toContain('base-second');
+      expect(await readFile(join(space, 'config.toml'), 'utf8')).toContain('home-model');
+    } finally {
+      subscription.dispose();
+    }
   });
 
   it('returns the last acknowledged rapid config write on GET and disk', async () => {
