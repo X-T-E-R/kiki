@@ -160,11 +160,6 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
     if (opened) report({ type: 'ready', pid: process.pid, writer: true });
   };
   if (stopped) { releaseLease(); return; }
-  if (process.memoryUsage().rss > hardMb * MiB) {
-    releaseLease();
-    process.stderr.write(`search indexer memory_budget rss=${process.memoryUsage().rss} limit=${hardMb * MiB}\n`);
-    process.exit(MEMORY_BUDGET_EXIT);
-  }
   const free = await statfs(dirname(path)).then((value) => value.bavail * value.bsize);
   if (stopped) { releaseLease(); return; }
   if (free < 2 * 1024 * MiB) {
@@ -221,7 +216,7 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
     releaseLease();
     return;
   }
-  index!.db.prepare("INSERT INTO meta(k,v) VALUES('selfcheck','passed') ON CONFLICT(k) DO UPDATE SET v=excluded.v").run();
+  index.db.prepare("INSERT INTO meta(k,v) VALUES('selfcheck','passed') ON CONFLICT(k) DO UPDATE SET v=excluded.v").run();
   report({ type: 'ready', pid: process.pid, writer: true });
   opened = true;
   status();

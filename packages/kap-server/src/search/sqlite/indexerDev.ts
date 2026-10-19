@@ -3,6 +3,7 @@ process.on('message', (message: unknown) => {
   if (!booting || message === null || typeof message !== 'object' || !('type' in message) || message.type !== 'close') return;
   process.exit(0);
 });
+await new Promise<void>((resolve) => { setImmediate(resolve); });
 
 try {
   const loaded = await import('./indexerEntry');

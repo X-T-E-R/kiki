@@ -24,6 +24,7 @@ export interface SqliteHostOptions {
   readonly queryTimeoutMs?: number;
   readonly indexSubagents?: boolean;
   readonly onStateChange?: (snapshot: SqliteHostSnapshot) => void;
+  readonly scheduleRestart?: (callback: () => void, delay: number) => NodeJS.Timeout;
 }
 
 export interface SqliteHostSnapshot {
@@ -352,7 +353,8 @@ export class SqliteSearchHost {
       this.options.onStateChange?.(this.snapshot());
       process.stderr.write(`search indexer exited code=${code} signal=${signal} reason=${this.reason} backoffMs=${terminal ? 0 : delay}\n`);
       if (terminal) return;
-      this.restart = setTimeout(() => { this.restart = undefined; this.retryAt = 0; this.startIndexer(); }, delay);
+      const arm = this.options.scheduleRestart ?? ((callback: () => void, wait: number) => setTimeout(callback, wait));
+      this.restart = arm(() => { this.restart = undefined; this.retryAt = 0; this.startIndexer(); }, delay);
       this.restart.unref();
     };
     child.on('error', (error) => {
