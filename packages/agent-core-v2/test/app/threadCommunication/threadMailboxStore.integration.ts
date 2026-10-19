@@ -1105,23 +1105,89 @@ describe('runtime thread mailbox', () => {
     } finally { gate.restore(); }
   });
 
+  it('reports initialization rather than shard contention before storage opens', async () => {
+    const item = harness(homeDir); open.push(item);
+    await item.runtime.ready();
+    const gate = blockMailboxOpen();
+    const caller = item.store as unknown as RuntimeMailboxCaller;
+    try {
+      const result = caller.call(THREAD_MAILBOX_RUNTIME_METHODS.claim,
+        { target, consumerId: 'consumer', leaseMs: 10_000 }, { requestId: 'initializing-claim' }, 100)
+        .catch((error: unknown) => error);
+      await gate.entered;
+      const error = await result;
+      expect(error).toMatchObject({ code: 'runtime.timeout' });
+      expect((error as Error).message).toMatch(/firstTimeout=.*ownerPhase=initialization.*lockWaits=0/);
+      expect(gate.count()).toBe(1);
+    } finally { gate.restore(); }
+    await expect(item.store.claimNext({ target, consumerId: 'consumer', leaseMs: 10_000 },
+      { requestId: 'initializing-claim' })).resolves.toBeUndefined();
+  });
+
   it('reports actual shard lock contention separately and recovers the same claim receipt', async () => {
     const item = harness(homeDir); open.push(item);
-    await item.store.getWorkspaceOverride('example-workspace');
-    const db = (item.store as unknown as { db: ClusterDb<unknown> }).db;
+    const accepted = await item.store.acceptMessage(acceptInput('locked-claim-message'));
+    const db = (item.store as unknown as { db: ClusterDb }).db;
     await db.close();
     (item.store as unknown as { db: undefined }).db = undefined;
     const partition = mailboxPartition(target);
-    const lock = await MiniDb.open({ dir: join(homeDir, 'store', 'thread-mailbox-v3', shardDirName(shardFor(partition, 16), 16)),
+    const lockDir = join(homeDir, 'store', 'thread-mailbox-v3', shardDirName(shardFor(partition, 16), 16));
+    const lock = await MiniDb.open({ dir: lockDir,
       valueCodec: 'json', fsyncPolicy: 'always', activeExpireIntervalMs: 0 });
+    let markContended!: () => void;
+    const contended = new Promise<void>((resolve) => { markContended = resolve; });
+    const originalOpen = MiniDb.open;
+    MiniDb.open = async function<V>(options: Parameters<typeof originalOpen>[0]): Promise<MiniDb<V>> {
+      try { return await originalOpen<V>(options); } catch (error) {
+        if (options.dir === lockDir && error instanceof LockError) markContended();
+        throw error;
+      }
+    };
+    const originalBatch = ClusterDb.prototype.partitionBatch;
+    let commit: Promise<void> | undefined;
+    let commitSettled = false;
+    ClusterDb.prototype.partitionBatch = function (...args: Parameters<typeof originalBatch>) {
+      const operation = originalBatch.apply(this, args);
+      if (args[0] === partition) {
+        commit = operation;
+        void operation.then(() => { commitSettled = true; }, () => { commitSettled = true; });
+      }
+      return operation;
+    };
     const caller = item.store as unknown as RuntimeMailboxCaller;
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     try {
-      await expect(caller.call(THREAD_MAILBOX_RUNTIME_METHODS.claim,
-        { target, consumerId: 'consumer', leaseMs: 10_000 }, { requestId: 'locked-claim' }, 100)).rejects.toMatchObject({
-        code: 'runtime.timeout', message: expect.stringMatching(/ownerPhase=claim_commit.*lockWaits=[1-9]/),
-      });
-    } finally { await lock.close(); }
-    await expect(item.store.claimNext({ target, consumerId: 'consumer', leaseMs: 10_000 }, { requestId: 'locked-claim' })).resolves.toBeUndefined();
+      const result = caller.call(THREAD_MAILBOX_RUNTIME_METHODS.claim,
+        { target, consumerId: 'consumer', leaseMs: 10_000 }, { requestId: 'locked-claim' }, 100)
+        .catch((error: unknown) => error);
+      await contended;
+      await vi.advanceTimersByTimeAsync(0);
+      expect(commit).toBeDefined();
+      expect((item.store as unknown as { db: ClusterDb }).db.stats().lockWaits).toBeGreaterThan(0);
+      await vi.advanceTimersByTimeAsync(200);
+      const error = await result;
+      expect(error).toMatchObject({ code: 'runtime.timeout' });
+      expect((error as Error).message).toMatch(/firstTimeout=.*ownerPhase=claim_commit.*lockWaits=[1-9]/);
+    } finally {
+      try {
+        await lock.close();
+        if (commit !== undefined) {
+          await vi.waitFor(() => { expect(commitSettled).toBe(true); });
+          await commit;
+        }
+      } finally {
+        vi.useRealTimers();
+        MiniDb.open = originalOpen;
+        ClusterDb.prototype.partitionBatch = originalBatch;
+      }
+    }
+    const input = { target, consumerId: 'consumer', leaseMs: 10_000 };
+    const claim = await item.store.claimNext(input, { requestId: 'locked-claim' });
+    expect(claim).toMatchObject({ message: { messageId: accepted.message.messageId }, consumerId: 'consumer', fence: 1 });
+    expect(await item.store.claimNext(input, { requestId: 'locked-claim' })).toEqual(claim);
+    expect(await item.store.claimNext({ ...input, consumerId: 'other' })).toBeUndefined();
+    expect(await item.store.acknowledgeDelivery(claim!)).toBe(true);
+    expect(await item.store.claimNext(input)).toBeUndefined();
   });
 
   it('enforces an elapsed direct-call deadline after synchronous handler blocking', async () => {
