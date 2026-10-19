@@ -29,7 +29,7 @@ import {
   IEventDispatcher,
   IBootstrapService,
   PromptEnqueued,
-  PromptRetryCommitted,
+  PromptAccepted,
   promptRetryFor,
   IAtomicDocumentStore,
   IWireService,
@@ -2493,28 +2493,22 @@ describe('server-v2 /api prompts', () => {
     child.accessor.get(IAgentPromptService).abort(payload.prompt_id);
   });
 
-  it('fails closed when a child prompt was accepted but its retry receipt did not commit', async () => {
+  it('fails closed when a legacy child admission has no replayable retry receipt', async () => {
     const id = await createSession(home as string);
     const child = await createHeldChild(id);
-    const dispatcher = child.accessor.get(IEventDispatcher);
-    const dispatch = dispatcher.dispatch.bind(dispatcher);
-    let failOnce = true;
-    vi.spyOn(dispatcher, 'dispatch').mockImplementation(async (event) => {
-      if (event instanceof PromptRetryCommitted && failOnce) {
-        failOnce = false;
-        throw new Error('receipt persist failed');
-      }
-      return dispatch(event);
-    });
+    const payload = { agent_id: child.id, prompt_id: 'native-child-uncommitted', content: [{ type: 'text', text: 'ambiguous' }] };
+    await child.accessor.get(IEventDispatcher).dispatch(new PromptAccepted({ promptId: payload.prompt_id }));
+    await child.accessor.get(IWireService).flush();
     const prompt = child.accessor.get(IAgentPromptService);
     const enqueue = vi.spyOn(prompt, 'enqueue');
-    const payload = { agent_id: child.id, prompt_id: 'native-child-uncommitted', content: [{ type: 'text', text: 'ambiguous' }] };
     const first = await call<null>('POST', `/api/sessions/${id}/prompts`, payload);
-    expect(first.body.code).not.toBe(0);
+    expect(first.body.code).toBe(40938);
+    expect(first.body.msg).toContain('accepted without a replayable receipt');
     const retry = await call<null>('POST', `/api/sessions/${id}/prompts`, payload);
     expect(retry.body.code).toBe(40938);
     expect(retry.body.msg).toContain('accepted without a replayable receipt');
-    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(child.accessor.get(IAgentLoopService).status().activeTurnId).toBeUndefined();
   });
 
   it('does not replay an unflushed child receipt as if it were durably accepted', async () => {
@@ -2544,30 +2538,42 @@ describe('server-v2 /api prompts', () => {
     const session = getLiveSessionById(server!.core.accessor, id)!;
     const dispatch = session.accessor.get(ISessionDispatchService);
     const recordRun = dispatch.recordRun.bind(dispatch);
-    let entered!: () => void;
-    const entering = new Promise<void>((resolve) => { entered = resolve; });
     let release!: () => void;
     const hold = new Promise<void>((resolve) => { release = resolve; });
-    vi.spyOn(dispatch, 'recordRun').mockImplementationOnce(async (...args) => {
-      entered();
+    const record = vi.spyOn(dispatch, 'recordRun').mockImplementationOnce(async (...args) => {
       await hold;
       return recordRun(...args);
     });
     const prompt = child.accessor.get(IAgentPromptService);
     const enqueue = vi.spyOn(prompt, 'enqueue');
+    const run = vi.spyOn(promptRetryFor(prompt), 'run');
     const payload = { agent_id: child.id, prompt_id: 'native-child-flight', content: [{ type: 'text', text: 'only one' }] };
     const first = call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, payload);
-    await entering;
-    const concurrent = await call<null>('POST', `/api/sessions/${id}/prompts`, payload);
-    expect(concurrent.body.code).toBe(40938);
-    release();
-    const accepted = await first;
-    expect(accepted.body.code, accepted.body.msg).toBe(0);
-    expect(enqueue).toHaveBeenCalledTimes(1);
-    const replay = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, payload);
-    expect(replay.body.code).toBe(0);
-    expect(enqueue).toHaveBeenCalledTimes(1);
-    prompt.abort(payload.prompt_id);
+    let concurrent: typeof first | undefined;
+    try {
+      await vi.waitFor(() => { expect(record).toHaveBeenCalledOnce(); });
+      concurrent = call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, payload);
+      await vi.waitFor(() => { expect(run).toHaveBeenCalledTimes(2); });
+      const changed = await call<null>('POST', `/api/sessions/${id}/prompts`, {
+        ...payload, content: [{ type: 'text', text: 'changed while in flight' }],
+      });
+      expect(changed.body.code).toBe(40938);
+      expect(record).toHaveBeenCalledOnce();
+      release();
+      const [accepted, joined] = await Promise.all([first, concurrent]);
+      expect(accepted.body.code, accepted.body.msg).toBe(0);
+      expect(joined.body.code, joined.body.msg).toBe(0);
+      expect(joined.body.data).toEqual(accepted.body.data);
+      expect(enqueue).toHaveBeenCalledTimes(1);
+      const replay = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, payload);
+      expect(replay.body.code).toBe(0);
+      expect(replay.body.data).toEqual(accepted.body.data);
+      expect(enqueue).toHaveBeenCalledTimes(1);
+    } finally {
+      release();
+      await Promise.allSettled([first, ...(concurrent === undefined ? [] : [concurrent])]);
+      prompt.abort(payload.prompt_id);
+    }
   });
 
   it('replays an accepted native child receipt after server restart without re-enqueueing', async () => {

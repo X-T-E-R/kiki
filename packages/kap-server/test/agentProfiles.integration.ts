@@ -13,6 +13,7 @@ import {
   IAgentProfileService,
   IAgentPromptService,
   IAgentUsageService,
+  IUsageFactStore,
   IAppendLogStore,
   IFileSystemStorageService,
   IConfigService,
@@ -2698,7 +2699,7 @@ describe('GET /api/agents', () => {
     expect(text.trimEnd().endsWith('Lead the team.')).toBe(true);
   });
 
-  it('reads only the selected agent wire when restoring persisted usage after restart', async () => {
+  it('settles only the selected agent persisted usage after restart without rereading wire', async () => {
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
@@ -2738,18 +2739,27 @@ describe('GET /api/agents', () => {
     });
     base = `http://127.0.0.1:${server.port}`;
     const wireRead = vi.spyOn(server.core.accessor.get(IAppendLogStore), 'read');
-    const restored = await authedFetch(server, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=main`);
+    const summaryRead = vi.spyOn(server.core.accessor.get(IUsageFactStore), 'summary');
+    const initial = await authedFetch(server, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=main&metrics_only=true`);
+    const initialData = agentCapabilitiesResponseSchema.parse((await initial.json() as Envelope<unknown>).data);
+    expect(initialData.metrics?.['main']).toMatchObject({ inputTokens: null, outputTokens: null, totalTokens: null, usageComplete: false });
+    expect(summaryRead).not.toHaveBeenCalled();
+    expect(wireRead).not.toHaveBeenCalled();
+    const restored = await authedFetch(server, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=main&metrics_settle=true`);
     const data = agentCapabilitiesResponseSchema.parse((await restored.json() as Envelope<unknown>).data);
     expect(data.metrics?.['main']).toMatchObject({ totalTokens: 15, inputTokens: 10, outputTokens: 5, usagePartial: true, costPartial: true, usageSource: 'persisted' });
     expect(data.metrics?.['agent-7']).toBeUndefined();
-    const scannedScopes = wireRead.mock.calls.filter(([_scope, key]) => key === AGENT_WIRE_RECORD_KEY)
-      .map(([scope]) => scope);
-    expect(scannedScopes.length).toBeGreaterThan(0);
-    expect(scannedScopes.every((scope) => scope.includes('main'))).toBe(true);
-    wireRead.mockClear();
-    const childResponse = await authedFetch(server, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=agent-7`);
+    expect(summaryRead).toHaveBeenCalled();
+    expect(summaryRead.mock.calls.every(([scope]) => scope.endsWith('/agents/main'))).toBe(true);
+    expect(wireRead.mock.calls.filter(([, key]) => key === AGENT_WIRE_RECORD_KEY)).toEqual([]);
+    summaryRead.mockClear();
+    const childResponse = await authedFetch(server, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=agent-7&metrics_settle=true`);
     const childData = agentCapabilitiesResponseSchema.parse((await childResponse.json() as Envelope<unknown>).data);
     expect(childData.metrics?.['agent-7']).toMatchObject({ totalTokens: 35, inputTokens: 25, outputTokens: 10, usagePartial: false, usageSource: 'persisted' });
+    expect(childData.metrics?.['main']).toBeUndefined();
+    expect(summaryRead).toHaveBeenCalled();
+    expect(summaryRead.mock.calls.every(([scope]) => scope.endsWith('/agents/agent-7'))).toBe(true);
+    expect(wireRead.mock.calls.filter(([, key]) => key === AGENT_WIRE_RECORD_KEY)).toEqual([]);
   });
 });
 
