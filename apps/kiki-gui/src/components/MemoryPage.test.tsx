@@ -1730,6 +1730,7 @@ describe('MemoryPage bounded vertical continuation', () => {
     const { memoryContinuationFixture } = await import('../../../../packages/kap-server/test/fixtures/memoryContinuation');
     const fixture = await memoryContinuationFixture();
     const release = deferred<void>();
+    const releaseDetail = deferred<void>();
     const applied = deferred<{ code: number; msg: string }>();
     let hold = false;
     let firstListPage = false;
@@ -1737,6 +1738,7 @@ describe('MemoryPage bounded vertical continuation', () => {
     vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init?: RequestInit) => {
       const url = new URL(String(input));
       if (url.pathname === '/api/memory/global' && hold) await release.promise;
+      if (url.pathname === '/api/memory/global/m_pending_4' && (init?.method ?? 'GET') === 'GET') await releaseDetail.promise;
       const response = await fixture.fetch(input, init);
       if (init?.method === 'PUT') applied.resolve(await response.clone().json());
       if (url.pathname === '/api/memory/global') {
@@ -1763,14 +1765,25 @@ describe('MemoryPage bounded vertical continuation', () => {
       const cache = queryClient.getQueriesData<{ items: MemoryEntry[] }>({ queryKey: ['memory'] });
       expect(cache.flatMap(([, page]) => page?.items ?? []).every((entry) => entry.body.length <= 160)).toBe(true);
       await click(container, '[data-memory-row="m_active_4"]');
-      expect(container.textContent).toContain('END-active-4');
+      await vi.waitFor(async () => {
+        await flush();
+        expect(container.textContent).toContain('END-active-4');
+      });
       await click(container, '[data-memory-tab="inbox"]');
       for (let index = 0; index < 100 && container.querySelectorAll('[data-memory-inbox-row]').length < 5; index++) await flush();
       expect(container.querySelectorAll('[data-memory-inbox-row]')).toHaveLength(5);
       expect(container.querySelector('[data-memory-coverage]')?.textContent).toContain('1 memory records were skipped');
       expect(container.querySelector('[data-memory-inbox-empty]')).toBeNull();
       await click(container, '[data-memory-inbox-row="m_pending_4"] [data-memory-inbox-read]');
-      expect(container.textContent).toContain('END-pending-4');
+      const proposal = container.querySelector('[data-memory-inbox-row="m_pending_4"]')!;
+      expect(proposal.querySelector('[role="status"]')?.textContent).toContain('Loading memory');
+      expect(proposal.textContent).not.toContain('END-pending-4');
+      releaseDetail.resolve();
+      await vi.waitFor(async () => {
+        await flush();
+        expect(proposal.textContent).toContain('END-pending-4');
+        expect(proposal.querySelector('[role="status"]')).toBeNull();
+      });
       await click(container, '[data-memory-inbox-row="m_pending_4"] [data-memory-inbox-keep]');
       let receipt: { code: number; msg: string } | undefined;
       await act(async () => { receipt = await applied.promise; });
@@ -1782,6 +1795,7 @@ describe('MemoryPage bounded vertical continuation', () => {
       expect(accepted?.basis).toEqual({ kind: 'observed', note: 'Fixture observation.' });
     } finally {
       release.resolve();
+      releaseDetail.resolve();
       for (const mountedPage of mounted.splice(0)) {
         await act(async () => { mountedPage.root.unmount(); });
         mountedPage.queryClient.clear(); mountedPage.container.remove();
