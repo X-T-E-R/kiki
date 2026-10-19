@@ -10,10 +10,10 @@ import { NATIVE_ASSET_MANIFEST_VERSION, getSourceOwnedAdapterRoot, type NativeAs
 
 const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
 const sourceDir = join(repoRoot, 'scripts/external-harness');
-const production = ['agy-cli-acp.mjs', 'agy-hook-registration.mjs', 'agy-permission-hook.mjs'] as const;
+const production = ['agy-cli-acp.mjs', 'agy-hook-registration.mjs', 'agy-permission-hook.mjs', 'agy-mcp-plugin.mjs'] as const;
 
 describe('source-owned adapter packaging', () => {
-  it('ships the three production scripts through the SEA manifest, npm dist and extraction', async () => {
+  it('ships the production adapter scripts through the SEA manifest, npm dist and extraction', async () => {
     const { collectSourceOwnedAdapterAssets, copySourceOwnedAdapterAssets } = await import('../../scripts/native/external-harness-assets.mjs');
     const { stageNpmDistributions } = await import('../../scripts/npm/stage.mjs');
     const root = mkdtempSync(join(tmpdir(), 'source-owned-package-'));
