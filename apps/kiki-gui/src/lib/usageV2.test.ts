@@ -600,10 +600,15 @@ describe('comparison windows', () => {
   });
 
   it('resolves preset ranges to local calendar windows and leaves all-history unbounded', () => {
-    const nowMs = new Date(2026, 9, 7, 12, 0, 0).getTime();
-    const today = usageRangeWindow({ ...USAGE_FILTER_DEFAULTS, range: 'today' }, 480, nowMs)!;
-    expect(today.startAt).toBe(new Date(2026, 9, 7, 0, 0, 0).getTime());
-    expect(today.endAt).toBe(new Date(2026, 9, 8, 0, 0, 0).getTime());
+    // Both sides are absolute: noon in the caller's +08:00 calendar, and the
+    // midnights that calendar produces. Reading the machine clock here made the
+    // expectation depend on the CI host's timezone rather than on the contract.
+    const offsetMinutes = 480;
+    const localMidnight = (day: number): number => Date.UTC(2026, 9, day) - offsetMinutes * 60_000;
+    const nowMs = Date.UTC(2026, 9, 7, 4, 0, 0);
+    const today = usageRangeWindow({ ...USAGE_FILTER_DEFAULTS, range: 'today' }, offsetMinutes, nowMs)!;
+    expect(today.startAt).toBe(localMidnight(7));
+    expect(today.endAt).toBe(localMidnight(8));
     expect(usageRangeWindow({ ...USAGE_FILTER_DEFAULTS, range: 'all' }, 480, nowMs)).toBeNull();
     const custom = usageRangeWindow(
       { ...USAGE_FILTER_DEFAULTS, range: 'custom', startAt: 1000, endAt: 2000 },

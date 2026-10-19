@@ -49,7 +49,10 @@ async function flush(): Promise<void> {
  * The component source is read so the test fails if the ratio is ever inverted
  * again, and the real file is opened so the expected numbers cannot drift.
  */
-const REAL_SAMPLE = 'C:/Programs/AI/EasyAgent/systems/kiki/.tmp/work-presets-033/preview-engine/ui-live-workspace-pdf.pdf';
+// Checked in beside the component: a real one-page US Letter portrait PDF
+// (612 x 792 pt), so the expectation below is measured from a file rather than
+// copied from the code it guards, and every platform reads the same bytes.
+const REAL_SAMPLE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'letter-portrait.pdf');
 const SOURCE = join(dirname(fileURLToPath(import.meta.url)), 'PdfPageView.tsx');
 const LETTER_PORTRAIT = { width: 612, height: 792 };
 

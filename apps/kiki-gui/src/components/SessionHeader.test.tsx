@@ -300,7 +300,8 @@ describe('session header discovery tour guide and dirty guard', () => {
     });
 
     expect(container.querySelector('[data-discovery-tour-tag="expanded"]')).not.toBeNull();
-    expect(container.textContent).toContain('2/5');
+    // The tag puts readable space around the slash; that is the shipped copy.
+    expect(container.textContent).toContain('2 / 5');
     expect(container.querySelector('[data-discovery-action="agent-panel"]')).not.toBeNull();
 
     await act(async () => { root.unmount(); });
