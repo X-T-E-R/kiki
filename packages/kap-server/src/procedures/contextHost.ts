@@ -63,21 +63,21 @@ export class ContextProcedureHost {
       const boundary = externalBoundaryHookEvent(input.event);
       const history = memory.get();
       const parts: string[] = [];
+      const fresh: string[] = [];
       for (const hint of hints) {
         if (!hint.text.trim()) continue;
         const id = `${preparing ? 'prepared:' : ''}${hint.origin}:${createHash('sha256').update(hint.text).digest('hex')}`;
         if (delivered.has(id)) continue;
         const formatted = `[Kiki ${hint.origin}]\n${hint.text.trim()}`;
-        if (!recovering && (externalHintAlreadyRecorded(history, hint.text, runningTurnId) || externalHintAlreadyRecorded(history, formatted, runningTurnId))) {
-          delivered.add(id);
-          continue;
-        }
+        const recorded = !recovering && (externalHintAlreadyRecorded(history, hint.text, runningTurnId) || externalHintAlreadyRecorded(history, formatted, runningTurnId));
         delivered.add(id);
         parts.push(formatted);
+        if (!recorded) fresh.push(formatted);
       }
       const content = parts.join('\n\n');
-      if (content.length > 0) {
-        const text = preparing ? `[Handoff prepared; not injected by this hook]\n${content}` : content;
+      const freshText = fresh.join('\n\n');
+      if (freshText.length > 0) {
+        const text = preparing ? `[Handoff prepared; not injected by this hook]\n${freshText}` : freshText;
         const origin = { kind: 'hook_result' as const, event: `kiki:${input.harness}:${input.event}`, blocked: false };
         const beforeModel = runningTurnId !== undefined && !externalTurnHasModelContent(history, runningTurnId);
         if (!preparing && boundary && runningTurnId !== undefined) {
