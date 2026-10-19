@@ -279,6 +279,59 @@ describe('CodexAppServerClient limits and observers', () => {
     expect(fixture.dispose).toHaveBeenCalledOnce();
   });
 
+  it('breaks with the original stdout error while the event sink is blocked', async () => {
+    const uncaught: unknown[] = [];
+    const onUncaught = (error: unknown): void => { uncaught.push(error); };
+    const onUnhandled = (reason: unknown): void => { uncaught.push(reason); };
+    process.on('uncaughtException', onUncaught);
+    process.on('unhandledRejection', onUnhandled);
+    const fixture = scriptedProcess(undefined, () => ({ turn: { id: 'turn-1' } }));
+    const client = turnClient(fixture, { shutdownGraceMs: 5 });
+    let releaseSink!: () => void;
+    let sinkEntered!: () => void;
+    let sinkReleased = false;
+    const gate = new Promise<void>((resolve) => { releaseSink = resolve; });
+    const entered = new Promise<void>((resolve) => { sinkEntered = resolve; });
+    try {
+      await client.connect();
+      const handle = await client.startTurn({ threadId: 'thread-1' }, new AbortController().signal, async () => {
+        sinkEntered();
+        await gate;
+        sinkReleased = true;
+      });
+      const completed = handle.completion.then((value) => value, (error: unknown) => error);
+      fixture.stdout.write(`${JSON.stringify({ method: 'item/agentMessage/delta', params: {
+        threadId: 'thread-1', turnId: 'turn-1', itemId: 'blocked-message', delta: 'blocked',
+      } })}\n`);
+      await entered;
+      const pending = client.request('pending/rpc', {}).then((value) => value, (error: unknown) => error);
+      await waitForFrame(fixture, 'pending/rpc');
+      const readFailed = new Error('read failed');
+      fixture.stdout.destroy(readFailed);
+      await vi.waitFor(() => {
+        expect(client.status().state).toBe('broken');
+      }, { interval: 1, timeout: 1_000 });
+      await expect(completed).resolves.toMatchObject({
+        code: 'stdio',
+        cause: readFailed,
+        data: readFailed,
+      });
+      await expect(pending).resolves.toMatchObject({ code: 'stdio', cause: readFailed });
+      expect(sinkReleased).toBe(false);
+      expect(fixture.dispose).toHaveBeenCalledOnce();
+      expect(fixture.kill).toHaveBeenCalledOnce();
+      expect(uncaught).toEqual([]);
+      releaseSink();
+      await client.shutdown();
+      expect(fixture.dispose).toHaveBeenCalledOnce();
+      expect(uncaught).toEqual([]);
+    } finally {
+      process.off('uncaughtException', onUncaught);
+      process.off('unhandledRejection', onUnhandled);
+      releaseSink();
+    }
+  });
+
   it('B-01 drains buffered legal events and terminal before natural-exit cleanup', async () => {
     const fixture = scriptedProcess(undefined, () => ({ turn: { id: 'turn-1' } }));
     const client = turnClient(fixture, { shutdownGraceMs: 100 });

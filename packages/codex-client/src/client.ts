@@ -52,6 +52,8 @@ export class CodexAppServerClient {
   readonly #responders = new Set<CodexRequestId>();
   readonly #stderr: StderrRing;
   #process: HostProcessLike | undefined;
+  #stdoutError: ((error: unknown) => void) | undefined;
+  #stdoutFailed = false;
   #state: CodexClientStatus['state'] = 'cold';
   #agentVersion: string | undefined;
   #requestSequence = 0;
@@ -328,6 +330,11 @@ export class CodexAppServerClient {
       try {
         await process.dispose();
       } finally {
+        const onStdoutError = this.#stdoutError;
+        if (onStdoutError !== undefined) {
+          process.stdout.off('error', onStdoutError);
+          this.#stdoutError = undefined;
+        }
         if (this.#process === process) this.#process = undefined;
       }
     }
@@ -357,6 +364,14 @@ export class CodexAppServerClient {
   #attachProcess(process: HostProcessLike): void {
     process.stdout.setEncoding('utf8');
     process.stderr.setEncoding('utf8');
+    // Owns stdout errors for the whole read and consume cycle. A paused
+    // read drops its own listener once a chunk is taken, and the sink can
+    // stay blocked after that with no further read.
+    const onStdoutError = (error: unknown): void => {
+      this.#failStdout(error);
+    };
+    this.#stdoutError = onStdoutError;
+    process.stdout.on('error', onStdoutError);
     void this.#readStdout(process).catch((error: unknown) => {
       if (!this.#transportEnded.signal.aborted) return this.#break(error);
     });
@@ -647,6 +662,21 @@ export class CodexAppServerClient {
     if (this.#state === 'turning') this.#setState('ready');
   }
 
+  #failStdout(error: unknown): void {
+    if (
+      this.#stdoutFailed ||
+      this.#state === 'closed' ||
+      this.#state === 'broken' ||
+      this.#transportEnded.signal.aborted
+    ) {
+      return;
+    }
+    this.#stdoutFailed = true;
+    const failure = new CodexClientError('stdio', 'Codex app-server stdout failed', error);
+    if (error instanceof Error) failure.cause = error;
+    void this.#break(failure);
+  }
+
   async #break(error: unknown): Promise<void> {
     if (this.#state === 'closed') return;
     if (this.#state !== 'broken') {
@@ -680,7 +710,9 @@ export class CodexAppServerClient {
  * One paused `read()`. Listeners are attached before the first pull so a
  * chunk that is already buffered is not missed, and nothing switches stdout
  * into flowing mode. Abort resolves without a chunk so the caller can return
- * before treating the close as EOF. A stream error rejects.
+ * before treating the close as EOF. A stream error during this pull
+ * rejects the pull. Errors after the chunk has been delivered are owned
+ * by the process-lifetime stdout listener, which stays up while the sink runs.
  */
 function readPausedChunk(stream: Readable, abort: AbortSignal): Promise<string | undefined> {
   return new Promise((resolve, reject) => {
