@@ -579,7 +579,7 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope, transcri
         reply.send(okEnvelope({
           activated: true,
           skill_name: skillName,
-          ...(promptId === undefined ? {} : { prompt_id: promptId }),
+          prompt_id: promptId,
         }, req.id));
       } catch (err) {
         await preparedMedia?.discard();
