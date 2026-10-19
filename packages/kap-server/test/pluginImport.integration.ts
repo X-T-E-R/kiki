@@ -307,7 +307,8 @@ it('keeps a published native session non-ephemeral when the ancillary session in
       moved = false;
       throw failure;
     }
-    await flush(...target);
+    if (target.length === 2) await flush(target[0], target[1]);
+    else await flush();
   });
   const job = await importNative(target, input);
   expect(observed).toBe(failure);
