@@ -10,7 +10,9 @@ import {
   IAgentExecutionService, IAgentLifecycleService, IAgentTaskService, IAppendLogStore, IFileService,
   IHomeRuntimeService, IMcpOAuthService, IPluginHostService, ISessionIndexMirror, ISessionManager,
   IThreadCommunicationService, IThreadMailboxStore, IWorktreeService, getLiveSessionById,
+  type ServiceIdentifier,
 } from '@kiki/agent-core-v2';
+import { InstantiationService } from '@kiki/agent-core-v2/_base/di/instantiationService';
 import { IGlobalSearchService, InlineSearchBackend } from '../src/search/searchService';
 import { SqliteSearchHost } from '../src/search/sqlite/host';
 import { SearchWorkerHost } from '../src/search/worker/host';
@@ -33,6 +35,17 @@ interface ClosePhase {
   error?: string;
 }
 
+function closePhaseText(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string' || typeof error === 'number' || typeof error === 'boolean' || typeof error === 'bigint') return `${error}`;
+  try {
+    const text = JSON.stringify(error);
+    return typeof text === 'string' ? text : 'close failed';
+  } catch {
+    return 'close failed';
+  }
+}
+
 class ClosePhaseWatch {
   private readonly entries: Array<ClosePhase & { started: number; ended?: number }> = [];
   private readonly stack: Array<{ phase: string }> = [];
@@ -41,26 +54,25 @@ class ClosePhaseWatch {
   track<T>(phase: string, run: () => T): T {
     const started = Date.now();
     const token = { phase };
-    const entry = { phase, state: 'pending' as const, elapsedMs: 0, started };
+    const entry: (typeof this.entries)[number] = { phase, state: 'pending', elapsedMs: 0, started };
     this.entries.push(entry);
     this.stack.push(token);
     const finish = (state: 'done' | 'failed', error?: unknown): void => {
       entry.state = state;
       entry.ended = Date.now();
       entry.elapsedMs = entry.ended - started;
-      if (error !== undefined) {
-        const message = error instanceof Error ? error.message : String(error);
-        entry.error = message.slice(0, 180);
-      }
+      if (error !== undefined) entry.error = closePhaseText(error).slice(0, 180);
       const index = this.stack.lastIndexOf(token);
       if (index >= 0) this.stack.splice(index, 1);
     };
     try {
       const result = run();
-      if (result instanceof Promise || (result !== null && typeof result === 'object' &&
-        typeof (result as { then?: unknown }).then === 'function')) {
-        return (result as Promise<unknown>).then(
-          (value) => { finish('done'); return value; },
+      const settled: unknown = result;
+      if (settled instanceof Promise || (settled !== null && typeof settled === 'object' &&
+        typeof (settled as { then?: unknown }).then === 'function')) {
+        const thenable = settled as Promise<unknown>;
+        return thenable.then(
+          (value: unknown) => { finish('done'); return value; },
           (error: unknown) => { finish('failed', error); throw error; },
         ) as T;
       }
@@ -106,42 +118,126 @@ class ClosePhaseWatch {
     return { pending, after, phases };
   }
 
+  undo(restore: () => void): void {
+    this.restores.push(restore);
+  }
+
   restore(): void {
     for (const restore of this.restores.splice(0).toReversed()) restore();
   }
 }
 
-function watchHostClose(host: RunningServer): ClosePhaseWatch {
-  const watch = new ClosePhaseWatch();
-  const service = <T>(token: { readonly _serviceBrand: undefined } & (new (...args: never[]) => T)): T | undefined => {
-    try { return host.core.accessor.get(token as never) as T; } catch { return undefined; }
+interface CloseWatchTarget {
+  app: object;
+  core: {
+    dispose(): unknown;
+    accessor: { get<T>(id: ServiceIdentifier<T>): T };
+    instantiation: object;
   };
-  watch.watch(host.app, 'close', 'app.close');
-  const threadComm = service<IThreadCommunicationService>(IThreadCommunicationService);
-  if (threadComm) watch.watch(threadComm, 'shutdown', 'threadComm.shutdown');
-  const sessions = service<ISessionManager>(ISessionManager);
-  if (sessions) watch.watch(sessions, 'close', 'session.close');
-  const worktrees = service<IWorktreeService>(IWorktreeService);
-  if (worktrees) watch.watch(worktrees, 'remove', 'worktree.remove');
-  const mailbox = service<IThreadMailboxStore>(IThreadMailboxStore);
-  if (mailbox) watch.watch(mailbox, 'close', 'mailbox.close');
-  const homeRuntime = service<IHomeRuntimeService>(IHomeRuntimeService);
-  if (homeRuntime) watch.watch(homeRuntime, 'close', 'homeRuntime.close');
-  const sessionIndex = service<ISessionIndexMirror>(ISessionIndexMirror);
-  if (sessionIndex) watch.watch(sessionIndex, 'drain', 'sessionIndexMirror.drain');
-  const oauth = service<IMcpOAuthService>(IMcpOAuthService);
-  if (oauth) watch.watch(oauth, 'shutdown', 'mcpOAuth.shutdown');
-  const plugins = service<IPluginHostService>(IPluginHostService);
-  if (plugins) watch.watch(plugins, 'stopAll', 'pluginHost.stopAll');
-  const appendLog = service<IAppendLogStore>(IAppendLogStore);
-  if (appendLog) watch.watch(appendLog, 'drainRetirements', 'appendLog.drainRetirements');
-  watch.watch(host.core, 'dispose', 'core.dispose');
-  const search = service<{ dispose?: () => unknown }>(IGlobalSearchService as never);
-  if (search) watch.watch(search, 'dispose', 'globalSearch.dispose');
-  watch.watch(SqliteSearchHost.prototype, 'close', 'sqliteHost.close');
-  watch.watch(InlineSearchBackend.prototype, 'dispose', 'inlineSearch.dispose');
-  watch.watch(SearchWorkerHost.prototype, 'dispose', 'searchWorker.dispose');
-  return watch;
+}
+
+function alreadyMaterialized<T>(host: CloseWatchTarget, id: ServiceIdentifier<T>): T | undefined {
+  const container = host.core.instantiation;
+  if (!(container instanceof InstantiationService)) return undefined;
+  return container.fiberHost.materializedInstance(id);
+}
+
+function watchHostClose(host: CloseWatchTarget): ClosePhaseWatch {
+  const watch = new ClosePhaseWatch();
+  const armed = new Set<object>();
+  const arm = (instance: object, method: string, phase: string): void => {
+    if (armed.has(instance)) return;
+    const current = (instance as Record<string, unknown>)[method];
+    if (typeof current !== 'function') return;
+    armed.add(instance);
+    watch.watch(instance, method, phase);
+  };
+  const specs: Array<{ id: object; method: string; phase: string }> = [];
+  const trackService = <T>(id: ServiceIdentifier<T>, method: string, phase: string): void => {
+    specs.push({ id, method, phase });
+    const existing = alreadyMaterialized(host, id);
+    if (existing !== null && typeof existing === 'object') arm(existing, method, phase);
+  };
+  try {
+    trackService(IThreadCommunicationService, 'shutdown', 'threadComm.shutdown');
+    trackService(ISessionManager, 'close', 'session.close');
+    trackService(IWorktreeService, 'remove', 'worktree.remove');
+    trackService(IThreadMailboxStore, 'close', 'mailbox.close');
+    trackService(IHomeRuntimeService, 'close', 'homeRuntime.close');
+    trackService(ISessionIndexMirror, 'drain', 'sessionIndexMirror.drain');
+    trackService(IMcpOAuthService, 'shutdown', 'mcpOAuth.shutdown');
+    trackService(IPluginHostService, 'stopAll', 'pluginHost.stopAll');
+    trackService(IAppendLogStore, 'drainRetirements', 'appendLog.drainRetirements');
+    trackService(IGlobalSearchService, 'dispose', 'globalSearch.dispose');
+    const accessor = host.core.accessor;
+    const originalGet = accessor.get;
+    const wrappedGet = function <T>(id: ServiceIdentifier<T>): T {
+      const instance = originalGet(id);
+      const spec = specs.find((item) => item.id === id);
+      if (spec && instance !== null && typeof instance === 'object') arm(instance, spec.method, spec.phase);
+      return instance;
+    };
+    accessor.get = wrappedGet;
+    watch.undo(() => { accessor.get = originalGet; });
+    watch.watch(host.app, 'close', 'app.close');
+    watch.watch(host.core, 'dispose', 'core.dispose');
+    watch.watch(SqliteSearchHost.prototype, 'close', 'sqliteHost.close');
+    watch.watch(InlineSearchBackend.prototype, 'dispose', 'inlineSearch.dispose');
+    watch.watch(SearchWorkerHost.prototype, 'dispose', 'searchWorker.dispose');
+    return watch;
+  } catch (error) {
+    watch.restore();
+    if (error instanceof Error) throw error;
+    throw new Error(closePhaseText(error), { cause: error });
+  }
+}
+
+async function awaitNaturalClose(input: {
+  close: () => Promise<unknown>;
+  install: () => ClosePhaseWatch;
+  restoreSpy: () => void;
+  onTimeout: () => void;
+  detail: (phases: ClosePhaseWatch) => unknown;
+}): Promise<void> {
+  let phases: ClosePhaseWatch | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  let closing: Promise<boolean> | undefined;
+  try {
+    const installed = input.install();
+    phases = installed;
+    let closeError: unknown;
+    closing = new Promise<boolean>((resolve) => {
+      try {
+        void Promise.resolve(input.close()).then(
+          () => { resolve(true); },
+          (error: unknown) => { closeError = error; resolve(false); },
+        );
+      } catch (error) {
+        closeError = error;
+        resolve(false);
+      }
+    });
+    const naturallyClosed = await Promise.race([
+      closing,
+      new Promise<false>((resolve) => { timer = setTimeout(() => { resolve(false); }, 2000); }),
+    ]);
+    if (closeError instanceof Error) throw closeError;
+    if (closeError !== undefined) throw new Error('close failed', { cause: closeError });
+    if (!naturallyClosed) {
+      timedOut = true;
+      throw new Error(`Host did not close naturally within 2000ms: ${JSON.stringify(input.detail(installed))}`);
+    }
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (timedOut) input.onTimeout();
+    try {
+      await closing;
+    } finally {
+      phases?.restore();
+      input.restoreSpy();
+    }
+  }
 }
 
 describe('close phase watch', () => {
@@ -194,6 +290,53 @@ describe('close phase watch', () => {
     await expect(broken.close()).rejects.toThrow('close failed');
     expect(failure.snapshot().phases[0]).toMatchObject({ phase: 'mailbox.close', state: 'failed', error: 'close failed' });
     failure.restore();
+  });
+
+  it('restores prototype wrappers when close rejects', async () => {
+    const originals = {
+      sqlite: SqliteSearchHost.prototype.close,
+      inline: InlineSearchBackend.prototype.dispose,
+      worker: SearchWorkerHost.prototype.dispose,
+    };
+    let gets = 0;
+    const get = <T,>(_id: ServiceIdentifier<T>): T => {
+      gets += 1;
+      throw new Error('accessor.get');
+    };
+    const server = { close() {}, closeAllConnections: vi.fn() };
+    const originalServerClose = server.close;
+    const spy = vi.spyOn(server, 'close');
+    let wrappedDuringClose = false;
+    const host: CloseWatchTarget = {
+      app: { close() { return undefined; }, server },
+      core: { dispose() { return undefined; }, accessor: { get }, instantiation: {} },
+    };
+    try {
+      await expect(awaitNaturalClose({
+        close: () => {
+          wrappedDuringClose = SqliteSearchHost.prototype.close !== originals.sqlite
+            && InlineSearchBackend.prototype.dispose !== originals.inline
+            && SearchWorkerHost.prototype.dispose !== originals.worker;
+          return Promise.reject(new Error('close failed'));
+        },
+        install: () => watchHostClose(host),
+        restoreSpy: () => { spy.mockRestore(); },
+        onTimeout: () => server.closeAllConnections(),
+        detail: () => ({}),
+      })).rejects.toThrow('close failed');
+      expect(wrappedDuringClose).toBe(true);
+      expect(gets).toBe(0);
+      expect(SqliteSearchHost.prototype.close).toBe(originals.sqlite);
+      expect(InlineSearchBackend.prototype.dispose).toBe(originals.inline);
+      expect(SearchWorkerHost.prototype.dispose).toBe(originals.worker);
+      expect(server.close).toBe(originalServerClose);
+      expect(server.closeAllConnections).not.toHaveBeenCalled();
+    } finally {
+      if (SqliteSearchHost.prototype.close !== originals.sqlite) SqliteSearchHost.prototype.close = originals.sqlite;
+      if (InlineSearchBackend.prototype.dispose !== originals.inline) InlineSearchBackend.prototype.dispose = originals.inline;
+      if (SearchWorkerHost.prototype.dispose !== originals.worker) SearchWorkerHost.prototype.dispose = originals.worker;
+      if (server.close !== originalServerClose) spy.mockRestore();
+    }
   });
 });
 
@@ -270,26 +413,18 @@ describe('GUI shared client against an isolated KAP host', () => {
     provider.closeAllConnections();
     const initialResponses = responseFacts.map((read) => read());
     const serverClose = vi.spyOn(host.app.server, 'close');
-    const closePhases = watchHostClose(host);
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const closing = host.close();
-    const naturallyClosed = await Promise.race([
-      closing.then(() => true),
-      new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), 2000); }),
-    ]);
-    if (timer !== undefined) clearTimeout(timer);
     try {
-      if (!naturallyClosed) {
-        throw new Error(`Host did not close naturally within 2000ms: ${JSON.stringify({
+      await awaitNaturalClose({
+        close: () => host.close(),
+        install: () => watchHostClose(host),
+        restoreSpy: () => { serverClose.mockRestore(); },
+        onTimeout: () => { host.app.server.closeAllConnections(); },
+        detail: (phases) => ({
           initialResponses, serverCloseCalled: serverClose.mock.calls.length,
-          responses: responseFacts.map((read) => read()), ...closePhases.snapshot(),
-        })}`);
-      }
+          responses: responseFacts.map((read) => read()), ...phases.snapshot(),
+        }),
+      });
     } finally {
-      if (!naturallyClosed) host.app.server.closeAllConnections();
-      await closing;
-      closePhases.restore();
-      serverClose.mockRestore();
       await new Promise<void>((resolve, reject) => provider.close((error) => {
         if (error) reject(error);
         else resolve();
