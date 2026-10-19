@@ -256,7 +256,7 @@ KIMI_API_KEY = "sk-xxx"
 KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 ```
 
-Priority: `api_key` field > `env` sub-table key > if both are absent, startup fails with an error. `type = "vertexai"` can omit `api_key` when the env sub-table sets both `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION`; see [Vertex AI](./providers.md#vertexai).
+Priority: `api_key` field > `env` sub-table key > if both are absent, startup fails with an error. `type = "vertexai"` can omit `api_key` when the env sub-table sets both `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION`. An `api_key` set alongside those coordinates is still sent. See [Vertex AI](./providers.md#vertexai).
 
 ## `models`
 

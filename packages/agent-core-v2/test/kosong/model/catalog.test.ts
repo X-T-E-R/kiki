@@ -695,13 +695,19 @@ describe('Model assembly (pure data)', () => {
           apiKey: 'vk-local-fixture',
           env: { GOOGLE_CLOUD_PROJECT: 'my-project', GOOGLE_CLOUD_LOCATION: 'us-central1' },
         },
+        projectOnly: { type: 'vertexai', env: { GOOGLE_CLOUD_PROJECT: 'example-project' } },
+        locationOnly: { type: 'vertexai', env: { GOOGLE_CLOUD_LOCATION: 'global' } },
         gemini: { type: 'google-genai', apiKey: 'gk-local-fixture' },
+        geminiProjectOnly: { type: 'google-genai', env: { GOOGLE_CLOUD_PROJECT: 'example-project' } },
       },
       models: {
         keyed: { provider: 'keyed', model: 'gemini-2.5-flash', maxContextSize: 1000 },
         project: { provider: 'project', model: 'gemini-2.5-flash', maxContextSize: 1000 },
         both: { provider: 'both', model: 'gemini-2.5-flash', maxContextSize: 1000 },
+        projectOnly: { provider: 'projectOnly', model: 'gemini-2.5-flash', maxContextSize: 1000 },
+        locationOnly: { provider: 'locationOnly', model: 'gemini-2.5-flash', maxContextSize: 1000 },
         gemini: { provider: 'gemini', model: 'gemini-2.5-flash', maxContextSize: 1000 },
+        geminiProjectOnly: { provider: 'geminiProjectOnly', model: 'gemini-2.5-flash', maxContextSize: 1000 },
       },
     });
     try {
@@ -718,8 +724,17 @@ describe('Model assembly (pure data)', () => {
         project: 'my-project',
         location: 'us-central1',
       });
+      expect(catalog.get('projectOnly').providerOptions).toEqual({
+        vertexai: true,
+        project: 'example-project',
+      });
+      expect(catalog.get('locationOnly').providerOptions).toEqual({
+        vertexai: true,
+        location: 'global',
+      });
       expect(catalog.get('gemini').protocol).toBe('google-genai');
       expect(catalog.get('gemini').providerOptions).toBeUndefined();
+      expect(catalog.get('geminiProjectOnly').providerOptions).toBeUndefined();
     } finally {
       await host.dispose();
     }

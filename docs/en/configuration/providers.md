@@ -209,13 +209,11 @@ api_key = "xxxxx"
 
 Uses the same Google GenAI client as [`google-genai`](#google-genai), but stays on Vertex AI. It does not call the Gemini Developer API (`generativelanguage.googleapis.com`). `vertexai` is a provider type, not a model `protocol` value.
 
-Pick one of the two setups below. They are not combined: when both the project and the location are set, Kiki uses the project route and does not send the API key.
-
 ### API key
 
-Store the key as `api_key` in `credentials.toml`, or as `VERTEXAI_API_KEY` in the provider `[providers.<name>.env]` sub-table. Leave the project and location unset.
+Store the key as `api_key` in `credentials.toml`, or as `VERTEXAI_API_KEY` in the provider `[providers.<name>.env]` sub-table.
 
-Requests go to `https://aiplatform.googleapis.com` with API version `v1beta1` and the `x-goog-api-key` header. The path looks like `/v1beta1/publishers/google/models/<model>:streamGenerateContent` and does not include a project or location.
+With neither project nor location set, requests go to `https://aiplatform.googleapis.com` with API version `v1` and the `x-goog-api-key` header. The path looks like `/v1/publishers/google/models/<model>:streamGenerateContent`.
 
 ```toml
 [providers.vertex]
@@ -228,11 +226,15 @@ type = "vertexai"
 api_key = "xxxxx"
 ```
 
+With both `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION` set, that same key is sent on the project resource. Location `global` uses `https://aiplatform.googleapis.com/v1/projects/<project>/locations/global/publishers/google/models/<model>:streamGenerateContent`. Any other location uses `https://<location>-aiplatform.googleapis.com/v1/projects/<project>/locations/<location>/publishers/google/models/<model>:streamGenerateContent`.
+
+Set both coordinates or neither. Setting only one is rejected. A model id that already starts with `projects/` is sent unchanged. A model id that starts with `publishers/` is rejected when project and location are set.
+
 ### Project ADC
 
-Write the project ID and region in the provider env sub-table. A shell `export GOOGLE_CLOUD_PROJECT` is not read. Sign in with Google Cloud application default credentials: `gcloud auth application-default login`, or set `GOOGLE_APPLICATION_CREDENTIALS` to a service account JSON file.
+Write the project ID and location in the provider env sub-table, and leave the API key unset. A shell `export GOOGLE_CLOUD_PROJECT` is not read. Sign in with Google Cloud application default credentials: `gcloud auth application-default login`, or set `GOOGLE_APPLICATION_CREDENTIALS` to a service account JSON file.
 
-No API key is required. Requests go to `https://<location>-aiplatform.googleapis.com` with API version `v1beta1`. The path starts with `/v1beta1/projects/<project>/locations/<location>/`. If an API key is also configured, Kiki still uses this project route and does not send the key.
+Requests use API version `v1beta1` and a path that starts with `/v1beta1/projects/<project>/locations/<location>/`. Location `global` uses `https://aiplatform.googleapis.com`. Location `us` uses `https://aiplatform.us.rep.googleapis.com`. Other locations use `https://<location>-aiplatform.googleapis.com`.
 
 ```toml
 [providers.vertex]
@@ -248,9 +250,9 @@ gcloud auth application-default login
 kiki
 ```
 
-To send either route through a custom host, set `base_url` (or `GOOGLE_VERTEX_BASE_URL` in the provider env sub-table). Give the host root only — the client appends the API version and path.
+To send any of these routes through a custom host, set `base_url` (or `GOOGLE_VERTEX_BASE_URL` in the provider env sub-table). Give the host root only. The client appends the API version and path.
 
-`google-genai` is a separate route. Its key is a Gemini Developer API key (`GOOGLE_API_KEY`) unless that provider's env sub-table sets both `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION`, which selects the project route above.
+`google-genai` stays on the Gemini Developer API unless that provider's env sub-table sets both `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION`. Those coordinates select Vertex AI, and an API key configured for that provider is still sent. A `vertexai` API key stays on Vertex AI when those coordinates are set.
 
 ## OAuth and credential injection
 

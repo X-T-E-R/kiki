@@ -1032,6 +1032,7 @@ async function drain(stream: StreamedMessage): Promise<void> {
 
 const VERTEX_KEY = 'vk-local-fixture';
 const GEMINI_KEY = 'gk-local-fixture';
+const ARGON_MODEL = 'gemini-4-argon';
 
 type GoogleAuthCtor = {
   prototype: { getRequestHeaders: (url?: string | URL) => Promise<Headers> };
@@ -1067,34 +1068,52 @@ describe('google-genai SDK route (intercepted fetch)', () => {
     vi.restoreAllMocks();
   });
 
-  it('sends a Vertex API key to aiplatform without a project path or the Gemini host', async () => {
-    const seen: Array<{ url: URL; keyHeader: string | null }> = [];
+  async function interceptSdk(adcAuthorization?: string) {
+    const seen: Array<{ url: URL; keyHeader: string | null; authorization: string | null }> = [];
     const authHeaders = vi.spyOn((await loadGoogleAuth()).prototype, 'getRequestHeaders');
+    if (adcAuthorization === undefined) authHeaders.mockRejectedValue(new Error('adc-called'));
+    else authHeaders.mockResolvedValue(new Headers({ authorization: adcAuthorization }));
     vi.stubGlobal(
       'fetch',
       capturedFetch((url, headers) => {
-        seen.push({ url, keyHeader: headers.get('x-goog-api-key') });
+        seen.push({
+          url,
+          keyHeader: headers.get('x-goog-api-key'),
+          authorization: headers.get('authorization'),
+        });
       }),
     );
-    const provider = new GoogleGenAIChatProvider({
-      model: 'gemini-2.5-flash',
-      vertexai: true,
-    });
+    return { seen, authHeaders };
+  }
+
+  function expectVertexKey(
+    request: { url: URL; keyHeader: string | null; authorization: string | null },
+    hostname: string,
+    pathname: string,
+  ) {
+    expect(request.url.hostname).toBe(hostname);
+    expect(request.url.pathname).toBe(pathname);
+    expect(request.url.searchParams.get('alt')).toBe('sse');
+    expect(request.url.hostname.includes('generativelanguage')).toBe(false);
+    expect(request.url.href.includes(VERTEX_KEY)).toBe(false);
+    expect(request.keyHeader).toBe(VERTEX_KEY);
+    expect(request.authorization).toBeNull();
+  }
+
+  it('sends a Vertex API key on the v1 publisher path', async () => {
+    const { seen, authHeaders } = await interceptSdk();
+    const provider = new GoogleGenAIChatProvider({ model: ARGON_MODEL, vertexai: true });
     const stream = await provider.generate('', [], PROBE_HISTORY, { auth: { apiKey: VERTEX_KEY } });
     const parts = [];
     for await (const part of stream) parts.push(part);
     expect(parts).toContainEqual({ type: 'text', text: 'ok' });
     expect(seen).toHaveLength(1);
-    const request = seen[0]!;
-    expect(request.url.hostname).toBe('aiplatform.googleapis.com');
-    expect(request.url.pathname).toBe(
-      '/v1beta1/publishers/google/models/gemini-2.5-flash:streamGenerateContent',
+    expectVertexKey(
+      seen[0]!,
+      'aiplatform.googleapis.com',
+      `/v1/publishers/google/models/${ARGON_MODEL}:streamGenerateContent`,
     );
-    expect(request.url.searchParams.get('alt')).toBe('sse');
-    expect(request.url.pathname.includes('/projects/')).toBe(false);
-    expect(request.url.hostname.includes('generativelanguage')).toBe(false);
-    expect(request.url.href.includes(VERTEX_KEY)).toBe(false);
-    expect(request.keyHeader).toBe(VERTEX_KEY);
+    expect(seen[0]!.url.pathname.includes('/projects/')).toBe(false);
     expect(authHeaders).not.toHaveBeenCalled();
   });
 
@@ -1118,51 +1137,265 @@ describe('google-genai SDK route (intercepted fetch)', () => {
     expect(request.keyHeader).toBe(GEMINI_KEY);
   });
 
-  it('uses the project ADC route and does not send an API key when project and location are set', async () => {
-    const seen: Array<{ url: URL; keyHeader: string | null; authorization: string | null }> = [];
-    vi.spyOn((await loadGoogleAuth()).prototype, 'getRequestHeaders').mockResolvedValue(
-      new Headers({ authorization: 'Bearer local-adc-stub' }),
-    );
+  it('keeps Gemini on generativelanguage when GOOGLE_GENAI_USE_VERTEXAI is set', async () => {
+    process.env['GOOGLE_GENAI_USE_VERTEXAI'] = 'true';
+    const seen: Array<{ url: URL; keyHeader: string | null }> = [];
     vi.stubGlobal(
       'fetch',
       capturedFetch((url, headers) => {
-        seen.push({
-          url,
-          keyHeader: headers.get('x-goog-api-key'),
-          authorization: headers.get('authorization'),
-        });
+        seen.push({ url, keyHeader: headers.get('x-goog-api-key') });
       }),
     );
+    const provider = new GoogleGenAIChatProvider({ model: 'gemini-2.5-flash' });
+    const stream = await provider.generate('', [], PROBE_HISTORY, { auth: { apiKey: GEMINI_KEY } });
+    for await (const part of stream) void part;
+    expect(seen[0]!.url.hostname).toBe('generativelanguage.googleapis.com');
+    expect(seen[0]!.url.pathname).toBe('/v1beta/models/gemini-2.5-flash:streamGenerateContent');
+    expect(seen[0]!.keyHeader).toBe(GEMINI_KEY);
+  });
+
+  it('sends a Vertex API key on the regional project resource', async () => {
+    const { seen, authHeaders } = await interceptSdk();
     const provider = new GoogleGenAIChatProvider({
-      model: 'gemini-2.5-flash',
+      model: ARGON_MODEL,
       apiKey: VERTEX_KEY,
       vertexai: true,
-      project: 'my-project',
+      project: 'example-project',
       location: 'us-central1',
     });
     const stream = await provider.generate('', [], PROBE_HISTORY, { auth: { apiKey: VERTEX_KEY } });
     for await (const part of stream) void part;
     expect(seen).toHaveLength(1);
+    expectVertexKey(
+      seen[0]!,
+      'us-central1-aiplatform.googleapis.com',
+      `/v1/projects/example-project/locations/us-central1/publishers/google/models/${ARGON_MODEL}:streamGenerateContent`,
+    );
+    expect(authHeaders).not.toHaveBeenCalled();
+  });
+
+  it('sends a Vertex API key on the global project resource', async () => {
+    const { seen, authHeaders } = await interceptSdk();
+    const provider = new GoogleGenAIChatProvider({
+      model: ARGON_MODEL,
+      vertexai: true,
+      project: 'example-project',
+      location: 'global',
+    });
+    const stream = await provider.generate('', [], PROBE_HISTORY, { auth: { apiKey: VERTEX_KEY } });
+    for await (const part of stream) void part;
+    expect(seen).toHaveLength(1);
+    expectVertexKey(
+      seen[0]!,
+      'aiplatform.googleapis.com',
+      `/v1/projects/example-project/locations/global/publishers/google/models/${ARGON_MODEL}:streamGenerateContent`,
+    );
+    expect(authHeaders).not.toHaveBeenCalled();
+  });
+
+  it('uses the location host template for a Vertex API key in us', async () => {
+    const { seen, authHeaders } = await interceptSdk();
+    const provider = new GoogleGenAIChatProvider({
+      model: ARGON_MODEL,
+      vertexai: true,
+      project: 'example-project',
+      location: 'us',
+    });
+    const stream = await provider.generate('', [], PROBE_HISTORY, { auth: { apiKey: VERTEX_KEY } });
+    for await (const part of stream) void part;
+    expectVertexKey(
+      seen[0]!,
+      'us-aiplatform.googleapis.com',
+      `/v1/projects/example-project/locations/us/publishers/google/models/${ARGON_MODEL}:streamGenerateContent`,
+    );
+    expect(authHeaders).not.toHaveBeenCalled();
+  });
+
+  it('keeps a request API key when the constructor has project coordinates and no key', async () => {
+    const { seen, authHeaders } = await interceptSdk();
+    const provider = new GoogleGenAIChatProvider({
+      model: ARGON_MODEL,
+      vertexai: true,
+      project: 'example-project',
+      location: 'global',
+    });
+    const stream = await provider.generate('', [], PROBE_HISTORY, { auth: { apiKey: VERTEX_KEY } });
+    for await (const part of stream) void part;
+    expectVertexKey(
+      seen[0]!,
+      'aiplatform.googleapis.com',
+      `/v1/projects/example-project/locations/global/publishers/google/models/${ARGON_MODEL}:streamGenerateContent`,
+    );
+    expect(authHeaders).not.toHaveBeenCalled();
+  });
+
+  it('sends a fully qualified model resource unchanged with the Vertex API key', async () => {
+    const { seen, authHeaders } = await interceptSdk();
+    const model = `projects/example-project/locations/global/publishers/google/models/${ARGON_MODEL}`;
+    const provider = new GoogleGenAIChatProvider({
+      model,
+      apiKey: VERTEX_KEY,
+      vertexai: true,
+      project: 'example-project',
+      location: 'global',
+    });
+    const stream = await provider.generate('', [], PROBE_HISTORY);
+    for await (const part of stream) void part;
+    expectVertexKey(
+      seen[0]!,
+      'aiplatform.googleapis.com',
+      `/v1/${model}:streamGenerateContent`,
+    );
+    expect(seen[0]!.url.pathname.includes('/publishers/google/models/projects/')).toBe(false);
+    expect(authHeaders).not.toHaveBeenCalled();
+  });
+
+  it('honors a caller base URL on the project resource and still sends the key', async () => {
+    const { seen, authHeaders } = await interceptSdk();
+    const provider = new GoogleGenAIChatProvider({
+      model: ARGON_MODEL,
+      apiKey: VERTEX_KEY,
+      vertexai: true,
+      project: 'example-project',
+      location: 'us-central1',
+      baseUrl: 'https://vertex.example.test',
+    });
+    const stream = await provider.generate('', [], PROBE_HISTORY);
+    for await (const part of stream) void part;
+    expectVertexKey(
+      seen[0]!,
+      'vertex.example.test',
+      `/v1/projects/example-project/locations/us-central1/publishers/google/models/${ARGON_MODEL}:streamGenerateContent`,
+    );
+    expect(authHeaders).not.toHaveBeenCalled();
+  });
+
+  it('uses project ADC when project and location are set and no API key is present', async () => {
+    const { seen, authHeaders } = await interceptSdk('Bearer local-adc-stub');
+    const provider = new GoogleGenAIChatProvider({
+      model: 'gemini-2.5-flash',
+      vertexai: true,
+      project: 'example-project',
+      location: 'us-central1',
+    });
+    const stream = await provider.generate('', [], PROBE_HISTORY);
+    for await (const part of stream) void part;
+    expect(seen).toHaveLength(1);
     const request = seen[0]!;
     expect(request.url.hostname).toBe('us-central1-aiplatform.googleapis.com');
     expect(request.url.pathname).toBe(
-      '/v1beta1/projects/my-project/locations/us-central1/publishers/google/models/gemini-2.5-flash:streamGenerateContent',
+      '/v1beta1/projects/example-project/locations/us-central1/publishers/google/models/gemini-2.5-flash:streamGenerateContent',
     );
-    expect(request.url.hostname.includes('generativelanguage')).toBe(false);
     expect(request.url.href.includes(VERTEX_KEY)).toBe(false);
     expect(request.keyHeader).toBeNull();
     expect(request.authorization).toBe('Bearer local-adc-stub');
+    expect(authHeaders).toHaveBeenCalled();
   });
+
+  it('uses the SDK global host for project ADC', async () => {
+    const { seen } = await interceptSdk('Bearer local-adc-stub');
+    const provider = new GoogleGenAIChatProvider({
+      model: 'gemini-2.5-flash',
+      vertexai: true,
+      project: 'example-project',
+      location: 'global',
+    });
+    const stream = await provider.generate('', [], PROBE_HISTORY);
+    for await (const part of stream) void part;
+    expect(seen[0]!.url.hostname).toBe('aiplatform.googleapis.com');
+    expect(seen[0]!.url.pathname).toBe(
+      '/v1beta1/projects/example-project/locations/global/publishers/google/models/gemini-2.5-flash:streamGenerateContent',
+    );
+    expect(seen[0]!.keyHeader).toBeNull();
+    expect(seen[0]!.authorization).toBe('Bearer local-adc-stub');
+  });
+
+  it('uses the SDK rep host for project ADC in us', async () => {
+    const { seen } = await interceptSdk('Bearer local-adc-stub');
+    const provider = new GoogleGenAIChatProvider({
+      model: 'gemini-2.5-flash',
+      vertexai: true,
+      project: 'example-project',
+      location: 'us',
+    });
+    const stream = await provider.generate('', [], PROBE_HISTORY);
+    for await (const part of stream) void part;
+    expect(seen[0]!.url.hostname).toBe('aiplatform.us.rep.googleapis.com');
+    expect(seen[0]!.url.pathname).toBe(
+      '/v1beta1/projects/example-project/locations/us/publishers/google/models/gemini-2.5-flash:streamGenerateContent',
+    );
+    expect(seen[0]!.keyHeader).toBeNull();
+    expect(seen[0]!.authorization).toBe('Bearer local-adc-stub');
+  });
+
+  async function expectVertexRejected(
+    options: ConstructorParameters<typeof GoogleGenAIChatProvider>[0],
+    pattern: RegExp,
+  ) {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const authHeaders = vi
+      .spyOn((await loadGoogleAuth()).prototype, 'getRequestHeaders')
+      .mockRejectedValue(new Error('adc-called'));
+    const provider = new GoogleGenAIChatProvider(options);
+    await expect(provider.generate('', [], PROBE_HISTORY, { auth: { apiKey: options.apiKey } })).rejects.toThrow(pattern);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(authHeaders).not.toHaveBeenCalled();
+  }
 
   it('refuses a Vertex key route without calling fetch when no key and no project are set', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
-    const provider = new GoogleGenAIChatProvider({
-      model: 'gemini-2.5-flash',
-      vertexai: true,
-    });
+    const authHeaders = vi
+      .spyOn((await loadGoogleAuth()).prototype, 'getRequestHeaders')
+      .mockRejectedValue(new Error('adc-called'));
+    const provider = new GoogleGenAIChatProvider({ model: 'gemini-2.5-flash', vertexai: true });
     await expect(provider.generate('', [], PROBE_HISTORY)).rejects.toThrow(/apiKey is required for Vertex AI/);
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(authHeaders).not.toHaveBeenCalled();
+  });
+
+  it('rejects a Vertex project without a location', async () => {
+    await expectVertexRejected(
+      { model: ARGON_MODEL, vertexai: true, apiKey: VERTEX_KEY, project: 'example-project' },
+      /project and location must both be set/,
+    );
+  });
+
+  it('rejects a Vertex location without a project', async () => {
+    await expectVertexRejected(
+      { model: ARGON_MODEL, vertexai: true, apiKey: VERTEX_KEY, location: 'global' },
+      /project and location must both be set/,
+    );
+  });
+
+  it('rejects one Vertex coordinate when no API key is present', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const authHeaders = vi
+      .spyOn((await loadGoogleAuth()).prototype, 'getRequestHeaders')
+      .mockRejectedValue(new Error('adc-called'));
+    const provider = new GoogleGenAIChatProvider({
+      model: ARGON_MODEL,
+      vertexai: true,
+      project: 'example-project',
+    });
+    await expect(provider.generate('', [], PROBE_HISTORY)).rejects.toThrow(/project and location must both be set/);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(authHeaders).not.toHaveBeenCalled();
+  });
+
+  it('rejects a publishers model id when Vertex project and location are set', async () => {
+    await expectVertexRejected(
+      {
+        model: `publishers/google/models/${ARGON_MODEL}`,
+        vertexai: true,
+        apiKey: VERTEX_KEY,
+        project: 'example-project',
+        location: 'global',
+      },
+      /publishers\/ model id cannot be combined/,
+    );
   });
 });
 

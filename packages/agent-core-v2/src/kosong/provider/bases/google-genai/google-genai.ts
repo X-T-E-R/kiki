@@ -705,62 +705,87 @@ export class GoogleGenAIChatProvider implements ChatProvider {
     this._location = options.location;
     this._defaultHeaders = options.defaultHeaders;
     this._clientFactory = options.clientFactory;
-    this._client =
-      this._vertexProject() !== undefined || this._apiKey !== undefined
-        ? this._buildClient(this._apiKey)
-        : undefined;
+    this._client = this._shouldEagerBuild() ? this._buildClient(this._apiKey) : undefined;
   }
 
-  private _vertexProject(): { readonly project: string; readonly location: string } | undefined {
-    if (!this._vertexai) return undefined;
+  private _shouldEagerBuild(): boolean {
+    const coordinates = this._vertexCoordinates();
+    if (coordinates.kind === 'partial') return false;
+    if (coordinates.kind === 'complete') return true;
+    return this._apiKey !== undefined;
+  }
+
+  private _vertexCoordinates(): VertexCoordinates {
+    if (!this._vertexai) return { kind: 'off' };
     const project = presentString(this._project);
     const location = presentString(this._location);
-    if (project === undefined || location === undefined) return undefined;
-    return { project, location };
+    if (project !== undefined && location !== undefined) return { kind: 'complete', project, location };
+    if (project !== undefined || location !== undefined) return { kind: 'partial' };
+    return { kind: 'absent' };
   }
 
-  private _buildClient(
-    apiKey: string | undefined,
-    auth?: ProviderRequestAuth,
-  ): GenAIClient {
+  private _httpOptions(
+    auth: ProviderRequestAuth | undefined,
+    baseUrl: string | undefined,
+  ): { headers?: Record<string, string>; baseUrl?: string } | undefined {
     const httpOptions: { headers?: Record<string, string>; baseUrl?: string } = {};
     const headers = mergeRequestHeaders(this._defaultHeaders, undefined, auth?.headers);
-    if (headers !== undefined) {
-      httpOptions.headers = headers;
-    }
-    if (this._baseUrl !== undefined) {
-      httpOptions.baseUrl = this._baseUrl;
-    }
-    const http = Object.keys(httpOptions).length > 0 ? httpOptions : undefined;
-    const vertexProject = this._vertexProject();
-    if (vertexProject !== undefined) {
-      return new GenAIClient({
-        apiKey: undefined,
-        vertexai: true,
-        project: vertexProject.project,
-        location: vertexProject.location,
-        httpOptions: http,
-      });
-    }
-    if (this._vertexai) {
-      if (apiKey === undefined || apiKey.length === 0) {
+    if (headers !== undefined) httpOptions.headers = headers;
+    if (baseUrl !== undefined) httpOptions.baseUrl = baseUrl;
+    return Object.keys(httpOptions).length > 0 ? httpOptions : undefined;
+  }
+
+  private _vertexKeyBaseUrl(location: string): string {
+    if (this._baseUrl !== undefined) return this._baseUrl;
+    if (location === 'global') return 'https://aiplatform.googleapis.com';
+    return `https://${location}-aiplatform.googleapis.com`;
+  }
+
+  private _buildClient(apiKey: string | undefined, auth?: ProviderRequestAuth): GenAIClient {
+    const coordinates = this._vertexCoordinates();
+    const key = configuredKey(apiKey);
+    switch (coordinates.kind) {
+      case 'partial':
         throw new ChatProviderError(
-          'GoogleGenAIChatProvider: apiKey is required for Vertex AI when GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION are not both set.',
+          'GoogleGenAIChatProvider: Vertex AI project and location must both be set, or both be omitted.',
         );
-      }
-      return new GenAIClient({
-        apiKey,
-        vertexai: true,
-        project: undefined,
-        location: undefined,
-        httpOptions: http,
-      });
+      case 'complete':
+        if (key !== undefined) {
+          return new GenAIClient({
+            apiKey: key,
+            vertexai: true,
+            apiVersion: 'v1',
+            httpOptions: this._httpOptions(auth, this._vertexKeyBaseUrl(coordinates.location)),
+          });
+        }
+        return new GenAIClient({
+          vertexai: true,
+          project: coordinates.project,
+          location: coordinates.location,
+          httpOptions: this._httpOptions(auth, this._baseUrl),
+        });
+      case 'absent':
+        if (key === undefined) {
+          throw new ChatProviderError(
+            'GoogleGenAIChatProvider: apiKey is required for Vertex AI when GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION are not both set.',
+          );
+        }
+        return new GenAIClient({
+          apiKey: key,
+          vertexai: true,
+          apiVersion: 'v1',
+          httpOptions: this._httpOptions(
+            auth,
+            this._baseUrl ?? 'https://aiplatform.googleapis.com',
+          ),
+        });
+      case 'off':
+        return new GenAIClient({
+          apiKey: key,
+          vertexai: false,
+          httpOptions: this._httpOptions(auth, this._baseUrl),
+        });
     }
-    return new GenAIClient({
-      apiKey,
-      vertexai: false,
-      httpOptions: http,
-    });
   }
 
   get modelName(): string {
@@ -823,15 +848,15 @@ export class GoogleGenAIChatProvider implements ChatProvider {
     applyResponseFormat(config, options?.responseFormat);
 
     try {
-      const client = this._createClient(
-        mergeProviderRequestAuth(options?.auth, options?.headers),
-      );
+      const requestAuth = mergeProviderRequestAuth(options?.auth, options?.headers);
+      const model = this._requestModel(requestAuth);
+      const client = this._createClient(requestAuth);
       const models = client.models as unknown as {
         generateContent(params: Record<string, unknown>): Promise<unknown>;
         generateContentStream(params: Record<string, unknown>): Promise<AsyncGenerator>;
       };
 
-      const params = { model: this._model, contents, config };
+      const params = { model, contents, config };
 
       options?.onRequestSent?.();
       if (this._stream) {
@@ -910,18 +935,28 @@ export class GoogleGenAIChatProvider implements ChatProvider {
     return thinkingConfig;
   }
 
+  private _resolvedKey(auth: ProviderRequestAuth | undefined): string | undefined {
+    return configuredKey(auth?.apiKey) ?? this._apiKey;
+  }
+
+  private _requestModel(auth: ProviderRequestAuth | undefined): string {
+    const coordinates = this._vertexCoordinates();
+    if (coordinates.kind !== 'complete') return this._model;
+    if (this._model.startsWith('publishers/')) {
+      throw new ChatProviderError(
+        'GoogleGenAIChatProvider: a publishers/ model id cannot be combined with Vertex AI project and location.',
+      );
+    }
+    if (this._resolvedKey(auth) === undefined || this._model.startsWith('projects/')) return this._model;
+    return `projects/${coordinates.project}/locations/${coordinates.location}/publishers/google/models/${this._model}`;
+  }
+
   private _createClient(auth: ProviderRequestAuth | undefined): GenAIClient {
     return resolveAuthBackedClient(
       { cachedClient: this._client, clientFactory: this._clientFactory },
       auth,
       (requestAuth) => {
-        if (this._vertexProject() !== undefined) return this._buildClient(undefined, requestAuth);
-        if (this._vertexai) {
-          const requestKey = requestAuth?.apiKey;
-          const apiKey =
-            requestKey !== undefined && requestKey.length > 0 ? requestKey : this._apiKey;
-          return this._buildClient(apiKey, requestAuth);
-        }
+        if (this._vertexai) return this._buildClient(this._resolvedKey(requestAuth), requestAuth);
         return this._buildClient(
           requireProviderApiKey('GoogleGenAIChatProvider', requestAuth, this._apiKey),
           requestAuth,
@@ -929,6 +964,16 @@ export class GoogleGenAIChatProvider implements ChatProvider {
       },
     );
   }
+}
+
+type VertexCoordinates =
+  | { readonly kind: 'off' }
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'partial' }
+  | { readonly kind: 'complete'; readonly project: string; readonly location: string };
+
+function configuredKey(value: string | undefined): string | undefined {
+  return value === undefined || value.length === 0 ? undefined : value;
 }
 
 function presentString(value: string | undefined): string | undefined {

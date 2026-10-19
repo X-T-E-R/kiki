@@ -694,6 +694,8 @@ function buildProtocolProviderOptions(
         options.location = location;
       } else if (provider?.type === 'vertexai') {
         options.vertexai = true;
+        if (project !== undefined) options.project = project;
+        if (location !== undefined) options.location = location;
       }
       break;
     }
