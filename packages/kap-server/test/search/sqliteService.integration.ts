@@ -50,7 +50,15 @@ it('serves partial building progress then locatable SQLite hits while indexing i
       page = await search.search({ query: 'needle', indexOnly: true });
     }
     expect(page.items[0]).toMatchObject({ sessionId: 's1', agentId: 'main', role: 'user', turn: 0 });
-    expect(page.indexState).toMatchObject({ indexedSessions: 1, totalSessions: 1 });
+    expect(page.indexState.totalSessions).toBe(1);
+    expect(['building', 'ready']).toContain(page.indexState.state);
+    expect(page.indexState.indexedSessions).toBeLessThanOrEqual(page.indexState.totalSessions);
+    while ((page.indexState.state !== 'ready' || page.indexState.indexedSessions < page.indexState.totalSessions) && Date.now() < deadline) {
+      await delay(50);
+      page = await search.search({ query: 'needle', indexOnly: true });
+    }
+    expect(page.items[0]).toMatchObject({ sessionId: 's1', agentId: 'main', role: 'user', turn: 0 });
+    expect(page.indexState).toMatchObject({ state: 'ready', indexedSessions: 1, totalSessions: 1 });
     expect((await search.status()).indexer?.indexerStatus?.documents).toBeGreaterThan(0);
   } finally { search.dispose(); }
 });
