@@ -1266,6 +1266,38 @@ describe('WsConnectionV1 cursor replay ordering', () => {
     conn.close();
   });
 
+  it('emits a global immediate frame before the cursor backlog and keeps that backlog exact', async () => {
+    const socket = new FakeSocket();
+    const gate = gatedBroadcaster();
+    const conn = makeConn(socket, { broadcaster: gate.broadcaster, flushIntervalMs: 60_000, maxBatchSize: 100 });
+    const backlog = [4, 5, 6, 7, 8, 9].map((seq) => durable('turn.step.completed', 's1', seq));
+    const tail = durable('event.session.work_changed', 's1', 10);
+    const overlap = durable('turn.ended', 's1', 4);
+
+    subscribeWithCursor(socket);
+    await gate.entered;
+    conn.send(tail, 'immediate');
+    conn.send(overlap);
+    expect(sessionFrames(socket)).toEqual([{ type: 'event.session.work_changed', seq: 10, volatile: undefined }]);
+
+    gate.release({
+      events: [...backlog.map((envelope) => ({ seq: envelope.seq, envelope })), { seq: tail.seq, envelope: tail }],
+      resyncRequired: false,
+      currentSeq: 10,
+      epoch: 'e1',
+    });
+    await vi.waitFor(() => {
+      expect(socket.frames().some((frame) => (frame as { id?: string }).id === 'replay')).toBe(true);
+    });
+
+    expect(sessionFrames(socket)).toEqual([
+      { type: 'event.session.work_changed', seq: 10, volatile: undefined },
+      ...backlog.map((envelope) => ({ type: envelope.type, seq: envelope.seq, volatile: undefined })),
+      { type: 'event.session.work_changed', seq: 10, volatile: undefined },
+    ]);
+    conn.close();
+  });
+
   it('drops replay-held frames when resync is required and clears their bytes', async () => {
     const socket = new FakeSocket();
     const gate = gatedBroadcaster();

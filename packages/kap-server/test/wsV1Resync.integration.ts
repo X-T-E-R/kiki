@@ -203,6 +203,19 @@ function integerRange(from: number, through: number): number[] {
   return Array.from({ length: Math.max(through - from + 1, 0) }, (_, index) => from + index);
 }
 
+function isSessionGlobalFanout(type: string): boolean {
+  return (
+    type === 'session.meta.updated' ||
+    type === 'session.worktree.changed' ||
+    type.startsWith('event.session.') ||
+    type.startsWith('event.workspace.') ||
+    type.startsWith('event.config.') ||
+    type.startsWith('event.plugin.') ||
+    type.startsWith('event.capability.') ||
+    type.startsWith('event.model_catalog.')
+  );
+}
+
 describe('server-v2 /api/ws resync', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
@@ -609,8 +622,16 @@ describe('server-v2 /api/ws resync', () => {
         typeof frame.seq === 'number' &&
         frame.seq > durableCursor.seq,
     );
-    const durableSeqs = replayedDurable.map((frame) => frame.seq!);
-    expect(durableSeqs).toEqual(integerRange(durableCursor.seq + 1, replayWatermark.seq));
+    const expectedReplay = integerRange(durableCursor.seq + 1, replayWatermark.seq);
+    const replayStart = replayedDurable.length - expectedReplay.length;
+    const globalPrefix = replayStart > 0 ? replayedDurable.slice(0, replayStart) : [];
+    const replayFrames = replayStart >= 0 ? replayedDurable.slice(replayStart) : replayedDurable;
+    expect(globalPrefix.map((frame) => `${frame.type}#${frame.seq}`)).toEqual(
+      globalPrefix.map((frame) =>
+        isSessionGlobalFanout(frame.type) ? `${frame.type}#${frame.seq}` : `non-global#${frame.seq}`,
+      ),
+    );
+    expect(replayFrames.map((frame) => frame.seq!)).toEqual(expectedReplay);
     expect(
       replayedDurable.filter(
         (frame) => frame.type === 'turn.ended' && frame.payload?.['turnId'] === 1,
