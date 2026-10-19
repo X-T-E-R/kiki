@@ -2,4 +2,4 @@
 "@kiki/cli": patch
 ---
 
-A repeated cold session snapshot reuses the transcript already read from an unchanged history file.
+Opening the same small unchanged cold session again reuses the history already read, and a larger history is read again instead of being kept.

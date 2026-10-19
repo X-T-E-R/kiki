@@ -20,7 +20,7 @@ Ordered session views use `/api/klient/session-view/{sessionId}`. Transcript pag
 
 A windowed baseline is a continuous suffix of the available timeline. When resident turns have been released, historical standalone markers before that suffix remain recoverable through pages but must not become the baseline's `olderCursor`. Continue from the first emitted item after both turn and byte windowing; a marker is a valid boundary only when it belongs to that suffix.
 
-Cold page previews share a 4 MiB, 15-second source-verified cache; canonical bodies stay in source-backed detail reads. Large detail retention uses one expiring slot, configured in `config.toml`:
+Cold page previews share a 4 MiB, 15-second source-verified cache; canonical bodies stay in source-backed detail reads. A repeated cold session snapshot can reuse a small unchanged main history. That reuse has its own 4 MiB limit, separate from the page-preview cache, and does not keep a larger history between requests. Large detail retention uses one expiring slot, configured in `config.toml`:
 
 ```toml
 [transcript_memory]

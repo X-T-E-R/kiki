@@ -46,8 +46,9 @@ export interface ColdMainWireProjection {
   readonly planActive: boolean;
 }
 
-const COLD_WIRE_CACHE_LIMIT = 32;
-const coldWireCaches = new WeakMap<Scope, Map<string, { fingerprint: string; projection: ColdMainWireProjection }>>();
+const COLD_MAIN_WIRE_CACHE_BYTES = 4 << 20;
+const COLD_MAIN_WIRE_CACHE_ENTRIES = 32;
+const coldWireCaches = new WeakMap<Scope, { bytes: number; entries: Map<string, { fingerprint: string; projection: ColdMainWireProjection; bytes: number }> }>();
 
 export async function readColdMainWireProjection(
   core: Scope,
@@ -65,9 +66,9 @@ export async function readColdMainWireProjection(
   );
   const path = join(core.accessor.get(IBootstrapService).homeDir, scope, AGENT_WIRE_RECORD_KEY);
   const before = await wireFingerprint(path);
-  const cached = coldWireCaches.get(core)?.get(scope);
-  if (before !== undefined && cached?.fingerprint === before) return cached.projection;
   signal?.throwIfAborted();
+  const cached = coldWireCaches.get(core)?.entries.get(scope);
+  if (before !== undefined && cached?.fingerprint === before) return cached.projection;
   const reducer = createContextTranscriptReducer();
   let permissionMode = permissionModeKey.initial() as PermissionMode;
   let plan: PlanState = { ...planKey.initial() };
@@ -99,16 +100,46 @@ async function wireFingerprint(path: string): Promise<string | undefined> {
 function rememberColdWire(core: Scope, scope: string, fingerprint: string, projection: ColdMainWireProjection): void {
   let cache = coldWireCaches.get(core);
   if (cache === undefined) {
-    cache = new Map();
+    cache = { bytes: 0, entries: new Map() };
     coldWireCaches.set(core, cache);
   }
-  if (cache.has(scope)) cache.delete(scope);
-  cache.set(scope, { fingerprint, projection });
-  while (cache.size > COLD_WIRE_CACHE_LIMIT) {
-    const oldest = cache.keys().next().value;
-    if (oldest === undefined) break;
-    cache.delete(oldest);
+  const previous = cache.entries.get(scope);
+  if (previous !== undefined) {
+    cache.entries.delete(scope);
+    cache.bytes -= previous.bytes;
   }
+  const bytes = projectionBytes(projection, COLD_MAIN_WIRE_CACHE_BYTES);
+  if (bytes > COLD_MAIN_WIRE_CACHE_BYTES) return;
+  while (cache.entries.size > 0 && (cache.bytes + bytes > COLD_MAIN_WIRE_CACHE_BYTES || cache.entries.size >= COLD_MAIN_WIRE_CACHE_ENTRIES)) {
+    const oldest = cache.entries.keys().next().value;
+    if (oldest === undefined) break;
+    cache.bytes -= cache.entries.get(oldest)?.bytes ?? 0;
+    cache.entries.delete(oldest);
+  }
+  cache.entries.set(scope, { fingerprint, projection, bytes });
+  cache.bytes += bytes;
+}
+
+function projectionBytes(value: unknown, cap: number): number {
+  let bytes = 0;
+  const stack: unknown[] = [value];
+  const seen = new Set<object>();
+  while (stack.length > 0) {
+    const item = stack.pop();
+    if (typeof item === 'string') bytes += item.length * 2;
+    else if (typeof item === 'number' || typeof item === 'boolean') bytes += 8;
+    else if (typeof item === 'object' && item !== null && !seen.has(item)) {
+      seen.add(item);
+      bytes += 64;
+      if (Array.isArray(item)) for (const child of item) stack.push(child);
+      else for (const [key, child] of Object.entries(item)) {
+        bytes += key.length * 2;
+        stack.push(child);
+      }
+    }
+    if (bytes > cap) return bytes;
+  }
+  return bytes;
 }
 
 function foldPermission(permissionMode: PermissionMode, record: WireRecord): PermissionMode {

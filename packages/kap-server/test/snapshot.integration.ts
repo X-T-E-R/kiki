@@ -41,6 +41,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IModelPricingService } from '../src/pricing/modelPricingService';
 import { assembleBrowseSnapshotSource, assembleSnapshot, registerSnapshotRoutes } from '../src/routes/snapshot';
+import { readColdMainWireProjection } from '../src/services/snapshot/coldSnapshotSource';
 import { applyContentSegment, jsonBytes, type ContentSegment } from '@kiki/transcript';
 import { readContentSegment } from '../src/transport/klient/boundedContent';
 import { type RunningServer, startServer } from '../src/start';
@@ -1106,6 +1107,26 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
     expect(readSpy).toHaveBeenCalled();
     expect(changed.session.message_count).toBe(3);
     expect(changed.messages.items).toEqual([]);
+    const summary = await server!.core.accessor.get(ISessionIndex).get(sid);
+    if (summary === undefined) throw new Error(`session ${sid} missing from the index`);
+    const aborted = new AbortController();
+    aborted.abort();
+    readSpy.mockClear();
+    await expect(readColdMainWireProjection(server!.core, summary.workspaceId, sid, aborted.signal)).rejects.toThrow(/abort/i);
+    expect(readSpy).not.toHaveBeenCalled();
+    await writeFile(join(wireDir, 'wire.jsonl'), `${JSON.stringify({
+      type: 'context.append_message',
+      message: { role: 'user', content: [{ type: 'text', text: 'x'.repeat(2_200_000) }], toolCalls: [] },
+    })}\n`, 'utf-8');
+    readSpy.mockClear();
+    const heavy = await snapshot(sid, 'transcript');
+    expect(heavy.session.message_count).toBe(1);
+    expect(heavy.messages.items).toEqual([]);
+    readSpy.mockClear();
+    const heavyAgain = await snapshot(sid, 'transcript');
+    expect(readSpy).toHaveBeenCalled();
+    expect(heavyAgain.session.message_count).toBe(1);
+    expect(heavyAgain.messages.items).toEqual([]);
     readSpy.mockRestore();
   });
 
