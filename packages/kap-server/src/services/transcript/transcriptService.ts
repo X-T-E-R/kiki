@@ -358,6 +358,19 @@ function coldWindowCovers(items: AgentTranscriptSnapshot['items'], beforeTurn: s
   return items.some((item) => item.kind === 'turn' && compareTurnIds(item.turnId, beforeTurn) < 0);
 }
 
+function coldItemIdentity(item: AgentTranscriptSnapshot['items'][number]): string {
+  if (item.kind === 'turn') return `turn:${item.turnId}`;
+  if (item.kind === 'marker') return `marker:${item.markerId}`;
+  if (item.kind === 'taskref') return `taskref:${item.refId}`;
+  return item.kind;
+}
+
+/** A cleared or padding prefix has no page of its own and must not keep a continuation cursor. */
+function coldPrefixAddsItem(current: AgentTranscriptSnapshot['items'], older: AgentTranscriptSnapshot['items']): boolean {
+  const seen = new Set(current.map(coldItemIdentity));
+  return older.some((item) => !seen.has(coldItemIdentity(item)));
+}
+
 function wireTurnId(record: ContextRecord): string | undefined {
   const direct = (record as { turnId?: unknown }).turnId;
   if (typeof direct === 'number' && Number.isSafeInteger(direct) && direct >= 0) return `t${direct}`;
@@ -1790,6 +1803,13 @@ export class TranscriptService {
     return window !== undefined && window.start > 0;
   }
 
+  async coldWindowReachedStart(sessionId: string, agentId: string): Promise<boolean> {
+    const location = await this.historyWireLocation(sessionId, agentId);
+    if (location === undefined) return false;
+    const window = this.coldWireWindows.get(location.wirePath);
+    return window !== undefined && window.payloadEvicted !== true && window.start === 0;
+  }
+
   private async readLegacyColdPageSnapshot(sessionId: string, agentId: string,
     project: (snapshot: AgentTranscriptSnapshot) => AgentTranscriptSnapshot,
     signal?: AbortSignal): Promise<AgentTranscriptSnapshot | undefined> {
@@ -1908,6 +1928,19 @@ export class TranscriptService {
     const retainEntireFile = entire && bytes <= COLD_WIRE_WINDOWS_MAX_TOTAL_BYTES;
     let extended: ColdWireWindow;
     if (window.records.length > 0 && bytes > COLD_WIRE_WINDOW_MAX_BYTES && !retainEntireFile && read.records.length > 0) {
+      const olderItems = this.projectColdRecords(agentId, read.records, false).items;
+      if (read.complete && !coldPrefixAddsItem(window.snapshot.items, olderItems)) {
+        const skipped: ColdWireWindow = {
+          ...window,
+          start: next,
+          entire: next === 0 && window.droppedTail !== true,
+          snapshot: { ...window.snapshot, hasMoreOlder: next > 0 },
+          payloadEvicted: false,
+        };
+        this.rememberColdWindow(wirePath, skipped);
+        this.deleteColdSnapshotCache(wirePath);
+        return skipped;
+      }
       const fitted = this.fitOlderColdWindow(agentId, read.records, window, preserveOpenTurnIds, captureReplayState);
       const startAt = read.recordStarts[fitted.keepFrom];
       if (startAt === undefined || startAt >= window.start) return window;
@@ -1935,30 +1968,44 @@ export class TranscriptService {
     };
     const allOld = window.records.length;
     let low = 0;
-    let high = older.length - 1;
-    let fitted = projectFrom(older.length - 1, allOld);
+    let high = allOld;
+    let fitted = projectFrom(0, 0);
     let fittedWithinCap = fitted.bytes <= COLD_WIRE_WINDOW_MAX_BYTES;
     while (low <= high) {
       const mid = (low + high) >> 1;
-      const candidate = projectFrom(mid, allOld);
+      const candidate = projectFrom(0, mid);
       if (candidate.bytes <= COLD_WIRE_WINDOW_MAX_BYTES) {
         fitted = candidate;
         fittedWithinCap = true;
-        high = mid - 1;
-      } else low = mid + 1;
+        low = mid + 1;
+      } else high = mid - 1;
     }
-    if (fittedWithinCap || allOld === 0) return fitted;
-    const adjacent = older.length - 1;
-    low = 1;
+    if (fittedWithinCap) return fitted;
+    const adjacent = Math.max(0, older.length - 1);
+    low = 0;
     high = allOld;
-    fitted = projectFrom(adjacent, 1);
+    fitted = projectFrom(adjacent, 0);
+    fittedWithinCap = fitted.bytes <= COLD_WIRE_WINDOW_MAX_BYTES;
     while (low <= high) {
       const mid = (low + high) >> 1;
       const candidate = projectFrom(adjacent, mid);
       if (candidate.bytes <= COLD_WIRE_WINDOW_MAX_BYTES) {
         fitted = candidate;
+        fittedWithinCap = true;
         low = mid + 1;
       } else high = mid - 1;
+    }
+    if (fittedWithinCap || older.length === 0) return fitted;
+    low = 0;
+    high = older.length - 1;
+    fitted = projectFrom(older.length - 1, allOld);
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      const candidate = projectFrom(mid, allOld);
+      if (candidate.bytes <= COLD_WIRE_WINDOW_MAX_BYTES) {
+        fitted = candidate;
+        high = mid - 1;
+      } else low = mid + 1;
     }
     return fitted;
   }
@@ -2189,6 +2236,8 @@ export class TranscriptService {
   }
 
   private retainColdTailTurns(wirePath: string, fingerprint: string, snapshot: AgentTranscriptSnapshot): void {
+    const existing = this.retainedColdTurns.get(wirePath);
+    if (existing !== undefined && existing.fingerprint === fingerprint && existing.turns.size > 0) return;
     const turns = new Map<string, TranscriptTurn>();
     let bytes = 0;
     for (let index = snapshot.items.length - 1; index >= 0; index -= 1) {
@@ -2870,7 +2919,8 @@ export class TranscriptService {
     const cached = this.anchorWindows.get(wirePath);
     const current = this.coldWireWindows.get(wirePath);
     if (cached !== undefined && cached.fingerprint === fingerprint && cached.at === end &&
-        current?.fingerprint === fingerprint && current.end === end && current.payloadEvicted !== true) return cached.snapshot;
+        current?.fingerprint === fingerprint && current.payloadEvicted !== true &&
+        current.start < end && current.end >= end) return cached.snapshot;
     if (end === 0) {
       const snapshot = this.projectColdRecords(agentId, [], true);
       this.anchorReads.set(snapshot, 'window');
@@ -2878,13 +2928,15 @@ export class TranscriptService {
       return snapshot;
     }
     const opened = signal ?? new AbortController().signal;
-    const start = await this.tailRecordStart(wirePath, end, opened);
-    const read = await this.readWireRange(wirePath, start, end, opened);
+    const recordEnd = end >= fileSize ? fileSize : await this.nextRecordBoundary(wirePath, end, fileSize, opened);
+    const readEnd = recordEnd > end && recordEnd - end <= FIRST_SCREEN_WINDOW_BYTES ? recordEnd : end;
+    const start = await this.tailRecordStart(wirePath, readEnd, opened);
+    const read = await this.readWireRange(wirePath, start, readEnd, opened);
     const snapshot = this.projectColdRecords(agentId, read.records, start === 0);
     this.anchorReads.set(snapshot, start === 0 ? 'window' : 'continues');
     this.rememberAnchorWindow(wirePath, fingerprint, end, snapshot);
-    this.rememberColdWindow(wirePath, { fingerprint, start, end, entire: false, records: read.records,
-      snapshot, bytes: this.coldWindowBytes(snapshot, read.records), droppedTail: end < fileSize });
+    this.rememberColdWindow(wirePath, { fingerprint, start, end: readEnd, entire: false, records: read.records,
+      snapshot, bytes: this.coldWindowBytes(snapshot, read.records), droppedTail: readEnd < fileSize });
     this.deleteColdSnapshotCache(wirePath);
     return snapshot;
   }

@@ -553,7 +553,7 @@ async function readColdTranscriptPage(
   const needsOlderItem = located.missing || located.page.items.length === 0;
   const anchorInWindow = turnAnchor !== undefined && snapshot.items.some((item) => item.kind === 'turn' && item.turnId === turnAnchor);
   let anchorPending: AgentTranscriptSnapshot | undefined;
-  if (turnAnchor !== undefined && (!anchorInWindow || needsOlderItem) && !coldWindowCovers(snapshot.items, turnAnchor) && snapshot.hasMoreOlder === true &&
+  if (turnAnchor !== undefined && (!anchorInWindow || orphan !== undefined) && !coldWindowCovers(snapshot.items, turnAnchor) && snapshot.hasMoreOlder === true &&
       typeof transcriptService.readAnchoredColdSnapshot === 'function') {
     const anchoredSnapshot = await transcriptService.readAnchoredColdSnapshot(sessionId, input.agentId, turnAnchor, input.signal);
     const anchorState = anchoredSnapshot === undefined || typeof transcriptService.anchorReadState !== 'function'
@@ -564,7 +564,7 @@ async function readColdTranscriptPage(
     } else if (anchorState === 'pending' && anchoredSnapshot !== undefined) anchorPending = anchoredSnapshot;
   }
   if (anchorPending === undefined && anchored && needsOlderItem && snapshot.hasMoreOlder === true && !coldWindowCovers(snapshot.items, turnAnchor ?? '')) {
-    const next = await extendColdPage(transcriptService, sessionId, input.agentId, project, input.signal, snapshot, true);
+    const next = await extendColdPage(transcriptService, sessionId, input.agentId, project, input.signal, snapshot, !anchorInWindow);
     if (next !== undefined) {
       snapshot = next.snapshot;
       located = locateColdPage(snapshot.items, query);
@@ -583,6 +583,11 @@ async function readColdTranscriptPage(
         located = locateColdPage(snapshot.items, query);
       }
     }
+  }
+  if (anchored && !located.missing && located.page.items.length > 0 && !located.page.hasMore && snapshot.hasMoreOlder === true &&
+      typeof transcriptService.coldWindowReachedStart === 'function' &&
+      await transcriptService.coldWindowReachedStart(sessionId, input.agentId)) {
+    snapshot = { ...snapshot, hasMoreOlder: false };
   }
   if (located.missing && snapshot.hasMoreOlder !== true) throw new TranscriptDetailCursorError();
   if (orphan !== undefined && anchored) {
@@ -684,7 +689,15 @@ function paginateTurns(items: readonly TranscriptItem[], query: { beforeTurn?: s
   const cursor = query.beforeItem ?? query.afterItem;
   if (cursor === undefined) return paginateCanonicalTurns(items, query);
   const index = items.findIndex((item) => itemKey(item) === cursor);
-  if (index < 0) throw new TranscriptDetailCursorError();
+  if (index < 0) {
+    const beforeTurn = query.beforeItem?.startsWith('turn:') === true ? query.beforeItem.slice(5) : undefined;
+    if (beforeTurn !== undefined && items.every((item) => item.kind !== 'turn' || compareTurnIds(item.turnId, beforeTurn) < 0)) {
+      const pageSize = Math.max(1, Math.min(100, Math.floor(query.pageSize)));
+      const start = Math.max(0, items.length - pageSize);
+      return { items: items.slice(start), hasMore: start > 0 };
+    }
+    throw new TranscriptDetailCursorError();
+  }
   const pageSize = Math.max(1, Math.min(100, Math.floor(query.pageSize)));
   if (query.afterItem !== undefined) {
     const end = Math.min(items.length, index + pageSize + 1);
