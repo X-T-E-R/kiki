@@ -17,6 +17,7 @@ import {
   IFileSystemStorageService,
   IConfigService,
   IManagedAdapterService,
+  SOURCE_OWNED_ADAPTER_ROOT_ENV,
   ILogService,
   IModelService,
   ISessionAgentProfileCatalog,
@@ -569,7 +570,9 @@ describe('GET /api/agents', () => {
       'command = "agy"',
       '',
     ].join('\n'));
-    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    const env = { ...process.env };
+    delete env[SOURCE_OWNED_ADAPTER_ROOT_ENV];
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent', env });
     base = `http://127.0.0.1:${server.port}`;
     const missed = await authedFetch(server, base, '/api/executors/not-owned/install', { method: 'POST' });
     expect((await missed.json() as Envelope<unknown>).code).toBe(ErrorCode.AGENT_PROFILE_NOT_FOUND);
@@ -582,12 +585,21 @@ describe('GET /api/agents', () => {
     expect(body.data.active?.version).toBe('0.4.1');
     expect(JSON.stringify(body.data)).not.toContain('supports_mcp');
     const updated = await readFile(script, 'utf8');
-    expect(updated).toContain('registerMcpAgent');
-    expect(updated).toBe(await readFile(new URL('../../../scripts/external-harness/agy-cli-acp.mjs', import.meta.url), 'utf8'));
+    const sourceEntry = await readFile(new URL('../../../scripts/external-harness/agy-cli-acp.mjs', import.meta.url), 'utf8');
+    expect(updated).toContain('registerMcpPlugin');
+    expect(updated).not.toContain('registerMcpAgent');
+    expect(updated).toContain('function readUrlTarget');
+    expect(updated).toContain('function safeDiagnosticLine');
+    expect(updated).toContain('permissionReceipt');
+    expect(updated).toContain('AGY exited before terminal result (code:');
+    expect(updated).toBe(sourceEntry);
     expect(await readFile(join(adapterDir, 'agy-hook-registration.mjs'), 'utf8')).toBe(
       await readFile(new URL('../../../scripts/external-harness/agy-hook-registration.mjs', import.meta.url), 'utf8'));
     expect(await readFile(join(adapterDir, 'agy-permission-hook.mjs'), 'utf8')).toBe(
       await readFile(new URL('../../../scripts/external-harness/agy-permission-hook.mjs', import.meta.url), 'utf8'));
+    const installedPlugin = await readFile(join(adapterDir, 'agy-mcp-plugin.mjs'), 'utf8');
+    expect(installedPlugin).toContain('registerProjectMcpPlugin');
+    expect(installedPlugin).toBe(await readFile(new URL('../../../scripts/external-harness/agy-mcp-plugin.mjs', import.meta.url), 'utf8'));
     await expect(readFile(join(adapterDir, 'fixture-cli.mjs'))).rejects.toThrow();
     expect(await readFile(join(adapterDir, 'agy-file-admission.mjs'), 'utf8')).toBe('export const admission = true;\n');
     expect(await readFile(join(adapterDir, 'agy-cli-audit-acp.mjs'), 'utf8')).toBe('audit-copy\n');
@@ -606,6 +618,8 @@ describe('GET /api/agents', () => {
     expect((await rolled.json() as Envelope<unknown>).code).toBe(0);
     expect(await readFile(script, 'utf8')).toBe('export const legacy = "pre-mcp";\n');
     await expect(readFile(join(adapterDir, 'agy-hook-registration.mjs'))).rejects.toThrow();
+    await expect(readFile(join(adapterDir, 'agy-permission-hook.mjs'))).rejects.toThrow();
+    await expect(readFile(join(adapterDir, 'agy-mcp-plugin.mjs'))).rejects.toThrow();
     expect(await readFile(join(adapterDir, 'agy-file-admission.mjs'), 'utf8')).toBe('export const admission = true;\n');
     expect(await readFile(join(adapterDir, 'audit', 'session.ndjson'), 'utf8')).toBe('{"keep":true}\n');
     expect(server.core.accessor.get(IConfigService).get<{

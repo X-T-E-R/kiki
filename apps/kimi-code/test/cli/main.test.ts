@@ -190,6 +190,15 @@ describe('main entry command handling', () => {
     expect(process.env['KIKI_SQLITE_INDEXER_SEA']).toBeUndefined();
   });
 
+  it('drops an inherited source-owned adapter root when this process has no bundle of its own', async () => {
+    vi.stubEnv('KIKI_SOURCE_OWNED_ADAPTER_ROOT', 'C:\\inherited\\external-harness');
+
+    main();
+    await waitForProgramArgs();
+
+    expect(process.env['KIKI_SOURCE_OWNED_ADAPTER_ROOT']).toBeUndefined();
+  });
+
   it('does not force-exit from the reusable handler in print mode', async () => {
     const opts: CLIOptions = { ...defaultOpts(), prompt: 'explain the repo' };
     mocks.validateOptions.mockReturnValue({ options: opts, uiMode: 'print' });

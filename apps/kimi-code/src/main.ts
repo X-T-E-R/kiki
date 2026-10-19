@@ -108,6 +108,7 @@ function bootstrap(): void {
   if (historyEntry !== null) process.env['KIKI_HISTORY_IMPORT_ENTRY'] = historyEntry;
   const sourceOwnedAdapterRoot = getSourceOwnedAdapterRoot();
   if (sourceOwnedAdapterRoot !== null) process.env[SOURCE_OWNED_ADAPTER_ROOT_ENV] = sourceOwnedAdapterRoot;
+  else if (!isSea()) delete process.env[SOURCE_OWNED_ADAPTER_ROOT_ENV];
   // Best-effort SEA worker installation. Diagnostics are trace-only and avoid
   // exposing the user's cache path; failure keeps MiniDb's bounded inline mode.
   const workerInstall = installMinidbTextBuildWorker();
