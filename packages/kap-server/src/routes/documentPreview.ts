@@ -369,8 +369,8 @@ function sendPreviewError(reply: PreviewReply, requestId: string, file: Document
   reply.code(500).send(errEnvelope(ErrorCode.INTERNAL_ERROR, error instanceof Error ? error.message : 'document preview failed', requestId));
 }
 
-async function settleReleases(releases: readonly (() => void | Promise<void>)[]): Promise<void> {
-  const settled = await Promise.allSettled(releases.map((release) => Promise.resolve(release())));
+export async function settleReleases(releases: readonly (() => void | Promise<void>)[]): Promise<void> {
+  const settled = await Promise.allSettled(releases.map((release) => Promise.resolve().then(release)));
   const errors = settled.flatMap((item) => item.status === 'rejected' ? [item.reason] : []);
   if (errors.length === 1) throw errors[0];
   if (errors.length > 1) throw new AggregateError(errors, 'document preview release failed');

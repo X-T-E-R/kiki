@@ -16,7 +16,7 @@ vi.mock('node:fs/promises', async () => {
   return { ...actual, readFile, stat };
 });
 
-import { renderOfficeDocument, toWireResponse } from '../src/routes/documentPreview';
+import { renderOfficeDocument, settleReleases, toWireResponse } from '../src/routes/documentPreview';
 
 const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
 const core = {
@@ -87,5 +87,38 @@ describe('office document render', () => {
     ));
     await expect(renderOfficeDocument(core, { path: 'C:/docs/deck.pptx', page: 2, signal })).rejects.toMatchObject({ reason: 'page_out_of_range' });
     expect(runOfficeCli.mock.calls.some((call) => (call[1] as readonly string[]).includes('screenshot'))).toBe(false);
+  });
+});
+
+describe('document preview releases', () => {
+  it('still disposes the operation when the first release throws synchronously', async () => {
+    const dispose = vi.fn();
+    const failure = new Error('lease');
+    await expect(settleReleases([
+      () => { throw failure; },
+      () => { dispose(); },
+    ])).rejects.toBe(failure);
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+
+  it('attempts every async release and keeps one failure as the main error', async () => {
+    const failure = new Error('lease');
+    const dispose = vi.fn(async () => undefined);
+    await expect(settleReleases([
+      async () => { throw failure; },
+      dispose,
+    ])).rejects.toBe(failure);
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+
+  it('attempts every async release and collects their failures', async () => {
+    const lease = new Error('lease');
+    const operation = new Error('operation');
+    const settled = settleReleases([
+      async () => { throw lease; },
+      async () => { throw operation; },
+    ]);
+    await expect(settled).rejects.toBeInstanceOf(AggregateError);
+    await expect(settled).rejects.toMatchObject({ message: 'document preview release failed', errors: [lease, operation] });
   });
 });
