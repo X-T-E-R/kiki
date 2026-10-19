@@ -519,23 +519,27 @@ export class AgyBridge {
       if (stderrTruncated) lines.shift();
       const diagnostic = lines.map(safeDiagnosticLine).findLast(line => line !== undefined);
       stderr = Buffer.alloc(0);
-      session.cleanup = delivery.finally(async () => {
-        session.broken = true;
-        if (session.active) {
-          const message = `AGY exited before terminal result (code: ${code ?? 'none'}, signal: ${signal ?? 'none'})${diagnostic === undefined ? '' : `: ${diagnostic}`}`;
-          const error = new Error(message);
-          error.code = 'AGY_EARLY_EXIT';
-          error.details = { exitCode: code ?? null, signal: signal ?? null, diagnostic };
-          session.failure = message;
-          session.active.reject(error);
-          session.active = undefined;
+      session.cleanup = (async () => {
+        try {
+          await delivery;
+        } finally {
+          session.broken = true;
+          if (session.active) {
+            const message = `AGY exited before terminal result (code: ${code ?? 'none'}, signal: ${signal ?? 'none'})${diagnostic === undefined ? '' : `: ${diagnostic}`}`;
+            const error = new Error(message);
+            error.code = 'AGY_EARLY_EXIT';
+            error.details = { exitCode: code ?? null, signal: signal ?? null, diagnostic };
+            session.failure = message;
+            session.active.reject(error);
+            session.active = undefined;
+          }
+          for (const controller of session.permissionRequests) controller.abort(new Error('AGY process ended'));
+          await session.permissionChannel?.close();
+          await session.permissionRegistration?.close();
+          await session.mcpPlugin?.close();
+          await session.releaseResume?.();
         }
-        for (const controller of session.permissionRequests) controller.abort(new Error('AGY process ended'));
-        await session.permissionChannel?.close();
-        await session.permissionRegistration?.close();
-        await session.mcpPlugin?.close();
-        await session.releaseResume?.();
-      });
+      })();
       session.cleanup.catch(error => { process.stderr.write(`AGY owned permission cleanup failed: ${error.message}\n`); });
     });
     try { await session.mcpPlugin?.launched(child.pid); }
@@ -806,7 +810,8 @@ export async function runSessionMcp(key) {
       }
       process.stdout.write(line + '\n');
     }
-    if (failure) throw failure;
+    if (failure instanceof Error) throw new Error(failure.message, { cause: failure });
+    if (failure) throw new Error('AGY session MCP child failed', { cause: failure });
     process.exitCode = await closed ?? 1;
   } finally {
     input.close();

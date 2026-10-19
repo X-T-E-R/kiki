@@ -4,7 +4,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { createRequire } from 'node:module';
+import { once } from 'node:events';
 import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { AgyBridge, launchArgs, promptText } from './agy-cli-acp.mjs';
 
 const cwd = fileURLToPath(new URL('.', import.meta.url));
@@ -22,14 +24,14 @@ function turn(b, id, text, messages) {
   return b.prompt({ sessionId: id, prompt: [{ type: 'text', text }] }, { notify: async (_method, event) => messages.push(event) });
 }
 
-test('bare launch preserves AGY model, effort, permissions and context settings', () => {
+void test('bare launch preserves AGY model, effort, permissions and context settings', () => {
   assert.deepEqual(launchArgs({ model: 'engine-default', effort: 'engine-default', additionalDirectories: [] }),
     ['--input-format', 'stream-json', '--output-format', 'stream-json']);
   assert.deepEqual(launchArgs({ model: 'gemini-3.8-flash-medium', effort: 'medium', additionalDirectories: [] }),
     ['--input-format', 'stream-json', '--output-format', 'stream-json', '--model', 'gemini-3.8-flash-medium', '--effort', 'medium']);
 });
 
-test('explicit frozen host yolo reaches the native process without changing other permission modes', () => {
+void test('explicit frozen host yolo reaches the native process without changing other permission modes', () => {
   const base = { model: 'engine-default', effort: 'engine-default', additionalDirectories: [] };
   const ordinary = launchArgs(base);
   assert.deepEqual(launchArgs({ ...base, hostGate: true, permission: { override: { mode: 'yolo' } } }), [...ordinary, '--dangerously-skip-permissions']);
@@ -37,9 +39,8 @@ test('explicit frozen host yolo reaches the native process without changing othe
   assert.deepEqual(launchArgs({ ...base, hostGate: false, permission: { override: { mode: 'yolo' } } }), ordinary);
 });
 
-test('frozen writer roots reach the real fixture process without changing the parent or vendor permissions', async () => {
+void test('frozen writer roots reach the real fixture process without changing the parent or vendor permissions', async () => {
   const { mkdtemp, mkdir, rm } = await import('node:fs/promises');
-  const { join, resolve } = await import('node:path');
   const parentCwd = process.cwd();
   const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-writer-'));
   const writer = join(root, 'writer space 中文');
@@ -65,7 +66,7 @@ test('frozen writer roots reach the real fixture process without changing the pa
   } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
 });
 
-test('native init rejects another project or missing cwd before accepting its context', async () => {
+void test('native init rejects another project or missing cwd before accepting its context', async () => {
   const b = bridge();
   const id = await session(b);
   const s = b.session(id);
@@ -76,19 +77,19 @@ test('native init rejects another project or missing cwd before accepting its co
   await b.close();
 });
 
-test('text-only boundary rejects rich content instead of dropping it', () => {
+void test('text-only boundary rejects rich content instead of dropping it', () => {
   assert.equal(promptText([{ type: 'text', text: 'one' }, { type: 'text', text: 'two' }]), 'one\ntwo');
   assert.throws(() => promptText([{ type: 'image', data: 'x' }]), /text prompts only/);
 });
 
-test('new contexts differ, unsupported system replacement and malformed MCP fail explicitly', async () => {
+void test('new contexts differ, unsupported system replacement and malformed MCP fail explicitly', async () => {
   const b = bridge();
   assert.notEqual(await session(b), await session(b));
   await assert.rejects(b.newSession({ cwd, mcpServers: [], _meta: { systemPromptOverride: 'replace' } }), /replacement is unsupported/);
   await assert.rejects(b.newSession({ cwd, mcpServers: [{ name: 'x' }] }), /stdio servers/);
 });
 
-test('explicit external ID reaches CLI; streamed chunks are not duplicated by result; same process keeps context', async () => {
+void test('explicit external ID reaches CLI; streamed chunks are not duplicated by result; same process keeps context', async () => {
   const b = bridge('gemini-3.8-flash-medium');
   const id = await session(b); const messages = [];
   try {
@@ -106,13 +107,13 @@ test('explicit external ID reaches CLI; streamed chunks are not duplicated by re
   assert.notEqual(b.session(id).child.exitCode, null);
 });
 
-test('permission denial is not reported as successful work', async () => {
+void test('permission denial is not reported as successful work', async () => {
   const b = bridge(); const id = await session(b);
   try { await assert.rejects(turn(b, id, 'deny', []), /AGY permission denied for command/); }
   finally { await b.close(); }
 });
 
-test('terminal denial settles pending tool calls before rejecting the turn', async () => {
+void test('terminal denial settles pending tool calls before rejecting the turn', async () => {
   const b = bridge(); const id = await session(b); const messages = [];
   try {
     await assert.rejects(turn(b, id, 'deny-tool', messages), /AGY permission denied for command/);
@@ -123,7 +124,7 @@ test('terminal denial settles pending tool calls before rejecting the turn', asy
   } finally { await b.close(); }
 });
 
-test('malformed NDJSON and unexpected CLI exit fail current turn and leave no live process', async () => {
+void test('malformed NDJSON and unexpected CLI exit fail current turn and leave no live process', async () => {
   for (const text of ['malformed', 'crash']) {
     const b = bridge(); const id = await session(b);
     try { await assert.rejects(turn(b, id, text, []), /invalid NDJSON|exited before/); }
@@ -132,7 +133,7 @@ test('malformed NDJSON and unexpected CLI exit fail current turn and leave no li
   }
 });
 
-test('real ACP early exits retain bounded safe diagnostics without mixing sessions or cancellation', { timeout: 15000 }, async () => {
+void test('real ACP early exits retain bounded safe diagnostics without mixing sessions or cancellation', { timeout: 15000 }, async () => {
   const require = createRequire(new URL('../../packages/acp-client/package.json', import.meta.url));
   const sdkPath = process.env.AGY_TEST_ACP_SDK_PATH ?? require.resolve('@agentclientprotocol/sdk');
   const vendorScript = `
@@ -202,7 +203,7 @@ test('real ACP early exits retain bounded safe diagnostics without mixing sessio
   reader.close();
 });
 
-test('cancel settles the owned session after the injected process stopper and never implicitly resumes', async () => {
+void test('cancel settles the owned session after the injected process stopper and never implicitly resumes', async () => {
   const b = bridge(); const id = await session(b); const messages = [];
   const pending = turn(b, id, 'tool-hang', messages);
   pending.catch(() => {});
@@ -217,7 +218,7 @@ test('cancel settles the owned session after the injected process stopper and ne
   await b.close();
 });
 
-test('missing-file ERROR is a failed tool receipt, not a failed recovered AGY turn', async () => {
+void test('missing-file ERROR is a failed tool receipt, not a failed recovered AGY turn', async () => {
   const b = bridge(); const id = await session(b); const messages = [];
   try {
     assert.equal((await turn(b, id, 'missing-file', messages)).stopReason, 'end_turn');
@@ -230,7 +231,7 @@ test('missing-file ERROR is a failed tool receipt, not a failed recovered AGY tu
   } finally { await b.close(); }
 });
 
-test('SUCCESS does not fabricate a result for an unfinished tool', async () => {
+void test('SUCCESS does not fabricate a result for an unfinished tool', async () => {
   const b = bridge(); const id = await session(b); const messages = [];
   try {
     await assert.rejects(turn(b, id, 'unfinished-tool', messages), /terminal result arrived before a tool terminal update/);
@@ -245,7 +246,7 @@ test('SUCCESS does not fabricate a result for an unfinished tool', async () => {
   } finally { await b.close(); }
 });
 
-test('real ACP transport preserves tool failure, protocol diagnostics and shuts down on stdin EOF', { timeout: 15000 }, async () => {
+void test('real ACP transport preserves tool failure, protocol diagnostics and shuts down on stdin EOF', { timeout: 15000 }, async () => {
   const require = createRequire(new URL('../../packages/acp-client/package.json', import.meta.url));
   const sdkPath = process.env.AGY_TEST_ACP_SDK_PATH ?? require.resolve('@agentclientprotocol/sdk');
   const script = `import { runBridge } from ${JSON.stringify(pathToFileURL(fileURLToPath(new URL('./agy-cli-acp.mjs', import.meta.url))).href)}; await runBridge(${JSON.stringify({ sdkPath, cliPath: process.execPath, cliPrefix: [fileURLToPath(new URL('./fixture-cli.mjs', import.meta.url))] })});`;
@@ -285,7 +286,7 @@ test('real ACP transport preserves tool failure, protocol diagnostics and shuts 
 });
 
 
-test('official permission hook preserves raw command, cwd and identity; only the host selected allow permits it', async () => {
+void test('official permission hook preserves raw command, cwd and identity; only the host selected allow permits it', async () => {
   const b = new AgyBridge({ cliPath: process.execPath });
   const permission = { version: 1, hostGate: true, override: { mode: 'yolo', source: 'runtime' }, policyIdentity: 'fixture-policy', workspace: { cwd, additionalDirectories: [] } };
   await assert.rejects(b.newSession({ cwd, mcpServers: [], _meta: { 'kiki.permission': { hostGate: true } } }), /frozen Kiki permission context/);
@@ -314,7 +315,7 @@ test('official permission hook preserves raw command, cwd and identity; only the
   assert.equal((await b.requestPermission(s, input)).decision, 'deny');
 });
 
-test('native task reads project exact actions without hiding the native policy identity or host rejection', async () => {
+void test('native task reads project exact actions without hiding the native policy identity or host rejection', async () => {
   const { canonicalTool } = await import('./agy-cli-acp.mjs');
   const b = new AgyBridge({ cliPath: process.execPath });
   const permission = { version: 1, hostGate: true, override: { mode: 'manual', source: 'profile' }, policyIdentity: 'fixture-policy', workspace: { cwd, additionalDirectories: [] } };
@@ -347,7 +348,7 @@ test('native task reads project exact actions without hiding the native policy i
   } finally { s.active = undefined; await b.close(); }
 });
 
-test('URL reads project only FetchURL and a host-approved read_url domain through the authenticated hook', async () => {
+void test('URL reads project only FetchURL and a host-approved read_url domain through the authenticated hook', async () => {
   const { canonicalTool, toolPermissionResources } = await import('./agy-cli-acp.mjs');
   const { openPermissionChannel, requestHookPermission } = await import('./agy-permission-hook.mjs');
   const b = new AgyBridge({ cliPath: process.execPath });
@@ -387,9 +388,8 @@ test('URL reads project only FetchURL and a host-approved read_url domain throug
   } finally { s.active = undefined; await channel.close(); await b.close(); }
 });
 
-test('new and native load acknowledge explicit permissions only after the real hook gate is ready', async () => {
+void test('new and native load acknowledge explicit permissions only after the real hook gate is ready', async () => {
   const { mkdtemp, readFile, rm, mkdir, writeFile } = await import('node:fs/promises');
-  const { join } = await import('node:path');
   const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-permission-receipt-'));
   const auditDir = join(root, 'audit');
   const first = bridge('gemini-3.8-flash-medium');
@@ -451,7 +451,7 @@ test('new and native load acknowledge explicit permissions only after the real h
   } finally { await first.close(); await loaded.close(); await rm(root, { recursive: true, force: true }); }
 });
 
-test('owned permission channel rejects bad nonce and disconnects, unrelated AGY keeps default policy', async () => {
+void test('owned permission channel rejects bad nonce and disconnects, unrelated AGY keeps default policy', async () => {
   const { openPermissionChannel, requestHookPermission } = await import('./agy-permission-hook.mjs');
   assert.deepEqual(await requestHookPermission({}, {}), { decision: 'ask' });
   let calls = 0;
@@ -470,9 +470,8 @@ test('owned permission channel rejects bad nonce and disconnects, unrelated AGY 
   assert.equal((await pending).decision, 'deny');
 });
 
-test('project hook registration leases restore original bytes and preserve concurrent foreign hooks', async () => {
+void test('project hook registration leases restore original bytes and preserve concurrent foreign hooks', async () => {
   const { mkdtemp, mkdir, readFile, writeFile, rm } = await import('node:fs/promises');
-  const { join } = await import('node:path');
   const { tmpdir } = await import('node:os');
   const { registerProjectHook } = await import('./agy-hook-registration.mjs');
   const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-hook-'));
@@ -501,9 +500,8 @@ test('project hook registration leases restore original bytes and preserve concu
 });
 
 
-test('fixture follows project PreToolUse through the owned hook and host ACP decision, including cancel and cleanup', async () => {
+void test('fixture follows project PreToolUse through the owned hook and host ACP decision, including cancel and cleanup', async () => {
   const { mkdtemp, readFile, rm } = await import('node:fs/promises');
-  const { join } = await import('node:path');
   const { tmpdir } = await import('node:os');
   const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-vertical-'));
   const b = new AgyBridge({ cliPath: process.execPath, cliPrefix: [fileURLToPath(new URL('./fixture-cli.mjs', import.meta.url))],
@@ -551,9 +549,8 @@ test('fixture follows project PreToolUse through the owned hook and host ACP dec
 });
 
 
-test('missing native tool terminals retain exact host denials and never infer completion from approval or vendor default', { timeout: 20000 }, async () => {
+void test('missing native tool terminals retain exact host denials and never infer completion from approval or vendor default', { timeout: 20000 }, async () => {
   const { mkdtemp, rm } = await import('node:fs/promises');
-  const { join } = await import('node:path');
   for (const outcome of [{ outcome: 'selected', optionId: 'reject_once' }, { outcome: 'cancelled' },
     { outcome: 'selected', optionId: 'allow_once' }, { outcome: 'selected', optionId: 'kiki.vendor_default' }]) {
     const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-terminal-'));
@@ -583,9 +580,8 @@ test('missing native tool terminals retain exact host denials and never infer co
   }
 });
 
-test('inherit starts without host hook, even with legacy ambient mode; clearing override is a fresh vendor session', async () => {
+void test('inherit starts without host hook, even with legacy ambient mode; clearing override is a fresh vendor session', async () => {
   const { mkdtemp, readFile, rm } = await import('node:fs/promises');
-  const { join } = await import('node:path');
   const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-inherit-'));
   const b = bridge('claude-opus-5-5-high');
   const originalSpawn = b.spawnProcess;
@@ -604,7 +600,7 @@ test('inherit starts without host hook, even with legacy ambient mode; clearing 
   } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
 });
 
-test('vendor-default host outcome crosses owned channel as native ask, never as allow', async () => {
+void test('vendor-default host outcome crosses owned channel as native ask, never as allow', async () => {
   const { openPermissionChannel, requestHookPermission } = await import('./agy-permission-hook.mjs');
   const b = new AgyBridge({ cliPath: process.execPath });
   const permission = { version: 1, hostGate: true, policyIdentity: 'explicit-rules-only', workspace: { cwd, additionalDirectories: [] } };
@@ -622,9 +618,8 @@ test('vendor-default host outcome crosses owned channel as native ask, never as 
   } finally { s.active = undefined; await channel.close(); }
 });
 
-test('scoped hook recovery preserves live owner and restores dead owner original bytes without foreign loss', async () => {
+void test('scoped hook recovery preserves live owner and restores dead owner original bytes without foreign loss', async () => {
   const { mkdtemp, mkdir, readFile, writeFile, rm } = await import('node:fs/promises');
-  const { join } = await import('node:path');
   const { registerProjectHook, recoverProjectHook } = await import('./agy-hook-registration.mjs');
   const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-recovery-'));
   const options = { cwd: root, nodePath: process.execPath, handlerPath: fileURLToPath(new URL('./agy-permission-hook.mjs', import.meta.url)) };
@@ -647,9 +642,8 @@ test('scoped hook recovery preserves live owner and restores dead owner original
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('real ACP permission request carries raw tool metadata and vendor-default ID, then EOF closes owned resources', { timeout: 15000 }, async () => {
+void test('real ACP permission request carries raw tool metadata and vendor-default ID, then EOF closes owned resources', { timeout: 15000 }, async () => {
   const { mkdtemp, readFile, rm } = await import('node:fs/promises');
-  const { join } = await import('node:path');
   const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-acp-permission-'));
   const sdkPath = process.env.AGY_TEST_ACP_SDK_PATH ?? createRequire(new URL('../../packages/acp-client/package.json', import.meta.url)).resolve('@agentclientprotocol/sdk');
   const script = `import { runBridge } from ${JSON.stringify(new URL('./agy-cli-acp.mjs', import.meta.url).href)}; await runBridge(${JSON.stringify({ sdkPath, cliPath: process.execPath, cliPrefix: [fileURLToPath(new URL('./fixture-cli.mjs', import.meta.url))] })});`;
@@ -697,9 +691,8 @@ test('real ACP permission request carries raw tool metadata and vendor-default I
 });
 
 
-test('turn snapshot switches inherit to explicit and back without replacing native process, model or history', async () => {
+void test('turn snapshot switches inherit to explicit and back without replacing native process, model or history', async () => {
   const { mkdtemp, readFile, rm } = await import('node:fs/promises');
-  const { join } = await import('node:path');
   const { tmpdir } = await import('node:os');
   const { requestHookPermission } = await import('./agy-permission-hook.mjs');
   const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-boundary-'));
@@ -732,9 +725,8 @@ test('turn snapshot switches inherit to explicit and back without replacing nati
 });
 
 
-test('hook UTF8 split bytes preserve raw Chinese command and path through stdin, server and client pipes', async () => {
+void test('hook UTF8 split bytes preserve raw Chinese command and path through stdin, server and client pipes', async () => {
   const { createConnection, createServer } = await import('node:net');
-  const { once } = await import('node:events');
   const { openPermissionChannel, requestHookPermission, permissionChannelIdentity } = await import('./agy-permission-hook.mjs');
   const hookPath = fileURLToPath(new URL('./agy-permission-hook.mjs', import.meta.url));
   const input = { conversationId: 'fixture-chinese', stepIdx: 1, toolCall: { name: 'run_command', args: {
@@ -796,11 +788,9 @@ test('hook UTF8 split bytes preserve raw Chinese command and path through stdin,
   finally { await new Promise(done => server.close(done)); }
 });
 
-test('authenticated hook accepts over 1MiB Write args intact through real ACP host; bad nonce and cancellation never allow', { timeout: 15000 }, async () => {
+void test('authenticated hook accepts over 1MiB Write args intact through real ACP host; bad nonce and cancellation never allow', { timeout: 15000 }, async () => {
   const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
-  const { join } = await import('node:path');
   const { createHash } = await import('node:crypto');
-  const { once } = await import('node:events');
   const { openPermissionChannel, requestHookPermission } = await import('./agy-permission-hook.mjs');
   const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-large-hook-'));
   const content = '完整中文正文'.repeat(100000);
@@ -864,9 +854,8 @@ test('authenticated hook accepts over 1MiB Write args intact through real ACP ho
 });
 
 
-test('Windows registered hook command survives native shell quoting for exact node path and Chinese spaced paths', { skip: process.platform !== 'win32', timeout: 30000 }, async () => {
+void test('Windows registered hook command survives native shell quoting for exact node path and Chinese spaced paths', { skip: process.platform !== 'win32', timeout: 30000 }, async () => {
   const { mkdtemp, mkdir, cp, readFile, rm } = await import('node:fs/promises');
-  const { join } = await import('node:path');
   const { registerProjectHook } = await import('./agy-hook-registration.mjs');
   const { openPermissionChannel } = await import('./agy-permission-hook.mjs');
   const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-shell-'));
@@ -919,9 +908,8 @@ test('Windows registered hook command survives native shell quoting for exact no
 });
 
 
-test('per-call resources cross downstream vendor command and write checks without retaining approval on clear', async () => {
+void test('per-call resources cross downstream vendor command and write checks without retaining approval on clear', async () => {
   const { mkdtemp, readFile, rm } = await import('node:fs/promises');
-  const { join } = await import('node:path');
   const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-resources-'));
   const b = new AgyBridge({ cliPath: process.execPath, cliPrefix: [fileURLToPath(new URL('./fixture-cli.mjs', import.meta.url))], stopProcess: async child => {
     if (!child || child.exitCode !== null || child.signalCode !== null) return;
@@ -977,7 +965,7 @@ test('per-call resources cross downstream vendor command and write checks withou
 });
 
 
-test('agy 1.3.4 catalog ids embed effort; a bare provider id does not inherit another model menu', async () => {
+void test('agy 1.3.4 catalog ids embed effort; a bare provider id does not inherit another model menu', async () => {
   const { vendorModelIds, configOptions, encodedEffort } = await import('./agy-cli-acp.mjs');
   const catalog = [
     'gemini-4-argon-medium\tGemini 4 Argon (Medium)',
@@ -1025,7 +1013,7 @@ test('agy 1.3.4 catalog ids embed effort; a bare provider id does not inherit an
   await bare.close();
 });
 
-test('raw model effort suffix is authoritative, not the generic CLI effort menu', async () => {
+void test('raw model effort suffix is authoritative, not the generic CLI effort menu', async () => {
   const { configOptions } = await import('./agy-cli-acp.mjs');
   for (const [model, effort] of [['claude-opus-5-5-high', 'high'], ['gemini-3.8-flash-medium', 'medium'], ['example-model-xhigh', 'xhigh']]) {
     const b = bridge(model); const id = await session(b);
@@ -1042,9 +1030,8 @@ test('raw model effort suffix is authoritative, not the generic CLI effort menu'
   assert.throws(() => launchArgs({ model: 'claude-opus-5-5-high', effort: 'max', additionalDirectories: [] }), /conflicts with effort/);
 });
 
-test('native load uses only exact audited conversation and binding, owns a lease, and never copies history', async () => {
+void test('native load uses only exact audited conversation and binding, owns a lease, and never copies history', async () => {
   const { mkdtemp, readFile, rm, appendFile } = await import('node:fs/promises');
-  const { join } = await import('node:path');
   const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-exact-load-'));
   const auditDir = join(root, 'audit');
   const first = bridge('gemini-3.8-flash-medium'); first.auditDir = auditDir;
@@ -1080,7 +1067,7 @@ test('native load uses only exact audited conversation and binding, owns a lease
   } finally { await first.close(); await loaded.close(); await competitor.close(); await rm(root, { recursive: true, force: true }); }
 });
 
-test('missing file during native permission declaration stays a failed read, not a vendor denial', async () => {
+void test('missing file during native permission declaration stays a failed read, not a vendor denial', async () => {
   const b = bridge(); const id = await session(b); const s = b.session(id);
   b.permissionSnapshot(s, { version: 1, hostGate: true, override: { mode: 'yolo', source: 'profile' },
     policyIdentity: 'fixture-policy', workspace: { cwd, additionalDirectories: [] } });
@@ -1103,7 +1090,7 @@ test('missing file during native permission declaration stays a failed read, not
   await b.close();
 });
 
-test('native denial after exact host approval retains failed tool receipt and names the vendor layer', async () => {
+void test('native denial after exact host approval retains failed tool receipt and names the vendor layer', async () => {
   const b = bridge(); const id = await session(b); const s = b.session(id);
   const permission = { version: 1, hostGate: true, override: { mode: 'yolo', source: 'runtime' }, policyIdentity: 'fixture-policy', workspace: { cwd, additionalDirectories: [] } };
   b.permissionSnapshot(s, permission);
@@ -1124,7 +1111,7 @@ test('native denial after exact host approval retains failed tool receipt and na
 });
 
 
-test('pre-tool hook denial cannot become successful work when native result omits denied_actions', async () => {
+void test('pre-tool hook denial cannot become successful work when native result omits denied_actions', async () => {
   for (const location of ['output', 'error']) {
     const b = bridge(); const id = await session(b); const s = b.session(id);
     const messages = []; let rejected; let resolved = false;
@@ -1152,7 +1139,7 @@ test('pre-tool hook denial cannot become successful work when native result omit
   }
 });
 
-test('shared Windows hook delegates inherited and vendor-default permission to native settings', { skip: process.platform !== 'win32', timeout: 10000 }, async () => {
+void test('shared Windows hook delegates inherited and vendor-default permission to native settings', { skip: process.platform !== 'win32', timeout: 10000 }, async () => {
   const { hookCommand } = await import('./agy-hook-registration.mjs');
   const { openPermissionChannel } = await import('./agy-permission-hook.mjs');
   const b = bridge(); const id = await session(b); const s = b.session(id);
@@ -1196,9 +1183,8 @@ test('shared Windows hook delegates inherited and vendor-default permission to n
   } finally { s.active = undefined; await channel.close(); await b.close(); }
 });
 
-test('real ACP session/load restores exact native argv after adapter EOF without handoff replay', { timeout: 15000 }, async () => {
+void test('real ACP session/load restores exact native argv after adapter EOF without handoff replay', { timeout: 15000 }, async () => {
   const { mkdtemp, readFile, rm } = await import('node:fs/promises');
-  const { join } = await import('node:path');
   const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-acp-load-'));
   const auditDir = join(root, 'audit');
   const sdkPath = process.env.AGY_TEST_ACP_SDK_PATH ?? createRequire(new URL('../../packages/acp-client/package.json', import.meta.url)).resolve('@agentclientprotocol/sdk');
@@ -1237,9 +1223,8 @@ test('real ACP session/load restores exact native argv after adapter EOF without
 });
 
 
-test('real ACP startup and recovery errors retain actionable reasons without starting or replaying a conversation', { timeout: 15000 }, async () => {
+void test('real ACP startup and recovery errors retain actionable reasons without starting or replaying a conversation', { timeout: 15000 }, async () => {
   const { mkdtemp, readFile, readdir, rm } = await import('node:fs/promises');
-  const { join } = await import('node:path');
   const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-acp-startup-'));
   const auditDir = join(root, 'audit');
   const catalogCalls = join(root, 'catalog-calls.ndjson');
@@ -1288,9 +1273,8 @@ test('real ACP startup and recovery errors retain actionable reasons without sta
   } finally { await first?.close(); await second?.close(); await rm(root, { recursive: true, force: true }); }
 });
 
-test('a user frame is delivered only after stdin accepts it; cancel and write failure leave no prompt receipt', async () => {
+void test('a user frame is delivered only after stdin accepts it; cancel and write failure leave no prompt receipt', async () => {
   const { mkdtemp, readFile, rm } = await import('node:fs/promises');
-  const { join } = await import('node:path');
   const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-prompt-delivery-'));
   const auditDir = join(root, 'audit');
   const promptRecords = async (id) => (await readFile(join(auditDir, `${id}.ndjson`), 'utf8')).trim().split('\n').map(JSON.parse)
@@ -1370,7 +1354,7 @@ test('a user frame is delivered only after stdin accepts it; cancel and write fa
   }
 });
 
-test('cancel and ACP close during permission setup cannot launch a late vendor process or leave its registration', async () => {
+void test('cancel and ACP close during permission setup cannot launch a late vendor process or leave its registration', async () => {
   for (const action of ['cancel', 'close']) {
     const b = bridge(); const id = await session(b);
     let ready; let release;
@@ -1398,9 +1382,8 @@ test('cancel and ACP close during permission setup cannot launch a late vendor p
   }
 });
 
-test('session stdio MCP uses a native plugin without replacing main, passes env and cleans up', async () => {
+void test('session stdio MCP uses a native plugin without replacing main, passes env and cleans up', async () => {
   const { mkdtemp, readFile, rm } = await import('node:fs/promises');
-  const { join, resolve } = await import('node:path');
   const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-mcp-agent-'));
   const b = bridge();
   const originalSpawn = b.spawnProcess;
@@ -1443,9 +1426,8 @@ test('session stdio MCP uses a native plugin without replacing main, passes env 
   }
 });
 
-test('native MCP plugin ownership preserves conflicts and edits, isolates sessions and recovers only dead leases', async () => {
+void test('native MCP plugin ownership preserves conflicts and edits, isolates sessions and recovers only dead leases', async () => {
   const { mkdtemp, mkdir, readFile, writeFile, rm } = await import('node:fs/promises');
-  const { join } = await import('node:path');
   const { randomUUID } = await import('node:crypto');
   const { registerProjectMcpPlugin, recoverProjectMcpPlugin } = await import('./agy-mcp-plugin.mjs');
   const root = await mkdtemp(join(tmpdir(), 'agy-plugin-owner-'));
@@ -1492,7 +1474,7 @@ test('native MCP plugin ownership preserves conflicts and edits, isolates sessio
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('unbound native stdio bootstrap is healthy and empty even with a different session lease in the environment', async () => {
+void test('unbound native stdio bootstrap is healthy and empty even with a different session lease in the environment', async () => {
   const script = fileURLToPath(new URL('./agy-cli-acp.mjs', import.meta.url));
   const child = spawn(process.execPath, [script, '--mcp-stdio', 'KIKI_AGY_MCP_aaaaaaaa_0'], { stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, KIKI_AGY_MCP_bbbbbbbb_0: JSON.stringify({ command: 'must-not-launch', args: [], env: [] }) } });
@@ -1513,9 +1495,8 @@ test('unbound native stdio bootstrap is healthy and empty even with a different 
   assert.equal(stderr, '');
 });
 
-test('MCP off does not register a plugin and native disabled discovery never falls back to a custom agent', async () => {
+void test('MCP off does not register a plugin and native disabled discovery never falls back to a custom agent', async () => {
   const { mkdtemp, readFile, rm } = await import('node:fs/promises');
-  const { join } = await import('node:path');
   const root = await mkdtemp(join(tmpdir(), 'agy-plugin-off-'));
   const b = bridge();
   const spawnProcess = b.spawnProcess;
@@ -1536,11 +1517,10 @@ test('MCP off does not register a plugin and native disabled discovery never fal
   } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
 });
 
-test('session bootstrap reports readiness only after its actual stdio consumer lists target tools', async () => {
+void test('session bootstrap reports readiness only after its actual stdio consumer lists target tools', async () => {
   const { Client } = await import(pathToFileURL(createRequire(new URL('../../packages/agent-core-v2/package.json', import.meta.url)).resolve('@modelcontextprotocol/sdk/client/index.js')).href);
   const { StdioClientTransport } = await import(pathToFileURL(createRequire(new URL('../../packages/agent-core-v2/package.json', import.meta.url)).resolve('@modelcontextprotocol/sdk/client/stdio.js')).href);
   const { mkdtemp, rm } = await import('node:fs/promises');
-  const { join } = await import('node:path');
   const root = await mkdtemp(join(tmpdir(), 'agy-bootstrap-ready-'));
   const b = bridge();
   const script = `const r=require('node:readline').createInterface({input:process.stdin});r.on('line',l=>{const q=JSON.parse(l);if(q.id===undefined)return;const result=q.method==='initialize'?{protocolVersion:q.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'neutral',version:'1'}}:{tools:[{name:'ping',inputSchema:{type:'object'}}]};console.log(JSON.stringify({jsonrpc:'2.0',id:q.id,result}));});`;
@@ -1557,7 +1537,7 @@ test('session bootstrap reports readiness only after its actual stdio consumer l
   } finally { await client.close(); await b.close(); await rm(root, { recursive: true, force: true }); }
 });
 
-test('agy models columns are raw ids; a listed id can be selected and an unknown or conflicting id cannot', async () => {
+void test('agy models columns are raw ids; a listed id can be selected and an unknown or conflicting id cannot', async () => {
   const { EventEmitter } = await import('node:events');
   const { PassThrough } = await import('node:stream');
   const { vendorModelIds, configOptions } = await import('./agy-cli-acp.mjs');
@@ -1635,9 +1615,8 @@ test('agy models columns are raw ids; a listed id can be selected and an unknown
 });
 
 
-test('native MCP load retains the exact compact or legacy namespace from its own audit', async () => {
+void test('native MCP load retains the exact compact or legacy namespace from its own audit', async () => {
   const { mkdtemp, readFile, rm, appendFile } = await import('node:fs/promises');
-  const { join } = await import('node:path');
   for (const legacy of [false, true]) {
     const root = await mkdtemp(join(tmpdir(), 'agy-mcp-load-'));
     const auditDir = join(root, 'audit');
@@ -1668,9 +1647,8 @@ test('native MCP load retains the exact compact or legacy namespace from its own
   }
 });
 
-test('legacy MCP recovery preserves live leases, validates namespaces and recovers only the exact owned plugin', async () => {
+void test('legacy MCP recovery preserves live leases, validates namespaces and recovers only the exact owned plugin', async () => {
   const { mkdtemp, readFile, writeFile, rm } = await import('node:fs/promises');
-  const { join } = await import('node:path');
   const { randomUUID } = await import('node:crypto');
   const { registerProjectMcpPlugin, recoverProjectMcpPlugin } = await import('./agy-mcp-plugin.mjs');
   const root = await mkdtemp(join(tmpdir(), 'agy-legacy-plugin-'));
@@ -1697,9 +1675,8 @@ test('legacy MCP recovery preserves live leases, validates namespaces and recove
 });
 
 
-test('session MCP bootstrap closes after spawn failure or early exit even while its caller keeps stdin open', async () => {
+void test('session MCP bootstrap closes after spawn failure or early exit even while its caller keeps stdin open', async () => {
   const { mkdtemp, rm } = await import('node:fs/promises');
-  const { join } = await import('node:path');
   for (const missing of [true, false]) {
     const root = await mkdtemp(join(tmpdir(), 'agy-bootstrap-exit-'));
     const b = bridge();

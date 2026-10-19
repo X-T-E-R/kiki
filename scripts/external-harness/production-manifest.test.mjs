@@ -8,7 +8,7 @@ import {
   SOURCE_OWNED_ADAPTER_VERSION,
 } from './production-manifest.mjs';
 
-test('production manifest lists only the shipped adapter files', async () => {
+void test('production manifest lists only the shipped adapter files', async () => {
   assert.deepEqual([...SOURCE_OWNED_ADAPTER_FILES], [
     'agy-cli-acp.mjs',
     'agy-hook-registration.mjs',
