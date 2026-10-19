@@ -1028,6 +1028,72 @@ describe('GlobalSearchService', () => {
     },
   );
 
+  it('serves the replacement title when it commits during a read-only catch-up', async () => {
+    const s1 = summary('s1', 'original title', T1);
+    await writeWire(home!, s1.id, 'main', [userLine('replacement message', T2)]);
+    const index = staticIndex([s1]);
+    const writer = track(makeInlineService(home!, index));
+    await writer.reindex();
+    const reader = track(makeInlineService(home!, index));
+    await reader.status();
+    await refreshNow(reader);
+    const untitled = await reader.search({ query: 'replacement', role: 'user' });
+    expect(untitled.items).toHaveLength(1);
+    expect(untitled.items[0]?.sessionTitle).toBe('');
+
+    await writeWire(home!, s1.id, 'main', [userLine('replacement message', T3)]);
+    await settleSync(writer);
+
+    const db = coreOf(reader).db as unknown as {
+      catchUpFromWal(offset: number): Promise<{ offset: number; appliedFrames: number } | null>;
+    };
+    const originalCatchUp = db.catchUpFromWal;
+    const callCatchUp = originalCatchUp.bind(db);
+    let releaseScan!: () => void;
+    let markEntered!: () => void;
+    const scanGate = new Promise<void>((resolve) => {
+      releaseScan = resolve;
+    });
+    const scanEntered = new Promise<void>((resolve) => {
+      markEntered = resolve;
+    });
+    let catchUps = 0;
+    db.catchUpFromWal = async (offset) => {
+      catchUps += 1;
+      if (catchUps === 1) {
+        const caught = await callCatchUp(offset);
+        markEntered();
+        await scanGate;
+        return caught;
+      }
+      return callCatchUp(offset);
+    };
+
+    const refreshing = refreshNow(reader);
+    const sawScan = await Promise.race([
+      scanEntered.then(() => true),
+      (async () => {
+        for (let i = 0; i < 1_000; i++) await new Promise((resolve) => setImmediate(resolve));
+        return false;
+      })(),
+    ]);
+    try {
+      expect(sawScan).toBe(true);
+      await writeTitle(home!, s1.id, 'replacement title');
+      await settleSync(writer);
+    } finally {
+      releaseScan();
+      db.catchUpFromWal = originalCatchUp;
+      await refreshing;
+    }
+
+    const replacement = await reader.search({ query: 'replacement', role: 'user' });
+    expect(replacement.items).toHaveLength(1);
+    expect(replacement.items[0]?.sessionTitle).toBe('replacement title');
+    expect(replacement.items[0]?.snippet).toContain('replacement message');
+    expect((await reader.search({ query: 'original' })).items).toEqual([]);
+  });
+
   it('rescans a wire file that shrank between syncs', async () => {
     const s1 = summary('s1', 'shrink', T1);
     const file = await writeWire(home!, 's1', 'main', [
