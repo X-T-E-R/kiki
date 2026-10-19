@@ -359,16 +359,41 @@ function coldWindowCovers(items: AgentTranscriptSnapshot['items'], beforeTurn: s
 }
 
 function coldItemIdentity(item: AgentTranscriptSnapshot['items'][number]): string {
-  if (item.kind === 'turn') return `turn:${item.turnId}`;
-  if (item.kind === 'marker') return `marker:${item.markerId}`;
-  if (item.kind === 'taskref') return `taskref:${item.refId}`;
-  return item.kind;
+  switch (item.kind) {
+    case 'turn': return `turn:${item.turnId}`;
+    case 'marker': return `marker:${item.markerId}`;
+    case 'taskref': return `taskref:${item.refId}`;
+    default: {
+      const unreachable: never = item;
+      return unreachable;
+    }
+  }
 }
 
-/** A cleared or padding prefix has no page of its own and must not keep a continuation cursor. */
-function coldPrefixAddsItem(current: AgentTranscriptSnapshot['items'], older: AgentTranscriptSnapshot['items']): boolean {
-  const seen = new Set(current.map(coldItemIdentity));
-  return older.some((item) => !seen.has(coldItemIdentity(item)));
+function coldPrefixAddsItem(current: AgentTranscriptSnapshot['items'], merged: AgentTranscriptSnapshot['items']): boolean {
+  if (current.length !== merged.length) return true;
+  for (let index = 0; index < current.length; index += 1) {
+    const before = current[index]!;
+    const after = merged[index]!;
+    if (coldItemIdentity(before) !== coldItemIdentity(after)) return true;
+    if (before.kind === 'turn' && after.kind === 'turn' && coldTurnVisibleDiffers(before, after)) return true;
+  }
+  return false;
+}
+
+function coldTurnVisibleDiffers(before: TranscriptTurn, after: TranscriptTurn): boolean {
+  if (before.prompt !== after.prompt || before.promptId !== after.promptId || before.origin.kind !== after.origin.kind || before.startedAt !== after.startedAt) return true;
+  if (before.message?.messageId !== after.message?.messageId) return true;
+  if ((before.contentRefs?.length ?? 0) !== (after.contentRefs?.length ?? 0) || before.steps.length !== after.steps.length) return true;
+  for (let step = 0; step < before.steps.length; step += 1) {
+    const left = before.steps[step]!;
+    const right = after.steps[step]!;
+    if (left.stepId !== right.stepId || left.frames.length !== right.frames.length) return true;
+    for (let frame = 0; frame < left.frames.length; frame += 1) {
+      if (left.frames[frame]!.frameId !== right.frames[frame]!.frameId) return true;
+    }
+  }
+  return false;
 }
 
 function wireTurnId(record: ContextRecord): string | undefined {
@@ -1928,8 +1953,7 @@ export class TranscriptService {
     const retainEntireFile = entire && bytes <= COLD_WIRE_WINDOWS_MAX_TOTAL_BYTES;
     let extended: ColdWireWindow;
     if (window.records.length > 0 && bytes > COLD_WIRE_WINDOW_MAX_BYTES && !retainEntireFile && read.records.length > 0) {
-      const olderItems = this.projectColdRecords(agentId, read.records, false).items;
-      if (read.complete && !coldPrefixAddsItem(window.snapshot.items, olderItems)) {
+      if (read.complete && !coldPrefixAddsItem(window.snapshot.items, snapshot.items)) {
         const skipped: ColdWireWindow = {
           ...window,
           start: next,
@@ -2921,23 +2945,20 @@ export class TranscriptService {
     if (cached !== undefined && cached.fingerprint === fingerprint && cached.at === end &&
         current?.fingerprint === fingerprint && current.payloadEvicted !== true &&
         current.start < end && current.end >= end) return cached.snapshot;
-    if (end === 0) {
-      const snapshot = this.projectColdRecords(agentId, [], true);
-      this.anchorReads.set(snapshot, 'window');
-      this.rememberAnchorWindow(wirePath, fingerprint, end, snapshot);
-      return snapshot;
-    }
     const opened = signal ?? new AbortController().signal;
     const recordEnd = end >= fileSize ? fileSize : await this.nextRecordBoundary(wirePath, end, fileSize, opened);
-    const readEnd = recordEnd > end && recordEnd - end <= FIRST_SCREEN_WINDOW_BYTES ? recordEnd : end;
+    const matchedFits = recordEnd <= end || recordEnd - end <= FIRST_SCREEN_WINDOW_BYTES;
+    const readEnd = matchedFits ? recordEnd : end;
     const start = await this.tailRecordStart(wirePath, readEnd, opened);
     const read = await this.readWireRange(wirePath, start, readEnd, opened);
-    const snapshot = this.projectColdRecords(agentId, read.records, start === 0);
-    this.anchorReads.set(snapshot, start === 0 ? 'window' : 'continues');
+    const snapshot = this.projectColdRecords(agentId, read.records, start === 0 && matchedFits);
+    this.anchorReads.set(snapshot, start === 0 && matchedFits ? 'window' : 'continues');
     this.rememberAnchorWindow(wirePath, fingerprint, end, snapshot);
-    this.rememberColdWindow(wirePath, { fingerprint, start, end: readEnd, entire: false, records: read.records,
-      snapshot, bytes: this.coldWindowBytes(snapshot, read.records), droppedTail: readEnd < fileSize });
-    this.deleteColdSnapshotCache(wirePath);
+    if (matchedFits) {
+      this.rememberColdWindow(wirePath, { fingerprint, start, end: readEnd, entire: false, records: read.records,
+        snapshot, bytes: this.coldWindowBytes(snapshot, read.records), droppedTail: readEnd < fileSize });
+      this.deleteColdSnapshotCache(wirePath);
+    }
     return snapshot;
   }
 

@@ -4584,6 +4584,38 @@ it.each([{ turnId: 0, prepared: false }, { turnId: 7, prepared: true }, { turnId
     } finally { service.dispose(); await database.close(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
   });
 
+it('keeps an earlier prompt on the same turn when the cold tail already shows that turn', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'transcript-same-turn-prefix-'));
+  const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'main');
+  await mkdir(wireDir, { recursive: true });
+  const prompt = {
+    type: 'turn.prompt', turnId: 0, promptId: 'same-turn-prefix',
+    input: [{ type: 'text', text: 'visible-prefix' }], origin: { kind: 'user' }, time: 1_000,
+    padding: 'p'.repeat(2 << 20),
+  };
+  const padding = Array.from({ length: 145 }, () => ({ type: 'fixture.padding', padding: 'x'.repeat(64 << 10) }));
+  const tail = [
+    { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 0, uuid: 'same-turn-step', step: 1 }, time: 2_000 },
+    { type: 'turn.ended', turnId: 0, reason: 'completed', time: 3_000 },
+  ];
+  await writeFile(join(wireDir, 'wire.jsonl'), `${[prompt, ...padding, ...tail].map(record => JSON.stringify(record)).join('\n')}\n`);
+  const service = new TranscriptService({ homeDir: home, core: coldCore() });
+  try {
+    const page = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main' });
+    const tailTurn = page?.items.find(item => item.kind === 'turn' && item.turnId === 't0');
+    expect(tailTurn).toMatchObject({ prompt: undefined, origin: { kind: 'other' } });
+    expect(page?.has_more).toBe(true);
+    let cursor = page?.next_cursor;
+    let recovered: typeof tailTurn;
+    for (let attempt = 0; attempt < 16 && cursor !== undefined && recovered === undefined; attempt += 1) {
+      const continued = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: cursor });
+      recovered = continued?.items.find(item => item.kind === 'turn' && item.turnId === 't0' && item.prompt === 'visible-prefix');
+      cursor = continued?.next_cursor;
+    }
+    expect(recovered).toMatchObject({ prompt: 'visible-prefix', promptId: 'same-turn-prefix', origin: { kind: 'user' } });
+  } finally { service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+});
+
 it('keeps a truly headerless long tail unknown with a usable continuation', async () => {
   const home = await mkdtemp(join(tmpdir(), 'transcript-headerless-'));
   const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'main');
