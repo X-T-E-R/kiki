@@ -5,6 +5,8 @@ import { TestInstantiationService } from '#/_base/di/test';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentProfileService, type ProfileData } from '#/agent/profile/profile';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
+import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
 import { AgentToolPolicyService } from '#/agent/toolPolicy/toolPolicyService';
 import { IAgentToolExecutorService, type ToolCallGuard } from '#/agent/toolExecutor/toolExecutor';
 import { IConfigService } from '#/app/config/config';
@@ -71,6 +73,7 @@ function fixture(options: FixtureOptions = {}) {
     guard = value;
     return { dispose() {} };
   } });
+  ix.set(IAgentToolRegistryService, new SyncDescriptor(AgentToolRegistryService));
   ix.set(IAgentToolPolicyService, new SyncDescriptor(AgentToolPolicyService));
   const policy = ix.get(IAgentToolPolicyService);
   ix.stub(IFlagService, { enabled: () => options.enabled ?? true });
@@ -78,8 +81,12 @@ function fixture(options: FixtureOptions = {}) {
   ix.stub(ITaskBoardService, { read, write });
   ix.set(IBoardReadTool, new SyncDescriptor(BoardReadTool));
   ix.set(IBoardWriteTool, new SyncDescriptor(BoardWriteTool));
-  return { ix, read, write, policy, guard: (name: string) => guard?.({ name, source: 'builtin' }), targetProfile,
-    reader: ix.get(IBoardReadTool), writer: ix.get(IBoardWriteTool) };
+  const reader = ix.get(IBoardReadTool);
+  const writer = ix.get(IBoardWriteTool);
+  for (const tool of [reader, writer]) disposables.add(ix.get(IAgentToolRegistryService).register(
+    Object.assign(tool, { subagentDefault: 'opt-in' as const }), { source: 'plugin' }));
+  return { ix, read, write, policy, guard: (name: string) => guard?.({ name, source: name === 'BoardRead' || name === 'BoardWrite' ? 'plugin' : 'builtin' }), targetProfile,
+    reader, writer };
 }
 
 async function execute(input: ToolExecution | Promise<ToolExecution>) {
@@ -123,7 +130,6 @@ describe('Board tools and subagent policy (real DI services)', () => {
     { tools: [] },
     { tools: ['Read'] },
     { disallowedTools: ['BoardRead'] },
-    { disabledToolGroups: ['board'] as const },
     { globalDisabled: ['BoardRead'] },
     { globalEnabled: ['Read'] },
     { workspaceDisabled: ['BoardRead'] },

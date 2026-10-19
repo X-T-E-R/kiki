@@ -14,6 +14,8 @@ import {
 import { AsyncEmitter, Emitter, Event } from '#/_base/event';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import { stubPluginUsageService } from '../../app/pluginUsage/stubs';
 import { PluginService } from '#/app/plugin/pluginService';
 import type { PluginReloadEvent } from '#/app/plugin/types';
 import { IProviderService } from '#/kosong/provider/provider';
@@ -816,6 +818,7 @@ describe('WorkspaceSkillCatalogService', () => {
       stubPair(IFlagService, stubFlag(true)),
       stubPair(ISkillDiscovery, store),
       stubPair(IBootstrapService, stubBootstrap(homeDir)),
+      stubPair(IPluginUsageService, stubPluginUsageService()),
       stubPair(IConfigService, configStub()),
       stubPair(IProviderService, stubProviderService()),
       stubPair(IHostFsWatchService, fsWatchStub()),

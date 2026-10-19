@@ -153,7 +153,7 @@ describe('plugin file target admission', () => {
       workspaceAAllowed = false;
       await expect(prepared.execute(context)).resolves.toMatchObject({
         isError: true,
-        output: expect.stringContaining('disabled in this workspace'),
+        output: expect.stringContaining('disabled in this session'),
       });
       expect(a.hosts.execute).not.toHaveBeenCalled();
       await state.fire('workspace-a');

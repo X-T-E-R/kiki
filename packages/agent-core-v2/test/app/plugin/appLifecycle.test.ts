@@ -64,7 +64,8 @@ it('keeps a real resident App host alive when one workspace closes its contribut
   const plan = await plugins.previewPlugin({ source });
   await plugins.installPlugin({ source, fingerprint: plan.fingerprint, consent: true });
   expect((await plugins.listPlugins())[0]).toMatchObject({ enabled: true, globalEnabled: false });
-  expect(hosts.running('fixture-resident')).toBe(false);
+  expect(hosts.running('fixture-resident')).toBe(true);
+  expect(await usage.allows('workspace-a', 'fixture-resident')).toBe(false);
   await usage.set({ workspaceId: 'workspace-a', pluginId: 'fixture-resident', override: 'on' });
   await vi.waitFor(async () => expect((await usage.read('workspace-a')).applyState).toBe('applied'));
   const before = await hosts.requestPanel('fixture-resident', 'status', 'status', {}) as { pid: number; ticks: number };

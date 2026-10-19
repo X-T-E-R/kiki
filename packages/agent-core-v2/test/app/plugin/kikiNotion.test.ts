@@ -13,6 +13,8 @@ import { ILogService } from '#/_base/log/log';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import { stubPluginUsageService } from '../pluginUsage/stubs';
 import { PluginService } from '#/app/plugin/pluginService';
 import { LifecycleScope } from '#/app/scopes';
 import { ISkillDiscovery } from '#/app/skillCatalog/skillDiscovery';
@@ -146,6 +148,7 @@ describe('kiki-notion install and scripted MCP contract', () => {
     await mkdir(home);
     const host: ScopedTestHost = createScopedTestHost([
       stubPair(IBootstrapService, stubBootstrap(home)),
+      stubPair(IPluginUsageService, stubPluginUsageService()),
       stubPair(ILogService, stubLog()),
       stubPair(IProviderService, stubProviderService()),
       stubPair(IConfigService, { _serviceBrand: undefined, ready: Promise.resolve(), get: () => ({}), replace: async () => {} } as unknown as IConfigService),
@@ -161,7 +164,7 @@ describe('kiki-notion install and scripted MCP contract', () => {
     await expect(plugins.installPlugin({ source, fingerprint: plan.fingerprint, consent: false })).rejects.toThrow();
     const installed = await plugins.installPlugin({ source, fingerprint: plan.fingerprint, consent: true });
     expect(installed.id).toBe('kiki-notion');
-    expect(installed.enabled).toBe(false);
+    expect(installed).toMatchObject({ enabled: true, globalEnabled: false });
     expect(await plugins.enabledMcpServers()).toEqual({});
     const skillSource = host.app.accessor.get(IPluginSkillSource);
     expect((await skillSource.load()).skills).toEqual([]);
