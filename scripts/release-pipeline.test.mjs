@@ -10,7 +10,7 @@ import { NPM_DISTRIBUTIONS, stageNpmDistributions } from '../apps/kimi-code/scri
 const root = resolve(import.meta.dirname, '..');
 const read = (path) => readFile(join(root, path), 'utf8');
 
-test('public CLI and desktop sidecar builds use the release SEA policy independently of signing', async () => {
+void test('public CLI and desktop sidecar builds use the release SEA policy independently of signing', async () => {
   assert.deepEqual(seaRuntimeOptions('release'), { execArgv: [], execArgvExtension: 'env' });
   assert.deepEqual(seaRuntimeOptions('local'), {
     execArgv: ['--max-old-space-size=8192'], execArgvExtension: 'cli',
@@ -33,7 +33,7 @@ test('public CLI and desktop sidecar builds use the release SEA policy independe
   assert.match(build, /runSignStep\(macosSigningOptions\(values\['sign-macos'\]\)\)/);
 });
 
-test('every Pages artifact contains feeds before upload and deployment', async () => {
+void test('every Pages artifact contains feeds before upload and deployment', async () => {
   const workflows = join(root, '.github/workflows');
   let deployments = 0;
   for (const name of await readdir(workflows)) {
@@ -53,7 +53,7 @@ test('every Pages artifact contains feeds before upload and deployment', async (
   assert.match(feed, /- Kiki Desktop Release/);
 });
 
-test('npm stages preserve public distribution names and synchronized workspace version', async (t) => {
+void test('npm stages preserve public distribution names and synchronized workspace version', async (t) => {
   await mkdir(join(root, '.tmp'), { recursive: true });
   const scratch = await mkdtemp(join(root, '.tmp/release-stage-test-'));
   t.after(() => rm(scratch, { recursive: true, force: true }));
