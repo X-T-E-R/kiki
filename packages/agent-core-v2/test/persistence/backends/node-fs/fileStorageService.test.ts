@@ -1,17 +1,146 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
+import { statSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, readdir, rm, stat, unlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 
+import { FSWatcher } from 'chokidar';
 import { join } from 'pathe';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { cleanupExpiredSessionLocks, isSessionLockActive } from '#/persistence/backends/node-fs/fileLock';
 import { FileStorageService, openAppendAfterTransientDenial } from '#/persistence/backends/node-fs/fileStorageService';
 
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, statSync: vi.fn(actual.statSync) };
+});
+
 const isWin = process.platform === 'win32';
 const encoder = new TextEncoder();
+
+describe('FileStorageService — watch initialization', () => {
+  let dir: string;
+  let watchers: FSWatcher[];
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'fss-watch-'));
+    watchers = [];
+    vi.useFakeTimers();
+    vi.spyOn(FSWatcher.prototype, 'add').mockImplementation(function (this: FSWatcher) {
+      watchers.push(this);
+      return this;
+    });
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  });
+
+  it.each([
+    ['rewrite', 'first', 'second'],
+    ['creation', undefined, 'created'],
+    ['deletion', 'first', undefined],
+  ] as const)('reconciles a %s before the watcher is ready', async (_operation, initial, next) => {
+    const target = join(dir, 'config.toml');
+    if (initial !== undefined) await writeFile(target, initial);
+    const storage = new FileStorageService(dir);
+    const changed = vi.fn();
+    const subscription = storage.watch('', 'config.toml')(changed);
+    try {
+      if (next === undefined) await unlink(target);
+      else await writeFile(target, next);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(changed).not.toHaveBeenCalled();
+      watchers[0]!.emit('ready');
+      await vi.advanceTimersByTimeAsync(150);
+      expect(changed).toHaveBeenCalledOnce();
+      const bytes = await storage.read('', 'config.toml');
+      expect(bytes === undefined ? undefined : new TextDecoder().decode(bytes)).toBe(next);
+    } finally {
+      subscription.dispose();
+    }
+  });
+
+  it('ignores unchanged startup and unrelated paths, and still debounces matching events', async () => {
+    const target = join(dir, 'config.toml');
+    await writeFile(target, 'first');
+    const storage = new FileStorageService(dir);
+    const changed = vi.fn();
+    const subscription = storage.watch('', 'config.toml')(changed);
+    try {
+      watchers[0]!.emit('ready');
+      watchers[0]!.emit('all', 'change', join(dir, 'other.toml'));
+      await vi.advanceTimersByTimeAsync(300);
+      expect(changed).not.toHaveBeenCalled();
+      watchers[0]!.emit('all', 'change', target);
+      watchers[0]!.emit('all', 'change', target);
+      await vi.advanceTimersByTimeAsync(150);
+      expect(changed).toHaveBeenCalledOnce();
+    } finally {
+      subscription.dispose();
+    }
+  });
+
+  it.each(['subscription', 'ready'] as const)('keeps observing the key when metadata is unavailable at %s', async (stage) => {
+    const target = join(dir, 'config.toml');
+    await writeFile(target, 'first');
+    const storage = new FileStorageService(dir);
+    const changed = vi.fn();
+    const error = Object.assign(new Error('metadata unavailable fixture'), { code: 'EACCES' });
+    const reported = vi.spyOn(console, 'error');
+    const failMetadata = (): void => {
+      vi.mocked(statSync).mockImplementationOnce(() => { throw error; });
+    };
+    if (stage === 'subscription') failMetadata();
+    const subscription = storage.watch('', 'config.toml')(changed);
+    try {
+      expect(watchers).toHaveLength(1);
+      if (stage === 'ready') failMetadata();
+      watchers[0]!.emit('ready');
+      await vi.advanceTimersByTimeAsync(150);
+      expect(reported).toHaveBeenCalledWith('[unexpected]', error);
+      expect(changed).toHaveBeenCalledOnce();
+      watchers[0]!.emit('all', 'change', target);
+      await vi.advanceTimersByTimeAsync(150);
+      expect(changed).toHaveBeenCalledTimes(2);
+    } finally {
+      subscription.dispose();
+    }
+  });
+
+  it('ignores ready and file events from a closed watcher after resubscription', async () => {
+    const target = join(dir, 'config.toml');
+    await writeFile(target, 'first');
+    const storage = new FileStorageService(dir);
+    const watch = storage.watch('', 'config.toml');
+    const changed = vi.fn();
+    const first = watch(changed);
+    await writeFile(target, 'second');
+    first.dispose();
+    const second = watch(changed);
+    try {
+      watchers[0]!.emit('ready');
+      watchers[0]!.emit('all', 'change', target);
+      await vi.advanceTimersByTimeAsync(300);
+      expect(changed).not.toHaveBeenCalled();
+      await writeFile(target, 'third');
+      watchers[1]!.emit('ready');
+      await vi.advanceTimersByTimeAsync(150);
+      expect(changed).toHaveBeenCalledOnce();
+      watchers[1]!.emit('all', 'change', target);
+      second.dispose();
+      await vi.advanceTimersByTimeAsync(300);
+      expect(changed).toHaveBeenCalledOnce();
+    } finally {
+      first.dispose();
+      second.dispose();
+    }
+  });
+});
 
 describe('FileStorageService — file permissions', () => {
   let dir: string;
