@@ -211,7 +211,7 @@ export class NotificationService {
   }
 
   private async drainDigests(): Promise<void> {
-    while (this.activeDigests.size > 0) await Promise.allSettled([...this.activeDigests]);
+    while (this.activeDigests.size > 0) await Promise.allSettled(this.activeDigests);
   }
 
   private mutate(change: (draft: Settings) => void): Promise<NotificationSettings> {

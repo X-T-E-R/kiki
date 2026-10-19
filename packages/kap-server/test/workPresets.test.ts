@@ -113,7 +113,8 @@ describe('work preset route catalog side effects', () => {
 
   it('prioritizes the configured catalog for explicit enable and preserves consent', async () => {
     const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
-      expect(String(input)).toBe('https://configured.test/marketplace.json');
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      expect(url).toBe('https://configured.test/marketplace.json');
       return marketplaceResponse('https://configured.test');
     });
     const fixture = routeFixture({ marketplaceUrl: 'https://configured.test/marketplace.json' });

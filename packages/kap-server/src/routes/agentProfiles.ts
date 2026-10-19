@@ -79,7 +79,7 @@ import { errEnvelope, okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
-import { acquireDraftProfileCatalog, acquireDraftProfileListCatalog, acquireWorkspaceProfileCatalog, agentCapabilities } from './agentProfileCapabilities';
+import { acquireDraftProfileListCatalog, acquireWorkspaceProfileCatalog, agentCapabilities } from './agentProfileCapabilities';
 import { previewExecutorPrompt } from './executorPromptPreview';
 import { applyAgentModelMenuDraft, projectAgentModelMenu } from './agentModelMenu';
 import { resumeLocalSession } from './localSessionResume';

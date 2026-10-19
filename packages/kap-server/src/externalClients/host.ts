@@ -303,7 +303,7 @@ export class ExternalClientHost {
               {signal,turnId:recorder.turnId,onToolCall:payload=>{recorder!.toolCall(payload);}})){
               await recorder.toolResult(executed);result=executed.result;break;
             }
-          }finally{await changed.dispose();await approvalWrite;}
+          }finally{changed.dispose();await approvalWrite;}
         }
         if(result===undefined) throw new ExternalClientError('missing_result','Native tool returned no result.');
         const failed=typeof result==='object'&&result!==null&&'isError' in result&&result.isError===true;

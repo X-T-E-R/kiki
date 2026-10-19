@@ -257,7 +257,7 @@ function diffEntries(content: readonly unknown[] | undefined): { path: string; b
     const path = stringOf(record['path']);
     const after = typeof record['newText'] === 'string' ? record['newText'] : undefined;
     const oldText = record['oldText'];
-    if (path === undefined || after === undefined || oldText != null && typeof oldText !== 'string') return [];
+    if (path === undefined || after === undefined || (oldText !== null && oldText !== undefined && typeof oldText !== 'string')) return [];
     return [{ path, before: oldText ?? '', after }];
   });
 }

@@ -353,7 +353,7 @@ async function sendSession(core: Scope, transcriptService: TranscriptService | u
       const file = opened.file;
       reply.type(grant.mime);
       const range = applyRange(reply, pickHeader(req.headers, 'range'), file.size);
-      if (range === 'unsatisfiable') return reply.send('');
+      if (range === 'unsatisfiable') return await reply.send('');
       const playback = Readable.from(file.stream(range === null ? undefined : { start: range.start, end: range.end }));
       stream = playback;
       responseCleanup = createDeferredCleanup(

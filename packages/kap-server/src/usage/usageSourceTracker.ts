@@ -8,6 +8,8 @@ import {
   ILogService,
   type Scope,
 } from '@kiki/agent-core-v2';
+import { onUnexpectedError } from '@kiki/agent-core-v2/_base/errors/unexpectedError';
+import { isPromiseLike } from '@kiki/agent-core-v2/_base/lifecycle/disposer';
 
 export interface UsageSourceChanges {
   readonly ready: boolean;
@@ -88,6 +90,7 @@ export class UsageSourceTracker extends Disposable implements UsageSourceChanges
     this.watching = false;
     this.startWatch = undefined;
     this.listeners.clear();
-    super.dispose();
+    const pending = super.dispose();
+    if (isPromiseLike(pending)) pending.then(undefined, onUnexpectedError);
   }
 }

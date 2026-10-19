@@ -140,7 +140,7 @@ export function registerDocumentPreviewRoutes(app: DocumentPreviewRouteHost, cor
         return;
       }
       if (opened.file === undefined) {
-        void opened.dispose();
+        await opened.dispose();
         typedReply.code(404).send(errEnvelope(ErrorCode.FILE_NOT_FOUND, 'file not found', typedReq.id));
         return;
       }
@@ -369,12 +369,19 @@ function sendPreviewError(reply: PreviewReply, requestId: string, file: Document
   reply.code(500).send(errEnvelope(ErrorCode.INTERNAL_ERROR, error instanceof Error ? error.message : 'document preview failed', requestId));
 }
 
+async function settleReleases(releases: readonly (() => void | Promise<void>)[]): Promise<void> {
+  const settled = await Promise.allSettled(releases.map((release) => Promise.resolve(release())));
+  const errors = settled.flatMap((item) => item.status === 'rejected' ? [item.reason] : []);
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, 'document preview release failed');
+}
+
 async function openPreviewFile(core: Scope, sessionId: string, request: DocumentPreviewRequest): Promise<OpenedPreviewFile> {
   const operation = await acquireSessionOperation(core, sessionId, 'document-preview');
-  if (operation.handle === undefined) return { sessionExists: false, dispose: () => { operation.dispose(); } };
+  if (operation.handle === undefined) return { sessionExists: false, dispose: () => operation.dispose() };
   if (request.source.kind === 'session-media') {
     const opened = await operation.handle.accessor.get(ISessionMediaStore).open(request.source.file_id);
-    if (opened !== undefined) return { sessionExists: true, file: { ...opened, sourceKind: 'session-media', name: request.source.name ?? opened.name, mediaType: request.source.media_type ?? opened.mediaType }, dispose: () => { operation.dispose(); } };
+    if (opened !== undefined) return { sessionExists: true, file: { ...opened, sourceKind: 'session-media', name: request.source.name ?? opened.name, mediaType: request.source.media_type ?? opened.mediaType }, dispose: () => operation.dispose() };
     try {
       const uploaded = await core.accessor.get(IFileService).get(request.source.file_id);
       return {
@@ -384,10 +391,10 @@ async function openPreviewFile(core: Scope, sessionId: string, request: Document
           mediaType: request.source.media_type ?? uploaded.meta.media_type, size: uploaded.meta.size,
           stream: async function* (range) { for await (const chunk of uploaded.stream(range)) yield chunk as Uint8Array; },
         },
-        dispose: () => { operation.dispose(); }
+        dispose: () => operation.dispose(),
       };
     } catch {
-      operation.dispose();
+      await operation.dispose();
       return { sessionExists: true, dispose: () => {} };
     }
   }
@@ -428,11 +435,14 @@ async function openPreviewFile(core: Scope, sessionId: string, request: Document
           }
         },
       },
-      dispose: () => { lease.dispose(); operation.dispose(); },
+      dispose: () => settleReleases([() => lease.dispose(), () => operation.dispose()]),
     };
   } catch (error) {
-    lease.dispose();
-    operation.dispose();
+    try {
+      await settleReleases([() => lease.dispose(), () => operation.dispose()]);
+    } catch (releaseError) {
+      throw new AggregateError([error, releaseError], 'document preview release failed', { cause: error });
+    }
     throw error;
   }
 }

@@ -316,48 +316,58 @@ export class DocumentPreviewService {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'kiki-document-preview-'));
     const target = path.join(directory, safeFilename(file.name, format));
     let cleanupUnconfirmed = false;
+    let failure: unknown;
+    let outcome: DocumentPreviewEngineResponse | undefined;
     try {
       await materialize(file, target, signal);
-      let rendered: OfficePreviewResult;
+      let rendered: OfficePreviewResult | undefined;
       try {
         rendered = await this.renderOffice!({ path: target, page, sheet: options.sheet, range: options.range, signal });
       } catch (error) {
         if (isOfficeDependencyError(error)) {
-          return {
+          outcome = {
             kind: 'missing_dependency', dependency: 'officecli', source,
             message: error instanceof Error ? error.message : 'OfficeCLI is unavailable.',
             recovery: { kind: 'install-prerequisite', pluginId: 'kiki-office', prerequisiteId: 'officecli', consentRequired: true, pluginState: error instanceof DocumentPreviewDependencyError ? error.pluginState : 'enabled' },
             readOnly: true,
           };
+        } else {
+          cleanupUnconfirmed = isCleanupUnconfirmed(error);
+          failure = error;
         }
-        cleanupUnconfirmed = isCleanupUnconfirmed(error);
-        throw error;
       }
-      if (rendered.mime !== 'image/png' || !hasPrefix(rendered.bytes, PNG_MAGIC) || rendered.bytes.byteLength > MAX_ASSET_BYTES) {
-        throw new DocumentPreviewRequestError('invalid_render', 'OfficeCLI did not return a bounded PNG preview.');
+      if (failure === undefined && outcome === undefined && rendered !== undefined) {
+        if (rendered.mime !== 'image/png' || !hasPrefix(rendered.bytes, PNG_MAGIC) || rendered.bytes.byteLength > MAX_ASSET_BYTES) {
+          failure = new DocumentPreviewRequestError('invalid_render', 'OfficeCLI did not return a bounded PNG preview.');
+        } else {
+          const asset = this.storeAsset(sessionId, rendered.bytes, rendered.mime, pngDimensions(rendered.bytes));
+          outcome = format === 'xlsx'
+            ? {
+              kind: 'ready', format, fidelity: 'rendered', renderer: 'officecli', source,
+              navigation: { kind: 'sheet', sheet: rendered.sheet ?? options.sheet, sheets: rendered.sheets, sheetIndex: rendered.sheetIndex, sheetCount: rendered.sheetCount ?? rendered.sheets?.length },
+              assets: [asset], readOnly: true,
+            }
+            : {
+              kind: 'ready', format, fidelity: 'rendered', renderer: 'officecli', source,
+              navigation: { kind: 'page', page: rendered.page ?? page, pageCount: rendered.pageCount },
+              assets: [asset], readOnly: true,
+            };
+        }
       }
-      const asset = this.storeAsset(sessionId, rendered.bytes, rendered.mime, pngDimensions(rendered.bytes));
-      if (format === 'xlsx') {
-        return {
-          kind: 'ready', format, fidelity: 'rendered', renderer: 'officecli', source,
-          navigation: { kind: 'sheet', sheet: rendered.sheet ?? options.sheet, sheets: rendered.sheets, sheetIndex: rendered.sheetIndex, sheetCount: rendered.sheetCount ?? rendered.sheets?.length },
-          assets: [asset], readOnly: true,
-        };
-      }
-      return {
-        kind: 'ready', format, fidelity: 'rendered', renderer: 'officecli', source,
-        navigation: { kind: 'page', page: rendered.page ?? page, pageCount: rendered.pageCount },
-        assets: [asset], readOnly: true,
-      };
     } finally {
       if (!cleanupUnconfirmed) {
         try {
           await rm(directory, { recursive: true, force: true });
         } catch (rmError) {
-          throw new OfficePreviewCleanupError('Document preview scratch could not be removed.', { cause: rmError });
+          const cleanup = new OfficePreviewCleanupError('Document preview scratch could not be removed.', { cause: rmError });
+          failure = failure === undefined ? cleanup : new AggregateError([failure, cleanup], 'Document preview failed and its scratch could not be removed.');
+          outcome = undefined;
         }
       }
     }
+    if (failure !== undefined) throw failure instanceof Error ? failure : new Error('Document preview failed.', { cause: failure });
+    if (outcome === undefined) throw new DocumentPreviewRequestError('invalid_render', 'OfficeCLI did not return a bounded PNG preview.');
+    return outcome;
   }
 
   private async pdfPageCount(file: DocumentPreviewFile, signal: AbortSignal): Promise<number | undefined> {

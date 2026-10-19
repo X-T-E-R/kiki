@@ -177,7 +177,7 @@ export class PromptIngress {
     const page = await this.documents().get<IndexPage>(`${target.scope}/prompt-ingress/pages`, `${pageNumber}.json`);
     const items: PromptItem[] = [];
     for (const key of page?.keys ?? []) {
-      if (key == null) continue;
+      if (key === null || key === undefined) continue;
       const entry = await this.read(target, key);
       if (entry?.agentId === agentId) items.push(await this.item(target, await this.recover(target, entry), false));
     }

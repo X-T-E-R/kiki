@@ -17,12 +17,14 @@ export class HistoryReadLane {
     if (this.active >= 2) {
       if (this.waiting.size >= 8) throw new Error2(ErrorCodes.SESSION_BUSY, 'History readers are busy. Retry this page shortly.');
       await new Promise<void>((resolve, reject) => {
+        let onAbort = (): void => {};
         const waiter: Waiter = {
-          start: () => { owned.removeEventListener('abort', waiter.cancel); this.waiting.delete(waiter); this.active += 1; resolve(); },
-          cancel: () => { owned.removeEventListener('abort', waiter.cancel); this.waiting.delete(waiter); reject(owned.reason); },
+          start: () => { owned.removeEventListener('abort', onAbort); this.waiting.delete(waiter); this.active += 1; resolve(); },
+          cancel: () => { owned.removeEventListener('abort', onAbort); this.waiting.delete(waiter); reject(owned.reason); },
         };
+        onAbort = () => { waiter.cancel(); };
         this.waiting.add(waiter);
-        owned.addEventListener('abort', waiter.cancel, { once: true });
+        owned.addEventListener('abort', onAbort, { once: true });
         if (owned.aborted) waiter.cancel();
       });
     } else this.active += 1;

@@ -319,7 +319,7 @@ describe('native harness tool parity', () => {
       interaction.respond(pending.id, { decision: 'rejected' });
       expect((await pendingCall).isError).toBe(true);
       interaction.releaseConsumer('child-bridge-test');
-      registrations[1]!.dispose();
+      await registrations[1]!.dispose();
       expect((await client.listTools()).tools.map((tool) => tool.name)).not.toContain('kiki_mcp_fixture');
       await expect(context.call({ name: 'mcp_fixture', arguments: {} })).rejects.toThrow();
       const forged = await fetch(`${endpoint}/api/klient/delegation/context/call`, {

@@ -2286,7 +2286,8 @@ describe('server-v2 /api prompts', () => {
         const response = await nativeFetch(input, init);
         const text = await response.clone().text();
         const envelope = JSON.parse(text);
-        responses.push({ path: new URL(String(input)).pathname, bytes: Buffer.byteLength(text), data: envelope.data });
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        responses.push({ path: new URL(url).pathname, bytes: Buffer.byteLength(text), data: envelope.data });
         return response;
       },
     } });
@@ -2319,7 +2320,8 @@ describe('server-v2 /api prompts', () => {
     const nativeFetch = globalThis.fetch;
     const client = createHttpKlient({ endpoint: base, token: bearerToken(server!), fetch: async (input, init) => {
       const response = await nativeFetch(input, init);
-      if (new URL(String(input)).pathname.endsWith('/prompts')) receipts.push((await response.clone().json()).data);
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (new URL(url).pathname.endsWith('/prompts')) receipts.push((await response.clone().json()).data);
       return response;
     } });
     try {
@@ -2648,7 +2650,7 @@ describe('server-v2 /api prompts', () => {
     });
     expect(changed.body.code).toBe(40938);
     expect(requester).toHaveBeenCalledTimes(1);
-    hold.dispose();
+    await hold.dispose();
     requester.mockRestore();
   });
 

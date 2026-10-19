@@ -122,7 +122,7 @@ describe('session media playback', () => {
           name: 'clip.mp4',
           mediaType: 'video/mp4',
           size: bytes.byteLength,
-          stream: async function* () { throw new Error('stream broke'); },
+          stream: () => failingByteStream(new Error('stream broke')),
         },
       }));
       const opened = await app.inject({ method: 'POST', url: '/api/sessions/session-a/media-playback', payload: { file_id: 'file-a' } });
@@ -142,7 +142,7 @@ describe('session media playback', () => {
           name: 'clip.mp4',
           mediaType: 'video/mp4',
           size: bytes.byteLength,
-          stream: async function* () { return; },
+          stream: () => emptyByteStream(),
         },
       }));
       const again = await app.inject({ method: 'POST', url: '/api/sessions/session-a/media-playback', payload: { file_id: 'file-a' } });
@@ -248,6 +248,14 @@ describe('session media playback', () => {
   });
 });
 
+function failingByteStream(error: Error): AsyncIterable<Uint8Array> {
+  return { [Symbol.asyncIterator]: () => ({ next: () => Promise.reject(error) }) };
+}
+
+function emptyByteStream(): AsyncIterable<Uint8Array> {
+  return { [Symbol.asyncIterator]: () => ({ next: async () => ({ done: true, value: undefined }) }) };
+}
+
 function watchLogs(app: FastifyInstance): { level: string; message: string }[] {
   const seen: { level: string; message: string }[] = [];
   app.addHook('onRequest', async (req) => {
@@ -255,11 +263,11 @@ function watchLogs(app: FastifyInstance): { level: string; message: string }[] {
     const warn = current.warn.bind(current);
     const error = current.error.bind(current);
     current.warn = ((obj?: unknown, message?: unknown) => {
-      seen.push({ level: 'warn', message: String(message ?? '') });
+      seen.push({ level: 'warn', message: typeof message === 'string' ? message : '' });
       return warn(obj as never, message as never);
     }) as typeof current.warn;
     current.error = ((obj?: unknown, message?: unknown) => {
-      seen.push({ level: 'error', message: String(message ?? '') });
+      seen.push({ level: 'error', message: typeof message === 'string' ? message : '' });
       return error(obj as never, message as never);
     }) as typeof current.error;
   });

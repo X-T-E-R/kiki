@@ -282,7 +282,7 @@ export class UsageExportStore {
       const acknowledged = usageExportItemSchema.parse(JSON.parse(String(row['item'])));
       const currentRow = this.db.prepare('SELECT item FROM versions WHERE dest=? AND bucket=?').get(id, String(row['bucket'])) as Row | undefined;
       const current = currentRow === undefined ? null : usageExportItemSchema.parse(JSON.parse(String(currentRow['item'])));
-      const mappingVersion = row['mapping_version'] == null ? null : String(row['mapping_version']);
+      const mappingVersion = row['mapping_version'] === null || row['mapping_version'] === undefined ? null : String(row['mapping_version']);
       const oldOrigins = JSON.parse(String(row['origins'])) as string[];
       for (const item of batch.items) {
         const sameBucket = item.bucket_id === acknowledged.bucket_id && item.stream_id === acknowledged.stream_id;

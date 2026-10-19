@@ -18,12 +18,18 @@ it('serves accepted prompt image bytes while the native model request remains he
   const gate = new Promise<void>((resolve) => { release = resolve; });
   const held = new Promise<void>((resolve) => { entered = resolve; });
   let requestBody = '';
-  const model = createServer(async (request, reply) => {
-    let body = '';
-    for await (const chunk of request) body += chunk.toString();
-    if (body.includes('image_url')) { requestBody = body; entered(); await gate; }
-    reply.writeHead(200, { 'content-type': 'text/event-stream' });
-    reply.end(`data: ${JSON.stringify({ id: 'fixture-response', choices: [{ index: 0, delta: { content: 'Done.' }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}\n\ndata: [DONE]\n\n`);
+  const model = createServer((request, reply) => {
+    void (async () => {
+      let body = '';
+      for await (const chunk of request) body += chunk.toString();
+      if (body.includes('image_url')) { requestBody = body; entered(); await gate; }
+      if (reply.writableEnded) return;
+      reply.writeHead(200, { 'content-type': 'text/event-stream' });
+      reply.end(`data: ${JSON.stringify({ id: 'fixture-response', choices: [{ index: 0, delta: { content: 'Done.' }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}\n\ndata: [DONE]\n\n`);
+    })().catch((error: unknown) => {
+      if (!reply.headersSent) reply.writeHead(500, { 'content-type': 'text/plain' });
+      if (!reply.writableEnded) reply.end(error instanceof Error ? error.message : 'model fixture failed');
+    });
   });
   await new Promise<void>((resolve) => model.listen(0, '127.0.0.1', resolve));
   const port = (model.address() as { port: number }).port;
