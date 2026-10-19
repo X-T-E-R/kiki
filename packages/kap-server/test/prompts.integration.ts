@@ -885,7 +885,12 @@ describe('server-v2 /api prompts', () => {
       const live = await klient.session(id).view.transcript.page({ agentId: 'main' });
       const liveMarkers = live.items.filter((item) => item.kind === 'marker' && item.markerId === 'model-switch:http-switch');
       expect(liveMarkers).toHaveLength(1);
-      expect(liveMarkers[0]).toMatchObject({ payload: { operationId: 'http-switch', mode: 'direct', state: 'completed' } });
+      const switchMarker = liveMarkers[0] as { payload?: { operationId?: string; mode?: string; state?: string }; contentRefs?: readonly { path: readonly (string | number)[] }[] };
+      const payloadRef = switchMarker.contentRefs?.find((ref) => ref.path.at(-1) === 'payload');
+      const loadedPayload = payloadRef === undefined ? switchMarker.payload : (await call<{ value: { operationId?: string; mode?: string; state?: string } }>('POST', `/api/klient/session-view/${id}/transcript/content`, { agentId: 'main', ref: payloadRef })).body;
+      if (payloadRef !== undefined) expect(loadedPayload).toMatchObject({ code: 0 });
+      const switchPayload = payloadRef === undefined ? switchMarker.payload : (loadedPayload as { data: { value: { operationId?: string; mode?: string; state?: string } } }).data.value;
+      expect(switchPayload).toMatchObject({ operationId: 'http-switch', mode: 'direct', state: 'completed' });
       subscription.dispose();
       await closeSessionById(server!.core.accessor, id);
       const cold = await klient.session(id).view.transcript.page({ agentId: 'main' });
@@ -3255,8 +3260,8 @@ describe('server-v2 /api prompts', () => {
   it('accepts a HEIC image against the configured default model before any model binds', async () => {
     await writeConfigToml(home as string, PROMPT_TOML.replace('default_model = "stub"', 'default_model = "stub-kimi"') + [
       '', '[providers.kimi-stub]', 'type = "kimi"', 'base_url = "http://127.0.0.1:9999"', 'api_key = "stub"',
-      '', '[models.stub-kimi]', 'provider = "kimi-stub"', 'model = "kimi-k2"', 'max_context_size = 1000',
-      'capabilities = ["thinking", "image_in"]', '',
+      '', '[models.stub-kimi]', 'provider = "kimi-stub"', 'model = "kimi-k2"', 'max_context_size = 100000',
+      'capabilities = ["thinking", "image_in"]', 'support_efforts = ["low", "high"]', 'default_effort = "high"', '',
     ].join('\n'));
     const id = await createSession(home as string);
     await createMainAgent(id);
