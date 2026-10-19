@@ -113,7 +113,19 @@ export function registerBrowserRoutes(app: BrowserRouteHost, core: Scope): void 
       return;
     }
     if (parsed.action === 'tabs') {
-      const tabs = await control().tabs(parsed.id);
+      let tabs;
+      try {
+        tabs = await control().tabs(parsed.id);
+      } catch (error) {
+        if (isError2(error) && error.code === 'browser.disabled' && error.details?.['reason'] === 'feature_disabled') {
+          const listed = await control().list();
+          const connection = listed.connections.find((item) => item.id === parsed.id);
+          if (connection?.enabled === false) throw new BrowserError('browser.disabled', 'This browser connection is disabled', { details: { reason: 'connection_disabled' } });
+          const status = await control().status(parsed.id);
+          if (status.state !== 'ready') throw new BrowserError('browser.disconnected', `Browser connection is ${status.state}; explicitly connect it before operating`);
+        }
+        throw error;
+      }
       reply.send(okEnvelope({ browser: parsed.id, status: await control().status(parsed.id), tabs }, req.id));
     } else if (parsed.action === 'catalog') {
       const tools = await control().catalog(parsed.id);
