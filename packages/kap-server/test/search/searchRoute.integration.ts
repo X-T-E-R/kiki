@@ -171,7 +171,12 @@ describe('server-v2 /api/search', () => {
     for (let attempt = 0; attempt < 100; attempt++) {
       body = await postSearch({ query: '苹果' });
       expect(body.code).toBe(0);
-      if (body.data.items.length > 0) break;
+      const items = body.data.items;
+      if (
+        items.some((h) => h.role === 'user') &&
+        items.some((h) => h.role === 'assistant') &&
+        items.some((h) => h.role === 'title')
+      ) break;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     expect(body).toBeDefined();
