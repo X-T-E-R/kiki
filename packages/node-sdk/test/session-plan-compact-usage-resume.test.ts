@@ -390,15 +390,15 @@ describe('session event waiting', () => {
     }
   });
 
-  it('consumes a wait-window timer and keeps a longer one', async () => {
+  it('consumes a wait-window timer and keeps a longer one', () => {
     vi.useFakeTimers();
     try {
       setTimeout(() => {}, 20_000);
       expect(vi.getTimerCount()).toBe(1);
-      await vi.advanceTimersByTimeAsync(20_000);
+      vi.advanceTimersByTime(20_000);
       expect(vi.getTimerCount()).toBe(0);
       setTimeout(() => {}, 60_000);
-      await vi.advanceTimersByTimeAsync(20_000);
+      vi.advanceTimersByTime(20_000);
       expect(vi.getTimerCount()).toBe(1);
     } finally {
       vi.useRealTimers();
