@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   applyContextCompactionRecord,
@@ -6,6 +6,7 @@ import {
   isFullyUndoable,
 } from '#/agent/contextMemory/contextOps';
 import {
+  createContextTranscriptReducer,
   reduceContextTranscript,
   type ContextTranscript,
 } from '#/agent/contextMemory/contextTranscript';
@@ -84,6 +85,39 @@ describe('reduceContextTranscript', () => {
     expect(texts(result)).toEqual(['u1', 'a1']);
     expect(result.entries.map((m) => m.role)).toEqual(['user', 'assistant']);
     expect(result.foldedLength).toBe(2);
+  });
+
+  it('appends native history without projecting or scanning accumulated messages', () => {
+    const reducer = createContextTranscriptReducer();
+    reducer.add(appendMessage({ ...userMessage('seed'), id: 'seed', providerMessageId: 'seed' }));
+    let historyReads = 0;
+    Object.defineProperty(reducer.result().logicalEntries[0]!, 'role', {
+      get: () => { historyReads++; return 'user'; },
+    });
+    const native = Array.from({ length: 512 }, (_, index) => [
+      appendMessage({ ...userMessage(`user ${index}`), id: `native-${index}` }),
+      appendMessage(assistantMessage(`answer ${index}`)),
+    ]).flat();
+    const providers = Array.from({ length: 16 }, (_, index) => appendMessage({
+      ...userMessage(`remote ${index}`), id: `remote-${index}`, providerMessageId: `remote-${index}`,
+    }));
+    const map = vi.spyOn(Array.prototype, 'map');
+    let nativeReads = -1;
+    let providerReads = -1;
+    let projections = -1;
+    try {
+      for (const record of native) reducer.add(record);
+      nativeReads = historyReads;
+      for (const record of providers) reducer.add(record);
+      providerReads = historyReads;
+      projections = map.mock.calls.length;
+    } finally {
+      map.mockRestore();
+    }
+    expect(nativeReads).toBe(0);
+    expect(providerReads).toBe(16);
+    expect(projections).toBe(0);
+    expect(reducer.result().foldedLength).toBe(1041);
   });
 
   it('compaction keeps the transcript and tracks the collapsed logical view', () => {
@@ -603,6 +637,21 @@ describe('live fold parity', () => {
     expect(texts(transcript)).toEqual(['hello world', 'answer']);
     expect(comparable(transcript.entries)).toEqual(comparable(live));
     expect(transcript.foldedLength).toBe(2);
+  });
+
+  it.each(['context.clear', 'context.undo'] as const)('does not revise removed provider history after %s', (type) => {
+    const first = { ...userMessage('old ', { kind: 'unknown' }), id: 'remote-user', providerMessageId: 'remote-user' };
+    const records: WireRecord[] = [appendMessage(first), ...assistantStep('s1', 'old answer'),
+      type === 'context.undo' ? undo(1) : { type },
+      appendMessage({ ...first, content: [{ type: 'text', text: 'fresh ' }] }),
+      appendMessage({ ...first, content: [{ type: 'text', text: 'suffix' }] }),
+    ];
+    const live = foldLive(records);
+    const transcript = reduceContextTranscript(records);
+    expect(comparable(transcript.logicalEntries)).toEqual(comparable(live));
+    expect(transcript.logicalEntries).toHaveLength(1);
+    expect(transcript.logicalEntries[0]?.content).toEqual([{ type: 'text', text: 'fresh ' }, { type: 'text', text: 'suffix' }]);
+    expect(texts(transcript)).toEqual(type === 'context.clear' ? ['old ', 'old answer', 'fresh suffix'] : ['fresh suffix']);
   });
 
   it('keeps injections not owned by any removed prompt across undo', () => {

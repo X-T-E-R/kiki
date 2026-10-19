@@ -89,7 +89,7 @@ export function createContextTranscriptReducer(): ContextTranscriptReducer {
       push(toMutableEntry(message, time));
     },
     pushMessage: (message: ContextMessage, time: number | undefined) => {
-      const revision = findProviderMessageRevision(logical.map((entry) => entry.message), message);
+      const revision = findProviderMessageRevision(logical, message, (entry) => entry.message);
       if (revision !== undefined) {
         const entry = logical[revision.index]!;
         entry.message = toMutableEntry(revision.message, entry.time).message;
