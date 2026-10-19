@@ -126,6 +126,7 @@ import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentPluginMediaService } from '#/agent/pluginMedia/pluginMedia';
 import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { IMcpRegistryService } from '#/app/mcpRegistry/mcpRegistry';
+import { IAgentToolActivationService } from '#/agent/toolActivation/toolActivation';
 import '#/agent/toolActivation/toolActivationService';
 import { IAgentMediaToolsRegistrar } from '#/agent/media/mediaTools';
 import '#/agent/media/mediaToolsRegistrar';
@@ -1139,6 +1140,27 @@ describe('AgentLifecycleService', () => {
     return { metadata: ix.get(ISessionMetadata), prior };
   }
 
+  it('restores the prior persona when creation fails after binding metadata is written', async () => {
+    const { metadata } = installStoredTerminalChild('completed');
+    await metadata.updateAgent('child', (current) => ({ ...current, personaId: 'old-persona' }));
+    const failure = new Error('tool activation failed');
+    const lifecycle = ix.get(IAgentLifecycleService);
+    disposables.add(lifecycle.onWillCreate((handle) => {
+      vi.spyOn(handle.accessor.get(IAgentToolActivationService), 'activate').mockImplementation(async () => {
+        expect((await metadata.read()).agents?.['child']?.personaId).toBe('new-persona');
+        throw failure;
+      });
+      const profile = handle.accessor.get(IAgentProfileService);
+      vi.spyOn(profile, 'bind').mockImplementation(async () => {
+        profile.applyBindingSnapshot({ ...profile.data(), personaId: 'new-persona' });
+        await profile.syncBindingMetadata();
+      });
+    }));
+    await expect(lifecycle.create({ agentId: 'child', binding: { profile: 'agent' } })).rejects.toBe(failure);
+    expect((await metadata.read()).agents?.['child']?.personaId).toBe('old-persona');
+    expect(lifecycle.get('child')).toBeUndefined();
+  });
+
   it('preserves persisted terminal metadata while cold-materializing the current binding', async () => {
     const { metadata, prior } = installStoredTerminalChild('completed');
     const update = vi.spyOn(metadata, 'updateAgent');
@@ -1233,6 +1255,7 @@ describe('AgentLifecycleService', () => {
       createWireMetadataRecord(1),
       {
         type: 'profile.bind',
+        personaId: 'example-persona',
         modelAlias: 'provider/child-model',
         profileName: 'explore',
         thinkingEffort: 'high',
@@ -1261,6 +1284,7 @@ describe('AgentLifecycleService', () => {
       labels: { workItem: 'work-item-1', profileName: 'explore' },
       displayName: 'explore',
       userLabel: 'Review usage accounting',
+      personaId: 'example-persona',
       model: 'provider/child-model',
       thinkingEffort: 'high',
       executor: 'native',

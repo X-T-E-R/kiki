@@ -400,7 +400,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         beforeBinding.execution === undefined && beforeBinding.profileName === undefined && beforeBinding.routeId === undefined);
       const restoreFellBack = await this.bindBootstrap(handle, opts);
       const binding = handle.accessor.get(IAgentProfileService).data();
-      if (writesBinding) bootstrapBinding = { execution: binding.execution, model: binding.modelAlias, thinkingEffort: binding.thinkingLevel,
+      if (writesBinding) bootstrapBinding = { execution: binding.execution, personaId: binding.personaId, model: binding.modelAlias, thinkingEffort: binding.thinkingLevel,
         thinkingEffortExplicit: binding.thinkingEffortExplicit, executor: binding.executorId ?? 'native', executorProtocol: binding.executorProtocol,
         negotiated: priorAgentMeta?.executor === binding.executorId ? priorAgentMeta?.negotiated : undefined,
         allowKikiSubagents: binding.allowKikiSubagents };
@@ -435,7 +435,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
           forkedFrom: opts.forkedFrom, labels: current.labels === undefined && requestedLabels === undefined ? undefined : labels,
           displayName: current.displayName ?? profile.routeId ?? profile.profileName,
           userLabel: opts.userLabel ?? current.userLabel,
-          execution: profile.execution, model: profile.modelAlias, thinkingEffort: profile.effectiveThinkingLevel ?? profile.thinkingLevel,
+          execution: profile.execution, personaId: profile.personaId, model: profile.modelAlias, thinkingEffort: profile.effectiveThinkingLevel ?? profile.thinkingLevel,
           thinkingEffortExplicit: profile.thinkingEffortExplicit,
           executor: profile.executorId ?? 'native', executorProtocol: profile.executorProtocol,
           negotiated: current.executor === profile.executorId ? current.negotiated : undefined,
@@ -465,7 +465,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         const written = appliedAgentMeta ?? bootstrapBinding!;
         await this.sessionMetadata.updateAgent(agentId, (current) => {
           const next = { ...current };
-          const bindingKeys = ['execution', 'model', 'thinkingEffort', 'thinkingEffortExplicit', 'executor', 'executorProtocol', 'negotiated', 'allowKikiSubagents'] as const;
+          const bindingKeys = ['execution', 'personaId', 'model', 'thinkingEffort', 'thinkingEffortExplicit', 'executor', 'executorProtocol', 'negotiated', 'allowKikiSubagents'] as const;
           const keys = appliedAgentMeta === undefined ? bindingKeys
             : [...bindingKeys, 'homedir', 'type', 'parentAgentId', 'delegator', 'forkedFrom', 'displayName', 'userLabel'] as const;
           for (const key of keys) {

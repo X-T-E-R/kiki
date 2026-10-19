@@ -1008,7 +1008,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const binding = this.data();
     const executor = binding.executorId ?? 'native';
     await this.metadata.updateAgent(this.agentScope.agentId, (current) => ({
-      ...current, execution: binding.execution, model: binding.modelAlias, thinkingEffort: binding.thinkingLevel,
+      ...current, execution: binding.execution, personaId: binding.personaId, model: binding.modelAlias, thinkingEffort: binding.thinkingLevel,
       thinkingEffortExplicit: binding.thinkingEffortExplicit,
       executor, executorProtocol: binding.executorProtocol,
       negotiated: (current.executor ?? 'native') === executor ? current.negotiated : undefined,

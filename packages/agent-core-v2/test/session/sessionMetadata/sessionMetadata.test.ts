@@ -149,6 +149,18 @@ describe('SessionMetadata', () => {
     expect((await createFreshMetadata(ix).read()).custom).toEqual(custom);
   });
 
+  it('persists persona-only changes and mirrors canonical identity ahead of conflicting legacy tags', async () => {
+    const meta = ix.get(ISessionMetadata);
+    await meta.registerAgent('main', { executor: 'native' });
+    await meta.update({ custom: { bot_persona_id: 'other', room_persona_id: 'other' } });
+    await meta.updateAgent('main', (current) => ({ ...current, personaId: 'example' }));
+    expect((await createFreshMetadata(ix).read()).agents?.['main']?.personaId).toBe('example');
+    expect(mirror.recorded.at(-1)).toMatchObject({ personaId: 'example', custom: { bot_persona_id: 'other', room_persona_id: 'other' } });
+    await meta.updateAgent('main', (current) => ({ ...current, personaId: undefined }));
+    expect((await createFreshMetadata(ix).read()).agents?.['main']?.personaId).toBeUndefined();
+    expect(mirror.recorded.at(-1)?.personaId).toBeUndefined();
+  });
+
   it('persists per-session handshake snapshots and restores them without a catalog lookup', async () => {
     const meta = ix.get(ISessionMetadata);
     const negotiated = { agentVersion: '1.2.3', image: false, audio: true, fork: true,

@@ -456,7 +456,10 @@ describe('AgentProfileService.bind', () => {
     service.applyBindingSnapshot({ profileName: 'old-profile', modelAlias: 'old-model', thinkingLevel: 'high',
       systemPrompt: 'OLD_KIKI_SYSTEM', executorId: 'grok-acp', executorProtocol: 'acp-v1',
       executorDescriptorRevision: 'test-revision', roomPrompt: 'OLD_ROOM', personaId: 'old-persona' });
+    const metadata = ctx.get(ISessionMetadata);
+    await metadata.registerAgent('main', { executor: 'grok-acp', personaId: 'old-persona' });
     await service.bind({ execution: { executor: 'grok-acp' } });
+    expect((await metadata.read()).agents?.['main']?.personaId).toBeUndefined();
     expect(service.data()).toMatchObject({ systemPrompt: '', thinkingLevel: 'off', kikiContext: [], allowKikiSubagents: false,
       execution: { selection: { executor: 'grok-acp' }, effective: { kiki_context: [], allow_kiki_subagents: false } } });
     expect(service.data().profileName).toBeUndefined();
@@ -1570,8 +1573,11 @@ describe('AgentProfileService.bind', () => {
     );
     const svc = ctx.get(IAgentProfileService);
 
+    const metadata = ctx.get(ISessionMetadata);
+    await metadata.registerAgent('main', { type: 'main' });
     await svc.bind({ persona: 'lin-lan' });
 
+    expect((await metadata.read()).agents?.['main']?.personaId).toBe('lin-lan');
     expect(svc.data()).toMatchObject({ profileName: 'persona-profile', modelAlias: MOCK_MODEL, personaId: 'lin-lan', personaRevision: 'r1' });
     expect(svc.getSystemPrompt().startsWith('<persona name="林岚" title="发布协调">')).toBe(true);
     expect(svc.getSystemPrompt()).toContain('你运行在 Kiki 中');

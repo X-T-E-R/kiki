@@ -307,6 +307,7 @@ function agentMetaEquals(a: AgentMeta, b: AgentMeta): boolean {
     a.forkedFrom === b.forkedFrom &&
     a.displayName === b.displayName &&
     a.userLabel === b.userLabel &&
+    a.personaId === b.personaId &&
     a.model === b.model &&
     a.thinkingEffort === b.thinkingEffort &&
     a.thinkingEffortExplicit === b.thinkingEffortExplicit &&
