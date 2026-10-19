@@ -6,7 +6,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { IAgentExecutionService, IAgentLifecycleService, IAgentTaskService, IFileService, getLiveSessionById } from '@kiki/agent-core-v2';
+import {
+  IAgentExecutionService, IAgentLifecycleService, IAgentTaskService, IAppendLogStore, IFileService,
+  IHomeRuntimeService, IMcpOAuthService, IPluginHostService, ISessionIndexMirror, ISessionManager,
+  IThreadCommunicationService, IThreadMailboxStore, IWorktreeService, getLiveSessionById,
+} from '@kiki/agent-core-v2';
+import { IGlobalSearchService, InlineSearchBackend } from '../src/search/searchService';
+import { SqliteSearchHost } from '../src/search/sqlite/host';
+import { SearchWorkerHost } from '../src/search/worker/host';
 import { SessionController } from '../../session-core/src/session/sessionController';
 import { applyTranscriptShell, projectAgentTranscriptView } from '../../session-core/src/session/transcript/project';
 import { KikiClient } from '../../../apps/kiki-gui/src/lib/client';
@@ -18,6 +25,177 @@ interface ModelRequest {
   model: string;
   messages: { role: string; content: unknown }[];
 }
+
+interface ClosePhase {
+  phase: string;
+  state: 'pending' | 'done' | 'failed';
+  elapsedMs: number;
+  error?: string;
+}
+
+class ClosePhaseWatch {
+  private readonly entries: Array<ClosePhase & { started: number; ended?: number }> = [];
+  private readonly stack: Array<{ phase: string }> = [];
+  private readonly restores: Array<() => void> = [];
+
+  track<T>(phase: string, run: () => T): T {
+    const started = Date.now();
+    const token = { phase };
+    const entry = { phase, state: 'pending' as const, elapsedMs: 0, started };
+    this.entries.push(entry);
+    this.stack.push(token);
+    const finish = (state: 'done' | 'failed', error?: unknown): void => {
+      entry.state = state;
+      entry.ended = Date.now();
+      entry.elapsedMs = entry.ended - started;
+      if (error !== undefined) {
+        const message = error instanceof Error ? error.message : String(error);
+        entry.error = message.slice(0, 180);
+      }
+      const index = this.stack.lastIndexOf(token);
+      if (index >= 0) this.stack.splice(index, 1);
+    };
+    try {
+      const result = run();
+      if (result instanceof Promise || (result !== null && typeof result === 'object' &&
+        typeof (result as { then?: unknown }).then === 'function')) {
+        return (result as Promise<unknown>).then(
+          (value) => { finish('done'); return value; },
+          (error: unknown) => { finish('failed', error); throw error; },
+        ) as T;
+      }
+      finish('done');
+      return result;
+    } catch (error) {
+      finish('failed', error);
+      throw error;
+    }
+  }
+
+  watch(target: object, method: string, phase: string): void {
+    const record = target as Record<string, unknown>;
+    const original = record[method];
+    if (typeof original !== 'function') return;
+    const own = Object.prototype.hasOwnProperty.call(target, method);
+    const descriptor = own ? Object.getOwnPropertyDescriptor(target, method) : undefined;
+    const track = (run: () => unknown) => this.track(phase, run);
+    const wrapped = function (this: unknown, ...args: unknown[]) {
+      return track(() => original.apply(this, args));
+    };
+    try { record[method] = wrapped; } catch { return; }
+    this.restores.push(() => {
+      if (!own) { delete record[method]; return; }
+      if (descriptor) Object.defineProperty(target, method, descriptor);
+      else record[method] = original;
+    });
+  }
+
+  snapshot(): { pending: string | null; after: string | null; phases: ClosePhase[] } {
+    const now = Date.now();
+    const phases = this.entries.map((entry) => {
+      const phase: ClosePhase = {
+        phase: entry.phase,
+        state: entry.state,
+        elapsedMs: (entry.ended ?? now) - entry.started,
+      };
+      if (entry.error !== undefined) phase.error = entry.error;
+      return phase;
+    });
+    const pending = this.stack.at(-1)?.phase ?? null;
+    const after = pending === null ? phases.at(-1)?.phase ?? 'before:app.close' : null;
+    return { pending, after, phases };
+  }
+
+  restore(): void {
+    for (const restore of this.restores.splice(0).toReversed()) restore();
+  }
+}
+
+function watchHostClose(host: RunningServer): ClosePhaseWatch {
+  const watch = new ClosePhaseWatch();
+  const service = <T>(token: { readonly _serviceBrand: undefined } & (new (...args: never[]) => T)): T | undefined => {
+    try { return host.core.accessor.get(token as never) as T; } catch { return undefined; }
+  };
+  watch.watch(host.app, 'close', 'app.close');
+  const threadComm = service<IThreadCommunicationService>(IThreadCommunicationService);
+  if (threadComm) watch.watch(threadComm, 'shutdown', 'threadComm.shutdown');
+  const sessions = service<ISessionManager>(ISessionManager);
+  if (sessions) watch.watch(sessions, 'close', 'session.close');
+  const worktrees = service<IWorktreeService>(IWorktreeService);
+  if (worktrees) watch.watch(worktrees, 'remove', 'worktree.remove');
+  const mailbox = service<IThreadMailboxStore>(IThreadMailboxStore);
+  if (mailbox) watch.watch(mailbox, 'close', 'mailbox.close');
+  const homeRuntime = service<IHomeRuntimeService>(IHomeRuntimeService);
+  if (homeRuntime) watch.watch(homeRuntime, 'close', 'homeRuntime.close');
+  const sessionIndex = service<ISessionIndexMirror>(ISessionIndexMirror);
+  if (sessionIndex) watch.watch(sessionIndex, 'drain', 'sessionIndexMirror.drain');
+  const oauth = service<IMcpOAuthService>(IMcpOAuthService);
+  if (oauth) watch.watch(oauth, 'shutdown', 'mcpOAuth.shutdown');
+  const plugins = service<IPluginHostService>(IPluginHostService);
+  if (plugins) watch.watch(plugins, 'stopAll', 'pluginHost.stopAll');
+  const appendLog = service<IAppendLogStore>(IAppendLogStore);
+  if (appendLog) watch.watch(appendLog, 'drainRetirements', 'appendLog.drainRetirements');
+  watch.watch(host.core, 'dispose', 'core.dispose');
+  const search = service<{ dispose?: () => unknown }>(IGlobalSearchService as never);
+  if (search) watch.watch(search, 'dispose', 'globalSearch.dispose');
+  watch.watch(SqliteSearchHost.prototype, 'close', 'sqliteHost.close');
+  watch.watch(InlineSearchBackend.prototype, 'dispose', 'inlineSearch.dispose');
+  watch.watch(SearchWorkerHost.prototype, 'dispose', 'searchWorker.dispose');
+  return watch;
+}
+
+describe('close phase watch', () => {
+  it('names the unfinished close phase and still runs the following cleanup', async () => {
+    const seen: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const enteredGate = new Promise<void>((resolve) => { entered = resolve; });
+    const steps = {
+      marker: 'host',
+      shutdown() { seen.push('shutdown'); return Promise.resolve(this.marker); },
+      close(arg: string) { seen.push(`close:${arg}`); entered(); return gate.then(() => 'close-result'); },
+      dispose() { seen.push('dispose'); return Promise.resolve('disposed'); },
+    };
+    const originalClose = steps.close;
+    const watch = new ClosePhaseWatch();
+    watch.watch(steps, 'shutdown', 'threadComm.shutdown');
+    watch.watch(steps, 'close', 'mailbox.close');
+    watch.watch(steps, 'dispose', 'core.dispose');
+    const values: unknown[] = [];
+    const running = (async () => {
+      values.push(await steps.shutdown());
+      values.push(await steps.close('keep'));
+      values.push(await steps.dispose());
+    })();
+    await enteredGate;
+    expect(watch.snapshot()).toMatchObject({
+      pending: 'mailbox.close',
+      after: null,
+      phases: [
+        { phase: 'threadComm.shutdown', state: 'done' },
+        { phase: 'mailbox.close', state: 'pending' },
+      ],
+    });
+    release();
+    await running;
+    expect(values).toEqual(['host', 'close-result', 'disposed']);
+    expect(seen).toEqual(['shutdown', 'close:keep', 'dispose']);
+    expect(watch.snapshot().pending).toBeNull();
+    expect(watch.snapshot().phases.map((phase) => `${phase.phase}:${phase.state}`)).toEqual([
+      'threadComm.shutdown:done', 'mailbox.close:done', 'core.dispose:done',
+    ]);
+    watch.restore();
+    expect(steps.close).toBe(originalClose);
+
+    const broken = { close: () => Promise.reject(new Error('close failed')) };
+    const failure = new ClosePhaseWatch();
+    failure.watch(broken, 'close', 'mailbox.close');
+    await expect(broken.close()).rejects.toThrow('close failed');
+    expect(failure.snapshot().phases[0]).toMatchObject({ phase: 'mailbox.close', state: 'failed', error: 'close failed' });
+    failure.restore();
+  });
+});
 
 describe('GUI shared client against an isolated KAP host', () => {
   let host: RunningServer;
@@ -92,6 +270,7 @@ describe('GUI shared client against an isolated KAP host', () => {
     provider.closeAllConnections();
     const initialResponses = responseFacts.map((read) => read());
     const serverClose = vi.spyOn(host.app.server, 'close');
+    const closePhases = watchHostClose(host);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const closing = host.close();
     const naturallyClosed = await Promise.race([
@@ -101,11 +280,15 @@ describe('GUI shared client against an isolated KAP host', () => {
     if (timer !== undefined) clearTimeout(timer);
     try {
       if (!naturallyClosed) {
-        throw new Error(`Host did not close naturally within 2000ms: ${JSON.stringify({ initialResponses, serverCloseCalled: serverClose.mock.calls.length, responses: responseFacts.map((read) => read()) })}`);
+        throw new Error(`Host did not close naturally within 2000ms: ${JSON.stringify({
+          initialResponses, serverCloseCalled: serverClose.mock.calls.length,
+          responses: responseFacts.map((read) => read()), ...closePhases.snapshot(),
+        })}`);
       }
     } finally {
       if (!naturallyClosed) host.app.server.closeAllConnections();
       await closing;
+      closePhases.restore();
       serverClose.mockRestore();
       await new Promise<void>((resolve, reject) => provider.close((error) => {
         if (error) reject(error);
