@@ -1,4 +1,4 @@
-import { copyFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -309,7 +309,9 @@ describe('plugin digest delivery', () => {
     await service.close();
     await rm(join(home, 'notifications'), { recursive: true, force: true });
     await mkdir(join(home, 'notifications'), { recursive: true });
-    await copyFile(snap, join(home, 'notifications', 'outbox.sqlite'));
+    const restored = join(home, 'notifications', 'outbox.sqlite');
+    await copyFile(snap, restored);
+    await chmod(restored, 0o600);
     transport.posts = [];
     transport.entered = 0;
     const restarted = await boot(errors, true);
@@ -340,6 +342,7 @@ describe('plugin digest delivery', () => {
     insert.run('account-a', 'mail-accepted', 'legacy-hash-accepted', 'accepted');
     insert.run('account-a', 'mail-armed', 'legacy-hash-armed', 'armed');
     seeded.close();
+    await chmod(join(home, 'notifications', 'outbox.sqlite'), 0o600);
     await boot(errors, true);
     await httpChannel(service, secret);
     const revision = (await service.pluginImRoutes(signal()))[0]!.routeRevision;
@@ -406,5 +409,18 @@ describe('plugin digest delivery', () => {
     const columns = raw.prepare('PRAGMA table_info(plugin_digest_receipts)').all() as Array<{ name: string }>;
     expect(columns.some((column) => column.name === 'plugin_id')).toBe(false);
     raw.close();
+  });
+
+  it.skipIf(process.platform === 'win32')('refuses a group-readable outbox before the runtime opens', async () => {
+    home = await mkdtemp(join(tmpdir(), 'kiki-plugin-im-'));
+    stored = undefined;
+    await mkdir(join(home, 'notifications'), { recursive: true });
+    const path = join(home, 'notifications', 'outbox.sqlite');
+    const seeded = new DatabaseSync(path);
+    seeded.close();
+    await chmod(path, 0o644);
+    await expect(boot(errors, true)).rejects.toThrow('insecure_store_permissions');
+    expect(transport.posts).toEqual([]);
+    expect(errors).toEqual([]);
   });
 });
