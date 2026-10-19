@@ -5,12 +5,12 @@ afterEach(() => { vi.unstubAllGlobals(); vi.resetModules(); });
 
 describe('browser notification navigation', () => {
   it('focuses the producing tab and carries its captured remote identity and child/turn route', async () => {
-    let notification!: { onclick: (() => void) | null; close: ReturnType<typeof vi.fn> };
     class FakeNotification {
       static permission = 'granted';
+      static readonly shown: FakeNotification[] = [];
       onclick: (() => void) | null = null;
       close = vi.fn();
-      constructor(_title: string, _options: NotificationOptions) { notification = this; }
+      constructor(_title: string, _options: NotificationOptions) { FakeNotification.shown.push(this); }
     }
     vi.stubGlobal('Notification', FakeNotification);
     const focus = vi.spyOn(window, 'focus').mockImplementation(() => {});
@@ -19,6 +19,7 @@ describe('browser notification navigation', () => {
     const unsubscribe = browserHost.onNotificationClick!(click);
     const scope = { homeId: 'remote:example', scopeId: 'remote:example', serverHomeId: 'remote-home', connectionRef: 'example' };
     await browserHost.notify!({ title: 'Needs input', route: '/s/shared/agent/child?interaction=approval-1', scope });
+    const notification = FakeNotification.shown[0]!;
     notification.onclick!();
     expect(focus).toHaveBeenCalledTimes(1);
     expect(notification.close).toHaveBeenCalledTimes(1);

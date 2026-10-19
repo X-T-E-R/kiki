@@ -6,7 +6,7 @@ import { MemoryRouter, Route, Routes, useNavigate, useParams } from 'react-route
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { clearComposerState, clearStoredDrafts, readComposerState, resetComposerMemoryForTests, resetDraftMemoryForTests, readDraft, writeDraft, writeComposerState, parseSelectionCarryovers, type ComposerAttachment, type SelectionAnnotation, type SelectionSourceAnchor } from '@kiki/session-core/composer';
+import { clearComposerState, clearStoredDrafts, readComposerState, resetComposerMemoryForTests, resetDraftMemoryForTests, readDraft, writeDraft, writeComposerState, parseSelectionCarryovers, buildAnnotationBlock, type ComposerAttachment, type SelectionAnnotation, type SelectionSourceAnchor } from '@kiki/session-core/composer';
 import { SendNowError } from '@kiki/session-core/session';
 import { I18nProvider } from '../i18n';
 import { SessionRouteView } from './SessionView';
@@ -14,7 +14,7 @@ import { clearToasts, getToasts } from '../lib/toasts';
 import type { QueuedModelSwitch } from '../lib/client';
 
 const { seat, submit, queueStub, fixture } = vi.hoisted(() => ({
-  fixture: { external: false, binding: undefined as { model: string; thinking: string } | undefined, records: [] as { sessionId: string; record: unknown }[] },
+  fixture: { external: false, loaded: false, binding: undefined as { model: string; thinking: string } | undefined, records: [] as { sessionId: string; record: unknown }[] },
   seat: { composer: null as unknown },
   submit: {
     // Each send hands the test a deferred result so it can inspect the
@@ -60,6 +60,7 @@ vi.mock('../state/connection', () => {
   };
   return {
     useConnection: () => ({ client, meta: { capabilities: {} }, socket: null, wsStatus: 'closed' }),
+    useOptionalConnection: () => null,
     useControllerRegistry: () => registry,
   };
 });
@@ -74,6 +75,7 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
     constructor(_sessions: unknown, _view: unknown, sessionId: string) {
       this.sessionId = sessionId;
       const base = actual.createViewState(sessionId);
+      if (fixture.loaded) Object.assign(base, { loaded: true });
       if (fixture.binding !== undefined) {
         Object.assign(base, { loaded: true, model: fixture.binding.model, thinkingEffort: fixture.binding.thinking,
           blocks: [{ kind: 'user', id: 'saved-human', text: 'Saved task.', createdAt: '2026-01-01T00:00:00.000Z', promptStatus: 'completed' }] });
@@ -167,9 +169,32 @@ vi.mock('./mediaPreview', () => ({
   PreviewToggleButton: () => null,
   useMediaPreview: () => undefined,
 }));
+/** The retry affordance the composer row owns once delivery is unconfirmed. */
+function pendingRetry(): HTMLButtonElement | null {
+  return document.querySelector<HTMLButtonElement>('[data-pending-retry]');
+}
+
 vi.mock('./Transcript', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./Transcript')>();
-  return { ...actual, Transcript: () => <div data-transcript /> };
+  // Only the pending-row retry is exercised here, so the timeline stays a stub
+  // that surfaces the same affordance the real Transcript renders.
+  return {
+    ...actual,
+    Transcript: ({ state, onRetryPending }: {
+      state: { blocks?: readonly { kind: string; id: string; promptId?: string; optimisticRetryable?: boolean }[] };
+      onRetryPending?: (promptId: string) => void;
+    }) => (
+      <div data-transcript>
+        {(state.blocks ?? [])
+          .filter((block) => block.kind === 'user' && block.optimisticRetryable === true && block.promptId !== undefined)
+          .map((block) => (
+            <button key={block.id} type="button" data-pending-retry onClick={() => onRetryPending?.(block.promptId!)}>
+              Retry
+            </button>
+          ))}
+      </div>
+    ),
+  };
 });
 vi.mock('./SelectionQuoteButton', () => ({
   SelectionQuoteButton: ({ onAnnotate, onQuote }: { onAnnotate: (quote: string, comment: string, source?: SelectionSourceAnchor) => void; onQuote: (text: string, source?: SelectionSourceAnchor) => void }) => (
@@ -205,6 +230,8 @@ type ComposerProps = {
   attachments: readonly ComposerAttachment[];
   queueEditing: boolean;
   quote: string | null;
+  /** Every unsent quote chip; the single `quote` prop is the legacy shape. */
+  quotes?: readonly { id: string; quote: string; source?: SelectionSourceAnchor | null }[];
   header?: ReactElement<{ queue: { count: number; panel: ReactElement<{ onEdit: (id: string) => void; onClearAll: () => void }> } }>;
   annotations: readonly SelectionAnnotation[];
   onSend: (
@@ -268,7 +295,10 @@ describe('session selection annotations', () => {
       expect(readComposerState('session-a').effortOverride).toBeUndefined();
       let sent: Promise<unknown> | undefined;
       await act(async () => { sent = composerProps().onSend('Continue saved work.', []); });
-      expect(submit.calls.at(-1)?.input).toMatchObject({ model: source === 'explicit' ? 'example/old-model' : 'example/new-model' });
+      // The restored display value is inherited chrome, not a message override:
+      // an untouched control is never promoted onto the wire, so neither the
+      // retired legacy id nor a re-pinned binding rides along.
+      expect(submit.calls.at(-1)?.input?.model).toBe(source === 'explicit' ? 'example/old-model' : undefined);
       expect(submit.calls.at(-1)?.input?.thinking).not.toBe('high');
       await act(async () => { submit.calls.at(-1)!.resolve({ status: 'running', prompt_id: 'restored' }); await sent; });
       await act(async () => { composerProps().onChangeEffort('high'); });
@@ -310,6 +340,9 @@ describe('session selection annotations', () => {
     resetComposerMemoryForTests();
     clearComposerState('session-a');
     fixture.external = external;
+    // An open conversation has a loaded view; only then is the composer a real
+    // place to pick from rather than a placeholder.
+    fixture.loaded = true;
     submit.calls.length = 0;
     const container = document.createElement('div');
     document.body.append(container);
@@ -325,7 +358,9 @@ describe('session selection annotations', () => {
       expect(composerProps().serverDefaultModel).toBe(external ? undefined : 'provider/native-model');
       let sent: Promise<unknown> | undefined;
       await act(async () => { sent = composerProps().onSend('hello', []); });
-      expect(submit.calls.at(-1)?.input).toMatchObject({ model: external ? undefined : 'provider/native-model' });
+      // Neither engine gets Kiki's default pushed in as a message override; the
+      // default stays a display fallback that only an explicit pick can send.
+      expect(submit.calls.at(-1)?.input?.model).toBeUndefined();
       expect(submit.calls.at(-1)?.input?.permissionMode).toBeUndefined();
       await act(async () => { submit.calls.at(-1)!.resolve({ status: 'running', prompt_id: 'first' }); await sent; });
       await act(async () => { composerProps().onChangePermissionMode('yolo'); });
@@ -336,6 +371,7 @@ describe('session selection annotations', () => {
       await act(async () => { submit.calls.at(-1)!.resolve({ status: 'running', prompt_id: 'second' }); await sent; });
     } finally {
       fixture.external = false;
+      fixture.loaded = false;
       await act(async () => { root.unmount(); });
       container.remove();
     }
@@ -529,12 +565,15 @@ describe('session selection annotations', () => {
       expect(carry.body).toBe('follow up');
       await act(async () => { submit.calls[0]!.reject(new Error('offline')); await sent; });
       expect(currentAnnotations()[0]?.source).toEqual(source);
-      expect(readComposerState('session-a').quoteSource?.blockId).toBe('actual-quote');
+      expect(readComposerState('session-a').quotes?.map((item) => item.source?.blockId)).toEqual(['actual-quote']);
     });
   });
 
   it('a queue edit restores the parked prompt\u2019s notes as live draft annotations', async () => {
-    queueStub.items = [{ promptId: 'p-queued', text: '> quoted passage\n\nComment: noted\n\nqueued body' }];
+    // Built with the same writer the composer sends through: a note always
+    // carries its source-anchor line, and the inverse parser needs it.
+    const queuedSource: SelectionSourceAnchor = { blockId: 'queued-source', version: 'queue-1', start: 0, end: 13, text: 'quotedpassage' };
+    queueStub.items = [{ promptId: 'p-queued', text: `${buildAnnotationBlock({ quote: 'quoted passage', comment: 'noted', source: queuedSource })}queued body` }];
     queueStub.replaced = [];
     resetComposerMemoryForTests();
     resetDraftMemoryForTests();
@@ -580,7 +619,7 @@ describe('session selection annotations', () => {
       await act(async () => { composerProps().onUpdateAnnotation!(noteId, 'noted harder'); });
       await act(async () => { await composerProps().onQueueEditConfirm!('edited body', composerProps().attachments); });
       expect(queueStub.replaced).toEqual([
-        { promptId: 'p-queued', text: '> quoted passage\n\nComment: noted harder\n\nedited body' },
+        { promptId: 'p-queued', text: `${buildAnnotationBlock({ quote: 'quoted passage', comment: 'noted harder', source: queuedSource })}edited body` },
       ]);
       // The composer then hands its pre-edit state back: empty here.
       expect(currentAnnotations()).toEqual([]);
@@ -602,13 +641,14 @@ describe('session selection annotations', () => {
     resetDraftMemoryForTests();
     clearStoredDrafts();
     writeDraft('session-a', 'ORIGINAL UNSENT DRAFT');
-    queueStub.items = [{ promptId: 'p-edit', text: '> queue quote\n\nComment: queued note\n\nQUEUED TEXT' }];
+    const queuedSource: SelectionSourceAnchor = { blockId: 'queued-edit-source', version: 'queue-2', start: 0, end: 10, text: 'queuequote' };
+    queueStub.items = [{ promptId: 'p-edit', text: `${buildAnnotationBlock({ quote: 'queue quote', comment: 'queued note', source: queuedSource })}QUEUED TEXT` }];
     queueStub.holds = [];
     try {
       await withSession(async (container) => {
         const originalNotes = currentAnnotations();
         await act(async () => { container.querySelector<HTMLButtonElement>('[data-quote]')!.click(); });
-        expect(composerProps().quote).toBe('personal quote');
+        expect(composerProps().quotes?.map((item) => item.quote)).toEqual(['personal quote']);
         await act(async () => { composerProps().header!.props.queue.panel.props.onEdit('p-edit'); });
         expect(composerProps().value).toBe('QUEUED TEXT');
         expect(composerProps().queueEditing).toBe(true);
@@ -619,7 +659,7 @@ describe('session selection annotations', () => {
         await act(async () => { container.querySelector<HTMLButtonElement>('[data-switch-a]')!.click(); });
         expect(composerProps().value).toBe('ORIGINAL UNSENT DRAFT');
         expect(currentAnnotations()).toEqual(originalNotes);
-        expect(composerProps().quote).toBe('personal quote');
+        expect(composerProps().quotes?.map((item) => item.quote)).toEqual(['personal quote']);
         expect(composerProps().queueEditing).toBe(false);
       });
     } finally {
@@ -641,8 +681,12 @@ describe('session selection annotations', () => {
       const yAttachment: ComposerAttachment = { kind: 'retained', name: 'y.txt', content: { type: 'file', file_id: 'y-file', name: 'y.txt', media_type: 'text/plain', size: 2 } };
       await act(async () => { composerProps().onChange('NEW Y'); composerProps().onChangeAttachments([yAttachment]); });
       await act(async () => { submit.calls[0]!.reject(new Error('offline')); await sent; });
-      const retry = getToasts().at(-1)!.retry!;
-      await act(async () => { retry.run(); retry.run(); });
+      // Unknown delivery keeps the captured identity on the pending row: one
+      // retry affordance there, and no duplicate toast action beside it.
+      expect(getToasts()).toEqual([]);
+      const retry = pendingRetry()!;
+      expect(retry).not.toBeNull();
+      await act(async () => { retry.click(); retry.click(); });
       expect(submit.calls).toHaveLength(2);
       const { onPreservation: firstPreservation, onAcknowledged: firstAcknowledged, ...capturedPayload } = captured!;
       const { onPreservation: retryPreservation, onAcknowledged: retryAcknowledged, ...retriedPayload } = submit.calls[1]!.input!;
@@ -654,11 +698,11 @@ describe('session selection annotations', () => {
       expect(composerProps().value).toBe('NEW Y');
       if (retryFails) {
         await act(async () => { submit.calls[1]!.reject(new Error('prompt_id already in use')); });
-        expect(getToasts().at(-1)!.retry).toBeDefined();
+        expect(pendingRetry()).not.toBeNull();
         expect(currentAnnotations()).toHaveLength(1);
       } else {
         await act(async () => { submit.calls[1]!.resolve(accepted('running')); });
-        await act(async () => { retry.run(); });
+        expect(pendingRetry()).toBeNull();
         expect(submit.calls).toHaveLength(2);
       }
       expect(readDraft('session-a')).toBe('NEW Y');
@@ -680,7 +724,7 @@ describe('session selection annotations', () => {
       await act(async () => { submit.calls[0]!.reject(new Error('rejected')); await sent; });
       expect(composerProps().value).toBe('X');
       expect(currentAnnotations()).toHaveLength(1);
-      await act(async () => { getToasts().at(-1)!.retry!.run(); });
+      await act(async () => { pendingRetry()!.click(); });
       expect(composerProps().value).toBe('');
       expect(currentAnnotations()).toEqual([]);
       expect(submit.calls[1]!.input?.promptId).toBe(submit.calls[0]!.input?.promptId);
@@ -695,7 +739,7 @@ describe('session selection annotations', () => {
     queueStub.switches = [{
       input: { operationId: 'queued-switch', model: 'fixture/other', mode: 'direct' },
       receipt: { operationId: 'queued-switch', state: 'pending', fromModel: 'fixture/one', toModel: 'fixture/other', mode: 'direct' },
-      revision: 1, queueIndex: messages,
+      revision: 1, originalBinding: { model: 'fixture/one', thinking: '' }, queueIndex: messages,
     } as QueuedModelSwitch];
     queueStub.cancelledSwitches = [];
     queueStub.clearCalls = 0;

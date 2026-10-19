@@ -112,15 +112,15 @@ export function useFollowLink(onOpenAgent?: (agentId: string) => void): (link: S
         const base = `/s/${encodeURIComponent(sessionId)}`;
         const route = link.agentId === undefined || link.agentId === 'main' ? base : `${base}/agent/${encodeURIComponent(link.agentId)}`;
         if (link.turn !== undefined) locate({ kind: 'turn', turnId: normalizeTurnId(link.turn) }, { sessionId, agentId: link.agentId, route });
-        else navigate(route);
+        else void navigate(route);
         return;
       }
       case 'agent':
         if (onOpenAgent !== undefined) onOpenAgent(link.agentId);
-        else if (currentSession !== undefined) navigate(`/s/${encodeURIComponent(currentSession)}/agent/${encodeURIComponent(link.agentId)}`);
+        else if (currentSession !== undefined) void navigate(`/s/${encodeURIComponent(currentSession)}/agent/${encodeURIComponent(link.agentId)}`);
         return;
       case 'route':
-        navigate(link.path);
+        void navigate(link.path);
         return;
       case 'external':
         void openExternalUrl(host, link.url, t('common.popupBlocked')).catch(() => undefined);

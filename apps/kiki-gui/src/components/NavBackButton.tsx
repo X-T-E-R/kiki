@@ -57,7 +57,7 @@ export function NavBackButton({ fallbackLabel, className = '' }: NavBackButtonPr
 
   const handleClick = useCallback(() => {
     if (!canGoBack()) return;
-    if (dirtyGuard) dirtyGuard.navigate(-1);
+    if (dirtyGuard) void dirtyGuard.navigate(-1);
     else void navigate(-1);
   }, [dirtyGuard, navigate]);
 

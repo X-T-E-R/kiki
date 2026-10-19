@@ -126,7 +126,7 @@ function useGuardedSpaceOpen(client: KikiClient | null) {
       } catch (error) { await prepared?.dispose(); throw error; }
     };
     return guard?.runAction !== undefined ? guard.runAction(open, localView)
-      : open().then(() => { if (localView !== undefined) navigate(localView); });
+      : open().then(() => { if (localView !== undefined) void navigate(localView); });
   };
 }
 

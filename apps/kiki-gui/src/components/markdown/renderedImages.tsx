@@ -64,11 +64,9 @@ export function RenderedImageScope({ children }: { readonly children: ReactNode 
 
 export function useRenderedImageTargets(): readonly string[] {
   const registry = useContext(RenderedImageContext);
-  return useSyncExternalStore(
-    registry === null ? subscribeNothing : registry.subscribe,
-    registry === null ? readEmpty : registry.read,
-    registry === null ? readEmpty : registry.read,
-  );
+  const subscribe = registry === null ? subscribeNothing : (listener: () => void) => registry.subscribe(listener);
+  const read = registry === null ? readEmpty : () => registry.read();
+  return useSyncExternalStore(subscribe, read, read);
 }
 
 /** Publishes the src this rendered image node actually received. */

@@ -492,15 +492,7 @@ export function FindBar({
           <Icon name="close" size={14} />
         </button>
       </div>
-      <label className="mx-2 mb-1.5 flex w-fit cursor-pointer items-center gap-1.5 rounded px-1 py-0.5 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-within:outline-2 focus-within:outline-selected-ink">
-        <input type="checkbox" data-find-tools checked={options.includeToolOutput === true} onChange={(event) => {
-          const include = event.target.checked;
-          setOptions((value) => ({ ...value, includeToolOutput: include }));
-          onIncludeToolOutputChange?.(include);
-        }} className="accent-selected-ink" />
-        {t('search.includeToolOutput')}
-      </label>
-      {hasQuery && (canLookBack || outside.compacted > 0 || lookingBack) ? (
+      {hasQuery && (canLookBack || outside.compacted > 0 || lookingBack || showProcessNote) ? (
         <div data-find-note className="flex flex-col gap-0.5 border-t border-hairline px-3 py-1.5 text-[12px] leading-snug text-ink-soft">
           {showProcessNote ? (
             <p data-find-process className="flex items-center gap-2">

@@ -175,7 +175,7 @@ export function PersonaConversationsSection({
           type="button"
           data-persona-new-conversation
           onClick={() => {
-            navigate(personaNewConversationUrl(persona.id, workspaceFilter === '' ? undefined : workspaceFilter));
+            void navigate(personaNewConversationUrl(persona.id, workspaceFilter === '' ? undefined : workspaceFilter));
           }}
           className="flex h-8 shrink-0 items-center gap-1.5 rounded-md px-3 text-[12px] font-medium text-ink transition-colors hover:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-selected-ink"
         >
@@ -232,7 +232,7 @@ export function PersonaConversationsSection({
                 <button
                   type="button"
                   data-persona-conversation-row={session.id}
-                  onClick={() => { navigate(roomId === undefined ? `/s/${encodeURIComponent(session.id)}` : `/rooms/${encodeURIComponent(roomId)}`); }}
+                  onClick={() => { void navigate(roomId === undefined ? `/s/${encodeURIComponent(session.id)}` : `/rooms/${encodeURIComponent(roomId)}`); }}
                   className="flex min-w-0 flex-1 items-start gap-2.5 text-left"
                 >
                   <span className="flex h-[19px] w-[7px] shrink-0 items-center">

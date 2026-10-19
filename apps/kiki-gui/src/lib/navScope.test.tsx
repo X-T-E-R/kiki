@@ -664,10 +664,16 @@ describe('confirmed missing navigation', () => {
   it('does not push a deleted explicit destination when the current source is still valid', async () => {
     const router = await mount('/s/a'); const source = router.state.location; const visit = getCurrentVisit()!.visitId;
     entityFailures.set(`${endpoints.b}/api/sessions/gone`, gone()); requests = [];
-    await act(async () => { await requestScopeNavigation({ homeId: 'home-b', route: '/s/gone' }); }); await flush();
+    await act(async () => {
+      await expect(requestScopeNavigation({ homeId: 'home-b', route: '/s/gone' })).rejects.toMatchObject({ reason: 'target-missing' });
+    }); await flush();
     expect(router.state.location.key).toBe(source.key); expect(getCurrentVisit()!.visitId).toBe(visit);
-    expect(current.scope.homeId).toBe('home-a'); expect(nativeHome).toBe('home-a'); expect(recovery!.state.phase).toBe('idle');
-    expect(canGoBack()).toBe(false); expect(sessionRequests()).toEqual([`${endpoints.b}/api/sessions/gone`, `${endpoints.a}/api/sessions/a`]);
+    expect(current.scope.homeId).toBe('home-a'); expect(nativeHome).toBe('home-a');
+    expect(recovery!.state).toMatchObject({ phase: 'failed', reason: 'target-missing', target: { route: '/s/gone' } });
+    expect(canGoBack()).toBe(false); expect(sessionRequests()).toEqual([`${endpoints.b}/api/sessions/gone`]);
+    await act(async () => { recovery!.cancel(); }); await flush();
+    expect(recovery!.state.phase).toBe('idle');
+    expect(router.state.location.key).toBe(source.key); expect(getCurrentVisit()!.visitId).toBe(visit);
   });
 
   it('replaces a deleted cold cross-scope destination in the confirmed scope without inventing a source', async () => {

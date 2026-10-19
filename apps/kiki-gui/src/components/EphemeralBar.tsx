@@ -124,7 +124,7 @@ function EndEphemeralDialog({ session, onClose }: { session: Session; onClose: (
         }
         void queryClient.invalidateQueries({ queryKey: ['sessions'] });
         onClose();
-        navigate('/new');
+        void navigate('/new');
       })
       .catch((cause: unknown) => {
         setBusy(false);

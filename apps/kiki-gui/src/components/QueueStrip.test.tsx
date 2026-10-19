@@ -662,7 +662,7 @@ describe('QueueStrip reorder', () => {
     queueGeometry(container);
     container.classList.add('composer-header-scroll');
     const rect = container.querySelector('ol')!.getBoundingClientRect();
-    vi.spyOn(container, 'getBoundingClientRect').mockReturnValue({ ...rect, bottom: 180, height: 80 });
+    vi.spyOn(container, 'getBoundingClientRect').mockReturnValue({ top: rect.top, bottom: 180, height: 80, left: rect.left, right: rect.right, width: rect.width, x: rect.x, y: rect.y, toJSON: () => ({}) } as DOMRect);
     const handle = handleOf(container, 0);
     await pointer(handle, 'pointerdown', 110);
     await pointer(handle, 'pointermove', 210);

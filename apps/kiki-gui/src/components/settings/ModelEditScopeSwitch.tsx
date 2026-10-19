@@ -12,8 +12,6 @@
  */
 
 import { useI18n } from '../../i18n';
-import { Hint } from '../controls';
-import { SettingsSegmented } from './SettingsPrimitives';
 import { EDIT_SCOPES, SCOPE_HINT, SCOPE_LABEL, type EditScope } from './modelEditScope';
 
 export function ModelEditScopeSwitch({ scope, summary, differences, onScopeChange }: {

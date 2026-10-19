@@ -385,6 +385,16 @@ const RAW_STORAGE_ALLOWLIST = new Set<string>([
   // Global: `kiki.spacePreferences.cache` (each space's cached preferences,
   // keyed by server + home inside the value) and `kiki.deviceId`.
   'apps/kiki-gui/src/lib/spaceAuthority.ts',
+  // Global: `kiki.onboarding.step` (this installation's first-run progress).
+  'apps/kiki-gui/src/components/OnboardingWizard.tsx',
+  // Global: `kiki.settingsIaPrototype` (which settings nav layout this device uses).
+  'apps/kiki-gui/src/lib/settingsIaPrototype.ts',
+  // Excluded: `kiki.output-layer.results.v1`, whose physical key the module
+  // itself suffixes with the active space (`<key>:<scopeKey>`).
+  'apps/kiki-gui/src/components/output-layer/useOutputLayerClient.ts',
+  // Reads the pre-space `kiki.output-layer.sessions.v1` once per boot to carry
+  // a subspace's own earlier records forward; it never writes that plain key.
+  'apps/kiki-gui/src/components/output-layer/outputLayerStore.ts',
 ]);
 
 const KEY_LITERAL = /kiki\.[A-Za-z0-9_.-]*/g;

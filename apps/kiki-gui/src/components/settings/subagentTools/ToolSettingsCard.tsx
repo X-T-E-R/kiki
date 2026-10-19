@@ -372,7 +372,7 @@ export function SubagentToolSettingsCard() {
         editable={profileEditable}
         native={nativeExecutor}
         onEdit={() => { setEditorOpen(true); }}
-        onNewSession={() => { navigate(namedAgentSessionHref(profile)); }}
+        onNewSession={() => { void navigate(namedAgentSessionHref(profile)); }}
         sessionBlocked={namedAgentNewSessionBlocked(profile)}
       />
     );

@@ -93,7 +93,7 @@ export function RoomRefChip({
       onClick={(event) => {
         if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
         event.preventDefault();
-        navigate(href);
+        void navigate(href);
       }}
       className={`${shape} ${inline ? '' : 'pr-3'} no-underline transition-colors hover:bg-paper focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none`}
     >
@@ -182,7 +182,7 @@ export function ThreadRefChip({
       onClick={(event) => {
         if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
         event.preventDefault();
-        navigate(href);
+        void navigate(href);
       }}
       onContextMenu={room.onContextMenu}
       className={`${shape} ${inline ? '' : 'pr-3'} no-underline transition-colors hover:bg-paper focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none`}

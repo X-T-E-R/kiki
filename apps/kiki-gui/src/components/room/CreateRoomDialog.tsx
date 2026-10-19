@@ -54,7 +54,7 @@ export function CreateRoomDialog({ onClose }: { readonly onClose: () => void }) 
       void queryClient.invalidateQueries({ queryKey: ROOMS_QUERY_KEY });
       void queryClient.invalidateQueries({ queryKey: ['sessions'] });
       onClose();
-      navigate(`/rooms/${encodeURIComponent(room.id)}`);
+      void navigate(`/rooms/${encodeURIComponent(room.id)}`);
     },
   });
 

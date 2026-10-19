@@ -22,6 +22,29 @@ import { handleGlobalConnectionFrame, refreshSessionAttention } from './state/co
 
 const appHarness = vi.hoisted(() => ({ connection: null as unknown }));
 
+const updateHarness = vi.hoisted(() => ({
+  options: null as { hasPendingApproval?: boolean; isDesktop?: boolean } | null,
+  offer: null as unknown,
+  onUpdate: vi.fn(),
+}));
+
+vi.mock('./lib/useDesktopUpdateScheduler', () => ({
+  UPDATE_DIALOG_OVERLAY: 'update-available',
+  useDesktopUpdateScheduler: (options: { hasPendingApproval?: boolean; isDesktop?: boolean }) => {
+    updateHarness.options = options;
+    return {
+      offer: updateHarness.offer,
+      onUpdate: updateHarness.onUpdate,
+      onRemindLater: vi.fn(async () => {}),
+      onSkip: vi.fn(async () => {}),
+      onDismiss: vi.fn(),
+      installing: false,
+      installError: null,
+      persistError: null,
+    };
+  },
+}));
+
 vi.mock('./state/connection', async (importOriginal) => ({
   ...await importOriginal<typeof import('./state/connection')>(),
   useConnection: () => appHarness.connection,
@@ -257,7 +280,7 @@ describe('App sidebar Escape wiring', () => {
     root = createRoot(container);
     unmounted = false;
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
-    expect(anyOverlayOpen()).toBe(false);
+    if (anyOverlayOpen()) throw new Error('an overlay was already open before the app mounted');
   });
 
   afterEach(async () => {
@@ -270,7 +293,7 @@ describe('App sidebar Escape wiring', () => {
     sessionStorage.clear();
     window.history.replaceState(null, '');
     vi.unstubAllGlobals();
-    expect(anyOverlayOpen()).toBe(false);
+    if (anyOverlayOpen()) throw new Error('an overlay stayed open after the app unmounted');
   });
 
   async function mountApp() {
@@ -378,6 +401,46 @@ describe('App sidebar Escape wiring', () => {
       key: third.event.key, defaultPrevented: third.event.defaultPrevented, overlayOpen: third.overlayOpen,
       terminalFocused: false, terminalOpen: false, inFormField: false,
     })).toBe(true);
+  });
+
+  it('renders the update offer the shell scheduler hands it and forwards the install click', async () => {
+    const offer = {
+      channel: 'stable',
+      update: { currentVersion: '0.3.1', version: '0.3.2', notes: 'Session switching is faster.', install: vi.fn(async () => {}) },
+    };
+    updateHarness.offer = offer;
+    updateHarness.options = null;
+    updateHarness.onUpdate.mockClear();
+    await mountApp();
+
+    // The shell owns the schedule: one hook call, from the browser host, which
+    // must not start the native checks.
+    const seen = updateHarness.options as { isDesktop?: boolean } | null;
+    expect(seen?.isDesktop).toBe(false);
+    // The dialog paints through the shell's portal, outside the app container.
+    expect(document.querySelector('[data-update-notes]')).not.toBeNull();
+    const install = document.querySelector<HTMLButtonElement>('[data-confirm-action="confirm"]')!;
+    await act(async () => { install.click(); });
+    expect(updateHarness.onUpdate).toHaveBeenCalledWith(offer);
+    updateHarness.offer = null;
+  });
+
+  it('passes the sessions waiting on an approval to the scheduler', async () => {
+    const base = appHarness.connection as { client: { listSessions: () => Promise<unknown> } };
+    const sessions = [{
+      id: 'session_approval', title: 'Waiting', metadata: { cwd: '/work/example' }, pending_interaction: 'approval',
+      created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', busy: false,
+    }];
+    const original = base.client.listSessions;
+    base.client.listSessions = async () => ({ items: sessions, has_more: false });
+    try {
+      updateHarness.options = null;
+      await mountApp();
+      const seen = updateHarness.options as { hasPendingApproval?: boolean } | null;
+      expect(seen?.hasPendingApproval).toBe(true);
+    } finally {
+      base.client.listSessions = original;
+    }
   });
 
   it('unregisters the real App drawer and filter layers on unmount without leaving an Escape consumer', async () => {

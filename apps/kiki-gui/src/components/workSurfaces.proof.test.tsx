@@ -463,10 +463,6 @@ describe('work surfaces — visual proof', () => {
     expect(container.querySelector('[data-proof-composer]')).not.toBeNull();
   });
 
-  it('work home at a narrow width', async () => {
-    await mountInShell(<WorkPage onSetupMode={() => {}} enabled />);
-  });
-
   it('preview: a rendered Office page, with page navigation', async () => {
     fixture.response = 'office';
     await mount(<DocumentTabView source={{ kind: 'workspace', path: 'C:/Documents/renewal-deck.pptx' }} sessionId="s1" client={PROOF_CLIENT} />);

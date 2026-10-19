@@ -43,7 +43,7 @@ function Viewed() {
 function Surface() {
   const [rows] = useState(sessions);
   navigate = useNavigate();
-  useAwayNotifications({ host, sessions: rows, listSessions: async () => rows, navigate });
+  useAwayNotifications({ host, sessions: rows, listSessions: async () => rows, navigate: (target) => { void navigate(target); } });
   return <Viewed />;
 }
 async function flush() { await act(async () => { await Promise.resolve(); }); }

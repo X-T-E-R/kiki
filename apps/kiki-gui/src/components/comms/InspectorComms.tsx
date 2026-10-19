@@ -151,7 +151,7 @@ export function InspectorComms({ sessionId }: { readonly sessionId: string }) {
         <ul className="space-y-0.5">
           {roomGroups.map((group) => {
             const room = roomName(group.roomId);
-            return <RoomRow key={`room:${group.roomId}`} group={group} name={room.name} exists={room.exists} onOpen={() => { navigate(roomHref(group.roomId)); }} />;
+            return <RoomRow key={`room:${group.roomId}`} group={group} name={room.name} exists={room.exists} onOpen={() => { void navigate(roomHref(group.roomId)); }} />;
           })}
           {visible.map((group) => (
             <PeerRow key={group.peer.ref.session_id} group={group} onOpen={() => { setOpenPeer(group); }} />

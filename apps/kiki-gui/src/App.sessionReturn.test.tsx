@@ -101,7 +101,7 @@ function SessionSurface({ sessionId }: { sessionId: string }) {
   const { client } = useConnection();
   const [shown, setShown] = useState<{ text: string; draft: string; anchor: string; model: string } | null>(null);
   useEffect(() => {
-    if (registry == null) return;
+    if (registry === null) return;
     const lease = registry.acquire(sessionId, client, () => {
       counts.factory += 1;
       return makeController(sessionId);

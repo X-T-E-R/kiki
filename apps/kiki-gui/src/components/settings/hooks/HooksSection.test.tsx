@@ -300,7 +300,8 @@ describe('hooks settings (dual shape)', () => {
     await saveActions();
     const saved = container.querySelector<HTMLTextAreaElement>('#st-card-hooks textarea')!;
     expect(saved.isConnected).toBe(true);
-    expect(saved.value).toBe(JSON.stringify([LEGACY_RULE], null, 2));
+    expect(JSON.parse(saved.value)).toEqual([LEGACY_RULE]);
+    expect(saved.value).toBe(JSON.stringify(config.hooks, null, 2));
     expect(config.hooks).toEqual([LEGACY_RULE]);
   });
 

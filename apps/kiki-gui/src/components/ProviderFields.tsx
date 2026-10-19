@@ -1358,7 +1358,7 @@ export function ProviderEditor({
         const baseRevision = revisionMap.get(row.id);
         if (baseRevision === undefined) throw new Error(`Missing revision for model ${row.id}`);
         const updated = await client.updateModel(row.id, {
-          ...(rowPatch ?? {}),
+          ...rowPatch,
           ...protocolPatch,
           base_revision: baseRevision,
         });

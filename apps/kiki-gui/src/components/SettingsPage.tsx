@@ -387,7 +387,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   }, [dirty]);
 
   const guardedNavigate = useCallback((target: string) => {
-    navigate(`/settings/${target}`);
+    void navigate(`/settings/${target}`);
   }, [navigate]);
 
   const onSearchHit = (entry: SettingsSearchEntry) => {
@@ -566,7 +566,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
                       type="button"
                       className="btn-primary px-3 py-1.5 text-[12px] font-medium"
                       data-settings-onboarding-return-action
-                      onClick={() => navigate('/new')}
+                      onClick={() => { void navigate('/new'); }}
                     >
                       {t('onboarding.returnBanner.action')}
                     </button>

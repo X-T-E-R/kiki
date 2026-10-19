@@ -37,6 +37,7 @@ import {
 } from 'react-router-dom';
 
 import { ConfirmDialog } from './components/ConfirmDialog';
+import { UpdateAvailableDialog } from './components/UpdateAvailableDialog';
 import { CronPage } from './components/GlobalCronPanel';
 import { DirtyGuardContext, useDirtyGuardState } from './components/dirtyGuard';
 import { DiscoveryPage, DiscoveryProvider, DiscoveryTourTag } from './components/discovery';
@@ -94,15 +95,11 @@ import {
   writeDesktopPrefs,
   writeLayoutPreferences,
 } from '@kiki/session-core/settings';
-import { isSessionIndexBuildingError } from './lib/client';
 import { useLayoutPreferences, useMediaQuery, useVisualViewportHeightVar } from './lib/layoutHooks';
 import { useLayerHistory } from './lib/layerHistory';
 import { useAppearancePacks } from './lib/skins/useAppearancePacks';
 import { useUserSkins } from './lib/skins/useUserSkins';
 import { pushToast } from './lib/toasts';
-import { useDesktopUpdateScheduler } from './lib/useDesktopUpdateScheduler';
-import { hydrateUpdatePrefs } from './lib/desktopUpdates';
-import { UpdateAvailableDialog } from './components/UpdateAvailableDialog';
 import { browserOwnsShortcut, isEditableTarget, matchesShortcutAction } from './lib/shortcuts';
 import { useNavigationComposerFocus } from './lib/navigationComposerFocus';
 import { useShortcutPreferencesSync } from './lib/useShortcutPreferences';
@@ -126,6 +123,7 @@ import {
 import { requestScopeNavigation } from './lib/navScope';
 import { activeSpace, parseActiveSpacePayload } from './lib/spaceStorage';
 import { NavHistoryBridge } from './components/NavBackButton';
+import { useDesktopUpdateScheduler } from './lib/useDesktopUpdateScheduler';
 import { SidebarContext } from './components/sidebarContext';
 import { retryRootReadModelDelay, retryRootReadModelQuery } from './lib/readModelRetry';
 
@@ -410,7 +408,7 @@ export function App() {
               owner: { homeId: activeSpace()?.homeId ?? 'main', scopeId: 'local' },
               closed: () => closed,
               hostKind: host.kind,
-              navigate,
+              navigate: (target) => { void navigate(target); },
             });
             if (closed) return;
             focusWatch.current.current = applied.cursor;
@@ -440,7 +438,7 @@ export function App() {
         const { request } = await client.pluginNavigation();
         if (closed) return;
         if (initialized && request !== undefined && request.id > seen) {
-          navigate(`/s/${encodeURIComponent(request.sessionId)}`);
+          void navigate(`/s/${encodeURIComponent(request.sessionId)}`);
           if (host.kind === 'tauri') {
             const { getCurrentWindow } = await import('@tauri-apps/api/window');
             const window = getCurrentWindow();
@@ -463,7 +461,7 @@ export function App() {
     void host.readDesktopPrefs().then((prefs) => {
       if (prefs !== null) writeDesktopPrefs(prefs);
     });
-    return host.onTrayNewSession(() => navigate(newSessionPath));
+    return host.onTrayNewSession(() => { void navigate(newSessionPath); });
   }, [host, navigate, newSessionPath]);
 
   // Keep the native side (tray menu labels) on the active UI locale. The tray
@@ -485,9 +483,6 @@ export function App() {
   const isNewRoute = useMatch('/new') !== null;
   const isSettingsRoute = useMatch('/settings/*') !== null;
   const isUsageRoute = useMatch('/usage') !== null;
-  const isCronRoute = useMatch('/cron') !== null;
-  const isMemoryRoute = useMatch('/memory') !== null;
-  const isActivityRoute = useMatch('/activity') !== null;
 
   const sessionsQuery = useInfiniteQuery({
     queryKey: ['sessions', showArchived, workspaceFilter],
@@ -553,6 +548,15 @@ export function App() {
     [sessionsQuery.data],
   );
   const conversations = useConversationList(sessions, layoutPrefs.sortBy, workspaceOptions);
+  // The one update schedule for the whole app: a check after the first screen,
+  // a daily tick for a window left open, and a catch-up when it comes back. A
+  // session waiting on an approval is a modal moment in its own right, so the
+  // offer waits rather than landing on top of it.
+  const hasPendingApproval = useMemo(
+    () => sessions.some((session) => session.pending_interaction === 'approval'),
+    [sessions],
+  );
+  const desktopUpdate = useDesktopUpdateScheduler({ host, isDesktop: desktop, hasPendingApproval });
   // The phone header's ☰ carries the same count as the sidebar bell: a
   // session waiting on the user stays visible from the conversation the
   // drawer hides.
@@ -627,7 +631,7 @@ export function App() {
         if (!desktop) return;
         event.preventDefault();
         setQuickSwitcherOpen(false);
-        navigate(newSessionPath);
+        void navigate(newSessionPath);
       } else if (matchesShortcutAction(event, 'switcher')) {
         event.preventDefault();
         setQuickSwitcherOpen((open) => !open);
@@ -635,7 +639,7 @@ export function App() {
         event.preventDefault();
         // Land in the search field: Ctrl+, → type → Enter → Esc is the
         // shortest path to any setting, and shorter than the nav tree.
-        navigate('/settings', { state: { focusSearch: true } });
+        void navigate('/settings', { state: { focusSearch: true } });
       } else if (matchesShortcutAction(event, 'shortcuts')) {
         event.preventDefault();
         setQuickSwitcherOpen(false);
@@ -659,7 +663,7 @@ export function App() {
       handleFindShortcut(event, findRoute, {
         overlayOpen: () => anyOverlayOpen(),
         focusSettingsSearch: () => {
-          navigate(`${location.pathname}${location.search}${location.hash}`, { replace: true, state: { focusSearch: true } });
+          void navigate(`${location.pathname}${location.search}${location.hash}`, { replace: true, state: { focusSearch: true } });
         },
       });
     };
@@ -707,7 +711,7 @@ export function App() {
       if (!isSettingsRoute || sidebarOpen || quickSwitcherOpen || shortcutsOpen) return;
       if (isEditableTarget(event.target)) return;
       event.preventDefault();
-      navigate(lastNonSettingsRef.current);
+      void navigate(lastNonSettingsRef.current);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
@@ -726,7 +730,7 @@ export function App() {
       if (direction === undefined) return;
       event.preventDefault();
       const next = adjacentRunningSession(sessions, activeSessionId, direction);
-      if (next !== undefined && next !== activeSessionId) navigate(`/s/${next}`);
+      if (next !== undefined && next !== activeSessionId) void navigate(`/s/${next}`);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
@@ -796,7 +800,7 @@ export function App() {
         onGroupBy={(groupBy) => { writeLayoutPreferences({ groupBy }); }}
         sortBy={layoutPrefs.sortBy}
         onSortBy={(sortBy) => { writeLayoutPreferences({ sortBy }); }}
-        onNewSession={() => { navigate(newSessionPath); }}
+        onNewSession={() => { void navigate(newSessionPath); }}
         onClose={closeSidebar}
       />
 
@@ -878,7 +882,7 @@ export function App() {
               <CronPage
                 sessions={sessions}
                 workspaceOptions={workspaceOptions}
-                onNavigate={navigate}
+                onNavigate={(target) => { void navigate(target); }}
                 onToggleSidebar={() => { setSidebarOpen((value) => !value); }}
               />
             }
@@ -889,7 +893,7 @@ export function App() {
               <MemoryPage
                 workspaceOptions={workspaceOptions}
                 workspacesLoading={workspacesQuery.isPending}
-                onNavigate={navigate}
+                onNavigate={(target) => { void navigate(target); }}
                 onToggleSidebar={() => { setSidebarOpen((value) => !value); }}
               />
             }
@@ -984,6 +988,16 @@ export function App() {
           pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
         }); }}
         onCancel={cancelNavigation}
+      />
+      <UpdateAvailableDialog
+        offer={desktopUpdate.offer}
+        onUpdate={desktopUpdate.onUpdate}
+        onRemindLater={desktopUpdate.onRemindLater}
+        onSkip={desktopUpdate.onSkip}
+        onDismiss={desktopUpdate.onDismiss}
+        installing={desktopUpdate.installing}
+        installError={desktopUpdate.installError}
+        persistError={desktopUpdate.persistError}
       />
       <DiscoveryTourTag />
       </DiscoveryProvider>

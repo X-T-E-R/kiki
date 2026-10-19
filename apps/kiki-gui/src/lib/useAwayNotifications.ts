@@ -250,13 +250,14 @@ export function useViewedSession(host: HostAdapter, sessionId: string, lastSeq: 
         markSessionSeen(sessionId, lastSeq);
       }
     };
+    const confirmFromEvent = () => { void confirm(); };
     void confirm();
-    window.addEventListener('focus', confirm);
-    document.addEventListener('visibilitychange', confirm);
+    window.addEventListener('focus', confirmFromEvent);
+    document.addEventListener('visibilitychange', confirmFromEvent);
     return () => {
       stopped = true;
-      window.removeEventListener('focus', confirm);
-      document.removeEventListener('visibilitychange', confirm);
+      window.removeEventListener('focus', confirmFromEvent);
+      document.removeEventListener('visibilitychange', confirmFromEvent);
     };
   }, [host, sessionId, lastSeq, location.pathname, scopeId, spaceKey]);
 }

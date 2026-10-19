@@ -1526,9 +1526,8 @@ function loadPlayableBlob(client: KikiClient, path: string, signal: AbortSignal)
 
 /** Capability URL when this connection can mint one; otherwise the file bytes. */
 function loadPlayableMedia(client: KikiClient, path: string, signal: AbortSignal, forceBlob: boolean): Promise<PlayableMedia> {
-  const open = client.openHostMediaPreview;
-  if (!forceBlob && typeof open === 'function') {
-    return open.call(client, { path }, { signal }).then((opened) => {
+  if (!forceBlob && typeof client.openHostMediaPreview === 'function') {
+    return client.openHostMediaPreview({ path }, { signal }).then((opened) => {
       if (signal.aborted) {
         void client.closeHostMediaPreview(opened.preview_id);
         throw signal.reason instanceof Error ? signal.reason : new Error('cancelled');
@@ -1868,8 +1867,10 @@ function TextTabView({
   const [fullError, setFullError] = useState(false);
   const fullLoadId = useRef(0);
   const fullLoadAbort = useRef<AbortController | null>(null);
+  const [headingFound, setHeadingFound] = useState(true);
   useEffect(() => {
     if (navigation?.line !== undefined) setMode('source');
+    else if (navigation?.heading !== undefined) setMode('rendered');
   }, [navigation]);
 
   useEffect(() => {
@@ -1984,9 +1985,17 @@ function TextTabView({
   const name = basenameOf(path);
   const editable = controller?.editable ?? false;
   const showEditor = !hasRenderedMode || mode === 'source';
+  const [sourceMounted, setSourceMounted] = useState(!hasRenderedMode);
+  useEffect(() => { if (showEditor) setSourceMounted(true); }, [showEditor]);
   const fullText = fullMarkdown?.controller === controller && fullMarkdown.client === client &&
     fullMarkdown.path === path && fullMarkdown.generation === snap.generation
     ? fullMarkdown.text : undefined;
+  const referenceOutside = useMemo(() => {
+    if (navigation?.line === undefined) return false;
+    const lines = (fullText ?? snap.draft).split(/\r\n|\r|\n/);
+    return navigation.line > lines.length || (navigation.endLine ?? navigation.line) > lines.length ||
+      (navigation.column ?? 1) > (lines[navigation.line - 1]?.length ?? 0) + 1;
+  }, [navigation, fullText, snap.draft]);
   // The renderer, not a frame deadline, says when this tab's text is on screen;
   // an HTML tab is readable once its document origin is live.
   useEffect(() => {
@@ -2230,26 +2239,31 @@ function TextTabView({
           <p className="p-3 text-[12.5px] text-danger">{t('preview.failed')}</p>
         ) : (
           <>
-            {showEditor ? (
-              html && snap.status === 'loading' ? htmlLoadingNotice
-                : html && snap.status === 'error' ? <p className="p-3 text-[12.5px] text-danger">{t('preview.failed')}</p>
-                : (
-                  <CodeEditor
-                    key={fullText !== undefined ? `${path}:full` : path}
-                    path={path}
-                    value={fullText ?? snap.draft}
-                    generation={snap.generation}
-                    navigation={navigation}
-                    readOnly={!editable}
-                    onChange={(text) => { controller?.setDraft(text); }}
-                    onSaveShortcut={() => { void controller?.saveNow(); }}
-                    ariaLabel={t('preview.openFile', { name })}
-                  />
-                )
+            {navigation?.invalidTarget || (navigation?.heading !== undefined && !headingFound) || referenceOutside ? (
+              <p role="status" className="px-3 py-2 text-[12px] text-ink-soft">{t(referenceOutside ? 'preview.referenceClamped' : 'preview.referenceMissing')}</p>
+            ) : null}
+            {sourceMounted || showEditor ? (
+              <div hidden={!showEditor} className={`min-h-0 flex-1 flex-col ${showEditor ? 'flex' : 'hidden'}`}>
+                {html && snap.status === 'loading' ? htmlLoadingNotice
+                  : html && snap.status === 'error' ? <p className="p-3 text-[12.5px] text-danger">{t('preview.failed')}</p>
+                  : (
+                    <CodeEditor
+                      key={fullText !== undefined ? `${path}:full` : path}
+                      path={path}
+                      value={fullText ?? snap.draft}
+                      generation={snap.generation}
+                      navigation={showEditor ? navigation : undefined}
+                      readOnly={!editable}
+                      onChange={(text) => { controller?.setDraft(text); }}
+                      onSaveShortcut={() => { void controller?.saveNow(); }}
+                      ariaLabel={t('preview.openFile', { name })}
+                    />
+                  )}
+              </div>
             ) : null}
             {markdown && !showEditor ? (
               <div data-preview-scroll className="min-h-0 flex-1 overflow-auto p-4">
-                <Markdown mode="static" text={fullText ?? snap.draft} documentDirectory={documentDirectory} />
+                <Markdown mode="static" text={fullText ?? snap.draft} documentDirectory={documentDirectory} documentPath={path} headingNavigation={navigation} onHeadingResult={setHeadingFound} />
               </div>
             ) : null}
             {html ? (

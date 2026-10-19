@@ -52,18 +52,21 @@ function catalog({ revision, values }) {
 }
 
 function boundTo(executor, overrides) {
+  // A null pick means "no model override": the execution keeps whatever the
+  // engine resolves, so only a real id is projected as an effective value.
+  const model = overrides?.model ?? null;
   return {
     model: '',
     execution: {
       version: 1,
       selection: { executor, ...(overrides === undefined ? {} : { overrides }) },
       effective: {
-        ...(overrides?.model == null ? {} : { model: overrides.model }),
+        ...(model === null ? {} : { model }),
         kiki_context: ['memory'],
         allow_kiki_subagents: false,
       },
       sources: {
-        ...(overrides?.model == null ? {} : { model: 'session' }),
+        ...(model === null ? {} : { model: 'session' }),
         kiki_context: 'session',
         allow_kiki_subagents: 'harness-default',
       },

@@ -364,7 +364,7 @@ export function AssistantOutputContent({
             </button>
             <button
               type="button"
-              onClick={handleCopyOriginal}
+              onClick={() => { void handleCopyOriginal(); }}
               className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-ink-soft hover:bg-ink/[0.04] hover:text-ink"
               title="复制主模型原始文字"
             >
@@ -420,7 +420,7 @@ export function AssistantOutputContent({
           {/* Copy Original Action */}
           <button
             type="button"
-            onClick={handleCopyOriginal}
+            onClick={() => { void handleCopyOriginal(); }}
             className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-ink-soft hover:bg-ink/[0.04] hover:text-ink"
             title="复制主模型原始文字"
           >

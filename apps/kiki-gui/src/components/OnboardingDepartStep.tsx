@@ -20,7 +20,7 @@ import { useI18n } from '../i18n';
 import type { HostSkillTarget } from '../lib/client';
 import { FeedbackLine, type Feedback } from './controls';
 import { DiscoveryRouteRow, useDiscovery } from './discovery';
-import { MODEL_SETTINGS_HREF, useModelConnection } from './discovery/ModelConnectionEntry';
+import { useModelConnection } from './discovery/ModelConnectionEntry';
 import { useGuardedNavigate } from './dirtyGuard';
 import { Icon } from './icons';
 import { HOST_SKILL_HOSTS, HostSkillInstallDialog } from './settings/HostSkillInstallCard';

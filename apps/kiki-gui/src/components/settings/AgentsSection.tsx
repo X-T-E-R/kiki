@@ -34,7 +34,7 @@ import type {
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
 import { useGuardedNavigate } from '../dirtyGuard';
-import { INPUT, SECONDARY_BUTTON } from '../ui';
+import { SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { SettingsDraftFooter, SettingsSelect } from './SettingsPrimitives';
 import { AgentProfileEditorDialog } from './AgentProfileEditorDialog';
@@ -358,7 +358,7 @@ export function NamedAgentProfileRow({
             disabled={newSessionBlocked}
             title={newSessionTitle}
             data-new-session-href={sessionHref}
-            onClick={() => navigate(sessionHref)}
+            onClick={() => { void navigate(sessionHref); }}
           >
             {t('st.namedAgents.newSession')}
           </button>

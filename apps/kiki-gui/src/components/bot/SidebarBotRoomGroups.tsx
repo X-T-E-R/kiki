@@ -81,7 +81,7 @@ export function SidebarBotRoomGroups({
   const openBot = useMutation({
     mutationFn: async (bot: BotSummary) => bot.homeSessionId ?? (await api.ensureBotHome(bot.personaId)).homeSessionId,
     onSuccess: (sessionId) => {
-      if (sessionId !== undefined) navigate(`/s/${sessionId}`);
+      if (sessionId !== undefined) void navigate(`/s/${sessionId}`);
       void queryClient.invalidateQueries({ queryKey: BOTS_QUERY_KEY });
     },
     onError: (error) => { pushToast({ tone: 'error', text: t('room.actionFailed', { detail: errorText(error) }) }); },
@@ -93,7 +93,7 @@ export function SidebarBotRoomGroups({
       pushToast({ tone: 'success', text: t('bot.enabledToast', { name: bot.name }) });
       void queryClient.invalidateQueries({ queryKey: BOTS_QUERY_KEY });
       void queryClient.invalidateQueries({ queryKey: ['sessions'] });
-      if (bot.homeSessionId !== undefined) navigate(`/s/${bot.homeSessionId}`);
+      if (bot.homeSessionId !== undefined) void navigate(`/s/${bot.homeSessionId}`);
     },
     onError: (error) => { pushToast({ tone: 'error', text: t('bot.enableFailed', { detail: errorText(error) }) }); },
   });

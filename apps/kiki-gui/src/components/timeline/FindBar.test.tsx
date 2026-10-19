@@ -24,7 +24,7 @@ import {
   resetFindHostsForTests,
   selectionPrefill,
 } from '../../lib/timelineFind';
-import { useTimelineView } from '../message/messageViewMode';
+import { useTimelineView, writeTimelineView } from '../message/messageViewMode';
 import { Transcript } from '../Transcript';
 import { FindBar, classifyOutsideHits, setFindSearchForTests } from './FindBar';
 import { TranscriptDetailProvider } from '../transcriptDetail';
@@ -288,8 +288,8 @@ describe('find bar in the timeline', () => {
     await act(async () => { press(document.body, { key: 'F3' }); });
     await settle();
     expect(count()).toBe('1 / 3');
-    const tools = container.querySelector<HTMLInputElement>('[data-find-tools]')!;
-    expect(tools.checked).toBe(false);
+    const tools = container.querySelector<HTMLButtonElement>('button[data-find-tools]')!;
+    expect(tools.getAttribute('aria-pressed')).toBe('false');
     await act(async () => { tools.click(); });
     await settle();
     expect(count()).toBe('1 / 5');
@@ -302,30 +302,33 @@ describe('find bar in the timeline', () => {
     off();
   });
 
-  it('keeps the tool-output scope on the option row as an icon toggle, off by default', async () => {
+  it('keeps the tool-output scope as one icon toggle on the option row, off by default', async () => {
     const off = installSessionShortcut();
     const { container } = await mount(timeline(foldedSession()));
     press(document.body, { key: 'f', ctrlKey: true });
     await settle();
     const input = container.querySelector<HTMLInputElement>('[data-find-input]')!;
-    const tools = container.querySelector<HTMLButtonElement>('[data-find-tools]')!;
     const count = () => container.querySelector('[data-find-count]')?.textContent;
-    // One control row: a small icon button beside Aa / ab, not a checkbox with a
-    // row of its own.
-    expect(container.querySelectorAll('[data-find-bar] input[type="checkbox"]')).toHaveLength(0);
-    expect(tools.tagName).toBe('BUTTON');
-    expect(tools.type).toBe('button');
-    expect(tools.querySelector('svg')).not.toBeNull();
+    // One control for the scope: the compact icon toggle, not an icon plus a
+    // checkbox for the same option.
+    const controls = container.querySelectorAll('[data-find-tools]');
+    expect(controls).toHaveLength(1);
+    const tools = container.querySelector<HTMLButtonElement>('button[data-find-tools]')!;
     expect(tools.getAttribute('aria-pressed')).toBe('false');
     expect(tools.getAttribute('aria-label')).toBe('Include tool output');
     expect(tools.getAttribute('title')).toBe('Include tool output');
-    expect(container.querySelector('[data-find-bar] > div:first-child [data-find-tools]')).toBe(tools);
     await typeQuery(input, 'export const needle');
     await settle(120);
     // Off by default: the tool output holding the needle is out of scope.
     expect(count()).toBe('No results');
+    // A native button in the tab order: Enter/Space activate it in the browser,
+    // and no key handler here swallows those keys before that happens.
+    expect(tools.tagName).toBe('BUTTON');
+    expect(tools.tabIndex).toBe(0);
     tools.focus();
     expect(document.activeElement).toBe(tools);
+    expect(press(tools, { key: 'Enter' }).defaultPrevented).toBe(false);
+    expect(press(tools, { key: ' ' }).defaultPrevented).toBe(false);
     await act(async () => { tools.click(); });
     await settle(120);
     expect(tools.getAttribute('aria-pressed')).toBe('true');
@@ -372,7 +375,7 @@ describe('find bar in the timeline', () => {
     await settle(120);
     expect(container.querySelector('[data-find-count]')?.textContent).toBe('No results');
     expect(container.querySelector('[data-history-fold-open]')).toBeNull();
-    await act(async () => { container.querySelector<HTMLInputElement>('[data-find-tools]')!.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[data-find-tools]')!.click(); });
     await settle();
     expect(container.querySelector('[data-find-count]')?.textContent).toBe('No results');
     await typeQuery(input, 'export const');
@@ -513,7 +516,7 @@ async function coldFindHarness(range: boolean, waitForPage?: Promise<void>) {
   }
   setFindSearchForTests({ searchMessages: vi.fn(async ({ query }) => ({ items: [{ role: 'assistant', turn: 1, snippet: `cold ${query}` } as SearchMessageHit], has_more: false, index_state: { state: 'ready' } } as never)) });
   const mounted = await mount(<ColdHarness />);
-  await act(async () => { mounted.container.querySelector<HTMLButtonElement>('[data-find-tools]')!.click(); });
+  await act(async () => { mounted.container.querySelector<HTMLButtonElement>('button[data-find-tools]')!.click(); });
   await settle(350);
   return { ...mounted, controller, read, page, locate, land, ref };
 }
@@ -566,7 +569,7 @@ function messageViewSession(): Block[] {
   ];
 }
 
-/** The session view owns the message/process choice; the find bar flips it. */
+/** The session view owns the message/process choice; tests use its storage writer. */
 function MessageViewTimeline({ sessionId, blocks }: { sessionId: string; blocks: Block[] }) {
   const [view] = useTimelineView(sessionId, { delivery: 'message' });
   return (
@@ -582,7 +585,7 @@ function MessageViewTimeline({ sessionId, blocks }: { sessionId: string; blocks:
 }
 
 describe('find in the message view', () => {
-  it('counts a folded tool output once the tool option is on, and its note shows the hit in the process view', async () => {
+  it('finds folded tool output from the message view and opens it through its process entry', async () => {
     const off = installSessionShortcut();
     const registry = new Map<string, { items: Range[] }>();
     vi.stubGlobal('CSS', {
@@ -592,25 +595,25 @@ describe('find in the message view', () => {
       },
     });
     vi.stubGlobal('Highlight', class { readonly items: Range[]; constructor(...items: Range[]) { this.items = items; } });
-    const { container } = await mount(<MessageViewTimeline sessionId="session_find_message" blocks={messageViewSession()} />);
+    const sessionId = 'session_find_message';
+    const { container } = await mount(<MessageViewTimeline sessionId={sessionId} blocks={messageViewSession()} />);
     expect(container.querySelector('[data-message-view-row="activity-summary"]')).not.toBeNull();
     press(document.body, { key: 'f', ctrlKey: true });
     await settle();
     const input = container.querySelector<HTMLInputElement>('[data-find-input]')!;
     await typeQuery(input, 'needle');
     await settle(120);
-    // Only the tool output holds the needle, and it is out of scope by default.
+    // Only the tool output holds the needle: out of the default scope.
     expect(container.querySelector('[data-find-count]')?.textContent).toBe('No results');
     expect(container.querySelector('[data-find-process]')).toBeNull();
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-find-tools]')!.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[data-find-tools]')!.click(); });
     await settle(120);
-    // The loaded tool hit counts now, and the bar says where it can be shown.
+    // With the tool option on, the folded output counts from the message view
+    // and the bar offers the surface that can paint it.
     expect(container.querySelector('[data-find-count]')?.textContent).toBe('1 / 1');
-    const open = container.querySelector<HTMLButtonElement>('[data-find-process-open]')!;
-    expect(open.textContent).toContain('process');
-    await act(async () => { open.click(); });
+    expect(container.querySelector('[data-find-process]')).not.toBeNull();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-find-process-open]')!.click(); });
     await settle(200);
-    // The process view is on screen, opened at the call that holds the hit.
     expect(container.querySelector('[data-message-view-row]')).toBeNull();
     const card = container.querySelector('[data-tool-id="tool1"]');
     expect(card?.textContent).toContain('export const needle = 1');
@@ -621,16 +624,19 @@ describe('find in the message view', () => {
     off();
   });
 
-  it('steps onto a folded tool match by opening the process view', async () => {
+  it('steps onto a folded tool match from the message view with F3', async () => {
     const off = installSessionShortcut();
-    const { container } = await mount(<MessageViewTimeline sessionId="session_find_message_step" blocks={messageViewSession()} />);
+    const sessionId = 'session_find_message_step';
+    const { container } = await mount(<MessageViewTimeline sessionId={sessionId} blocks={messageViewSession()} />);
     press(document.body, { key: 'f', ctrlKey: true });
     await settle();
     const input = container.querySelector<HTMLInputElement>('[data-find-input]')!;
     await typeQuery(input, 'needle');
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-find-tools]')!.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[data-find-tools]')!.click(); });
     await settle(120);
     expect(container.querySelector('[data-find-count]')?.textContent).toBe('1 / 1');
+    // F3 lands on the match the message view cannot paint, so it opens the
+    // process surface and locates the output there.
     await act(async () => { press(input, { key: 'F3' }); });
     await settle(200);
     expect(container.querySelector('[data-message-view-row]')).toBeNull();

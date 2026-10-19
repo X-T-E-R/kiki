@@ -189,8 +189,8 @@ import { activityOutcomeLabels, DURATION_WORTH_SHOWING_MS, ToolCard } from './To
 import { DisclosureChevron, Icon, OutcomeMark, Spinner } from './icons';
 import { Wordmark } from './Wordmark';
 import { useContentContinuation, useTranscriptDetail, useTranscriptController } from './transcriptDetail';
+import { useSessionRemainderPending } from './SessionRemainder';
 import { ContentContinuation, frameContentSource, MESSAGE_TEXT_ROOTS, OUTPUT_ROOTS, SHELL_COMMAND_ROOTS, TASK_COMMAND_ROOTS, TASK_OUTPUT_ROOTS, TURN_STEP_ROOTS } from './ContentContinuation';
-import { SessionRemainder, useSessionRemainderPending } from './SessionRemainder';
 import { BridgedOriginRow } from './message/BridgedOriginLine';
 import { MessageRow, SpeakerHead, speakerOf } from './message/MessageRow';
 import { ActivitySummaryRow, HandoffRow, isSilentActivity, OutcomeLine, PresenceLine } from './message/MessageTimelineRows';
@@ -4113,20 +4113,6 @@ export function Transcript({
     }
     return loaded;
   }, []);
-  const requestOlderPage = useCallback(() => {
-    readingIntentRef.current += 1;
-    olderIntentRef.current = false;
-    seekRequestRef.current?.abort();
-    olderRequestRef.current?.abort();
-    const request = new AbortController();
-    olderRequestRef.current = request;
-    olderInflightRef.current = true;
-    return loadOlderAtReadingAnchor(request.signal).finally(() => {
-      if (olderRequestRef.current !== request) return;
-      olderRequestRef.current = null;
-      olderInflightRef.current = false;
-    });
-  }, [loadOlderAtReadingAnchor]);
   useEffect(() => {
     const element = scrollRef.current;
     if (element === null) return;
@@ -4725,7 +4711,7 @@ export function Transcript({
   // "process view only" mark that routes their landing below.
   const findItems = useMemo(
     () => (findOpen
-      ? buildFindItems(groupedNodes.filter((node): node is DisplayNode => node.kind !== 'activity-summary'), true)
+      ? buildFindItems(groupedNodes, true)
       : []),
     [findOpen, groupedNodes],
   );

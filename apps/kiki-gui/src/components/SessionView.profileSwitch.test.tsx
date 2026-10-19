@@ -27,6 +27,7 @@ import { I18nProvider } from '../i18n';
 import { clearToasts, getToasts } from '../lib/toasts';
 import { ConversationShell } from './ConversationShell';
 import { SessionRouteView } from './SessionView';
+import { resolveCompiledGuiStylesheet } from '../testSupport/compiledGuiStylesheet';
 
 const { listNamedAgentProfiles, listModels, sendPrompt, steerQueued, sendPromptNow, promptResult, fixture, abort, getExecutorModels } = vi.hoisted(() => ({
   listNamedAgentProfiles: vi.fn(),
@@ -743,13 +744,10 @@ describe('effort-only changes stay on the current engine', () => {
     const track = selectedButton?.parentElement;
     if (track === null || track === undefined) throw new Error('effort track is missing');
 
-    const { existsSync } = await import('node:fs');
-    const { readdir } = await import('node:fs/promises');
-    const assets = [join(process.cwd(), 'dist', 'assets'), join(process.cwd(), 'apps', 'kiki-gui', 'dist', 'assets')]
-      .find((dir) => existsSync(dir));
-    if (assets === undefined) throw new Error('compiled gui stylesheet is missing');
-    const cssName = (await readdir(assets)).find((name) => name.startsWith('index-') && name.endsWith('.css'));
-    if (cssName === undefined) throw new Error(`no compiled stylesheet in ${assets}`);
+    // The painted colour below is resolved from the compiled tokens, so the
+    // proof needs the build: a missing stylesheet fails here instead of passing
+    // the class checks without the colour they stand for.
+    const { cssPath } = resolveCompiledGuiStylesheet();
 
     await mkdir(EFFORT_SHOT_DIR, { recursive: true });
     await writeFile(join(EFFORT_SHOT_DIR, 'selected-effort.html'), track.outerHTML);
@@ -761,7 +759,7 @@ describe('effort-only changes stay on the current engine', () => {
         '<!doctype html><html data-theme="light"><head><meta charset="utf-8"></head>'
         + '<body class="bg-canvas text-ink"><div class="bg-surface p-6">' + track.outerHTML + '</div></body></html>',
       );
-      await page.addStyleTag({ path: join(assets, cssName) });
+      await page.addStyleTag({ path: cssPath });
       // The capsules exist before the stylesheet, so transition-colors starts
       // on the unstyled button face. Settle on the token the class actually sets.
       await page.evaluate(() => { for (const animation of document.getAnimations()) animation.finish(); });
@@ -783,7 +781,7 @@ describe('effort-only changes stay on the current engine', () => {
       await writeFile(join(EFFORT_SHOT_DIR, 'selected-effort-color.json'), JSON.stringify({
         selected: color,
         idleBackground: idleColor,
-        stylesheet: join(assets, cssName),
+        stylesheet: cssPath,
         shot,
       }, null, 2));
     } finally {

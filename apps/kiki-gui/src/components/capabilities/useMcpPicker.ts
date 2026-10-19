@@ -195,11 +195,11 @@ export function useMcpPicker(sessionId: string | undefined) {
     [connectionKey, sessionId],
   );
 
-  const catalogList = client.klient?.global?.mcp?.list;
+  const mcpCatalog = client.klient?.global?.mcp;
   const draftCatalog = useQuery({
     queryKey: ['draft-mcp-catalog', connectionKey] as const,
-    queryFn: () => catalogList!(),
-    enabled: !scoped && typeof catalogList === 'function',
+    queryFn: () => mcpCatalog!.list!(),
+    enabled: !scoped && typeof mcpCatalog?.list === 'function',
     staleTime: 5_000,
     retry: false,
   });
@@ -341,7 +341,7 @@ export function useMcpPicker(sessionId: string | undefined) {
     available: scoped || draftCatalog.isSuccess,
     /** True where this build can really add, remove, and restore a server. */
     writable: scoped ? port !== undefined : draftCatalog.isSuccess,
-    loading: scoped ? read.isPending : draftCatalog.isPending && typeof catalogList === 'function',
+    loading: scoped ? read.isPending : draftCatalog.isPending && typeof mcpCatalog?.list === 'function',
     failed: scoped ? read.isError : draftCatalog.isError,
     failure: currentFailure,
     dismissFailure: useCallback(() => { setFailure(undefined); }, []),

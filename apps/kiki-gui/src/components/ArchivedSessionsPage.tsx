@@ -232,7 +232,7 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
         <button
           type="button"
           data-archive-back
-          onClick={() => { navigate('/settings/sessions'); }}
+          onClick={() => { void navigate('/settings/sessions'); }}
           className={`${SECONDARY_BUTTON} pointer-coarse:min-h-11`}
         >
           <span className="inline-flex items-center gap-1.5">
@@ -341,7 +341,7 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
                   divider={index > 0}
                   busy={busy}
                   deleting={deleting === session.id}
-                  onOpen={() => { navigate(`/s/${encodeURIComponent(session.id)}`); }}
+                  onOpen={() => { void navigate(`/s/${encodeURIComponent(session.id)}`); }}
                   onDelete={() => { setConfirmOne(session); }}
                 />
               ))}

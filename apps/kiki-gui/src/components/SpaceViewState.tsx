@@ -66,7 +66,7 @@ export function SpaceViewState({ children }: { readonly children: ReactNode }) {
   // store on this connection, so admission must not wait out getSession
   // before painting it. A different connection object does not count.
   const hasRetainedController = useMemo(() => {
-    if (sessionId === undefined || registry == null) return false;
+    if (sessionId === undefined || registry === null || registry === undefined) return false;
     if (typeof registry.hasRetained === 'function') return registry.hasRetained(sessionId, client);
     try {
       for (const ctrl of registry) {

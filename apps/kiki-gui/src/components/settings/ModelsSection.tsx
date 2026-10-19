@@ -9,7 +9,6 @@ import type {
   ModelGenerationMigrationPreviewResponse,
   ModelProtocol,
   ModelSteeringSource,
-  SessionTitleTrigger,
 } from '@kiki/protocol';
 
 import { errorText, issueText, type I18nKey } from '@kiki/session-core/i18n';
@@ -24,7 +23,6 @@ import {
   requestIdentityLayerDraftFromPolicy,
   requestIdentityPolicyFromDraft,
   sessionTitleModelPatch,
-  sessionTitleSettingsPatch,
   sortThinkingEffortsForDisplay,
   validateImagePolicyDraft,
   validateRequestIdentityLayerDraft,
@@ -388,7 +386,7 @@ export function ModelCatalogCard() {
           <ListEmpty kind="none" title={t('st.models.emptyCatalog')}
             action={(
               <button type="button" className={SECONDARY_BUTTON}
-                onClick={() => { navigate('/settings/ai?tab=providers#st-card-providers-add'); }}>
+                onClick={() => { void navigate('/settings/ai?tab=providers#st-card-providers-add'); }}>
                 {t('st.models.goProviders')}
               </button>
             )} />
@@ -1787,12 +1785,6 @@ function ModelCatalogRowEditor({
   const resolvedProtocol: ModelProtocol | undefined = protocolBaseline === 'inherit' ? entity.effective_protocol : undefined;
 
   const sectionId = (section: EditorSectionName) => `model-editor-${section}-${entity.id}`;
-  const jumpTo = (section: EditorSectionName) => {
-    const target = document.getElementById(sectionId(section));
-    // jsdom has no scrollIntoView; every browser does.
-    target?.scrollIntoView?.({ block: 'start' });
-    target?.querySelector<HTMLElement>('h3')?.focus({ preventScroll: true });
-  };
 
   return (
     <div className="min-w-0 space-y-7" data-model-editor-layout>
@@ -2156,13 +2148,6 @@ function ModelCatalogRowEditor({
 }
 
 type EditorSectionName = 'basics' | 'identity' | 'recipe' | 'advanced';
-const EDITOR_SECTIONS: readonly EditorSectionName[] = ['basics', 'identity', 'recipe', 'advanced'];
-const EDITOR_SECTION_LABEL: Readonly<Record<EditorSectionName, I18nKey>> = {
-  basics: 'st.modelEditor.nav.basics',
-  identity: 'st.modelEditor.nav.identity',
-  recipe: 'st.modelEditor.nav.recipe',
-  advanced: 'st.modelEditor.nav.advanced',
-};
 
 /**
  * One section of the model editor: a quiet heading with the one fact that

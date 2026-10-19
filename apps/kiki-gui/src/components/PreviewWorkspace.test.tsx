@@ -522,14 +522,21 @@ describe('PreviewWorkspace', () => {
       const links = probe.container.querySelectorAll('a');
       await act(async () => { links[0]!.click(); });
       const editor = workspace().querySelector<HTMLTextAreaElement>('[data-testid="editor"]')!;
+      const draft = `${editor.value}\nUnsaved citation draft.\n`;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(editor, draft);
+        editor.dispatchEvent(new Event('input', { bubbles: true }));
+      });
       await act(async () => { links[1]!.click(); });
       expect(editor.closest('[hidden]')).not.toBeNull();
       expect(workspace().querySelector('h1')?.textContent).toBe('Design');
       expect(workspace().querySelector('h1')!.closest('[hidden]')).toBeNull();
+      expect(workspace().textContent).toContain('Unsaved citation draft.');
       await act(async () => { links[2]!.click(); });
       expect(workspace().textContent).toContain('File opened, but the cited location was not found.');
       await act(async () => { links[3]!.click(); });
       expect(workspace().querySelector('[data-testid="editor"]')).toBe(editor);
+      expect(editor.value).toBe(draft);
       expect(editor.closest('[hidden]')).toBeNull();
       expect(workspace().textContent).toContain('Showing the nearest available position.');
       await act(async () => { links[4]!.click(); });

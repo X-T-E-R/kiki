@@ -345,7 +345,7 @@ function PersonaForm({
           </p>
         </div>
         {snapshot !== undefined ? (
-          <PersonaActions snapshot={snapshot} dirty={dirty} onChanged={() => { void invalidatePersonas(queryClient, snapshot.definition.id); }} onClosed={onClosed} onStartChat={() => { navigate(`/p/${encodeURIComponent(snapshot.definition.id)}/daily`); }} />
+          <PersonaActions snapshot={snapshot} dirty={dirty} onChanged={() => { void invalidatePersonas(queryClient, snapshot.definition.id); }} onClosed={onClosed} onStartChat={() => { void navigate(`/p/${encodeURIComponent(snapshot.definition.id)}/daily`); }} />
         ) : null}
       </div>
 
@@ -497,7 +497,7 @@ function PersonaForm({
             <button
               type="button"
               data-persona-memory-open
-              onClick={() => { navigate(`/memory?persona=${encodeURIComponent(snapshot.definition.id)}`); }}
+              onClick={() => { void navigate(`/memory?persona=${encodeURIComponent(snapshot.definition.id)}`); }}
               className="ml-auto inline-flex items-center gap-1 text-[12px] font-medium text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
             >
               {t('persona.memoryOpen')}

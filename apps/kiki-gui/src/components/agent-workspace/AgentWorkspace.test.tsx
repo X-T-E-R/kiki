@@ -1565,6 +1565,17 @@ it('renders the agent’s own context meter and cumulative totals in the fullscr
     maxContextTokens: 10_000,
     usage: { total: { inputOther: 1_200, output: 340, inputCacheRead: 56, inputCacheCreation: 8 } },
   };
+  // The card's cumulative block reads the canonical per-agent row, not the
+  // snapshot projection: gross input counts the cache buckets separately.
+  harness.readCapabilities.mockResolvedValue({
+    context: 'live', owner: { profile: 'general', agent_id: 'child' }, available: true,
+    profile: { name: 'general' }, targets: [], tools: [], skills: [],
+    metrics: { child: {
+      inputTokens: 1_264, outputTokens: 340, cacheReadTokens: 56, cacheWriteTokens: 8, totalTokens: 1_604,
+      totalCostUsd: null, contextTokens: null, contextLimit: null, compactionCount: null,
+      usageComplete: true, usagePartial: false, costPartial: true,
+    } },
+  });
   await renderWorkspace({
     controller: controllerStub({ forest: testForest(), agentStates: { child: childState } }),
   });

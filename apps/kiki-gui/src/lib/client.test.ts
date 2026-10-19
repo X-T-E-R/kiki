@@ -25,6 +25,17 @@ import { memoryApplicability } from '../components/memory/memoryReceipt';
 import { refreshSessionAttention } from '../state/connection';
 import { saveOnboardingReplyParagraph } from './onboardingReplyStyle';
 
+/** JSON body a stubbed transport was handed; these tests always post serialized strings. */
+function sentJson(init: RequestInit | undefined): unknown {
+  return typeof init?.body === 'string' ? JSON.parse(init.body) : init?.body;
+}
+
+/** Request URL a stubbed fetch was called with, whether it was given text, a URL, or a Request. */
+function requestUrl(input: RequestInfo | URL): URL {
+  if (typeof input === 'string') return new URL(input);
+  return input instanceof URL ? new URL(input.href) : new URL(input.url);
+}
+
 describe('KikiClient workspace catalog', () => {
   afterEach(() => vi.unstubAllGlobals());
 
@@ -58,7 +69,7 @@ describe('KikiClient workspace catalog', () => {
     const calls: { method: string; path: string; search: string; body: unknown }[] = [];
     vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init?: RequestInit) => {
       const url = new URL(String(input));
-      calls.push({ method: init?.method ?? 'GET', path: url.pathname, search: url.search, body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) });
+      calls.push({ method: init?.method ?? 'GET', path: url.pathname, search: url.search, body: sentJson(init) });
       return Response.json({ code: 0, msg: 'success', data: url.searchParams.get('view') === 'catalog' ? entry : full });
     }));
     const client = new KikiClient({ baseUrl: 'http://example.test' });
@@ -227,9 +238,9 @@ describe('KikiClient attached archive adapter', () => {
 
 describe('KikiClient cold-session actions', () => {
   afterEach(() => { vi.unstubAllGlobals(); });
+  const promptResult = { prompt_id: 'p1', user_message_id: 'p1', status: 'queued', content: [{ type: 'text', text: 'hello' }], created_at: '2026-01-01T00:00:00.000Z' };
+  const submitHello = (client: KikiClient) => client.submitPrompt('s1', { content: [{ type: 'text', text: 'hello' }] });
   const actions = [
-    { path: '/prompts', invoke: (client: KikiClient) => client.submitPrompt('s1', { content: [{ type: 'text', text: 'hello' }] }),
-      result: { prompt_id: 'p1', user_message_id: 'p1', status: 'queued', content: [{ type: 'text', text: 'hello' }], created_at: '2026-01-01T00:00:00.000Z' } },
     { path: '/approvals/a1', invoke: (client: KikiClient) => client.resolveApproval('s1', 'a1', { decision: 'approved' }),
       result: { resolved: true, resolved_at: '2026-01-01T00:00:00.000Z' } },
     { path: '/prompts/p1:steer', invoke: (client: KikiClient) => client.steerPrompt('s1', 'p1'),
@@ -258,6 +269,30 @@ describe('KikiClient cold-session actions', () => {
     const client = new KikiClient({ baseUrl: 'http://example.test' });
     try {
       await expect(invoke(client)).rejects.toMatchObject({ code: 40901 });
+      expect(fetchMock).toHaveBeenCalledOnce();
+    } finally { await client.klient.close(); }
+  });
+  // Prompt submission is the durable enqueue boundary: it must not wait for
+  // the view/history resume gate, so the POST goes out on its own.
+  it('enqueues a prompt without resuming the view first', async () => {
+    const calls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      calls.push(new URL(url).pathname);
+      expect(init?.method).toBe('POST');
+      return Response.json({ code: 0, msg: 'success', data: promptResult });
+    }));
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    try {
+      await expect(submitHello(client)).resolves.toEqual(promptResult);
+      expect(calls).toEqual(['/api/sessions/s1/prompts']);
+    } finally { await client.klient.close(); }
+  });
+  it('surfaces a refused prompt without a resume attempt of its own', async () => {
+    const fetchMock = vi.fn(async () => Response.json({ code: 40901, msg: 'session locked', data: null }));
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    try {
+      await expect(submitHello(client)).rejects.toMatchObject({ code: 40901 });
       expect(fetchMock).toHaveBeenCalledOnce();
     } finally { await client.klient.close(); }
   });
@@ -542,8 +577,6 @@ describe('KikiClient.sendAgentMessage', () => {
     const urls: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
       urls.push(String(url));
-      const resumed = resumeResponse(url, init);
-      if (resumed !== undefined) return resumed;
       if (String(url).endsWith('/api/klient/call')) return Response.json({
         code: 0, msg: 'success', data: 'native',
       });
@@ -557,9 +590,11 @@ describe('KikiClient.sendAgentMessage', () => {
     }));
     const receipt = await new KikiClient({ baseUrl: 'http://127.0.0.1:8080' })
       .sendAgentMessage('s1', 'child', 'look', content, 'native-submission');
-    // Attachments retain the ordinary prompt route and have no replay guarantee.
+    // Attachments retain the ordinary prompt route and have no replay
+    // guarantee; the prompt POST is the durable boundary and takes no view
+    // resume with it.
     expect(receipt).toBeNull();
-    expect(urls).toEqual(['http://127.0.0.1:8080/api/klient/call', 'http://127.0.0.1:8080/api/klient/call', 'http://127.0.0.1:8080/api/sessions/s1/prompts?receipt=true']);
+    expect(urls).toEqual(['http://127.0.0.1:8080/api/klient/call', 'http://127.0.0.1:8080/api/sessions/s1/prompts?receipt=true']);
   });
 
   it('sends one native child text key to the prompt route and treats replay as a prompt, not a mailbox delivery', async () => {
@@ -2136,7 +2171,7 @@ describe('typed quota consumer', () => {
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
       expect(new URL(url).pathname).toBe(`/api/usage/provider-quotas${suffix}`);
       expect(init?.method ?? 'GET').toBe(method);
-      expect(init?.body === undefined ? undefined : JSON.parse(String(init.body))).toEqual(body);
+      expect(sentJson(init)).toEqual(body);
       return Response.json({ code: 0, msg: 'success', data: snapshot });
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -2147,8 +2182,13 @@ describe('typed quota consumer', () => {
   it.each(actions)('rejects a failed $method $suffix rather than reporting cached success', async ({ invoke }) => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ code: 40001, msg: 'Quota unavailable', data: null })));
     const client = new KikiClient({ baseUrl: 'http://example.test' });
-    try { await expect(invoke(client)).rejects.toMatchObject({ message: 'Quota unavailable' }); }
-    finally { await client.klient.close(); }
+    try {
+      const failure = await invoke(client).catch((error: unknown) => error);
+      // ApiError keeps the code in its own field and the server text in the
+      // message, so the failure is attributable and never a cached success.
+      expect(failure).toMatchObject({ name: 'ApiError', code: 40001 });
+      expect((failure as Error).message).toContain('Quota unavailable');
+    } finally { await client.klient.close(); }
   });
   it('rejects an obsolete fixture shape instead of inventing source data', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ code: 0, msg: 'success', data: { items: [], fetchedAt: '2026-10-10T12:00:00Z' } })));
@@ -2163,9 +2203,9 @@ describe('KikiClient profile file preview', () => {
     const body = { path: 'profiles/example.md', cwd: '/workspace/example' };
     const result = { profile: { name: 'example', description: 'Example profile', source: 'file', main: false, disabled: false, routes: [] } };
     const fetchMock: typeof fetch = async (input, init) => {
-      expect(new URL(String(input)).pathname).toBe('/api/agent-profiles/file-preview');
+      expect(requestUrl(input).pathname).toBe('/api/agent-profiles/file-preview');
       expect(init?.method).toBe('POST');
-      expect(JSON.parse(String(init?.body))).toEqual(body);
+      expect(sentJson(init)).toEqual(body);
       return Response.json({ code: 0, msg: 'success', data: result });
     };
     const client = new KikiClient({ baseUrl: 'http://example.test', transport: { fetch: fetchMock, eventsUrl: 'ws://example.test/api/ws' } });

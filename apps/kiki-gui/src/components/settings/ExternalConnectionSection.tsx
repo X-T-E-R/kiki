@@ -314,13 +314,13 @@ export function ExternalConnectionSection() {
               tunnelsList={tunnelsList}
               onRefresh={() => { void refreshStatus(); }}
               onInstallDep={() => { void handleInstallDependency(); }}
-              onToggleService={handleToggleService}
-              onToggleAutoStart={handleToggleAutoStart}
+              onToggleService={(running) => { void handleToggleService(running); }}
+              onToggleAutoStart={(current) => { void handleToggleAutoStart(current); }}
               onLogin={() => { void handleLogin(); }}
               onCancelLogin={() => { void handleCancelLogin(); }}
               onLoadTunnels={() => { void handleLoadTunnels(); }}
-              onSelectTunnel={handleSelectTunnel}
-              onCopyUrl={copyUrl}
+              onSelectTunnel={(id) => { void handleSelectTunnel(id); }}
+              onCopyUrl={(url) => { void copyUrl(url); }}
             />
           ) : null}
 

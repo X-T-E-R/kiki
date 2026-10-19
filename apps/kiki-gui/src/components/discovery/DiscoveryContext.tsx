@@ -39,7 +39,7 @@ import {
   type DiscoveryState,
   type DiscoveryTryAction,
 } from '@kiki/session-core/discovery';
-import { appendToDraft, readDraft, writeDraft } from '@kiki/session-core/composer';
+import { appendToDraft, readDraft } from '@kiki/session-core/composer';
 
 function hasRouterErrors(routerState?: { errors?: Record<string, unknown> | null }): boolean {
   if (!routerState || !routerState.errors) return false;

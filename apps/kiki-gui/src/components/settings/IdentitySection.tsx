@@ -893,7 +893,7 @@ function UsageCard({ catalog }: { catalog: RequestIdentityCatalog | undefined })
         </div>
       )}
       <div className="pt-3">
-        <button type="button" className={SECONDARY_BUTTON} onClick={() => { navigate('/settings/ai?tab=providers'); }}>
+        <button type="button" className={SECONDARY_BUTTON} onClick={() => { void navigate('/settings/ai?tab=providers'); }}>
           {t('st.identity.usageEdit')}
         </button>
       </div>

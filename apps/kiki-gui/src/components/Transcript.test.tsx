@@ -2469,7 +2469,7 @@ describe('live and event chrome', () => {
     expect(container.textContent).toContain('Continue with the transcript labels');
   });
 
-  it('labels folded compactions as successful commits and expands every time and reason', async () => {
+  it('keeps the generic compaction label when the wire carries no strategy', async () => {
     const snapshot = replayAgentWire('main', [1000, 2000, 3000].map((time, index) => ({
       type: 'context.apply_compaction', summary: 'summary', time, reasonCodes: [index === 0 ? 'notes_missing' : 'tool_error'],
     })));

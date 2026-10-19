@@ -143,9 +143,9 @@ it('carries the second pending operation selected by the hook through the real G
     const body = JSON.parse(init?.body as string);
     if (String(url).endsWith('/api/klient/call')) {
       if (body.procedure.method === 'resume') return Response.json({ code: 0, msg: 'success', data: { id: 's1', kind: 'session' } });
-      expect(body.procedure.method).toBe('read');
-      return Response.json({ code: 0, msg: 'success', data: { id: 's1', createdAt: 1, updatedAt: 1, archived: false,
-        agents: { child: { type: 'sub', executor: 'native' } } } });
+      expect(body.procedure).toMatchObject({ service: 'sessionMetadata', method: 'getAgentExecutor' });
+      expect(body.params).toEqual(['child']);
+      return Response.json({ code: 0, msg: 'success', data: 'native' });
     }
     expect(new URL(url).pathname).toBe('/api/sessions/s1/prompts');
     requests.push(body);

@@ -85,16 +85,44 @@ describe('external engine enable proof', () => {
     });
     await settle();
 
+    // The row is a summary line; everything that changes one engine — the
+    // offer switch, the check, the facts — lives in the panel the row opens.
+    const panel = (id: string): HTMLElement | null => document.querySelector<HTMLElement>(`[data-engine-panel="${id}"]`);
+    const openPanel = async (id: string): Promise<HTMLElement> => {
+      await act(async () => { container.querySelector<HTMLButtonElement>(`[data-engine-row="${id}"] [data-engine-open]`)!.click(); });
+      await settle();
+      const found = panel(id);
+      if (found === null) throw new Error(`engine panel did not open: ${id}`);
+      return found;
+    };
+    const closePanel = async (id: string): Promise<void> => {
+      const overlay = document.querySelector<HTMLElement>(`[data-engine-panel-overlay="${id}"]`);
+      if (overlay === null) return;
+      await act(async () => { overlay.querySelector<HTMLButtonElement>('button[aria-label]')!.click(); });
+      await settle();
+    };
+
     expect([...container.querySelectorAll<HTMLElement>('[data-engine-row]')].map((row) => row.dataset['engineRow']))
       .toEqual(['codex-app-server', 'missing-acp', 'pending-acp']);
-    expect(container.querySelector<HTMLInputElement>('[data-engine-visible="codex-app-server"] input')!.checked).toBe(true);
-    expect(container.querySelector<HTMLInputElement>('[data-engine-visible="pending-acp"] input')!.checked).toBe(false);
-    expect(container.querySelector<HTMLInputElement>('[data-engine-visible="missing-acp"] input')!.checked).toBe(false);
     expect(container.querySelector('[data-engine-row="codex-app-server"]')?.getAttribute('data-engine-health')).toBe('warning');
-    expect(container.querySelector('[data-engine-row="codex-app-server"] [data-engine-last-check]')?.textContent).toContain('Check passed with warnings');
-    expect(container.querySelector('[data-engine-row="codex-app-server"] [data-engine-check-stale]')?.getAttribute('data-engine-check-stale')).toBe('true');
-    expect(container.querySelector('[data-engine-row="pending-acp"] [data-engine-last-check]')?.textContent).toContain('Not checked yet');
-    expect(container.querySelector('[data-engine-row="missing-acp"] [data-engine-last-check]')?.getAttribute('data-engine-last-check')).toBe('unavailable');
+    expect(container.querySelector('[data-engine-row="missing-acp"]')?.getAttribute('data-engine-health')).toBe('missing');
+
+    const codexPanel = await openPanel('codex-app-server');
+    expect(codexPanel.querySelector<HTMLInputElement>('[data-engine-visible="codex-app-server"] input')!.checked).toBe(true);
+    expect(codexPanel.querySelector('[data-engine-last-check]')?.textContent).toContain('Check passed with warnings');
+    expect(codexPanel.querySelector('[data-engine-check-stale]')?.getAttribute('data-engine-check-stale')).toBe('true');
+    await closePanel('codex-app-server');
+    expect(panel('codex-app-server')).toBeNull();
+
+    const pendingPanel = await openPanel('pending-acp');
+    expect(pendingPanel.querySelector<HTMLInputElement>('[data-engine-visible="pending-acp"] input')!.checked).toBe(false);
+    expect(pendingPanel.querySelector('[data-engine-last-check]')?.textContent).toContain('Not checked yet');
+    await closePanel('pending-acp');
+
+    const missingPanel = await openPanel('missing-acp');
+    expect(missingPanel.querySelector<HTMLInputElement>('[data-engine-visible="missing-acp"] input')!.checked).toBe(false);
+    expect(missingPanel.querySelector('[data-engine-last-check]')?.getAttribute('data-engine-last-check')).toBe('unavailable');
+    await closePanel('missing-acp');
     expect(client.checkExecutor).not.toHaveBeenCalled();
     expect(engineChoices([], catalog, {
       overrides: config.raw['agent_executor_overrides'] as Record<string, unknown>,
@@ -106,31 +134,34 @@ describe('external engine enable proof', () => {
       retain: ['missing-acp'],
     })).toEqual(['', 'codex-app-server', 'missing-acp']);
 
-    const pendingRow = container.querySelector<HTMLElement>('[data-engine-row="pending-acp"]')!;
-    await act(async () => pendingRow.querySelector<HTMLButtonElement>('[data-engine-check-button]')!.click());
+    const checkPanel = await openPanel('pending-acp');
+    await act(async () => checkPanel.querySelector<HTMLButtonElement>('[data-engine-check-button]')!.click());
     await settle();
-    expect(pendingRow.querySelector('[data-engine-last-check]')?.getAttribute('data-engine-last-check')).toBe('failed');
-    expect(pendingRow.querySelector('[data-engine-last-check]')?.textContent).toContain('timed out');
-    expect(container.querySelector('[data-engine-row="codex-app-server"] [data-engine-last-check]')?.textContent).toContain('Check passed with warnings');
-    expect(container.querySelector('[data-engine-row="codex-app-server"] [data-engine-last-check]')?.textContent).not.toContain('timed out');
+    expect(checkPanel.querySelector('[data-engine-last-check]')?.getAttribute('data-engine-last-check')).toBe('failed');
+    expect(checkPanel.querySelector('[data-engine-last-check]')?.textContent).toContain('timed out');
+    await closePanel('pending-acp');
+    const codexCheck = await openPanel('codex-app-server');
+    expect(codexCheck.querySelector('[data-engine-last-check]')?.textContent).toContain('Check passed with warnings');
+    expect(codexCheck.querySelector('[data-engine-last-check]')?.textContent).not.toContain('timed out');
     expect(client.checkExecutor).toHaveBeenCalledTimes(1);
 
-    await act(async () => { container.querySelector<HTMLInputElement>('[data-engine-visible="codex-app-server"] input')!.click(); });
+    await act(async () => { codexCheck.querySelector<HTMLInputElement>('[data-engine-visible="codex-app-server"] input')!.click(); });
     await settle();
     expect(client.patchConfig).toHaveBeenCalledWith({ agent_executor_overrides: { 'codex-app-server': { show_in_profile_list: false } } });
     for (let i = 0; i < 40; i += 1) {
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-      if (container.querySelector('[data-engine-visible="codex-app-server"]')?.getAttribute('data-visible') === 'false') break;
+      if (codexCheck.querySelector('[data-engine-visible="codex-app-server"]')?.getAttribute('data-visible') === 'false') break;
     }
-    expect(container.querySelector('[data-engine-visible="codex-app-server"]')?.getAttribute('data-visible')).toBe('false');
-    expect(container.querySelector<HTMLInputElement>('[data-engine-visible="codex-app-server"] input')!.checked).toBe(false);
+    expect(codexCheck.querySelector('[data-engine-visible="codex-app-server"]')?.getAttribute('data-visible')).toBe('false');
+    expect(codexCheck.querySelector<HTMLInputElement>('[data-engine-visible="codex-app-server"] input')!.checked).toBe(false);
+    await closePanel('codex-app-server');
     expect(engineChoices([], catalog, {
       overrides: config.raw['agent_executor_overrides'] as Record<string, unknown>,
       display: config.raw['agent_executor_display'] as Record<string, unknown>,
       retain: ['missing-acp'],
     })).toEqual(['', 'missing-acp']);
 
-    for (const row of container.querySelectorAll<HTMLDetailsElement>('[data-engine-row]')) row.open = true;
+    expect(panel('codex-app-server')).toBeNull();
     const assets = [join(process.cwd(), 'dist', 'assets'), join(process.cwd(), 'apps', 'kiki-gui', 'dist', 'assets')].find((dir) => existsSync(dir));
     if (assets === undefined) throw new Error('compiled gui stylesheet is missing');
     const cssName = (await readdir(assets)).find((name) => name.startsWith('index-') && name.endsWith('.css'));
@@ -147,11 +178,10 @@ describe('external engine enable proof', () => {
           + `<body class="bg-canvas text-ink"><div style="width:${width}px;padding:16px">${container.innerHTML}</div></body></html>`,
         );
         await page.addStyleTag({ path: join(assets, cssName) });
-        const idBox = await page.locator('[data-engine-row="codex-app-server"] summary .font-mono').boundingBox();
+        const idBox = await page.locator('[data-engine-row="codex-app-server"] [data-engine-open] .font-mono').boundingBox();
         if (width === 1280) expect(idBox).not.toBeNull();
         else expect(idBox).toBeNull();
-        expect(await page.locator('[data-engine-row="pending-acp"] [data-engine-last-check="failed"]').textContent()).toContain('timed out');
-        expect(await page.locator('[data-engine-row="codex-app-server"] [data-engine-last-check="warning"]').textContent()).toContain('Check passed with warnings');
+        expect(await page.locator('[data-engine-row="missing-acp"] [data-engine-status]').getAttribute('data-engine-status')).toBe('missing');
         const overflow = await page.evaluate(() => ({
           doc: document.documentElement.scrollWidth,
           width: window.innerWidth,

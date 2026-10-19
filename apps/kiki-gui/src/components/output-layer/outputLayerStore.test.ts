@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { outputLayerStore } from './outputLayerStore';
 import { type OutputLayerPreset, hasConfiguredModel } from './types';
 
@@ -342,5 +342,155 @@ describe('outputLayerStore', () => {
     expect(saved).toBeDefined();
     expect(saved.modelId).toBe('openai/gpt-4o-mini');
     expect(saved.maxOutputTokens).toBe(4096);
+  });
+});
+
+describe('outputLayerStore space namespacing', () => {
+  const LEGACY_KEY = 'kiki.output-layer.sessions.v1';
+  const DEFAULT_STATE = { activePresetId: null, viewMode: 'processed' };
+
+  /**
+   * Boot a fresh store the way the desktop entry does: configure the space
+   * first, then load the module that reads the keys at construction.
+   */
+  async function bootInSpace(homeId: string | null): Promise<typeof import('./outputLayerStore')> {
+    vi.resetModules();
+    const storage = await import('../../lib/spaceStorage');
+    storage.configureSpaceStorage(homeId === null ? null : { homeId, isPrimary: homeId === 'main' });
+    return import('./outputLayerStore');
+  }
+
+  function writeLegacy(value: unknown): void {
+    localStorage.setItem(LEGACY_KEY, typeof value === 'string' ? value : JSON.stringify(value));
+  }
+
+  function namespacedKey(homeId: string): string {
+    return `kiki.space.${homeId}.${LEGACY_KEY}`;
+  }
+
+  beforeEach(() => {
+    vi.resetModules();
+    localStorage.clear();
+  });
+
+  it('recovers a subspace record that only exists under the pre-space key', async () => {
+    const legacy = { 'work:server-a:session-1': { activePresetId: 'translate', viewMode: 'original' } };
+    writeLegacy(legacy);
+
+    const { outputLayerStore: store } = await bootInSpace('work');
+
+    expect(store.getSessionState('work:server-a:session-1')).toEqual(legacy['work:server-a:session-1']);
+    // The migration reads; the original bytes stay exactly as they were.
+    expect(JSON.parse(localStorage.getItem(LEGACY_KEY)!)).toEqual(legacy);
+    expect(localStorage.getItem(namespacedKey('work'))).toBeNull();
+  });
+
+  it('keeps a recovered record once the space saves its own state', async () => {
+    writeLegacy({ 'work:server-a:session-1': { activePresetId: 'translate', viewMode: 'original' } });
+    const { outputLayerStore: store } = await bootInSpace('work');
+
+    store.setViewMode('work:server-a:session-2', 'original');
+
+    expect(JSON.parse(localStorage.getItem(namespacedKey('work'))!)).toEqual({
+      'work:server-a:session-1': { activePresetId: 'translate', viewMode: 'original' },
+      'work:server-a:session-2': { activePresetId: null, viewMode: 'original' },
+    });
+  });
+
+  it('leaves the main space on the plain key it has always used', async () => {
+    const plain = { 'main:server-a:session-1': { activePresetId: 'translate', viewMode: 'processed' } };
+    writeLegacy(plain);
+
+    const { outputLayerStore: store } = await bootInSpace(null);
+
+    expect(store.getSessionState('main:server-a:session-1')).toEqual(plain['main:server-a:session-1']);
+    expect(localStorage.getItem(namespacedKey('main'))).toBeNull();
+  });
+
+  it('keeps two homes and two servers apart even for the same session id', async () => {
+    writeLegacy({
+      'work:server-a:session-1': { activePresetId: 'translate', viewMode: 'processed' },
+      'work:server-b:session-1': { activePresetId: 'plain', viewMode: 'processed' },
+    });
+
+    const work = (await bootInSpace('work')).outputLayerStore;
+    expect(work.getSessionState('work:server-a:session-1').activePresetId).toBe('translate');
+    expect(work.getSessionState('work:server-b:session-1').activePresetId).toBe('plain');
+
+    const studio = (await bootInSpace('studio')).outputLayerStore;
+    expect(studio.getSessionState('studio:server-a:session-1')).toEqual(DEFAULT_STATE);
+    expect(studio.getSessionState('studio:server-b:session-1')).toEqual(DEFAULT_STATE);
+
+    studio.setViewMode('studio:server-a:session-1', 'original');
+    expect(JSON.parse(localStorage.getItem(namespacedKey('studio'))!)).toEqual({
+      'studio:server-a:session-1': { activePresetId: null, viewMode: 'original' },
+    });
+  });
+
+  it('never overwrites a value the space already saved', async () => {
+    const legacy = { 'work:server-a:session-1': { activePresetId: 'translate', viewMode: 'original' } };
+    writeLegacy(legacy);
+    const stored = { 'work:server-a:session-1': { activePresetId: 'plain', viewMode: 'processed' } };
+    localStorage.setItem(namespacedKey('work'), JSON.stringify(stored));
+
+    const first = (await bootInSpace('work')).outputLayerStore;
+    expect(first.getSessionState('work:server-a:session-1')).toEqual(stored['work:server-a:session-1']);
+    expect(JSON.parse(localStorage.getItem(LEGACY_KEY)!)).toEqual(legacy);
+
+    // A second boot reads the same answer; the migration is idempotent.
+    const second = (await bootInSpace('work')).outputLayerStore;
+    expect(second.getSessionState('work:server-a:session-1')).toEqual(stored['work:server-a:session-1']);
+  });
+
+  it('restores a remote connection record only for the context that asks for it', async () => {
+    const remote = 'remote:conn-1:server-x:session-9';
+    const legacy = {
+      [remote]: { activePresetId: 'translate', viewMode: 'original' },
+      'remote:conn-2:server-x:session-9': { activePresetId: 'plain', viewMode: 'original' },
+    };
+    writeLegacy(legacy);
+
+    const work = (await bootInSpace('work')).outputLayerStore;
+    // A remote id carries no home, so it is not part of the boot merge; the
+    // exact live context still reads its own record.
+    expect(work.getSessionState(remote)).toEqual(legacy[remote]);
+    expect(work.getSessionState('remote:conn-2:server-y:session-9')).toEqual(DEFAULT_STATE);
+
+    work.setViewMode('work:server-a:session-1', 'original');
+    const persisted = JSON.parse(localStorage.getItem(namespacedKey('work'))!);
+    expect(persisted).toEqual({
+      'work:server-a:session-1': { activePresetId: null, viewMode: 'original' },
+    });
+    expect(JSON.parse(localStorage.getItem(LEGACY_KEY)!)).toEqual(legacy);
+  });
+
+  it('reuses the boot migration without rereading storage or exposing another home', async () => {
+    const remote = 'remote:conn-1:server-x:session-9';
+    writeLegacy({
+      [remote]: { activePresetId: 'translate', viewMode: 'original' },
+      'studio:server-a:session-1': { activePresetId: 'plain', viewMode: 'original' },
+    });
+    const work = (await bootInSpace('work')).outputLayerStore;
+    const read = vi.spyOn(Storage.prototype, 'getItem');
+    try {
+      for (let index = 0; index < 100; index++) {
+        expect(work.getSessionState(remote)).toEqual({ activePresetId: 'translate', viewMode: 'original' });
+        expect(work.getSessionState('studio:server-a:session-1')).toEqual(DEFAULT_STATE);
+      }
+      expect(read).not.toHaveBeenCalled();
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it('survives unreadable bytes on either side', async () => {
+    writeLegacy('{not json');
+    const empty = (await bootInSpace('work')).outputLayerStore;
+    expect(empty.getSessionState('work:server-a:session-1')).toEqual(DEFAULT_STATE);
+
+    writeLegacy({ 'work:server-a:session-1': { activePresetId: 'translate', viewMode: 'original' } });
+    localStorage.setItem(namespacedKey('work'), '[];');
+    const recovered = (await bootInSpace('work')).outputLayerStore;
+    expect(recovered.getSessionState('work:server-a:session-1')).toEqual({ activePresetId: 'translate', viewMode: 'original' });
   });
 });

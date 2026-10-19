@@ -16,7 +16,6 @@ import { useI18n } from '../../i18n';
 import type { AgentProfileCatalogMode } from '../../lib/agentProfileCatalog';
 import { useConnection } from '../../state/connection';
 import {
-  COMPOSER_PANEL_START,
   MENU_ROW_CLASS,
   MENU_ROW_SELECTED_CLASS,
   STATUS_SEGMENT_CLASS,
@@ -25,7 +24,6 @@ import {
   useComposerPanelAnchor,
   usePopover,
 } from '../ComposerControls';
-import { POPOVER_SURFACE_CLASS } from '../SearchableSelect';
 import { Icon } from '../icons';
 import {
   configuredEngineDescriptors,

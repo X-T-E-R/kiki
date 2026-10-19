@@ -73,7 +73,7 @@ export function PendingBadge({ sessions }: { sessions: readonly Session[] }) {
               type="button"
               onClick={() => {
                 setOpen(false);
-                navigate(`/s/${session.id}`);
+                void navigate(`/s/${session.id}`);
               }}
               className="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left transition-colors hover:bg-paper"
             >

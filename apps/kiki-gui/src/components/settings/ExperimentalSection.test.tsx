@@ -110,7 +110,7 @@ describe('ExperimentalRows', () => {
     const names = locale === 'en'
       ? ['Model Recipes', 'Workspace plugin selection', 'App plugin services', 'Space work modes', 'External MCP clients']
       : ['模型 Recipe', '工作区插件选择', '应用级插件服务', '空间工作模式', '外部 MCP 客户端'];
-    const sections = ['ai', 'plugins', 'plugins', 'spaces', 'external-clients'];
+    const sections = ['ai', 'plugins', 'plugins', 'spaces', 'connection-services'];
     for (const [index, id] of flags.entries()) {
       await render(sections[index]!);
       const row = container.querySelector(`[data-experimental-row="${id}"]`)!;
@@ -178,7 +178,7 @@ describe('ExperimentalRows', () => {
     client.getConfig.mockResolvedValue({ experimental: { external_clients: false } });
     client.meta.mockResolvedValueOnce({ experimental_flags: { external_clients: false } })
       .mockResolvedValue({ experimental_flags: { external_clients: enabled } });
-    await render('external-clients');
+    await render('connection-services');
     const button = container.querySelector<HTMLButtonElement>('[data-experimental-row="external_clients"] [data-experimental-choice="default"]')!;
     await act(async () => { button.click(); });
     await flush();

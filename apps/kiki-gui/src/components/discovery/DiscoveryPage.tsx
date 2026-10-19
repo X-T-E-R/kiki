@@ -112,7 +112,7 @@ export function DiscoveryPage({
    */
   const openModelSettings = () => {
     if (state.lifecycle === 'active') leaveDiscovery();
-    navigate(MODEL_SETTINGS_HREF);
+    void navigate(MODEL_SETTINGS_HREF);
   };
 
   const { sidebarOpen } = useSidebarContext();
@@ -261,7 +261,7 @@ export function DiscoveryPage({
             <button
               type="button"
               data-discovery-real-task
-              onClick={() => { navigate('/new'); }}
+              onClick={() => { void navigate('/new'); }}
               className={SECONDARY_BUTTON}
             >
               {t('sidebar.newSession')}

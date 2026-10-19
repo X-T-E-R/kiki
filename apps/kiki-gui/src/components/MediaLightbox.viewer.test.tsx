@@ -219,7 +219,9 @@ function installRasterCanvas() {
   const originalContext = proto.getContext;
   proto.getContext = function (this: HTMLCanvasElement, kind: string) {
     if (kind !== '2d') return originalContext.call(this, kind);
-    const canvas = this;
+    return rasterContext(this);
+  } as typeof HTMLCanvasElement.prototype.getContext;
+  function rasterContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D {
     let strokeStyle = '#000000';
     let lineWidth = 1;
     const commands: { op: 'move' | 'line' | 'rect'; x: number; y: number; w?: number; h?: number }[] = [];
@@ -283,7 +285,7 @@ function installRasterCanvas() {
         }
       },
     } as unknown as CanvasRenderingContext2D;
-  } as typeof HTMLCanvasElement.prototype.getContext;
+  }
   proto.toBlob = function (this: HTMLCanvasElement, callback: BlobCallback) {
     const data = pixels.get(this);
     if (data === undefined) { callback(null); return; }

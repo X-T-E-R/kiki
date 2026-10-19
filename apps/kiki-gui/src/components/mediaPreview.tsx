@@ -46,7 +46,7 @@ import { useNavSnapshotAdapter, useNavVisitId } from '../lib/useNavSnapshot';
 import { useDirtyReporter } from './dirtyGuard';
 import { Dialog } from './Dialog';
 import { Icon } from './icons';
-import { copyImageBitmap, hostActionPath, httpImageLink, imageMenuEntries, isRemoteConnection, mediaOutcomeKey, noteMediaReady } from './imageActions';
+import { copyImageBitmap, httpImageLink, imageMenuEntries, isRemoteConnection, mediaOutcomeKey, noteMediaReady } from './imageActions';
 import { MediaLightbox } from './MediaLightbox';
 import { blockGalleryImages, canonicalGalleryItem, galleryImageId, orderedGalleryImages, type GalleryImage } from './mediaGallery';
 import { MiniContextMenu } from './MiniContextMenu';

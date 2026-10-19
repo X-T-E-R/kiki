@@ -140,7 +140,7 @@ function ProviderQuotaCard({ source, isRefreshing, feedback: externalFeedback, o
         const methods = await client.listOAuthMethods();
         const method = methods.find((entry) => entry.provider === source.auth.provider || entry.id === source.auth.provider);
         if (method === undefined) {
-          navigate('/settings/ai#st-card-providers');
+          void navigate('/settings/ai#st-card-providers');
           return;
         }
         await flow.start(method);
@@ -150,11 +150,11 @@ function ProviderQuotaCard({ source, isRefreshing, feedback: externalFeedback, o
         setAuthBusy(false);
       }
     } else if (source.auth.action === 'provider_settings') {
-      navigate('/settings/ai#st-card-providers');
+      void navigate('/settings/ai#st-card-providers');
     } else if (source.auth.action === 'external_service_settings') {
-      navigate('/settings/search#st-card-search-providers');
+      void navigate('/settings/search#st-card-search-providers');
     } else if (source.auth.action === 'executor_login') {
-      navigate('/settings/ai#st-card-engines');
+      void navigate('/settings/ai#st-card-engines');
     }
   };
   const runAction = async (action: () => Promise<unknown>) => {

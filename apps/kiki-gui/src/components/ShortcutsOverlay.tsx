@@ -176,7 +176,7 @@ export function ShortcutsOverlay({ onClose }: { onClose: () => void }) {
         <button
           type="button"
           data-shortcuts-customize
-          onClick={() => { onClose(); navigate('/settings/general#st-card-shortcuts'); }}
+          onClick={() => { onClose(); void navigate('/settings/general#st-card-shortcuts'); }}
           className="shrink-0 rounded-md px-1.5 py-1 text-[11.5px] font-medium text-selected-ink transition-colors hover:bg-selected"
         >
           {t('shortcuts.customize')}

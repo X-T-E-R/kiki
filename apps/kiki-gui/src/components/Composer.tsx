@@ -72,7 +72,6 @@ import {
   projectedProfileModelState,
   projectedProfileModelRuleSource,
   resolveCatalogModel,
-  resolveEffectiveModel,
   resolveSelectedEffort,
   sortThinkingEffortsForDisplay,
   settingsServerSnapshot,
@@ -113,7 +112,8 @@ import { roomRefFetcher, useRoomRefDirectory } from '../lib/roomRefs';
 import { useThreadRefDirectory } from '../lib/threadRefs';
 import { ExecutionSelect } from './harness/ExecutionSelect';
 import { ProfileSelect } from './harness/ProfileSelect';
-import { configuredEngineDescriptors, engineDisplayOf, engineLabel, engineOverridesOf, useExecutorCatalog } from './settings/profileEditor/engines';
+import { OutputLayerSelect } from './output-layer';
+import { engineLabel, useExecutorCatalog } from './settings/profileEditor/engines';
 import type { ExecutionChoice, ExecutionContextGroup } from '@kiki/session-core/composer';
 import { buildCatalogModelOptions, modelFactBadges, modelTooltip, useProviderGroupLabel } from './modelSelectOptions';
 import { POPOVER_SURFACE_CLASS, SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
@@ -134,7 +134,6 @@ import {
   STATUS_SEGMENT_ICON_CLASS,
   STATUS_SEGMENT_SET,
   usePopover,
-  OutputLayerSelect,
   type RunMode,
   type RunModeControls,
   type SendTimingChoice,
@@ -326,7 +325,6 @@ export function Composer({
   onChangeExecution,
   executionPending = false,
   onCancelExecution,
-  executionGrants,
   permissionMode,
   planMode,
   planGate,
@@ -689,7 +687,7 @@ export function Composer({
    */
   engine?: ComposerEngine;
 }) {
-  const quoteItems = quotes ?? (quote == null ? [] : [{ id: 'legacy-quote', quote }]);
+  const quoteItems = quotes ?? (quote === undefined || quote === null ? [] : [{ id: 'legacy-quote', quote }]);
   const host = useHost();
   const vscodeRuntime = isVscodeWebview();
   const vscodeConversationRef = useRef<
@@ -957,12 +955,6 @@ export function Composer({
   // The engine catalog behind the execution panel. Empty while loading or on a
   // server without the route; the native engine is always offered regardless.
   const executorCatalog = useExecutorCatalog();
-  // Which engines the panel may list: the display choice lives in the config's
-  // own records, read here so a hidden engine stops being offered as a choice.
-  const engineOverridesQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000, retry: retryCatalog });
-  const engineOverrides = engineOverridesOf(engineOverridesQuery.data);
-  const engineDisplay = engineDisplayOf(engineOverridesQuery.data);
-  const engineDescriptors = configuredEngineDescriptors(engineOverridesQuery.data);
   const agentProfileOptions: readonly SearchableSelectOption[] = useMemo(
     () => buildAgentProfileOptions(
       agentProfilesQuery.data?.items ?? [],
@@ -981,7 +973,6 @@ export function Composer({
   });
   const frozenProfile = frozenMenuQuery.data?.profile;
   const fromFile = execution?.profile_file !== undefined;
-  const externalFile = fromFile && execution?.executor !== 'native';
   const validateFile = fromFile && (sessionId === undefined || executionPending);
   const filePreviewQuery = useProfileFilePreview(validateFile ? execution?.profile_file : undefined, agentProfileCatalogMode);
   const selectedProfileName = fromFile

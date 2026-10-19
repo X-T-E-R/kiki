@@ -123,12 +123,12 @@ export function QuickSwitcher({
   const openItem = (item: SwitcherItem | undefined) => {
     if (item === undefined) return;
     onClose();
-    if (item.kind === 'action' || item.kind === 'setting') navigate(item.route);
+    if (item.kind === 'action' || item.kind === 'setting') void navigate(item.route);
     else if (item.kind === 'hit') {
       const route = item.agentId && item.agentId !== 'main'
         ? `/s/${item.sessionId}/agent/${item.agentId}` : `/s/${item.sessionId}`;
-      navigate(item.turn === undefined ? route : `${route}?turn=${item.turn}`);
-    } else navigate(`/s/${item.sessionId}`);
+      void navigate(item.turn === undefined ? route : `${route}?turn=${item.turn}`);
+    } else void navigate(`/s/${item.sessionId}`);
   };
 
   const onInputKeyDown = (event: React.KeyboardEvent) => {

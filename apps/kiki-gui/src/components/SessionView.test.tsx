@@ -37,6 +37,11 @@ import { ContextMeter } from './ContextMeter';
 import { RightRail } from './RightRail';
 import { resolveRunningSubagentTask } from './agent-workspace';
 
+/** JSON body a stubbed fetch was handed; these fixtures always post serialized strings. */
+function sentJson(init: RequestInit | undefined): unknown {
+  return typeof init?.body === 'string' ? JSON.parse(init.body) : init?.body;
+}
+
 // The profile head and capability block read the agent panel over the
 // connection; these fixtures have none, so they render as plain stand-ins.
 vi.mock('./rail-variants/DefaultSections', async (importOriginal) => ({
@@ -838,7 +843,7 @@ describe('activateSkillWithConditionalClear', () => {
     const accepted = new Set<string>();
     let executions = 0;
     vi.stubGlobal('fetch', vi.fn(async (_url: string | URL, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body));
+      const body = sentJson(init) as { procedure?: { method?: string }; prompt_id?: string; content?: unknown };
       if (body.procedure?.method === 'resume') {
         return Response.json({ code: 0, msg: 'ok', data: { id: 'session_test', kind: 'session' } });
       }
@@ -881,7 +886,7 @@ describe('activateSkillWithConditionalClear', () => {
       attachments: [{ type: 'image' as const, source: { kind: 'url' as const, url: 'https://example.test/legacy.png' } }] });
     const requests: unknown[] = [];
     const fetch = vi.fn(async (_url: string | URL, init?: RequestInit) => {
-      requests.push(JSON.parse(String(init?.body)));
+      requests.push(sentJson(init));
       if (requests.length === 1) throw new TypeError('activation response unavailable');
       return Response.json({ code: 0, msg: 'ok', data: { activated: true, skill_name: 'review' } });
     });

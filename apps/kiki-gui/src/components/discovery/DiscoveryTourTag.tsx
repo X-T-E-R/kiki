@@ -10,7 +10,6 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
-import { discoveryStation } from '@kiki/session-core/discovery';
 import { useI18n } from '../../i18n';
 import { useMediaQuery } from '../../lib/layoutHooks';
 import { Icon } from '../icons';
@@ -131,8 +130,6 @@ export function DiscoveryTourTag() {
   }
 
   const isLastStation = view.position === view.total;
-  const nextStationId = view.route.stations[view.position]; // position is 1-indexed
-  const nextStationName = nextStationId !== undefined ? t(discoveryStation(nextStationId).titleKey) : '';
 
   // Collapsed mode: mini bookmark pinned to the header/corner
   if (collapsed) {
@@ -327,7 +324,7 @@ export function DiscoveryTourTag() {
               <button
                 type="button"
                 data-discovery-nav="routes"
-                onClick={() => { navigate('/discover'); }}
+                onClick={() => { void navigate('/discover'); }}
                 className="text-[12px] text-ink-soft hover:text-ink"
               >
                 {t('discovery.routes')}

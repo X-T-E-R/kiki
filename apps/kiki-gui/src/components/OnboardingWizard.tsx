@@ -67,7 +67,6 @@ import { Icon } from './icons';
 import { useConnection } from '../state/connection';
 import { Dialog } from './Dialog';
 import { useDiscovery } from './discovery';
-import { MODEL_SETTINGS_HREF } from './discovery/ModelConnectionEntry';
 import { OnboardingAgreementStep } from './OnboardingAgreementStep';
 import { OnboardingAppearanceStep } from './OnboardingAppearanceStep';
 import { OnboardingDepartStep } from './OnboardingDepartStep';

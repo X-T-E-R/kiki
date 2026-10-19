@@ -333,7 +333,7 @@ function PrimaryNav({
           type="button"
           {...item.hook}
           aria-current={current ? 'page' : undefined}
-          onClick={() => { navigate(scopedRoute(item.route, activeWorkspaceId)); }}
+          onClick={() => { void navigate(scopedRoute(item.route, activeWorkspaceId)); }}
           className={`row-interactive flex h-8 w-full items-center gap-2 px-2 text-left text-[13px] ${
             current ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
           }`}
@@ -450,7 +450,7 @@ function CollapsedSidebarRail({
               aria-current={current ? 'page' : undefined}
               aria-label={label}
               title={label}
-              onClick={() => { navigate(scopedRoute(item.route, activeWorkspaceId)); }}
+              onClick={() => { void navigate(scopedRoute(item.route, activeWorkspaceId)); }}
               className={RAIL_ICON}
             >
               <span className="relative"><ItemIcon />{item.key === 'usage' ? <RequestGovernanceBadge compact /> : null}</span>
@@ -465,7 +465,7 @@ function CollapsedSidebarRail({
           aria-current={location.pathname.startsWith('/settings') ? 'page' : undefined}
           aria-label={t('sidebar.settings')}
           title={t('sidebar.settings')}
-          onClick={() => { navigate('/settings'); }}
+          onClick={() => { void navigate('/settings'); }}
           className={RAIL_ICON}
         >
           <Icon name="settings" size={16} />
@@ -586,7 +586,7 @@ export function Sidebar({
   const filterMenuButtonRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const [searchInput, setSearchInput] = useState('');
-  const [includeToolOutput, setIncludeToolOutput] = useState(false);
+  const [includeToolOutput] = useState(false);
   // Search is a header icon (Codex-style): the field only takes vertical space
   // while it is in use, and `/` opens it from anywhere. Closing clears the
   // query so the list is never left silently filtered behind a collapsed box.
@@ -846,7 +846,7 @@ export function Sidebar({
         queryClient.removeQueries({ queryKey: roomQueryKey(item.id) });
         refreshRooms();
         refreshSessions();
-        if (location.pathname === item.href) navigate('/');
+        if (location.pathname === item.href) void navigate('/');
       })
       .catch((error: unknown) => {
         setActionError(error instanceof Error ? error.message : String(error));
@@ -1006,7 +1006,7 @@ export function Sidebar({
       });
     }
     for (const match of search.local.sessions) {
-      items.push({ key: `s:${match.session.id}`, open: () => { setSearchInput(''); navigate(`/s/${match.session.id}`); } });
+      items.push({ key: `s:${match.session.id}`, open: () => { setSearchInput(''); void navigate(`/s/${match.session.id}`); } });
     }
     search.hits.forEach((hit, index) => {
       items.push({
@@ -1015,7 +1015,7 @@ export function Sidebar({
           setSearchInput('');
           const route = hit.agent_id && hit.agent_id !== 'main'
             ? `/s/${hit.session_id}/agent/${hit.agent_id}` : `/s/${hit.session_id}`;
-          navigate(hit.turn === undefined ? route : `${route}?turn=${hit.turn}`);
+          void navigate(hit.turn === undefined ? route : `${route}?turn=${hit.turn}`);
         },
       });
     });
@@ -1250,7 +1250,7 @@ export function Sidebar({
           aria-label={activityLabel}
           aria-current={location.pathname === '/activity' ? 'page' : undefined}
           title={activityLabel}
-          onClick={() => { navigate('/activity'); }}
+          onClick={() => { void navigate('/activity'); }}
           className={`relative ${HEADER_ICON}`}
         >
           <Icon name="bell" size={16} />
@@ -1556,7 +1556,7 @@ export function Sidebar({
                   elapsedFor={activity.elapsedFor}
                   showLocation
                   temporary
-                  onOpen={() => { navigate(`/s/${session.id}`); }}
+                  onOpen={() => { void navigate(`/s/${session.id}`); }}
                   onMenu={() => undefined}
                   onTogglePin={() => undefined}
                   seen={seen}
@@ -1609,7 +1609,7 @@ export function Sidebar({
                     showLocation={groupBy !== 'workspace'}
                     showPin={groupBy === 'none'}
                     location={roomLocation}
-                    onOpen={() => { navigate(item.href); }}
+                    onOpen={() => { void navigate(item.href); }}
                     onMenu={(x, y, toggle) => {
                       setMenu((current) =>
                         toggle && current?.item.key === item.key ? null : { item, x, y });
@@ -1640,7 +1640,7 @@ export function Sidebar({
                   parentTitle={node.relation === undefined
                     ? undefined
                     : titleOf.get(node.relation.parentId) ?? t('sidebar.thread.unknownParent')}
-                  onOpen={() => { navigate(`/s/${session.id}`); }}
+                  onOpen={() => { void navigate(`/s/${session.id}`); }}
                   selected={selected.has(session.id)}
                   onToggleSelect={session.archived === true || isSubagentSession(session) ? undefined : () => { toggleSelected(session); }}
                   onMenu={(x, y, toggle) => {
@@ -1752,7 +1752,7 @@ export function Sidebar({
           type="button"
           data-nav-settings
           aria-current={location.pathname.startsWith('/settings') ? 'page' : undefined}
-          onClick={() => navigate('/settings')}
+          onClick={() => { void navigate('/settings'); }}
           className={`row-interactive flex h-9 w-full min-w-0 items-center gap-2 pr-20 pl-2 text-left text-[13px] ${
             location.pathname.startsWith('/settings') ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
           }`}
@@ -1775,7 +1775,7 @@ export function Sidebar({
         <button
           type="button"
           data-connection-status
-          onClick={() => navigate('/settings/connection')}
+          onClick={() => { void navigate('/settings/connection'); }}
           aria-label={t('sidebar.connStatusAria')}
           title={t('sidebar.connTitle', {
             version: meta.server_version,
@@ -1818,7 +1818,7 @@ export function Sidebar({
           onToggleWorkspacePin={toggleWorkspacePin}
           onManageWorkspaces={() => {
             setOpenMenu(null);
-            navigate('/settings/workspaces');
+            void navigate('/settings/workspaces');
           }}
         />
       ) : null}
@@ -2558,7 +2558,7 @@ function RoomListMenu({
 
   const openPanel = (focus: 'members' | 'budget') => {
     onClose();
-    navigate(focus === 'budget' ? `${item.href}?panel=members&focus=budget` : `${item.href}?panel=members`);
+    void navigate(focus === 'budget' ? `${item.href}?panel=members&focus=budget` : `${item.href}?panel=members`);
   };
 
   const itemClass =

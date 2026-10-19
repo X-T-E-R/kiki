@@ -69,7 +69,7 @@ export function NewThreadRoomDialog({
     onSuccess: (room) => {
       void queryClient.invalidateQueries({ queryKey: ROOMS_QUERY_KEY });
       onClose();
-      navigate(`/rooms/${encodeURIComponent(room.id)}`);
+      void navigate(`/rooms/${encodeURIComponent(room.id)}`);
     },
   });
   const addById = async (sessionId: string) => {

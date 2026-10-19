@@ -307,7 +307,7 @@ export function UsageExportForm({ entry, onClose, onSaved, onUpdated }: {
     destinationIdRef.current = saved.id;
     onUpdated();
     setState((current) => (current.id === saved.id ? current : { ...current, id: saved.id }));
-    setSavedBaseline((current) => ({ ...state, id: saved.id }));
+    setSavedBaseline(() => ({ ...state, id: saved.id }));
     return saved.id;
   };
 

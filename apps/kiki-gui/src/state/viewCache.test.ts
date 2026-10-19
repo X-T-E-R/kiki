@@ -119,7 +119,7 @@ describe('LiveControllerRegistry view cache', () => {
     registry.acquire('a', scope, () => view.controller).release();
     let resolveResume!: () => void;
     const resume = new Promise<void>((resolve) => { resolveResume = resolve; });
-    view.resume.mockImplementation(() => resume);
+    view.resume.mockReturnValue(resume);
 
     const lease = registry.acquire('a', scope, () => view.controller);
     let settled = false;

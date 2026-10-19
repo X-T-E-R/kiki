@@ -104,7 +104,7 @@ export function SpaceSwitcher() {
   const localView = () => readHomeViewRoute(currentSpaceId(), 'local') ?? '/new';
   const runAction = (action: (signal?: AbortSignal) => void | Promise<void>, target?: string) => {
     const result = guard?.runAction !== undefined ? guard.runAction(action, target)
-      : Promise.resolve(action()).then(() => { if (target !== undefined) navigate(target); });
+      : Promise.resolve(action()).then(() => { if (target !== undefined) void navigate(target); });
     void result?.catch((error: unknown) => {
       if (error instanceof Error && error.name === 'AbortError') return;
       pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
@@ -120,10 +120,10 @@ export function SpaceSwitcher() {
   };
   const openSettings = (target: string) => {
     setOpen(false);
-    if (!inRemoteScope) { navigate(target); return; }
+    if (!inRemoteScope) { void navigate(target); return; }
     const result = guard?.runAction !== undefined
       ? guard.runAction(restoreLocal, target)
-      : restoreLocal().then(() => { navigate(target); });
+      : restoreLocal().then(() => { void navigate(target); });
     void result?.catch((error: unknown) => {
       if (error instanceof Error && error.name === 'AbortError') return;
       pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
@@ -154,7 +154,7 @@ export function SpaceSwitcher() {
       finally { enteringRef.current = false; setEntering(null); }
     };
     const result = mode === 'switch' ? open() : guard?.runAction !== undefined ? guard.runAction(open, target)
-      : open().then(() => { if (target !== undefined) navigate(target); });
+      : open().then(() => { if (target !== undefined) void navigate(target); });
     void result?.catch((error: unknown) => {
       if (error instanceof Error && error.name === 'AbortError') return;
       pushToast({ tone: 'error', text: t('st.spaces.switchFailed', { name: label(space) }) });

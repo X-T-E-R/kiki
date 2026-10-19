@@ -2003,7 +2003,12 @@ export function SessionView({
   attachmentsRef.current = attachments;
   // Unsent quotes share the session's in-memory chrome with annotations;
   // send (and the chip's ×) clear them explicitly.
-  const [quotes, setQuotes] = useState<readonly SelectionQuote[]>(() => restoredComposer.quotes ?? (restoredComposer.quote == null ? [] : [createQuote(restoredComposer.quote, restoredComposer.quoteSource)]));
+  const [quotes, setQuotes] = useState<readonly SelectionQuote[]>(() => {
+    if (restoredComposer.quotes !== undefined) return restoredComposer.quotes;
+    // Composer chrome saved before multiple quotes carries one legacy quote.
+    const legacy = restoredComposer.quote;
+    return legacy === null || legacy === undefined ? [] : [createQuote(legacy, restoredComposer.quoteSource)];
+  });
   // Selection annotations (quote + one-line comment) accumulate independently
   // of the quote chip — any number ride the same prompt, and unsent ones return
   // with the session's in-memory composer chrome after navigation.
@@ -3888,12 +3893,12 @@ boundExecution,
   const openAgent = useCallback(
     (agentId: string) => {
       if (agentId === MAIN_AGENT_ID) {
-        navigateVisits(`/s/${sessionId}`);
+        void navigateVisits(`/s/${sessionId}`);
         return;
       }
       const mode = liveSettings.subagentPanelOpenMode;
       if (mode === 'fullscreen' || previewRef.current === null) {
-        navigateVisits(agentDetailPath(sessionId, agentId));
+        void navigateVisits(agentDetailPath(sessionId, agentId));
         return;
       }
       const node = forest.byId[agentId];
@@ -3936,12 +3941,12 @@ boundExecution,
   // page" — the source visit keeps its preview snapshot, so the return arrow
   // reopens the panel the reader left).
   const openSession = useCallback(() => {
-    navigateVisits(`/s/${sessionId}`);
+    void navigateVisits(`/s/${sessionId}`);
   }, [navigateVisits, sessionId]);
   const openAgentRoute = useCallback(
     (agentId: string) => {
       const path = agentDetailPath(sessionId, agentId);
-      if (location.pathname !== path) navigateVisits(path);
+      if (location.pathname !== path) void navigateVisits(path);
     },
     [location.pathname, navigateVisits, sessionId],
   );

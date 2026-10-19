@@ -44,7 +44,7 @@ export function AiSection() {
     if (next === tab) return;
     const params = new URLSearchParams(search);
     params.set('tab', next);
-    navigate(`/settings/ai?${params.toString()}`);
+    void navigate(`/settings/ai?${params.toString()}`);
   };
 
   return (

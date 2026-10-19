@@ -28,7 +28,6 @@ import {
   type UsageFilters,
   type UsageGroupBy,
   type UsageResponseWire,
-  type UsageSourceRow,
   type UsageWindow,
 } from '../../lib/usageV2';
 import { SidePanel } from '../SidePanel';

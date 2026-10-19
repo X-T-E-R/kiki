@@ -163,6 +163,9 @@ export const SPACE_SCOPED_STORAGE_KEYS = [
   'kiki.sidebar.workspaceGroups',
   'kiki.sidebar.topLevelThreads',
   'kiki.timelineView',
+  // Per-session output-layer view state (preset / view mode), keyed inside the
+  // value by session id. A home's sessions are its own, so the map is too.
+  'kiki.output-layer.sessions.v1',
   // The work mode a window opens in. Space-scoped because a home's modes are
   // its own; the window dimension lives inside the stored value, not the key.
   'kiki.windowMode',
@@ -196,6 +199,13 @@ export const GLOBAL_STORAGE_KEYS = [
   // This device's own id, sent once when a space that has never carried
   // preferences is told which client its earlier look came from.
   'kiki.deviceId',
+  // First-run progress of this installation (`components/OnboardingWizard.tsx`).
+  // Onboarding is a device fact, not a home's data: opening a subspace must not
+  // walk the app through its introduction again.
+  'kiki.onboarding.step',
+  // Which settings navigation layout (`lib/settingsIaPrototype.ts`) this device
+  // shows. It selects UI over generic buckets, never a home's own ids.
+  'kiki.settingsIaPrototype',
 ] as const;
 
 /** `kiki.*` names that are deliberately neither of the above. */
@@ -207,4 +217,10 @@ export const EXCLUDED_STORAGE_KEYS = [
   // shared across spaces — it is minted per window and lives in session
   // storage, so it is outside both axes by design.
   'kiki.windowId',
+  // Output-layer results (`lib/outputLayerClient.ts`) cache what a server
+  // derived, and `components/output-layer/useOutputLayerClient.ts` already
+  // rewrites the physical key to `<key>:<scopeKey>` from the active space, so
+  // the value cannot cross homes. It is listed here instead of space-scoped
+  // because `spaceStorage` must not prefix it a second time.
+  'kiki.output-layer.results.v1',
 ] as const;

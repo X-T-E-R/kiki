@@ -71,7 +71,7 @@ export function PersonaImportDialog({ takenIds, onClose, onImported }: {
         detail: result.memory.status === 'failed' ? result.memory.error : undefined,
         retry: result.memory.status === 'failed' ? {
           label: t('persona.importMemoryView'),
-          run: () => { navigate(`/memory?persona=${encodeURIComponent(result.snapshot.definition.id)}`); },
+          run: () => { void navigate(`/memory?persona=${encodeURIComponent(result.snapshot.definition.id)}`); },
         } : undefined,
       });
       onImported(result.snapshot.definition.id);

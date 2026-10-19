@@ -168,9 +168,12 @@ describe('subagent tool settings', () => {
     // Built-in tools allow by default and carry no control; the opt-ins do.
     expect(row('Bash')!.textContent).toContain('Allowed');
     expect(row('Bash')!.querySelector('input')).toBeNull();
-    expect(row('BoardRead')!.querySelector('input[data-server-allow="BoardRead"]')).not.toBeNull();
-    expect(row('BoardRead')!.textContent).toContain('Blocked');
-    // Asking the user is an opt-in now, not a main-only tool.
+    // Board tools are ordinary default-allowed tools now, not optional board
+    // grants. The current row therefore has the same read-only shape as Bash.
+    expect(row('BoardRead')!.textContent).toContain('Allowed');
+    expect(row('BoardRead')!.querySelector('input')).toBeNull();
+    // Asking the user is a real subagent opt-in and keeps the editable-row
+    // coverage without restoring the removed board opt-in.
     expect(row('AskUserQuestion')!.textContent).toContain('Blocked');
     expect(row('AskUserQuestion')!.querySelector('input[data-server-allow="AskUserQuestion"]')).not.toBeNull();
     // MemoryWrite stays out of reach whatever either object writes.
@@ -192,23 +195,23 @@ describe('subagent tool settings', () => {
     expect(detail()!.textContent).toContain('The default rule allows Bash for every subagent.');
   });
 
-  it('saves a board opt-in through the config patch and keeps the echoed value', async () => {
+  it('saves a subagent opt-in through the config patch and keeps the echoed value', async () => {
     await render();
-    await act(async () => { row('BoardRead')!.querySelector<HTMLInputElement>('input')!.click(); });
+    await act(async () => { row('AskUserQuestion')!.querySelector<HTMLInputElement>('input')!.click(); });
     expect(footer()).not.toBeNull();
     await save();
-    expect(client.patchConfig).toHaveBeenCalledWith({ subagent: { allowed_tools: ['BoardRead'] } });
-    expect(row('BoardRead')!.querySelector<HTMLInputElement>('input')!.checked).toBe(true);
+    expect(client.patchConfig).toHaveBeenCalledWith({ subagent: { allowed_tools: ['AskUserQuestion'] } });
+    expect(row('AskUserQuestion')!.querySelector<HTMLInputElement>('input')!.checked).toBe(true);
     expect(container.querySelector('[data-saved-tick]')).not.toBeNull();
     expect(footer()!.disabled).toBe(true);
   });
 
   it('resets the rule to no extra allows as a draft that still needs saving', async () => {
-    client.getConfig.mockResolvedValue({ subagent: { allowedTools: ['BoardRead', 'BoardWrite'] } });
+    client.getConfig.mockResolvedValue({ subagent: { allowedTools: ['AskUserQuestion', 'ThreadRead'] } });
     await render();
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-subagent-tools-reset]')!.click(); });
     await settle();
-    expect(row('BoardRead')!.textContent).toContain('Blocked');
+    expect(row('AskUserQuestion')!.textContent).toContain('Blocked');
     await save();
     expect(client.patchConfig).toHaveBeenCalledWith({ subagent: { allowed_tools: [] } });
   });
@@ -216,13 +219,13 @@ describe('subagent tool settings', () => {
   it('keeps a failed rule save as a draft and lets the save be retried', async () => {
     client.patchConfig.mockRejectedValueOnce(new Error('fixture save failure'));
     await render();
-    await act(async () => { row('BoardWrite')!.querySelector<HTMLInputElement>('input')!.click(); });
+    await act(async () => { row('AskUserQuestion')!.querySelector<HTMLInputElement>('input')!.click(); });
     await save();
     expect(container.textContent).toContain('fixture save failure');
-    expect(row('BoardWrite')!.querySelector<HTMLInputElement>('input')!.checked).toBe(true);
+    expect(row('AskUserQuestion')!.querySelector<HTMLInputElement>('input')!.checked).toBe(true);
     expect(footer()!.disabled).toBe(false);
     await save();
-    expect(client.patchConfig).toHaveBeenLastCalledWith({ subagent: { allowed_tools: ['BoardWrite'] } });
+    expect(client.patchConfig).toHaveBeenLastCalledWith({ subagent: { allowed_tools: ['AskUserQuestion'] } });
     expect(container.textContent).not.toContain('fixture save failure');
   });
 
@@ -430,7 +433,7 @@ describe('subagent tool settings', () => {
     // The catalog's `active` flag is the calling session's own availability, so
     // a globally denied tool never turns a configuration row into "usable now".
     client.listTools.mockResolvedValue({ tools: CATALOG.map((tool) => tool.name === 'Bash' ? { ...tool, active: false } : tool) });
-    client.getConfig.mockResolvedValue({ subagent: { allowedTools: ['BoardRead'] } });
+    client.getConfig.mockResolvedValue({ subagent: { allowedTools: ['AskUserQuestion'] } });
     await render();
     await selectObject('general');
     expect(row('Bash')!.textContent).toContain('Inherited');
@@ -440,20 +443,20 @@ describe('subagent tool settings', () => {
     expect(detail()!.textContent).not.toContain('available');
     // An opt-in tool this profile does not name is still open when the server
     // rule names it: the engine reads those two grants as an alternative.
-    expect(rowReason('BoardRead')).toBe('Allowed by the server rule');
-    expect(row('BoardRead')!.textContent).toContain('Allowed');
+    expect(rowReason('AskUserQuestion')).toBe('Allowed by the server rule');
+    expect(row('AskUserQuestion')!.textContent).toContain('Allowed');
     // This profile has no writable file, so it offers no control at all, and in
     // particular nothing that would claim to close the server's grant.
-    expect(row('BoardRead')!.querySelector('input, button[data-tool-allow], button[data-tool-deny]')).toBeNull();
+    expect(row('AskUserQuestion')!.querySelector('input, button[data-tool-allow], button[data-tool-deny]')).toBeNull();
     // The rule's extra allow is a configuration row the user can change.
     await selectObject('Default rule');
-    await openTool('BoardRead');
-    expect(detail()!.textContent).toContain('The default rule allows BoardRead on top of the default access.');
-    expect(row('BoardRead')!.querySelector<HTMLInputElement>('input')!.checked).toBe(true);
-    await act(async () => { detail()!.querySelector<HTMLInputElement>('[data-tool-detail-opt-in="BoardRead"]')!.click(); });
+    await openTool('AskUserQuestion');
+    expect(detail()!.textContent).toContain('The default rule allows AskUserQuestion on top of the default access.');
+    expect(row('AskUserQuestion')!.querySelector<HTMLInputElement>('input')!.checked).toBe(true);
+    await act(async () => { detail()!.querySelector<HTMLInputElement>('[data-tool-detail-opt-in="AskUserQuestion"]')!.click(); });
     await settle();
-    expect(row('BoardRead')!.textContent).toContain('Blocked');
-    expect(row('BoardRead')!.querySelector<HTMLInputElement>('input')!.checked).toBe(false);
+    expect(row('AskUserQuestion')!.textContent).toContain('Blocked');
+    expect(row('AskUserQuestion')!.querySelector<HTMLInputElement>('input')!.checked).toBe(false);
   });
 
   it('reads a one-name wildcard allowlist as unrestricted instead of blocking every tool', async () => {
@@ -489,7 +492,7 @@ describe('subagent tool settings', () => {
     expect(row('ThreadRead')!.querySelector<HTMLInputElement>('input')!.checked).toBe(true);
     // The default rule still decides the other opt-ins: naming one tool opens
     // that tool, never the rest.
-    expect(row('BoardRead')!.textContent).toContain('Blocked');
+    expect(row('AskUserQuestion')!.textContent).toContain('Blocked');
     expect(row('ThreadRead')!.querySelector<HTMLInputElement>('input[data-profile-opt-in]')).not.toBeNull();
     // A main-only tool is unaffected by the same switch.
     expect(row('ThreadSend')!.textContent).toContain('Not editable');
@@ -572,11 +575,11 @@ describe('subagent tool settings', () => {
       tools: ['*', 'ThreadRead'],
       disallowed_tools: undefined,
     });
-    // Every ordinary tool is still available; only the named opt-in opened.
+    // Every ordinary tool is still inherited; only the named opt-in opened.
     expect(row('Bash')!.textContent).toContain('Inherited');
     expect(row('Read')!.textContent).toContain('Inherited');
     expect(row('ThreadRead')!.textContent).toContain('Allowed');
-    expect(row('BoardRead')!.textContent).toContain('Blocked');
+    expect(row('AskUserQuestion')!.textContent).toContain('Blocked');
     expect(row('Write')!.textContent).toContain('Blocked');
   });
 
@@ -585,21 +588,21 @@ describe('subagent tool settings', () => {
     // profile's own tools list names it. A profile that writes none still gets
     // the server's grant, and this object must not offer to take it away.
     client.listTools.mockResolvedValue({ tools: [...CATALOG, TOOL('Cron', 'builtin', 'Schedule a prompt.')] });
-    client.getConfig.mockResolvedValue({ subagent: { allowedTools: ['BoardRead', 'Cron'] } });
+    client.getConfig.mockResolvedValue({ subagent: { allowedTools: ['AskUserQuestion', 'Cron'] } });
     client.listNamedAgentProfiles.mockResolvedValue(catalog([general, {
       ...explore, name: 'starred', tools: ['*'], disallowed_tools: undefined,
     }]));
     await render();
     await selectObject('starred');
-    expect(row('BoardRead')!.textContent).toContain('Allowed');
-    expect(rowReason('BoardRead')).toBe('Allowed by the server rule');
+    expect(row('AskUserQuestion')!.textContent).toContain('Allowed');
+    expect(rowReason('AskUserQuestion')).toBe('Allowed by the server rule');
     // The switch is absent: ticking it would add a name the server grant does
     // not need, and unticking it would change nothing.
-    expect(row('BoardRead')!.querySelector('input')).toBeNull();
-    expect(rowAction('BoardRead', 'deny')).toBeNull();
-    await openTool('BoardRead');
+    expect(row('AskUserQuestion')!.querySelector('input')).toBeNull();
+    expect(rowAction('AskUserQuestion', 'deny')).toBeNull();
+    await openTool('AskUserQuestion');
     // The detail says the server rule is the reason, not this profile.
-    expect(detail()!.textContent).toContain('The default rule allows BoardRead on top of the default access.');
+    expect(detail()!.textContent).toContain('The default rule allows AskUserQuestion on top of the default access.');
     // Cron is named by the server under its merged name, so the row is open and
     // offers no switch either.
     expect(row('Cron')!.textContent).toContain('Allowed');
@@ -693,17 +696,17 @@ describe('subagent tool settings', () => {
     // The engine requires both: an opt-in grant and membership in the profile's
     // own list. `tools: ['Read']` leaves this tool out, so the server grant
     // cannot open it for this profile, and the row must not say it can.
-    client.getConfig.mockResolvedValue({ subagent: { allowedTools: ['BoardRead'] } });
+    client.getConfig.mockResolvedValue({ subagent: { allowedTools: ['AskUserQuestion'] } });
     client.listNamedAgentProfiles.mockResolvedValue(catalog([general, {
       ...explore, tools: ['Read'], disallowed_tools: undefined,
     }]));
     await render();
     await selectObject('explore');
-    expect(row('BoardRead')!.textContent).toContain('Blocked');
-    expect(rowReason('BoardRead')).toBe('Not in this agent’s tools list');
-    expect(row('BoardRead')!.querySelector('input[data-profile-opt-in]')).toBeNull();
+    expect(row('AskUserQuestion')!.textContent).toContain('Blocked');
+    expect(rowReason('AskUserQuestion')).toBe('Not in this agent’s tools list');
+    expect(row('AskUserQuestion')!.querySelector('input[data-profile-opt-in]')).toBeNull();
     // The switch it can honestly offer is the one that adds the tool to the list.
-    expect(rowAction('BoardRead', 'allow')).not.toBeNull();
+    expect(rowAction('AskUserQuestion', 'allow')).not.toBeNull();
     expect(row('Read')!.textContent).toContain('Allowed');
 
     // The same server grant on a profile that restricts nothing is open, which
@@ -714,8 +717,8 @@ describe('subagent tool settings', () => {
     queries.clear();
     await render();
     await selectObject('starred');
-    expect(row('BoardRead')!.textContent).toContain('Allowed');
-    expect(rowReason('BoardRead')).toBe('Allowed by the server rule');
+    expect(row('AskUserQuestion')!.textContent).toContain('Allowed');
+    expect(rowReason('AskUserQuestion')).toBe('Allowed by the server rule');
     expect(row('Read')!.textContent).toContain('Inherited');
   });
 
@@ -747,7 +750,7 @@ describe('subagent tool settings', () => {
   it('keeps a restricted list finite: an opted-in tool is still selected by that list', async () => {
     // A profile that restricts its tools has no wildcard to add to: the name
     // joins its own list, and the list still excludes everything else.
-    client.listNamedAgentProfiles.mockResolvedValue(catalog([general, { ...explore, tools: ['Bash', 'BoardRead', 'ThreadRead'], disallowed_tools: [] }]));
+    client.listNamedAgentProfiles.mockResolvedValue(catalog([general, { ...explore, tools: ['Bash', 'AskUserQuestion', 'ThreadRead'], disallowed_tools: [] }]));
     await render();
     await selectObject('explore');
     expect(row('ThreadRead')!.textContent).toContain('Allowed');
@@ -756,8 +759,8 @@ describe('subagent tool settings', () => {
     expect(row('Write')!.textContent).toContain('Blocked');
     expect(rowReason('Write')).toBe('Not in this agent’s tools list');
     expect(rowAction('Write', 'allow')).not.toBeNull();
-    // Naming the merged name of one tool does not need a second entry for it.
-    await act(async () => { row('BoardRead')!.querySelector<HTMLInputElement>('input[data-profile-opt-in]')!.click(); });
+    // Naming another opt-in does not need a second entry for it.
+    await act(async () => { row('AskUserQuestion')!.querySelector<HTMLInputElement>('input[data-profile-opt-in]')!.click(); });
     expect(footer()!.disabled).toBe(false);
     await save();
     expect(client.updateNamedAgentProfile).toHaveBeenLastCalledWith('explore', {
@@ -831,7 +834,7 @@ describe('subagent tool settings', () => {
     let confirm: (() => void) | undefined;
     guardState.value = { confirmDiscard: (id, action) => { asked = id; confirm = action; } };
     await render();
-    await act(async () => { row('BoardWrite')!.querySelector<HTMLInputElement>('input')!.click(); });
+    await act(async () => { row('AskUserQuestion')!.querySelector<HTMLInputElement>('input')!.click(); });
     await selectObject('explore');
     // Cancel: the object and the draft both stay, and nothing was written.
     expect(asked).toBe('subagent-tool-draft');
@@ -878,29 +881,29 @@ describe('subagent tool settings', () => {
     await render();
     expect(container.querySelector('[data-tool-changed]')).toBeNull();
     expect(pendingLine()).toBeNull();
-    await act(async () => { row('BoardRead')!.querySelector<HTMLInputElement>('input')!.click(); });
+    await act(async () => { row('AskUserQuestion')!.querySelector<HTMLInputElement>('input')!.click(); });
     // Only the touched row is marked; its neighbour reads exactly as before.
-    expect(row('BoardRead')!.querySelector('[data-tool-changed="BoardRead"]')).not.toBeNull();
-    expect(row('BoardWrite')!.querySelector('[data-tool-changed]')).toBeNull();
+    expect(row('AskUserQuestion')!.querySelector('[data-tool-changed="AskUserQuestion"]')).not.toBeNull();
+    expect(row('ThreadRead')!.querySelector('[data-tool-changed]')).toBeNull();
     expect(pendingLine()!.textContent).toContain('1');
-    await act(async () => { row('BoardWrite')!.querySelector<HTMLInputElement>('input')!.click(); });
+    await act(async () => { row('ThreadRead')!.querySelector<HTMLInputElement>('input')!.click(); });
     expect(pendingLine()!.textContent).toContain('2');
     // Toggling a row back to its saved state un-marks it while the draft lives.
-    await act(async () => { row('BoardWrite')!.querySelector<HTMLInputElement>('input')!.click(); });
-    expect(row('BoardWrite')!.querySelector('[data-tool-changed]')).toBeNull();
+    await act(async () => { row('ThreadRead')!.querySelector<HTMLInputElement>('input')!.click(); });
+    expect(row('ThreadRead')!.querySelector('[data-tool-changed]')).toBeNull();
     expect(pendingLine()!.textContent).toContain('1');
     // A successful save makes the saved state the baseline: nothing is marked.
     await save();
-    expect(client.patchConfig).toHaveBeenLastCalledWith({ subagent: { allowed_tools: ['BoardRead'] } });
+    expect(client.patchConfig).toHaveBeenLastCalledWith({ subagent: { allowed_tools: ['AskUserQuestion'] } });
     expect(container.querySelector('[data-tool-changed]')).toBeNull();
     expect(pendingLine()).toBeNull();
     // A further edit then discard drops the marks with the draft.
-    await act(async () => { row('BoardRead')!.querySelector<HTMLInputElement>('input')!.click(); });
-    expect(row('BoardRead')!.querySelector('[data-tool-changed="BoardRead"]')).not.toBeNull();
+    await act(async () => { row('AskUserQuestion')!.querySelector<HTMLInputElement>('input')!.click(); });
+    expect(row('AskUserQuestion')!.querySelector('[data-tool-changed="AskUserQuestion"]')).not.toBeNull();
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-settings-discard="subagent-tool-draft"]')!.click(); });
     await settle();
     expect(container.querySelector('[data-tool-changed]')).toBeNull();
-    expect(row('BoardRead')!.textContent).toContain('Allowed');
+    expect(row('AskUserQuestion')!.textContent).toContain('Allowed');
   });
 
   it('marks a first opt-in on a profile that never wrote a list', async () => {

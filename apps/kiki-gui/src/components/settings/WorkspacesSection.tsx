@@ -116,7 +116,7 @@ function WorkspacesList() {
             onRename={setRenaming}
             onRemove={setRemoving}
             onBulkRemove={setBulkRemoving}
-            onNewSession={(workspace) => navigate(`/new?workspace=${encodeURIComponent(workspace.id)}`)}
+            onNewSession={(workspace) => { void navigate(`/new?workspace=${encodeURIComponent(workspace.id)}`); }}
             onOpenDetail={(workspace) => { void navigate(workspaceSettingsPath(workspace.id)); }}
           />
         ) : null}
@@ -125,7 +125,7 @@ function WorkspacesList() {
             kind="none"
             title={t('st.workspaces.emptyTitle')}
             body={t('st.workspaces.emptyBody')}
-            action={<button type="button" className={SECONDARY_BUTTON} onClick={() => navigate('/new')}>{t('st.workspaces.newSession')}</button>}
+            action={<button type="button" className={SECONDARY_BUTTON} onClick={() => { void navigate('/new'); }}>{t('st.workspaces.newSession')}</button>}
           />
         ) : null}
         {query.isLoading ? <Hint>{t('st.workspaces.loading')}</Hint> : null}

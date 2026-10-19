@@ -139,7 +139,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
           document.body.append(anchor); anchor.click(); anchor.remove();
           setTimeout(() => { URL.revokeObjectURL(url); }, 0);
         }
-      } catch (error) {
+      } catch {
         setSaveFailed(true);
       }
       return;

@@ -21,7 +21,6 @@
 import base from './profile-editor.scenario.mjs';
 import { sessionRecord } from './helpers.mjs';
 
-const WSID = 'wd_fixture_000000000000';
 const WORKSPACE = 'C:/fixture/workshop';
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;

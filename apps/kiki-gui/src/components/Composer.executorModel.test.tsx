@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
-import { existsSync } from 'node:fs';
-import { mkdir, readdir } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -12,6 +11,7 @@ import type { ExecutorModelCatalogResponse } from '@kiki/protocol';
 import { writeSettings } from '@kiki/session-core/settings';
 import { I18nProvider } from '../i18n';
 import { Composer } from './Composer';
+import { resolveCompiledGuiStylesheet } from '../testSupport/compiledGuiStylesheet';
 
 const getExecutorModels = vi.fn();
 const refreshExecutorModels = vi.fn();
@@ -239,11 +239,13 @@ describe('external executor model writability', () => {
   });
 });
 
+/**
+ * Screenshot evidence for the colour assertions above. The compiled stylesheet
+ * is part of the evidence, so a missing build fails this proof instead of
+ * quietly passing the DOM checks without the paint they were written for.
+ */
 async function shot(name: string, node: HTMLElement, padTop = 16): Promise<void> {
-  const assets = [join(process.cwd(), 'dist', 'assets'), join(process.cwd(), 'apps', 'kiki-gui', 'dist', 'assets')].find((dir) => existsSync(dir));
-  if (assets === undefined) throw new Error('compiled gui stylesheet is missing');
-  const cssName = (await readdir(assets)).find((entry) => entry.startsWith('index-') && entry.endsWith('.css'));
-  if (cssName === undefined) throw new Error(`no compiled stylesheet in ${assets}`);
+  const { cssPath } = resolveCompiledGuiStylesheet();
   const out = join(process.cwd(), process.cwd().endsWith('kiki-gui') ? '.tmp' : 'apps/kiki-gui/.tmp', 'agy-catalog-gui');
   await mkdir(out, { recursive: true });
   const { chromium } = await import('playwright');
@@ -251,7 +253,7 @@ async function shot(name: string, node: HTMLElement, padTop = 16): Promise<void>
   try {
     const page = await browser.newPage({ viewport: { width: 960, height: 720 }, deviceScaleFactor: 1 });
     await page.setContent(`<!doctype html><html data-theme="light"><head><meta charset="utf-8"></head><body class="bg-canvas text-ink"><div style="width:960px;padding:${padTop}px 16px 16px">${node.innerHTML}</div></body></html>`);
-    await page.addStyleTag({ path: join(assets, cssName) });
+    await page.addStyleTag({ path: cssPath });
     await page.screenshot({ path: join(out, `${name}.png`), fullPage: true });
     await page.close();
   } finally {

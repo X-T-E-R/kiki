@@ -170,7 +170,7 @@ export function WorkPage({ onSetupMode, modeMenu, enabled = true }: WorkPageProp
           <p className="text-[10.5px] font-semibold uppercase tracking-[0.1em] text-section-ink">{t('workHome.startHeading')}</p>
           <button
             type="button"
-            onClick={() => { navigate('/new'); }}
+            onClick={() => { void navigate('/new'); }}
             className="text-[11.5px] text-ink-faint transition-colors hover:text-ink"
           >
             {t('new.title')}

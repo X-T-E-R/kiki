@@ -35,7 +35,7 @@ export function ConnectionSection() {
   // a bookmarked `?tab=external` follows it and lands on the card itself.
   useEffect(() => {
     if (new URLSearchParams(search).get('tab') === 'external') {
-      navigate('/settings/connection-services#st-card-conn-external', { replace: true });
+      void navigate('/settings/connection-services#st-card-conn-external', { replace: true });
     }
   }, [search, navigate]);
   return (

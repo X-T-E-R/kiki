@@ -354,7 +354,7 @@ export function UnifiedAgentManager() {
           onToggleEnabled={(enabled) => toggleEnabled(editing.profile, enabled)} toggleSaving={toggleSaving || configQuery.isLoading}
           newSessionBlocked={namedAgentNewSessionBlocked(editing.profile, relations.get(editing.profile))
             || (effective !== undefined && !effective.some((winner) => sameProfile(winner, editing.profile)))}
-          onNewSession={() => navigate(namedAgentSessionHref(editing.profile, selectedWorkspaceId))}
+          onNewSession={() => { void navigate(namedAgentSessionHref(editing.profile, selectedWorkspaceId)); }}
           onDuplicate={() => setSheet({ kind: 'new', source: editing.profile.name })} />
           : <Hint>{t('st.agentManager.select')}</Hint>}
     </Dialog> : null}

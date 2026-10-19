@@ -176,7 +176,7 @@ export function PluginSettingsPanel({
 
   const post = useCallback((message: unknown) => {
     const target = frameRef.current?.contentWindow;
-    if (target == null || target !== frameWindowRef.current) return;
+    if ((target === null || target === undefined) || target !== frameWindowRef.current) return;
     target.postMessage(message, '*');
   }, []);
 

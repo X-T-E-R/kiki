@@ -136,7 +136,7 @@ export function MemoryToolRow({ block, agentId = 'main' }: { readonly block: Too
         if (target.personaId !== undefined) params.set('persona', target.personaId);
         if (write.outcome === 'pending') params.set('tab', 'inbox');
         if (write.status === 'archived' || write.status === 'superseded') params.set('inactive', 'true');
-        navigate(`/memory?${params}`);
+        void navigate(`/memory?${params}`);
       })
       .catch((error: unknown) => { pushToast({ tone: 'error', text: t('memory.actionFailed', { detail: errorText(locale, error) }) }); });
   };

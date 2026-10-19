@@ -371,7 +371,7 @@ export function Rail({
   onClose,
   className,
 }: RailProps) {
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
   const navigate = useNavigate();
   const [mode, chooseMode] = useRailMode();
   const preview = useMediaPreview();

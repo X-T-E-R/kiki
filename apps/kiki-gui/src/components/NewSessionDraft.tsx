@@ -28,7 +28,6 @@ import {
   flushDrafts,
   readDraft,
   readNewSessionDraft,
-  subscribeDraftAppends,
   writeDraft,
   writeNewSessionDraft,
   type ComposerAttachment,
@@ -36,7 +35,6 @@ import {
   type SshHostAttachment,
   executionSelectionOf,
   isNativeExecutor,
-  parseExecutionChoice,
   readExecutionChoice,
   isBareExternalChoice,
   sendsLegacyControl,
@@ -197,22 +195,6 @@ export interface DraftSkillHandoff {
  * send callback keeps one identity across keystrokes. The engine is part of it
  * because the create body is where an external engine is bound.
  */
-interface SendContext {
-  busy: boolean;
-  cwd: string;
-  workspaceId: string | undefined;
-  modelOverride: string | undefined;
-  effectiveEffort: string | undefined;
-  agentProfile: string;
-  execution: ExecutionChoice;
-  permissionMode: PermissionMode;
-  planMode: boolean;
-  goalObjective: string;
-  worktree: boolean;
-  ephemeral: boolean;
-  persona: PersonaSnapshot | undefined;
-}
-
 /** Hosts preselected on /new, split off before anything becomes a message. */
 function sshOf(attachments: readonly ComposerAttachment[]): readonly SshHostAttachment[] {
   return attachments.filter((item): item is SshHostAttachment => item.kind === 'ssh');
@@ -497,7 +479,6 @@ export function useNewSessionDraft({
         : workspaces.find((w) => w.id === workspaceId),
     [dailyPersonaId, workspaces, workspaceId, workspacesReady],
   );
-  const hasExplicitWorkspace = workspaceId !== '' && workspaceId !== AUTO_WORKSPACE_ID;
   // Only a list that answered can be read as "nothing here": a read still in
   // flight, or one that failed, decides nothing, and automatic allocation then
   // needs the user's own choice of it.
@@ -902,7 +883,7 @@ export function useNewSessionDraft({
         // The hand-off motion rides along with it and never delays the send.
         runNewSessionHandoff({
           text: handoff.initialPrompt,
-          navigate: () => navigate(`/s/${session.id}`, {
+          navigate: () => { void navigate(`/s/${session.id}`, {
             state: {
               createdSession: { id: session.id, scopeId },
               initialPrompt: handoff.initialPrompt,
@@ -927,7 +908,7 @@ export function useNewSessionDraft({
               personaGreetingReply: handoff.initialPrompt !== undefined && hasGreeting(context.persona) ? true : undefined,
             },
             replace: false,
-          }),
+          }); },
         });
       })
       .catch((cause: unknown) => {

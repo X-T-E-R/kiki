@@ -193,7 +193,7 @@ export function useAskKiki(): UseAskKiki {
     const launch = async (signal: AbortSignal) => {
       const create = askKikiCreateBody(task.location);
       const sessionId = await createAndDraft(signal, task, create);
-      navigate(`/s/${sessionId}`, { state: { createdSession: { id: sessionId, scopeId } } });
+      void navigate(`/s/${sessionId}`, { state: { createdSession: { id: sessionId, scopeId } } });
       focusComposerWhenReady();
     };
     const run = guard?.runAction !== undefined

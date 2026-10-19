@@ -245,7 +245,7 @@ function RoomView({
       queryClient.removeQueries({ queryKey: roomQueryKey(room.id) });
       void queryClient.invalidateQueries({ queryKey: ROOMS_QUERY_KEY });
       void queryClient.invalidateQueries({ queryKey: ['sessions'] });
-      navigate('/');
+      void navigate('/');
     },
     onError: (error) => {
       setConfirmDelete(false);

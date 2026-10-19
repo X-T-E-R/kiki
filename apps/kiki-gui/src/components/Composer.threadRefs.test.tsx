@@ -33,6 +33,7 @@ vi.mock('../state/connection', () => ({
       klient: { global: { threads: { hostId: getHostId } } },
     },
   }),
+  useOptionalConnection: () => null,
 }));
 vi.mock('../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
 vi.mock('../host/vscode', () => ({ isVscodeWebview: () => false, vscodeHost: {} }));

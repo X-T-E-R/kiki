@@ -75,7 +75,7 @@ export function chunkText(text: string, targetSize = DEFAULT_CHUNK_SIZE): TextCh
   }
 
   // If text is shorter than targetSize, return single chunk
-  if ([...text].length <= targetSize) {
+  if (Array.from(text).length <= targetSize) {
     return [{ index: 0, start: 0, end: text.length, text }];
   }
 
@@ -86,7 +86,7 @@ export function chunkText(text: string, targetSize = DEFAULT_CHUNK_SIZE): TextCh
 
   while (currentStart < fullLength) {
     const remaining = text.slice(currentStart);
-    const remainingChars = [...remaining].length;
+    const remainingChars = Array.from(remaining).length;
 
     if (remainingChars <= targetSize) {
       chunks.push({
@@ -127,7 +127,7 @@ function findBestCutPosition(
 ): number {
   // Convert targetChars to approximate JS string index
   const textFromStart = text.slice(start);
-  const chars = [...textFromStart];
+  const chars = Array.from(textFromStart);
   const desiredCharIndex = Math.min(chars.length, targetChars);
 
   const rawTargetStringIndex = chars.slice(0, desiredCharIndex).join('').length;

@@ -19,8 +19,48 @@ import {
 } from './types';
 import type { OutputLayerClient } from '../../lib/outputLayerClient';
 import { useOptionalConnection } from '../../state/connection';
+import { activeSpace, spaceStorage } from '../../lib/spaceStorage';
 
 const STORAGE_SESSION_STATE_KEY = 'kiki.output-layer.sessions.v1';
+
+/**
+ * Before this key was space-namespaced, every home wrote the one plain key and
+ * told its records apart only inside the value (`<home>:<server>:<session>`,
+ * or `remote:<connection>:<server>:<session>` for a remote connection). A
+ * subspace created after the change therefore reads an empty namespaced map
+ * while its earlier choice still sits under the plain name. Read the plain map
+ * once per process; callers decide which records it may use.
+ */
+function legacySessionMap(): Record<string, unknown> {
+  if (typeof localStorage === 'undefined') return {};
+  try {
+    const saved = localStorage.getItem(STORAGE_SESSION_STATE_KEY);
+    if (saved === null) return {};
+    const parsed = JSON.parse(saved) as unknown;
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return parsed as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The records this home can claim by id. A remote connection's id
+ * (`remote:<connection>:…`) carries no home, so it is never bulk-copied here;
+ * `getSessionState` reads such a record only when the live connection asks for
+ * exactly that id.
+ */
+function legacySessionStates(homeId: string, legacy: Record<string, unknown>): Record<string, OutputLayerSessionState> {
+  const prefix = `${homeId}:`;
+  return Object.fromEntries(
+    Object.entries(legacy)
+      .filter(([id, state]) => id.startsWith(prefix) && isSessionState(state)),
+  ) as Record<string, OutputLayerSessionState>;
+}
+
+function isSessionState(value: unknown): value is OutputLayerSessionState {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
 
 export interface SavePresetOptions {
   settings?: OutputLayerSettings;
@@ -39,6 +79,7 @@ class OutputLayerStore {
   private activeClient: OutputLayerClient | null = null;
   private configuration: OutputLayerConfiguration | null = null;
   private configurations: Record<string, OutputLayerConfiguration | null> = {};
+  private readonly legacySessions = activeSpace() === null ? {} : legacySessionMap();
   private sessions: Record<string, OutputLayerSessionState> = this.loadSessionStates();
   private listeners = new Set<() => void>();
   private snapshot: OutputLayerStoreSnapshot = {
@@ -48,24 +89,27 @@ class OutputLayerStore {
   };
 
   private loadSessionStates(): Record<string, OutputLayerSessionState> {
+    if (typeof localStorage === 'undefined') return {};
+    let stored: Record<string, OutputLayerSessionState> = {};
     try {
-      if (typeof localStorage !== 'undefined') {
-        const saved = localStorage.getItem(STORAGE_SESSION_STATE_KEY);
-        if (saved) {
-          return JSON.parse(saved) as Record<string, OutputLayerSessionState>;
-        }
+      const saved = spaceStorage.getItem(STORAGE_SESSION_STATE_KEY);
+      if (saved) {
+        stored = JSON.parse(saved) as Record<string, OutputLayerSessionState>;
       }
     } catch {
       // Fallback to empty
     }
-    return {};
+    const space = activeSpace();
+    // The main space reads the legacy key itself, so there is nothing to migrate.
+    if (space === null) return stored;
+    // A value already stored for this space wins over the shared migration copy.
+    return { ...legacySessionStates(space.homeId, this.legacySessions), ...stored };
   }
 
   private saveSessionStates() {
+    if (typeof localStorage === 'undefined') return;
     try {
-      if (typeof localStorage !== 'undefined') {
-        localStorage.setItem(STORAGE_SESSION_STATE_KEY, JSON.stringify(this.sessions));
-      }
+      spaceStorage.setItem(STORAGE_SESSION_STATE_KEY, JSON.stringify(this.sessions));
     } catch {
       // Ignore
     }
@@ -169,12 +213,19 @@ class OutputLayerStore {
   // Session Preferences
   public getSessionState(sessionId?: string): OutputLayerSessionState {
     const id = sessionId ?? '__global__';
-    return (
-      this.sessions[id] ?? {
-        activePresetId: null,
-        viewMode: 'processed',
-      }
-    );
+    const stored = this.sessions[id];
+    if (stored !== undefined) return stored;
+    // A remote connection's id carries no home, so the boot merge cannot claim
+    // it. Read the exact id the live connection asks for, and only that one:
+    // no other context's record is copied into this space.
+    if (id.startsWith('remote:')) {
+      const legacy = this.legacySessions[id];
+      if (isSessionState(legacy)) return legacy;
+    }
+    return {
+      activePresetId: null,
+      viewMode: 'processed',
+    };
   }
 
   public setActivePreset(sessionId: string | undefined, presetId: string | null) {
