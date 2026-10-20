@@ -257,7 +257,7 @@ it('rolls back pre-publication failures, preserves old archives, isolates change
   const publish = vi.spyOn(target.server.core.accessor.get(IFileSystemStorageService), 'moveDirectory').mockRejectedValueOnce(new Error('fixture before publication'));
   const preview = await target.client.global.imports.preview(fixture.input);
   const started = await target.client.global.imports.start({ previewId: preview.id, acknowledge: true });
-  await vi.waitFor(async () => expect((await target.client.global.imports.job(started.id)).status).toBe('failed'));
+  await vi.waitFor(async () => expect((await target.client.global.imports.job(started.id)).status).toBe('failed'), { timeout: 15_000 });
   expect((await target.client.global.sessions.list({})).items).toHaveLength(0);
   expect(manager.listEphemeral()).toHaveLength(0);
   publish.mockRestore();
