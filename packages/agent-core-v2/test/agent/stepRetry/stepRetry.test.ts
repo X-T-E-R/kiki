@@ -428,10 +428,12 @@ describe('stepRetry plugin', () => {
     ctx = createRetryTestAgent(
       llmGenerateServices(async () => {
         calls += 1;
+        setTimeout(() => {
+          controller.abort(new Error('stop'));
+        }, 100);
         throw new APIStatusError(400, 'endpoint broken');
       }),
     );
-    setTimeout(() => controller.abort(new Error('stop')), 100);
 
     const result = await runTurn(1, controller.signal);
 
