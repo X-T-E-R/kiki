@@ -1140,6 +1140,50 @@ describe('AgentLifecycleService', () => {
     return { metadata: ix.get(ISessionMetadata), prior };
   }
 
+  it.each([false, true])('drains rejected creation writes and preserves persistence failures (flush failure=%s)', async (failFlush) => {
+    const lifecycle = ix.get(IAgentLifecycleService);
+    const bindingFailure = new Error2(ErrorCodes.REQUEST_INVALID, 'Rejected profile');
+    const persistenceFailure = new Error2(ErrorCodes.STORAGE_DISK_FULL, 'Creation writes could not be persisted');
+    let releaseFlush!: () => void;
+    let markFlush!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseFlush = resolve; });
+    const entered = new Promise<void>((resolve) => { markFlush = resolve; });
+    let disposed = false;
+    disposables.add(lifecycle.onWillCreate((handle) => {
+      vi.spyOn(handle.accessor.get(IAgentProfileService), 'bind').mockRejectedValue(bindingFailure);
+      const wire = handle.accessor.get(IWireService);
+      const flush = wire.flush.bind(wire);
+      const dispose = handle.dispose.bind(handle);
+      vi.spyOn(handle, 'dispose').mockImplementation(async () => {
+        await dispose();
+        disposed = true;
+      });
+      vi.spyOn(wire, 'flush').mockImplementation(async () => {
+        expect(disposed).toBe(true);
+        markFlush();
+        await gate;
+        if (failFlush) throw persistenceFailure;
+        await flush();
+      });
+    }));
+    const creating = lifecycle.create({ agentId: 'main', binding: { profile: 'agent' } });
+    const outcome = creating.then(() => undefined, (error: unknown) => error);
+    try {
+      expect(await Promise.race([entered.then(() => true), outcome.then(() => false)])).toBe(true);
+      expect(lifecycle.get('main')).toBeUndefined();
+    } finally {
+      releaseFlush();
+    }
+    const failure = await outcome;
+    if (failFlush) {
+      expect(failure).toBeInstanceOf(AggregateError);
+      expect((failure as AggregateError).cause).toBe(bindingFailure);
+      expect((failure as AggregateError).errors).toEqual([bindingFailure, persistenceFailure]);
+    } else {
+      expect(failure).toBe(bindingFailure);
+    }
+  });
+
   it('restores the prior persona when creation fails after binding metadata is written', async () => {
     const { metadata } = installStoredTerminalChild('completed');
     await metadata.updateAgent('child', (current) => ({ ...current, personaId: 'old-persona' }));

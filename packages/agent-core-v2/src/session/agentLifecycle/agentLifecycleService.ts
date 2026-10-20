@@ -381,13 +381,14 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         ],
       },
     ) as IAgentScopeHandle;
+    let wire: IWireService | undefined;
     try {
       priorAgentMeta = (await this.sessionMetadata.read()).agents?.[agentId];
       if (priorAgentMeta === undefined && opts.restoreBinding === undefined &&
         (opts.copiedIdentity === true || await this.storage.size(agentScope, AGENT_WIRE_RECORD_KEY) === undefined)) {
         createdAt = creationTime;
       }
-      const wire = handle.accessor.get(IWireService);
+      wire = handle.accessor.get(IWireService);
       await wire.seal();
       await wire.beginTranscriptEpoch?.();
       handle.accessor.get(IAgentStateService).contributeState(interactionKey);
@@ -487,6 +488,13 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         await handle.dispose();
       } catch { }
       this.onDidDisposeEmitter.fire(agentId);
+      try {
+        await wire?.flush();
+      } catch (flushError) {
+        if (flushError !== error) {
+          throw new AggregateError([error, flushError], 'Failed to drain rejected agent creation writes', { cause: error });
+        }
+      }
       throw error;
     }
   }

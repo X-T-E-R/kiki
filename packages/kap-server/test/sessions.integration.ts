@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from '
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { inflateRawSync } from 'node:zlib';
+import { inspect } from 'node:util';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -21,6 +22,7 @@ import {
   setSessionArchivedBatch,
   IAgentGoalService,
   IAgentLifecycleService,
+  IAgentProfileService,
   IAgentUsageService,
   IAppendLogStore,
   IAtomicDocumentStore,
@@ -51,6 +53,7 @@ import {
 } from '@kiki/agent-core-v2';
 import { Event, type IWaitUntil } from '@kiki/agent-core-v2/_base/event';
 import { TurnStarted } from '@kiki/agent-core-v2/agent/loop/turnEvents';
+import { AgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycleService';
 import { sessionWarningsResponseSchema } from '@kiki/agent-core-v2/app/sessionLegacy/sessionProtocol';
 import { encodeLegacyWorkDirKey, encodeWorkDirKey } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
 
@@ -760,7 +763,7 @@ describe('server-v2 /api/sessions', () => {
     expect(sessions.body.data.items).toEqual([]);
   });
 
-  it('maps inactive profile tool patterns on create to request invalid', async () => {
+  it.each([false, true])('maps inactive profile tool patterns on create to request invalid (pending append=%s)', async (pendingAppend) => {
     await (server as RunningServer).close();
     server = undefined;
     await writeFile(
@@ -797,6 +800,20 @@ describe('server-v2 /api/sessions', () => {
       ].join('\n'),
       'utf8',
     );
+    await writeFile(
+      join(agentsDir, 'active-tools.md'),
+      [
+        '---',
+        'name: active-tools',
+        'description: Profile with an available denylist',
+        'disallowedTools: [Read]',
+        '---',
+        '',
+        'Reject file reads.',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
@@ -807,14 +824,109 @@ describe('server-v2 /api/sessions', () => {
     });
     base = `http://127.0.0.1:${server.port}`;
 
-    const created = await postJson<null>('/api/sessions', {
+    const manager = server.core.accessor.get(ISessionManager);
+    const create = manager.create.bind(manager);
+    let failure: unknown;
+    vi.spyOn(manager, 'create').mockImplementation(async (options) => {
+      try {
+        return await create(options);
+      } catch (error) {
+        failure = error;
+        throw error;
+      }
+    });
+    const announcements: string[] = [];
+    const sessionDirs: string[] = [];
+    let releaseAppend!: () => void;
+    let markAppend!: () => void;
+    let markCleanup!: () => void;
+    const appendGate = new Promise<void>((resolve) => { releaseAppend = resolve; });
+    const appendEntered = new Promise<void>((resolve) => { markAppend = resolve; });
+    const cleanupEntered = new Promise<void>((resolve) => { markCleanup = resolve; });
+    const storage = server.core.accessor.get(IFileSystemStorageService);
+    const append = storage.append.bind(storage);
+    if (pendingAppend) vi.spyOn(storage, 'append').mockImplementation(async (scope, key, content, options) => {
+      if (key === 'wire.jsonl' && Buffer.from(content).includes('pending-profile-create')) {
+        markAppend();
+        await appendGate;
+      }
+      return append(scope, key, content, options);
+    });
+    const onCreated = manager.onDidCreateSession?.(({ sessionId }) => announcements.push(sessionId));
+    const onMaterialized = manager.onWillCreateSession?.((event) => {
+      sessionDirs.push(event.readSeed(ISessionContext).sessionDir);
+    });
+    const createAgent = AgentLifecycleService.prototype.create;
+    if (pendingAppend) vi.spyOn(AgentLifecycleService.prototype, 'create').mockImplementation(async function (this: AgentLifecycleService, options) {
+      const subscription = this.onWillCreate((agent) => {
+        const wire = agent.accessor.get(IWireService);
+        const flush = wire.flush.bind(wire);
+        const dispose = agent.dispose.bind(agent);
+        let disposed = false;
+        vi.spyOn(agent, 'dispose').mockImplementation(async () => {
+          await dispose();
+          disposed = true;
+        });
+        vi.spyOn(wire, 'flush').mockImplementation(async () => {
+          if (disposed) markCleanup();
+          await flush();
+        });
+        const profile = agent.accessor.get(IAgentProfileService);
+        const bind = profile.bind.bind(profile);
+        vi.spyOn(profile, 'bind').mockImplementation(async (input) => {
+          wire.appendRecord({ type: 'warning.issued', code: 'pending-profile-create', message: 'Creation cleanup barrier' });
+          await bind(input);
+        });
+      });
+      try {
+        return await createAgent.call(this, options);
+      } finally {
+        subscription.dispose();
+      }
+    });
+    const creating = postJson<null>('/api/sessions', {
       metadata: { cwd: home as string },
       agent_config: { profile: 'inactive-tools' },
     });
+    let created: Awaited<typeof creating>;
+    try {
+      if (pendingAppend) {
+        await appendEntered;
+        const reachedCleanup = await Promise.race([cleanupEntered.then(() => true), creating.then(() => false)]);
+        expect(reachedCleanup, 'rejected creation must drain its wire before returning to session rollback').toBe(true);
+        expect(announcements).toEqual([]);
+        expect(sessionDirs).toHaveLength(1);
+        await expect(stat(sessionDirs[0]!)).resolves.toBeDefined();
+      }
+    } finally {
+      releaseAppend();
+      created = await creating;
+      onCreated?.dispose();
+      onMaterialized?.dispose();
+    }
 
-    expect(created.body.code).toBe(40001);
+    expect(created.body.code, `${JSON.stringify(created.body)}\n${inspect(failure, { depth: 6 })}`).toBe(40001);
+    expect(failure).toMatchObject({ name: 'ProfileError', code: 'profile.tool_pattern_inactive' });
+    expect(created.body.msg).toBe((failure as Error).message);
     expect(created.body.msg).toContain('DefinitelyMissingTool');
     expect(created.body.msg).toContain('disallowedTools');
+    expect(announcements).toEqual([]);
+    expect(manager.list()).toEqual([]);
+    expect(sessionDirs).toHaveLength(1);
+    for (const dir of sessionDirs) await expect(stat(dir)).rejects.toMatchObject({ code: 'ENOENT' });
+    const sessions = await getJson<PageWire>('/api/sessions');
+    expect(sessions.body.data.items).toEqual([]);
+
+    const valid = await postJson<SessionWire>('/api/sessions', {
+      metadata: { cwd: home as string },
+      agent_config: { profile: 'active-tools' },
+    });
+    expect(valid.body.code, JSON.stringify(valid.body)).toBe(0);
+    const main = manager.get(valid.body.data.id)?.accessor.get(IAgentLifecycleService).get('main');
+    expect(main?.accessor.get(IAgentProfileService).data()).toMatchObject({
+      profileName: 'active-tools',
+      disallowedTools: ['Read'],
+    });
   });
 
   it('creates and registers a new directory for each session without a workspace target', async () => {
