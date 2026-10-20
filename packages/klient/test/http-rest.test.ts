@@ -1145,13 +1145,36 @@ describe('native HTTP response lifecycle', () => {
   });
 
   it.each(['json', 'binary'] as const)('reports a severed %s body as connection failure, not malformed JSON or timeout', async (kind) => {
-    handler = (response) => {
-      response.writeHead(200, { 'content-type': kind === 'json' ? 'application/json' : 'application/octet-stream', 'content-length': '1024' });
-      response.write(kind === 'json' ? '{"code":0,' : 'partial file');
-      later(() => response.destroy(), 15);
-    };
-    const operation = kind === 'json' ? channel.rest.meta() : channel.rest.sessions.media('s', 'f');
-    await expect(operation).rejects.toMatchObject({ name: 'RPCError', code: -1 });
+    await channel.close();
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('missing TCP address');
+    const headersReceived = Promise.withResolvers<void>();
+    const nativeFetch = globalThis.fetch;
+    channel = new HttpChannel({
+      endpoint: `http://127.0.0.1:${address.port}`, timeoutMs: 100,
+      fetch: async (...args) => {
+        const response = await nativeFetch(...args);
+        headersReceived.resolve();
+        return response;
+      },
+    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      handler = (response) => {
+        response.writeHead(200, { 'content-type': kind === 'json' ? 'application/json' : 'application/octet-stream', 'content-length': '1024' });
+        response.write(kind === 'json' ? '{"code":0,' : 'partial file');
+        later(() => response.destroy(), 15);
+      };
+      const operation = kind === 'json' ? channel.rest.meta() : channel.rest.sessions.media('s', 'f');
+      const rejected = expect(operation).rejects.toMatchObject({ name: 'RPCError', code: -1 });
+      await headersReceived.promise;
+      await vi.advanceTimersByTimeAsync(15);
+      await rejected;
+    } finally {
+      for (const timer of timers) clearTimeout(timer);
+      timers.clear();
+      vi.useRealTimers();
+    }
   });
 
   it('distinguishes a complete malformed document from a server failure envelope', async () => {
