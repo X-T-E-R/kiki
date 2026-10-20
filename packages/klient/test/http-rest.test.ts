@@ -1148,13 +1148,14 @@ describe('native HTTP response lifecycle', () => {
     await channel.close();
     const address = server.address();
     if (address === null || typeof address === 'string') throw new Error('missing TCP address');
-    const headersReceived = Promise.withResolvers<void>();
+    let resolveHeaders!: () => void;
+    const headersReceived = new Promise<void>((resolve) => { resolveHeaders = resolve; });
     const nativeFetch = globalThis.fetch;
     channel = new HttpChannel({
       endpoint: `http://127.0.0.1:${address.port}`, timeoutMs: 100,
       fetch: async (...args) => {
         const response = await nativeFetch(...args);
-        headersReceived.resolve();
+        resolveHeaders();
         return response;
       },
     });
@@ -1167,7 +1168,7 @@ describe('native HTTP response lifecycle', () => {
       };
       const operation = kind === 'json' ? channel.rest.meta() : channel.rest.sessions.media('s', 'f');
       const rejected = expect(operation).rejects.toMatchObject({ name: 'RPCError', code: -1 });
-      await headersReceived.promise;
+      await headersReceived;
       await vi.advanceTimersByTimeAsync(15);
       await rejected;
     } finally {
