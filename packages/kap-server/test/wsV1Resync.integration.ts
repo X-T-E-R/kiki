@@ -608,14 +608,32 @@ describe('server-v2 /api/ws resync', () => {
         cursors: { [sid]: durableCursor },
       }),
     });
-    const replayAck = await c2.next((f) => f.type === 'ack' && f.id === 'h-replay');
+    const replayConnection = c2;
+    let replayBatch: Frame[] = [];
+    const replayAck = await c2.next((frame) => {
+      if (frame.type !== 'ack' || frame.id !== 'h-replay') return false;
+      replayBatch = [...replayConnection.frames];
+      return true;
+    });
     const replayAckPayload = ackPayload(replayAck);
     expect(replayAckPayload).toMatchObject({
       accepted_subscriptions: [sid],
       resync_required: [],
     });
     const replayWatermark = replayAckPayload.cursors![sid]!;
-    const replayedDurable = c2.frames.filter(
+    const liveAfterAck = await new Promise<Frame>((resolve) => {
+      const observe = (data: unknown): void => {
+        const frame = JSON.parse(String(data)) as Frame;
+        if (frame.type !== 'fixture.after_replay_ack') return;
+        replayConnection.ws.off('message', observe);
+        resolve(frame);
+      };
+      replayConnection.ws.on('message', observe);
+      emitAgentEvent(sid, { type: 'fixture.after_replay_ack' } as unknown as Event2<any>);
+    });
+    expect(liveAfterAck.seq).toBeGreaterThan(replayWatermark.seq);
+    expect(replayConnection.frames).toContainEqual(liveAfterAck);
+    const replayedDurable = replayBatch.filter(
       (frame) =>
         frame.session_id === sid &&
         frame.volatile !== true &&
