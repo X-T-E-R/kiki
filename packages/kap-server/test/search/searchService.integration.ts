@@ -1072,10 +1072,7 @@ describe('GlobalSearchService', () => {
     const refreshing = refreshNow(reader);
     const sawScan = await Promise.race([
       scanEntered.then(() => true),
-      (async () => {
-        for (let i = 0; i < 1_000; i++) await new Promise((resolve) => setImmediate(resolve));
-        return false;
-      })(),
+      refreshing.then(() => false),
     ]);
     try {
       expect(sawScan).toBe(true);
