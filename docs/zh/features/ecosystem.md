@@ -34,7 +34,7 @@ Kiki 内置的历史导入把另一个工具的文本对话变成**你能接着�
 
 ## 让 Kiki 把别的工具当引擎用
 
-方向反过来：另一个智能体 harness 跑**你的**子智能体。一个 agent profile 可以带 `executor`，通过 ACP 或 Codex app-server 跑在 Claude Code、Codex、Cursor、Gemini CLI、Kimi CLI、OpenCode 或 Grok Build 上。设置 → 外部引擎会检查每个引擎是否已安装，并列出还差哪些配置步骤。
+方向反过来：另一个智能体 harness 跑**你的**子智能体。一个 agent profile 可以带 `executor`，通过 ACP 或 Codex app-server 跑在 Claude Code、Codex、Cursor、Gemini CLI、Kimi CLI、OpenCode 或 Grok Build 上。设置 → 模型与提供商 → 连接服务 → 外部引擎会检查每个引擎是否已安装，并列出还差哪些配置步骤。
 
 ![外部引擎列表：每个引擎的安装状态、Kiki 能在它上面设置什么，以及仍然存在的检查明细。](/shots/ecosystem/ce-20261005-ecosystem-engines.zh.png)
 

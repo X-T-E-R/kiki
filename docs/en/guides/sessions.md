@@ -34,7 +34,7 @@ An existing conversation reopens on its committed model and effort. Old composer
 
 ## Task board
 
-The task board is the optional official plugin `kiki-task-board`, requiring a host that supports plugin protocol `0.4.1` or later. [Install and enable the plugin](../customization/plugins.md), then open its workspace panel from **Capabilities → Plugins** and select a workspace. Its panel and the agent tools `plugin__kiki_task_board__BoardRead` and `plugin__kiki_task_board__BoardWrite` read and write the same cards.
+The task board is the optional official plugin `kiki-task-board`, requiring a host that supports plugin protocol `0.4.1` or later. [Install and enable the plugin](../customization/plugins.md), then open its workspace panel from **Capabilities → Extensions & tools → Plugins** and select a workspace. Its panel and the agent tools `plugin__kiki_task_board__BoardRead` and `plugin__kiki_task_board__BoardWrite` read and write the same cards.
 
 If the plugin is missing, disabled, or uninstalled, conversations that used it still open and send ordinary messages. Historical `BoardRead` and `BoardWrite` calls and their recorded results remain unchanged. A new attempt to call an unavailable tool reports that it is missing; it does not invent a successful result or replay an old write.
 

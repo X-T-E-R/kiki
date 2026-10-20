@@ -58,7 +58,7 @@ await klient.session(sessionId).agent("main").runCommand({ name: "hooks-inspect"
 
 结果是 `hook.result` 诊断事件（`hookEvent = "hooks.inspect"`），不会进入模型对话。GUI 里会话 Agent 面板的**自动规则**显示同样的信息，读取 `GET /api/sessions/{session_id}/agents/{agent_id}/hooks`——规则保存成功但在该会话未激活时，原因就显示在这里。没有配置任何规则、也没有需要修复的来源时，这个区块整个不出现。
 
-在**设置 → 能力 → 钩子**（`/settings/hooks`）里编辑用户配置：选中规则直接编辑，或用 **高级：编辑 JSON** 处理整个 legacy 数组或 v2 对象。添加第一条声明式规则会把 legacy 数组切换为 v2，原命令保留在 `legacy` 下；打开或保存这个页面都不会执行它们。**保存自动操作** 校验完整的 hooks 值并显示服务器实际保存的内容，保存失败时你的草稿还在。v2 开关和停用 id 只影响声明式规则。
+在**设置 → 权限与规则 → 钩子**（`/settings/hooks`）里编辑用户配置：选中规则直接编辑，或用 **高级：编辑 JSON** 处理整个 legacy 数组或 v2 对象。添加第一条声明式规则会把 legacy 数组切换为 v2，原命令保留在 `legacy` 下；打开或保存这个页面都不会执行它们。**保存自动操作** 校验完整的 hooks 值并显示服务器实际保存的内容，保存失败时你的草稿还在。v2 开关和停用 id 只影响声明式规则。
 
 TOML 不能在同一个 key 下同时写 `[[hooks]]` 和 `[hooks]`，已有数组继续照常工作。要在 v2 文档里保留 legacy 命令，把它们显式移到 `[[hooks.legacy]]`，保留 `event`、`matcher`、`command` 和以秒计的 `timeout`；它们仍按 legacy runner 和输出协议执行。
 

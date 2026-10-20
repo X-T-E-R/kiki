@@ -122,7 +122,7 @@ A new session applies its engine pick immediately. In a session that has already
 
 Picking a different engine asks once first: the new engine starts a context of its own — Kiki does not hand it the old conversation or resume the old engine's session — while the conversation stays complete and readable in Kiki. An engine or profile change starts with the message's own turn after the current turn finishes. For a native model or effort change, **Send now** can instead apply the message's settings at the next safe step boundary, after the current model response and tool results have landed; it never changes a request already in flight.
 
-**What Kiki adds when an engine runs** in **Settings → AI → External engines** sets the defaults for that engine across every session that does not override them: which Kiki tool groups and hooks the harness can reach, whether it can dispatch Kiki subagents, and how the profile prompt is delivered. Leaving everything there off is the same as choosing the bare row in the composer, so a harness you already trust runs exactly as its own CLI would.
+**What Kiki adds when an engine runs** in **Settings → Models & providers → Connections → External engines** sets the defaults for that engine across every session that does not override them: which Kiki tool groups and hooks the harness can reach, whether it can dispatch Kiki subagents, and how the profile prompt is delivered. Leaving everything there off is the same as choosing the bare row in the composer, so a harness you already trust runs exactly as its own CLI would.
 
 ### Direct external execution
 

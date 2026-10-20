@@ -8,11 +8,11 @@ title: 扩展
 
 ## 插件把能力打包
 
-插件是打包单位。一个插件可以贡献 Skill、智能体、MCP 服务器、hooks、命令、工具和沙箱面板，你可以在**能力**页浏览、安装和配置。带 `.claude-plugin/plugin.json` 清单的 Claude Code 插件也能装，还可以让 Kiki 指向你自己的市场 JSON。
+插件是打包单位。一个插件可以贡献 Skill、智能体、MCP 服务器、hooks、命令、工具和沙箱面板，你可以在**能力 → 扩展与工具**里浏览、安装和配置。带 `.claude-plugin/plugin.json` 清单的 Claude Code 插件也能装，还可以让 Kiki 指向你自己的市场 JSON。
 
 官方市场由 Kimi 维护，目前有三条：**Kimi Datasource**（用自然语言查市场行情、宏观指标、企业注册、学术文献和法律法规）、**Kimi Browser Extension**（让 AI 驱动你自己的浏览器）、**Kimi Computer Use**（让 AI 操作你的桌面应用）。另外两个能力是独立插件，不属于这三条：**Kiki Extract** 把本地 PDF、Office、HTML 或文本文件转成 `Read` 和 `Grep` 能用的 Markdown；**Kiki Notion** 是面向 Notion 官方托管 MCP 服务的配置和工作流。提取文件是一次读取动作——让已有文档变得可被搜索，它既不创建也不编辑 Office 文档。安装插件本身不会执行它的 hooks——只有匹配的事件发生、且插件处于启用状态时才会触发。见[插件](/zh/customization/plugins)。
 
-媒体生成使用媒体插件提供的图片、视频或语音**来源**，在**能力 → 插件 → 媒体来源**里配置。无需额外的实验开关：安装并启用插件、配置并启用来源后，按需发起生成。保存或列出来源不会启动任务。来源访问与授权见 [媒体来源](/zh/customization/plugins#媒体来源)。
+媒体生成使用媒体插件提供的图片、视频或语音**来源**，在**能力 → 扩展与工具 → 插件 → 媒体来源**里配置。无需额外的实验开关：安装并启用插件、配置并启用来源后，按需发起生成。保存或列出来源不会启动任务。来源访问与授权见 [媒体来源](/zh/customization/plugins#媒体来源)。
 
 ## Skill 是可复用的工作流
 

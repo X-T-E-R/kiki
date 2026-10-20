@@ -125,7 +125,7 @@ On Windows, install the formats you need with:
 .venv-documents/Scripts/python.exe -m pip install "markitdown[pdf,docx,xlsx,xls,pptx]"
 ```
 
-On macOS/Linux, use `.venv-documents/bin/python` instead. For PDF only, use `markitdown[pdf]`. Point the plugin at that interpreter in **Capabilities → Plugins → Kiki Extract → Settings → Python with MarkItDown** (`pythonPath`); it installs neither Python nor the pip dependencies for you.
+On macOS/Linux, use `.venv-documents/bin/python` instead. For PDF only, use `markitdown[pdf]`. Point the plugin at that interpreter in **Capabilities → Extensions & tools → Plugins → Kiki Extract → Settings → Python with MarkItDown** (`pythonPath`); it installs neither Python nor the pip dependencies for you.
 
 Each extraction writes a new output directory with `document.md`, an `extraction.json` recording source, engine and warnings, and whatever assets the engine actually returned. The source is untouched and existing output is never overwritten. The response preview may be shortened and marked `previewTruncated` — read the saved Markdown for the full text. MarkItDown does not export images, and Defuddle does not download linked ones.
 
@@ -152,7 +152,7 @@ Reading results and output-layer model history are stored separately. The defaul
 
 ## Media Sources
 
-Install and enable **Kiki Media** (`kiki-media`) once, then open **Capabilities → Plugins → Media sources**. Version 0.2.0 includes OpenAI, Google, Ark, xAI, MiniMax, StepFun, Novita, Agnes, NewAPI and ComfyUI sources for images, video and speech; you do not need a separate package for each vendor. Your own local commands can join the same list as script sources.
+Install and enable **Kiki Media** (`kiki-media`) once, then open **Capabilities → Extensions & tools → Plugins → Media sources**. Version 0.2.0 includes OpenAI, Google, Ark, xAI, MiniMax, StepFun, Novita, Agnes, NewAPI and ComfyUI sources for images, video and speech; you do not need a separate package for each vendor. Your own local commands can join the same list as script sources.
 
 The unified package needs a Kiki host with grouped media sources and script-source management. If your build has no **Add script source** action or rejects unknown manifest fields, update the host first. The package's plugin-engine requirement `>=0.4.0` is a protocol version, not a CLI release number; the [package README](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media#configure-a-source) gives the host contract.
 
@@ -600,7 +600,7 @@ Scope changes refresh the runtime catalog. Turning a server off rejects new call
 
 ### Notion material and write-back
 
-`kiki-notion` is a Kiki-maintained configuration and workflow for [Notion's hosted MCP service](https://developers.notion.com/guides/mcp/get-started-with-mcp), not a Notion-endorsed integration. Install **Kiki Notion** from the **Official** tab and enable it after reviewing the preview; its source lives in the independent [Kiki Plugins repository](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-notion), not the Kiki source tree, and [Working on an official plugin](#working-on-an-official-plugin) covers installing that checkout for local work. For an extracted package, use the directory containing `kimi.plugin.json`. In **Capabilities → MCP**, authorize `plugin-kiki-notion:notion` through the normal browser OAuth flow; there is no token field to fill. If an open conversation has not picked up the new MCP connection, `/reload` or start a new one.
+`kiki-notion` is a Kiki-maintained configuration and workflow for [Notion's hosted MCP service](https://developers.notion.com/guides/mcp/get-started-with-mcp), not a Notion-endorsed integration. Install **Kiki Notion** from the **Official** tab and enable it after reviewing the preview; its source lives in the independent [Kiki Plugins repository](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-notion), not the Kiki source tree, and [Working on an official plugin](#working-on-an-official-plugin) covers installing that checkout for local work. For an extracted package, use the directory containing `kimi.plugin.json`. In **Capabilities → Extensions & tools → MCP**, authorize `plugin-kiki-notion:notion` through the normal browser OAuth flow; there is no token field to fill. If an open conversation has not picked up the new MCP connection, `/reload` or start a new one.
 
 Ask `/skill:notion-workspace` to search a page, teamspace or workspace, read the key originals, and save a brief with source links to a local path. Name the destination page URL or ID, and whether to add or update, when you want it written back — a summary alone changes nothing in Notion. A write request adds no plugin-specific confirmation, and the normal Kiki tool approvals still apply. Plan and tool restrictions, dropped filters, missing subtrees and pending async writes are reported as such rather than presented as complete coverage or a successful write. Access also depends on your workspace permissions and administrator policy; installing the plugin authorizes no upgrades or paid actions.
 

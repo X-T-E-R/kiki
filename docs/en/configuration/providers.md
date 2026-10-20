@@ -290,11 +290,11 @@ The identity works over OpenAI Responses, Anthropic Messages, and OpenAI Chat Co
 
 ### Where to configure it
 
-GUI **Settings → Request identity** is the central page: the left column lists built-in (read-only) and custom identities, the right side previews the headers and body fields that identity actually sends, and three further cards cover client versions, per-layer usage, and recent requests. An identity applies in three layers; the **Default request identity** card on that page sets the global layer, and the provider and model layers are set in **Settings → Models & providers**:
+GUI **Settings → Models & providers → Identity** is the central page: the left column lists built-in (read-only) and custom identities, the right side previews the headers and body fields that identity actually sends, and three further cards cover client versions, per-layer usage, and recent requests. An identity applies in three layers; the **Default request identity** card on that page sets the global layer, and the provider and model layers are set in **Settings → Models & providers**:
 
 | Layer | GUI | `config.toml` |
 | --- | --- | --- |
-| Global default | Settings → Request identity | `[request_identity]` |
+| Global default | Settings → Models & providers → Identity | `[request_identity]` |
 | Provider | Settings → Models & providers → provider editor → Request identity | `[providers.<name>.request_identity]` |
 | Model | Settings → Models & providers → model editor → Request identity | `[models."<alias>".request_identity]` |
 

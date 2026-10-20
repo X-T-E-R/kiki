@@ -125,7 +125,7 @@ Windows 下安装所需格式：
 .venv-documents/Scripts/python.exe -m pip install "markitdown[pdf,docx,xlsx,xls,pptx]"
 ```
 
-macOS/Linux 改用 `.venv-documents/bin/python`。只处理 PDF 时用 `markitdown[pdf]`。在 **能力 → Plugins → Kiki Extract → 设置 → Python with MarkItDown** 里把 `pythonPath` 指向该解释器，它不会替你装 Python 或 pip 依赖。
+macOS/Linux 改用 `.venv-documents/bin/python`。只处理 PDF 时用 `markitdown[pdf]`。在 **能力 → 扩展与工具 → 插件 → Kiki Extract → 设置 → Python with MarkItDown** 里把 `pythonPath` 指向该解释器，它不会替你装 Python 或 pip 依赖。
 
 每次提取写一个新目录，包含 `document.md`、记录来源/引擎/warnings 的 `extraction.json`，以及引擎实际返回的素材。原文件不动，已有输出不会被覆盖。响应里的预览可能缩短并标记 `previewTruncated`，完整正文用 `Read`/`Grep` 读保存后的 Markdown。MarkItDown 不导出图片，Defuddle 也不下载正文中的链接图片。
 
@@ -152,7 +152,7 @@ Auto 默认本地处理，不上传也不做 OCR。空内容或只有图像的�
 
 ## 媒体来源
 
-只需安装并启用一个 **Kiki Media**（`kiki-media`），再打开**能力 → Plugins → 媒体来源**。0.2.0 内置 OpenAI、Google、Ark、xAI、MiniMax、StepFun、Novita、Agnes、NewAPI 和 ComfyUI 的图像、视频与语音来源，不必按厂商另装插件。你自己的本地命令也可以作为脚本来源加入同一列表。
+只需安装并启用一个 **Kiki Media**（`kiki-media`），再打开**能力 → 扩展与工具 → 插件 → 媒体来源**。0.2.0 内置 OpenAI、Google、Ark、xAI、MiniMax、StepFun、Novita、Agnes、NewAPI 和 ComfyUI 的图像、视频与语音来源，不必按厂商另装插件。你自己的本地命令也可以作为脚本来源加入同一列表。
 
 统一包需要支持媒体来源分组及脚本来源管理的 Kiki 宿主。如果当前版本没有**添加脚本来源**操作，或报告未知 manifest 字段，请先更新宿主。包声明的插件引擎要求 `>=0.4.0` 是协议版本，不是 CLI 发行版本号；具体宿主接口见[插件 README](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media#configure-a-source)。
 
@@ -601,7 +601,7 @@ HTTP server（远程服务）：
 
 ### Notion 资料与写回
 
-`kiki-notion` 是 Kiki 维护的连接配置与工作流，使用 [Notion 官方托管 MCP](https://developers.notion.com/guides/mcp/get-started-with-mcp)，并非 Notion 背书的集成。从 **Official** 页签安装 **Kiki Notion**，审阅预览后启用。源码位于独立的 [Kiki Plugins 仓库](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-notion)，不在 Kiki 源码树中；本地开发时怎么装那个检出目录，见[改一个官方 plugin](#改一个官方-plugin)。解压包则使用包含 `kimi.plugin.json` 的目录。在**能力 → MCP** 中对 `plugin-kiki-notion:notion` 完成常规浏览器 OAuth 授权，没有 token 字段要填。若已打开的对话还没发现新 MCP 连接，用 `/reload` 或新对话加载。
+`kiki-notion` 是 Kiki 维护的连接配置与工作流，使用 [Notion 官方托管 MCP](https://developers.notion.com/guides/mcp/get-started-with-mcp)，并非 Notion 背书的集成。从 **Official** 页签安装 **Kiki Notion**，审阅预览后启用。源码位于独立的 [Kiki Plugins 仓库](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-notion)，不在 Kiki 源码树中；本地开发时怎么装那个检出目录，见[改一个官方 plugin](#改一个官方-plugin)。解压包则使用包含 `kimi.plugin.json` 的目录。在**能力 → 扩展与工具 → MCP** 中对 `plugin-kiki-notion:notion` 完成常规浏览器 OAuth 授权，没有 token 字段要填。若已打开的对话还没发现新 MCP 连接，用 `/reload` 或新对话加载。
 
 让 `/skill:notion-workspace` 搜索指定页面、teamspace 或工作区，读取关键原文，把带来源链接的简报保存到本地路径。需要写回时，给出目标页面 URL/ID 以及追加还是更新——只做总结不会改动 Notion。写回请求不增加 plugin 专属确认，Kiki 原有的工具审批照常生效。套餐与工具限制、过滤条件被忽略、缺失 subtree、异步写入未完成都会如实报告，不会被当成完整覆盖或写回成功。访问还取决于工作区权限与管理员政策；安装不授权升级套餐或付费。
 

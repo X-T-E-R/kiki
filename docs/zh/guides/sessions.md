@@ -34,7 +34,7 @@ Kiki 把每次对话持久化为一个「会话」，保留消息历史和元数
 
 ## 任务看板
 
-任务看板由可选官方插件 `kiki-task-board` 提供，宿主需支持插件协议 `0.4.1` 及以上版本。[安装并启用插件](../customization/plugins.md)后，在**能力 → 插件**中打开它的工作区面板，再选择工作区。面板和智能体工具 `plugin__kiki_task_board__BoardRead`、`plugin__kiki_task_board__BoardWrite` 读写同一批卡片。
+任务看板由可选官方插件 `kiki-task-board` 提供，宿主需支持插件协议 `0.4.1` 及以上版本。[安装并启用插件](../customization/plugins.md)后，在**能力 → 扩展与工具 → 插件**中打开它的工作区面板，再选择工作区。面板和智能体工具 `plugin__kiki_task_board__BoardRead`、`plugin__kiki_task_board__BoardWrite` 读写同一批卡片。
 
 没安装、已停用或已卸载插件时，用过它的对话仍能打开并发送普通消息。历史里的 `BoardRead`、`BoardWrite` 调用及已记录的结果保持不变。再次调用不可用的工具时才报告缺少工具，不会伪造成功结果或重放旧的写入。
 

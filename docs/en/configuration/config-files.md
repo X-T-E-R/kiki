@@ -815,7 +815,7 @@ Automatic title generation is on by default. Turn it off in the GUI, with `auto_
 | `native_browser` | `boolean` | `true` | Run saved browser connections through the managed browser backend; without it a connection cannot connect and agents get no [browser tools](../reference/tools.md#browser-tools) |
 | `local_session_resume` | `boolean` | `true` | Continue existing local Claude Code and Codex sessions; managed under Settings → Sessions and checked on each new attachment |
 
-Any registered flag can be overridden here by id, with a boolean value. Every built-in switch is named and explained on its related Settings page; **Settings → Experimental** links to those homes and shows when a change applies. Unknown extension flags appear under **Settings → Developer** by id. Availability does not install a plugin, authorize a script or connect an unconfigured external destination.
+Any registered flag can be overridden here by id, with a boolean value. Every built-in switch is named and explained on its related Settings page; **Settings → Advanced → Developer & labs** ends with **Where experimental features live**, which links to those homes and shows when a change applies. Unknown extension flags appear on that page by id. Availability does not install a plugin, authorize a script or connect an unconfigured external destination.
 
 ## `browser_control`
 
