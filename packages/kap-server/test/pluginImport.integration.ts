@@ -256,11 +256,25 @@ it('rolls back pre-publication failures, preserves old archives, isolates change
   const manager = target.server.core.accessor.get(ISessionManager);
   const publish = vi.spyOn(target.server.core.accessor.get(IFileSystemStorageService), 'moveDirectory').mockRejectedValueOnce(new Error('fixture before publication'));
   const preview = await target.client.global.imports.preview(fixture.input);
+  const failed = Promise.withResolvers<void>();
+  const documents = target.server.core.accessor.get(IAtomicDocumentStore);
+  const set = documents.set.bind(documents);
+  const persisted = vi.spyOn(documents, 'set').mockImplementation(async (...args) => {
+    await set(...args);
+    const [scope, key, value] = args;
+    const job = value as Partial<ImportJob> | null | undefined;
+    if (scope === 'plugin-import-v1' && key === `jobs.${job?.id}` && job?.previewId === preview.id && job.status === 'failed') failed.resolve();
+  });
   const started = await target.client.global.imports.start({ previewId: preview.id, acknowledge: true });
-  await vi.waitFor(async () => expect((await target.client.global.imports.job(started.id)).status).toBe('failed'), { timeout: 15_000 });
-  expect((await target.client.global.sessions.list({})).items).toHaveLength(0);
-  expect(manager.listEphemeral()).toHaveLength(0);
-  publish.mockRestore();
+  try {
+    await failed.promise;
+    expect((await target.client.global.imports.job(started.id)).status).toBe('failed');
+    expect((await target.client.global.sessions.list({})).items).toHaveLength(0);
+    expect(manager.listEphemeral()).toHaveLength(0);
+  } finally {
+    persisted.mockRestore();
+    publish.mockRestore();
+  }
   await target.client.global.imports.resume(started.id);
   await vi.waitFor(async () => expect((await target.client.global.imports.job(started.id)).status).toBe('completed'));
   const original = await target.client.global.imports.job(started.id);
