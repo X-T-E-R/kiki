@@ -34,7 +34,7 @@ export class RecipeService extends Disposable implements IRecipeService {
   constructor(
     @IAtomicDocumentStore private readonly documents: IAtomicDocumentStore,
     @IBlobStore private readonly blobs: IBlobStore,
-    @IBootstrapService bootstrap: IBootstrapService,
+    @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IRecipeSourceReader private readonly sources: IRecipeSourceReader,
     @IPromptFieldRegistry private readonly fields: IPromptFieldRegistry,
     @IConfigService private readonly config: IConfigService,
@@ -50,18 +50,31 @@ export class RecipeService extends Disposable implements IRecipeService {
   private enabled(): void { if (!this.flags.enabled('recipes')) throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Enable experimental recipes to use Recipe packages'); }
   private key(revision: string): string { return `recipes/revisions/${revision.slice(7)}`; }
   private async snapshot(revision: string): Promise<RecipeSnapshot> {
-    const value = await this.documents.get<RecipeSnapshot>(this.scope, this.key(revision));
+    const value = await this.documents.get<RecipeSnapshot>(this.scope, this.key(revision))
+      ?? await this.bootstrap.baseDocumentStore?.get<RecipeSnapshot>(this.scope, this.key(revision));
     if (value === undefined || !resolvedRecipeSchema.safeParse(value.resolved).success || value.resolved.revision !== revision || this.snapshotDigest(value) !== revision) recipeFailure('Recipe revision is unavailable or corrupt', revision);
     return value;
   }
-  private async records(): Promise<Record<string, Installation>> { return await this.documents.get<Record<string, Installation>>(this.scope, 'recipes/installations') ?? {}; }
+  private async localRecords(): Promise<Record<string, Installation>> { return await this.documents.get<Record<string, Installation>>(this.scope, 'recipes/installations') ?? {}; }
+  private async records(): Promise<Record<string, Installation>> {
+    const inherited = await this.bootstrap.baseDocumentStore?.get<Record<string, Installation>>(this.scope, 'recipes/installations');
+    return { ...inherited, ...await this.localRecords() };
+  }
   private async record(id: string): Promise<Installation> { const value = (await this.records())[id]; if (value === undefined) recipeFailure('Recipe installation not found', id); return value; }
-  private usedBy(id: string): string[] { return Object.entries(this.models.list()).filter(([, model]) => model.recipe === id).map(([alias]) => alias); }
+  private async localRecord(id: string): Promise<Installation> {
+    const value = (await this.localRecords())[id];
+    if (value === undefined) {
+      await this.record(id);
+      recipeFailure('Recipe is inherited; copy or inherit it before changing it in this space', id);
+    }
+    return value;
+  }
+  private usedBy(id: string): string[] { return Object.entries(this.models.list()).filter(([, model]) => model.recipe?.trim().replace(/^installation:/u, '') === id).map(([alias]) => alias); }
   async list(): Promise<RecipeSummary[]> { this.enabled(); return Object.values(await this.records()).map((value) => value.summary); }
   async get(id: string): Promise<RecipeDetail | undefined> {
     this.enabled(); const record = (await this.records())[id]; if (record === undefined) return undefined;
     const snapshot = await this.snapshot(record.summary.revision);
-    return { summary: record.summary, resolved: snapshot.resolved, files: snapshot.files, history: record.history, editable: record.editable, used_by: this.usedBy(id) };
+    return { summary: record.summary, resolved: snapshot.resolved, files: snapshot.files, history: record.history, editable: record.editable && (await this.localRecords())[id] !== undefined, used_by: this.usedBy(id) };
   }
   private consentFailure(): never {
     throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Confirm installation to authorize new Recipe scripts', { details: { code: 'recipe-hook-consent-required', path: 'hooks' } });
@@ -141,7 +154,7 @@ export class RecipeService extends Disposable implements IRecipeService {
   async preview(input: RecipePreviewInput): Promise<RecipePreview> {
     this.enabled(); for (const [id, candidate] of this.candidates) if (candidate.expires < Date.now()) this.candidates.delete(id);
     if (this.candidates.size >= 32) recipeFailure('Too many pending Recipe previews; install or wait for expiry');
-    const old = input.installation_id === undefined ? undefined : await this.record(input.installation_id);
+    const old = input.installation_id === undefined ? undefined : await this.localRecord(input.installation_id);
     if (input.files !== undefined && (old === undefined || !old.editable)) recipeFailure('Recipe files can only preview an editable installation');
     if (old !== undefined && input.expected_revision !== undefined && old.summary.revision !== input.expected_revision) recipeFailure('Recipe changed; reload before saving');
     if (old !== undefined && input.source.locator !== old.summary.source.locator) recipeFailure('Update preview must retain the installation source');
@@ -179,7 +192,7 @@ export class RecipeService extends Disposable implements IRecipeService {
     this.changed.fire(); return result!;
   }
   async update(input: RecipeUpdateInput): Promise<RecipeSummary> {
-    this.enabled(); const old = await this.record(input.installation_id);
+    this.enabled(); const old = await this.localRecord(input.installation_id);
     if (input.revision !== undefined && !old.history.includes(input.revision)) recipeFailure('Recipe revision is not in installation history', input.installation_id);
     try {
       const snapshot = input.revision !== undefined ? await this.snapshot(input.revision)
@@ -205,7 +218,7 @@ export class RecipeService extends Disposable implements IRecipeService {
     this.checking = this.check(true).finally(() => { this.checking = undefined; }); await this.checking;
   }
   private async check(accept: boolean): Promise<RecipeSummary[]> {
-    for (const [id, record] of Object.entries(await this.records())) {
+    for (const [id, record] of Object.entries(await this.localRecords())) {
       if (record.summary.update_mode === 'pinned' || accept && Date.now() - (record.checked_at ?? 0) < 24 * 60 * 60_000) continue;
       try {
         const next = await this.prepare(record.summary.source);
@@ -257,18 +270,18 @@ export class RecipeService extends Disposable implements IRecipeService {
       steering_sources: branch.steering_sources === undefined ? undefined : Object.fromEntries(Object.entries(branch.steering_sources).map(([source, setting]) => [source, { ...setting, custom: setting.custom === undefined ? undefined : { ...setting.custom, steering: setting.custom.steering === undefined ? 'off' : { text: setting.custom.steering } } }])) };
   }
   async saveLocal(input: RecipeSaveLocalInput): Promise<RecipeDetail> {
-    this.enabled(); const old = await this.record(input.installation_id); if (!old.editable) recipeFailure('Copy or inherit this Recipe before editing', input.installation_id);
+    this.enabled(); const old = await this.localRecord(input.installation_id); if (!old.editable) recipeFailure('Copy or inherit this Recipe before editing', input.installation_id);
     const next = await this.prepare(old.summary.source, [], input.files);
     await this.publish(input.installation_id, next, input.expected_revision); return (await this.get(input.installation_id))!;
   }
   async remove(input: RecipeRemoveInput): Promise<void> {
-    this.enabled(); const old = await this.record(input.installation_id);
+    this.enabled(); const old = await this.localRecord(input.installation_id);
     if (input.expected_revision !== undefined && input.expected_revision !== old.summary.revision) recipeFailure('Recipe changed; reload before removing', input.installation_id);
     const used = this.usedBy(input.installation_id);
     if (used.length > 0 && input.disable_models !== true) throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Disable affected models before removing Recipe', { details: { used_by: used } });
     if (used.length > 0) {
-      const before = this.config.get<ModelsSection>('models'); const after = structuredClone(before);
-      for (const id of used) { if (after[id]?.recipe === input.installation_id) delete after[id]!.recipe; }
+      const before = this.config.inspect<ModelsSection>('models').userValue; const after = structuredClone(before ?? {});
+      for (const id of used) after[id] = { ...after[id], recipe: 'off' };
       await this.config.replaceSections({ models: after }, undefined, { models: before });
     }
     await this.documents.update<Record<string, Installation>>(this.scope, 'recipes/installations', (records) => { const next = { ...records }; delete next[input.installation_id]; return next; }); this.changed.fire();

@@ -3,6 +3,7 @@ import { loadSteeringSources } from '#/agent/cognition/steeringBinding';
 import { dirname } from 'node:path';
 import { composeRecipeLayers, recipeReferences } from '#/app/recipes/recipeOverlay';
 import { isRecipeFileReference, resolveRecipeFileLocator } from '#/app/recipes/recipePrimitives';
+import { resolveModelRecipeReference } from '#/app/recipes/recipeReferenceResolution';
 import { snapshotRecipeModelSettings } from '#/app/recipes/recipeModelSettings';
 import type { AgentPromptDiagnostics, ExecutionSelection } from '@kiki/protocol';
 import { AGENT_EXECUTOR_OVERRIDES_SECTION, type AgentExecutorOverridesConfig } from '#/app/agentExecutor/executorOverrides';
@@ -2258,7 +2259,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     for (const reference of references) {
       const raw = reference.id!;
       const file = isRecipeFileReference(raw);
-      const installation_id = file ? resolveRecipeFileLocator(raw, reference.surface === 'profile' ? profileBase : undefined) : raw.replace(/^installation:/u, '');
+      const installation_id = file ? reference.surface === 'profile'
+        ? resolveRecipeFileLocator(raw, profileBase) : resolveModelRecipeReference(raw, alias, this.config, this.bootstrap)
+        : raw.replace(/^installation:/u, '');
       layers.push({ surface: reference.surface, installation_id, resolved: await this.recipes.resolve(installation_id) });
     }
     return composeRecipeLayers(layers, model?.overrides);

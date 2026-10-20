@@ -61,6 +61,8 @@ import {
 } from './modelCatalogMutation';
 
 import { IRecipeService } from '#/app/recipes/recipes';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { resolveModelRecipeReference } from '#/app/recipes/recipeReferenceResolution';
 import { IModelPromptReader } from './modelPromptReader';
 import { modelPromptBodies } from './modelPromptBodies';
 import { patchModelSteeringSources } from './modelSteeringPatch';
@@ -541,6 +543,7 @@ export class ModelCatalogMutationService
   constructor(
     @IConfigService private readonly config: IConfigService,
     @IModelOAuthTokens private readonly oauth: IModelOAuthTokens,
+    @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IRecipeService private readonly recipes?: IRecipeService,
     @IModelPromptReader private readonly promptReader?: IModelPromptReader,
   ) {
@@ -569,10 +572,10 @@ export class ModelCatalogMutationService
     const entity = this.currentModelEntity(id);
     const cognition = structuredClone(effectiveModelsOf(this.config)[id]?.cognition);
     const saved = { ...entity, cognition_bodies: await modelPromptBodies(cognition, entity.revision, this.promptReader) };
-    if (saved.recipe === undefined) return saved;
+    if (saved.recipe === undefined || saved.recipe === 'off') return saved;
     try {
       if (this.recipes === undefined) throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Recipe service is unavailable');
-      const resolved = await this.recipes.resolve(saved.recipe);
+      const resolved = await this.recipes.resolve(resolveModelRecipeReference(saved.recipe, id, this.config, this.bootstrap));
       const record = effectiveModelsOf(this.config)[id]!;
       const recipe = composeRecipeLayers([{ surface: 'model', installation_id: saved.recipe, resolved }], record.overrides)!;
       const effective = modelEntity(id, applyRecipeModelSettings(record, recipe.model), effectiveProvidersOf(this.config), defaultProviderOf(this.config));
@@ -681,9 +684,9 @@ export class ModelCatalogMutationService
         });
       }
       if (deepEqual(next, local)) return this.readModel(id);
-      if (typeof request.recipe === 'string') {
+      if (typeof request.recipe === 'string' && request.recipe !== 'off') {
         if (this.recipes === undefined) throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Recipe service is unavailable');
-        await this.recipes.resolve(request.recipe);
+        await this.recipes.resolve(resolveModelRecipeReference(request.recipe, id, this.config, this.bootstrap, true));
       }
       await this.writeSections(
         { [MODELS_SECTION]: { ...models, [id]: next } },
