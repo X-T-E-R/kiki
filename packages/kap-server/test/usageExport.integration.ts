@@ -362,8 +362,20 @@ describe('usage export real source → SQLite outbox → loopback receiver → d
     const batch = f.store.take(d.id, 1, 1048576)!; f.store.updateWithMetadata(d.id, { enabled: false, next_at: null }, { [`handoff-arm:${d.id}`]: JSON.stringify({ file, fingerprint: preview.preview_fingerprint }) });
     available = false; now = plan.cutoff_at + 1800000; await f.restart(); f.service.registerAdapter(adapter); f.service.start(); await vi.waitFor(() => expect(f.store.get(d.id).enabled).toBe(true)); expect(f.store.get(d.id).scope.start_at).toBe(plan.cutoff_at); expect(f.store.take(d.id, 1, 1048576)).toEqual(batch);
     entry.active = true; entry.last_receipt = { completed_at: now, cutoff_at: plan.cutoff_at, ingested: 1, coverage_complete: true, cutoff_persisted: true, collector_version: 'synthetic-fixture', collector_identity: identity }; await writeProof(); await f.service.refreshHandoff(d.id); available = true; await f.service.deliver(d.id, true); expect(f.service.handoff(d.id)?.phase).toBe('completed');
-    const R = now + 3600000; const rollback = await f.service.rollbackHandoff(d.id, R, true); expect(rollback.phase).toBe('rollback-prepared'); expect(f.store.get(d.id).scope).toMatchObject({ start_at: plan.cutoff_at, end_at: R }); expect(JSON.parse(await readFile(file, 'utf8')).homes[0].resume_ranges).toEqual([{ start_at: R, end_at: null }]);
-    preview = await f.service.preview(d.id); expect(preview.items.every((item) => Date.parse(item.bucket!.start_at) >= plan.cutoff_at && Date.parse(item.bucket!.start_at) < R)).toBe(true);
+    const R = now + 3600000;
+    await f.write('handoff', 'main', [record(T + 1, 10), record(T + 3600001, 20), record(T + 7200001, 30), record(R, 40)]);
+    const staged = Promise.withResolvers<void>(); const release = Promise.withResolvers<void>();
+    const publish = f.store.publishStageAsync.bind(f.store);
+    const publication = vi.spyOn(f.store, 'publishStageAsync').mockImplementationOnce(async (...args) => { staged.resolve(); await release.promise; return publish(...args); });
+    const scan = f.service.scan(true); await staged.promise;
+    const update = f.store.updateWithMetadataAsync.bind(f.store);
+    const rollbackUpdate = vi.spyOn(f.store, 'updateWithMetadataAsync').mockImplementationOnce(async (...args) => { release.resolve(); await Promise.resolve(); return update(...args); });
+    try {
+      const rollback = await f.service.rollbackHandoff(d.id, R, true); expect(rollback.phase).toBe('rollback-prepared'); expect(f.store.get(d.id).scope).toMatchObject({ start_at: plan.cutoff_at, end_at: R }); expect(JSON.parse(await readFile(file, 'utf8')).homes[0].resume_ranges).toEqual([{ start_at: R, end_at: null }]);
+    } finally { release.resolve(); await scan; publication.mockRestore(); rollbackUpdate.mockRestore(); }
+    expect(f.service.status().scan_error).toBeNull();
+    expect(f.store.ack(d.id, batch.items[0]!.bucket_id)).toEqual({ revision: batch.items[0]!.revision, hash: batch.items[0]!.payload_hash });
+    preview = await f.service.preview(d.id); expect(preview.items.map((item) => Date.parse(item.bucket!.start_at))).toEqual([plan.cutoff_at, T + 7200000]);
   });
 
   it.each([

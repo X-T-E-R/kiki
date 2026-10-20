@@ -17,6 +17,7 @@ export class UsageExportStore {
   private fence = '';
   private closed = false;
   private readonly projectedOrigins = new Map<string, Set<string>>();
+  private projectionLane: Promise<void> = Promise.resolve();
   private elected: boolean;
   get writer(): boolean { return this.elected; }
   constructor(path: string, private readonly legacyDisabled?: boolean) {
@@ -106,12 +107,21 @@ export class UsageExportStore {
       return next;
     });
   }
+  private withProjection<T>(work: () => Promise<T>): Promise<T> {
+    const flight = this.projectionLane.then(work);
+    this.projectionLane = flight.then(() => {}, () => {});
+    return flight;
+  }
   async updateWithMetadataAsync(id: string, change: Partial<UsageExportDestination>, metadata: Readonly<Record<string, string>>): Promise<UsageExportDestination> {
-    const plan = await this.projectionPlan(id, undefined, { ...this.get(id), ...change });
-    return this.transaction(() => {
-      this.assertProjection(id, plan); const next = this.update(id, change);
-      for (const [key, value] of Object.entries(metadata)) this.setMeta(key, value);
-      this.publishDestination(id, plan); if (this.totalBytes() > this.capacity()) throw new Error('export-queue-full'); return next;
+    const destinationStamp = this.projectionStamp(this.get(id));
+    return this.withProjection(async () => {
+      if (destinationStamp !== this.projectionStamp(this.get(id))) throw new Error('export-projection-changed');
+      const plan = await this.projectionPlan(id, undefined, { ...this.get(id), ...change });
+      return this.transaction(() => {
+        this.assertProjection(id, plan); const next = this.update(id, change);
+        for (const [key, value] of Object.entries(metadata)) this.setMeta(key, value);
+        this.publishDestination(id, plan); if (this.totalBytes() > this.capacity()) throw new Error('export-queue-full'); return next;
+      });
     });
   }
   stage(run: string, source: SourceContribution): void {
@@ -120,9 +130,11 @@ export class UsageExportStore {
   }
   discardStage(run: string): void { this.assertWriter(); this.db.prepare('DELETE FROM staging WHERE run=?').run(run); }
   async publishStageAsync(run: string, complete = true, incompleteReason: string | null = null): Promise<void> {
-    const plans = new Map<string, ProjectionPlan>();
-    for (const destination of this.list()) if (destination.enabled) plans.set(destination.id, await this.projectionPlan(destination.id, run));
-    this.publishStage(run, complete, incompleteReason, plans);
+    return this.withProjection(async () => {
+      const plans = new Map<string, ProjectionPlan>();
+      for (const destination of this.list()) if (destination.enabled) plans.set(destination.id, await this.projectionPlan(destination.id, run));
+      this.publishStage(run, complete, incompleteReason, plans);
+    });
   }
   publishStage(run: string, complete = true, incompleteReason: string | null = null, plans?: Map<string, ProjectionPlan>): void {
     this.transaction(() => {
@@ -142,7 +154,12 @@ export class UsageExportStore {
     });
   }
   refreshDestination(id: string): void { this.transaction(() => { this.publishDestination(id); if (this.totalBytes() > this.capacity()) throw new Error('export-queue-full'); }); }
-  async refreshDestinationAsync(id: string): Promise<void> { const plan = await this.projectionPlan(id); this.transaction(() => { this.assertProjection(id, plan); this.publishDestination(id, plan); if (this.totalBytes() > this.capacity()) throw new Error('export-queue-full'); }); }
+  async refreshDestinationAsync(id: string): Promise<void> {
+    return this.withProjection(async () => {
+      const plan = await this.projectionPlan(id);
+      this.transaction(() => { this.assertProjection(id, plan); this.publishDestination(id, plan); if (this.totalBytes() > this.capacity()) throw new Error('export-queue-full'); });
+    });
+  }
   private projectionStamp(destination: UsageExportDestination): string { return digest({ scope: destination.scope, stream: destination.stream_id, target: destination.target, account: destination.account_fingerprint, enabled: destination.enabled, consent: destination.consent_fingerprint }); }
   private accumulateProjection(row: SourceRow, destination: UsageExportDestination, identityKey: string, groups: Map<string, ProjectionAccumulator>, origins: Map<string, Set<string>>): void {
     if (destination.scope.excluded_workspace_ids.includes(String(row['workspace'])) || (row['kind'] === 'ephemeral' && !destination.scope.include_ephemeral)) return;
@@ -183,7 +200,11 @@ export class UsageExportStore {
     return { buckets: this.finishProjection(groups, identityKey), origins, sourceGeneration, destinationStamp: this.projectionStamp(saved.destination) };
   }
   private assertProjection(id: string, plan: ProjectionPlan): void { if (plan.sourceGeneration !== this.meta('source-generation') || plan.destinationStamp !== this.projectionStamp(this.get(id))) throw new Error('export-projection-changed'); }
-  async previewAsync(id: string, limit = 20): Promise<{ items: UsageExportItem[]; total: number }> { const plan = await this.projectionPlan(id); this.assertProjection(id, plan); return this.previewProjected(id, plan.buckets, limit); }
+  async previewAsync(id: string, limit = 20): Promise<{ items: UsageExportItem[]; total: number }> {
+    return this.withProjection(async () => {
+      const plan = await this.projectionPlan(id); this.assertProjection(id, plan); return this.previewProjected(id, plan.buckets, limit);
+    });
+  }
   preview(id: string, limit = 20): { items: UsageExportItem[]; total: number } { return this.previewProjected(id, this.projected(id), limit); }
   private previewProjected(id: string, projected: ProjectionPlan['buckets'], limit: number): { items: UsageExportItem[]; total: number } {
     const destination = this.get(id); const items: UsageExportItem[] = [];
