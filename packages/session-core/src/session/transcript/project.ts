@@ -19,6 +19,7 @@ import { readTextPresentation, transcriptValueEquals } from '@kiki/transcript';
 import type {
   AgentState,
   AgentTranscriptSnapshot,
+  ContentWindow,
   TranscriptItem,
   TranscriptPrompt,
   TranscriptTask,
@@ -155,6 +156,7 @@ function classifiedTextToBlocks(input: {
   id: string;
   classified: ReturnType<typeof classifyTranscriptText>;
   contentSource?: UserBlock['contentSource'];
+  contentPending?: boolean;
   presentation?: UserBlock['presentation'];
   createdAt: string;
   media?: readonly MediaRef[];
@@ -169,7 +171,7 @@ function classifiedTextToBlocks(input: {
   switch (classified.lane) {
     case 'you':
     case 'peer':
-      if (classified.text !== '' || (input.media !== undefined && input.media.length > 0)) {
+      if (classified.text !== '' || (input.media !== undefined && input.media.length > 0) || input.contentPending === true) {
         const identity = input.userMessageId ?? input.clientRequestId ?? input.id;
         blocks.push({
           kind: 'user',
@@ -1791,6 +1793,7 @@ function upsertPromptItemBlocks(
   blocks: readonly Block[],
   item: PromptItem,
   mediaOverride?: readonly MediaRef[],
+  contentWindow?: Pick<Parameters<typeof classifiedTextToBlocks>[0], 'contentSource' | 'contentPending'>,
 ): readonly Block[] {
   const projection = projectMessageContent(item.content);
   const media = mediaOverride ?? projection.media;
@@ -1803,6 +1806,7 @@ function upsertPromptItemBlocks(
   );
   const previous = stableIndex < 0 ? undefined : blocks[stableIndex] as UserBlock;
   const sourceOrigin = item.origin === undefined ? previous?.sourceOrigin : item.origin;
+  const contentSource = contentWindow?.contentSource ?? previous?.contentSource;
   const origin = sourceOrigin === undefined ? { kind: 'user' } : originFromRecord({ origin: sourceOrigin }) ?? { kind: 'unknown' };
   const classified = classifyTranscriptText({ text: projection.text, presentation: projection.presentation, role: 'user', origin });
   const text = classified.text;
@@ -1811,13 +1815,15 @@ function upsertPromptItemBlocks(
     classified,
     createdAt: item.created_at,
     media,
+    contentSource,
+    contentPending: contentWindow?.contentPending,
     promptId: item.prompt_id,
     userMessageId: item.user_message_id,
     promptStatus: item.status,
   }).map((block): Block => block.kind === 'user' ? { ...block, queuedContent, sourceOrigin } : block);
   const incoming = additions.find((block): block is UserBlock => block.kind === 'user');
   if (previous !== undefined && classified.lane !== 'you' && classified.lane !== 'peer') {
-    return upsertPromptItemBlocks(blocks.filter((block) => block !== previous), { ...item, origin: sourceOrigin }, mediaOverride);
+    return upsertPromptItemBlocks(blocks.filter((block) => block !== previous), { ...item, origin: sourceOrigin }, mediaOverride, contentWindow);
   }
   if (stableIndex >= 0) {
     const existing = blocks[stableIndex] as UserBlock;
@@ -1838,6 +1844,7 @@ function upsertPromptItemBlocks(
       sameMedia(existing.media, nextMedia) &&
       transcriptValueEquals(existing.queuedContent, queuedContent) &&
       transcriptValueEquals(existing.sourceOrigin, sourceOrigin) &&
+      transcriptValueEquals(existing.contentSource, contentSource) &&
       transcriptValueEquals(blocks.filter(isPromptReminder), reminders)
     ) {
       return blocks;
@@ -1845,7 +1852,7 @@ function upsertPromptItemBlocks(
     const next = blocks.filter((block) => !isPromptReminder(block));
     const index = next.indexOf(existing);
     next.splice(index, 1, {
-      ...existing, text, presentation: projection.presentation, promptStatus: nextStatus, media: nextMedia, queuedContent, sourceOrigin,
+      ...existing, text, presentation: projection.presentation, promptStatus: nextStatus, media: nextMedia, queuedContent, sourceOrigin, contentSource,
       agentMessage: incoming?.agentMessage, bridgedPeer: incoming?.bridgedPeer, peerThread: incoming?.peerThread,
     }, ...reminders);
     return next;
@@ -2156,6 +2163,7 @@ function mergeTranscriptPromptBlocks(
     }
     const parts = promptContentParts(prompt.content);
     const projection = projectMessageContent(parts);
+    const contentPending = prompt.contentRefs?.some((ref) => ref.path[0] === 'content') === true;
     if (prompt.status === 'running') {
       const previousUser = previous.find(
         (block): block is UserBlock =>
@@ -2167,10 +2175,12 @@ function mergeTranscriptPromptBlocks(
         continue;
       }
       next = stampRunningPromptIdentity(next, prompt);
-      if (parts.length === 0) continue;
+      if (next.some((block) => block.kind === 'user' && block.turnId !== undefined &&
+        isPromptIdentity(block, prompt.promptId, prompt.userMessageId))) continue;
+      if (parts.length === 0 && !contentPending) continue;
     }
     if (prompt.steeredAt !== undefined) continue;
-    if (parts.length === 0 && prompt.userMessageId === undefined) continue;
+    if (parts.length === 0 && prompt.userMessageId === undefined && !contentPending) continue;
     const item: PromptItem = {
       prompt_id: prompt.promptId,
       user_message_id: prompt.userMessageId ?? prompt.promptId,
@@ -2180,7 +2190,10 @@ function mergeTranscriptPromptBlocks(
       append_timing: prompt.appendTiming,
       revision: prompt.revision,
     };
-    next = [...upsertPromptItemBlocks(next, item, projection.media.length > 0 ? projection.media : undefined)];
+    next = [...upsertPromptItemBlocks(next, item, projection.media.length > 0 ? projection.media : undefined, {
+      contentSource: { kind: 'prompt', id: prompt.promptId },
+      contentPending,
+    })];
     const owner = prompt.status === 'running' ? context.turns.get(prompt.promptId) : undefined;
     if (owner !== undefined) {
       const userIndex = next.findIndex((block) => block.kind === 'user' && block.turnId === undefined && isPromptIdentity(block, prompt.promptId, prompt.userMessageId));
@@ -2563,12 +2576,18 @@ export function agentTranscriptToBlocks(
     const identity = identityFromTurnOrigin(origin);
     const turnPresentation = readTextPresentation((item as { presentation?: unknown }).presentation);
     const turnUserMessageId = turnMessageId(item) ?? identity.userMessageId;
+    const turnMedia = mediaWithPresentation(mediaFromAttachmentIds(
+      (item as { attachmentIds?: readonly string[] }).attachmentIds, attachmentsById, response.agent_id,
+    ), turnPresentation);
+    const promptPending = (item as ContentWindow).contentRefs?.some((ref) => ['prompt', 'presentation', 'origin', 'attachmentIds'].includes(String(ref.path[0]))) === true;
+    const frameOwnsMessage = turnUserMessageId !== undefined && item.steps.some((step) => step.frames.some((frame) =>
+      frame.kind === 'text' && frame.role === 'user' && frameMessageId(frame) === turnUserMessageId));
     let projectedTurnPrompt = false;
-    if (item.prompt !== undefined && item.prompt.trim() !== '') {
+    if (item.prompt?.trim() || (!frameOwnsMessage && ((turnMedia?.length ?? 0) > 0 || promptPending))) {
       const promptBlocks = classifiedTextToBlocks({
         id: turnUserMessageId ?? `agent-turn-${item.turnId}-prompt`,
         classified: classifyTranscriptText({
-          text: item.prompt,
+          text: item.prompt ?? '',
           presentation: turnPresentation,
           role: 'user',
           origin,
@@ -2577,13 +2596,10 @@ export function agentTranscriptToBlocks(
         createdAt: (item as { delivery?: { deliveredAt?: string } }).delivery?.deliveredAt ?? item.startedAt ?? '',
         turnId: item.turnId,
         contentSource: { kind: 'turn', id: item.turnId },
+        contentPending: promptPending,
         promptId: (item as { readonly promptId?: string }).promptId ?? identity.promptId,
         userMessageId: turnUserMessageId,
-        media: mediaWithPresentation(mediaFromAttachmentIds(
-          (item as { attachmentIds?: readonly string[] }).attachmentIds,
-          attachmentsById,
-          response.agent_id,
-        ), turnPresentation),
+        media: turnMedia,
       });
       projectedTurnPrompt = promptBlocks.some((block) => block.kind === 'user');
       blocks.push(...promptBlocks);
@@ -2640,6 +2656,7 @@ export function agentTranscriptToBlocks(
                     '',
                   turnId: item.turnId,
                   contentSource: { kind: 'frame', id: frame.frameId, turnId: item.turnId, stepId: step.stepId },
+                  contentPending: (frame as ContentWindow).contentRefs?.some((ref) => ['text', 'presentation', 'origin', 'attachmentIds'].includes(String(ref.path[0]))),
                   userMessageId,
                   media: mediaWithPresentation(mediaFromAttachmentIds(
                     (frame as { attachmentIds?: readonly string[] }).attachmentIds,

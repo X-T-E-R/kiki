@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { AgentTranscript, type AgentTranscriptSnapshot, type TranscriptOperation } from '@kiki/transcript';
+import { AgentTranscript, type AgentTranscriptSnapshot, type ContentRef, type TranscriptOperation, type TranscriptPrompt, type TranscriptTurn } from '@kiki/transcript';
 import type { Message, Session, SessionSnapshotResponse, SnapshotSubagent } from '@kiki/protocol';
 
 import {
@@ -22,6 +22,8 @@ import {
 } from './__fixtures__/canonicalTranscript';
 
 import type { AgentTranscriptResponse } from '../transport';
+import { selectionCarryoverPresentation } from '../composer/selectionQuote';
+import { parseSelectionCarryovers } from '../composer/timelineAnnotations';
 
 import { buildAgentForest } from './agentTree';
 import { foldHistory, groupBlocks } from './grouping';
@@ -1737,6 +1739,52 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       content: [{ type: 'text', text: 'hello', presentation: second }],
     });
     expect(replaced.blocks.find((block): block is UserBlock => block.kind === 'user')?.presentation).toEqual(second);
+  });
+
+  it.each(['queued', 'blocked'] as const)('keeps message identity and presentation in %s previews', (status) => {
+    const selection = selectionCarryoverPresentation([{ quote: 'Selected requirement.', comment: 'Keep this complete note.' }], []);
+    const content: Message['content'] = [{ type: 'text', text: selection.prefix + 'Read the report.', presentation: selection.presentation },
+      { type: 'file', file_id: 'file-report', name: 'report.txt', media_type: 'text/plain', size: 12 }];
+    const view = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({ prompts: [{
+      promptId: 'p-preview', userMessageId: 'um-preview', status, content, createdAt: FIXED_AT,
+    }] }));
+    const block = view.blocks.find((block): block is UserBlock => block.kind === 'user')!;
+    expect(block).toMatchObject({ promptStatus: status, contentSource: { kind: 'prompt', id: 'p-preview' } });
+    const preview = status === 'queued' ? queuedPromptPreviews(view)[0]! : block;
+    expect(preview).toMatchObject({ promptId: 'p-preview', userMessageId: 'um-preview', presentation: selection.presentation,
+      media: [{ kind: 'file', fileId: 'file-report', name: 'report.txt', mime: 'text/plain', size: 12 }] });
+    if (status === 'queued') expect(queuedPromptPreviews(view)[0]?.content).toEqual(content);
+    expect(parseSelectionCarryovers(preview.text, preview.presentation)).toMatchObject({ body: 'Read the report.', annotations: [{ comment: 'Keep this complete note.' }] });
+  });
+
+  it('keeps media-only canonical messages and empty bounded frames without replacing their source', () => {
+    const ref: ContentRef = { source: { kind: 'frame', id: 'f-bounded', turnId: 't-bounded', stepId: 's-bounded' },
+      path: ['text'], kind: 'text', offset: 0, total: 100, revision: 'bounded-v1' };
+    const view = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({
+      items: [{ kind: 'turn', turnId: 't-media', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: '', attachmentIds: ['att-media'], steps: [] },
+        { kind: 'turn', turnId: 't-bounded', ordinal: 1, state: 'completed', origin: { kind: 'user' }, steps: [{ kind: 'step', stepId: 's-bounded', turnId: 't-bounded', ordinal: 1, state: 'completed',
+          frames: [{ kind: 'text', frameId: 'f-bounded', role: 'user', text: '', contentRefs: [ref] }] }] }],
+      attachments: [{ attachmentId: 'att-media', mediaType: 'image/png', source: { kind: 'url', url: 'https://example.test/photo.png' } }],
+    }));
+    const users = view.blocks.filter((block): block is UserBlock => block.kind === 'user');
+    expect(users).toHaveLength(2);
+    expect(users[0]).toMatchObject({ text: '', contentSource: { kind: 'turn', id: 't-media' }, media: [{ kind: 'image', url: 'https://example.test/photo.png' }] });
+    expect(users[1]).toMatchObject({ text: '', contentSource: ref.source });
+  });
+
+  it('does not let a media-only turn shell suppress its canonical user frame', () => {
+    const view = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({ items: [{
+      kind: 'turn', turnId: 't-frame', ordinal: 0, state: 'completed', prompt: '', attachmentIds: ['att-frame'],
+      origin: { kind: 'user', payload: { userMessageId: 'um-frame' } }, steps: [{
+        kind: 'step', stepId: 's-frame', turnId: 't-frame', ordinal: 1, state: 'completed', frames: [{
+          kind: 'text', frameId: 'f-frame', role: 'user', text: 'Frame-owned message.', attachmentIds: ['att-frame'],
+          part: { partId: 'part-frame', messageId: 'um-frame', revision: 1, provenance: { source: 'engine' } },
+        }],
+      }],
+    }], attachments: [{ attachmentId: 'att-frame', mediaType: 'image/png', source: { kind: 'url', url: 'https://example.test/photo.png' } }] }));
+    const users = view.blocks.filter((block): block is UserBlock => block.kind === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0]).toMatchObject({ text: 'Frame-owned message.', contentSource: { kind: 'frame', id: 'f-frame', turnId: 't-frame', stepId: 's-frame' }, media: [{ kind: 'image', url: 'https://example.test/photo.png' }] });
   });
 
   it('projects attachment presentation spans into queue media and contentless turn/frame user blocks', () => {
@@ -4984,6 +5032,104 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
         }),
       ]);
     }
+  });
+
+  function annotatedRunningPrompt() {
+    const annotations = [
+      { quote: 'First selected paragraph. '.repeat(60), comment: 'Keep the first requirement.\nRetain its supporting detail.' },
+      { quote: 'Second selected paragraph.', comment: 'Keep the second requirement.' },
+      { quote: 'Third selected paragraph.', comment: 'Keep the third requirement.' },
+    ];
+    const quotes = [{ quote: 'An additional cited paragraph.' }];
+    const selection = selectionCarryoverPresentation(annotations, quotes);
+    const body = 'Use the approved build targets only.';
+    const text = selection.prefix + body;
+    const turn: TranscriptTurn = {
+      kind: 'turn', turnId: 't-preview', ordinal: 1, state: 'running', promptId: 'p-preview',
+      origin: { kind: 'user', payload: { promptId: 'p-preview', userMessageId: 'um-preview' } },
+      prompt: text, presentation: selection.presentation, attachmentIds: ['att-preview'], startedAt: FIXED_AT, steps: [],
+    };
+    const ref: ContentRef = {
+      source: { kind: 'prompt', id: 'p-preview' }, path: ['content', 0, 'text'], kind: 'text',
+      offset: 1024, total: text.length, revision: 'prompt-preview-v1',
+    };
+    const prompt: TranscriptPrompt = {
+      promptId: 'p-preview', userMessageId: 'um-preview', status: 'running', createdAt: FIXED_AT,
+      content: [{ type: 'text', text: text.slice(0, ref.offset), presentation: selection.presentation }], contentRefs: [ref],
+    };
+    const attachments: AgentTranscriptSnapshot['attachments'] = [{
+      attachmentId: 'att-preview', mediaType: 'image/png', name: 'example.png',
+      source: { kind: 'session_media', fileId: 'file-preview' },
+    }];
+    return { annotations, quotes, body, text, turn, prompt, attachments };
+  }
+
+  it.each(['preview first', 'turn first', 'cold baseline'] as const)(
+    'keeps the delivered annotated message when a running prompt is bounded (%s)',
+    (order) => {
+      const fixture = annotatedRunningPrompt();
+      const store = new AgentTranscript('main');
+      let view = createViewState('session_test');
+      const turn: TranscriptOperation = { op: 'turn.upsert', turn: fixture.turn };
+      const prompt: TranscriptOperation = { op: 'prompt.upsert', prompt: fixture.prompt };
+      const initial = emptySnapshot({ attachments: fixture.attachments });
+      if (order === 'cold baseline') {
+        store.apply([{ op: 'reset', agentId: 'main', snapshot: { ...initial, items: [fixture.turn], prompts: [fixture.prompt] } }]);
+        view = projectAgentTranscriptView(view, 'main', store.snapshot(), { cold: true });
+      } else {
+        store.apply([{ op: 'reset', agentId: 'main', snapshot: initial }]);
+        for (const op of order === 'preview first' ? [prompt, turn] : [turn, prompt]) {
+          store.apply([op]);
+          view = projectAgentTranscriptView(view, 'main', store.snapshot());
+        }
+      }
+      const users = view.blocks.filter((block): block is UserBlock => block.kind === 'user');
+      expect(users).toHaveLength(1);
+      expect(users[0]).toMatchObject({
+        id: 'user-um-preview', promptId: 'p-preview', userMessageId: 'um-preview', promptStatus: 'running',
+        text: fixture.text, presentation: fixture.turn.presentation, contentSource: { kind: 'turn', id: 't-preview' },
+        sourceOrigin: { kind: 'user' }, media: [{ kind: 'image', fileId: 'file-preview', name: 'example.png' }],
+      });
+      expect(parseSelectionCarryovers(users[0]!.text, users[0]!.presentation)).toMatchObject({
+        body: fixture.body, annotations: fixture.annotations, quotes: fixture.quotes,
+      });
+    },
+  );
+
+  it('keeps a bounded canonical message on its own content source until its body is read', () => {
+    const fixture = annotatedRunningPrompt();
+    const visiblePrefix = 'Read this introduction.\n';
+    const text = visiblePrefix + fixture.text;
+    const presentation = { spans: fixture.turn.presentation!.spans.map((span) => ({
+      ...span, start: span.start + visiblePrefix.length, end: span.end + visiblePrefix.length,
+    })) };
+    const ref: ContentRef = {
+      source: { kind: 'turn', id: fixture.turn.turnId }, path: ['prompt'], kind: 'text',
+      offset: 1024, total: text.length, revision: 'turn-preview-v1',
+    };
+    const partial = { ...fixture.turn, prompt: text.slice(0, ref.offset), presentation, contentRefs: [ref] };
+    const snapshot = emptySnapshot({ items: [partial], prompts: [fixture.prompt], attachments: fixture.attachments });
+    const previous = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
+    const user = previous.blocks.find((block): block is UserBlock => block.kind === 'user');
+    expect(user).toMatchObject({ text: partial.prompt, presentation, contentSource: ref.source });
+    expect(parseSelectionCarryovers(user!.text, user!.presentation).body).toBe(visiblePrefix);
+    const complete = projectAgentTranscriptView(previous, 'main', {
+      ...snapshot, items: [{ ...fixture.turn, prompt: text, presentation }],
+    });
+    const users = complete.blocks.filter((block): block is UserBlock => block.kind === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0]).toMatchObject({ id: user!.id, text, presentation, contentSource: ref.source });
+    expect(parseSelectionCarryovers(users[0]!.text, users[0]!.presentation).body).toBe(visiblePrefix + fixture.body);
+  });
+
+  it('keeps a delivered replacement authoritative even when prompt content is longer', () => {
+    const fixture = annotatedRunningPrompt();
+    const turn = { ...fixture.turn, prompt: 'Edited replacement.', presentation: undefined };
+    const prompt = { ...fixture.prompt, content: [{ type: 'text', text: fixture.text, presentation: fixture.turn.presentation }] };
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({ items: [turn], prompts: [prompt] }));
+    const users = projected.blocks.filter((block): block is UserBlock => block.kind === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0]).toMatchObject({ text: 'Edited replacement.', presentation: undefined, promptStatus: 'running', contentSource: { kind: 'turn', id: turn.turnId } });
   });
 
   it('clears a running chip once the matching prompt completes so edit/fork return', () => {

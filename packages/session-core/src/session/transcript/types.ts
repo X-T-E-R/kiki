@@ -813,7 +813,9 @@ export interface QueuedPromptMeta {
 export interface QueuedPromptPreview {
   readonly runtimeControls?: import('@kiki/transcript').TranscriptPromptRuntimeControls;
   readonly promptId: string;
+  readonly userMessageId?: string;
   readonly text: string;
+  readonly presentation?: import('@kiki/transcript').TextPresentation;
   readonly originKind?: 'cron_job';
   /** Scheduled delivery mode; absent on a legacy cron record, which reads FIFO. */
   readonly cronDeliveryMode?: CronDeliveryMode;

@@ -44,7 +44,7 @@ import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type P
 
 import type { DeferredAppendTiming } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
-import { stripThreadRefContext } from '@kiki/session-core/composer';
+import { parseSelectionCarryovers, stripThreadRefContext } from '@kiki/session-core/composer';
 import type { MediaRef } from '@kiki/session-core/composer/media';
 import { isOrdinaryQueueItem, type QueuedPromptPreview, type TranscriptDetailStatus } from '@kiki/session-core/session';
 import type { TranscriptGlobalEntityCoverage } from '@kiki/transcript';
@@ -52,7 +52,10 @@ import { mergeSessionQueueRows, pendingModelSwitchChange, type SessionQueueRow }
 import { useI18n } from '../i18n';
 import type { QueuedModelSwitch } from '../lib/client';
 import { useCoarsePointer } from '../lib/layoutHooks';
-import { ContinuationRow } from './ContentContinuation';
+import { ContentContinuation, ContinuationRow } from './ContentContinuation';
+import { QuoteChip } from './ContextChips';
+import { SentAnnotationsBubble } from './SentAnnotationsBubble';
+import { ThreadRefText } from './ThreadRefChip';
 import { Icon } from './icons';
 import { useMediaPreview } from './mediaPreviewContext';
 import { useSessionMedia } from './mediaParts';
@@ -161,9 +164,10 @@ export function QueueHeaderSummary({
   readonly count: number;
   readonly heldCount?: number;
   /** Next prompt in drain order: what the collapsed bar previews, and when it sends. */
-  readonly first?: { readonly text: string; readonly timing: DeferredAppendTiming };
+  readonly first?: Pick<QueuedPromptPreview, 'text' | 'presentation'> & { readonly timing: DeferredAppendTiming };
 }) {
   const { t, tp } = useI18n();
+  const previewText = first === undefined ? '' : parseSelectionCarryovers(first.text, first.presentation).body;
   return (
     <span className="flex min-w-0 flex-1 items-center gap-2">
       {count > 0 ? (
@@ -179,7 +183,7 @@ export function QueueHeaderSummary({
       {first !== undefined ? (
         <>
           <span data-queue-first-preview className="min-w-0 truncate text-ink-faint">
-            {first.text === '' ? t('sv.queueNoText') : stripThreadRefContext(first.text)}
+            {previewText === '' ? t('sv.queueNoText') : stripThreadRefContext(previewText)}
           </span>
           <span data-queue-first-timing className="shrink-0 text-ink-faint">
             {t(TIMING_SHORT_KEY[first.timing])}
@@ -196,6 +200,24 @@ export interface QueuePromptContinuation {
   readonly coverage: TranscriptGlobalEntityCoverage;
   readonly status?: TranscriptDetailStatus;
   readonly onRequest: () => void;
+}
+
+const QUEUED_CONTENT_ROOTS: readonly string[] = ['content'];
+
+function QueuedMessageContent({ item }: { readonly item: QueuedPromptPreview }) {
+  const { t } = useI18n();
+  const carry = parseSelectionCarryovers(item.text, item.presentation);
+  const source = useMemo(() => ({ kind: 'prompt' as const, id: item.promptId }), [item.promptId]);
+  return <div className="min-w-0 flex-1 basis-36 text-[13px] text-ink">
+    <div className="truncate" title={stripThreadRefContext(carry.body) || undefined}>
+      {carry.body === '' ? t('sv.queueNoText') : <ThreadRefText text={stripThreadRefContext(carry.body)} projectSegment={(text) => text} />}
+    </div>
+    {carry.quotes.length > 0 || carry.annotations.length > 0 ? <div className="mt-1 flex flex-wrap items-center gap-1.5">
+      {carry.quotes.map((quote, index) => <QuoteChip key={index} quote={quote.quote} />)}
+      {carry.annotations.length > 0 ? <SentAnnotationsBubble blockId={`user-${item.userMessageId ?? item.promptId}`} annotations={carry.annotations} /> : null}
+    </div> : null}
+    <ContentContinuation source={source} roots={QUEUED_CONTENT_ROOTS} label={t('subagent.message')} />
+  </div>;
 }
 
 export function QueueStrip({
@@ -619,12 +641,7 @@ export function QueueStrip({
             <p className="mt-2 whitespace-pre-wrap break-words pl-1 text-ink-soft">{item.text}</p>
           </details>
         ) : (
-          <span
-            title={item.text === '' ? undefined : stripThreadRefContext(item.text)}
-            className="min-w-0 flex-1 basis-36 truncate text-[13px] text-ink"
-          >
-            {item.text === '' ? t('sv.queueNoText') : stripThreadRefContext(item.text)}
-          </span>
+          <QueuedMessageContent item={item} />
         )}
         {item.media?.map((media, mediaIndex) => {
           const label = media.name ?? media.mime ?? t('media.attachment');

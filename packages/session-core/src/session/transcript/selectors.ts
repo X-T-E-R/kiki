@@ -20,9 +20,11 @@ export function queuedPromptPreviews(state: SessionViewState): readonly QueuedPr
     const scheduled = meta?.originKind === 'cron_job' ? projectMessageContent(meta.content ?? []) : undefined;
     return {
       promptId,
+      userMessageId: block?.userMessageId,
       originKind: meta?.originKind,
       cronDeliveryMode: meta?.cronDeliveryMode,
       text: scheduled === undefined ? block?.text ?? '' : classifyTranscriptText({ text: scheduled.text, origin: { kind: 'cron_job' } }).text,
+      presentation: scheduled?.presentation ?? block?.presentation,
       media: scheduled?.media ?? block?.media,
       content: meta?.content ?? block?.queuedContent,
       runtimeControls: meta?.runtimeControls ?? block?.runtimeControls,

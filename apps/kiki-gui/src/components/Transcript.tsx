@@ -188,7 +188,7 @@ import { resolveSubagentToolCalls, type SubagentToolCalls } from './subagentTool
 import { activityOutcomeLabels, DURATION_WORTH_SHOWING_MS, ToolCard } from './ToolCard';
 import { DisclosureChevron, Icon, OutcomeMark, Spinner } from './icons';
 import { Wordmark } from './Wordmark';
-import { useContentContinuation, useTranscriptDetail, useTranscriptController } from './transcriptDetail';
+import { useAutomaticContentRead, useContentContinuation, useTranscriptDetail, useTranscriptController, useTranscriptTarget } from './transcriptDetail';
 import { useSessionRemainderPending } from './SessionRemainder';
 import { ContentContinuation, frameContentSource, MESSAGE_TEXT_ROOTS, OUTPUT_ROOTS, SHELL_COMMAND_ROOTS, TASK_COMMAND_ROOTS, TASK_OUTPUT_ROOTS, TURN_STEP_ROOTS } from './ContentContinuation';
 import { BridgedOriginRow } from './message/BridgedOriginLine';
@@ -330,6 +330,9 @@ export interface SenderIdentity {
   readonly model?: string;
 }
 
+const USER_MESSAGE_DETAILS_ROOTS: readonly string[] = ['content', 'presentation', 'origin', 'attachmentIds'];
+const USER_MESSAGE_ROOTS: readonly string[] = [...MESSAGE_TEXT_ROOTS, ...USER_MESSAGE_DETAILS_ROOTS];
+
 const UserMessage = memo(function UserMessage({
   block,
   onCancelQueued: _onCancelQueued,
@@ -367,8 +370,13 @@ const UserMessage = memo(function UserMessage({
   // Edit/fork need the stable wire identity; parked prompts settle through
   // the queue strip instead of a rewrite.
   const settled = block.promptStatus === undefined && block.steerStatus === undefined;
-  const continuation = useContentContinuation(block.contentSource, MESSAGE_TEXT_ROOTS);
-  const serverRef = continuation.pending.find((ref) => MESSAGE_TEXT_ROOTS.includes(String(ref.path[0])));
+  const continuation = useContentContinuation(block.contentSource, USER_MESSAGE_ROOTS);
+  useAutomaticContentRead(block.contentSource, MESSAGE_TEXT_ROOTS);
+  const reader = useTranscriptController();
+  const target = useTranscriptTarget();
+  const textRange = continuation.pending.some((ref) => MESSAGE_TEXT_ROOTS.includes(String(ref.path[0])) &&
+    reader !== undefined && target !== undefined && reader.isContentRange(target.agentId, ref));
+  const serverRef = textRange ? undefined : continuation.pending.find((ref) => MESSAGE_TEXT_ROOTS.includes(String(ref.path[0])));
   const serverRemaining = serverRef !== undefined;
   const serverStatus = serverRef !== undefined ? continuation.statusOf(serverRef) : undefined;
   const isServerLoading = serverStatus?.status === 'loading';
@@ -614,7 +622,7 @@ const UserMessage = memo(function UserMessage({
           }}
           onCancel={() => { setEditing(false); }}
         />
-      ) : bodyText.trim() === '' ? null : (
+      ) : textRange || (bodyText.trim() === '' && !serverRemaining) ? null : (
         <div
           data-steer-status={block.steerStatus}
           className={`max-w-[80%] rounded-[14px] rounded-br-[6px] px-4 py-2 text-[14px] leading-[1.6] whitespace-pre-wrap text-ink steer-bubble ${
@@ -717,9 +725,10 @@ const UserMessage = memo(function UserMessage({
           <Icon name="chevron" size={12} className="-rotate-90" />
         </button>
       ) : null}
-      {continuation.pending.some((ref) => ref.path[0] !== 'text' && ref.path[0] !== 'prompt') ? (
-        <ContentContinuation source={block.contentSource} roots={MESSAGE_TEXT_ROOTS} presentation={block.presentation} renderText={projectBody} label={t('subagent.message')} className="mt-1 justify-end" />
-      ) : null}
+      {textRange ? <ContentContinuation source={block.contentSource} roots={MESSAGE_TEXT_ROOTS} presentation={block.presentation}
+        renderText={(text) => projectBody(displayUserMessageText({ ...block, text, presentation: undefined }).text)}
+        label={t('subagent.message')} className="mt-1 max-w-[80%]" /> : null}
+      <ContentContinuation source={block.contentSource} roots={USER_MESSAGE_DETAILS_ROOTS} label={t('subagent.message')} className="mt-1 justify-end" />
       {/* Row actions hang under the bubble they belong to, flush right: an
           overlay off the row's bottom edge that reserves no height and never
           sits over the bubble's own inline links. */}

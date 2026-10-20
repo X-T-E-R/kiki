@@ -59,6 +59,7 @@ import { WorktreeMark } from './WorktreeMark';
 import {
   contentSegmentKey,
   isSessionRemainderRef,
+  TranscriptDetailProvider,
   type ContentContinuationHandle,
 } from './transcriptDetail';
 import { contentTextPresentation, readTextPresentation, type ContentRef } from '@kiki/transcript';
@@ -115,6 +116,7 @@ import {
   type ExecutionChoice,
 } from '@kiki/session-core/composer';
 import {
+  appendLocalUserMessage,
   assertSessionWritable,
   MAIN_AGENT_ID,
   SendNowError,
@@ -1359,14 +1361,18 @@ function PromptRecordsRemainder({ continuation }: { readonly continuation: NonNu
 
 export function withOptimisticUserBlock(
   blocks: readonly Block[],
-  pending: { id: string; text: string; createdAt: string; slow: boolean; preserved: boolean; retryable: boolean; status: 'sending' | 'offline' | 'server' } | undefined,
+  pending: { id: string; text: string; content?: MessageContent[]; createdAt: string; slow: boolean; preserved: boolean; retryable: boolean; status: 'sending' | 'offline' | 'server' } | undefined,
 ): readonly Block[] {
   if (pending === undefined || blocks.some(block => block.kind === 'user' && block.promptId === pending.id)) return blocks;
-  return [...blocks, {
-    kind: 'user', id: `optimistic-${pending.id}`, promptId: pending.id, text: pending.text,
-    createdAt: pending.createdAt, optimisticStatus: pending.status, optimisticSlow: pending.slow,
+  const projected = appendLocalUserMessage(createViewState(pending.id), {
+    userMessageId: pending.id, promptId: pending.id, text: pending.text, content: pending.content,
+    createdAt: pending.createdAt, status: 'running',
+  }).blocks;
+  return [...blocks, ...projected.map((block): Block => block.kind !== 'user' ? block : {
+    ...block, userMessageId: undefined, promptStatus: undefined,
+    optimisticStatus: pending.status, optimisticSlow: pending.slow,
     optimisticPreserved: pending.preserved, optimisticRetryable: pending.retryable,
-  } satisfies UserBlock];
+  })];
 }
 
 /** Put a failed prompt's notes back in front of any the user added since. */
@@ -1984,6 +1990,7 @@ export function SessionView({
   const [pendingSubmission, setPendingSubmission] = useState<{
     id: string;
     text: string;
+    content: MessageContent[];
     contentKey: string;
     createdAt: string;
     slow: boolean;
@@ -3272,6 +3279,7 @@ export function SessionView({
           setPendingSubmission({
             id: submissionId,
             text: echoText,
+            content,
             contentKey,
             createdAt: new Date().toISOString(),
             slow: false,
@@ -4526,6 +4534,7 @@ boundExecution,
           count={total}
           first={queuedItems[0] === undefined ? undefined : {
             text: queuedItems[0].text,
+            presentation: queuedItems[0].presentation,
             timing: queuedItems[0].appendTiming ?? 'agent_idle',
           }}
         />
@@ -4535,6 +4544,10 @@ boundExecution,
       // The round-trip edit keeps its row (and the hold notice) in sight.
       forceOpen: queueEdit !== null,
       panel: (
+        <TranscriptDetailProvider controller={controller ?? undefined} loads={state.detailLoads} contentRefs={state.contentRefs}
+          sessionId={sessionId} agentId={MAIN_AGENT_ID}
+          load={(agentId, kind, id) => controller?.loadTranscriptDetail(agentId, kind, id) ?? Promise.resolve(false)}
+          loadContent={(ref) => controller?.loadContentSegment(MAIN_AGENT_ID, ref) ?? Promise.resolve(false)}>
         <QueueStrip
           items={queuedItems} onSendNow={handleSendNowQueued} onRemove={handleCancelQueued}
           onRemoveAttachment={handleRemoveQueuedAttachment} onEdit={handleStartQueueEdit}
@@ -4546,6 +4559,7 @@ boundExecution,
           sendNowDisabled={state.resyncing || state.resyncFailed}
           timingReady={queueTimingReady}
         />
+        </TranscriptDetailProvider>
       ),
     };
   }, [
@@ -4554,6 +4568,7 @@ boundExecution,
     handleClearQueue, state.resyncing, state.resyncFailed, queueTimingReady,
     modelSwitches.switches, modelSwitchActions.edit, modelSwitchActions.cancel, modelsQuery.data,
     hasPromptContinuation, promptCoverage, promptEntityLoad, handleLoadPromptEntities,
+    controller, sessionId, state.detailLoads, state.contentRefs,
   ]);
   const composerHeader = useMemo(() => headerGoalSection === undefined && headerQueueSection === undefined ? undefined : (
     <ComposerHeader goal={headerGoalSection} queue={headerQueueSection} settled={state.loaded} />

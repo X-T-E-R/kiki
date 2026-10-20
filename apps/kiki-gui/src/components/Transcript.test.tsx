@@ -3919,6 +3919,83 @@ describe('user message body sizing', () => {
     expect(content.className).toContain('collapsed-content-fade');
   });
 
+  it.each(['turn', 'prompt', 'presentation', 'attachments'] as const)('reads a bounded %s message even when its projected body is empty', async (kind) => {
+    const { TranscriptDetailProvider } = await import('./transcriptDetail');
+    const { applyContentSegment } = await import('@kiki/transcript');
+    const selected = selectionCarryoverPresentation([{ quote: 'Selected passage.', comment: 'Keep the entire annotation.' }], []);
+    const text = selected.prefix + 'Review the complete message.';
+    const source: import('@kiki/transcript').ContentSource = { kind: kind === 'prompt' ? 'prompt' : 'turn', id: kind === 'prompt' ? 'p-bounded' : 't-bounded' };
+    const ref: import('@kiki/transcript').ContentRef = {
+      source, revision: 'bounded-v1',
+      path: kind === 'prompt' ? ['content'] : kind === 'presentation' ? ['presentation', 'spans'] : kind === 'attachments' ? ['attachmentIds'] : ['prompt'],
+      kind: kind === 'turn' ? 'text' : 'array', offset: 0,
+      total: kind === 'turn' ? text.length : 1,
+    };
+    let entity: import('@kiki/transcript').TranscriptPrompt | import('@kiki/transcript').TranscriptTurn = kind === 'prompt'
+      ? { promptId: 'p-bounded', userMessageId: 'um-bounded', status: 'running' as const, createdAt: '2026-01-01T00:00:00.000Z', content: [], contentRefs: [ref] }
+      : { kind: 'turn' as const, turnId: 't-bounded', ordinal: 1, state: 'completed' as const,
+          origin: { kind: 'user', payload: { promptId: 'p-bounded', userMessageId: 'um-bounded' } },
+          prompt: kind === 'turn' || kind === 'attachments' ? '' : text,
+          presentation: kind === 'presentation' ? { spans: [] } : selected.presentation,
+          attachmentIds: [], steps: [], contentRefs: [ref] };
+    const snapshot = (): AgentTranscriptSnapshot => ({
+      items: 'turnId' in entity ? [entity] : [], prompts: 'promptId' in entity && !('turnId' in entity) ? [entity] : [],
+      tasks: [], attachments: [{ attachmentId: 'att-bounded', source: { kind: 'url', url: 'https://example.test/photo.png' }, name: 'photo.png', mediaType: 'image/png' }],
+      todos: [], interactions: [], meta: {},
+    });
+    const { root, container } = makeRoot();
+    const loadContent = vi.fn(async () => {
+      const value = kind === 'turn' ? text : kind === 'prompt' ? [{ type: 'text', text, presentation: selected.presentation }]
+        : kind === 'presentation' ? selected.presentation.spans : ['att-bounded'];
+      entity = applyContentSegment(entity, { ref, value, contentRefs: [] });
+      await draw();
+      return true;
+    });
+    const draw = () => renderSettled(root,
+      <TranscriptDetailProvider load={async () => false} loads={{}} contentRefs={entity.contentRefs} loadContent={loadContent}>
+        <Transcript state={projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot())}
+          onLoadOlder={() => Promise.resolve(false)} onResolveApproval={() => noopActions()}
+          onAnswerQuestion={() => noopActions()} onDismissQuestion={() => noopActions()} />
+      </TranscriptDetailProvider>);
+    await draw();
+    const row = container.querySelector('[data-block-id="user-um-bounded"]');
+    expect(row).not.toBeNull();
+    const more = row!.querySelector<HTMLButtonElement>('[data-content-continuation-action]');
+    expect(more).not.toBeNull();
+    await act(async () => { more!.click(); });
+    expect(loadContent).toHaveBeenCalledOnce();
+    expect(container.querySelectorAll('[data-block-id="user-um-bounded"]')).toHaveLength(1);
+    expect(container.querySelector('[data-content-continuation-action]')).toBeNull();
+    if (kind === 'attachments') {
+      expect(container.querySelector('[data-user-media] img')?.getAttribute('src')).toBe('https://example.test/photo.png');
+    } else {
+      expect(container.querySelector('[data-source-block-id="user-um-bounded"]')?.textContent).toBe('Review the complete message.');
+      const note = container.querySelector<HTMLButtonElement>('[data-annotation-bubble]');
+      expect(note).not.toBeNull();
+      await act(async () => { note!.click(); });
+      expect(document.querySelector('[data-annotation-bubble-comment]')?.textContent).toBe('Keep the entire annotation.');
+    }
+  });
+
+  it('keeps range-backed user text in the canonical range reader rather than an inert ellipsis', async () => {
+    const { TranscriptDetailProvider } = await import('./transcriptDetail');
+    const source: import('@kiki/transcript').ContentSource = { kind: 'turn', id: 't-range' };
+    const ref: import('@kiki/transcript').ContentRef = { source, path: ['prompt'], revision: 'range-v1', kind: 'text', offset: 6, total: 100_000 };
+    const beginContentRead = vi.fn(() => ({ release() {}, retry() {} }));
+    const controller = { contentRefsFor: () => [ref], isContentRange: () => true, beginContentRead,
+      readContentRange: async () => 'Complete range-backed message.', historyPreviewPending: () => false, retainHistoryPreview: () => () => {} };
+    const { root, container } = makeRoot();
+    await renderSettled(root, <TranscriptDetailProvider controller={controller as unknown as SessionController}
+      load={async () => false} loads={{}} contentRefs={[ref]} sessionId="session_test" agentId="main">
+      <Transcript state={transcriptState([userBlock({ id: 'user-range', text: 'prefix', contentSource: source })])}
+        onLoadOlder={async () => false} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions} />
+    </TranscriptDetailProvider>);
+    expect(container.querySelector('[data-content-range-text]')).not.toBeNull();
+    expect(container.querySelector('[data-user-ellipsis]')).toBeNull();
+    expect(container.querySelector('[data-collapsible-content]')).toBeNull();
+    expect(beginContentRead).toHaveBeenCalledWith('main', source, ['text', 'prompt']);
+  });
+
   it('renders grey ellipsis for server continuation and loads the next segment on click', async () => {
     const { TranscriptDetailProvider } = await import('./transcriptDetail');
     const source: import('@kiki/transcript').ContentSource = { kind: 'turn', id: 't0' };

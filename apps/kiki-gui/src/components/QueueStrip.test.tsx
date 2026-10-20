@@ -515,6 +515,45 @@ describe('QueueStrip scheduled delivery modes', () => {
 });
 
 describe('QueueStrip drawer body', () => {
+  it('hydrates canonical queued content into its body, selection controls, links and media without duplicating the row', async () => {
+    const { MemoryRouter } = await import('react-router-dom');
+    const { TranscriptDetailProvider } = await import('./transcriptDetail');
+    const { selectionCarryoverPresentation } = await import('@kiki/session-core/composer');
+    const { createViewState, projectAgentTranscriptView, queuedPromptPreviews } = await import('@kiki/session-core/session');
+    const { applyContentSegment } = await import('@kiki/transcript');
+    const selection = selectionCarryoverPresentation([{ quote: 'Selected requirement.', comment: 'Preserve this entire comment.' }], [{ quote: 'Quoted source.' }]);
+    const text = selection.prefix + '> Keep this literal quote\n\nReview /s/session_reference.';
+    const ref: import('@kiki/transcript').ContentRef = { source: { kind: 'prompt', id: 'p-content' }, path: ['content'], kind: 'array', offset: 0, total: 2, revision: 'content-v1' };
+    let prompt: import('@kiki/transcript').TranscriptPrompt = { promptId: 'p-content', userMessageId: 'um-content', status: 'queued', createdAt: '2026-01-01T00:00:00.000Z', content: [], contentRefs: [ref] };
+    const container = document.createElement('div'); document.body.append(container); containers.push(container);
+    const root = createRoot(container);
+    const loadContent = vi.fn(async () => {
+      prompt = applyContentSegment(prompt, { ref, value: [{ type: 'text', text, presentation: selection.presentation }, { type: 'file', file_id: 'file-report', name: 'report.txt', media_type: 'text/plain', size: 12 }], contentRefs: [] });
+      await draw(); return true;
+    });
+    const draw = () => act(async () => {
+      const view = projectAgentTranscriptView(createViewState('session_example'), 'main', { items: [], prompts: [prompt], attachments: [], tasks: [], todos: [], interactions: [], meta: {} });
+      root.render(<MemoryRouter><I18nProvider><TranscriptDetailProvider load={async () => false} loads={{}} contentRefs={prompt.contentRefs} loadContent={loadContent}>
+        <QueueStrip items={queuedPromptPreviews(view)} onSendNow={() => {}} onRemove={() => {}} onClearAll={() => {}} />
+      </TranscriptDetailProvider></I18nProvider></MemoryRouter>);
+    });
+    try {
+      await draw();
+      await click(container.querySelector('[data-content-continuation-action]')!);
+      expect(loadContent).toHaveBeenCalledWith(ref);
+      expect(rows(container)).toHaveLength(1);
+      expect(container.querySelector('[data-content-continuation-action]')).toBeNull();
+      const row = rows(container)[0]!;
+      expect(row.textContent).toContain('> Keep this literal quote');
+      expect(row.textContent).toContain('report.txt');
+      expect(row.textContent).not.toContain('Comment:');
+      expect(row.querySelector('[data-thread-ref-chip]')?.getAttribute('href')).toBe('/s/session_reference');
+      expect(row.querySelectorAll('[data-quote-chip]')).toHaveLength(1);
+      await click(row.querySelector('[data-annotation-bubble]')!);
+      expect(document.querySelector('[data-annotation-bubble-comment]')?.textContent).toBe('Preserve this entire comment.');
+    } finally { await act(async () => { root.unmount(); }); }
+  });
+
   it('identifies scheduled text and discloses its body without making it an editable attachment row', async () => {
     const text = 'Controller self-check: keep existing work running.';
     const { container } = await renderStrip({ items: [{ promptId: 'scheduled-1', originKind: 'cron_job', text, content: [{ type: 'text', text }], media: [] }], onEdit: vi.fn() });
