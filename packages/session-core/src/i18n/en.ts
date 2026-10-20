@@ -874,7 +874,8 @@ export const en = {
   'execution.switchFreshContextPlain': 'The new engine starts with a fresh context. Kiki does not hand it the old conversation, and the old engine’s session is not resumed.',
   'execution.switchHistoryKept': 'This conversation stays here and remains readable.',
   'execution.switchBareEffects': 'No Kiki profile prompt, tools or context is added, and the model, effort and approval mode are the engine’s own.',
-  'execution.switchProfileEffects': 'The {profile} profile supplies Kiki’s prompt, tools and context, and pins its model and thinking effort.',
+  'execution.switchProfileEffects': 'The {profile} profile supplies Kiki’s prompt, tools and context.',
+  'execution.switchNativeContext': 'Kiki continues with this conversation’s context.',
   'execution.switchRunningTurn': 'The turn that is running now finishes on the current engine.',
   'execution.switchConfirm': 'Switch engine',
   'composer.execution.aria': 'Execution — {engine}, {profile}',
@@ -908,7 +909,7 @@ export const en = {
   'profile.switchTitle': 'Switch to {profile}?',
   'profile.switchBody': 'The new agent profile takes effect from your next message in this session.',
   'profile.switchModelReset':
-    'The model and thinking effort on this page switch to the new profile’s defaults. You can still change them before sending.',
+    'The profile’s model and thinking defaults apply where configured; without a model default, the current model stays. You can change these before sending.',
   'profile.switchSubagents': 'Subagent dispatch policy switches with the new profile.',
   'profile.switchRunningTurn': 'The turn that is running now finishes on the current profile.',
   'profile.switchConfirm': 'Switch profile',

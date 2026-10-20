@@ -1241,7 +1241,7 @@ export function resolveProfileSwitchSubmission(input: {
   // itself: send it even when the live selection stored the previous effort.
   // An empty string is the default capsule: null drops the user pin. Omitting
   // the field keeps the current override.
-  const sendModel = input.modelTouched && !namesLegacyControl(governing, 'model');
+  const sendModel = input.modelTouched && !(executionSwitching && namesLegacyControl(input.pendingExecution, 'model'));
   const incomingOwnsThinking = executionSwitching && namesLegacyControl(input.pendingExecution, 'thinking');
   const clearThinking = input.effortTouched && input.thinking === '' && !incomingOwnsThinking;
   const sendThinking = input.effortTouched
@@ -1930,7 +1930,22 @@ export function SessionView({
   // promote the displayed effort (often `off`), which on the execution path is
   // a session override the engine would inherit (see resolveProfileSwitchSubmission).
   const [pendingProfile, setPendingProfile] = useState<string | undefined>(undefined);
-  const [profileSwitchConfirm, setProfileSwitchConfirm] = useState<string | undefined>(undefined);
+  const [switchConfirmation, setSwitchConfirmation] = useState<
+    | { readonly kind: 'profile'; readonly profile: string }
+    | { readonly kind: 'execution'; readonly execution: ExecutionChoice }
+    | { readonly kind: 'model'; readonly fromModel: string; readonly toModel: string; readonly initialMode: ModelSwitchMode;
+        readonly matchedRuleId?: string; readonly editingOperationId?: string; readonly editingRevision?: number }
+    | undefined
+  >(undefined);
+  const profileSwitchConfirm = switchConfirmation?.kind === 'profile' ? switchConfirmation.profile : undefined;
+  const executionSwitchConfirm = switchConfirmation?.kind === 'execution' ? switchConfirmation.execution : undefined;
+  const modelSwitchDialog = switchConfirmation?.kind === 'model' ? switchConfirmation : undefined;
+  const setProfileSwitchConfirm = useCallback((profile: string | undefined) => {
+    setSwitchConfirmation(profile === undefined ? undefined : { kind: 'profile', profile });
+  }, []);
+  const setExecutionSwitchConfirm = useCallback((execution: ExecutionChoice | undefined) => {
+    setSwitchConfirmation(execution === undefined ? undefined : { kind: 'execution', execution });
+  }, []);
   const [modelChoice, setModelChoice] = useState(restoredComposer.modelChoice);
   const [effortChoice, setEffortChoice] = useState(restoredComposer.effortChoice);
   const [modelTouched, setModelTouched] = useState(restoredComposer.modelChoice !== undefined);
@@ -1943,7 +1958,6 @@ export function SessionView({
   const [pendingExecution, setPendingExecution] = useState<ExecutionChoice | undefined>(
     restoredComposer.execution,
   );
-  const [executionSwitchConfirm, setExecutionSwitchConfirm] = useState<ExecutionChoice | undefined>(undefined);
   const [confirmUndo, setConfirmUndo] = useState(false);
   const [batchConfirm, setBatchConfirm] = useState<
     { decision: 'approved' | 'rejected'; ids: readonly string[] } | undefined
@@ -2545,8 +2559,13 @@ export function SessionView({
     effectiveModel === sessionModel ? state.thinkingEffort : undefined,
     catalogItem?.default_effort,
   ) : state.thinkingEffort);
-  const modelControlPending = modelTouched && composerSelection.modelChoice === modelChoice && composerSelection.modelOverride !== undefined;
-  const effortControlPending = effortTouched && composerSelection.effortChoice === effortChoice && composerSelection.effortOverride !== undefined;
+  const selectedModelId = effectiveModel === undefined ? undefined : resolveCatalogModel(modelsQuery.data?.items ?? [], effectiveModel)?.id ?? effectiveModel;
+  const liveModel = sessionModel || inheritedDefault;
+  const boundModelId = liveModel === undefined ? undefined : resolveCatalogModel(modelsQuery.data?.items ?? [], liveModel)?.id ?? liveModel;
+  const modelControlPending = modelTouched && composerSelection.modelChoice === modelChoice && composerSelection.modelOverride !== undefined
+    && (selectedModelId !== boundModelId || modelSwitchMode === 'fresh' || modelSwitchMode === 'compact');
+  const effortControlPending = effortTouched && composerSelection.effortChoice === effortChoice && composerSelection.effortOverride !== undefined
+    && composerSelection.effortOverride !== (state.thinkingEffort ?? catalogItem?.default_effort);
   const pendingRuntimeControls: PendingRuntimeControls | undefined = modelControlPending || effortControlPending ? {
     model: modelControlPending ? effectiveModel : undefined,
     thinking: effortControlPending ? effectiveEffort : undefined,
@@ -2565,14 +2584,9 @@ export function SessionView({
     [configQuery.data],
   );
   const modelSwitches = useModelSwitches(sessionId, MAIN_AGENT_ID);
-  const [modelSwitchDialog, setModelSwitchDialog] = useState<{
-    readonly fromModel: string;
-    readonly toModel: string;
-    readonly initialMode: ModelSwitchMode;
-    readonly matchedRuleId?: string;
-    readonly editingOperationId?: string;
-    readonly editingRevision?: number;
-  } | undefined>(undefined);
+  const setModelSwitchDialog = useCallback((dialog: Omit<Extract<NonNullable<typeof switchConfirmation>, { kind: 'model' }>, 'kind'> | undefined) => {
+    setSwitchConfirmation(dialog === undefined ? undefined : { ...dialog, kind: 'model' });
+  }, []);
   const [modelSwitchSubmitting, setModelSwitchSubmitting] = useState(false);
   const [modelSwitchActionPending, setModelSwitchActionPending] = useState<string | undefined>(undefined);
   // Canonical ids on both sides: a bare alias lands on its provider row, so
@@ -2582,7 +2596,7 @@ export function SessionView({
       value === undefined ? undefined : resolveCatalogModel(modelsQuery.data?.items ?? [], value)?.id ?? value,
     [modelsQuery.data],
   );
-  const currentBoundModel = canonicalModel(sessionModel === '' ? inheritedDefault : sessionModel);
+  const currentBoundModel = boundModelId;
   const submitModelSwitch = useCallback(async (choice: {
     readonly fromModel: string;
     readonly toModel: string;
@@ -2778,34 +2792,36 @@ export function SessionView({
     setModelSwitchMode(undefined);
   }, []);
   const cancelPendingRuntimeControls = useCallback(() => {
+    setPendingProfile(undefined);
+    setPendingExecution(undefined);
+    setSwitchConfirmation(undefined);
     setModelOverride(undefined);
     setEffortOverride(undefined);
-    setModelSwitchMode(undefined);
     clearTouchedControls();
   }, [clearTouchedControls]);
 
   const applyPendingProfile = useCallback((name: string) => {
     const defaults = composerDefaultsForProfile(agentProfilesQuery.data?.items ?? [], name);
     setPendingProfile(name);
-    if (defaults.model !== undefined) {
+    setPendingExecution(undefined);
+    if (defaults.model !== undefined || !modelTouched) {
       setModelOverride(defaults.model);
       setModelTouched(false);
       setModelChoice(undefined);
       setModelSwitchMode(undefined);
     }
-    if (defaults.thinking !== undefined) {
+    if (defaults.thinking !== undefined || !effortTouched) {
       setEffortOverride(defaults.thinking);
       setEffortTouched(false);
       setEffortChoice(undefined);
     }
-  }, [agentProfilesQuery.data]);
+  }, [agentProfilesQuery.data, modelTouched, effortTouched]);
   const handleAgentProfileChange = useCallback(
     (name: string) => {
       if (name === (pendingProfile ?? boundProfile)) return;
       if (name === boundProfile) {
         // Reverting to the live binding needs no confirm — drop the pending pick.
-        setPendingProfile(undefined);
-        clearTouchedControls();
+        cancelPendingRuntimeControls();
         return;
       }
       if (state.loaded && !sessionHasStartedConversation(state.blocks)) {
@@ -2827,46 +2843,33 @@ export function SessionView({
   // immediately, as a profile pick does. Reverting to the live binding only
   // drops the pending pick. A new profile brings that profile's own model and
   // effort pins, but a user who re-picked them after confirming keeps theirs.
-  const applyPendingExecution = useCallback((next: ExecutionChoice, options?: { readonly modelTouched?: boolean }) => {
+  const applyPendingExecution = useCallback((next: ExecutionChoice) => {
     const profile = next.profile;
     const selected = agentProfilesQuery.data?.items.find((item) => item.name === profile);
     const isTargetExecutor = selected !== undefined && profileExecutor(selected) === next.executor;
     const defaults = profile === undefined || !isTargetExecutor
       ? {}
       : composerDefaultsForProfile(agentProfilesQuery.data?.items ?? [], profile);
-    const sameExecutor = next.executor === (pendingExecution?.executor ?? boundExecution?.executor ?? 'native');
+    const sameExecutor = next.executor === (pendingExecution?.executor ?? boundExecution.executor);
+    setPendingProfile(undefined);
     setPendingExecution(next);
-    if (options?.modelTouched !== true) {
-      if (defaults.model !== undefined) {
-        setModelOverride(defaults.model);
-        setModelTouched(false);
-        setModelChoice(undefined);
-        setModelSwitchMode(undefined);
-      } else if (!sameExecutor) {
-        setModelOverride(undefined);
-        setModelTouched(false);
-        setModelChoice(undefined);
-        setModelSwitchMode(undefined);
-      }
-      if (defaults.thinking !== undefined) {
-        setEffortOverride(defaults.thinking);
-        setEffortTouched(false);
-        setEffortChoice(undefined);
-      } else if (!sameExecutor) {
-        setEffortOverride(undefined);
-        setEffortTouched(false);
-        setEffortChoice(undefined);
-      }
+    if (defaults.model !== undefined || !sameExecutor || !modelTouched) {
+      setModelOverride(defaults.model);
+      setModelTouched(false);
+      setModelChoice(undefined);
+      setModelSwitchMode(undefined);
     }
-  }, [agentProfilesQuery.data, boundExecution?.executor, clearTouchedControls, pendingExecution?.executor]);
-  // Drops a switch that is still waiting. Re-selecting the bound engine in the
-  // panel has always done this; the chip's cancel button is the same action,
-  // reachable without reopening the panel.
-  const cancelPendingExecution = useCallback(() => {
-    setPendingExecution(undefined);
-    clearTouchedControls();
-  }, [clearTouchedControls]);
-  const handleExecutionChange = useCallback((next: ExecutionChoice) => {
+    if (defaults.thinking !== undefined || !sameExecutor || !effortTouched) {
+      setEffortOverride(defaults.thinking);
+      setEffortTouched(false);
+      setEffortChoice(undefined);
+    }
+  }, [agentProfilesQuery.data, boundExecution.executor, pendingExecution?.executor, modelTouched, effortTouched]);
+  const cancelPendingExecution = cancelPendingRuntimeControls;
+  const handleExecutionChange = useCallback((selection: ExecutionChoice) => {
+    const next = isNativeExecutor(selection.executor) && selection.profile === undefined && selection.profile_file === undefined
+      ? { ...selection, profile: DEFAULT_AGENT_PROFILE }
+      : selection;
     const current = pendingExecution ?? boundExecution;
     if (sameExecutionChoice(next, current)) return;
     // Effort capsules must not confirm an engine switch or rebind the model.
@@ -3061,6 +3064,7 @@ export function SessionView({
         // path: a steered message runs inside the ACTIVE turn, which cannot
         // change the binding.
         const rebindsAgent = profileSwitch.profile !== undefined || profileSwitch.execution !== undefined;
+        const requiresOwnTurn = rebindsAgent || (modelControlTouched && modelSwitchMode !== undefined);
         const completeControls = () => completeSkillControlSelection({
           controlled: { content, profile: profileSwitch.profile, execution: profileSwitch.execution,
             model: profileSwitch.model, thinking: profileSwitch.thinking },
@@ -3077,7 +3081,7 @@ export function SessionView({
           },
           refresh: () => { void controller.refreshSession(); },
         });
-        if (options?.now === true && !rebindsAgent) {
+        if (options?.now === true && !requiresOwnTurn) {
           const sentAnnotationsNow = annotations;
           const sentNowIds = new Set(sentAnnotationsNow.map((annotation) => annotation.id));
           const sentQuotesNow = quotes;
@@ -3315,7 +3319,7 @@ export function SessionView({
             // the ACTIVE turn, so it cannot change the binding, and the engine
             // refuses the steer outright. It stays queued and runs next, which
             // is exactly the confirmed contract, so there is nothing to report.
-            if (options?.now === true && result.status === 'queued' && !rebindsAgent) {
+            if (options?.now === true && result.status === 'queued' && !requiresOwnTurn) {
               void controller.steerQueued(result.prompt_id).catch((error: unknown) => {
                 pushToast({
                   tone: 'error',
@@ -5202,17 +5206,18 @@ boundExecution,
         open={executionSwitchConfirm !== undefined}
         overlayId="confirm-execution-switch"
         title={t('execution.switchTitle', { engine: executionSwitchName(executionSwitchConfirm, executorLabels) })}
-        body={executionSwitchConfirm?.profile === undefined
-          ? t('execution.switchBareBody')
-          : t('execution.switchBody')}
+        body={isNativeExecutor(executionSwitchConfirm?.executor)
+          ? t('profile.switchBody')
+          : executionSwitchConfirm?.profile === undefined
+            ? t('execution.switchBareBody')
+            : t('execution.switchBody')}
         consequences={[
-          // The one thing a user switching engines mid-conversation is unsure
-          // about: what happens to the thread and to what is already here.
-          t('execution.switchFreshContextPlain'),
-          t('execution.switchHistoryKept'),
-          ...(executionSwitchConfirm?.profile === undefined
-            ? [t('execution.switchBareEffects')]
-            : [t('execution.switchProfileEffects', { profile: executionSwitchConfirm?.profile ?? '' })]),
+          ...(isNativeExecutor(executionSwitchConfirm?.executor)
+            ? [t('execution.switchNativeContext'), t('execution.switchProfileEffects', { profile: executionSwitchConfirm?.profile ?? DEFAULT_AGENT_PROFILE }), t('profile.switchModelReset')]
+            : [t('execution.switchFreshContextPlain'), t('execution.switchHistoryKept'),
+                executionSwitchConfirm?.profile === undefined
+                  ? t('execution.switchBareEffects')
+                  : t('execution.switchProfileEffects', { profile: executionSwitchConfirm.profile })]),
           ...(composerBusy ? [t('execution.switchRunningTurn')] : []),
         ]}
         confirmLabel={t('execution.switchConfirm')}

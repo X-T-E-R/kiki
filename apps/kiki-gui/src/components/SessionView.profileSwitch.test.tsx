@@ -29,10 +29,11 @@ import { ConversationShell } from './ConversationShell';
 import { SessionRouteView } from './SessionView';
 import { resolveCompiledGuiStylesheet } from '../testSupport/compiledGuiStylesheet';
 
-const { listNamedAgentProfiles, listModels, sendPrompt, steerQueued, sendPromptNow, promptResult, fixture, abort, getExecutorModels } = vi.hoisted(() => ({
+const { listNamedAgentProfiles, listModels, sendPrompt, submitPrompt, steerQueued, sendPromptNow, promptResult, fixture, abort, getExecutorModels } = vi.hoisted(() => ({
   listNamedAgentProfiles: vi.fn(),
   listModels: vi.fn(),
   sendPrompt: vi.fn(),
+  submitPrompt: vi.fn(),
   steerQueued: vi.fn(),
   sendPromptNow: vi.fn(),
   promptResult: { current: { status: 'started' as 'started' | 'queued', prompt_id: 'prompt-1' } },
@@ -78,6 +79,12 @@ vi.mock('../state/connection', () => {
 vi.mock('@kiki/session-core/session', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@kiki/session-core/session')>();
   class StubSessionController {
+    private readonly sender = new actual.SessionController(
+      { submitPrompt } as unknown as ConstructorParameters<typeof actual.SessionController>[0],
+      {} as ConstructorParameters<typeof actual.SessionController>[1],
+      'session-a',
+      { ephemeral: true },
+    );
     readonly sessionId = 'session-a';
     readonly subscribe = () => () => {};
     readonly subscribeInterruptedPrompt = () => () => {};
@@ -111,11 +118,12 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
     // binding forever, which is a stub artefact rather than product behaviour.
     refreshSession() { return Promise.resolve(); }
     open() { return Promise.resolve(); }
-    close() {}
+    close() { this.sender.close(); }
     getForest() { return actual.buildAgentForest([], []); }
     retainHistoryRead() { return () => {}; }
     async sendPrompt(input: unknown) {
       const result = await sendPrompt(input);
+      await this.sender.sendPrompt(input as Parameters<typeof this.sender.sendPrompt>[0]);
       // The engine binds the profile carried by the message it accepts, so the
       // session record reports it from then on. This is the observable end of
       // the switch, and it is what the chip reflects.
@@ -276,6 +284,10 @@ beforeEach(() => {
   resetDraftMemoryForTests();
   clearToasts();
   sendPrompt.mockReset().mockImplementation(async () => promptResult.current);
+  submitPrompt.mockReset().mockImplementation(async (_sessionId, request) => ({
+    ...promptResult.current, prompt_id: request.prompt_id, user_message_id: 'user-next',
+    content: request.content, created_at: '2026-10-20T00:00:00.000Z',
+  }));
   steerQueued.mockReset().mockResolvedValue(undefined);
   sendPromptNow.mockReset().mockResolvedValue({ outcome: 'sent' });
   abort.mockReset().mockResolvedValue(undefined);
@@ -539,7 +551,8 @@ describe('switching profile while a turn is running', () => {
 });
 
 function catalogModel(id: string, displayName: string) {
-  return { id, provider_id: 'fixture', remote_id: id, display_name: displayName, max_context_size: 128000 };
+  return { id, provider_id: 'fixture', remote_id: id, display_name: displayName, max_context_size: 128000,
+    support_efforts: ['low', 'medium', 'high'], default_effort: 'medium' };
 }
 
 function workspaceProfile(name: string, extras: { readonly pinned_model_alias?: string } = {}) {
@@ -564,31 +577,158 @@ async function waitForElement(container: HTMLElement, selector: string): Promise
 }
 
 describe('a model switch waiting for the next message', () => {
-  it('keeps the next-message hint on the profile chip and the model confirm', async () => {
+  beforeEach(() => {
     fixture.model = 'fixture/live-model';
     listModels.mockResolvedValue({
       items: [catalogModel('fixture/live-model', 'Live'), catalogModel('fixture/other-model', 'Other')],
     });
-    const { container } = await mount();
+  });
+
+  async function pickModel(container: HTMLElement, model = 'fixture/other-model') {
     await click(await waitForElement(container, '#composer-execution-select'));
-    await click(await waitForElement(container, '[data-execution-model="fixture/other-model"]'));
+    await click(await waitForElement(container, `[data-execution-model="${model}"]`));
     await settle();
+  }
 
-    // A started conversation still asks before an engine binding changes, and
-    // the model switch keeps its own confirm.
-    expect(dialogButton(container, 'Switch engine')).toBeDefined();
+  it('asks only about the model, confirms once and sends that target without rebinding the engine', async () => {
+    const { container } = await mount();
+    await pickModel(container);
+    expect(container.querySelectorAll('[role="alertdialog"]')).toHaveLength(1);
+    expect(dialogButton(container, 'Switch engine')).toBeUndefined();
     expect(container.querySelector('[data-model-switch-mode]')).not.toBeNull();
+    expect(profileTrigger(container)?.textContent).not.toContain('next message');
+    expect(container.querySelector('[data-runtime-controls-pending]')).toBeNull();
+    expect(sendPrompt).not.toHaveBeenCalled();
 
-    await click(dialogButton(container, 'Switch engine'));
+    await click(dialogButton(container, 'Switch when idle'));
+    expect(container.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(profileTrigger(container)?.textContent).toContain('next message');
+    expect(container.querySelector('#composer-execution-select')?.textContent).toContain('Other');
+    expect(container.querySelector('#composer-execution-select')?.textContent).not.toContain('next message');
+    expect(container.querySelectorAll('[data-execution-cancel-pending]')).toHaveLength(1);
+    expect(container.querySelector('[data-runtime-controls-pending]')).toBeNull();
+
+    await sendNextMessage(container);
+    expect(sendPrompt).toHaveBeenCalledTimes(1);
+    expect(sendPrompt.mock.calls[0]?.[0]).toMatchObject({ model: 'fixture/other-model', modelSwitchMode: 'direct' });
+    expect(submitPrompt).toHaveBeenCalledTimes(1);
+    expect(submitPrompt.mock.calls[0]?.[1]).toMatchObject({ model: 'fixture/other-model', model_switch_mode: 'direct' });
+    expect(submitPrompt.mock.calls[0]?.[1].execution).toBeUndefined();
+    expect(submitPrompt.mock.calls[0]?.[1].thinking).toBeUndefined();
+    expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).execution).toBeUndefined();
+    expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).thinking).toBeUndefined();
+    expect(abort).not.toHaveBeenCalled();
+  });
+
+  it('cancels before confirmation without creating any pending controls or changing the next request', async () => {
+    const { container } = await mount();
+    await pickModel(container);
+    await click(dialogButton(container, 'Cancel'));
+    expect(container.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(profileTrigger(container)?.textContent).not.toContain('next message');
+    expect(container.querySelector('[data-execution-cancel-pending]')).toBeNull();
+    expect(container.querySelector('#composer-execution-select')?.textContent).not.toContain('Other');
+    await sendNextMessage(container);
+    const submission = submissionOf(sendPrompt.mock.calls[0]?.[0]);
+    expect(submission.model).toBeUndefined();
+    expect(submission.thinking).toBeUndefined();
+    expect(submission.execution).toBeUndefined();
+    expect(submitPrompt).toHaveBeenCalledTimes(1);
+    expect(submitPrompt.mock.calls[0]?.[1].model).toBeUndefined();
+    expect(submitPrompt.mock.calls[0]?.[1].thinking).toBeUndefined();
+    expect(submitPrompt.mock.calls[0]?.[1].execution).toBeUndefined();
+  });
+
+  it('cancels the confirmed transaction and renders reselection without retaining a target or a second dialog', async () => {
+    const { container } = await mount();
+    await pickModel(container);
+    const confirmFrame = container.innerHTML;
+    await click(dialogButton(container, 'Switch when idle'));
+    const pendingFrame = container.innerHTML;
+    await click(container.querySelector('[data-execution-cancel-pending]'));
+    expect(profileTrigger(container)?.textContent).not.toContain('next message');
+    expect(container.querySelector('#composer-execution-select')?.textContent).not.toContain('Other');
+    const cancelledFrame = container.innerHTML;
+    await pickModel(container);
+    expect(container.querySelectorAll('[role="alertdialog"]')).toHaveLength(1);
+    const reselectedFrame = container.innerHTML;
+    await click(dialogButton(container, 'Cancel'));
+    await sendNextMessage(container);
+    expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).model).toBeUndefined();
+    expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).execution).toBeUndefined();
+    expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).thinking).toBeUndefined();
+
+    for (const root of roots.splice(0)) await act(async () => { root.unmount(); });
+    const directory = join(EFFORT_SHOT_DIR, '..', 'switch-transaction');
+    const { cssPath } = resolveCompiledGuiStylesheet();
+    await mkdir(directory, { recursive: true });
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch({ args: ['--no-proxy-server'] });
+    try {
+      const page = await browser.newPage({ viewport: { width: 1100, height: 760 }, deviceScaleFactor: 1 });
+      for (const [name, frame] of Object.entries({ confirm: confirmFrame, pending: pendingFrame, cancelled: cancelledFrame, reselected: reselectedFrame })) {
+        await page.setContent('<!doctype html><html data-theme="light"><head><meta charset="utf-8"></head><body class="bg-canvas text-ink">' + frame + '</body></html>');
+        await page.addStyleTag({ path: cssPath });
+        await page.evaluate(() => {
+          for (const animation of document.getAnimations()) {
+            if (animation.effect?.getComputedTiming().iterations === Infinity) animation.pause();
+            else animation.finish();
+          }
+        });
+        expect(await page.locator('[role="alertdialog"]').count()).toBe(name === 'confirm' || name === 'reselected' ? 1 : 0);
+        expect(await page.locator('[data-execution-cancel-pending]').count()).toBe(name === 'pending' ? 1 : 0);
+        await page.screenshot({ path: join(directory, `${name}.png`) });
+        await writeFile(join(directory, `${name}.html`), frame);
+      }
+      await writeFile(join(directory, 'calltrace.json'), JSON.stringify({ sendPrompt: sendPrompt.mock.calls, submitPrompt: submitPrompt.mock.calls, sendPromptNow: sendPromptNow.mock.calls, abort: abort.mock.calls }, null, 2));
+    } finally {
+      await browser.close();
+    }
+  }, 60_000);
+
+  it('keeps a confirmed compact model switch on its next turn even with Send now', async () => {
+    promptResult.current = { status: 'queued', prompt_id: 'prompt-queued' };
+    const { container } = await mount();
+    await pickModel(container);
+    await click(container.querySelector('[data-model-switch-mode="compact"]'));
+    await click(dialogButton(container, 'Switch when idle'));
+    await type('continue on the new model', container);
+    await act(async () => {
+      composerInput(container)?.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter', ctrlKey: true, shiftKey: settingsSnapshot().sendShortcut !== 'enter', bubbles: true,
+      }));
+    });
     await settle();
+    expect(submitPrompt).toHaveBeenCalledTimes(1);
+    expect(submitPrompt.mock.calls[0]?.[1]).toMatchObject({ model: 'fixture/other-model', model_switch_mode: 'compact' });
+    expect(sendPromptNow).not.toHaveBeenCalled();
+    expect(steerQueued).not.toHaveBeenCalled();
+  });
 
-    const profile = profileTrigger(container);
-    const model = container.querySelector('#composer-execution-select');
-    expect(profile?.textContent).toContain('next message');
-    expect(model?.textContent).not.toContain('next message');
-    expect(model?.textContent).toContain('fixture/live-model');
-    expect(model?.getAttribute('data-execution-pending')).toBe('true');
-    expect(container.querySelector('[data-model-switch-mode]')).not.toBeNull();
+  it('keeps an earlier confirmed model when a replacement is cancelled', async () => {
+    listModels.mockResolvedValue({ items: [catalogModel('fixture/live-model', 'Live'), catalogModel('fixture/other-model', 'Other'), catalogModel('fixture/third-model', 'Third')] });
+    const { container } = await mount();
+    await pickModel(container);
+    await click(dialogButton(container, 'Switch when idle'));
+    await pickModel(container, 'fixture/third-model');
+    await click(dialogButton(container, 'Cancel'));
+    expect(container.querySelector('#composer-execution-select')?.textContent).toContain('Other');
+    await sendNextMessage(container);
+    expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).model).toBe('fixture/other-model');
+    expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).execution).toBeUndefined();
+  });
+
+  it('sends the confirmed model even when the live native binding contains an older model override', async () => {
+    fixture.session = { ...fixture.session!, agent_config: { ...fixture.session!.agent_config, execution: {
+      version: 1, selection: { executor: 'native', profile: 'agent', overrides: { model: 'fixture/live-model' } },
+      effective: { model: 'fixture/live-model', kiki_context: [], allow_kiki_subagents: false }, sources: {}, generation: 1,
+    } } } as Session;
+    const { container } = await mount();
+    await pickModel(container);
+    await click(dialogButton(container, 'Switch when idle'));
+    await sendNextMessage(container);
+    expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).model).toBe('fixture/other-model');
+    expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).execution).toBeUndefined();
   });
 });
 
@@ -667,6 +807,30 @@ describe('same-executor model selection across a profile switch', () => {
     expect(submission.model).toBeUndefined();
     expect(submission.thinking).toBeUndefined();
   });
+
+  it('cancels a pinned profile and restores the live display and request', async () => {
+    const { container } = await mount();
+    await chooseProfile(container, 'pinned');
+    expect(container.querySelector('#composer-execution-select')?.textContent).toContain('Pinned');
+    await click(container.querySelector('[data-execution-cancel-pending]'));
+    expect(profileTrigger(container)?.textContent).not.toContain('next message');
+    expect(container.querySelector('#composer-execution-select')?.textContent).not.toContain('Pinned');
+    await sendNextMessage(container);
+    expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).execution).toBeUndefined();
+    expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).model).toBeUndefined();
+  });
+
+  it('replaces a pinned pending profile with an unpinned one without leaking the previous pin', async () => {
+    const { container } = await mount();
+    await chooseProfile(container, 'pinned');
+    await chooseProfile(container, 'open');
+    expect(container.querySelector('#composer-execution-select')?.textContent).not.toContain('Pinned');
+    await sendNextMessage(container);
+    const submission = submissionOf(sendPrompt.mock.calls[0]?.[0]);
+    expect(submission.execution).toMatchObject({ executor: 'native', profile: 'open' });
+    expect(submission.execution?.overrides?.model).toBeUndefined();
+    expect(submission.model).toBeUndefined();
+  });
 });
 
 const EFFORT_SHOT_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..', '.tmp', 'effort-switch-185');
@@ -684,6 +848,38 @@ function submissionOf(call: unknown): {
     profile?: string;
   };
 }
+
+describe('returning from an external engine to native Kiki', () => {
+  it('uses the native profile contract, cancels without a rebind and confirms on the next pick', async () => {
+    fixture.session = { ...fixture.session!, executor_id: 'claude-acp', agent_config: { ...fixture.session!.agent_config, execution: {
+      version: 1, selection: { executor: 'claude-acp', overrides: { model: 'vendor/sonnet' } },
+      effective: { model: 'vendor/sonnet', kiki_context: [], allow_kiki_subagents: false }, sources: {}, generation: 1,
+    } } } as Session;
+    const { container } = await mount();
+    const pickNative = async () => {
+      await click(profileTrigger(container));
+      await click(await waitForElement(container, '[data-execution-bare="native"]'));
+    };
+    await pickNative();
+    expect(container.querySelectorAll('[role="alertdialog"]')).toHaveLength(1);
+    const dialog = container.querySelector('[role="alertdialog"]');
+    expect(dialog?.textContent).toContain('The agent profile supplies Kiki’s prompt, tools and context');
+    expect(dialog?.textContent).toContain('Kiki continues with this conversation’s context');
+    expect(dialog?.textContent).not.toContain('no Kiki profile');
+    expect(dialog?.textContent).not.toContain('does not hand it the old conversation');
+    await click(dialogButton(container, 'Cancel'));
+    expect(profileTrigger(container)?.textContent).not.toContain('next message');
+    expect(container.querySelector('#composer-execution-select')?.textContent).toContain('vendor/sonnet');
+    expect(sendPrompt).not.toHaveBeenCalled();
+    await pickNative();
+    await click(dialogButton(container, 'Switch engine'));
+    await sendNextMessage(container);
+    expect(sendPrompt).toHaveBeenCalledTimes(1);
+    expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).execution).toEqual({ executor: 'native', profile: 'agent' });
+    expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).model).toBeUndefined();
+    expect(abort).not.toHaveBeenCalled();
+  });
+});
 
 describe('effort-only changes stay on the current engine', () => {
   const liveModel = 'fixture/live-model';

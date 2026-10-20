@@ -319,9 +319,10 @@ export function ExecutionSelect({
 
   // Handlers for instant selection (即点即切)
   const handleSelectDefault = useCallback(() => {
-    if (isNative) {
-      if (onChangeModel) void onChangeModel(undefined);
-      if (onChangeEffort) onChangeEffort('');
+    if (isNative && onChangeModel !== undefined) {
+      void onChangeModel(undefined);
+      close(true);
+      return;
     }
     onChange({
       ...choice,
@@ -338,11 +339,14 @@ export function ExecutionSelect({
       close(true);
       return;
     }
+    if (onChangeModel !== undefined) {
+      void onChangeModel(modelId);
+      close(true);
+      return;
+    }
     const m = (models ?? []).find((item) => item.id === modelId);
     const nextEfforts = m?.support_efforts ?? [];
     const nextEffort = (currentEffort && nextEfforts.includes(currentEffort)) ? currentEffort : undefined;
-    if (onChangeModel) void onChangeModel(modelId);
-    if (onChangeEffort && nextEffort !== undefined) onChangeEffort(nextEffort);
     onChange({
       ...choice,
       external_connection_id: undefined,

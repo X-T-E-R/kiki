@@ -2107,7 +2107,7 @@ export function Composer({
   // wording would promise what the key no longer does. The pending chip
   // beside it already names the switch, and the ⌘/Ctrl+Enter path itself
   // keeps working: it queues.
-  const sendNowDegrades = executionPending;
+  const sendNowDegrades = executionPending || pendingRuntimeControls?.model !== undefined;
 
   const clearSendTimingTimers = () => {
     if (sendTimingOpenTimerRef.current !== null) {
@@ -2451,7 +2451,7 @@ export function Composer({
         <ComposerPanelOrigin className="flex min-w-0 items-center [&>div]:min-w-0">
           <ProfileSelect
             choice={execution}
-            pending={executionPending}
+            pending={executionPending || pendingRuntimeControls !== undefined}
             busy={busy}
             disabled={variant === 'subagent' && disabled}
             onChange={(next) => {
@@ -2471,7 +2471,7 @@ export function Composer({
               avatar: <PersonaAvatar persona={pickedPersona} size={20} decorative className="!rounded-full" />,
             }}
             onClearPersona={pickedPersona === undefined ? undefined : () => { personaPick?.onChange(undefined); }}
-            onCancelPending={executionPending ? onCancelExecution : undefined}
+            onCancelPending={executionPending ? onCancelExecution : pendingRuntimeControls !== undefined ? onCancelRuntimeControls : undefined}
             boundExecution={boundExecution}
           />
         </ComposerPanelOrigin>
@@ -2483,7 +2483,7 @@ export function Composer({
         <ComposerPanelOrigin className="flex min-w-0 items-center [&>div]:min-w-0">
           <ExecutionSelect
             choice={execution}
-            pending={executionPending}
+            pending={executionPending || pendingRuntimeControls !== undefined}
             busy={busy}
             disabled={variant === 'subagent' && disabled}
             onChange={(next) => {
@@ -2510,7 +2510,6 @@ export function Composer({
               return onChangeModel(next);
             }}
             onChangeEffort={onChangeEffort}
-            onCancelPending={executionPending ? onCancelExecution : undefined}
             executorResponse={executorModelResponse}
             executorRefreshBusy={executorRefreshCurrent && executorRefresh.isPending}
             executorRefreshFailed={executorRefreshCurrent && executorRefresh.isError}
@@ -2584,7 +2583,7 @@ export function Composer({
       ),
     });
   }
-  if (pendingRuntimeControls !== undefined && pendingRuntimeControlParts.length > 0) {
+  if (execution === undefined && pendingRuntimeControls !== undefined && pendingRuntimeControlParts.length > 0) {
     const label = pendingRuntimeControlParts.join(' · ');
     statusSegments.push({
       key: 'runtime-controls-pending',

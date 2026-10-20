@@ -4583,6 +4583,12 @@ describe('Composer with a pending engine/profile switch', () => {
     expect(button.getAttribute('aria-label')).toBe('Queue prompt');
   });
 
+  it('also names the next-turn result for a confirmed model change', async () => {
+    const { container } = await renderComposer({ value: 'hello', busy: true, pendingRuntimeControls: { model: 'fixture/other-model' }, onSendNow: vi.fn(), working: { lastResponseAt: undefined } });
+    expect(container.querySelector<HTMLButtonElement>('button[data-send-ready]')?.title).toBe(PENDING_TITLE);
+    expect(container.querySelector('[data-composer-send-now-hint]')).toBeNull();
+  });
+
   it('omits the send-now row from the timing menu and keeps the real queue choices', async () => {
     const { container } = await renderComposer({ busy: true, value: 'hello', executionPending: true, sendTimingDefault: 'agent_idle', onSendNow: vi.fn() });
     await act(async () => {
@@ -4632,10 +4638,7 @@ describe('Composer with a pending engine/profile switch', () => {
       .toContain('⌘/Ctrl+Enter sends now');
   });
 
-  it('keeps the plain wording without a pending rebind — the naming keys on executionPending alone', async () => {
-    // Model/effort-only touches never set executionPending (SessionView derives
-    // it from pendingProfile/pendingExecution only), so a plain busy composer is
-    // exactly what those cases look like here: unchanged names, real now-row.
+  it('keeps the plain wording without a pending binding or model change', async () => {
     const { container } = await renderComposer({
       value: 'hello', busy: true, sendTimingDefault: 'agent_idle', onSendNow: vi.fn(),
     });
