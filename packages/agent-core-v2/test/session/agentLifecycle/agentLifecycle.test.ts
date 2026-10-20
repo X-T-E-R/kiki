@@ -1,6 +1,8 @@
+import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { resolve } from 'pathe';
+import { resetUnexpectedErrorHandler, setUnexpectedErrorHandler } from '#/_base/errors/unexpectedError';
 import { Error2, ErrorCodes } from '#/errors';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
@@ -106,7 +108,7 @@ import { SessionMetadata } from '#/session/sessionMetadata/sessionMetadataServic
 import { ISessionIndexMirror } from '#/app/sessionIndex/sessionIndex';
 import { AgentCollaborationRegistry, IAgentCollaborationRegistry, COLLABORATION_TASK_NAME_LABEL } from '#/session/agentCollaboration/registry';
 import { createWireMetadataRecord, type WireRecord } from '#/wire/record';
-import { WIRE_TRANSCRIPT_RECEIPT_KEY, parseWireTranscriptReceipt } from '#/wire/transcriptReceipt';
+import { WIRE_TRANSCRIPT_RECEIPT_KEY, digestWireBytes, parseWireTranscriptReceipt } from '#/wire/transcriptReceipt';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
@@ -1814,6 +1816,47 @@ describe('AgentLifecycleService', () => {
     ).toString('utf8')));
     expect(sealed).toMatchObject({ state: 'sealed', trusted: true, epoch: open?.epoch, wire: { size: expect.any(Number), sha256: expect.any(String) } });
     expect(sealed?.wire?.size).toBeGreaterThan(0);
+  });
+
+  it('removes an agent whose transcript bytes diverged and keeps that journal uncertified', async () => {
+    const storage = new InMemoryStorageService();
+    ix.stub(IFileSystemStorageService, storage);
+    ix.stub(IAppendLogStore, new AppendLogStore(storage));
+    const svc = ix.get(IAgentLifecycleService);
+    const handle = await svc.create({ agentId: 'child' });
+    const wire = handle.accessor.get(IWireService);
+    const scope = ix.get(ISessionContext).scope('agents/child');
+    wire.appendRecord({
+      type: 'turn.prompt', turnId: 0, input: [{ type: 'text', text: 'kept' }], origin: { kind: 'user' },
+    });
+    await wire.flush();
+    const original = Buffer.from((await storage.read(scope, AGENT_WIRE_RECORD_KEY))!).toString('utf8');
+    const changed = original.replace('"text":"kept"', '"text":"held"');
+    expect(Buffer.byteLength(changed)).toBe(Buffer.byteLength(original));
+    await storage.write(scope, AGENT_WIRE_RECORD_KEY, Buffer.from(changed));
+    const unexpected: unknown[] = [];
+    setUnexpectedErrorHandler((error) => unexpected.push(error));
+    const receipts: unknown[] = [];
+    disposables.add(svc.onDidCleanup!((receipt) => receipts.push(receipt)));
+    try {
+      await svc.remove('child');
+    } finally {
+      resetUnexpectedErrorHandler();
+    }
+    expect(svc.get('child')).toBeUndefined();
+    const persisted = Buffer.from((await storage.read(scope, AGENT_WIRE_RECORD_KEY))!).toString('utf8');
+    expect(persisted).toBe(changed);
+    const observed = await digestWireBytes(storage.readStream(scope, AGENT_WIRE_RECORD_KEY));
+    const sealed = parseWireTranscriptReceipt(JSON.parse(Buffer.from(
+      (await storage.read(scope, WIRE_TRANSCRIPT_RECEIPT_KEY))!,
+    ).toString('utf8')));
+    expect(sealed).toMatchObject({ state: 'sealed', trusted: false, wire: { size: observed.size, sha256: observed.sha256 } });
+    expect(sealed?.wire?.sha256).toBe(createHash('sha256').update(persisted).digest('hex'));
+    expect(wire.isTranscriptLiveEpochVerified!()).toBe(false);
+    expect(unexpected).toEqual([expect.objectContaining({ message: 'Transcript wire contents do not match accepted events' })]);
+    expect(receipts).toContainEqual(expect.objectContaining({
+      agentId: 'child', callerOutcome: 'resolved', cleanupOutcome: 'closed', resourcesAfter: 0,
+    }));
   });
 
   it('waits for a direct loop to settle before sealing its accepted transcript', async () => {

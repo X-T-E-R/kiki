@@ -141,18 +141,32 @@ export class WireService extends Service implements IWireService {
   }
 
   async sealTranscriptEpoch(): Promise<void> {
-    const epoch = this.transcriptEpoch;
-    if (epoch?.state !== 'open') throw new Error('Transcript epoch is not open');
+    if (this.transcriptEpoch?.state !== 'open') throw new Error('Transcript epoch is not open');
     await this.flush();
-    const digest = await digestWireBytes(this.storage.readStream(this.wireScope, AGENT_WIRE_RECORD_KEY));
-    if (epoch.trusted && (digest.size === 0 || !digest.endsWithNewline ||
-        digest.lines !== this.epochBaselineLines + this.epochAcceptedRecords ||
-        this.epochExpectedHash === undefined || digest.size !== this.epochExpectedSize ||
-        digest.sha256 !== this.epochExpectedHash.copy().digest('hex'))) {
-      throw new Error('Transcript wire contents do not match accepted events');
+    let digest = await digestWireBytes(this.storage.readStream(this.wireScope, AGENT_WIRE_RECORD_KEY));
+    if (this.transcriptEpoch?.state !== 'open') throw new Error('Transcript epoch is not open');
+    if (this.transcriptEpoch.trusted && !this.transcriptDigestMatches(digest, this.epochAcceptedRecords)) {
+      await this.flush();
+      if (this.transcriptEpoch?.state !== 'open') throw new Error('Transcript epoch is not open');
+      digest = await digestWireBytes(this.storage.readStream(this.wireScope, AGENT_WIRE_RECORD_KEY));
+      if (this.transcriptEpoch?.state !== 'open') throw new Error('Transcript epoch is not open');
     }
-    const wire = { size: digest.size, sha256: digest.sha256 };
-    const sealed: WireTranscriptReceipt = { ...epoch, state: 'sealed', wire };
+    const open = this.transcriptEpoch;
+    if (open?.state !== 'open') throw new Error('Transcript epoch is not open');
+    const certified = open.trusted && this.transcriptDigestMatches(digest, this.epochAcceptedRecords);
+    if (open.trusted && !certified) {
+      this.verifiedAcceptedRecords = -1;
+      this.transcriptEpoch = { ...open, trusted: false };
+      onUnexpectedError(new Error('Transcript wire contents do not match accepted events'));
+    }
+    const sealing = this.transcriptEpoch;
+    if (sealing?.state !== 'open') throw new Error('Transcript epoch is not open');
+    const sealed: WireTranscriptReceipt = {
+      ...sealing,
+      state: 'sealed',
+      trusted: sealing.trusted,
+      wire: { size: digest.size, sha256: digest.sha256 },
+    };
     await this.storage.write(
       this.wireScope,
       WIRE_TRANSCRIPT_RECEIPT_KEY,
@@ -184,14 +198,21 @@ export class WireService extends Service implements IWireService {
     if (stored === undefined || Buffer.from(stored).toString('utf8') !== JSON.stringify(epoch)) return false;
     const digest = await digestWireBytes(this.storage.readStream(this.wireScope, AGENT_WIRE_RECORD_KEY));
     const verified = this.transcriptEpoch === epoch && this.persistFailure === undefined &&
-      this.epochAcceptedRecords === accepted && digest.size > 0 && digest.endsWithNewline &&
-      digest.lines === this.epochBaselineLines + accepted &&
-      this.epochExpectedHash !== undefined && digest.size === this.epochExpectedSize &&
-      digest.sha256 === this.epochExpectedHash.copy().digest('hex');
+      this.epochAcceptedRecords === accepted && this.transcriptDigestMatches(digest, accepted);
     if (this.transcriptEpoch === epoch && this.epochAcceptedRecords === accepted) {
       this.verifiedAcceptedRecords = verified ? accepted : -1;
     }
     return verified;
+  }
+
+  private transcriptDigestMatches(
+    digest: { size: number; sha256: string; lines: number; endsWithNewline: boolean },
+    acceptedRecords: number,
+  ): boolean {
+    return digest.size > 0 && digest.endsWithNewline &&
+      digest.lines === this.epochBaselineLines + acceptedRecords &&
+      this.epochExpectedHash !== undefined && digest.size === this.epochExpectedSize &&
+      digest.sha256 === this.epochExpectedHash.copy().digest('hex');
   }
 
   isTranscriptLiveEpochVerified(): boolean {

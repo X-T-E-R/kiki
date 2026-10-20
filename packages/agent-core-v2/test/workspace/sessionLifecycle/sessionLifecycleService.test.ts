@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { resetUnexpectedErrorHandler, setUnexpectedErrorHandler } from '#/_base/errors/unexpectedError';
+import { noopTelemetryService } from '#/app/telemetry/telemetry';
+import { AGENT_WIRE_RECORD_KEY } from '#/wire/record';
+import { WIRE_TRANSCRIPT_RECEIPT_KEY, parseWireTranscriptReceipt } from '#/wire/transcriptReceipt';
+import { IWireService } from '#/wire/wire';
+import { noopLogger, registerTestAgentWire, testWireScope } from '../../wire/stubs';
+
 import { createDecorator, type IInstantiationService, type ServiceIdentifier, type ServicesAccessor } from '#/_base/di/instantiation';
 import { Error2, ErrorCodes } from '#/errors';
 import { DisposableStore, type IDisposable } from '#/_base/di/lifecycle';
@@ -887,6 +894,139 @@ describe('SessionLifecycleService fork cron ownership', () => {
     } finally {
       materialize.mockRestore();
       announce.mockRestore();
+      await fx.service.dispose();
+    }
+  });
+});
+
+describe('SessionLifecycleService archive transcript certification', () => {
+  async function divergentWire(): Promise<{
+    readonly ix: TestInstantiationService;
+    readonly wire: IWireService;
+    readonly storage: InMemoryStorageService;
+    readonly changed: string;
+  }> {
+    const ix = new TestInstantiationService();
+    const storage = new InMemoryStorageService();
+    ix.stub(IFileSystemStorageService, storage);
+    ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+    const wire = registerTestAgentWire(ix, testWireScope('archive', 'child'), {
+      log: ix.get(IAppendLogStore), storage, logger: noopLogger, telemetry: noopTelemetryService,
+    });
+    await wire.seal();
+    await wire.beginTranscriptEpoch!();
+    wire.appendRecord({
+      type: 'turn.prompt', turnId: 0, input: [{ type: 'text', text: 'kept' }], origin: { kind: 'user' },
+    });
+    await wire.flush();
+    const scope = testWireScope('archive', 'child');
+    const original = Buffer.from((await storage.read(scope, AGENT_WIRE_RECORD_KEY))!).toString('utf8');
+    const changed = original.replace('"text":"kept"', '"text":"held"');
+    await storage.write(scope, AGENT_WIRE_RECORD_KEY, Buffer.from(changed));
+    return { ix, wire, storage, changed };
+  }
+
+  function installArchiveHandle(
+    fx: ReturnType<typeof fixture>,
+    remove: () => Promise<void>,
+  ): { readonly archived: { value: boolean }; readonly order: string[]; readonly release: ReturnType<typeof vi.fn> } {
+    const archived = { value: false };
+    const order: string[] = [];
+    const release = vi.fn(async () => { order.push('lock'); });
+    const handle = {
+      id: 'session-1',
+      dispose: vi.fn(async () => { order.push('dispose'); }),
+      accessor: accessor([
+        [ISessionActivityView, { state: () => ({ busy: false, mainTurnActive: false, pendingInteraction: 'none' }) }],
+        [IAgentLifecycleService, {
+          countPendingBackgroundTasks: () => 0,
+          list: () => [{ id: 'child', accessor: accessor([[IEventDispatcher, { saveReplayCheckpoint: async () => true }]]) }],
+          remove,
+        }],
+        [ISessionTerminalService, { countLiveTerminals: () => 0 }],
+        [ISessionMetadata, {
+          usage: () => undefined,
+          update: async () => {},
+          setArchived: async (value: boolean) => { archived.value = value; order.push('meta'); },
+        }],
+      ]),
+    } as unknown as ISessionScopeHandle;
+    const internals = fx.service as unknown as {
+      sessions: Map<string, ISessionScopeHandle>;
+      sessionLocks: Map<string, { release(): Promise<void> }>;
+      indexMirror: { drain(): Promise<void> };
+      event: { publish(event: { readonly type: string }): void };
+    };
+    internals.sessions.set('session-1', handle);
+    internals.sessionLocks.set('session-1', { release });
+    internals.indexMirror = { drain: async () => { order.push('index'); } };
+    internals.event = { publish: (event) => { order.push(event.type); } };
+    return { archived, order, release };
+  }
+
+  it('archives a session after transcript bytes diverge and releases its resources', async () => {
+    const prepared = await divergentWire();
+    const fx = fixture();
+    const installed = installArchiveHandle(fx, async () => { await prepared.wire.sealTranscriptEpoch!(); });
+    const archivedIds: string[] = [];
+    const receipts: unknown[] = [];
+    fx.service.onDidArchiveSession((event) => archivedIds.push(event.sessionId));
+    fx.service.onDidCleanup((receipt) => receipts.push(receipt));
+    const unexpected: unknown[] = [];
+    setUnexpectedErrorHandler((error) => unexpected.push(error));
+    try {
+      await fx.service.archive('session-1');
+      expect(installed.archived.value).toBe(true);
+      expect(installed.order).toEqual(['meta', 'event.session.archived', 'index', 'dispose', 'lock']);
+      expect(fx.service.get('session-1')).toBeUndefined();
+      expect(installed.release).toHaveBeenCalledOnce();
+      expect(archivedIds).toEqual(['session-1']);
+      expect(receipts).toContainEqual(expect.objectContaining({
+        sessionId: 'session-1', reason: 'archive', callerOutcome: 'resolved', cleanupOutcome: 'closed', resourcesAfter: 0,
+      }));
+      const scope = testWireScope('archive', 'child');
+      expect(Buffer.from((await prepared.storage.read(scope, AGENT_WIRE_RECORD_KEY))!).toString('utf8')).toBe(prepared.changed);
+      const sealed = parseWireTranscriptReceipt(JSON.parse(Buffer.from(
+        (await prepared.storage.read(scope, WIRE_TRANSCRIPT_RECEIPT_KEY))!,
+      ).toString('utf8')));
+      expect(sealed).toMatchObject({ state: 'sealed', trusted: false });
+      expect(unexpected).toEqual([expect.objectContaining({ message: 'Transcript wire contents do not match accepted events' })]);
+    } finally {
+      resetUnexpectedErrorHandler();
+      await prepared.ix.dispose();
+      await fx.service.dispose();
+    }
+  });
+
+  it('does not archive successfully when transcript flush fails', async () => {
+    const ix = new TestInstantiationService();
+    const storage = new InMemoryStorageService();
+    ix.stub(IFileSystemStorageService, storage);
+    ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+    const wire = registerTestAgentWire(ix, testWireScope('archive', 'flush'), {
+      log: ix.get(IAppendLogStore), storage, logger: noopLogger, telemetry: noopTelemetryService,
+    });
+    await wire.seal();
+    await wire.beginTranscriptEpoch!();
+    const failure = new Error('dehydration failed');
+    const unexpected: unknown[] = [];
+    setUnexpectedErrorHandler((error) => unexpected.push(error));
+    const fx = fixture();
+    const installed = installArchiveHandle(fx, async () => { await wire.sealTranscriptEpoch!(); });
+    wire.appendRecord({ type: 'turn.prompt', turnId: 0 }, async () => { throw failure; });
+    try {
+      await expect(fx.service.archive('session-1')).rejects.toBe(failure);
+      expect(fx.service.get('session-1')).toBeDefined();
+      expect(installed.release).not.toHaveBeenCalled();
+      const scope = testWireScope('archive', 'flush');
+      const receipt = parseWireTranscriptReceipt(JSON.parse(Buffer.from(
+        (await storage.read(scope, WIRE_TRANSCRIPT_RECEIPT_KEY))!,
+      ).toString('utf8')));
+      expect(receipt).toMatchObject({ state: 'open', trusted: true });
+      expect(unexpected).toEqual([failure]);
+    } finally {
+      resetUnexpectedErrorHandler();
+      await ix.dispose();
       await fx.service.dispose();
     }
   });

@@ -78,7 +78,7 @@ import { FileStorageService } from '../../../agent-core-v2/src/persistence/backe
 import { AppendLogStore } from '../../../agent-core-v2/src/persistence/backends/node-fs/appendLogStore';
 import { noopTelemetryService } from '../../../agent-core-v2/src/app/telemetry/telemetry';
 import { noopLogger, registerTestAgentWire, stubAgentWire } from '../../../agent-core-v2/test/wire/stubs';
-import { WIRE_TRANSCRIPT_RECEIPT_KEY, digestWireBytes } from '../../../agent-core-v2/src/wire/transcriptReceipt';
+import { WIRE_TRANSCRIPT_RECEIPT_KEY, digestWireBytes, parseWireTranscriptReceipt } from '../../../agent-core-v2/src/wire/transcriptReceipt';
 import * as transcriptReceipt from '../../../agent-core-v2/src/wire/transcriptReceipt';
 
 vi.mock('node:fs/promises', { spy: true });
@@ -1516,7 +1516,11 @@ describe('TranscriptService live integration', () => {
       expect(page?.items).toEqual([expect.objectContaining({ kind: 'turn', prompt: 'b' })]);
       wire.appendRecord({ type: 'turn.ended', turnId: 0, reason: 'completed', time: 2_000 });
       expect(await wire.verifyTranscriptLiveEpoch!()).toBe(false);
-      await expect(wire.sealTranscriptEpoch!()).rejects.toThrow('Transcript wire contents do not match accepted events');
+      await wire.sealTranscriptEpoch!();
+      const sealed = parseWireTranscriptReceipt(JSON.parse(
+        (await fsPromises.readFile(join(dirname(path), WIRE_TRANSCRIPT_RECEIPT_KEY), 'utf8')),
+      ));
+      expect(sealed).toMatchObject({ state: 'sealed', trusted: false });
       agents.remove('child-tamper');
       expect(await service.readColdSnapshot('s1', 'child-tamper')).toMatchObject({
         toolCallCountKnown: false, hasMoreOlder: true,
