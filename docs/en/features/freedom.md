@@ -26,7 +26,7 @@ You do not need a fork of a profile to change a sentence. **Prompt field overrid
 
 ## Connections: one list, one row each
 
-**Settings → Models & providers → Connections** is a single list, and every way Kiki reaches a model is a **connection** — an account you sign in to, a hosted API you hold a key for, or a server on this machine. Each connection is one row saying how it is reached, what it carries, and whether it works. How a connection authenticates is part of that row, not a second list you have to keep in step.
+**Settings → Models & providers → Providers & accounts** is a single list, and every way Kiki reaches a model is a **connection** — an account you sign in to, a hosted API you hold a key for, or a server on this machine. Each connection is one row saying how it is reached, what it carries, and whether it works. How a connection authenticates is part of that row, not a second list you have to keep in step.
 
 **Add connection** asks one question: which service, by what means.
 

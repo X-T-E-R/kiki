@@ -75,7 +75,7 @@ Thread members default to `queueWhenBusy: true`, so room input waits for their c
 
 Renaming, changing the host, muting and workspace classification never rewrite a member's system prompt or permissions. Removing a thread leaves a system record in its session and preserves the room log without archiving the original thread. Creating a room needs two to six members, though members can leave and take it below two.
 
-If a member cannot wake, the room shows the failure and what to do about it. For a model login failure, sign in under **Settings → Models & providers → Connections**, or open that member's conversation and pick an available model — existing member sessions keep their bound model, and editing the persona card does not change it. Then send another room message mentioning the failed member if it is not the host. **Continue** resumes a paused room; it does not retry a failed wake on an unpaused one.
+If a member cannot wake, the room shows the failure and what to do about it. For a model login failure, sign in under **Settings → Models & providers → Providers & accounts**, or open that member's conversation and pick an available model — existing member sessions keep their bound model, and editing the persona card does not change it. Then send another room message mentioning the failed member if it is not the host. **Continue** resumes a paused room; it does not retry a failed wake on an unpaused one.
 
 ## API entry points
 

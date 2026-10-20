@@ -70,7 +70,7 @@ The budget limits member messages after each user message — 12 by default. Whe
 
 ![A room whose member budget is spent: the discussion paused at 12 of 12 messages, with Continue and Adjust limit offered, and the member list beside it.](/shots/people/ps-20261005-people-room-paused.en.png)
 
-Renaming, changing the host, muting, and reassigning the classification workspace never rewrite a member's system prompt or permissions. A member that cannot wake shows the failure and a recovery action rather than a promise of an automatic retry: for a model login failure, sign in under **Settings → Models & providers → Connections**, or open the member's conversation and pick an available model, then send another room message and mention it if it is not the host.
+Renaming, changing the host, muting, and reassigning the classification workspace never rewrite a member's system prompt or permissions. A member that cannot wake shows the failure and a recovery action rather than a promise of an automatic retry: for a model login failure, sign in under **Settings → Models & providers → Providers & accounts**, or open the member's conversation and pick an available model, then send another room message and mention it if it is not the host.
 
 See [Discuss in a room](/en/customization/personas#discuss-in-a-room) and [Collaboration tools](/en/reference/tools#collaboration-tools).
 

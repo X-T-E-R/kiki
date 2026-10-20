@@ -65,7 +65,7 @@ protocol = "openai_responses"
 
 建议只保存在服务器内存中，服务器重启后消失。修改或删除提供商连接会丢弃该连接的缓存建议。获取失败会显示错误并保留上次成功的建议；成功返回空列表则清空建议。该提供商已配置的模型不会重复出现，即使本地别名与上游模型 ID 不同。
 
-在 GUI 的 **设置 → 模型与提供商 → 连接服务** 中，**用 API 密钥连接**提供五个协议入口：`openai`、`openai_responses`、`anthropic`、`google-genai`、`vertexai`；也可以按服务名称搜索。搜索 DeepSeek、GLM、Kimi、Ollama、LM Studio 或 OpenRouter，选中结果后会自动填入协议和 base URL。没有匹配结果时，选协议后手填 base URL；之后按需填写密钥并添加模型。
+在 GUI 的 **设置 → 模型与提供商 → 服务与账号** 中，**用 API 密钥连接**提供五个协议入口：`openai`、`openai_responses`、`anthropic`、`google-genai`、`vertexai`；也可以按服务名称搜索。搜索 DeepSeek、GLM、Kimi、Ollama、LM Studio 或 OpenRouter，选中结果后会自动填入协议和 base URL。没有匹配结果时，选协议后手填 base URL；之后按需填写密钥并添加模型。
 
 Ollama 和 LM Studio 与其他 OpenAI 兼容服务共用 API 密钥路径，本地服务可能无需密钥。五个快捷入口是 OpenAI、Anthropic、Google Gemini、DeepSeek 和 Moonshot（Kimi）——Kimi 快捷入口配置的就是下文的 `kimi` 供应商。
 
@@ -256,7 +256,7 @@ kiki
 
 ## OAuth 与凭证注入
 
-GUI 的 **连接服务 → 用账号登录** 提供 Kimi Code、GitHub Copilot、ChatGPT（Codex）三种选项。选择账号后打开验证地址、输入设备码，等待页面显示「已连接」。对应账号须有相关订阅或服务权限；可用模型取决于账号。退出登录会移除该账号的托管连接与模型。这些是登录方式，并非新的 `type` 协议值：Kimi Code 与 Copilot 使用 OpenAI 兼容请求，ChatGPT Codex 使用指向 Codex 端点的 `openai_responses`。OAuth 凭据存放在 `credentials/` 的 JSON 文件中（见[数据路径](./data-locations.md)）；API 密钥存放在 `credentials/credentials.toml`。CLI 的 `/login`、`/logout` 目前仍只管理 Kimi Code。
+GUI 的 **服务与账号 → 用账号登录** 提供 Kimi Code、GitHub Copilot、ChatGPT（Codex）三种选项。选择账号后打开验证地址、输入设备码，等待页面显示「已连接」。对应账号须有相关订阅或服务权限；可用模型取决于账号。退出登录会移除该账号的托管连接与模型。这些是登录方式，并非新的 `type` 协议值：Kimi Code 与 Copilot 使用 OpenAI 兼容请求，ChatGPT Codex 使用指向 Codex 端点的 `openai_responses`。OAuth 凭据存放在 `credentials/` 的 JSON 文件中（见[数据路径](./data-locations.md)）；API 密钥存放在 `credentials/credentials.toml`。CLI 的 `/login`、`/logout` 目前仍只管理 Kimi Code。
 
 ## 请求身份
 

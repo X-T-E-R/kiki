@@ -8,7 +8,7 @@ The settings sidebar groups twenty entries under seven headings: **App**, **Mode
 
 | I want to change… | Go to |
 | --- | --- |
-| Sign in with a subscription, or add an API key | **Models & agents → Models & providers → Connections** |
+| Sign in with a subscription, or add an API key | **Models & agents → Models & providers → Providers & accounts** |
 | How outbound requests identify themselves | **Models & agents → Models & providers → Identity** |
 | Version and update channel (Stable / Beta) | **Advanced → About & updates** |
 | Agent profiles, prompt-field overrides | **Models & agents → Agents → Agent profiles** |
@@ -31,7 +31,7 @@ The settings sidebar groups twenty entries under seven headings: **App**, **Mode
 
 ## Connections
 
-**Settings → Models & agents → Models & providers** opens **Connections** (`/settings/ai?tab=providers`), the first of the page's four tabs; **Models**, **Defaults**, and **Identity** sit beside it. `/settings/providers` opens the same tab. The page has three blocks, in this order.
+**Settings → Models & agents → Models & providers** opens **Providers & accounts** (`/settings/ai?tab=providers`), the first of the page's four tabs; **Models**, **Defaults**, and **Identity** sit beside it. `/settings/providers` opens the same tab. The page has three blocks, in this order.
 
 **① API key providers** lists hosted APIs you reach with a key. An empty list in this block does not mean the page has no connections.
 
@@ -71,7 +71,7 @@ If the machine cannot be used, the page says why in terms you can act on — no 
 
 ### Timeouts
 
-Open **Settings → Connection & remote → Connection**, then **Current connection** and **HTTP requests** (`/settings/connection?tab=current`). These settings govern requests from this interface to the Kiki server, not the provider connections above:
+Open **Settings → Connection & remote → Server connection**, then **Current connection** and **HTTP requests** (`/settings/connection?tab=current`). These settings govern requests from this interface to the Kiki server, not the provider connections above:
 
 - **Request timeout (seconds)** — the default deadline for ordinary requests this interface makes to the Kiki server.
 - **Reading timeout (seconds)** — how long a history or content read may wait before Kiki gives up on it. The default is `0`, meaning no deadline: a large or slow conversation loads as long as it takes. Set a number of seconds if you would rather a stalled read fail quickly.
@@ -80,7 +80,7 @@ A reading timeout only bounds waiting; it never limits how much can be read. A c
 
 ## Models and Recipes
 
-**Settings → Models & agents → Models & providers** opens **Connections**. **Models** (`/settings/ai?tab=models`) is the catalog and each model's editor. **Defaults** (`/settings/ai?tab=defaults`) is where the other task models are set. **Identity** (`/settings/ai?tab=identity`) decides how outbound requests introduce themselves.
+**Settings → Models & agents → Models & providers** opens **Providers & accounts**. **Models** (`/settings/ai?tab=models`) is the catalog and each model's editor. **Defaults** (`/settings/ai?tab=defaults`) is where the other task models are set. **Identity** (`/settings/ai?tab=identity`) decides how outbound requests introduce themselves.
 
 Above the tabs, **New sessions use** changes the model a new session starts with as soon as you pick one. The titles, fast model, and subagents listed beside it open **Defaults**, where you change them.
 
