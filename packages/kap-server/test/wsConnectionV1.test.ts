@@ -1260,6 +1260,10 @@ describe('WsConnectionV1 cursor replay ordering', () => {
       { type: 'event.session.work_changed', seq: 6, volatile: undefined },
       { type: 'assistant.delta', seq: 1, volatile: true },
     ]);
+    const replayAck = socket.frames().find((frame) => (frame as { id?: string }).id === 'replay') as {
+      payload: { cursors: { s1: { seq: number } } };
+    };
+    expect(replayAck.payload.cursors.s1.seq).toBe(6);
     expect(socket.terminateCalls).toBe(0);
     expect(replayBooks(conn).heldBytes).toBe(0);
     expect(replayBooks(conn).heldDuringReplay.size).toBe(0);

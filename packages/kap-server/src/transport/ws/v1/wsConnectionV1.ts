@@ -858,19 +858,24 @@ export class WsConnectionV1 implements BroadcastTarget {
     const result = await this.broadcaster.getBufferedSince(sid, cursor, filter, transcriptGrades);
     this.replayHolds.delete(sid);
     const held = this.takeReplayHeld(sid);
+    let seq = result.currentSeq;
     if (result.resyncRequired !== false) {
       this.sendImmediateFrame(
         buildResyncRequired(sid, result.resyncRequired as ResyncReason, result.currentSeq, result.epoch),
       );
       resyncRequired.push(sid);
     } else {
-      for (const { envelope } of result.events) this.sendSubscribedFrame(envelope);
-      for (const envelope of held) {
-        if (envelope.volatile !== true && envelope.seq <= result.currentSeq) continue;
+      const deliver = (envelope: EventEnvelope): void => {
         this.sendSubscribedFrame(envelope);
+        if (envelope.volatile !== true && envelope.seq > seq) seq = envelope.seq;
+      };
+      for (const { envelope } of result.events) deliver(envelope);
+      for (const envelope of held) {
+        if (envelope.volatile !== true && envelope.seq <= seq) continue;
+        deliver(envelope);
       }
     }
-    serverCursors[sid] = { seq: result.currentSeq, epoch: result.epoch };
+    serverCursors[sid] = { seq, epoch: result.epoch };
   }
 
   private async authorize(frame: InboundFrame): Promise<boolean> {
