@@ -819,13 +819,13 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     const handle = this.sessions.get(sessionId);
     if (handle === undefined) return;
     const meta = handle.accessor.get(ISessionMetadata);
-    await meta.setArchived(true);
     await this.saveReplayCheckpoints(sessionId, handle);
     this.disposeCheckpointScheduling(sessionId);
     const usageFallback = aggregateSessionUsage(handle);
     await this.drainAgents(handle);
     await this.persistUsage(handle, usageFallback);
     await this.appendLogStore.drainRetirements();
+    await meta.setArchived(true);
     this.event.publish(new SessionArchived({ payload: { sessionId } }));
     await this.announceWillClose({ sessionId, handle, reason: 'archive' });
     this.sessions.delete(sessionId);

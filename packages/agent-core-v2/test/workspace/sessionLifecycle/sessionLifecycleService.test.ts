@@ -941,7 +941,10 @@ describe('SessionLifecycleService archive transcript certification', () => {
         [IAgentLifecycleService, {
           countPendingBackgroundTasks: () => 0,
           list: () => [{ id: 'child', accessor: accessor([[IEventDispatcher, { saveReplayCheckpoint: async () => true }]]) }],
-          remove,
+          remove: async () => {
+            order.push('drain');
+            await remove();
+          },
         }],
         [ISessionTerminalService, { countLiveTerminals: () => 0 }],
         [ISessionMetadata, {
@@ -977,7 +980,7 @@ describe('SessionLifecycleService archive transcript certification', () => {
     try {
       await fx.service.archive('session-1');
       expect(installed.archived.value).toBe(true);
-      expect(installed.order).toEqual(['meta', 'event.session.archived', 'index', 'dispose', 'lock']);
+      expect(installed.order).toEqual(['drain', 'meta', 'event.session.archived', 'index', 'dispose', 'lock']);
       expect(fx.service.get('session-1')).toBeUndefined();
       expect(installed.release).toHaveBeenCalledOnce();
       expect(archivedIds).toEqual(['session-1']);
@@ -1013,9 +1016,17 @@ describe('SessionLifecycleService archive transcript certification', () => {
     setUnexpectedErrorHandler((error) => unexpected.push(error));
     const fx = fixture();
     const installed = installArchiveHandle(fx, async () => { await wire.sealTranscriptEpoch!(); });
+    const archivedIds: string[] = [];
+    const receipts: unknown[] = [];
+    fx.service.onDidArchiveSession((event) => archivedIds.push(event.sessionId));
+    fx.service.onDidCleanup((receipt) => receipts.push(receipt));
     wire.appendRecord({ type: 'turn.prompt', turnId: 0 }, async () => { throw failure; });
     try {
       await expect(fx.service.archive('session-1')).rejects.toBe(failure);
+      expect(installed.archived.value).toBe(false);
+      expect(installed.order).toEqual(['drain']);
+      expect(archivedIds).toEqual([]);
+      expect(receipts).toEqual([]);
       expect(fx.service.get('session-1')).toBeDefined();
       expect(installed.release).not.toHaveBeenCalled();
       const scope = testWireScope('archive', 'flush');
@@ -1026,6 +1037,48 @@ describe('SessionLifecycleService archive transcript certification', () => {
       expect(unexpected).toEqual([failure]);
     } finally {
       resetUnexpectedErrorHandler();
+      await ix.dispose();
+      await fx.service.dispose();
+    }
+  });
+
+  it('does not archive successfully when the transcript receipt write fails', async () => {
+    const ix = new TestInstantiationService();
+    const storage = new InMemoryStorageService();
+    ix.stub(IFileSystemStorageService, storage);
+    ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+    const wire = registerTestAgentWire(ix, testWireScope('archive', 'receipt'), {
+      log: ix.get(IAppendLogStore), storage, logger: noopLogger, telemetry: noopTelemetryService,
+    });
+    await wire.seal();
+    await wire.beginTranscriptEpoch!();
+    const failure = new Error('receipt write failed');
+    const original = storage.write.bind(storage);
+    storage.write = async (scope, key, data, options) => {
+      if (key === WIRE_TRANSCRIPT_RECEIPT_KEY) throw failure;
+      return original(scope, key, data, options);
+    };
+    const fx = fixture();
+    const installed = installArchiveHandle(fx, async () => { await wire.sealTranscriptEpoch!(); });
+    const archivedIds: string[] = [];
+    const receipts: unknown[] = [];
+    fx.service.onDidArchiveSession((event) => archivedIds.push(event.sessionId));
+    fx.service.onDidCleanup((receipt) => receipts.push(receipt));
+    try {
+      await expect(fx.service.archive('session-1')).rejects.toBe(failure);
+      expect(installed.archived.value).toBe(false);
+      expect(installed.order).toEqual(['drain']);
+      expect(archivedIds).toEqual([]);
+      expect(receipts).toEqual([]);
+      expect(fx.service.get('session-1')).toBeDefined();
+      expect(installed.release).not.toHaveBeenCalled();
+      const scope = testWireScope('archive', 'receipt');
+      const receipt = parseWireTranscriptReceipt(JSON.parse(Buffer.from(
+        (await storage.read(scope, WIRE_TRANSCRIPT_RECEIPT_KEY))!,
+      ).toString('utf8')));
+      expect(receipt).toMatchObject({ state: 'open', trusted: true });
+      expect(receipt?.wire).toBeUndefined();
+    } finally {
       await ix.dispose();
       await fx.service.dispose();
     }
