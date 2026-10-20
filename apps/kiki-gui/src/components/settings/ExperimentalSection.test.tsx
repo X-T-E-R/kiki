@@ -70,8 +70,8 @@ afterEach(async () => {
 
 describe('ExperimentalRows', () => {
   it('lists only the flags whose home is this page, each with the tag, description and timing', async () => {
-    await render('tasks');
-    const block = container.querySelector('#st-card-exp-tasks')!;
+    await render('sessions');
+    const block = container.querySelector('#st-card-exp-sessions')!;
     expect(block.querySelector('h2')?.textContent).toBe('Experimental');
     const rows = [...block.querySelectorAll('[data-experimental-row]')];
     expect(rows.map((row) => row.getAttribute('data-experimental-row'))).toEqual(['task_wait']);
@@ -110,7 +110,7 @@ describe('ExperimentalRows', () => {
     const names = locale === 'en'
       ? ['Model Recipes', 'Workspace plugin selection', 'App plugin services', 'Space work modes', 'External MCP clients']
       : ['模型 Recipe', '工作区插件选择', '应用级插件服务', '空间工作模式', '外部 MCP 客户端'];
-    const sections = ['ai', 'plugins', 'plugins', 'spaces', 'connection-services'];
+    const sections = ['ai', 'extensions', 'extensions', 'spaces', 'connection-services'];
     for (const [index, id] of flags.entries()) {
       await render(sections[index]!);
       const row = container.querySelector(`[data-experimental-row="${id}"]`)!;
@@ -188,7 +188,7 @@ describe('ExperimentalRows', () => {
 
   it('rolls the choice back and explains the failure when the save fails', async () => {
     client.patchConfig.mockRejectedValueOnce(new Error('offline'));
-    await render('tasks');
+    await render('sessions');
     const off = container.querySelector<HTMLButtonElement>('[data-experimental-row="task_wait"] [data-experimental-choice="off"]')!;
     await act(async () => { off.click(); });
     await flush();

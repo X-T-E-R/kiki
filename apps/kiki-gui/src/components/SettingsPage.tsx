@@ -2,7 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import {
+  AGENTS_SETTINGS_DEFAULT_TAB,
   AI_SETTINGS_DEFAULT_TAB,
+  BROWSER_CONTROL_SETTINGS_DEFAULT_TAB,
+  EXTENSIONS_SETTINGS_DEFAULT_TAB,
   SETTINGS_NAV_TREE,
   SETTINGS_SECTION_META,
   experimentalTabForSection,
@@ -31,6 +34,7 @@ import { HooksSection } from './settings/hooks/HooksSection';
 import { ConnectionSection } from './settings/ConnectionSection';
 import { DeveloperSection } from './settings/DeveloperSection';
 import { ExperimentalRows } from './settings/ExperimentalRows';
+import { ExtensionsSection } from './settings/ExtensionsSection';
 import { ExternalClientsSection } from './settings/ExternalClientsSection';
 import { GeneralSection } from './settings/GeneralSection';
 import { LabsSection } from './settings/LabsSection';
@@ -55,8 +59,6 @@ import { SpacesSection } from './settings/SpacesSection';
 import { SpaceDot } from './settings/spaces/SpaceDot';
 import { currentSpace } from '../lib/spaces';
 import { spaceSettingsTargetIsSpace, spaceSettingsTargetOf } from '../lib/spaceSettings';
-import { SubagentsSection } from './settings/SubagentsSection';
-import { UnifiedAgentManager } from './settings/UnifiedAgentManager';
 import { TasksSection } from './settings/TasksSection';
 import { UnknownSettingsSection } from './settings/UnknownSection';
 import { SettingsWorkspaceScopeContext, WorkspaceDetailNameContext } from './settings/workspaceScope';
@@ -409,7 +411,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   // One installed plugin's own settings page, or the installed list. The
   // section's card hash targets the list, so a bookmark to the Plugins leaf
   // lands on the list even when the query still names a plugin.
-  const activePluginId = active === 'plugins' && hash.replace(/^#/, '') === ''
+  const activePluginId = (active === 'plugins' || active === 'extensions') && hash.replace(/^#/, '') === ''
     ? pluginSettingsIdFromQuery(search)
     : null;
 
@@ -421,7 +423,12 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : null;
 
   const currentTab = new URLSearchParams(search).get('tab')
-    ?? (active === 'ai' ? AI_SETTINGS_DEFAULT_TAB : active === 'search' ? 'overview' : null);
+    ?? (active === 'ai' ? AI_SETTINGS_DEFAULT_TAB
+      : active === 'agents' ? AGENTS_SETTINGS_DEFAULT_TAB
+      : active === 'extensions' ? EXTENSIONS_SETTINGS_DEFAULT_TAB
+      : active === 'browser-control' ? BROWSER_CONTROL_SETTINGS_DEFAULT_TAB
+      : active === 'search' ? 'overview'
+      : null);
   const fromOnboarding = new URLSearchParams(search).get('from') === 'onboarding';
 
   // Import history is a built-in session surface, not a plugin sub-view. It
@@ -438,8 +445,8 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'models' ? <div className="space-y-6"><DefaultsTab /><ModelsTab /></div>
     : active === 'connection-services' ? <ExternalClientsSection />
     : active === 'identity' ? <IdentitySection />
-    : active === 'agents' ? <><UnifiedAgentManager /><AgentsSection /></>
-    : active === 'subagents' ? <SubagentsSection />
+    : active === 'agents' ? <AgentsSection />
+    : active === 'subagents' ? <AgentsSection />
     : active === 'sessions' ? <SessionsSection />
     : active === 'notifications' ? <NotificationsSection />
     : active === 'memory' ? <MemorySection />
@@ -458,12 +465,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'ssh' ? <SshSection />
     : active === 'developer' ? <DeveloperSection />
     : active === 'labs' ? <LabsSection />
-    : active === 'extensions' ? (
-        currentTab === 'skills' ? <SkillsSection />
-        : currentTab === 'mcp' ? <McpSection />
-        : currentTab === 'plugins' ? <PluginsSection pluginId={activePluginId} />
-        : <div className="space-y-6"><SkillsSection /><McpSection /><PluginsSection pluginId={activePluginId} /></div>
-      )
+    : active === 'extensions' ? <ExtensionsSection pluginId={activePluginId} />
     : active === 'environment-tools' ? (
         currentTab === 'search' ? <NbSearchSection />
         : currentTab === 'browser-control' ? <BrowserControlSection />
@@ -471,7 +473,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
         : <div className="space-y-6"><NbSearchSection /><BrowserControlSection /><ComputerControlSection /></div>
       )
     : active === 'remote' ? <div className="space-y-6"><ConnectionSection /><SshSection /><ExternalClientsSection /></div>
-    : active === 'system' ? <div className="space-y-6"><DeveloperSection /><LabsSection /><AboutSection /><DesktopLogCard /></div>
+    : active === 'system' ? <div className="space-y-6"><DeveloperSection /><AboutSection /><DesktopLogCard /></div>
     : <><AboutSection /><DesktopLogCard /></>;
 
   // A feature page ends with the experimental flags that change it; tabbed

@@ -39,7 +39,7 @@ async function click(text: string, scope: Element = container) {
   await flush();
 }
 async function mount(view: 'automation' | 'rows' = 'automation') {
-  await act(async () => root.render(<QueryClientProvider client={query}><I18nProvider>{view === 'rows' ? <ExperimentalRows section="mcp" /> : <ToolPolicyCard />}</I18nProvider></QueryClientProvider>));
+  await act(async () => root.render(<QueryClientProvider client={query}><I18nProvider>{view === 'rows' ? <ExperimentalRows section="extensions" /> : <ToolPolicyCard />}</I18nProvider></QueryClientProvider>));
   await flush();
   await flush();
 }
@@ -79,7 +79,7 @@ describe('safe automation drafts', () => {
 
   it('saves each Experimental row on change, keeps other overrides and flags an environment override', async () => {
     await mount('rows');
-    const rows = container.querySelector('#st-card-exp-mcp')!;
+    const rows = container.querySelector('#st-card-exp-extensions')!;
     expect(rows.querySelector('[data-experimental-row="tool-select"]')).not.toBeNull();
     expect(rows.querySelector('[data-experimental-row="search_worker"]')).toBeNull();
     const choose = async (flag: string, value: string) => {

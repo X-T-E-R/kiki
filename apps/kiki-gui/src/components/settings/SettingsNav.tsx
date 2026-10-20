@@ -18,15 +18,16 @@ import { Icon } from '../icons';
 import { useOptionalInstalledPlugins } from '../capabilities/usePlugins';
 import { SECTIONS, type SectionId } from './sections';
 
-const LEAF_QUERY_PREFIXES: Readonly<Record<string, readonly unknown[]>> = {
-  ai: ['config'],
-  workspaces: ['workspaces', 'catalog'],
-  memory: ['memory-settings'],
-  skills: ['workspace-skills'],
-  mcp: ['mcp-managed-servers'],
-  plugins: ['plugins'],
-  'browser-control': ['browser'],
-  'computer-control': ['capability', 'kiki-computer'],
+const LEAF_QUERY_PREFIXES: Readonly<Record<string, readonly (readonly unknown[])[]>> = {
+  ai: [['config']],
+  workspaces: [['workspaces', 'catalog']],
+  memory: [['memory-settings']],
+  extensions: [['workspace-skills'], ['mcp-managed-servers'], ['plugins']],
+  skills: [['workspace-skills']],
+  mcp: [['mcp-managed-servers']],
+  plugins: [['plugins']],
+  'browser-control': [['browser'], ['capability', 'kiki-computer']],
+  'computer-control': [['capability', 'kiki-computer']],
 };
 
 /**
@@ -158,9 +159,9 @@ export function SettingsNavTree({
   const activeCanonical = active !== null ? canonicalNavSection(active, activeTab) : null;
 
   const subscribeErrors = useCallback((listener: () => void) => queryClient.getQueryCache().subscribe(listener), [queryClient]);
-  const readErrors = useCallback(() => Object.entries(LEAF_QUERY_PREFIXES).filter(([id, queryKey]) => {
-    const cached = queryClient.getQueryCache().findAll({ queryKey });
-    return cached.some((query) => query.state.status === 'error' || id === 'plugins' &&
+  const readErrors = useCallback(() => Object.entries(LEAF_QUERY_PREFIXES).filter(([id, queryKeys]) => {
+    const cached = queryKeys.flatMap((queryKey) => queryClient.getQueryCache().findAll({ queryKey }));
+    return cached.some((query) => query.state.status === 'error' || (id === 'plugins' || id === 'extensions') &&
       (query.state.data as { plugins?: { state?: string; hasErrors?: boolean }[] } | undefined)?.plugins?.some(
         (plugin) => plugin.state === 'error' || plugin.hasErrors === true,
       ));
@@ -171,8 +172,9 @@ export function SettingsNavTree({
   const leafButton = (id: string) => {
     const labelKey = labelFor(id);
     if (labelKey === undefined) return null;
-    const isCurrent = (id === active || id === activeCanonical) && !(id === 'plugins' && activePluginId !== null && activePluginId !== undefined);
-    const errored = errorLeaves.has(id) || id === 'plugins' && plugins.some((plugin) => plugin.state === 'error' || plugin.hasErrors);
+    const isPluginContainer = id === 'plugins' || id === 'extensions';
+    const isCurrent = (id === active || id === activeCanonical) && !(isPluginContainer && activePluginId !== null && activePluginId !== undefined);
+    const errored = errorLeaves.has(id) || isPluginContainer && plugins.some((plugin) => plugin.state === 'error' || plugin.hasErrors);
     return (
       <button
         key={id}
@@ -233,7 +235,7 @@ export function SettingsNavTree({
                     ))}
                   </div>
                 ) : null}
-                {id === 'plugins' && (active === 'plugins' || activeCanonical === 'plugins') && plugins.length > 0 ? (
+                {(id === 'plugins' || id === 'extensions') && (active === id || activeCanonical === id) && plugins.length > 0 ? (
                   <div className="mt-0.5 flex flex-col gap-0.5" data-settings-nav-subtabs="plugins">
                     {plugins.map((plugin) => (
                       <button

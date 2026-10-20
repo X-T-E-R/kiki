@@ -1,16 +1,24 @@
 import { useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useLocation } from 'react-router-dom';
 import {
+  BROWSER_CONTROL_SETTINGS_DEFAULT_TAB,
+  BROWSER_CONTROL_SETTINGS_TABS,
+  browserControlTabLabelKey,
   effectiveAllowedBrowserCount,
   isBrowserControlEnabled,
   isBrowserToolPolicyDenied,
   isBrowserToolPolicyPartiallyDenied,
+  normalizeBrowserControlTab,
+  type BrowserControlSettingsTab,
 } from '@kiki/session-core/settings';
 
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { browserApi, browserKeys } from '../../lib/browserRest';
 import { FeedbackLine, Hint, SaveStatus } from '../controls';
+import { useGuardedNavigate } from '../dirtyGuard';
+import { ComputerControlSection } from './ComputerControlSection';
 import { SectionCard } from './SectionCard';
 import { AdvancedDetails } from './fields';
 import { SettingsSelect } from './SettingsPrimitives';
@@ -22,27 +30,60 @@ import { BrowserToolPolicy } from './browserControl/BrowserToolPolicy';
 
 export function BrowserControlSection() {
   const { t } = useI18n();
+  const navigate = useGuardedNavigate();
+  const { search } = useLocation();
+  const rawTab = new URLSearchParams(search).get('tab');
+  const tab: BrowserControlSettingsTab = normalizeBrowserControlTab(rawTab) ?? BROWSER_CONTROL_SETTINGS_DEFAULT_TAB;
+
+  const selectTab = (next: BrowserControlSettingsTab) => {
+    if (next === tab) return;
+    const params = new URLSearchParams(search);
+    params.set('tab', next);
+    void navigate(`/settings/browser-control?${params.toString()}`);
+  };
+
   return (
-    <div className="space-y-6" data-settings-browser-control>
-      <div className="sticky top-0 z-10 -mx-1 bg-paper/95 px-1 py-1 backdrop-blur-[2px]" data-browser-status-bar>
-        <BrowserMasterCard />
+    <div className="space-y-4">
+      <div role="tablist" aria-label={t('st.section.browserControl')} className="flex flex-wrap gap-1 border-b border-hairline">
+        {BROWSER_CONTROL_SETTINGS_TABS.map((candidate) => {
+          const active = candidate === tab;
+          return (
+            <button
+              key={candidate}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              data-browser-control-tab={candidate}
+              onClick={() => { selectTab(candidate); }}
+              className={`-mb-px min-h-9 border-b-2 px-3 py-1.5 text-[13px] transition-colors ${
+                active
+                  ? 'border-ink font-medium text-ink'
+                  : 'border-transparent text-ink-soft hover:text-ink'
+              }`}
+            >
+              {t(browserControlTabLabelKey(candidate))}
+            </button>
+          );
+        })}
       </div>
-      <SectionCard id="st-card-browser-setup" title={t('st.browser.setup.title')}>
-        <BrowserSetupWizard />
-      </SectionCard>
-      {/* The bridge's own readiness. It answers the same question as the setup
-          card above — is browser control working — so it sits with it rather
-          than on the Plugins leaf, where a browser fact read as a plugin. */}
-      <WebBridgeReadiness />
-      {/* Everything a person types rather than picks sits below the routes that
-          need no typing, and stays folded: a hand-written CDP address or a
-          driver path is a real way in, but it is the exception, not the
-          opening move. Editing what is already saved lives in here too. */}
-      <AdvancedDetails summary={t('st.browser.advanced.title')} data-browser-advanced-region>
-        <SectionCard id="st-card-browser-connections" title={t('st.browser.connectionsTitle')}>
-          <BrowserConnectionCard />
-        </SectionCard>
-      </AdvancedDetails>
+      {tab === 'computer' ? (
+        <ComputerControlSection />
+      ) : (
+        <div className="space-y-6" data-settings-browser-control>
+          <div className="sticky top-0 z-10 -mx-1 bg-paper/95 px-1 py-1 backdrop-blur-[2px]" data-browser-status-bar>
+            <BrowserMasterCard />
+          </div>
+          <SectionCard id="st-card-browser-setup" title={t('st.browser.setup.title')}>
+            <BrowserSetupWizard />
+          </SectionCard>
+          <WebBridgeReadiness />
+          <AdvancedDetails summary={t('st.browser.advanced.title')} data-browser-advanced-region>
+            <SectionCard id="st-card-browser-connections" title={t('st.browser.connectionsTitle')}>
+              <BrowserConnectionCard />
+            </SectionCard>
+          </AdvancedDetails>
+        </div>
+      )}
     </div>
   );
 }

@@ -362,9 +362,9 @@ describe('SettingsPage panel scopes', () => {
     expect(container.querySelector('[data-settings-remote-line]')).not.toBeNull();
   });
 
-  it('drops a page intro that would only restate a card title', async () => {
+  it('shows the Extensions & tools page intro on /settings/mcp and keeps the timeouts card title concise', async () => {
     const mcp = await renderSettings('/settings/mcp');
-    expect(mcp.querySelector('[data-settings-intro]')).toBeNull();
+    expect(mcp.querySelector('[data-settings-intro]')?.textContent).toBe('Manage skills, MCP tool servers, and installed plugins.');
     expect(mcp.textContent).not.toContain('Server-wide MCP timeouts.');
     expect(mcp.querySelector('#st-card-mcp-timeouts')).not.toBeNull();
   });
@@ -633,7 +633,7 @@ describe('SettingsPage batch-3 leaves', () => {
   });
 
   it.each([
-    ['/settings/extensions', '#st-card-caps'],
+    ['/settings/extensions', '#st-card-plugins'],
     ['/settings/environment-tools', '[data-settings-page-title]'],
     ['/settings/remote', '#st-card-conn-server'],
     ['/settings/system', '#st-card-resource-limits'],
@@ -721,7 +721,9 @@ describe('SettingsPage batch-3 leaves', () => {
   it('keeps plan defaults on sessions and puts each flag on its feature page', async () => {
     const tasks = await renderSettings('/settings/tasks');
     expect(tasks.querySelector('#st-card-agent-board')).toBeNull();
-    expect(tasks.querySelector('#st-card-defaults')).toBeNull();
+    // /settings/tasks redirects to /settings/sessions, which unites plan defaults and task policy.
+    expect(tasks.querySelector('#st-card-defaults')).not.toBeNull();
+    expect(tasks.querySelector('#st-card-task-policy')).not.toBeNull();
     const sessions = await renderSettings('/settings/sessions');
     expect(sessions.querySelector('#st-card-defaults')).not.toBeNull();
     expect(sessions.querySelector('#st-card-questions')).not.toBeNull();
@@ -729,10 +731,10 @@ describe('SettingsPage batch-3 leaves', () => {
     // Session titles are switched by their own card, so they get no second row.
     expect(sessions.querySelector('[data-experimental-row="auto_session_title"]')).toBeNull();
     const homes: [string, string[]][] = [
-      ['/settings/agents', ['agent-profile-routes']],
-      ['/settings/subagents', ['subagent_release_idle']],
+      ['/settings/agents', ['agent-profile-routes', 'subagent_release_idle']],
+      ['/settings/subagents', ['agent-profile-routes', 'subagent_release_idle']],
       ['/settings/mcp', ['tool-select', 'external_delegation_mcp']],
-      ['/settings/tasks', ['task_wait']],
+      ['/settings/tasks', ['session_idle_eviction', 'task_wait']],
       ['/settings/search?tab=advanced', ['search_worker']],
       ['/settings/developer', ['persistence_minidb_readmodel']],
     ];
@@ -757,8 +759,8 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(card.querySelector('[role="group"]')).toBeNull();
     const link = (flag: string) => card.querySelector(`[data-labs-entry="${flag}"] a`)?.getAttribute('href');
     expect(link('agent-profile-routes')).toBe('/settings/agents#st-card-exp-agents');
-    expect(link('external_delegation_mcp')).toBe('/settings/mcp#st-card-exp-mcp');
-    expect(link('subagent_release_idle')).toBe('/settings/subagents#st-card-exp-subagents');
+    expect(link('external_delegation_mcp')).toBe('/settings/extensions#st-card-exp-extensions');
+    expect(link('subagent_release_idle')).toBe('/settings/agents#st-card-exp-agents');
     expect(link('search_worker')).toBe('/settings/search#st-card-exp-search');
     expect(link('auto_session_title')).toBe('/settings/sessions#st-card-session-title');
     // Every flag the server reports is listed, including ones switched by a feature card.
@@ -780,12 +782,12 @@ describe('SettingsPage batch-3 leaves', () => {
     client.getConfig.mockResolvedValue({});
   });
 
-  it('redirects the retired experimental URL to the labs index', async () => {
+  it('redirects the retired experimental URL to the labs index on developer', async () => {
     const container = await renderSettings('/settings/experimental', { guarded: true });
-    expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/labs');
+    expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/developer#st-card-labs');
     expect(container.querySelector('#st-card-labs')).not.toBeNull();
-    expect(container.querySelector('#st-card-advanced')).toBeNull();
-    expect(scopeHeader(container).textContent).toBe('Experimental features and feature flags.');
+    expect(container.querySelector('#st-card-advanced')).not.toBeNull();
+    expect(scopeHeader(container).textContent).toBe('Engine parameters, low-level configuration, system diagnostics, and experimental feature index.');
     expect(container.querySelector('#st-card-labs [data-labs-index]')).not.toBeNull();
     expect(container.querySelector('#st-card-labs [role="switch"]')).toBeNull();
   });
@@ -793,18 +795,18 @@ describe('SettingsPage batch-3 leaves', () => {
   it('sends an old single-flag card link to the flag’s new row', async () => {
     const container = await renderSettings('/settings/agents#st-card-mcp-delegation');
     await flush();
-    expect(container.querySelector('#st-card-exp-mcp [data-experimental-row="external_delegation_mcp"]')).not.toBeNull();
+    expect(container.querySelector('#st-card-exp-extensions [data-experimental-row="external_delegation_mcp"]')).not.toBeNull();
   });
 
   it('mounts the developer page with limits first and raw JSON after', async () => {
     const container = await renderSettings('/settings/developer');
     const card = container.querySelector('#st-card-advanced')!;
     expect(card).not.toBeNull();
-    expect(scopeHeader(container).textContent).toBe('Engine parameters, low-level configuration, and system diagnostics.');
+    expect(scopeHeader(container).textContent).toBe('Engine parameters, low-level configuration, system diagnostics, and experimental feature index.');
     expect(card.textContent).toContain('Advanced configuration for permissions, loop controls, and background tasks. Validated on save.');
     expect(card.textContent).not.toContain('kap-server');
     const order = [...container.querySelectorAll('[data-settings-card]')].map((node) => node.id);
-    expect(order).toEqual(['st-card-resource-limits', 'st-card-retry', 'st-card-session-residency', 'st-card-token-counting', 'st-card-advanced', 'st-card-exp-developer']);
+    expect(order).toEqual(['st-card-resource-limits', 'st-card-retry', 'st-card-session-residency', 'st-card-token-counting', 'st-card-advanced', 'st-card-labs', 'st-card-exp-developer']);
 
     const writes = client.patchConfig.mock.calls.length;
     await setTextarea(card.querySelector('textarea')!, '{');
@@ -941,6 +943,52 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(invalidated).toContainEqual(['tools']);
     expect(invalidated).not.toContainEqual(['mcp-servers']);
   });
+
+  it('switches tabs on Extensions & tools and Browser & computer while preserving ?plugin= and legacy redirects', async () => {
+    const extensions = await renderSettings('/settings/extensions', { guarded: true });
+    await flush();
+    expect(extensions.querySelector('[data-extensions-tab="plugins"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(extensions.querySelector('#st-card-plugins')).not.toBeNull();
+
+    await click(extensions.querySelector('[data-extensions-tab="skills"]')!);
+    await flush();
+    expect(extensions.querySelector('[data-test-location]')?.textContent).toBe('/settings/extensions?tab=skills');
+    expect(extensions.querySelector('#st-card-caps')).not.toBeNull();
+    expect(extensions.querySelector('#st-card-skill-catalog')).not.toBeNull();
+
+    await click(extensions.querySelector('[data-extensions-tab="mcp"]')!);
+    await flush();
+    expect(extensions.querySelector('[data-test-location]')?.textContent).toBe('/settings/extensions?tab=mcp');
+    expect(extensions.querySelector('#st-card-mcp')).not.toBeNull();
+
+    const browser = await renderSettings('/settings/browser-control', { guarded: true });
+    await flush();
+    expect(browser.querySelector('[data-browser-control-tab="browser"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(browser.querySelector('#st-card-browser-enabled')).not.toBeNull();
+
+    await click(browser.querySelector('[data-browser-control-tab="computer"]')!);
+    await flush();
+    expect(browser.querySelector('[data-test-location]')?.textContent).toBe('/settings/browser-control?tab=computer');
+    expect(browser.querySelector('#st-card-computer-enabled')).not.toBeNull();
+
+    const legacyComputer = await renderSettings('/settings/computer-control', { guarded: true });
+    await flush();
+    expect(legacyComputer.querySelector('[data-test-location]')?.textContent).toBe('/settings/browser-control?tab=computer');
+    expect(legacyComputer.querySelector('[data-browser-control-tab="computer"]')?.getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('switches between Agents & profiles and Dispatch & subagents tabs on Agents', async () => {
+    const agents = await renderSettings('/settings/agents', { guarded: true });
+    await flush();
+    expect(agents.querySelector('[data-agents-tab="profiles"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(agents.querySelector('#st-card-main-agents')).not.toBeNull();
+
+    await click(agents.querySelector('[data-agents-tab="dispatch"]')!);
+    await flush();
+    expect(agents.querySelector('[data-test-location]')?.textContent).toBe('/settings/agents?tab=dispatch');
+    expect(agents.querySelector('#st-card-subagents')).not.toBeNull();
+    expect(agents.querySelector('#st-card-subagent-tool-defaults')).not.toBeNull();
+  });
 });
 
 describe('SettingsPage search ownership', () => {
@@ -1009,10 +1057,10 @@ describe('SettingsPage search ownership', () => {
 
 describe('SettingsPage search locating', () => {
   it.each([
-    // The default-target card sits with the other subagent rules, so the hit
-    // opens that leaf; the card itself and its selector are unchanged.
-    ['en', 'default profile', 'Subagent rules', 'Default subagent'],
-    ['zh', '默认 profile', '子智能体规则', '默认子智能体'],
+    // The default-target card sits on the Agents page's Dispatch & subagents tab,
+    // so the hit opens that leaf and switches to the dispatch tab.
+    ['en', 'default profile', 'Agents', 'Default subagent'],
+    ['zh', '默认 profile', '智能体', '默认子智能体'],
   ] as const)('clicks the %s default-target search hit into the mounted subagent card', async (locale, query, pageTitle, cardTitle) => {
     localStorage.setItem('kiki.locale', locale);
     const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
@@ -1039,10 +1087,10 @@ describe('SettingsPage search locating', () => {
 
   it('locates the already-mounted card on every same-page search click', async () => {
     localStorage.setItem('kiki.locale', 'en');
-    // The default-target card lives on the subagent leaf, so that is the page
+    // The default-target card lives on the Agents dispatch tab, so that is the page
     // a same-page hit must be started from: the hit locates the mounted card
     // instead of navigating.
-    const container = await renderSettings('/settings/subagents', { guarded: true });
+    const container = await renderSettings('/settings/agents?tab=dispatch', { guarded: true });
     const visitKey = container.querySelector('[data-test-location]')?.getAttribute('data-test-location-key');
     const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
     try {

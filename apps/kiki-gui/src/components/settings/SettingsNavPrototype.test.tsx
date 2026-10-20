@@ -133,6 +133,13 @@ describe('candidate nav trees', () => {
       if (node.kind !== 'group') continue;
       for (const leaf of node.sections) {
         if (leaf === 'identity') continue;
+        if (leaf === 'extensions') {
+          for (const sub of ['plugins', 'skills', 'mcp']) {
+            expect(navTreeCoverage(TASKFLOW_NAV_TREE).placed).toContain(sub);
+            expect(navTreeCoverage(OBJECTS_NAV_TREE).placed).toContain(sub);
+          }
+          continue;
+        }
         expect(navTreeCoverage(TASKFLOW_NAV_TREE).placed).toContain(leaf);
         expect(navTreeCoverage(OBJECTS_NAV_TREE).placed).toContain(leaf);
       }
@@ -201,23 +208,29 @@ describe('prototype mode switch', () => {
 });
 
 describe('search breadcrumbs under a candidate tree', () => {
-  it('a re-homed leaf shows its candidate group, identity borrows its host in objects mode', () => {
+  it('a re-homed leaf shows its candidate group, and merged sections resolve to their host group', () => {
     const t = (key: string) => key;
     const labels = settingsSectionLabels(t);
     const taskflow = buildSettingsSearchIndex(labels, t, TASKFLOW_NAV_TREE);
     const permissions = taskflow.find((entry) => entry.section === 'permissions')!;
     expect(permissions.groupLabel).toBe('st.group.rulesAlerts');
     const objects = buildSettingsSearchIndex(labels, t, OBJECTS_NAV_TREE);
-    const identity = objects.find((entry) => entry.section === 'identity')!;
-    expect(identity.groupLabel).toBe('');
-    expect(identity.sectionLabel).toBe('st.section.identity');
-    expect(objects.find((entry) => entry.section === 'plugins')!.groupLabel).toBe('st.group.capabilities');
+    const identity = objects.find((entry) => entry.section === 'ai' && entry.tab === 'identity')!;
+    expect(identity.groupLabel).toBe('st.group.modelsAccounts');
+    expect(identity.sectionLabel).toBe('st.section.ai');
+    const shipped = buildSettingsSearchIndex(labels, t, SETTINGS_NAV_TREE);
+    expect(shipped.find((entry) => entry.section === 'extensions')!.groupLabel).toBe('st.group.capabilities');
   });
 
   it('the shipped spec leaves every candidate destination intact', () => {
     const sections = new Set(SETTINGS_SEARCH_SPEC.map((entry) => entry.section));
     for (const section of sections) {
       if (section === 'identity') continue;
+      if (section === 'extensions') {
+        expect(navTreeCoverage(TASKFLOW_NAV_TREE).placed).toEqual(expect.arrayContaining(['plugins', 'skills', 'mcp']));
+        expect(navTreeCoverage(OBJECTS_NAV_TREE).placed).toEqual(expect.arrayContaining(['plugins', 'skills', 'mcp']));
+        continue;
+      }
       expect(navTreeCoverage(TASKFLOW_NAV_TREE).placed).toContain(section);
       expect(navTreeCoverage(OBJECTS_NAV_TREE).placed).toContain(section);
     }

@@ -128,15 +128,27 @@ export function objectsSectionTarget(section: string): string | null {
   return OBJECTS_SECTION_REDIRECTS[section] ?? null;
 }
 
-/** Test oracle: every shipped leaf appears in the tree exactly once, minus merged-away ones. */
+/** Test oracle: every canonical leaf in the candidate tree is covered, plus any legacy leaf the tree still explicitly places. */
+const PROTOTYPE_ALL_SECTIONS: readonly string[] = [
+  'general', 'appearance', 'shortcuts', 'notifications',
+  'ai', 'agents', 'subagents', 'identity',
+  'sessions', 'workspaces', 'memory', 'tasks',
+  'skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control',
+  'permissions', 'hooks',
+  'connection', 'spaces', 'ssh', 'connection-services',
+  'developer', 'labs', 'about',
+];
+
 export function navTreeCoverage(tree: readonly SettingsNavNode[]): {
   placed: string[];
   missing: string[];
   duplicated: string[];
 } {
   const placed = tree.flatMap((node) => node.kind === 'group' ? [...node.sections] : [node.section]);
-  const all = SETTINGS_SECTIONS.map((section) => section.id);
-  const missing = all.filter((id) => !placed.includes(id));
+  const reference = placed.includes('extensions')
+    ? SETTINGS_SECTIONS.map((section) => section.id)
+    : PROTOTYPE_ALL_SECTIONS;
+  const missing = reference.filter((id) => !placed.includes(id));
   const duplicated = placed.filter((id, index) => placed.indexOf(id) !== index);
   return { placed, missing, duplicated };
 }

@@ -629,6 +629,8 @@ describe('SessionsSection archive entry', () => {
       'st-card-questions',
       'st-card-session-title',
       'st-card-agent-messaging',
+      'st-card-task-policy',
+      'st-card-cron',
     ]);
 
     const entry = container.querySelector('[data-settings-open-archived]')!;

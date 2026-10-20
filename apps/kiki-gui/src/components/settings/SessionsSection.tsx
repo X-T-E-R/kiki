@@ -25,6 +25,7 @@ import { SectionCard } from './SectionCard';
 import { SessionTitlePromptField } from './SessionTitlePromptField';
 import { SettingHelp } from './SettingHelp';
 import { SETTINGS_SELECT_TRIGGER, SettingsSegmented } from './SettingsPrimitives';
+import { CronRuntimeCard, TaskPolicyCard } from './TaskRuntimeSettings';
 import {
   EMPTY_GUARD_DRAFT,
   guardDraftFromGlobalEffective,
@@ -429,9 +430,8 @@ function ArchivedConversationsCard() {
 }
 
 /**
- * Sessions: what a new session looks like and how agents behave inside one.
- * Everything here is stored on the server and instant-apply, except the
- * plan-approval timeout, which is a typed number and keeps its own Save.
+ * Sessions: what a new session looks like, how agents behave inside one, and
+ * how background & scheduled tasks run across sessions.
  */
 export function SessionsSection() {
   return (
@@ -442,6 +442,8 @@ export function SessionsSection() {
       <QuestionsCard />
       <SessionTitlesCard />
       <AgentMessagingCard />
+      <TaskPolicyCard />
+      <CronRuntimeCard />
     </>
   );
 }

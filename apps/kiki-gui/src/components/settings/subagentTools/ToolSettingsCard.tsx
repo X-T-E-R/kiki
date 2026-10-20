@@ -10,7 +10,7 @@
  * are shown in that session's agent panel.
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { errorText } from '@kiki/session-core/i18n';
@@ -67,7 +67,11 @@ export function SubagentToolSettingsCard() {
   const queryClient = useQueryClient();
   const navigate = useGuardedNavigate();
   const guard = useDirtyGuard();
-  const [object, setObject] = useState<string>(DEFAULT_TOOL_OBJECT);
+  const [object, setObject] = useState<string>(() => {
+    if (typeof window === 'undefined') return DEFAULT_TOOL_OBJECT;
+    const requested = new URLSearchParams(window.location.search).get('object');
+    return requested !== null && requested !== '' ? requested : DEFAULT_TOOL_OBJECT;
+  });
   const [draft, setDraft] = useState<ToolDraft | null>(null);
   const [query, setQuery] = useState('');
   const [selectedTool, setSelectedTool] = useState<string | null>(null);
@@ -120,7 +124,16 @@ export function SubagentToolSettingsCard() {
         || !sameToolLists(draft.profile.tools, draftBaseline.tools)
         || !sameToolLists(draft.profile.disallowedTools, draftBaseline.disallowedTools);
 
-  const profile = object === DEFAULT_TOOL_OBJECT ? undefined : profiles.find((candidate) => profileIdentityKey(candidate) === object);
+  const profile = object === DEFAULT_TOOL_OBJECT ? undefined
+    : profiles.find((candidate) => profileIdentityKey(candidate) === object)
+      ?? profiles.find((candidate) => candidate.name === object);
+
+  useEffect(() => {
+    if (object !== DEFAULT_TOOL_OBJECT && profile !== undefined) {
+      const canonicalKey = profileIdentityKey(profile);
+      if (canonicalKey !== object) setObject(canonicalKey);
+    }
+  }, [object, profile]);
   const profileFields = useMemo(
     () => (profile === undefined ? [] : subagentProfileToolFields(profile)),
     [profile],

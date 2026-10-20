@@ -1,19 +1,24 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useSearchParams } from 'react-router-dom';
+import { useLocation, useSearchParams } from 'react-router-dom';
 
 import { errorText } from '@kiki/session-core/i18n';
 import {
+  AGENTS_SETTINGS_DEFAULT_TAB,
+  AGENTS_SETTINGS_TABS,
+  agentsTabLabelKey,
   disabledProfilePatch,
   mergeNamedAgentProfiles,
   namedAgentNewSessionBlocked,
   namedAgentOverrideRelations,
   namedAgentSessionHref,
+  normalizeAgentsTab,
   partitionNamedAgentProfiles,
   shippedEntryForProfile,
   subagentGovernanceFromConfig,
   subagentGovernancePatch,
   workspaceChipDisplay,
+  type AgentsSettingsTab,
   type NamedAgentOverrideRelation,
   type SubagentGovernanceDraft,
 } from '@kiki/session-core/settings';
@@ -42,6 +47,9 @@ import { AgentRuntimeCard } from './AgentRuntimeSettings';
 import { PromptConfigCard } from './PromptConfigCard';
 import { ShippedProfileControls } from './ShippedProfileControls';
 import { SubagentLimitsSettings } from './SubagentLimitsSettings';
+import { SubagentDefaultTargetCard, SubagentOpenModeCard } from './SubagentsSection';
+import { UnifiedAgentManager } from './UnifiedAgentManager';
+import { SubagentToolSettingsCard } from './subagentTools/ToolSettingsCard';
 import { useSavedTick } from './useSavedTick';
 import { AliasChips } from './profileEditor/fields';
 import { dispatchFieldsOf } from './profileEditor/profileDraft';
@@ -707,11 +715,65 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
   );
 }
 
-export function AgentsSection() {
+export function SubagentsSection() {
   return (
     <div className="space-y-4">
-      <AgentRuntimeCard />
-      <PromptConfigCard />
+      <SubagentDefaultTargetCard />
+      <SubagentGovernanceCard />
+      <SubagentOpenModeCard />
+      <SubagentToolSettingsCard />
+    </div>
+  );
+}
+
+export function AgentsSection() {
+  const { t } = useI18n();
+  const navigate = useGuardedNavigate();
+  const { search } = useLocation();
+  const rawTab = new URLSearchParams(search).get('tab');
+  const tab: AgentsSettingsTab = normalizeAgentsTab(rawTab) ?? AGENTS_SETTINGS_DEFAULT_TAB;
+
+  const selectTab = (next: AgentsSettingsTab) => {
+    if (next === tab) return;
+    const params = new URLSearchParams(search);
+    params.set('tab', next);
+    params.delete('object');
+    void navigate(`/settings/agents?${params.toString()}`);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div role="tablist" aria-label={t('st.section.agents')} className="flex flex-wrap gap-1 border-b border-hairline">
+        {AGENTS_SETTINGS_TABS.map((candidate) => {
+          const active = candidate === tab;
+          return (
+            <button
+              key={candidate}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              data-agents-tab={candidate}
+              onClick={() => { selectTab(candidate); }}
+              className={`-mb-px min-h-9 border-b-2 px-3 py-1.5 text-[13px] transition-colors ${
+                active
+                  ? 'border-ink font-medium text-ink'
+                  : 'border-transparent text-ink-soft hover:text-ink'
+              }`}
+            >
+              {t(agentsTabLabelKey(candidate))}
+            </button>
+          );
+        })}
+      </div>
+      {tab === 'dispatch' ? (
+        <SubagentsSection />
+      ) : (
+        <div className="space-y-4">
+          <UnifiedAgentManager />
+          <AgentRuntimeCard />
+          <PromptConfigCard />
+        </div>
+      )}
     </div>
   );
 }

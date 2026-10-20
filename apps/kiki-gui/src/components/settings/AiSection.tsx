@@ -10,26 +10,28 @@ import {
 import { useI18n } from '../../i18n';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { DefaultModelBar } from './DefaultModelBar';
+import { IdentitySection } from './IdentitySection';
 import { DefaultsTab, ModelsTab } from './ModelsSection';
 import { ConnectionsTab } from './ProvidersSection';
 
 /**
  * Visual tab order follows the path a person takes: connect something, see
- * the models it brings, then decide which model each job uses. Tab ids and
- * deep links are unchanged.
+ * the models it brings, decide which model each job uses, and configure how
+ * outbound requests identify themselves. Tab ids and deep links are unchanged.
  */
-const AI_TAB_ORDER: readonly AiSettingsTab[] = (['providers', 'models', 'defaults'] as const)
+const AI_TAB_ORDER: readonly AiSettingsTab[] = (['providers', 'models', 'defaults', 'identity'] as const)
   .filter((candidate) => (AI_SETTINGS_TABS as readonly string[]).includes(candidate));
 
 /**
- * The merged "Models & providers" entry (settings redesign batch 2, §3.3 /
- * §7.1): one navigation leaf, three stable tabs — Connections (OAuth, API
- * keys, provider lifecycle), Available models (cross-provider catalog), and
- * Defaults (per-job models, request identity, thinking). The new-session
- * default model is a bar above all three, so it is stated once and reachable
- * from wherever the reader lands. The active tab is the `?tab=` query so deep
- * links, search hits, and the legacy `/settings/models` / `/settings/providers`
- * redirects all land on the right one; unknown values fall back to the default tab.
+ * The merged "Models & providers" entry: one navigation leaf, four stable
+ * tabs — Providers & accounts (OAuth, API keys, provider lifecycle), Models
+ * (cross-provider catalog), Defaults (per-job models, thinking, compaction),
+ * and Identity (request identity profiles, version tracks, usage, observations).
+ * The new-session default model is a bar above the tabs, so it is stated once
+ * and reachable from wherever the reader lands. The active tab is the `?tab=`
+ * query so deep links, search hits, and legacy `/settings/models`,
+ * `/settings/providers`, and `/settings/identity` redirects all land on the
+ * right one; unknown values fall back to the default tab.
  */
 export function AiSection() {
   const { t } = useI18n();
@@ -38,8 +40,8 @@ export function AiSection() {
   const rawTab = new URLSearchParams(search).get('tab');
   const tab: AiSettingsTab = normalizeAiTab(rawTab) ?? AI_SETTINGS_DEFAULT_TAB;
 
-  // Tab switches go through the guarded navigator: an unsaved provider draft
-  // on the Connections tab arms the same leave-guard as a section switch.
+  // Tab switches go through the guarded navigator: an unsaved provider or
+  // identity draft arms the same leave-guard as a section switch.
   const selectTab = (next: AiSettingsTab) => {
     if (next === tab) return;
     const params = new URLSearchParams(search);
@@ -50,7 +52,7 @@ export function AiSection() {
   return (
     <div className="space-y-4">
       <DefaultModelBar tab={tab} />
-      <div role="tablist" aria-label={t('st.section.ai')} className="flex gap-1 border-b border-hairline">
+      <div role="tablist" aria-label={t('st.section.ai')} className="flex flex-wrap gap-1 border-b border-hairline">
         {AI_TAB_ORDER.map((candidate) => {
           const active = candidate === tab;
           return (
@@ -74,6 +76,7 @@ export function AiSection() {
       </div>
       {tab === 'providers' ? <ConnectionsTab />
         : tab === 'defaults' ? <DefaultsTab />
+        : tab === 'identity' ? <IdentitySection />
         : <ModelsTab />}
     </div>
   );

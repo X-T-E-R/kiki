@@ -10,6 +10,7 @@ import { useConnection } from '../../../state/connection';
 import { FeedbackLine, Toggle, type Feedback } from '../../controls';
 import { Icon } from '../../icons';
 import { SearchableSelect } from '../../SearchableSelect';
+import { useGuardedNavigate } from '../../dirtyGuard';
 import { sourceBadgeLabel } from '../../agent-panel/SourceBadge';
 import { INPUT, SECONDARY_BUTTON } from '../../ui';
 import { CompactPointField } from '../CompactPointField';
@@ -98,6 +99,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
 }) {
   const { client } = useConnection();
   const { t, tp, locale } = useI18n();
+  const navigate = useGuardedNavigate();
   const [mode, setMode] = useState<Mode>('form');
   const [baseline, setBaseline] = useState(() => draftFromProfile(profile));
   const [draft, setDraft] = useState(baseline);
@@ -315,6 +317,17 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
           applicability={fieldState('tools')} engine={engine} onChange={(next) => set('tools', next)} />
         <ToolList id="disallowedTools" label={t('st.namedAgents.disallowedTools')} field={draft.disallowedTools} disabled={disabled} deny
           applicability={fieldState('disallowed_tools')} engine={engine} onChange={(next) => set('disallowedTools', next)} />
+        {!draft.main ? (
+          <button
+            type="button"
+            data-profile-inspect-tools
+            onClick={() => { void navigate(`/settings/agents?tab=dispatch&object=${encodeURIComponent(profile.name)}#st-card-subagent-tool-defaults`); }}
+            className="inline-flex items-center gap-1 text-[12px] text-ink-soft underline decoration-dotted underline-offset-2 transition-colors hover:text-ink"
+          >
+            {t('st.profiles.inspectToolPermissions')}
+            <Icon name="arrowRight" size={12} />
+          </button>
+        ) : null}
       </Section>
       <Section title={t('st.profiles.advanced')} dataSection="advanced" count={advancedSet} summary={t('st.profiles.advancedSummary')}>
         <Field label={t('st.profiles.allowedEfforts')} dataField="allowedEfforts">
