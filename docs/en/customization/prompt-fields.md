@@ -83,7 +83,9 @@ await klient.global.kosong.updateModel("example-model", {
 });
 ```
 
-A profile can reference the same installed package, or a local Recipe file, without changing the global model. Add `recipe: installation:<installed-id>` (or just the installation id) to its Markdown frontmatter; the id is returned by `install`. A local file or package directory also works: `recipe: ./focus/recipe.toml`, or an absolute path. A relative path resolves from the profile file and is read at bind time.
+A model's `recipe` can also reference a local file or package directory, such as `./focus/recipe.toml`. Relative paths resolve from the configuration that declares the reference: an inherited reference stays relative to the base home's configuration, while a local override resolves from the current configuration directory. Absolute paths keep their original meaning.
+
+A profile can reference the same installed package, or a local Recipe file, without changing the global model. Add `recipe: installation:<installed-id>` (or just the installation id) to its Markdown frontmatter; the id is returned by `install`. A local file or package directory also works: `recipe: ./focus/recipe.toml`, or an absolute path. A profile's relative path resolves from the profile file and is read at bind time.
 
 The file is not installed, and binding does not download a URL. Save through the existing profile Markdown editor or edit the profile file. Script hooks in a directly referenced file still require the existing installation consent; `hooks = "off"` contributes no scripts.
 
@@ -99,9 +101,11 @@ request_params:
 Review the changes and report actionable findings.
 ```
 
+A child space reads installed Recipes from its base home by default; a local entry takes precedence when the installation IDs match. Inherited packages are read-only: use **Copy** or **Extend** before editing them in the child space. Disabling configuration inheritance with `inherit.config = false` does not remove access to those packages, so an inherited profile can still resolve its installed Recipe. Package updates and removals in the child space write only to that space.
+
 Recipes contribute only their declared values. Model settings resolve from the saved model, then the model Recipe, local model `overrides`, the profile Recipe, explicit profile parameters, and matching `model_profiles` parameters. Context and output caps still take the smallest applicable limit. Prompt fields resolve from global, saved model fields, model Recipe fields, profile Recipe fields, profile fields, then matching profile-model or caller-lease fields. Uncovered cognition slots and ordinary model-profile prompt text continue to apply; the role, persona, workspace instructions, host context and permissions keep their existing authority.
 
-Set the model's `recipe: null` with the current `base_revision`, or set `recipe: off` in a profile, to remove only that layer's contribution. Saved manual values and the other layer's Recipe remain intact. New bindings freeze each referenced package revision, expanded text and effective model settings, including inherited parameters. Existing sessions and cold restores keep that snapshot until a context rebuild or explicit model change; subscription updates and profile edits do not silently rebind them.
+Set `recipe: off` on a model or profile to disable that layer's Recipe, including an inherited model selection. For model API updates, pass the current `base_revision`; `recipe: null` clears the local selection instead. Saved manual values and the other layer's Recipe remain intact. New bindings freeze each referenced package revision, expanded text and effective model settings, including inherited parameters. Existing sessions and cold restores keep that snapshot until a context rebuild or explicit model change; subscription updates and profile edits do not silently rebind them.
 
 ### Inherit or customize
 

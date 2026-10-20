@@ -83,7 +83,9 @@ await klient.global.kosong.updateModel("example-model", {
 });
 ```
 
-Profile 可引用同一已安装包，或一份本地 Recipe 文件，且不改变全局模型。在 Markdown Frontmatter 中写 `recipe: installation:<已安装 id>`（也可直接写安装 id）；id 来自 `install` 返回值。本地文件或包目录同样可用：`recipe: ./focus/recipe.toml`，或绝对路径。相对路径按 profile 文件所在目录解析，并在绑定时直接读取。
+模型的 `recipe` 也可引用本地文件或包目录，例如 `./focus/recipe.toml`。相对路径以声明该引用的配置为基准：继承来的引用仍按主空间配置目录解析，本地覆盖则按当前配置目录解析。绝对路径保持原含义。
+
+Profile 可引用同一已安装包，或一份本地 Recipe 文件，且不改变全局模型。在 Markdown Frontmatter 中写 `recipe: installation:<已安装 id>`（也可直接写安装 id）；id 来自 `install` 返回值。本地文件或包目录同样可用：`recipe: ./focus/recipe.toml`，或绝对路径。Profile 的相对路径按自身文件所在目录解析，并在绑定时直接读取。
 
 这不会安装该文件，绑定也不会下载 URL。沿现有 profile Markdown 编辑入口保存，或编辑 profile 文件。直接引用的文件若带脚本 hooks，仍须走现有安装确认；`hooks = "off"` 不贡献脚本。
 
@@ -99,9 +101,11 @@ request_params:
 审查变更并报告可执行的发现。
 ```
 
+子空间默认读取主空间已安装的 Recipe；安装 ID 相同时，本地条目优先。继承包只读，要在子空间编辑，先选择**复制**或**扩展**。`inherit.config = false` 只关闭配置继承，不切断这些包的读取，因此仍在继承的 Profile 可以继续解析其已安装 Recipe 引用。子空间中的包更新和移除只写入子空间。
+
 Recipe 只贡献自己声明的值。模型设置依次采用保存模型、模型 Recipe、模型 `overrides` 本地差异、profile Recipe、profile 显式参数、匹配的 `model_profiles` 参数；上下文和输出上限仍取各适用限制的最小值。提示字段依次采用全局、保存模型字段、模型 Recipe 字段、profile Recipe 字段、profile 字段、匹配的 profile-model 或 caller-lease 字段。未覆盖的 cognition 槽和普通模型 profile 正文继续生效；角色、persona、工作区指令、宿主上下文与权限保留原有权威。
 
-用当前 `base_revision` 写模型 `recipe: null`，或在 profile 中写 `recipe: off`，只撤回对应层的配方贡献。手动值和另一层 Recipe 都保留。新绑定冻结每个引用包的 revision、展开正文与有效模型设置，包括继承来的参数。已有会话和冷恢复保留该快照，直到重建上下文或显式换模；订阅更新与 profile 编辑不会暗中换绑。
+在模型或 profile 中写 `recipe: off`，可停用对应层的 Recipe，包括继承来的模型选择。通过 API 更新模型时携带当前 `base_revision`；`recipe: null` 则清除本地选择。手动值和另一层 Recipe 都保留。新绑定冻结每个引用包的 revision、展开正文与有效模型设置，包括继承来的参数。已有会话和冷恢复保留该快照，直到重建上下文或显式换模；订阅更新与 profile 编辑不会暗中换绑。
 
 ### 继承或自定义
 
