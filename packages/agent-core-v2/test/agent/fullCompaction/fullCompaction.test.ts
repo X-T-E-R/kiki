@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { LifecycleScope } from '#/app/scopes';
+import { ILogService } from '#/_base/log/log';
+import { IEventDispatcher } from '#/state/eventDispatcher';
 import { join } from 'pathe';
 
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
@@ -1992,6 +1994,38 @@ describe('FullCompaction', () => {
     expect(countEvents(ctx.newEvents(), 'full_compaction.complete')).toBe(0);
     await ctx.expectResumeMatches();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it.each([undefined, 'native', 'grok-acp'])('publishes auto compaction status only for native bindings: %s', async (executorId) => {
+    const ctx = testAgent();
+    ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
+    ctx.get(IAgentFullCompactionService);
+    const profile = ctx.get(IAgentProfileService);
+    const resolveModel = vi.spyOn(profile, 'resolveModelContext');
+    const warn = vi.spyOn(ctx.get(ILogService), 'warn');
+    profile.applyBindingSnapshot({ ...profile.data(), profileName: 'fixture-profile', executorId });
+    await ctx.get(IEventDispatcher).flush();
+    expect(profile.isRunnable()).toBe(true);
+    for (let publication = 0; publication < 2; publication++) {
+      const statuses = ctx.newEvents();
+      expect(statuses).toContainEqual(expect.objectContaining({ event: 'agent.status.updated', args: expect.objectContaining({ model: CATALOGUED_PROVIDER.model }) }));
+      if (executorId === 'grok-acp') {
+        expect(resolveModel).not.toHaveBeenCalled();
+        expect(statuses).not.toContainEqual(expect.objectContaining({ event: 'agent.status.updated', args: expect.objectContaining({ autoCompactTokens: expect.anything() }) }));
+      } else {
+        expect(resolveModel).toHaveBeenCalled();
+        expect(statuses).toContainEqual(expect.objectContaining({ event: 'agent.status.updated', args: expect.objectContaining({
+          autoCompactTokens: 206_000, autoCompactSource: 'legacy',
+          effectiveMaxContextTokens: 256_000, reservedContextTokens: 50_000,
+        }) }));
+      }
+      if (publication === 0) {
+        profile.republishStatus();
+        await ctx.get(IEventDispatcher).flush();
+      }
+    }
+    expect(warn).not.toHaveBeenCalled();
+    if (executorId === 'grok-acp') expect(() => profile.resolveModelContext()).toThrow('unsupported for external executor');
+  });
 
   it('applies a lowered session threshold only at the next step boundary, once', async () => {
     const ctx = testAgent();

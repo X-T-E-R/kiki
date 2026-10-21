@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { Error2, ErrorCodes } from '#/errors';
 
 import type { ServiceIdentifier, ServicesAccessor } from '#/_base/di/instantiation';
 import { IInstantiationService } from '#/_base/di/instantiation';
@@ -108,6 +109,7 @@ function makeFakeAgent(
 
   const profileStub = {
     _serviceBrand: undefined,
+    data: () => ({}),
     isToolActive: () => true,
   };
 
@@ -226,6 +228,36 @@ function makeTodoService(lifecycle: IAgentLifecycleService): ISessionTodoService
 }
 
 describe('SessionTodoService', () => {
+  it.each(['new', 'restored'] as const)('keeps external continuity reminders without a native window threshold: %s', async (mode) => {
+    const { TurnPrompt } = await import('#/agent/loop/turnOps');
+    const reminders = new Map<string, () => string | undefined>();
+    const main = makeFakeAgent('main', reminders, [{ role: 'assistant', content: [{ type: 'text', text: 'uncovered work' }], toolCalls: [] }], 1_000_000);
+    const getAutoCompact = vi.fn(() => {
+      throw new Error2(ErrorCodes.CONFIG_INVALID, 'resolveModelContext is unsupported for external executor "grok-acp"');
+    });
+    const original = main.handle.accessor;
+    const handle = { ...main.handle, accessor: { get: <T>(id: ServiceIdentifier<T>): T => {
+      if (id === IAgentProfileService) return { data: () => ({ executorId: 'grok-acp' }) } as unknown as T;
+      if (id === IAgentFullCompactionService) return { getAutoCompact } as unknown as T;
+      return original.get(id);
+    } } };
+    const lifecycle = makeLifecycleStub(mode === 'restored' ? [handle] : []);
+    makeTodoService(lifecycle.service);
+    if (mode === 'new') lifecycle.fireCreate(handle);
+    const provider = reminders.get(TODO_LIST_REMINDER_VARIANT)!;
+    expect(provider()).toBeUndefined();
+    const prompt = { turnId: 1, promptId: 'p1', origin: { kind: 'user' as const }, input: [{ type: 'text' as const, text: 'never push to main' }] };
+    if (mode === 'restored') await main.restore([{ type: TurnPrompt.type, ...prompt }]);
+    else await main.dispatcher.dispatch(new TurnPrompt(prompt));
+    const reminder = provider();
+    expect(reminder).toContain('standing rule');
+    expect(reminder).not.toContain('The context window will be renewed soon');
+    expect(provider()).toBeUndefined();
+    expect(getAutoCompact).not.toHaveBeenCalled();
+    expect(main.journal).toContainEqual(expect.objectContaining({ type: ContextAppendMessage.type,
+      message: expect.objectContaining({ origin: expect.objectContaining({ disclosure: expect.objectContaining({ triggers: ['E1'] }) }) }) }));
+  });
+
   it.each(['available', 'unregistered', 'policy-disabled', 'ephemeral', 'memory-disabled', 'approval-off', 'child'] as const)('uses actual MemoryWrite availability, without TodoList: %s', async (condition) => {
     const { TurnPrompt } = await import('#/agent/loop/turnOps');
     const reminders = new Map<string, () => string | undefined>();

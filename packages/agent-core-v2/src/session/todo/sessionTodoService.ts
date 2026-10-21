@@ -10,6 +10,7 @@ import { Emitter } from '#/_base/event';
 
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { ContextUndone } from '#/agent/undo/undoService';
 import { IAgentStateService } from '#/agent/state/agentState';
@@ -191,7 +192,10 @@ export class SessionTodoService extends Service implements ISessionTodoService {
     const memory = handle.accessor.get(IAgentContextMemoryService);
     const toolPolicy = handle.accessor.get(IAgentToolPolicyService);
     const state = readTodoState(handle.accessor.get(IAgentStateService).get(todoKey));
-    const compact = handle.accessor.get(IAgentFullCompactionService);
+    const executorId = handle.accessor.get(IAgentProfileService).data().executorId;
+    const threshold = (executorId ?? 'native') === 'native'
+      ? handle.accessor.get(IAgentFullCompactionService).getAutoCompact().tokens
+      : undefined;
     const counting = handle.accessor.get(IAgentTokenCountingService);
     const config = handle.accessor.get(IConfigService);
     const settings = config.get<MemoryConfig>(MEMORY_SECTION);
@@ -204,7 +208,7 @@ export class SessionTodoService extends Service implements ISessionTodoService {
     return this.reminderTrackers.get(handle.id)?.evaluate({
       active: toolPolicy.isToolActive(TODO_LIST_TOOL_NAME, 'builtin'),
       history: memory.get(), todos: state.items, notes: state.notes, notesMeta: state.notesMeta,
-      threshold: compact.getAutoCompact().tokens, currentTokens: counting.get().size,
+      threshold, currentTokens: counting.get().size,
       epoch, remindedEpoch: state.remindedEpoch, clock,
       cadence: config.get<LoopControl>(LOOP_CONTROL_SECTION).continuityCadence,
       humanAuthorized: handle.id === MAIN_AGENT_ID,
