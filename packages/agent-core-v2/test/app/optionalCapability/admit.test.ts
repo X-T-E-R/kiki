@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   admitOptionalCapability,
+  capabilityToolsSource,
   namesOptionalCapability,
   optionalCapabilityDocumentKey,
   optionalCapabilityForTool,
@@ -61,6 +62,21 @@ describe('admitOptionalCapability', () => {
     expect(namesOptionalCapability('computer', ['*'], ['desktop'])).toBe(false);
     expect(namesOptionalCapability('computer', ['mcp__kiki-computer__*'])).toBe(false);
     expect(namesOptionalCapability('computer', ['mcp__desktop__*'], ['desktop'])).toBe(true);
+  });
+
+  it('treats only a clean shipped default profile as the builtin list', () => {
+    const clean = 'C:/kiki/agents/builtin/agent.md';
+    const profile = { name: 'agent', sourcePath: clean, definitionId: clean };
+    const edited = { name: 'agent', sourcePath: 'C:/kiki/agents/builtin/agent.md', definitionId: 'C:/kiki/agents/builtin/agent.md' };
+    const isClean = (path: string) => path === clean;
+    const shipped = { ...profile, tools: ['MemoryRead', 'WebSearch'], fileDefinition: { tools: ['MemoryRead', 'WebSearch'] } };
+    expect(capabilityToolsSource('declared', profile, isClean)).toBe('builtin-default');
+    expect(capabilityToolsSource('declared', shipped, isClean)).toBe('builtin-default');
+    expect(capabilityToolsSource('declared', { ...shipped, tools: ['MemoryRead'] }, isClean)).toBe('declared');
+    expect(capabilityToolsSource('declared', { ...edited, sourcePath: 'C:/project/agents/agent.md' }, isClean)).toBe('declared');
+    expect(capabilityToolsSource('declared', { name: 'memory-named', sourcePath: clean }, isClean)).toBe('declared');
+    expect(capabilityToolsSource('inherited-default', profile, isClean)).toBe('inherited-default');
+    expect(capabilityToolsSource('builtin-default', undefined, isClean)).toBe('builtin-default');
   });
 
   it('encodes host and session identities as distinct portable document names', () => {

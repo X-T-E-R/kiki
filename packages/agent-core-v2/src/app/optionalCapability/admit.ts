@@ -1,4 +1,5 @@
 import picomatch from 'picomatch';
+import { DEFAULT_AGENT_PROFILE_NAME } from '@kiki/agent-profiles/agentProfile';
 import { isBrowserOperationToolName } from '@kiki/agent-profiles/toolPolicy';
 import { qualifyMcpToolName, sanitizeMcpNamePart } from '#/mcpCore/tool-naming';
 
@@ -57,6 +58,30 @@ export function optionalCapabilityForTool(name: string, computerServers: readonl
   if (THREAD_TOOLS.has(name)) return 'thread';
   if (WEB_TOOLS.has(name)) return 'web';
   return undefined;
+}
+
+export function capabilityToolsSource(
+  source: ProfileToolsSource | undefined,
+  profile: {
+    readonly name?: string;
+    readonly sourcePath?: string;
+    readonly definitionId?: string;
+    readonly tools?: readonly string[];
+    readonly fileDefinition?: { readonly tools?: readonly string[] };
+  } | undefined,
+  isCleanDefaultPath: (path: string) => boolean,
+): ProfileToolsSource | undefined {
+  const path = profile?.sourcePath ?? profile?.definitionId;
+  if (source !== 'declared' || profile?.name !== DEFAULT_AGENT_PROFILE_NAME || path === undefined || !isCleanDefaultPath(path)) return source;
+  const fileTools = profile.fileDefinition?.tools;
+  if (fileTools !== undefined && !sameToolNames(profile.tools, fileTools)) return source;
+  return 'builtin-default';
+}
+
+function sameToolNames(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
+  if (left === undefined || right === undefined || left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) if (left[index] !== right[index]) return false;
+  return true;
 }
 
 export function namesOptionalCapability(

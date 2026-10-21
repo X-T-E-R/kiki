@@ -9,8 +9,9 @@ import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IConfigService } from '#/app/config/config';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
 import { MEMORY_SECTION, type MemoryConfig } from '#/app/memory/configSection';
-import { optionalCapabilityForTool } from '#/app/optionalCapability/admit';
+import { capabilityToolsSource, optionalCapabilityForTool } from '#/app/optionalCapability/admit';
 import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
+import { IShippedAgentProfileManager } from '#/app/shippedAgentProfiles/shippedAgentProfileManager';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionToolPolicy } from '#/session/sessionToolPolicy/sessionToolPolicy';
 import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';
@@ -147,14 +148,23 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     }
   }
 
+  private cleanDefaultPath(path: string): boolean {
+    try {
+      return this.instantiation.invokeFunction((accessor) => accessor.get(IShippedAgentProfileManager))?.isCleanActivePath(path) === true;
+    } catch {
+      return false;
+    }
+  }
+
   private note(policy: IOptionalCapabilityPolicy, sessionId: string, workspaceId: string): void {
     const profile = this.profile.data();
-    const source = profile.boundProfile?.toolsSource;
+    const bound = profile.boundProfile;
+    const source = capabilityToolsSource(bound?.toolsSource, bound, (path) => this.cleanDefaultPath(path));
     policy.retain(sessionId, this.scope.agentId, {
       workspaceId,
       agentKind: this.scope.parentAgentId === undefined ? 'main' : 'child',
       toolsSource: source,
-      declaredTools: source === 'declared' ? [...(profile.toolPolicyBase?.tools ?? profile.boundProfile?.tools ?? [])] : undefined,
+      declaredTools: source === 'declared' ? [...(profile.toolPolicyBase?.tools ?? bound?.tools ?? [])] : undefined,
       taskTools: profile.toolOverride?.tools === undefined ? undefined : [...profile.toolOverride.tools],
     });
     if (this.noted) return;

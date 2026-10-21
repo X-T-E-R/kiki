@@ -45,7 +45,9 @@ import { IMcpConfigStore } from '#/app/mcpConfig/configStore';
 import { isComputerMcpConfig } from '#/mcpCore/computer';
 import { IConfigService } from '#/app/config/config';
 import { COMPUTER_CONFIG_SECTION, computerToolsEnabled, type ComputerConfig } from '#/app/computer/configSection';
+import { capabilityToolsSource } from '#/app/optionalCapability/admit';
 import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
+import { IShippedAgentProfileManager } from '#/app/shippedAgentProfiles/shippedAgentProfileManager';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import type { MCPClient, MCPToolDefinition } from '#/mcpCore/types';
 import { IEventDispatcher } from '#/state/eventDispatcher';
@@ -537,6 +539,14 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     }
   }
 
+  private cleanDefaultPath(path: string): boolean {
+    try {
+      return this.instantiation.invokeFunction((accessor) => accessor.get(IShippedAgentProfileManager))?.isCleanActivePath(path) === true;
+    } catch {
+      return false;
+    }
+  }
+
   private computerAdmitted(): boolean {
     const fallback = computerToolsEnabled(this.configService.get<ComputerConfig>(COMPUTER_CONFIG_SECTION));
     const policy = this.optionalPolicy();
@@ -548,7 +558,8 @@ export class AgentMcpService extends Service implements IAgentMcpService {
       agent = undefined;
     }
     const profile = this.profile.data();
-    const source = profile.boundProfile?.toolsSource;
+    const bound = profile.boundProfile;
+    const source = capabilityToolsSource(bound?.toolsSource, bound, (path) => this.cleanDefaultPath(path));
     const sessionId = this.sessionContext.sessionId;
     const workspaceId = this.sessionContext.workspaceId;
     if (agent !== undefined) {
@@ -556,7 +567,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
         workspaceId,
         agentKind: agent.parentAgentId === undefined ? 'main' : 'child',
         toolsSource: source,
-        declaredTools: source === 'declared' ? [...(profile.toolPolicyBase?.tools ?? profile.boundProfile?.tools ?? [])] : undefined,
+        declaredTools: source === 'declared' ? [...(profile.toolPolicyBase?.tools ?? bound?.tools ?? [])] : undefined,
         taskTools: profile.toolOverride?.tools === undefined ? undefined : [...profile.toolOverride.tools],
       });
       this.armComputerLease(policy, sessionId, agent.agentId);
