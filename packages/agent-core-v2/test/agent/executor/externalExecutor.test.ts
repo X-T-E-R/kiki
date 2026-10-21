@@ -724,7 +724,7 @@ describe('ACP external executor', () => {
       .toBe(first.generation + 1);
   });
 
-  it('does not splice old Kiki reminders or pending collaboration mail into a bare user turn', async () => {
+  it('keeps old reminders and previously queued mail out of a bare user turn after delegation is explicitly disabled', async () => {
     const harness = createExecutionHarness({ unpinModel: true, thinkingEffort: 'off',
       history: [{ role: 'user', toolCalls: [], content: [{ type: 'text', text: 'OLD_CONTEXT' }], origin: { kind: 'injection', variant: 'goal_state' } }],
       todos: [{ title: 'OLD_TODO', status: 'pending' }],
@@ -732,12 +732,20 @@ describe('ACP external executor', () => {
     const profile = harness.ix.get(IAgentProfileService);
     const original = profile.data();
     const execution = resolveExecutionBinding({ executor: original.executorId! }, undefined, undefined, undefined);
-    vi.spyOn(profile, 'data').mockReturnValue({ ...original, execution, modelAlias: undefined, thinkingLevel: 'off', systemPrompt: '', kikiContext: [], allowKikiSubagents: false });
+    const binding = { ...original, execution, modelAlias: undefined, thinkingLevel: 'off' as const, systemPrompt: '', kikiContext: [], allowKikiSubagents: false };
+    const data = vi.spyOn(profile, 'data').mockReturnValue(binding);
     const reconcile = vi.spyOn(harness.ix.get(IAgentContextInjectorService), 'reconcileAllAtSafeBoundary');
     const mailbox = attachExternalMailboxHarness(harness.ix, 'external-agent');
     try {
-      await mailbox.messaging.send({ sourceAgentId: 'main', sourceTaskName: 'root', targetAgentId: 'external-agent',
+      const accepted = await mailbox.messaging.send({ sourceAgentId: 'main', sourceTaskName: 'root', targetAgentId: 'external-agent',
         targetTaskName: 'external-agent', content: 'OLD_MAIL', idempotencyKey: 'old-mail', waitForRunningDelivery: true });
+      expect(accepted.delivery).toBe('queued');
+      data.mockReturnValue({ ...binding, execution: resolveExecutionBinding({
+        executor: original.executorId!, overrides: { allow_kiki_subagents: false },
+      }, undefined, undefined, execution) });
+      await expect(mailbox.messaging.send({ sourceAgentId: 'main', sourceTaskName: 'root', targetAgentId: 'external-agent',
+        targetTaskName: 'external-agent', content: 'NEW_MAIL', idempotencyKey: 'new-mail', waitForRunningDelivery: true }))
+        .rejects.toThrow(/allow_kiki_subagents is false/);
       await harness.execution.run({ kind: 'prompt', prompt: 'ONLY_NEW_USER' }, { signal: new AbortController().signal });
       expect(harness.starts[0]?.prompt).toBe('ONLY_NEW_USER');
       expect(reconcile).not.toHaveBeenCalled();
