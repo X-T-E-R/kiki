@@ -1,5 +1,9 @@
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices, type TestInstantiationService } from '#/_base/di/test';
 import { NATIVE_BROWSER_FLAG_ID } from '#/app/browser/flag';
@@ -14,8 +18,13 @@ import { OPTIONAL_CAPABILITIES_SECTION } from '#/app/optionalCapability/configSe
 import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
 import { OptionalCapabilityPolicyService } from '#/app/optionalCapability/policyService';
 import { THREAD_COMMUNICATION_SECTION } from '#/app/threadCommunication/configSection';
-import { Error2, ErrorCodes } from '#/errors';
+import { Error2, ErrorCodes, resetUnexpectedErrorHandler, setUnexpectedErrorHandler } from '#/errors';
+import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
+import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { ISessionOptionalCapabilityService, SessionOptionalCapabilityService } from '#/session/optionalCapability/sessionOptionalCapabilityService';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 
 type OriginMap = Record<string, ConfigOrigin>;
 
@@ -26,6 +35,7 @@ let values: Record<string, unknown>;
 let browser: { enabled: boolean; source: ExperimentalFeatureState['source'] } | undefined;
 let docs: Map<string, unknown>;
 let failSet: boolean;
+let readFailure: Error | undefined;
 let hijackRevision: number | undefined;
 
 function flagState(): ExperimentalFeatureState | undefined {
@@ -58,6 +68,7 @@ describe('OptionalCapabilityPolicyService', () => {
     browser = { enabled: true, source: 'default' };
     docs = new Map();
     failSet = false;
+    readFailure = undefined;
     hijackRevision = undefined;
     ix = createServices(disposables, {
       additionalServices: (reg) => {
@@ -71,7 +82,10 @@ describe('OptionalCapabilityPolicyService', () => {
         });
         reg.definePartialInstance(IFlagService, { explain: () => flagState() });
         reg.definePartialInstance(IAtomicDocumentStore, {
-          get: (async (_scope: string, key: string) => docs.get(key)) as IAtomicDocumentStore['get'],
+          get: (async (_scope: string, key: string) => {
+            if (readFailure !== undefined) throw readFailure;
+            return docs.get(key);
+          }) as IAtomicDocumentStore['get'],
           set: (async (_scope: string, key: string, value: { revision: number }) => {
             if (hijackRevision !== undefined) {
               docs.set(key, { ...(value as object), revision: hijackRevision });
@@ -92,7 +106,55 @@ describe('OptionalCapabilityPolicyService', () => {
     });
   });
 
-  afterEach(() => disposables.dispose());
+  afterEach(() => {
+    disposables.dispose();
+    resetUnexpectedErrorHandler();
+  });
+
+  it('loads and restores session choices through the real file-backed document store', async () => {
+    const base = tmpdir();
+    const homeDir = await mkdtemp(join(base, 'kiki-capability-persistence-'));
+    try {
+      ix.set(IFileSystemStorageService, new FileStorageService(homeDir));
+      ix.set(IAtomicDocumentStore, new SyncDescriptor(JsonAtomicDocumentStore));
+      expect((await policy().readSession('session_example')).revision).toBe(0);
+      await policy().setChoice('session_example', 'web', 'off');
+      const key = optionalCapabilityDocumentKey('local', 'session_example');
+      const stored = JSON.parse(await readFile(join(homeDir, OPTIONAL_CAPABILITY_DOCUMENT_SCOPE, key), 'utf8'));
+      expect(stored).toEqual({ revision: 1, hostId: 'local', overrides: { web: 'off' } });
+      const reopened = createServices(disposables, {
+        additionalServices: (reg) => {
+          reg.defineInstance(IConfigService, ix.get(IConfigService));
+          reg.defineInstance(IFlagService, ix.get(IFlagService));
+          reg.defineInstance(IFileSystemStorageService, new FileStorageService(homeDir));
+          reg.define(IAtomicDocumentStore, JsonAtomicDocumentStore);
+          reg.define(IOptionalCapabilityPolicy, OptionalCapabilityPolicyService);
+        },
+      }).get(IOptionalCapabilityPolicy);
+      const restored = await reopened.readSession('session_example');
+      expect(restored.revision).toBe(1);
+      expect(restored.rows.find((entry) => entry.id === 'web')).toMatchObject({ choice: 'off', effective: false });
+    } finally {
+      expect(dirname(homeDir)).toBe(base);
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('observes background load failures, keeps admission closed, and permits an explicit retry', async () => {
+    const errors: unknown[] = [];
+    setUnexpectedErrorHandler((error) => errors.push(error));
+    readFailure = new Error('capability document unavailable');
+    ix.stub(ISessionContext, { sessionId: 'session_example', workspaceId: 'workspace_example' });
+    ix.set(ISessionOptionalCapabilityService, new SyncDescriptor(SessionOptionalCapabilityService));
+    const session = ix.get(ISessionOptionalCapabilityService);
+    await expect(policy().load('session_example')).rejects.toBe(readFailure);
+    expect(errors).toEqual([readFailure]);
+    expect(policy().admit('web', { sessionId: 'session_example', workspaceId: 'workspace_example' }))
+      .toEqual({ admitted: false, reason: 'origin_unreadable' });
+    readFailure = undefined;
+    expect((await session.read()).revision).toBe(0);
+    expect(policy().admit('web', { sessionId: 'session_example', workspaceId: 'workspace_example' }).admitted).toBe(true);
+  });
 
   it('keeps factory thread allowed and default-off, and a user false as hard-off', async () => {
     const factory = policy().globalState('thread');

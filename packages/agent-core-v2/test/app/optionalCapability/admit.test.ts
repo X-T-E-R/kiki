@@ -61,6 +61,22 @@ describe('admitOptionalCapability', () => {
     expect(namesOptionalCapability('computer', ['*'], ['desktop'])).toBe(false);
     expect(namesOptionalCapability('computer', ['mcp__kiki-computer__*'])).toBe(false);
     expect(namesOptionalCapability('computer', ['mcp__desktop__*'], ['desktop'])).toBe(true);
-    expect(optionalCapabilityDocumentKey('local', 's1')).toBe('local\u0000s1');
+  });
+
+  it('encodes host and session identities as distinct portable document names', () => {
+    const identities = [
+      ['local', 'session_example'],
+      ['LOCAL', 'session_example'],
+      ['a\u0000b', 'c'],
+      ['a', 'b\u0000c'],
+      ['../host:*?', '../session\\name'],
+      ['本机', '会话'],
+    ] as const;
+    const keys = identities.map(([host, session]) => optionalCapabilityDocumentKey(host, session));
+    expect(new Set(keys).size).toBe(identities.length);
+    for (const [index, key] of keys.entries()) {
+      expect(key).toMatch(/^v1-[0-9a-f]+\.json$/);
+      expect(JSON.parse(Buffer.from(key.slice(3, -5), 'hex').toString('utf8'))).toEqual(identities[index]);
+    }
   });
 });

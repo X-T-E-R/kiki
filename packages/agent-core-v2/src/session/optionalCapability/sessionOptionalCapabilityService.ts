@@ -7,6 +7,7 @@ import {
   type SessionCapabilityView,
 } from '#/app/optionalCapability/policy';
 import type { CapabilityChoice, OptionalCapabilityId } from '#/app/optionalCapability/admit';
+import { onUnexpectedError } from '#/errors';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 
 export interface ISessionOptionalCapabilityService {
@@ -24,7 +25,7 @@ export class SessionOptionalCapabilityService extends Service implements ISessio
     @IOptionalCapabilityPolicy private readonly policy: IOptionalCapabilityPolicy,
   ) {
     super();
-    void this.policy.load(this.session.sessionId);
+    void this.policy.load(this.session.sessionId).catch(onUnexpectedError);
   }
 
   read(): Promise<SessionCapabilityView> {

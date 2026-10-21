@@ -10,7 +10,7 @@ export const LOCAL_CAPABILITY_HOST = 'local';
 export const OPTIONAL_CAPABILITY_DOCUMENT_SCOPE = 'session-optional-capabilities';
 
 export function optionalCapabilityDocumentKey(hostId: string, sessionId: string): string {
-  return `${hostId}\u0000${sessionId}`;
+  return `v1-${Buffer.from(JSON.stringify([hostId, sessionId]), 'utf8').toString('hex')}.json`;
 }
 
 const MEMORY_TOOLS = new Set(['MemoryRead', 'MemorySearch', 'MemoryWrite']);
