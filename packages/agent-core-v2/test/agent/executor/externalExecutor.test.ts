@@ -142,6 +142,7 @@ interface FakeHarnessOptions {
   readonly supportsMcp?: boolean;
   readonly hostPermissionReceipt?: (input: AcpOpenSessionOptions) => Readonly<Record<string, unknown>> | undefined;
   readonly client?: AcpProcessClient;
+  readonly clientState?: 'cold' | 'ready' | 'broken';
   readonly permission?: AgentExecutorContext['descriptor']['permission'];
 }
 
@@ -405,7 +406,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
     return true;
   });
   const client = {
-    status: () => ({ state: 'ready' as const, sessionId: 'remote-2' }),
+    status: () => ({ state: options.clientState ?? 'ready' as const, sessionId: 'remote-2' }),
     openSession: async (input: AcpOpenSessionOptions) => {
       opens.push(input);
       return openResult();
@@ -2004,6 +2005,54 @@ describe('ACP external executor', () => {
     expect(harness.opens[0]?.systemPromptOverride).toBe('Changed profile');
     expect(harness.starts[0]?.prompt).toContain('work');
     expect(harness.starts[0]?.prompt).not.toContain('BEGIN KIKI FROZEN PROFILE INSTRUCTIONS');
+  });
+
+  it('resumes a broken ACP child only on the original binding and remote session', async () => {
+    const prior = {
+      executorId: 'example-acp',
+      descriptorRevision: 'r1',
+      sessionEpoch: 1,
+      sessionRef: { executorId: 'example-acp', version: 1, ref: { sessionId: 'remote-2' } },
+    };
+    const permission = {
+      via: 'argv' as const,
+      flag: '--permission-mode',
+      manual: 'default',
+      auto: 'acceptEdits',
+      yolo: 'bypassPermissions',
+    };
+    const recoverable = createHarness({ clientState: 'broken', permission, prior, mode: 'resume' });
+    const drifted = createHarness({
+      clientState: 'broken', permission, prior, mode: 'resume', priorBindingFingerprint: '0'.repeat(64),
+    });
+    const unsupported = createHarness({ clientState: 'broken', prior, mode: 'resume' });
+    const refused = createHarness({ clientState: 'broken', permission, prior, mode: 'resume' });
+    refused.executorContext.agent.accessor.get(IAgentExecutorRegistry).recordNegotiated?.(
+      'example-acp', undefined, { resume: false, load: false },
+    );
+    const busy = createHarness({
+      clientState: 'broken', permission, prior, mode: 'resume', deferTurnCompletion: true,
+    });
+    try {
+      expect(recoverable.session.status()).toEqual({ state: 'broken' });
+      expect(recoverable.session.canResumeBrokenOriginal?.()).toBe(true);
+      expect(drifted.session.canResumeBrokenOriginal?.()).toBe(false);
+      expect(unsupported.session.canResumeBrokenOriginal?.()).toBe(false);
+      expect(refused.session.canResumeBrokenOriginal?.()).toBe(false);
+      const run = await busy.session.run({ kind: 'prompt', prompt: 'busy' }, { signal: new AbortController().signal });
+      expect(busy.opens[0]).toMatchObject({
+        requireResume: true,
+        sessionRef: { ref: { sessionId: 'remote-2' } },
+      });
+      expect(busy.session.status().state).toBe('running');
+      expect(busy.session.canResumeBrokenOriginal?.()).toBe(false);
+      void run.completion.catch(() => undefined);
+    } finally {
+      await Promise.all([
+        recoverable.session.shutdown(), drifted.session.shutdown(), unsupported.session.shutdown(),
+        refused.session.shutdown(), busy.session.shutdown(),
+      ]);
+    }
   });
 
   it('records handshake capabilities on the owning agent before running the turn', async () => {

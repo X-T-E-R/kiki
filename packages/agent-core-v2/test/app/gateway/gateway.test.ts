@@ -62,6 +62,7 @@ describe('RestGateway', () => {
       attachLocalSession: async () => { throw new Error('unexpected local attachment'); },
       trackPromptRun: (_completion, signal) => signal,
       status: () => ({ state: 'running', turnId: 7 }),
+      canResumeBrokenOriginal: () => false,
       cancel: (reason) => turnService.cancel(undefined, reason),
       settled: () => Promise.resolve(),
       shutdown: () => Promise.resolve(),

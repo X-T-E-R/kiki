@@ -30,6 +30,7 @@ import type { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import type { IAgentStateService } from '#/agent/state/agentState';
 import type {
+  AgentExecutionStatus,
   AgentExecutorContext,
   AgentExecutorProvider,
   AgentExecutorSession,
@@ -38,6 +39,8 @@ import type {
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import { createHooks } from '#/hooks';
 import { appendSharedPromptField } from '#/app/promptField/builtinPromptFields';
+import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { IAgentPermissionRulesService } from '#/agent/permissionRules/permissionRules';
 import { IAgentActivityView } from '#/agent/activityView/activityView';
 import { IRequestGovernance } from '#/app/requestGovernance/requestGovernance';
 import { RequestGovernanceService } from '#/app/requestGovernance/requestGovernanceService';
@@ -1083,6 +1086,152 @@ describe('AgentExecutionService', () => {
       await service.dispose();
       await ix.dispose();
     }
+  });
+
+  it('does not open another session after a native executor is broken', async () => {
+    const ix = new TestInstantiationService();
+    const resolveExecutable = vi.fn(async () => ({
+      descriptor: { id: 'missing', protocol: 'acp-v1', args: [], revision: 'r1' },
+      options: {},
+    }));
+    const registry = {
+      resolveExecutable,
+    } as unknown as IAgentExecutorRegistry;
+    const service = executionService(
+      ix,
+      scope(),
+      profile({ executorId: 'missing', executorProtocol: 'acp-v1', executorDescriptorRevision: 'r1' }),
+      registry,
+      states(),
+    );
+    const signal = new AbortController().signal;
+    await expect(service.run({ kind: 'prompt', prompt: 'work' }, { signal })).rejects.toThrow(/has no registered provider/);
+    expect(service.status()).toEqual({ state: 'broken' });
+    expect(service.canResumeBrokenOriginal()).toBe(false);
+    await expect(service.run({ kind: 'prompt', prompt: 'again' }, { signal })).rejects.toThrow(/has no registered provider/);
+    expect(resolveExecutable).toHaveBeenCalledTimes(1);
+    void service.dispose();
+    ix.dispose();
+  });
+
+  it('reuses a recoverable broken session and refuses binding or permission drift without creating one', async () => {
+    const ix = new TestInstantiationService();
+    let state: AgentExecutionStatus = { state: 'idle' };
+    let resumeOriginal = true;
+    const run = vi.fn<AgentExecutorSession['run']>(async () => ({
+      agentId: 'agent-test',
+      completion: Promise.resolve({ summary: 'ok' }),
+      turn: {
+        id: 1, signal: new AbortController().signal, ready: Promise.resolve(),
+        result: Promise.resolve({ type: 'completed', steps: 1, truncated: false }), cancel: () => false,
+      },
+    }));
+    const updateBinding = vi.fn();
+    const shutdown = vi.fn(async () => {});
+    const session: AgentExecutorSession = {
+      run,
+      status: () => state,
+      canResumeBrokenOriginal: () => resumeOriginal,
+      updateBinding,
+      cancel: () => false,
+      settled: async () => {},
+      shutdown,
+      hooks: createHooks(['onWillRun']),
+    };
+    const create = vi.fn(() => session);
+    const descriptor = {
+      id: 'example-acp', protocol: 'acp-v1', args: [], revision: 'r1',
+      permission: { via: 'argv' as const, flag: '--permission-mode', manual: 'default', auto: 'acceptEdits', yolo: 'bypassPermissions' },
+    };
+    const registry = {
+      get: () => descriptor,
+      resolveExecutable: async () => ({ descriptor, options: {}, provider: { create } }),
+    } as unknown as IAgentExecutorRegistry;
+    const data: Partial<ProfileData> = {
+      executorId: 'example-acp', executorProtocol: 'acp-v1', executorDescriptorRevision: 'r1', systemPrompt: 'frozen',
+    };
+    const permission = { mode: 'manual' as const, externalOverride: undefined as 'auto' | undefined, modeCeiling: undefined };
+    const service = executionService(ix, scope(), profile(data), registry, states());
+    ix.stub(IAgentPermissionRulesService, { rules: [] });
+    ix.stub(IAgentPermissionModeService, permission);
+    const signal = new AbortController().signal;
+    await service.run({ kind: 'prompt', prompt: 'first' }, { signal });
+    state = { state: 'broken' };
+    await service.run({ kind: 'prompt', prompt: 'resume original' }, { signal });
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(shutdown).not.toHaveBeenCalled();
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(updateBinding).toHaveBeenCalledTimes(1);
+
+    data.systemPrompt = 'changed binding';
+    await expect(service.run({ kind: 'prompt', prompt: 'drift' }, { signal })).rejects.toThrow(/original remote session cannot be resumed/);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(shutdown).not.toHaveBeenCalled();
+    expect(run).toHaveBeenCalledTimes(2);
+
+    data.systemPrompt = 'frozen';
+    permission.externalOverride = 'auto';
+    await expect(service.run({ kind: 'prompt', prompt: 'permission' }, { signal })).rejects.toThrow(/original remote session cannot be resumed/);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(shutdown).not.toHaveBeenCalled();
+    expect(run).toHaveBeenCalledTimes(2);
+    resumeOriginal = false;
+    permission.externalOverride = undefined;
+    const unrecoverable = await service.run({ kind: 'prompt', prompt: 'unrecoverable' }, { signal }).then(() => undefined, (error: unknown) => error);
+    expect(unrecoverable).toMatchObject({
+      message: expect.stringContaining('original remote session cannot be resumed'),
+    });
+    expect(unrecoverable).toMatchObject({
+      message: expect.not.stringContaining('already running'),
+    });
+    expect(create).toHaveBeenCalledTimes(1);
+    void service.dispose();
+    ix.dispose();
+  });
+
+  it('keeps an in-flight run busy instead of treating it as a recoverable broken resume', async () => {
+    const ix = new TestInstantiationService();
+    let release!: () => void;
+    const completion = new Promise<{ summary: string }>((resolve) => { release = () => resolve({ summary: 'ok' }); });
+    const session: AgentExecutorSession = {
+      run: async () => ({
+        agentId: 'agent-test',
+        completion,
+        turn: {
+          id: 4, signal: new AbortController().signal, ready: Promise.resolve(),
+          result: Promise.resolve({ type: 'completed', steps: 1, truncated: false }), cancel: () => false,
+        },
+      }),
+      status: () => ({ state: 'broken' }),
+      canResumeBrokenOriginal: () => true,
+      cancel: () => false,
+      settled: async () => {},
+      shutdown: async () => {},
+      hooks: createHooks(['onWillRun']),
+    };
+    const registry = {
+      resolveExecutable: async () => ({
+        descriptor: { id: 'example-acp', protocol: 'acp-v1', args: [], revision: 'r1' },
+        options: {},
+        provider: { create: () => session },
+      }),
+    } as unknown as IAgentExecutorRegistry;
+    const service = executionService(
+      ix, scope(),
+      profile({ executorId: 'example-acp', executorProtocol: 'acp-v1', executorDescriptorRevision: 'r1' }),
+      registry, states(),
+    );
+    const running = service.run({ kind: 'prompt', prompt: 'busy' }, { signal: new AbortController().signal });
+    const handle = await running;
+    expect(service.status()).toMatchObject({ state: 'running', turnId: 4 });
+    expect(service.canResumeBrokenOriginal()).toBe(false);
+    release();
+    await handle.completion;
+    await service.settled();
+    expect(service.status()).toEqual({ state: 'broken' });
+    expect(service.canResumeBrokenOriginal()).toBe(true);
+    void service.dispose();
+    ix.dispose();
   });
 });
 

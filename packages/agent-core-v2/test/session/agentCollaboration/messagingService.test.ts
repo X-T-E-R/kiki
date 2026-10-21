@@ -838,7 +838,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     ix.stub(IConfigService, { get: (() => undefined) as IConfigService['get'] });
     ix.stub(IModelCatalog, {});
     ix.stub(IModelService, {});
-    ix.stub(ILogService, { warn: () => {}, info: () => {}, error: () => {}, debug: () => {}, trace: () => {} });
+    ix.stub(ILogService, { warn: () => {}, info: () => {}, error: () => {}, debug: () => {} });
     ix.stub(IAgentScopeContext, {
       _serviceBrand: undefined,
       agentId: 'main',
@@ -854,7 +854,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     });
     ix.stub(ISessionWorkspaceContext, { workDir: 'cwd' });
     ix.stub(IAgentRuntimeService, {
-      acquire: () => ({ runtime: {}, dispose: () => {} }),
+      acquire: (() => ({ runtime: {}, track: <T>(resource: T) => resource, dispose() {} })) as IAgentRuntimeService['acquire'],
     });
     ix.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
     ix.set(ISubagentTool, new SyncDescriptor(SubagentTool));
@@ -1713,6 +1713,73 @@ describe('agent collaboration safe-boundary delivery', () => {
       message: 'Agent instance "agent-target" is broken and its original remote session cannot be resumed. The saved message stays queued. Do not call AgentSend again. Do not open a new remote session.',
     });
     await service.dispose();
+  });
+
+  it('splits broken continuation notices by whether the original remote session can resume', async () => {
+    const store = mailboxStore(tempDir());
+    const recoverableTarget = agentHandle('agent-target', { recoverableBroken: true });
+    recoverableTarget.setExecutionState('broken');
+    const recoverableSender: ContextMessage[] = [];
+    const sender = agentHandle('main', { enqueued: recoverableSender });
+    const lifecycle = lifecycleHarness([recoverableTarget.handle, sender.handle]);
+    const recoverable = messagingService(
+      store,
+      lifecycle.service,
+      sessionContext(),
+      metadataHarness({ 'agent-target': {}, main: {} }),
+      dispatchHarness(),
+      residencyHarness(lifecycle.service).manager,
+    );
+    await expect(recoverable.send({
+      ...sendInput('recover original', 'broken-recoverable'),
+      idleWake: 'owned-child',
+    })).rejects.toMatchObject({
+      code: 'internal',
+      message: 'Agent instance "agent-target" is broken. Resume the original remote session with AgentRun; the saved message stays queued.',
+    });
+    const accepted = await recoverable.send({
+      ...sendInput('recover original', 'broken-recoverable'),
+      waitForRunningDelivery: false,
+      idleWake: 'owned-child',
+    });
+    await vi.waitFor(() => { expect(recoverableSender.length).toBeGreaterThan(0); });
+    const recoverNotice = noticeText(recoverableSender.at(-1)!);
+    expect(recoverNotice).toContain(accepted.message.messageId);
+    expect(recoverNotice).toContain('Resume the original remote session with AgentRun');
+    expect(recoverNotice).toContain('Set resume to agent-target');
+    expect(recoverNotice).toContain('empty string');
+    expect(recoverNotice).toContain('Do not set new_window');
+    expect(recoverNotice).not.toContain('original remote session cannot be resumed');
+    recoverable.dispose();
+
+    const refusedSender: ContextMessage[] = [];
+    const refusedTarget = agentHandle('agent-target');
+    refusedTarget.setExecutionState('broken');
+    const refusedMain = agentHandle('main', { enqueued: refusedSender });
+    const refusedLifecycle = lifecycleHarness([refusedTarget.handle, refusedMain.handle]);
+    const refused = messagingService(
+      mailboxStore(tempDir()),
+      refusedLifecycle.service,
+      sessionContext(),
+      metadataHarness({ 'agent-target': {}, main: {} }),
+      dispatchHarness(),
+      residencyHarness(refusedLifecycle.service).manager,
+    );
+    const queued = await refused.send({
+      ...sendInput('stay queued', 'broken-unrecoverable'),
+      waitForRunningDelivery: false,
+      idleWake: 'owned-child',
+    });
+    await vi.waitFor(() => { expect(refusedSender.length).toBeGreaterThan(0); });
+    const refusedNotice = noticeText(refusedSender.at(-1)!);
+    expect(refusedNotice).toContain(queued.message.messageId);
+    expect(refusedNotice).toContain('original remote session cannot be resumed');
+    expect(refusedNotice).toContain('Do not call AgentSend again');
+    expect(refusedNotice).toContain('Do not open a new remote session');
+    expect(refusedNotice).not.toContain('Set resume to');
+    expect(refusedNotice).not.toContain('empty string');
+    expect(refusedNotice).not.toContain('new_window');
+    refused.dispose();
   });
 
   it.each(['starting', 'cancelling'] as const)(
@@ -3287,6 +3354,7 @@ function agentHandle(
     readonly onPrepareHeld?: () => void;
     readonly enqueued?: ContextMessage[];
     readonly dispatcher?: { dispatch: (event: { notificationType?: string; body?: string; sourceId?: string; sourceKind?: string }) => Promise<void> };
+    readonly recoverableBroken?: boolean;
   } = {},
 ) {
   const messages: ContextMessage[] = [];
@@ -3404,6 +3472,7 @@ function agentHandle(
     },
     settled: () => runsSettled,
     shutdown: () => Promise.resolve(),
+    canResumeBrokenOriginal: () => options.recoverableBroken === true,
     hooks: executionHooks,
   } as AgentExecution;
   const loop = {
