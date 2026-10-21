@@ -14,6 +14,7 @@ import type { Runtime, RuntimeCapability, RuntimeStatus } from '#/runtime/runtim
 import { normalizeAgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { IPluginService } from '#/app/plugin/plugin';
 import { IPluginUsageService, type PluginUsageChange } from '#/app/pluginUsage/pluginUsage';
+import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import type { EnabledPluginSystemPrompt } from '#/app/plugin/types';
 import { InMemorySkillCatalog } from '#/app/skillCatalog/registry';
@@ -31,7 +32,7 @@ import { agentProfileFromFile } from '@kiki/agent-profiles/agentProfileFromFile'
 import { resolveAgentProfileRoute } from '@kiki/agent-profiles/agentProfileRoute';
 import { freezeBoundProfile } from '#/agent/profile/boundProfile';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
-import { IConfigService } from '#/app/config/config';
+import { IConfigService, type ConfigOrigin } from '#/app/config/config';
 import { IMemoryScopes } from '#/app/memory/memoryScopes';
 import type { PromptConfig } from '#/app/prompt/configSection';
 import {
@@ -269,11 +270,17 @@ describe('AgentProfileService.applyProfile', () => {
     const { IAgentContextMemoryService } = await import('#/agent/contextMemory/contextMemory');
     const { IMemoryStore } = await import('#/app/memory/memoryStore');
     const { IAgentMemorySnapshot } = await import('#/app/memory/memorySnapshot');
+    host.get(IConfigService).origins = (domain: string): Record<string, ConfigOrigin> => domain === 'memory' ? { enabled: 'home' } : {};
     const states = host.get(IAgentStateService);
     states.set(profileKey, { ...states.get(profileKey), renderGeneration: 0 });
     const native = normalizeAgentProfile({ name: 'memory-runtime', tools: ['Read'], renderSystemPrompt: (context) =>
       renderPromptTemplateResult('BASE ${now}|${cwd}|${memory}', context, { skillActive: false }) });
     await svc.applyProfile(native);
+    expect(host.get(IOptionalCapabilityPolicy).admit('memory', {
+      sessionId: host.get(ISessionContext).sessionId,
+      workspaceId: host.get(ISessionContext).workspaceId,
+      agentId: 'main',
+    })).toEqual({ admitted: true, reason: 'admitted' });
     host.get(IDynamicPromptInjection);
     const injector = host.get(IAgentContextInjectorService);
     const context = host.get(IAgentContextMemoryService);
@@ -369,6 +376,7 @@ describe('AgentProfileService.applyProfile', () => {
     const { ctx: host, profile: svc } = buildContext({ initialConfig: { memory: { enabled: true, approval: 'auto', budget: 2_000, workspaces: {} } } },
       homeDirServices(homeDir),
       appService(IMemoryScopes, { _serviceBrand: undefined, resolve: async (scope) => scope.kind === 'global' ? 'memory/global' : scope.kind === 'workspace' ? 'memory/workspace' : `memory/personas/${scope.personaId}/${scope.kind}` }));
+    host.get(IConfigService).origins = (domain: string): Record<string, ConfigOrigin> => domain === 'memory' ? { enabled: 'home' } : {};
     const { IAgentStateService } = await import('#/agent/state/agentState');
     const { dynamicPromptKey, IDynamicPromptInjection } = await import('#/agent/profile/dynamicPrompt');
     const { IAgentContextInjectorService } = await import('#/agent/contextInjector/contextInjector');
