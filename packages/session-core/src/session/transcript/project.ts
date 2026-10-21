@@ -883,6 +883,7 @@ function isPromptContentPart(value: unknown): value is MessageContentPart {
     type === 'text' ||
     type === 'image' ||
     type === 'video' ||
+    type === 'audio' ||
     type === 'file' ||
     type === 'thinking' ||
     type === 'tool_use' ||

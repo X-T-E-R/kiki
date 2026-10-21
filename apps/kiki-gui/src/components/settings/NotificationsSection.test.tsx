@@ -24,9 +24,14 @@ const api = {
   upsertChannel: vi.fn(), deleteChannel: vi.fn(), setCredential: vi.fn(), checkCredential: vi.fn(), sendTest: vi.fn(), listDeliveries: vi.fn(),
 };
 const revealSecret = vi.fn();
+const imSessions = {
+  snapshot: vi.fn(async () => ({ policy: { allowed: true, default_enabled: true }, instances: [], discoveries: [], bindings: [], strangers: [], voice_fallbacks: 0 })),
+  catalog: vi.fn(async () => ({ personas: [], sessions: [] })),
+  setPolicy: vi.fn(), paste: vi.fn(), check: vi.fn(), listen: vi.fn(), confirm: vi.fn(), dismiss: vi.fn(), updateBinding: vi.fn(), removeBinding: vi.fn(),
+};
 
 vi.mock('../../state/connection', () => ({
-  useConnection: () => ({ scopeId: 'fixture', client: { notifications: api, revealSecret } }),
+  useConnection: () => ({ scopeId: 'fixture', client: { notifications: api, revealSecret, imSessions } }),
 }));
 vi.mock('../../host', () => ({ useHost: () => ({ kind: 'browser', notify: async () => {} }) }));
 

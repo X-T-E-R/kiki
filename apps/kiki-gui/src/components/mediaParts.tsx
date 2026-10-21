@@ -171,6 +171,15 @@ export function MediaLoadFailure({ name, decode, size = 'default', onRetry }: { 
   );
 }
 
+function AudioPart({ item }: { item: MediaRef }) {
+  const preview = useMediaPreview();
+  const [hostRef, visible] = useVisibleOnce();
+  const load = useSessionMedia(item, preview?.sessionId, visible && item.url === undefined, false);
+  const src = item.url ?? (load.status === 'ready' ? load.url : undefined);
+  if (src === undefined) return <FileChip item={item} />;
+  return <span ref={hostRef} className="inline-flex max-w-full"><audio controls src={src} preload="none" className="h-10 max-w-full" /></span>;
+}
+
 function FileChip({ item }: { item: MediaRef }) {
   const { t } = useI18n();
   const preview = useMediaPreview();
@@ -321,6 +330,7 @@ export function MediaPart({ item, agentId, size = 'default', galleryIndex = 0 }:
     if (item.path !== undefined) return <HostMediaThumb item={{ ...item, kind: 'image', path: item.path }} size={size} onOpen={openImage} />;
     return <FileChip item={item} />;
   }
+  if (item.kind === 'audio') return <AudioPart item={item} />;
   if (item.kind === 'video') {
     if (item.fileId !== undefined) return <SessionMediaThumb item={item} size={size} />;
     if (item.url !== undefined) return <UrlMediaPart item={{ ...item, url: item.url }} size={size} />;

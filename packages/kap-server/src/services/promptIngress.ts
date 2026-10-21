@@ -320,19 +320,19 @@ export class PromptIngress {
     await assertPromptFileRefs(content, files);
     const retained: PromptSubmission['content'] = [];
     for (const part of content) {
-      const uploadId = part.type === 'file' ? part.file_id : (part.type === 'image' || part.type === 'video') && part.source.kind === 'file' ? part.source.file_id : undefined;
+      const uploadId = part.type === 'file' ? part.file_id : (part.type === 'image' || part.type === 'video' || part.type === 'audio') && part.source.kind === 'file' ? part.source.file_id : undefined;
       if (uploadId !== undefined) {
         const file = await files.get(uploadId);
         await media.materialize({ fileId: uploadId, size: file.meta.size, name: file.meta.name, mimeType: file.meta.media_type, stream: () => file.stream() });
         retained.push(part);
-      } else if ((part.type === 'image' || part.type === 'video') && part.source.kind === 'base64') {
+      } else if ((part.type === 'image' || part.type === 'video' || part.type === 'audio') && part.source.kind === 'base64') {
         const bytes = Buffer.from(part.source.data, 'base64');
         const id = `f_${randomUUID()}`;
         const extension = part.source.media_type.split('/')[1]?.replace(/[^a-z0-9]/gi, '') || 'bin';
         await media.materialize({ fileId: id, size: bytes.length, name: part.name ?? `${part.type}.${extension}`, mimeType: part.source.media_type, stream: () => Readable.from(bytes) });
         retained.push({ ...part, source: { kind: 'file', file_id: id } });
       } else {
-        if ((part.type === 'image' || part.type === 'video') && part.source.kind === 'session_media' && !part.source.file_id.startsWith('inline')) {
+        if ((part.type === 'image' || part.type === 'video' || part.type === 'audio') && part.source.kind === 'session_media' && !part.source.file_id.startsWith('inline')) {
           if (await media.open(part.source.file_id) === undefined) throw fileNotFoundError(part.source.file_id);
         }
         retained.push(part);

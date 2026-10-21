@@ -1,0 +1,417 @@
+import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { Readable } from 'node:stream';
+
+import {
+  ErrorCodes,
+  IAgentLoopService,
+  IAgentPromptService,
+  IBootstrapService,
+  IAgentContextMemoryService,
+  IBotService,
+  IFileService,
+  ISessionActivityView,
+  ISessionApprovalService,
+  ISessionContext,
+  ISessionIndex,
+  ISessionInteractionService,
+  ISessionMediaStore,
+  ISessionQuestionService,
+  ensureMainAgent,
+  isError2,
+  reservePrompt,
+  type ContentPart,
+  type ContextMessage,
+  type QuestionRequest,
+  type Scope,
+  type SessionApprovalRequest,
+} from '@kiki/agent-core-v2';
+import type { ImProviderKind, MessageContent } from '@kiki/protocol';
+import { createSafeHttpTransport } from '@nb-im/core';
+
+import { contentToCoreParts, resolvePromptMediaFiles } from '../../lib/promptMedia';
+import { withSessionOperation } from '../../lib/sessionOperationLease';
+import type { NotificationService } from '../notifications/notificationService';
+import type { ImAdapterFactory, ImHttpTransport } from './adapter';
+import { ImSessionBridge } from './bridge';
+import type { ImQuestionAnswer, ImSessionPorts, ImSubmitResult, ImVisibleMedia, ImVisibleReply } from './ports';
+import { telegramAdapterFactory } from './telegramAdapter';
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const TELEGRAM_TOKEN = /^[0-9]{1,20}:[A-Za-z0-9_-]{20,128}$/u;
+
+interface SecretInstance {
+  readonly providerKind: ImProviderKind;
+  readonly credential: string;
+  readonly label?: string;
+}
+
+interface SecretFile {
+  instances: Record<string, SecretInstance>;
+}
+
+interface HostLogger {
+  info(fields: Record<string, string | number | boolean>, message: string): void;
+}
+
+export async function createImSessionHost(input: {
+  readonly core: Scope;
+  readonly homeDir: string;
+  readonly notifications: NotificationService;
+  readonly logger: HostLogger;
+}): Promise<ImSessionBridge> {
+  const ports = new NotificationSessionPorts(input.core, input.homeDir, input.notifications, input.logger);
+  const factories = loadSessionFactories((credential) => telegramHttp(credential));
+  const bridge = new ImSessionBridge({ ports, factories });
+  await bridge.whenReady();
+  const snapshot = await bridge.snapshot();
+  await bridge.setPolicy(snapshot.policy);
+  return bridge;
+}
+
+export function loadSessionFactories(transportFor: (credential: string) => ImHttpTransport): ImAdapterFactory[] {
+  return [telegramAdapterFactory(transportFor)];
+}
+
+function telegramHttp(token: string): ImHttpTransport {
+  const http = createSafeHttpTransport();
+  return {
+    async call(method, body) {
+      const outcome = await http.post({
+        url: `https://api.telegram.org/bot${token}/${method}`,
+        body: JSON.stringify(body),
+        content_type: 'application/json',
+      }, () => 'ready');
+      if ('blocked' in outcome) throw new Error('telegram_blocked');
+      return { status: outcome.status, body: JSON.parse(outcome.body) as unknown };
+    },
+    async download(filePath) {
+      const response = await fetch(new URL(filePath, `https://api.telegram.org/file/bot${token}/`));
+      if (!response.ok) throw new Error('telegram_download_failed');
+      return new Uint8Array(await response.arrayBuffer());
+    },
+  };
+}
+
+class NotificationSessionPorts implements ImSessionPorts {
+  private secrets: SecretFile = { instances: {} };
+
+  constructor(
+    private readonly core: Scope,
+    private readonly homeDir: string,
+    private readonly notifications: NotificationService,
+    readonly logger: HostLogger,
+  ) {
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(join(homeDir, 'im-session-secrets.json'), 'utf8'));
+      if (typeof parsed === 'object' && parsed !== null && 'instances' in parsed && typeof parsed.instances === 'object' && parsed.instances !== null) {
+        this.secrets = { instances: parsed.instances as SecretFile['instances'] };
+      }
+    } catch {
+      this.secrets = { instances: {} };
+    }
+  }
+
+  readonly credentials = {
+    list: (): ReturnType<ImSessionPorts['credentials']['list']> => {
+      const settings = this.notifications.getSettings();
+      const listed = Object.entries(settings.provider_instances).flatMap(([id, instance]) => {
+        if (instance.provider_id !== 'telegram') return [];
+        const slot = instance.options['token_slot'];
+        const configured = typeof slot === 'string' && settings.credential_slots[slot]?.configured === true;
+        return [{ id, providerId: 'telegram', ...(instance.label === undefined ? {} : { label: instance.label }), configured }];
+      });
+      for (const [id, secret] of Object.entries(this.secrets.instances)) {
+        if (listed.some((item) => item.id === id)) continue;
+        listed.push({ id, providerId: secret.providerKind, ...(secret.label === undefined ? {} : { label: secret.label }), configured: secret.credential.length > 0 });
+      }
+      return listed;
+    },
+    read: (instanceId: string): string | undefined => {
+      const secret = this.secrets.instances[instanceId];
+      if (secret !== undefined) return secret.credential;
+      const settings = this.notifications.getSettings();
+      const slot = settings.provider_instances[instanceId]?.options['token_slot'];
+      if (typeof slot !== 'string') return undefined;
+      try { return this.notifications.revealCredential(slot); } catch { return undefined; }
+    },
+    write: async (instanceId: string, value: string): Promise<void> => {
+      const settings = this.notifications.getSettings();
+      const slot = settings.provider_instances[instanceId]?.options['token_slot'];
+      if (typeof slot === 'string') {
+        await this.notifications.setCredential(slot, value);
+        return;
+      }
+      const current = this.secrets.instances[instanceId];
+      if (current === undefined) throw new Error('unknown_instance');
+      this.secrets.instances[instanceId] = { ...current, credential: value };
+      await this.persistSecrets();
+    },
+    check: async (instanceId: string): Promise<{ ok: boolean; accountId?: string; conflict?: 'webhook'; detail?: string }> => {
+      const credential = this.credentials.read(instanceId);
+      if (credential === undefined || credential.length === 0) return { ok: false, detail: 'missing' };
+      const kind = this.secrets.instances[instanceId]?.providerKind ?? (this.notifications.getSettings().provider_instances[instanceId]?.provider_id === 'telegram' ? 'telegram' : undefined);
+      if (kind === 'telegram') return this.checkTelegram(credential);
+      if (kind === 'feishu_app') {
+        const appId = credential.split('\n')[0]?.trim() ?? '';
+        return appId.length > 0 ? { ok: true, accountId: appId, detail: 'adapter_missing' } : { ok: false, detail: 'missing' };
+      }
+      return { ok: true, detail: 'adapter_missing' };
+    },
+    create: async (input: { providerKind: ImProviderKind; credential: string }): Promise<{ instanceId: string; label?: string }> => {
+      if (input.providerKind === 'telegram') return this.createTelegram(input.credential);
+      const instanceId = `im_${randomUUID()}`;
+      this.secrets.instances[instanceId] = { providerKind: input.providerKind, credential: input.credential };
+      await this.persistSecrets();
+      return { instanceId };
+    },
+  };
+
+  readonly sessions: ImSessionPorts['sessions'] = {
+    listPersonas: async () => (await this.core.accessor.get(IBotService).list()).map((persona) => ({
+      id: persona.personaId, name: persona.name, ...(persona.homeSessionId === undefined ? {} : { homeSessionId: persona.homeSessionId }),
+    })),
+    listSessions: async () => (await this.core.accessor.get(ISessionIndex).listRecent({ limit: 50 })).items.map((session) => ({
+      id: session.id, title: session.title ?? session.id, ...(session.personaId === undefined ? {} : { personaId: session.personaId }),
+    })),
+    owns: async (sessionId: string) => (await this.core.accessor.get(ISessionIndex).listRecent({ sessionId, limit: 1 })).items.some((session) => session.id === sessionId),
+    ensureHome: async (personaId: string) => {
+      const home = await this.core.accessor.get(IBotService).ensureHomeSession(personaId);
+      return { ...(home.homeSessionId === undefined ? {} : { homeSessionId: home.homeSessionId }) };
+    },
+    setHome: async (personaId: string, sessionId: string) => { await this.core.accessor.get(IBotService).setHomeSession(personaId, sessionId); },
+    activity: (sessionId: string) => this.inSession(sessionId, async (session) => {
+      const agent = await ensureMainAgent(session);
+      const prompt = agent.accessor.get(IAgentPromptService);
+      const loop = agent.accessor.get(IAgentLoopService);
+      const queue = prompt.list();
+      const state = session.accessor.get(ISessionActivityView).state();
+      return { busy: state.busy, pending: state.pendingInteraction, queueLength: queue.pending.length, ...(queue.active === undefined ? {} : { activePromptId: queue.active.id }), ...(loop.status().activeTurnId === undefined ? {} : { activeTurnId: loop.status().activeTurnId }) };
+    }),
+    submit: (input) => this.submit(input),
+    steer: (sessionId, promptId) => this.inSession(sessionId, async (session) => {
+      const prompt = (await ensureMainAgent(session)).accessor.get(IAgentPromptService);
+      try {
+        const [handle] = await prompt.steer([promptId]);
+        return handle?.state === 'steered' ? 'steered' as const : 'queued' as const;
+      } catch {
+        return 'queued' as const;
+      }
+    }),
+    abort: (sessionId, promptId, turnId) => this.inSession(sessionId, async (session) => {
+      const agent = await ensureMainAgent(session);
+      let aborted = false;
+      if (promptId !== undefined) {
+        try { aborted = agent.accessor.get(IAgentPromptService).abort(promptId) || aborted; } catch { aborted = aborted || false; }
+      }
+      const loop = agent.accessor.get(IAgentLoopService);
+      if (turnId !== undefined && loop.status().activeTurnId === turnId) aborted = loop.cancel(turnId) || aborted;
+      return aborted;
+    }),
+    saveMedia: (input) => this.saveMedia(input),
+    readVisible: (sessionId, promptId, turnId) => this.readVisible(sessionId, promptId, turnId),
+    listInteractions: (sessionId) => this.listInteractions(sessionId),
+    decideApproval: (input) => this.decide(input, false),
+    decideHostKey: (input) => this.decide(input, true),
+    answerQuestion: (input) => this.answerQuestion(input),
+  };
+
+  async load(): Promise<string | undefined> {
+    try { return await readFile(join(this.homeDir, 'im-session-bridge.json'), 'utf8'); } catch { return undefined; }
+  }
+
+  async save(value: string): Promise<void> {
+    await mkdir(this.homeDir, { recursive: true });
+    await writeFile(join(this.homeDir, 'im-session-bridge.json'), value, 'utf8');
+  }
+
+  private async persistSecrets(): Promise<void> {
+    await mkdir(this.homeDir, { recursive: true });
+    await writeFile(join(this.homeDir, 'im-session-secrets.json'), JSON.stringify(this.secrets), 'utf8');
+  }
+
+  private async createTelegram(credential: string): Promise<{ instanceId: string }> {
+    const instanceId = `im_${randomUUID()}`;
+    const slot = `${instanceId}.telegram_bot`;
+    await this.notifications.upsertInstance(instanceId, {
+      provider_id: 'telegram', enabled: true, revision: '1', options: { token_slot: slot },
+    }, { [slot]: { provider_id: 'telegram', provider_instance_id: instanceId, purpose: 'telegram_bot', env: 'KIKI_NOTIFY_IM' } });
+    await this.notifications.setCredential(slot, credential);
+    return { instanceId };
+  }
+
+  private async checkTelegram(credential: string): Promise<{ ok: boolean; accountId?: string; conflict?: 'webhook'; detail?: string }> {
+    if (!TELEGRAM_TOKEN.test(credential)) return { ok: false, detail: 'unauthorized' };
+    const http = telegramHttp(credential);
+    const me = recordOf(recordOf((await http.call('getMe', {}))['body'])?.['result']);
+    const id = me?.['id'];
+    if (!Number.isSafeInteger(id)) return { ok: false, detail: 'unauthorized' };
+    const webhook = recordOf(recordOf((await http.call('getWebhookInfo', {}))['body'])?.['result']);
+    if (typeof webhook?.['url'] === 'string' && webhook['url'].length > 0) return { ok: false, accountId: String(id), conflict: 'webhook' };
+    return { ok: true, accountId: String(id) };
+  }
+
+  private inSession<T>(sessionId: string, work: (session: NonNullable<Parameters<Parameters<typeof withSessionOperation>[2]>[0]>) => Promise<T>): Promise<T> {
+    return withSessionOperation(this.core, sessionId, async (session) => {
+      if (session === undefined) throw new Error('unknown_session');
+      return work(session);
+    });
+  }
+
+  private async submit(input: { sessionId: string; promptId: string; content: readonly MessageContent[]; delivery: 'queue' | 'steer' }): Promise<ImSubmitResult> {
+    return this.inSession(input.sessionId, async (session) => {
+      const agent = await ensureMainAgent(session);
+      const prompt = agent.accessor.get(IAgentPromptService);
+      const known = prompt.lookup(input.promptId);
+      if (known !== undefined) return { duplicate: true, promptId: input.promptId, ...(known.turnId === undefined ? {} : { turnId: known.turnId }), deliveryState: 'pending' };
+      const prepared = await resolvePromptMediaFiles([...input.content], this.core.accessor.get(IFileService), this.core.accessor.get(IBootstrapService).cacheDir, {
+        resolveAttachmentsDir: async () => join(session.accessor.get(ISessionContext).sessionDir, 'attachments'),
+      });
+      const reservation = reservePrompt(prompt, input.promptId, true);
+      try {
+        const handle = await reservation.submit({ role: 'user', content: contentToCoreParts(prepared.content), toolCalls: [], origin: { kind: 'user' } });
+        void Promise.race([handle.launched, handle.completion]).then(() => prepared.discard(), () => prepared.discard());
+        const queue = prompt.list();
+        const pending = queue.pending.some((item) => item.id === handle.id);
+        const busy = queue.active !== undefined || queue.launching !== undefined;
+        return { duplicate: false, promptId: handle.id, deliveryState: input.delivery === 'queue' && pending && busy ? 'queued' : 'pending' };
+      } catch (error) {
+        await prepared.discard();
+        if (isError2(error) && error.code === ErrorCodes.PROMPT_ID_CONFLICT) return { duplicate: true, promptId: input.promptId, deliveryState: 'pending' };
+        throw error;
+      } finally {
+        await reservation.dispose();
+      }
+    });
+  }
+
+  private async saveMedia(input: { sessionId: string; kind: 'image' | 'file' | 'audio'; name: string; mediaType: string; bytes: Uint8Array; text?: string }): Promise<readonly MessageContent[]> {
+    return this.inSession(input.sessionId, async (session) => {
+      const dir = join(session.accessor.get(ISessionContext).sessionDir, 'attachments');
+      await mkdir(dir, { recursive: true });
+      const safe = input.name.replace(/[^\w.-]+/gu, '_').replace(/^\.+/u, '').slice(0, 80) || 'file';
+      await writeFile(join(dir, `${randomUUID()}-${safe}`), input.bytes);
+      const text = input.text === undefined ? [] : [{ type: 'text' as const, text: input.text }];
+      if (input.kind === 'file') {
+        const saved = await this.core.accessor.get(IFileService).save(Readable.from(Buffer.from(input.bytes)), safe, { mimeType: input.mediaType });
+        return [...text, { type: 'file', file_id: saved.id, name: saved.name, media_type: saved.media_type, size: saved.size }];
+      }
+      return [...text, { type: input.kind, name: safe, source: { kind: 'base64', media_type: input.mediaType, data: Buffer.from(input.bytes).toString('base64') } }];
+    });
+  }
+
+  private async readVisible(sessionId: string, promptId: string, turnId?: number): Promise<ImVisibleReply> {
+    return this.inSession(sessionId, async (session) => {
+      const agent = await ensureMainAgent(session);
+      const messages = agent.accessor.get(IAgentContextMemoryService).get();
+      const selected = turnId === undefined ? afterPrompt(messages, promptId) : messages.filter((message) => message.role === 'assistant' && message.source?.turnId === turnId);
+      const text = selected.flatMap((message) => message.content.flatMap((part) => part.type === 'text' ? [part.text] : [])).join('');
+      const media: ImVisibleMedia[] = [];
+      const store = session.accessor.get(ISessionMediaStore);
+      for (const message of selected) {
+        for (const part of message.content) {
+          const item = await mediaBytes(part, store);
+          if (item !== undefined) media.push(item);
+        }
+      }
+      const queue = agent.accessor.get(IAgentPromptService).list();
+      const live = queue.active?.id === promptId || queue.launching?.id === promptId || queue.pending.some((item) => item.id === promptId);
+      const turnLive = turnId !== undefined && agent.accessor.get(IAgentLoopService).status().activeTurnId === turnId;
+      return { text, done: !live && !turnLive, media };
+    });
+  }
+
+  private listInteractions(sessionId: string) {
+    return this.inSession(sessionId, async (session) => {
+      const approvals: { id: string; expiresAt: number; toolName: string; action: string; ssh?: 'login' | 'host_key' }[] = [];
+      const questions: { id: string; expiresAt: number; questionKey: string; options: { id: string; label: string }[]; multi: boolean; allowOther: boolean }[] = [];
+      for (const item of session.accessor.get(ISessionInteractionService).listPending()) {
+        const expiresAt = item.createdAt + DAY_MS;
+        if (Date.now() > expiresAt) continue;
+        if (item.kind === 'approval') {
+          const payload = item.payload as SessionApprovalRequest;
+          approvals.push({ id: item.id, expiresAt, toolName: payload.toolName, action: payload.action, ...(payload.ssh === undefined ? {} : { ssh: payload.ssh.kind }) });
+        } else if (item.kind === 'question') {
+          const payload = item.payload as QuestionRequest;
+          const question = payload.questions[0];
+          if (question === undefined) continue;
+          questions.push({
+            id: item.id, expiresAt, questionKey: question.question,
+            options: question.options.map((option, index) => ({ id: `opt_0_${index}`, label: option.label })),
+            multi: question.multiSelect === true, allowOther: true,
+          });
+        }
+      }
+      return { approvals, questions };
+    });
+  }
+
+  private decide(input: { sessionId: string; interactionId: string; decision: 'approved' | 'rejected' }, hostKey: boolean) {
+    return this.inSession(input.sessionId, async (session) => {
+      const interactions = session.accessor.get(ISessionInteractionService);
+      const pending = interactions.listPending().find((item) => item.id === input.interactionId);
+      if (pending === undefined) return interactions.isRecentlyResolved(input.interactionId) ? 'resolved' as const : 'expired' as const;
+      if (Date.now() > pending.createdAt + DAY_MS) return 'expired' as const;
+      const payload = pending.payload as SessionApprovalRequest;
+      if (!hostKey && payload.ssh?.kind === 'login') return 'resolved' as const;
+      if (hostKey) {
+        if (payload.ssh?.kind !== 'host_key') return 'resolved' as const;
+        session.accessor.get(ISessionApprovalService).decideSsh(input.interactionId, { decision: input.decision, scope: 'session' });
+        return 'decided' as const;
+      }
+      if (payload.ssh !== undefined) return 'resolved' as const;
+      session.accessor.get(ISessionApprovalService).decide(input.interactionId, { decision: input.decision, scope: 'session' });
+      return 'decided' as const;
+    });
+  }
+
+  private answerQuestion(input: { sessionId: string; interactionId: string; response: ImQuestionAnswer }) {
+    return this.inSession(input.sessionId, async (session) => {
+      const interactions = session.accessor.get(ISessionInteractionService);
+      const pending = interactions.listPending('question').find((item) => item.id === input.interactionId);
+      if (pending === undefined) return interactions.isRecentlyResolved(input.interactionId) ? 'answered' as const : 'expired' as const;
+      if (Date.now() > pending.createdAt + DAY_MS) return 'expired' as const;
+      const request = pending.payload as QuestionRequest;
+      const question = request.questions[0];
+      if (question === undefined) return 'resolved' as const;
+      const label = (id: string) => question.options[Number(id.replace('opt_0_', ''))]?.label ?? id;
+      const answers: Record<string, string> = {};
+      if (input.response.kind === 'single') answers[question.question] = label(input.response.optionIds?.[0] ?? '');
+      else if (input.response.kind === 'multi') answers[question.question] = (input.response.optionIds ?? []).map(label).join(', ');
+      else if (input.response.kind === 'other') answers[question.question] = input.response.text ?? '';
+      else answers[question.question] = [...(input.response.optionIds ?? []).map(label), input.response.text ?? ''].join(', ');
+      session.accessor.get(ISessionQuestionService).answer(input.interactionId, { answers, method: 'number_key' });
+      return 'answered' as const;
+    });
+  }
+}
+
+function recordOf(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function afterPrompt(messages: readonly ContextMessage[], promptId: string): ContextMessage[] {
+  const start = messages.findIndex((message) => message.id === promptId);
+  if (start < 0) return [];
+  const selected = [];
+  for (const message of messages.slice(start + 1)) {
+    if (message.role === 'user') break;
+    if (message.role === 'assistant') selected.push(message);
+  }
+  return selected;
+}
+
+async function mediaBytes(part: ContentPart, store: ISessionMediaStore): Promise<ImVisibleMedia | undefined> {
+  if (part.type !== 'image_url' && part.type !== 'audio_url' && part.type !== 'video_url') return undefined;
+  const ref = part.type === 'image_url' ? part.imageUrl : part.type === 'audio_url' ? part.audioUrl : part.videoUrl;
+  const kind = part.type === 'image_url' ? 'image' : part.type === 'audio_url' ? 'audio' : 'file';
+  const data = /^data:([^;]+);base64,([\s\S]*)$/u.exec(ref.url);
+  if (data !== null) return { kind, name: ref.name ?? kind, mediaType: data[1]!, bytes: Buffer.from(data[2]!, 'base64') };
+  const daemon = /^kimi-file:\/\/([^?]*)/u.exec(ref.url);
+  if (daemon === null) return undefined;
+  const file = await store.read(decodeURIComponent(daemon[1] ?? ''));
+  if (file === undefined) return undefined;
+  return { kind, name: ref.name ?? file.name, mediaType: ref.mimeType ?? 'application/octet-stream', bytes: file.data };
+}

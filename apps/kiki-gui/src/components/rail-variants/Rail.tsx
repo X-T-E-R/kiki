@@ -64,6 +64,7 @@ import { readExternalClientMark } from '../../lib/externalClients';
 import { ActivityFeed, CapabilitiesBlock, NeedsYouList, ProfileHead } from './DefaultSections';
 import { RailTodos } from './DefaultRail';
 import { SessionCronSection } from './SessionCronSection';
+import { ImSessionRailSwitch } from '../im/ImSessionRailSwitch';
 import { PersonaSettingsUpdate } from '../persona/PersonaSettingsUpdate';
 import { useEntityPage } from '../transcriptDetail';
 
@@ -599,6 +600,7 @@ export function Rail({
   const personaSection = (
     <div className={`${SECTION} empty:hidden`}>
       <PersonaSettingsUpdate sessionId={state.sessionId} />
+      <ImSessionRailSwitch sessionId={state.sessionId} />
     </div>
   );
   const needsYouSection = sessionPending !== undefined && sessionPending.length > 0 ? (

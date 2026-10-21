@@ -19,7 +19,7 @@ import { mediaUrlFromPart, parseMediaBlobRef } from '@kiki/transcript';
 
 /** A renderable (or at least describable) media reference from a message part. */
 export interface MediaRef {
-  readonly kind: 'image' | 'video' | 'file';
+  readonly kind: 'image' | 'video' | 'audio' | 'file';
   /** Ready-to-use URL: a data: URI, blob: URL, or remote http(s) URL. */
   readonly url?: string;
   /** Absolute host path, when the part references a file on disk. */
@@ -47,7 +47,7 @@ function mimeFromDataUrl(url: string | undefined): string | undefined {
 }
 
 function refFromSource(
-  kind: 'image' | 'video',
+  kind: 'image' | 'video' | 'audio',
   source: Extract<ContentPart, { type: 'image' }>['source'],
 ): MediaRef {
   switch (source.kind) {
@@ -77,7 +77,7 @@ const DAEMON_FILE_RE = /^kimi-file:\/\/([^?]*)/;
  * file chip instead of a broken image.
  */
 export function mediaRefFromUrl(
-  kind: 'image' | 'video',
+  kind: 'image' | 'video' | 'audio',
   url: string,
   extra?: Pick<MediaRef, 'name' | 'mime' | 'size'>,
 ): MediaRef {
@@ -98,7 +98,7 @@ export function mediaRefFromUrl(
 export function mediaFromContentParts(content: readonly ContentPart[]): MediaRef[] {
   const media: MediaRef[] = [];
   for (const part of content) {
-    if (part.type === 'image' || part.type === 'video') {
+    if (part.type === 'image' || part.type === 'video' || part.type === 'audio') {
       media.push({ ...refFromSource(part.type, part.source), name: part.name });
     } else if (part.type === 'file') {
       media.push({
@@ -211,7 +211,7 @@ export function extractToolOutputMedia(output: unknown): ToolOutputMedia | undef
     if (typeof metadata === 'object' && metadata !== null) {
       const attachment = metadata as Record<string, unknown>;
       if (typeof attachment['fileId'] === 'string') {
-        media.push({ kind: type === 'image_url' ? 'image' : type === 'video_url' ? 'video' : 'file',
+        media.push({ kind: type === 'image_url' ? 'image' : type === 'video_url' ? 'video' : type === 'audio_url' ? 'audio' : 'file',
           fileId: attachment['fileId'], name: typeof attachment['name'] === 'string' ? attachment['name'] : undefined,
           mime: typeof attachment['mimeType'] === 'string' ? attachment['mimeType'] : undefined,
           size: typeof attachment['size'] === 'number' ? attachment['size'] : undefined });

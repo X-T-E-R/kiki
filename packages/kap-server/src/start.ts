@@ -632,6 +632,8 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     logger.warn({ event_type: 'lease_expiry_cleanup_failed' }, 'lease resource expiry cleanup failed');
   });
   let notifications: NotificationService | undefined;
+  let imSessions: import('./services/imSession/bridge').ImSessionBridge | undefined;
+  let imSessionTimer: ReturnType<typeof setInterval> | undefined;
   let idleTimer: NodeJS.Timeout | undefined;
   let authMonitor: NodeJS.Timeout | undefined;
   let resolveClosed!: () => void;
@@ -663,6 +665,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       { run: () => externalClients.close() },
       { run: () => leaseRegistry.dispose() },
       { run: () => app.close() },
+      { run: () => { if (imSessionTimer !== undefined) clearInterval(imSessionTimer); return imSessions?.close(); } },
       { run: () => notifications?.close() },
       { run: () => core.accessor.get(IThreadCommunicationService).shutdown() },
       {
@@ -845,6 +848,11 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     (sessionId) => broadcaster.isSessionViewed(sessionId),
     () => logger.warn({ event_type: 'notification_operation_failed' }, 'notification operation failed'));
   await notifications.start();
+  const { createImSessionHost } = await import('./services/imSession/host');
+  imSessions = await createImSessionHost({ core, homeDir, notifications, logger });
+  const startedImSessions = imSessions;
+  notifications.setSceneSuppressor((input) => startedImSessions.suppressChannel(input));
+  imSessionTimer = setInterval(() => { void startedImSessions.syncInteractions().catch(() => undefined); }, 2_000);
   const startedNotifications = notifications;
   core.accessor.get(IPluginHostService).attachOutboundIm({
     capabilities: (signal) => startedNotifications.pluginImCapabilities(signal),
@@ -939,6 +947,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     enableTerminals,
     guiStore,
     notifications,
+    imSessions,
     externalClients: core.accessor.get(IFlagService).enabled(EXTERNAL_CLIENT_FLAG_ID) ? externalClients : undefined,
     themesDir: join(homeDir, 'themes'),
     pluginBridgeServerToken: () => authTokenService.getToken(),

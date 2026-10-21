@@ -1871,6 +1871,23 @@ export class KikiClient {
     };
   }
 
+  get imSessions(): import('@kiki/klient').HttpRestFacade['imSessions'] {
+    const api = this.rest.imSessions;
+    const wrap = <A extends unknown[], R>(call: (...args: A) => Promise<R>) => (...args: A): Promise<R> => this.run(() => call(...args));
+    return {
+      snapshot: wrap(api.snapshot.bind(api)),
+      catalog: wrap(api.catalog.bind(api)),
+      setPolicy: wrap(api.setPolicy.bind(api)),
+      paste: wrap(api.paste.bind(api)),
+      check: wrap(api.check.bind(api)),
+      listen: wrap(api.listen.bind(api)),
+      confirm: wrap(api.confirm.bind(api)),
+      dismiss: wrap(api.dismiss.bind(api)),
+      updateBinding: wrap(api.updateBinding.bind(api)),
+      removeBinding: wrap(api.removeBinding.bind(api)),
+    };
+  }
+
   listNamedAgentProfiles(
     query?: string | import('@kiki/protocol').ListNamedAgentProfilesQuery,
   ): Promise<ListNamedAgentProfilesResponse> {

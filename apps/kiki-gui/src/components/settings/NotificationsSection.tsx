@@ -12,6 +12,7 @@ import { AddChannelForm } from './notifications/AddChannelForm';
 import { AwayNotificationsCard } from './notifications/AwayNotificationsCard';
 import { ChannelRow } from './notifications/ChannelRow';
 import { channelState, isAddable, providerLabel, sortedChannels } from './notifications/model';
+import { ImSessionCard } from './notifications/ImSessionCard';
 import { NotificationRulesCard } from './notifications/NotificationRulesCard';
 import { useNotificationData } from './notifications/useNotifications';
 import { SectionCard, SettingsFlashContext } from './SectionCard';
@@ -74,14 +75,15 @@ export function NotificationsSection() {
   const view = useListView({ listId: 'notify-channels', items: channels, keyOf, textOf, filters, sorts });
 
   if (settings.isError || providers.isError) {
-    return <><AwayNotificationsCard /><FeedbackLine feedback={{ tone: 'error', text: t('st.notify.loadFailed', { detail: errorText(locale, settings.error ?? providers.error) }) }} /></>;
+    return <><AwayNotificationsCard /><ImSessionCard /><FeedbackLine feedback={{ tone: 'error', text: t('st.notify.loadFailed', { detail: errorText(locale, settings.error ?? providers.error) }) }} /></>;
   }
-  if (data === undefined || providers.data === undefined) return <><AwayNotificationsCard /><div data-notify-loading aria-busy="true" className="min-h-40" /></>;
+  if (data === undefined || providers.data === undefined) return <><AwayNotificationsCard /><ImSessionCard /><div data-notify-loading aria-busy="true" className="min-h-40" /></>;
 
   return (
     <>
       <AwayNotificationsCard />
       <NotificationRulesCard global={data.global} />
+      <ImSessionCard />
       <SectionCard id="st-card-notify-channels" title={t('st.notify.channelsTitle')}>
         <div className="space-y-3">
           {channels.length > 0 ? (

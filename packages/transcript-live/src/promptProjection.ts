@@ -1,4 +1,4 @@
-import { daemonFileRefFromPart, type ContentPart } from '@kiki/agent-core-v2';
+import { daemonFileRefFromPart, parseDaemonFileUrl, type ContentPart } from '@kiki/agent-core-v2';
 import type { MessageContent } from '@kiki/protocol';
 import { readTextPresentation, sessionMediaIdFromBlobUrl } from '@kiki/transcript';
 
@@ -32,6 +32,23 @@ export function projectPromptContentParts(content: readonly ContentPart[]): Mess
               ? part.videoUrl.name
               : undefined,
       });
+      continue;
+    }
+    if (part.type === 'audio_url') {
+      const blobId = sessionMediaIdFromBlobUrl(part.audioUrl.url);
+      if (blobId !== undefined) {
+        parts.push({ type: 'audio', source: { kind: 'session_media', file_id: blobId }, name: part.audioUrl.name });
+        continue;
+      }
+      const daemon = parseDaemonFileUrl(part.audioUrl.url);
+      if (daemon !== undefined) {
+        parts.push({ type: 'audio', source: { kind: 'session_media', file_id: daemon.fileId }, name: part.audioUrl.name });
+        continue;
+      }
+      const match = /^data:([^;]+);base64,(.*)$/.exec(part.audioUrl.url);
+      parts.push(match === null
+        ? { type: 'audio', source: { kind: 'url', url: part.audioUrl.url, id: part.audioUrl.id }, name: part.audioUrl.name }
+        : { type: 'audio', source: { kind: 'base64', media_type: match[1]!, data: match[2]! }, name: part.audioUrl.name });
       continue;
     }
     if (part.type === 'text') parts.push({ type: 'text', text: part.text, presentation: readTextPresentation(part.presentation) });

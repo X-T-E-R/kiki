@@ -40,7 +40,9 @@ import { registerNbSearchRoutes } from './nbSearch';
 import { registerRequestIdentityRoutes } from './requestIdentity';
 import { registerSecretsRoutes } from './secrets';
 import { registerNotificationRoutes } from './notifications';
+import { registerImSessionRoutes } from './imSessions';
 import type { NotificationService } from '../services/notifications/notificationService';
+import type { ImSessionBridge } from '../services/imSession/bridge';
 import { registerOAuthRoutes } from './oauth';
 import { registerPluginsRoutes } from './plugins';
 import { registerPluginUsageRoutes } from './pluginUsage';
@@ -101,6 +103,7 @@ export interface RegisterApiV1RoutesOptions {
   readonly enableTerminals?: boolean;
   readonly guiStore: IGuiStoreService;
   readonly notifications: NotificationService;
+  readonly imSessions?: ImSessionBridge;
   /** Directory holding user theme/skin files; `<homeDir>/themes` in production. */
   readonly themesDir: string;
   readonly onShutdown: () => void;
@@ -198,6 +201,7 @@ export async function registerApiV1Routes(
       registerRequestIdentityRoutes(apiV1 as unknown as Parameters<typeof registerRequestIdentityRoutes>[0], core);
       registerSecretsRoutes(apiV1 as unknown as Parameters<typeof registerSecretsRoutes>[0], core, opts.notifications);
       registerNotificationRoutes(apiV1 as unknown as Parameters<typeof registerNotificationRoutes>[0], opts.notifications);
+      if (opts.imSessions !== undefined) registerImSessionRoutes(apiV1 as unknown as Parameters<typeof registerImSessionRoutes>[0], opts.imSessions);
       registerModelCatalogRoutes(
         apiV1 as unknown as Parameters<typeof registerModelCatalogRoutes>[0],
         core,

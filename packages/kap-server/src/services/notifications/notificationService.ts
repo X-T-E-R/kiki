@@ -125,6 +125,7 @@ export class NotificationService {
   private readonly retired = new WeakSet<ISessionScopeHandle>();
   private readonly subscriptions: { dispose(): void }[] = [];
   private readonly lastSent = new Map<string, number>();
+  private sceneSuppressor?: (input: { providerInstanceId: string; scene: 'work_complete' | 'question_pending'; target: Record<string, unknown> }) => boolean;
   private readonly health = new Map<string, { state: import('@kiki/klient').NotificationHealth; at: number }>();
   private setHealth(id: string, state: import('@kiki/klient').NotificationHealth, at = Date.now()): void {
     if (at >= (this.health.get(id)?.at ?? 0)) this.health.set(id, { state, at });
@@ -144,6 +145,10 @@ export class NotificationService {
   constructor(private readonly core: Scope, private readonly homeDir: string,
     private readonly isViewing: (sessionId: string) => boolean,
     private readonly onError: () => void) {}
+
+  setSceneSuppressor(suppressor: (input: { providerInstanceId: string; scene: 'work_complete' | 'question_pending'; target: Record<string, unknown> }) => boolean): void {
+    this.sceneSuppressor = suppressor;
+  }
 
   async start(): Promise<void> {
     const config = this.core.accessor.get(IConfigService);
@@ -526,6 +531,7 @@ export class NotificationService {
     for (const [channelId, raw] of Object.entries(this.settings.channels)) {
       const channel = raw as NotificationChannel;
       if (!channel.enabled || !channel.scenes[scene]) continue;
+      if (this.sceneSuppressor?.({ providerInstanceId: channel.provider_instance_id, scene, target: channel.target }) === true) continue;
       const rateKey = `${scene}:${channelId}`;
       if (Date.now() - (this.lastSent.get(rateKey) ?? 0) < 60_000) continue;
       try {

@@ -593,6 +593,19 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       listDeliveries: (channelId) => transport.json('/notifications/deliveries', { query: channelId === undefined ? undefined : { channel_id: channelId } }),
     },
 
+    imSessions: {
+      snapshot: () => transport.json('/im/sessions'),
+      catalog: () => transport.json('/im/sessions/catalog'),
+      setPolicy: (policy) => transport.json('/im/sessions/policy', { method: 'PUT', body: policy }),
+      paste: (text, instanceId) => transport.json('/im/sessions/paste', { method: 'POST', body: { text, ...(instanceId === undefined ? {} : { instance_id: instanceId }) } }),
+      check: (instanceId) => transport.json(`/im/sessions/instances/${encodeURIComponent(instanceId)}/check`, { method: 'POST', body: {} }),
+      listen: (instanceId, listening) => transport.json(`/im/sessions/instances/${encodeURIComponent(instanceId)}/listen`, { method: 'POST', body: { listening } }),
+      confirm: (discoveryId, body) => transport.json(`/im/sessions/discoveries/${encodeURIComponent(discoveryId)}/confirm`, { method: 'POST', body }),
+      dismiss: (discoveryId) => transport.json(`/im/sessions/discoveries/${encodeURIComponent(discoveryId)}/dismiss`, { method: 'POST', body: {} }),
+      updateBinding: (id, patch) => transport.json(`/im/sessions/bindings/${encodeURIComponent(id)}`, { method: 'PATCH', body: patch }),
+      removeBinding: (id) => transport.json(`/im/sessions/bindings/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    },
+
     secrets: {
       reveal: (ref) => transport.json('/secrets:reveal', { method: 'POST', body: { ref } }),
     },

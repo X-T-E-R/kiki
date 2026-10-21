@@ -30,8 +30,14 @@ function mapContentPart(part: ContextMessage['content'][number]): MessageContent
         ? { type: 'image', source: { kind: 'session_media', file_id: ref.fileId }, name: part.imageUrl.name }
         : { type: 'image', source: { kind: 'url', url: part.imageUrl.url, id: part.imageUrl.id }, name: part.imageUrl.name };
     }
-    case 'audio_url':
-      return { type: 'text', text: `[audio:${part.audioUrl.url}]` };
+    case 'audio_url': {
+      const ref = parseDaemonFileUrl(part.audioUrl.url);
+      if (ref !== undefined) return { type: 'audio', source: { kind: 'session_media', file_id: ref.fileId }, name: part.audioUrl.name };
+      const data = /^data:([^;]+);base64,([\s\S]*)$/u.exec(part.audioUrl.url);
+      return data === null
+        ? { type: 'audio', source: { kind: 'url', url: part.audioUrl.url, id: part.audioUrl.id }, name: part.audioUrl.name }
+        : { type: 'audio', source: { kind: 'base64', media_type: data[1]!, data: data[2]! }, name: part.audioUrl.name };
+    }
     case 'video_url': {
       const ref = parseDaemonFileUrl(part.videoUrl.url);
       return ref !== undefined

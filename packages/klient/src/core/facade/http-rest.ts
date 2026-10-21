@@ -612,6 +612,19 @@ export interface HttpRestFacade {
     listDeliveries(channelId?: string): Promise<readonly NotificationDelivery[]>;
   };
 
+  readonly imSessions: {
+    snapshot(): Promise<import('@kiki/protocol').ImSessionSnapshot>;
+    catalog(): Promise<import('@kiki/protocol').ImCatalog>;
+    setPolicy(policy: import('@kiki/protocol').ImPolicy): Promise<import('@kiki/protocol').ImSessionSnapshot>;
+    paste(text: string, instanceId?: string): Promise<import('@kiki/protocol').ImPasteResult>;
+    check(instanceId: string): Promise<import('@kiki/protocol').ImCheckResult>;
+    listen(instanceId: string, listening: boolean): Promise<import('@kiki/protocol').ImSessionSnapshot>;
+    confirm(discoveryId: string, body: import('@kiki/protocol').ImConfirmRequest): Promise<import('@kiki/protocol').ImSessionSnapshot>;
+    dismiss(discoveryId: string): Promise<import('@kiki/protocol').ImSessionSnapshot>;
+    updateBinding(id: string, patch: import('@kiki/protocol').ImBindingPatch): Promise<import('@kiki/protocol').ImSessionSnapshot>;
+    removeBinding(id: string): Promise<import('@kiki/protocol').ImSessionSnapshot>;
+  };
+
   readonly secrets: {
     /** Explicit, authenticated reveal of one secret value; bulk reads stay redacted. */
     reveal(ref: import('@kiki/protocol').SecretRef): Promise<import('@kiki/protocol').RevealedSecret>;

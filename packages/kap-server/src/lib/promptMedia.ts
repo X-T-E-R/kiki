@@ -97,6 +97,9 @@ export function contentToCoreParts(content: WireContent): ContentPart[] {
     else if (part.type === 'video' && part.source.kind === 'url') parts.push({ type: 'video_url', videoUrl: { url: part.source.url, id: part.source.id, name: part.name } });
     else if (part.type === 'video' && part.source.kind === 'base64') parts.push({ type: 'video_url', videoUrl: { url: `data:${part.source.media_type};base64,${part.source.data}`, name: part.name } });
     else if (part.type === 'video' && part.source.kind === 'session_media') parts.push({ type: 'video_url', videoUrl: { url: buildDaemonFileUrl(part.source.file_id), id: part.source.file_id, name: part.name } });
+    else if (part.type === 'audio' && part.source.kind === 'url') parts.push({ type: 'audio_url', audioUrl: { url: part.source.url, id: part.source.id, name: part.name } });
+    else if (part.type === 'audio' && part.source.kind === 'base64') parts.push({ type: 'audio_url', audioUrl: { url: `data:${part.source.media_type};base64,${part.source.data}`, name: part.name } });
+    else if (part.type === 'audio' && (part.source.kind === 'session_media' || part.source.kind === 'file')) parts.push({ type: 'audio_url', audioUrl: { url: buildDaemonFileUrl(part.source.file_id), id: part.source.file_id, name: part.name } });
   }
   return parts;
 }

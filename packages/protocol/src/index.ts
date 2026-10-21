@@ -17,6 +17,7 @@ export * from './asyncapi';
 export * from './session';
 export * from './workspace';
 export * from './message';
+export * from './imSession';
 export * from './approval';
 export * from './question';
 export * from './tool';
