@@ -426,4 +426,3 @@ export function egoTabBody(action: 'list' | 'open' | 'select' | 'close'): string
   if (action === 'select') return `console.log(${JSON.stringify(PAGE)} + JSON.stringify({ label: __kikiBound.label }));`;
   return `const found = (await task.tabs()).find((tab) => tab && tab.label === __kikiBound.label);\nif (!found || !found.label || found.openedBy !== 'agent') console.log(${JSON.stringify(REFUSED)});\nelse { await task.page(found.label).close(); console.log(${JSON.stringify(PAGE)} + JSON.stringify({ label: found.label })); }`;
 }
-
