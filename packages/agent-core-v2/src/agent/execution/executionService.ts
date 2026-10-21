@@ -142,9 +142,6 @@ export class AgentExecutionService implements IAgentExecutionService {
         return active.turnId === undefined ? 'starting' : 'running';
       });
       controller.signal.throwIfAborted();
-      session = await this.resolveSession();
-      controller.signal.throwIfAborted();
-      this.broken = undefined;
       let outbound = runContext.request ?? request;
       const binding = this.profile.data();
       const usesContextHooks = binding.kikiContext?.includes('hooks') === true && binding.executorId !== 'grok-acp';
@@ -165,6 +162,10 @@ export class AgentExecutionService implements IAgentExecutionService {
           ...deliverable.map((hint) => `[Kiki ${hint.origin}]\n${hint.text}`), outbound.prompt,
         ].join('\n\n') };
       }
+      controller.signal.throwIfAborted();
+      session = await this.resolveSession();
+      controller.signal.throwIfAborted();
+      this.broken = undefined;
       const handle = await session.run(outbound, { ...options, signal: controller.signal });
       active.turnId = handle.turn.id;
       void handle.completion.then(

@@ -316,7 +316,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       handoff: handoff?.text,
     });
     const resumeMode: ExecutorResumeMode = handoff === undefined
-      ? configured.mode
+      ? opened.mode
       : 'handoff';
     const recorder = new ExternalTurnRecorder(
       this.context.agent,

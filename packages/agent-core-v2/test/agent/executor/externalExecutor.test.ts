@@ -2354,6 +2354,19 @@ describe('ACP external executor', () => {
     )).toHaveLength(1);
   });
 
+  it.each(['live', 'resume', 'load'] as const)('records the current %s opening mode instead of the cached configuration mode', async (mode) => {
+    const harness = createHarness({ mode });
+    const configure = harness.client.configureSession;
+    vi.spyOn(harness.client, 'configureSession').mockImplementation(async (input) => ({ ...await configure(input), mode: 'new' }));
+    try {
+      const run = await harness.session.run({ kind: 'prompt', prompt: 'continue' }, { signal: new AbortController().signal });
+      await run.completion;
+      const metadata = harness.events.find((event): event is ExecutorTurnMetadata => event instanceof ExecutorTurnMetadata);
+      expect(metadata).toMatchObject({ resumeMode: mode });
+      expect(metadata?.losses).not.toContain('resume_new_session_handoff');
+    } finally { await harness.session.shutdown(); }
+  });
+
   it.each(['grok-acp', 'claude-acp'] as const)('resumes an unpinned %s session with the harness default model', async (executorId) => {
     const harness = createHarness({
       executorId, unpinModel: true, thinkingEffort: 'off', mode: 'resume',

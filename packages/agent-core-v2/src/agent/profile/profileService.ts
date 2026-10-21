@@ -2009,13 +2009,20 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       );
       this.promptFieldSnapshot = assembled.promptFields;
       this.promptConfigurationSignature = this.promptFieldSignature(profile, this.modelAlias ?? '', assembled.promptFields);
-      this.update({
-        profileName: profile.name,
-        systemPrompt: assembled.text,
-        promptBase: assembled.promptBase,
-        environmentDisclosure: assembled.environment,
-        agentsMdPaths: extractAgentsMdPathsFromSystemPrompt(assembled.text),
-      });
+      const current = this.profileState;
+      const agentsMdPaths = extractAgentsMdPathsFromSystemPrompt(assembled.text);
+      if (adoptPromptInputs || current.profileName !== profile.name || current.systemPrompt !== assembled.text
+        || (current.boundProfile !== undefined && JSON.stringify(current.boundProfile.promptBase) !== JSON.stringify(assembled.promptBase))
+        || JSON.stringify(current.environmentDisclosure) !== JSON.stringify(assembled.environment)
+        || JSON.stringify(current.agentsMdPaths) !== JSON.stringify(agentsMdPaths)) {
+        this.update({
+          profileName: profile.name,
+          systemPrompt: assembled.text,
+          promptBase: assembled.promptBase,
+          environmentDisclosure: assembled.environment,
+          agentsMdPaths,
+        });
+      }
       this.seedAgentsMdReminder(assembled.text, context);
       this.cacheAgentsMdWarning(context);
       this.publishAgentsMdWarning();

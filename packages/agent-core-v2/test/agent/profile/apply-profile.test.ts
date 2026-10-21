@@ -196,6 +196,21 @@ describe('AgentProfileService.applyProfile', () => {
     expect(svc.data().boundProfile?.toolsSource).toBe('declared');
   });
 
+  it('keeps an unchanged prompt refresh on the same executor binding generation', async () => {
+    const { profile: svc } = buildContext();
+    const { agentExecutorBindingFingerprint } = await import('#/app/agentExecutor/agentExecutor');
+    await svc.applyProfile(exactProfile);
+    const before = svc.data();
+    const fingerprint = agentExecutorBindingFingerprint(before);
+    await svc.refreshSystemPrompt();
+    const refreshed = svc.data();
+    expect(refreshed.systemPrompt).toBe(before.systemPrompt);
+    expect(refreshed.environmentDisclosure).toEqual(before.environmentDisclosure);
+    expect(refreshed.boundProfile?.promptBase).toEqual(before.boundProfile?.promptBase);
+    expect(refreshed.renderGeneration).toBe(before.renderGeneration);
+    expect(agentExecutorBindingFingerprint(refreshed)).toBe(fingerprint);
+  });
+
   it('keeps a fresh binding byte-stable while clock and directory snapshots change', async () => {
     const { ctx: host, profile: svc } = buildContext();
     const { IAgentStateService } = await import('#/agent/state/agentState');

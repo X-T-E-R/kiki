@@ -750,6 +750,35 @@ describe('AgentExecutionService', () => {
     await ix.dispose();
   });
 
+  it('captures the external binding after safe-boundary profile reconciliation', async () => {
+    const ix = new TestInstantiationService();
+    const data = { executorId: 'grok-acp', executorProtocol: 'acp-v1', executorDescriptorRevision: 'r1', systemPrompt: 'before reconciliation', renderGeneration: 1 } satisfies Partial<ProfileData>;
+    const captured: AgentExecutorContext[] = [];
+    const provider: AgentExecutorProvider = {
+      id: 'fixture-acp', protocol: 'acp-v1', validateOptions: () => ({}), validateBinding: binding => ({ ok: true, binding }),
+      create: context => {
+        captured.push(context);
+        return {
+          run: async () => ({ agentId: 'agent-test', completion: Promise.resolve({ summary: 'done' }), turn: { id: 1, signal: new AbortController().signal, ready: Promise.resolve(), result: Promise.resolve({ type: 'completed', steps: 1, truncated: false }), cancel: () => false } }),
+          status: () => ({ state: 'idle' }), cancel: () => false, settled: async () => {}, shutdown: async () => {}, hooks: createHooks(['onWillRun']),
+        };
+      },
+    };
+    const registry = { resolveExecutable: async () => ({ descriptor: { id: 'grok-acp', protocol: 'acp-v1', args: [], revision: 'r1' }, options: {}, provider }) } as unknown as IAgentExecutorRegistry;
+    const service = executionService(ix, scope(), profile(data), registry, states());
+    ix.stub(IAgentContextInjectorService, { reconcileAllAtSafeBoundary: async () => {
+      data.systemPrompt = 'after reconciliation';
+      data.renderGeneration = 2;
+    } });
+    try {
+      const handle = await service.run({ kind: 'prompt', prompt: 'continue' }, { signal: new AbortController().signal });
+      await handle.completion;
+      await service.settled();
+      expect(captured).toHaveLength(1);
+      expect(captured[0]!.binding).toMatchObject({ systemPrompt: 'after reconciliation', renderGeneration: 2 });
+    } finally { await service.dispose(); await ix.dispose(); }
+  });
+
   it.each([
     ['grok-acp', 'acp-v1'],
     ['cursor-acp', 'acp-v1'],
