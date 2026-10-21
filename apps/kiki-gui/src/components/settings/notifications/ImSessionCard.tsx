@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { imSessionAdmitted, type ImCatalog, type ImConfirmRequest, type ImPasteResult, type ImSessionSnapshot } from '@kiki/protocol';
 
@@ -9,6 +9,7 @@ import { INPUT, SECONDARY_BUTTON } from '../../ui';
 import { SettingField } from '../fields';
 import { SectionCard } from '../SectionCard';
 import { SettingsSegmented, SettingsSelect } from '../SettingsPrimitives';
+import { wechatQrImage } from './wechatQr';
 
 const KEY = ['im-sessions'] as const;
 
@@ -68,6 +69,7 @@ export function ImSessionCard() {
                   onChange={(default_enabled) => { void run(() => client.imSessions.setPolicy({ ...data.policy, default_enabled })); }} />
               </SettingField>
             </div>
+            <WechatScan />
             <label className="block space-y-1 text-[12px] text-ink-soft">
               <span>{t('st.im.paste')}</span>
               <textarea data-im-paste value={text} rows={3} placeholder={t('st.im.pastePlaceholder')} className={INPUT}
@@ -119,13 +121,20 @@ export function ImSessionCard() {
                 <p className="text-[12px] text-ink-soft">{[item.identity.chat_title, item.identity.sender_name, item.preview].filter(Boolean).join(' · ')}</p>
                 <SettingsSelect id={`im-target-${item.id}`} variant="form" ariaLabel={t('st.im.target')} value={selected} choices={choices}
                   emptyText={t('st.im.target')} onChange={setTarget} dataAttr="data-im-target" />
-                <div className="flex flex-wrap gap-3">
+                <div className="flex flex-wrap items-start gap-3">
                   <SettingsSegmented ariaLabel={t('st.im.busy')} value={busy} onChange={setBusy} dataAttr="data-im-busy"
                     choices={[{ value: 'queue', label: t('st.im.queue') }, { value: 'steer', label: t('st.im.steer') }]} />
-                  <SettingsSegmented ariaLabel={t('st.im.text')} value={reply} onChange={setReply} dataAttr="data-im-text"
-                    choices={[{ value: 'final', label: t('st.im.final') }, { value: 'edit', label: t('st.im.edit') }]} />
-                  <SettingsSegmented ariaLabel={t('st.im.actions')} value={actions ? 'on' : 'off'} onChange={(value) => { setActions(value === 'on'); }} dataAttr="data-im-actions"
-                    choices={[{ value: 'on', label: t('st.im.on') }, { value: 'off', label: t('st.im.off') }]} />
+                  <div className="flex min-w-0 flex-col items-start gap-1">
+                    <SettingsSegmented ariaLabel={t('st.im.text')} value={reply} onChange={setReply} dataAttr="data-im-text"
+                      choices={[{ value: 'final', label: t('st.im.final') }, { value: 'edit', label: t('st.im.edit') }]} />
+                    <p className="text-[12px] leading-5 text-ink-soft" data-im-text-note>{t('st.im.textNote')}</p>
+                    <p className="text-[12px] leading-5 text-ink-soft" data-im-file-note>{t('st.im.fileNote')}</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[12px] text-ink-soft">{t('st.im.actions')}</span>
+                    <SettingsSegmented ariaLabel={t('st.im.actions')} value={actions ? 'on' : 'off'} onChange={(value) => { setActions(value === 'on'); }} dataAttr="data-im-actions"
+                      choices={[{ value: 'on', label: t('st.im.on') }, { value: 'off', label: t('st.im.off') }]} />
+                  </div>
                 </div>
                 <label className="flex items-center gap-2 text-[12px] text-ink-soft">
                   <input type="checkbox" data-im-also-home checked={alsoHome} onChange={(event) => { setAlsoHome(event.target.checked); }} />
@@ -150,12 +159,19 @@ export function ImSessionCard() {
                 <SettingsSegmented ariaLabel={t('st.im.busy')} value={binding.busy} dataAttr="data-im-binding-busy"
                   onChange={(value) => { void run(() => client.imSessions.updateBinding(binding.id, { busy: value })); }}
                   choices={[{ value: 'queue', label: t('st.im.queue') }, { value: 'steer', label: t('st.im.steer') }]} />
-                <SettingsSegmented ariaLabel={t('st.im.text')} value={binding.reply} dataAttr="data-im-binding-text"
-                  onChange={(value) => { void run(() => client.imSessions.updateBinding(binding.id, { reply: value })); }}
-                  choices={[{ value: 'final', label: t('st.im.final') }, { value: 'edit', label: t('st.im.edit') }]} />
-                <SettingsSegmented ariaLabel={t('st.im.actions')} value={binding.mobile_interactions ? 'on' : 'off'} dataAttr="data-im-binding-actions"
-                  onChange={(value) => { void run(() => client.imSessions.updateBinding(binding.id, { mobile_interactions: value === 'on' })); }}
-                  choices={[{ value: 'on', label: t('st.im.on') }, { value: 'off', label: t('st.im.off') }]} />
+                <div className="flex min-w-0 flex-col items-start gap-1">
+                  <SettingsSegmented ariaLabel={t('st.im.text')} value={binding.reply} dataAttr="data-im-binding-text"
+                    onChange={(value) => { void run(() => client.imSessions.updateBinding(binding.id, { reply: value })); }}
+                    choices={[{ value: 'final', label: t('st.im.final') }, { value: 'edit', label: t('st.im.edit') }]} />
+                  <p className="text-[12px] leading-5 text-ink-soft" data-im-text-note>{t('st.im.textNote')}</p>
+                  <p className="text-[12px] leading-5 text-ink-soft" data-im-file-note>{t('st.im.fileNote')}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[12px] text-ink-soft">{t('st.im.actions')}</span>
+                  <SettingsSegmented ariaLabel={t('st.im.actions')} value={binding.mobile_interactions ? 'on' : 'off'} dataAttr="data-im-binding-actions"
+                    onChange={(value) => { void run(() => client.imSessions.updateBinding(binding.id, { mobile_interactions: value === 'on' })); }}
+                    choices={[{ value: 'on', label: t('st.im.on') }, { value: 'off', label: t('st.im.off') }]} />
+                </div>
                 <button type="button" className={SECONDARY_BUTTON} data-im-session-switch={binding.id}
                   onClick={() => { void run(() => client.imSessions.updateBinding(binding.id, { session_enabled: !(binding.session_enabled ?? data.policy.default_enabled) })); }}>
                   {t('st.im.sessionSwitch')}: {imSessionAdmitted({ allowed: data.policy.allowed, defaultEnabled: data.policy.default_enabled, sessionEnabled: binding.session_enabled }) ? t('st.im.on') : t('st.im.off')}
@@ -181,6 +197,106 @@ export function ImSessionCard() {
       </div>
     </SectionCard>
   );
+}
+
+function WechatScan() {
+  const { t } = useI18n();
+  const { client } = useConnection();
+  const queryClient = useQueryClient();
+  const [loginId, setLoginId] = useState<string | undefined>();
+  const [image, setImage] = useState<string | undefined>();
+  const [status, setStatus] = useState<string | undefined>();
+  const [verifyCode, setVerifyCode] = useState('');
+  const [error, setError] = useState<string | undefined>();
+  const polling = loginId !== undefined && (status === undefined || status === 'wait' || status === 'scaned' || status === 'scaned_but_redirect');
+
+  useEffect(() => {
+    if (!polling || loginId === undefined) return;
+    let stop = false;
+    const tick = () => {
+      void client.imSessions.pollWechatQr(loginId).then((result) => {
+        if (stop) return;
+        setStatus(result.status);
+        if (result.status === 'confirmed') void queryClient.invalidateQueries({ queryKey: KEY });
+      }).catch((caught: unknown) => {
+        if (stop) return;
+        const message = caught instanceof Error ? caught.message : '';
+        if (message === 'wechat_login_cancelled' || message === 'unknown_login') return;
+        setError(message.length > 0 ? message : t('st.im.error'));
+      });
+    };
+    const timer = setInterval(tick, 1500);
+    return () => { stop = true; clearInterval(timer); };
+  }, [client, loginId, polling, queryClient, t]);
+
+  const start = () => {
+    setError(undefined);
+    setVerifyCode('');
+    void client.imSessions.startWechatQr().then((started) => {
+      setLoginId(started.login_id);
+      setImage(started.image);
+      setStatus('wait');
+    }).catch((caught: unknown) => { setError(caught instanceof Error ? caught.message : t('st.im.error')); });
+  };
+  const cancel = () => {
+    const id = loginId;
+    setLoginId(undefined);
+    setImage(undefined);
+    setStatus('cancelled');
+    if (id !== undefined) void client.imSessions.cancelWechatQr(id);
+  };
+
+  return (
+    <div className="space-y-2" data-im-wechat>
+      <div className="flex flex-wrap gap-2">
+        <button type="button" className={SECONDARY_BUTTON} data-im-wechat-scan onClick={start}>{t('st.im.wechatScan')}</button>
+        {loginId !== undefined ? <button type="button" className={SECONDARY_BUTTON} data-im-wechat-cancel onClick={cancel}>{t('st.im.wechatCancel')}</button> : null}
+        {status === 'expired' || status === 'verify_code_blocked' ? <button type="button" className={SECONDARY_BUTTON} data-im-wechat-retry onClick={start}>{t('st.im.retry')}</button> : null}
+      </div>
+      {image !== undefined && status !== 'cancelled' ? <WechatImage image={image} /> : null}
+      {status !== undefined && status !== 'confirmed' ? <p className="text-[12px] text-ink-soft" data-im-wechat-status>{t(wechatStatusKey(status))}</p> : null}
+      {status === 'need_verifycode' ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <input data-im-wechat-verify value={verifyCode} className={INPUT} aria-label={t('st.im.wechatVerify')}
+            onChange={(event) => { setVerifyCode(event.target.value); }} />
+          <button type="button" className={SECONDARY_BUTTON} data-im-wechat-verify-submit disabled={verifyCode.trim() === ''}
+            onClick={() => {
+              if (loginId === undefined) return;
+              void client.imSessions.pollWechatQr(loginId, verifyCode.trim()).then((result) => {
+                setStatus(result.status);
+                if (result.status === 'confirmed') void queryClient.invalidateQueries({ queryKey: KEY });
+              }).catch((caught: unknown) => { setError(caught instanceof Error ? caught.message : t('st.im.error')); });
+            }}>{t('st.im.check')}</button>
+        </div>
+      ) : null}
+      {error !== undefined ? <FeedbackLine feedback={{ tone: 'error', text: error }} /> : null}
+    </div>
+  );
+}
+
+function WechatImage({ image }: { image: string }) {
+  if (image.startsWith('data:image')) return <img alt="" src={image} data-im-wechat-image className="h-40 w-40 bg-paper" />;
+  const drawn = wechatQrImage(image);
+  if (drawn !== undefined) {
+    return (
+      <div className="space-y-1">
+        <img alt="" src={drawn} data-im-wechat-image className="h-40 w-40 bg-paper" />
+        {image.startsWith('https://') ? <input readOnly data-im-wechat-code value={image} className={INPUT} /> : null}
+      </div>
+    );
+  }
+  return <input readOnly data-im-wechat-code value={image} className={INPUT} />;
+}
+
+function wechatStatusKey(status: string): 'st.im.wechatWaiting' | 'st.im.wechatScanned' | 'st.im.wechatExpired' | 'st.im.wechatVerify' | 'st.im.wechatBlocked' | 'st.im.wechatBound' | 'st.im.wechatCancel' | 'st.im.error' {
+  if (status === 'wait') return 'st.im.wechatWaiting';
+  if (status === 'scaned' || status === 'scaned_but_redirect') return 'st.im.wechatScanned';
+  if (status === 'expired') return 'st.im.wechatExpired';
+  if (status === 'need_verifycode') return 'st.im.wechatVerify';
+  if (status === 'verify_code_blocked') return 'st.im.wechatBlocked';
+  if (status === 'binded_redirect') return 'st.im.wechatBound';
+  if (status === 'cancelled') return 'st.im.wechatCancel';
+  return 'st.im.error';
 }
 
 function bindingSessions(catalog: ImCatalog | undefined, current: string): { value: string; label: string }[] {

@@ -4,6 +4,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 
+import { atomicWrite } from '@kiki/agent-core-v2/_base/utils/fs';
+
 import {
   ErrorCodes,
   IAgentLoopService,
@@ -34,10 +36,11 @@ import { createSafeHttpTransport } from '@nb-im/core';
 import { contentToCoreParts, resolvePromptMediaFiles } from '../../lib/promptMedia';
 import { withSessionOperation } from '../../lib/sessionOperationLease';
 import type { NotificationService } from '../notifications/notificationService';
-import type { ImHttpTransport } from './adapter';
+import type { ImAdapterFactory, ImHttpTransport } from './adapter';
 import { ImSessionBridge } from './bridge';
 import { loadHubFactories, sessionAccountHint } from './hubAdapter';
 import type { ImQuestionAnswer, ImSessionPorts, ImSubmitResult, ImVisibleMedia, ImVisibleReply } from './ports';
+import { WechatQrLogin, type WechatLoginFetch } from './wechatLogin';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const TELEGRAM_TOKEN = /^[0-9]{1,20}:[A-Za-z0-9_-]{20,128}$/u;
@@ -52,10 +55,14 @@ export async function createImSessionHost(input: {
   readonly homeDir: string;
   readonly notifications: NotificationService;
   readonly logger: HostLogger;
+  readonly factories?: readonly ImAdapterFactory[];
+  readonly wechatFetch?: WechatLoginFetch;
 }): Promise<ImSessionBridge> {
   const ports = new NotificationSessionPorts(input.core, input.homeDir, input.notifications, input.logger);
-  const factories = loadSessionFactories(input.homeDir);
-  const bridge = new ImSessionBridge({ ports, factories, locale: () => readHostLocale(input.homeDir) });
+  const factories = input.factories ?? loadSessionFactories(input.homeDir);
+  const fetchImpl = input.wechatFetch ?? ((url, init) => globalThis.fetch(url, init));
+  const wechatLogin = new WechatQrLogin(fetchImpl, () => ports.wechatTokens(), async (credential) => ports.credentials.create!({ providerKind: 'wechat_bridge', credential }));
+  const bridge = new ImSessionBridge({ ports, factories, locale: () => readHostLocale(input.homeDir), wechatLogin });
   await bridge.whenReady();
   const snapshot = await bridge.snapshot();
   await bridge.setPolicy(snapshot.policy);
@@ -87,7 +94,7 @@ function telegramHttp(token: string): ImHttpTransport {
 }
 
 class NotificationSessionPorts implements ImSessionPorts {
-  private readonly pendingAnswers = new Map<string, Record<string, string>>();
+  private readonly pendingAnswers = new Map<string, Record<string, string | true>>();
 
   constructor(
     private readonly core: Scope,
@@ -184,13 +191,31 @@ class NotificationSessionPorts implements ImSessionPorts {
     answerQuestion: (input) => this.answerQuestion(input),
   };
 
+  wechatTokens(): string[] {
+    const tokens: string[] = [];
+    for (const item of this.credentials.list()) {
+      if (item.providerId !== 'wechat_bridge') continue;
+      const token = this.credentials.read(item.id)?.split('\n')[0]?.trim() ?? '';
+      if (token.length === 0) continue;
+      tokens.push(token);
+      if (tokens.length === 10) break;
+    }
+    return tokens;
+  }
+
   async load(): Promise<string | undefined> {
-    try { return await readFile(join(this.homeDir, 'im-session-bridge.json'), 'utf8'); } catch { return undefined; }
+    try {
+      const text = await readFile(join(this.homeDir, 'im-session-bridge.json'), 'utf8');
+      return text.trim() === '' ? undefined : text;
+    } catch (error) {
+      if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') return undefined;
+      throw error;
+    }
   }
 
   async save(value: string): Promise<void> {
     await mkdir(this.homeDir, { recursive: true });
-    await writeFile(join(this.homeDir, 'im-session-bridge.json'), value, 'utf8');
+    await atomicWrite(join(this.homeDir, 'im-session-bridge.json'), value);
   }
 
   private async createInstance(kind: ImProviderKind, credential: string): Promise<{ instanceId: string }> {
@@ -369,23 +394,35 @@ export function readHostLocale(homeDir: string): 'en' | 'zh' {
 
 export function mergeQuestionAnswers(
   questions: readonly { readonly question: string; readonly options: readonly { readonly label: string }[] }[],
-  previous: Record<string, string>,
+  previous: Record<string, string | true>,
   response: ImQuestionAnswer,
-): { answers: Record<string, string>; complete: boolean } {
-  const key = response.questionKey ?? questions[0]?.question;
-  const question = questions.find((item) => item.question === key);
-  if (key === undefined || question === undefined) return { answers: previous, complete: false };
-  const index = questions.indexOf(question);
+): { answers: Record<string, string | true>; complete: boolean } {
+  const index = response.questionIndex !== undefined && response.questionIndex >= 0 && response.questionIndex < questions.length
+    ? response.questionIndex
+    : uniqueQuestionIndex(questions, response.questionKey);
+  const complete = (answers: Record<string, string | true>) => questions.length > 0 && questions.every((_, item) => answers[`q_${item}`] !== undefined);
+  if (index === undefined) return { answers: previous, complete: complete(previous) };
+  const question = questions[index]!;
   const label = (id: string) => {
     const match = new RegExp(`^opt_${index}_(\\d+)$`).exec(id);
     return match === null ? id : question.options[Number(match[1])]?.label ?? id;
   };
-  const answers = { ...previous };
-  if (response.kind === 'single') answers[key] = label(response.optionIds?.[0] ?? '');
-  else if (response.kind === 'multi') answers[key] = (response.optionIds ?? []).map(label).join(', ');
-  else if (response.kind === 'other') answers[key] = response.text ?? '';
-  else answers[key] = [...(response.optionIds ?? []).map(label), response.text ?? ''].filter((item) => item !== '').join(', ');
-  return { answers, complete: questions.length > 0 && questions.every((item) => answers[item.question] !== undefined) };
+  const value = response.kind === 'single'
+    ? label(response.optionIds?.[0] ?? '')
+    : response.kind === 'multi'
+      ? (response.optionIds ?? []).map(label).join(', ')
+      : response.kind === 'other'
+        ? response.text ?? ''
+        : [...(response.optionIds ?? []).map(label), response.text ?? ''].filter((item) => item !== '').join(', ');
+  const answers: Record<string, string | true> = { ...previous, [`q_${index}`]: value };
+  if (questions.filter((item) => item.question === question.question).length === 1) answers[question.question] = value;
+  return { answers, complete: complete(answers) };
+}
+
+function uniqueQuestionIndex(questions: readonly { readonly question: string }[], key: string | undefined): number | undefined {
+  if (key === undefined) return questions.length === 1 ? 0 : undefined;
+  const matches = questions.flatMap((item, index) => item.question === key ? [index] : []);
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 function recordOf(value: unknown): Record<string, unknown> | undefined {

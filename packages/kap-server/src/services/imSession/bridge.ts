@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { imSessionAdmitted, type ImBinding, type ImCatalog, type ImCheckResult, type ImConfirmRequest, type ImDiscovery, type ImInstanceView, type ImPasteResult, type ImPolicy, type ImProviderKind, type ImSessionSnapshot, type ImStranger, type MessageContent } from '@kiki/protocol';
 
-import type { ImAdapterFactory, ImInboundEvent, ImInboundIdentity, ImSessionAdapter } from './adapter';
+import { ImSendError, type ImAdapterFactory, type ImInboundEvent, type ImInboundIdentity, type ImSessionAdapter } from './adapter';
 import { parseImPaste } from './paste';
 import type { ImPendingQuestion, ImQuestionAnswer, ImSessionBridgeOptions, ImSessionPorts } from './ports';
 import { segmentText } from './segment';
@@ -55,6 +55,7 @@ interface TicketRecord {
   consumed: boolean;
   action: 'approve' | 'reject' | 'host_yes' | 'host_no' | 'single' | 'toggle' | 'multi_done' | 'other';
   questionKey?: string;
+  questionIndex?: number;
   optionId?: string;
   group?: string;
 }
@@ -70,6 +71,9 @@ interface ReplyLedger {
   messageIds: string[];
   fileSent: boolean;
   lastText: string;
+  failedText?: string;
+  tooLongNotice?: string;
+  undelivered?: boolean;
 }
 
 interface Stored {
@@ -81,7 +85,7 @@ interface Stored {
   seen: string[];
   tickets: TicketRecord[];
   selections: Record<string, string[]>;
-  awaiting: Record<string, { interactionId: string; questionKey: string; expiresAt: number; sessionId: string }>;
+  awaiting: Record<string, { interactionId: string; questionKey: string; questionIndex?: number; expiresAt: number; sessionId: string }>;
   voiceFallbacks: number;
   cursors: Record<string, number>;
   notices: string[];
@@ -111,6 +115,8 @@ const COPY = {
     trust: 'Trust',
     numbers: 'Send the number of a choice.',
     fileUnsupported: 'This platform cannot take that file.',
+    tooLong: 'This platform rejected the message as too long and cannot take a file.',
+    wechatAuth: 'This WeChat connection needs a new scan.',
     status: (busy: boolean, pending: string, queue: number) => `Busy: ${busy ? 'yes' : 'no'}. Waiting: ${pending}. Queue: ${queue}.`,
   },
   zh: {
@@ -129,6 +135,8 @@ const COPY = {
     trust: '信任',
     numbers: '发送选项的数字。',
     fileUnsupported: '这个平台收不了这个文件。',
+    tooLong: '这个平台认为消息过长，而且不能接收文件。',
+    wechatAuth: '这个微信连接需要重新扫码。',
     status: (busy: boolean, pending: string, queue: number) => `忙：${busy ? '是' : '否'}。等待：${pending}。队列：${queue}。`,
   },
 } as const;
@@ -156,6 +164,7 @@ export class ImSessionBridge {
   private state: Stored = emptyState();
   private readonly pollers = new Map<string, Poller>();
   private readonly jobs = new Set<Promise<void>>();
+  private readonly wechatLogin: ImSessionBridgeOptions['wechatLogin'];
   private seq = 0;
   private ready: Promise<void>;
 
@@ -167,6 +176,7 @@ export class ImSessionBridge {
     this.editIntervalMs = options.editIntervalMs ?? 2_000;
     this.now = options.now ?? (() => Date.now());
     this.wait = options.wait ?? ((ms) => new Promise((resolve) => { setTimeout(resolve, ms); }));
+    this.wechatLogin = options.wechatLogin;
     this.ready = this.restore();
   }
 
@@ -333,6 +343,24 @@ export class ImSessionBridge {
       const pending = await this.ports.sessions.listInteractions(binding.sessionId);
       await this.projectInteractions(binding, pending.approvals, pending.questions);
     }
+  }
+
+  async startWechatQr(): Promise<{ login_id: string; image: string }> {
+    await this.ready;
+    if (this.wechatLogin === undefined) throw new Error('wechat_login_unavailable');
+    return this.wechatLogin.start();
+  }
+
+  async pollWechatQr(id: string, verifyCode?: string): Promise<{ status: string; provider_instance_id?: string; account_id?: string }> {
+    await this.ready;
+    if (this.wechatLogin === undefined) throw new Error('wechat_login_unavailable');
+    return this.wechatLogin.poll(id, verifyCode);
+  }
+
+  async cancelWechatQr(id: string): Promise<Record<string, never>> {
+    await this.ready;
+    if (this.wechatLogin !== undefined) await this.wechatLogin.cancel(id);
+    return {};
   }
 
   async close(): Promise<void> {
@@ -516,6 +544,7 @@ export class ImSessionBridge {
     if (this.state.seen.includes(key)) return;
     const meta = this.requireMeta(instanceId);
     const accountId = meta.accountId ?? instanceId;
+    this.rememberChatKind(instanceId, event);
     try {
       if (event.kind === 'callback') await this.onCallback(instanceId, event);
       else await this.onMessage(instanceId, accountId, event);
@@ -555,7 +584,7 @@ export class ImSessionBridge {
         if (adapter !== undefined) await this.send(adapter, event.identity, this.copy('expired'), 'expired');
         return;
       }
-      await this.ports.sessions.answerQuestion({ sessionId: binding.sessionId, interactionId: waiting.interactionId, response: { kind: 'other', questionKey: waiting.questionKey, text, method: 'number_key' } });
+      await this.ports.sessions.answerQuestion({ sessionId: binding.sessionId, interactionId: waiting.interactionId, response: { kind: 'other', questionKey: waiting.questionKey, ...(waiting.questionIndex === undefined ? {} : { questionIndex: waiting.questionIndex }), text, method: 'number_key' } });
       delete this.state.awaiting[senderKey(instanceId, event.identity)];
       return;
     }
@@ -626,14 +655,14 @@ export class ImSessionBridge {
   private async answerNumbers(binding: BindingRecord, text: string): Promise<boolean> {
     if (!/^[0-9]+(?:\s+[0-9]+)*$/u.test(text)) return false;
     const pending = await this.ports.sessions.listInteractions(binding.sessionId);
-    const question = pending.questions.find((item) => !this.state.tickets.some((ticket) => ticket.interactionId === item.id && ticket.questionKey === item.questionKey && ticket.consumed && ticket.action !== 'toggle'));
+    const question = pending.questions.find((item) => !this.state.tickets.some((ticket) => this.sameQuestion(ticket, item) && ticket.consumed && ticket.action !== 'toggle'));
     if (question === undefined) return false;
     const numbers = text.split(/\s+/u).map((item) => Number(item));
     const options = numbers.map((number) => question.options[number - 1]).filter((item) => item !== undefined);
     if (options.length !== numbers.length || options.length === 0) return false;
     const response: ImQuestionAnswer = question.multi
-      ? { kind: 'multi', questionKey: question.questionKey, optionIds: options.map((item) => item.id), method: 'number_key' }
-      : { kind: 'single', questionKey: question.questionKey, optionIds: [options[0]!.id], method: 'number_key' };
+      ? { kind: 'multi', questionKey: question.questionKey, questionIndex: question.questionIndex, optionIds: options.map((item) => item.id), method: 'number_key' }
+      : { kind: 'single', questionKey: question.questionKey, questionIndex: question.questionIndex, optionIds: [options[0]!.id], method: 'number_key' };
     await this.ports.sessions.answerQuestion({ sessionId: binding.sessionId, interactionId: question.id, response });
     return true;
   }
@@ -644,6 +673,7 @@ export class ImSessionBridge {
     if (found !== undefined) {
       found.preview = preview;
       found.at = this.now();
+      if (event.identity.chatKind !== undefined) found.identity = { ...found.identity, chatKind: event.identity.chatKind };
       return;
     }
     this.state.discoveries.push({ id: this.next('d'), providerInstanceId: meta.id, providerKind: meta.providerKind, accountId, identity: event.identity, preview, at: this.now() });
@@ -659,6 +689,11 @@ export class ImSessionBridge {
     this.state.strangers.push({ providerInstanceId: instanceId, identity: event.identity, preview: event.preview ?? event.text?.slice(0, 80) ?? '', count: 1 });
   }
 
+  private pendingReply(text: string, ledger: ReplyLedger, done: boolean): boolean {
+    if (text.length === 0 || text === ledger.lastText) return false;
+    return done || text !== ledger.failedText;
+  }
+
   private watchReply(binding: BindingRecord, promptId: string, turnId: number | undefined, adapter: ImSessionAdapter): void {
     const ledger: ReplyLedger = { messageIds: [], fileSent: false, lastText: '' };
     const job = (async () => {
@@ -667,14 +702,17 @@ export class ImSessionBridge {
           await this.wait(this.editIntervalMs);
           const current = this.state.bindings.find((item) => item.id === binding.id) ?? binding;
           const visible = await this.ports.sessions.readVisible(current.sessionId, promptId, turnId);
-          if (current.reply === 'edit' && visible.text.length > 0 && visible.text !== ledger.lastText) await this.publishText(adapter, current.identity, visible.text, ledger, true, visible.done);
+          if (current.reply === 'edit' && this.pendingReply(visible.text, ledger, visible.done)) await this.publishText(adapter, current.identity, visible.text, ledger, true, visible.done);
           if (!visible.done) continue;
           if (current.reply === 'final' && visible.text.length > 0) await this.publishText(adapter, current.identity, visible.text, ledger, false, true);
-          else if (current.reply === 'edit' && visible.text.length > 0 && visible.text !== ledger.lastText) await this.publishText(adapter, current.identity, visible.text, ledger, true, true);
+          else if (current.reply === 'edit' && this.pendingReply(visible.text, ledger, true)) await this.publishText(adapter, current.identity, visible.text, ledger, true, true);
           await this.publishMedia(adapter, current.identity, visible.media);
           return;
         }
-      } catch {
+      } catch (error) {
+        if (error instanceof Error && error.message === 'wechat_auth') {
+          await this.send(adapter, binding.identity, this.copy('wechatAuth'), 'wechat_auth').catch(() => undefined);
+        }
         this.ports.logger.info({ instance_id: binding.providerInstanceId, failed: true }, 'im reply failed');
       }
     })();
@@ -683,35 +721,143 @@ export class ImSessionBridge {
   }
 
   private async publishText(adapter: ImSessionAdapter, identity: ImInboundIdentity, text: string, ledger: ReplyLedger, edit: boolean, final: boolean): Promise<void> {
+    if (adapter.providerKind === 'feishu_app') {
+      await this.publishFeishu(adapter, identity, text, ledger, edit);
+      return;
+    }
     const parts = segmentText(text, adapter.textLimit);
     if (parts.length === 0) return;
     const head = parts[0]!;
-    if (ledger.messageIds.length === 0) ledger.messageIds.push((await adapter.sendText({ identity, text: head, code: 'reply' })).messageId);
-    else if (edit) await this.editOrSend(adapter, identity, ledger, 0, head);
+    if (ledger.messageIds.length === 0) {
+      const sent = await this.sendReply(adapter, identity, head, ledger, text);
+      if (sent === undefined) return;
+      ledger.messageIds.push(sent.messageId);
+    } else if (edit) await this.editOrSend(adapter, identity, ledger, 0, head);
     if (parts.length > 4 && final && !ledger.fileSent) {
       try {
         await adapter.sendFile({ identity, name: 'reply.txt', mediaType: 'text/plain', bytes: new TextEncoder().encode(text), asVoice: false, asImage: false });
         ledger.fileSent = true;
       } catch {
         for (let index = 1; index < parts.length; index += 1) {
-          if (ledger.messageIds.length <= index) ledger.messageIds.push((await adapter.sendText({ identity, text: parts[index]!, code: 'reply' })).messageId);
-          else if (edit) await this.editOrSend(adapter, identity, ledger, index, parts[index]!);
+          if (ledger.messageIds.length <= index) {
+            const sent = await this.sendReply(adapter, identity, parts[index]!, ledger, text);
+            if (sent === undefined) return;
+            ledger.messageIds.push(sent.messageId);
+          } else if (edit) await this.editOrSend(adapter, identity, ledger, index, parts[index]!);
         }
       }
     } else if (parts.length > 1 && parts.length <= 4 && final) {
       for (let index = 1; index < parts.length; index += 1) {
-        if (ledger.messageIds.length <= index) ledger.messageIds.push((await adapter.sendText({ identity, text: parts[index]!, code: 'reply' })).messageId);
-        else if (edit) await this.editOrSend(adapter, identity, ledger, index, parts[index]!);
+        if (ledger.messageIds.length <= index) {
+          const sent = await this.sendReply(adapter, identity, parts[index]!, ledger, text);
+          if (sent === undefined) return;
+          ledger.messageIds.push(sent.messageId);
+        } else if (edit) await this.editOrSend(adapter, identity, ledger, index, parts[index]!);
       }
     }
+    if (ledger.undelivered === true) return;
     ledger.lastText = text;
+  }
+
+  private async publishFeishu(adapter: ImSessionAdapter, identity: ImInboundIdentity, text: string, ledger: ReplyLedger, edit: boolean): Promise<void> {
+    const parts = [...adapter.splitText(text)];
+    if (parts.length === 0) return;
+    const next: string[] = [];
+    for (let index = 0; index < parts.length; index += 1) {
+      const part = parts[index]!;
+      const existing = ledger.messageIds[index];
+      try {
+        if (existing !== undefined && existing.length > 0) {
+          if (!edit) {
+            next.push(existing);
+            continue;
+          }
+          const edited = await adapter.editText({ identity, messageId: existing, text: part, code: 'reply' });
+          if (!edited.edited) {
+            const sent = await adapter.sendText({ identity, text: part, code: 'reply' });
+            const accepted = deliveryIds(sent);
+            if (accepted.length === 0) {
+              ledger.messageIds = next;
+              return;
+            }
+            next.push(...accepted);
+          } else next.push(edited.messageId.length > 0 ? edited.messageId : existing);
+          continue;
+        }
+        const sent = await adapter.sendText({ identity, text: part, code: 'reply' });
+        const accepted = deliveryIds(sent);
+        if (accepted.length === 0) {
+          ledger.messageIds = next;
+          return;
+        }
+        next.push(...accepted);
+      } catch (error) {
+        const extra = error instanceof ImSendError ? error.acceptedIds.filter((id) => id.length > 0) : [];
+        const failedPart = error instanceof ImSendError && error.failedPart !== undefined ? error.failedPart : extra.length;
+        ledger.messageIds = [...next, ...extra.slice(0, failedPart)];
+        return;
+      }
+    }
+    if (edit && ledger.messageIds.length > parts.length) {
+      for (let index = parts.length; index < ledger.messageIds.length; index += 1) {
+        const existing = ledger.messageIds[index];
+        if (existing === undefined || existing.length === 0) continue;
+        try {
+          const edited = await adapter.editText({ identity, messageId: existing, text: ' ', code: 'reply' });
+          if (!edited.edited) return;
+        } catch {
+          return;
+        }
+      }
+    }
+    ledger.messageIds = next;
+    ledger.lastText = text;
+  }
+
+  private async sendReply(adapter: ImSessionAdapter, identity: ImInboundIdentity, part: string, ledger: ReplyLedger, full: string): Promise<{ messageId: string } | undefined> {
+    try {
+      return await adapter.sendText({ identity, text: part, code: 'reply' });
+    } catch (error) {
+      if (await this.noteTooLong(adapter, identity, full, ledger, error)) return undefined;
+      throw error;
+    }
+  }
+
+  private async noteTooLong(adapter: ImSessionAdapter, identity: ImInboundIdentity, text: string, ledger: ReplyLedger, error: unknown): Promise<boolean> {
+    if (!(error instanceof Error) || error.message !== 'too_long') return false;
+    if (adapter.providerKind === 'wechat_bridge' && adapter.supportsFile) {
+      try {
+        await adapter.sendFile({ identity, name: 'reply.txt', mediaType: 'text/plain', bytes: new TextEncoder().encode(text), asVoice: false, asImage: false });
+        ledger.fileSent = true;
+        ledger.undelivered = false;
+        ledger.failedText = undefined;
+        ledger.lastText = text;
+      } catch {
+        ledger.fileSent = false;
+        ledger.undelivered = true;
+        ledger.failedText = text;
+      }
+      return true;
+    }
+    if (adapter.providerKind === 'onebot_v11' && !adapter.supportsFile) {
+      if (ledger.tooLongNotice !== text) {
+        ledger.tooLongNotice = text;
+        await this.send(adapter, identity, this.copy('tooLong'), 'too_long');
+      }
+      ledger.undelivered = true;
+      ledger.failedText = text;
+      return true;
+    }
+    return false;
   }
 
   private async editOrSend(adapter: ImSessionAdapter, identity: ImInboundIdentity, ledger: ReplyLedger, index: number, text: string): Promise<void> {
     const messageId = ledger.messageIds[index];
     if (messageId === undefined) return;
-    if (!adapter.supportsEdit) {
-      ledger.messageIds[index] = (await adapter.sendText({ identity, text, code: 'reply' })).messageId;
+    if (!adapter.supportsEdit || messageId.length === 0) {
+      const sent = await this.sendReply(adapter, identity, text, ledger, text);
+      if (sent === undefined) return;
+      ledger.messageIds[index] = sent.messageId;
       return;
     }
     const edited = await adapter.editText({ identity, messageId, text, code: 'reply' });
@@ -778,19 +924,31 @@ export class ImSessionBridge {
       await this.send(adapter, binding.identity, `${approval.toolName} ${approval.action}`, 'approval', [{ id: allow, label: this.copy('allow') }, { id: refuse, label: this.copy('refuse') }]);
     }
     for (const question of questions) {
-      if (this.state.tickets.some((ticket) => ticket.interactionId === question.id && ticket.questionKey === question.questionKey)) continue;
+      if (this.state.tickets.some((ticket) => this.sameQuestion(ticket, question))) continue;
       const group = `${question.id}:${question.questionIndex}`;
-      const buttons = question.options.map((option, index) => ({ id: this.ticket(binding, question.id, question.expiresAt, question.multi ? 'toggle' : 'single', question.questionKey, option.id, group), label: `${index + 1}. ${option.label}` }));
-      if (question.multi) buttons.push({ id: this.ticket(binding, question.id, question.expiresAt, 'multi_done', question.questionKey, undefined, group), label: this.copy('done') });
-      if (question.allowOther) buttons.push({ id: this.ticket(binding, question.id, question.expiresAt, 'other', question.questionKey), label: this.copy('other') });
+      const buttons = question.options.map((option, index) => ({ id: this.ticket(binding, question.id, question.expiresAt, question.multi ? 'toggle' : 'single', question.questionKey, option.id, group, question.questionIndex), label: `${index + 1}. ${option.label}` }));
+      if (question.multi) buttons.push({ id: this.ticket(binding, question.id, question.expiresAt, 'multi_done', question.questionKey, undefined, group, question.questionIndex), label: this.copy('done') });
+      if (question.allowOther) buttons.push({ id: this.ticket(binding, question.id, question.expiresAt, 'other', question.questionKey, undefined, undefined, question.questionIndex), label: this.copy('other') });
       await this.send(adapter, binding.identity, question.questionKey, 'question', buttons);
     }
   }
 
-  private ticket(binding: BindingRecord, interactionId: string, expiresAt: number, action: TicketRecord['action'], questionKey?: string, optionId?: string, group?: string): string {
+  private ticket(binding: BindingRecord, interactionId: string, expiresAt: number, action: TicketRecord['action'], questionKey?: string, optionId?: string, group?: string, questionIndex?: number): string {
     const id = this.next('t');
-    this.state.tickets.push({ id, sessionId: binding.sessionId, interactionId, bindingId: binding.id, senderKey: senderKey(binding.providerInstanceId, binding.identity), expiresAt, consumed: false, action, questionKey, optionId, group });
+    this.state.tickets.push({ id, sessionId: binding.sessionId, interactionId, bindingId: binding.id, senderKey: senderKey(binding.providerInstanceId, binding.identity), expiresAt, consumed: false, action, questionKey, ...(questionIndex === undefined ? {} : { questionIndex }), optionId, group });
     return id;
+  }
+
+  private sameQuestion(ticket: TicketRecord, question: { id: string; questionIndex: number }): boolean {
+    return ticket.interactionId === question.id && ticket.questionIndex === question.questionIndex;
+  }
+
+  private rememberChatKind(instanceId: string, event: ImInboundEvent): void {
+    if (event.identity.chatKind === undefined) return;
+    const binding = this.state.bindings.find((item) => item.providerInstanceId === instanceId && sameIdentity(item.identity, event.identity));
+    if (binding !== undefined) binding.identity = { ...binding.identity, chatKind: event.identity.chatKind };
+    const discovery = this.state.discoveries.find((item) => item.providerInstanceId === instanceId && sameIdentity(item.identity, event.identity));
+    if (discovery !== undefined) discovery.identity = { ...discovery.identity, chatKind: event.identity.chatKind };
   }
 
   private async onCallback(instanceId: string, event: ImInboundEvent): Promise<void> {
@@ -826,7 +984,7 @@ export class ImSessionBridge {
       return;
     }
     if (ticket.action === 'single' && ticket.optionId !== undefined) {
-      await this.ports.sessions.answerQuestion({ sessionId: ticket.sessionId, interactionId: ticket.interactionId, response: { kind: 'single', questionKey: ticket.questionKey, optionIds: [ticket.optionId], method: 'number_key' } });
+      await this.ports.sessions.answerQuestion({ sessionId: ticket.sessionId, interactionId: ticket.interactionId, response: { kind: 'single', questionKey: ticket.questionKey, ...(ticket.questionIndex === undefined ? {} : { questionIndex: ticket.questionIndex }), optionIds: [ticket.optionId], method: 'number_key' } });
       ticket.consumed = true;
       return;
     }
@@ -840,12 +998,12 @@ export class ImSessionBridge {
     if (ticket.action === 'multi_done' && ticket.group !== undefined) {
       const optionIds = this.state.selections[ticket.group] ?? [];
       if (optionIds.length === 0) return;
-      await this.ports.sessions.answerQuestion({ sessionId: ticket.sessionId, interactionId: ticket.interactionId, response: { kind: 'multi', questionKey: ticket.questionKey, optionIds, method: 'number_key' } });
+      await this.ports.sessions.answerQuestion({ sessionId: ticket.sessionId, interactionId: ticket.interactionId, response: { kind: 'multi', questionKey: ticket.questionKey, ...(ticket.questionIndex === undefined ? {} : { questionIndex: ticket.questionIndex }), optionIds, method: 'number_key' } });
       ticket.consumed = true;
       return;
     }
     if (ticket.action === 'other' && ticket.questionKey !== undefined) {
-      this.state.awaiting[senderKey(instanceId, event.identity)] = { interactionId: ticket.interactionId, questionKey: ticket.questionKey, expiresAt: ticket.expiresAt, sessionId: ticket.sessionId };
+      this.state.awaiting[senderKey(instanceId, event.identity)] = { interactionId: ticket.interactionId, questionKey: ticket.questionKey, ...(ticket.questionIndex === undefined ? {} : { questionIndex: ticket.questionIndex }), expiresAt: ticket.expiresAt, sessionId: ticket.sessionId };
       ticket.consumed = true;
     }
   }
@@ -878,6 +1036,11 @@ function toBinding(record: BindingRecord): ImBinding {
 
 function toStranger(record: StrangerRecord): ImStranger {
   return { provider_instance_id: record.providerInstanceId, identity: wireIdentity(record.identity), preview: record.preview, count: record.count };
+}
+
+function deliveryIds(sent: { messageId: string; messageIds?: readonly string[] }): string[] {
+  const ids = sent.messageIds ?? (sent.messageId.length > 0 ? [sent.messageId] : []);
+  return ids.filter((id) => id.length > 0);
 }
 
 function wireIdentity(identity: ImInboundIdentity): ImDiscovery['identity'] {

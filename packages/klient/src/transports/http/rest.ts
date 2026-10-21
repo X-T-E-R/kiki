@@ -604,6 +604,9 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       dismiss: (discoveryId) => transport.json(`/im/sessions/discoveries/${encodeURIComponent(discoveryId)}/dismiss`, { method: 'POST', body: {} }),
       updateBinding: (id, patch) => transport.json(`/im/sessions/bindings/${encodeURIComponent(id)}`, { method: 'PATCH', body: patch }),
       removeBinding: (id) => transport.json(`/im/sessions/bindings/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+      startWechatQr: () => transport.json('/im/sessions/wechat/qrcode', { method: 'POST', body: {} }),
+      pollWechatQr: (id, verifyCode) => transport.json(`/im/sessions/wechat/qrcode/${encodeURIComponent(id)}/poll`, { method: 'POST', body: verifyCode === undefined ? {} : { verify_code: verifyCode } }),
+      cancelWechatQr: (id) => transport.json(`/im/sessions/wechat/qrcode/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: {} }),
     },
 
     secrets: {

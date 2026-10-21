@@ -1885,6 +1885,9 @@ export class KikiClient {
       dismiss: wrap(api.dismiss.bind(api)),
       updateBinding: wrap(api.updateBinding.bind(api)),
       removeBinding: wrap(api.removeBinding.bind(api)),
+      startWechatQr: wrap(api.startWechatQr.bind(api)),
+      pollWechatQr: wrap(api.pollWechatQr.bind(api)),
+      cancelWechatQr: wrap(api.cancelWechatQr.bind(api)),
     };
   }
 

@@ -8,6 +8,7 @@ import {
   type ImOutboundText,
   type ImSessionAdapter,
 } from './adapter';
+import { segmentText } from './segment';
 
 export class FakeImAdapter implements ImSessionAdapter {
   readonly sent: ImOutboundText[] = [];
@@ -19,6 +20,9 @@ export class FakeImAdapter implements ImSessionAdapter {
   conflict: 'webhook' | 'none' = 'none';
   failFile = false;
   failEdit = false;
+  emptyMessageId = false;
+  tooLongOnReply = false;
+  splitOverride: ((text: string) => readonly string[]) | undefined;
   supportsEdit = true;
   supportsButtons = true;
   supportsFile = true;
@@ -33,6 +37,10 @@ export class FakeImAdapter implements ImSessionAdapter {
 
   acceptsVoice(mediaType: string): boolean {
     return (this.voice || this.badVoiceFormat) && acceptsTelegramVoice(mediaType);
+  }
+
+  splitText(text: string): readonly string[] {
+    return this.splitOverride?.(text) ?? segmentText(text, this.textLimit);
   }
 
   describeConflict(): Promise<'webhook' | 'none'> {
@@ -56,10 +64,11 @@ export class FakeImAdapter implements ImSessionAdapter {
     return this.listener(event);
   }
 
-  sendText(message: ImOutboundText): Promise<{ messageId: string }> {
-    const messageId = `m${++this.sequence}`;
+  sendText(message: ImOutboundText): Promise<{ messageId: string; messageIds: readonly string[] }> {
+    if (this.tooLongOnReply && message.code === 'reply') return Promise.reject(new Error('too_long'));
+    const messageId = this.emptyMessageId ? '' : `m${++this.sequence}`;
     this.sent.push(message);
-    return Promise.resolve({ messageId });
+    return Promise.resolve({ messageId, messageIds: messageId.length > 0 ? [messageId] : [] });
   }
 
   editText(message: ImOutboundText & { messageId: string }): Promise<{ messageId: string; edited: boolean }> {

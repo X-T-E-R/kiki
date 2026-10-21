@@ -33,6 +33,9 @@ const imSessions = {
   dismiss: vi.fn(),
   updateBinding: vi.fn(async () => bound),
   removeBinding: vi.fn(async () => empty),
+  startWechatQr: vi.fn(async () => ({ login_id: 'login1', image: 'https://cdn.example/qr.png' })),
+  pollWechatQr: vi.fn(async () => ({ status: 'wait' })),
+  cancelWechatQr: vi.fn(async () => ({})),
 };
 
 vi.mock('../../../state/connection', () => ({
@@ -84,6 +87,11 @@ describe('ImSessionCard', () => {
       expect(container.dataset['imFixture']).toBe('client');
       expect(container.querySelector('[data-im-session]')).not.toBeNull();
       expect(container.textContent).toContain('Phone session');
+      expect(container.textContent).toContain('Paste a setup and check it, then bind the phone message to a session.');
+      expect(container.textContent).toContain('Enable new bindings');
+      expect(container.textContent).toContain('Phone actions');
+      expect(container.textContent).toContain('QQ and WeChat send the full text and cannot change a sent message.');
+      expect(container.textContent).toContain('QQ cannot take a file.');
       expect(container.textContent).toContain('Full text');
       expect(container.textContent).toContain('Queue');
       expect(container.querySelector('[data-im-actions]')).not.toBeNull();
@@ -153,5 +161,24 @@ describe('ImSessionCard', () => {
     await click(container, '[data-im-binding-actions="off"]');
     expect(imSessions.updateBinding).toHaveBeenCalledWith('b1', { mobile_interactions: false });
     expect(container.querySelector('[data-im-binding-target="home"]')).not.toBeNull();
+  });
+
+  it('draws a WeChat code from the returned link and keeps an image payload as an image', async () => {
+    const container = await render('360px');
+    imSessions.startWechatQr.mockResolvedValueOnce({ login_id: 'login1', image: 'https://cdn.example/qr.png' });
+    await click(container, '[data-im-wechat-scan]');
+    const drawn = container.querySelector('[data-im-wechat-image]')?.getAttribute('src') ?? '';
+    expect(drawn.startsWith('data:image/svg+xml')).toBe(true);
+    expect(decodeURIComponent(drawn)).toContain('<rect');
+    expect(container.querySelector<HTMLInputElement>('[data-im-wechat-code]')?.value).toBe('https://cdn.example/qr.png');
+    imSessions.startWechatQr.mockResolvedValueOnce({ login_id: 'login2', image: 'data:image/png;base64,aaaa' });
+    await click(container, '[data-im-wechat-scan]');
+    expect(container.querySelector('[data-im-wechat-image]')?.getAttribute('src')).toBe('data:image/png;base64,aaaa');
+    imSessions.startWechatQr.mockResolvedValueOnce({ login_id: 'login3', image: 'qr-payload' });
+    await click(container, '[data-im-wechat-scan]');
+    const payload = container.querySelector('[data-im-wechat-image]')?.getAttribute('src') ?? '';
+    expect(payload.startsWith('data:image/svg+xml')).toBe(true);
+    expect(container.querySelector('[data-im-wechat-code]')).toBeNull();
+    expect(container.textContent).not.toMatch(/reply|Receive/i);
   });
 });

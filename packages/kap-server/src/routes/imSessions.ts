@@ -53,4 +53,16 @@ export function registerImSessionRoutes(app: FastifyInstance, bridge: ImSessionB
     });
   }));
   app.delete('/im/sessions/bindings/:id', (req, reply) => respond(req, reply, () => bridge.removeBinding(routeId(req))));
+  app.post('/im/sessions/wechat/qrcode', (req, reply) => respond(req, reply, () => {
+    z.object({}).strict().parse(req.body ?? {});
+    return bridge.startWechatQr();
+  }));
+  app.post('/im/sessions/wechat/qrcode/:id/poll', (req, reply) => respond(req, reply, () => {
+    const body = z.object({ verify_code: z.string().max(64).optional() }).strict().parse(req.body ?? {});
+    return bridge.pollWechatQr(routeId(req), body.verify_code);
+  }));
+  app.post('/im/sessions/wechat/qrcode/:id/cancel', (req, reply) => respond(req, reply, () => {
+    z.object({}).strict().parse(req.body ?? {});
+    return bridge.cancelWechatQr(routeId(req));
+  }));
 }

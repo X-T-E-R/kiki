@@ -623,6 +623,9 @@ export interface HttpRestFacade {
     dismiss(discoveryId: string): Promise<import('@kiki/protocol').ImSessionSnapshot>;
     updateBinding(id: string, patch: import('@kiki/protocol').ImBindingPatch): Promise<import('@kiki/protocol').ImSessionSnapshot>;
     removeBinding(id: string): Promise<import('@kiki/protocol').ImSessionSnapshot>;
+    startWechatQr(): Promise<{ readonly login_id: string; readonly image: string }>;
+    pollWechatQr(id: string, verifyCode?: string): Promise<{ readonly status: string; readonly provider_instance_id?: string; readonly account_id?: string }>;
+    cancelWechatQr(id: string): Promise<Record<string, never>>;
   };
 
   readonly secrets: {

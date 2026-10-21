@@ -51,9 +51,16 @@ export interface ImSubmitResult {
 export interface ImQuestionAnswer {
   readonly kind: 'single' | 'multi' | 'other' | 'multi_with_other';
   readonly questionKey?: string;
+  readonly questionIndex?: number;
   readonly optionIds?: readonly string[];
   readonly text?: string;
   readonly method: 'number_key';
+}
+
+export interface WechatQrLoginPort {
+  start(): Promise<{ readonly login_id: string; readonly image: string }>;
+  poll(id: string, verifyCode?: string): Promise<{ readonly status: string; readonly provider_instance_id?: string; readonly account_id?: string }>;
+  cancel(id: string): Promise<void>;
 }
 
 export interface ImSessionPorts {
@@ -93,6 +100,7 @@ export interface ImSessionBridgeOptions {
   readonly editIntervalMs?: number;
   readonly now?: () => number;
   readonly wait?: (ms: number) => Promise<void>;
+  readonly wechatLogin?: WechatQrLoginPort;
 }
 
 export type { ImInboundIdentity };

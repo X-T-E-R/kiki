@@ -7,6 +7,19 @@ export interface ImInboundIdentity {
   readonly chatTitle?: string;
   readonly senderName?: string;
   readonly topicTitle?: string;
+  readonly chatKind?: 'private' | 'group';
+}
+
+export class ImSendError extends Error {
+  readonly acceptedIds: readonly string[];
+  readonly failedPart: number | undefined;
+
+  constructor(message: string, acceptedIds: readonly string[] = [], failedPart?: number) {
+    super(message);
+    this.name = 'ImSendError';
+    this.acceptedIds = acceptedIds;
+    this.failedPart = failedPart;
+  }
 }
 
 export interface ImInboundMedia {
@@ -54,10 +67,11 @@ export interface ImSessionAdapter {
   readonly supportsButtons: boolean;
   readonly supportsFile: boolean;
   describeConflict(): Promise<'webhook' | 'none'>;
+  splitText(text: string): readonly string[];
   acceptsVoice(mediaType: string): boolean;
   start(listener: (event: ImInboundEvent) => Promise<void>, options?: { readonly offset?: number }): Promise<{ readonly accountId: string; readonly conflict?: 'webhook'; readonly failed?: 'auth' }>;
   stop(): Promise<void>;
-  sendText(message: ImOutboundText): Promise<{ readonly messageId: string }>;
+  sendText(message: ImOutboundText): Promise<{ readonly messageId: string; readonly messageIds?: readonly string[] }>;
   editText(message: ImOutboundText & { readonly messageId: string }): Promise<{ readonly messageId: string; readonly edited: boolean }>;
   sendFile(message: ImOutboundFile): Promise<{ readonly messageId: string; readonly deliveredAs: 'file' | 'image' | 'voice' }>;
   answerCallback(callbackQueryId: string): Promise<void>;

@@ -56,9 +56,9 @@ describe('im session credentials', () => {
     const questions = [{ question: 'A', options: [{ label: 'One' }] }, { question: 'B', options: [{ label: 'Two' }] }];
     const partial = mergeQuestionAnswers(questions, {}, { kind: 'single', questionKey: 'A', optionIds: ['opt_0_0'], method: 'number_key' });
     expect(partial.complete).toBe(false);
-    expect(partial.answers).toEqual({ A: 'One' });
+    expect(partial.answers).toEqual({ A: 'One', q_0: 'One' });
     const done = mergeQuestionAnswers(questions, partial.answers, { kind: 'single', questionKey: 'B', optionIds: ['opt_1_0'], method: 'number_key' });
     expect(done.complete).toBe(true);
-    expect(done.answers).toEqual({ A: 'One', B: 'Two' });
+    expect(done.answers).toEqual({ A: 'One', q_0: 'One', B: 'Two', q_1: 'Two' });
   });
 });

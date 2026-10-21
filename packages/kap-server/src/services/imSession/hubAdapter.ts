@@ -1,6 +1,7 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { atomicWrite } from '@kiki/agent-core-v2/_base/utils/fs';
 import type { ImProviderKind } from '@kiki/protocol';
 import {
   createSessionHub,
@@ -15,23 +16,35 @@ import {
   type SessionPlatformId,
   type SessionReceipt,
   type SessionSpec,
+  type SessionTarget,
 } from '@nb-im/core';
 
-import type { ImAdapterFactory, ImInboundEvent, ImInboundIdentity, ImOutboundFile, ImOutboundText, ImSessionAdapter } from './adapter';
+import { readPrivateFile, writePrivateFile } from '../auth/privateFiles';
+import { ImSendError, type ImAdapterFactory, type ImInboundEvent, type ImInboundIdentity, type ImOutboundFile, type ImOutboundText, type ImSessionAdapter } from './adapter';
+import { segmentText } from './segment';
+import { wechatEndpointAllowed } from './wechatLogin';
+
+function ioCode(error: unknown): string | undefined {
+  return typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string' ? error.code : undefined;
+}
 
 export function fileCursorStore(homeDir: string): SessionCursorStore {
   const file = join(homeDir, 'im-session-cursors.json');
   let chain = Promise.resolve();
   const read = async (): Promise<Record<string, string>> => {
+    let text: string;
     try {
-      const parsed: unknown = JSON.parse(await readFile(file, 'utf8'));
-      if (typeof parsed !== 'object' || parsed === null) return {};
-      const values: Record<string, string> = {};
-      for (const [key, value] of Object.entries(parsed)) if (typeof value === 'string') values[key] = value;
-      return values;
-    } catch {
-      return {};
+      text = await readFile(file, 'utf8');
+    } catch (error) {
+      if (ioCode(error) === 'ENOENT') return {};
+      throw error;
     }
+    let parsed: unknown;
+    try { parsed = JSON.parse(text) as unknown; } catch { throw new Error('cursor_file_invalid'); }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('cursor_file_invalid');
+    const values: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed)) if (typeof value === 'string') values[key] = value;
+    return values;
   };
   return {
     async load(scope) {
@@ -42,12 +55,26 @@ export function fileCursorStore(homeDir: string): SessionCursorStore {
         const values = await read();
         values[scope] = cursor;
         await mkdir(homeDir, { recursive: true });
-        await writeFile(file, JSON.stringify(values), 'utf8');
+        await atomicWrite(file, JSON.stringify(values));
       });
       chain = run.then(() => undefined, () => undefined);
       return run;
     },
   };
+}
+
+async function loadReplyMap(file: string): Promise<Record<string, string>> {
+  let raw: Buffer;
+  try { raw = await readPrivateFile(file); } catch (error) {
+    if (ioCode(error) === 'ENOENT') return {};
+    throw error;
+  }
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw.toString('utf8')) as unknown; } catch { throw new Error('im_session_reply_unreadable'); }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('im_session_reply_unreadable');
+  const values: Record<string, string> = {};
+  for (const [key, value] of Object.entries(parsed)) if (typeof value === 'string') values[key] = value;
+  return values;
 }
 
 export function sessionSpec(kind: ImProviderKind, instanceId: string, credential: string): SessionSpec {
@@ -57,9 +84,16 @@ export function sessionSpec(kind: ImProviderKind, instanceId: string, credential
     return { platform: 'feishu_app', instance_id: instanceId, app_id: appId?.trim() ?? '', app_secret: appSecret?.trim() ?? '' };
   }
   if (kind === 'wechat_bridge') {
-    const [token, account] = credential.split('\n');
+    const [token, account, base] = credential.split('\n');
     const accountId = account?.trim() ?? '';
-    return { platform: 'personal_wechat', instance_id: instanceId, token: token?.trim() ?? '', ...(accountId.length > 0 ? { account_id: accountId } : {}) };
+    const baseUrl = base?.trim() ?? '';
+    return {
+      platform: 'personal_wechat',
+      instance_id: instanceId,
+      token: token?.trim() ?? '',
+      ...(accountId.length > 0 ? { account_id: accountId } : {}),
+      ...(baseUrl.length > 0 && wechatEndpointAllowed(baseUrl) ? { base_url: baseUrl } : {}),
+    };
   }
   return oneBotSpec(instanceId, credential);
 }
@@ -80,16 +114,16 @@ export function sessionAccountHint(kind: ImProviderKind, credential: string): { 
   }
 }
 
-export function hubSessionFactories(hub: SessionHub): ImAdapterFactory[] {
+export function hubSessionFactories(hub: SessionHub, homeDir: string): ImAdapterFactory[] {
   const kinds: readonly ImProviderKind[] = ['telegram', 'feishu_app', 'onebot_v11', 'wechat_bridge'];
   return kinds.map((providerKind) => ({
     providerKind,
-    create: (input) => new HubSessionAdapter(hub.acquire(sessionSpec(providerKind, input.instanceId, input.credential))),
+    create: (input) => new HubSessionAdapter(hub.acquire(sessionSpec(providerKind, input.instanceId, input.credential)), homeDir),
   }));
 }
 
 export function loadHubFactories(homeDir: string): ImAdapterFactory[] {
-  return hubSessionFactories(createSessionHub({ store: fileCursorStore(homeDir) }));
+  return hubSessionFactories(createSessionHub({ store: fileCursorStore(homeDir) }), homeDir);
 }
 
 export class HubSessionAdapter implements ImSessionAdapter {
@@ -102,8 +136,11 @@ export class HubSessionAdapter implements ImSessionAdapter {
   readonly supportsFile: boolean;
   private ack: string | undefined;
   private readonly contexts = new Map<string, { reply_context?: string; chat_kind?: SessionChatKind }>();
+  private readonly replies = new Map<string, string>();
+  private replyError: unknown = undefined;
+  private readonly replyReady: Promise<void>;
 
-  constructor(private readonly session: SessionAdapter) {
+  constructor(private readonly session: SessionAdapter, private readonly homeDir?: string) {
     this.canonicalInstanceId = session.instance_id;
     this.providerKind = providerKindOf(session.platform);
     this.textLimit = session.limits.text_characters ?? undefined;
@@ -112,10 +149,16 @@ export class HubSessionAdapter implements ImSessionAdapter {
     this.supportsEdit = editable;
     this.supportsButtons = editable;
     this.supportsFile = session.platform !== 'qq_onebot_v11';
+    this.replyReady = homeDir === undefined ? Promise.resolve() : this.readReplies().then(() => undefined, (error: unknown) => { this.replyError = error; });
   }
 
   describeConflict(): Promise<'webhook' | 'none'> {
     return Promise.resolve('none');
+  }
+
+  splitText(text: string): string[] {
+    if (this.session.platform === 'feishu_app') return splitFeishuText(text);
+    return segmentText(text, this.textLimit);
   }
 
   acceptsVoice(mediaType: string): boolean {
@@ -130,6 +173,7 @@ export class HubSessionAdapter implements ImSessionAdapter {
       admit: async (event) => {
         this.ack = undefined;
         try {
+          await this.capture(event);
           await listener(this.toEvent(event));
         } catch {
           return { decision: 'defer' };
@@ -150,44 +194,60 @@ export class HubSessionAdapter implements ImSessionAdapter {
     return this.session.stop();
   }
 
-  async sendText(message: ImOutboundText): Promise<{ messageId: string }> {
-    const target = this.target(message.identity);
+  async sendText(message: ImOutboundText): Promise<{ messageId: string; messageIds: readonly string[] }> {
+    await this.useReplies();
     const buttons = message.buttons?.map((button) => ({ data: button.id, label: button.label }));
-    if (this.session.platform === 'feishu_app') {
-      const parts = splitFeishuText(message.text);
-      if (parts.length > 1) {
-        const first = await this.session.send({ type: 'text', target, text: parts[0] ?? '', ...(buttons !== undefined && buttons.length > 0 ? { buttons } : {}) });
-        const rest = await this.session.send({ type: 'text_parts', target, parts: parts.slice(1) });
-        if (rest.status !== 'accepted') throw receiptError(rest);
-        return { messageId: acceptedId(first) };
-      }
-    }
-    const sent = await this.session.send({ type: 'text', target, text: message.text, ...(buttons !== undefined && buttons.length > 0 ? { buttons } : {}) });
-    return { messageId: acceptedId(sent) };
+    const sent = await this.dispatch({
+      type: 'text',
+      target: this.target(message.identity),
+      text: message.text,
+      ...(buttons !== undefined && buttons.length > 0 ? { buttons } : {}),
+    }, message.identity);
+    return acceptedDelivery(sent);
   }
 
   async editText(message: ImOutboundText & { readonly messageId: string }): Promise<{ messageId: string; edited: boolean }> {
-    const sent = await this.session.send({ type: 'edit_text', target: this.target(message.identity), message_id: message.messageId, text: message.text });
+    await this.useReplies();
+    const sent = await this.dispatch({ type: 'edit_text', target: this.target(message.identity), message_id: message.messageId, text: message.text }, message.identity);
     if (sent.error_kind === 'unsupported') return { messageId: message.messageId, edited: false };
-    return { messageId: acceptedId(sent), edited: true };
+    const accepted = acceptedDelivery(sent);
+    return { messageId: accepted.messageId.length > 0 ? accepted.messageId : message.messageId, edited: true };
   }
 
   async sendFile(message: ImOutboundFile): Promise<{ messageId: string; deliveredAs: 'file' | 'image' | 'voice' }> {
+    await this.useReplies();
     const kind = message.asVoice ? 'voice' : message.asImage ? 'image' : 'file';
-    const sent = await this.session.send({
+    const sent = await this.dispatch({
       type: 'media',
       target: this.target(message.identity),
       media: { kind, filename: message.name, mime: message.mediaType, bytes: message.bytes },
-    });
+    }, message.identity);
     if (message.asVoice && sent.error_kind === 'bad_format') throw new Error('bad_format');
     if (sent.error_kind === 'unsupported') throw new Error('unsupported_file');
+    const accepted = acceptedDelivery(sent);
     const deliveredAs = message.asVoice && this.acceptsVoice(message.mediaType) ? 'voice' : message.asImage ? 'image' : 'file';
-    return { messageId: acceptedId(sent), deliveredAs };
+    return { messageId: accepted.messageId, deliveredAs };
   }
 
   answerCallback(_callbackQueryId: string): Promise<void> {
     this.ack = 'ok';
     return Promise.resolve();
+  }
+
+  private async capture(event: SessionInbound): Promise<void> {
+    await this.useReplies();
+    const identity = { chatId: event.identity.chat_id, senderId: event.identity.sender_id, topicId: event.identity.topic_id };
+    const key = contextKey(identity);
+    const previous = this.contexts.get(key);
+    const replyContext = event.reply_context ?? previous?.reply_context;
+    const chatKind = event.identity.chat_kind ?? previous?.chat_kind;
+    if (replyContext !== undefined || chatKind !== undefined) {
+      this.contexts.set(key, { ...(replyContext === undefined ? {} : { reply_context: replyContext }), ...(chatKind === undefined ? {} : { chat_kind: chatKind }) });
+    }
+    if (this.homeDir !== undefined && event.reply_context !== undefined) {
+      this.replies.set(replyKey(this.session.instance_id, identity), event.reply_context);
+      await this.writeReplies();
+    }
   }
 
   private toEvent(event: SessionInbound): ImInboundEvent {
@@ -196,32 +256,74 @@ export class HubSessionAdapter implements ImSessionAdapter {
       senderId: event.identity.sender_id,
       topicId: event.identity.topic_id,
     };
-    const key = contextKey(identity);
-    const previous = this.contexts.get(key);
-    const replyContext = event.reply_context ?? previous?.reply_context;
-    const chatKind = event.identity.chat_kind ?? previous?.chat_kind;
-    if (replyContext !== undefined || chatKind !== undefined) {
-      this.contexts.set(key, { ...(replyContext === undefined ? {} : { reply_context: replyContext }), ...(chatKind === undefined ? {} : { chat_kind: chatKind }) });
-    }
+    const chatKind = event.identity.chat_kind ?? this.contexts.get(contextKey(identity))?.chat_kind;
+    const visible: ImInboundIdentity = chatKind === undefined ? identity : { ...identity, chatKind };
     const payload = event.payload;
-    if (payload.type === 'text') return { eventId: event.event_key, identity, kind: 'text', text: payload.text, preview: payload.text.slice(0, 80) };
-    if (payload.type === 'callback') return { eventId: event.event_key, identity, kind: 'callback', callbackData: payload.data, callbackQueryId: payload.callback_id };
-    if (payload.type === 'media_unavailable') return { eventId: event.event_key, identity, kind: payload.kind === 'voice' ? 'audio' : payload.kind, tooLarge: true, text: '' };
+    if (payload.type === 'text') return { eventId: event.event_key, identity: visible, kind: 'text', text: payload.text, preview: payload.text.slice(0, 80) };
+    if (payload.type === 'callback') return { eventId: event.event_key, identity: visible, kind: 'callback', callbackData: payload.data, callbackQueryId: payload.callback_id };
+    if (payload.type === 'media_unavailable') return { eventId: event.event_key, identity: visible, kind: payload.kind === 'voice' ? 'audio' : payload.kind, tooLarge: true, text: '' };
     const kind = payload.media.kind === 'voice' ? 'audio' as const : payload.media.kind;
     return {
-      eventId: event.event_key, identity, kind, text: payload.caption ?? '', ...(payload.caption === undefined ? {} : { preview: payload.caption.slice(0, 80) }),
+      eventId: event.event_key, identity: visible, kind, text: payload.caption ?? '', ...(payload.caption === undefined ? {} : { preview: payload.caption.slice(0, 80) }),
       media: { name: payload.media.filename, mediaType: payload.media.mime, bytes: payload.media.bytes },
     };
   }
 
-  private target(identity: ImInboundIdentity): Extract<SessionOutbound, { type: 'text' }>['target'] {
+  private target(identity: ImInboundIdentity): SessionTarget {
     const saved = this.contexts.get(contextKey(identity));
+    const reply = this.replies.get(replyKey(this.session.instance_id, identity)) ?? saved?.reply_context;
+    const chatKind = identity.chatKind ?? saved?.chat_kind;
     return {
       chat_id: identity.chatId,
       ...(identity.topicId === '0' ? {} : { topic_id: identity.topicId }),
-      ...(saved?.reply_context === undefined ? {} : { reply_context: saved.reply_context }),
-      ...(saved?.chat_kind === undefined ? {} : { chat_kind: saved.chat_kind }),
+      ...(reply === undefined || reply.length === 0 ? {} : { reply_context: reply }),
+      ...(chatKind === undefined ? {} : { chat_kind: chatKind }),
     };
+  }
+
+  private async dispatch(message: SessionOutbound, identity: ImInboundIdentity): Promise<SessionReceipt> {
+    const had = 'target' in message && typeof message.target.reply_context === 'string' && message.target.reply_context.length > 0;
+    const sent = await this.session.send(message);
+    if (sent.diagnostic_code === 'wechat_auth') throw new Error('wechat_auth');
+    if (sent.diagnostic_code === 'wechat_rejected' && had) {
+      await this.forgetReply(identity);
+      const retried = await this.session.send(withoutReply(message));
+      if (retried.diagnostic_code === 'wechat_auth') throw new Error('wechat_auth');
+      return retried;
+    }
+    return sent;
+  }
+
+  private async forgetReply(identity: ImInboundIdentity): Promise<void> {
+    await this.useReplies();
+    this.replies.delete(replyKey(this.session.instance_id, identity));
+    const key = contextKey(identity);
+    const saved = this.contexts.get(key);
+    if (saved !== undefined) {
+      if (saved.chat_kind === undefined) this.contexts.delete(key);
+      else this.contexts.set(key, { chat_kind: saved.chat_kind });
+    }
+    if (this.homeDir !== undefined) await this.writeReplies();
+  }
+
+  private async useReplies(): Promise<void> {
+    await this.replyReady;
+    if (this.replyError !== undefined) throw this.replyError instanceof Error ? this.replyError : new Error('im_session_reply_unreadable');
+  }
+
+  private async readReplies(): Promise<void> {
+    if (this.homeDir === undefined) return;
+    const loaded = await loadReplyMap(join(this.homeDir, 'im-session-reply.json'));
+    this.replies.clear();
+    for (const [key, value] of Object.entries(loaded)) this.replies.set(key, value);
+  }
+
+  private async writeReplies(): Promise<void> {
+    if (this.homeDir === undefined) return;
+    await this.useReplies();
+    const file = join(this.homeDir, 'im-session-reply.json');
+    await loadReplyMap(file);
+    await writePrivateFile(file, JSON.stringify(Object.fromEntries(this.replies)));
   }
 }
 
@@ -246,17 +348,25 @@ function providerKindOf(platform: SessionPlatformId): ImProviderKind {
   return platform;
 }
 
-function contextKey(identity: ImInboundIdentity): string {
+function contextKey(identity: { chatId: string; senderId: string; topicId: string }): string {
   return `${identity.chatId}\u0000${identity.senderId}\u0000${identity.topicId}`;
 }
 
-function acceptedId(receipt: SessionReceipt): string {
-  if (receipt.status !== 'accepted') throw receiptError(receipt);
-  const id = receipt.message_ids[0];
-  if (id === undefined || id.length === 0) throw new Error('missing_message_id');
-  return id;
+function replyKey(instanceId: string, identity: { chatId: string; senderId: string; topicId: string }): string {
+  return `${instanceId}\u0000${identity.chatId}\u0000${identity.senderId}\u0000${identity.topicId}`;
 }
 
-function receiptError(receipt: SessionReceipt): Error {
-  return new Error(receipt.diagnostic_code ?? receipt.error_kind ?? 'send_failed');
+function withoutReply(message: SessionOutbound): SessionOutbound {
+  if (!('target' in message)) return message;
+  const { reply_context: _drop, ...target } = message.target;
+  return { ...message, target };
+}
+
+function acceptedDelivery(receipt: SessionReceipt): { messageId: string; messageIds: readonly string[] } {
+  if (receipt.status !== 'accepted') {
+    const tooLong = receipt.error_kind === 'too_long' || (receipt.diagnostic_code !== undefined && receipt.diagnostic_code.includes('too_long'));
+    throw new ImSendError(tooLong ? 'too_long' : receipt.diagnostic_code ?? receipt.error_kind ?? 'send_failed', receipt.message_ids, receipt.failed_part);
+  }
+  const ids = receipt.message_ids.filter((id) => id.length > 0);
+  return { messageId: ids[0] ?? '', messageIds: ids };
 }
