@@ -49,14 +49,18 @@ import {
   type AgentLLMRequestFinish,
 } from '#/agent/llmRequester/llmRequester';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
-import { SubagentToolInputSchema } from '#/agent/tools/agent/agent';
+import { ISubagentTool, SubagentToolInputSchema } from '#/agent/tools/agent/agent';
+import { SubagentTool } from '#/agent/tools/agent/agentTool';
 import { AgentSendTool } from '#/agent/tools/agent-send/agentSendTool';
+import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { IAgentLifecycleService, type IAgentLifecycleService as AgentLifecycle } from '#/session/agentLifecycle/agentLifecycle';
 import { IAgentCollaborationRegistry, COLLABORATION_LATEST_TASK_LABEL, COLLABORATION_TASK_NAME_LABEL } from '#/session/agentCollaboration/registry';
 import {
@@ -394,6 +398,70 @@ describe('agent collaboration safe-boundary delivery', () => {
     service.dispose();
   });
 
+  it.each(['fail', 'cancel'] as const)(
+    'releases the next external message when a prepared start %s before afterStart',
+    async (mode) => {
+      const store = mailboxStore(tempDir());
+      let markPrepared!: () => void;
+      const prepared = new Promise<void>((resolve) => { markPrepared = resolve; });
+      const target = agentHandle('agent-target', {
+        executorId: 'codex-acp',
+        holdAfterPrepare: true,
+        onPrepareHeld: () => { markPrepared(); },
+      });
+      const lifecycle = lifecycleHarness([target.handle]);
+      const residency = residencyHarness(lifecycle.service);
+      const dispatch = dispatchHarness(async (child, request, options) => ({
+        child,
+        request: request as DispatchRun['request'],
+        started: target.execution.run(request as AgentRunRequest, { signal: options.signal }),
+      }));
+      const service = messagingService(
+        store,
+        lifecycle.service,
+        sessionContext(),
+        metadataHarness({ 'agent-target': {} }),
+        dispatch,
+        residency.manager,
+      );
+      const settled = vi.spyOn(target.execution, 'settled');
+      const first = service.send({
+        ...sendInput('message A', 'external-start-a'),
+        waitForRunningDelivery: false,
+        idleWake: 'owned-child',
+      });
+      await prepared;
+      await first;
+      const second = service.send({
+        ...sendInput('message B', 'external-start-b'),
+        waitForRunningDelivery: false,
+        idleWake: 'owned-child',
+      });
+      await vi.waitFor(() => { expect(residency.pins()).toBe(2); });
+      await vi.waitFor(() => { expect(settled).toHaveBeenCalled(); });
+      expect(target.execution.status().state).toBe('starting');
+      expect((await store.accept(messageInput('message A', 'external-start-a'))).delivery).toBe('queued');
+      expect((await store.accept(messageInput('message B', 'external-start-b'))).delivery).toBe('queued');
+
+      if (mode === 'fail') {
+        target.failHeldStart(new AcpClientError(
+          'executor.session_open_failed',
+          'The requested external session cannot be resumed or loaded',
+        ));
+      } else {
+        target.cancelHeldStart();
+      }
+
+      await vi.waitFor(() => { expect(residency.pins()).toBe(0); });
+      expect((await store.accept(messageInput('message A', 'external-start-a'))).delivery).toBe('delivered');
+      expect((await store.accept(messageInput('message B', 'external-start-b'))).delivery).toBe('delivered');
+      expect(await store.nextQueued('session-1', 'agent-target')).toBeUndefined();
+      expect(target.execution.status().state).toBe('idle');
+      await second;
+      service.dispose();
+    },
+  );
+
   it('continues a saved message after another child releases dispatch capacity', async () => {
     const store = mailboxStore(tempDir());
     const target = agentHandle('agent-target');
@@ -444,6 +512,70 @@ describe('agent collaboration safe-boundary delivery', () => {
     await vi.waitFor(() => { expect(attempts).toBe(2); });
     await vi.waitFor(async () => {
       expect((await store.accept(messageInput('after capacity', 'capacity-release'))).delivery).toBe('delivered');
+    });
+    expect(target.messages).toHaveLength(1);
+    service.dispose();
+  });
+
+  it('retries dispatch when one of two holders finishes and the other stays running', async () => {
+    const store = mailboxStore(tempDir());
+    const target = agentHandle('agent-target');
+    const holderA = agentHandle('holder-a');
+    const holderB = agentHandle('holder-b');
+    const main = agentHandle('main', { dispatcher: { dispatch: async () => {} } });
+    holderA.setRunning(true);
+    holderB.setRunning(true);
+    main.setRunning(true);
+    let releaseA!: () => void;
+    const gateA = new Promise<void>((resolve) => { releaseA = resolve; });
+    const mainSettled = vi.spyOn(main.execution, 'settled').mockImplementation(() => new Promise(() => {}));
+    vi.spyOn(holderB.execution, 'settled').mockImplementation(() => new Promise(() => {}));
+    vi.spyOn(holderA.execution, 'settled').mockImplementation(() => gateA.then(() => {
+      holderA.setRunning(false);
+    }));
+    const limit = new Error2(
+      ErrorCodes.DISPATCH_LIMIT_EXCEEDED,
+      'Subagent direct limit reached (2/2). No agent was started; wait for an active run to finish before dispatching again.',
+      { details: { layer: 'direct', current: 2, limit: 2, owner: 'main' } },
+    );
+    let attempts = 0;
+    const dispatch = dispatchHarness(async (child, request, options) => {
+      attempts += 1;
+      if (attempts === 1) throw limit;
+      await target.execution.hooks.onWillRun.run({ signal: options.signal });
+      return {
+        child,
+        request: request as DispatchRun['request'],
+        started: Promise.resolve({
+          agentId: child.agentId,
+          turn: {} as never,
+          completion: Promise.resolve({ summary: 'done' }),
+        }),
+      };
+    });
+    const service = messagingService(
+      store,
+      lifecycleHarness([target.handle, holderA.handle, holderB.handle, main.handle]).service,
+      sessionContext(),
+      metadataHarness({ 'agent-target': {}, 'holder-a': {}, 'holder-b': {} }),
+      dispatch,
+    );
+    const accepted = await service.send({
+      ...sendInput('after one holder', 'two-holder-release'),
+      waitForRunningDelivery: false,
+      idleWake: 'owned-child',
+    });
+    expect(accepted).toMatchObject({ delivery: 'queued' });
+    expect(accepted.resumed).toBeUndefined();
+    await vi.waitFor(() => { expect(attempts).toBe(1); });
+    expect(target.messages).toEqual([]);
+    releaseA();
+    await vi.waitFor(() => { expect(attempts).toBe(2); });
+    expect(holderB.execution.status().state).toBe('running');
+    expect(main.execution.status().state).toBe('running');
+    expect(mainSettled).not.toHaveBeenCalled();
+    await vi.waitFor(async () => {
+      expect((await store.accept(messageInput('after one holder', 'two-holder-release'))).delivery).toBe('delivered');
     });
     expect(target.messages).toHaveLength(1);
     service.dispose();
@@ -647,6 +779,124 @@ describe('agent collaboration safe-boundary delivery', () => {
       await senderCtx.get(IAgentLoopService).settled();
     } finally {
       service.dispose();
+      await senderCtx.dispose();
+    }
+  });
+
+  it('consumes the saved message once through AgentRun resume with an empty prompt', async () => {
+    const senderCtx = createTestAgent();
+    const disposables = new DisposableStore();
+    const ix = disposables.add(new TestInstantiationService());
+    const target = agentHandle('agent-target', { executorId: 'codex-acp' });
+    const agents: Record<string, AgentMeta> = {
+      main: { type: 'main' },
+      'agent-target': {
+        type: 'sub',
+        delegator: { kind: 'agent', agentId: 'main' },
+        executor: 'codex-acp',
+        labels: { [COLLABORATION_TASK_NAME_LABEL]: 'researcher' },
+      },
+    };
+    const metadata: ISessionMetadata = {
+      ...metadataHarness(() => agents),
+      updateAgent: async (agentId, update) => {
+        const current = agents[agentId];
+        if (current !== undefined) agents[agentId] = update(current);
+      },
+    };
+    let lifecycle!: AgentLifecycle;
+    const main: IAgentScopeHandle = {
+      id: 'main',
+      kind: LifecycleScope.Agent,
+      accessor: {
+        get: <T>(id: ServiceIdentifier<T>): T => {
+          if (id === ISessionMetadata) return metadata as T;
+          if (id === IAgentLifecycleService) return lifecycle as T;
+          if (id === ISessionSubagentService) return ix.get(ISessionSubagentService) as T;
+          return senderCtx.get(id);
+        },
+      },
+      dispose: () => {},
+    };
+    lifecycle = lifecycleHarness([main, target.handle]).service;
+    ix.stub(IAgentLifecycleService, lifecycle);
+    ix.stub(ISessionMetadata, metadata);
+    ix.stub(ISessionSubagentService, {
+      hooks: createHooks(['onWillStartAgentTask']),
+      notifyAgentTaskStopped: () => {},
+      run: async (_agentId: string, request: AgentRunRequest, options: { signal: AbortSignal }) =>
+        target.execution.run(request, { signal: options.signal }),
+    });
+    ix.stub(ISessionAgentProfileCatalog, {
+      ready: Promise.resolve(),
+      list: () => [],
+      listRoutes: () => [],
+      get: () => undefined,
+    });
+    ix.stub(IAgentCollaborationRegistry, { commit: () => {}, release: () => {} });
+    ix.stub(IConfigService, { get: (() => undefined) as IConfigService['get'] });
+    ix.stub(IModelCatalog, {});
+    ix.stub(IModelService, {});
+    ix.stub(ILogService, { warn: () => {}, info: () => {}, error: () => {}, debug: () => {}, trace: () => {} });
+    ix.stub(IAgentScopeContext, {
+      _serviceBrand: undefined,
+      agentId: 'main',
+      scope: (key?: string) => `agent/main/${key ?? ''}`,
+    });
+    ix.stub(IAgentTaskService, senderCtx.get(IAgentTaskService));
+    ix.stub(IAgentProfileService, senderCtx.get(IAgentProfileService));
+    ix.stub(IAgentToolPolicyService, {
+      isToolActive: () => true,
+      isToolActiveForDisclosure: () => true,
+      isToolActiveForProfile: () => true,
+      setSessionDisabledTools: async () => {},
+    });
+    ix.stub(ISessionWorkspaceContext, { workDir: 'cwd' });
+    ix.stub(IAgentRuntimeService, {
+      acquire: () => ({ runtime: {}, dispose: () => {} }),
+    });
+    ix.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
+    ix.set(ISubagentTool, new SyncDescriptor(SubagentTool));
+    const store = mailboxStore(tempDir());
+    const service = messagingService(
+      store,
+      lifecycle,
+      sessionContext(),
+      metadata,
+      ix.get(ISessionDispatchService),
+    );
+    try {
+      const saved = await service.send({
+        ...sendInput('saved body', 'saved-body'),
+        waitForRunningDelivery: false,
+      });
+      expect(saved).toMatchObject({ delivery: 'queued' });
+      expect(saved.resumed).toBeUndefined();
+      expect(target.remoteRequests).toEqual([]);
+
+      const result = await executeTool(ix.get(ISubagentTool), {
+        turnId: 2,
+        toolCallId: 'toolu_resume_empty',
+        args: {
+          resume: 'agent-target',
+          prompt: '',
+          description: 'resume saved message',
+          background: true,
+        },
+        signal,
+      });
+      expect(result.isError).toBeFalsy();
+      expect(target.remoteRequests).toEqual([{
+        kind: 'prompt',
+        prompt: 'Message from agent "root" (main):\n\nsaved body\n\n',
+        promptId: 'resume-prompt:resume:main:2:toolu_resume_empty',
+      }]);
+      expect((await store.accept(messageInput('saved body', 'saved-body'))).delivery).toBe('delivered');
+      expect(await store.nextQueued('session-1', 'agent-target')).toBeUndefined();
+      expect(result.output).not.toContain('saved body');
+    } finally {
+      service.dispose();
+      disposables.dispose();
       await senderCtx.dispose();
     }
   });
@@ -2923,6 +3173,8 @@ function agentHandle(
   options: {
     readonly executorId?: string;
     readonly pauseAfterWillRun?: () => Promise<void>;
+    readonly holdAfterPrepare?: boolean;
+    readonly onPrepareHeld?: () => void;
     readonly enqueued?: ContextMessage[];
     readonly dispatcher?: { dispatch: (event: { notificationType?: string; body?: string; sourceId?: string; sourceKind?: string }) => Promise<void> };
   } = {},
@@ -2940,6 +3192,17 @@ function agentHandle(
     'onWillRun'
   >(['onWillRun']);
   let state: 'idle' | 'starting' | 'running' | 'cancelling' | 'broken' = 'idle';
+  let runsSettled = Promise.resolve();
+  let rejectHeldStart: (error: unknown) => void = () => {};
+  let abortHeldStart: () => void = () => {};
+  let heldPrepare = false;
+  const enrollRun = (): (() => void) => {
+    let resolveRun!: () => void;
+    const done = new Promise<void>((resolve) => { resolveRun = resolve; });
+    const current = runsSettled;
+    runsSettled = Promise.all([current, done]).then(() => undefined);
+    return resolveRun;
+  };
   const memory: AgentContextMemory = {
     _serviceBrand: undefined,
     get: () => messages,
@@ -2962,6 +3225,7 @@ function agentHandle(
     trackPromptRun: (_completion: Promise<unknown>, signal: AbortSignal) => signal,
     run: async (request: AgentRunRequest, runOptions: RunAgentOptions) => {
       if (options.executorId === undefined) throw new Error('unexpected run');
+      const resolveRun = enrollRun();
       const afterStartCallbacks: Array<() => Promise<void>> = [];
       const context: AgentExecutionRunContext = {
         signal: runOptions.signal,
@@ -2973,20 +3237,36 @@ function agentHandle(
           afterStartCallbacks.push(callback);
         },
       };
-      if (options.pauseAfterWillRun !== undefined) state = 'starting';
-      await executionHooks.onWillRun.run(context);
-      remoteRequests.push(context.request ?? request);
-      await options.pauseAfterWillRun?.();
-      await Promise.allSettled(
-        afterStartCallbacks.map(async (callback) => {
-          await callback();
-        }),
-      );
-      return {
-        agentId,
-        turn: {} as never,
-        completion: Promise.resolve({ summary: 'done' }),
-      };
+      try {
+        if (options.pauseAfterWillRun !== undefined || options.holdAfterPrepare === true) state = 'starting';
+        await executionHooks.onWillRun.run(context);
+        remoteRequests.push(context.request ?? request);
+        if (options.holdAfterPrepare === true && !heldPrepare) {
+          heldPrepare = true;
+          await new Promise<void>((_resolve, reject) => {
+            rejectHeldStart = reject;
+            abortHeldStart = () => {
+              state = 'cancelling';
+              reject(new Error('The operation was aborted'));
+            };
+            options.onPrepareHeld?.();
+          });
+        }
+        await options.pauseAfterWillRun?.();
+        await Promise.allSettled(
+          afterStartCallbacks.map(async (callback) => {
+            await callback();
+          }),
+        );
+        return {
+          agentId,
+          turn: { id: 1 } as never,
+          completion: Promise.resolve({ summary: 'done' }),
+        };
+      } finally {
+        if (state === 'starting' || state === 'cancelling') state = 'idle';
+        resolveRun();
+      }
     },
     status: () => state === 'running'
       ? { state: 'running' as const, turnId: 1 }
@@ -3001,8 +3281,11 @@ function agentHandle(
       if (state !== 'running' || options.executorId !== undefined) return Promise.resolve(false);
       return new Promise<boolean>((resolve) => pendingSteers.push({ message, resolve }));
     },
-    cancel: () => false,
-    settled: () => Promise.resolve(),
+    cancel: () => {
+      abortHeldStart();
+      return state === 'cancelling';
+    },
+    settled: () => runsSettled,
     shutdown: () => Promise.resolve(),
     hooks: executionHooks,
   } as AgentExecution;
@@ -3042,6 +3325,9 @@ function agentHandle(
       executorId: options.executorId,
     }),
     prepareResumeBinding: async () => ({ model: 'test-model', thinking: 'off', config: {}, assertCurrent: () => {}, syncMetadata: async () => {} }),
+    getModel: () => 'test-model',
+    getEffectiveThinkingLevel: () => 'off',
+    republishStatus: () => {},
   };
   const wire = {
     _serviceBrand: undefined,
@@ -3058,6 +3344,7 @@ function agentHandle(
         if (id === IAgentLoopService) return loop as T;
         if (id === IAgentPromptService) return prompt as T;
         if (id === IAgentProfileService) return profile as T;
+        if (id === IAgentToolPolicyService) return { isToolActive: () => false } as T;
         if (id === IAgentModelSwitchService) return { get: () => undefined, execute: async () => ({ state: 'completed' }) } as T;
         if (id === IAgentTokenCountingService) return { statusSize: () => 0 } as T;
         if (id === IWireService) return wire as T;
@@ -3086,6 +3373,12 @@ function agentHandle(
     },
     setExecutionState(next: 'starting' | 'cancelling' | 'broken') {
       state = next;
+    },
+    failHeldStart(error: unknown) {
+      rejectHeldStart(error);
+    },
+    cancelHeldStart() {
+      abortHeldStart();
     },
     pendingSteers: () => pendingSteers.length,
     async beginStepBoundary(step: number) {
