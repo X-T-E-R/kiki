@@ -517,7 +517,7 @@ export class ImSessionBridge {
       const poller = [...this.pollers.values()].find((item) => item.instances.has(id));
       const attempt = [...this.pending.values()].find((item) => item.poller.instances.has(id));
       const phase = this.linkPhase(poller?.adapter ?? attempt?.poller.adapter) ?? (attempt === undefined ? undefined : 'starting');
-      const view: ImInstanceView & { connection?: 'starting' | 'reconnecting' } = {
+      const view: ImInstanceView = {
         id,
         provider_kind: kind,
         ...(meta.label === undefined ? {} : { label: meta.label }),
@@ -596,7 +596,7 @@ export class ImSessionBridge {
     let started: Promise<{ accountId: string; conflict?: 'webhook'; failed?: 'auth' }>;
     try {
       started = Promise.resolve(adapter.start(async (event) => {
-        if (!this.published(poller)) return;
+        if (!this.published(poller)) throw new Error('im_not_ready');
         await this.ingest(poller.ownerId, event);
       }, { offset: this.state.cursors[poller.ownerId] }));
     } catch {
@@ -630,12 +630,8 @@ export class ImSessionBridge {
     return phase === 'starting' || phase === 'reconnecting' ? phase : undefined;
   }
 
-  private adapterPhase(adapter: ImSessionAdapter | undefined): string | undefined {
-    if (adapter === undefined) return undefined;
-    const reader = (adapter as { connectionPhase?: () => unknown }).connectionPhase;
-    if (typeof reader !== 'function') return undefined;
-    const value = reader.call(adapter);
-    return typeof value === 'string' ? value : undefined;
+  private adapterPhase(adapter: ImSessionAdapter | undefined): ReturnType<NonNullable<ImSessionAdapter['connectionPhase']>> | undefined {
+    return adapter?.connectionPhase?.();
   }
 
   private async finishStart(poller: Poller, started: Promise<{ accountId: string; conflict?: 'webhook'; failed?: 'auth' }>): Promise<void> {

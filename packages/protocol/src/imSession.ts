@@ -71,6 +71,7 @@ export const imInstanceViewSchema = z.object({
   account_id: z.string().optional(),
   conflict: z.literal('webhook').optional(),
   adapter: z.enum(['missing', 'running', 'shared', 'stopped']),
+  connection: z.enum(['starting', 'reconnecting']).optional(),
 }).strict();
 export type ImInstanceView = z.infer<typeof imInstanceViewSchema>;
 

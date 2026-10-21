@@ -67,6 +67,7 @@ export interface ImSessionAdapter {
   readonly supportsButtons: boolean;
   readonly supportsFile: boolean;
   describeConflict(): Promise<'webhook' | 'none'>;
+  connectionPhase?(): 'idle' | 'starting' | 'running' | 'reconnecting' | 'conflict' | 'auth_expired' | 'stopped';
   splitText(text: string): readonly string[];
   acceptsVoice(mediaType: string): boolean;
   start(listener: (event: ImInboundEvent) => Promise<void>, options?: { readonly offset?: number }): Promise<{ readonly accountId: string; readonly conflict?: 'webhook'; readonly failed?: 'auth' }>;

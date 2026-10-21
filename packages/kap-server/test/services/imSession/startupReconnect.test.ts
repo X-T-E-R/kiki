@@ -2,13 +2,15 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { SessionRunState, SessionSink } from '@nb-im/core';
+import { imSessionSnapshotSchema } from '@kiki/protocol';
 import { WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { ImSessionAdapter } from '../../../src/services/imSession/adapter';
 import { ImSessionBridge } from '../../../src/services/imSession/bridge';
 import { FakeImAdapter } from '../../../src/services/imSession/fakeAdapter';
-import { loadHubFactories } from '../../../src/services/imSession/hubAdapter';
+import { HubSessionAdapter, loadHubFactories } from '../../../src/services/imSession/hubAdapter';
 import type { ImSessionPorts } from '../../../src/services/imSession/ports';
 
 class PendingAdapter extends FakeImAdapter {
@@ -172,6 +174,85 @@ describe('im session startup reconnect', () => {
     expect(held.reads()).toBe(0);
     expect(held.submitted).toEqual([]);
     expect(held.logs.some((item) => item.startsWith('im session connected'))).toBe(false);
+  });
+
+  it('defers an event admitted before start resolves and ingests that event once it is published', async () => {
+    let state: SessionRunState = 'starting';
+    let resolveStart: () => void = () => undefined;
+    const pending = new Promise<void>((resolve) => { resolveStart = resolve; });
+    const raw = {
+      platform: 'telegram' as const,
+      instance_id: 'inst',
+      account: { platform: 'telegram' as const, account_id: '42' },
+      limits: { text_characters: 4096, text_utf8_bytes: null, callback_data_bytes: 64, voice_mime: ['audio/ogg'] as const, image_bytes: null, file_bytes: null },
+      get state() { return state; },
+      sink: undefined as SessionSink | undefined,
+      start(sink: SessionSink) { raw.sink = sink; return pending; },
+      stop() { state = 'stopped'; resolveStart(); return Promise.resolve(); },
+      send() { return Promise.resolve({ status: 'accepted' as const, message_ids: ['m1'] }); },
+    };
+    const submitted: string[] = [];
+    let saved = storedState(false);
+    const ports: ImSessionPorts = {
+      credentials: {
+        list: () => [{ id: 'inst', providerId: 'telegram', configured: true }],
+        read: () => 'token-value',
+        write: async () => undefined,
+        check: async () => ({ ok: true, accountId: '42' }),
+      },
+      sessions: {
+        listPersonas: async () => [],
+        listSessions: async () => [],
+        owns: async () => true,
+        ensureHome: async () => ({ homeSessionId: 'home' }),
+        activity: async () => ({ busy: false, pending: 'none', queueLength: 0 }),
+        submit: async (input) => { submitted.push(input.promptId); return { duplicate: false, promptId: input.promptId, deliveryState: 'pending' }; },
+        steer: async () => 'steered',
+        abort: async () => false,
+        saveMedia: async () => [],
+        readVisible: async () => ({ text: '', done: true, media: [] }),
+        listInteractions: async () => ({ approvals: [], questions: [] }),
+        decideApproval: async () => 'decided',
+        decideHostKey: async () => 'decided',
+        answerQuestion: async () => 'answered',
+      },
+      logger: { info() {} },
+      load: async () => saved,
+      save: async (value) => { saved = value; },
+    };
+    const bridge = new ImSessionBridge({
+      ports,
+      factories: [{ providerKind: 'telegram', create: () => new HubSessionAdapter(raw) }],
+      editIntervalMs: 0,
+      now: () => 1_700_000_000_000,
+      wait: async () => undefined,
+    });
+    open.push(bridge);
+    const inbound = (eventKey: string) => ({
+      event_key: eventKey,
+      platform_event_id: eventKey,
+      cursor: '1',
+      identity: { platform: 'telegram' as const, account_id: '42', chat_id: 'c1', sender_id: 'u1', topic_id: '0' },
+      payload: { type: 'text' as const, text: 'hello' },
+    });
+    await bridge.whenReady();
+    await bridge.setPolicy({ allowed: true, default_enabled: true });
+    const sink = raw.sink;
+    if (sink === undefined) throw new Error('sink missing');
+    expect(await sink.admit(inbound('tg:1'))).toEqual({ decision: 'defer' });
+    expect(submitted).toEqual([]);
+    expect(imSessionSnapshotSchema.parse(await bridge.snapshot()).instances[0]?.connection).toBe('starting');
+    state = 'running';
+    resolveStart();
+    await until(async () => (await bridge.snapshot()).instances[0]?.adapter === 'running', 'listener did not publish');
+    expect((await sink.admit(inbound('tg:1'))).decision).toBe('accepted');
+    expect(submitted).toEqual(['im:inst:tg:1']);
+    expect((await sink.admit(inbound('tg:1'))).decision).toBe('accepted');
+    expect(submitted).toEqual(['im:inst:tg:1']);
+    expect(imSessionSnapshotSchema.parse(await bridge.snapshot()).instances[0]?.connection).toBeUndefined();
+    await bridge.setListening('inst', false);
+    expect(await sink.admit(inbound('tg:2'))).toEqual({ decision: 'defer' });
+    expect(submitted).toEqual(['im:inst:tg:1']);
   });
 
   it('does not resume a model reply when the bridge closes during recovery', async () => {
