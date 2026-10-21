@@ -633,19 +633,24 @@ export class AcpProcessClient {
     const steering = objectValue(session?.initialize._meta?.['steering']);
     if (active === undefined || active.signal.aborted || connection === undefined || session === undefined ||
         steering?.['supported'] !== true || this.#steeringDetached) return false;
-    const response = await connection.agent.request('_session/steering', {
-      sessionId: session.sessionId,
-      prompt,
-      _meta: { steering: { idleBehavior: 'promptRequired' } },
-    }, { cancellationSignal: active.signal });
-    const outcome = objectValue(response)?.['outcome'];
-    if (outcome === 'injected') return true;
-    if (outcome === 'promptRequired') return false;
-    if (outcome === 'startedNewTurn') {
-      this.#steeringDetached = true;
-      return true;
+    try {
+      const response = await connection.agent.request('_session/steering', {
+        sessionId: session.sessionId,
+        prompt,
+        _meta: { steering: { idleBehavior: 'promptRequired' } },
+      }, { cancellationSignal: active.signal });
+      const outcome = objectValue(response)?.['outcome'];
+      if (outcome === 'injected') return true;
+      if (outcome === 'startedNewTurn') {
+        this.#steeringDetached = true;
+        return true;
+      }
+      return false;
+    } catch (error) {
+      if (active.signal.aborted || error instanceof AcpClientError || error instanceof AcpProtocolError ||
+          error instanceof RequestError || (error instanceof Error && error.name === 'AbortError')) return false;
+      throw error;
     }
-    throw new AcpProtocolError('ACP steering returned an unknown consumption outcome');
   }
 
   async cancel(reason: unknown = new Error('ACP turn cancelled')): Promise<boolean> {

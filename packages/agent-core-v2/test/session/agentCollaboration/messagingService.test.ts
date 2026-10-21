@@ -1620,6 +1620,88 @@ describe('agent collaboration safe-boundary delivery', () => {
     await service.dispose();
   });
 
+  it('does not steer the external opening message while its acknowledgement is still pending', async () => {
+    const store = mailboxStore(tempDir());
+    let releaseRunning!: () => void;
+    const running = new Promise<void>((resolve) => { releaseRunning = resolve; });
+    const target = agentHandle('agent-target', {
+      executorId: 'example-acp',
+      acceptExternalSteer: true,
+      pauseWhileRunning: () => running,
+    });
+    const dispatch = dispatchHarness(async (child, request, options) => ({
+      child,
+      request: request as AgentRunRequest,
+      started: target.execution.run(request as AgentRunRequest, { signal: options.signal }),
+    }));
+    const service = messagingService(store, lifecycleHarness([target.handle]).service, sessionContext(),
+      metadataHarness({ 'agent-target': { type: 'sub', parentAgentId: 'main', executor: 'example-acp' } }), dispatch);
+    const first = service.send({
+      ...sendInput('opening mail', 'external-opening'),
+      waitForRunningDelivery: false,
+      idleWake: 'owned-child',
+    });
+    await vi.waitFor(() => { expect(target.remoteRequests).toHaveLength(1); });
+    const second = service.send({
+      ...sendInput('later mail', 'external-later'),
+      waitForRunningDelivery: false,
+      idleWake: 'owned-child',
+    });
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    expect(target.steeredTexts()).toEqual([]);
+    expect(target.remoteRequests).toHaveLength(1);
+    releaseRunning();
+    await first;
+    await second;
+    expect(target.steeredTexts().some((text) => text.includes('opening mail'))).toBe(false);
+    expect(target.remoteRequests.filter((request) => request.kind !== 'retry' && request.prompt.includes('opening mail'))).toHaveLength(1);
+    await service.dispose();
+  });
+
+  it('delivers mail when an external execution binding leaves delegation at the harness default', async () => {
+    const store = mailboxStore(tempDir());
+    const target = agentHandle('agent-target', {
+      executorId: 'example-acp',
+      allowKikiSubagents: false,
+      delegationSource: 'harness-default',
+    });
+    const dispatch = dispatchHarness(async (child, request, options) => ({
+      child,
+      request: request as AgentRunRequest,
+      started: target.execution.run(request as AgentRunRequest, { signal: options.signal }),
+    }));
+    const service = messagingService(store, lifecycleHarness([target.handle]).service, sessionContext(),
+      metadataHarness({ 'agent-target': { type: 'sub', parentAgentId: 'main', executor: 'example-acp' } }), dispatch);
+    await expect(service.send({
+      ...sendInput('default delegation', 'external-default-delegation'),
+      idleWake: 'owned-child',
+    })).resolves.toMatchObject({ delivery: 'delivered', resumed: true });
+    expect(target.remoteRequests.map((request) => request.kind === 'retry' ? '' : request.prompt).join('\n')).toContain('default delegation');
+    await service.dispose();
+  });
+
+  it('rejects mail when the external profile explicitly turns delegation off', async () => {
+    const store = mailboxStore(tempDir());
+    const target = agentHandle('agent-target', {
+      executorId: 'example-acp',
+      allowKikiSubagents: false,
+      delegationSource: 'profile',
+    });
+    const dispatch = dispatchHarness();
+    const service = messagingService(store, lifecycleHarness([target.handle]).service, sessionContext(),
+      metadataHarness({ 'agent-target': { type: 'sub', parentAgentId: 'main', executor: 'example-acp' } }), dispatch);
+    await expect(service.send({
+      ...sendInput('blocked delegation', 'external-blocked-delegation'),
+      idleWake: 'owned-child',
+    })).rejects.toMatchObject({
+      code: 'request.invalid',
+      message: expect.stringContaining('allow_kiki_subagents'),
+    });
+    expect(dispatch.runOnExisting).not.toHaveBeenCalled();
+    expect(await store.nextQueued('session-1', 'agent-target')).toBeUndefined();
+    await service.dispose();
+  });
+
   it('queues user-authored mail to a running external child until its next run', async () => {
     const store = mailboxStore(tempDir());
     const target = agentHandle('agent-target', { executorId: 'grok-acp' });
@@ -3421,6 +3503,10 @@ function agentHandle(
     readonly dispatcher?: { dispatch: (event: { notificationType?: string; body?: string; sourceId?: string; sourceKind?: string }) => Promise<void> };
     readonly recoverableBroken?: boolean;
     readonly retryableBroken?: boolean;
+    readonly acceptExternalSteer?: boolean;
+    readonly pauseWhileRunning?: () => Promise<void>;
+    readonly allowKikiSubagents?: boolean;
+    readonly delegationSource?: 'harness-default' | 'profile' | 'session' | 'harness-settings';
   } = {},
 ) {
   const messages: ContextMessage[] = [];
@@ -3431,6 +3517,7 @@ function agentHandle(
     readonly resolve: (delivered: boolean) => void;
   }> = [];
   const remoteRequests: AgentRunRequest[] = [];
+  const steeredTexts: string[] = [];
   const executionHooks = createHooks<
     { onWillRun: AgentExecutionRunContext },
     'onWillRun'
@@ -3492,6 +3579,10 @@ function agentHandle(
         if (options.pauseAfterWillRun !== undefined || options.holdAfterPrepare === true) state = 'starting';
         await executionHooks.onWillRun.run(context);
         remoteRequests.push(context.request ?? request);
+        if (options.pauseWhileRunning !== undefined) {
+          state = 'running';
+          await options.pauseWhileRunning();
+        }
         if (options.holdAfterPrepare === true && !heldPrepare) {
           heldPrepare = true;
           await new Promise<void>((_resolve, reject) => {
@@ -3529,7 +3620,12 @@ function agentHandle(
             ? { state: 'broken' as const }
             : { state: 'idle' as const },
     steer: (message: ContextMessage) => {
-      if (state !== 'running' || options.executorId !== undefined) return Promise.resolve(false);
+      if (state !== 'running') return Promise.resolve(false);
+      if (options.acceptExternalSteer === true) {
+        steeredTexts.push(message.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n'));
+        return Promise.resolve(true);
+      }
+      if (options.executorId !== undefined) return Promise.resolve(false);
       return new Promise<boolean>((resolve) => pendingSteers.push({ message, resolve }));
     },
     cancel: () => {
@@ -3576,6 +3672,11 @@ function agentHandle(
       profileName: 'test',
       thinkingLevel: 'off',
       executorId: options.executorId,
+      allowKikiSubagents: options.allowKikiSubagents,
+      execution: options.delegationSource === undefined ? undefined : {
+        sources: { allow_kiki_subagents: options.delegationSource },
+        effective: { allow_kiki_subagents: options.allowKikiSubagents ?? false },
+      },
     }),
     prepareResumeBinding: async () => ({ model: 'test-model', thinking: 'off', config: {}, assertCurrent: () => {}, syncMetadata: async () => {} }),
     getModel: () => 'test-model',
@@ -3614,6 +3715,7 @@ function agentHandle(
     messages,
     operations,
     remoteRequests,
+    steeredTexts: () => steeredTexts,
     setRunning(running: boolean) {
       state = running ? 'running' : 'idle';
       if (!running) this.releaseSteers(false);

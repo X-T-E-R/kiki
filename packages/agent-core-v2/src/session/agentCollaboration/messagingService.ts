@@ -2,6 +2,7 @@ import { Disposable, DisposableMap, DisposableStore } from '#/_base/di/lifecycle
 import { isPromiseLike } from '#/_base/lifecycle/disposer';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { abortable } from '#/_base/utils/abort';
+import { harnessCapabilities } from '#/app/agentExecutor/harnessMcp';
 import { LifecycleScope } from '#/app/scopes';
 import { ILogService } from '#/_base/log/log';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
@@ -181,8 +182,6 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
   }): Promise<AgentMessageAcceptance> {
     const { waitForRunningDelivery, idleWake, ...messageInput } = input;
     const storedInput = { sessionId: this.session.sessionId, ...messageInput };
-    const acceptance = await this.store.accept(storedInput);
-    if (acceptance.delivery === 'delivered' || acceptance.payloadConflict) return acceptance;
     let child: DispatchChild | undefined;
     let handle = this.lifecycle.get(input.targetAgentId);
     if (handle === undefined && idleWake === 'owned-child') {
@@ -192,6 +191,14 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       );
       handle = child.agent;
     }
+    if (handle !== undefined && !this.kikiMailEnabled(handle)) {
+      throw new Error2(
+        ErrorCodes.REQUEST_INVALID,
+        `Agent "${input.targetAgentId}" does not accept Kiki mail while allow_kiki_subagents is false.`,
+      );
+    }
+    const acceptance = await this.store.accept(storedInput);
+    if (acceptance.delivery === 'delivered' || acceptance.payloadConflict) return acceptance;
     if (handle === undefined) return acceptance;
     if (waitForRunningDelivery !== true) {
       const lease = await this.sessions.acquire?.(this.session.sessionId, 'agent-message-delivery');
@@ -526,7 +533,8 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
 
   private kikiMailEnabled(handle: IAgentScopeHandle): boolean {
     const binding = handle.accessor.get(IAgentProfileService).data();
-    return binding.execution === undefined || (binding.executorId ?? 'native') === 'native' || binding.allowKikiSubagents === true;
+    if ((binding.executorId ?? 'native') === 'native') return true;
+    return harnessCapabilities(binding).delegation !== false;
   }
 
   private isExternalExecutor(handle: IAgentScopeHandle): boolean {
@@ -789,8 +797,9 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       signal?.throwIfAborted();
       if (pending === undefined) return;
       const message = pending.queued.message;
-      if (!this.hasAppliedMessage(handle, pending) && !await apply(toContextMessage(message))) {
-        return;
+      if (!this.hasAppliedMessage(handle, pending)) {
+        if (this.externalPrepared.get(handle.id) === message.messageId) return;
+        if (!await apply(toContextMessage(message))) return;
       }
       if (!await this.completeClaim(handle, pending)) return;
     }

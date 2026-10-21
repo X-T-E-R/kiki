@@ -160,7 +160,7 @@ ACP harness 的工具调用与 Kiki 工具显示在同一条时间线中。harne
 
 外部执行器既可以担任 main agent，也可以运行子 Agent。main agent 通过 `allow_kiki_subagents: true` 开启 Kiki 委派工具，可在 profile、会话覆盖或 [harness 默认设置](../configuration/config-files.md#外部-harness-默认设置) 中声明；profile 省略时继承默认设置。没有能力声明的原样 main 执行不会注入 Kiki 工具桥。
 
-真实子 Agent 的执行器明确支持本机 stdio MCP 时，自动获得其获准的原生 Kiki 工具桥，包括已注册的插件和 MCP 工具。桥接调用使用这个子 Agent 自己的会话和身份，不借用 main agent。原生角色、叶子限制、工具策略、审批和工作区限制继续生效。明确设置 `allow_kiki_subagents: false` 会关闭 `AgentRun`、`AgentList` 和 `AgentSend`，不关闭 `AgentNotify`；父级通知沿自己的权限规则执行。
+真实子 Agent 的执行器明确支持本机 stdio MCP 时，自动获得其获准的原生 Kiki 工具桥，包括已注册的插件和 MCP 工具。桥接调用使用这个子 Agent 自己的会话和身份，不借用 main agent。原生角色、叶子限制、工具策略、审批和工作区限制继续生效。明确设置 `allow_kiki_subagents: false` 会关闭该 Agent 自己的 `AgentRun`、`AgentList` 和 `AgentSend`，父级发给它的 AgentSend 也会被拒绝且不保存。省略该值，或沿用 harness 默认，不拦截这封入站邮件。该设置不关闭 `AgentNotify`；父级通知沿自己的权限规则执行。
 
 工具桥附加到**已有会话**，不另建 seat 会话。harness 必须接受会话级 stdio MCP，并能启动 Kiki 的桥接命令。启用原生桥后，会话 MCP 工具经过原生注册表和策略，不再同时直接转发给 harness。执行器明确不支持这条连接时，显式请求能力会得到配置错误；支持状态未知不会自动为子 Agent 注入工具桥。
 
@@ -285,7 +285,7 @@ disallowedTools:
 | `restrict_models_to_menu` | 否 | 布尔值，默认 `false`，仅放 profile 顶层。`true` 从作者原始默认 `model_alias` 与 `model_profiles[].alias` 派生一道**硬**模型上限，在 route / lease 改写前捕获并随绑定冻结。其他硬允许域继续求交，禁止项仍生效；显式 pin 与恢复不能绕过。见 [模型菜单与硬边界](./agent-profiles.md#模型菜单与硬边界) |
 | `thinking_effort` | 否 | 该 profile 作为新 subagent 启动时请求的思考强度。使用 `model_alias: inherit` 时，适用的显式档位 pin 优先于调用方的有效思考强度 |
 | `executor` | 否 | `agent-executors.toml` 中的 executor id；省略时使用原生引擎。进程内派发与外部委派表面都会为具名子 Agent 使用这份绑定。外部委派中，harness 的审批请求通过该 root 的 `interactions` / `respond` 操作暴露，并且只覆盖它自己的直属子 Agent。示例 profile 位于仓库中的 `docs/examples/agent-profiles/external-harnesses/` 目录 |
-| `allow_kiki_subagents` | 否 | 为外部 main agent 开启委派工具，main 未声明时保持关闭。兼容的子 Agent 在各层未作选择时继承获准的原生委派工具。明确的 `false` 关闭 `AgentRun`、`AgentList`、`AgentSend`，不关闭 `AgentNotify`。需要会话级 stdio MCP 与原生派发权限。见 [外部 main agent 的委派](#外部-main-agent-的委派) |
+| `allow_kiki_subagents` | 否 | 为外部 main agent 开启委派工具，main 未声明时保持关闭。兼容的子 Agent 在各层未作选择时继承获准的原生委派工具。明确的 `false` 关闭该 Agent 自己的 `AgentRun`、`AgentList`、`AgentSend`，并拒绝父级 AgentSend 且不保存。省略该值或 harness 默认不拦截这封入站邮件。不关闭 `AgentNotify`。需要会话级 stdio MCP 与原生派发权限。见 [外部 main agent 的委派](#外部-main-agent-的委派) |
 | `kiki_context` | 否 | `memory`、`board`、`cron`、`threads`、`history`、`hooks` 的列表。main 未声明时保持关闭；兼容子 Agent 继承获准的原生上下文工具。明确的 `[]` 关闭上下文组，不影响无关原生工具。见 [外部 main agent 的 Kiki 上下文](#外部-main-agent-的-kiki-上下文) |
 | `allowed_models` | 否 | **硬**模型允许列表，支持 YAML 列表或逗号分隔字符串。原生 alias 按规范模型身份比较；外部 executor 按其实际生效模型 ID 检查。列表外绑定会被拒绝，包括显式 pin、人工选择与恢复。`[]` 不允许任何模型；省略、`null` 或单独的 `"*"` 表示不增加限制。不得将 `*` 与名称混写 |
 | `deny_models` | 否 | **硬**模型禁止列表。命中即拒绝，即使另一列表允许它。为空或省略表示无禁止项；不接受通配符。机器级 `[subagent].deny_models` 仍是额外硬边界 |

@@ -27,6 +27,8 @@ export interface InProcessAgentScript {
   readonly hangPrompt?: boolean;
   readonly modeUpdate?: string;
   readonly sessionResponseMeta?: Record<string, unknown>;
+  readonly initializeMeta?: Record<string, unknown>;
+  readonly steeringOutcome?: 'injected' | 'promptRequired' | 'startedNewTurn' | 'unknown' | 'reject';
 }
 
 export interface InProcessAgentHistory {
@@ -39,6 +41,7 @@ export interface InProcessAgentHistory {
   readonly sessionLoadParams: unknown[];
   readonly sessionForkParams: unknown[];
   readonly promptParams: unknown[];
+  readonly steeringParams: unknown[];
   cancelCount: number;
 }
 
@@ -86,6 +89,7 @@ export function createInProcessScriptedAgent(
     sessionLoadParams: [],
     sessionForkParams: [],
     promptParams: [],
+    steeringParams: [],
     cancelCount: 0,
   };
   let settlePrompt: ((stopReason: StopReason) => void) | undefined;
@@ -101,6 +105,7 @@ export function createInProcessScriptedAgent(
           sessionCapabilities: { resume: {} },
         },
         agentInfo: { name: 'scripted-agent', version: '1.0.0' },
+        ...(script.initializeMeta === undefined ? {} : { _meta: script.initializeMeta }),
       };
     })
     .onRequest(methods.agent.session.new, ({ params }) => {
@@ -174,6 +179,12 @@ export function createInProcessScriptedAgent(
         return { stopReason };
       }
       return { stopReason: script.stopReason ?? 'end_turn' };
+    })
+    .onRequest('_session/steering', (params: unknown) => params, ({ params }) => {
+      history.methods.push('_session/steering');
+      history.steeringParams.push(params);
+      if (script.steeringOutcome === 'reject') throw RequestError.methodNotFound('_session/steering');
+      return { outcome: script.steeringOutcome ?? 'injected' };
     })
     .onNotification(methods.agent.session.cancel, () => {
       history.cancelCount += 1;

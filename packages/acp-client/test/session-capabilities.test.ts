@@ -420,3 +420,67 @@ describe('ACP fork isolation', () => {
     expect(saved).toEqual([{ executorId: 'fixture', version: 1, ref: { sessionId: 'forked-session' } }]);
   }, 15_000);
 });
+
+async function whenPrompting(methods: readonly string[]): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (!methods.includes('session/prompt')) {
+    if (Date.now() > deadline) throw new Error('scripted prompt did not start');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+describe('AcpProcessClient steering consumption', () => {
+  const steeringMeta = { steering: { supported: true } };
+
+  async function duringPrompt(outcome: InProcessAgentScript['steeringOutcome']) {
+    const opened = await openWithScriptedAgent({
+      hangPrompt: true,
+      initializeMeta: steeringMeta,
+      steeringOutcome: outcome,
+    }, {});
+    const turn = await opened.client.startTurn({
+      prompt: 'work',
+      signal: new AbortController().signal,
+      session: { cwd: 'C:/workspace' },
+    });
+    void turn.completion.catch(() => undefined);
+    await whenPrompting(opened.history.methods);
+    return { ...opened, turn };
+  }
+
+  it('acks an injected steering prompt', async () => {
+    const { client, history, turn } = await duringPrompt('injected');
+    try {
+      await expect(client.steer([{ type: 'text', text: 'later' }])).resolves.toBe(true);
+      expect(history.steeringParams).toEqual([expect.objectContaining({
+        prompt: [{ type: 'text', text: 'later' }],
+        _meta: { steering: { idleBehavior: 'promptRequired' } },
+      })]);
+    } finally {
+      await turn.cancel();
+      await client.shutdown();
+    }
+  });
+
+  it('acks a started turn once and then stops steering that session', async () => {
+    const { client, history, turn } = await duringPrompt('startedNewTurn');
+    try {
+      await expect(client.steer([{ type: 'text', text: 'later' }])).resolves.toBe(true);
+      await expect(client.steer([{ type: 'text', text: 'again' }])).resolves.toBe(false);
+      expect(history.steeringParams).toHaveLength(1);
+    } finally {
+      await turn.cancel();
+      await client.shutdown();
+    }
+  });
+
+  it.each(['promptRequired', 'unknown', 'reject'] as const)('leaves %s unconsumed', async (outcome) => {
+    const { client, turn } = await duringPrompt(outcome);
+    try {
+      await expect(client.steer([{ type: 'text', text: 'later' }])).resolves.toBe(false);
+    } finally {
+      await turn.cancel();
+      await client.shutdown();
+    }
+  });
+});
