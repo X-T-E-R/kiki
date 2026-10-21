@@ -122,6 +122,29 @@ describe('im session bridge', () => {
     expect(after.discoveries.some((item) => item.preview === 'again')).toBe(true);
   });
 
+  it('confirms a paused chat back onto its existing binding', async () => {
+    const adapter = new FakeImAdapter('telegram', '42');
+    const harness = bridgeFor(adapter);
+    await harness.bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
+    await harness.bridge.setListening('inst', true);
+    await adapter.emit({ eventId: '1', cursor: 1, identity, kind: 'text', text: 'hello' });
+    const snap = await harness.bridge.snapshot();
+    await harness.bridge.confirm(snap.discoveries[0]!.id, { target: { kind: 'session', session_id: 'sess' } });
+    const bound = (await harness.bridge.snapshot()).bindings[0]!;
+    await harness.bridge.updateBinding(bound.id, { sessionEnabled: false });
+    await adapter.emit({ eventId: '2', cursor: 2, identity, kind: 'text', text: 'again' });
+    const paused = await harness.bridge.snapshot();
+    const discovery = paused.discoveries.find((item) => item.preview === 'again');
+    expect(discovery).toBeDefined();
+    await harness.bridge.confirm(discovery!.id, { target: { kind: 'session', session_id: 'home' }, busy: 'steer', reply: 'final' });
+    const restored = await harness.bridge.snapshot();
+    expect(restored.bindings).toHaveLength(1);
+    expect(restored.bindings[0]).toMatchObject({ id: bound.id, session_id: 'home', busy: 'steer', enabled: true });
+    expect(restored.bindings[0]?.session_enabled).toBeUndefined();
+    await adapter.emit({ eventId: '3', cursor: 3, identity, kind: 'text', text: 'next' });
+    expect(harness.submitted.map((item) => item.promptId)).toEqual(['im:inst:3']);
+  });
+
   it('answers status, abort, and target without a prompt', async () => {
     const adapter = new FakeImAdapter('telegram', '42');
     const harness = bridgeFor(adapter);

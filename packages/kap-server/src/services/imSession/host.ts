@@ -25,7 +25,6 @@ import {
   isError2,
   reservePrompt,
   type ContentPart,
-  type ContextMessage,
   type QuestionRequest,
   type Scope,
   type SessionApprovalRequest,
@@ -295,7 +294,7 @@ class NotificationSessionPorts implements ImSessionPorts {
     return this.inSession(sessionId, async (session) => {
       const agent = await ensureMainAgent(session);
       const messages = agent.accessor.get(IAgentContextMemoryService).get();
-      const selected = turnId === undefined ? afterPrompt(messages, promptId) : messages.filter((message) => message.role === 'assistant' && message.source?.turnId === turnId);
+      const selected = visibleReplyMessages(messages, promptId, turnId);
       const text = selected.flatMap((message) => message.content.flatMap((part) => part.type === 'text' ? [part.text] : [])).join('');
       const media: ImVisibleMedia[] = [];
       const store = session.accessor.get(ISessionMediaStore);
@@ -430,12 +429,24 @@ function recordOf(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
-function afterPrompt(messages: readonly ContextMessage[], promptId: string): ContextMessage[] {
+interface ReplySelectorMessage {
+  readonly id?: string;
+  readonly role: string;
+  readonly origin?: { readonly kind?: string };
+  readonly source?: { readonly turnId?: number };
+}
+
+export function visibleReplyMessages<T extends ReplySelectorMessage>(messages: readonly T[], promptId: string, turnId?: number): T[] {
+  const resolved = turnId ?? messages.find((message) => message.id === promptId)?.source?.turnId;
+  if (typeof resolved === 'number') {
+    const byTurn = messages.filter((message) => message.role === 'assistant' && message.source?.turnId === resolved);
+    if (byTurn.length > 0) return byTurn;
+  }
   const start = messages.findIndex((message) => message.id === promptId);
   if (start < 0) return [];
-  const selected = [];
+  const selected: T[] = [];
   for (const message of messages.slice(start + 1)) {
-    if (message.role === 'user') break;
+    if (message.role === 'user' && message.origin?.kind !== 'injection') break;
     if (message.role === 'assistant') selected.push(message);
   }
   return selected;

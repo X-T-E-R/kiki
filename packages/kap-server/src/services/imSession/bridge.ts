@@ -328,19 +328,33 @@ export class ImSessionBridge {
       sessionId = request.target.session_id;
     }
     this.state.discoveries = this.state.discoveries.filter((item) => item.id !== discoveryId);
-    this.state.bindings.push({
-      id: this.next('b'),
-      providerInstanceId: discovery.providerInstanceId,
-      providerKind: discovery.providerKind,
-      accountId: discovery.accountId,
-      identity: discovery.identity,
-      sessionId,
-      ...(personaId === undefined ? {} : { personaId }),
-      enabled: true,
-      busy: request.busy ?? meta.busy ?? 'queue',
-      reply: request.reply ?? meta.reply ?? 'final',
-      mobileInteractions: request.mobile_interactions ?? true,
-    });
+    const existing = this.state.bindings.find((item) => item.providerInstanceId === discovery.providerInstanceId && sameIdentity(item.identity, discovery.identity));
+    if (existing !== undefined) {
+      existing.accountId = discovery.accountId;
+      existing.identity = discovery.identity;
+      existing.sessionId = sessionId;
+      if (personaId === undefined) delete existing.personaId;
+      else existing.personaId = personaId;
+      existing.enabled = true;
+      delete existing.sessionEnabled;
+      existing.busy = request.busy ?? meta.busy ?? existing.busy;
+      existing.reply = request.reply ?? meta.reply ?? existing.reply;
+      existing.mobileInteractions = request.mobile_interactions ?? existing.mobileInteractions;
+    } else {
+      this.state.bindings.push({
+        id: this.next('b'),
+        providerInstanceId: discovery.providerInstanceId,
+        providerKind: discovery.providerKind,
+        accountId: discovery.accountId,
+        identity: discovery.identity,
+        sessionId,
+        ...(personaId === undefined ? {} : { personaId }),
+        enabled: true,
+        busy: request.busy ?? meta.busy ?? 'queue',
+        reply: request.reply ?? meta.reply ?? 'final',
+        mobileInteractions: request.mobile_interactions ?? true,
+      });
+    }
     await this.persist();
     return this.snapshot();
   }
@@ -624,7 +638,8 @@ export class ImSessionBridge {
 
   private async onMessage(instanceId: string, accountId: string, event: ImInboundEvent): Promise<void> {
     const meta = this.requireMeta(instanceId);
-    const binding = this.state.bindings.find((item) => item.providerInstanceId === instanceId && sameIdentity(item.identity, event.identity));
+    const matches = this.state.bindings.filter((item) => item.providerInstanceId === instanceId && sameIdentity(item.identity, event.identity));
+    const binding = matches.find((item) => this.admitted(item)) ?? matches[0];
     const adapter = this.adapterFor(instanceId);
     if (binding !== undefined && !this.admitted(binding)) {
       this.noteDiscovery(meta, accountId, event);
