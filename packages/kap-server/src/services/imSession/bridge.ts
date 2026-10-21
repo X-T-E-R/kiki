@@ -1,10 +1,10 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 import { imSessionAdmitted, type ImBinding, type ImCatalog, type ImCheckResult, type ImConfirmRequest, type ImDiscovery, type ImInstanceView, type ImPasteResult, type ImPolicy, type ImProviderKind, type ImSessionSnapshot, type ImStranger, type MessageContent } from '@kiki/protocol';
 
 import { ImSendError, type ImAdapterFactory, type ImInboundEvent, type ImInboundIdentity, type ImSessionAdapter } from './adapter';
 import { parseImPaste } from './paste';
-import type { ImPendingQuestion, ImQuestionAnswer, ImSessionBridgeOptions, ImSessionPorts } from './ports';
+import type { ImAnswerResult, ImPendingQuestion, ImQuestionAnswer, ImSessionBridgeOptions, ImSessionPorts } from './ports';
 import { segmentText } from './segment';
 
 interface BindingRecord {
@@ -77,6 +77,20 @@ interface ReplyLedger {
   deliveredText?: string;
 }
 
+interface OpenReply {
+  bindingId: string;
+  promptId: string;
+  turnId?: number;
+  messageIds: string[];
+  lastText: string;
+  deliveredText?: string;
+  failedText?: string;
+  tooLongNotice?: string;
+  fileSent: boolean;
+  undelivered?: boolean;
+  open: boolean;
+}
+
 interface Stored {
   policy: { allowed: boolean; defaultEnabled: boolean };
   instances: InstanceMeta[];
@@ -90,6 +104,9 @@ interface Stored {
   voiceFallbacks: number;
   cursors: Record<string, number>;
   notices: string[];
+  questionAnswers: Record<string, Record<string, string | true>>;
+  answeredQuestions: Record<string, string[]>;
+  replies: OpenReply[];
 }
 
 interface Poller {
@@ -117,6 +134,7 @@ const COPY = {
     numbers: 'Send the number of a choice.',
     fileUnsupported: 'This platform cannot take that file.',
     tooLong: 'This platform rejected the message as too long and cannot take a file.',
+    unknown: 'That action is not pending.',
     wechatAuth: 'This WeChat connection needs a new scan.',
     status: (busy: boolean, pending: string, queue: number) => `Busy: ${busy ? 'yes' : 'no'}. Waiting: ${pending}. Queue: ${queue}.`,
   },
@@ -137,6 +155,7 @@ const COPY = {
     numbers: '发送选项的数字。',
     fileUnsupported: '这个平台收不了这个文件。',
     tooLong: '这个平台认为消息过长，而且不能接收文件。',
+    unknown: '没有这项待处理。',
     wechatAuth: '这个微信连接需要重新扫码。',
     status: (busy: boolean, pending: string, queue: number) => `忙：${busy ? '是' : '否'}。等待：${pending}。队列：${queue}。`,
   },
@@ -166,7 +185,7 @@ export class ImSessionBridge {
   private readonly pollers = new Map<string, Poller>();
   private readonly jobs = new Set<Promise<void>>();
   private readonly wechatLogin: ImSessionBridgeOptions['wechatLogin'];
-  private seq = 0;
+  private readonly liveReplies = new Set<string>();
   private ready: Promise<void>;
 
   constructor(options: ImSessionBridgeOptions) {
@@ -211,6 +230,7 @@ export class ImSessionBridge {
     if (!policy.allowed) await this.stopAll();
     else await this.ensureListening();
     await this.persist();
+    if (policy.allowed) await this.resumeReplies();
     return this.snapshot();
   }
 
@@ -245,6 +265,7 @@ export class ImSessionBridge {
     if (!listening) await this.release(instanceId);
     else await this.ensureOne(instanceId);
     await this.persist();
+    if (listening) await this.resumeReplies(instanceId);
     return this.snapshot();
   }
 
@@ -269,7 +290,7 @@ export class ImSessionBridge {
 
   async confirm(discoveryId: string, request: ImConfirmRequest): Promise<ImSessionSnapshot> {
     await this.ready;
-    const discovery = this.state.discoveries.find((item) => item.id === discoveryId);
+    const discovery = this.only(this.state.discoveries, discoveryId);
     if (discovery === undefined) throw new Error('unknown_discovery');
     const meta = this.requireMeta(discovery.providerInstanceId);
     let sessionId: string;
@@ -304,6 +325,7 @@ export class ImSessionBridge {
 
   async dismiss(discoveryId: string): Promise<ImSessionSnapshot> {
     await this.ready;
+    if (this.only(this.state.discoveries, discoveryId) === undefined) throw new Error('unknown_discovery');
     this.state.discoveries = this.state.discoveries.filter((item) => item.id !== discoveryId);
     await this.persist();
     return this.snapshot();
@@ -311,7 +333,7 @@ export class ImSessionBridge {
 
   async updateBinding(id: string, patch: { enabled?: boolean; sessionEnabled?: boolean | null; busy?: 'queue' | 'steer'; reply?: 'final' | 'edit'; mobileInteractions?: boolean; sessionId?: string }): Promise<ImSessionSnapshot> {
     await this.ready;
-    const binding = this.state.bindings.find((item) => item.id === id);
+    const binding = this.only(this.state.bindings, id);
     if (binding === undefined) throw new Error('unknown_binding');
     if (patch.enabled !== undefined) binding.enabled = patch.enabled;
     if (patch.sessionEnabled === null) delete binding.sessionEnabled;
@@ -321,11 +343,13 @@ export class ImSessionBridge {
     if (patch.mobileInteractions !== undefined) binding.mobileInteractions = patch.mobileInteractions;
     if (patch.sessionId !== undefined) binding.sessionId = patch.sessionId;
     await this.persist();
+    await this.resumeReplies(binding.providerInstanceId);
     return this.snapshot();
   }
 
   async removeBinding(id: string): Promise<ImSessionSnapshot> {
     await this.ready;
+    if (this.only(this.state.bindings, id) === undefined) throw new Error('unknown_binding');
     this.state.bindings = this.state.bindings.filter((item) => item.id !== id);
     await this.persist();
     return this.snapshot();
@@ -374,6 +398,9 @@ export class ImSessionBridge {
     if (raw === undefined || raw === '') return;
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed === 'object' && parsed !== null) this.state = { ...emptyState(), ...(parsed as Stored) };
+    if (!Array.isArray(this.state.replies)) this.state.replies = [];
+    if (typeof this.state.questionAnswers !== 'object' || this.state.questionAnswers === null) this.state.questionAnswers = {};
+    if (typeof this.state.answeredQuestions !== 'object' || this.state.answeredQuestions === null) this.state.answeredQuestions = {};
   }
 
   private async persist(): Promise<void> {
@@ -389,8 +416,21 @@ export class ImSessionBridge {
   }
 
   private next(prefix: string): string {
-    this.seq += 1;
-    return `${prefix}${this.seq.toString(36)}`;
+    const used = new Set<string>([
+      ...this.state.bindings.map((item) => item.id),
+      ...this.state.discoveries.map((item) => item.id),
+      ...this.state.tickets.map((item) => item.id),
+    ]);
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const id = `${prefix}${randomBytes(8).toString('hex')}`;
+      if (!used.has(id)) return id;
+    }
+    throw new Error('id_exhausted');
+  }
+
+  private only<T extends { id: string }>(items: readonly T[], id: string): T | undefined {
+    const matches = items.filter((item) => item.id === id);
+    return matches.length === 1 ? matches[0] : undefined;
   }
 
   private meta(instanceId: string, providerKind: ImProviderKind): InstanceMeta {
@@ -585,7 +625,8 @@ export class ImSessionBridge {
         if (adapter !== undefined) await this.send(adapter, event.identity, this.copy('expired'), 'expired');
         return;
       }
-      await this.ports.sessions.answerQuestion({ sessionId: binding.sessionId, interactionId: waiting.interactionId, response: { kind: 'other', questionKey: waiting.questionKey, ...(waiting.questionIndex === undefined ? {} : { questionIndex: waiting.questionIndex }), text, method: 'number_key' } });
+      await this.ask(binding.sessionId, waiting.interactionId, { kind: 'other', questionKey: waiting.questionKey, ...(waiting.questionIndex === undefined ? {} : { questionIndex: waiting.questionIndex }), text, method: 'number_key' });
+      if (waiting.questionIndex !== undefined) this.markQuestion(binding, waiting.interactionId, waiting.questionIndex);
       delete this.state.awaiting[senderKey(instanceId, event.identity)];
       return;
     }
@@ -654,18 +695,54 @@ export class ImSessionBridge {
   }
 
   private async answerNumbers(binding: BindingRecord, text: string): Promise<boolean> {
-    if (!/^[0-9]+(?:\s+[0-9]+)*$/u.test(text)) return false;
     const pending = await this.ports.sessions.listInteractions(binding.sessionId);
-    const question = pending.questions.find((item) => !this.state.tickets.some((ticket) => this.sameQuestion(ticket, item) && ticket.consumed && ticket.action !== 'toggle'));
+    const question = pending.questions.find((item) => !this.questionAnswered(binding, item));
     if (question === undefined) return false;
-    const numbers = text.split(/\s+/u).map((item) => Number(item));
-    const options = numbers.map((number) => question.options[number - 1]).filter((item) => item !== undefined);
-    if (options.length !== numbers.length || options.length === 0) return false;
-    const response: ImQuestionAnswer = question.multi
-      ? { kind: 'multi', questionKey: question.questionKey, questionIndex: question.questionIndex, optionIds: options.map((item) => item.id), method: 'number_key' }
-      : { kind: 'single', questionKey: question.questionKey, questionIndex: question.questionIndex, optionIds: [options[0]!.id], method: 'number_key' };
-    await this.ports.sessions.answerQuestion({ sessionId: binding.sessionId, interactionId: question.id, response });
-    return true;
+    const numeric = /^[0-9]+(?:\s+[0-9]+)*$/u.test(text);
+    if (numeric) {
+      const numbers = text.split(/\s+/u).map((item) => Number(item));
+      const options = numbers.map((number) => question.options[number - 1]);
+      const valid = options.length > 0 && options.every((item) => item !== undefined) && (!question.multi ? numbers.length === 1 : true);
+      if (valid) {
+        const response: ImQuestionAnswer = question.multi
+          ? { kind: 'multi', questionKey: question.questionKey, questionIndex: question.questionIndex, optionIds: options.map((item) => item!.id), method: 'number_key' }
+          : { kind: 'single', questionKey: question.questionKey, questionIndex: question.questionIndex, optionIds: [options[0]!.id], method: 'number_key' };
+        await this.ask(binding.sessionId, question.id, response);
+        this.markQuestion(binding, question.id, question.questionIndex);
+        return true;
+      }
+    }
+    if (!numeric && question.allowOther && text.length > 0) {
+      await this.ask(binding.sessionId, question.id, { kind: 'other', questionKey: question.questionKey, questionIndex: question.questionIndex, text, method: 'number_key' });
+      this.markQuestion(binding, question.id, question.questionIndex);
+      return true;
+    }
+    const kind = this.adapterFor(binding.providerInstanceId)?.providerKind;
+    return (kind === 'onebot_v11' || kind === 'wechat_bridge') && text.length > 0;
+  }
+
+  private questionAnswered(binding: BindingRecord, question: { id: string; questionIndex: number }): boolean {
+    const key = senderKey(binding.providerInstanceId, binding.identity);
+    const token = `${question.id}:${question.questionIndex}`;
+    if ((this.state.answeredQuestions[key] ?? []).includes(token)) return true;
+    return this.state.tickets.some((ticket) => ticket.bindingId === binding.id && ticket.senderKey === key && this.sameQuestion(ticket, question) && ticket.consumed && ticket.action !== 'toggle');
+  }
+
+  private markQuestion(binding: BindingRecord, interactionId: string, questionIndex: number): void {
+    const key = senderKey(binding.providerInstanceId, binding.identity);
+    const token = `${interactionId}:${questionIndex}`;
+    const list = this.state.answeredQuestions[key] ?? [];
+    if (!list.includes(token)) this.state.answeredQuestions[key] = [...list, token];
+  }
+
+  private async ask(sessionId: string, interactionId: string, response: ImQuestionAnswer): Promise<ImAnswerResult> {
+    const previous = this.state.questionAnswers[interactionId];
+    const result = await this.ports.sessions.answerQuestion({ sessionId, interactionId, response, ...(previous === undefined ? {} : { previous }) });
+    if (typeof result === 'object') {
+      if (result.result === 'partial') this.state.questionAnswers[interactionId] = { ...result.answers };
+      else delete this.state.questionAnswers[interactionId];
+    }
+    return result;
   }
 
   private noteDiscovery(meta: InstanceMeta, accountId: string, event: ImInboundEvent): void {
@@ -696,18 +773,38 @@ export class ImSessionBridge {
   }
 
   private watchReply(binding: BindingRecord, promptId: string, turnId: number | undefined, adapter: ImSessionAdapter): void {
-    const ledger: ReplyLedger = { messageIds: [], fileSent: false, lastText: '' };
+    const live = `${binding.id}:${promptId}`;
+    if (this.liveReplies.has(live)) return;
+    this.liveReplies.add(live);
+    const stored = this.state.replies.find((item) => item.bindingId === binding.id && item.promptId === promptId);
+    const ledger: ReplyLedger = {
+      messageIds: [...(stored?.messageIds ?? [])],
+      fileSent: stored?.fileSent ?? false,
+      lastText: stored?.lastText ?? '',
+      ...(stored?.deliveredText === undefined ? {} : { deliveredText: stored.deliveredText }),
+      ...(stored?.failedText === undefined ? {} : { failedText: stored.failedText }),
+      ...(stored?.tooLongNotice === undefined ? {} : { tooLongNotice: stored.tooLongNotice }),
+      ...(stored?.undelivered === undefined ? {} : { undelivered: stored.undelivered }),
+    };
     const job = (async () => {
       try {
         while (this.state.policy.allowed) {
           await this.wait(this.editIntervalMs);
-          const current = this.state.bindings.find((item) => item.id === binding.id) ?? binding;
+          const current = this.only(this.state.bindings, binding.id);
+          if (current === undefined || !this.admitted(current)) return;
           const visible = await this.ports.sessions.readVisible(current.sessionId, promptId, turnId);
+          const before = `${ledger.lastText}\n${ledger.deliveredText ?? ''}\n${ledger.messageIds.join('\n')}`;
           if (current.reply === 'edit' && this.pendingReply(visible.text, ledger, visible.done)) await this.publishText(adapter, current.identity, visible.text, ledger, true, visible.done);
+          if (`${ledger.lastText}\n${ledger.deliveredText ?? ''}\n${ledger.messageIds.join('\n')}` !== before) {
+            this.rememberReply(current, promptId, turnId, ledger, true);
+            await this.persist();
+          }
           if (!visible.done) continue;
           if (current.reply === 'final' && visible.text.length > 0) await this.publishText(adapter, current.identity, visible.text, ledger, false, true);
           else if (current.reply === 'edit' && this.pendingReply(visible.text, ledger, true)) await this.publishText(adapter, current.identity, visible.text, ledger, true, true);
           await this.publishMedia(adapter, current.identity, visible.media);
+          this.rememberReply(current, promptId, turnId, ledger, false);
+          await this.persist();
           return;
         }
       } catch (error) {
@@ -718,7 +815,38 @@ export class ImSessionBridge {
       }
     })();
     this.jobs.add(job);
-    void job.finally(() => { this.jobs.delete(job); });
+    void job.finally(() => { this.jobs.delete(job); this.liveReplies.delete(live); });
+  }
+
+  private rememberReply(binding: BindingRecord, promptId: string, turnId: number | undefined, ledger: ReplyLedger, open: boolean): void {
+    const next: OpenReply = {
+      bindingId: binding.id,
+      promptId,
+      ...(turnId === undefined ? {} : { turnId }),
+      messageIds: [...ledger.messageIds],
+      lastText: ledger.lastText,
+      ...(ledger.deliveredText === undefined ? {} : { deliveredText: ledger.deliveredText }),
+      ...(ledger.failedText === undefined ? {} : { failedText: ledger.failedText }),
+      ...(ledger.tooLongNotice === undefined ? {} : { tooLongNotice: ledger.tooLongNotice }),
+      fileSent: ledger.fileSent,
+      ...(ledger.undelivered === undefined ? {} : { undelivered: ledger.undelivered }),
+      open,
+    };
+    const index = this.state.replies.findIndex((item) => item.bindingId === binding.id && item.promptId === promptId);
+    if (index < 0) this.state.replies.push(next);
+    else this.state.replies[index] = next;
+  }
+
+  private async resumeReplies(instanceId?: string): Promise<void> {
+    for (const reply of this.state.replies) {
+      if (!reply.open) continue;
+      const binding = this.only(this.state.bindings, reply.bindingId);
+      if (binding === undefined || !this.admitted(binding)) continue;
+      if (instanceId !== undefined && binding.providerInstanceId !== instanceId) continue;
+      const adapter = this.adapterFor(binding.providerInstanceId);
+      if (adapter === undefined) continue;
+      this.watchReply(binding, reply.promptId, reply.turnId, adapter);
+    }
   }
 
   private async publishText(adapter: ImSessionAdapter, identity: ImInboundIdentity, text: string, ledger: ReplyLedger, edit: boolean, final: boolean): Promise<void> {
@@ -1011,31 +1139,39 @@ export class ImSessionBridge {
   private async projectInteractions(binding: BindingRecord, approvals: readonly { id: string; expiresAt: number; toolName: string; action: string; ssh?: 'login' | 'host_key' }[], questions: readonly ImPendingQuestion[]): Promise<void> {
     const adapter = this.adapterFor(binding.providerInstanceId);
     if (adapter === undefined) return;
+    const outbound: { text: string; code: string; buttons?: { id: string; label: string }[] }[] = [];
+    let changed = false;
     for (const approval of approvals) {
       if (this.state.notices.includes(approval.id) || this.state.tickets.some((ticket) => ticket.interactionId === approval.id)) continue;
       if (approval.ssh === 'login') {
         this.state.notices.push(approval.id);
-        await this.send(adapter, binding.identity, this.copy('desktopSsh'), 'desktop_ssh');
+        changed = true;
+        outbound.push({ text: this.copy('desktopSsh'), code: 'desktop_ssh' });
         continue;
       }
       if (approval.ssh === 'host_key') {
         const yes = this.ticket(binding, approval.id, approval.expiresAt, 'host_yes');
         const no = this.ticket(binding, approval.id, approval.expiresAt, 'host_no');
-        await this.send(adapter, binding.identity, `${approval.toolName}`, 'host_key', [{ id: yes, label: this.copy('trust') }, { id: no, label: this.copy('refuse') }]);
+        changed = true;
+        outbound.push({ text: `${approval.toolName}`, code: 'host_key', buttons: [{ id: yes, label: this.copy('trust') }, { id: no, label: this.copy('refuse') }] });
         continue;
       }
       const allow = this.ticket(binding, approval.id, approval.expiresAt, 'approve');
       const refuse = this.ticket(binding, approval.id, approval.expiresAt, 'reject');
-      await this.send(adapter, binding.identity, `${approval.toolName} ${approval.action}`, 'approval', [{ id: allow, label: this.copy('allow') }, { id: refuse, label: this.copy('refuse') }]);
+      changed = true;
+      outbound.push({ text: `${approval.toolName} ${approval.action}`, code: 'approval', buttons: [{ id: allow, label: this.copy('allow') }, { id: refuse, label: this.copy('refuse') }] });
     }
     for (const question of questions) {
-      if (this.state.tickets.some((ticket) => this.sameQuestion(ticket, question))) continue;
+      if (this.questionAnswered(binding, question) || this.state.tickets.some((ticket) => this.sameQuestion(ticket, question))) continue;
       const group = `${question.id}:${question.questionIndex}`;
       const buttons = question.options.map((option, index) => ({ id: this.ticket(binding, question.id, question.expiresAt, question.multi ? 'toggle' : 'single', question.questionKey, option.id, group, question.questionIndex), label: `${index + 1}. ${option.label}` }));
       if (question.multi) buttons.push({ id: this.ticket(binding, question.id, question.expiresAt, 'multi_done', question.questionKey, undefined, group, question.questionIndex), label: this.copy('done') });
       if (question.allowOther) buttons.push({ id: this.ticket(binding, question.id, question.expiresAt, 'other', question.questionKey, undefined, undefined, question.questionIndex), label: this.copy('other') });
-      await this.send(adapter, binding.identity, question.questionKey, 'question', buttons);
+      changed = true;
+      outbound.push({ text: question.questionKey, code: 'question', buttons });
     }
+    if (changed) await this.persist();
+    for (const item of outbound) await this.send(adapter, binding.identity, item.text, item.code, item.buttons);
   }
 
   private ticket(binding: BindingRecord, interactionId: string, expiresAt: number, action: TicketRecord['action'], questionKey?: string, optionId?: string, group?: string, questionIndex?: number): string {
@@ -1058,11 +1194,15 @@ export class ImSessionBridge {
 
   private async onCallback(instanceId: string, event: ImInboundEvent): Promise<void> {
     const adapter = this.adapterFor(instanceId);
-    const ticket = this.state.tickets.find((item) => item.id === event.callbackData);
+    const tickets = this.state.tickets.filter((item) => item.id === event.callbackData);
+    const ticket = tickets.length === 1 ? tickets[0] : undefined;
     const binding = this.state.bindings.find((item) => item.providerInstanceId === instanceId && sameIdentity(item.identity, event.identity));
     if (event.callbackQueryId !== undefined && adapter !== undefined) await adapter.answerCallback(event.callbackQueryId);
-    if (ticket === undefined || binding === undefined || adapter === undefined) return;
-    if (ticket.sessionId !== binding.sessionId) {
+    if (ticket === undefined || binding === undefined || adapter === undefined) {
+      if (ticket === undefined && binding !== undefined && adapter !== undefined) await this.send(adapter, event.identity, this.copy('unknown'), 'unknown');
+      return;
+    }
+    if (ticket.senderKey !== senderKey(instanceId, event.identity) || ticket.bindingId !== binding.id || ticket.sessionId !== binding.sessionId) {
       await this.send(adapter, event.identity, this.copy('crossSession'), 'cross_session');
       return;
     }
@@ -1089,8 +1229,9 @@ export class ImSessionBridge {
       return;
     }
     if (ticket.action === 'single' && ticket.optionId !== undefined) {
-      await this.ports.sessions.answerQuestion({ sessionId: ticket.sessionId, interactionId: ticket.interactionId, response: { kind: 'single', questionKey: ticket.questionKey, ...(ticket.questionIndex === undefined ? {} : { questionIndex: ticket.questionIndex }), optionIds: [ticket.optionId], method: 'number_key' } });
+      await this.ask(ticket.sessionId, ticket.interactionId, { kind: 'single', questionKey: ticket.questionKey, ...(ticket.questionIndex === undefined ? {} : { questionIndex: ticket.questionIndex }), optionIds: [ticket.optionId], method: 'number_key' });
       ticket.consumed = true;
+      if (ticket.questionIndex !== undefined) this.markQuestion(binding, ticket.interactionId, ticket.questionIndex);
       return;
     }
     if (ticket.action === 'toggle' && ticket.group !== undefined && ticket.optionId !== undefined) {
@@ -1103,8 +1244,9 @@ export class ImSessionBridge {
     if (ticket.action === 'multi_done' && ticket.group !== undefined) {
       const optionIds = this.state.selections[ticket.group] ?? [];
       if (optionIds.length === 0) return;
-      await this.ports.sessions.answerQuestion({ sessionId: ticket.sessionId, interactionId: ticket.interactionId, response: { kind: 'multi', questionKey: ticket.questionKey, ...(ticket.questionIndex === undefined ? {} : { questionIndex: ticket.questionIndex }), optionIds, method: 'number_key' } });
+      await this.ask(ticket.sessionId, ticket.interactionId, { kind: 'multi', questionKey: ticket.questionKey, ...(ticket.questionIndex === undefined ? {} : { questionIndex: ticket.questionIndex }), optionIds, method: 'number_key' });
       ticket.consumed = true;
+      if (ticket.questionIndex !== undefined) this.markQuestion(binding, ticket.interactionId, ticket.questionIndex);
       return;
     }
     if (ticket.action === 'other' && ticket.questionKey !== undefined) {
@@ -1115,7 +1257,7 @@ export class ImSessionBridge {
 }
 
 function emptyState(): Stored {
-  return { policy: { allowed: true, defaultEnabled: true }, instances: [], discoveries: [], bindings: [], strangers: [], seen: [], tickets: [], selections: {}, awaiting: {}, voiceFallbacks: 0, cursors: {}, notices: [] };
+  return { policy: { allowed: true, defaultEnabled: true }, instances: [], discoveries: [], bindings: [], strangers: [], seen: [], tickets: [], selections: {}, awaiting: {}, voiceFallbacks: 0, cursors: {}, notices: [], questionAnswers: {}, answeredQuestions: {}, replies: [] };
 }
 
 function toDiscovery(record: DiscoveryRecord): ImDiscovery {

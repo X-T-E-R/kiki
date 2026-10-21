@@ -57,6 +57,12 @@ export interface ImQuestionAnswer {
   readonly method: 'number_key';
 }
 
+export type ImAnswerResult =
+  | 'answered'
+  | 'expired'
+  | 'resolved'
+  | { readonly result: 'answered' | 'partial'; readonly answers: Record<string, string | true> };
+
 export interface WechatQrLoginPort {
   start(): Promise<{ readonly login_id: string; readonly image: string }>;
   poll(id: string, verifyCode?: string): Promise<{ readonly status: string; readonly provider_instance_id?: string; readonly account_id?: string }>;
@@ -86,7 +92,7 @@ export interface ImSessionPorts {
     listInteractions(sessionId: string): Promise<{ approvals: readonly ImPendingApproval[]; questions: readonly ImPendingQuestion[] }>;
     decideApproval(input: { sessionId: string; interactionId: string; decision: 'approved' | 'rejected' }): Promise<'decided' | 'expired' | 'resolved'>;
     decideHostKey(input: { sessionId: string; interactionId: string; decision: 'approved' | 'rejected' }): Promise<'decided' | 'expired' | 'resolved'>;
-    answerQuestion(input: { sessionId: string; interactionId: string; response: ImQuestionAnswer }): Promise<'answered' | 'expired' | 'resolved'>;
+    answerQuestion(input: { sessionId: string; interactionId: string; response: ImQuestionAnswer; previous?: Record<string, string | true> }): Promise<ImAnswerResult>;
   };
   readonly logger: { info(fields: Record<string, string | number | boolean>, message: string): void };
   load(): Promise<string | undefined>;

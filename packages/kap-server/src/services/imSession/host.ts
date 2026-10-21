@@ -39,7 +39,7 @@ import type { NotificationService } from '../notifications/notificationService';
 import type { ImAdapterFactory, ImHttpTransport } from './adapter';
 import { ImSessionBridge } from './bridge';
 import { loadHubFactories, sessionAccountHint } from './hubAdapter';
-import type { ImQuestionAnswer, ImSessionPorts, ImSubmitResult, ImVisibleMedia, ImVisibleReply } from './ports';
+import type { ImAnswerResult, ImQuestionAnswer, ImSessionPorts, ImSubmitResult, ImVisibleMedia, ImVisibleReply } from './ports';
 import { WechatQrLogin, type WechatLoginFetch } from './wechatLogin';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -356,21 +356,22 @@ class NotificationSessionPorts implements ImSessionPorts {
     });
   }
 
-  private answerQuestion(input: { sessionId: string; interactionId: string; response: ImQuestionAnswer }) {
+  private answerQuestion(input: { sessionId: string; interactionId: string; response: ImQuestionAnswer; previous?: Record<string, string | true> }): Promise<ImAnswerResult> {
     return this.inSession(input.sessionId, async (session) => {
       const interactions = session.accessor.get(ISessionInteractionService);
       const pending = interactions.listPending('question').find((item) => item.id === input.interactionId);
       if (pending === undefined) return interactions.isRecentlyResolved(input.interactionId) ? 'answered' as const : 'expired' as const;
       if (Date.now() > pending.createdAt + DAY_MS) return 'expired' as const;
       const request = pending.payload as QuestionRequest;
-      const merged = mergeQuestionAnswers(request.questions, this.pendingAnswers.get(input.interactionId) ?? {}, input.response);
+      const previous = input.previous ?? this.pendingAnswers.get(input.interactionId) ?? {};
+      const merged = mergeQuestionAnswers(request.questions, previous, input.response);
       if (!merged.complete) {
         this.pendingAnswers.set(input.interactionId, merged.answers);
-        return 'answered' as const;
+        return { result: 'partial' as const, answers: merged.answers };
       }
       this.pendingAnswers.delete(input.interactionId);
       session.accessor.get(ISessionQuestionService).answer(input.interactionId, { answers: merged.answers, method: 'number_key' });
-      return 'answered' as const;
+      return { result: 'answered' as const, answers: merged.answers };
     });
   }
 }

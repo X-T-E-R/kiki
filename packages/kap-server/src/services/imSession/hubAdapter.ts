@@ -63,6 +63,16 @@ export function fileCursorStore(homeDir: string): SessionCursorStore {
   };
 }
 
+const replyWrites = new Map<string, Promise<void>>();
+
+function enqueueReplyWrite(file: string, job: () => Promise<void>): Promise<void> {
+  const previous = replyWrites.get(file) ?? Promise.resolve();
+  const run = previous.then(job, job);
+  const settled = run.then(() => undefined, () => undefined);
+  replyWrites.set(file, settled);
+  return run;
+}
+
 async function loadReplyMap(file: string): Promise<Record<string, string>> {
   let raw: Buffer;
   try { raw = await readPrivateFile(file); } catch (error) {
@@ -137,6 +147,8 @@ export class HubSessionAdapter implements ImSessionAdapter {
   private ack: string | undefined;
   private readonly contexts = new Map<string, { reply_context?: string; chat_kind?: SessionChatKind }>();
   private readonly replies = new Map<string, string>();
+  private readonly replyBaseline = new Map<string, string>();
+  private readonly replyDirty = new Set<string>();
   private replyError: unknown = undefined;
   private readonly replyReady: Promise<void>;
 
@@ -251,7 +263,9 @@ export class HubSessionAdapter implements ImSessionAdapter {
       this.contexts.set(key, { ...(replyContext === undefined ? {} : { reply_context: replyContext }), ...(chatKind === undefined ? {} : { chat_kind: chatKind }) });
     }
     if (this.homeDir !== undefined && event.reply_context !== undefined) {
-      this.replies.set(replyKey(this.session.instance_id, identity), event.reply_context);
+      const key = replyKey(this.session.instance_id, identity);
+      this.replies.set(key, event.reply_context);
+      this.replyDirty.add(key);
       await this.writeReplies();
     }
   }
@@ -302,7 +316,9 @@ export class HubSessionAdapter implements ImSessionAdapter {
 
   private async forgetReply(identity: ImInboundIdentity): Promise<void> {
     await this.useReplies();
-    this.replies.delete(replyKey(this.session.instance_id, identity));
+    const dropped = replyKey(this.session.instance_id, identity);
+    this.replies.delete(dropped);
+    this.replyDirty.add(dropped);
     const key = contextKey(identity);
     const saved = this.contexts.get(key);
     if (saved !== undefined) {
@@ -321,15 +337,35 @@ export class HubSessionAdapter implements ImSessionAdapter {
     if (this.homeDir === undefined) return;
     const loaded = await loadReplyMap(join(this.homeDir, 'im-session-reply.json'));
     this.replies.clear();
-    for (const [key, value] of Object.entries(loaded)) this.replies.set(key, value);
+    this.replyBaseline.clear();
+    this.replyDirty.clear();
+    for (const [key, value] of Object.entries(loaded)) {
+      this.replies.set(key, value);
+      this.replyBaseline.set(key, value);
+    }
   }
 
   private async writeReplies(): Promise<void> {
     if (this.homeDir === undefined) return;
     await this.useReplies();
     const file = join(this.homeDir, 'im-session-reply.json');
-    await loadReplyMap(file);
-    await writePrivateFile(file, JSON.stringify(Object.fromEntries(this.replies)));
+    await enqueueReplyWrite(file, async () => {
+      const dirty = [...this.replyDirty];
+      const current = await loadReplyMap(file);
+      const merged: Record<string, string> = { ...current };
+      for (const key of dirty) {
+        const value = this.replies.get(key);
+        if (value === undefined) delete merged[key];
+        else merged[key] = value;
+      }
+      await writePrivateFile(file, JSON.stringify(merged));
+      for (const key of dirty) {
+        const value = this.replies.get(key);
+        if (value === undefined) this.replyBaseline.delete(key);
+        else this.replyBaseline.set(key, value);
+        this.replyDirty.delete(key);
+      }
+    });
   }
 }
 
