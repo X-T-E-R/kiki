@@ -461,6 +461,25 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     return { state: 'idle' };
   }
 
+  canResumeBrokenOriginal(): boolean {
+    if (this.#shutdown || this.#active !== undefined) return false;
+    if (this.#client.status().state !== 'broken') return false;
+    const state = externalStateForGeneration(this.#states.get(externalExecutorKey), this.context.binding.execution?.generation);
+    if (
+      state.executorId !== undefined &&
+      (state.executorId !== this.context.descriptor.id || state.descriptorRevision !== this.context.descriptor.revision)
+    ) return false;
+    if (state.sessionRef?.ref['localSource'] !== undefined &&
+        !agentExecutorBindingMatches(this.context.binding, state.bindingFingerprint)) return false;
+    const resume = originalRemoteResumeFields(this.context.binding, this.context.descriptor, state);
+    if (resume.sessionRef === undefined || resume.requireResume !== true) return false;
+    const negotiated = this.context.agent.accessor.get(IAgentExecutorRegistry).negotiated?.(
+      this.context.descriptor.id,
+      this.context.descriptor.version,
+    );
+    return negotiated?.resume !== false || negotiated?.load !== false;
+  }
+
   async steer(message: ContextMessage): Promise<boolean> {
     const active = this.#active;
     if (active === undefined || active.turn.signal.aborted || this.#client.steer === undefined) return false;
@@ -633,12 +652,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       mcpServers: servers,
       sessionMeta: { ...this.#harnessMcp?.sessionMeta,
         'kiki.permission': { ...externalPermissionMeta(this.context, roots.workDir, roots.additionalDirs), requestId: randomUUID() } },
-      sessionRef:
-        agentExecutorBindingMatches(this.context.binding, state.bindingFingerprint) && state.sessionRef !== undefined
-          ? sessionRefWithLocalSource(state.sessionRef, state.sessionRef.ref['localSource'])
-          : undefined,
-      requireResume: state.sessionRef?.ref['localSource'] !== undefined ||
-        ((this.context.binding.execution !== undefined || this.context.descriptor.permission?.via === 'argv') && state.sessionRef !== undefined),
+      ...originalRemoteResumeFields(this.context.binding, this.context.descriptor, state),
       systemPromptOverride:
         resolvePromptDelivery(this.context.descriptor, this.context.binding).actual === 'replace' &&
           this.context.descriptor.profileDelivery === 'system_prompt_override' && systemPrompt.length > 0
@@ -1320,6 +1334,21 @@ function boundedPermissionDetail(request: AcpPermissionRequest): unknown {
       locations: request.toolCall.locations,
     },
     meta: request._meta,
+  };
+}
+
+function originalRemoteResumeFields(
+  binding: AgentExecutorContext['binding'],
+  descriptor: AgentExecutorContext['descriptor'],
+  state: ReturnType<typeof externalStateForGeneration>,
+): { readonly sessionRef: ExecutorSessionRefEnvelope | undefined; readonly requireResume: boolean } {
+  return {
+    sessionRef:
+      agentExecutorBindingMatches(binding, state.bindingFingerprint) && state.sessionRef !== undefined
+        ? sessionRefWithLocalSource(state.sessionRef, state.sessionRef.ref['localSource'])
+        : undefined,
+    requireResume: state.sessionRef?.ref['localSource'] !== undefined ||
+      ((binding.execution !== undefined || descriptor.permission?.via === 'argv') && state.sessionRef !== undefined),
   };
 }
 

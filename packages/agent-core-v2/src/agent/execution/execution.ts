@@ -1,5 +1,6 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { Hooks } from '#/hooks';
+import { Error2, ErrorCodes } from '#/errors';
 import type {
   AgentRunHandle,
   AgentRunRequest,
@@ -27,6 +28,8 @@ export interface IAgentExecutionService {
   trackPromptRun(completion: Promise<unknown>, signal: AbortSignal): AbortSignal;
   /** Reports cancelling once all tracked runs receive cancellation, until they settle; a stop request alone does not release capacity. */
   status(): AgentExecutionStatus;
+  /** True only when a broken ACP client can open its saved remote session again without creating a new one. */
+  canResumeBrokenOriginal(): boolean;
   attachLocalSession(source: import('#/app/agentExecutor/localSessionRef').LocalExecutorSessionSource): Promise<void>;
   steer?(message: ContextMessage): Promise<boolean>;
   cancel(reason?: unknown): boolean;
@@ -38,3 +41,11 @@ export interface IAgentExecutionService {
 
 export const IAgentExecutionService: ServiceIdentifier<IAgentExecutionService> =
   createDecorator<IAgentExecutionService>('agentExecutionService');
+
+export function brokenOriginalResumeRefusal(agentId: string, messageId?: string): Error2 {
+  return new Error2(
+    ErrorCodes.INTERNAL,
+    `Agent instance "${agentId}" is broken and its original remote session cannot be resumed. The saved message stays queued. Do not call AgentSend again. Do not open a new remote session.`,
+    { details: messageId === undefined ? { agentId } : { agentId, messageId } },
+  );
+}

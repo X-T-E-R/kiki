@@ -223,6 +223,7 @@ export interface AgentExecutorSession {
     options: RunAgentOptions,
   ): Promise<AgentRunHandle>;
   status(): AgentExecutionStatus;
+  canResumeBrokenOriginal?(): boolean;
   steer?(message: import('#/agent/contextMemory/types').ContextMessage): Promise<boolean>;
   updateBinding?(binding: ProfileBindingSnapshot): void;
   cancel(reason?: unknown): boolean;

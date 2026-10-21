@@ -1710,7 +1710,7 @@ describe('agent collaboration safe-boundary delivery', () => {
       idleWake: 'owned-child',
     })).rejects.toMatchObject({
       code: 'internal',
-      message: 'Agent instance "agent-target" cannot be resumed because its executor is broken',
+      message: 'Agent instance "agent-target" is broken and its original remote session cannot be resumed. The saved message stays queued. Do not call AgentSend again. Do not open a new remote session.',
     });
     await service.dispose();
   });
