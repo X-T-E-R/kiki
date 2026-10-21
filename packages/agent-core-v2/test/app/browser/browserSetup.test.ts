@@ -18,7 +18,7 @@ import { BrowserControlService, admitEgoAfterAllow } from '#/app/browser/browser
 import type { BrowserRequestContext } from '#/app/browser/codexBrowser';
 import { IBrowserBackendFactory, type BrowserBackend } from '#/app/browser/browserBackend';
 import { IBrowserConnectionStore } from '#/app/browser/browserConnectionStore';
-import { BrowserConnectionInputSchema, type BrowserConnectionInput, type BrowserResolvedConnection } from '#/app/browser/browserConfig';
+import { BrowserConnectionInputSchema, browserSourceOfConnection, type BrowserConnectionInput, type BrowserResolvedConnection, type BrowserSourceId } from '#/app/browser/browserConfig';
 import { ICapabilityService } from '#/app/capability/capability';
 import { IPluginService } from '#/app/plugin/plugin';
 import { IFlagService } from '#/app/flag/flag';
@@ -83,7 +83,9 @@ function fixture(options: { home?: string; hostProcess?: IHostProcessService; ho
   }));
   const setDefault = vi.fn(async () => {});
   let allowed: readonly string[] | undefined = options.initialAllowed;
+  let disabledSources: readonly BrowserSourceId[] | undefined;
   const setAllowed = vi.fn(async (next: readonly string[] | undefined) => { allowed = next; });
+  const setDisabledSources = vi.fn(async (next: readonly BrowserSourceId[] | undefined) => { disabledSources = next; });
   const cancelCapability = vi.fn<ICapabilityService['cancelCapability']>(async () => ({} as never));
   const files = new Map<string, string>();
   const spawn = vi.fn(async () => ({
@@ -98,20 +100,29 @@ function fixture(options: { home?: string; hostProcess?: IHostProcessService; ho
       list: async () => ({
         connections: rows.map((row) => ({ id: row.id, name: row.name, type: row.type, enabled: row.enabled, ...(row.cliPath !== undefined ? { cliPath: row.cliPath } : {}) })),
         ...(allowed !== undefined ? { allowedBrowsers: allowed } : {}),
+        ...(disabledSources !== undefined ? { disabledSources } : {}),
       }),
       resolve: async (id: string) => {
         const found = rows.find((row) => row.id === id);
         if (found === undefined) throw new BrowserError('browser.not_found', `Unknown browser connection "${id}"`);
         return found as unknown as BrowserResolvedConnection;
       },
-      upsert, setDefault, setAllowed,
+      upsert, setDefault, setAllowed, setDisabledSources,
       remove: async () => undefined,
       revealEndpoint: async () => undefined,
     });
     ix.set(IBrowserControlService, new SyncDescriptor(BrowserControlService));
   } else {
     ix.stub(IBrowserControlService, { upsert, connect, status, invoke });
-    ix.stub(IBrowserConnectionStore, { list: async () => ({ connections: rows }), resolve: async (id) => (rows.find((r) => r.id === id) as unknown as BrowserResolvedConnection) ?? { id, type: 'agent-browser-profile' as const, name: id, enabled: true, executablePath: 'C:\\fake\\chrome.exe' }, setDefault });
+    ix.stub(IBrowserConnectionStore, {
+      list: async () => ({
+        connections: rows,
+        ...(disabledSources !== undefined ? { disabledSources } : {}),
+      }),
+      resolve: async (id) => (rows.find((r) => r.id === id) as unknown as BrowserResolvedConnection) ?? { id, type: 'agent-browser-profile' as const, name: id, enabled: true, executablePath: 'C:\\fake\\chrome.exe' },
+      setDefault,
+      setDisabledSources,
+    });
   }
   ix.stub(IFlagService, { enabled: () => native, explain: () => ({ id: 'native_browser', title: 'Fixture', description: 'fixture', surface: 'both', env: 'KIKI_EXPERIMENTAL_NATIVE_BROWSER', defaultEnabled: false, enabled: native, source: forced === 'env' ? 'env' : 'config' }) });
   ix.stub(IConfigService, { set: configSet, inspect: () => ({ value: undefined, defaultValue: undefined, userValue: undefined, memoryValue: forced === 'memory' ? { native_browser: false } as never : undefined }) });
@@ -122,7 +133,7 @@ function fixture(options: { home?: string; hostProcess?: IHostProcessService; ho
   ix.set(IBrowserSetupService, new SyncDescriptor(BrowserSetupService));
   const setup = ix.get(IBrowserSetupService);
   const control = options.realControl === true ? ix.get(IBrowserControlService) : undefined;
-  return { setup, control, configSet, preview, installPlugin, enablePlugin, installCapability, updateCapability, cancelCapability, getCapability, fetchMock, upsert, connect, invoke, status, spawn, files, setDefault, setAllowed, rows,
+  return { setup, control, configSet, preview, installPlugin, enablePlugin, installCapability, updateCapability, cancelCapability, getCapability, fetchMock, upsert, connect, invoke, status, spawn, files, setDefault, setAllowed, setDisabledSources, rows,
     extension: () => { extension = true; }, existing: () => { installed = true; enabled = true; daemon = true; }, disableNative: () => { native = false; }, forceOff: (source: 'env' | 'memory') => { native = false; forced = source; } };
 }
 
@@ -899,6 +910,71 @@ it('admits Ego Lite when the user allows it, without a second check or an automa
     if (previous === undefined) delete process.env['PATH'];
     else process.env['PATH'] = previous;
   }
+});
+
+it('auto-probes a real Citro Ego Lite install path on status read and gates disabled sources without losing allowed connections', async () => {
+  const exe = 'C:\\Users\\fixture\\AppData\\Local\\Programs\\Citro\\ego-lite\\active_version_dir\\ego-browser.exe';
+  const previous = process.env['PATH'];
+  process.env['PATH'] = 'C:\\Users\\fixture\\AppData\\Local\\Programs\\Citro\\ego-lite\\active_version_dir';
+  const end = vi.fn();
+  const spawn = vi.fn(async (_command: string, args: readonly string[] = []) => ({
+    stdin: { end },
+    stdout: Readable.from(['']),
+    stderr: Readable.from([args.includes('nodejs') ? 'kiki-ego-ready\n' : '']),
+    wait: async () => 0,
+    kill: async () => undefined,
+    dispose: async () => undefined,
+  }));
+  const f = fixture({
+    realControl: true,
+    initialAllowed: ['ego-lite'],
+    hostProcess: { spawn } as never,
+    hostFs: {
+      mkdir: async () => undefined, writeText: async () => undefined, readText: async () => '', remove: async () => undefined, readdir: async () => [],
+      stat: async (file: string) => ({ isFile: file.replaceAll('/', '\\').toLowerCase() === exe.toLowerCase(), isDirectory: false, size: 0 }),
+    } as never,
+  });
+  const control = f.control;
+  if (control === undefined) throw new Error('missing control');
+  const caller = { sessionId: 's', agentId: 'a' };
+  const context = { caller, sessionDir: 'C:/session', turnId: 0, toolCallId: 't', elicit: async () => { throw new Error('unused'); } } satisfies BrowserRequestContext;
+  try {
+    const initial = await f.setup.status('ego-lite');
+    expect(initial).toMatchObject({ state: 'ready', reason: 'ego_ready' });
+    expect(end).toHaveBeenCalled();
+    const connected = await f.setup.connect('ego-lite', {});
+    expect(connected).toMatchObject({ state: 'connected', connectionId: 'ego-lite' });
+    await f.setDisabledSources(['ego-lite']);
+    expect(await f.setup.status('ego-lite')).toMatchObject({ state: 'needs_user_action', reason: 'source_disabled' });
+    await expect(control.invoke({ browser: 'ego-lite', tool: 'browser__ego_run', args: { script: 'console.log(1)' }, caller, requestContext: context })).rejects.toMatchObject({ code: 'browser.disabled', message: 'This browser source is disabled', details: { reason: 'connection_disabled' } });
+    await f.setDisabledSources([]);
+    expect(await f.setup.status('ego-lite')).toMatchObject({ state: 'connected', connectionId: 'ego-lite' });
+  } finally {
+    if (previous === undefined) delete process.env['PATH'];
+    else process.env['PATH'] = previous;
+  }
+});
+
+it('does not probe or install a source that is switched off', async () => {
+  const f = fixture();
+  await f.setDisabledSources(['kimi-webbridge', 'independent-browser']);
+  f.fetchMock.mockClear();
+  f.getCapability.mockClear();
+  f.enablePlugin.mockClear();
+  expect(await f.setup.status('kimi-webbridge')).toMatchObject({ state: 'needs_user_action', reason: 'source_disabled', actions: [] });
+  expect(await f.setup.status('independent-browser')).toMatchObject({ state: 'needs_user_action', reason: 'source_disabled', actions: [] });
+  expect(f.fetchMock).not.toHaveBeenCalled();
+  expect(f.getCapability).not.toHaveBeenCalled();
+  await f.setup.prepare('kimi-webbridge', { consent: true });
+  expect(f.enablePlugin).not.toHaveBeenCalled();
+  await f.setup.connect('independent-browser', {});
+  expect(f.connect).not.toHaveBeenCalled();
+});
+
+it('keeps a CDP connection on the independent browser source', () => {
+  expect(browserSourceOfConnection({ type: 'agent-browser-cdp' })).toBe('independent-browser');
+  expect(browserSourceOfConnection({ type: 'agent-browser-profile' })).toBe('independent-browser');
+  expect(browserSourceOfConnection({ type: 'ego-lite' })).toBe('ego-lite');
 });
 
 async function readShortcut(host: HostProcessService, shortcutPath: string): Promise<{ target: string; arguments: string }> {

@@ -31,6 +31,8 @@ export const browserConnectionSchema = z.object({
 export type BrowserConnection = z.infer<typeof browserConnectionSchema>;
 export const controlSettingSourceSchema = z.enum(['default', 'preset', 'base', 'home', 'env', 'memory']);
 export type ControlSettingSource = z.infer<typeof controlSettingSourceSchema>;
+export const browserSourceIdSchema = z.enum(['kimi-webbridge', 'independent-browser', 'codex-browser', 'ego-lite']);
+export type BrowserSourceId = z.infer<typeof browserSourceIdSchema>;
 /**
  * Stable browser-control save/read contract.
  * `enabled` maps the existing `native_browser` flag. `allowedBrowsers` is the
@@ -45,11 +47,13 @@ export const browserControlSettingsSchema = z.object({
   allowedBrowsers: z.array(browserIdSchema),
   allowedBrowsersConfigured: z.boolean(),
   allowedBrowsersSource: controlSettingSourceSchema,
+  disabledSources: z.array(browserSourceIdSchema).optional(),
 }).strict();
 export type BrowserControlSettings = z.infer<typeof browserControlSettingsSchema>;
 export const browserControlSettingsPatchSchema = z.object({
   enabled: z.boolean().nullable().optional(),
   allowed_browsers: z.array(browserIdSchema).nullable().optional(),
+  disabled_sources: z.array(browserSourceIdSchema).nullable().optional(),
 }).strict();
 export type BrowserControlSettingsPatch = z.infer<typeof browserControlSettingsPatchSchema>;
 export const browserConnectionsSchema = z.object({ connections: z.array(browserConnectionSchema), defaultBrowser: browserIdSchema.optional() });

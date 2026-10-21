@@ -7,14 +7,14 @@ import type { MCPToolDefinition, MCPToolResult } from '#/mcpCore/types';
 import { IBrowserControlService, type BrowserCaller, type BrowserInvocation, type BrowserInvocationResult, type BrowserStatus, type BrowserTab } from './browser';
 import { IBrowserBackendFactory, type BrowserBackend } from './browserBackend';
 import { IBrowserConnectionStore } from './browserConnectionStore';
-import { browserOperationAllowed, type BrowserConnectionInput, type BrowserResolvedConnection } from './browserConfig';
+import { browserOperationAllowed, browserSourceOfConnection, type BrowserConnectionInput, type BrowserResolvedConnection } from './browserConfig';
 import { BrowserError } from './errors';
 import { IFlagService } from '#/app/flag/flag';
 import { NATIVE_BROWSER_FLAG_ID } from './flag';
 import type { BrowserRequestContext } from './codexBrowser';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService } from '#/os/interface/hostProcess';
-import { EgoBrowserRuntime, egoTabBody } from './ego/runtime';
+import { EgoBrowserRuntime, egoTabBody, egoUserOutput } from './ego/runtime';
 import { EGO_LITE_CONNECTION_ID } from './ego/resolveCli';
 
 interface LiveBrowser {
@@ -111,7 +111,9 @@ export class BrowserControlService implements IBrowserControlService {
   async list() {
     const configured = await this.store.list();
     return { connections: await Promise.all(configured.connections.map(async (entry) => ({ ...entry, status: await this.status(entry.id) }))),
-      defaultBrowser: configured.defaultBrowser, ...(configured.allowedBrowsers !== undefined ? { allowedBrowsers: configured.allowedBrowsers } : {}) };
+      defaultBrowser: configured.defaultBrowser,
+      ...(configured.allowedBrowsers !== undefined ? { allowedBrowsers: configured.allowedBrowsers } : {}),
+      ...(configured.disabledSources !== undefined ? { disabledSources: configured.disabledSources } : {}) };
   }
 
   async upsert(id: string, input: BrowserConnectionInput) {
@@ -281,6 +283,10 @@ export class BrowserControlService implements IBrowserControlService {
     const current = await this.store.resolve(live.connection.id);
     if (!this.flags.enabled(NATIVE_BROWSER_FLAG_ID)) throw new BrowserError('browser.disabled', 'Browser control is disabled', { details: { reason: 'feature_disabled' } });
     if (!current.enabled) throw new BrowserError('browser.disabled', 'This browser connection is disabled', { details: { reason: 'connection_disabled' } });
+    const listed = await this.store.list();
+    if (listed.disabledSources?.includes(browserSourceOfConnection(current)) === true) {
+      throw new BrowserError('browser.disabled', 'This browser source is disabled', { details: { reason: 'connection_disabled' } });
+    }
     if (!sameBrowserTarget(current, live.connection)) throw new BrowserError('browser.busy', 'Browser configuration changed; disconnect the old session before using the new endpoint');
     live.connection = current;
     await this.assertAllowed(current.id);
@@ -582,7 +588,7 @@ export class BrowserControlService implements IBrowserControlService {
       if (ran.result.code !== 0) throw new BrowserError('browser.execution_failed', ran.result.stderr.trim() || ran.result.stdout.trim() || 'Ego Lite script failed');
       live.status = { ...live.status, state: live.admitting ? 'ready' : 'stopping', currentCall: undefined, checkedAt: new Date().toISOString() };
       return { browser: input.browser, generation: live.status.generation, executionHost: live.status.executionHost, runtimeSession: ran.binding.spaceId ?? ran.binding.name,
-        tab: ran.pageLabel ?? label, result: { isError: false, content: [{ type: 'text', text: ran.result.stdout }], structuredContent: { response: { success: true, data: { label: ran.pageLabel, spaceId: ran.binding.spaceId, shots: ran.shots } } } } };
+        tab: ran.pageLabel ?? label, result: { isError: false, content: [{ type: 'text', text: egoUserOutput(ran.result) }], structuredContent: { response: { success: true, data: { label: ran.pageLabel, spaceId: ran.binding.spaceId, shots: ran.shots } } } } };
     } catch (error) {
       if (live.status.generation !== startedGeneration) throw error;
       if (signal?.aborted && error === signal.reason) {

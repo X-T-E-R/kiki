@@ -41,10 +41,21 @@ export const BrowserConnectionInputSchema = z.discriminatedUnion('type', [
 ]);
 export type BrowserConnectionInput = z.infer<typeof BrowserConnectionInputSchema>;
 
+export const BrowserSourceIdSchema = z.enum(['kimi-webbridge', 'independent-browser', 'codex-browser', 'ego-lite']);
+export type BrowserSourceId = z.infer<typeof BrowserSourceIdSchema>;
+
+export function browserSourceOfConnection(connection: { readonly type: BrowserStoredConnection['type']; readonly id?: string }): BrowserSourceId {
+  if (connection.type === 'ego-lite') return 'ego-lite';
+  if (connection.type === 'codex-extension') return 'codex-browser';
+  if (connection.type === 'agent-browser-profile' || connection.type === 'agent-browser-cdp') return 'independent-browser';
+  return 'kimi-webbridge';
+}
+
 export const BrowserConfigSchema = z.object({
   connections: z.record(BrowserIdSchema, BrowserStoredConnectionSchema).default({}),
   defaultBrowser: BrowserIdSchema.optional(),
   allowedBrowsers: z.array(BrowserIdSchema).max(64).optional(),
+  disabledSources: z.array(BrowserSourceIdSchema).max(16).optional(),
 }).strict();
 export type BrowserConfig = z.infer<typeof BrowserConfigSchema>;
 
@@ -60,12 +71,14 @@ export interface BrowserControlSettings {
   readonly allowedBrowsers: readonly string[];
   readonly allowedBrowsersConfigured: boolean;
   readonly allowedBrowsersSource: ConfigOrigin;
+  readonly disabledSources?: readonly BrowserSourceId[];
 }
 
 export function readBrowserControlSettings(
   flags: IFlagService,
   origins: { readonly experimental?: ConfigOrigin; readonly allowed?: ConfigOrigin },
   allowedBrowsers: readonly string[] | undefined,
+  disabledSources?: readonly BrowserSourceId[],
 ): BrowserControlSettings {
   const explained = flags.explain(NATIVE_BROWSER_FLAG_ID);
   const enabled = explained?.enabled ?? true;
@@ -76,6 +89,7 @@ export function readBrowserControlSettings(
     allowedBrowsers: allowedBrowsers === undefined ? [] : [...allowedBrowsers],
     allowedBrowsersConfigured: allowedBrowsers !== undefined,
     allowedBrowsersSource: allowedBrowsers === undefined ? 'default' : origins.allowed ?? 'home',
+    ...(disabledSources !== undefined && disabledSources.length > 0 ? { disabledSources: [...disabledSources] } : {}),
   };
 }
 

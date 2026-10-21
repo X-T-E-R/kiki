@@ -234,6 +234,7 @@ room_budget = 12
 connections = {  }
 # default_browser: string
 # allowed_browsers: string[]
+# disabled_sources: "kimi-webbridge" | "independent-browser" | "codex-browser" | "ego-lite"[]
 
 # ##########################################################################
 # builtinProductSkills (config.toml: builtin_product_skills)

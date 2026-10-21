@@ -180,15 +180,18 @@ let queries: QueryClient;
 function boundedBrowserStore(seed: {
   readonly connections: MockBrowserControlList['connections'];
   readonly allowed: readonly string[];
+  readonly disabledSources?: readonly BrowserPresetId[];
   readonly defaultBrowser?: string;
 }) {
   const state: {
     connections: MockBrowserControlList['connections'];
     allowed: string[];
+    disabledSources: BrowserPresetId[];
     defaultBrowser?: string;
   } = {
     connections: seed.connections.map((connection) => ({ ...connection })),
     allowed: [...seed.allowed],
+    disabledSources: [...(seed.disabledSources ?? [])],
     ...(seed.defaultBrowser !== undefined ? { defaultBrowser: seed.defaultBrowser } : {}),
   };
   const rejectUnknown = (ids: readonly string[]) => {
@@ -204,14 +207,18 @@ function boundedBrowserStore(seed: {
     allowedBrowsers: [...state.allowed],
     allowedBrowsersConfigured: true,
     allowedBrowsersSource: 'home',
+    disabledSources: [...state.disabledSources],
     ...(state.defaultBrowser !== undefined ? { defaultBrowser: state.defaultBrowser } : {}),
     connections: state.connections.map((connection) => ({ ...connection })),
   }));
   patchConfig.mockImplementation(async (patch: unknown) => {
-    const ids = (patch as { browser_control?: { allowed_browsers?: string[] } }).browser_control?.allowed_browsers;
-    if (ids !== undefined) {
-      rejectUnknown(ids);
-      state.allowed = [...ids];
+    const bc = (patch as { browser_control?: { allowed_browsers?: string[]; disabled_sources?: BrowserPresetId[] } }).browser_control;
+    if (bc?.allowed_browsers !== undefined) {
+      rejectUnknown(bc.allowed_browsers);
+      state.allowed = [...bc.allowed_browsers];
+    }
+    if (bc?.disabled_sources !== undefined) {
+      state.disabledSources = [...bc.disabled_sources];
     }
     return patch;
   });
@@ -2202,6 +2209,70 @@ describe('BrowserControlSection', () => {
       expect(query<HTMLInputElement>('[data-browser-allow-checkbox="work-browser"]')?.checked).toBe(false);
       expect(query<HTMLInputElement>('[data-browser-allow-checkbox="lab-browser"]')?.checked).toBe(true);
       expect(queryAll('[data-browser-route="codex-browser"] [data-browser-allow-checkbox]')).toHaveLength(2);
+    });
+
+    it('toggles a browser source off to hide its checklist and exclude it from active counts, while preserving checked connections on restore without stealth-selecting new items', async () => {
+      const store = boundedBrowserStore({
+        allowed: ['work-browser'],
+        connections: [
+          {
+            id: 'work-browser',
+            type: 'codex-extension',
+            name: 'Pipe 1',
+            enabled: true,
+            browserId: 'codex-browser-use-pipe-1',
+            status: browserStatus({ browser: 'work-browser', state: 'ready', ownership: 'external-browser' }),
+          },
+          {
+            id: 'lab-browser',
+            type: 'codex-extension',
+            name: 'Pipe 2',
+            enabled: true,
+            browserId: 'codex-browser-use-pipe-2',
+            status: browserStatus({ browser: 'lab-browser', state: 'ready', ownership: 'external-browser' }),
+          },
+        ],
+      });
+
+      setupPresets.mockResolvedValue({
+        presets: [
+          preset({
+            preset: 'codex-browser',
+            displayName: 'Codex Browser',
+            controlSurface: 'browser-connection',
+            state: 'ready',
+            candidates: [
+              { browserId: 'codex-browser-use-pipe-1' },
+              { browserId: 'codex-browser-use-pipe-2' },
+            ],
+          }),
+        ],
+      });
+
+      await render();
+      await settleUntil('[data-browser-source-items="codex-browser"]');
+
+      const sourceSwitch = query<HTMLButtonElement>('[data-browser-source-switch="codex-browser"]');
+      expect(sourceSwitch).not.toBeNull();
+      expect(sourceSwitch?.getAttribute('aria-checked')).toBe('true');
+      expect(query('[data-browser-allowed-total]')?.textContent).toContain('1 browsers currently allowed');
+      expect(query<HTMLInputElement>('[data-browser-allow-checkbox="work-browser"]')?.checked).toBe(true);
+      expect(query<HTMLInputElement>('[data-browser-allow-checkbox="lab-browser"]')?.checked).toBe(false);
+
+      await click('[data-browser-source-switch="codex-browser"]');
+      expect(store.state.disabledSources).toEqual(['codex-browser']);
+      expect(store.state.allowed).toEqual(['work-browser']);
+      expect(query('[data-browser-source-items="codex-browser"]')).toBeNull();
+      expect(query('[data-browser-allowed-total]')?.textContent).toContain('0 browsers currently allowed');
+      expect(query('[data-browser-route="codex-browser"]')?.getAttribute('data-browser-route-state')).toBe('disabled');
+
+      await click('[data-browser-source-switch="codex-browser"]');
+      expect(store.state.disabledSources).toEqual([]);
+      expect(store.state.allowed).toEqual(['work-browser']);
+      await settleUntil('[data-browser-source-items="codex-browser"]');
+      expect(query('[data-browser-allowed-total]')?.textContent).toContain('1 browsers currently allowed');
+      expect(query<HTMLInputElement>('[data-browser-allow-checkbox="work-browser"]')?.checked).toBe(true);
+      expect(query<HTMLInputElement>('[data-browser-allow-checkbox="lab-browser"]')?.checked).toBe(false);
     });
   });
 });

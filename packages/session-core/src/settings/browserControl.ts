@@ -57,20 +57,34 @@ export function isBrowserToolPolicyPartiallyDenied(config: unknown): boolean {
   return disabled.includes('BrowserConnections') || disabled.includes('BrowserTabs');
 }
 
+export type BrowserSourceId = 'kimi-webbridge' | 'independent-browser' | 'codex-browser' | 'ego-lite';
+
+export function browserSourceOfConnectionType(type?: string, id?: string): BrowserSourceId | undefined {
+  if (type === 'ego-lite') return 'ego-lite';
+  if (type === 'codex-extension') return 'codex-browser';
+  if (type === 'agent-browser-profile' || type === 'agent-browser-cdp') return 'independent-browser';
+  if (id === 'kimi-webbridge') return 'kimi-webbridge';
+  return undefined;
+}
+
 export function isBrowserConnectionEffectiveAllowed(
-  connection: { id: string; enabled?: boolean },
+  connection: { id: string; enabled?: boolean; type?: string },
   allowedBrowsersConfigured: boolean,
   allowedBrowsers: readonly string[] | undefined,
+  disabledSources?: readonly string[],
 ): boolean {
   if (connection.enabled === false) return false;
+  const source = browserSourceOfConnectionType(connection.type, connection.id);
+  if (source !== undefined && disabledSources?.includes(source) === true) return false;
   if (!allowedBrowsersConfigured || allowedBrowsers === undefined) return true;
   return allowedBrowsers.includes(connection.id);
 }
 
 export function effectiveAllowedBrowserCount(
-  connections: readonly { id: string; enabled?: boolean }[],
+  connections: readonly { id: string; enabled?: boolean; type?: string }[],
   allowedBrowsersConfigured: boolean,
   allowedBrowsers: readonly string[] | undefined,
+  disabledSources?: readonly string[],
 ): number {
-  return connections.filter((c) => isBrowserConnectionEffectiveAllowed(c, allowedBrowsersConfigured, allowedBrowsers)).length;
+  return connections.filter((c) => isBrowserConnectionEffectiveAllowed(c, allowedBrowsersConfigured, allowedBrowsers, disabledSources)).length;
 }

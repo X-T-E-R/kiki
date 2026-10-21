@@ -2286,5 +2286,10 @@ describe('browser-control settings helpers', () => {
     expect(isBrowserConnectionEffectiveAllowed(connections[0]!, true, ['b1'])).toBe(true);
     expect(isBrowserConnectionEffectiveAllowed(connections[1]!, true, ['b1'])).toBe(false);
     expect(isBrowserConnectionEffectiveAllowed(connections[2]!, true, ['b3'])).toBe(false);
+
+    const cdp = { id: 'cdp', enabled: true, type: 'agent-browser-cdp' };
+    expect(effectiveAllowedBrowserCount([cdp], true, ['cdp'], ['independent-browser'])).toBe(0);
+    expect(effectiveAllowedBrowserCount([cdp], true, ['cdp'], ['kimi-webbridge'])).toBe(1);
+    expect(isBrowserConnectionEffectiveAllowed({ id: 'kimi-webbridge', enabled: true }, true, ['kimi-webbridge'], ['kimi-webbridge'])).toBe(false);
   });
 });

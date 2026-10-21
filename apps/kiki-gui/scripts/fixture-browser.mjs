@@ -65,6 +65,10 @@ function state(server) {
       host: server.scenario?.data.host ?? 'fixture-browser-host',
       connections: seed.connections ?? [],
       defaultBrowser: seed.defaultBrowser,
+      allowedBrowsers: Array.isArray(seed.allowedBrowsers)
+        ? [...seed.allowedBrowsers]
+        : (server.scenario?.name === 'ego-lite' ? [] : undefined),
+      disabledSources: Array.isArray(seed.disabledSources) ? [...seed.disabledSources] : undefined,
       overrides: structuredClone(seed.presets ?? {}),
     };
   }
@@ -182,9 +186,14 @@ const EGO_CLI_PATHS = ['C:/Ego/0.6.0.16/ego-browser.exe', 'C:/Ego/0.6.0.15/ego-b
 function presetStatus(browser, seed) {
   const base = PRESETS[seed];
   const override = browser.overrides?.[base.preset] ?? {};
+  const sourceDisabled = browser.disabledSources?.includes(base.preset) === true;
   const steps = override.steps ?? base.steps;
-  const state = override.state ?? base.state ?? (override.error !== undefined ? 'failed' : 'not_prepared');
-  const reason = override.reason ?? (override.egoPhase !== undefined || override.error !== undefined ? undefined : base.reason);
+  const state = sourceDisabled
+    ? 'needs_user_action'
+    : (override.state ?? base.state ?? (override.error !== undefined ? 'failed' : 'not_prepared'));
+  const reason = sourceDisabled
+    ? 'source_disabled'
+    : (override.reason ?? (override.egoPhase !== undefined || override.error !== undefined ? undefined : base.reason));
   const cliPaths = Array.isArray(override.cliPaths) ? override.cliPaths : base.cliPaths;
   const candidates = override.candidates !== undefined ? override.candidates : base.candidates;
   const browserId = override.browserId ?? base.browserId;
@@ -418,11 +427,32 @@ export function handleBrowser(server, res, path, query, method, body) {
   if (handleSetup(server, browser, res, path, method, body)) return true;
 
   if (path === '/browser/connections' && method === 'GET') {
-    const restricted = browser.scenario === 'ego-lite';
     server.envelope(res, {
       connections: list(),
       defaultBrowser: browser.defaultBrowser,
-      ...(restricted ? { allowedBrowsers: [], allowedBrowsersConfigured: true } : {}),
+      ...(browser.allowedBrowsers !== undefined
+        ? { allowedBrowsers: browser.allowedBrowsers, allowedBrowsersConfigured: true }
+        : {}),
+      ...(browser.disabledSources !== undefined && browser.disabledSources.length > 0
+        ? { disabledSources: browser.disabledSources }
+        : {}),
+    });
+    return true;
+  }
+  if (path === '/browser/allowed' && method === 'PUT') {
+    const next = Array.isArray(body?.browsers) ? body.browsers.map(String) : undefined;
+    browser.allowedBrowsers = next;
+    server.envelope(res, {
+      browsers: next ?? [],
+      configured: next !== undefined,
+    });
+    return true;
+  }
+  if (path === '/browser/disabled-sources' && method === 'PUT') {
+    const next = Array.isArray(body?.sources) ? body.sources.map(String) : undefined;
+    browser.disabledSources = next !== undefined && next.length > 0 ? next : undefined;
+    server.envelope(res, {
+      sources: browser.disabledSources ?? [],
     });
     return true;
   }

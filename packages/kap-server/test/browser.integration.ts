@@ -66,8 +66,8 @@ describe('browser REST persisted configuration and explicit secret access', () =
     if (listed.length > 0) {
       const chosen = listed[0]!.browserId;
       const saved = await read('POST', '/browser/setup/codex-browser:connect', { connectionId: 'codex-browser', browserId: chosen });
-      expect(saved.reason).toBeUndefined();
-      expect(saved).toMatchObject({ state: 'ready', connectionId: 'codex-browser', browserId: chosen });
+      expect(saved.reason).toBe('approval_unproven');
+      expect(saved).toMatchObject({ state: 'needs_user_action', connectionId: 'codex-browser', browserId: chosen });
       const control = browserControlListSchema.parse((await request('GET', '/browser/connections')).data);
       expect(control.enabled).toBe(true);
       expect(control.allowedBrowsersConfigured).toBe(false);
@@ -75,8 +75,8 @@ describe('browser REST persisted configuration and explicit secret access', () =
         expect.objectContaining({ id: 'codex-browser', type: 'codex-extension', browserId: chosen, status: expect.objectContaining({ state: 'idle' }) }),
       ]);
       const again = await read('POST', '/browser/setup/codex-browser:connect', { connectionId: 'codex-browser' });
-      expect(again.reason).toBeUndefined();
-      expect(again).toMatchObject({ state: 'ready', browserId: chosen });
+      expect(again.reason).toBe('approval_unproven');
+      expect(again).toMatchObject({ state: 'needs_user_action', browserId: chosen });
     }
     const prepared = await read('POST', '/browser/setup/codex-browser:prepare', { consent: true });
     if (prepared.state === 'preparing') {
@@ -84,7 +84,10 @@ describe('browser REST persisted configuration and explicit secret access', () =
     }
     const after = await read('GET', '/browser/setup/codex-browser');
     expect(after.state === 'ready' || after.state === 'needs_user_action').toBe(true);
-    expect(after.connection?.state).toBeUndefined();
+    expect(after.connection?.state).toBe(listed.length > 0 ? 'idle' : undefined);
+    expect((await request('POST', '/config', { browser_control: { disabled_sources: ['codex-browser'] } })).code).toBe(0);
+    expect((await read('GET', '/browser/setup/codex-browser')).candidates).toEqual([]);
+    expect(browserControlListSchema.parse((await request('GET', '/browser/connections')).data).disabledSources).toEqual(['codex-browser']);
   }, 90_000);
   it.each([undefined, 'false'])('prepares independent control through persisted config while respecting forced env=%s', async (forced) => {
     const { vi } = await import('vitest');

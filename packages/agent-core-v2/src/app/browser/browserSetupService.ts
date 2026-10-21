@@ -129,6 +129,21 @@ export class BrowserSetupService implements IBrowserSetupService {
     this.egoRuntime = new EgoBrowserRuntime(hostProcess, hostFs);
   }
 
+  private disabledSourceStatus(preset: 'kimi-webbridge' | 'independent-browser'): BrowserSetupStatus {
+    if (preset === 'kimi-webbridge') {
+      return {
+        preset, displayName: 'Kimi Browser Extension', controlSurface: 'plugin-skill', pluginId: preset, skill: preset,
+        capabilityId: preset, supported: true, executionHost: hostname(), sourceUrl: KIMI_HELP,
+        state: 'needs_user_action', reason: 'source_disabled', steps: [], actions: [],
+      };
+    }
+    return {
+      preset, displayName: 'Independent browser', controlSurface: 'browser-connection', capabilityId: 'kiki-browser',
+      supported: true, executionHost: hostname(), sourceUrl: 'https://github.com/vercel-labs/agent-browser',
+      state: 'needs_user_action', reason: 'source_disabled', steps: [], actions: [],
+    };
+  }
+
   list(): Promise<{ readonly presets: readonly BrowserSetupStatus[] }> {
     return Promise.all((['kimi-webbridge', 'independent-browser', 'codex-browser', 'ego-lite'] as const).map((preset) => this.status(preset))).then((presets) => ({ presets }));
   }
@@ -137,6 +152,7 @@ export class BrowserSetupService implements IBrowserSetupService {
     if (preset === 'ego-lite') return this.egoStatus();
     if (preset === 'codex-browser') return this.codexStatus();
     if (preset !== 'kimi-webbridge' && preset !== 'independent-browser') throw new BrowserError('browser.invalid', 'Unknown browser setup preset');
+    if ((await this.connections.list()).disabledSources?.includes(preset) === true) return this.disabledSourceStatus(preset);
     const capability = await this.capabilities.getCapability(preset === 'kimi-webbridge' ? preset : 'kiki-browser');
     const installing = this.preparing.has(preset) || capability.install.running;
     const error = this.errors.get(preset) ?? capability.install.error;
@@ -189,6 +205,7 @@ export class BrowserSetupService implements IBrowserSetupService {
 
   async prepare(preset: BrowserPresetId, input: { readonly consent: true }): Promise<BrowserSetupStatus> {
     if (preset === 'ego-lite') throw new BrowserError('browser.unsupported', 'Install Ego Lite from its own site. Kiki does not install it.');
+    if ((await this.connections.list()).disabledSources?.includes(preset) === true) return this.status(preset);
     if (input.consent !== true) throw new BrowserError('browser.invalid', 'Confirm installation and plugin enablement before preparing browser access');
     if (preset === 'codex-browser') {
       if (this.preparing.has(preset)) return this.status(preset);
@@ -235,6 +252,7 @@ export class BrowserSetupService implements IBrowserSetupService {
   }
 
   async connect(preset: BrowserPresetId, input: BrowserSetupConnectInput): Promise<BrowserSetupStatus> {
+    if ((await this.connections.list()).disabledSources?.includes(preset) === true) return this.status(preset);
     if (preset === 'codex-browser') return this.connectCodex(input);
     if (preset === 'ego-lite') return this.connectEgo(input);
     this.errors.delete(preset);
@@ -276,6 +294,7 @@ export class BrowserSetupService implements IBrowserSetupService {
   }
 
   async open(preset: BrowserPresetId, input: BrowserSetupOpenInput = {}): Promise<BrowserSetupStatus> {
+    if ((await this.connections.list()).disabledSources?.includes(preset) === true) return this.status(preset);
     if (preset === 'codex-browser') return this.status(preset);
     if (preset === 'kimi-webbridge') return this.connect(preset, input);
     if (preset !== 'independent-browser') throw new BrowserError('browser.invalid', 'Unknown browser setup preset');
@@ -385,9 +404,30 @@ export class BrowserSetupService implements IBrowserSetupService {
   }
 
   private async egoStatus(): Promise<BrowserSetupStatus> {
-    const saved = (await this.connections.list()).connections.find((item) => item.id === EGO_LITE_CONNECTION_ID && item.type === 'ego-lite');
+    const listed = await this.connections.list();
+    const sourceDisabled = listed.disabledSources?.includes('ego-lite') === true;
+    const saved = listed.connections.find((item) => item.id === EGO_LITE_CONNECTION_ID && item.type === 'ego-lite');
     const resolved = saved === undefined ? undefined : await this.connections.resolve(saved.id);
     const resolution = await this.egoRuntime.resolve(resolved);
+    if (
+      !sourceDisabled
+      && this.egoLast === undefined
+      && resolution.kind === 'found'
+      && (saved !== undefined || /citro|active_version_dir/i.test(resolution.path))
+    ) {
+      const target = resolved?.type === 'ego-lite'
+        ? resolved
+        : { id: EGO_LITE_CONNECTION_ID, type: 'ego-lite' as const, name: saved?.name ?? 'Ego Lite', enabled: saved?.enabled ?? true, cliPath: resolution.path };
+      try {
+        const probed = await this.egoRuntime.probe(target);
+        if (probed.resolution.kind === 'found') {
+          const kind = probed.kind === 'ready' || probed.kind === 'onboarding' ? probed.kind : 'not_ready';
+          this.egoLast = { kind, cliPath: probed.resolution.path, checkedAt: new Date().toISOString() };
+        }
+      } catch {
+        this.egoLast = undefined;
+      }
+    }
     const download = { id: 'open_instructions' as const, url: EGO_LITE_DOWNLOAD_URL, target: 'documentation' as const };
     const connect = { id: 'connect' as const };
     const probe = this.egoLast !== undefined && resolution.kind === 'found' && this.egoLast.cliPath === resolution.path ? this.egoLast : undefined;
@@ -398,7 +438,10 @@ export class BrowserSetupService implements IBrowserSetupService {
     let error: string | undefined;
     let steps: BrowserSetupStatus['steps'] = [];
     let actions: BrowserSetupStatus['actions'] = [download];
-    if (resolution.kind === 'missing') {
+    if (sourceDisabled) {
+      state = 'needs_user_action';
+      reason = 'source_disabled';
+    } else if (resolution.kind === 'missing') {
       state = 'not_prepared';
     } else if (resolution.kind === 'choose') {
       state = 'needs_user_action';
@@ -477,7 +520,8 @@ export class BrowserSetupService implements IBrowserSetupService {
 
   private async codexStatus(): Promise<BrowserSetupStatus> {
     const paths = codexBridgeResourcePaths(this.bootstrap.homeDir);
-    const pipes = await this.discoverCodexPipes();
+    const sourceDisabled = (await this.connections.list()).disabledSources?.includes('codex-browser') === true;
+    const pipes = sourceDisabled ? { names: [] } : await this.discoverCodexPipes();
     const install = await codexBridgeInstallState(this.bootstrap.homeDir);
     const pathsPresent = install !== 'missing' && await this.regularFile(paths.binary);
     const installed = install === 'installed' || pathsPresent;

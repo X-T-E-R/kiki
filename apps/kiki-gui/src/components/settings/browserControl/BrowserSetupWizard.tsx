@@ -136,7 +136,7 @@ function BrowserRoute({ preset, active, onSelect }: {
   const { client, scopeId } = useConnection();
   const queryClient = useQueryClient();
   const [feedback, setFeedback] = useState<Feedback>(null);
-  const [busy, setBusy] = useState<'prepare' | 'connect' | 'cancel' | 'open' | 'update' | 'shortcut' | 'allow' | 'default' | null>(null);
+  const [busy, setBusy] = useState<'prepare' | 'connect' | 'cancel' | 'open' | 'update' | 'shortcut' | 'allow' | 'default' | 'source' | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [selectedBrowserId, setSelectedBrowserId] = useState(preset.browserId ?? '');
   const [selectedCliPath, setSelectedCliPath] = useState('');
@@ -166,8 +166,13 @@ function BrowserRoute({ preset, active, onSelect }: {
     ?? (configQuery.data as { browser_control?: { allowedBrowsers?: string[] } } | undefined)?.browser_control?.allowedBrowsers;
   const isAllowedConfigured = (connectionsQuery.data as { allowedBrowsersConfigured?: boolean } | undefined)?.allowedBrowsersConfigured === true
     || (configQuery.data as { browser_control?: { allowedBrowsersConfigured?: boolean } } | undefined)?.browser_control?.allowedBrowsersConfigured === true;
+  const disabledSources = (connectionsQuery.data as { disabledSources?: string[] } | undefined)?.disabledSources
+    ?? (configQuery.data as { browser_control?: { disabledSources?: string[] } } | undefined)?.browser_control?.disabledSources
+    ?? [];
+  const sourceEnabled = !disabledSources.includes(preset.preset);
 
   const items: SourceBrowserItem[] = useMemo(() => {
+    if (!sourceEnabled) return [];
     const list: SourceBrowserItem[] = [];
     const seenConnectionIds = new Set<string>();
     const allowedFor = (connection: { readonly id: string; readonly enabled?: boolean } | undefined): boolean => {
@@ -231,10 +236,104 @@ function BrowserRoute({ preset, active, onSelect }: {
       });
     }
 
+    if (preset.preset === 'ego-lite' && (preset.state === 'ready' || preset.state === 'connected') && list.length === 0) {
+      list.push({
+        id: 'ego-lite',
+        browserId: 'ego-lite',
+        source: 'ego-lite',
+        name: preset.displayName || 'Ego Lite',
+        allowed: false,
+        realStatus: browserRealStatus({
+          toolPolicyDenied,
+          toolPolicyPartial,
+          ready: preset.state === 'connected',
+          allowed: false,
+          live: true,
+        }),
+        connectionId: undefined,
+      });
+    }
+
     return list;
-  }, [preset, connections, allowedBrowsers, isAllowedConfigured, toolPolicyDenied, toolPolicyPartial]);
+  }, [preset, connections, allowedBrowsers, isAllowedConfigured, sourceEnabled, toolPolicyDenied, toolPolicyPartial]);
 
   const allowedCountForRoute = items.filter((item) => item.allowed).length;
+
+  const upsertConnectionEnabled = async (existingConn: (typeof connections)[number], nextEnabled: boolean, fallbackBrowserId?: string) => {
+    if (existingConn.type === 'agent-browser-profile') {
+      await browserApi(client).upsert(existingConn.id, {
+        type: 'agent-browser-profile',
+        name: existingConn.name,
+        enabled: nextEnabled,
+        profilePath: existingConn.profilePath,
+        executablePath: existingConn.executablePath,
+        headed: existingConn.headed,
+        driverPath: existingConn.driverPath,
+      });
+    } else if (existingConn.type === 'agent-browser-cdp') {
+      await browserApi(client).upsert(existingConn.id, {
+        type: 'agent-browser-cdp',
+        name: existingConn.name,
+        enabled: nextEnabled,
+        endpoint: { action: 'keep' },
+        driverPath: existingConn.driverPath,
+      });
+    } else if (existingConn.type === 'codex-extension') {
+      await browserApi(client).upsert(existingConn.id, {
+        type: 'codex-extension',
+        name: existingConn.name,
+        enabled: nextEnabled,
+        runtimeRoot: existingConn.runtimeRoot ?? '',
+        browserId: existingConn.browserId ?? fallbackBrowserId ?? existingConn.id,
+      });
+    } else if (existingConn.type === 'ego-lite') {
+      await browserApi(client).upsert(existingConn.id, {
+        type: 'ego-lite',
+        name: existingConn.name,
+        enabled: nextEnabled,
+        ...(existingConn.cliPath !== undefined ? { cliPath: existingConn.cliPath } : {}),
+        ...(existingConn.profileId !== undefined ? { profileId: existingConn.profileId } : {}),
+        ...(existingConn.serverName !== undefined ? { serverName: existingConn.serverName } : {}),
+      });
+    }
+  };
+
+  const handleToggleSource = async (nextSourceEnabled: boolean) => {
+    setBusy('source');
+    setFeedback(null);
+    try {
+      const rawAllowed = (connectionsQuery.data as { allowedBrowsers?: string[] } | undefined)?.allowedBrowsers
+        ?? (configQuery.data as { browser_control?: { allowedBrowsers?: string[] } } | undefined)?.browser_control?.allowedBrowsers;
+      const isConfigured = (connectionsQuery.data as { allowedBrowsersConfigured?: boolean } | undefined)?.allowedBrowsersConfigured === true
+        || (configQuery.data as { browser_control?: { allowedBrowsersConfigured?: boolean } } | undefined)?.browser_control?.allowedBrowsersConfigured === true;
+
+      if (!nextSourceEnabled) {
+        const preservedAllowed = isConfigured && rawAllowed !== undefined
+          ? [...rawAllowed]
+          : connections.filter((conn) => conn.enabled).map((conn) => conn.id);
+        const nextDisabled = [...new Set([...disabledSources, preset.preset])] as ('kimi-webbridge' | 'independent-browser' | 'codex-browser' | 'ego-lite')[];
+        await client.patchConfig({
+          browser_control: {
+            disabled_sources: nextDisabled,
+            ...(!isConfigured ? { allowed_browsers: preservedAllowed } : {}),
+          },
+        } as import('../../../lib/client').KikiConfigPatch);
+      } else {
+        const nextDisabled = disabledSources.filter((source) => source !== preset.preset) as ('kimi-webbridge' | 'independent-browser' | 'codex-browser' | 'ego-lite')[];
+        await client.patchConfig({
+          browser_control: { disabled_sources: nextDisabled },
+        } as import('../../../lib/client').KikiConfigPatch);
+      }
+
+      await queryClient.invalidateQueries({ queryKey: browserKeys.connections(scopeId) });
+      await queryClient.invalidateQueries({ queryKey: browserKeys.presets(scopeId) });
+      await queryClient.invalidateQueries({ queryKey: ['config', scopeId] });
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const handleToggleAllow = async (item: SourceBrowserItem, nextChecked: boolean) => {
     setBusy('allow');
@@ -243,33 +342,41 @@ function BrowserRoute({ preset, active, onSelect }: {
       let connectionId = item.connectionId;
       let savedPending = false;
       if (nextChecked && connectionId === undefined) {
-        if (preset.preset !== 'codex-browser') {
+        if (preset.preset === 'ego-lite') {
+          const created = await browserApi(client).connectPreset('ego-lite', {});
+          if ((created.state !== 'ready' && created.state !== 'connected') || created.error !== undefined) {
+            setFeedback({ tone: 'error', text: created.error ?? t('st.browser.reason.egoFailed') });
+            return;
+          }
+          connectionId = created.connectionId ?? 'ego-lite';
+        } else if (preset.preset === 'codex-browser') {
+          const createId = codexConnectionIdForNewPipe(connections, item.browserId);
+          if (createId === undefined) {
+            setFeedback({ tone: 'error', text: t('st.browser.reason.connectionConflict') });
+            return;
+          }
+          const created = await browserApi(client).connectPreset(preset.preset, {
+            connectionId: createId,
+            browserId: item.browserId,
+          });
+          const blocked = created.reason === 'connection_conflict' || created.reason === 'connection_disabled' || created.reason === 'choose_connection';
+          savedPending = created.state === 'needs_user_action' && created.reason === 'approval_unproven';
+          const usable = (created.state === 'ready' || created.state === 'connected' || savedPending)
+            && !blocked && created.error === undefined && created.connectionId !== undefined;
+          if (!usable) {
+            setFeedback({
+              tone: 'error',
+              text: created.error ?? (created.reason === 'connection_conflict'
+                ? t('st.browser.reason.connectionConflict')
+                : t('st.browser.outcome.connectIncomplete')),
+            });
+            return;
+          }
+          connectionId = created.connectionId;
+        } else {
           setFeedback({ tone: 'error', text: t('st.browser.reason.chooseConnection') });
           return;
         }
-        const createId = codexConnectionIdForNewPipe(connections, item.browserId);
-        if (createId === undefined) {
-          setFeedback({ tone: 'error', text: t('st.browser.reason.connectionConflict') });
-          return;
-        }
-        const created = await browserApi(client).connectPreset(preset.preset, {
-          connectionId: createId,
-          browserId: item.browserId,
-        });
-        const blocked = created.reason === 'connection_conflict' || created.reason === 'connection_disabled' || created.reason === 'choose_connection';
-        savedPending = created.state === 'needs_user_action' && created.reason === 'approval_unproven';
-        const usable = (created.state === 'ready' || created.state === 'connected' || savedPending)
-          && !blocked && created.error === undefined && created.connectionId !== undefined;
-        if (!usable) {
-          setFeedback({
-            tone: 'error',
-            text: created.error ?? (created.reason === 'connection_conflict'
-              ? t('st.browser.reason.connectionConflict')
-              : t('st.browser.outcome.connectIncomplete')),
-          });
-          return;
-        }
-        connectionId = created.connectionId;
       }
       if (connectionId === undefined) return;
 
@@ -278,6 +385,7 @@ function BrowserRoute({ preset, active, onSelect }: {
       const isConfigured = (connectionsQuery.data as { allowedBrowsersConfigured?: boolean } | undefined)?.allowedBrowsersConfigured === true
         || (configQuery.data as { browser_control?: { allowedBrowsersConfigured?: boolean } } | undefined)?.browser_control?.allowedBrowsersConfigured === true;
       const known = new Set(connections.map((connection) => connection.id));
+      known.add(connectionId);
       const base = (isConfigured && rawAllowed !== undefined
         ? [...rawAllowed]
         : connections.filter((connection) => connection.enabled).map((connection) => connection.id))
@@ -292,42 +400,7 @@ function BrowserRoute({ preset, active, onSelect }: {
 
       const existingConn = connections.find((connection) => connection.id === connectionId);
       if (existingConn && existingConn.enabled !== nextChecked) {
-        if (existingConn.type === 'agent-browser-profile') {
-          await browserApi(client).upsert(connectionId, {
-            type: 'agent-browser-profile',
-            name: existingConn.name,
-            enabled: nextChecked,
-            profilePath: existingConn.profilePath,
-            executablePath: existingConn.executablePath,
-            headed: existingConn.headed,
-            driverPath: existingConn.driverPath,
-          });
-        } else if (existingConn.type === 'agent-browser-cdp') {
-          await browserApi(client).upsert(connectionId, {
-            type: 'agent-browser-cdp',
-            name: existingConn.name,
-            enabled: nextChecked,
-            endpoint: { action: 'keep' },
-            driverPath: existingConn.driverPath,
-          });
-        } else if (existingConn.type === 'codex-extension') {
-          await browserApi(client).upsert(connectionId, {
-            type: 'codex-extension',
-            name: existingConn.name,
-            enabled: nextChecked,
-            runtimeRoot: existingConn.runtimeRoot ?? '',
-            browserId: existingConn.browserId ?? item.browserId,
-          });
-        } else if (existingConn.type === 'ego-lite') {
-          await browserApi(client).upsert(connectionId, {
-            type: 'ego-lite',
-            name: existingConn.name,
-            enabled: nextChecked,
-            ...(existingConn.cliPath !== undefined ? { cliPath: existingConn.cliPath } : {}),
-            ...(existingConn.profileId !== undefined ? { profileId: existingConn.profileId } : {}),
-            ...(existingConn.serverName !== undefined ? { serverName: existingConn.serverName } : {}),
-          });
-        }
+        await upsertConnectionEnabled(existingConn, nextChecked, item.browserId);
       }
 
       await queryClient.invalidateQueries({ queryKey: browserKeys.connections(scopeId) });
@@ -509,11 +582,12 @@ function BrowserRoute({ preset, active, onSelect }: {
   return (
     <li
       data-browser-route={preset.preset}
-      data-browser-route-state={readiness}
+      data-browser-route-state={sourceEnabled ? readiness : 'disabled'}
       data-browser-route-active={active ? 'true' : 'false'}
+      data-browser-source-enabled={sourceEnabled ? 'true' : 'false'}
       className={`min-w-0 border-t border-hairline py-3.5 first:border-t-0 first:pt-1 ${active ? 'bg-ink/[0.02]' : ''}`}
     >
-      <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
         <button type="button" data-browser-route-select
           aria-pressed={active}
           onClick={onSelect}
@@ -521,367 +595,374 @@ function BrowserRoute({ preset, active, onSelect }: {
           {preset.displayName}
         </button>
         <span className="inline-flex shrink-0 items-center gap-1.5 text-[12px] text-ink-soft" data-browser-route-readiness={readiness}>
-          <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${tone.dot}`} />
-          {t(tone.text)}
+          <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${sourceEnabled ? tone.dot : 'bg-hairline-strong'}`} />
+          {sourceEnabled ? t(tone.text) : t('st.browser.source.disabled')}
         </span>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={sourceEnabled}
+          aria-label={t('st.browser.source.enable', { name: preset.displayName })}
+          data-browser-source-switch={preset.preset}
+          disabled={busy !== null}
+          onClick={() => { void handleToggleSource(!sourceEnabled); }}
+          className={`relative inline-flex h-[18px] w-8 shrink-0 items-center rounded-full ring-1 transition-colors duration-[var(--kiki-motion-quick)] ${
+            sourceEnabled ? 'bg-selected ring-selected-ink/45' : 'bg-hairline ring-hairline-strong'
+          } ${busy !== null ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
+        >
+          <span
+            className={`inline-block h-3 w-3 transform rounded-full transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${
+              sourceEnabled ? 'translate-x-[16px] bg-selected-ink' : 'translate-x-[3px] bg-ink-faint'
+            }`}
+          />
+        </button>
       </div>
 
-      {preset.preset === 'ego-lite' ? (
-        <p className="mt-1 max-w-[62ch] text-[12.5px] leading-5 text-ink-soft" data-browser-route-ego-next>
-          {t(egoNextKey(preset))}
-        </p>
+      {!sourceEnabled ? (
+        <>
+          <p className="mt-1 text-[12px] text-ink-faint" data-browser-source-disabled-hint={preset.preset}>
+            {t('st.browser.source.disabledHint')}
+          </p>
+          <FeedbackLine feedback={feedback} />
+        </>
       ) : (
-        <p className="mt-1 max-w-[62ch] text-[12.5px] leading-5 text-ink-soft">
-          {t(`st.browser.route.blurb.${preset.preset}`)}
-        </p>
-      )}
-
-      {/* Progress while a preparation runs: the server's own step, its own
-          percent. Nothing is invented, so the row can say what is moving
-          without claiming which file is on the wire. */}
-      {moving ? (
-        <p role="status" className="mt-2 flex items-baseline gap-2 text-[12px] text-ink-soft" data-browser-route-progress={running.id}>
-          <span>{t('st.browser.route.installing', { step: step(running.id) })}</span>
-          {running.percent === undefined ? null : (
-            <span className="font-mono tabular-nums text-ink-faint">{Math.round(running.percent)}%</span>
-          )}
-        </p>
-      ) : null}
-
-      {needsLine ? (
-        <p className="mt-2 max-w-[62ch] text-[12px] leading-[18px] text-ink-soft" data-browser-route-blocker={blocking.id}>
-          {t('st.browser.route.blocking', { step: step(blocking.id) })}
-          {reason(blocking) === undefined ? '' : ` ${reason(blocking)}`}
-        </p>
-      ) : null}
-      {/* An override that outranks this page: the headline says what that
-          means, and the line the reader has to change to undo it goes in the
-          diagnostics fold with the rest of the detector's prose. It is the one
-          actionable fact here, so the fold is opened for it rather than
-          leaving it to compete with the sentence above. */}
-      {forcedOff ? (
-        <p className="mt-2 max-w-[62ch] text-[12px] leading-[18px] text-danger" data-browser-route-forced-off>
-          {t('st.browser.reason.forcedOff', { step: step(blocking.id) })}
-          {blocking.detail === undefined ? null : (
-            <>
-              {' '}
-              {/* Not decoration: naming the override is the only way back, so
-                  this opens the fold that holds it rather than leaving the
-                  reader to find it. */}
-              <button type="button" className="text-ink-soft underline underline-offset-2"
-                data-browser-route-forced-off-cause
-                onClick={() => { setDiagnosticsOpen(true); }}>
-                {t('st.browser.reason.forcedOffCause')}
-              </button>
-            </>
-          )}
-        </p>
-      ) : null}      {settled ? (
-        <p className="mt-2 max-w-[62ch] text-[12px] leading-[18px] text-ink-faint" data-browser-route-settled>
-          {t('st.browser.route.alreadyInstalled')}
-        </p>
-      ) : null}
-
-      {warned === undefined ? null : (
-        // A rule, because at phone width this wraps to two or three lines and
-        // would otherwise read straight on from the settled line above it —
-        // one grey sentence and one amber sentence as a single paragraph.
-        <p className="mt-2.5 max-w-[62ch] border-l-2 border-amber-ink/45 pl-2.5 text-[12px] leading-[18px] text-amber-ink"
-          data-browser-route-warning={warned.id}>
-          {t('st.browser.route.warning', { step: step(warned.id) })}
-          {reason(warned) === undefined ? '' : ` ${reason(warned)}`}
-        </p>
-      )}
-
-      {preset.error === undefined ? null : (
-        <p role="alert" className="mt-2 max-w-[72ch] break-words text-[12px] leading-[18px] text-danger" data-browser-route-error>
-          {preset.error}
-        </p>
-      )}
-
-      {preset.candidates !== undefined ? (
-        <div className="mt-2.5 space-y-1.5" data-browser-candidates-region>
-          {preset.candidates.length === 0 ? (
-            <p className="text-[12px] leading-[18px] text-ink-soft" data-browser-candidates-empty>
-              {t('st.browser.candidates.empty')}
+        <>
+          {preset.preset === 'ego-lite' ? (
+            <p className="mt-1 max-w-[62ch] text-[12.5px] leading-5 text-ink-soft" data-browser-route-ego-next>
+              {t(egoNextKey(preset))}
             </p>
           ) : (
-            <div className="flex flex-wrap items-center gap-2">
-              <label htmlFor={`candidate-select-${preset.preset}`} className="text-[12px] font-medium text-ink-soft shrink-0">
-                {t('st.browser.candidates.label')}
-              </label>
-              <div className="min-w-[240px] max-w-full">
-                <SettingsSelect
-                  id={`candidate-select-${preset.preset}`}
-                  ariaLabel={t('st.browser.candidates.label')}
-                  dataAttr="data-browser-candidate-select"
-                  choices={preset.candidates.map((c) => ({
-                    value: c.browserId,
-                    label: c.browserId,
-                  }))}
-                  value={selectedBrowserId}
-                  emptyText={t('st.browser.candidates.placeholder')}
-                  onChange={(val) => { setSelectedBrowserId(val); }}
-                  disabled={busy !== null}
-                  variant="row"
-                  mono
-                />
-              </div>
-              {selectedBrowserId !== (preset.browserId ?? '') ? (
-                <button
-                  type="button"
-                  className={SECONDARY_BUTTON}
-                  data-browser-candidate-cancel
-                  disabled={busy !== null}
-                  onClick={() => { setSelectedBrowserId(preset.browserId ?? ''); }}
-                >
-                  {t('st.browser.route.cancelSelection')}
-                </button>
-              ) : null}
-            </div>
+            <p className="mt-1 max-w-[62ch] text-[12.5px] leading-5 text-ink-soft">
+              {t(`st.browser.route.blurb.${preset.preset}`)}
+            </p>
           )}
-        </div>
-      ) : null}
 
-      {preset.cliPaths !== undefined && preset.cliPaths.length > 0 ? (
-        <div className="mt-2.5 space-y-1.5" data-browser-cli-paths>
-          <div className="flex flex-wrap items-center gap-2">
-            <label htmlFor="ego-cli-select" className="text-[12px] font-medium text-ink-soft shrink-0">
-              {t('st.browser.fieldCliPath')}
-            </label>
-            <div className="min-w-0 max-w-full flex-1 sm:min-w-[240px] sm:flex-none">
-              <SettingsSelect
-                id="ego-cli-select"
-                ariaLabel={t('st.browser.fieldCliPath')}
-                dataAttr="data-browser-cli-select"
-                choices={preset.cliPaths.map((cliPath) => ({ value: cliPath, label: cliPath }))}
-                value={selectedCliPath}
-                emptyText={t('st.browser.route.egoCliPlaceholder')}
-                onChange={(cliPath) => { setSelectedCliPath(cliPath); }}
-                disabled={busy !== null}
-                variant="row"
-                mono
-              />
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {items.length > 0 ? (
-        <div className="mt-3 space-y-2 rounded border border-hairline bg-surface/40 p-2.5" data-browser-source-items={preset.preset}>
-          <div className="flex items-center justify-between text-[12px]">
-            <span className="font-medium text-ink">{t('st.browser.allowCheckbox')}</span>
-            <span className="text-ink-soft" data-browser-allowed-count={preset.preset}>
-              {t('st.browser.allowedCount', { count: allowedCountForRoute })}
-            </span>
-          </div>
-          <div className="space-y-1.5 pt-1">
-            {items.map((item) => {
-              const currentDefault = connectionsQuery.data?.defaultBrowser ?? '';
-              const targetConnId = item.connectionId;
-              const isDefault = targetConnId !== undefined && currentDefault !== '' && currentDefault === targetConnId;
-              return (
-                <div
-                  key={item.id}
-                  className="flex items-center justify-between gap-2.5 rounded px-2 py-1 text-[12px] hover:bg-ink/[0.03]"
-                >
-                  <label className="flex items-center gap-2 min-w-0 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      className="h-3.5 w-3.5 rounded border-hairline-strong text-selected-ink focus:ring-0 cursor-pointer"
-                      data-browser-allow-checkbox={item.id}
-                      checked={item.allowed}
-                      disabled={busy !== null}
-                      onChange={(e) => { void handleToggleAllow(item, e.target.checked); }}
-                    />
-                    <span className="font-mono text-ink truncate" data-browser-identity={item.browserId}>
-                      {item.name || item.browserId}
-                    </span>
-                    <span className="rounded bg-ink/[0.05] px-1.5 py-0.5 text-[10px] text-ink-soft" data-browser-source-tag={item.source}>
-                      {item.source}
-                    </span>
-                  </label>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    {targetConnId !== undefined && (item.allowed || isDefault) ? (
-                      <button
-                        type="button"
-                        data-browser-default-star={targetConnId}
-                        aria-pressed={isDefault}
-                        aria-label={t('st.browser.defaultLabel')}
-                        disabled={busy !== null}
-                        onClick={() => { void handleDefault(targetConnId, isDefault); }}
-                        className={`rounded px-1.5 py-0.5 text-[10px] transition-colors ${
-                          isDefault
-                            ? 'bg-selected text-selected-ink font-medium'
-                            : 'text-ink-faint hover:bg-ink/[0.05] hover:text-ink-soft'
-                        }`}
-                      >
-                        {isDefault ? t('st.browser.defaultActive') : t('st.browser.setDefaultAction')}
-                      </button>
-                    ) : null}
-                    <span
-                      className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                        item.realStatus === 'ready'
-                          ? 'bg-success/10 text-success'
-                          : item.realStatus === 'denied'
-                            ? 'bg-danger/10 text-danger'
-                            : item.realStatus === 'partial'
-                              ? 'bg-amber-ink/10 text-amber-ink'
-                              : item.realStatus === 'auth_unknown'
-                                ? 'bg-amber-ink/10 text-amber-ink'
-                                : item.realStatus === 'allowed'
-                                  ? 'bg-selected-ink/10 text-selected-ink'
-                                  : 'bg-ink/[0.05] text-ink-soft'
-                      }`}
-                      data-browser-status-tag={item.realStatus}
+          {items.length > 0 ? (
+            <div className="mt-2.5 space-y-1.5 rounded border border-hairline bg-surface/40 p-2.5" data-browser-source-items={preset.preset}>
+              <div className="flex items-center justify-between text-[12px]">
+                <span className="font-medium text-ink">{t('st.browser.allowCheckbox')}</span>
+                <span className="text-ink-soft" data-browser-allowed-count={preset.preset}>
+                  {t('st.browser.allowedCount', { count: allowedCountForRoute })}
+                </span>
+              </div>
+              <div className="space-y-1 pt-0.5">
+                {items.map((item) => {
+                  const currentDefault = connectionsQuery.data?.defaultBrowser ?? '';
+                  const targetConnId = item.connectionId;
+                  const isDefault = targetConnId !== undefined && currentDefault !== '' && currentDefault === targetConnId;
+                  return (
+                    <div
+                      key={item.id}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded px-2 py-1 text-[12px] hover:bg-ink/[0.03]"
                     >
-                      {t(`st.browser.status.${
-                        item.realStatus === 'auth_unknown' ? 'authUnknown' : item.realStatus
-                      }`)}
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      ) : null}
+                      <label className="flex min-w-[8.5rem] flex-1 items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          className="h-3.5 w-3.5 shrink-0 rounded border-hairline-strong text-selected-ink focus:ring-0 cursor-pointer"
+                          data-browser-allow-checkbox={item.id}
+                          checked={item.allowed}
+                          disabled={busy !== null}
+                          onChange={(e) => { void handleToggleAllow(item, e.target.checked); }}
+                        />
+                        <span className="min-w-0 font-mono text-ink truncate" data-browser-identity={item.browserId}>
+                          {item.name || item.browserId}
+                        </span>
+                        {item.name && item.name !== item.browserId ? (
+                          <span className="hidden min-w-0 font-mono text-[11px] text-ink-faint truncate sm:inline">
+                            {item.browserId}
+                          </span>
+                        ) : null}
+                        <span className="hidden shrink-0 rounded bg-ink/[0.05] px-1.5 py-0.5 text-[10px] text-ink-soft sm:inline" data-browser-source-tag={item.source}>
+                          {item.source}
+                        </span>
+                      </label>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {targetConnId !== undefined && (item.allowed || isDefault) ? (
+                          <button
+                            type="button"
+                            data-browser-default-star={targetConnId}
+                            aria-pressed={isDefault}
+                            aria-label={t('st.browser.defaultLabel')}
+                            disabled={busy !== null}
+                            onClick={() => { void handleDefault(targetConnId, isDefault); }}
+                            className={`rounded px-1.5 py-0.5 text-[10px] transition-colors ${
+                              isDefault
+                                ? 'bg-selected text-selected-ink font-medium'
+                                : 'text-ink-faint hover:bg-ink/[0.05] hover:text-ink-soft'
+                            }`}
+                          >
+                            {isDefault ? t('st.browser.defaultActive') : t('st.browser.setDefaultAction')}
+                          </button>
+                        ) : null}
+                        <span
+                          className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                            item.realStatus === 'ready'
+                              ? 'bg-success/10 text-success'
+                              : item.realStatus === 'denied'
+                                ? 'bg-danger/10 text-danger'
+                                : item.realStatus === 'partial'
+                                  ? 'bg-amber-ink/10 text-amber-ink'
+                                  : item.realStatus === 'auth_unknown'
+                                    ? 'bg-amber-ink/10 text-amber-ink'
+                                    : item.realStatus === 'allowed'
+                                      ? 'bg-selected-ink/10 text-selected-ink'
+                                      : 'bg-ink/[0.05] text-ink-soft'
+                          }`}
+                          data-browser-status-tag={item.realStatus}
+                        >
+                          {t(`st.browser.status.${
+                            item.realStatus === 'auth_unknown' ? 'authUnknown' : item.realStatus
+                          }`)}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
 
-      <div className="mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-2">
-        {/* External control surfaces get no Kiki button: there is nothing here
-            for Kiki to install or connect, so a primary button would promise a
-            step this app does not perform. And Set up is only the headline while
-            something is actually missing — once the components are in place the
-            next move belongs to the person, and pushing "install" at them is the
-            thing this page is here to stop doing. It stays available, quiet, for
-            the case where a later check does find something to repair. */}
-        {!routeActions || prepare === undefined || busy !== null || moving || readiness === 'connected' || !canPrepare ? null : (
-          <button type="button"
-            className={openAction !== undefined && readiness === 'ready' ? SECONDARY_BUTTON : PRIMARY_BUTTON}
-            data-browser-route-prepare
-            disabled={busy !== null}
-            onClick={() => { setConfirming(true); }}>
-            {busy === 'prepare' ? t('st.browser.route.preparing')
-              // Nothing is left to install when only the flag is, so the button
-              // says what it actually does rather than claiming to set up.
-              : featureOnly ? t('st.browser.route.turnOn') : t('st.browser.route.prepare')}
-          </button>
-        )}
-        {!routeActions || openAction === undefined || (readiness !== 'ready' && readiness !== 'connected' && preset.state !== 'failed' && preset.error === undefined) || busy !== null ? null : (
-          <button type="button" className={PRIMARY_BUTTON} data-browser-route-open
-            disabled={busy !== null}
-            onClick={() => { void act('open'); }}>
-            {busy === 'open' ? t('st.browser.route.opening') : t('st.browser.route.open')}
-          </button>
-        )}
-        {!routeActions || connect === undefined || (readiness !== 'ready' && preset.state !== 'needs_user_action' && preset.state !== 'failed' && preset.error === undefined) || busy !== null ? null : (
-          <button type="button" className={openAction !== undefined ? SECONDARY_BUTTON : PRIMARY_BUTTON} data-browser-route-connect
-            disabled={busy !== null || (preset.candidates !== undefined && (!selectedBrowserId || selectedBrowserId === '')) || (preset.cliPaths !== undefined && preset.cliPaths.length > 0 && selectedCliPath === '')}
-            onClick={() => { void act('connect'); }}>
-            {busy === 'connect' ? t('st.browser.route.connecting')
-              : preset.preset === 'ego-lite' ? t('st.browser.route.checkEgo')
-                : preset.candidates !== undefined ? t('st.browser.route.saveConnection') : t('st.browser.route.connect')}
-          </button>
-        )}
-        {hasVersionMismatch && updateAction !== undefined ? (
-          <button type="button" className={SECONDARY_BUTTON} data-browser-route-update
-            disabled={busy !== null}
-            onClick={() => { void act('update'); }}>
-            {busy === 'update' ? t('st.browser.route.updating') : t('st.browser.route.update')}
-          </button>
-        ) : null}
-        {readiness === 'connected' ? (
-          <span className="inline-flex items-center gap-1.5 text-[12px] text-success" data-browser-route-connected>
-            <Icon name="check" size={12} />
-            {t('st.browser.route.connectedAt', { at: whenText(locale, preset.checkedAt) ?? t('st.browser.route.connectedNow') })}
-          </span>
-        ) : null}
-        {cancel === undefined || busy !== null ? null : (
-          <button type="button" className={SECONDARY_BUTTON} data-browser-route-cancel
-            onClick={() => { void act('cancel'); }}>
-            {t('st.browser.route.cancel')}
-          </button>
-        )}
-        {/* The flag is enabled by the consented Set up above, so there is no
-            second button and no trip to another page: the reader is told what
-            is off, and the button they can already see turns it on. */}
-        {offeredExtension?.url === undefined ? null : (
-          <ExternalLink className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`} href={offeredExtension.url}
-            data-browser-route-extension={offeredExtension.target ?? 'chrome'}>
-            <Icon name="external" size={12} />
-            {t('st.browser.route.addExtension', { store: t(STORE_TARGET_KEYS[offeredExtension.target ?? ''] ?? 'st.browser.store.chrome') })}
-          </ExternalLink>
-        )}
-        {offeredInstructions === undefined ? null : (
-          <ExternalLink className="inline-flex items-center gap-1 text-[12px] text-selected-ink hover:underline" href={offeredInstructions}
-            data-browser-route-instructions>
-            {preset.preset === 'ego-lite' ? t('st.browser.route.downloadEgo') : t('st.browser.route.instructions')}
-          </ExternalLink>
-        )}
-      </div>
-
-      {preset.checkedAt === undefined ? null : (
-        <p className="mt-2 text-[11px] text-ink-faint" data-browser-route-checked>
-          {t('st.browser.route.checkedAt', { at: whenText(locale, preset.checkedAt) ?? '' })}
-        </p>
-      )}
-
-      <FeedbackLine feedback={feedback} />
-
-      {/* Advanced actions: low-frequency operations (update, desktop shortcut) */}
-      {(updateAction !== undefined || shortcutAction !== undefined) ? (
-        <AdvancedDetails summary={t('st.browser.route.advanced')} data-browser-route-advanced>
-          <div className="flex flex-col gap-2 pt-1">
-            <div className="flex flex-wrap items-center gap-2">
-              {updateAction === undefined || hasVersionMismatch ? null : (
-                <button type="button" className={SECONDARY_BUTTON} data-browser-route-update
-                  disabled={busy !== null}
-                  onClick={() => { void act('update'); }}>
-                  {busy === 'update' ? t('st.browser.route.updating') : t('st.browser.route.update')}
-                </button>
+          {moving ? (
+            <p role="status" className="mt-2 flex items-baseline gap-2 text-[12px] text-ink-soft" data-browser-route-progress={running.id}>
+              <span>{t('st.browser.route.installing', { step: step(running.id) })}</span>
+              {running.percent === undefined ? null : (
+                <span className="font-mono tabular-nums text-ink-faint">{Math.round(running.percent)}%</span>
               )}
-              {shortcutAction === undefined ? null : (
-                <button type="button" className={SECONDARY_BUTTON} data-browser-route-shortcut
-                  disabled={busy !== null}
-                  onClick={() => { void act('shortcut'); }}>
-                  {busy === 'shortcut' ? t('st.browser.route.creatingShortcut') : t('st.browser.route.shortcut')}
-                </button>
+            </p>
+          ) : null}
+
+          {needsLine ? (
+            <p className="mt-2 max-w-[62ch] text-[12px] leading-[18px] text-ink-soft" data-browser-route-blocker={blocking.id}>
+              {t('st.browser.route.blocking', { step: step(blocking.id) })}
+              {reason(blocking) === undefined ? '' : ` ${reason(blocking)}`}
+            </p>
+          ) : null}
+
+          {forcedOff ? (
+            <p className="mt-2 max-w-[62ch] text-[12px] leading-[18px] text-danger" data-browser-route-forced-off>
+              {t('st.browser.reason.forcedOff', { step: step(blocking.id) })}
+              {blocking.detail === undefined ? null : (
+                <>
+                  {' '}
+                  <button type="button" className="text-ink-soft underline underline-offset-2"
+                    data-browser-route-forced-off-cause
+                    onClick={() => { setDiagnosticsOpen(true); }}>
+                    {t('st.browser.reason.forcedOffCause')}
+                  </button>
+                </>
+              )}
+            </p>
+          ) : null}
+          {settled ? (
+            <p className="mt-2 max-w-[62ch] text-[12px] leading-[18px] text-ink-faint" data-browser-route-settled>
+              {t('st.browser.route.alreadyInstalled')}
+            </p>
+          ) : null}
+
+          {warned === undefined ? null : (
+            <p className="mt-2.5 max-w-[62ch] border-l-2 border-amber-ink/45 pl-2.5 text-[12px] leading-[18px] text-amber-ink"
+              data-browser-route-warning={warned.id}>
+              {t('st.browser.route.warning', { step: step(warned.id) })}
+              {reason(warned) === undefined ? '' : ` ${reason(warned)}`}
+            </p>
+          )}
+
+          {preset.error === undefined ? null : (
+            <p role="alert" className="mt-2 max-w-[72ch] break-words text-[12px] leading-[18px] text-danger" data-browser-route-error>
+              {preset.error}
+            </p>
+          )}
+
+          {preset.candidates !== undefined ? (
+            <div className="mt-2.5 space-y-1.5" data-browser-candidates-region>
+              {preset.candidates.length === 0 ? (
+                <p className="text-[12px] leading-[18px] text-ink-soft" data-browser-candidates-empty>
+                  {t('st.browser.candidates.empty')}
+                </p>
+              ) : (
+                <div className="flex flex-wrap items-center gap-2">
+                  <label htmlFor={`candidate-select-${preset.preset}`} className="text-[12px] font-medium text-ink-soft shrink-0">
+                    {t('st.browser.candidates.label')}
+                  </label>
+                  <div className="min-w-[240px] max-w-full">
+                    <SettingsSelect
+                      id={`candidate-select-${preset.preset}`}
+                      ariaLabel={t('st.browser.candidates.label')}
+                      dataAttr="data-browser-candidate-select"
+                      choices={preset.candidates.map((c) => ({
+                        value: c.browserId,
+                        label: c.browserId,
+                      }))}
+                      value={selectedBrowserId}
+                      emptyText={t('st.browser.candidates.placeholder')}
+                      onChange={(val) => { setSelectedBrowserId(val); }}
+                      disabled={busy !== null}
+                      variant="row"
+                      mono
+                    />
+                  </div>
+                  {selectedBrowserId !== (preset.browserId ?? '') ? (
+                    <button
+                      type="button"
+                      className={SECONDARY_BUTTON}
+                      data-browser-candidate-cancel
+                      disabled={busy !== null}
+                      onClick={() => { setSelectedBrowserId(preset.browserId ?? ''); }}
+                    >
+                      {t('st.browser.route.cancelSelection')}
+                    </button>
+                  ) : null}
+                </div>
               )}
             </div>
-            {shortcutAction === undefined ? null : (
-              <p className="text-[11px] text-ink-faint">
-                {preset.executionHost === 'local' || preset.executionHost === '127.0.0.1' || preset.executionHost === 'localhost'
-                  ? t('st.browser.route.shortcutHostLocal')
-                  : t('st.browser.route.shortcutHostRemote', { host: preset.executionHost })}
-              </p>
+          ) : null}
+
+          {preset.cliPaths !== undefined && preset.cliPaths.length > 0 ? (
+            <div className="mt-2.5 space-y-1.5" data-browser-cli-paths>
+              <div className="flex flex-wrap items-center gap-2">
+                <label htmlFor="ego-cli-select" className="text-[12px] font-medium text-ink-soft shrink-0">
+                  {t('st.browser.fieldCliPath')}
+                </label>
+                <div className="min-w-0 max-w-full flex-1 sm:min-w-[240px] sm:flex-none">
+                  <SettingsSelect
+                    id="ego-cli-select"
+                    ariaLabel={t('st.browser.fieldCliPath')}
+                    dataAttr="data-browser-cli-select"
+                    choices={preset.cliPaths.map((cliPath) => ({ value: cliPath, label: cliPath }))}
+                    value={selectedCliPath}
+                    emptyText={t('st.browser.route.egoCliPlaceholder')}
+                    onChange={(cliPath) => { setSelectedCliPath(cliPath); }}
+                    disabled={busy !== null}
+                    variant="row"
+                    mono
+                  />
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-2">
+            {!routeActions || prepare === undefined || busy !== null || moving || readiness === 'connected' || !canPrepare ? null : (
+              <button type="button"
+                className={openAction !== undefined && readiness === 'ready' ? SECONDARY_BUTTON : PRIMARY_BUTTON}
+                data-browser-route-prepare
+                disabled={busy !== null}
+                onClick={() => { setConfirming(true); }}>
+                {busy === 'prepare' ? t('st.browser.route.preparing')
+                  : featureOnly ? t('st.browser.route.turnOn') : t('st.browser.route.prepare')}
+              </button>
+            )}
+            {!routeActions || openAction === undefined || (readiness !== 'ready' && readiness !== 'connected' && preset.state !== 'failed' && preset.error === undefined) || busy !== null ? null : (
+              <button type="button" className={PRIMARY_BUTTON} data-browser-route-open
+                disabled={busy !== null}
+                onClick={() => { void act('open'); }}>
+                {busy === 'open' ? t('st.browser.route.opening') : t('st.browser.route.open')}
+              </button>
+            )}
+            {!routeActions || connect === undefined || (readiness !== 'ready' && preset.state !== 'needs_user_action' && preset.state !== 'failed' && preset.error === undefined) || busy !== null ? null : (
+              <button type="button" className={openAction !== undefined ? SECONDARY_BUTTON : PRIMARY_BUTTON} data-browser-route-connect
+                disabled={busy !== null || (preset.candidates !== undefined && (!selectedBrowserId || selectedBrowserId === '')) || (preset.cliPaths !== undefined && preset.cliPaths.length > 0 && selectedCliPath === '')}
+                onClick={() => { void act('connect'); }}>
+                {busy === 'connect' ? t('st.browser.route.connecting')
+                  : preset.preset === 'ego-lite' ? t('st.browser.route.checkEgo')
+                    : preset.candidates !== undefined ? t('st.browser.route.saveConnection') : t('st.browser.route.connect')}
+              </button>
+            )}
+            {hasVersionMismatch && updateAction !== undefined ? (
+              <button type="button" className={SECONDARY_BUTTON} data-browser-route-update
+                disabled={busy !== null}
+                onClick={() => { void act('update'); }}>
+                {busy === 'update' ? t('st.browser.route.updating') : t('st.browser.route.update')}
+              </button>
+            ) : null}
+            {readiness === 'connected' ? (
+              <span className="inline-flex items-center gap-1.5 text-[12px] text-success" data-browser-route-connected>
+                <Icon name="check" size={12} />
+                {t('st.browser.route.connectedAt', { at: whenText(locale, preset.checkedAt) ?? t('st.browser.route.connectedNow') })}
+              </span>
+            ) : null}
+            {cancel === undefined || busy !== null ? null : (
+              <button type="button" className={SECONDARY_BUTTON} data-browser-route-cancel
+                onClick={() => { void act('cancel'); }}>
+                {t('st.browser.route.cancel')}
+              </button>
+            )}
+            {offeredExtension?.url === undefined ? null : (
+              <ExternalLink className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`} href={offeredExtension.url}
+                data-browser-route-extension={offeredExtension.target ?? 'chrome'}>
+                <Icon name="external" size={12} />
+                {t('st.browser.route.addExtension', { store: t(STORE_TARGET_KEYS[offeredExtension.target ?? ''] ?? 'st.browser.store.chrome') })}
+              </ExternalLink>
+            )}
+            {offeredInstructions === undefined ? null : (
+              <ExternalLink className="inline-flex items-center gap-1 text-[12px] text-selected-ink hover:underline" href={offeredInstructions}
+                data-browser-route-instructions>
+                {preset.preset === 'ego-lite' ? t('st.browser.route.downloadEgo') : t('st.browser.route.instructions')}
+              </ExternalLink>
             )}
           </div>
-        </AdvancedDetails>
-      ) : null}
 
-      {/* The detector's own sentences, folded. They explain the machine rather
-          than the next action, so they are here and not in the row above. */}
-      {preset.steps.every((item) => item.detail === undefined) ? null : (
-        <AdvancedDetails summary={t('st.browser.route.diagnostics')} data-browser-route-diagnostics
-          open={openDiagnostics || undefined}
-          onToggle={(event) => { setDiagnosticsOpen((event.currentTarget as HTMLDetailsElement).open); }}>
-          <dl className="space-y-1.5">
-            {preset.steps.map((item) => (
-              <div key={item.id} className="grid grid-cols-[minmax(0,9rem)_minmax(0,1fr)] gap-x-3 gap-y-0.5">
-                <dt className="text-ink-faint">{step(item.id)}</dt>
-                <dd className="min-w-0 text-ink-soft">
-                  {t(`st.browser.stepState.${item.state}`)}
-                  {item.reason === undefined ? '' : ` · ${item.reason}`}
-                  {item.detail === undefined ? '' : <span className="block text-ink-faint">{item.detail}</span>}
-                </dd>
+          {preset.checkedAt === undefined ? null : (
+            <p className="mt-2 text-[11px] text-ink-faint" data-browser-route-checked>
+              {t('st.browser.route.checkedAt', { at: whenText(locale, preset.checkedAt) ?? '' })}
+            </p>
+          )}
+
+          <FeedbackLine feedback={feedback} />
+
+          {(updateAction !== undefined || shortcutAction !== undefined) ? (
+            <AdvancedDetails summary={t('st.browser.route.advanced')} data-browser-route-advanced>
+              <div className="flex flex-col gap-2 pt-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  {updateAction === undefined || hasVersionMismatch ? null : (
+                    <button type="button" className={SECONDARY_BUTTON} data-browser-route-update
+                      disabled={busy !== null}
+                      onClick={() => { void act('update'); }}>
+                      {busy === 'update' ? t('st.browser.route.updating') : t('st.browser.route.update')}
+                    </button>
+                  )}
+                  {shortcutAction === undefined ? null : (
+                    <button type="button" className={SECONDARY_BUTTON} data-browser-route-shortcut
+                      disabled={busy !== null}
+                      onClick={() => { void act('shortcut'); }}>
+                      {busy === 'shortcut' ? t('st.browser.route.creatingShortcut') : t('st.browser.route.shortcut')}
+                    </button>
+                  )}
+                </div>
+                {shortcutAction === undefined ? null : (
+                  <p className="text-[11px] text-ink-faint">
+                    {preset.executionHost === 'local' || preset.executionHost === '127.0.0.1' || preset.executionHost === 'localhost'
+                      ? t('st.browser.route.shortcutHostLocal')
+                      : t('st.browser.route.shortcutHostRemote', { host: preset.executionHost })}
+                  </p>
+                )}
               </div>
-            ))}
-          </dl>
-          <p className="font-mono text-ink-faint break-all" data-browser-route-source>{preset.sourceUrl}</p>
-          <p className="text-ink-faint">
-            {t('st.browser.route.hostLine')} <span className="font-mono break-all">{preset.executionHost}</span>
-          </p>
-        </AdvancedDetails>
+            </AdvancedDetails>
+          ) : null}
+
+          {preset.steps.every((item) => item.detail === undefined) ? null : (
+            <AdvancedDetails summary={t('st.browser.route.diagnostics')} data-browser-route-diagnostics
+              open={openDiagnostics || undefined}
+              onToggle={(event) => { setDiagnosticsOpen((event.currentTarget as HTMLDetailsElement).open); }}>
+              <dl className="space-y-1.5">
+                {preset.steps.map((item) => (
+                  <div key={item.id} className="grid grid-cols-[minmax(0,9rem)_minmax(0,1fr)] gap-x-3 gap-y-0.5">
+                    <dt className="text-ink-faint">{step(item.id)}</dt>
+                    <dd className="min-w-0 text-ink-soft">
+                      {t(`st.browser.stepState.${item.state}`)}
+                      {item.reason === undefined ? '' : ` · ${item.reason}`}
+                      {item.detail === undefined ? '' : <span className="block text-ink-faint">{item.detail}</span>}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+              <p className="font-mono text-ink-faint break-all" data-browser-route-source>{preset.sourceUrl}</p>
+              <p className="text-ink-faint">
+                {t('st.browser.route.hostLine')} <span className="font-mono break-all">{preset.executionHost}</span>
+              </p>
+            </AdvancedDetails>
+          )}
+        </>
       )}
 
       <ConfirmDialog open={confirming} overlayId={`confirm-browser-prepare-${preset.preset}`}

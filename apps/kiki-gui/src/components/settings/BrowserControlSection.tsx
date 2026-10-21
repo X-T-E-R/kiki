@@ -120,8 +120,10 @@ function BrowserMasterCard() {
     ?? (configQuery.data as { browser_control?: { allowedBrowsers?: string[] } } | undefined)?.browser_control?.allowedBrowsers;
   const isAllowedConfigured = (connectionsQuery.data as { allowedBrowsersConfigured?: boolean } | undefined)?.allowedBrowsersConfigured === true
     || (configQuery.data as { browser_control?: { allowedBrowsersConfigured?: boolean } } | undefined)?.browser_control?.allowedBrowsersConfigured === true;
+  const disabledSources = (connectionsQuery.data as { disabledSources?: string[] } | undefined)?.disabledSources
+    ?? (configQuery.data as { browser_control?: { disabledSources?: string[] } } | undefined)?.browser_control?.disabledSources;
 
-  const allowedCount = effectiveAllowedBrowserCount(connections, isAllowedConfigured, allowedBrowsers);
+  const allowedCount = effectiveAllowedBrowserCount(connections, isAllowedConfigured, allowedBrowsers, disabledSources);
 
   const choices = useMemo(() => [
     { value: '', label: t('st.browser.defaultNone'), hint: t('st.browser.defaultNoneHint') },

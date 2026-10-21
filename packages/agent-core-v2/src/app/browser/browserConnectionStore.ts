@@ -5,20 +5,21 @@ import { LifecycleScope } from '#/app/scopes';
 
 import { BrowserError } from './errors';
 import {
-  BROWSER_CONFIG_SECTION, BrowserConfigSchema, BrowserConnectionInputSchema, BrowserIdSchema,
+  BROWSER_CONFIG_SECTION, BrowserConfigSchema, BrowserConnectionInputSchema, BrowserIdSchema, BrowserSourceIdSchema,
   browserConnectionRecord, type BrowserConfig, type BrowserConnectionInput, type BrowserConnectionRecord,
-  type BrowserResolvedConnection, type BrowserStoredConnection,
+  type BrowserResolvedConnection, type BrowserSourceId, type BrowserStoredConnection,
 } from './browserConfig';
 
 export interface IBrowserConnectionStore {
   readonly _serviceBrand: undefined;
-  list(): Promise<{ readonly connections: readonly BrowserConnectionRecord[]; readonly defaultBrowser?: string; readonly allowedBrowsers?: readonly string[] }>;
+  list(): Promise<{ readonly connections: readonly BrowserConnectionRecord[]; readonly defaultBrowser?: string; readonly allowedBrowsers?: readonly string[]; readonly disabledSources?: readonly BrowserSourceId[] }>;
   resolve(id: string): Promise<BrowserResolvedConnection>;
   upsert(id: string, input: BrowserConnectionInput): Promise<BrowserConnectionRecord>;
   remove(id: string): Promise<void>;
   setDefault(browser?: string): Promise<void>;
   /** `undefined` clears a saved allow set. An array, including empty, is explicit. */
   setAllowed(browsers: readonly string[] | undefined): Promise<void>;
+  setDisabledSources?(sources: readonly BrowserSourceId[] | undefined): Promise<void>;
   revealEndpoint(id: string): Promise<string | undefined>;
 }
 export const IBrowserConnectionStore = createDecorator<IBrowserConnectionStore>('browserConnectionStore');
@@ -29,11 +30,12 @@ export class BrowserConnectionStore implements IBrowserConnectionStore {
 
   constructor(@IConfigService private readonly config: IConfigService) {}
 
-  async list(): Promise<{ readonly connections: readonly BrowserConnectionRecord[]; readonly defaultBrowser?: string; readonly allowedBrowsers?: readonly string[] }> {
+  async list(): Promise<{ readonly connections: readonly BrowserConnectionRecord[]; readonly defaultBrowser?: string; readonly allowedBrowsers?: readonly string[]; readonly disabledSources?: readonly BrowserSourceId[] }> {
     const current = await this.read();
     return { connections: Object.entries(current.connections).map(([id, entry]) => browserConnectionRecord({ ...entry, id }))
       .sort((a, b) => a.id.localeCompare(b.id)), defaultBrowser: current.defaultBrowser,
-      ...(current.allowedBrowsers !== undefined ? { allowedBrowsers: current.allowedBrowsers } : {}) };
+      ...(current.allowedBrowsers !== undefined ? { allowedBrowsers: current.allowedBrowsers } : {}),
+      ...(current.disabledSources !== undefined ? { disabledSources: current.disabledSources } : {}) };
   }
 
   async resolve(id: string): Promise<BrowserResolvedConnection> {
@@ -87,6 +89,20 @@ export class BrowserConnectionStore implements IBrowserConnectionStore {
         if (!Object.hasOwn(current.connections, browser)) throw new BrowserError('browser.not_found', `Unknown browser connection "${browser}"`);
       }
       return { ...current, allowedBrowsers: unique };
+    });
+  }
+
+  async setDisabledSources(sources: readonly BrowserSourceId[] | undefined): Promise<void> {
+    await this.change((current) => {
+      if (sources === undefined || sources.length === 0) {
+        const { disabledSources: _omit, ...rest } = current;
+        return rest;
+      }
+      const unique = [...new Set(sources)];
+      for (const source of unique) {
+        if (!BrowserSourceIdSchema.safeParse(source).success) throw new BrowserError('browser.invalid', 'Invalid browser source id');
+      }
+      return { ...current, disabledSources: unique };
     });
   }
 

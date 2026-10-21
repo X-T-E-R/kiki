@@ -14,7 +14,7 @@ import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceCo
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { IBrowserControlService, type BrowserInvocationResult } from '#/app/browser/browser';
 import { IBrowserConnectionStore } from '#/app/browser/browserConnectionStore';
-import { BROWSER_CONFIG_SECTION, BrowserIdSchema, browserOperationAllowed, type BrowserConfig } from '#/app/browser/browserConfig';
+import { BROWSER_CONFIG_SECTION, BrowserIdSchema, browserOperationAllowed, browserSourceOfConnection, type BrowserConfig } from '#/app/browser/browserConfig';
 import { BROWSER_OWNED_FIELDS, browserManagedLifecycle, browserResponse, browserToolGroup, isBrowserOperation } from '#/app/browser/browserControlService';
 import { BrowserError } from '#/app/browser/errors';
 import { LifecycleScope } from '#/app/scopes';
@@ -156,7 +156,9 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
     if (this.flags.enabled(NATIVE_BROWSER_FLAG_ID)) {
       for (const [browser, entry] of this.loadedCatalog) {
         if (!browserOperationAllowed(config?.allowedBrowsers, browser)) continue;
-        if (config?.connections !== undefined && config.connections[browser]?.enabled !== true) continue;
+        const conn = config?.connections?.[browser];
+        if (conn?.enabled !== true) continue;
+        if (config?.disabledSources?.includes(browserSourceOfConnection(conn)) === true) continue;
         for (const tool of entry.tools) {
           const name = this.modelName(tool.name);
           if (this.policy.isToolActiveForDisclosure(name, 'builtin')) wanted.set(name, tool);
@@ -205,7 +207,9 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
         for (const name of input.unload ?? []) retained.delete(name);
         const operations = tools.filter((tool) => isBrowserOperation(tool.name));
         const requested = operations.filter((tool) => input.groups?.includes(browserToolGroup(tool.name) as 'page') || input.tools?.includes(tool.name));
-        const allowed = browserOperationAllowed(listed.allowedBrowsers, browser);
+        const conn = listed.connections.find((entry) => entry.id === browser);
+        const sourceEnabled = conn !== undefined && listed.disabledSources?.includes(browserSourceOfConnection(conn)) !== true;
+        const allowed = sourceEnabled && browserOperationAllowed(listed.allowedBrowsers, browser);
         if (allowed) for (const tool of requested) retained.set(tool.name, tool);
         if (retained.size === 0) this.loadedCatalog.delete(browser);
         else this.loadedCatalog.set(browser, { backend, tools: [...retained.values()] });
@@ -309,7 +313,8 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
       if (explicit !== undefined) this.selected = explicit;
       return browser;
     }
-    if (!connection.enabled) throw new BrowserError('browser.disabled', `Browser "${browser}" is disabled; select another configured connection explicitly`, { details: { reason: 'connection_disabled' } });
+    const sourceDisabled = listed.disabledSources?.includes(browserSourceOfConnection(connection)) === true;
+    if (!connection.enabled || sourceDisabled) throw new BrowserError('browser.disabled', `Browser "${browser}" is disabled; select another configured connection explicitly`, { details: { reason: 'connection_disabled' } });
     if (!browserOperationAllowed(listed.allowedBrowsers, browser)) throw new BrowserError('browser.disabled', `Browser "${browser}" is not in the allowed set. List and discover stay available.`, { details: { reason: 'not_allowed' } });
     if (explicit !== undefined) this.selected = explicit;
     return browser;
@@ -524,7 +529,13 @@ export class BrowserEgoRunTool implements IBrowserEgoRunTool {
 }
 registerAgentToolService(IBrowserConnectionsTool, BrowserConnectionsTool, { name: 'BrowserConnections', source: 'builtin', domain: 'browser', when: browserCapabilityWhen });
 registerAgentToolService(IBrowserTabsTool, BrowserTabsTool, { name: 'BrowserTabs', source: 'builtin', domain: 'browser', when: browserCapabilityWhen });
-registerAgentToolService(IBrowserEgoRunTool, BrowserEgoRunTool, { name: 'browser__ego_run', source: 'builtin', domain: 'browser', when: browserCapabilityWhen });
+registerAgentToolService(IBrowserEgoRunTool, BrowserEgoRunTool, { name: 'browser__ego_run', source: 'builtin', domain: 'browser', when: browserEgoCapabilityWhen });
+
+function browserEgoCapabilityWhen(accessor: ServicesAccessor): boolean {
+  if (!browserCapabilityWhen(accessor)) return false;
+  const config = present(accessor, IConfigService)?.get<BrowserConfig>(BROWSER_CONFIG_SECTION);
+  return config?.disabledSources?.includes('ego-lite') !== true;
+}
 
 function browserCapabilityWhen(accessor: ServicesAccessor): boolean {
   if (!accessor.get(IFlagService).enabled(NATIVE_BROWSER_FLAG_ID)) return false;

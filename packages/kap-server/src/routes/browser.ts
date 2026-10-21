@@ -82,7 +82,7 @@ export function registerBrowserRoutes(app: BrowserRouteHost, core: Scope): void 
     const settings = readBrowserControlSettings(core.accessor.get(IFlagService), {
       experimental: config.origins(EXPERIMENTAL_SECTION)['native_browser'],
       allowed: config.origins(BROWSER_CONFIG_SECTION)['allowedBrowsers'],
-    }, listed.allowedBrowsers);
+    }, listed.allowedBrowsers, listed.disabledSources);
     reply.send(okEnvelope({ ...listed, ...settings }, req.id));
   });
   app.get(list.path, list.options, protect(list.handler as Handler));

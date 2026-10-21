@@ -2705,6 +2705,36 @@ class FixtureServer {
         }
         this.config.session_title = title;
       }
+      if (patch.browser_control !== undefined && patch.browser_control !== null && typeof patch.browser_control === 'object') {
+        const prevBc = typeof this.config.browser_control === 'object' && this.config.browser_control !== null
+          ? { ...this.config.browser_control }
+          : { enabled: true };
+        if ('enabled' in patch.browser_control) prevBc.enabled = Boolean(patch.browser_control.enabled);
+        if ('allowed_browsers' in patch.browser_control || 'allowedBrowsers' in patch.browser_control) {
+          const rawAllowed = patch.browser_control.allowed_browsers ?? patch.browser_control.allowedBrowsers;
+          if (rawAllowed === null || rawAllowed === undefined) {
+            delete prevBc.allowedBrowsers;
+            delete prevBc.allowed_browsers;
+            prevBc.allowedBrowsersConfigured = false;
+            if (this.browser) this.browser.allowedBrowsers = undefined;
+          } else if (Array.isArray(rawAllowed)) {
+            const list = rawAllowed.map(String);
+            prevBc.allowedBrowsers = list;
+            prevBc.allowedBrowsersConfigured = true;
+            delete prevBc.allowed_browsers;
+            if (this.browser) this.browser.allowedBrowsers = list;
+          }
+        }
+        if ('disabled_sources' in patch.browser_control || 'disabledSources' in patch.browser_control) {
+          const rawDisabled = patch.browser_control.disabled_sources ?? patch.browser_control.disabledSources;
+          const list = Array.isArray(rawDisabled) ? rawDisabled.map(String) : [];
+          if (list.length > 0) prevBc.disabledSources = list;
+          else delete prevBc.disabledSources;
+          delete prevBc.disabled_sources;
+          if (this.browser) this.browser.disabledSources = list.length > 0 ? list : undefined;
+        }
+        this.config.browser_control = prevBc;
+      }
       // The built-in body and the source are answered facts, never stored
       // config: what is in force follows from whether an override is there.
       if (this.config.session_title !== undefined) {

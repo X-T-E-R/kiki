@@ -156,6 +156,12 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
             await store.setAllowed(after);
             await admitEgoAfterAllow(core.accessor.get(IBrowserControlService), before, after);
           }
+          if ('disabledSources' in patch) {
+            const disabled = patch['disabledSources'];
+            const store = core.accessor.get(IBrowserConnectionStore);
+            const after = disabled === null ? undefined : disabled as ('kimi-webbridge' | 'independent-browser' | 'codex-browser' | 'ego-lite')[];
+            await store.setDisabledSources?.(after);
+          }
           if ('enabled' in patch) {
             const explained = core.accessor.get(IFlagService).explain('native_browser');
             if (explained?.source === 'env' && patch['enabled'] !== explained.enabled) {
@@ -393,7 +399,7 @@ function controlProjection(core: Scope): { browser: BrowserControlSettings; comp
     browser: readBrowserControlSettings(core.accessor.get(IFlagService), {
       experimental: config.origins(EXPERIMENTAL_SECTION)['native_browser'],
       allowed: config.origins(BROWSER_CONFIG_SECTION)['allowedBrowsers'],
-    }, browser?.allowedBrowsers),
+    }, browser?.allowedBrowsers, browser?.disabledSources),
     computerEnabledSource: config.origins(COMPUTER_CONFIG_SECTION)['enabled'] ?? 'default',
   };
 }

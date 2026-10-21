@@ -1,6 +1,6 @@
 import { createDecorator } from '#/_base/di/instantiation';
 import type { MCPToolDefinition, MCPToolResult } from '#/mcpCore/types';
-import type { BrowserConnectionInput, BrowserConnectionRecord } from './browserConfig';
+import type { BrowserConnectionInput, BrowserConnectionRecord, BrowserSourceId } from './browserConfig';
 import type { BrowserErrorCode } from './errors';
 import type { BrowserRequestContext } from './codexBrowser';
 
@@ -54,7 +54,7 @@ export interface BrowserInvocationResult {
 }
 export interface IBrowserControlService {
   readonly _serviceBrand: undefined;
-  list(): Promise<{ readonly connections: readonly (BrowserConnectionRecord & { readonly status: BrowserStatus })[]; readonly defaultBrowser?: string; readonly allowedBrowsers?: readonly string[] }>;
+  list(): Promise<{ readonly connections: readonly (BrowserConnectionRecord & { readonly status: BrowserStatus })[]; readonly defaultBrowser?: string; readonly allowedBrowsers?: readonly string[]; readonly disabledSources?: readonly BrowserSourceId[] }>;
   upsert(id: string, input: BrowserConnectionInput): Promise<BrowserConnectionRecord>;
   remove(id: string): Promise<void>;
   status(id: string): Promise<BrowserStatus>;
