@@ -853,9 +853,7 @@ describe('agent collaboration safe-boundary delivery', () => {
       setSessionDisabledTools: async () => {},
     });
     ix.stub(ISessionWorkspaceContext, { workDir: 'cwd' });
-    ix.stub(IAgentRuntimeService, {
-      acquire: (() => ({ runtime: {}, track: <T>(resource: T) => resource, dispose() {} })) as IAgentRuntimeService['acquire'],
-    });
+    ix.stub(IAgentRuntimeService, senderCtx.get(IAgentRuntimeService));
     ix.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
     ix.set(ISubagentTool, new SyncDescriptor(SubagentTool));
     const store = mailboxStore(tempDir());
@@ -1715,9 +1713,15 @@ describe('agent collaboration safe-boundary delivery', () => {
     await service.dispose();
   });
 
-  it('splits broken continuation notices by whether the original remote session can resume', async () => {
+  it.each(['original', 'construction'] as const)('distinguishes %s recovery from an unrecoverable broken continuation', async (recovery) => {
     const store = mailboxStore(tempDir());
-    const recoverableTarget = agentHandle('agent-target', { recoverableBroken: true });
+    const recoverableTarget = agentHandle('agent-target', {
+      recoverableBroken: recovery === 'original',
+      retryableBroken: recovery === 'construction',
+    });
+    const recoveryReason = recovery === 'original'
+      ? 'Agent instance "agent-target" is broken. Resume the original remote session with AgentRun; the saved message stays queued.'
+      : 'Agent instance "agent-target" failed before a usable executor session remained. Resume the same child with AgentRun; the saved message stays queued.';
     recoverableTarget.setExecutionState('broken');
     const recoverableSender: ContextMessage[] = [];
     const sender = agentHandle('main', { enqueued: recoverableSender });
@@ -1735,7 +1739,7 @@ describe('agent collaboration safe-boundary delivery', () => {
       idleWake: 'owned-child',
     })).rejects.toMatchObject({
       code: 'internal',
-      message: 'Agent instance "agent-target" is broken. Resume the original remote session with AgentRun; the saved message stays queued.',
+      message: recoveryReason,
     });
     const accepted = await recoverable.send({
       ...sendInput('recover original', 'broken-recoverable'),
@@ -1745,7 +1749,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     await vi.waitFor(() => { expect(recoverableSender.length).toBeGreaterThan(0); });
     const recoverNotice = noticeText(recoverableSender.at(-1)!);
     expect(recoverNotice).toContain(accepted.message.messageId);
-    expect(recoverNotice).toContain('Resume the original remote session with AgentRun');
+    expect(recoverNotice).toContain(recoveryReason);
     expect(recoverNotice).toContain('Set resume to agent-target');
     expect(recoverNotice).toContain('empty string');
     expect(recoverNotice).toContain('Do not set new_window');
@@ -3355,6 +3359,7 @@ function agentHandle(
     readonly enqueued?: ContextMessage[];
     readonly dispatcher?: { dispatch: (event: { notificationType?: string; body?: string; sourceId?: string; sourceKind?: string }) => Promise<void> };
     readonly recoverableBroken?: boolean;
+    readonly retryableBroken?: boolean;
   } = {},
 ) {
   const messages: ContextMessage[] = [];
@@ -3473,6 +3478,7 @@ function agentHandle(
     settled: () => runsSettled,
     shutdown: () => Promise.resolve(),
     canResumeBrokenOriginal: () => options.recoverableBroken === true,
+    canRetryBrokenExecution: () => options.retryableBroken === true,
     hooks: executionHooks,
   } as AgentExecution;
   const loop = {

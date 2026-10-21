@@ -180,11 +180,12 @@ describe('thread communication tools', () => {
       ix.stub(IAgentContextMemoryService, {});
       ix.set(ISendMessageToThreadTool, new SyncDescriptor(SendMessageToThreadTool));
       const tool = ix.get(ISendMessageToThreadTool);
-      expect(tool.description).toContain('exact member IDs (thread sessionId or personaId), not display names');
-      expect(tool.description).toContain('A room send without mentions is logged but wakes no one');
-      expect(tool.description).toContain('Only a user room message without mentions wakes the host');
-      expect(tool.description).toContain('never ordinary assistant text');
-      expect(tool.description).toContain('room delivery means logged, not that every member has replied');
+      expect(tool.description).toContain('exact member IDs (thread session id or persona id), not display names');
+      expect(tool.description).toContain('A message from a member wakes only the members it mentions');
+      expect(tool.description).toContain('A user message with no mention goes to the room host');
+      expect(tool.description).toContain('Text in this thread stays in this thread');
+      expect(tool.description).toContain('Room `delivered` means the room log has the message');
+      expect(tool.description).toContain('a successful catch-up covers older queued notifications');
       const execution = tool.resolveExecution({ room: 'room-a', content: 'hello room' });
       if (!('execute' in execution)) throw new Error('Expected executable send tool resolution.');
       const result = await execution.execute({ toolCallId: 'call-1' } as never);

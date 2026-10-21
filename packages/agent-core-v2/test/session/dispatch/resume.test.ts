@@ -428,7 +428,7 @@ describe('dispatch resume through model switch and real native run', () => {
     expect(ctx.get(IAgentStateService).get(contextWindowEpochKey)).toBe(0);
   });
 
-  it('admits only a recoverable broken child and still rejects a busy one', async () => {
+  it.each(['original', 'construction'] as const)('admits a recoverable %s failure and still rejects a busy child', async (recovery) => {
     const ctx = await host();
     const execution = ctx.get(IAgentExecutionService);
     const { dispatch, child, runs } = dispatchFor(ctx);
@@ -448,6 +448,8 @@ describe('dispatch resume through model switch and real native run', () => {
     expect(start).not.toHaveBeenCalled();
 
     vi.spyOn(execution, 'status').mockReturnValue({ state: 'broken' });
+    vi.spyOn(execution, 'canResumeBrokenOriginal').mockReturnValue(recovery === 'original');
+    vi.spyOn(execution, 'canRetryBrokenExecution').mockReturnValue(recovery === 'construction');
     vi.spyOn(ctx.get(IAgentProfileService), 'prepareResumeBinding').mockRejectedValue(new Error('admitted past idle gate'));
     await expect(dispatch.runOnExisting(child, 'Original remote', options('recoverable-broken'))).rejects.toThrow('admitted past idle gate');
     expect(start).not.toHaveBeenCalled();

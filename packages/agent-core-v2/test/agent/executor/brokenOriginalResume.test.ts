@@ -252,6 +252,7 @@ describe('recoverable ACP broken resume', () => {
       agentId: CHILD,
       client: remote.client,
       modelBinding: 'argv',
+      thinkingEffort: 'medium',
       permission: argvPermission,
       prior: {
         executorId: 'example-acp',
@@ -348,9 +349,7 @@ describe('recoverable ACP broken resume', () => {
       setSessionDisabledTools: async () => {},
     });
     toolIx.stub(ISessionWorkspaceContext, { workDir: 'cwd' });
-    toolIx.stub(IAgentRuntimeService, {
-      acquire: (() => ({ runtime: {}, track: <T>(resource: T) => resource, dispose() {} })) as IAgentRuntimeService['acquire'],
-    });
+    toolIx.stub(IAgentRuntimeService, senderCtx.get(IAgentRuntimeService));
     toolIx.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
     toolIx.set(ISubagentTool, new SyncDescriptor(SubagentTool));
     const fingerprint = () => (harness.ix.get(IAgentStateService).get(externalExecutorKey) as { bindingFingerprint?: string; sessionRef?: { ref: { sessionId?: string } } }).bindingFingerprint;
@@ -474,9 +473,7 @@ describe('recoverable ACP broken resume', () => {
     toolIx.stub(IAgentProfileService, senderCtx.get(IAgentProfileService));
     toolIx.stub(IAgentToolPolicyService, { isToolActive: () => true, isToolActiveForDisclosure: () => true, isToolActiveForProfile: () => true, setSessionDisabledTools: async () => {} });
     toolIx.stub(ISessionWorkspaceContext, { workDir: 'cwd' });
-    toolIx.stub(IAgentRuntimeService, {
-      acquire: (() => ({ runtime: {}, track: <T>(resource: T) => resource, dispose() {} })) as IAgentRuntimeService['acquire'],
-    });
+    toolIx.stub(IAgentRuntimeService, senderCtx.get(IAgentRuntimeService));
     toolIx.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
     toolIx.set(ISubagentTool, new SyncDescriptor(SubagentTool));
     try {
@@ -595,7 +592,7 @@ describe('recoverable ACP broken resume', () => {
     messagingIx.set(ISessionContext, session);
     messagingIx.set(ISessionMetadata, metadata);
     messagingIx.set(ISessionDispatchService, {
-      runOnExisting: async (child, request, options) => {
+      runOnExisting: async (...[child, request, options]: Parameters<ISessionDispatchService['runOnExisting']>) => {
         const runRequest = typeof request === 'string' ? { kind: 'prompt' as const, prompt: request } : request;
         return {
           child,

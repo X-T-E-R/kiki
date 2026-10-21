@@ -583,7 +583,20 @@ function createHarness(options: FakeHarnessOptions = {}) {
   };
 }
 
-export function createExecutionHarness(options: FakeHarnessOptions = {}) {
+export function createExecutionHarness(options: FakeHarnessOptions = {}): {
+  ix: TestInstantiationService;
+  execution: AgentExecutionService;
+  starts: AcpTurnRequest[];
+  events: Event2[];
+  pendingTurns: Set<number>;
+  interaction: ISessionInteractionService;
+  client: {
+    openSession(options: AcpOpenSessionOptions): Promise<AcpOpenSessionResult>;
+    shutdown(): Promise<void>;
+  };
+  runtimeLease: { dispose(): void };
+  turnCancel(): Promise<boolean>;
+} {
   const harness = createHarness({ ...options, deferTurnCompletion: true });
   const ix = new TestInstantiationService();
   const agentId = harness.executorContext.agent.id;

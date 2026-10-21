@@ -1088,7 +1088,7 @@ describe('AgentExecutionService', () => {
     }
   });
 
-  it('does not open another session after a native executor is broken', async () => {
+  it('keeps a failed external construction retryable without claiming an original remote session', async () => {
     const ix = new TestInstantiationService();
     const resolveExecutable = vi.fn(async () => ({
       descriptor: { id: 'missing', protocol: 'acp-v1', args: [], revision: 'r1' },
@@ -1108,8 +1108,9 @@ describe('AgentExecutionService', () => {
     await expect(service.run({ kind: 'prompt', prompt: 'work' }, { signal })).rejects.toThrow(/has no registered provider/);
     expect(service.status()).toEqual({ state: 'broken' });
     expect(service.canResumeBrokenOriginal()).toBe(false);
+    expect(service.canRetryBrokenExecution()).toBe(true);
     await expect(service.run({ kind: 'prompt', prompt: 'again' }, { signal })).rejects.toThrow(/has no registered provider/);
-    expect(resolveExecutable).toHaveBeenCalledTimes(1);
+    expect(resolveExecutable).toHaveBeenCalledTimes(2);
     void service.dispose();
     ix.dispose();
   });

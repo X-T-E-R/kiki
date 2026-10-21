@@ -30,6 +30,8 @@ export interface IAgentExecutionService {
   status(): AgentExecutionStatus;
   /** True only when a broken ACP client can open its saved remote session again without creating a new one. */
   canResumeBrokenOriginal(): boolean;
+  /** True when external construction can be retried after no session was opened or its failed wrapper was fully released. */
+  canRetryBrokenExecution(): boolean;
   attachLocalSession(source: import('#/app/agentExecutor/localSessionRef').LocalExecutorSessionSource): Promise<void>;
   steer?(message: ContextMessage): Promise<boolean>;
   cancel(reason?: unknown): boolean;

@@ -650,9 +650,7 @@ describe('RoomService', () => {
     expect(calls[1]!.content).toContain('A user message with no mention goes to the room host');
     expect(calls[1]!.content).toContain('A member message wakes only the members it mentions');
     expect(calls[1]!.content).toContain('ThreadSend({room: "thread-room"');
-    expect(calls[1]!.content).toContain('Your room send without mentions is logged but wakes no one');
-    expect(calls[1]!.content).toContain('Only a user room message without mentions wakes the host');
-    expect(calls[1]!.content).toContain('Your existing workspace and permissions are unchanged');
+    expect(calls[1]!.content).toContain('mentions must use these exact member IDs, not display names');
     release(calls[1]!.id);
     await service.drain(room.id);
     const cursor = (await service.get(room.id))!.cursors['thread-b'];

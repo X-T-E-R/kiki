@@ -71,7 +71,7 @@ function continuationFailureReason(error: unknown): string {
 
 function originalSessionCannotResume(execution: IAgentExecutionService | undefined): boolean {
   if (execution?.status().state !== 'broken') return false;
-  return execution.canResumeBrokenOriginal() !== true;
+  return execution.canResumeBrokenOriginal() !== true && execution.canRetryBrokenExecution?.() !== true;
 }
 
 function continuationFailureNotice(input: {
@@ -432,6 +432,11 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     const loop = handle.accessor.get(IAgentLoopService);
     let executionState = execution.status().state;
     if (executionState === 'broken') {
+      if (execution.canRetryBrokenExecution?.() === true) {
+        throw new Error2(ErrorCodes.INTERNAL,
+          `Agent instance "${handle.id}" failed before a usable executor session remained. Resume the same child with AgentRun; the saved message stays queued.`,
+          { details: { agentId: handle.id, messageId: message.messageId } });
+      }
       if (execution.canResumeBrokenOriginal?.() === true) {
         throw new Error2(
           ErrorCodes.INTERNAL,

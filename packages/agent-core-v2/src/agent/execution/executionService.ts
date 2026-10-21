@@ -250,6 +250,11 @@ export class AgentExecutionService implements IAgentExecutionService {
     return this.session?.canResumeBrokenOriginal?.() === true;
   }
 
+  canRetryBrokenExecution(): boolean {
+    return !this.shuttingDown && this.runs.size === 0 && this.broken !== undefined &&
+      this.session === undefined && (this.profile.data().executorId ?? 'native') !== 'native';
+  }
+
   steer(message: ContextMessage): Promise<boolean> {
     if (this.status().state !== 'running') return Promise.resolve(false);
     return this.session?.steer?.(message) ?? Promise.resolve(false);
@@ -413,6 +418,7 @@ export class AgentExecutionService implements IAgentExecutionService {
   }
 
   private async cleanupFailedExternalSession(session: AgentExecutorSession, error: unknown): Promise<boolean> {
+    if (session.canResumeBrokenOriginal !== undefined) return true;
     if (this.broken === undefined) this.broken = error;
     if (this.session !== session || this.sessionBindingKey === 'native') return true;
     try {
@@ -429,7 +435,7 @@ export class AgentExecutionService implements IAgentExecutionService {
 
   private async disposeBrokenExternalSession(): Promise<void> {
     const session = this.session;
-    if (session === undefined || this.sessionBindingKey === 'native' ||
+    if (session === undefined || this.sessionBindingKey === 'native' || session.canResumeBrokenOriginal !== undefined ||
         (session.status().state !== 'broken' && this.broken === undefined)) return;
     await session.settled();
     const reason = this.broken ?? new Error('External executor session failed before explicit resume');
