@@ -156,14 +156,33 @@ describe('OptionalCapabilityPolicyService', () => {
     expect(policy().admit('web', { sessionId: 'session_example', workspaceId: 'workspace_example' }).admitted).toBe(true);
   });
 
-  it('keeps factory thread allowed and default-off, and a user false as hard-off', async () => {
-    const factory = policy().globalState('thread');
-    expect(factory).toMatchObject({ allowed: true, defaultOn: false, origin: 'default', unresolved: false });
+  it('opens memory, web, and thread by factory default and keeps an explicit false closed', async () => {
+    expect(policy().globalState('memory')).toMatchObject({ allowed: true, defaultOn: true, origin: 'default', unresolved: false });
+    expect(policy().globalState('web')).toMatchObject({ allowed: true, defaultOn: true, origin: 'default' });
+    expect(policy().globalState('thread')).toMatchObject({ allowed: true, defaultOn: true, origin: 'default', unresolved: false });
+    expect(policy().globalState('browser')).toMatchObject({ allowed: true, defaultOn: false, origin: 'default' });
+    expect(policy().globalState('computer')).toMatchObject({ allowed: true, defaultOn: false, origin: 'default' });
+    browser = { enabled: false, source: 'config' };
+    expect(policy().globalState('browser')).toMatchObject({ allowed: false, defaultOn: false, origin: 'home' });
+    browser = { enabled: true, source: 'config' };
+    expect(policy().globalState('browser')).toMatchObject({ allowed: true, defaultOn: true, origin: 'home' });
+    browser = { enabled: true, source: 'default' };
     origins[THREAD_COMMUNICATION_SECTION] = { enabled: 'home' };
     values[THREAD_COMMUNICATION_SECTION] = { enabled: false };
     expect(policy().globalState('thread')).toMatchObject({ allowed: false, defaultOn: false, origin: 'home' });
     values[THREAD_COMMUNICATION_SECTION] = { enabled: true };
     expect(policy().globalState('thread')).toMatchObject({ allowed: true, defaultOn: true, origin: 'home' });
+    origins[OPTIONAL_CAPABILITIES_SECTION] = { 'defaults.thread': 'home', 'defaults.browser': 'home' };
+    values[OPTIONAL_CAPABILITIES_SECTION] = { defaults: { thread: false, browser: true } };
+    origins[THREAD_COMMUNICATION_SECTION] = {};
+    values[THREAD_COMMUNICATION_SECTION] = {};
+    expect(policy().globalState('thread')).toMatchObject({ allowed: true, defaultOn: false, origin: 'default' });
+    expect(policy().globalState('browser')).toMatchObject({ allowed: true, defaultOn: true, origin: 'default' });
+    origins[COMPUTER_CONFIG_SECTION] = { enabled: 'home' };
+    values[COMPUTER_CONFIG_SECTION] = { enabled: false };
+    expect(policy().globalState('computer')).toMatchObject({ allowed: false, defaultOn: false, origin: 'home' });
+    values[COMPUTER_CONFIG_SECTION] = { enabled: true };
+    expect(policy().globalState('computer')).toMatchObject({ allowed: true, defaultOn: true, origin: 'home' });
   });
 
   it('reports an unreadable origin instead of opening, including an unreadable defaults map', () => {
@@ -224,13 +243,16 @@ describe('OptionalCapabilityPolicyService', () => {
     expect(policy().admit('thread', { sessionId: 's1', workspaceId: 'w', agentId: 'main' }).admitted).toBe(true);
     values[MEMORY_SECTION] = { enabled: true, workspaces: { w: false } };
     expect(policy().admit('memory', { sessionId: 's1', workspaceId: 'w', agentId: 'main' }).reason).toBe('workspace_off');
-    expect(policy().globalState('computer')).toMatchObject({ allowed: true, defaultOn: true });
+    expect(policy().globalState('computer')).toMatchObject({ allowed: true, defaultOn: false });
     origins[COMPUTER_CONFIG_SECTION] = { enabled: 'env' };
     values[COMPUTER_CONFIG_SECTION] = { enabled: false };
     expect(policy().globalState('computer')).toMatchObject({ allowed: false, hostLocked: true, origin: 'env' });
+    delete origins[COMPUTER_CONFIG_SECTION];
+    delete values[COMPUTER_CONFIG_SECTION];
     expect(policy().anyMayUse('thread')).toBe(true);
     policy().release('s1', 'main');
-    expect(policy().anyMayUse('thread')).toBe(false);
+    expect(policy().anyMayUse('thread')).toBe(true);
+    expect(policy().anyMayUse('computer')).toBe(false);
     expect(docs.get(optionalCapabilityDocumentKey('local', 's1'))).toBeDefined();
     expect(OPTIONAL_CAPABILITY_DOCUMENT_SCOPE).toBe('session-optional-capabilities');
   });
@@ -243,6 +265,7 @@ describe('OptionalCapabilityPolicyService', () => {
     policy().retain('blocked-session', 'main', { workspaceId: 'blocked', agentKind: 'main' });
     expect(policy().admit('memory', { sessionId: 'blocked-session', workspaceId: 'blocked', agentId: 'main' }).reason).toBe('workspace_off');
     expect(await row('blocked-session', 'memory')).toMatchObject({ effective: false, reason: 'workspace_off' });
-    expect(await row('cold-session', 'thread')).toMatchObject({ effective: false, reason: 'unbound', source: 'default' });
+    expect(await row('cold-session', 'thread')).toMatchObject({ effective: true, reason: 'admitted', source: 'default' });
+    expect(await row('cold-session', 'browser')).toMatchObject({ effective: false, reason: 'unbound', source: 'default' });
   });
 });

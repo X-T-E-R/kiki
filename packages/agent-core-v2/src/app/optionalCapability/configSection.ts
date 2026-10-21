@@ -4,22 +4,24 @@ import { registerConfigSection } from '#/app/config/configSectionContributions';
 
 export const OPTIONAL_CAPABILITIES_SECTION = 'optionalCapabilities';
 
+export const OPTIONAL_CAPABILITY_FACTORY_DEFAULTS = {
+  browser: false,
+  computer: false,
+  memory: true,
+  thread: true,
+  web: true,
+} as const;
+
 export const OptionalCapabilityDefaultsSchema = z.object({
-  browser: z.boolean().default(true),
-  computer: z.boolean().default(true),
-  memory: z.boolean().default(true),
-  thread: z.boolean().default(false),
-  web: z.boolean().default(true),
+  browser: z.boolean().default(OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.browser),
+  computer: z.boolean().default(OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.computer),
+  memory: z.boolean().default(OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.memory),
+  thread: z.boolean().default(OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.thread),
+  web: z.boolean().default(OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.web),
 }).strict();
 
 export const OptionalCapabilitiesConfigSchema = z.object({
-  defaults: OptionalCapabilityDefaultsSchema.default({
-    browser: true,
-    computer: true,
-    memory: true,
-    thread: false,
-    web: true,
-  }),
+  defaults: OptionalCapabilityDefaultsSchema.default({ ...OPTIONAL_CAPABILITY_FACTORY_DEFAULTS }),
   web: z.object({
     allowed: z.boolean().default(true),
   }).strict().default({ allowed: true }),
@@ -27,17 +29,9 @@ export const OptionalCapabilitiesConfigSchema = z.object({
 
 export type OptionalCapabilitiesConfig = z.infer<typeof OptionalCapabilitiesConfigSchema>;
 
-export const OPTIONAL_CAPABILITY_FACTORY_DEFAULTS = {
-  browser: true,
-  computer: true,
-  memory: true,
-  thread: false,
-  web: true,
-} as const;
-
 registerConfigSection(OPTIONAL_CAPABILITIES_SECTION, OptionalCapabilitiesConfigSchema, {
   defaultValue: {
-    defaults: { browser: true, computer: true, memory: true, thread: false, web: true },
+    defaults: { ...OPTIONAL_CAPABILITY_FACTORY_DEFAULTS },
     web: { allowed: true },
   },
 });

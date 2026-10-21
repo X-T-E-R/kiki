@@ -22,7 +22,7 @@ import {
   type CapabilityChoice,
   type OptionalCapabilityId,
 } from './admit';
-import { OPTIONAL_CAPABILITIES_SECTION, type OptionalCapabilitiesConfig } from './configSection';
+import { OPTIONAL_CAPABILITIES_SECTION, OPTIONAL_CAPABILITY_FACTORY_DEFAULTS, type OptionalCapabilitiesConfig } from './configSection';
 import {
   IOptionalCapabilityPolicy,
   type AgentCapabilityContext,
@@ -264,8 +264,8 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
     if (id === 'browser') return this.browserState();
     if (id === 'web') return this.webState();
     if (id === 'thread') return this.threadState();
-    if (id === 'computer') return this.booleanState(COMPUTER_CONFIG_SECTION, 'enabled', true);
-    return this.booleanState(MEMORY_SECTION, 'enabled', true);
+    if (id === 'computer') return this.booleanState(COMPUTER_CONFIG_SECTION, 'enabled', OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.computer);
+    return this.booleanState(MEMORY_SECTION, 'enabled', OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.memory);
   }
 
   private browserState(): OptionalCapabilityGlobalState {
@@ -275,7 +275,7 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
     return {
       allowed: explained.enabled,
       hostLocked: explained.source === 'env',
-      defaultOn: explained.source === 'default' || explained.enabled,
+      defaultOn: explained.source === 'default' ? OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.browser : explained.enabled,
       origin,
       unresolved: false,
     };
@@ -286,13 +286,13 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
     if (origin === 'unreadable') return this.unresolved();
     const value = this.boolAt(OPTIONAL_CAPABILITIES_SECTION, 'web.allowed');
     const allowed = origin === 'default' || value === undefined ? true : value;
-    return { allowed, hostLocked: origin === 'env', defaultOn: true, origin, unresolved: false };
+    return { allowed, hostLocked: origin === 'env', defaultOn: OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.web, origin, unresolved: false };
   }
 
   private threadState(): OptionalCapabilityGlobalState {
     const origin = this.originOf(THREAD_COMMUNICATION_SECTION, 'enabled');
     if (origin === 'unreadable') return this.unresolved();
-    if (origin === 'default') return { allowed: true, hostLocked: false, defaultOn: false, origin, unresolved: false };
+    if (origin === 'default') return { allowed: true, hostLocked: false, defaultOn: OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.thread, origin, unresolved: false };
     const enabled = this.boolAt(THREAD_COMMUNICATION_SECTION, 'enabled') === true;
     if (!enabled && !USER_OFF.has(origin)) return this.unresolved();
     return { allowed: enabled, hostLocked: origin === 'env', defaultOn: enabled, origin, unresolved: false };
