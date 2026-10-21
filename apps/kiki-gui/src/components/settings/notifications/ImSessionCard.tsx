@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { imSessionAdmitted, type ImCatalog, type ImConfirmRequest, type ImPasteResult, type ImSessionSnapshot } from '@kiki/protocol';
+import { imSessionAdmitted, type ImCatalog, type ImConfirmRequest, type ImPasteResult, type ImProviderKind, type ImSessionSnapshot } from '@kiki/protocol';
 
 import { useI18n } from '../../../i18n';
 import { useConnection } from '../../../state/connection';
@@ -110,7 +110,15 @@ export function ImSessionCard() {
                 {item.conflict === 'webhook' ? <span data-im-webhook className="text-ink">{t('st.im.webhook')}</span> : null}
                 {item.adapter === 'missing' ? <span data-im-missing>{t('st.im.missing')}</span> : null}
                 <button type="button" className={SECONDARY_BUTTON} data-im-listen={item.id}
-                  onClick={() => { void run(async () => { await client.imSessions.check(item.id); return client.imSessions.listen(item.id, !item.listening); }); }}>
+                  onClick={() => { void run(async () => {
+                    if (item.listening) return client.imSessions.listen(item.id, false);
+                    const checked = await client.imSessions.check(item.id);
+                    if (!checked.ok) {
+                      setError(checked.detail ?? t('st.im.error'));
+                      return client.imSessions.snapshot();
+                    }
+                    return client.imSessions.listen(item.id, true);
+                  }); }}>
                   {item.listening ? t('st.im.stop') : t('st.im.listen')}
                 </button>
               </div>
@@ -124,12 +132,7 @@ export function ImSessionCard() {
                 <div className="flex flex-wrap items-start gap-3">
                   <SettingsSegmented ariaLabel={t('st.im.busy')} value={busy} onChange={setBusy} dataAttr="data-im-busy"
                     choices={[{ value: 'queue', label: t('st.im.queue') }, { value: 'steer', label: t('st.im.steer') }]} />
-                  <div className="flex min-w-0 flex-col items-start gap-1">
-                    <SettingsSegmented ariaLabel={t('st.im.text')} value={reply} onChange={setReply} dataAttr="data-im-text"
-                      choices={[{ value: 'final', label: t('st.im.final') }, { value: 'edit', label: t('st.im.edit') }]} />
-                    <p className="text-[12px] leading-5 text-ink-soft" data-im-text-note>{t('st.im.textNote')}</p>
-                    <p className="text-[12px] leading-5 text-ink-soft" data-im-file-note>{t('st.im.fileNote')}</p>
-                  </div>
+                  <ReplyMode kind={item.provider_kind} value={reply} onChange={setReply} dataAttr="data-im-text" />
                   <div className="flex items-center gap-2">
                     <span className="text-[12px] text-ink-soft">{t('st.im.actions')}</span>
                     <SettingsSegmented ariaLabel={t('st.im.actions')} value={actions ? 'on' : 'off'} onChange={(value) => { setActions(value === 'on'); }} dataAttr="data-im-actions"
@@ -142,7 +145,7 @@ export function ImSessionCard() {
                 </label>
                 <div className="flex flex-wrap gap-2">
                   <button type="button" className={SECONDARY_BUTTON} data-im-confirm={item.id} disabled={selected === ''}
-                    onClick={() => { void run(() => client.imSessions.confirm(item.id, confirmBody(selected, busy, reply, actions, alsoHome))); }}>
+                    onClick={() => { void run(() => client.imSessions.confirm(item.id, confirmBody(selected, busy, liveText(item.provider_kind) ? reply : 'final', actions, alsoHome))); }}>
                     {t('st.im.confirm')}
                   </button>
                   <button type="button" className={SECONDARY_BUTTON} data-im-dismiss={item.id}
@@ -159,13 +162,8 @@ export function ImSessionCard() {
                 <SettingsSegmented ariaLabel={t('st.im.busy')} value={binding.busy} dataAttr="data-im-binding-busy"
                   onChange={(value) => { void run(() => client.imSessions.updateBinding(binding.id, { busy: value })); }}
                   choices={[{ value: 'queue', label: t('st.im.queue') }, { value: 'steer', label: t('st.im.steer') }]} />
-                <div className="flex min-w-0 flex-col items-start gap-1">
-                  <SettingsSegmented ariaLabel={t('st.im.text')} value={binding.reply} dataAttr="data-im-binding-text"
-                    onChange={(value) => { void run(() => client.imSessions.updateBinding(binding.id, { reply: value })); }}
-                    choices={[{ value: 'final', label: t('st.im.final') }, { value: 'edit', label: t('st.im.edit') }]} />
-                  <p className="text-[12px] leading-5 text-ink-soft" data-im-text-note>{t('st.im.textNote')}</p>
-                  <p className="text-[12px] leading-5 text-ink-soft" data-im-file-note>{t('st.im.fileNote')}</p>
-                </div>
+                <ReplyMode kind={binding.provider_kind} value={binding.reply} dataAttr="data-im-binding-text"
+                  onChange={(value) => { void run(() => client.imSessions.updateBinding(binding.id, { reply: value })); }} />
                 <div className="flex items-center gap-2">
                   <span className="text-[12px] text-ink-soft">{t('st.im.actions')}</span>
                   <SettingsSegmented ariaLabel={t('st.im.actions')} value={binding.mobile_interactions ? 'on' : 'off'} dataAttr="data-im-binding-actions"
@@ -310,6 +308,32 @@ function targetChoices(catalog: ImCatalog | undefined): { value: string; label: 
     ...catalog.personas.map((persona) => ({ value: `persona:${persona.id}`, label: persona.name })),
     ...catalog.sessions.map((session) => ({ value: `session:${session.id}`, label: session.title })),
   ];
+}
+
+function liveText(kind: ImProviderKind): boolean {
+  return kind === 'telegram' || kind === 'feishu_app';
+}
+
+function ReplyMode({ kind, value, onChange, dataAttr }: {
+  kind: ImProviderKind;
+  value: 'final' | 'edit';
+  onChange: (value: 'final' | 'edit') => void;
+  dataAttr: string;
+}) {
+  const { t } = useI18n();
+  if (!liveText(kind)) {
+    return (
+      <div className="flex min-w-0 flex-col items-start gap-1">
+        <span className="text-[12px] text-ink" data-im-text-fixed={kind}>{t('st.im.final')}</span>
+        <p className="text-[12px] leading-5 text-ink-soft" data-im-text-note>{t(kind === 'onebot_v11' ? 'st.im.qqText' : 'st.im.wechatText')}</p>
+        {kind === 'onebot_v11' ? <p className="text-[12px] leading-5 text-ink-soft" data-im-file-note>{t('st.im.fileNote')}</p> : null}
+      </div>
+    );
+  }
+  return (
+    <SettingsSegmented ariaLabel={t('st.im.text')} value={value} onChange={onChange} dataAttr={dataAttr}
+      choices={[{ value: 'final', label: t('st.im.final') }, { value: 'edit', label: t('st.im.edit') }]} />
+  );
 }
 
 function confirmBody(selected: string, busy: 'queue' | 'steer', reply: 'final' | 'edit', actions: boolean, alsoHome: boolean): ImConfirmRequest {

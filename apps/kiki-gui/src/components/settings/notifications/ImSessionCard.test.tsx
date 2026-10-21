@@ -90,9 +90,10 @@ describe('ImSessionCard', () => {
       expect(container.textContent).toContain('Paste a setup and check it, then bind the phone message to a session.');
       expect(container.textContent).toContain('Enable new bindings');
       expect(container.textContent).toContain('Phone actions');
-      expect(container.textContent).toContain('QQ and WeChat send the full text and cannot change a sent message.');
-      expect(container.textContent).toContain('QQ cannot take a file.');
       expect(container.textContent).toContain('Full text');
+      expect(container.textContent).toContain('Live text');
+      expect(container.textContent).not.toContain('QQ cannot take a file.');
+      expect(container.textContent).not.toContain('WeChat sends the full text');
       expect(container.textContent).toContain('Queue');
       expect(container.querySelector('[data-im-actions]')).not.toBeNull();
       expect(container.textContent).not.toMatch(/reply|Receive/i);
@@ -180,5 +181,48 @@ describe('ImSessionCard', () => {
     expect(payload.startsWith('data:image/svg+xml')).toBe(true);
     expect(container.querySelector('[data-im-wechat-code]')).toBeNull();
     expect(container.textContent).not.toMatch(/reply|Receive/i);
+  });
+
+  it('shows full text for QQ and WeChat and keeps live text on Telegram', async () => {
+    const qq = {
+      ...found,
+      discoveries: [{ ...found.discoveries[0]!, provider_kind: 'onebot_v11' as const }],
+      bindings: [{ ...bound.bindings[0]!, provider_kind: 'wechat_bridge' as const, reply: 'edit' as const }],
+    };
+    imSessions.snapshot.mockResolvedValue(qq);
+    const container = await render('1100px');
+    const discovery = container.querySelector('[data-im-discovery="d1"]')!;
+    expect(discovery.querySelector('[data-im-text="edit"]')).toBeNull();
+    expect(discovery.textContent).toContain('QQ sends the full text and cannot change a sent message.');
+    expect(discovery.textContent).toContain('QQ cannot take a file.');
+    expect(discovery.textContent).not.toContain('Live text');
+    const row = container.querySelector('[data-im-binding="b1"]')!;
+    expect(row.querySelector('[data-im-binding-text="edit"]')).toBeNull();
+    expect(row.querySelector('[data-im-text-fixed="wechat_bridge"]')?.textContent).toBe('Full text');
+    expect(row.textContent).toContain('WeChat sends the full text and cannot change a sent message.');
+    expect(row.textContent).not.toContain('QQ cannot take a file.');
+    await click(container, '[data-im-confirm="d1"]');
+    expect(imSessions.confirm).toHaveBeenCalledWith('d1', expect.objectContaining({ reply: 'final' }));
+    expect(container.textContent).not.toMatch(/reply|Receive/i);
+  });
+
+  it('stops a listener without checking and does not start after a failed check', async () => {
+    const listening: ImSessionSnapshot = { ...empty, instances: [{ id: 'inst', provider_kind: 'telegram', listening: true, configured: true, adapter: 'running' }] };
+    const stopped: ImSessionSnapshot = { ...empty, instances: [{ id: 'inst', provider_kind: 'telegram', listening: false, configured: true, adapter: 'stopped' }] };
+    imSessions.snapshot.mockResolvedValue(listening);
+    imSessions.listen.mockResolvedValueOnce(stopped);
+    const container = await render('1100px');
+    imSessions.check.mockClear();
+    await click(container, '[data-im-listen="inst"]');
+    expect(imSessions.check).not.toHaveBeenCalled();
+    expect(imSessions.listen).toHaveBeenCalledWith('inst', false);
+    imSessions.snapshot.mockResolvedValue(stopped);
+    imSessions.check.mockResolvedValue({ ok: false, detail: 'Credential expired' });
+    imSessions.listen.mockClear();
+    await click(container, '[data-im-listen="inst"]');
+    expect(imSessions.check).toHaveBeenCalledWith('inst');
+    expect(imSessions.listen).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('Credential expired');
+    expect(container.querySelector('[data-im-listen="inst"]')?.textContent).toContain('Listen');
   });
 });
