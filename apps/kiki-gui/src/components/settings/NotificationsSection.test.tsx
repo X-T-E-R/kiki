@@ -213,4 +213,21 @@ describe('NotificationsSection', () => {
     expect(channel).toMatchObject({ provider_instance_id: 'telegram-1', target: { chat_id: '42' }, directions: ['send'] });
     expect(api.upsertInstance.mock.invocationCallOrder[0]).toBeLessThan(api.upsertChannel.mock.invocationCallOrder[0]!);
   });
+
+  it('defaults to the two-way chat tab and switches tabs on click', async () => {
+    const container = await render();
+    expect(container.querySelector('[data-notify-tab="im"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(container.querySelector('#notify-panel-im')?.classList.contains('hidden')).toBe(false);
+    expect(container.querySelector('#notify-panel-channels')?.classList.contains('hidden')).toBe(true);
+
+    await click(container.querySelector('[data-notify-tab="channels"]'));
+    expect(container.querySelector('[data-notify-tab="channels"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(container.querySelector('#notify-panel-channels')?.classList.contains('hidden')).toBe(false);
+  });
+
+  it('activates the system alerts tab when deep-linked to st-card-notify-away', async () => {
+    const container = await render(SETTINGS, '/settings/notifications#st-card-notify-away');
+    expect(container.querySelector('[data-notify-tab="away"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(container.querySelector('#notify-panel-away')?.classList.contains('hidden')).toBe(false);
+  });
 });

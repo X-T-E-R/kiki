@@ -5,7 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import type { ImSessionSnapshot } from '@kiki/protocol';
+import type { ImBindingPatch, ImCatalog, ImSessionSnapshot } from '@kiki/protocol';
 
 import { I18nProvider } from '../../../i18n';
 import { ImSessionCard } from './ImSessionCard';
@@ -24,14 +24,14 @@ const bound: ImSessionSnapshot = {
 
 const imSessions = {
   snapshot: vi.fn(async () => empty),
-  catalog: vi.fn(async () => ({ personas: [{ id: 'ada', name: 'Ada' }], sessions: [{ id: 'sess', title: 'Notes' }] })),
+  catalog: vi.fn(async (): Promise<ImCatalog> => ({ personas: [{ id: 'ada', name: 'Ada' }], sessions: [{ id: 'sess', title: 'Notes' }] })),
   setPolicy: vi.fn(async (policy: typeof empty.policy) => ({ ...empty, policy })),
-  paste: vi.fn(async () => ({ provider_instance_id: 'inst', provider_kind: 'telegram' as const, ignored_keys: ['extra'], chat_hint_ignored: true })),
+  paste: vi.fn(async (): Promise<import('@kiki/protocol').ImPasteResult> => ({ provider_instance_id: 'inst', provider_kind: 'telegram', ignored_keys: ['extra'], chat_hint_ignored: true })),
   check: vi.fn(async (): Promise<import('@kiki/protocol').ImCheckResult> => ({ ok: true, account_id: '7' })),
   listen: vi.fn(async () => found),
   confirm: vi.fn(async () => bound),
   dismiss: vi.fn(),
-  updateBinding: vi.fn(async () => bound),
+  updateBinding: vi.fn(async (_id: string, _patch: ImBindingPatch): Promise<ImSessionSnapshot> => bound),
   removeBinding: vi.fn(async () => empty),
   startWechatQr: vi.fn(async () => ({ login_id: 'login1', image: 'https://cdn.example/qr.png' })),
   pollWechatQr: vi.fn(async () => ({ status: 'wait' })),
@@ -224,5 +224,357 @@ describe('ImSessionCard', () => {
     expect(imSessions.listen).not.toHaveBeenCalled();
     expect(container.textContent).toContain('Credential expired');
     expect(container.querySelector('[data-im-listen="inst"]')?.textContent).toContain('Listen');
+  });
+
+  it('offers an explicit bind flow for a configured WeChat account with no discoveries yet, switches between persona and thread, starts listening, and binds', async () => {
+    const wechatStopped: ImSessionSnapshot = {
+      ...empty,
+      instances: [{ id: 'wx-1', provider_kind: 'wechat_bridge', listening: false, configured: true, account_id: 'wxid_user1', adapter: 'stopped' }],
+    };
+    const wechatListening: ImSessionSnapshot = {
+      ...empty,
+      instances: [{ id: 'wx-1', provider_kind: 'wechat_bridge', listening: true, configured: true, account_id: 'wxid_user1', adapter: 'running' }],
+    };
+    const wechatDiscovered: ImSessionSnapshot = {
+      ...wechatListening,
+      discoveries: [{
+        id: 'd-wx',
+        provider_instance_id: 'wx-1',
+        provider_kind: 'wechat_bridge',
+        account_id: 'wxid_user1',
+        identity: { chat_id: 'wx_chat', sender_id: 'wx_sender', topic_id: '0', sender_name: 'Lin' },
+        preview: 'Hi Kiki',
+        at: '2026-10-22T00:00:00.000Z',
+      }],
+    };
+    const wechatBound: ImSessionSnapshot = {
+      ...wechatListening,
+      discoveries: [],
+      bindings: [{
+        id: 'b-wx',
+        provider_instance_id: 'wx-1',
+        provider_kind: 'wechat_bridge',
+        account_id: 'wxid_user1',
+        identity: wechatDiscovered.discoveries[0]!.identity,
+        session_id: 'sess',
+        enabled: true,
+        busy: 'queue',
+        reply: 'final',
+        mobile_interactions: true,
+      }],
+    };
+
+    imSessions.snapshot.mockResolvedValue(wechatStopped);
+    imSessions.check.mockResolvedValue({ ok: true, account_id: 'wxid_user1' });
+    imSessions.listen.mockResolvedValueOnce(wechatListening);
+    imSessions.confirm.mockResolvedValueOnce(wechatBound);
+
+    const container = await render('1100px');
+    expect(container.querySelector('[data-im-connect-drawer]')?.classList.contains('hidden')).toBe(true);
+    expect(container.querySelector('[data-im-bind-flow]')).not.toBeNull();
+    expect(container.querySelector('[data-im-instance-row="wx-1"]')?.textContent).toContain('WeChat');
+
+    await click(container, '[data-im-target-kind="session"]');
+    expect(container.querySelector('[data-im-target="session:sess"]')).not.toBeNull();
+
+    await click(container, '[data-im-bind-listen]');
+    expect(imSessions.check).toHaveBeenCalledWith('wx-1');
+    expect(imSessions.listen).toHaveBeenCalledWith('wx-1', true);
+    expect(container.querySelector('[data-im-waiting-discovery]')).not.toBeNull();
+
+    imSessions.snapshot.mockResolvedValue(wechatDiscovered);
+    await click(container, '[data-im-refresh-discovery]');
+    expect(container.querySelector('[data-im-discovery="d-wx"]')?.textContent).toContain('Lin');
+
+    await click(container, '[data-im-confirm="d-wx"]');
+    expect(imSessions.confirm).toHaveBeenCalledWith('d-wx', expect.objectContaining({
+      target: { kind: 'session', session_id: 'sess' },
+      reply: 'final',
+    }));
+    expect(container.querySelector('[data-im-binding="b-wx"]')).not.toBeNull();
+    expect(container.textContent).not.toMatch(/reply|Receive/i);
+  });
+
+  it('switches an existing binding target between a thread and a persona', async () => {
+    imSessions.catalog.mockResolvedValueOnce({
+      personas: [
+        { id: 'ada', name: 'Ada', home_session_id: 'home' },
+        { id: 'bob', name: 'Bob', home_session_id: 'bob-home' },
+      ],
+      sessions: [{ id: 'sess', title: 'Notes' }],
+    });
+    imSessions.snapshot.mockResolvedValue(bound);
+    imSessions.updateBinding.mockImplementation(async (_id: string, patch: ImBindingPatch) => {
+      const nextTarget = patch.target;
+      const nextSessionId = nextTarget?.kind === 'persona'
+        ? (nextTarget.persona_id === 'bob' ? 'bob-home' : 'home')
+        : nextTarget?.kind === 'session'
+          ? nextTarget.session_id
+          : (patch.session_id ?? bound.bindings[0]!.session_id);
+      const nextPersonaId = nextTarget?.kind === 'persona' ? nextTarget.persona_id : undefined;
+      return {
+        ...bound,
+        bindings: [{
+          ...bound.bindings[0]!,
+          session_id: nextSessionId,
+          persona_id: nextPersonaId,
+        }],
+      };
+    });
+
+    const container = await render('1100px');
+    await click(container, '#im-binding-target-b1');
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-option-value="sess"]')!.click();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(imSessions.updateBinding).toHaveBeenCalledWith('b1', { target: { kind: 'session', session_id: 'sess' } });
+    expect(container.querySelector('[data-im-binding-target="sess"]')).not.toBeNull();
+
+    await click(container, '#im-binding-target-b1');
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-option-value="persona:bob"]')!.click();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(imSessions.updateBinding).toHaveBeenCalledWith('b1', { target: { kind: 'persona', persona_id: 'bob' } });
+    expect(container.querySelector('[data-im-binding-target="bob-home"]')).not.toBeNull();
+  });
+
+  it('updates an existing binding row in place when re-confirming the same chat identity', async () => {
+    const pausedExistingWithDiscovery: ImSessionSnapshot = {
+      ...found,
+      bindings: [{
+        ...bound.bindings[0]!,
+        id: 'b1',
+        session_id: 'home',
+        persona_id: 'ada',
+        enabled: false,
+      }],
+    };
+    const reconfirmedInPlace: ImSessionSnapshot = {
+      ...found,
+      discoveries: [],
+      bindings: [{
+        ...bound.bindings[0]!,
+        id: 'b1',
+        session_id: 'sess',
+        persona_id: undefined,
+        enabled: true,
+      }],
+    };
+    imSessions.snapshot.mockResolvedValue(pausedExistingWithDiscovery);
+    imSessions.confirm.mockResolvedValueOnce(reconfirmedInPlace);
+
+    const container = await render('1100px');
+    expect(container.querySelectorAll('[data-im-binding]').length).toBe(1);
+    expect(container.querySelector('[data-im-enabled="b1"]')?.textContent).toBe('Enable');
+
+    await click(container, '[data-im-target-kind="session"]');
+    await click(container, '[data-im-confirm="d1"]');
+
+    expect(imSessions.confirm).toHaveBeenCalledWith('d1', expect.objectContaining({
+      target: { kind: 'session', session_id: 'sess' },
+    }));
+    expect(container.querySelectorAll('[data-im-binding]').length).toBe(1);
+    expect(container.querySelector('[data-im-binding-target="sess"]')).not.toBeNull();
+    expect(container.querySelector('[data-im-enabled="b1"]')?.textContent).toBe('Disable');
+  });
+
+  it('pastes a third account without overwriting either of two existing accounts, and only updates an account when explicitly selected', async () => {
+    const twoAccounts: ImSessionSnapshot = {
+      ...empty,
+      instances: [
+        { id: 'inst-1', provider_kind: 'wechat_bridge', listening: true, configured: true, account_id: 'wxid_1', adapter: 'running' },
+        { id: 'inst-2', provider_kind: 'telegram', listening: true, configured: true, account_id: '7', adapter: 'running' },
+      ],
+    };
+    imSessions.snapshot.mockResolvedValue(twoAccounts);
+    imSessions.listen.mockResolvedValueOnce(twoAccounts).mockResolvedValueOnce(twoAccounts);
+    imSessions.paste.mockClear();
+    imSessions.paste.mockResolvedValueOnce({
+      provider_instance_id: 'inst-3',
+      provider_kind: 'feishu_app',
+      ignored_keys: [],
+      chat_hint_ignored: false,
+    });
+    imSessions.check.mockResolvedValue({ ok: true, account_id: 'cli_3' });
+
+    const container = await render('1100px');
+    await click(container, '[data-im-connect-toggle]');
+    expect(container.querySelector('[data-im-instance=""]')).not.toBeNull();
+
+    const paste = container.querySelector<HTMLTextAreaElement>('[data-im-paste]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(paste, 'app_id=cli_3\napp_secret=sec');
+      paste.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await click(container, '[data-im-check]');
+    expect(imSessions.paste).toHaveBeenCalledWith('app_id=cli_3\napp_secret=sec', undefined);
+
+    await click(container, '[data-im-connect-toggle]');
+    await click(container, '#im-instance');
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-option-value="inst-2"]')!.click();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(container.querySelector('[data-im-instance="inst-2"]')).not.toBeNull();
+
+    await click(container, '#im-instance');
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-option-value=""]')!.click();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(container.querySelector('[data-im-instance=""]')).not.toBeNull();
+
+    imSessions.paste.mockClear();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(paste, '999:new_bot_token');
+      paste.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await click(container, '[data-im-check]');
+    expect(imSessions.paste).toHaveBeenCalledWith('999:new_bot_token', undefined);
+  });
+
+  it('scopes routeExisting to the clicked account and requires explicit chat selection when multiple bindings exist', async () => {
+    const multiAccountAndBindings: ImSessionSnapshot = {
+      ...empty,
+      instances: [
+        { id: 'wx-1', provider_kind: 'wechat_bridge', listening: true, configured: true, account_id: 'wxid_1', adapter: 'running' },
+        { id: 'tg-1', provider_kind: 'telegram', listening: true, configured: true, account_id: '7', adapter: 'running' },
+      ],
+      bindings: [
+        {
+          id: 'b-wx-1',
+          provider_instance_id: 'wx-1',
+          provider_kind: 'wechat_bridge',
+          account_id: 'wxid_1',
+          identity: { chat_id: 'c-wx-1', sender_id: 'u-wx-1', topic_id: '0', sender_name: 'Lin' },
+          session_id: 'home',
+          persona_id: 'ada',
+          enabled: true,
+          busy: 'queue',
+          reply: 'final',
+          mobile_interactions: true,
+        },
+        {
+          id: 'b-wx-2',
+          provider_instance_id: 'wx-1',
+          provider_kind: 'wechat_bridge',
+          account_id: 'wxid_1',
+          identity: { chat_id: 'c-wx-2', sender_id: 'u-wx-2', topic_id: '0', chat_title: 'Ops Group', sender_name: 'Chen' },
+          session_id: 'home',
+          persona_id: 'ada',
+          enabled: true,
+          busy: 'queue',
+          reply: 'final',
+          mobile_interactions: true,
+        },
+        {
+          id: 'b-tg-1',
+          provider_instance_id: 'tg-1',
+          provider_kind: 'telegram',
+          account_id: '7',
+          identity: { chat_id: 'c-tg-1', sender_id: 'u-tg-1', topic_id: '0', sender_name: 'Ada' },
+          session_id: 'home',
+          persona_id: 'ada',
+          enabled: true,
+          busy: 'queue',
+          reply: 'final',
+          mobile_interactions: true,
+        },
+      ],
+    };
+    imSessions.snapshot.mockResolvedValue(multiAccountAndBindings);
+    imSessions.updateBinding.mockClear();
+    imSessions.updateBinding.mockResolvedValue(multiAccountAndBindings);
+
+    const container = await render('1100px');
+
+    await click(container, '[data-im-start-bind="tg-1"]');
+    await click(container, '[data-im-target-kind="session"]');
+    const tgRouteBtn = container.querySelector<HTMLButtonElement>('[data-im-route-existing="b-tg-1"]')!;
+    expect(tgRouteBtn).not.toBeNull();
+    expect(tgRouteBtn.disabled).toBe(false);
+    expect(tgRouteBtn.textContent).toContain('Telegram · Ada');
+    await click(container, '[data-im-route-existing="b-tg-1"]');
+    expect(imSessions.updateBinding).toHaveBeenCalledWith('b-tg-1', {
+      target: { kind: 'session', session_id: 'sess' },
+    });
+
+    imSessions.updateBinding.mockClear();
+    await click(container, '[data-im-start-bind="wx-1"]');
+    const ambiguousRouteBtn = container.querySelector<HTMLButtonElement>('[data-im-route-existing]')!;
+    expect(ambiguousRouteBtn.disabled).toBe(true);
+    expect(container.querySelector('[data-im-route-binding]')).not.toBeNull();
+
+    await click(container, '#im-route-binding');
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-option-value="b-wx-2"]')!.click();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    const chosenWxBtn = container.querySelector<HTMLButtonElement>('[data-im-route-existing="b-wx-2"]')!;
+    expect(chosenWxBtn.disabled).toBe(false);
+    await click(container, '[data-im-route-existing="b-wx-2"]');
+    expect(imSessions.updateBinding).toHaveBeenCalledWith('b-wx-2', {
+      target: { kind: 'session', session_id: 'sess' },
+    });
+  });
+
+  it('shows Starting and Reconnecting states instead of Listening while keeping target switching and stop controls active without re-scanning', async () => {
+    const offlineRecovering: ImSessionSnapshot = {
+      ...bound,
+      instances: [
+        {
+          id: 'wx-1',
+          provider_kind: 'wechat_bridge',
+          listening: true,
+          configured: true,
+          account_id: 'wxid_1',
+          adapter: 'stopped',
+          connection: 'reconnecting',
+        },
+        {
+          id: 'tg-1',
+          provider_kind: 'telegram',
+          listening: true,
+          configured: true,
+          account_id: '7',
+          adapter: 'running',
+          connection: 'starting',
+        },
+      ],
+      bindings: [{
+        ...bound.bindings[0]!,
+        id: 'b1',
+        provider_instance_id: 'wx-1',
+        provider_kind: 'wechat_bridge',
+      }],
+    };
+    imSessions.snapshot.mockResolvedValue(offlineRecovering);
+    imSessions.updateBinding.mockClear();
+    imSessions.listen.mockClear();
+
+    const container = await render('1100px');
+    expect(container.querySelector('[data-im-connect-drawer]')?.classList.contains('hidden')).toBe(true);
+    const wxState = container.querySelector('[data-im-instance-row="wx-1"] [data-im-instance-state]')!;
+    expect(wxState.getAttribute('data-im-instance-state')).toBe('reconnecting');
+    expect(wxState.textContent).toBe('Reconnecting');
+    expect(wxState.textContent).not.toBe('Listening');
+
+    const tgState = container.querySelector('[data-im-instance-row="tg-1"] [data-im-instance-state]')!;
+    expect(tgState.getAttribute('data-im-instance-state')).toBe('starting');
+    expect(tgState.textContent).toBe('Connecting');
+
+    await click(container, '#im-binding-target-b1');
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-option-value="sess"]')!.click();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(imSessions.updateBinding).toHaveBeenCalledWith('b1', {
+      target: { kind: 'session', session_id: 'sess' },
+    });
+
+    await click(container, '[data-im-listen="wx-1"]');
+    expect(imSessions.listen).toHaveBeenCalledWith('wx-1', false);
   });
 });
