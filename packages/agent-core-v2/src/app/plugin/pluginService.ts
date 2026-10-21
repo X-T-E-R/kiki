@@ -19,7 +19,10 @@ import { BugIndicatingError, Error2, PluginErrors } from '#/errors';
 import { IProviderService } from '#/kosong/provider/provider';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 
+import { readBundledPluginCatalog } from './defaultCatalog';
+import { catalogSha256ForSource } from './marketplace';
 import { PluginManager } from './manager';
+import { resolveInstallSource } from './source';
 import {
   type PluginChangeEvent,
   type GetPluginInfoInput,
@@ -108,7 +111,20 @@ export class PluginService extends Service implements IPluginService {
   }
 
   previewPlugin(input: Pick<InstallPluginInput, 'source' | 'sha256'>) {
-    return this.runSerializedOperation(() => this.manager.preview(input.source, input.sha256));
+    return this.runSerializedOperation(() => this.manager.preview(input.source, this.installSha256(input.source, input.sha256)));
+  }
+
+  private installSha256(source: string, sha256: string | undefined): string | undefined {
+    const supplied = sha256?.trim();
+    if (supplied !== undefined && supplied.length > 0) return supplied;
+    let resolved: ReturnType<typeof resolveInstallSource>;
+    try {
+      resolved = resolveInstallSource(source);
+    } catch {
+      return undefined;
+    }
+    if (resolved.kind !== 'zip-url') return undefined;
+    return catalogSha256ForSource(readBundledPluginCatalog().marketplace.plugins, resolved.path);
   }
 
   installPlugin(input: InstallPluginInput): Promise<PluginSummary> {
@@ -118,7 +134,7 @@ export class PluginService extends Service implements IPluginService {
       }
       let finish: (() => void) | undefined;
       try {
-        const record = await this.manager.install(input.source, input, async (id) => {
+        const record = await this.manager.install(input.source, { ...input, sha256: this.installSha256(input.source, input.sha256) }, async (id) => {
           finish = await this.beginPluginChange([id]);
         });
         const info = this.manager.info(record.id);

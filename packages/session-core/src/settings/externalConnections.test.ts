@@ -61,12 +61,37 @@ describe('Cloudflare external connection', () => {
     const f = fixture();
     await expect(f.api.installDependency(false as true)).rejects.toThrow('Install');
     expect(f.plugins.installPrerequisite).not.toHaveBeenCalled();
-    const plan = await f.api.previewInstall('/fixture/source');
+    const plan = await f.api.previewInstall({ source: '/fixture/source' });
     await f.api.install({ source: '/fixture/source', plan, consent: true });
+    expect(f.plugins.preview).toHaveBeenCalledWith({ source: '/fixture/source' });
     expect(f.plugins.install).toHaveBeenCalledWith({ source: '/fixture/source', fingerprint: plan.fingerprint, consent: true });
     expect(f.plugins.setEnabled).toHaveBeenCalledWith('kiki-cloudflare', true);
     await f.api.installDependency(true);
     expect(f.plugins.installPrerequisite).toHaveBeenCalledWith('kiki-cloudflare', { id: 'cloudflared', consent: true });
+  });
+
+  it('forwards the marketplace checksum and does not invent one', async () => {
+    const f = fixture();
+    const sha256 = 'b'.repeat(64);
+    await f.api.previewInstall({ source: 'https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-cloudflare-20261010.1/kiki-cloudflare-0.1.1.zip', sha256 });
+    await f.api.install({
+      source: 'https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-cloudflare-20261010.1/kiki-cloudflare-0.1.1.zip',
+      sha256,
+      plan: f.plan,
+      consent: true,
+    });
+    expect(f.plugins.preview).toHaveBeenCalledWith({
+      source: 'https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-cloudflare-20261010.1/kiki-cloudflare-0.1.1.zip',
+      sha256,
+    });
+    expect(f.plugins.install).toHaveBeenCalledWith({
+      source: 'https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-cloudflare-20261010.1/kiki-cloudflare-0.1.1.zip',
+      sha256,
+      fingerprint: f.plan.fingerprint,
+      consent: true,
+    });
+    await f.api.previewInstall({ source: '/fixture/source', sha256: '   ' });
+    expect(f.plugins.preview).toHaveBeenLastCalledWith({ source: '/fixture/source' });
   });
 
   it('does not turn an unavailable catalog or disabled plugin into an online connection', async () => {

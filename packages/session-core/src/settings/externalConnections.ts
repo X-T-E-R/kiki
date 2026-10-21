@@ -8,6 +8,11 @@ import {
 export const CLOUDFLARE_PLUGIN_ID = 'kiki-cloudflare';
 export const CLOUDFLARE_PANEL_ID = 'cloudflare';
 
+function digest(sha256: string | undefined): { readonly sha256: string } | Record<string, never> {
+  const value = sha256?.trim();
+  return value !== undefined && value.length > 0 ? { sha256: value } : {};
+}
+
 export interface ExternalConnectionClient {
   readonly global: { readonly plugins: Pick<Klient['global']['plugins'], 'list'> };
   readonly rest?: { readonly plugins: Pick<HttpRestFacade['plugins'], 'marketplace' | 'preview' | 'install' | 'info' | 'setEnabled' | 'installPrerequisite' | 'panelBridge'> };
@@ -56,14 +61,14 @@ export function createCloudflareConnection(client: ExternalConnectionClient) {
       return { state: 'available', source, version: info.version, status: await status() };
     },
     status,
-    async previewInstall(source: string): Promise<PluginInstallPlan> {
-      const plan = await plugins.preview({ source });
+    async previewInstall(input: { readonly source: string; readonly sha256?: string }): Promise<PluginInstallPlan> {
+      const plan = await plugins.preview({ source: input.source, ...(digest(input.sha256)) });
       if (plan.id !== CLOUDFLARE_PLUGIN_ID) throw new Error('The selected package is not the Cloudflare Tunnel plugin.');
       return plan;
     },
-    async install(input: { source: string; plan: PluginInstallPlan; consent: true }) {
+    async install(input: { source: string; sha256?: string; plan: PluginInstallPlan; consent: true }) {
       if (input.consent !== true || input.plan.id !== CLOUDFLARE_PLUGIN_ID) throw new Error('Review and approve the Cloudflare plugin installation first.');
-      const result = await plugins.install({ source: input.source, fingerprint: input.plan.fingerprint, consent: true });
+      const result = await plugins.install({ source: input.source, ...digest(input.sha256), fingerprint: input.plan.fingerprint, consent: true });
       if (result.id !== CLOUDFLARE_PLUGIN_ID) throw new Error('The installed package is not the Cloudflare Tunnel plugin.');
       await plugins.setEnabled(CLOUDFLARE_PLUGIN_ID, true);
       return result;

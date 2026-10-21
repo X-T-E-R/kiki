@@ -3669,6 +3669,7 @@ export const en = {
   'st.conn.ext.retry': 'Retry',
   'st.conn.ext.installing': 'Installing…',
   'st.conn.ext.installPlugin': 'Install Cloudflare plugin',
+  'st.conn.ext.catalogMissing': 'The plugin market did not list Cloudflare, so Kiki cannot install it from here. Open Plugins and install Cloudflare from the market.',
   'st.conn.ext.disabled': 'Cloudflare plugin is currently disabled.',
   'st.conn.ext.enablePlugin': 'Enable plugin',
   'st.conn.ext.installConfirmTitle': 'Install Cloudflare Tunnel plugin?',

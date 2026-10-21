@@ -64,6 +64,7 @@ import { clipboard } from '#/utils/clipboard/clipboard-native';
 import { parseImageMeta } from '#/utils/image/image-mime';
 import { openUrl } from '#/utils/open-url';
 import { loadPluginMarketplace } from '#/utils/plugin-marketplace';
+import { parsePluginInstallArgs } from '#/tui/utils/plugin-install-args';
 import { editInExternalEditor, resolveEditorCommand } from '#/utils/process/external-editor';
 
 import { projectAttachmentSettlement } from './attachment-settlement';
@@ -1773,13 +1774,16 @@ export class DaemonTUI {
       return;
     }
     if (action === 'install') {
-      const consent = rest.startsWith('--trust ');
-      const source = consent ? rest.slice('--trust '.length).trim() : rest;
-      if (source === '') throw new Error('/plugins install [--trust] requires an explicit source.');
-      const plan = await plugins.preview({ source });
+      const parsed = parsePluginInstallArgs(rest);
+      const source = parsed.source;
+      if (source === '') throw new Error('/plugins install [--trust] [--sha256 <64-hex>] requires an explicit source.');
+      const previewInput = parsed.sha256 === undefined ? { source } : { source, sha256: parsed.sha256 };
+      const plan = await plugins.preview(previewInput);
       this.showStatus(`Plugin: ${plan.id}\nSource: ${source}\nContributions: ${plan.contributions.join(', ')}\nTrusted Node code runs with your full account permissions, not in a sandbox.`);
-      if (plan.consentRequired && !consent) throw new Error('To consent once to this source, run /plugins install --trust <source>.');
-      await plugins.install({ source, fingerprint: plan.fingerprint, consent });
+      if (plan.consentRequired && !parsed.trust) throw new Error('To consent once to this source, run /plugins install --trust <source>.');
+      await plugins.install(parsed.sha256 === undefined
+        ? { source, fingerprint: plan.fingerprint, consent: parsed.trust }
+        : { source, sha256: parsed.sha256, fingerprint: plan.fingerprint, consent: parsed.trust });
     } else if (action === 'enable' || action === 'disable') {
       if (rest === '') throw new Error(`/plugins ${action} requires a plugin id.`);
       await plugins.setEnabled({ id: rest, enabled: action === 'enable' });

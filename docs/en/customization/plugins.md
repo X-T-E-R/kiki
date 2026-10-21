@@ -30,7 +30,7 @@ You can also use slash commands directly:
 | --- | --- |
 | `/plugins` | Open the interactive plugin manager |
 | `/plugins list` | List installed plugins |
-| `/plugins install [--trust] <path-or-url>` | Install from a local directory, zip URL, or GitHub repository URL, or update an already-installed local source by repeating the same path. `--trust` gives the [one-time consent](#installing-a-plugin-that-runs-code) that a plugin running its own code needs, and is only asked on the first install of a source |
+| `/plugins install [--trust] [--sha256 <64-hex>] <path-or-url>` | Install from a local directory, zip URL, or GitHub repository URL, or update an already-installed local source by repeating the same path. `--trust` gives the [one-time consent](#installing-a-plugin-that-runs-code) that a plugin running its own code needs, and is only asked on the first install of a source. `--sha256` is the publisher checksum for a ZIP you chose yourself. The market already publishes that checksum, so an Official or Curated install does not ask you to type it |
 | `/plugins marketplace [source]` | Browse the official marketplace, or pass a custom marketplace JSON path or URL |
 | `/plugins info <id>` | View plugin details and diagnostics |
 | `/plugins enable <id>` | Enable a plugin |
@@ -92,7 +92,7 @@ App-activated plugins use a shared background service owned by the connected Kik
 
 Pass a marketplace JSON path or URL to `/plugins marketplace <source>`, set [`KIKI_PLUGIN_MARKETPLACE_URL`](../configuration/env-vars.md), or configure `[plugins] marketplace_url` in `config.toml`; the command wins over the environment variable, which wins over the config. With no custom source, Kiki uses the official [Kiki Plugins catalog](https://x-t-e-r.github.io/kiki-plugins/marketplace.json). If the catalog cannot be reached, the bundled metadata still lets you browse it; installing a package still needs access to its download URL.
 
-Kiki's own plugins — writing, document extraction, media sources, Notion and the rest — are built in a separate [Kiki Plugins repository](https://github.com/X-T-E-R/kiki-plugins), not in the Kiki source tree. That is where their source lives, where you send a change, and what a development checkout points at. Installing from the official catalog is the ordinary route: Kiki downloads the published package and checks it against the SHA256 digest recorded in the catalog, so what runs is the artifact that was released, not whatever a directory happens to contain. A checkout of that repository is only for working on the plugins themselves.
+Kiki's own plugins — writing, document extraction, media sources, Notion and the rest — are built in a separate [Kiki Plugins repository](https://github.com/X-T-E-R/kiki-plugins), not in the Kiki source tree. That is where their source lives, where you send a change, and what a development checkout points at. Installing from the official catalog is the ordinary route: Kiki downloads the published package and checks it against the SHA256 digest recorded in the catalog, so what runs is the artifact that was released, not whatever a directory happens to contain. A remote ZIP catalog entry carries `sha256`. Market, detail, and session installs send that digest with the download URL. A GitHub repository URL and a local directory do not use a ZIP digest. A checkout of that repository is only for working on the plugins themselves.
 
 Each entry in the `plugins` array needs an `id` and a `source` (local path, zip URL or GitHub URL):
 

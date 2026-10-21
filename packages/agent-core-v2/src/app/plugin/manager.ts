@@ -641,7 +641,7 @@ async function preparePluginSource(source: string, sha256?: string): Promise<Pre
     github = { owner: resolved.owner, repo: resolved.repo, ref: resolution.ref, installedSha };
     zipUrl = `https://codeload.github.com/${resolved.owner}/${resolved.repo}/zip/${installedSha}`;
   } else if (sha256 === undefined || !/^[0-9a-fA-F]{64}$/.test(sha256)) {
-    throw new Error2(ErrorCodes.VALIDATION_FAILED, 'ZIP plugins require a sha256 checksum');
+    throw new Error2(ErrorCodes.VALIDATION_FAILED, 'ZIP plugins require a sha256 checksum. Install it from the plugin market, which publishes the checksum, or pass the publisher checksum for a ZIP you chose yourself.');
   }
   const buffer = await downloadZip(zipUrl);
   if (resolved.kind === 'zip-url' && createHash('sha256').update(buffer).digest('hex') !== sha256!.toLowerCase()) {

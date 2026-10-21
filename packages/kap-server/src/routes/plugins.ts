@@ -20,6 +20,7 @@ import {
   PluginErrors,
   isError2,
   nonemptyMarketplaceSource,
+  isMarketplaceEntryInstallable,
   parseManifest,
   parsePluginMarketplace,
   readPluginMarketplace,
@@ -229,7 +230,7 @@ export function registerPluginsRoutes(
         const entries = relevantPlugins(catalog.plugins, req.body, installed, dismissed).map((item) => ({
           id: item.id, tier: item.tier!, displayName: item.displayName, description: item.description,
           homepage: item.homepage, icon: item.icon, keywords: item.keywords === undefined ? undefined : [...item.keywords],
-          relevance: item.relevance, version: item.version, source: item.source,
+          relevance: item.relevance, version: item.version, source: item.source, sha256: item.sha256,
         }));
         reply.send(okEnvelope({ entries }, req.id));
       } catch (error) { reply.send(mapPluginError(error, req.id)); }
@@ -658,13 +659,7 @@ function mapPluginError(error: unknown, requestId: string) {
 }
 
 function installableSource(entry: PluginMarketplaceEntry): boolean {
-  const source = entry.source.trim();
-  if (source.length === 0) return false;
-  if (source.startsWith('http://') || source.startsWith('https://')) {
-    if (source.includes('github.com')) return true;
-    return entry.sha256 !== undefined;
-  }
-  return true;
+  return isMarketplaceEntryInstallable(entry);
 }
 
 async function localOfficialIcons(

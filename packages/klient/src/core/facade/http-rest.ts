@@ -224,6 +224,7 @@ export interface HttpRestPluginMarketplaceEntry {
   };
   readonly version?: string;
   readonly source: string;
+  readonly sha256?: string;
   readonly installed?: { readonly version?: string; readonly enabled: boolean };
   readonly updateAvailable?: boolean;
 }

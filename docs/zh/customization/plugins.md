@@ -30,7 +30,7 @@ Plugin 把可复用的 Kiki 能力打包成一个可安装单元：可以添加 
 | --- | --- |
 | `/plugins` | 打开交互式 plugin 管理器 |
 | `/plugins list` | 列出已安装 plugins |
-| `/plugins install [--trust] <path-or-url>` | 从本地目录、zip URL 或 GitHub 仓库 URL 安装；对已安装的本地来源，重复执行同一路径即可更新。`--trust` 给出[一次知情同意](#安装会运行代码的插件)，会运行自身代码的 plugin 需要它，且只在该来源首次安装时询问 |
+| `/plugins install [--trust] [--sha256 <64-hex>] <path-or-url>` | 从本地目录、zip URL 或 GitHub 仓库 URL 安装；对已安装的本地来源，重复执行同一路径即可更新。`--trust` 给出[一次知情同意](#安装会运行代码的插件)，会运行自身代码的 plugin 需要它，且只在该来源首次安装时询问。`--sha256` 是你自行选择的 ZIP 的发布者校验和。市场已经发布这个校验和，从 Official 或 Curated 安装时不必手填 |
 | `/plugins marketplace [source]` | 浏览官方 marketplace，或传入自定义 marketplace JSON 的路径或 URL |
 | `/plugins info <id>` | 查看 plugin 详情和 diagnostics |
 | `/plugins enable <id>` | 启用 plugin |
@@ -92,7 +92,7 @@ App 类型插件使用当前连接的 Kiki home 所拥有的共享后台服务�
 
 浏览 marketplace 时，把 JSON 路径或 URL 传给 `/plugins marketplace <source>`，设置 [`KIKI_PLUGIN_MARKETPLACE_URL`](../configuration/env-vars.md)，或在 `config.toml` 中配置 `[plugins] marketplace_url`。优先级依次为命令 source、环境变量和配置；未指定自定义 source 时，Kiki 使用官方 [Kiki Plugins 目录](https://x-t-e-r.github.io/kiki-plugins/marketplace.json)。目录暂时无法访问时，仍可浏览随版本附带的元数据；安装插件包仍需能访问其下载地址。
 
-Kiki 自己的那些 plugin——写作、文档提取、媒体来源、Notion 等等——在独立的 [Kiki Plugins 仓库](https://github.com/X-T-E-R/kiki-plugins) 里开发，不在 Kiki 源码树中。它们的源码在那里，改动提给那里，开发时指向的本地目录也是那里。从官方目录安装是常规路径：Kiki 下载已发布的包，并按目录中记录的 SHA256 校验和核对，所以跑起来的是真正发布出去的那个产物，而不是某个目录里碰巧有什么。检出那个仓库只在你本人要改这些 plugin 时才需要。
+Kiki 自己的那些 plugin——写作、文档提取、媒体来源、Notion 等等——在独立的 [Kiki Plugins 仓库](https://github.com/X-T-E-R/kiki-plugins) 里开发，不在 Kiki 源码树中。它们的源码在那里，改动提给那里，开发时指向的本地目录也是那里。从官方目录安装是常规路径：Kiki 下载已发布的包，并按目录中记录的 SHA256 校验和核对，所以跑起来的是真正发布出去的那个产物，而不是某个目录里碰巧有什么。远程 ZIP 目录条目带有 `sha256`。市场、详情和会话里的安装会把这个校验和连同下载地址一起提交。GitHub 仓库 URL 和本地目录不使用 ZIP 校验和。检出那个仓库只在你本人要改这些 plugin 时才需要。
 
 `plugins` 数组中每个条目需要 `id` 和 `source`（本地路径、zip URL 或 GitHub URL）：
 

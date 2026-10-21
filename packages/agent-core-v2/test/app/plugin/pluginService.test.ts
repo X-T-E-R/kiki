@@ -15,7 +15,7 @@ import { createScopedTestHost, stubPair, type ScopedTestHost } from '#/_base/di/
 import { Event } from '#/_base/event';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
-import { readDefaultPluginCatalog } from '#/app/plugin/defaultCatalog';
+import { readBundledPluginCatalog, readDefaultPluginCatalog } from '#/app/plugin/defaultCatalog';
 import { IPluginService } from '#/app/plugin/plugin';
 import { IPluginUsageService, type PluginUsageSnapshot } from '#/app/pluginUsage/pluginUsage';
 import { PluginService } from '#/app/plugin/pluginService';
@@ -260,6 +260,42 @@ describe('PluginService (plugin boundary)', () => {
       for (const [input] of vi.mocked(fetch).mock.calls) {
         expect(archives.has(input instanceof Request ? input.url : input.toString())).toBe(true);
       }
+    } finally {
+      await host.dispose();
+    }
+  }, 30_000);
+
+  it('installs a bundled official ZIP when the caller omits sha256 and rejects an unknown ZIP', async () => {
+    const entry = readBundledPluginCatalog().marketplace.plugins.find((item) => item.id === 'kiki-cloudflare');
+    expect(entry?.sha256).toMatch(/^[0-9a-f]{64}$/);
+    const bytes = await fixedPublishedArchive(entry!.source, entry!.sha256!);
+    const fetchArchive = vi.fn(async (input: string | URL | Request) => {
+      const source = input instanceof Request ? input.url : String(input);
+      if (source !== entry!.source) throw new Error(`Unexpected plugin fixture URL: ${source}`);
+      return new Response(new Uint8Array(bytes), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchArchive);
+    const home = await makeHome();
+    const host = makeHost(home);
+    try {
+      const svc = host.app.accessor.get(IPluginService);
+      const plan = await svc.previewPlugin({ source: entry!.source });
+      expect(plan).toMatchObject({ id: 'kiki-cloudflare', consentRequired: true });
+      await svc.installPlugin({ source: entry!.source, fingerprint: plan.fingerprint, consent: true });
+      expect(await svc.getPluginInfo({ id: 'kiki-cloudflare' })).toMatchObject({
+        id: 'kiki-cloudflare',
+        version: entry!.version,
+        state: 'ok',
+        zipSha256: entry!.sha256,
+      });
+      await expect(svc.previewPlugin({ source: 'https://downloads.example.test/unknown.zip' })).rejects.toThrow(
+        'ZIP plugins require a sha256 checksum',
+      );
+      await expect(svc.previewPlugin({ source: entry!.source, sha256: '0'.repeat(64) })).rejects.toThrow(
+        'Plugin ZIP sha256 mismatch',
+      );
+      expect(fetchArchive.mock.calls.map(([input]) => input instanceof Request ? input.url : String(input)))
+        .not.toContain('https://downloads.example.test/unknown.zip');
     } finally {
       await host.dispose();
     }

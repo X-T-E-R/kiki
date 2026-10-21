@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from 'react';
 
 import {
   createCloudflareConnection,
-  CLOUDFLARE_PLUGIN_ID,
   type CloudflareConnection,
   type CloudflareConnectionSnapshot,
 } from '@kiki/session-core/settings';
@@ -33,6 +32,7 @@ export function ExternalConnectionSection() {
   // Install plan preview & confirm dialog
   const [installPlan, setInstallPlan] = useState<PluginInstallPlan | null>(null);
   const [installSource, setInstallSource] = useState<string>('');
+  const [installSha256, setInstallSha256] = useState<string | undefined>();
   const [confirmInstall, setConfirmInstall] = useState(false);
 
   // Available existing tunnels
@@ -94,10 +94,13 @@ export function ExternalConnectionSection() {
     setBusy('preview');
     setFeedback(null);
     try {
-      const source = snapshot.catalog?.source ?? CLOUDFLARE_PLUGIN_ID;
-      const plan = await connection.previewInstall(source);
+      const source = snapshot.catalog?.source?.trim() ?? '';
+      if (source.length === 0) throw new Error(t('st.conn.ext.catalogMissing'));
+      const sha256 = snapshot.catalog?.sha256;
+      const plan = await connection.previewInstall({ source, sha256 });
       setInstallPlan(plan);
       setInstallSource(source);
+      setInstallSha256(sha256);
       setConfirmInstall(true);
     } catch (err) {
       setFeedback({ tone: 'error', text: errorText(locale, err) });
@@ -113,7 +116,7 @@ export function ExternalConnectionSection() {
     setBusy('install');
     setFeedback(null);
     try {
-      await connection.install({ source: installSource, plan: installPlan, consent: true });
+      await connection.install({ source: installSource, sha256: installSha256, plan: installPlan, consent: true });
       setFeedback({ tone: 'success', text: t('st.conn.ext.installed') });
       await loadSnapshot();
     } catch (err) {
@@ -340,7 +343,7 @@ export function ExternalConnectionSection() {
         confirmLabel={t('st.conn.ext.installPlugin')}
         tone="default"
         onConfirm={() => { void handleConfirmInstall(); }}
-        onCancel={() => { setConfirmInstall(false); setInstallPlan(null); }}
+        onCancel={() => { setConfirmInstall(false); setInstallPlan(null); setInstallSha256(undefined); }}
       />
     </div>
   );

@@ -3633,6 +3633,7 @@ export const zh = {
   'st.conn.ext.retry': '重试',
   'st.conn.ext.installing': '正在安装…',
   'st.conn.ext.installPlugin': '安装 Cloudflare 插件',
+  'st.conn.ext.catalogMissing': '插件市场没有列出 Cloudflare，这里无法安装。请打开插件页，从市场安装 Cloudflare。',
   'st.conn.ext.disabled': 'Cloudflare 插件当前已禁用。',
   'st.conn.ext.enablePlugin': '启用插件',
   'st.conn.ext.installConfirmTitle': '安装 Cloudflare 隧道插件？',
