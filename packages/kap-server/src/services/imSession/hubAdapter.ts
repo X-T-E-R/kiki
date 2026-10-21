@@ -168,6 +168,10 @@ export class HubSessionAdapter implements ImSessionAdapter {
     return Promise.resolve('none');
   }
 
+  connectionPhase(): 'idle' | 'starting' | 'running' | 'reconnecting' | 'conflict' | 'auth_expired' | 'stopped' {
+    return this.session.state;
+  }
+
   splitText(text: string): string[] {
     if (this.session.platform === 'feishu_app') return splitFeishuText(text);
     return segmentText(text, this.textLimit);

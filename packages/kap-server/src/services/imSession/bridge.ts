@@ -204,6 +204,7 @@ export class ImSessionBridge {
   private readonly wait: (ms: number) => Promise<void>;
   private state: Stored = emptyState();
   private readonly pollers = new Map<string, Poller>();
+  private readonly pending = new Map<string, { poller: Poller; originId: string }>();
   private readonly jobs = new Set<Promise<void>>();
   private readonly wechatLogin: ImSessionBridgeOptions['wechatLogin'];
   private readonly liveReplies = new Set<string>();
@@ -514,7 +515,9 @@ export class ImSessionBridge {
       const meta = this.meta(id, kind);
       if (remote?.label !== undefined) meta.label = remote.label;
       const poller = [...this.pollers.values()].find((item) => item.instances.has(id));
-      views.push({
+      const attempt = [...this.pending.values()].find((item) => item.poller.instances.has(id));
+      const phase = this.linkPhase(poller?.adapter ?? attempt?.poller.adapter) ?? (attempt === undefined ? undefined : 'starting');
+      const view: ImInstanceView & { connection?: 'starting' | 'reconnecting' } = {
         id,
         provider_kind: kind,
         ...(meta.label === undefined ? {} : { label: meta.label }),
@@ -523,7 +526,9 @@ export class ImSessionBridge {
         ...(meta.accountId === undefined ? {} : { account_id: meta.accountId }),
         ...(meta.conflict === undefined ? {} : { conflict: meta.conflict }),
         adapter: poller === undefined ? (this.factories.some((factory) => factory.providerKind === kind) ? 'stopped' : 'missing') : poller.ownerId === id ? 'running' : 'shared',
-      });
+        ...(phase === undefined ? {} : { connection: phase }),
+      };
+      views.push(view);
     }
     return views;
   }
@@ -554,6 +559,11 @@ export class ImSessionBridge {
       this.join(existing, instanceId);
       return;
     }
+    const queued = this.pending.get(tokenHash);
+    if (queued !== undefined) {
+      this.join(queued.poller, instanceId);
+      return;
+    }
     const factory = this.factories.find((item) => item.providerKind === meta.providerKind);
     if (factory === undefined) return;
     let adapter: ImSessionAdapter;
@@ -570,31 +580,114 @@ export class ImSessionBridge {
       this.pollers.set(tokenHash, shared);
       return;
     }
+    const sharedPending = [...this.pending.values()].find((item) => item.poller.adapter === adapter || item.poller.ownerId === canonical || item.poller.adapter.canonicalInstanceId === canonical);
+    if (sharedPending !== undefined) {
+      this.join(sharedPending.poller, instanceId);
+      this.pending.set(tokenHash, sharedPending);
+      return;
+    }
     if (await adapter.describeConflict() === 'webhook') {
       meta.conflict = 'webhook';
       return;
     }
     const poller: Poller = { tokenHash, ownerId: canonical, instances: new Set([instanceId]), adapter };
-    this.pollers.set(tokenHash, poller);
+    this.pending.set(tokenHash, { poller, originId: instanceId });
     this.retarget(instanceId, canonical);
+    let started: Promise<{ accountId: string; conflict?: 'webhook'; failed?: 'auth' }>;
     try {
-      const started = await adapter.start(async (event) => {
+      started = Promise.resolve(adapter.start(async (event) => {
+        if (!this.published(poller)) return;
         await this.ingest(poller.ownerId, event);
-      }, { offset: this.state.cursors[poller.ownerId] });
-      if (started.conflict === 'webhook' || started.failed === 'auth') {
-        if (started.conflict === 'webhook') meta.conflict = 'webhook';
-        meta.listening = started.conflict !== 'webhook' ? false : meta.listening;
-        await adapter.stop();
-        this.pollers.delete(tokenHash);
-        return;
-      }
-      meta.accountId = started.accountId;
-      meta.conflict = undefined;
+      }, { offset: this.state.cursors[poller.ownerId] }));
     } catch {
+      this.forgetPending(poller);
       meta.listening = false;
-      await adapter.stop().catch(() => undefined);
-      this.pollers.delete(tokenHash);
+      return;
     }
+    const apply = this.finishStart(poller, started);
+    this.jobs.add(apply);
+    void apply.finally(() => { this.jobs.delete(apply); });
+    const gate = await new Promise<'ready' | 'later'>((resolve) => {
+      const timer = setTimeout(() => resolve('later'), 0);
+      timer.unref();
+      void started.then(() => resolve('ready'), () => resolve('ready'));
+    });
+    if (gate === 'ready') await apply;
+    else this.ports.logger.info({ instance_id: instanceId, provider_kind: meta.providerKind, connection: this.linkPhase(adapter) ?? 'starting' }, 'im session connecting');
+  }
+
+  private published(poller: Poller): boolean {
+    for (const item of this.pollers.values()) if (item === poller) return true;
+    return false;
+  }
+
+  private forgetPending(poller: Poller): void {
+    for (const [key, attempt] of this.pending) if (attempt.poller === poller) this.pending.delete(key);
+  }
+
+  private linkPhase(adapter: ImSessionAdapter | undefined): 'starting' | 'reconnecting' | undefined {
+    const phase = this.adapterPhase(adapter);
+    return phase === 'starting' || phase === 'reconnecting' ? phase : undefined;
+  }
+
+  private adapterPhase(adapter: ImSessionAdapter | undefined): string | undefined {
+    if (adapter === undefined) return undefined;
+    const reader = (adapter as { connectionPhase?: () => unknown }).connectionPhase;
+    if (typeof reader !== 'function') return undefined;
+    const value = reader.call(adapter);
+    return typeof value === 'string' ? value : undefined;
+  }
+
+  private async finishStart(poller: Poller, started: Promise<{ accountId: string; conflict?: 'webhook'; failed?: 'auth' }>): Promise<void> {
+    let result: { accountId: string; conflict?: 'webhook'; failed?: 'auth' };
+    try {
+      result = await started;
+    } catch {
+      const current = [...this.pending.values()].find((item) => item.poller === poller);
+      if (current === undefined) return;
+      this.forgetPending(poller);
+      this.markOrigin(current.originId, { listening: false });
+      await this.persist();
+      await poller.adapter.stop().catch(() => undefined);
+      return;
+    }
+    const current = [...this.pending.values()].find((item) => item.poller === poller);
+    if (current === undefined || this.adapterPhase(poller.adapter) === 'stopped') {
+      this.forgetPending(poller);
+      return;
+    }
+    if (result.conflict === 'webhook' || result.failed === 'auth') {
+      this.markOrigin(current.originId, {
+        listening: result.conflict === 'webhook' ? undefined : false,
+        conflict: result.conflict === 'webhook' ? 'webhook' : undefined,
+      });
+      this.forgetPending(poller);
+      await this.persist();
+      await poller.adapter.stop().catch(() => undefined);
+      return;
+    }
+    const keys = [...this.pending.keys()].filter((key) => this.pending.get(key)?.poller === poller);
+    this.forgetPending(poller);
+    for (const key of keys) this.pollers.set(key, poller);
+    for (const id of poller.instances) {
+      const meta = this.state.instances.find((item) => item.id === id);
+      if (meta === undefined) continue;
+      meta.accountId = result.accountId;
+      meta.conflict = undefined;
+    }
+    await this.persist();
+    this.ports.logger.info({ instance_id: current.originId, provider_kind: poller.adapter.providerKind, connection: 'running' }, 'im session connected');
+    for (const id of poller.instances) {
+      if (!this.published(poller)) return;
+      await this.resumeReplies(id);
+    }
+  }
+
+  private markOrigin(instanceId: string, patch: { listening?: false; conflict?: 'webhook' }): void {
+    const meta = this.state.instances.find((item) => item.id === instanceId);
+    if (meta === undefined) return;
+    if (patch.listening === false) meta.listening = false;
+    if (patch.conflict === 'webhook') meta.conflict = 'webhook';
   }
 
   private retarget(from: string, to: string): void {
@@ -605,6 +698,15 @@ export class ImSessionBridge {
   }
 
   private async release(instanceId: string): Promise<void> {
+    const waiting = new Set<Poller>();
+    for (const attempt of this.pending.values()) {
+      if (waiting.has(attempt.poller) || !attempt.poller.instances.has(instanceId)) continue;
+      waiting.add(attempt.poller);
+      attempt.poller.instances.delete(instanceId);
+      if (attempt.poller.instances.size > 0) continue;
+      this.forgetPending(attempt.poller);
+      await attempt.poller.adapter.stop();
+    }
     const seen = new Set<Poller>();
     for (const poller of this.pollers.values()) {
       if (seen.has(poller) || !poller.instances.has(instanceId)) continue;
@@ -617,6 +719,9 @@ export class ImSessionBridge {
   }
 
   private async stopAll(): Promise<void> {
+    const waiting = new Set(this.pending.values());
+    this.pending.clear();
+    for (const attempt of waiting) await attempt.poller.adapter.stop();
     const seen = new Set<ImSessionAdapter>();
     for (const poller of this.pollers.values()) {
       if (seen.has(poller.adapter)) continue;
