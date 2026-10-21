@@ -91,6 +91,26 @@ interface OpenReply {
   open: boolean;
 }
 
+interface OutboxButton {
+  id: string;
+  label: string;
+}
+
+interface OutboxRecord {
+  key: string;
+  bindingId: string;
+  senderKey: string;
+  sessionId: string;
+  interactionId: string;
+  questionIndex?: number;
+  kind: 'approval' | 'host_key' | 'question' | 'desktop_ssh';
+  expiresAt: number;
+  text: string;
+  code: string;
+  buttons: OutboxButton[];
+  delivery: 'pending' | 'sent';
+}
+
 interface Stored {
   policy: { allowed: boolean; defaultEnabled: boolean };
   instances: InstanceMeta[];
@@ -107,6 +127,7 @@ interface Stored {
   questionAnswers: Record<string, Record<string, string | true>>;
   answeredQuestions: Record<string, string[]>;
   replies: OpenReply[];
+  outbox: OutboxRecord[];
 }
 
 interface Poller {
@@ -186,6 +207,7 @@ export class ImSessionBridge {
   private readonly jobs = new Set<Promise<void>>();
   private readonly wechatLogin: ImSessionBridgeOptions['wechatLogin'];
   private readonly liveReplies = new Set<string>();
+  private projection: Promise<void> = Promise.resolve();
   private ready: Promise<void>;
 
   constructor(options: ImSessionBridgeOptions) {
@@ -399,6 +421,7 @@ export class ImSessionBridge {
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed === 'object' && parsed !== null) this.state = { ...emptyState(), ...(parsed as Stored) };
     if (!Array.isArray(this.state.replies)) this.state.replies = [];
+    if (!Array.isArray(this.state.outbox)) this.state.outbox = [];
     if (typeof this.state.questionAnswers !== 'object' || this.state.questionAnswers === null) this.state.questionAnswers = {};
     if (typeof this.state.answeredQuestions !== 'object' || this.state.answeredQuestions === null) this.state.answeredQuestions = {};
   }
@@ -1136,42 +1159,87 @@ export class ImSessionBridge {
     await adapter.sendText({ identity, text, code, ...(buttons === undefined ? {} : { buttons }) });
   }
 
+  private enqueueProjection(work: () => Promise<void>): Promise<void> {
+    const run = this.projection.then(work, work);
+    this.projection = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
   private async projectInteractions(binding: BindingRecord, approvals: readonly { id: string; expiresAt: number; toolName: string; action: string; ssh?: 'login' | 'host_key' }[], questions: readonly ImPendingQuestion[]): Promise<void> {
+    await this.enqueueProjection(() => this.deliverInteractions(binding, approvals, questions));
+  }
+
+  private async deliverInteractions(binding: BindingRecord, approvals: readonly { id: string; expiresAt: number; toolName: string; action: string; ssh?: 'login' | 'host_key' }[], questions: readonly ImPendingQuestion[]): Promise<void> {
     const adapter = this.adapterFor(binding.providerInstanceId);
-    if (adapter === undefined) return;
-    const outbound: { text: string; code: string; buttons?: { id: string; label: string }[] }[] = [];
-    let changed = false;
-    for (const approval of approvals) {
-      if (this.state.notices.includes(approval.id) || this.state.tickets.some((ticket) => ticket.interactionId === approval.id)) continue;
-      if (approval.ssh === 'login') {
-        this.state.notices.push(approval.id);
-        changed = true;
-        outbound.push({ text: this.copy('desktopSsh'), code: 'desktop_ssh' });
-        continue;
-      }
-      if (approval.ssh === 'host_key') {
-        const yes = this.ticket(binding, approval.id, approval.expiresAt, 'host_yes');
-        const no = this.ticket(binding, approval.id, approval.expiresAt, 'host_no');
-        changed = true;
-        outbound.push({ text: `${approval.toolName}`, code: 'host_key', buttons: [{ id: yes, label: this.copy('trust') }, { id: no, label: this.copy('refuse') }] });
-        continue;
-      }
+    if (adapter === undefined || !this.admitted(binding) || !binding.mobileInteractions) return;
+    const jobs: OutboxRecord[] = [];
+    let changed = this.retireOutbox(binding, approvals, questions);
+    for (const approval of approvals) changed = this.stageApproval(binding, approval, jobs) || changed;
+    for (const question of questions) changed = this.stageQuestion(binding, question, jobs) || changed;
+    if (changed) await this.persist();
+    for (const job of jobs) {
+      await this.send(adapter, binding.identity, job.text, job.code, job.buttons.length > 0 ? job.buttons : undefined);
+      job.delivery = 'sent';
+      if (job.kind === 'desktop_ssh' && !this.state.notices.includes(job.interactionId)) this.state.notices.push(job.interactionId);
+      await this.persist();
+    }
+  }
+
+  private retireOutbox(binding: BindingRecord, approvals: readonly { id: string }[], questions: readonly ImPendingQuestion[]): boolean {
+    const approvalIds = new Set(approvals.map((item) => item.id));
+    const questionKeys = new Set(questions.filter((item) => !this.questionAnswered(binding, item)).map((item) => `${item.id}:${item.questionIndex}`));
+    const next = this.state.outbox.filter((item) => {
+      if (item.bindingId !== binding.id) return true;
+      if (item.kind === 'question') return questionKeys.has(`${item.interactionId}:${item.questionIndex ?? 0}`);
+      return approvalIds.has(item.interactionId);
+    });
+    if (next.length === this.state.outbox.length) return false;
+    this.state.outbox = next;
+    return true;
+  }
+
+  private stageApproval(binding: BindingRecord, approval: { id: string; expiresAt: number; toolName: string; action: string; ssh?: 'login' | 'host_key' }, jobs: OutboxRecord[]): boolean {
+    const key = `interaction:${approval.id}`;
+    const existing = this.state.outbox.find((item) => item.key === key);
+    if (existing !== undefined) {
+      if (existing.delivery === 'pending' && existing.bindingId === binding.id && existing.senderKey === senderKey(binding.providerInstanceId, binding.identity)) jobs.push(existing);
+      return false;
+    }
+    if (approval.ssh === 'login' ? this.state.notices.includes(approval.id) : this.state.tickets.some((ticket) => ticket.interactionId === approval.id)) return false;
+    const who = senderKey(binding.providerInstanceId, binding.identity);
+    if (approval.ssh === 'login') {
+      this.state.outbox.push({ key, bindingId: binding.id, senderKey: who, sessionId: binding.sessionId, interactionId: approval.id, kind: 'desktop_ssh', expiresAt: approval.expiresAt, text: this.copy('desktopSsh'), code: 'desktop_ssh', buttons: [], delivery: 'pending' });
+    } else if (approval.ssh === 'host_key') {
+      const yes = this.ticket(binding, approval.id, approval.expiresAt, 'host_yes');
+      const no = this.ticket(binding, approval.id, approval.expiresAt, 'host_no');
+      this.state.outbox.push({ key, bindingId: binding.id, senderKey: who, sessionId: binding.sessionId, interactionId: approval.id, kind: 'host_key', expiresAt: approval.expiresAt, text: approval.toolName, code: 'host_key', buttons: [{ id: yes, label: this.copy('trust') }, { id: no, label: this.copy('refuse') }], delivery: 'pending' });
+    } else {
       const allow = this.ticket(binding, approval.id, approval.expiresAt, 'approve');
       const refuse = this.ticket(binding, approval.id, approval.expiresAt, 'reject');
-      changed = true;
-      outbound.push({ text: `${approval.toolName} ${approval.action}`, code: 'approval', buttons: [{ id: allow, label: this.copy('allow') }, { id: refuse, label: this.copy('refuse') }] });
+      this.state.outbox.push({ key, bindingId: binding.id, senderKey: who, sessionId: binding.sessionId, interactionId: approval.id, kind: 'approval', expiresAt: approval.expiresAt, text: `${approval.toolName} ${approval.action}`, code: 'approval', buttons: [{ id: allow, label: this.copy('allow') }, { id: refuse, label: this.copy('refuse') }], delivery: 'pending' });
     }
-    for (const question of questions) {
-      if (this.questionAnswered(binding, question) || this.state.tickets.some((ticket) => this.sameQuestion(ticket, question))) continue;
-      const group = `${question.id}:${question.questionIndex}`;
-      const buttons = question.options.map((option, index) => ({ id: this.ticket(binding, question.id, question.expiresAt, question.multi ? 'toggle' : 'single', question.questionKey, option.id, group, question.questionIndex), label: `${index + 1}. ${option.label}` }));
-      if (question.multi) buttons.push({ id: this.ticket(binding, question.id, question.expiresAt, 'multi_done', question.questionKey, undefined, group, question.questionIndex), label: this.copy('done') });
-      if (question.allowOther) buttons.push({ id: this.ticket(binding, question.id, question.expiresAt, 'other', question.questionKey, undefined, undefined, question.questionIndex), label: this.copy('other') });
-      changed = true;
-      outbound.push({ text: question.questionKey, code: 'question', buttons });
+    const staged = this.state.outbox[this.state.outbox.length - 1];
+    if (staged !== undefined) jobs.push(staged);
+    return true;
+  }
+
+  private stageQuestion(binding: BindingRecord, question: ImPendingQuestion, jobs: OutboxRecord[]): boolean {
+    if (this.questionAnswered(binding, question)) return false;
+    const key = `question:${question.id}:${question.questionIndex}`;
+    const existing = this.state.outbox.find((item) => item.key === key);
+    if (existing !== undefined) {
+      if (existing.delivery === 'pending' && existing.bindingId === binding.id && existing.senderKey === senderKey(binding.providerInstanceId, binding.identity)) jobs.push(existing);
+      return false;
     }
-    if (changed) await this.persist();
-    for (const item of outbound) await this.send(adapter, binding.identity, item.text, item.code, item.buttons);
+    if (this.state.tickets.some((ticket) => this.sameQuestion(ticket, question))) return false;
+    const group = `${question.id}:${question.questionIndex}`;
+    const buttons = question.options.map((option, index) => ({ id: this.ticket(binding, question.id, question.expiresAt, question.multi ? 'toggle' : 'single', question.questionKey, option.id, group, question.questionIndex), label: `${index + 1}. ${option.label}` }));
+    if (question.multi) buttons.push({ id: this.ticket(binding, question.id, question.expiresAt, 'multi_done', question.questionKey, undefined, group, question.questionIndex), label: this.copy('done') });
+    if (question.allowOther) buttons.push({ id: this.ticket(binding, question.id, question.expiresAt, 'other', question.questionKey, undefined, undefined, question.questionIndex), label: this.copy('other') });
+    this.state.outbox.push({ key, bindingId: binding.id, senderKey: senderKey(binding.providerInstanceId, binding.identity), sessionId: binding.sessionId, interactionId: question.id, ...(question.questionIndex === undefined ? {} : { questionIndex: question.questionIndex }), kind: 'question', expiresAt: question.expiresAt, text: question.questionKey, code: 'question', buttons, delivery: 'pending' });
+    const staged = this.state.outbox[this.state.outbox.length - 1];
+    if (staged !== undefined) jobs.push(staged);
+    return true;
   }
 
   private ticket(binding: BindingRecord, interactionId: string, expiresAt: number, action: TicketRecord['action'], questionKey?: string, optionId?: string, group?: string, questionIndex?: number): string {
@@ -1257,7 +1325,7 @@ export class ImSessionBridge {
 }
 
 function emptyState(): Stored {
-  return { policy: { allowed: true, defaultEnabled: true }, instances: [], discoveries: [], bindings: [], strangers: [], seen: [], tickets: [], selections: {}, awaiting: {}, voiceFallbacks: 0, cursors: {}, notices: [], questionAnswers: {}, answeredQuestions: {}, replies: [] };
+  return { policy: { allowed: true, defaultEnabled: true }, instances: [], discoveries: [], bindings: [], strangers: [], seen: [], tickets: [], selections: {}, awaiting: {}, voiceFallbacks: 0, cursors: {}, notices: [], questionAnswers: {}, answeredQuestions: {}, replies: [], outbox: [] };
 }
 
 function toDiscovery(record: DiscoveryRecord): ImDiscovery {
