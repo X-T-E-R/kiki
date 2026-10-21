@@ -1,4 +1,4 @@
-import { AcpClientError } from '@kiki/acp-client';
+import { AcpClientError, type AcpProcessClient } from '@kiki/acp-client';
 import type {
   AcpOpenSessionOptions,
   AcpOpenSessionResult,
@@ -71,6 +71,7 @@ import {
   IAgentExecutorRegistry,
   type AgentExecutorContext,
 } from '#/app/agentExecutor/agentExecutor';
+import type { NegotiatedExecutorCapabilities } from '#/app/agentExecutor/capabilities';
 import { BUILTIN_AGENT_EXECUTORS } from '#/app/agentExecutor/builtinDescriptors';
 import type { Event2 } from '#/app/event/event2';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
@@ -133,6 +134,8 @@ interface FakeHarnessOptions {
   readonly deferTurnCompletion?: boolean;
   readonly mcpServers?: Readonly<Record<string, McpServerConfig>>;
   readonly supportsMcp?: boolean;
+  readonly client?: AcpProcessClient;
+  readonly permission?: AgentExecutorContext['descriptor']['permission'];
 }
 
 function asyncEvents(events: readonly NormalizedExecutorEvent[]): AsyncIterable<NormalizedExecutorEvent> {
@@ -208,6 +211,17 @@ function stateHarness(prior: {
     set: (key: unknown, value: unknown) => values.set(key, value),
   } as unknown as IAgentStateService;
   return { state, values, prior };
+}
+
+function negotiatedRegistry() {
+  const caps = new Map<string, NegotiatedExecutorCapabilities>();
+  return {
+    recordNegotiated: vi.fn((id: string, version: string | undefined, capabilities: NegotiatedExecutorCapabilities) => {
+      const key = `${id}\0${version ?? ''}`;
+      caps.set(key, { ...caps.get(key), ...capabilities });
+    }),
+    negotiated: (id: string, version: string | undefined) => caps.get(`${id}\0${version ?? ''}`),
+  };
 }
 
 function createHarness(options: FakeHarnessOptions = {}) {
@@ -347,7 +361,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
         : { permissionDecision: response.decision === 'rejected' && selected?.kind.startsWith('reject_') ? 'rejected' : 'cancelled',
           veto: { isError: true, output: 'Not approved' } };
     }) }],
-    [IAgentExecutorRegistry, { recordNegotiated: vi.fn() }],
+    [IAgentExecutorRegistry, negotiatedRegistry()],
     [ISessionMetadata, { read: async () => ({ agents: {} }), getAgentExecutor: async () => undefined, registerAgent: vi.fn(), updateAgent: vi.fn(async () => {}) }],
   ]);
   let permissionHandler: AcpPermissionHandler | undefined;
@@ -464,6 +478,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
       command: 'example-acp',
       args: options.args ?? [],
       modelBinding: options.modelBinding ?? 'session_config',
+      permission: options.permission,
       modelArgs: options.modelArgs,
       modelConfigCategory: 'model',
       modelConfigId: options.modelConfigId,
@@ -508,7 +523,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
       permissionHandler = handler;
       elicitationHandler = elicitation;
       planHandler = planApproval;
-      return client;
+      return options.client ?? client;
     },
   );
   let session: AcpAgentExecutorSession | undefined;
@@ -550,7 +565,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
   };
 }
 
-function createExecutionHarness(options: FakeHarnessOptions = {}) {
+export function createExecutionHarness(options: FakeHarnessOptions = {}) {
   const harness = createHarness({ ...options, deferTurnCompletion: true });
   const ix = new TestInstantiationService();
   const agentId = harness.executorContext.agent.id;
@@ -573,11 +588,27 @@ function createExecutionHarness(options: FakeHarnessOptions = {}) {
   ix.stub(ISessionMetadata, { read: async () => ({ id: 's1', createdAt: 1, updatedAt: 1, archived: false, agents: {} }), getAgentExecutor: async () => undefined, registerAgent: vi.fn(), updateAgent: vi.fn(async () => {}) });
   ix.set(IAgentPermissionModeService, harness.permissionMode);
   ix.stub(IAgentPermissionRulesService, { rules: [] });
+  const resumeModel = harness.executorContext.binding.modelAlias ?? 'model-a';
+  const resumeThinking = harness.executorContext.binding.thinkingLevel;
   ix.set(IAgentProfileService, {
     _serviceBrand: undefined,
     data: () => harness.executorContext.binding,
     preparePromptConfiguration: async () => false,
     getSystemPrompt: () => appendSharedPromptField(harness.executorContext.binding.systemPrompt, { values: { 'system.shared': 'ALL_EXECUTORS_SHARED' }, fields: [] }),
+    getModel: () => resumeModel,
+    getEffectiveThinkingLevel: () => resumeThinking,
+    republishStatus: () => {},
+    publishBindingAdvisories: () => {},
+    syncBindingMetadata: async () => {},
+    prepareResumeBinding: async () => ({
+      model: resumeModel,
+      thinking: resumeThinking,
+      config: { modelAlias: resumeModel, thinkingEffort: resumeThinking },
+      maxContextTokens: undefined,
+      reservedTokens: undefined,
+      assertCurrent: () => {},
+      syncMetadata: async () => {},
+    }),
   } as unknown as IAgentProfileService);
   ix.set(IAgentRuntimeService, harness.runtime);
   ix.set(IAgentScopeContext, {

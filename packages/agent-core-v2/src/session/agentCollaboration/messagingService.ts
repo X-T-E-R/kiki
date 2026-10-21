@@ -6,7 +6,7 @@ import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { AgentMessageOrigin, ContextMessage } from '#/agent/contextMemory/types';
-import { IAgentExecutionService } from '#/agent/execution/execution';
+import { brokenOriginalResumeRefusal, IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { MessageStepRequest } from '#/agent/loop/stepRequest';
 import { IAgentProfileService } from '#/agent/profile/profile';
@@ -72,14 +72,17 @@ function continuationFailureNotice(input: {
   readonly code: string;
   readonly reason: string;
 }): string {
+  const unrecoverable = input.reason.includes('original remote session cannot be resumed');
   return [
     'AgentSend continuation did not start.',
     `message_id: ${input.messageId}`,
     `target_agent_id: ${input.targetAgentId}`,
     `error_code: ${input.code}`,
     `reason: ${input.reason}`,
-    `Resume this same child with AgentRun. Set resume to ${input.targetAgentId}, set prompt to an empty string, and set description to a short label. Message ${input.messageId} stays queued and enters that resume. Do not call AgentSend again. Do not repeat the saved message in the prompt.`,
-    'Do not set new_window. Do not open a new remote session in place of this resume.',
+    unrecoverable
+      ? `The executor is broken and the original remote session cannot be resumed. Message ${input.messageId} stays queued. Do not call AgentSend again. Do not open a new remote session.`
+      : `Resume this same child with AgentRun. Set resume to ${input.targetAgentId}, set prompt to an empty string, and set description to a short label. Message ${input.messageId} stays queued and enters that resume. Do not call AgentSend again. Do not repeat the saved message in the prompt.`,
+    ...(unrecoverable ? [] : ['Do not set new_window. Do not open a new remote session in place of this resume.']),
   ].join('\n');
 }
 
@@ -409,11 +412,14 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     const loop = handle.accessor.get(IAgentLoopService);
     let executionState = execution.status().state;
     if (executionState === 'broken') {
-      throw new Error2(
-        ErrorCodes.INTERNAL,
-        `Agent instance "${handle.id}" cannot be resumed because its executor is broken`,
-        { details: { agentId: handle.id, messageId: message.messageId } },
-      );
+      if (execution.canResumeBrokenOriginal?.() === true) {
+        throw new Error2(
+          ErrorCodes.INTERNAL,
+          `Agent instance "${handle.id}" is broken. Resume the original remote session with AgentRun; the saved message stays queued.`,
+          { details: { agentId: handle.id, messageId: message.messageId } },
+        );
+      }
+      throw brokenOriginalResumeRefusal(handle.id, message.messageId);
     }
     if (executionState !== 'idle' && executionState !== 'running') return 'skipped';
     if (executionState === 'running') {

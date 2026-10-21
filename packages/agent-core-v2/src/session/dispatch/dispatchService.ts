@@ -13,7 +13,7 @@ import { setClampedTimeout } from '#/_base/utils/timer';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
 import { Error2, ErrorCodes } from '#/errors';
-import { IAgentExecutionService } from '#/agent/execution/execution';
+import { brokenOriginalResumeRefusal, IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentProfileService, type ProfileData } from '#/agent/profile/profile';
@@ -847,16 +847,18 @@ export class SessionDispatchService implements ISessionDispatchService {
   }
 
   private requireIdle(child: IAgentScopeHandle, policy: DispatchIdlePolicy): void {
-    const idle =
-      policy === 'execution'
-        ? child.accessor.get(IAgentExecutionService).status().state === 'idle'
-        : quiescent(child.accessor.get(IAgentLoopService).status());
-    if (idle) return;
-    throw new Error2(
-      ErrorCodes.AGENT_ALREADY_RUNNING,
-      `Agent instance "${child.id}" is already running and cannot run concurrently`,
-      { details: { agentId: child.id } },
-    );
+    if (policy !== 'execution') {
+      if (quiescent(child.accessor.get(IAgentLoopService).status())) return;
+      throw alreadyRunning(child.id);
+    }
+    const execution = child.accessor.get(IAgentExecutionService);
+    const state = execution.status().state;
+    if (state === 'idle') return;
+    if (state === 'broken') {
+      if (execution.canResumeBrokenOriginal?.() === true) return;
+      throw brokenOriginalResumeRefusal(child.id);
+    }
+    throw alreadyRunning(child.id);
   }
 }
 
@@ -884,6 +886,14 @@ function nextWake(
       if (timeout !== undefined) clearTimeout(timeout);
     },
   };
+}
+
+function alreadyRunning(agentId: string): Error2 {
+  return new Error2(
+    ErrorCodes.AGENT_ALREADY_RUNNING,
+    `Agent instance "${agentId}" is already running and cannot run concurrently`,
+    { details: { agentId } },
+  );
 }
 
 function quiescent(status: ReturnType<IAgentLoopService['status']>): boolean {

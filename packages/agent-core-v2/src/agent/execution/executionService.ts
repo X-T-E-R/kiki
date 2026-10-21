@@ -38,7 +38,7 @@ import type {
   RunAgentOptions,
 } from '#/session/subagent/subagent';
 
-import { IAgentExecutionService, type AgentExecutionRunContext } from './execution';
+import { brokenOriginalResumeRefusal, IAgentExecutionService, type AgentExecutionRunContext } from './execution';
 import { ExecutorHintDelivery, ExecutorSessionUpdated, externalExecutorKey, externalStateForGeneration } from './externalExecutorOps';
 import { ILocalSessionCatalog } from '#/app/agentExecutor/localSessionCatalog';
 import { localSourceFromRef, type LocalExecutorSessionSource } from '#/app/agentExecutor/localSessionRef';
@@ -231,6 +231,11 @@ export class AgentExecutionService implements IAgentExecutionService {
     return this.session?.status() ?? { state: 'idle' };
   }
 
+  canResumeBrokenOriginal(): boolean {
+    if (this.broken !== undefined || this.shuttingDown || this.runs.size > 0) return false;
+    return this.session?.canResumeBrokenOriginal?.() === true;
+  }
+
   steer(message: ContextMessage): Promise<boolean> {
     if (this.status().state !== 'running') return Promise.resolve(false);
     return this.session?.steer?.(message) ?? Promise.resolve(false);
@@ -336,6 +341,7 @@ export class AgentExecutionService implements IAgentExecutionService {
       : `${agentExecutorBindingFingerprint(binding)}${modeKey}`;
     if (this.session !== undefined && this.sessionBindingKey !== bindingKey) {
       const status = this.session.status();
+      if (status.state === 'broken') throw brokenOriginalResumeRefusal(this.agent.id);
       if (status.state !== 'idle') {
         throw new Error2(
           ErrorCodes.CONFIG_INVALID,
@@ -348,7 +354,13 @@ export class AgentExecutionService implements IAgentExecutionService {
       this.sessionBindingKey = undefined;
     }
     if (this.session !== undefined) {
-      if (this.session.status().state !== 'idle' && executorId !== 'native') {
+      const status = this.session.status();
+      if (status.state === 'broken') {
+        if (this.session.canResumeBrokenOriginal?.() !== true) throw brokenOriginalResumeRefusal(this.agent.id);
+        this.session.updateBinding?.(binding);
+        return this.session;
+      }
+      if (status.state !== 'idle' && executorId !== 'native') {
         throw new Error2(ErrorCodes.CONFIG_INVALID, 'External executor binding cannot change during a turn');
       }
       this.session.updateBinding?.(binding);
