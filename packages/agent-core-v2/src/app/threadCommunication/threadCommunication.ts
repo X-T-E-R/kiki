@@ -21,6 +21,7 @@ export interface ThreadSummary {
 export interface ThreadCaller {
   readonly sessionId: string;
   readonly workspaceId: string;
+  readonly agentId?: string;
 }
 
 export interface ListThreadsInput {

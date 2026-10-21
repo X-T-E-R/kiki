@@ -44,6 +44,7 @@ import type { NotificationService } from '../services/notifications/notification
 import { registerOAuthRoutes } from './oauth';
 import { registerPluginsRoutes } from './plugins';
 import { registerPluginUsageRoutes } from './pluginUsage';
+import { registerOptionalCapabilityRoutes } from './optionalCapabilities';
 import { registerOutputLayerRoutes } from './outputLayer';
 import { registerPromptsRoutes } from './prompts';
 import { registerQuestionsRoutes } from './questions';
@@ -235,6 +236,7 @@ export async function registerApiV1Routes(
         serverToken: opts.pluginBridgeServerToken,
       });
       registerPluginUsageRoutes(apiV1 as unknown as Parameters<typeof registerPluginUsageRoutes>[0], core);
+      registerOptionalCapabilityRoutes(apiV1 as unknown as Parameters<typeof registerOptionalCapabilityRoutes>[0], core);
       registerMessagesRoutes(
         apiV1 as unknown as Parameters<typeof registerMessagesRoutes>[0],
         {

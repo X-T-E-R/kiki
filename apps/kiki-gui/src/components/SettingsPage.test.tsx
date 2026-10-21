@@ -396,8 +396,8 @@ describe('SettingsPage panel scopes', () => {
     expect(client.getWorkspaceMemorySettings).toHaveBeenCalledWith('ws-beta');
     // One visible label per row: the switch keeps its name for assistive tech only.
     const toggleRow = container.querySelector('#memory-enabled')!.closest('[data-settings-field]')!;
-    expect(toggleRow.querySelector('span.sr-only')?.textContent).toBe('Use memory');
-    expect([...toggleRow.querySelectorAll('label, span')].filter((node) => node.textContent === 'Use memory' && !node.classList.contains('sr-only') && node.children.length === 0)).toHaveLength(1);
+    expect(toggleRow.querySelector('span.sr-only')?.textContent).toBe('Allow memory');
+    expect([...toggleRow.querySelectorAll('label, span')].filter((node) => node.textContent === 'Allow memory' && !node.classList.contains('sr-only') && node.children.length === 0)).toHaveLength(1);
 
     await pickOption(container.querySelector('[data-memory-approval]')!, 'Review in Inbox');
     expect(client.patchMemorySettings).toHaveBeenCalledWith({ approval: 'review' });
@@ -679,7 +679,7 @@ describe('SettingsPage batch-3 leaves', () => {
     const sessions = await renderSettings('/settings/communication');
     const messaging = sessions.querySelector('#st-card-agent-messaging')!;
     expect(messaging).not.toBeNull();
-    expect(messaging.textContent).toContain('Messages between threads');
+    expect(messaging.textContent).toContain('Allow threads');
     expect(messaging.textContent).toContain('Subagents can notify their parent');
     expect(sessions.querySelector('#st-card-token-counting')).toBeNull();
 

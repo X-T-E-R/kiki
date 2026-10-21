@@ -219,7 +219,7 @@ api_key = "YOUR_API_KEY"
 | `background` | `table` | — | 后台任务运行参数 → [`background`](#background) |
 | `subagent` | `table` | — | subagent 运行默认值与限额 → [`subagent`](#subagent) |
 | `agents` | `table` | — | 委派说明默认值 → [`agents`](#agents) |
-| `thread_communication` | `table` | `{ enabled = false }` | 本地 peer thread 通信 → [`thread_communication`](#thread-communication) |
+| `thread_communication` | `table` | 不写 | 允许 peer thread 工具，默认关闭 → [`thread_communication`](#thread-communication) |
 | `mcp` | `table` | — | MCP server 全局超时默认值 → [`mcp`](#mcp) |
 | `tools` | `table` | — | 全局工具开关 → [`tools`](#tools) |
 | `image` | `table` | — | 图片压缩参数 → [`image`](#image) |
@@ -699,13 +699,28 @@ profile 描述和设置页中的工具列表是配置预览，不保证运行时
 
 ## `thread_communication`
 
-这个严格配置节控制[本地 peer thread 通信](../customization/agents-and-subagents.md#peer-thread-通信)。功能默认关闭，没有对应的环境变量覆盖。
+这个严格配置节是[本地 peer thread 通信](../customization/agents-and-subagents.md#peer-thread-通信)的允许开关。不写 `enabled` 时工具允许使用，但默认关闭，直到某个会话打开，或声明的 profile、这次任务点名它们。你写成 `enabled = false` 就是完全关闭，会话不能再打开。已经保存的 `enabled = true` 会保持原先的默认开启，直到 `[optional_capabilities.defaults] thread` 另作选择。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `enabled` | `boolean` | `false` | 允许 4 个主 Agent peer thread 工具以及本地 REST 与 Klient thread 操作；设为 `true` 可全局启用这些操作 |
+| `enabled` | `boolean` | 不写 | 允许 4 个主 Agent peer thread 工具以及本地 REST 与 Klient thread 操作。你写成 `false` 即完全关闭 |
 
-单个工作区的覆盖值单独持久化，通过本地 REST API 或 Klient 管理。全局开关开启时，覆盖值可以关闭某个工作区；全局开关关闭时，覆盖值不能重新启用通信。
+单个工作区的覆盖值单独持久化，通过本地 REST API 或 Klient 管理。工具仍允许时，覆盖值可以关闭某个工作区；完全关闭后，覆盖值不能重新启用通信。
+
+## `optional_capabilities`
+
+这一节把浏览器、电脑、记忆、线程和网页（`WebSearch` 与 `FetchURL`）的「允许使用」和「默认开启」分开。
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `defaults.browser` | `boolean` | `true` | 新会话是否一开始就有浏览器工具 |
+| `defaults.computer` | `boolean` | `true` | 新会话是否一开始就有电脑工具 |
+| `defaults.memory` | `boolean` | `true` | 新会话是否一开始就有记忆工具 |
+| `defaults.thread` | `boolean` | `false` | 新会话是否一开始就有 peer thread 工具 |
+| `defaults.web` | `boolean` | `true` | 新会话是否一开始就有网页工具 |
+| `web.allowed` | `boolean` | `true` | `false` 会完全关闭网页工具 |
+
+浏览器、电脑、记忆和线程的允许位仍写在原有键上（`native_browser`、`computer_control.enabled`、`memory.enabled`、`thread_communication.enabled`）。会话可以打开或关闭一项仍允许的能力，但不能越过完全关闭。记忆的审批和预算、浏览器连接、电脑使用倾向是各自独立的设置。
 
 ## `mcp`
 
@@ -823,7 +838,9 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 usage_preference = "avoid"
 ```
 
-`usage_preference` 可设为 `"avoid"`（默认）或 `"prefer"`。`"avoid"` 提示模型：除非用户或用户规则明确要求，否则一般不用电脑控制，优先已有 CLI、API、MCP、短脚本及浏览器专用能力。`"prefer"` 偏好用电脑控制处理适合的交互任务。两种倾向都以用户当前明确要求、正确性、工具可用性与权限规则为先。改动在下次模型请求生效，无需重连，也不会安装组件；删除字段会恢复继承。
+`enabled = false` 会完全关闭电脑工具。不写这一项则允许使用。新会话是否一开始就带上这些工具，由 `[optional_capabilities.defaults] computer` 决定，默认开启。
+
+`usage_preference` 可设为 `"avoid"`（默认）或 `"prefer"`。`"avoid"` 提示模型：除非用户或用户规则明确要求，否则一般不用电脑控制，优先已有 CLI、API、MCP、短脚本及浏览器专用能力。`"prefer"` 偏好用电脑控制处理适合的交互任务。两种倾向都以用户当前明确要求、正确性、工具可用性与权限规则为先。使用倾向不授予也不收回工具。改动在下次模型请求生效，无需重连，也不会安装组件；删除字段会恢复继承。
 
 已识别的 cua-driver MCP 电脑工具默认向每个会话的 main agent 暴露，独立会话也有自己的 main agent。子 Agent 需要在 profile、route 或派发的工具选择、`[subagent].allowed_tools` 或 `[tools].enabled` 中显式指定 MCP 工具模式。安装所得连接可用 `mcp__kiki-computer__*` 开启；仅有 `tools: ["*"]` 不算明确开启。现有允许范围上限、deny 规则和已停用连接继续生效。输入结果未知的调用不会重放：先重连并观察，再决定下一步操作。
 

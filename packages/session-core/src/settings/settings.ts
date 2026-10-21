@@ -1188,6 +1188,11 @@ export function threadCommunicationPatch(enabled: boolean): KikiConfigPatch {
   };
 }
 
+/** Allow threads. `null` clears a hard-off back to the shipped allow bit. */
+export function threadAllowPatch(enabled: boolean | null): KikiConfigPatch {
+  return { thread_communication: { enabled } };
+}
+
 /** The communication leaf's token counting strategy patch. */
 export function tokenCountingPatch(strategy: TokenCountingStrategy): KikiConfigPatch {
   return {

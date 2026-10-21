@@ -108,6 +108,20 @@ describe('config REST protocol', () => {
     expect(patchConfigRequestSchema.safeParse({ nb_search_source: { reuse_local_config: false, api_key: 'fixture-private-key' } }).success).toBe(false);
   });
 
+  it('accepts optional capability availability separately from defaults', () => {
+    const state = { allowed: true, host_locked: false, default_on: false, origin: 'default' as const, unresolved: false };
+    expect(configResponseSchema.parse({
+      providers: {},
+      optional_capabilities: { browser: state, computer: state, memory: state, thread: { ...state, allowed: true }, web: { ...state, default_on: true } },
+    }).optional_capabilities?.thread).toEqual({ ...state, allowed: true });
+    expect(patchConfigRequestSchema.parse({
+      optional_capabilities: { defaults: { thread: true, web: null }, web_allowed: false },
+    })).toEqual({
+      optional_capabilities: { defaults: { thread: true, web: null }, web_allowed: false },
+    });
+    expect(patchConfigRequestSchema.safeParse({ optional_capabilities: { enabled: true } }).success).toBe(false);
+  });
+
   it('accepts the explicit nb_search config contract', () => {
     expect(patchConfigRequestSchema.parse({
       nb_search: {

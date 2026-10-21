@@ -27,7 +27,7 @@ import { modelSwitchConfigSchema, modelSwitchConfigPatchSchema, agentExecutorDis
 import { worktreeConfigSchema } from '@kiki/agent-core-v2/app/git/worktreeConfig';
 import { SessionResidencyConfigSchema } from '@kiki/agent-core-v2/app/sessionManager/configSection';
 import { z } from 'zod';
-import { browserControlSettingsPatchSchema, browserControlSettingsSchema, computerControlConfigResponseSchema, computerControlConfigPatchSchema } from '@kiki/protocol';
+import { browserControlSettingsPatchSchema, browserControlSettingsSchema, computerControlConfigResponseSchema, computerControlConfigPatchSchema, optionalCapabilitiesPatchSchema, optionalCapabilitiesResponseSchema } from '@kiki/protocol';
 export { interactionConfigResponseSchema, interactionConfigPatchSchema } from '@kiki/protocol';
 
 const tokenCountingConfigSchema = TokenCountingConfigSchema as z.ZodType<TokenCountingConfig>;
@@ -234,6 +234,7 @@ export const configResponseSchema = z.object({
   mcp: McpSectionSchema.optional(),
   plugins: PluginsSectionSchema.optional(),
   tools: ToolsConfigSchema.optional(),
+  optional_capabilities: optionalCapabilitiesResponseSchema.optional(),
   prompt: PromptConfigSchema.optional(),
   task_board: TaskBoardConfigSchema.optional(),
   retry: z.unknown().optional(),
@@ -287,7 +288,7 @@ export const patchConfigRequestSchema = z.object({
   builtin_product_skills: z.boolean().optional(),
   session_title: sessionTitleConfigPatchSchema.optional(),
   experimental: z.record(z.string(), z.boolean()).optional(),
-  thread_communication: ThreadCommunicationConfigSchema.optional(),
+  thread_communication: z.object({ enabled: z.boolean().nullable() }).strict().optional(),
   token_counting: tokenCountingConfigSchema.optional(),
   workspace_instance: workspaceInstanceConfigRequestSchema.optional(),
   image: imageConfigRequestSchema.optional(),
@@ -300,6 +301,7 @@ export const patchConfigRequestSchema = z.object({
   mcp: mcpConfigRequestSchema.optional(),
   plugins: pluginsConfigRequestSchema.optional(),
   tools: ToolsConfigSchema.optional(),
+  optional_capabilities: optionalCapabilitiesPatchSchema.optional(),
   prompt: PromptConfigPatchSchema.optional(),
   task_board: TaskBoardConfigSchema.optional(),
   retry: z.unknown().optional(),

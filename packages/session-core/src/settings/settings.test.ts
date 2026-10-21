@@ -23,6 +23,7 @@ import {
   clearRestartRequirement,
   configureSpacePortableSettings,
   refreshSpacePortableSettings,
+  threadAllowPatch,
   threadCommunicationPatch,
   tokenCountingPatch,
   agentNotifyParentPatch,
@@ -468,6 +469,8 @@ describe('settings persistence and validation', () => {
       thread_communication: { enabled: true },
       replace_domains: ['thread_communication'],
     });
+    expect(threadAllowPatch(null)).toEqual({ thread_communication: { enabled: null } });
+    expect(threadAllowPatch(false)).toEqual({ thread_communication: { enabled: false } });
     expect(tokenCountingPatch('estimated')).toEqual({
       token_counting: { strategy: 'estimated' },
       replace_domains: ['token_counting'],

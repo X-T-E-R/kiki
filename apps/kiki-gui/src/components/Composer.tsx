@@ -3234,6 +3234,7 @@ export function Composer({
                 ...(pluginPick.busyId !== undefined ? { busyId: pluginPick.busyId } : {}),
                 onToggle: pluginPick.toggle,
               } : undefined}
+              optional={{ sessionId }}
               mcp={mcpPick.available ? {
                 items: mcpPick.items,
                 loading: mcpPick.loading,

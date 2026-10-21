@@ -70,13 +70,13 @@ Agent 任务默认 2 小时超时，全局限制用 `[subagent] timeout_ms` 或 
 
 ## Peer thread 通信
 
-Peer thread 通信让 main agent 协调同一台本地主机上的其他 Kiki 会话，包括其他工作区的会话。它与上面的子 Agent 工具相互独立，默认关闭。启用后会话的主 agent 会获得 `ThreadList`、`ThreadRead`、`ThreadSend` 和 `ThreadWait`。subagent 默认没有这些工具；在其 profile 的 `tools` 中点名 `ThreadList`、`ThreadRead`、`ThreadWait` 即可开放，而 `ThreadSend` 始终仅供主 Agent 使用，因为它以父会话的 peer 身份发送。主 Agent 想创建独立会话的话，直接用 [`ThreadCreate`](../reference/tools.md#协作类) 即可，无需启用本功能。
+Peer thread 通信让 main agent 协调同一台本地主机上的其他 Kiki 会话，包括其他工作区的会话。它与上面的子 Agent 工具相互独立。工具允许使用，但默认关闭，直到某个会话打开，或声明的 profile、这次任务点名它们。会话打开后，主 agent 会获得 `ThreadList`、`ThreadRead`、`ThreadSend` 和 `ThreadWait`。subagent 默认没有这些工具；在其 profile 的 `tools` 中点名 `ThreadList`、`ThreadRead`、`ThreadWait` 即可开放，而 `ThreadSend` 始终仅供主 Agent 使用，因为它以父会话的 peer 身份发送。主 Agent 想创建独立会话的话，直接用 [`ThreadCreate`](../reference/tools.md#协作类) 即可，无需打开 peer 工具。
 
 Thread 引用标识主机、工作区和会话。`ThreadList` 返回后续调用所需的引用；`ThreadRead` 读取已完成的主 Agent turn，不恢复冷会话；`ThreadSend` 从当前主 Agent 会话派生来源；`ThreadWait` 最多等待 8 条 thread 的活动，最长 60 秒。消息不能跨主机。
 
 只有来源 thread 的主 Agent 调用 `ThreadSend` 才会记为 peer 来源。REST 和 Klient 的 `global.threads` facade 只接受目标 thread，消息记为外部客户端输入，不能自行声明来源 thread 或直接人类来源。
 
-在 `config.toml` 中设 `[thread_communication] enabled = true` 全局启用。发送消息可能恢复冷会话并消耗模型额度。工作区可以持久设置启用或禁用覆盖值，但全局开关关闭时无法反向启用。接口见 [服务 API](../server/rest-api.md#会话租约与-peer-thread)。
+不写 `[thread_communication] enabled` 即允许这些工具并保持默认关闭。写成 `enabled = false` 会完全关闭。会话自己的开或关在右侧能力列表里，下一步生效。发送消息可能恢复冷会话并消耗模型额度。工作区可以持久关闭，但完全关闭后不能再打开。接口见 [服务 API](../server/rest-api.md#会话租约与-peer-thread)。
 
 ## 上下文隔离与资源开销
 

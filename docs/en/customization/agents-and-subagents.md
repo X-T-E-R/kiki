@@ -70,13 +70,13 @@ For `AgentRun` model choices, a profile's menu is a candidate list rather than a
 
 ## Peer-thread communication
 
-Peer-thread communication lets a main agent coordinate other Kiki sessions on the same local host, including sessions in other workspaces. It is separate from the child-agent tools above and is off by default. Once enabled, a session's main agent gets `ThreadList`, `ThreadRead`, `ThreadSend` and `ThreadWait`. Subagents do not get them by default; a subagent profile can name `ThreadList`, `ThreadRead` and `ThreadWait` in its `tools` list, while `ThreadSend` stays main-only because it sends under the parent session's peer identity. To create an independent session instead, main agents can use [`ThreadCreate`](../reference/tools.md#collaboration-tools) without enabling anything.
+Peer-thread communication lets a main agent coordinate other Kiki sessions on the same local host, including sessions in other workspaces. It is separate from the child-agent tools above. The tools are allowed, and off until a conversation turns them on or a declared profile or this task names them. A conversation that turns them on gives its main agent `ThreadList`, `ThreadRead`, `ThreadSend` and `ThreadWait`. Subagents do not get them by default; a subagent profile can name `ThreadList`, `ThreadRead` and `ThreadWait` in its `tools` list, while `ThreadSend` stays main-only because it sends under the parent session's peer identity. To create an independent session instead, main agents can use [`ThreadCreate`](../reference/tools.md#collaboration-tools) without turning peer tools on.
 
 A thread reference identifies a host, workspace and session. `ThreadList` returns the references later calls need, `ThreadRead` reads completed main-agent turns without resuming a cold session, `ThreadSend` derives the source from the current main-agent session, and `ThreadWait` waits up to 60 seconds for activity from up to eight threads. Messages cannot cross hosts.
 
 A message is recorded as coming from a peer only when the source thread's own main agent calls `ThreadSend`. REST and the `global.threads` Klient facade take target-addressed input only and record it as external-client input, so an external client cannot claim a source thread or a direct human origin.
 
-Set `[thread_communication] enabled = true` in `config.toml` to opt in globally. Sending can resume a cold target session and consume model quota. A workspace can persist an enable or disable override, but it cannot turn the feature on while the global switch is off. See [Server API](../server/rest-api.md#session-leases-and-peer-threads) for those interfaces.
+Leave `[thread_communication] enabled` unset to allow the tools and keep the default off. Set `enabled = false` to turn them completely off. A conversation’s own on/off is in the right-hand capabilities list and applies on the next step. Sending can resume a cold target session and consume model quota. A workspace can persist a disable override, but it cannot turn the tools on after a hard off. See [Server API](../server/rest-api.md#session-leases-and-peer-threads) for those interfaces.
 
 ## Context Isolation and Resource Cost
 

@@ -29,9 +29,17 @@ export interface PendingMcpChoice {
   readonly name: string;
 }
 
+export type PendingOptionalCapabilityId = 'browser' | 'computer' | 'memory' | 'thread' | 'web';
+
+export interface PendingOptionalChoice {
+  readonly id: PendingOptionalCapabilityId;
+  readonly choice: 'on' | 'off';
+}
+
 export interface PendingNewSessionCapabilities {
   readonly plugins: readonly PendingPluginChoice[];
   readonly mcp: readonly PendingMcpChoice[];
+  readonly optional?: readonly PendingOptionalChoice[];
 }
 
 /** The connection and the /new draft those choices belong to. */
@@ -59,9 +67,14 @@ interface StampedMcp extends PendingMcpChoice {
   readonly revision: number;
 }
 
+interface StampedOptional extends PendingOptionalChoice {
+  readonly revision: number;
+}
+
 interface Bucket {
   plugins: StampedPlugin[];
   mcp: StampedMcp[];
+  optional: StampedOptional[];
   snapshot: PendingNewSessionCapabilities;
 }
 
@@ -91,14 +104,16 @@ function notify(): void {
 }
 
 function publish(key: string, bucket: Bucket): void {
-  if (bucket.plugins.length === 0 && bucket.mcp.length === 0) {
+  if (bucket.plugins.length === 0 && bucket.mcp.length === 0 && bucket.optional.length === 0) {
     buckets.delete(key);
     notify();
     return;
   }
+  const optional = bucket.optional.map(({ id, choice }) => ({ id, choice }));
   bucket.snapshot = {
     plugins: bucket.plugins.map(({ pluginId, override }) => ({ pluginId, override })),
     mcp: bucket.mcp.map(({ locator, override, name }) => ({ locator, override, name })),
+    ...(optional.length > 0 ? { optional } : {}),
   };
   buckets.set(key, bucket);
   notify();
@@ -108,7 +123,7 @@ function bucketOf(scope: PendingCapabilityScope): Bucket {
   const key = pendingCapabilityConnectionKey(scope);
   let bucket = buckets.get(key);
   if (bucket === undefined) {
-    bucket = { plugins: [], mcp: [], snapshot: EMPTY };
+    bucket = { plugins: [], mcp: [], optional: [], snapshot: EMPTY };
     buckets.set(key, bucket);
   }
   return bucket;
@@ -160,6 +175,21 @@ export function setPendingPluginChoice(
   publish(key, bucket);
 }
 
+export function setPendingOptionalChoice(
+  id: PendingOptionalCapabilityId,
+  choice: 'on' | 'off' | 'inherit',
+  scope: PendingCapabilityScope = DEFAULT_SCOPE,
+): void {
+  const key = pendingCapabilityConnectionKey(scope);
+  const bucket = bucketOf(scope);
+  bucket.optional = bucket.optional.filter((item) => item.id !== id);
+  if (choice !== 'inherit') {
+    revisionClock += 1;
+    bucket.optional = [...bucket.optional, { id, choice, revision: revisionClock }];
+  }
+  publish(key, bucket);
+}
+
 export function setPendingMcpChoice(
   choice: PendingMcpChoice | { readonly locator: McpServerLocator; readonly override: 'inherit'; readonly name: string },
   scope: PendingCapabilityScope = DEFAULT_SCOPE,
@@ -184,6 +214,7 @@ export function clearPendingNewSessionCapabilities(): void {
 
 export interface PendingCapabilityClient {
   setPluginUsage(input: PluginUsageRequest): Promise<unknown>;
+  setOptionalCapability?(input: { readonly sessionId: string; readonly id: PendingOptionalCapabilityId; readonly choice: 'on' | 'off' }): Promise<unknown>;
   klient: {
     session(id: string): {
       agent(id: string): {
@@ -210,9 +241,16 @@ export async function applyPendingNewSessionCapabilities(
   const key = pendingCapabilityConnectionKey(scope);
   const bucket = buckets.get(key);
   const plugins = bucket?.plugins.map((item) => ({ ...item })) ?? [];
+  const optional = bucket?.optional.map((item) => ({ ...item })) ?? [];
   const mcp = bucket?.mcp.map((item) => ({ ...item })) ?? [];
   for (const choice of plugins) {
     await client.setPluginUsage({ target: { session_id: sessionId }, plugin_id: choice.pluginId, override: choice.override });
+  }
+  if (optional.length > 0) {
+    if (client.setOptionalCapability === undefined) throw new Error('this connection cannot store optional capabilities');
+    for (const choice of optional) {
+      await client.setOptionalCapability({ sessionId, id: choice.id, choice: choice.choice });
+    }
   }
   if (mcp.length > 0) {
     const agent = client.klient.session(sessionId).agent('main');
@@ -223,7 +261,9 @@ export async function applyPendingNewSessionCapabilities(
   const current = buckets.get(key);
   if (current === undefined) return;
   const pluginRevision = new Map(plugins.map((item) => [item.pluginId, item.revision]));
+  const optionalRevision = new Map(optional.map((item) => [item.id, item.revision]));
   current.plugins = current.plugins.filter((item) => pluginRevision.get(item.pluginId) !== item.revision);
+  current.optional = current.optional.filter((item) => optionalRevision.get(item.id) !== item.revision);
   current.mcp = current.mcp.filter((item) => {
     const captured = mcp.find((candidate) => sameLocator(candidate.locator, item.locator));
     return captured === undefined || captured.revision !== item.revision;

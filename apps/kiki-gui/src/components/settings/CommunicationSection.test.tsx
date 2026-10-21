@@ -111,7 +111,6 @@ describe('Agent messaging and token counting', () => {
     expect(patchConfig).toHaveBeenCalledTimes(1);
     expect(patchConfig).toHaveBeenCalledWith({
       thread_communication: { enabled: false },
-      replace_domains: ['thread_communication'],
     });
     expect(switchIn(card, 'thread').checked).toBe(false);
     expect(switchIn(card, 'notify').checked).toBe(true);

@@ -22,6 +22,9 @@ import { COMPUTER_CONFIG_SECTION, DEFAULT_COMPUTER_USAGE_PREFERENCE, computerToo
 import { BROWSER_CONFIG_SECTION, readBrowserControlSettings, type BrowserConfig, type BrowserControlSettings } from '@kiki/agent-core-v2/app/browser/browserConfig';
 import { IBrowserConnectionStore } from '@kiki/agent-core-v2/app/browser/browserConnectionStore';
 import { EXPERIMENTAL_SECTION, IFlagService } from '@kiki/agent-core-v2/app/flag/flag';
+import { IOptionalCapabilityPolicy } from '@kiki/agent-core-v2/app/optionalCapability/policy';
+import { OPTIONAL_CAPABILITIES_SECTION } from '@kiki/agent-core-v2/app/optionalCapability/configSection';
+import { THREAD_COMMUNICATION_SECTION } from '@kiki/agent-core-v2/app/threadCommunication/configSection';
 import type { ConfigOrigin } from '@kiki/agent-core-v2/app/config/config';
 import { SUBAGENT_SECTION } from '@kiki/agent-core-v2/session/subagent/configSection';
 import { SESSION_TITLE_SECTION, type SessionTitleConfig } from '@kiki/agent-core-v2/session/sessionTitle/configSection';
@@ -88,7 +91,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
     async (req, reply) => {
       const config = core.accessor.get(IConfigService);
       await config.ready;
-      reply.send(okEnvelope(toConfigResponse(config.getAll(), core.accessor.get(IBootstrapService).spaceId === undefined ? undefined : config, config.origins(COMPUTER_CONFIG_SECTION)['usagePreference'], controlProjection(core)), req.id));
+      reply.send(okEnvelope(toConfigResponse(config.getAll(), core.accessor.get(IBootstrapService).spaceId === undefined ? undefined : config, config.origins(COMPUTER_CONFIG_SECTION)['usagePreference'], controlProjection(core), capabilityWire(core)), req.id));
     },
   );
   app.get(getRoute.path, getRoute.options, getRoute.handler as Parameters<ConfigRouteHost['get']>[2]);
@@ -183,6 +186,10 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
         }
         delete camelPatch[NB_SEARCH_SECTION];
         delete camelPatch[NB_SEARCH_SOURCE_SECTION];
+        if (isPlainObject(camelPatch['optionalCapabilities'])) {
+          await applyOptionalCapabilityPatch(config, camelPatch['optionalCapabilities']);
+          delete camelPatch['optionalCapabilities'];
+        }
         for (const domain of Object.keys(camelPatch)) {
           if (domain === TASK_BOARD_SECTION) {
             await config.replaceSections({ [TASK_BOARD_SECTION]: camelPatch[domain] }, ConfigTarget.User);
@@ -199,6 +206,8 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
             if (Object.keys(patch).length > 0) await config.set(domain, patch);
           } else if (domain === SUBAGENT_SECTION && isSubagentDefaultModelClear(camelPatch[domain])) {
             await clearSubagentDefaultModel(config, camelPatch[domain] as Record<string, unknown>);
+          } else if (domain === THREAD_COMMUNICATION_SECTION && isPlainObject(camelPatch[domain]) && camelPatch[domain]['enabled'] === null) {
+            await config.removeOverride(THREAD_COMMUNICATION_SECTION, ['enabled']);
           } else if (domain === FAST_MODEL_SECTION && camelPatch[domain] === null) {
             await config.replace(FAST_MODEL_SECTION, null, ConfigTarget.User);
           } else if (domain === 'prompt' && replaceDomains.has(domain)) {
@@ -217,7 +226,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
             ConfigTarget.User,
           );
         }
-        const response = toConfigResponse(config.getAll(), core.accessor.get(IBootstrapService).spaceId === undefined ? undefined : config, config.origins(COMPUTER_CONFIG_SECTION)['usagePreference'], controlProjection(core));
+        const response = toConfigResponse(config.getAll(), core.accessor.get(IBootstrapService).spaceId === undefined ? undefined : config, config.origins(COMPUTER_CONFIG_SECTION)['usagePreference'], controlProjection(core), capabilityWire(core));
         const changedFields = Object.keys(req.body as Record<string, unknown>).filter(
           (field) => field !== 'replace_domains',
         );
@@ -252,7 +261,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
       const config = core.accessor.get(IConfigService);
       const domain = snakeToCamel(req.body.domain);
       await config.removeOverride(domain, req.body.key_path);
-      const response = toConfigResponse(config.getAll(), config, config.origins(COMPUTER_CONFIG_SECTION)['usagePreference'], controlProjection(core));
+      const response = toConfigResponse(config.getAll(), config, config.origins(COMPUTER_CONFIG_SECTION)['usagePreference'], controlProjection(core), capabilityWire(core));
       core.accessor.get(IEventService).publish(new ConfigChanged({ payload: { changedFields: [req.body.domain], config: response } }));
       reply.send(okEnvelope(response, req.id));
     } catch (error) {
@@ -383,7 +392,30 @@ function controlProjection(core: Scope): { browser: BrowserControlSettings; comp
   };
 }
 
-function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigService, computerPreferenceSource: ConfigOrigin = 'default', projection?: { browser: BrowserControlSettings; computerEnabledSource: ConfigOrigin }): ConfigResponse {
+function capabilityWire(core: Scope): Record<string, unknown> | undefined {
+  try {
+    return core.accessor.get(IOptionalCapabilityPolicy).wireProjection();
+  } catch {
+    return undefined;
+  }
+}
+
+async function applyOptionalCapabilityPatch(config: IConfigService, patch: Record<string, unknown>): Promise<void> {
+  const defaults = patch['defaults'];
+  if (isPlainObject(defaults)) {
+    for (const [id, value] of Object.entries(defaults)) {
+      if (value === null) await config.removeOverride(OPTIONAL_CAPABILITIES_SECTION, ['defaults', id]);
+      else if (typeof value === 'boolean') await config.set(OPTIONAL_CAPABILITIES_SECTION, { defaults: { [id]: value } });
+    }
+  }
+  if ('webAllowed' in patch) {
+    const value = patch['webAllowed'];
+    if (value === null) await config.removeOverride(OPTIONAL_CAPABILITIES_SECTION, ['web', 'allowed']);
+    else if (typeof value === 'boolean') await config.set(OPTIONAL_CAPABILITIES_SECTION, { web: { allowed: value } });
+  }
+}
+
+function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigService, computerPreferenceSource: ConfigOrigin = 'default', projection?: { browser: BrowserControlSettings; computerEnabledSource: ConfigOrigin }, capabilities?: Record<string, unknown>): ConfigResponse {
   const wire: Record<string, unknown> = {};
   if (config !== undefined) {
     wire['origins'] = Object.fromEntries(Object.keys(resolved).filter((domain) => domain !== 'services' && domain !== 'telemetry')
@@ -449,6 +481,8 @@ function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigSer
   }
   const computer = resolved[COMPUTER_CONFIG_SECTION] as ComputerConfig | undefined;
   wire['browser_control'] = projection?.browser ?? { enabled: true, enabledSource: 'default', allowedBrowsers: [], allowedBrowsersConfigured: false, allowedBrowsersSource: 'default' };
+  delete wire['optional_capabilities'];
+  if (capabilities !== undefined) wire['optional_capabilities'] = capabilities;
   wire['computer_control'] = {
     enabled: computerToolsEnabled(computer),
     enabledSource: projection?.computerEnabledSource ?? 'default',

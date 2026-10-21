@@ -44,6 +44,8 @@ import { qualifyMcpToolName } from '#/mcpCore/tool-naming';
 import { isComputerMcpConfig } from '#/mcpCore/computer';
 import { IConfigService } from '#/app/config/config';
 import { COMPUTER_CONFIG_SECTION, computerToolsEnabled, type ComputerConfig } from '#/app/computer/configSection';
+import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import type { MCPClient, MCPToolDefinition } from '#/mcpCore/types';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import {
@@ -117,14 +119,12 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     if (this.configService.onDidSectionChange !== undefined) {
       this._register(this.configService.onDidSectionChange((event) => {
         if (event.domain !== COMPUTER_CONFIG_SECTION) return;
-        for (const [serverName, session] of this.computerSessions) {
-          const registered = this.registerMcpServer(serverName, session.client, session.tools, session.enabledNames, session.admitCall);
-          void this.dispatcher.dispatch(new ToolListUpdated({
-            reason: registered.registered.length > 0 ? 'mcp.connected' : 'mcp.disconnected',
-            serverName,
-          }));
-        }
+        this.reopenComputerSessions();
       }));
+    }
+    const capabilityPolicy = this.optionalPolicy();
+    if (capabilityPolicy !== undefined) {
+      this._register(capabilityPolicy.onDidChange(() => { this.reopenComputerSessions(); }));
     }
     loop.hooks.onWillBeginStep.register('mcp', async (ctx, next) => {
       await this.waitForInitialLoad(ctx.signal);
@@ -492,6 +492,50 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     }
   }
 
+  private reopenComputerSessions(): void {
+    for (const [serverName, session] of this.computerSessions) {
+      const registered = this.registerMcpServer(serverName, session.client, session.tools, session.enabledNames, session.admitCall);
+      void this.dispatcher.dispatch(new ToolListUpdated({
+        reason: registered.registered.length > 0 ? 'mcp.connected' : 'mcp.disconnected',
+        serverName,
+      }));
+    }
+  }
+
+  private optionalPolicy(): IOptionalCapabilityPolicy | undefined {
+    try {
+      return this.instantiation.invokeFunction((accessor) => accessor.get(IOptionalCapabilityPolicy)) ?? undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private computerAdmitted(): boolean {
+    const fallback = computerToolsEnabled(this.configService.get<ComputerConfig>(COMPUTER_CONFIG_SECTION));
+    const policy = this.optionalPolicy();
+    if (policy === undefined) return fallback;
+    let agent: IAgentScopeContext | undefined;
+    try {
+      agent = this.instantiation.invokeFunction((accessor) => accessor.get(IAgentScopeContext));
+    } catch {
+      agent = undefined;
+    }
+    const profile = this.profile.data();
+    const source = profile.boundProfile?.toolsSource;
+    const sessionId = this.sessionContext.sessionId;
+    const workspaceId = this.sessionContext.workspaceId;
+    if (agent !== undefined) {
+      policy.retain(sessionId, agent.agentId, {
+        workspaceId,
+        agentKind: agent.parentAgentId === undefined ? 'main' : 'child',
+        toolsSource: source,
+        declaredTools: source === 'declared' ? [...(profile.toolPolicyBase?.tools ?? profile.boundProfile?.tools ?? [])] : undefined,
+        taskTools: profile.toolOverride?.tools === undefined ? undefined : [...profile.toolOverride.tools],
+      });
+    }
+    return policy.admit('computer', { sessionId, workspaceId, agentId: agent?.agentId }).admitted;
+  }
+
   private registerConnectedMcpServer(entry: McpServerEntry): void {
     const resolved = this.resolved(entry.name);
     if (resolved === undefined) return;
@@ -502,7 +546,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
       resolved.enabledNames,
       resolved.admitCall,
     );
-    if (isComputerMcpConfig(this.mcpHandle.connectionManager.configOf(entry.name)) && !computerToolsEnabled(this.configService.get<ComputerConfig>(COMPUTER_CONFIG_SECTION))) {
+    if (isComputerMcpConfig(this.mcpHandle.connectionManager.configOf(entry.name)) && !this.computerAdmitted()) {
       void this.dispatcher.dispatch(new ToolListUpdated({ reason: 'mcp.disconnected', serverName: entry.name }));
       return;
     }
@@ -551,7 +595,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     const computer = isComputerMcpConfig(this.mcpHandle.connectionManager.configOf(serverName));
     if (computer) this.computerSessions.set(serverName, { client, tools, enabledNames: enabledTools, admitCall });
     this.unregisterMcpServer(serverName);
-    if (computer && !computerToolsEnabled(this.configService.get<ComputerConfig>(COMPUTER_CONFIG_SECTION))) {
+    if (computer && !this.computerAdmitted()) {
       return { registered: [], collisions: [] };
     }
     const qualifiedNames: string[] = [];

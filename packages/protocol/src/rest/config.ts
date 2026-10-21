@@ -243,8 +243,58 @@ export const agentExecutorDisplayConfigPatchSchema = z.object({
   discovery_initialized: z.boolean().nullable().optional(),
 }).strict();
 
+export const optionalCapabilityStateSchema = z.object({
+  allowed: z.boolean(),
+  host_locked: z.boolean(),
+  default_on: z.boolean(),
+  origin: z.enum(['default', 'preset', 'base', 'home', 'env', 'memory', 'unreadable']),
+  unresolved: z.boolean(),
+}).strict();
+export const optionalCapabilitiesResponseSchema = z.object({
+  browser: optionalCapabilityStateSchema,
+  computer: optionalCapabilityStateSchema,
+  memory: optionalCapabilityStateSchema,
+  thread: optionalCapabilityStateSchema,
+  web: optionalCapabilityStateSchema,
+}).strict();
+export const optionalCapabilitiesPatchSchema = z.object({
+  defaults: z.object({
+    browser: z.boolean().nullable().optional(),
+    computer: z.boolean().nullable().optional(),
+    memory: z.boolean().nullable().optional(),
+    thread: z.boolean().nullable().optional(),
+    web: z.boolean().nullable().optional(),
+  }).strict().optional(),
+  web_allowed: z.boolean().nullable().optional(),
+}).strict();
+export const optionalCapabilityChoiceSchema = z.enum(['on', 'off', 'inherit']);
+export const optionalCapabilitySessionRowSchema = z.object({
+  id: z.enum(['browser', 'computer', 'memory', 'thread', 'web']),
+  choice: optionalCapabilityChoiceSchema,
+  effective: z.boolean(),
+  source: z.enum(['session', 'default', 'off']),
+  reason: z.string(),
+  allowed: z.boolean(),
+  host_locked: z.boolean(),
+  default_on: z.boolean(),
+  unresolved: z.boolean(),
+  applies: z.enum(['next-model-request', 'next-step']),
+}).strict();
+export const optionalCapabilitySessionResponseSchema = z.object({
+  revision: z.number().int().nonnegative(),
+  host_id: z.string().min(1),
+  rows: z.array(optionalCapabilitySessionRowSchema),
+}).strict();
+export type OptionalCapabilitySessionResponse = z.infer<typeof optionalCapabilitySessionResponseSchema>;
+export const optionalCapabilitySessionRequestSchema = z.object({
+  id: z.enum(['browser', 'computer', 'memory', 'thread', 'web']),
+  choice: optionalCapabilityChoiceSchema,
+}).strict();
+export type OptionalCapabilitySessionRequest = z.infer<typeof optionalCapabilitySessionRequestSchema>;
+
 export const configResponseSchema = z.object({
   browser_control: browserControlSettingsSchema.optional(),
+  optional_capabilities: optionalCapabilitiesResponseSchema.optional(),
   computer_control: computerControlConfigResponseSchema.optional(),
   agent_executor_display: agentExecutorDisplayConfigSchema.optional(),
   model_switch: modelSwitchConfigSchema.optional(),
@@ -343,5 +393,6 @@ export const patchConfigRequestSchema = z.object({
   request_governance: requestGovernanceConfigPatchSchema.optional(),
   retry: z.unknown().optional(),
   plugins: z.object({ marketplace_url: z.string().optional() }).optional(),
+  optional_capabilities: optionalCapabilitiesPatchSchema.optional(),
 });
 export type PatchConfigRequest = z.infer<typeof patchConfigRequestSchema>;

@@ -224,9 +224,9 @@ describe('SessionPluginsPanel', () => {
     }));
     await render();
     await settle();
-    expect(container.querySelector('[data-rail-plugin="a"] [data-rail-plugin-source]')!.textContent).toBe('当前对话');
+    expect(container.querySelector('[data-rail-plugin="a"] [data-rail-plugin-source]')!.textContent).toBe('本会话');
     expect(container.querySelector('[data-rail-plugin="b"] [data-rail-plugin-source]')!.textContent).toBe('本工作区');
-    expect(container.querySelector('[data-rail-plugin="c"] [data-rail-plugin-source]')!.textContent).toBe('全局默认');
+    expect(container.querySelector('[data-rail-plugin="c"] [data-rail-plugin-source]')!.textContent).toBe('默认');
     expect(container.querySelector('[data-rail-plugin="d"] [data-rail-plugin-source]')!.textContent).toBe('全局开启');
   });
 
@@ -239,7 +239,7 @@ describe('SessionPluginsPanel', () => {
     const row = container.querySelector('[data-rail-plugin="demo"]')!;
     expect(row.getAttribute('data-effective')).toBe('false');
     const reason = row.querySelector('[data-rail-plugin-reason="home_disabled"]')!;
-    expect(reason.textContent).toBe('主开关已关闭');
+    expect(reason.textContent).toBe('已完全关闭');
     // The switch is present but not clickable into a lie.
     const toggle = row.querySelector<HTMLInputElement>('input[type=checkbox]')!;
     expect(toggle.disabled).toBe(true);

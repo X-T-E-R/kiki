@@ -307,7 +307,7 @@ describe('WorkspaceSettingsPage', () => {
     }));
     await renderPage();
     expect(container.querySelector('[data-workspace-plugin="here"] [data-workspace-plugin-source]')!.textContent).toBe('this workspace');
-    expect(container.querySelector('[data-workspace-plugin="below"] [data-workspace-plugin-source]')!.textContent).toBe('global default');
+    expect(container.querySelector('[data-workspace-plugin="below"] [data-workspace-plugin-source]')!.textContent).toBe('default');
   });
 
   it('restores this workspace to inherit without touching the global default', async () => {
@@ -326,7 +326,7 @@ describe('WorkspaceSettingsPage', () => {
     await renderPage();
     const row = container.querySelector('[data-workspace-plugin="demo"]')!;
     expect(row.getAttribute('data-effective')).toBe('false');
-    expect(row.querySelector('[data-workspace-plugin-reason="home_disabled"]')!.textContent).toBe('Master switch is off');
+    expect(row.querySelector('[data-workspace-plugin-reason="home_disabled"]')!.textContent).toBe('Completely off');
     expect(row.querySelector<HTMLInputElement>('input[type=checkbox]')!.disabled).toBe(true);
   });
 

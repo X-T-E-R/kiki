@@ -1,8 +1,9 @@
 import { z } from 'zod';
-import { createDecorator, type ServicesAccessor } from '#/_base/di/instantiation';
+import { createDecorator, IInstantiationService, type ServicesAccessor } from '#/_base/di/instantiation';
 import { IConfigService } from '#/app/config/config';
 import { MEMORY_SECTION, type MemoryConfig } from '#/app/memory/configSection';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
+import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
 import { IMemoryStore, MemoryDomainError, memoryBasisSchema, memoryValiditySchema, memoryCoveredBySchema, memoryApplicability, type MemoryEntry, type MemoryTarget } from '#/app/memory/memoryStore';
 import type { MemoryScope } from '#/app/memory/memoryScopes';
 import { IAgentMemorySnapshot, type MemoryPersonaContext } from '#/app/memory/memorySnapshot';
@@ -69,8 +70,33 @@ function resolveScope(kind: z.infer<typeof scopeSchema> | undefined, session: IS
   if (found === undefined) throw new MemoryDomainError('scope_mismatch', `This context cannot access ${wanted} memory`, 'Choose one of this context’s visible scopes. Scope selection does not grant access.');
   return found;
 }
-function available(snapshot: ICapabilitySnapshotService, session: ISessionContext, tool = 'MemoryWrite'): boolean {
+function available(snapshot: ICapabilitySnapshotService, session: ISessionContext, instantiation: IInstantiationService, tool = 'MemoryWrite'): boolean {
+  const policy = presentPolicy(instantiation);
+  if (policy !== undefined) {
+    let agentId: string | undefined;
+    try {
+      agentId = instantiation.invokeFunction((accessor) => accessor.get(IAgentScopeContext))?.agentId;
+    } catch {
+      agentId = undefined;
+    }
+    const admitted = policy.admit('memory', { sessionId: session.sessionId, workspaceId: session.workspaceId, agentId }).admitted;
+    if (!admitted) return false;
+    if (tool !== 'MemoryWrite') return true;
+    try {
+      return instantiation.invokeFunction((accessor) => accessor.get(IConfigService).get<MemoryConfig>(MEMORY_SECTION))?.approval !== 'off';
+    } catch {
+      return snapshot.toolAvailable(tool, session.workspaceId, session.sessionId);
+    }
+  }
   return snapshot.toolAvailable(tool, session.workspaceId, session.sessionId);
+}
+
+function presentPolicy(instantiation: IInstantiationService): IOptionalCapabilityPolicy | undefined {
+  try {
+    return instantiation.invokeFunction((accessor) => accessor.get(IOptionalCapabilityPolicy)) ?? undefined;
+  } catch {
+    return undefined;
+  }
 }
 function target(scope: MemoryScope, entry: MemoryEntry): MemoryTarget {
   return { scope: scope.kind, id: entry.id, expected_revision: entry.revision };
@@ -110,6 +136,7 @@ Archive is a state change: provide the target and reason, not a replacement body
     @IConfigService private readonly config: IConfigService,
     @ICapabilitySnapshotService private readonly capabilities: ICapabilitySnapshotService,
     @IAgentMemorySnapshot private readonly memorySnapshot: IAgentMemorySnapshot,
+    @IInstantiationService private readonly instantiation: IInstantiationService,
   ) {}
   resolveExecution(args: z.infer<typeof writeSchema>): ToolExecution {
     const parsed = writeSchema.safeParse(args);
@@ -120,7 +147,7 @@ Archive is a state change: provide the target and reason, not a replacement body
     if (input.action !== 'create' && !input.expected_revision) return failure(new MemoryDomainError('missing_revision', 'Memory revision is required', 'Read the complete target and copy its latest revision.'));
     if (input.action !== 'archive' && input.covered_by !== undefined) return failure(new MemoryDomainError('invalid_input', 'covered_by is only accepted for archive', 'Remove covered_by from this action.'));
     return { approvalRule: this.name, accesses: ToolAccesses.none(), description: `Remember: ${(input.title ?? input.id ?? '').slice(0, 70)}`, execute: async ({ turnId, signal }) => {
-      if (this.session.ephemeral === true || !available(this.capabilities, this.session)) return failure(new MemoryDomainError('inactive_target', 'Memory is disabled.', 'Preserve an unsaved change in existing task records instead of bypassing this restriction.'));
+      if (this.session.ephemeral === true || !available(this.capabilities, this.session, this.instantiation)) return failure(new MemoryDomainError('inactive_target', 'Memory is disabled.', 'Preserve an unsaved change in existing task records instead of bypassing this restriction.'));
       try {
         const persona = this.memorySnapshot.getPersona();
         const visible = scopes(this.session, persona);
@@ -179,6 +206,7 @@ Each item has its complete title, status, owning scope, revision, and a target w
     @ISessionContext private readonly session: ISessionContext,
     @ICapabilitySnapshotService private readonly capabilities: ICapabilitySnapshotService,
     @IAgentMemorySnapshot private readonly memorySnapshot: IAgentMemorySnapshot,
+    @IInstantiationService private readonly instantiation: IInstantiationService,
   ) {}
   resolveExecution(args: z.infer<typeof searchSchema>): ToolExecution {
     const parsed = searchSchema.safeParse(args);
@@ -187,7 +215,7 @@ Each item has its complete title, status, owning scope, revision, and a target w
     if (input.statuses !== undefined && input.include_superseded !== undefined) return failure(new MemoryDomainError('invalid_query', 'statuses cannot be combined with include_superseded', 'Use statuses alone for explicit state filters.'));
     if (input.cursor !== undefined && Object.keys(input).some((key) => key !== 'cursor')) return failure(new MemoryDomainError('cursor_invalidated', 'Continue with cursor alone', 'Restart the query if its filters need changing.'));
     return { approvalRule: this.name, accesses: ToolAccesses.none(), execute: async ({ signal }) => {
-      if (!available(this.capabilities, this.session, this.name)) return failure(new MemoryDomainError('inactive_target', 'Memory is disabled.', 'Use current guidance already in view.'));
+      if (!available(this.capabilities, this.session, this.instantiation, this.name)) return failure(new MemoryDomainError('inactive_target', 'Memory is disabled.', 'Use current guidance already in view.'));
       try {
         const persona = this.memorySnapshot.getPersona();
         if (input.scope !== undefined) resolveScope(input.scope, this.session, persona);
@@ -220,12 +248,13 @@ Check status and validity. Archived and superseded entries are history, not curr
     @IConfigService private readonly config: IConfigService,
     @ICapabilitySnapshotService private readonly capabilities: ICapabilitySnapshotService,
     @IAgentMemorySnapshot private readonly memorySnapshot: IAgentMemorySnapshot,
+    @IInstantiationService private readonly instantiation: IInstantiationService,
   ) {}
   resolveExecution(args: z.infer<typeof readSchema>): ToolExecution {
     const parsed = readSchema.safeParse(args);
     if (!parsed.success || (parsed.data.id === undefined) === (parsed.data.ids === undefined)) return failure(new MemoryDomainError('invalid_input', 'Provide exactly one of id or ids (up to 10).', 'Use id for one entry or ids for a related batch.'));
     return { approvalRule: this.name, accesses: ToolAccesses.none(), execute: async () => {
-      if (!available(this.capabilities, this.session, this.name)) return failure(new MemoryDomainError('inactive_target', 'Memory is disabled.', 'Use current guidance already in view.'));
+      if (!available(this.capabilities, this.session, this.instantiation, this.name)) return failure(new MemoryDomainError('inactive_target', 'Memory is disabled.', 'Use current guidance already in view.'));
       try {
         const persona = this.memorySnapshot.getPersona();
         const visible = parsed.data.scope === undefined ? scopes(this.session, persona) : [resolveScope(parsed.data.scope, this.session, persona)];

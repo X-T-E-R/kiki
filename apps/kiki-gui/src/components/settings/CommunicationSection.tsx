@@ -8,7 +8,7 @@ import {
   subscribeSettings,
   settingsSnapshot,
   settingsServerSnapshot,
-  threadCommunicationPatch,
+  threadAllowPatch,
   tokenCountingPatch,
   writeSettings,
   type DefaultAppendTiming,
@@ -16,6 +16,7 @@ import {
   type TokenCountingStrategy,
 } from '@kiki/session-core/settings';
 import type { KikiConfigPatch, KikiConfigResponse } from '@kiki/session-core/transport';
+import { DefaultOnSwitch, optionalCapabilityState } from '../capabilities/optionalCapabilityUi';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
@@ -99,7 +100,10 @@ function useServerChoice<T>(
  */
 export function AgentMessagingCard() {
   const { t } = useI18n();
-  const thread = useServerChoice((draft) => draft.threadCommunicationEnabled, threadCommunicationPatch);
+  const thread = useServerChoice((_draft, config) => optionalCapabilityState(config, 'thread')?.allowed ?? config.thread_communication?.enabled ?? false,
+    (allowed) => threadAllowPatch(allowed ? null : false));
+  const threadDefault = useServerChoice((_draft, config) => optionalCapabilityState(config, 'thread')?.default_on === true,
+    (on) => ({ optional_capabilities: { defaults: { thread: on } } }));
   const notify = useServerChoice((draft) => draft.agentsNotifyParent, agentNotifyParentPatch);
   // [agents.delegation]: an absent slot means the notice is on.
   const delegateSub = useServerChoice((_draft, config) => config.agents?.delegation?.sub !== false,
@@ -118,6 +122,12 @@ export function AgentMessagingCard() {
             <Toggle layout="row" label={t('st.communication.threadCommunication')} checked={thread.value === true}
               disabled={thread.saving} onChange={(checked) => { void thread.apply(checked); }} />
             <Hint>{t('st.sessions.threadHint')}</Hint>
+            <DefaultOnSwitch
+              id="thread"
+              state={optionalCapabilityState(thread.configQuery.data, 'thread')}
+              disabled={threadDefault.saving}
+              onChange={(next) => { void threadDefault.apply(next); }}
+            />
             <FeedbackLine feedback={thread.error} />
           </div>
           <div data-settings-field data-agent-messaging="notify" className="space-y-0.5 py-1">

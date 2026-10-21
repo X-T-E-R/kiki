@@ -223,7 +223,7 @@ export interface RuntimeConfigPatch {
     readonly clock?: string;
     readonly poll_interval_ms?: number | null;
   };
-  readonly thread_communication?: { readonly enabled: boolean };
+  readonly thread_communication?: { readonly enabled: boolean | null };
   readonly token_counting?: { readonly strategy: 'measured+estimated' | 'measured' | 'estimated' };
   readonly workspace_instance?: { readonly idle_ttl_ms?: number };
   readonly image?: { readonly max_edge_px?: number; readonly read_byte_budget?: number };

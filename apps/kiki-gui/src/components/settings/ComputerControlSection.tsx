@@ -25,6 +25,7 @@ import {
   isComputerToolPolicyPartiallyDenied,
 } from '@kiki/session-core/settings';
 
+import { DefaultOnSwitch, optionalCapabilityState } from '../capabilities/optionalCapabilityUi';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import type { CapabilityStatus } from '../../lib/client';
@@ -103,14 +104,16 @@ export function ComputerControlSection() {
   const preferenceSource = configQuery.data?.computer_control?.usagePreferenceSource ?? 'default';
   const isOverriddenByHigherSource = preferenceSource === 'env' || preferenceSource === 'memory';
 
-  const isComputerEnabled = isComputerControlEnabled(configQuery.data);
+  const computerCapability = optionalCapabilityState(configQuery.data, 'computer');
+  const isComputerEnabled = computerCapability?.allowed ?? isComputerControlEnabled(configQuery.data);
+  const computerHostLocked = computerCapability?.host_locked === true;
   const isToolPolicyDenied = isComputerToolPolicyDenied(configQuery.data);
   const isToolPolicyPartiallyDenied = isComputerToolPolicyPartiallyDenied(configQuery.data);
   const enabledSave = useInstantSave();
 
   const handleToggleEnabled = (next: boolean) => {
     void enabledSave.run(async () => {
-      await client.setComputerControlEnabled(next);
+      await client.setComputerControlEnabled(next ? null : false);
       await queryClient.invalidateQueries({ queryKey: ['config', scopeId] });
     });
   };
@@ -261,11 +264,11 @@ export function ComputerControlSection() {
                   role="switch"
                   aria-checked={isComputerEnabled}
                   data-computer-enabled-switch
-                  disabled={enabledSave.saving || configQuery.isLoading}
+                  disabled={enabledSave.saving || configQuery.isLoading || computerHostLocked}
                   onClick={() => { handleToggleEnabled(!isComputerEnabled); }}
                   className={`relative inline-flex h-[18px] w-8 shrink-0 items-center rounded-full ring-1 transition-colors duration-[var(--kiki-motion-quick)] ${
                     isComputerEnabled ? 'bg-selected ring-selected-ink/45' : 'bg-hairline ring-hairline-strong'
-                  } ${enabledSave.saving || configQuery.isLoading ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
+                  } ${enabledSave.saving || configQuery.isLoading || computerHostLocked ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
                 >
                   <span
                     className={`inline-block h-3 w-3 transform rounded-full transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${
@@ -275,6 +278,17 @@ export function ComputerControlSection() {
                 </button>
               </div>
             </div>
+            <DefaultOnSwitch
+              id="computer"
+              state={computerCapability}
+              disabled={enabledSave.saving}
+              onChange={(next) => {
+                void enabledSave.run(async () => {
+                  await client.patchConfig({ optional_capabilities: { defaults: { computer: next } } });
+                  await queryClient.invalidateQueries({ queryKey: ['config', scopeId] });
+                });
+              }}
+            />
 
             {isToolPolicyDenied ? (
               <p className="text-[12px] text-danger" data-computer-toolpolicy-denied>

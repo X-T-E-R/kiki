@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import { errorText } from '@kiki/session-core/i18n';
+import { DefaultOnSwitch, optionalCapabilityState } from '../capabilities/optionalCapabilityUi';
 import { useI18n } from '../../i18n';
 import type { MemoryApproval, MemorySettings } from '../../lib/client';
 import { useConnection } from '../../state/connection';
@@ -27,11 +28,19 @@ export function MemorySettingsCard() {
   const [saved, ping] = useSavedTick();
   // The text budget keeps its system default; it surfaces only behind Advanced.
   const [advanced, setAdvanced] = useState(false);
+  const [defaultError, setDefaultError] = useState<unknown>();
   const settingsQuery = useQuery({
     queryKey: MEMORY_SETTINGS_KEY,
     queryFn: () => client.getMemorySettings(),
     staleTime: 15_000,
   });
+  const configQuery = useQuery({
+    queryKey: ['config', 'memory-default'],
+    queryFn: () => client.getConfig(),
+    enabled: typeof client.getConfig === 'function',
+    staleTime: 30_000,
+  });
+  const memoryCapability = optionalCapabilityState(configQuery.data, 'memory');
   const update = useMutation({
     mutationFn: (patch: MemoryPatch) => client.patchMemorySettings(patch),
     onSuccess: async (next: MemorySettings) => {
@@ -53,7 +62,9 @@ export function MemorySettingsCard() {
     ? { tone: 'error', text: t('st.memory.loadFailed', { detail: errorText(locale, settingsQuery.error) }) }
     : update.isError
       ? { tone: 'error', text: t('st.memory.saveFailed', { detail: errorText(locale, update.error) }) }
-      : null;
+      : defaultError !== undefined
+        ? { tone: 'error', text: t('st.memory.saveFailed', { detail: errorText(locale, defaultError) }) }
+        : null;
 
   return (
     <SectionCard id="st-card-memory" title={t('st.memory.title')}>
@@ -64,11 +75,23 @@ export function MemorySettingsCard() {
             id="memory-enabled"
             layout="bare"
             label={t('memory.toggle')}
-            checked={settingsQuery.data?.enabled === true}
-            disabled={busy}
+            checked={memoryCapability?.allowed ?? settingsQuery.data?.enabled === true}
+            disabled={busy || memoryCapability?.host_locked === true}
             onChange={(enabled) => { update.mutate({ enabled }); }}
           />
         </SettingField>
+        <DefaultOnSwitch
+          id="memory"
+          state={memoryCapability}
+          disabled={busy}
+          onChange={(next) => {
+            setDefaultError(undefined);
+            void client.patchConfig({ optional_capabilities: { defaults: { memory: next } } }).then((echoed) => {
+              queryClient.setQueryData(['config', 'memory-default'], echoed);
+              ping();
+            }).catch((cause: unknown) => { setDefaultError(cause); });
+          }}
+        />
         <SettingField label={t('st.memory.approval')} labelId="memory-approval-label">
           {status('approval')}
           <SettingsSelect<MemoryApproval>

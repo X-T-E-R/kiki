@@ -219,7 +219,7 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `background` | `table` | — | Background task runtime parameters → [`background`](#background) |
 | `subagent` | `table` | — | Subagent run defaults and limits → [`subagent`](#subagent) |
 | `agents` | `table` | — | Delegation-notice defaults → [`agents`](#agents) |
-| `thread_communication` | `table` | `{ enabled = false }` | Local peer-thread communication → [`thread_communication`](#thread-communication) |
+| `thread_communication` | `table` | unset | Allow peer-thread tools; default stays off → [`thread_communication`](#thread-communication) |
 | `mcp` | `table` | — | Global MCP server timeout defaults → [`mcp`](#mcp) |
 | `tools` | `table` | — | Global tool switch → [`tools`](#tools) |
 | `image` | `table` | — | Image compression parameters → [`image`](#image) |
@@ -713,13 +713,28 @@ To replace notice text, override `delegation.sub.notice` or `delegation.independ
 
 ## `thread_communication`
 
-This strict section controls [local peer-thread communication](../customization/agents-and-subagents.md#peer-thread-communication). It is disabled by default and has no environment-variable override.
+This strict section is the allow switch for [local peer-thread communication](../customization/agents-and-subagents.md#peer-thread-communication). Leaving `enabled` unset allows the tools and keeps them off until a conversation turns them on, or a declared profile or this task names them. `enabled = false` that you write turns them completely off. A conversation cannot turn that back on. `enabled = true` that you already saved keeps the previous default-on until `[optional_capabilities.defaults] thread` says otherwise.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `enabled` | `boolean` | `false` | Permits the four main-Agent peer-thread tools and local REST and Klient thread operations. Set to `true` to enable those operations globally |
+| `enabled` | `boolean` | unset | Allow the four main-agent peer-thread tools and local REST and Klient thread operations. A value you set to `false` is a hard off |
 
-Per-workspace overrides are persisted separately and managed through the local REST API or Klient. An override can disable one workspace while the global switch remains on, but cannot enable communication while this global switch is off.
+Per-workspace overrides are persisted separately and managed through the local REST API or Klient. An override can disable one workspace while the tools stay allowed, but cannot enable communication after a hard off.
+
+## `optional_capabilities`
+
+This section separates “allowed” from “on by default” for browser, computer, memory, threads, and web (`WebSearch` and `FetchURL`).
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `defaults.browser` | `boolean` | `true` | Whether a conversation starts with browser tools |
+| `defaults.computer` | `boolean` | `true` | Whether a conversation starts with computer tools |
+| `defaults.memory` | `boolean` | `true` | Whether a conversation starts with memory tools |
+| `defaults.thread` | `boolean` | `false` | Whether a conversation starts with peer-thread tools |
+| `defaults.web` | `boolean` | `true` | Whether a conversation starts with web tools |
+| `web.allowed` | `boolean` | `true` | `false` turns web tools completely off |
+
+Browser, computer, memory, and thread allow bits stay on their existing keys (`native_browser`, `computer_control.enabled`, `memory.enabled`, `thread_communication.enabled`). A conversation can turn an allowed capability on or off. It cannot cross a hard off. Memory approval, budget, browser connections, and the computer usage preference are separate settings.
 
 ## `mcp`
 
@@ -837,7 +852,9 @@ Each entry describes one connection through its `type` (`agent-browser-profile` 
 usage_preference = "avoid"
 ```
 
-`usage_preference` accepts `"avoid"` (default) or `"prefer"`. `"avoid"` tells models generally not to use computer control unless the user or the user's rules explicitly request it, preferring existing CLI, API, MCP, short-script, and browser-specific capabilities. `"prefer"` favors computer control for suitable interactive tasks. Current explicit user instructions, correctness, availability, and permission rules take priority in both modes. Changes apply on the next model request without reconnecting or installing anything; removing the field restores inheritance.
+`enabled = false` turns computer tools completely off. Leaving it unset allows them. Whether a conversation starts with them is `[optional_capabilities.defaults] computer`, which is on unless you turn that default off.
+
+`usage_preference` accepts `"avoid"` (default) or `"prefer"`. `"avoid"` tells models generally not to use computer control unless the user or the user's rules explicitly request it, preferring existing CLI, API, MCP, short-script, and browser-specific capabilities. `"prefer"` favors computer control for suitable interactive tasks. Current explicit user instructions, correctness, availability, and permission rules take priority in both modes. The preference does not grant or remove the tools. Changes apply on the next model request without reconnecting or installing anything; removing the field restores inheritance.
 
 Computer tools from the recognized cua-driver MCP default to the main agent of each session, including an independent session. Children require explicit MCP tool patterns in their profile, route, or dispatch tool selection, `[subagent].allowed_tools`, or `[tools].enabled`. For the installed connection, `mcp__kiki-computer__*` opts in; a blanket `tools: ["*"]` does not. All existing allow ceilings, deny rules, and disabled connections still apply. A call with an unknown input outcome is not replayed: reconnect and observe before another action.
 

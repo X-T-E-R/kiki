@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { z } from 'zod';
 
-import { createDecorator } from '#/_base/di/instantiation';
+import { createDecorator, type ServiceIdentifier, type ServicesAccessor } from '#/_base/di/instantiation';
 import { Disposable } from '#/_base/di/lifecycle';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
@@ -31,6 +31,7 @@ import { mcpResultToExecutableOutput } from '#/agent/mcp/output';
 import { assertMcpInputSchema, type MCPToolDefinition } from '#/mcpCore/types';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import { IFlagService } from '#/app/flag/flag';
+import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IConfigService } from '#/app/config/config';
 import { NATIVE_BROWSER_FLAG_ID } from '#/app/browser/flag';
@@ -441,5 +442,25 @@ export class BrowserTabsTool implements IBrowserTabsTool {
     return { approvalRule: this.name, accesses: args.action === 'list' ? ToolAccesses.none() : ToolAccesses.all(), execute: (ctx) => this.browser.tabs(args, ctx.signal, ctx) };
   }
 }
-registerAgentToolService(IBrowserConnectionsTool, BrowserConnectionsTool, { name: 'BrowserConnections', source: 'builtin', domain: 'browser', when: (accessor) => accessor.get(IFlagService).enabled(NATIVE_BROWSER_FLAG_ID) });
-registerAgentToolService(IBrowserTabsTool, BrowserTabsTool, { name: 'BrowserTabs', source: 'builtin', domain: 'browser', when: (accessor) => accessor.get(IFlagService).enabled(NATIVE_BROWSER_FLAG_ID) });
+registerAgentToolService(IBrowserConnectionsTool, BrowserConnectionsTool, { name: 'BrowserConnections', source: 'builtin', domain: 'browser', when: browserCapabilityWhen });
+registerAgentToolService(IBrowserTabsTool, BrowserTabsTool, { name: 'BrowserTabs', source: 'builtin', domain: 'browser', when: browserCapabilityWhen });
+
+function browserCapabilityWhen(accessor: ServicesAccessor): boolean {
+  if (!accessor.get(IFlagService).enabled(NATIVE_BROWSER_FLAG_ID)) return false;
+  const policy = present(accessor, IOptionalCapabilityPolicy);
+  if (policy === undefined) return true;
+  const session = present(accessor, ISessionContext);
+  if (session === undefined) return true;
+  const agent = present(accessor, IAgentScopeContext);
+  return policy.admit('browser', { sessionId: session.sessionId, workspaceId: session.workspaceId, agentId: agent?.agentId }).admitted;
+}
+
+function present<T>(accessor: ServicesAccessor, id: ServiceIdentifier<T>): T | undefined {
+  const probed = accessor as ServicesAccessor & { has?: (service: ServiceIdentifier<unknown>) => boolean };
+  if (typeof probed.has === 'function' && !probed.has(id)) return undefined;
+  try {
+    return accessor.get(id) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}

@@ -18,6 +18,7 @@ import { useConnection } from '../../state/connection';
 import { browserApi, browserKeys } from '../../lib/browserRest';
 import { FeedbackLine, Hint, SaveStatus } from '../controls';
 import { useGuardedNavigate } from '../dirtyGuard';
+import { DefaultOnSwitch, optionalCapabilityState } from '../capabilities/optionalCapabilityUi';
 import { ComputerControlSection } from './ComputerControlSection';
 import { SectionCard } from './SectionCard';
 import { AdvancedDetails } from './fields';
@@ -107,7 +108,9 @@ function BrowserMasterCard() {
     staleTime: 10_000,
   });
 
-  const isEnabled = isBrowserControlEnabled(configQuery.data);
+  const browserCapability = optionalCapabilityState(configQuery.data, 'browser');
+  const isEnabled = browserCapability?.allowed ?? isBrowserControlEnabled(configQuery.data);
+  const browserHostLocked = browserCapability?.host_locked === true;
   const toolPolicyDenied = isBrowserToolPolicyDenied(configQuery.data);
   const toolPolicyPartiallyDenied = isBrowserToolPolicyPartiallyDenied(configQuery.data);
 
@@ -133,7 +136,7 @@ function BrowserMasterCard() {
 
   const handleToggle = (next: boolean) => {
     void save.run(async () => {
-      await client.setBrowserControlEnabled(next);
+      await client.setBrowserControlEnabled(next ? null : false);
       await queryClient.invalidateQueries({ queryKey: ['config', scopeId] });
       await queryClient.invalidateQueries({ queryKey: browserKeys.connections(scopeId) });
       await queryClient.invalidateQueries({ queryKey: browserKeys.presets(scopeId) });
@@ -165,11 +168,11 @@ function BrowserMasterCard() {
             role="switch"
             aria-checked={isEnabled}
             data-browser-enabled-switch
-            disabled={save.saving || configQuery.isLoading}
+            disabled={save.saving || configQuery.isLoading || browserHostLocked}
             onClick={() => { handleToggle(!isEnabled); }}
             className={`relative inline-flex h-[18px] w-8 shrink-0 items-center rounded-full ring-1 transition-colors duration-[var(--kiki-motion-quick)] ${
               isEnabled ? 'bg-selected ring-selected-ink/45' : 'bg-hairline ring-hairline-strong'
-            } ${save.saving || configQuery.isLoading ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
+            } ${save.saving || configQuery.isLoading || browserHostLocked ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
           >
             <span
               className={`inline-block h-3 w-3 transform rounded-full transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${
@@ -178,6 +181,17 @@ function BrowserMasterCard() {
             />
           </button>
         </div>
+        <DefaultOnSwitch
+          id="browser"
+          state={browserCapability}
+          disabled={defaultSave.saving}
+          onChange={(next) => {
+            void defaultSave.run(async () => {
+              await client.patchConfig({ optional_capabilities: { defaults: { browser: next } } });
+              await queryClient.invalidateQueries({ queryKey: ['config', scopeId] });
+            });
+          }}
+        />
 
         {toolPolicyDenied ? (
           <p className="text-[12px] text-danger" data-browser-toolpolicy-denied>

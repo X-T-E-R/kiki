@@ -8,7 +8,7 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (52 sections · 1 overlay(s))
+# Index (53 sections · 1 overlay(s))
 #   agentExecutorDisplay            src/app/agentExecutor/executorOverrides.ts
 #   agentExecutorOverrides          src/app/agentExecutor/executorOverrides.ts
 #   agentExecutors                  src/app/agentExecutor/configSection.ts
@@ -39,6 +39,7 @@
 #   nbSearch                        src/app/nbSearch/configSection.ts
 #   nbSearchSource                  src/app/nbSearch/configSection.ts
 #   notifications                   src/app/notifications/configSection.ts
+#   optionalCapabilities            src/app/optionalCapability/configSection.ts
 #   permission                      src/agent/permissionRules/configSection.ts
 #   plan                            src/features/plan/configSection.ts
 #   plugins                         src/app/plugin/configSection.ts
@@ -640,6 +641,16 @@ provider_instances = {  }
 channels = {  }
 credential_slots = {  }
 credential_values = {  }
+
+# ##########################################################################
+# optionalCapabilities (config.toml: optional_capabilities)
+#   owner: src/app/optionalCapability/configSection.ts
+#   scope: core
+# ##########################################################################
+
+[optional_capabilities]
+defaults = { browser = true, computer = true, memory = true, thread = false, web = true }
+web = { allowed = true }
 
 # ##########################################################################
 # permission

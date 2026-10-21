@@ -12,7 +12,9 @@ import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
+import { IInstantiationService } from '#/_base/di/instantiation';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
+import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
 import { ISessionIndex, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import type { ContentPart } from '#/kosong/contract/message';
@@ -227,6 +229,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     @IAppendLogStore private readonly appendLog: IAppendLogStore,
     @IAtomicDocumentStore private readonly documents: IAtomicDocumentStore,
     @ILogService private readonly log: ILogService,
+    @IInstantiationService private readonly instantiation: IInstantiationService,
   ) {
     super();
     this.hostId = createKimiDeviceId(bootstrap.homeDir);
@@ -688,7 +691,21 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
 
   private async globalEnabled(caller?: ThreadCaller): Promise<boolean> {
     await this.capabilities.ready;
+    const policy = this.optionalPolicy();
+    if (policy !== undefined && caller?.sessionId !== undefined) {
+      await policy.load(caller.sessionId);
+      return policy.admit('thread', { sessionId: caller.sessionId, workspaceId: caller.workspaceId, agentId: caller.agentId }).admitted;
+    }
+    if (policy !== undefined) return policy.anyMayUse('thread');
     return this.capabilities.threadEnabled(caller?.workspaceId, caller?.sessionId);
+  }
+
+  private optionalPolicy(): IOptionalCapabilityPolicy | undefined {
+    try {
+      return this.instantiation.invokeFunction((accessor) => accessor.get(IOptionalCapabilityPolicy)) ?? undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   private async workspaceEnabled(workspaceId: string): Promise<boolean> {

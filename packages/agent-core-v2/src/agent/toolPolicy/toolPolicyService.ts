@@ -1,5 +1,5 @@
 import { Disposable } from '#/_base/di/lifecycle';
-import { ref, type LiveRef } from '#/_base/di/instantiation';
+import { IInstantiationService, ref, type LiveRef } from '#/_base/di/instantiation';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IAgentProfileService, ProfileError, ProfileErrors } from '#/agent/profile/profile';
@@ -8,6 +8,9 @@ import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IConfigService } from '#/app/config/config';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
+import { MEMORY_SECTION, type MemoryConfig } from '#/app/memory/configSection';
+import { optionalCapabilityForTool } from '#/app/optionalCapability/admit';
+import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionToolPolicy } from '#/session/sessionToolPolicy/sessionToolPolicy';
 import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';
@@ -22,6 +25,7 @@ import { IAgentToolPolicyService } from './toolPolicy';
 
 export class AgentToolPolicyService extends Disposable implements IAgentToolPolicyService {
   declare readonly _serviceBrand: undefined;
+  private noted = false;
 
   constructor(
     @IAgentProfileService private readonly profile: IAgentProfileService,
@@ -33,6 +37,7 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     @IAgentToolRegistryService private readonly registry: IAgentToolRegistryService,
     @ref(ISessionContext) private readonly session: LiveRef<ISessionContext>,
     @ref(ICapabilitySnapshotService) private readonly capabilities: LiveRef<ICapabilitySnapshotService>,
+    @IInstantiationService private readonly instantiation: IInstantiationService,
   ) {
     super();
     this._register(
@@ -110,7 +115,13 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
   ): boolean {
     const capabilities = this.capabilities.current;
     const session = this.session.current;
-    if (capabilities !== undefined && session !== undefined &&
+    const capability = optionalCapabilityForTool(name);
+    const policy = session === undefined || capability === undefined ? undefined : this.optionalPolicy();
+    if (policy !== undefined && session !== undefined && capability !== undefined) {
+      this.note(policy, session.sessionId, session.workspaceId);
+      if (!policy.admit(capability, { sessionId: session.sessionId, workspaceId: session.workspaceId, agentId: this.scope.agentId }).admitted) return false;
+      if (name === 'MemoryWrite' && this.config.get<MemoryConfig>(MEMORY_SECTION)?.approval === 'off') return false;
+    } else if (capabilities !== undefined && session !== undefined &&
       !capabilities.toolAvailable(name, session.workspaceId, session.sessionId)) return false;
     return isToolActiveComposed(
       {
@@ -124,6 +135,30 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
       name,
       source,
     );
+  }
+
+  private optionalPolicy(): IOptionalCapabilityPolicy | undefined {
+    try {
+      return this.instantiation.invokeFunction((accessor) => accessor.get(IOptionalCapabilityPolicy)) ?? undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private note(policy: IOptionalCapabilityPolicy, sessionId: string, workspaceId: string): void {
+    const profile = this.profile.data();
+    const source = profile.boundProfile?.toolsSource;
+    policy.retain(sessionId, this.scope.agentId, {
+      workspaceId,
+      agentKind: this.scope.parentAgentId === undefined ? 'main' : 'child',
+      toolsSource: source,
+      declaredTools: source === 'declared' ? [...(profile.toolPolicyBase?.tools ?? profile.boundProfile?.tools ?? [])] : undefined,
+      taskTools: profile.toolOverride?.tools === undefined ? undefined : [...profile.toolOverride.tools],
+    });
+    if (this.noted) return;
+    this.noted = true;
+    const agentId = this.scope.agentId;
+    this._register({ dispose: () => { policy.release(sessionId, agentId); } });
   }
 
   async setSessionDisabledTools(names: readonly string[]): Promise<void> {

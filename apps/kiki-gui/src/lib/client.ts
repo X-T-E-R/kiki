@@ -405,7 +405,6 @@ export interface RuntimeConfigPatch {
     readonly clock?: string;
     readonly poll_interval_ms?: number | null;
   };
-  readonly thread_communication?: { readonly enabled: boolean };
   readonly token_counting?: { readonly strategy: 'measured+estimated' | 'measured' | 'estimated' };
   readonly workspace_instance?: { readonly idle_ttl_ms?: number };
   readonly image?: { readonly max_edge_px?: number; readonly read_byte_budget?: number };
@@ -430,6 +429,7 @@ export interface RuntimeConfigPatch {
   readonly disabled_named_profiles?: string[];
   readonly mcp?: { readonly startup_timeout_ms?: number; readonly tool_timeout_ms?: number };
   readonly plugins?: { readonly marketplace_url?: string };
+  readonly thread_communication?: { readonly enabled: boolean | null };
   readonly tools?: { readonly enabled?: string[]; readonly disabled?: string[] };
   readonly agents?: {
     readonly enabled?: boolean;
@@ -3080,6 +3080,17 @@ export class KikiClient {
    * layer it came from. The klient REST facade has no domain for this route
    * yet, so it goes through the plain enveloped request.
    */
+  getSessionOptionalCapabilities(sessionId: string): Promise<import('@kiki/protocol').OptionalCapabilitySessionResponse> {
+    return this.memoryRequest('GET', `/sessions/${encodeURIComponent(sessionId)}/optional-capabilities`);
+  }
+
+  setSessionOptionalCapability(
+    sessionId: string,
+    body: import('@kiki/protocol').OptionalCapabilitySessionRequest,
+  ): Promise<import('@kiki/protocol').OptionalCapabilitySessionResponse> {
+    return this.memoryRequest('POST', `/sessions/${encodeURIComponent(sessionId)}/optional-capabilities`, { body });
+  }
+
   getContextStrategy(sessionId: string, agentId: string): Promise<import('@kiki/protocol').ContextStrategyStatus> {
     return this.memoryRequest('GET', `/sessions/${encodeURIComponent(sessionId)}/agents/${encodeURIComponent(agentId)}/context-strategy`);
   }

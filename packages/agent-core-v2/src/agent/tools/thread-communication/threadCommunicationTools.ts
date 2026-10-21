@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { bridgeReadSchema } from '@kiki/protocol';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 
-import { createDecorator, type ServicesAccessor } from '#/_base/di/instantiation';
+import { createDecorator, IInstantiationService, type ServicesAccessor } from '#/_base/di/instantiation';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import THREAD_SEND_DESCRIPTION_SOURCE from './thread-send.md?raw';
 import type { AgentTool, ToolExecution } from '#/tool/toolContract';
@@ -11,6 +11,7 @@ import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import {
   IThreadCommunicationService,
+  type ThreadCaller,
   type ThreadRef,
 } from '#/app/threadCommunication/threadCommunication';
 import {
@@ -111,6 +112,8 @@ abstract class ThreadToolBase {
   constructor(
     protected readonly threads: IThreadCommunicationService,
     protected readonly session: ISessionContext,
+    private readonly instantiation?: IInstantiationService,
+    private readonly knownAgentId?: string,
   ) {}
 
   protected callerRef(): ThreadRef {
@@ -121,8 +124,24 @@ abstract class ThreadToolBase {
     };
   }
 
+  protected admissionCaller(): ThreadCaller {
+    return {
+      ...this.callerRef(),
+      agentId: this.knownAgentId ?? this.lookupAgentId(),
+    };
+  }
+
+  private lookupAgentId(): string | undefined {
+    if (this.instantiation === undefined) return undefined;
+    try {
+      return this.instantiation.invokeFunction((accessor) => accessor.get(IAgentScopeContext))?.agentId;
+    } catch {
+      return undefined;
+    }
+  }
+
   protected async requireCallerEnabled(): Promise<void> {
-    if (await this.threads.isWorkspaceEnabled(this.session.workspaceId, this.callerRef())) return;
+    if (await this.threads.isWorkspaceEnabled(this.session.workspaceId, this.admissionCaller())) return;
     throw new Error2(
       ErrorCodes.THREAD_DISABLED,
       `Thread communication is disabled for workspace "${this.session.workspaceId}".`,
@@ -140,8 +159,9 @@ export class ListThreadsTool extends ThreadToolBase implements IListThreadsTool 
   constructor(
     @IThreadCommunicationService threads: IThreadCommunicationService,
     @ISessionContext session: ISessionContext,
+    @IInstantiationService instantiation: IInstantiationService,
   ) {
-    super(threads, session);
+    super(threads, session, instantiation);
   }
 
   resolveExecution(input: ListThreadsToolInput): ToolExecution {
@@ -154,7 +174,7 @@ export class ListThreadsTool extends ThreadToolBase implements IListThreadsTool 
           signal: ctx.signal,
           bridgeId: input.bridge_id,
           connectionId: input.connection_id,
-          caller: this.callerRef(),
+          caller: this.admissionCaller(),
           workspaceId: input.workspace_id,
           cursor: input.cursor,
           limit: input.limit,
@@ -175,8 +195,9 @@ export class ReadThreadTool extends ThreadToolBase implements IReadThreadTool {
   constructor(
     @IThreadCommunicationService threads: IThreadCommunicationService,
     @ISessionContext session: ISessionContext,
+    @IInstantiationService instantiation: IInstantiationService,
   ) {
-    super(threads, session);
+    super(threads, session, instantiation);
   }
 
   resolveExecution(input: ReadThreadToolInput): ToolExecution {
@@ -188,7 +209,7 @@ export class ReadThreadTool extends ThreadToolBase implements IReadThreadTool {
         const result = await this.threads.readThread({
           signal: ctx.signal,
           contentRef: input.content_ref,
-          caller: this.callerRef(),
+          caller: this.admissionCaller(),
           thread: fromToolRef(input.thread),
           cursor: input.cursor,
           limit: input.limit,
@@ -215,7 +236,7 @@ export class SendMessageToThreadTool
     @IAgentScopeContext private readonly agent: IAgentScopeContext,
     @IAgentContextMemoryService private readonly memory: IAgentContextMemoryService,
   ) {
-    super(threads, session);
+    super(threads, session, undefined, agent.agentId);
   }
 
   resolveExecution(input: SendMessageToThreadToolInput): ToolExecution {
@@ -257,8 +278,9 @@ export class WaitThreadsTool extends ThreadToolBase implements IWaitThreadsTool 
   constructor(
     @IThreadCommunicationService threads: IThreadCommunicationService,
     @ISessionContext session: ISessionContext,
+    @IInstantiationService instantiation: IInstantiationService,
   ) {
-    super(threads, session);
+    super(threads, session, instantiation);
   }
 
   resolveExecution(input: WaitThreadsToolInput): ToolExecution {
@@ -269,7 +291,7 @@ export class WaitThreadsTool extends ThreadToolBase implements IWaitThreadsTool 
         await this.requireCallerEnabled();
         const result = await this.threads.waitThreads({
           signal: ctx.signal,
-          caller: this.callerRef(),
+          caller: this.admissionCaller(),
           threads: input.threads.map((item) => ({
             thread: fromToolRef(item.thread),
             cursor: item.cursor,

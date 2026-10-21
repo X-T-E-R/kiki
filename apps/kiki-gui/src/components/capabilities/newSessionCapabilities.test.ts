@@ -7,6 +7,7 @@ import {
   currentPendingCapabilityScope,
   pendingNewSessionCapabilities,
   setPendingMcpChoice,
+  setPendingOptionalChoice,
   setPendingPluginChoice,
   type PendingCapabilityScope,
 } from './newSessionCapabilities';
@@ -126,6 +127,25 @@ describe('pending /new capabilities', () => {
     expect(sessionRetry).toHaveBeenCalledTimes(1);
     expect(sessionRetry).toHaveBeenCalledWith('session-new');
     expect(setMcpSessionOverride).toHaveBeenCalledWith({ locator: { source: 'global', name: 'files' }, override: 'on' });
+    expect(pendingNewSessionCapabilities()).toEqual({ plugins: [], mcp: [] });
+  });
+
+  it('writes optional choices after plugins and before the agent override', async () => {
+    setPendingPluginChoice('notes', 'on');
+    setPendingOptionalChoice('web', 'off');
+    setPendingOptionalChoice('thread', 'inherit');
+    setPendingMcpChoice({ locator: { source: 'global', name: 'files' }, override: 'off', name: 'files' });
+    const order: string[] = [];
+    const setPluginUsage = vi.fn(async () => { order.push('plugin'); });
+    const setOptionalCapability = vi.fn(async () => { order.push('optional'); });
+    const setMcpSessionOverride = vi.fn(async () => { order.push('mcp'); });
+    await applyPendingNewSessionCapabilities({
+      setPluginUsage,
+      setOptionalCapability,
+      klient: { session: () => ({ agent: () => ({ setMcpSessionOverride }) }) },
+    }, 'session-new');
+    expect(order).toEqual(['plugin', 'optional', 'mcp']);
+    expect(setOptionalCapability).toHaveBeenCalledWith({ sessionId: 'session-new', id: 'web', choice: 'off' });
     expect(pendingNewSessionCapabilities()).toEqual({ plugins: [], mcp: [] });
   });
 });

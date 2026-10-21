@@ -29,6 +29,7 @@ import type { I18nKey, I18nParams } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../i18n';
 import { registerOverlay } from '../lib/uiBusy';
+import { OptionalCapabilityRows } from './capabilities/optionalCapabilityUi';
 import type { OverrideSource } from './capabilities/pluginUsage';
 import { QUIET_BUTTON, StatusDot } from './capabilities/primitives';
 import {
@@ -432,7 +433,7 @@ function RunModePanel({ controls }: { controls: RunModeControls }) {
  * The panel floats above the whole composer card (useComposerPanelAnchor),
  * never over the card's own chips or header.
  */
-export type AddMenuView = 'closed' | 'root' | 'mode' | 'ssh' | 'skills' | 'mention' | 'timing' | 'plugins' | 'mcp';
+export type AddMenuView = 'closed' | 'root' | 'mode' | 'ssh' | 'skills' | 'mention' | 'timing' | 'plugins' | 'mcp' | 'optional';
 
 /** One SSH host as the ＋ search lists it (the SSH view owns the full panel). */
 export interface AddMenuHost {
@@ -900,6 +901,7 @@ export function AddMenu({
   skills,
   plugins,
   mcp,
+  optional,
   files,
 }: {
   readonly view: AddMenuView;
@@ -932,6 +934,8 @@ export function AddMenu({
   readonly plugins?: AddMenuPlugins;
   /** MCP servers row + view; absent hides it (no session to scope them to). */
   readonly mcp?: AddMenuMcp;
+  /** Optional capability choices; absent hides the row. */
+  readonly optional?: { readonly sessionId?: string };
   /** Mention-a-file row + view (the `@` picker's search); absent hides it. */
   readonly files?: AddMenuFiles;
 }) {
@@ -967,7 +971,7 @@ export function AddMenu({
   // one pointless extra click: ＋ attaches directly.
   const attachOnly =
     runMode === undefined && timing === undefined && onRebuild === undefined && ssh === undefined && skills === undefined
-    && plugins === undefined && mcp === undefined && files === undefined;
+    && plugins === undefined && mcp === undefined && optional === undefined && files === undefined;
   // A root search is only worth the space when something is searchable: skills,
   // files, plugins, MCP servers and SSH hosts each answer it.
   const searchable = skills !== undefined || plugins !== undefined || mcp !== undefined || files !== undefined
@@ -1303,6 +1307,9 @@ export function AddMenu({
                   ? <span className="text-[12px] text-ink-faint tabular-nums">{plugins.items.filter((plugin) => plugin.enabled).length}</span>
                   : undefined, { 'data-add-menu-plugins': '' })
             : null}
+          {optional !== undefined
+            ? drillRow('optional', <MenuIcon d="M2.5 3.5h7M2.5 6h7M2.5 8.5h4" />, t('composer.addMenu.optional'), undefined, { 'data-add-menu-optional': '' })
+            : null}
           {mcp !== undefined
             ? drillRow('mcp', <McpIcon />, t('composer.addMenu.mcp'),
                 heldCount(mcp.items) > 0
@@ -1368,6 +1375,16 @@ export function AddMenu({
           ))}
       </div>
       <p className="px-3 pt-1 pb-1.5 text-[12px] leading-4 text-ink-faint">{t('composer.addMenu.pluginsHint')}</p>
+    </div>
+  );
+
+  const optionalBody = optional === undefined ? null : (
+    <div data-add-optional-view>
+      {backRow(t('composer.addMenu.optional'))}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <OptionalCapabilityRows sessionId={optional.sessionId} />
+      </div>
+      <p className="px-3 pt-1 pb-1.5 text-[12px] leading-4 text-ink-faint">{t('composer.addMenu.optionalHint')}</p>
     </div>
   );
 
@@ -1462,6 +1479,7 @@ export function AddMenu({
               : view === 'timing' ? t('composer.sendTimingAria')
               : view === 'skills' ? t('composer.addMenu.skills')
               : view === 'plugins' ? t('composer.addMenu.plugins')
+              : view === 'optional' ? t('composer.addMenu.optional')
               : view === 'mcp' ? t('composer.addMenu.mcp')
               : view === 'mention' ? t('composer.addMenu.mention')
               : t('composer.addMenuAria')
@@ -1482,6 +1500,8 @@ export function AddMenu({
             skillsBody
           ) : view === 'plugins' ? (
             pluginsBody
+          ) : view === 'optional' ? (
+            optionalBody
           ) : view === 'mcp' ? (
             mcpBody
           ) : view === 'mention' ? (

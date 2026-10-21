@@ -18,6 +18,7 @@ import { INSPECTOR_HEAD, InspectorChevron } from '../agent-panel/InspectorSectio
 import { isCapabilityUnsupportedError, capabilityFieldGaps, mapPanelSkills, mapPanelSubagentTargets, mapPanelTools } from '../agent-panel/mapCapabilities';
 import { capabilitySourceLabel, SOURCE_TONE_CLASS } from '../agent-panel/sourceLabel';
 import type { AgentIdentity, DetailDrawerTarget } from '../agent-panel/types';
+import { OptionalCapabilityRows, SessionMcpRail } from '../capabilities/optionalCapabilityUi';
 import { availableCount } from '../capabilities/pluginUsage';
 import { SessionPluginsPanel } from '../capabilities/SessionPluginsPanel';
 import { PLUGIN_QUERY_KEYS } from '../capabilities/usePlugins';
@@ -542,6 +543,8 @@ export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { se
       <FoldHead title={t('rail.capabilities.title')} summary={summary} open={open} onToggle={() => { setOpen((v) => !v); }} />
       {open ? (
         <div className="pt-1">
+          <OptionalCapabilityRows sessionId={sessionId} />
+          <SessionMcpRail sessionId={sessionId} />
           {body}
         </div>
       ) : null}

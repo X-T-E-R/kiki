@@ -27,7 +27,9 @@ import {
 } from '@kiki/session-core/settings';
 import { subagentToolsDraftFromConfig, subagentToolsPatch } from '@kiki/session-core/settings/subagentToolsSettings';
 import type { ListNamedAgentProfilesResponse, NamedAgentProfile, ToolDescriptor } from '@kiki/protocol';
+import type { KikiConfigPatch } from '../../../lib/client';
 
+import { DefaultOnSwitch, optionalCapabilityState } from '../../capabilities/optionalCapabilityUi';
 import { useI18n } from '../../../i18n';
 import { invalidateAgentProfileCatalogs, loadAgentProfileCatalog } from '../../../lib/agentProfileCatalog';
 import { toolDisplayName } from '../../../lib/pluginCatalog';
@@ -56,6 +58,44 @@ import {
 
 /** The editor id this card's draft transaction reports under (see `dirtyGuard`). */
 const DRAFT_EDITOR_ID = 'subagent-tool-draft';
+
+function WebCapabilityControls() {
+  const { client } = useConnection();
+  const { t } = useI18n();
+  const queryClient = useQueryClient();
+  const query = useQuery({
+    queryKey: ['config', 'web-capability'],
+    queryFn: () => client.getConfig(),
+    enabled: typeof client.getConfig === 'function' && typeof client.patchConfig === 'function',
+    staleTime: 30_000,
+  });
+  const state = optionalCapabilityState(query.data, 'web');
+  if (state === undefined) return null;
+  const write = (patch: KikiConfigPatch) => {
+    void client.patchConfig(patch).then((echoed) => {
+      queryClient.setQueryData(['config', 'web-capability'], echoed);
+    });
+  };
+  return (
+    <div data-web-capability className="space-y-2 border-b border-hairline pb-3">
+      <div className="flex items-center justify-between gap-4">
+        <span className="text-[13px] text-ink">{t('cap.web')}</span>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={state.allowed}
+          data-web-allow
+          disabled={state.host_locked}
+          onClick={() => { write({ optional_capabilities: { web_allowed: state.allowed ? false : null } }); }}
+          className="min-h-6 rounded px-2 text-[12px] text-ink-soft disabled:opacity-40"
+        >
+          {t(state.allowed ? 'cap.choice.on' : 'cap.choice.off')}
+        </button>
+      </div>
+      <DefaultOnSwitch id="web" state={state} onChange={(next) => { write({ optional_capabilities: { defaults: { web: next } } }); }} />
+    </div>
+  );
+}
 
 type ToolDraft =
   | { readonly kind: 'rule'; readonly allowedTools: readonly string[] }
@@ -395,6 +435,7 @@ export function SubagentToolSettingsCard() {
     <SectionCard id="st-card-subagent-tool-defaults" title={t('st.subagentTools.title')}>
       <div className="space-y-3">
         <Hint>{t('st.subagentTools.hint')}</Hint>
+        <WebCapabilityControls />
         <fieldset disabled={saving} className="min-w-0 space-y-3 disabled:opacity-60">
           <div className="space-y-1" data-subagent-tools-object-row>
             <SettingField label={t('st.subagentTools.objectLabel')} labelId="subagent-tools-object-label">
