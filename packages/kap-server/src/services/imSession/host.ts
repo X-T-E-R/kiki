@@ -151,7 +151,7 @@ class NotificationSessionPorts implements ImSessionPorts {
     owns: async (sessionId: string) => (await this.core.accessor.get(ISessionIndex).listRecent({ sessionId, limit: 1 })).items.some((session) => session.id === sessionId),
     ensureHome: async (personaId: string) => {
       const home = await this.core.accessor.get(IBotService).ensureHomeSession(personaId);
-      return { ...(home.homeSessionId === undefined ? {} : { homeSessionId: home.homeSessionId }) };
+      return { homeSessionId: home.homeSessionId };
     },
     setHome: async (personaId: string, sessionId: string) => { await this.core.accessor.get(IBotService).setHomeSession(personaId, sessionId); },
     activity: (sessionId: string) => this.inSession(sessionId, async (session) => {
@@ -439,8 +439,7 @@ interface ReplySelectorMessage {
 export function visibleReplyMessages<T extends ReplySelectorMessage>(messages: readonly T[], promptId: string, turnId?: number): T[] {
   const resolved = turnId ?? messages.find((message) => message.id === promptId)?.source?.turnId;
   if (typeof resolved === 'number') {
-    const byTurn = messages.filter((message) => message.role === 'assistant' && message.source?.turnId === resolved);
-    if (byTurn.length > 0) return byTurn;
+    return messages.filter((message) => message.role === 'assistant' && message.source?.turnId === resolved);
   }
   const start = messages.findIndex((message) => message.id === promptId);
   if (start < 0) return [];

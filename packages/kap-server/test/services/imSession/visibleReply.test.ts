@@ -12,6 +12,14 @@ describe('visible IM reply messages', () => {
     expect(visibleReplyMessages(messages, 'im:1').map((item) => item.content[0]?.text)).toEqual(['reply-turn-hello']);
   });
 
+  it.each([undefined, 0])('does not fall back to another turn when the requested turn has no reply (%s)', (turnId) => {
+    const messages = [
+      { id: 'im:1', role: 'user', source: { turnId: 0 } },
+      { id: 'other-reply', role: 'assistant', source: { turnId: 1 } },
+    ];
+    expect(visibleReplyMessages(messages, 'im:1', turnId)).toEqual([]);
+  });
+
   it('skips an injection when the prompt has no turn id yet and stops at the next person', () => {
     const messages = [
       { id: 'im:1', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'a' }] },

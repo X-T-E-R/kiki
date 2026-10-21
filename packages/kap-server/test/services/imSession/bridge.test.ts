@@ -145,6 +145,38 @@ describe('im session bridge', () => {
     expect(harness.submitted.map((item) => item.promptId)).toEqual(['im:inst:3']);
   });
 
+  it('validates a replacement session before changing any binding settings', async () => {
+    const adapter = new FakeImAdapter('telegram', '42');
+    const harness = bridgeFor(adapter);
+    await harness.bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
+    await harness.bridge.setListening('inst', true);
+    await adapter.emit({ eventId: '1', cursor: 1, identity, kind: 'text', text: 'hello' });
+    await harness.bridge.confirm((await harness.bridge.snapshot()).discoveries[0]!.id, { target: { kind: 'persona', persona_id: 'ada' } });
+    const bound = (await harness.bridge.snapshot()).bindings[0]!;
+    await expect(harness.bridge.updateBinding(bound.id, { sessionId: 'unknown', enabled: false })).rejects.toThrow('unknown_session');
+    expect((await harness.bridge.snapshot()).bindings[0]).toEqual(bound);
+    await harness.bridge.updateBinding(bound.id, { sessionId: 'sess' });
+    const changed = (await harness.bridge.snapshot()).bindings[0]!;
+    expect(changed.session_id).toBe('sess');
+    expect(changed.persona_id).toBeUndefined();
+    await harness.bridge.close();
+  });
+
+  it('switches an existing chat to a persona home without adding a binding', async () => {
+    const adapter = new FakeImAdapter('telegram', '42');
+    const harness = bridgeFor(adapter);
+    await harness.bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
+    await harness.bridge.setListening('inst', true);
+    await adapter.emit({ eventId: '1', cursor: 1, identity, kind: 'text', text: 'hello' });
+    await harness.bridge.confirm((await harness.bridge.snapshot()).discoveries[0]!.id, { target: { kind: 'session', session_id: 'sess' } });
+    const bound = (await harness.bridge.snapshot()).bindings[0]!;
+    await harness.bridge.updateBinding(bound.id, { target: { kind: 'persona', persona_id: 'ada' } });
+    const changed = await harness.bridge.snapshot();
+    expect(changed.bindings).toHaveLength(1);
+    expect(changed.bindings[0]).toMatchObject({ id: bound.id, session_id: 'home', persona_id: 'ada' });
+    await harness.bridge.close();
+  });
+
   it('answers status, abort, and target without a prompt', async () => {
     const adapter = new FakeImAdapter('telegram', '42');
     const harness = bridgeFor(adapter);

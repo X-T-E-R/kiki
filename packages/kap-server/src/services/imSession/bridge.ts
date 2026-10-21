@@ -367,17 +367,31 @@ export class ImSessionBridge {
     return this.snapshot();
   }
 
-  async updateBinding(id: string, patch: { enabled?: boolean; sessionEnabled?: boolean | null; busy?: 'queue' | 'steer'; reply?: 'final' | 'edit'; mobileInteractions?: boolean; sessionId?: string }): Promise<ImSessionSnapshot> {
+  async updateBinding(id: string, patch: { enabled?: boolean; sessionEnabled?: boolean | null; busy?: 'queue' | 'steer'; reply?: 'final' | 'edit'; mobileInteractions?: boolean; sessionId?: string; target?: ImConfirmRequest['target'] }): Promise<ImSessionSnapshot> {
     await this.ready;
     const binding = this.only(this.state.bindings, id);
     if (binding === undefined) throw new Error('unknown_binding');
+    const target = patch.target ?? (patch.sessionId === undefined ? undefined : { kind: 'session' as const, session_id: patch.sessionId });
+    let resolved: { sessionId: string; personaId?: string } | undefined;
+    if (target?.kind === 'persona') {
+      const home = await this.ports.sessions.ensureHome(target.persona_id);
+      if (home.homeSessionId === undefined || home.homeSessionId.length === 0) throw new Error('home_session_missing');
+      resolved = { sessionId: home.homeSessionId, personaId: target.persona_id };
+    } else if (target?.kind === 'session') {
+      if (!await this.ports.sessions.owns(target.session_id)) throw new Error('unknown_session');
+      resolved = { sessionId: target.session_id };
+    }
     if (patch.enabled !== undefined) binding.enabled = patch.enabled;
     if (patch.sessionEnabled === null) delete binding.sessionEnabled;
     else if (patch.sessionEnabled !== undefined) binding.sessionEnabled = patch.sessionEnabled;
     if (patch.busy !== undefined) binding.busy = patch.busy;
     if (patch.reply !== undefined) binding.reply = patch.reply;
     if (patch.mobileInteractions !== undefined) binding.mobileInteractions = patch.mobileInteractions;
-    if (patch.sessionId !== undefined) binding.sessionId = patch.sessionId;
+    if (resolved !== undefined) {
+      binding.sessionId = resolved.sessionId;
+      if (resolved.personaId === undefined) delete binding.personaId;
+      else binding.personaId = resolved.personaId;
+    }
     await this.persist();
     await this.resumeReplies(binding.providerInstanceId);
     return this.snapshot();
@@ -426,7 +440,7 @@ export class ImSessionBridge {
 
   async close(): Promise<void> {
     await this.stopAll();
-    await Promise.all([...this.jobs]);
+    await Promise.all(this.jobs);
   }
 
   private async restore(): Promise<void> {
@@ -598,7 +612,7 @@ export class ImSessionBridge {
       poller.instances.delete(instanceId);
       if (poller.instances.size > 0) continue;
       await poller.adapter.stop();
-      for (const [key, item] of [...this.pollers]) if (item === poller) this.pollers.delete(key);
+      for (const [key, item] of this.pollers) if (item === poller) this.pollers.delete(key);
     }
   }
 

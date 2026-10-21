@@ -28,3 +28,25 @@ it('keeps the id in front of the action colon', async () => {
   expect(seen).toEqual(['check:inst', 'listen:inst:true', 'confirm:d1', 'dismiss:d1', 'patch:b1', 'delete:b1']);
   await app.close();
 });
+
+it('accepts persona or session targets while preserving the legacy binding patch', async () => {
+  const patches: unknown[] = [];
+  const bridge = { updateBinding: async (_id: string, patch: unknown) => { patches.push(patch); return snapshot; } } as unknown as ImSessionBridge;
+  const app = Fastify();
+  registerImSessionRoutes(app, bridge);
+  try {
+    for (const target of [{ kind: 'persona', persona_id: 'ada' }, { kind: 'session', session_id: 'sess' }]) {
+      expect((await app.inject({ method: 'PATCH', url: '/im/sessions/bindings/b1', payload: { target } })).json().code).toBe(0);
+    }
+    expect((await app.inject({ method: 'PATCH', url: '/im/sessions/bindings/b1', payload: { session_id: 'legacy' } })).json().code).toBe(0);
+    expect(patches).toEqual([
+      expect.objectContaining({ target: { kind: 'persona', persona_id: 'ada' } }),
+      expect.objectContaining({ target: { kind: 'session', session_id: 'sess' } }),
+      expect.objectContaining({ sessionId: 'legacy' }),
+    ]);
+    expect((await app.inject({ method: 'PATCH', url: '/im/sessions/bindings/b1', payload: { target: { kind: 'session', session_id: 'a' }, session_id: 'b' } })).json().code).toBe(40001);
+    expect(patches).toHaveLength(3);
+  } finally {
+    await app.close();
+  }
+});

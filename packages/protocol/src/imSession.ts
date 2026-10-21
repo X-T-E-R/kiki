@@ -141,5 +141,9 @@ export const imBindingPatchSchema = z.object({
   reply: z.enum(['final', 'edit']).optional(),
   mobile_interactions: z.boolean().optional(),
   session_id: z.string().min(1).optional(),
-}).strict();
+  target: imConfirmRequestSchema.shape.target.optional(),
+}).strict().refine((patch) => patch.target === undefined || patch.session_id === undefined, {
+  path: ['target'],
+  message: 'Set either target or session_id, not both.',
+});
 export type ImBindingPatch = z.infer<typeof imBindingPatchSchema>;

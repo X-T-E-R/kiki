@@ -44,12 +44,13 @@ export function registerImSessionRoutes(app: FastifyInstance, bridge: ImSessionB
   app.patch('/im/sessions/bindings/:id', (req, reply) => respond(req, reply, () => {
     const patch = imBindingPatchSchema.parse(req.body);
     return bridge.updateBinding(routeId(req), {
-      ...(patch.enabled === undefined ? {} : { enabled: patch.enabled }),
-      ...(patch.session_enabled === undefined ? {} : { sessionEnabled: patch.session_enabled }),
-      ...(patch.busy === undefined ? {} : { busy: patch.busy }),
-      ...(patch.reply === undefined ? {} : { reply: patch.reply }),
-      ...(patch.mobile_interactions === undefined ? {} : { mobileInteractions: patch.mobile_interactions }),
-      ...(patch.session_id === undefined ? {} : { sessionId: patch.session_id }),
+      enabled: patch.enabled,
+      sessionEnabled: patch.session_enabled,
+      busy: patch.busy,
+      reply: patch.reply,
+      mobileInteractions: patch.mobile_interactions,
+      sessionId: patch.session_id,
+      target: patch.target,
     });
   }));
   app.delete('/im/sessions/bindings/:id', (req, reply) => respond(req, reply, () => bridge.removeBinding(routeId(req))));
