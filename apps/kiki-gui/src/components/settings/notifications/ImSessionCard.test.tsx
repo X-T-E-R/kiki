@@ -34,7 +34,7 @@ const imSessions = {
   updateBinding: vi.fn(async (_id: string, _patch: ImBindingPatch): Promise<ImSessionSnapshot> => bound),
   removeBinding: vi.fn(async () => empty),
   startWechatQr: vi.fn(async () => ({ login_id: 'login1', image: 'https://cdn.example/qr.png' })),
-  pollWechatQr: vi.fn(async () => ({ status: 'wait' })),
+  pollWechatQr: vi.fn(async (): Promise<{ status: string; provider_instance_id?: string }> => ({ status: 'wait' })),
   cancelWechatQr: vi.fn(async () => ({})),
 };
 
@@ -181,6 +181,71 @@ describe('ImSessionCard', () => {
     expect(payload.startsWith('data:image/svg+xml')).toBe(true);
     expect(container.querySelector('[data-im-wechat-code]')).toBeNull();
     expect(container.textContent).not.toMatch(/reply|Receive/i);
+  });
+
+  it.each(['poll', 'verification'] as const)('starts only the account identified by the confirmed WeChat %s result', async (route) => {
+    const accounts: ImSessionSnapshot = {
+      ...empty,
+      instances: ['wx-old', 'wx-new'].map((id) => ({ id, provider_kind: 'wechat_bridge', listening: false, configured: true, account_id: id, adapter: 'stopped' })),
+    };
+    imSessions.snapshot.mockResolvedValue(accounts);
+    imSessions.check.mockResolvedValue({ ok: true });
+    imSessions.check.mockClear();
+    imSessions.listen.mockClear();
+    imSessions.listen.mockResolvedValue(accounts);
+    const confirmed = { status: 'confirmed', provider_instance_id: 'wx-new' };
+    imSessions.pollWechatQr.mockResolvedValueOnce(route === 'poll' ? confirmed : { status: 'need_verifycode' });
+    const container = await render('1100px');
+    await click(container, '[data-im-connect-toggle]');
+    await click(container, '[data-im-wechat-scan]');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1_550)); });
+    if (route === 'verification') {
+      const field = container.querySelector<HTMLInputElement>('[data-im-wechat-verify]')!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(field, '1234');
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      imSessions.pollWechatQr.mockResolvedValueOnce(confirmed);
+      await click(container, '[data-im-wechat-verify-submit]');
+    }
+    expect(imSessions.check.mock.calls).toEqual([['wx-new']]);
+    expect(imSessions.listen.mock.calls).toEqual([['wx-new', true]]);
+  });
+
+  it('does not guess a WeChat account when confirmation has no instance id', async () => {
+    const accounts: ImSessionSnapshot = {
+      ...empty,
+      instances: [{ id: 'wx-old', provider_kind: 'wechat_bridge', listening: false, configured: true, adapter: 'stopped' }],
+    };
+    imSessions.snapshot.mockResolvedValue(accounts);
+    imSessions.check.mockClear();
+    imSessions.listen.mockClear();
+    imSessions.pollWechatQr.mockResolvedValueOnce({ status: 'confirmed' });
+    const container = await render('1100px');
+    await click(container, '[data-im-connect-toggle]');
+    await click(container, '[data-im-wechat-scan]');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1_550)); });
+    expect(imSessions.check).not.toHaveBeenCalled();
+    expect(imSessions.listen).not.toHaveBeenCalled();
+  });
+
+  it('shows a confirmed WeChat account check failure instead of starting another account', async () => {
+    const accounts: ImSessionSnapshot = {
+      ...empty,
+      instances: ['wx-old', 'wx-new'].map((id) => ({ id, provider_kind: 'wechat_bridge', listening: false, configured: true, adapter: 'stopped' })),
+    };
+    imSessions.snapshot.mockResolvedValue(accounts);
+    imSessions.check.mockResolvedValueOnce({ ok: false, detail: 'New account is unavailable' });
+    imSessions.check.mockClear();
+    imSessions.listen.mockClear();
+    imSessions.pollWechatQr.mockResolvedValueOnce({ status: 'confirmed', provider_instance_id: 'wx-new' });
+    const container = await render('1100px');
+    await click(container, '[data-im-connect-toggle]');
+    await click(container, '[data-im-wechat-scan]');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1_550)); });
+    expect(imSessions.check.mock.calls).toEqual([['wx-new']]);
+    expect(imSessions.listen).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('New account is unavailable');
   });
 
   it('shows full text for QQ and WeChat and keeps live text on Telegram', async () => {

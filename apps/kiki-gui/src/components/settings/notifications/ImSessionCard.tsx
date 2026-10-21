@@ -289,17 +289,25 @@ export function ImSessionCard() {
 
             <div className={showConnectForm ? 'space-y-3 rounded-lg border border-hairline bg-paper/40 p-3.5' : 'hidden'} data-im-connect-drawer>
               <p className="text-[12px] leading-5 text-ink-soft">{t('st.im.hint')}</p>
-              <WechatScan onConfirmed={() => {
+              <WechatScan onConfirmed={(providerInstanceId) => {
                 setConnectOpen(false);
                 setBindFlowOpen(true);
-                void client.imSessions.snapshot().then(async (fresh) => {
+                void run(async () => {
+                  const fresh = await client.imSessions.snapshot();
                   apply(fresh);
-                  const wechat = fresh.instances.find((item) => item.provider_kind === 'wechat_bridge' && !item.listening);
-                  if (wechat !== undefined) {
-                    const checked = await client.imSessions.check(wechat.id);
-                    if (checked.ok) apply(await client.imSessions.listen(wechat.id, true));
+                  if (providerInstanceId === undefined) return;
+                  const wechat = fresh.instances.find((item) => item.id === providerInstanceId && item.provider_kind === 'wechat_bridge');
+                  if (wechat === undefined) return;
+                  setBindInstanceId(wechat.id);
+                  setRouteBindingId('');
+                  if (wechat.listening) return;
+                  const checked = await client.imSessions.check(wechat.id);
+                  if (!checked.ok) {
+                    setError(checked.detail ?? t('st.im.error'));
+                    return;
                   }
-                }).catch(() => {});
+                  return client.imSessions.listen(wechat.id, true);
+                });
               }} />
               <label className="block space-y-1 text-[12px] text-ink-soft">
                 <span>{t('st.im.paste')}</span>
@@ -679,7 +687,7 @@ export function ImSessionCard() {
   );
 }
 
-function WechatScan({ onConfirmed }: { onConfirmed?: () => void }) {
+function WechatScan({ onConfirmed }: { onConfirmed?: (providerInstanceId?: string) => void }) {
   const { t } = useI18n();
   const { client } = useConnection();
   const queryClient = useQueryClient();
@@ -699,7 +707,7 @@ function WechatScan({ onConfirmed }: { onConfirmed?: () => void }) {
         setStatus(result.status);
         if (result.status === 'confirmed') {
           void queryClient.invalidateQueries({ queryKey: KEY });
-          onConfirmed?.();
+          onConfirmed?.(result.provider_instance_id);
         }
       }).catch((caught: unknown) => {
         if (stop) return;
@@ -749,7 +757,7 @@ function WechatScan({ onConfirmed }: { onConfirmed?: () => void }) {
                 setStatus(result.status);
                 if (result.status === 'confirmed') {
                   void queryClient.invalidateQueries({ queryKey: KEY });
-                  onConfirmed?.();
+                  onConfirmed?.(result.provider_instance_id);
                 }
               }).catch((caught: unknown) => { setError(caught instanceof Error ? caught.message : t('st.im.error')); });
             }}>{t('st.im.check')}</button>
