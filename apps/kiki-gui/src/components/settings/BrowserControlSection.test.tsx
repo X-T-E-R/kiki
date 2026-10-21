@@ -390,12 +390,71 @@ describe('BrowserControlSection', () => {
       await render();
       await settleUntil('[data-browser-route="ego-lite"]');
       const chinese = query('[data-browser-route="ego-lite"]');
-      expect(chinese?.textContent).toContain('请自行下载 Ego Lite，完成它自己的设置窗口，再在这里检查。Kiki 不会安装它，也不会导入 Chrome 的数据。');
+      expect(chinese?.textContent).not.toContain('请自行下载 Ego Lite');
+      expect(query('[data-browser-route-ego-next]')?.textContent).toBe('已安装 Ego Lite。请先完成它自己的设置窗口，再在这里检查。');
       expect(chinese?.textContent).toContain('下载 Ego Lite');
       expect(chinese?.textContent).toContain('检查 Ego Lite');
-      expect(chinese?.textContent).toContain('已安装 Ego Lite。请先完成它自己的设置窗口，再在这里检查。');
       expect(query('[data-browser-route="ego-lite"] [data-browser-route-prepare]')).toBeNull();
       expect(chinese?.textContent).not.toContain('一键配置');
+    });
+
+    it('keeps Ego Lite onboarding as one next step, with the raw sentence folded', async () => {
+      localStorage.setItem('kiki.locale', 'zh');
+      const onboarding = preset({
+        preset: 'ego-lite', displayName: 'Ego Lite', controlSurface: 'external-app',
+        state: 'needs_user_action', reason: 'ego_onboarding', sourceUrl: 'https://lite.ego.app/download?auto=1',
+        steps: [{ id: 'detect', state: 'user_action', detail: 'Please complete the onboarding process first' }],
+        actions: [
+          { id: 'connect' },
+          { id: 'open_instructions', url: 'https://lite.ego.app/download?auto=1', target: 'documentation' },
+        ],
+      });
+      setupPresets.mockResolvedValue({ presets: [onboarding] });
+      connectPreset.mockResolvedValue(onboarding);
+      await render();
+      await settleUntil('[data-browser-route="ego-lite"]');
+      await click('[data-browser-route-connect]');
+      await settle();
+      expect(query('[data-browser-route-error]')).toBeNull();
+      expect(query('[data-feedback-tone="error"]')).toBeNull();
+      expect(query('[data-browser-route-ego-next]')?.textContent).toBe('请先完成 Ego Lite 自己的设置窗口，然后再检查。');
+      expect(query('[data-browser-route="ego-lite"]')?.textContent?.match(/Please complete the onboarding process first/g)).toEqual(['Please complete the onboarding process first']);
+      expect(query('[data-browser-route-diagnostics]')?.textContent).toContain('Please complete the onboarding process first');
+      expect(query<HTMLDetailsElement>('[data-browser-route-diagnostics]')?.open).toBe(false);
+    });
+
+    it('tells a ready Ego Lite connection to allow it, without asking for another download', async () => {
+      setupPresets.mockResolvedValue({ presets: [preset({
+        preset: 'ego-lite', displayName: 'Ego Lite', controlSurface: 'external-app',
+        state: 'ready', reason: 'ego_ready', sourceUrl: 'https://lite.ego.app/download?auto=1',
+        actions: [
+          { id: 'connect' },
+          { id: 'open_instructions', url: 'https://lite.ego.app/download?auto=1', target: 'documentation' },
+        ],
+      })] });
+      localStorage.setItem('kiki.locale', 'en');
+      await render();
+      await settleUntil('[data-browser-route="ego-lite"][data-browser-route-state="ready"]');
+      const route = query('[data-browser-route="ego-lite"]');
+      expect(query('[data-browser-route-ego-next]')?.textContent).toBe('Ego Lite is ready. Allow this connection, then select it for the agent.');
+      expect(route?.textContent).not.toContain('Download Ego Lite yourself');
+      expect(route?.textContent).toContain('Download Ego Lite');
+      expect(query('[data-browser-route-readiness="ready"]')).not.toBeNull();
+    });
+
+    it('says an admitted Ego Lite connection is open only when the server says it is connected', async () => {
+      setupPresets.mockResolvedValue({ presets: [preset({
+        preset: 'ego-lite', displayName: 'Ego Lite', controlSurface: 'external-app',
+        state: 'connected', sourceUrl: 'https://lite.ego.app/download?auto=1',
+        actions: [{ id: 'open_instructions', url: 'https://lite.ego.app/download?auto=1', target: 'documentation' }],
+      })] });
+      localStorage.setItem('kiki.locale', 'en');
+      await render();
+      await settleUntil('[data-browser-route="ego-lite"][data-browser-route-state="connected"]');
+      expect(query('[data-browser-route-ego-next]')?.textContent).toBe('This Ego Lite connection is open. Select it for the agent to use the page.');
+      expect(query('[data-browser-route="ego-lite"]')?.textContent).not.toContain('Download Ego Lite yourself');
+      expect(query('[data-browser-route-readiness="connected"]')?.textContent).toContain('Connected');
+      expect(query('[data-browser-route-connect]')).toBeNull();
     });
 
     it('gives an external control surface no Kiki action at all', async () => {

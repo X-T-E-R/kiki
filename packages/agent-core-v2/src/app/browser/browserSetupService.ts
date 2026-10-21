@@ -391,9 +391,12 @@ export class BrowserSetupService implements IBrowserSetupService {
     const download = { id: 'open_instructions' as const, url: EGO_LITE_DOWNLOAD_URL, target: 'documentation' as const };
     const connect = { id: 'connect' as const };
     const probe = this.egoLast !== undefined && resolution.kind === 'found' && this.egoLast.cliPath === resolution.path ? this.egoLast : undefined;
+    const admission = saved === undefined ? undefined : await this.control.status(saved.id);
+    const open = admission?.state === 'ready';
     let state: BrowserSetupStatus['state'] = 'not_prepared';
     let reason: string | undefined;
     let error: string | undefined;
+    let steps: BrowserSetupStatus['steps'] = [];
     let actions: BrowserSetupStatus['actions'] = [download];
     if (resolution.kind === 'missing') {
       state = 'not_prepared';
@@ -404,10 +407,11 @@ export class BrowserSetupService implements IBrowserSetupService {
     } else if (probe?.kind === 'onboarding') {
       state = 'needs_user_action';
       reason = 'ego_onboarding';
-      error = EGO_ONBOARDING_SENTENCE;
+      steps = [{ id: 'detect', state: 'user_action', detail: EGO_ONBOARDING_SENTENCE }];
       actions = [connect, download];
     } else if (probe?.kind === 'ready') {
-      state = 'ready';
+      state = open ? 'connected' : 'ready';
+      if (!open) reason = 'ego_ready';
       actions = [connect, download];
     } else if (probe?.kind === 'not_ready') {
       state = 'failed';
@@ -420,7 +424,7 @@ export class BrowserSetupService implements IBrowserSetupService {
     }
     return {
       preset: 'ego-lite', displayName: 'Ego Lite', controlSurface: 'external-app', state, supported: true,
-      executionHost: hostname(), steps: [], actions, sourceUrl: EGO_LITE_DOWNLOAD_URL,
+      executionHost: hostname(), steps, actions, sourceUrl: EGO_LITE_DOWNLOAD_URL,
       ...(saved !== undefined ? { connectionId: saved.id } : {}),
       ...(reason !== undefined ? { reason } : {}),
       ...(error !== undefined ? { error } : {}),
@@ -458,7 +462,6 @@ export class BrowserSetupService implements IBrowserSetupService {
       try {
         await this.control.connect(EGO_LITE_CONNECTION_ID);
       } catch (error) {
-        // The allow checkbox is a separate later step. Refusing admission must not turn a ready CLI check into a failure.
         if (!(error instanceof BrowserError) || error.code !== 'browser.disabled' || error.details?.['reason'] !== 'not_allowed') throw error;
       }
     }

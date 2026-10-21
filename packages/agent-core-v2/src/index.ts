@@ -215,7 +215,7 @@ export * from '#/app/browser/browserSetup';
 export { BrowserError } from '#/app/browser/errors';
 import '#/app/browser/browserSetupService';
 import '#/app/browser/browserBackend';
-export { isBrowserOperation, browserToolGroup } from '#/app/browser/browserControlService';
+export { isBrowserOperation, browserToolGroup, admitEgoAfterAllow } from '#/app/browser/browserControlService';
 export * from '#/agent/tools/browser/browserTools';
 import '#/persistence/backends/node-fs/sshCredentialStore';
 import '#/persistence/backends/node-fs/sshHostDocumentStore';

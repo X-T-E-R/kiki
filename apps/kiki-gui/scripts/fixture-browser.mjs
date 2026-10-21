@@ -270,9 +270,13 @@ function handleSetup(server, browser, res, path, method, body) {
       const chosen = typeof body?.cliPath === 'string' && EGO_CLI_PATHS.includes(body.cliPath) ? body.cliPath : undefined;
       let next;
       if (phase === 'installed') {
-        next = { egoPhase: 'onboarding', state: 'needs_user_action', reason: 'ego_onboarding', error: 'Please complete the onboarding process first' };
+        next = {
+          egoPhase: 'onboarding', state: 'needs_user_action', reason: 'ego_onboarding', steps: [
+            { id: 'detect', state: 'user_action', detail: 'Please complete the onboarding process first' },
+          ],
+        };
       } else if (phase === 'onboarding' || (phase === 'choose' && chosen === undefined)) {
-        next = { egoPhase: 'choose', state: 'needs_user_action', reason: 'ego_choose_cli', cliPaths: EGO_CLI_PATHS };
+        next = { egoPhase: 'choose', state: 'needs_user_action', reason: 'ego_choose_cli', cliPaths: EGO_CLI_PATHS, steps: [] };
       } else if (chosen !== undefined) {
         const current = find(browser, 'ego-lite');
         const saved = {
@@ -282,9 +286,9 @@ function handleSetup(server, browser, res, path, method, body) {
           status: current?.status ?? { state: 'idle', generation: 0 },
         };
         browser.connections = [...browser.connections.filter((entry) => entry.id !== 'ego-lite'), saved];
-        next = { egoPhase: 'ready', state: 'ready', connectionId: 'ego-lite' };
+        next = { egoPhase: 'ready', state: 'ready', reason: 'ego_ready', connectionId: 'ego-lite', steps: [] };
       } else {
-        next = { egoPhase: 'ready', state: 'ready', connectionId: 'ego-lite' };
+        next = { egoPhase: 'ready', state: 'ready', reason: 'ego_ready', connectionId: 'ego-lite', steps: [] };
       }
       const merged = { ...override, ...next };
       if (next.cliPaths === undefined) delete merged.cliPaths;
@@ -414,7 +418,12 @@ export function handleBrowser(server, res, path, query, method, body) {
   if (handleSetup(server, browser, res, path, method, body)) return true;
 
   if (path === '/browser/connections' && method === 'GET') {
-    server.envelope(res, { connections: list(), defaultBrowser: browser.defaultBrowser });
+    const restricted = browser.scenario === 'ego-lite';
+    server.envelope(res, {
+      connections: list(),
+      defaultBrowser: browser.defaultBrowser,
+      ...(restricted ? { allowedBrowsers: [], allowedBrowsersConfigured: true } : {}),
+    });
     return true;
   }
   if (path === '/browser/default' && method === 'PUT') {

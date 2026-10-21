@@ -15,6 +15,7 @@ import type { BrowserRequestContext } from './codexBrowser';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService } from '#/os/interface/hostProcess';
 import { EgoBrowserRuntime, egoTabBody } from './ego/runtime';
+import { EGO_LITE_CONNECTION_ID } from './ego/resolveCli';
 
 interface LiveBrowser {
   connection: BrowserResolvedConnection;
@@ -65,6 +66,25 @@ export function isBrowserOperation(name: string): boolean {
   if (name.startsWith('codex_')) return !browserManagedLifecycle(name);
   return name.startsWith('agent_browser_') && !/^agent_browser_(?:tools_profiles|connect|close|tab_|frame_|window_|session(?:_|$)|profiles(?:_|$)|skills(?:_|$)|install$|upgrade$|doctor$|dashboard_|plugin(?:_|$)|plugins(?:_|$)|chat$|batch$|confirm$|deny$|auth(?:_|$)|state_(?:list|show|rename|clear|clean))/.test(name);
 }
+export async function admitEgoAfterAllow(
+  control: IBrowserControlService,
+  before: readonly string[] | undefined,
+  after: readonly string[] | undefined,
+): Promise<void> {
+  if (before === undefined || after === undefined) return;
+  const prior = new Set(before);
+  for (const id of after) {
+    if (prior.has(id) || id !== EGO_LITE_CONNECTION_ID) continue;
+    try {
+      await control.connect(id);
+    } catch (error) {
+      const reason = error instanceof BrowserError ? error.details?.['reason'] : undefined;
+      if (error instanceof BrowserError && error.code === 'browser.disabled' && (reason === 'feature_disabled' || reason === 'connection_disabled')) continue;
+      throw error;
+    }
+  }
+}
+
 export function browserToolGroup(name: string): string {
   if (/network|har|headers|credentials|offline/.test(name)) return 'network';
   if (/cookies|storage|state_/.test(name)) return 'state';

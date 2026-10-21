@@ -111,9 +111,20 @@ const REASON_KEYS: Readonly<Record<string, I18nKey>> = {
   ego_installed: 'st.browser.reason.egoInstalled',
   ego_onboarding: 'st.browser.reason.egoOnboarding',
   ego_choose_cli: 'st.browser.reason.egoChooseCli',
+  ego_ready: 'st.browser.reason.egoReady',
   disk_updated: 'st.browser.route.done.updateDisk',
   disk_updated_running_unchanged: 'st.browser.route.done.updateRunningUnchanged',
 };
+
+function egoNextKey(preset: BrowserSetupStatus): I18nKey {
+  if (preset.state === 'connected') return 'st.browser.reason.egoAdmitted';
+  if (preset.reason === 'ego_onboarding') return 'st.browser.reason.egoOnboarding';
+  if (preset.reason === 'ego_installed') return 'st.browser.reason.egoInstalled';
+  if (preset.reason === 'ego_choose_cli') return 'st.browser.reason.egoChooseCli';
+  if (preset.reason === 'ego_ready' || preset.state === 'ready') return 'st.browser.reason.egoReady';
+  if (preset.state === 'failed') return 'st.browser.reason.egoFailed';
+  return 'st.browser.reason.egoMissing';
+}
 
 /** One route. The name is the server's `displayName`; the rest is its own answer. */
 function BrowserRoute({ preset, active, onSelect }: {
@@ -360,7 +371,6 @@ function BrowserRoute({ preset, active, onSelect }: {
   const blocking = blockingStep(preset);
   const external = preset.controlSurface === 'external-app';
   const routeActions = preset.preset === 'ego-lite' || !external;
-  const egoReason = preset.preset === 'ego-lite' && preset.reason !== undefined ? REASON_KEYS[preset.reason] : undefined;
   const step = (id: string): string => t(STEP_KEYS[id] ?? 'st.browser.step.install');
   const reason = (source: BrowserSetupStatus['steps'][number]): string | undefined => {
     if (source.reason === undefined) return undefined;
@@ -445,6 +455,13 @@ function BrowserRoute({ preset, active, onSelect }: {
         await queryClient.invalidateQueries({ queryKey: browserKeys.connections(scopeId) });
       }
 
+      if (action === 'connect' && preset.preset === 'ego-lite' && (
+        res?.reason === 'ego_choose_cli' || res?.reason === 'ego_onboarding' || res?.reason === 'ego_installed' || res?.reason === 'ego_ready'
+        || res?.state === 'ready' || res?.state === 'connected'
+      )) {
+        setFeedback(null);
+        return;
+      }
       if (res?.state === 'failed' || res?.error !== undefined) {
         setFeedback({ tone: 'error', text: res?.error ?? t('st.browser.route.failed') });
         return;
@@ -462,20 +479,12 @@ function BrowserRoute({ preset, active, onSelect }: {
           setFeedback({ tone: 'info', text: t('st.browser.route.done.savedApprovalUnproven') });
           return;
         }
-        if (preset.preset === 'ego-lite' && res?.reason === 'ego_choose_cli') {
-          setFeedback(null);
-          return;
-        }
         if (res?.state !== 'connected' && res?.state !== 'ready') {
           setFeedback({ tone: 'error', text: res?.error ?? t('st.browser.outcome.connectIncomplete') });
           return;
         }
         if (res?.state === 'connected') {
           setFeedback(null);
-          return;
-        }
-        if (preset.preset === 'ego-lite' && res?.state === 'ready') {
-          setFeedback({ tone: 'info', text: t('st.browser.route.ready') });
           return;
         }
       }
@@ -517,12 +526,13 @@ function BrowserRoute({ preset, active, onSelect }: {
         </span>
       </div>
 
-      <p className="mt-1 max-w-[62ch] text-[12.5px] leading-5 text-ink-soft">
-        {t(`st.browser.route.blurb.${preset.preset}`)}
-      </p>
-      {egoReason === undefined ? null : (
-        <p className="mt-2 max-w-[62ch] text-[12px] leading-[18px] text-ink-soft" data-browser-route-ego-reason>
-          {t(egoReason)}
+      {preset.preset === 'ego-lite' ? (
+        <p className="mt-1 max-w-[62ch] text-[12.5px] leading-5 text-ink-soft" data-browser-route-ego-next>
+          {t(egoNextKey(preset))}
+        </p>
+      ) : (
+        <p className="mt-1 max-w-[62ch] text-[12.5px] leading-5 text-ink-soft">
+          {t(`st.browser.route.blurb.${preset.preset}`)}
         </p>
       )}
 

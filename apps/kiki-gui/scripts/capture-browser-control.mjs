@@ -353,11 +353,19 @@ const scenarios = [
       await page.waitForSelector('[data-browser-route="codex-browser"]', { timeout: 30_000 });
       await page.waitForSelector('[data-browser-route="ego-lite"][data-browser-route-state="needs-action"]', { timeout: 30_000 });
       if (await route.locator('[data-browser-route-prepare]').count() !== 0) throw new Error('Ego Lite must not offer Set up');
+      await page.waitForSelector('[data-browser-route="ego-lite"] [data-browser-route-ego-next]', { timeout: 15_000 });
+      const installedNext = await route.locator('[data-browser-route-ego-next]').innerText();
+      if (installedNext.includes('Download Ego Lite yourself') || installedNext.includes('请自行下载 Ego Lite')) {
+        throw new Error(`installed next step still asks for a download: ${installedNext}`);
+      }
       await route.scrollIntoViewIfNeeded();
       await shot('ego-installed');
 
       await check.click();
-      await page.waitForSelector('[data-browser-route="ego-lite"] [data-browser-route-error]', { timeout: 15_000 });
+      await page.waitForSelector('[data-browser-route="ego-lite"] [data-browser-route-ego-next]', { timeout: 15_000 });
+      if (await route.locator('[data-browser-route-error]').count() !== 0) throw new Error('onboarding is not an error');
+      const onboardingNext = await route.locator('[data-browser-route-ego-next]').innerText();
+      if (onboardingNext.includes('Please complete the onboarding process first')) throw new Error('onboarding next step is the raw diagnosis');
       await route.scrollIntoViewIfNeeded();
       await shot('ego-onboarding');
 
@@ -380,6 +388,10 @@ const scenarios = [
       });
       await check.click();
       await page.waitForSelector('[data-browser-route="ego-lite"][data-browser-route-state="ready"]', { timeout: 15_000 });
+      const readyNext = await route.locator('[data-browser-route-ego-next]').innerText();
+      if (readyNext.includes('Download Ego Lite yourself') || readyNext.includes('请自行下载 Ego Lite')) {
+        throw new Error(`ready next step still asks for a download: ${readyNext}`);
+      }
       await route.scrollIntoViewIfNeeded();
       await shot('ego-ready');
 

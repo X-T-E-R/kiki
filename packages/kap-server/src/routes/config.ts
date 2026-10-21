@@ -1,8 +1,10 @@
 import {
+  admitEgoAfterAllow,
   ConfigChanged,
   ConfigTarget,
   IBootstrapService,
   FAST_MODEL_SECTION,
+  IBrowserControlService,
   IConfigService,
   IEventService,
   IModelService,
@@ -148,7 +150,11 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
           const patch = camelPatch['browserControl'] as Record<string, unknown>;
           if ('allowedBrowsers' in patch) {
             const allowed = patch['allowedBrowsers'];
-            await core.accessor.get(IBrowserConnectionStore).setAllowed(allowed === null ? undefined : allowed as string[]);
+            const store = core.accessor.get(IBrowserConnectionStore);
+            const before = (await store.list()).allowedBrowsers;
+            const after = allowed === null ? undefined : allowed as string[];
+            await store.setAllowed(after);
+            await admitEgoAfterAllow(core.accessor.get(IBrowserControlService), before, after);
           }
           if ('enabled' in patch) {
             const explained = core.accessor.get(IFlagService).explain('native_browser');
