@@ -8,7 +8,7 @@
  * behind it (`agent-core-v2/src/app/browser/browserConfig.ts`): a display name,
  * a stable id, an optional managed-driver path, and a type branch — profile
  * paths for a browser Kiki starts, a CDP endpoint for a browser that already
- * exists. There is no third branch and no field the server does not read.
+ * exists, and CLI fields for an installed Ego Lite app. Ego Lite has no endpoint.
  */
 
 import { browserConnectionInputSchema, browserIdSchema } from '@kiki/protocol';
@@ -33,6 +33,9 @@ export interface BrowserDraft {
   /** Profile branch only: run with a visible window instead of headless. */
   readonly headed: boolean;
   readonly endpoint: SecretDraft;
+  readonly cliPath: string;
+  readonly profileId: string;
+  readonly serverName: string;
 }
 
 export interface BrowserDraftIssues {
@@ -42,12 +45,14 @@ export interface BrowserDraftIssues {
   readonly profilePath?: I18nKey;
   readonly executablePath?: I18nKey;
   readonly endpoint?: I18nKey;
+  readonly cliPath?: I18nKey;
 }
 
 export function newBrowserDraft(): BrowserDraft {
   return {
     id: '', original: undefined, name: '', enabled: true, type: 'agent-browser-profile',
     driverPath: '', profilePath: '', executablePath: '', headed: false, endpoint: KEEP_SECRET,
+    cliPath: '', profileId: '', serverName: '',
   };
 }
 
@@ -63,6 +68,9 @@ export function draftOf(connection: BrowserConnection): BrowserDraft {
     executablePath: connection.executablePath ?? '',
     headed: connection.headed === true,
     endpoint: KEEP_SECRET,
+    cliPath: connection.cliPath ?? '',
+    profileId: connection.profileId ?? '',
+    serverName: connection.serverName ?? '',
   };
 }
 
@@ -85,7 +93,7 @@ function isAbsolutePath(text: string): boolean {
 
 /** The first thing wrong with this draft, per field, in the page's own words. */
 export function draftIssues(draft: BrowserDraft, takenIds: readonly string[]): BrowserDraftIssues {
-  const issues: { id?: I18nKey; name?: I18nKey; driverPath?: I18nKey; profilePath?: I18nKey; executablePath?: I18nKey; endpoint?: I18nKey } = {};
+  const issues: { id?: I18nKey; name?: I18nKey; driverPath?: I18nKey; profilePath?: I18nKey; executablePath?: I18nKey; endpoint?: I18nKey; cliPath?: I18nKey } = {};
   if (isNewDraft(draft)) {
     const id = draft.id.trim();
     if (id === '') issues.id = 'st.browser.idRequired';
@@ -106,6 +114,10 @@ export function draftIssues(draft: BrowserDraft, takenIds: readonly string[]): B
     issues.endpoint = 'st.browser.endpointRequired';
   } else if (draft.type === 'agent-browser-cdp' && draft.endpoint.mode === 'keep' && draft.original?.type !== 'agent-browser-cdp') {
     issues.endpoint = 'st.browser.endpointRequired';
+  } else if (draft.type === 'ego-lite') {
+    const cliPath = draft.cliPath.trim();
+    if (cliPath !== '' && !isAbsolutePath(cliPath)) issues.cliPath = 'st.browser.pathInvalid';
+    if (draft.profileId.trim().length > 256 || draft.serverName.trim().length > 256) issues.name = issues.name ?? 'st.browser.nameTooLong';
   }
   return issues;
 }
@@ -135,6 +147,17 @@ export function browserConnectionInput(draft: BrowserDraft): BrowserConnectionIn
       executablePath: executablePath === '' ? undefined : executablePath,
       // Absent means headless, so a headless connection stores nothing.
       headed: draft.headed ? true : undefined,
+    };
+  }
+  if (draft.type === 'ego-lite') {
+    const cliPath = draft.cliPath.trim();
+    const profileId = draft.profileId.trim();
+    const serverName = draft.serverName.trim();
+    return {
+      type: 'ego-lite', name, enabled: draft.enabled,
+      ...(cliPath === '' ? {} : { cliPath }),
+      ...(profileId === '' ? {} : { profileId }),
+      ...(serverName === '' ? {} : { serverName }),
     };
   }
   return { name, enabled: draft.enabled, driverPath: driver, type: 'agent-browser-cdp', endpoint: endpointEdit(draft.endpoint) };

@@ -9,7 +9,7 @@ import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
-import { prepareToolRuntime } from '#/agent/tools/os/sshToolTarget';
+import { prepareToolRuntime, toolApprovalRule } from '#/agent/tools/os/sshToolTarget';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { IBrowserControlService, type BrowserInvocationResult } from '#/app/browser/browser';
@@ -38,6 +38,7 @@ import { IConfigService } from '#/app/config/config';
 import { NATIVE_BROWSER_FLAG_ID } from '#/app/browser/flag';
 import { resolveRealPathAccess, resolveRealPathAccessPath, type WorkspaceConfig } from '#/tool/path-access';
 import { ToolAccesses, type AgentTool, type ExecutableToolContext, type ExecutableToolResult, type ToolExecution, type ToolFileAccess } from '#/tool/toolContract';
+import type { Runtime } from '#/runtime/runtime';
 
 export const BrowserConnectionsInputSchema = z.object({ action: z.enum(['list', 'select', 'status', 'check', 'connect', 'disconnect', 'tools']).default('list'),
   browser: BrowserIdSchema.optional(), groups: z.array(z.enum(['page', 'network', 'state', 'debug', 'input', 'react'])).optional(),
@@ -53,6 +54,12 @@ export const BrowserTabsInputSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('frame'), browser: BrowserIdSchema.optional(), frame: z.string().min(1) }).strict(),
 ]);
 export type BrowserTabsInput = z.infer<typeof BrowserTabsInputSchema>;
+export const BrowserEgoRunInputSchema = z.object({ browser: BrowserIdSchema.optional(), script: z.string().min(1) }).strict();
+export type BrowserEgoRunInput = z.infer<typeof BrowserEgoRunInputSchema>;
+
+export function egoRunExecution(script: string, runtime: Runtime, execute: (ctx: ExecutableToolContext) => Promise<ExecutableToolResult>): ToolExecution {
+  return { display: { kind: 'command', command: script, language: 'bash' }, approvalRule: toolApprovalRule('browser__ego_run', script, runtime), execute };
+}
 
 interface Selection { tab: string; generation: number; frame?: string; observed?: boolean; owned?: boolean }
 interface ISessionBrowserDefault { readonly _serviceBrand: undefined; readonly ready: Promise<string | undefined> }
@@ -68,6 +75,8 @@ export interface IAgentBrowserService {
   readonly _serviceBrand: undefined;
   connections(input: BrowserConnectionsInput, signal?: AbortSignal, context?: ExecutableToolContext): Promise<ExecutableToolResult>;
   tabs(input: BrowserTabsInput, signal?: AbortSignal, context?: ExecutableToolContext): Promise<ExecutableToolResult>;
+  egoExecution(input: BrowserEgoRunInput): Promise<ToolExecution>;
+  egoRun(input: BrowserEgoRunInput, signal?: AbortSignal, context?: ExecutableToolContext): Promise<ExecutableToolResult>;
 }
 export const IAgentBrowserService = createDecorator<IAgentBrowserService>('agentBrowserService');
 
@@ -175,7 +184,7 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
   private requestContext(ctx?: ExecutableToolContext): BrowserRequestContext | undefined {
     if (ctx === undefined) return undefined;
     const caller = { sessionId: this.session.sessionId, agentId: this.agent.agentId };
-    return { caller, turnId: ctx.turnId, toolCallId: ctx.toolCallId,
+    return { caller, turnId: ctx.turnId, toolCallId: ctx.toolCallId, sessionDir: this.session.sessionDir,
       elicit: (request, signal) => browserElicitation(this.approvals, caller, ctx.turnId, ctx.toolCallId, request, AbortSignal.any([ctx.signal, signal])) };
   }
 
@@ -227,6 +236,10 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
     try {
       signal?.throwIfAborted();
       const browser = await this.choose(input.browser, input.action === 'list' ? 'read' : 'operate');
+      const connection = await this.store.resolve(browser);
+      if (connection.type === 'ego-lite' && (input.action === 'window' || input.action === 'frame')) {
+        throw new BrowserError('browser.unsupported', 'The Ego Lite Page API has no window or frame method');
+      }
       const requestContext = this.requestContext(ctx);
       if (input.action === 'list') return this.json({ browser, status: await this.control.status(browser), selected: this.selections.get(browser), tabs: await this.control.tabs(browser, signal, requestContext) });
       const current = this.selections.get(browser);
@@ -258,6 +271,28 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
         tool: input.frame === 'main' ? 'agent_browser_frame_main' : 'agent_browser_frame_switch', args: input.frame === 'main' ? {} : { frame: input.frame } }, signal);
       if (browserResponse(result.result).success === true) this.selections.set(browser, { ...current, frame: input.frame, observed: false });
       return await this.output(result);
+    } catch (error) { return this.error(error); }
+  }
+
+  async egoExecution(input: BrowserEgoRunInput): Promise<ToolExecution> {
+    const args = BrowserEgoRunInputSchema.parse(input);
+    const inspected = this.runtime.inspect();
+    const runtime = inspected.identity.runtimeId.startsWith('ssh:') ? await prepareToolRuntime(this.runtime, 'local') : inspected;
+    return egoRunExecution(args.script, runtime, (ctx) => this.egoRun(args, ctx.signal, ctx));
+  }
+
+  async egoRun(input: BrowserEgoRunInput, signal?: AbortSignal, ctx?: ExecutableToolContext): Promise<ExecutableToolResult> {
+    try {
+      signal?.throwIfAborted();
+      const browser = await this.choose(input.browser, 'operate');
+      const connection = await this.store.resolve(browser);
+      if (connection.type !== 'ego-lite') throw new BrowserError('browser.unsupported', 'browser__ego_run runs on an Ego Lite connection');
+      const caller = { sessionId: this.session.sessionId, agentId: this.agent.agentId };
+      const result = await this.control.invoke({
+        browser, caller, requestContext: this.requestContext(ctx), tool: 'browser__ego_run', args: { script: input.script },
+        tab: this.selections.get(browser)?.tab,
+      }, signal);
+      return await this.output(result, ctx);
     } catch (error) { return this.error(error); }
   }
 
@@ -398,6 +433,25 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
     const parts = typeof converted.output === 'string' ? [{ type: 'text' as const, text: converted.output }] : [...converted.output];
     parts.unshift({ type: 'text', text: `Browser provenance: ${provenance}` });
     const path = browserResponse(result.result).data?.['path'];
+    const shots = browserResponse(result.result).data?.['shots'];
+    if (ctx !== undefined && Array.isArray(shots) && !converted.isError) {
+      const runtime = await prepareToolRuntime(this.runtime, 'local');
+      if (runtime.fs !== undefined) {
+        for (const shot of shots) {
+          if (typeof shot !== 'string' || shot === '') continue;
+          const stat = await runtime.fs.stat(shot).catch(() => undefined);
+          if (stat === undefined || !stat.isFile) continue;
+          if (stat.size > 20 * 1024 * 1024) {
+            parts.push({ type: 'text', text: 'File remains on the indicated execution host; automatic attachment is limited to 20 MiB. Use the existing file channel to retrieve it.' });
+            continue;
+          }
+          const bytes = await runtime.fs.readBytes(shot);
+          const fileId = `browser-${createHash('sha256').update(`${provenance}:${ctx.toolCallId}:${shot}`).digest('hex')}`;
+          await this.media.materialize({ fileId, size: bytes.byteLength, name: runtime.path.basename(shot), mimeType: 'application/octet-stream', stream: () => Readable.from([bytes]) });
+          parts.push({ type: 'text', text: `Browser file (${provenance}): [${runtime.path.basename(shot)}](${buildDaemonFileUrl(fileId)})` });
+        }
+      }
+    }
     if (ctx !== undefined && expectedPath !== undefined && typeof path === 'string' && path === expectedPath && !converted.isError) {
       const runtime = await prepareToolRuntime(this.runtime, 'local');
       const stat = await runtime.fs!.stat(path);
@@ -454,8 +508,21 @@ export class BrowserTabsTool implements IBrowserTabsTool {
     return { approvalRule: this.name, accesses: args.action === 'list' ? ToolAccesses.none() : ToolAccesses.all(), execute: (ctx) => this.browser.tabs(args, ctx.signal, ctx) };
   }
 }
+export interface IBrowserEgoRunTool extends AgentTool<BrowserEgoRunInput> { readonly _serviceBrand: undefined }
+export const IBrowserEgoRunTool = createDecorator<IBrowserEgoRunTool>('browserEgoRunTool');
+export class BrowserEgoRunTool implements IBrowserEgoRunTool {
+  declare readonly _serviceBrand: undefined;
+  readonly name = 'browser__ego_run';
+  readonly description = 'Run one script in this agent\'s Ego Lite space. `task` is already bound to that space. `shotDir` is an absolute directory for this call; pass it as `page.screenshot({ path })`. Print `page.snapshot()` when the next step needs refs. Kiki does not install Ego Lite and does not import Chrome data.';
+  readonly parameters = toInputJsonSchema(BrowserEgoRunInputSchema);
+  constructor(@IAgentBrowserService private readonly browser: IAgentBrowserService) {}
+  resolveExecution(input: BrowserEgoRunInput): Promise<ToolExecution> {
+    return this.browser.egoExecution(BrowserEgoRunInputSchema.parse(input));
+  }
+}
 registerAgentToolService(IBrowserConnectionsTool, BrowserConnectionsTool, { name: 'BrowserConnections', source: 'builtin', domain: 'browser', when: browserCapabilityWhen });
 registerAgentToolService(IBrowserTabsTool, BrowserTabsTool, { name: 'BrowserTabs', source: 'builtin', domain: 'browser', when: browserCapabilityWhen });
+registerAgentToolService(IBrowserEgoRunTool, BrowserEgoRunTool, { name: 'browser__ego_run', source: 'builtin', domain: 'browser', when: browserCapabilityWhen });
 
 function browserCapabilityWhen(accessor: ServicesAccessor): boolean {
   if (!accessor.get(IFlagService).enabled(NATIVE_BROWSER_FLAG_ID)) return false;

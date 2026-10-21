@@ -449,13 +449,13 @@ Kiki 根据 OpenSSH 配置和路径展开结果确定 `UserKnownHostsFile` 的�
 | `POST /api/browser/connections/{id}:check` | 执行与该接法对应的检查 |
 | `POST /api/browser/connections/{id}:connect` \| `:disconnect` | 启动或附着该连接，或释放它 |
 
-`PUT` 使用与 GUI 相同的判别联合请求体。`type` 为 `agent-browser-profile` 时必须给出 `name`，可带 `profilePath`、`executablePath`、`headed`、`driverPath`；`type` 为 `agent-browser-cdp` 时必须给出 `name` 与 `endpoint`，`endpoint` 取值为 `{ "action": "set", "value": "<CDP 的 http 或 ws 地址>" }`，或 `{ "action": "keep" }` 表示保留已存地址。两者都可带 `enabled`，默认 `true`。新建 CDP 连接时未提供 `set` 会被拒绝。已保存的 CDP 地址读回时是掩码；显式读取需用 `POST /api/secrets:reveal`，其 `ref` 的 `kind` 为 `"browser_endpoint"`。
+`PUT` 使用与 GUI 相同的判别联合请求体。`type` 为 `agent-browser-profile` 时必须给出 `name`，可带 `profilePath`、`executablePath`、`headed`、`driverPath`；`type` 为 `agent-browser-cdp` 时必须给出 `name` 与 `endpoint`，`endpoint` 取值为 `{ "action": "set", "value": "<CDP 的 http 或 ws 地址>" }`，或 `{ "action": "keep" }` 表示保留已存地址。两者都可带 `enabled`，默认 `true`。新建 CDP 连接时未提供 `set` 会被拒绝。已保存的 CDP 地址读回时是掩码；显式读取需用 `POST /api/secrets:reveal`，其 `ref` 的 `kind` 为 `"browser_endpoint"`。`type` 为 `ego-lite` 时必须给出 `name`，可带可选的 `cliPath`、`profileId` 和 `serverName`，没有 endpoint。
 
 执行类动作失败即关闭：未开启 `native_browser` 实验开关时，`:connect` 返回信封码 `40001`，`details.code` 为 `"browser.disabled"`、`details.reason` 为 `"feature_disabled"`；连接自身被停用时返回的 `details.reason` 为 `"connection_disabled"`。Klient 对应方法为 `rest.browser.list()`、`upsert(id, input)`、`remove(id)`、`setDefault(browser?)`、`status(id)`、`tabs(id)`、`catalog(id, { includeSchema })`、`check(id)`、`connect(id)` 和 `disconnect(id)`。
 
 ### 浏览器引导预设
 
-预设为 `kimi-webbridge`、`independent-browser` 和 `codex-browser`。`kimi-webbridge` 与 `independent-browser` 管理本地组件，而 `codex-browser` 将匹配的端点名称列为尚未验证的候选项（`candidates`，最多 20 项），并保存明确选定的管道。桌面应用工具也使用同一名称前缀，因此发现名称不代表扩展连接已验证；仅凭空列表也不能判断扩展未启用。Kiki 不安装外部应用。`kimi-webbridge` 的连接与打开都指向一条固定的本地桥，不接受候选列表。Codex 管道和独立浏览器 profile 是另外的接法，不会因此多出 Kimi WebBridge 实例。
+预设为 `kimi-webbridge`、`independent-browser`、`codex-browser` 和 `ego-lite`。`kimi-webbridge` 与 `independent-browser` 管理本地组件，而 `codex-browser` 将匹配的端点名称列为尚未验证的候选项（`candidates`，最多 20 项），并保存明确选定的管道。桌面应用工具也使用同一名称前缀，因此发现名称不代表扩展连接已验证；仅凭空列表也不能判断扩展未启用。Kiki 不安装外部应用。`kimi-webbridge` 的连接与打开都指向一条固定的本地桥，不接受候选列表。Codex 管道和独立浏览器 profile 是另外的接法，不会因此多出 Kimi WebBridge 实例。`ego-lite` 的 `controlSurface` 为 `"external-app"`，`sourceUrl` 为 `https://lite.ego.app/download?auto=1`。它的状态查询不会启动 `nodejs`。只有检查输出包含 `kiki-ego-ready` 时才是 `ready`。其余原因是 `ego_installed`、`ego_onboarding` 和 `ego_choose_cli`。该预设的 `:prepare` 会被拒绝。`:connect` 执行检查；成功且尚无该 id 时，保存连接 id `ego-lite`，不改允许列表，也不改默认浏览器。
 
 | 方法与路径 | 说明 |
 | --- | --- |

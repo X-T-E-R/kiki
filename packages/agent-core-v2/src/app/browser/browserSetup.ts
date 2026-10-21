@@ -1,7 +1,7 @@
 import { createDecorator } from '#/_base/di/instantiation';
 import type { BrowserStatus } from './browser';
 
-export type BrowserPresetId = 'kimi-webbridge' | 'independent-browser' | 'codex-browser';
+export type BrowserPresetId = 'kimi-webbridge' | 'independent-browser' | 'codex-browser' | 'ego-lite';
 export interface BrowserSetupCandidate {
   readonly browserId: string;
 }

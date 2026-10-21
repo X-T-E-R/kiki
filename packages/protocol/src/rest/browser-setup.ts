@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { browserIdSchema, browserStatusSchema } from './browser';
 
-export const browserPresetIdSchema = z.enum(['kimi-webbridge', 'independent-browser', 'codex-browser']);
+export const browserPresetIdSchema = z.enum(['kimi-webbridge', 'independent-browser', 'codex-browser', 'ego-lite']);
 export type BrowserPresetId = z.infer<typeof browserPresetIdSchema>;
 export const browserSetupStepSchema = z.object({
   id: z.string(), state: z.enum(['ready', 'missing', 'running', 'user_action', 'failed', 'warning']),

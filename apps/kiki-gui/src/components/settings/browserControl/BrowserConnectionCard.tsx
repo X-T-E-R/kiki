@@ -67,6 +67,7 @@ const NATIVE_BROWSER_FLAG_HOME = experimentalSectionForFlag(NATIVE_BROWSER_FLAG)
 const NATIVE_BROWSER_FLAG_TRIP = `/settings/${NATIVE_BROWSER_FLAG_HOME}#${experimentalCardId(NATIVE_BROWSER_FLAG_HOME)}`;
 
 function typeLabel(t: ReturnType<typeof useI18n>['t'], type: BrowserConnectionType): string {
+  if (type === 'ego-lite') return t('st.browser.type.ego-lite');
   return t(type === 'codex-extension' ? 'st.browser.type.codex-extension' : type === 'agent-browser-cdp' ? 'st.browser.type.cdp' : 'st.browser.type.profile');
 }
 
@@ -78,6 +79,7 @@ function typeLabel(t: ReturnType<typeof useI18n>['t'], type: BrowserConnectionTy
  */
 function locationLabel(t: ReturnType<typeof useI18n>['t'], row: BrowserConnectionRow): string {
   if (row.type === 'codex-extension') return row.browserId ?? t('st.browser.location.unknown');
+  if (row.type === 'ego-lite') return row.cliPath ?? t('st.browser.type.ego-lite');
   if (row.type === 'agent-browser-profile') return t('st.browser.location.server');
   return endpointHost(row.endpointDisplay) ?? t('st.browser.location.unknown');
 }
@@ -361,16 +363,16 @@ export function BrowserConnectionCard() {
             <span className="ml-auto flex flex-wrap items-center gap-2">
               <button type="button" className={SECONDARY_BUTTON} data-browser-check
                 disabled={busy !== null || saving || dirty || !draft.enabled}
-                title={t(draft.type === 'agent-browser-cdp' ? 'st.browser.checkHintCdp' : 'st.browser.checkHintProfile')}
+                title={t(draft.type === 'ego-lite' ? 'st.browser.checkHintEgo' : draft.type === 'agent-browser-cdp' ? 'st.browser.checkHintCdp' : 'st.browser.checkHintProfile')}
                 onClick={() => { void run('check', () => browserApi(client).check(draft.id)); }}>
                 {busy === 'check' ? t('st.browser.checking')
-                  : t(draft.type === 'agent-browser-cdp' ? 'st.browser.checkCdp' : 'st.browser.checkProfile')}
+                  : t(draft.type === 'ego-lite' ? 'st.browser.checkEgo' : draft.type === 'agent-browser-cdp' ? 'st.browser.checkCdp' : 'st.browser.checkProfile')}
               </button>
               <button type="button" className={SECONDARY_BUTTON} data-browser-connect
                 disabled={busy !== null || saving || dirty || !draft.enabled || LIVE_BLOCKING_CONNECT.has(selectedStatus.state)}
                 onClick={() => { void run('connect', () => browserApi(client).connect(draft.id)); }}>
                 {busy === 'connect' ? t('st.browser.connecting')
-                  : t(draft.type === 'agent-browser-cdp' ? 'st.browser.connectCdp' : 'st.browser.connectProfile')}
+                  : t(draft.type === 'ego-lite' ? 'st.browser.connectEgo' : draft.type === 'agent-browser-cdp' ? 'st.browser.connectCdp' : 'st.browser.connectProfile')}
               </button>
               {LIVE_STATES.has(selectedStatus.state) ? (
                 // Releasing uses the connection as it is saved, not the form:
@@ -458,6 +460,8 @@ export function BrowserConnectionCard() {
               ariaLabel={t('st.browser.fieldType')} value={draft.type} dataAttr="data-browser-type"
               choices={draft.original?.type === 'codex-extension' ? [
                 { value: 'codex-extension', label: t('st.browser.type.codexExtensionLong'), hint: t('st.browser.type.codexExtensionHint') },
+              ] : draft.original?.type === 'ego-lite' ? [
+                { value: 'ego-lite', label: t('st.browser.type.egoLiteLong'), hint: t('st.browser.type.egoLiteHint') },
               ] : [
                 { value: 'agent-browser-profile', label: t('st.browser.type.profileLong'), hint: t('st.browser.type.profileHint') },
                 { value: 'agent-browser-cdp', label: t('st.browser.type.cdpLong'), hint: t('st.browser.type.cdpHint') },
@@ -477,6 +481,21 @@ export function BrowserConnectionCard() {
             <dt className={FORM_LABEL}>{t('st.browser.runtimeRoot')}</dt><dd className="break-all font-mono text-ink-soft">{draft.original?.runtimeRoot}</dd>
             <dt className={FORM_LABEL}>{t('st.browser.browserId')}</dt><dd className="break-all font-mono text-ink-soft">{draft.original?.browserId}</dd>
           </dl>
+        ) : draft.type === 'ego-lite' ? (
+          <AdvancedDetails summary={t('st.browser.advanced')} data-browser-advanced>
+            <div className="space-y-3">
+              <DraftField id="browser-cli-path" label={t('st.browser.fieldCliPath')} mono dataAttr="data-browser-cli-input"
+                value={draft.cliPath} issue={issueText('cliPath', draft.cliPath.trim() !== '')}
+                hint={t('st.browser.fieldCliPathHint')}
+                onChange={(cliPath) => { setDraft({ ...draft, cliPath }); }} />
+              <DraftField id="browser-profile-id" label={t('st.browser.fieldProfileId')} dataAttr="data-browser-profile-id-input"
+                value={draft.profileId} issue={null} hint={t('st.browser.fieldProfileIdHint')}
+                onChange={(profileId) => { setDraft({ ...draft, profileId }); }} />
+              <DraftField id="browser-server-name" label={t('st.browser.fieldServerName')} dataAttr="data-browser-server-name-input"
+                value={draft.serverName} issue={null} hint={t('st.browser.fieldServerNameHint')}
+                onChange={(serverName) => { setDraft({ ...draft, serverName }); }} />
+            </div>
+          </AdvancedDetails>
         ) : draft.type === 'agent-browser-profile' ? (
           <div className="space-y-4">
             <div className="space-y-1" data-browser-headed>
@@ -552,7 +571,7 @@ export function BrowserConnectionCard() {
         title={t('st.browser.deleteTitle', { name: draft.original?.name ?? '' })}
         body={t('st.browser.deleteBody')}
         consequences={[
-          ...(draft.type === 'agent-browser-cdp' ? [t('st.browser.deleteConsequenceCdp')] : [t('st.browser.deleteConsequenceProfile')]),
+          ...(draft.type === 'agent-browser-cdp' ? [t('st.browser.deleteConsequenceCdp')] : draft.type === 'ego-lite' ? [t('st.browser.deleteConsequenceEgo')] : [t('st.browser.deleteConsequenceProfile')]),
           ...(selectedStatus !== undefined && LIVE_STATES.has(selectedStatus.state) ? [t('st.browser.deleteEndsSession')] : []),
           ...(query.data?.defaultBrowser === draft.original?.id ? [t('st.browser.deleteDefault')] : []),
         ]}

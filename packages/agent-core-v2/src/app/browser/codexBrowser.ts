@@ -15,6 +15,7 @@ export interface BrowserRequestContext {
   readonly caller: BrowserCaller;
   readonly turnId: number;
   readonly toolCallId: string;
+  readonly sessionDir?: string;
   readonly elicit: (request: ElicitRequest['params'], signal: AbortSignal) => Promise<ElicitResult>;
 }
 

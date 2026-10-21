@@ -1,4 +1,4 @@
-import { isToolActive, isToolExplicitlyNamed, isMcpToolName, isBrowserOperationToolName, type ToolSource } from './toolPolicy';
+import { isToolActive, isToolExplicitlyNamed, isMcpToolName, isBrowserOperationToolName, isEgoHostScriptToolName, type ToolSource } from './toolPolicy';
 
 export const SUBAGENT_OPT_IN_TOOL_NAMES = [
   'AskUserQuestion', 'Cron', 'CronCreate', 'CronDelete', 'CronList',
@@ -44,7 +44,7 @@ export interface SubagentToolPolicy {
 export function subagentToolDefault(name: string, source: ToolSource = 'builtin'): SubagentToolDefault {
   if (source !== 'builtin') return 'allowed';
   if ((SUBAGENT_MAIN_ONLY_TOOL_NAMES as readonly string[]).includes(name)) return 'main-only';
-  if (name === 'BrowserConnections' || name === 'BrowserTabs' || isBrowserOperationToolName(name)
+  if (name === 'BrowserConnections' || name === 'BrowserTabs' || isBrowserOperationToolName(name) || isEgoHostScriptToolName(name)
     || (SUBAGENT_OPT_IN_TOOL_NAMES as readonly string[]).includes(name)) return 'opt-in';
   return 'allowed';
 }

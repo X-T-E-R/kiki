@@ -12,6 +12,9 @@ import { BrowserError } from './errors';
 import { IFlagService } from '#/app/flag/flag';
 import { NATIVE_BROWSER_FLAG_ID } from './flag';
 import type { BrowserRequestContext } from './codexBrowser';
+import { IHostFileSystem } from '#/os/interface/hostFileSystem';
+import { IHostProcessService } from '#/os/interface/hostProcess';
+import { EgoBrowserRuntime, egoTabBody } from './ego/runtime';
 
 interface LiveBrowser {
   connection: BrowserResolvedConnection;
@@ -24,6 +27,11 @@ interface LiveBrowser {
   observation?: { binding: string; refs: Set<string> };
   target?: { tab: string; frame: string };
   captures?: Map<string, string>;
+}
+
+function textArg(args: Readonly<Record<string, unknown>>, key: string): string | undefined {
+  const value = args[key];
+  return typeof value === 'string' && value !== '' ? value : undefined;
 }
 
 function sameBrowserTarget(left: BrowserResolvedConnection, right: BrowserResolvedConnection): boolean {
@@ -69,11 +77,16 @@ export function browserToolGroup(name: string): string {
 export class BrowserControlService implements IBrowserControlService {
   declare readonly _serviceBrand: undefined;
   private readonly connections = new Map<string, LiveBrowser>();
+  private readonly ego: EgoBrowserRuntime;
   constructor(
     @IBrowserConnectionStore private readonly store: IBrowserConnectionStore,
     @IBrowserBackendFactory private readonly factory: IBrowserBackendFactory,
     @IFlagService private readonly flags: IFlagService,
-  ) {}
+    @IHostProcessService processes: IHostProcessService,
+    @IHostFileSystem files: IHostFileSystem,
+  ) {
+    this.ego = new EgoBrowserRuntime(processes, files);
+  }
 
   async list() {
     const configured = await this.store.list();
@@ -105,6 +118,7 @@ export class BrowserControlService implements IBrowserControlService {
   }
 
   async check(id: string, signal?: AbortSignal, context?: BrowserRequestContext): Promise<BrowserStatus> {
+    if ((await this.store.resolve(id)).type === 'ego-lite') return this.egoProbe(id, signal, false);
     const live = await this.live(id);
     return this.enqueue(live, async () => {
       if (live.status.state === 'unconfirmed') return this.confirmStopped(live);
@@ -138,6 +152,7 @@ export class BrowserControlService implements IBrowserControlService {
   }
 
   async catalog(id: string, signal?: AbortSignal): Promise<readonly MCPToolDefinition[]> {
+    if ((await this.store.resolve(id)).type === 'ego-lite') return [];
     const live = await this.live(id);
     return this.enqueue(live, async () => {
       if (live.tools !== undefined) return live.tools;
@@ -149,6 +164,7 @@ export class BrowserControlService implements IBrowserControlService {
   }
 
   async connect(id: string, signal?: AbortSignal, context?: BrowserRequestContext): Promise<BrowserStatus> {
+    if ((await this.store.resolve(id)).type === 'ego-lite') return this.egoProbe(id, signal, true);
     const live = await this.live(id);
     await this.assertAdmission(live);
     return this.enqueue(live, async () => {
@@ -197,6 +213,14 @@ export class BrowserControlService implements IBrowserControlService {
   }
 
   async disconnect(id: string, signal?: AbortSignal): Promise<BrowserStatus> {
+    if ((await this.store.resolve(id)).type === 'ego-lite') {
+      signal?.throwIfAborted();
+      const live = await this.live(id);
+      live.admitting = false;
+      live.status = { ...live.status, state: 'disconnected', generation: live.status.generation + 1, currentCall: undefined, checkedAt: new Date().toISOString(), error: undefined, failure: undefined };
+      this.ego.abort(id);
+      return { ...live.status };
+    }
     const live = this.connections.get(id) ?? await this.live(id);
     signal?.throwIfAborted();
     if (signal === undefined) {
@@ -250,6 +274,7 @@ export class BrowserControlService implements IBrowserControlService {
   }
 
   async tabs(id: string, signal?: AbortSignal, context?: BrowserRequestContext): Promise<readonly BrowserTab[]> {
+    if ((await this.store.resolve(id)).type === 'ego-lite') return this.egoTabs(id, signal, context);
     const live = await this.live(id);
     return this.enqueue(live, async () => {
       await this.assertAdmission(live);
@@ -259,6 +284,7 @@ export class BrowserControlService implements IBrowserControlService {
   }
 
   async invoke(input: BrowserInvocation, signal?: AbortSignal): Promise<BrowserInvocationResult> {
+    if ((await this.store.resolve(input.browser)).type === 'ego-lite') return this.egoInvoke(input, signal);
     const live = await this.live(input.browser);
     await this.assertAdmission(live);
     return this.enqueue(live, async () => {
@@ -464,6 +490,92 @@ export class BrowserControlService implements IBrowserControlService {
       live.status = { ...live.status, state: 'disconnected', generation: live.status.generation + 1, error: undefined, failure: undefined, checkedAt: new Date().toISOString() };
     }
     return { ...live.status };
+  }
+
+  private async egoProbe(id: string, signal: AbortSignal | undefined, connect: boolean): Promise<BrowserStatus> {
+    const live = await this.live(id);
+    await this.assertAdmission(live);
+    signal?.throwIfAborted();
+    try {
+      const probed = await this.ego.probe(live.connection, signal);
+      const checkedAt = new Date().toISOString();
+      if (probed.kind === 'ready') {
+        if (connect) {
+          live.admitting = true;
+          this.ego.arm(id);
+        }
+        live.status = { ...live.status, state: connect || live.admitting ? 'ready' : live.status.state === 'failed' ? 'idle' : live.status.state,
+          checkedAt, error: undefined, failure: undefined, ...(connect ? { generation: live.status.generation + 1 } : {}) };
+        return { ...live.status };
+      }
+      live.admitting = false;
+      const onboarding = probed.kind === 'onboarding';
+      const choose = probed.kind === 'choose' || probed.kind === 'missing';
+      live.status = { ...live.status, state: onboarding || choose ? 'requires_action' : 'failed', checkedAt,
+        failure: { code: onboarding || choose ? 'browser.requires_action' : 'browser.execution_failed' },
+        error: onboarding ? 'Please complete the onboarding process first' : choose ? probed.kind === 'missing' ? 'Ego Lite is not installed' : 'Choose one Ego Lite CLI path' : 'Ego Lite is not ready' };
+      return { ...live.status };
+    } catch (error) {
+      if (signal?.aborted && error === signal.reason) throw error;
+      this.fail(live, error, false);
+      return { ...live.status };
+    }
+  }
+
+  private async egoTabs(id: string, signal: AbortSignal | undefined, context?: BrowserRequestContext): Promise<readonly BrowserTab[]> {
+    const live = await this.live(id);
+    await this.assertAdmission(live);
+    this.assertReady(live);
+    if (context?.sessionDir === undefined) throw new BrowserError('browser.invalid', 'Ego Lite tabs need the agent session directory');
+    const ran = await this.ego.runAgent({ connection: live.connection, sessionDir: context.sessionDir, sessionId: context.caller.sessionId, agentId: context.caller.agentId, body: egoTabBody('list'), signal });
+    if (ran.tabs === undefined) throw new BrowserError('browser.execution_failed', 'Ego Lite did not return tabs');
+    return ran.tabs;
+  }
+
+  private async egoInvoke(input: BrowserInvocation, signal?: AbortSignal): Promise<BrowserInvocationResult> {
+    const live = await this.live(input.browser);
+    await this.assertAdmission(live);
+    input.assertToolAllowed?.();
+    signal?.throwIfAborted();
+    if (input.tool === 'agent_browser_window_new' || /^agent_browser_(?:window_|frame_)/.test(input.tool)) {
+      throw new BrowserError('browser.unsupported', 'The Ego Lite Page API has no window or frame method');
+    }
+    this.assertReady(live);
+    const sessionDir = input.requestContext?.sessionDir;
+    if (sessionDir === undefined) throw new BrowserError('browser.invalid', 'Ego Lite scripts need the session directory');
+    const action = input.tool === 'agent_browser_tab_new' ? 'open' : input.tool === 'agent_browser_tab_switch' ? 'select' : input.tool === 'agent_browser_tab_close' ? 'close' : input.tool === 'browser__ego_run' ? 'script' : undefined;
+    if (action === undefined) throw new BrowserError('browser.unsupported', `Ego Lite does not run ${input.tool}`);
+    const label = action === 'open' || action === 'script' ? input.tab : textArg(input.args, 'tab') ?? input.tab;
+    const body = action === 'script' ? textArg(input.args, 'script') : egoTabBody(action);
+    if (body === undefined || body === '') throw new BrowserError('browser.invalid', 'Ego Lite script is required');
+    const startedGeneration = live.status.generation;
+    live.status = { ...live.status, state: 'running', currentCall: { ...input.caller, tool: input.tool, tab: label } };
+    try {
+      const ran = await this.ego.runAgent({
+        connection: live.connection, sessionDir, sessionId: input.caller.sessionId, agentId: input.caller.agentId,
+        ...(action !== 'open' && label !== undefined ? { label } : {}),
+        ...(action === 'open' && textArg(input.args, 'url') !== undefined ? { url: textArg(input.args, 'url') } : {}),
+        body, signal,
+      });
+      if (live.status.generation !== startedGeneration) throw new BrowserError('browser.disconnected', 'Ego Lite connection was disconnected');
+      if (ran.refused) throw new BrowserError('browser.target', 'Only an agent-opened labeled Ego Lite tab can be closed');
+      if (ran.result.code !== 0) throw new BrowserError('browser.execution_failed', ran.result.stderr.trim() || ran.result.stdout.trim() || 'Ego Lite script failed');
+      live.status = { ...live.status, state: live.admitting ? 'ready' : 'stopping', currentCall: undefined, checkedAt: new Date().toISOString() };
+      return { browser: input.browser, generation: live.status.generation, executionHost: live.status.executionHost, runtimeSession: ran.binding.spaceId ?? ran.binding.name,
+        tab: ran.pageLabel ?? label, result: { isError: false, content: [{ type: 'text', text: ran.result.stdout }], structuredContent: { response: { success: true, data: { label: ran.pageLabel, spaceId: ran.binding.spaceId, shots: ran.shots } } } } };
+    } catch (error) {
+      if (live.status.generation !== startedGeneration) throw error;
+      if (signal?.aborted && error === signal.reason) {
+        live.status = { ...live.status, state: live.admitting ? 'ready' : live.status.state, currentCall: undefined };
+        throw error;
+      }
+      if (error instanceof BrowserError && error.code !== 'browser.disabled') {
+        live.status = { ...live.status, state: live.admitting ? 'ready' : 'failed', currentCall: undefined, error: error.message, failure: { code: error.code } };
+        throw error;
+      }
+      this.fail(live, error, false);
+      throw error;
+    }
   }
 
   async endTurn(caller: BrowserCaller, turnId?: number): Promise<void> {

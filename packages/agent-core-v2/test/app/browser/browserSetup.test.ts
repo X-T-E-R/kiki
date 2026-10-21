@@ -104,8 +104,11 @@ function fixture(options: { home?: string; hostProcess?: IHostProcessService; ho
 it('reads presets without installing or connecting and reports a missing Codex release', async () => {
   const f = fixture();
   const result = await f.setup.list();
-  expect(result.presets.map((preset) => preset.preset)).toEqual(['kimi-webbridge', 'independent-browser', 'codex-browser']);
+  expect(result.presets.map((preset) => preset.preset)).toEqual(['kimi-webbridge', 'independent-browser', 'codex-browser', 'ego-lite']);
   expect(result.presets[2]).toMatchObject({ state: 'not_prepared', controlSurface: 'browser-connection', reason: 'artifact_missing', supported: true, candidates: [] });
+  expect(result.presets[3]).toMatchObject({ state: 'not_prepared', controlSurface: 'external-app', sourceUrl: 'https://lite.ego.app/download?auto=1', supported: true });
+  expect(result.presets[3]?.actions.map((action) => action.id)).toEqual(['open_instructions']);
+  expect(JSON.stringify(f.spawn.mock.calls)).not.toContain('nodejs');
   expect(result.presets[2]?.steps.find((step) => step.id === 'driver')?.detail).toContain('browserResourceStore.ts');
   expect(result.presets[2]?.steps.find((step) => step.id === 'driver')?.detail).not.toContain('.tmp');
   expect(f.installPlugin).not.toHaveBeenCalled(); expect(f.enablePlugin).not.toHaveBeenCalled(); expect(f.installCapability).not.toHaveBeenCalled(); expect(f.connect).not.toHaveBeenCalled(); expect(f.upsert).not.toHaveBeenCalled();
@@ -639,6 +642,61 @@ it('keeps a failed Codex prepare from saving a connection', async () => {
     expect(f.upsert).not.toHaveBeenCalled();
     expect(f.connect).not.toHaveBeenCalled();
   } finally { await rm(home, { recursive: true, force: true }); }
+});
+
+it('checks Ego Lite from the installed CLI and does not launch nodejs while listing status', async () => {
+  const exe = 'C:\\ego-fixture\\ego-browser.exe';
+  const previous = process.env['PATH'];
+  process.env['PATH'] = 'C:\\ego-fixture';
+  const files = new Map<string, string>();
+  let mode: 'ready' | 'onboarding' | 'both' | 'empty' = 'ready';
+  const spawn = vi.fn(async (_command: string, args: readonly string[] = []) => {
+    const node = args.includes('nodejs');
+    const text = !node ? ''
+      : mode === 'ready' ? 'kiki-ego-ready\n'
+        : mode === 'onboarding' ? 'Please complete the onboarding process first\n'
+          : mode === 'both' ? 'kiki-ego-ready\nPlease complete the onboarding process first\n'
+            : '';
+    return { stdout: Readable.from([text]), stderr: Readable.from(['']), wait: async () => 0, kill: async () => undefined, dispose: async () => undefined };
+  });
+  const nodeCalls = () => spawn.mock.calls.filter((call) => (call[1] as readonly string[] | undefined)?.includes('nodejs')).length;
+  const f = fixture({
+    hostProcess: { spawn } as never,
+    hostFs: {
+      mkdir: async () => undefined,
+      writeText: async (file: string, data: string) => { files.set(file, data); },
+      readText: async (file: string) => files.get(file) ?? '',
+      stat: async (file: string) => ({ isFile: file.replaceAll('/', '\\').toLowerCase() === exe.toLowerCase(), isDirectory: false, size: 0 }),
+      readdir: async () => [],
+      remove: async () => undefined,
+    } as never,
+  });
+  try {
+    const installed = await f.setup.status('ego-lite');
+    expect(installed).toMatchObject({ state: 'needs_user_action', reason: 'ego_installed', controlSurface: 'external-app', sourceUrl: 'https://lite.ego.app/download?auto=1' });
+    expect(installed.actions.map((action) => action.id)).not.toContain('prepare');
+    expect(nodeCalls()).toBe(0);
+    const ready = await f.setup.connect('ego-lite', { name: 'Desk', setDefault: true });
+    expect(ready.state).toBe('ready');
+    expect(f.upsert).toHaveBeenCalledWith('ego-lite', { type: 'ego-lite', name: 'Desk', enabled: true, cliPath: 'C:/ego-fixture/ego-browser.exe' });
+    expect(f.setDefault).not.toHaveBeenCalled();
+    expect([...files.values()].join('\n')).toContain('console.log("kiki-ego-ready")');
+    expect([...files.values()].join('\n')).not.toContain('taskSpace');
+    const before = nodeCalls();
+    expect((await f.setup.status('ego-lite')).state).toBe('ready');
+    expect(nodeCalls()).toBe(before);
+    mode = 'onboarding';
+    expect(await f.setup.connect('ego-lite', {})).toMatchObject({ state: 'needs_user_action', reason: 'ego_onboarding' });
+    mode = 'both';
+    expect(await f.setup.connect('ego-lite', {})).toMatchObject({ reason: 'ego_onboarding', state: 'needs_user_action' });
+    mode = 'empty';
+    expect(await f.setup.connect('ego-lite', {})).toMatchObject({ state: 'failed' });
+    await expect(f.setup.prepare('ego-lite', { consent: true })).rejects.toMatchObject({ code: 'browser.unsupported' });
+    expect(f.upsert).toHaveBeenCalledTimes(1);
+  } finally {
+    if (previous === undefined) delete process.env['PATH'];
+    else process.env['PATH'] = previous;
+  }
 });
 
 async function readShortcut(host: HostProcessService, shortcutPath: string): Promise<{ target: string; arguments: string }> {

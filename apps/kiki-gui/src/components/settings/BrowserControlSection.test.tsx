@@ -361,6 +361,43 @@ describe('BrowserControlSection', () => {
       expect(connectPreset).not.toHaveBeenCalled();
     });
 
+    it('shows the Ego Lite route in English without an install button', async () => {
+      setupPresets.mockResolvedValue({ presets: [preset({
+        preset: 'ego-lite', displayName: 'Ego Lite', controlSurface: 'external-app',
+        state: 'not_prepared', sourceUrl: 'https://lite.ego.app/download?auto=1',
+        actions: [{ id: 'open_instructions', url: 'https://lite.ego.app/download?auto=1', target: 'documentation' }],
+      })] });
+      localStorage.setItem('kiki.locale', 'en');
+      await render();
+      await settleUntil('[data-browser-route="ego-lite"]');
+      const english = query('[data-browser-route="ego-lite"]');
+      expect(english?.textContent).toContain('Download Ego Lite yourself, finish its own setup window, then check it here. Kiki does not install it and does not import Chrome data.');
+      expect(english?.textContent).toContain('Download Ego Lite');
+      expect(query('[data-browser-route="ego-lite"] [data-browser-route-prepare]')).toBeNull();
+      expect(query<HTMLAnchorElement>('[data-browser-route="ego-lite"] [data-browser-route-instructions]')?.getAttribute('href')).toBe('https://lite.ego.app/download?auto=1');
+    });
+
+    it('shows the Ego Lite route in Chinese without an install button', async () => {
+      setupPresets.mockResolvedValue({ presets: [preset({
+        preset: 'ego-lite', displayName: 'Ego Lite', controlSurface: 'external-app',
+        state: 'needs_user_action', reason: 'ego_installed', sourceUrl: 'https://lite.ego.app/download?auto=1',
+        actions: [
+          { id: 'connect' },
+          { id: 'open_instructions', url: 'https://lite.ego.app/download?auto=1', target: 'documentation' },
+        ],
+      })] });
+      localStorage.setItem('kiki.locale', 'zh');
+      await render();
+      await settleUntil('[data-browser-route="ego-lite"]');
+      const chinese = query('[data-browser-route="ego-lite"]');
+      expect(chinese?.textContent).toContain('请自行下载 Ego Lite，完成它自己的设置窗口，再在这里检查。Kiki 不会安装它，也不会导入 Chrome 的数据。');
+      expect(chinese?.textContent).toContain('下载 Ego Lite');
+      expect(chinese?.textContent).toContain('检查 Ego Lite');
+      expect(chinese?.textContent).toContain('已安装 Ego Lite。请先完成它自己的设置窗口，再在这里检查。');
+      expect(query('[data-browser-route="ego-lite"] [data-browser-route-prepare]')).toBeNull();
+      expect(chinese?.textContent).not.toContain('一键配置');
+    });
+
     it('gives an external control surface no Kiki action at all', async () => {
       setupPresets.mockResolvedValue({ presets: [KIMI_NEEDS_EXTENSION, MANAGED_READY, CODEX_EXTERNAL] });
       await render();

@@ -111,6 +111,7 @@ export function browserPresetOwnsConnection(
   namedConnectionId?: string,
 ): boolean {
   if (preset === 'codex-browser') return connection.type === 'codex-extension';
+  if (preset === 'ego-lite') return connection.type === 'ego-lite';
   if (preset === 'kimi-webbridge') return namedConnectionId !== undefined && connection.id === namedConnectionId;
   if (preset === 'independent-browser') return connection.type === 'agent-browser-profile' || connection.type === 'agent-browser-cdp';
   return namedConnectionId !== undefined && connection.id === namedConnectionId;

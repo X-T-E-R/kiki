@@ -108,6 +108,9 @@ const REASON_KEYS: Readonly<Record<string, I18nKey>> = {
   choose_connection: 'st.browser.reason.chooseConnection',
   approval_unproven: 'st.browser.reason.approvalUnproven',
   pipe_discovery_failed: 'st.browser.reason.pipeDiscoveryFailed',
+  ego_installed: 'st.browser.reason.egoInstalled',
+  ego_onboarding: 'st.browser.reason.egoOnboarding',
+  ego_choose_cli: 'st.browser.reason.egoChooseCli',
   disk_updated: 'st.browser.route.done.updateDisk',
   disk_updated_running_unchanged: 'st.browser.route.done.updateRunningUnchanged',
 };
@@ -300,6 +303,15 @@ function BrowserRoute({ preset, active, onSelect }: {
             runtimeRoot: existingConn.runtimeRoot ?? '',
             browserId: existingConn.browserId ?? item.browserId,
           });
+        } else if (existingConn.type === 'ego-lite') {
+          await browserApi(client).upsert(connectionId, {
+            type: 'ego-lite',
+            name: existingConn.name,
+            enabled: nextChecked,
+            ...(existingConn.cliPath !== undefined ? { cliPath: existingConn.cliPath } : {}),
+            ...(existingConn.profileId !== undefined ? { profileId: existingConn.profileId } : {}),
+            ...(existingConn.serverName !== undefined ? { serverName: existingConn.serverName } : {}),
+          });
         }
       }
 
@@ -343,6 +355,8 @@ function BrowserRoute({ preset, active, onSelect }: {
   const running = runningStep(preset);
   const blocking = blockingStep(preset);
   const external = preset.controlSurface === 'external-app';
+  const routeActions = preset.preset === 'ego-lite' || !external;
+  const egoReason = preset.preset === 'ego-lite' && preset.reason !== undefined ? REASON_KEYS[preset.reason] : undefined;
   const step = (id: string): string => t(STEP_KEYS[id] ?? 'st.browser.step.install');
   const reason = (source: BrowserSetupStatus['steps'][number]): string | undefined => {
     if (source.reason === undefined) return undefined;
@@ -420,7 +434,7 @@ function BrowserRoute({ preset, active, onSelect }: {
       await reload();
       // The managed route's connect or open writes a real connection, so the list and
       // the default selector below have to be re-read from the server.
-      if ((preset.preset === 'independent-browser' || preset.preset === 'codex-browser') && (action === 'connect' || action === 'open')) {
+      if ((preset.preset === 'independent-browser' || preset.preset === 'codex-browser' || preset.preset === 'ego-lite') && (action === 'connect' || action === 'open')) {
         await queryClient.invalidateQueries({ queryKey: browserKeys.connections(scopeId) });
       }
 
@@ -491,6 +505,11 @@ function BrowserRoute({ preset, active, onSelect }: {
       <p className="mt-1 max-w-[62ch] text-[12.5px] leading-5 text-ink-soft">
         {t(`st.browser.route.blurb.${preset.preset}`)}
       </p>
+      {egoReason === undefined ? null : (
+        <p className="mt-2 max-w-[62ch] text-[12px] leading-[18px] text-ink-soft" data-browser-route-ego-reason>
+          {t(egoReason)}
+        </p>
+      )}
 
       {/* Progress while a preparation runs: the server's own step, its own
           percent. Nothing is invented, so the row can say what is moving
@@ -687,7 +706,7 @@ function BrowserRoute({ preset, active, onSelect }: {
             next move belongs to the person, and pushing "install" at them is the
             thing this page is here to stop doing. It stays available, quiet, for
             the case where a later check does find something to repair. */}
-        {external || prepare === undefined || busy !== null || moving || readiness === 'connected' || !canPrepare ? null : (
+        {!routeActions || prepare === undefined || busy !== null || moving || readiness === 'connected' || !canPrepare ? null : (
           <button type="button"
             className={openAction !== undefined && readiness === 'ready' ? SECONDARY_BUTTON : PRIMARY_BUTTON}
             data-browser-route-prepare
@@ -699,18 +718,20 @@ function BrowserRoute({ preset, active, onSelect }: {
               : featureOnly ? t('st.browser.route.turnOn') : t('st.browser.route.prepare')}
           </button>
         )}
-        {external || openAction === undefined || (readiness !== 'ready' && readiness !== 'connected' && preset.state !== 'failed' && preset.error === undefined) || busy !== null ? null : (
+        {!routeActions || openAction === undefined || (readiness !== 'ready' && readiness !== 'connected' && preset.state !== 'failed' && preset.error === undefined) || busy !== null ? null : (
           <button type="button" className={PRIMARY_BUTTON} data-browser-route-open
             disabled={busy !== null}
             onClick={() => { void act('open'); }}>
             {busy === 'open' ? t('st.browser.route.opening') : t('st.browser.route.open')}
           </button>
         )}
-        {external || connect === undefined || (readiness !== 'ready' && preset.state !== 'needs_user_action' && preset.state !== 'failed' && preset.error === undefined) || busy !== null ? null : (
+        {!routeActions || connect === undefined || (readiness !== 'ready' && preset.state !== 'needs_user_action' && preset.state !== 'failed' && preset.error === undefined) || busy !== null ? null : (
           <button type="button" className={openAction !== undefined ? SECONDARY_BUTTON : PRIMARY_BUTTON} data-browser-route-connect
             disabled={busy !== null || (preset.candidates !== undefined && (!selectedBrowserId || selectedBrowserId === ''))}
             onClick={() => { void act('connect'); }}>
-            {busy === 'connect' ? t('st.browser.route.connecting') : (preset.candidates !== undefined ? t('st.browser.route.saveConnection') : t('st.browser.route.connect'))}
+            {busy === 'connect' ? t('st.browser.route.connecting')
+              : preset.preset === 'ego-lite' ? t('st.browser.route.checkEgo')
+                : preset.candidates !== undefined ? t('st.browser.route.saveConnection') : t('st.browser.route.connect')}
           </button>
         )}
         {hasVersionMismatch && updateAction !== undefined ? (
@@ -745,7 +766,7 @@ function BrowserRoute({ preset, active, onSelect }: {
         {offeredInstructions === undefined ? null : (
           <ExternalLink className="inline-flex items-center gap-1 text-[12px] text-selected-ink hover:underline" href={offeredInstructions}
             data-browser-route-instructions>
-            {t('st.browser.route.instructions')}
+            {preset.preset === 'ego-lite' ? t('st.browser.route.downloadEgo') : t('st.browser.route.instructions')}
           </ExternalLink>
         )}
       </div>
