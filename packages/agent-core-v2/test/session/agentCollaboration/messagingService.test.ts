@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { AcpClientError } from '@kiki/acp-client';
 import { ClusterDb } from '@kiki/minidb/cluster';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -42,6 +43,7 @@ import {
   type IAgentExecutionService as AgentExecution,
 } from '#/agent/execution/execution';
 import { IAgentLoopService, type IAgentLoopService as AgentLoop } from '#/agent/loop/loop';
+import { executeTool } from '../../tools/fixtures/execute-tool';
 import {
   IAgentLLMRequesterService,
   type AgentLLMRequestFinish,
@@ -77,9 +79,9 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { stubLog } from '../../_base/log/stubs';
 import { Error2, ErrorCodes } from '#/errors';
 import type { AgentRunRequest, RunAgentOptions } from '#/session/subagent/subagent';
+import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IWireService, type IWireService as Wire } from '#/wire/wire';
 import { agentService, createTestAgent } from '../../harness';
-import { executeTool } from '../../tools/fixtures/execute-tool';
 
 const signal = new AbortController().signal;
 const tempDirs: string[] = [];
@@ -470,12 +472,17 @@ describe('agent collaboration safe-boundary delivery', () => {
         }),
       };
     });
-    const lifecycle = lifecycleHarness([target.handle]);
+    const senderNotices: ContextMessage[] = [];
+    const sender = agentHandle('main', {
+      enqueued: senderNotices,
+      dispatcher: { dispatch: async () => {} },
+    });
+    const lifecycle = lifecycleHarness([target.handle, sender.handle]);
     const service = messagingService(
       store,
       lifecycle.service,
       sessionContext(),
-      metadataHarness({ 'agent-target': {} }),
+      metadataHarness({ 'agent-target': {}, main: {} }),
       dispatch,
       residencyHarness(lifecycle.service).manager,
       log,
@@ -487,7 +494,14 @@ describe('agent collaboration safe-boundary delivery', () => {
     });
     expect(accepted).toMatchObject({ delivery: 'queued' });
     expect(accepted.resumed).toBeUndefined();
-    await vi.waitFor(() => { expect(warn).toHaveBeenCalled(); });
+    await vi.waitFor(() => { expect(senderNotices.length).toBeGreaterThan(0); });
+    const capacityNotice = noticeText(senderNotices.at(-1)!);
+    expect(capacityNotice).toContain(accepted.message.messageId);
+    expect(capacityNotice).toContain('agent-target');
+    expect(capacityNotice).toContain('dispatch.limit_exceeded');
+    expect(capacityNotice).toContain('same idempotency key');
+    expect(capacityNotice).toContain('new remote session');
+    expect(warn).toHaveBeenCalled();
     const payload = warn.mock.calls.at(-1)?.[1] as { messageId: string; error: Error2 };
     expect(payload.messageId).toBe(accepted.message.messageId);
     expect(payload.error).toMatchObject({
@@ -523,6 +537,187 @@ describe('agent collaboration safe-boundary delivery', () => {
       message: { messageId: accepted.message.messageId },
     });
     service.dispose();
+  });
+
+  it('tells the AgentSend caller when an external resume fails and retries the same message', async () => {
+    const senderCtx = createTestAgent();
+    const source: IAgentScopeHandle = {
+      id: 'main',
+      kind: LifecycleScope.Agent,
+      accessor: { get: <T>(id: ServiceIdentifier<T>): T => senderCtx.get(id) },
+      dispose: () => {},
+    };
+    const target = agentHandle('agent-target', { executorId: 'codex-acp' });
+    const store = mailboxStore(tempDir());
+    const resumeFailure = new AcpClientError(
+      'executor.session_open_failed',
+      'The requested external session cannot be resumed or loaded',
+      { details: { resumeSupported: false, loadSupported: false } },
+    );
+    let opened = 0;
+    let rejectResume = true;
+    const dispatch = dispatchHarness(async (child, request, options) => {
+      opened += 1;
+      if (rejectResume) {
+        let current = request as DispatchRun['request'];
+        await child.agent.accessor.get(IAgentExecutionService).hooks.onWillRun.run({
+          signal: options.signal,
+          request: current,
+          replaceRequest: (replacement) => { current = replacement; },
+          afterStart: () => {},
+        });
+        const started = Promise.reject(resumeFailure);
+        void started.catch(() => {});
+        return { child, request: current, started };
+      }
+      const started = child.agent.accessor.get(IAgentExecutionService).run(
+        request as DispatchRun['request'],
+        { signal: options.signal },
+      );
+      return { child, request: request as DispatchRun['request'], started };
+    });
+    const metadata = metadataHarness({
+      main: { type: 'main' },
+      'agent-target': {
+        type: 'sub',
+        delegator: { kind: 'agent', agentId: 'main' },
+        executor: 'codex-acp',
+        labels: { [COLLABORATION_TASK_NAME_LABEL]: 'researcher' },
+      },
+    });
+    const service = messagingService(
+      store,
+      lifecycleHarness([source, target.handle]).service,
+      sessionContext(),
+      metadata,
+      dispatch,
+    );
+    const tool = new AgentSendTool({ agentId: 'main' } as IAgentScopeContext, metadata, service);
+    const saved = {
+      sessionId: 'session-1',
+      sourceAgentId: 'main',
+      sourceTaskName: 'root',
+      targetAgentId: 'agent-target',
+      targetTaskName: 'researcher',
+      content: 'continue the open session',
+      idempotencyKey: 'toolu_resume_1',
+    };
+    senderCtx.mockNextResponse({ type: 'text', text: 'saw the blocked continuation' });
+    try {
+      const first = await executeTool(tool, {
+        turnId: 0,
+        toolCallId: 'toolu_resume_1',
+        args: { target: 'researcher', message: 'continue the open session' },
+        signal,
+      });
+      expect(first.isError).toBeFalsy();
+      const queued = JSON.parse(toolOutput(first)) as {
+        message_id: string;
+        status: string;
+        deduplicated: boolean;
+        resumed?: boolean;
+      };
+      expect(queued).toMatchObject({ status: 'queued', deduplicated: false });
+      expect(queued.resumed).toBeUndefined();
+      await vi.waitFor(() => { expect(contextText(senderCtx)).toContain(queued.message_id); });
+      const notice = contextText(senderCtx);
+      expect(notice).toContain('agent-target');
+      expect(notice).toContain('executor.session_open_failed');
+      expect(notice).toContain('The requested external session cannot be resumed or loaded');
+      expect(notice).toContain('same idempotency key');
+      expect(notice).toContain('new remote session');
+      expect(opened).toBe(1);
+      expect(target.remoteRequests).toEqual([]);
+      expect((await store.accept(saved)).delivery).toBe('queued');
+
+      rejectResume = false;
+      const second = await executeTool(tool, {
+        turnId: 1,
+        toolCallId: 'toolu_resume_1',
+        args: { target: 'researcher', message: 'continue the open session' },
+        signal,
+      });
+      expect(JSON.parse(toolOutput(second))).toMatchObject({
+        message_id: queued.message_id,
+        deduplicated: true,
+      });
+      await vi.waitFor(async () => {
+        expect((await store.accept(saved)).delivery).toBe('delivered');
+      });
+      expect(opened).toBe(2);
+      expect(target.remoteRequests).toHaveLength(1);
+      await senderCtx.get(IAgentLoopService).settled();
+    } finally {
+      service.dispose();
+      await senderCtx.dispose();
+    }
+  });
+
+  it('notifies an external-client sender when resume cannot open, without a new session', async () => {
+    const dispatched: Array<{ notificationType?: string; body?: string; sourceId?: string; sourceKind?: string }> = [];
+    const senderNotices: ContextMessage[] = [];
+    const sender = agentHandle('main', {
+      enqueued: senderNotices,
+      dispatcher: {
+        dispatch: async (event: { notificationType?: string; body?: string; sourceId?: string; sourceKind?: string }) => {
+          dispatched.push(event);
+        },
+      },
+    });
+    const target = agentHandle('agent-target', { executorId: 'codex-acp' });
+    const store = mailboxStore(tempDir());
+    const dispatch = dispatchHarness(async (child, request) => {
+      const started = Promise.reject(new AcpClientError(
+        'executor.session_open_failed',
+        'The requested external session cannot be resumed or loaded',
+        { details: { resumeSupported: false, loadSupported: false } },
+      ));
+      void started.catch(() => {});
+      return { child, request: request as DispatchRun['request'], started };
+    });
+    const service = messagingService(
+      store,
+      lifecycleHarness([sender.handle, target.handle]).service,
+      sessionContext(),
+      metadataHarness(
+        { main: { type: 'main' }, 'agent-target': { type: 'sub', executor: 'codex-acp' } },
+        {
+          custom: {
+            externalClient: {
+              connectionId: 'conn',
+              clientName: 'grok',
+              sessionRef: 'sess',
+              driver: 'external',
+            },
+          },
+        },
+      ),
+      dispatch,
+    );
+    try {
+      const accepted = await service.send({
+        ...sendInput('resume the external session', 'external-open-failed'),
+        waitForRunningDelivery: false,
+        idleWake: 'owned-child',
+      });
+      expect(accepted).toMatchObject({ delivery: 'queued' });
+      await vi.waitFor(() => { expect(dispatched).toHaveLength(1); });
+      expect(senderNotices).toEqual([]);
+      expect(target.remoteRequests).toEqual([]);
+      expect(dispatch.runOnExisting).toHaveBeenCalledOnce();
+      expect(dispatched[0]).toMatchObject({
+        notificationType: 'executor.session_open_failed',
+        sourceKind: 'agent_message',
+        sourceId: accepted.message.messageId,
+      });
+      expect(dispatched[0]?.body).toContain(accepted.message.messageId);
+      expect(dispatched[0]?.body).toContain('agent-target');
+      expect(dispatched[0]?.body).toContain('same idempotency key');
+      expect(dispatched[0]?.body).toContain('new remote session');
+      expect((await store.accept(messageInput('resume the external session', 'external-open-failed'))).delivery).toBe('queued');
+    } finally {
+      service.dispose();
+    }
   });
 
   it.each(['claim', 'recipient-flush'] as const)(
@@ -2527,6 +2722,14 @@ function bootstrap(homeDir: string): IBootstrapService {
   };
 }
 
+function noticeText(message: ContextMessage): string {
+  return message.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('');
+}
+
+function contextText(sender: ReturnType<typeof createTestAgent>): string {
+  return sender.context.get().map((message) => noticeText(message)).join('\n');
+}
+
 function toolOutput(result: { readonly output: string | readonly unknown[] }): string {
   expect(typeof result.output).toBe('string');
   return result.output as string;
@@ -2577,6 +2780,7 @@ function metadataHarness(
   options: {
     readonly createdByLoad?: boolean;
     readonly onCreatedByLoad?: () => void;
+    readonly custom?: Record<string, unknown>;
   } = {},
 ): ISessionMetadata {
   return {
@@ -2587,6 +2791,7 @@ function metadataHarness(
       createdAt: 0,
       updatedAt: 0,
       archived: false,
+      custom: options.custom,
       agents: typeof agents === 'function' ? agents() : agents,
     }),
     getAgentExecutor: async (agentId: string) => (typeof agents === 'function' ? agents() : agents)[agentId]?.executor,
@@ -2716,6 +2921,8 @@ function agentHandle(
   options: {
     readonly executorId?: string;
     readonly pauseAfterWillRun?: () => Promise<void>;
+    readonly enqueued?: ContextMessage[];
+    readonly dispatcher?: { dispatch: (event: { notificationType?: string; body?: string; sourceId?: string; sourceKind?: string }) => Promise<void> };
   } = {},
 ) {
   const messages: ContextMessage[] = [];
@@ -2799,7 +3006,11 @@ function agentHandle(
   } as AgentExecution;
   const loop = {
     _serviceBrand: undefined,
-    enqueue: () => { throw new Error('unexpected enqueue'); },
+    enqueue: (request: { resolveContextMessages: () => readonly ContextMessage[] }) => {
+      if (options.enqueued === undefined) throw new Error('unexpected enqueue');
+      options.enqueued.push(...request.resolveContextMessages());
+      return { assigned: Promise.resolve({}), abort: () => false };
+    },
     run: async () => ({ type: 'completed', steps: 0, truncated: false } as const),
     status: () => ({
       state: state === 'running' ? 'running' as const : 'idle' as const,
@@ -2816,7 +3027,7 @@ function agentHandle(
     hasPendingRequests: () => false,
     registerLoopErrorHandler: () => ({ dispose: () => {} }),
     hooks: createHooks(['onWillBeginStep', 'onDidFinishStep']),
-  } as AgentLoop;
+  } as unknown as AgentLoop;
   const prompt = {
     _serviceBrand: undefined,
     list: () => ({ active: undefined, pending: [] }),
@@ -2849,6 +3060,7 @@ function agentHandle(
         if (id === IAgentTokenCountingService) return { statusSize: () => 0 } as T;
         if (id === IWireService) return wire as T;
         if (id === IAgentLifecycleService) return undefined as T;
+        if (id === IEventDispatcher && options.dispatcher !== undefined) return options.dispatcher as T;
         throw new Error('unexpected agent service');
       },
     },

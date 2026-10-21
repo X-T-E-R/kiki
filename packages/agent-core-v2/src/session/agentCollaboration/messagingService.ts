@@ -8,7 +8,9 @@ import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory'
 import type { AgentMessageOrigin, ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import { MessageStepRequest } from '#/agent/loop/stepRequest';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { TaskNotified } from '#/agent/task/taskOps';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { agentMessageMaterializationsKey, agentMessageReceiptsKey } from './messageReceiptState';
@@ -37,6 +39,7 @@ import { AgentMessageDelivered } from './messageEvents';
 
 const DELIVERY_HOOK_ID = 'agent-collaboration-message-delivery';
 const MISSING_TARGET_REASON = 'target agent is not registered in the session';
+const AGENT_SEND_BLOCKED_TRIGGER = 'agent_send_blocked';
 
 interface ClaimedAgentMessage {
   readonly queued: QueuedAgentMessage;
@@ -49,6 +52,36 @@ interface PreparedExternalDelivery {
 }
 
 type WakeAttempt = 'landed' | 'other' | 'skipped';
+
+function continuationFailureCode(error: unknown): string {
+  if (isError2(error)) return error.code;
+  if (typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string') {
+    return error.code;
+  }
+  return ErrorCodes.INTERNAL;
+}
+
+function continuationFailureReason(error: unknown): string {
+  if (error instanceof Error && error.message.trim().length > 0) return error.message;
+  return 'The continuation did not start.';
+}
+
+function continuationFailureNotice(input: {
+  readonly messageId: string;
+  readonly targetAgentId: string;
+  readonly code: string;
+  readonly reason: string;
+}): string {
+  return [
+    'AgentSend continuation did not start.',
+    `message_id: ${input.messageId}`,
+    `target_agent_id: ${input.targetAgentId}`,
+    `error_code: ${input.code}`,
+    `reason: ${input.reason}`,
+    `Retry this AgentSend call with the same idempotency key. That retry reuses message ${input.messageId}.`,
+    'Do not open a new remote session in place of this resume.',
+  ].join('\n');
+}
 
 function continuationBlocked(error: Error2, messageId: string, targetAgentId: string): Error2 {
   const details = error.details ?? {};
@@ -166,11 +199,12 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
           true,
         );
         void delivery.finally(() => { lease.dispose(); }).catch((error: unknown) => {
-          this.log.warn('Agent message delivery did not finish', {
-            messageId: acceptance.message.messageId,
-            targetAgentId: input.targetAgentId,
+          void this.reportContinuationFailure(
+            input.sourceAgentId,
+            acceptance.message.messageId,
+            input.targetAgentId,
             error,
-          });
+          );
         });
         return acceptance;
       } catch (error) {
@@ -188,6 +222,50 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     );
     const refreshed = await this.store.accept(storedInput);
     return { ...acceptance, delivery: refreshed.delivery, resumed: resumed || undefined };
+  }
+
+  private async reportContinuationFailure(
+    sourceAgentId: string,
+    messageId: string,
+    targetAgentId: string,
+    error: unknown,
+  ): Promise<void> {
+    const code = continuationFailureCode(error);
+    const reason = continuationFailureReason(error);
+    this.log.warn('Agent message delivery did not finish', { messageId, targetAgentId, error });
+    const sender = this.lifecycle.get(sourceAgentId);
+    if (sender === undefined) return;
+    const text = continuationFailureNotice({ messageId, targetAgentId, code, reason });
+    try {
+      if (isExternalClientMain(await this.metadata.read(), sourceAgentId)) {
+        await sender.accessor.get(IEventDispatcher).dispatch(new TaskNotified({
+          notificationType: code,
+          title: 'AgentSend continuation did not start',
+          body: text,
+          severity: 'warning',
+          sourceKind: 'agent_message',
+          sourceId: messageId,
+        }));
+        return;
+      }
+      sender.accessor.get(IAgentLoopService).enqueue(new MessageStepRequest({
+        role: 'user',
+        content: [{ type: 'text', text }],
+        toolCalls: [],
+        origin: { kind: 'system_trigger', name: AGENT_SEND_BLOCKED_TRIGGER },
+      }, {
+        kind: AGENT_SEND_BLOCKED_TRIGGER,
+        admission: 'activeOrNewTurn',
+        mergeable: false,
+        turnScoped: false,
+      }));
+    } catch (notifyError) {
+      this.log.warn('Agent message startup failure could not reach the sender', {
+        messageId,
+        targetAgentId,
+        error: notifyError,
+      });
+    }
   }
 
   private async discardUnregisteredTargetMessages(): Promise<void> {
