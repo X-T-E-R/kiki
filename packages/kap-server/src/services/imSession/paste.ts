@@ -24,6 +24,11 @@ export function parseImPaste(text: string): ImPaste {
   let appSecret: string | undefined;
   let endpoint: string | undefined;
   let endpointKind: 'onebot_v11' | 'wechat_bridge' | undefined;
+  let oneBotMode: 'forward' | 'reverse' | undefined;
+  let accessToken: string | undefined;
+  let listenPort: number | undefined;
+  let wechatToken: string | undefined;
+  let wechatAccount: string | undefined;
   for (const rawLine of text.split(/\r?\n/u)) {
     const line = rawLine.trim();
     if (line === '' || line.startsWith('#')) continue;
@@ -52,10 +57,19 @@ export function parseImPaste(text: string): ImPaste {
       providerKind = 'onebot_v11';
       endpointKind = 'onebot_v11';
       endpoint = value;
-    } else if (key === 'wechat' || key === 'wechat_endpoint') {
+    } else if (key === 'mode' && (value === 'forward' || value === 'reverse')) oneBotMode = value;
+    else if (key === 'access_token') accessToken = value;
+    else if (key === 'listen_port' && /^[0-9]{1,5}$/u.test(value)) listenPort = Number(value);
+    else if (key === 'wechat_token' || key === 'ilink_token') {
       providerKind = 'wechat_bridge';
-      endpointKind = 'wechat_bridge';
-      endpoint = value;
+      wechatToken = value;
+    } else if (key === 'wechat_account') wechatAccount = value;
+    else if (key === 'wechat' || key === 'wechat_endpoint') {
+      if (/^(https?|wss?):\/\//u.test(value)) ignored.add(key);
+      else {
+        providerKind = 'wechat_bridge';
+        wechatToken = value;
+      }
     } else if (key === 'endpoint') {
       endpoint = value;
     } else if (key === 'busy' && (value === 'queue' || value === 'steer')) busy = value;
@@ -65,7 +79,14 @@ export function parseImPaste(text: string): ImPaste {
     else ignored.add(key);
   }
   if (providerKind === 'feishu_app' && appId !== undefined && appSecret !== undefined) credential = `${appId}\n${appSecret}`;
-  if ((providerKind === 'onebot_v11' || providerKind === 'wechat_bridge') && endpoint !== undefined) credential = endpoint;
+  if (providerKind === 'onebot_v11' && endpoint !== undefined) {
+    credential = JSON.stringify({
+      mode: oneBotMode ?? 'forward', endpoint,
+      ...(accessToken === undefined ? {} : { access_token: accessToken }),
+      ...(listenPort === undefined ? {} : { listen_port: listenPort }),
+    });
+  }
+  if (providerKind === 'wechat_bridge' && wechatToken !== undefined) credential = wechatAccount === undefined ? wechatToken : `${wechatToken}\n${wechatAccount}`;
   if (providerKind === undefined && endpoint !== undefined && endpointKind !== undefined) {
     providerKind = endpointKind;
     credential = endpoint;

@@ -33,6 +33,7 @@ export interface ImPendingApproval {
 
 export interface ImPendingQuestion {
   readonly id: string;
+  readonly questionIndex: number;
   readonly expiresAt: number;
   readonly questionKey: string;
   readonly options: readonly { readonly id: string; readonly label: string }[];
@@ -49,6 +50,7 @@ export interface ImSubmitResult {
 
 export interface ImQuestionAnswer {
   readonly kind: 'single' | 'multi' | 'other' | 'multi_with_other';
+  readonly questionKey?: string;
   readonly optionIds?: readonly string[];
   readonly text?: string;
   readonly method: 'number_key';
@@ -87,7 +89,7 @@ export interface ImSessionPorts {
 export interface ImSessionBridgeOptions {
   readonly ports: ImSessionPorts;
   readonly factories: readonly ImAdapterFactory[];
-  readonly locale?: 'en' | 'zh';
+  readonly locale?: 'en' | 'zh' | (() => 'en' | 'zh');
   readonly editIntervalMs?: number;
   readonly now?: () => number;
   readonly wait?: (ms: number) => Promise<void>;

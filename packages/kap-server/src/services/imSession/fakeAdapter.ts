@@ -19,6 +19,10 @@ export class FakeImAdapter implements ImSessionAdapter {
   conflict: 'webhook' | 'none' = 'none';
   failFile = false;
   failEdit = false;
+  supportsEdit = true;
+  supportsButtons = true;
+  supportsFile = true;
+  badVoiceFormat = false;
   textLimit: number | undefined = 4096;
   maxInboundBytes = 20 * 1024 * 1024;
   voice = true;
@@ -28,7 +32,7 @@ export class FakeImAdapter implements ImSessionAdapter {
   constructor(readonly providerKind: ImProviderKind, readonly accountId: string) {}
 
   acceptsVoice(mediaType: string): boolean {
-    return this.voice && acceptsTelegramVoice(mediaType);
+    return (this.voice || this.badVoiceFormat) && acceptsTelegramVoice(mediaType);
   }
 
   describeConflict(): Promise<'webhook' | 'none'> {
@@ -64,6 +68,8 @@ export class FakeImAdapter implements ImSessionAdapter {
   }
 
   sendFile(message: ImOutboundFile): Promise<{ messageId: string; deliveredAs: 'file' | 'image' | 'voice' }> {
+    if (message.asVoice && this.badVoiceFormat) return Promise.reject(new Error('bad_format'));
+    if (!this.supportsFile && !message.asImage && !message.asVoice) return Promise.reject(new Error('unsupported_file'));
     if (this.failFile) return Promise.reject(new Error('file_failed'));
     const deliveredAs = message.asVoice && this.acceptsVoice(message.mediaType) ? 'voice' : message.asImage ? 'image' : 'file';
     const messageId = `f${++this.sequence}`;

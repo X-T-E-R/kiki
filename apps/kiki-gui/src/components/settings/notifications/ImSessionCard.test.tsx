@@ -117,4 +117,41 @@ describe('ImSessionCard', () => {
     }));
     expect(container.querySelector('[data-im-binding="b1"]')).not.toBeNull();
   });
+
+  it('shows a discovery that arrives while a connection is listening', async () => {
+    const listening: ImSessionSnapshot = { ...empty, instances: [{ id: 'inst', provider_kind: 'telegram', listening: true, configured: true, adapter: 'running' }] };
+    imSessions.snapshot.mockResolvedValueOnce(listening).mockResolvedValue(found);
+    const container = await render('360px');
+    expect(container.querySelector('[data-im-discovery="d1"]')).toBeNull();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2_500)); });
+    expect(container.querySelector('[data-im-discovery="d1"]')?.textContent).toContain('Ada');
+  }, 8_000);
+
+  it('checks the only saved connection without pasting the token again', async () => {
+    const saved: ImSessionSnapshot = { ...empty, instances: [{ id: 'inst', provider_kind: 'telegram', listening: false, configured: true, adapter: 'stopped' }] };
+    imSessions.snapshot.mockResolvedValue(saved);
+    imSessions.paste.mockClear();
+    imSessions.check.mockClear();
+    const container = await render('1100px');
+    const check = container.querySelector<HTMLButtonElement>('[data-im-check]')!;
+    expect(check.disabled).toBe(false);
+    await click(container, '[data-im-check]');
+    expect(imSessions.paste).not.toHaveBeenCalled();
+    expect(imSessions.check).toHaveBeenCalledWith('inst');
+  });
+
+  it('shows the effective session switch and can change the target and phone actions', async () => {
+    const quiet: ImSessionSnapshot = {
+      ...bound,
+      policy: { allowed: true, default_enabled: false },
+      bindings: [{ ...bound.bindings[0]!, session_enabled: undefined }],
+    };
+    imSessions.snapshot.mockResolvedValue(quiet);
+    const container = await render('1100px');
+    expect(container.querySelector('[data-im-session-switch="b1"]')?.textContent).toContain('Off');
+    expect(container.querySelector('[data-im-follow-default="b1"]')).toBeNull();
+    await click(container, '[data-im-binding-actions="off"]');
+    expect(imSessions.updateBinding).toHaveBeenCalledWith('b1', { mobile_interactions: false });
+    expect(container.querySelector('[data-im-binding-target="home"]')).not.toBeNull();
+  });
 });

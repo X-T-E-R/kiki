@@ -4,7 +4,7 @@ import { imSessionAdmitted, type ImBinding, type ImCatalog, type ImCheckResult, 
 
 import type { ImAdapterFactory, ImInboundEvent, ImInboundIdentity, ImSessionAdapter } from './adapter';
 import { parseImPaste } from './paste';
-import type { ImQuestionAnswer, ImSessionBridgeOptions, ImSessionPorts } from './ports';
+import type { ImPendingQuestion, ImQuestionAnswer, ImSessionBridgeOptions, ImSessionPorts } from './ports';
 import { segmentText } from './segment';
 
 interface BindingRecord {
@@ -109,6 +109,8 @@ const COPY = {
     done: 'Done',
     other: 'Other',
     trust: 'Trust',
+    numbers: 'Send the number of a choice.',
+    fileUnsupported: 'This platform cannot take that file.',
     status: (busy: boolean, pending: string, queue: number) => `Busy: ${busy ? 'yes' : 'no'}. Waiting: ${pending}. Queue: ${queue}.`,
   },
   zh: {
@@ -125,6 +127,8 @@ const COPY = {
     done: '完成',
     other: '其他',
     trust: '信任',
+    numbers: '发送选项的数字。',
+    fileUnsupported: '这个平台收不了这个文件。',
     status: (busy: boolean, pending: string, queue: number) => `忙：${busy ? '是' : '否'}。等待：${pending}。队列：${queue}。`,
   },
 } as const;
@@ -145,7 +149,7 @@ function senderKey(instanceId: string, identity: ImInboundIdentity): string {
 export class ImSessionBridge {
   private readonly ports: ImSessionPorts;
   private readonly factories: readonly ImAdapterFactory[];
-  private readonly locale: 'en' | 'zh';
+  private readonly locale: () => 'en' | 'zh';
   private readonly editIntervalMs: number;
   private readonly now: () => number;
   private readonly wait: (ms: number) => Promise<void>;
@@ -158,7 +162,8 @@ export class ImSessionBridge {
   constructor(options: ImSessionBridgeOptions) {
     this.ports = options.ports;
     this.factories = options.factories;
-    this.locale = options.locale ?? 'en';
+    const locale = options.locale;
+    this.locale = typeof locale === 'function' ? locale : () => locale ?? 'en';
     this.editIntervalMs = options.editIntervalMs ?? 2_000;
     this.now = options.now ?? (() => Date.now());
     this.wait = options.wait ?? ((ms) => new Promise((resolve) => { setTimeout(resolve, ms); }));
@@ -347,7 +352,7 @@ export class ImSessionBridge {
   }
 
   private copy(key: keyof typeof COPY.en): string {
-    return COPY[this.locale][key] as string;
+    return COPY[this.locale()][key] as string;
   }
 
   private admitted(binding: BindingRecord): boolean {
@@ -407,6 +412,16 @@ export class ImSessionBridge {
     for (const meta of this.state.instances) if (meta.listening) await this.ensureOne(meta.id);
   }
 
+  private join(poller: Poller, instanceId: string): void {
+    const canonical = poller.adapter.canonicalInstanceId ?? poller.ownerId;
+    poller.instances.add(instanceId);
+    if (poller.ownerId !== canonical) {
+      this.retarget(poller.ownerId, canonical);
+      poller.ownerId = canonical;
+    }
+    this.retarget(instanceId, canonical);
+  }
+
   private async ensureOne(instanceId: string): Promise<void> {
     if (!this.state.policy.allowed) return;
     const meta = this.requireMeta(instanceId);
@@ -416,47 +431,83 @@ export class ImSessionBridge {
     const tokenHash = createHash('sha256').update(credential).digest('hex');
     const existing = this.pollers.get(tokenHash);
     if (existing !== undefined) {
-      existing.instances.add(instanceId);
+      this.join(existing, instanceId);
       return;
     }
     const factory = this.factories.find((item) => item.providerKind === meta.providerKind);
     if (factory === undefined) return;
-    const adapter = factory.create({ instanceId, credential });
+    let adapter: ImSessionAdapter;
+    try {
+      adapter = factory.create({ instanceId, credential });
+    } catch {
+      meta.listening = false;
+      return;
+    }
+    const canonical = adapter.canonicalInstanceId ?? instanceId;
+    const shared = [...this.pollers.values()].find((item) => item.adapter === adapter || item.ownerId === canonical || item.adapter.canonicalInstanceId === canonical);
+    if (shared !== undefined) {
+      this.join(shared, instanceId);
+      this.pollers.set(tokenHash, shared);
+      return;
+    }
     if (await adapter.describeConflict() === 'webhook') {
       meta.conflict = 'webhook';
       return;
     }
-    const poller: Poller = { tokenHash, ownerId: instanceId, instances: new Set([instanceId]), adapter };
+    const poller: Poller = { tokenHash, ownerId: canonical, instances: new Set([instanceId]), adapter };
     this.pollers.set(tokenHash, poller);
-    const started = await adapter.start(async (event) => {
-      for (const member of poller.instances) await this.ingest(member, event);
-    }, { offset: this.state.cursors[instanceId] });
-    if (started.conflict === 'webhook') {
-      meta.conflict = 'webhook';
-      await adapter.stop();
+    this.retarget(instanceId, canonical);
+    try {
+      const started = await adapter.start(async (event) => {
+        await this.ingest(poller.ownerId, event);
+      }, { offset: this.state.cursors[poller.ownerId] });
+      if (started.conflict === 'webhook' || started.failed === 'auth') {
+        if (started.conflict === 'webhook') meta.conflict = 'webhook';
+        meta.listening = started.conflict !== 'webhook' ? false : meta.listening;
+        await adapter.stop();
+        this.pollers.delete(tokenHash);
+        return;
+      }
+      meta.accountId = started.accountId;
+      meta.conflict = undefined;
+    } catch {
+      meta.listening = false;
+      await adapter.stop().catch(() => undefined);
       this.pollers.delete(tokenHash);
-      return;
     }
-    meta.accountId = started.accountId;
-    meta.conflict = undefined;
+  }
+
+  private retarget(from: string, to: string): void {
+    if (from === to) return;
+    for (const binding of this.state.bindings) if (binding.providerInstanceId === from) binding.providerInstanceId = to;
+    for (const discovery of this.state.discoveries) if (discovery.providerInstanceId === from) discovery.providerInstanceId = to;
+    for (const stranger of this.state.strangers) if (stranger.providerInstanceId === from) stranger.providerInstanceId = to;
   }
 
   private async release(instanceId: string): Promise<void> {
-    for (const [hash, poller] of this.pollers) {
+    const seen = new Set<Poller>();
+    for (const poller of this.pollers.values()) {
+      if (seen.has(poller) || !poller.instances.has(instanceId)) continue;
+      seen.add(poller);
       poller.instances.delete(instanceId);
       if (poller.instances.size > 0) continue;
       await poller.adapter.stop();
-      this.pollers.delete(hash);
+      for (const [key, item] of [...this.pollers]) if (item === poller) this.pollers.delete(key);
     }
   }
 
   private async stopAll(): Promise<void> {
-    for (const poller of this.pollers.values()) await poller.adapter.stop();
+    const seen = new Set<ImSessionAdapter>();
+    for (const poller of this.pollers.values()) {
+      if (seen.has(poller.adapter)) continue;
+      seen.add(poller.adapter);
+      await poller.adapter.stop();
+    }
     this.pollers.clear();
   }
 
   private adapterFor(instanceId: string): ImSessionAdapter | undefined {
-    return [...this.pollers.values()].find((item) => item.instances.has(instanceId))?.adapter;
+    return [...this.pollers.values()].find((item) => item.ownerId === instanceId || item.instances.has(instanceId))?.adapter;
   }
 
   private async ingest(instanceId: string, event: ImInboundEvent): Promise<void> {
@@ -504,7 +555,7 @@ export class ImSessionBridge {
         if (adapter !== undefined) await this.send(adapter, event.identity, this.copy('expired'), 'expired');
         return;
       }
-      await this.ports.sessions.answerQuestion({ sessionId: binding.sessionId, interactionId: waiting.interactionId, response: { kind: 'other', text, method: 'number_key' } });
+      await this.ports.sessions.answerQuestion({ sessionId: binding.sessionId, interactionId: waiting.interactionId, response: { kind: 'other', questionKey: waiting.questionKey, text, method: 'number_key' } });
       delete this.state.awaiting[senderKey(instanceId, event.identity)];
       return;
     }
@@ -548,7 +599,7 @@ export class ImSessionBridge {
     const [name, arg] = text.split(/\s+/u);
     if (name === ':status') {
       const activity = await this.ports.sessions.activity(binding.sessionId);
-      await this.send(adapter, binding.identity, COPY[this.locale].status(activity.busy, activity.pending, activity.queueLength), 'status');
+      await this.send(adapter, binding.identity, COPY[this.locale()].status(activity.busy, activity.pending, activity.queueLength), 'status');
       return;
     }
     if (name === ':abort') {
@@ -575,14 +626,14 @@ export class ImSessionBridge {
   private async answerNumbers(binding: BindingRecord, text: string): Promise<boolean> {
     if (!/^[0-9]+(?:\s+[0-9]+)*$/u.test(text)) return false;
     const pending = await this.ports.sessions.listInteractions(binding.sessionId);
-    const question = pending.questions[0];
+    const question = pending.questions.find((item) => !this.state.tickets.some((ticket) => ticket.interactionId === item.id && ticket.questionKey === item.questionKey && ticket.consumed && ticket.action !== 'toggle'));
     if (question === undefined) return false;
     const numbers = text.split(/\s+/u).map((item) => Number(item));
     const options = numbers.map((number) => question.options[number - 1]).filter((item) => item !== undefined);
     if (options.length !== numbers.length || options.length === 0) return false;
     const response: ImQuestionAnswer = question.multi
-      ? { kind: 'multi', optionIds: options.map((item) => item.id), method: 'number_key' }
-      : { kind: 'single', optionIds: [options[0]!.id], method: 'number_key' };
+      ? { kind: 'multi', questionKey: question.questionKey, optionIds: options.map((item) => item.id), method: 'number_key' }
+      : { kind: 'single', questionKey: question.questionKey, optionIds: [options[0]!.id], method: 'number_key' };
     await this.ports.sessions.answerQuestion({ sessionId: binding.sessionId, interactionId: question.id, response });
     return true;
   }
@@ -659,6 +710,10 @@ export class ImSessionBridge {
   private async editOrSend(adapter: ImSessionAdapter, identity: ImInboundIdentity, ledger: ReplyLedger, index: number, text: string): Promise<void> {
     const messageId = ledger.messageIds[index];
     if (messageId === undefined) return;
+    if (!adapter.supportsEdit) {
+      ledger.messageIds[index] = (await adapter.sendText({ identity, text, code: 'reply' })).messageId;
+      return;
+    }
     const edited = await adapter.editText({ identity, messageId, text, code: 'reply' });
     if (!edited.edited) ledger.messageIds[index] = (await adapter.sendText({ identity, text, code: 'reply' })).messageId;
   }
@@ -666,16 +721,43 @@ export class ImSessionBridge {
   private async publishMedia(adapter: ImSessionAdapter, identity: ImInboundIdentity, media: readonly { kind: 'image' | 'file' | 'audio'; name: string; mediaType: string; bytes: Uint8Array }[]): Promise<void> {
     for (const item of media) {
       const asVoice = item.kind === 'audio' && adapter.acceptsVoice(item.mediaType);
-      const sent = await adapter.sendFile({ identity, name: item.name, mediaType: item.mediaType, bytes: item.bytes, asVoice, asImage: item.kind === 'image' });
-      if (item.kind === 'audio' && sent.deliveredAs !== 'voice') this.state.voiceFallbacks += 1;
+      const asImage = item.kind === 'image';
+      if (!asVoice && !asImage && !adapter.supportsFile) {
+        if (item.kind === 'audio') this.state.voiceFallbacks += 1;
+        await this.send(adapter, identity, this.copy('fileUnsupported'), 'file_unsupported');
+        continue;
+      }
+      let counted = false;
+      let sent: { deliveredAs: 'file' | 'image' | 'voice' };
+      try {
+        sent = await adapter.sendFile({ identity, name: item.name, mediaType: item.mediaType, bytes: item.bytes, asVoice, asImage });
+      } catch (error) {
+        if (asVoice && error instanceof Error && error.message === 'bad_format') {
+          counted = true;
+          this.state.voiceFallbacks += 1;
+          if (!adapter.supportsFile) {
+            await this.send(adapter, identity, this.copy('fileUnsupported'), 'file_unsupported');
+            continue;
+          }
+          sent = await adapter.sendFile({ identity, name: item.name, mediaType: item.mediaType, bytes: item.bytes, asVoice: false, asImage: false });
+        } else if (error instanceof Error && error.message === 'unsupported_file') {
+          await this.send(adapter, identity, this.copy('fileUnsupported'), 'file_unsupported');
+          continue;
+        } else throw error;
+      }
+      if (item.kind === 'audio' && !counted && sent.deliveredAs !== 'voice') this.state.voiceFallbacks += 1;
     }
   }
 
   private async send(adapter: ImSessionAdapter, identity: ImInboundIdentity, text: string, code: string, buttons?: readonly { id: string; label: string }[]): Promise<void> {
+    if (buttons !== undefined && buttons.length > 0 && !adapter.supportsButtons) {
+      await adapter.sendText({ identity, text: [text, ...buttons.map((button) => button.label), this.copy('numbers')].join('\n'), code });
+      return;
+    }
     await adapter.sendText({ identity, text, code, ...(buttons === undefined ? {} : { buttons }) });
   }
 
-  private async projectInteractions(binding: BindingRecord, approvals: readonly { id: string; expiresAt: number; toolName: string; action: string; ssh?: 'login' | 'host_key' }[], questions: readonly { id: string; expiresAt: number; questionKey: string; options: readonly { id: string; label: string }[]; multi: boolean; allowOther: boolean }[]): Promise<void> {
+  private async projectInteractions(binding: BindingRecord, approvals: readonly { id: string; expiresAt: number; toolName: string; action: string; ssh?: 'login' | 'host_key' }[], questions: readonly ImPendingQuestion[]): Promise<void> {
     const adapter = this.adapterFor(binding.providerInstanceId);
     if (adapter === undefined) return;
     for (const approval of approvals) {
@@ -696,9 +778,10 @@ export class ImSessionBridge {
       await this.send(adapter, binding.identity, `${approval.toolName} ${approval.action}`, 'approval', [{ id: allow, label: this.copy('allow') }, { id: refuse, label: this.copy('refuse') }]);
     }
     for (const question of questions) {
-      if (this.state.tickets.some((ticket) => ticket.interactionId === question.id)) continue;
-      const buttons = question.options.map((option, index) => ({ id: this.ticket(binding, question.id, question.expiresAt, question.multi ? 'toggle' : 'single', question.questionKey, option.id, question.id), label: `${index + 1}. ${option.label}` }));
-      if (question.multi) buttons.push({ id: this.ticket(binding, question.id, question.expiresAt, 'multi_done', question.questionKey, undefined, question.id), label: this.copy('done') });
+      if (this.state.tickets.some((ticket) => ticket.interactionId === question.id && ticket.questionKey === question.questionKey)) continue;
+      const group = `${question.id}:${question.questionIndex}`;
+      const buttons = question.options.map((option, index) => ({ id: this.ticket(binding, question.id, question.expiresAt, question.multi ? 'toggle' : 'single', question.questionKey, option.id, group), label: `${index + 1}. ${option.label}` }));
+      if (question.multi) buttons.push({ id: this.ticket(binding, question.id, question.expiresAt, 'multi_done', question.questionKey, undefined, group), label: this.copy('done') });
       if (question.allowOther) buttons.push({ id: this.ticket(binding, question.id, question.expiresAt, 'other', question.questionKey), label: this.copy('other') });
       await this.send(adapter, binding.identity, question.questionKey, 'question', buttons);
     }
@@ -743,7 +826,7 @@ export class ImSessionBridge {
       return;
     }
     if (ticket.action === 'single' && ticket.optionId !== undefined) {
-      await this.ports.sessions.answerQuestion({ sessionId: ticket.sessionId, interactionId: ticket.interactionId, response: { kind: 'single', optionIds: [ticket.optionId], method: 'number_key' } });
+      await this.ports.sessions.answerQuestion({ sessionId: ticket.sessionId, interactionId: ticket.interactionId, response: { kind: 'single', questionKey: ticket.questionKey, optionIds: [ticket.optionId], method: 'number_key' } });
       ticket.consumed = true;
       return;
     }
@@ -757,7 +840,7 @@ export class ImSessionBridge {
     if (ticket.action === 'multi_done' && ticket.group !== undefined) {
       const optionIds = this.state.selections[ticket.group] ?? [];
       if (optionIds.length === 0) return;
-      await this.ports.sessions.answerQuestion({ sessionId: ticket.sessionId, interactionId: ticket.interactionId, response: { kind: 'multi', optionIds, method: 'number_key' } });
+      await this.ports.sessions.answerQuestion({ sessionId: ticket.sessionId, interactionId: ticket.interactionId, response: { kind: 'multi', questionKey: ticket.questionKey, optionIds, method: 'number_key' } });
       ticket.consumed = true;
       return;
     }

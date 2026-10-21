@@ -47,11 +47,15 @@ export interface ImOutboundFile {
 
 export interface ImSessionAdapter {
   readonly providerKind: ImProviderKind;
+  readonly canonicalInstanceId?: string;
   readonly textLimit: number | undefined;
   readonly maxInboundBytes: number;
+  readonly supportsEdit: boolean;
+  readonly supportsButtons: boolean;
+  readonly supportsFile: boolean;
   describeConflict(): Promise<'webhook' | 'none'>;
   acceptsVoice(mediaType: string): boolean;
-  start(listener: (event: ImInboundEvent) => Promise<void>, options?: { readonly offset?: number }): Promise<{ readonly accountId: string; readonly conflict?: 'webhook' }>;
+  start(listener: (event: ImInboundEvent) => Promise<void>, options?: { readonly offset?: number }): Promise<{ readonly accountId: string; readonly conflict?: 'webhook'; readonly failed?: 'auth' }>;
   stop(): Promise<void>;
   sendText(message: ImOutboundText): Promise<{ readonly messageId: string }>;
   editText(message: ImOutboundText & { readonly messageId: string }): Promise<{ readonly messageId: string; readonly edited: boolean }>;

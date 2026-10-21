@@ -67,17 +67,34 @@ export const notificationProviders: readonly NotificationProviderDescriptor[] = 
   })),
 ];
 
+const SESSION_KINDS = new Set(['feishu_app', 'onebot_v11', 'wechat_bridge']);
+
+function sessionInstanceIds(settings: Settings): Set<string> {
+  const ids = new Set<string>();
+  for (const [id, value] of Object.entries(settings.provider_instances)) {
+    if (typeof value !== 'object' || value === null) continue;
+    const kind = (value as { options?: { session_kind?: unknown } }).options?.session_kind;
+    if (typeof kind === 'string' && SESSION_KINDS.has(kind)) ids.add(id);
+  }
+  return ids;
+}
+
 function donorConfig(settings: Settings): Config {
-  const channels = Object.fromEntries(Object.entries(settings.channels).map(([id, value]) => {
-    const { scenes: _scenes, label: _label, health: _health, ...channel } = value as NotificationChannel;
-    return [id, channel];
+  const skipped = sessionInstanceIds(settings);
+  const channels = Object.fromEntries(Object.entries(settings.channels).flatMap(([id, value]) => {
+    const channel = value as NotificationChannel;
+    if (skipped.has(channel.provider_instance_id)) return [];
+    const { scenes: _scenes, label: _label, health: _health, ...rest } = channel;
+    return [[id, rest]];
   }));
-  const provider_instances = Object.fromEntries(Object.entries(settings.provider_instances).map(([id, value]) => {
+  const provider_instances = Object.fromEntries(Object.entries(settings.provider_instances).flatMap(([id, value]) => {
+    if (skipped.has(id)) return [];
     const { label: _label, health: _health, ...instance } = value as NotificationInstance;
-    return [id, instance];
+    return [[id, instance]];
   }));
+  const credential_slots = Object.fromEntries(Object.entries(settings.credential_slots).filter(([, slot]) => !skipped.has((slot as NotificationCredentialSlot).provider_instance_id)));
   return { schema_version: '1', provider_instances: provider_instances as Config['provider_instances'],
-    channels, credential_slots: settings.credential_slots as Config['credential_slots'] };
+    channels, credential_slots: credential_slots as Config['credential_slots'] };
 }
 function validateSettings(settings: Settings): void {
   NotificationsConfigSchema.parse(settings);

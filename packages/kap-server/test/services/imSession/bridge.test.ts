@@ -1,11 +1,11 @@
+import { createTelegramSessionAdapter } from '@nb-im/core';
 import { describe, expect, it } from 'vitest';
 
+import type { ImInboundIdentity } from '../../../src/services/imSession/adapter';
 import { ImSessionBridge } from '../../../src/services/imSession/bridge';
 import { FakeImAdapter, fakeAdapterFactory } from '../../../src/services/imSession/fakeAdapter';
 import { parseImPaste } from '../../../src/services/imSession/paste';
 import type { ImPendingApproval, ImPendingQuestion, ImSessionPorts, ImSubmitResult, ImVisibleReply } from '../../../src/services/imSession/ports';
-import { TelegramPollingAdapter } from '../../../src/services/imSession/telegramAdapter';
-import type { ImHttpTransport, ImInboundIdentity } from '../../../src/services/imSession/adapter';
 
 const identity: ImInboundIdentity = { chatId: 'c1', senderId: 'u1', topicId: '0', chatTitle: 'Ada', senderName: 'Ada' };
 const other: ImInboundIdentity = { chatId: 'c1', senderId: 'u2', topicId: '0' };
@@ -195,7 +195,7 @@ describe('im session bridge', () => {
 
   it('resolves approval and question buttons, and rejects expiry, replay, and another session', async () => {
     const adapter = new FakeImAdapter('telegram', '42');
-    const questions: ImPendingQuestion[] = [{ id: 'q1', expiresAt: 1_700_000_000_000 + 1000, questionKey: 'Pick', options: [{ id: 'opt_0_0', label: 'One' }, { id: 'opt_0_1', label: 'Two' }], multi: false, allowOther: true }];
+    const questions: ImPendingQuestion[] = [{ id: 'q1', questionIndex: 0, expiresAt: 1_700_000_000_000 + 1000, questionKey: 'Pick', options: [{ id: 'opt_0_0', label: 'One' }, { id: 'opt_0_1', label: 'Two' }], multi: false, allowOther: true }];
     const approvals: ImPendingApproval[] = [{ id: 'a1', expiresAt: 1_700_000_000_000 + 1000, toolName: 'Bash', action: 'run' }];
     const harness = bridgeFor(adapter, ports({
       listInteractions: async () => ({ approvals, questions }),
@@ -317,18 +317,77 @@ describe('im session bridge', () => {
 
   it('does not call deleteWebhook when Telegram already has one', async () => {
     const methods: string[] = [];
-    const transport: ImHttpTransport = {
-      async call(method) {
-        methods.push(method);
-        if (method === 'getMe') return { status: 200, body: { ok: true, result: { id: 7 } } };
-        if (method === 'getWebhookInfo') return { status: 200, body: { ok: true, result: { url: 'https://example.invalid/hook' } } };
-        return { status: 200, body: { ok: true, result: [] } };
+    const adapter = createTelegramSessionAdapter({
+      platform: 'telegram', instance_id: 'im_hook', token: '123456:abcdefghijklmnopqrstuvwxyz',
+      transport: {
+        async call(request) {
+          methods.push(request.method);
+          if (request.method === 'getMe') return { http_status: 200, body: { ok: true, result: { id: 7 } } };
+          if (request.method === 'getWebhookInfo') return { http_status: 200, body: { ok: true, result: { url: 'https://example.invalid/hook' } } };
+          return { http_status: 200, body: { ok: true, result: [] } };
+        },
+        async download() { return { ok: false }; },
       },
-      async download() { return new Uint8Array(); },
-    };
-    const started = await new TelegramPollingAdapter(transport, 100, 0).start(async () => undefined);
-    expect(started.conflict).toBe('webhook');
+    }, { async load() { return undefined; }, async save() { return undefined; } });
+    await adapter.start({ async admit() { return { decision: 'accepted' }; } });
+    expect(adapter.state).toBe('conflict');
     expect(methods).not.toContain('deleteWebhook');
     expect(methods).not.toContain('getUpdates');
+    await adapter.stop();
+  });
+
+  it('keeps the first acquire id when the same token is asked for again', async () => {
+    const transport = {
+      async call() { return { http_status: 200, body: { ok: true, result: [] } }; },
+      async download() { return { ok: false as const }; },
+    };
+    const store = { async load() { return undefined; }, async save() { return undefined; } };
+    const token = '123456:abcdefghijklmnopqrstuvwxyzAA';
+    const first = createTelegramSessionAdapter({ platform: 'telegram', instance_id: 'im_first', token, transport }, store);
+    const second = createTelegramSessionAdapter({ platform: 'telegram', instance_id: 'im_second', token, transport }, store);
+    expect(second.instance_id).toBe('im_first');
+    expect(second).toBe(first);
+    await first.stop();
+  });
+
+  it('sends every question and falls back when edit, buttons, or files are unavailable', async () => {
+    const adapter = new FakeImAdapter('telegram', '42');
+    adapter.supportsEdit = false;
+    adapter.supportsButtons = false;
+    adapter.supportsFile = false;
+    adapter.badVoiceFormat = true;
+    const questions: ImPendingQuestion[] = [
+      { id: 'q1', questionIndex: 0, expiresAt: 1_700_000_000_000 + 1000, questionKey: 'Pick', options: [{ id: 'opt_0_0', label: 'One' }], multi: false, allowOther: false },
+      { id: 'q1', questionIndex: 1, expiresAt: 1_700_000_000_000 + 1000, questionKey: 'Where', options: [{ id: 'opt_1_0', label: 'Here' }], multi: false, allowOther: false },
+    ];
+    let releaseDone: () => void = () => undefined;
+    const doneGate = new Promise<void>((resolve) => { releaseDone = resolve; });
+    let reads = 0;
+    const harness = bridgeFor(adapter, ports({
+      listInteractions: async () => ({ approvals: [], questions }),
+      readVisible: async () => {
+        reads += 1;
+        if (reads === 1) return { text: 'Hi', done: false, media: [] };
+        await doneGate;
+        return { text: 'Hello', done: true, media: [{ kind: 'audio' as const, name: 'note.wav', mediaType: 'audio/wav', bytes: new Uint8Array([1, 2]) }] };
+      },
+    }));
+    await harness.bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
+    await harness.bridge.setListening('inst', true);
+    await adapter.emit({ eventId: '1', cursor: 1, identity, kind: 'text', text: 'hello' });
+    await harness.bridge.confirm((await harness.bridge.snapshot()).discoveries[0]!.id, { target: { kind: 'persona', persona_id: 'ada' }, reply: 'edit' });
+    await harness.bridge.syncInteractions();
+    const prompts = adapter.sent.filter((item) => item.code === 'question').map((item) => item.text);
+    expect(prompts.some((item) => item.startsWith('Pick'))).toBe(true);
+    expect(prompts.some((item) => item.startsWith('Where'))).toBe(true);
+    expect(prompts.every((item) => item.includes('Send the number of a choice.'))).toBe(true);
+    expect(adapter.sent.some((item) => item.buttons !== undefined && item.buttons.length > 0)).toBe(false);
+    await adapter.emit({ eventId: '2', cursor: 2, identity, kind: 'text', text: 'go' });
+    releaseDone();
+    await harness.bridge.close();
+    expect(adapter.edits).toEqual([]);
+    expect(adapter.sent.filter((item) => item.code === 'reply').map((item) => item.text)).toEqual(['Hi', 'Hello']);
+    expect(adapter.sent.some((item) => item.code === 'file_unsupported')).toBe(true);
+    expect((await harness.bridge.snapshot()).voice_fallbacks).toBe(1);
   });
 });

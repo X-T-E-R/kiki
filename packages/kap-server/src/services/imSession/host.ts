@@ -34,23 +34,14 @@ import { createSafeHttpTransport } from '@nb-im/core';
 import { contentToCoreParts, resolvePromptMediaFiles } from '../../lib/promptMedia';
 import { withSessionOperation } from '../../lib/sessionOperationLease';
 import type { NotificationService } from '../notifications/notificationService';
-import type { ImAdapterFactory, ImHttpTransport } from './adapter';
+import type { ImHttpTransport } from './adapter';
 import { ImSessionBridge } from './bridge';
+import { loadHubFactories, sessionAccountHint } from './hubAdapter';
 import type { ImQuestionAnswer, ImSessionPorts, ImSubmitResult, ImVisibleMedia, ImVisibleReply } from './ports';
-import { telegramAdapterFactory } from './telegramAdapter';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const TELEGRAM_TOKEN = /^[0-9]{1,20}:[A-Za-z0-9_-]{20,128}$/u;
-
-interface SecretInstance {
-  readonly providerKind: ImProviderKind;
-  readonly credential: string;
-  readonly label?: string;
-}
-
-interface SecretFile {
-  instances: Record<string, SecretInstance>;
-}
+const SESSION_KINDS = new Set<ImProviderKind>(['feishu_app', 'onebot_v11', 'wechat_bridge']);
 
 interface HostLogger {
   info(fields: Record<string, string | number | boolean>, message: string): void;
@@ -63,16 +54,16 @@ export async function createImSessionHost(input: {
   readonly logger: HostLogger;
 }): Promise<ImSessionBridge> {
   const ports = new NotificationSessionPorts(input.core, input.homeDir, input.notifications, input.logger);
-  const factories = loadSessionFactories((credential) => telegramHttp(credential));
-  const bridge = new ImSessionBridge({ ports, factories });
+  const factories = loadSessionFactories(input.homeDir);
+  const bridge = new ImSessionBridge({ ports, factories, locale: () => readHostLocale(input.homeDir) });
   await bridge.whenReady();
   const snapshot = await bridge.snapshot();
   await bridge.setPolicy(snapshot.policy);
   return bridge;
 }
 
-export function loadSessionFactories(transportFor: (credential: string) => ImHttpTransport): ImAdapterFactory[] {
-  return [telegramAdapterFactory(transportFor)];
+export function loadSessionFactories(homeDir: string) {
+  return loadHubFactories(homeDir);
 }
 
 function telegramHttp(token: string): ImHttpTransport {
@@ -96,42 +87,27 @@ function telegramHttp(token: string): ImHttpTransport {
 }
 
 class NotificationSessionPorts implements ImSessionPorts {
-  private secrets: SecretFile = { instances: {} };
+  private readonly pendingAnswers = new Map<string, Record<string, string>>();
 
   constructor(
     private readonly core: Scope,
     private readonly homeDir: string,
     private readonly notifications: NotificationService,
     readonly logger: HostLogger,
-  ) {
-    try {
-      const parsed: unknown = JSON.parse(readFileSync(join(homeDir, 'im-session-secrets.json'), 'utf8'));
-      if (typeof parsed === 'object' && parsed !== null && 'instances' in parsed && typeof parsed.instances === 'object' && parsed.instances !== null) {
-        this.secrets = { instances: parsed.instances as SecretFile['instances'] };
-      }
-    } catch {
-      this.secrets = { instances: {} };
-    }
-  }
+  ) {}
 
   readonly credentials = {
     list: (): ReturnType<ImSessionPorts['credentials']['list']> => {
       const settings = this.notifications.getSettings();
-      const listed = Object.entries(settings.provider_instances).flatMap(([id, instance]) => {
-        if (instance.provider_id !== 'telegram') return [];
+      return Object.entries(settings.provider_instances).flatMap(([id, instance]) => {
+        const kind = instanceKind(instance);
+        if (kind === undefined) return [];
         const slot = instance.options['token_slot'];
         const configured = typeof slot === 'string' && settings.credential_slots[slot]?.configured === true;
-        return [{ id, providerId: 'telegram', ...(instance.label === undefined ? {} : { label: instance.label }), configured }];
+        return [{ id, providerId: kind, ...(instance.label === undefined ? {} : { label: instance.label }), configured }];
       });
-      for (const [id, secret] of Object.entries(this.secrets.instances)) {
-        if (listed.some((item) => item.id === id)) continue;
-        listed.push({ id, providerId: secret.providerKind, ...(secret.label === undefined ? {} : { label: secret.label }), configured: secret.credential.length > 0 });
-      }
-      return listed;
     },
     read: (instanceId: string): string | undefined => {
-      const secret = this.secrets.instances[instanceId];
-      if (secret !== undefined) return secret.credential;
       const settings = this.notifications.getSettings();
       const slot = settings.provider_instances[instanceId]?.options['token_slot'];
       if (typeof slot !== 'string') return undefined;
@@ -140,32 +116,22 @@ class NotificationSessionPorts implements ImSessionPorts {
     write: async (instanceId: string, value: string): Promise<void> => {
       const settings = this.notifications.getSettings();
       const slot = settings.provider_instances[instanceId]?.options['token_slot'];
-      if (typeof slot === 'string') {
-        await this.notifications.setCredential(slot, value);
-        return;
-      }
-      const current = this.secrets.instances[instanceId];
-      if (current === undefined) throw new Error('unknown_instance');
-      this.secrets.instances[instanceId] = { ...current, credential: value };
-      await this.persistSecrets();
+      if (typeof slot !== 'string') throw new Error('unknown_instance');
+      await this.notifications.setCredential(slot, value);
     },
     check: async (instanceId: string): Promise<{ ok: boolean; accountId?: string; conflict?: 'webhook'; detail?: string }> => {
       const credential = this.credentials.read(instanceId);
       if (credential === undefined || credential.length === 0) return { ok: false, detail: 'missing' };
-      const kind = this.secrets.instances[instanceId]?.providerKind ?? (this.notifications.getSettings().provider_instances[instanceId]?.provider_id === 'telegram' ? 'telegram' : undefined);
+      const kind = instanceKind(this.notifications.getSettings().provider_instances[instanceId]);
       if (kind === 'telegram') return this.checkTelegram(credential);
-      if (kind === 'feishu_app') {
-        const appId = credential.split('\n')[0]?.trim() ?? '';
-        return appId.length > 0 ? { ok: true, accountId: appId, detail: 'adapter_missing' } : { ok: false, detail: 'missing' };
-      }
-      return { ok: true, detail: 'adapter_missing' };
+      if (kind === undefined) return { ok: false, detail: 'missing' };
+      const hinted = sessionAccountHint(kind, credential);
+      return hinted.ok ? { ok: true, ...(hinted.accountId === undefined ? {} : { accountId: hinted.accountId }) } : { ok: false, detail: 'missing' };
     },
     create: async (input: { providerKind: ImProviderKind; credential: string }): Promise<{ instanceId: string; label?: string }> => {
-      if (input.providerKind === 'telegram') return this.createTelegram(input.credential);
-      const instanceId = `im_${randomUUID()}`;
-      this.secrets.instances[instanceId] = { providerKind: input.providerKind, credential: input.credential };
-      await this.persistSecrets();
-      return { instanceId };
+      const existing = this.credentials.list().find((item) => item.providerId === input.providerKind && this.credentials.read(item.id) === input.credential);
+      if (existing !== undefined) return { instanceId: existing.id };
+      return this.createInstance(input.providerKind, input.credential);
     },
   };
 
@@ -227,17 +193,15 @@ class NotificationSessionPorts implements ImSessionPorts {
     await writeFile(join(this.homeDir, 'im-session-bridge.json'), value, 'utf8');
   }
 
-  private async persistSecrets(): Promise<void> {
-    await mkdir(this.homeDir, { recursive: true });
-    await writeFile(join(this.homeDir, 'im-session-secrets.json'), JSON.stringify(this.secrets), 'utf8');
-  }
-
-  private async createTelegram(credential: string): Promise<{ instanceId: string }> {
-    const instanceId = `im_${randomUUID()}`;
-    const slot = `${instanceId}.telegram_bot`;
+  private async createInstance(kind: ImProviderKind, credential: string): Promise<{ instanceId: string }> {
+    const instanceId = `im_${randomUUID().replace(/-/gu, '')}`;
+    const purpose = kind === 'telegram' ? 'telegram_bot' : 'im_session';
+    const slot = `${instanceId}.${purpose}`;
+    const env = `KIKI_NOTIFY_${slot.toUpperCase().replace(/[^A-Z0-9]+/gu, '_')}`.slice(0, 128);
+    const options = kind === 'telegram' ? { token_slot: slot } : { session_kind: kind, token_slot: slot };
     await this.notifications.upsertInstance(instanceId, {
-      provider_id: 'telegram', enabled: true, revision: '1', options: { token_slot: slot },
-    }, { [slot]: { provider_id: 'telegram', provider_instance_id: instanceId, purpose: 'telegram_bot', env: 'KIKI_NOTIFY_IM' } });
+      provider_id: kind, enabled: true, revision: '1', options,
+    }, { [slot]: { provider_id: kind, provider_instance_id: instanceId, purpose, env } });
     await this.notifications.setCredential(slot, credential);
     return { instanceId };
   }
@@ -326,7 +290,7 @@ class NotificationSessionPorts implements ImSessionPorts {
   private listInteractions(sessionId: string) {
     return this.inSession(sessionId, async (session) => {
       const approvals: { id: string; expiresAt: number; toolName: string; action: string; ssh?: 'login' | 'host_key' }[] = [];
-      const questions: { id: string; expiresAt: number; questionKey: string; options: { id: string; label: string }[]; multi: boolean; allowOther: boolean }[] = [];
+      const questions: { id: string; questionIndex: number; expiresAt: number; questionKey: string; options: { id: string; label: string }[]; multi: boolean; allowOther: boolean }[] = [];
       for (const item of session.accessor.get(ISessionInteractionService).listPending()) {
         const expiresAt = item.createdAt + DAY_MS;
         if (Date.now() > expiresAt) continue;
@@ -335,12 +299,12 @@ class NotificationSessionPorts implements ImSessionPorts {
           approvals.push({ id: item.id, expiresAt, toolName: payload.toolName, action: payload.action, ...(payload.ssh === undefined ? {} : { ssh: payload.ssh.kind }) });
         } else if (item.kind === 'question') {
           const payload = item.payload as QuestionRequest;
-          const question = payload.questions[0];
-          if (question === undefined) continue;
-          questions.push({
-            id: item.id, expiresAt, questionKey: question.question,
-            options: question.options.map((option, index) => ({ id: `opt_0_${index}`, label: option.label })),
-            multi: question.multiSelect === true, allowOther: true,
+          payload.questions.forEach((question, index) => {
+            questions.push({
+              id: item.id, questionIndex: index, expiresAt, questionKey: question.question,
+              options: question.options.map((option, optionIndex) => ({ id: `opt_${index}_${optionIndex}`, label: option.label })),
+              multi: question.multiSelect === true, allowOther: true,
+            });
           });
         }
       }
@@ -374,18 +338,54 @@ class NotificationSessionPorts implements ImSessionPorts {
       if (pending === undefined) return interactions.isRecentlyResolved(input.interactionId) ? 'answered' as const : 'expired' as const;
       if (Date.now() > pending.createdAt + DAY_MS) return 'expired' as const;
       const request = pending.payload as QuestionRequest;
-      const question = request.questions[0];
-      if (question === undefined) return 'resolved' as const;
-      const label = (id: string) => question.options[Number(id.replace('opt_0_', ''))]?.label ?? id;
-      const answers: Record<string, string> = {};
-      if (input.response.kind === 'single') answers[question.question] = label(input.response.optionIds?.[0] ?? '');
-      else if (input.response.kind === 'multi') answers[question.question] = (input.response.optionIds ?? []).map(label).join(', ');
-      else if (input.response.kind === 'other') answers[question.question] = input.response.text ?? '';
-      else answers[question.question] = [...(input.response.optionIds ?? []).map(label), input.response.text ?? ''].join(', ');
-      session.accessor.get(ISessionQuestionService).answer(input.interactionId, { answers, method: 'number_key' });
+      const merged = mergeQuestionAnswers(request.questions, this.pendingAnswers.get(input.interactionId) ?? {}, input.response);
+      if (!merged.complete) {
+        this.pendingAnswers.set(input.interactionId, merged.answers);
+        return 'answered' as const;
+      }
+      this.pendingAnswers.delete(input.interactionId);
+      session.accessor.get(ISessionQuestionService).answer(input.interactionId, { answers: merged.answers, method: 'number_key' });
       return 'answered' as const;
     });
   }
+}
+
+function instanceKind(instance: { provider_id?: unknown; options?: Record<string, unknown> } | undefined): ImProviderKind | undefined {
+  if (instance === undefined) return undefined;
+  const kind = instance.options?.['session_kind'];
+  if (typeof kind === 'string' && SESSION_KINDS.has(kind as ImProviderKind)) return kind as ImProviderKind;
+  return instance.provider_id === 'telegram' ? 'telegram' : undefined;
+}
+
+export function readHostLocale(homeDir: string): 'en' | 'zh' {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(join(homeDir, 'desktop.json'), 'utf8'));
+    if (typeof parsed === 'object' && parsed !== null && 'locale' in parsed && (parsed.locale === 'zh' || parsed.locale === 'en')) return parsed.locale;
+  } catch {
+    return Intl.DateTimeFormat().resolvedOptions().locale.toLowerCase().startsWith('zh') ? 'zh' : 'en';
+  }
+  return Intl.DateTimeFormat().resolvedOptions().locale.toLowerCase().startsWith('zh') ? 'zh' : 'en';
+}
+
+export function mergeQuestionAnswers(
+  questions: readonly { readonly question: string; readonly options: readonly { readonly label: string }[] }[],
+  previous: Record<string, string>,
+  response: ImQuestionAnswer,
+): { answers: Record<string, string>; complete: boolean } {
+  const key = response.questionKey ?? questions[0]?.question;
+  const question = questions.find((item) => item.question === key);
+  if (key === undefined || question === undefined) return { answers: previous, complete: false };
+  const index = questions.indexOf(question);
+  const label = (id: string) => {
+    const match = new RegExp(`^opt_${index}_(\\d+)$`).exec(id);
+    return match === null ? id : question.options[Number(match[1])]?.label ?? id;
+  };
+  const answers = { ...previous };
+  if (response.kind === 'single') answers[key] = label(response.optionIds?.[0] ?? '');
+  else if (response.kind === 'multi') answers[key] = (response.optionIds ?? []).map(label).join(', ');
+  else if (response.kind === 'other') answers[key] = response.text ?? '';
+  else answers[key] = [...(response.optionIds ?? []).map(label), response.text ?? ''].filter((item) => item !== '').join(', ');
+  return { answers, complete: questions.length > 0 && questions.every((item) => answers[item.question] !== undefined) };
 }
 
 function recordOf(value: unknown): Record<string, unknown> | undefined {

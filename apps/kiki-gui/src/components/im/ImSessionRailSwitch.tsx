@@ -1,5 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
+import { imSessionAdmitted } from '@kiki/protocol';
+
 import { useI18n } from '../../i18n';
 import { useOptionalConnection } from '../../state/connection';
 
@@ -17,10 +19,13 @@ function ImSessionRailBody({ sessionId }: { sessionId: string }) {
     queryKey: ['im-sessions'],
     queryFn: () => connection!.client.imSessions.snapshot(),
     enabled: connection !== null,
+    placeholderData: (previous) => previous,
+    refetchInterval: (query) => query.state.data?.instances.some((item) => item.listening) === true ? 2_000 : false,
   });
   const bindings = (snapshot.data?.bindings ?? []).filter((binding) => binding.session_id === sessionId);
-  if (connection === null || bindings.length === 0) return null;
-  const on = bindings.every((binding) => binding.session_enabled !== false && binding.enabled);
+  if (connection === null || bindings.length === 0 || snapshot.data === undefined) return null;
+  const policy = snapshot.data.policy;
+  const on = bindings.every((binding) => binding.enabled && imSessionAdmitted({ allowed: policy.allowed, defaultEnabled: policy.default_enabled, sessionEnabled: binding.session_enabled }));
   return (
     <button
       type="button"
