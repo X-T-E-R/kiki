@@ -81,19 +81,28 @@ describe('HostProcessService', () => {
   });
 
   it('throws a coded error when the command does not exist', async () => {
-    const svc = ix.get(IHostProcessService);
-    await expect(svc.spawn('definitely-not-a-real-command-42')).rejects.toSatisfy((err: unknown) => {
-      expect(err).toBeInstanceOf(HostProcessError);
-      const error = err as HostProcessError;
-      expect(error.code).toBe(HostProcessErrorCode.SpawnFailed);
-      expect(error.code).toBe('os.process.spawn_failed');
-      expect(error.details).toMatchObject({
-        command: 'definitely-not-a-real-command-42',
-        errno: 'ENOENT',
+    const unhandled: unknown[] = [];
+    const onUnhandled = (error: unknown): void => { unhandled.push(error); };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const svc = ix.get(IHostProcessService);
+      await expect(svc.spawn('definitely-not-a-real-command-42')).rejects.toSatisfy((err: unknown) => {
+        expect(err).toBeInstanceOf(HostProcessError);
+        const error = err as HostProcessError;
+        expect(error.code).toBe(HostProcessErrorCode.SpawnFailed);
+        expect(error.code).toBe('os.process.spawn_failed');
+        expect(error.details).toMatchObject({
+          command: 'definitely-not-a-real-command-42',
+          errno: 'ENOENT',
+        });
+        expect(error.cause).toBeInstanceOf(Error);
+        return true;
       });
-      expect(error.cause).toBeInstanceOf(Error);
-      return true;
-    });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
   });
 
   it.skipIf(process.platform === 'win32').each([false, true])('delivers SIGTERM and observes actual exit with detached=%s on POSIX', async (detached) => {

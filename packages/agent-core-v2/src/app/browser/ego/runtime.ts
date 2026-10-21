@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { delimiter } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
-import { join } from 'pathe';
+import { isAbsolute, join } from 'pathe';
 
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import type { IHostProcess, IHostProcessService } from '#/os/interface/hostProcess';
@@ -204,8 +204,12 @@ export class EgoBrowserRuntime {
   }
 
   async resolve(connection: BrowserResolvedConnection | undefined): Promise<EgoCliResolution> {
-    const records = await readEgoUninstallRecords(this.processes, this.platform);
     const exists = async (file: string): Promise<boolean> => egoFileExists(this.files, file);
+    const cliPath = connection?.type === 'ego-lite' ? connection.cliPath?.trim() : undefined;
+    if (cliPath !== undefined && cliPath !== '' && isAbsolute(cliPath) && await exists(cliPath)) {
+      return { kind: 'found', path: cliPath };
+    }
+    const records = await readEgoUninstallRecords(this.processes, this.platform);
     const registered = await readRegisteredEgoPath(this.processes, this.env, this.platform);
     const pathEnv = [registered, this.env['PATH']].filter((part): part is string => part !== undefined && part.trim() !== '').join(delimiter);
     const pathHits = await egoPathHits(pathEnv === '' ? undefined : pathEnv, exists);
@@ -226,7 +230,6 @@ export class EgoBrowserRuntime {
         if (record.installLocation === location && record.displayVersion !== undefined) await remember(join(location, record.displayVersion, 'ego-browser.exe'));
       }
     }
-    const cliPath = connection?.type === 'ego-lite' ? connection.cliPath : undefined;
     if (cliPath !== undefined) await remember(cliPath);
     for (const hit of pathHits) syncExists.set(hit, true);
     const children = new Map<string, string[]>();
@@ -285,6 +288,7 @@ export class EgoBrowserRuntime {
   private async spawn(cli: string, args: readonly string[], signal?: AbortSignal): Promise<{ readonly code: number; readonly stdout: string; readonly stderr: string; readonly aborted: boolean }> {
     signal?.throwIfAborted();
     const child = await this.processes.spawn(cli, args, { shell: false, windowsHide: true });
+    (child.stdin as { end?: () => void } | undefined)?.end?.();
     let aborted = false;
     const stop = (): void => {
       aborted = true;
@@ -395,20 +399,24 @@ function parseTabs(output: string): readonly BrowserTab[] | undefined {
   try {
     const value = JSON.parse(line.slice(TABS.length)) as unknown;
     const rows = Array.isArray(value) ? value : [];
-    return rows.flatMap((row) => {
-      if (row === null || typeof row !== 'object') return [];
+    const byLabel = new Map<string, BrowserTab>();
+    for (const row of rows) {
+      if (row === null || typeof row !== 'object') continue;
       const record = row as Record<string, unknown>;
       const label = typeof record['label'] === 'string' && record['label'] !== '' ? record['label'] : undefined;
-      if (label === undefined) return [];
-      return [{
+      if (label === undefined) continue;
+      const prev = byLabel.get(label);
+      byLabel.set(label, {
+        ...prev,
         tabId: label,
         targetId: label,
         label,
         ...(typeof record['title'] === 'string' ? { title: record['title'] } : {}),
         ...(typeof record['url'] === 'string' ? { url: record['url'] } : {}),
         ...(typeof record['active'] === 'boolean' ? { active: record['active'] } : {}),
-      }];
-    });
+      });
+    }
+    return [...byLabel.values()];
   } catch {
     return undefined;
   }
@@ -425,4 +433,22 @@ export function egoTabBody(action: 'list' | 'open' | 'select' | 'close'): string
   if (action === 'open') return `const opened = await task.newPage();\nif (__kikiBound.url) await opened.goto(__kikiBound.url);\nconsole.log(${JSON.stringify(PAGE)} + JSON.stringify({ label: opened && opened.label }));`;
   if (action === 'select') return `console.log(${JSON.stringify(PAGE)} + JSON.stringify({ label: __kikiBound.label }));`;
   return `const found = (await task.tabs()).find((tab) => tab && tab.label === __kikiBound.label);\nif (!found || !found.label || found.openedBy !== 'agent') console.log(${JSON.stringify(REFUSED)});\nelse { await task.page(found.label).close(); console.log(${JSON.stringify(PAGE)} + JSON.stringify({ label: found.label })); }`;
+}
+
+export function egoUserOutput(result: { readonly stdout: string; readonly stderr: string }): string {
+  const isInternalMarker = (line: string): boolean =>
+    line.startsWith(PRELUDE)
+    || line.startsWith(FINISH)
+    || line.startsWith(TABS)
+    || line.startsWith(PAGE)
+    || line === REFUSED;
+  const clean = (text: string): string =>
+    text
+      .split(/\r?\n/)
+      .filter((line) => !isInternalMarker(line))
+      .join('\n')
+      .trim();
+  const stdout = clean(result.stdout);
+  if (stdout !== '') return stdout;
+  return clean(result.stderr);
 }

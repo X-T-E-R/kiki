@@ -92,15 +92,21 @@ class HostProcess implements IHostProcess {
       : new BufferedReadable(child.stderr as Readable);
     this.pid = child.pid ?? -1;
 
-    this._exitPromise = new Promise<number>((resolve, reject) => {
-      child.on('exit', (code: number | null) => {
-        this._exitCode = code ?? -1;
-        resolve(this._exitCode);
+    const alreadyExited = typeof child.exitCode === 'number' || child.signalCode != null;
+    if (alreadyExited) {
+      this._exitCode = child.exitCode ?? -1;
+      this._exitPromise = Promise.resolve(this._exitCode);
+    } else {
+      this._exitPromise = new Promise<number>((resolve, reject) => {
+        child.on('exit', (code: number | null) => {
+          this._exitCode = code ?? -1;
+          resolve(this._exitCode);
+        });
+        child.on('error', (error: Error) => {
+          reject(error);
+        });
       });
-      child.on('error', (error: Error) => {
-        reject(error);
-      });
-    });
+    }
   }
 
   get exitCode(): number | null {
@@ -224,9 +230,13 @@ export class HostProcessService implements IHostProcessService {
       } finally { this.pendingTrees.delete(pending); }
     }
     const child = spawn(command, args as string[], spawnOptions);
+    const processHandle = new HostProcess(child, options.mergeStderr ?? false, spawnOptions.detached === true);
+    const observedExit = processHandle.wait().catch(() => undefined);
     try {
       await waitForSpawn(child);
     } catch (error) {
+      await observedExit;
+      processHandle.dispose();
       const err = error as NodeJS.ErrnoException;
       throw new HostProcessError(
         HostProcessErrorCode.SpawnFailed,
@@ -237,7 +247,7 @@ export class HostProcessService implements IHostProcessService {
         },
       );
     }
-    return new HostProcess(child, options.mergeStderr ?? false, spawnOptions.detached === true);
+    return processHandle;
   }
 }
 

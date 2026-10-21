@@ -95,6 +95,7 @@ async function readRegistryPath(processes: IHostProcessService, key: string): Pr
   let child: IHostProcess | undefined;
   try {
     child = await processes.spawn('reg.exe', ['query', key, '/v', 'Path'], { shell: false, windowsHide: true });
+    (child.stdin as { end?: () => void } | undefined)?.end?.();
     const [code, stdout] = await Promise.all([child.wait(), readStream(child.stdout)]);
     if (code !== 0) return undefined;
     return parseRegistryPathValue(stdout);
@@ -120,6 +121,7 @@ export async function readEgoUninstallRecords(processes: IHostProcessService, pl
   let child: IHostProcess | undefined;
   try {
     child = await processes.spawn('reg.exe', ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall', '/s'], { shell: false, windowsHide: true });
+    (child.stdin as { end?: () => void } | undefined)?.end?.();
     const [code, stdout] = await Promise.all([child.wait(), readStream(child.stdout)]);
     if (code !== 0) return [];
     return parseEgoUninstallExport(stdout);

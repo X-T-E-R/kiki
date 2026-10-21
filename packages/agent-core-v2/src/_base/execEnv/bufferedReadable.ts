@@ -7,10 +7,28 @@ export class BufferedReadable extends Readable {
   constructor(source: Readable) {
     super({ highWaterMark: 128 * 1024 });
     this._source = source;
+    const pendingError = source.errored;
+    if (source.readableFlowing !== true && source.readableLength > 0) {
+      let chunk: string | Buffer | null = source.read();
+      while (chunk !== null) {
+        this.push(chunk);
+        chunk = source.read();
+      }
+    }
     this._source.on('data', this._onData);
     this._source.on('end', this._onEnd);
     this._source.on('close', this._onClose);
     this._source.on('error', this._onError);
+    if (pendingError) {
+      queueMicrotask(() => {
+        if (!this.destroyed) this.destroy(pendingError);
+      });
+      return;
+    }
+    if ((source.readableEnded || source.destroyed) && source.readableLength === 0) {
+      this._ended = true;
+      this.push(null);
+    }
   }
 
   override _read(): void {
