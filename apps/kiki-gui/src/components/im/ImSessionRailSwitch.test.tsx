@@ -24,7 +24,7 @@ function snap(sessionEnabled: boolean | undefined, enabled = true, allowed = tru
 
 const imSessions = {
   snapshot: vi.fn(async () => snap(false)),
-  updateBinding: vi.fn(async () => snap(true)),
+  updateBinding: vi.fn(async (_id: string, _patch: { session_enabled: boolean }) => snap(true)),
 };
 
 vi.mock('../../state/connection', () => ({

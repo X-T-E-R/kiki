@@ -20,7 +20,7 @@ function fixture() {
   const panelBridge = vi.fn(async () => ({ result: status }));
   const plugins = {
     marketplace: vi.fn(async () => ({ configured: true, entries: [] })),
-    preview: vi.fn(async () => plan), install: vi.fn(async () => info), info: vi.fn(async () => info),
+    preview: vi.fn(async (_input: { source: string; sha256?: string }) => plan), install: vi.fn(async () => info), info: vi.fn(async () => info),
     setEnabled: vi.fn(async () => ({ ok: true as const })),
     installPrerequisite: vi.fn(async () => ({ ok: true as const })), panelBridge,
   };

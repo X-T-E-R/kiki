@@ -27,7 +27,7 @@ const imSessions = {
   catalog: vi.fn(async () => ({ personas: [{ id: 'ada', name: 'Ada' }], sessions: [{ id: 'sess', title: 'Notes' }] })),
   setPolicy: vi.fn(async (policy: typeof empty.policy) => ({ ...empty, policy })),
   paste: vi.fn(async () => ({ provider_instance_id: 'inst', provider_kind: 'telegram' as const, ignored_keys: ['extra'], chat_hint_ignored: true })),
-  check: vi.fn(async () => ({ ok: true, account_id: '7' })),
+  check: vi.fn(async (): Promise<import('@kiki/protocol').ImCheckResult> => ({ ok: true, account_id: '7' })),
   listen: vi.fn(async () => found),
   confirm: vi.fn(async () => bound),
   dismiss: vi.fn(),
