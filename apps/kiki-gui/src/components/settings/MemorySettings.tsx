@@ -5,7 +5,7 @@ import { useSearchParams } from 'react-router-dom';
 import { errorText } from '@kiki/session-core/i18n';
 import { DefaultOnSwitch, optionalCapabilityState } from '../capabilities/optionalCapabilityUi';
 import { useI18n } from '../../i18n';
-import type { MemoryApproval, MemorySettings } from '../../lib/client';
+import type { KikiConfigResponse, MemoryApproval, MemorySettings } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, SaveStatus, Toggle, type Feedback } from '../controls';
 import { useGuardedNavigate } from '../dirtyGuard';
@@ -43,8 +43,21 @@ export function MemorySettingsCard() {
   const memoryCapability = optionalCapabilityState(configQuery.data, 'memory');
   const update = useMutation({
     mutationFn: (patch: MemoryPatch) => client.patchMemorySettings(patch),
-    onSuccess: async (next: MemorySettings) => {
+    onSuccess: async (next: MemorySettings, patch: MemoryPatch) => {
       queryClient.setQueryData(MEMORY_SETTINGS_KEY, next);
+      if (patch.enabled !== undefined) {
+        queryClient.setQueryData(['config', 'memory-default'], (current: KikiConfigResponse | undefined) => {
+          const memory = current?.optional_capabilities?.memory;
+          if (current?.optional_capabilities === undefined || memory === undefined) return current;
+          return {
+            ...current,
+            optional_capabilities: {
+              ...current.optional_capabilities,
+              memory: { ...memory, allowed: next.enabled },
+            },
+          };
+        });
+      }
       // The global switch decides every workspace's effective state, so a save
       // that touched it has to re-read all of them, not just the ones this
       // card happens to be holding.

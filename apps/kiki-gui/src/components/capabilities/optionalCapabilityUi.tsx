@@ -7,6 +7,8 @@ import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
 import type { KikiConfigResponse } from '../../lib/client';
 import { useConnection } from '../../state/connection';
+import { Toggle } from '../controls';
+import { Segmented } from './primitives';
 import { heldByConversation, type McpSessionRow } from './sessionMcp';
 import { useMcpPicker } from './useMcpPicker';
 import {
@@ -53,6 +55,8 @@ interface RowModel {
   readonly defaultOn: boolean;
   readonly unresolved: boolean;
   readonly effective: boolean;
+  readonly reason: string;
+  readonly source: 'session' | 'default' | 'off';
   readonly applies: 'next-model-request' | 'next-step';
 }
 
@@ -78,18 +82,16 @@ export function DefaultOnSwitch({ id, state, disabled, onChange }: {
   return (
     <div className="flex items-center justify-between gap-4" data-capability-default={id}>
       <span className="text-[13px] text-ink">{t('cap.defaultOn')}</span>
-      <button
-        type="button"
-        role="switch"
-        id={`${id}-default-on`}
-        aria-checked={state.default_on}
-        data-capability-default-switch={id}
-        disabled={locked}
-        onClick={() => { onChange(!state.default_on); }}
-        className="min-h-6 rounded px-2 text-[12px] text-ink-soft disabled:opacity-40"
-      >
-        {state.default_on ? t('cap.choice.on') : t('cap.choice.off')}
-      </button>
+      <span data-capability-default-switch={id}>
+        <Toggle
+          id={`${id}-default-on`}
+          layout="bare"
+          label={t('cap.defaultOn')}
+          checked={state.default_on}
+          disabled={locked}
+          onChange={onChange}
+        />
+      </span>
     </div>
   );
 }
@@ -101,15 +103,25 @@ function draftRows(config: KikiConfigResponse | undefined, pending: readonly { i
     const allowed = state?.allowed ?? true;
     const unresolved = state?.unresolved ?? false;
     const defaultOn = state?.default_on ?? FACTORY_DEFAULT[id];
+    const hostLocked = state?.host_locked ?? false;
     const effective = !unresolved && allowed && (choice === 'on' || (choice === 'inherit' && defaultOn));
+    const source = !allowed || unresolved ? 'off' : choice === 'inherit' ? 'default' : 'session';
+    const reason = unresolved ? 'origin_unreadable'
+      : !allowed && hostLocked ? 'host_locked'
+        : !allowed ? 'allowed_off'
+          : choice === 'off' ? 'session_off'
+            : choice === 'on' || defaultOn ? 'admitted'
+              : 'default_off';
     return {
       id,
       choice,
       allowed,
-      hostLocked: state?.host_locked ?? false,
+      hostLocked,
       defaultOn,
       unresolved,
       effective,
+      reason,
+      source,
       applies: id === 'memory' || id === 'thread' ? 'next-step' : 'next-model-request',
     };
   });
@@ -124,21 +136,22 @@ function serverRows(view: OptionalCapabilitySessionResponse): RowModel[] {
     defaultOn: row.default_on,
     unresolved: row.unresolved,
     effective: row.effective,
+    reason: row.reason,
+    source: row.source,
     applies: row.applies,
   }));
 }
 
-function sentenceKey(row: RowModel): I18nKey {
-  if (!row.allowed || row.unresolved) return 'cap.sentence.hardOff';
-  if (row.choice === 'on') return 'cap.sentence.sessionOn';
-  if (row.choice === 'off' || !row.defaultOn) return 'cap.sentence.sessionOff';
-  return 'cap.sentence.inheritOn';
-}
-
-function sourceKey(row: RowModel): I18nKey {
-  if (!row.allowed || row.unresolved) return 'cap.source.off';
-  if (row.choice === 'inherit') return 'cap.source.default';
-  return 'cap.source.session';
+function factKey(row: RowModel): I18nKey {
+  if (row.reason === 'workspace_off') return 'cap.fact.workspaceOff';
+  if (row.reason === 'unbound') return 'cap.fact.unbound';
+  if (row.reason === 'session_off') return 'cap.fact.sessionOff';
+  if (row.reason === 'default_off') return 'cap.fact.defaultOff';
+  if (row.reason === 'host_locked' || row.reason === 'allowed_off' || row.reason === 'origin_unreadable') return 'cap.fact.hardOff';
+  if (row.reason === 'admitted' && row.choice === 'inherit' && !row.defaultOn) return 'cap.fact.named';
+  if (row.reason === 'admitted' && row.source === 'session') return 'cap.fact.sessionOn';
+  if (row.reason === 'admitted') return 'cap.fact.inheritOn';
+  return 'cap.fact.defaultOff';
 }
 
 export function OptionalCapabilityRows({ sessionId }: { sessionId?: string }) {
@@ -195,31 +208,28 @@ export function OptionalCapabilityRows({ sessionId }: { sessionId?: string }) {
   return (
     <div className="space-y-1 px-1 py-1" data-optional-capabilities={live ? 'session' : 'draft'}>
       {rows.map((row) => (
-        <div key={row.id} data-optional-capability={row.id} data-optional-choice={row.choice} data-optional-effective={row.effective ? 'true' : 'false'} className="rounded-md px-2 py-1.5">
-          <div className="flex items-center justify-between gap-2">
-            <span className="min-w-0 text-[13px] text-ink">{t(LABEL[row.id])}</span>
-            <span data-optional-source={row.id} className="shrink-0 text-[11px] text-ink-faint">{t(sourceKey(row))}</span>
+        <div key={row.id} data-optional-capability={row.id} data-optional-choice={row.choice} data-optional-effective={row.effective ? 'true' : 'false'} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-2 py-1.5">
+          <div className="min-w-0">
+            <span className="text-[13px] text-ink">{t(LABEL[row.id])}</span>
+            <p data-optional-fact={row.id} data-optional-source={row.source} className="text-[12px] leading-4 text-ink-faint">
+              {t(factKey(row))}
+              <span> · {t(row.applies === 'next-step' ? 'cap.applies.nextStep' : 'cap.applies.nextModel')}</span>
+            </p>
           </div>
-          <p className="mt-0.5 text-[12px] leading-4 text-ink-soft">{t(sentenceKey(row))}</p>
-          <p className="text-[11px] text-ink-faint">{t(row.applies === 'next-step' ? 'cap.applies.nextStep' : 'cap.applies.nextModel')}</p>
-          <div className="mt-1 flex gap-1" role="group" aria-label={t(LABEL[row.id])}>
-            {(['inherit', 'on', 'off'] as const).map((choice) => {
-              const blocked = choice === 'on' && (!row.allowed || row.unresolved);
-              return (
-                <button
-                  key={choice}
-                  type="button"
-                  data-optional-set={choice}
-                  aria-pressed={row.choice === choice}
-                  disabled={busyId === row.id || blocked}
-                  onClick={() => { choose(row.id, choice); }}
-                  className={`min-h-6 rounded px-1.5 text-[11px] ${row.choice === choice ? 'bg-paper text-ink' : 'text-ink-soft'} disabled:opacity-40`}
-                >
-                  {t(choice === 'inherit' ? 'cap.choice.inherit' : choice === 'on' ? 'cap.choice.on' : 'cap.choice.off')}
-                </button>
-              );
-            })}
-          </div>
+          <Segmented
+            value={row.choice}
+            ariaLabel={t(LABEL[row.id])}
+            options={[
+              { value: 'inherit', label: t('cap.choice.inherit') },
+              { value: 'on', label: t('cap.choice.on') },
+              { value: 'off', label: t('cap.choice.off') },
+            ]}
+            onChange={(choice) => {
+              if (busyId === row.id) return;
+              if (choice === 'on' && (!row.allowed || row.unresolved)) return;
+              choose(row.id, choice);
+            }}
+          />
         </div>
       ))}
       {error === undefined ? null : <p role="alert" className="px-2 text-[12px] text-danger">{error}</p>}

@@ -41,6 +41,7 @@ import type { McpServerEntry } from '#/mcpCore/connection-manager';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 import { IAgentMcpService } from './mcp';
 import { qualifyMcpToolName } from '#/mcpCore/tool-naming';
+import { IMcpConfigStore } from '#/app/mcpConfig/configStore';
 import { isComputerMcpConfig } from '#/mcpCore/computer';
 import { IConfigService } from '#/app/config/config';
 import { COMPUTER_CONFIG_SECTION, computerToolsEnabled, type ComputerConfig } from '#/app/computer/configSection';
@@ -127,6 +128,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     const capabilityPolicy = this.optionalPolicy();
     if (capabilityPolicy !== undefined) {
       this._register(capabilityPolicy.onDidChange(() => { this.reopenComputerSessions(); }));
+      this.watchComputerServers(capabilityPolicy);
     }
     loop.hooks.onWillBeginStep.register('mcp', async (ctx, next) => {
       await this.waitForInitialLoad(ctx.signal);
@@ -162,7 +164,11 @@ export class AgentMcpService extends Service implements IAgentMcpService {
   }
 
   waitForInitialLoad(signal?: AbortSignal): Promise<void> {
-    const ready = Promise.all([this.mcpHandle.ready, this.sessionOverridesReady]).then(() => undefined);
+    const policy = this.optionalPolicy();
+    const document = policy === undefined || typeof policy.load !== 'function'
+      ? Promise.resolve()
+      : policy.load(this.sessionContext.sessionId).catch(() => undefined);
+    const ready = Promise.all([this.mcpHandle.ready, this.sessionOverridesReady, document]).then(() => undefined);
     return signal === undefined ? ready : abortable(ready, signal);
   }
 
@@ -502,6 +508,25 @@ export class AgentMcpService extends Service implements IAgentMcpService {
         serverName,
       }));
     }
+  }
+
+  private watchComputerServers(policy: IOptionalCapabilityPolicy): void {
+    if (typeof policy.noteComputerServers !== 'function') return;
+    let store: IMcpConfigStore | undefined;
+    try {
+      store = this.instantiation.invokeFunction((accessor) => accessor.get(IMcpConfigStore));
+    } catch {
+      store = undefined;
+    }
+    if (store === undefined || typeof store.list !== 'function') return;
+    const configStore = store;
+    const publish = () => {
+      void configStore.list().then((servers) => {
+        policy.noteComputerServers(servers);
+      }).catch(() => undefined);
+    };
+    publish();
+    if (typeof configStore.onDidWrite === 'function') this._register(configStore.onDidWrite(() => { publish(); }));
   }
 
   private optionalPolicy(): IOptionalCapabilityPolicy | undefined {

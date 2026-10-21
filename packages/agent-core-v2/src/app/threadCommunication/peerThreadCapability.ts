@@ -48,6 +48,7 @@ export interface SendPeerThreadMessageInput {
   readonly idempotencyKey: string;
   readonly sender?: ThreadMessageSender;
   readonly allowWhenDisabled?: boolean;
+  readonly executingAgentId?: string;
 }
 
 /** `threadCommunication` domain — non-reflective peer-send capability. The symbol-keyed method is

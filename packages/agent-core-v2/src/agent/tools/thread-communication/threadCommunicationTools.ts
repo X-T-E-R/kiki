@@ -258,6 +258,7 @@ export class SendMessageToThreadTool
           signal: ctx.signal,
           cause: origin?.kind === 'bridged_peer' ? { causeId: origin.causeId, hop: origin.hop } : undefined,
           source: this.callerRef(),
+          executingAgentId: this.agent.agentId,
           target: fromToolRef(input.thread),
           content: input.content,
           idempotencyKey: input.idempotency_key,

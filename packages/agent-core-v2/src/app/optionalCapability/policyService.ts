@@ -9,6 +9,8 @@ import { IFlagService } from '#/app/flag/flag';
 import { MEMORY_SECTION, type MemoryConfig } from '#/app/memory/configSection';
 import { THREAD_COMMUNICATION_SECTION, type ThreadCommunicationConfig } from '#/app/threadCommunication/configSection';
 import { Error2, ErrorCodes } from '#/errors';
+import { isComputerMcpConfig } from '#/mcpCore/computer';
+import type { McpServerConfig } from '#/mcpCore/config-schema';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 
 import {
@@ -56,8 +58,10 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
   private readonly cache = new Map<string, StoredCapabilityDocument>();
   private readonly loaded = new Set<string>();
   private readonly loading = new Map<string, Promise<void>>();
+  private readonly failed = new Set<string>();
   private readonly queues = new Map<string, Promise<unknown>>();
   private readonly agents = new Map<string, AgentCapabilityContext>();
+  private computerServers: readonly string[] = [];
 
   constructor(
     @IConfigService private readonly settings: IConfigService,
@@ -108,18 +112,29 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
     if (this.loaded.has(key)) return Promise.resolve();
     const pending = this.loading.get(key);
     if (pending !== undefined) return pending;
-    const task = (async () => {
-      const stored = await this.store.get<StoredCapabilityDocument>(OPTIONAL_CAPABILITY_DOCUMENT_SCOPE, key);
-      if (!this.cache.has(key)) this.cache.set(key, this.normalize(stored));
-      this.loaded.add(key);
-    })();
-    this.loading.set(key, task.finally(() => { this.loading.delete(key); }));
-    return this.loading.get(key)!;
+    const task = this.readDocument(sessionId, key).finally(() => {
+      if (this.loading.get(key) === task) this.loading.delete(key);
+    });
+    this.loading.set(key, task);
+    return task;
   }
 
-  async readSession(sessionId: string): Promise<SessionCapabilityView> {
+  async readSession(sessionId: string, workspaceId = ''): Promise<SessionCapabilityView> {
     await this.load(sessionId);
-    return this.view(sessionId);
+    return this.view(sessionId, workspaceId);
+  }
+
+  noteComputerServers(servers: readonly { readonly name: string; readonly transport?: string; readonly command?: string; readonly args?: readonly string[] }[]): void {
+    const names = servers
+      .filter((server) => server.transport !== undefined && server.command !== undefined && isComputerMcpConfig(server as McpServerConfig))
+      .map((server) => server.name);
+    if (names.length === this.computerServers.length && names.every((name, index) => name === this.computerServers[index])) return;
+    this.computerServers = names;
+    this.changes.fire({});
+  }
+
+  computerServerNames(): readonly string[] {
+    return this.computerServers;
   }
 
   retain(sessionId: string, agentId: string, context: AgentCapabilityContext): void {
@@ -131,6 +146,10 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
   }
 
   admit(id: OptionalCapabilityId, request: CapabilityAdmitRequest): ReturnType<IOptionalCapabilityPolicy['admit']> {
+    const key = this.key(request.sessionId);
+    if (!this.loaded.has(key) && (this.loading.has(key) || this.failed.has(key))) {
+      return { admitted: false, reason: 'origin_unreadable' };
+    }
     const state = this.globalState(id);
     const agent = request.agentId === undefined ? undefined : this.agents.get(this.agentKey(request.sessionId, request.agentId));
     return admitOptionalCapability(id, {
@@ -144,12 +163,13 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
       toolsSource: agent?.toolsSource,
       declaredTools: agent?.declaredTools,
       taskTools: agent?.taskTools,
+      computerServers: this.computerServers,
     });
   }
 
-  setChoice(sessionId: string, id: OptionalCapabilityId, choice: CapabilityChoice): Promise<SessionCapabilityView> {
+  setChoice(sessionId: string, id: OptionalCapabilityId, choice: CapabilityChoice, workspaceId = ''): Promise<SessionCapabilityView> {
     const previous = this.queues.get(sessionId) ?? Promise.resolve();
-    const write = previous.catch(() => undefined).then(() => this.applyChoice(sessionId, id, choice));
+    const write = previous.catch(() => undefined).then(() => this.applyChoice(sessionId, id, choice, workspaceId));
     this.queues.set(sessionId, write);
     return write;
   }
@@ -170,7 +190,21 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
     return false;
   }
 
-  private async applyChoice(sessionId: string, id: OptionalCapabilityId, choice: CapabilityChoice): Promise<SessionCapabilityView> {
+  private async readDocument(sessionId: string, key: string): Promise<void> {
+    try {
+      const stored = await this.store.get<StoredCapabilityDocument>(OPTIONAL_CAPABILITY_DOCUMENT_SCOPE, key);
+      if (!this.cache.has(key)) this.cache.set(key, this.normalize(stored));
+      this.failed.delete(key);
+      this.loaded.add(key);
+      this.changes.fire({ sessionId });
+    } catch (error) {
+      this.failed.add(key);
+      this.changes.fire({ sessionId });
+      throw error;
+    }
+  }
+
+  private async applyChoice(sessionId: string, id: OptionalCapabilityId, choice: CapabilityChoice, workspaceId: string): Promise<SessionCapabilityView> {
     await this.load(sessionId);
     const state = this.globalState(id);
     if (choice === 'on') {
@@ -192,26 +226,32 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
       throw error;
     }
     this.changes.fire({ sessionId });
-    return this.view(sessionId);
+    return this.view(sessionId, workspaceId);
   }
 
-  private view(sessionId: string): SessionCapabilityView {
+  private view(sessionId: string, workspaceId: string): SessionCapabilityView {
     const document = this.cache.get(this.key(sessionId)) ?? this.normalize(undefined);
-    const rows = OPTIONAL_CAPABILITY_IDS.map((id) => this.row(sessionId, id, document));
+    const rows = OPTIONAL_CAPABILITY_IDS.map((id) => this.row(sessionId, id, document, workspaceId));
     return { revision: document.revision, hostId: document.hostId, rows };
   }
 
-  private row(sessionId: string, id: OptionalCapabilityId, document: StoredCapabilityDocument): SessionCapabilityRow {
+  private row(sessionId: string, id: OptionalCapabilityId, document: StoredCapabilityDocument, workspaceId: string): SessionCapabilityRow {
     const state = this.globalState(id);
     const choice = document.overrides[id] ?? 'inherit';
-    const decision = this.admit(id, { sessionId, workspaceId: '', agentId: undefined });
+    const main = this.agents.get(this.agentKey(sessionId, 'main'));
+    const decision = this.admit(id, {
+      sessionId,
+      workspaceId: main?.workspaceId ?? workspaceId,
+      agentId: main === undefined ? undefined : 'main',
+    });
+    const reason = main === undefined && decision.reason === 'default_off' ? 'unbound' : decision.reason;
     const source: CapabilitySource = !state.allowed || state.unresolved ? 'off' : choice === 'inherit' ? 'default' : 'session';
     return {
       id,
       choice,
       effective: decision.admitted,
       source,
-      reason: decision.reason,
+      reason,
       allowed: state.allowed,
       hostLocked: state.hostLocked,
       defaultOn: state.defaultOn,

@@ -172,4 +172,15 @@ describe('OptionalCapabilityPolicyService', () => {
     expect(docs.get(optionalCapabilityDocumentKey('local', 's1'))).toBeDefined();
     expect(OPTIONAL_CAPABILITY_DOCUMENT_SCOPE).toBe('session-optional-capabilities');
   });
+
+  it('uses the retained main and workspace for the session row', async () => {
+    policy().retain('declared-session', 'main', { workspaceId: 'open', agentKind: 'main', toolsSource: 'declared', declaredTools: ['ThreadRead'] });
+    expect(policy().admit('thread', { sessionId: 'declared-session', workspaceId: 'open', agentId: 'main' }).admitted).toBe(true);
+    expect(await row('declared-session', 'thread')).toMatchObject({ effective: true, reason: 'admitted', source: 'default' });
+    values[MEMORY_SECTION] = { enabled: true, workspaces: { blocked: false } };
+    policy().retain('blocked-session', 'main', { workspaceId: 'blocked', agentKind: 'main' });
+    expect(policy().admit('memory', { sessionId: 'blocked-session', workspaceId: 'blocked', agentId: 'main' }).reason).toBe('workspace_off');
+    expect(await row('blocked-session', 'memory')).toMatchObject({ effective: false, reason: 'workspace_off' });
+    expect(await row('cold-session', 'thread')).toMatchObject({ effective: false, reason: 'unbound', source: 'default' });
+  });
 });

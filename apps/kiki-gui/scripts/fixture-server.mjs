@@ -789,6 +789,8 @@ class FixtureServer {
   constructor() {
     this.scenario = null; // { name, data }
     this.config = {};
+    this.optionalChoices = new Map();
+    this.optionalRevisions = new Map();
     this.nbSearchCredentials = new Map();
     this.providers = [];
     this.models = [];
@@ -2479,6 +2481,54 @@ class FixtureServer {
     });
   }
 
+  optionalCapabilityView(sessionId) {
+    const choices = this.optionalChoices.get(sessionId) ?? {};
+    const defaults = { browser: true, computer: true, memory: true, thread: false, web: true };
+    const applies = { browser: 'next-model-request', computer: 'next-model-request', memory: 'next-step', thread: 'next-step', web: 'next-model-request' };
+    const rows = Object.keys(defaults).map((id) => {
+      const choice = choices[id] ?? 'inherit';
+      const defaultOn = defaults[id];
+      let reason = 'default_off';
+      let effective = false;
+      if (choice === 'off') reason = 'session_off';
+      else if (choice === 'on') { reason = 'admitted'; effective = true; }
+      else if (defaultOn) { reason = 'admitted'; effective = true; }
+      else reason = 'unbound';
+      return {
+        id, choice, effective,
+        source: choice === 'inherit' ? 'default' : 'session',
+        reason,
+        allowed: true,
+        host_locked: false,
+        default_on: defaultOn,
+        unresolved: false,
+        applies: applies[id],
+      };
+    });
+    return { revision: this.optionalRevisions.get(sessionId) ?? 0, host_id: 'local', rows };
+  }
+
+  routeOptionalCapabilities(res, sessionId, body, method) {
+    if (!this.sessions.has(sessionId)) {
+      this.envelope(res, null, 40401, 'session.not_found');
+      return;
+    }
+    if (method === 'POST') {
+      const id = body?.id;
+      const choice = body?.choice;
+      if (!['browser', 'computer', 'memory', 'thread', 'web'].includes(id) || !['on', 'off', 'inherit'].includes(choice)) {
+        this.envelope(res, null, 40001, 'request.invalid');
+        return;
+      }
+      const next = { ...(this.optionalChoices.get(sessionId) ?? {}) };
+      if (choice === 'inherit') delete next[id];
+      else next[id] = choice;
+      this.optionalChoices.set(sessionId, next);
+      this.optionalRevisions.set(sessionId, (this.optionalRevisions.get(sessionId) ?? 0) + 1);
+    }
+    this.envelope(res, this.optionalCapabilityView(sessionId));
+  }
+
   route(res, path, query, body, method, req) {
     // Native SSH surface (scripts/fixture-ssh.mjs) — ahead of the session tail routes.
     if ((path.startsWith('/ssh/') || /^\/sessions\/[^/:]+\/ssh\//.test(path)) && handleSsh(this, res, path, query, method, body)) return;
@@ -2501,6 +2551,9 @@ class FixtureServer {
     const action = sessionMatch?.[2];
     const tail = action !== undefined ? `:${action}` : (sessionMatch?.[3] ?? '');
     const session = sessionId !== undefined ? this.sessions.get(sessionId) : undefined;
+    if (sessionId !== undefined && tail === '/optional-capabilities') {
+      return this.routeOptionalCapabilities(res, sessionId, body, method);
+    }
 
     if (path === '/meta') {
       return this.envelope(res, {

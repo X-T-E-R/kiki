@@ -503,27 +503,43 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   async [SEND_PEER_THREAD_MESSAGE](input: SendPeerThreadMessageInput): Promise<SendThreadMessageResult> {
     await this.ensureRecovery();
     validateSendInput(input);
-    input = { ...input, source: this.requireLocalHost(input.source) };
-    await this.requireThread(input.source, input.source, this.needsBridge(input.target) || input.allowWhenDisabled !== true);
-    if (this.needsBridge(input.target)) return this.requireConnector().send(input);
-    input = { ...input, target: this.requireLocalHost(input.target) };
-    if (sameThread(input.source, input.target)) {
+    const source = this.requireLocalHost(input.source);
+    const caller: ThreadCaller = {
+      sessionId: source.sessionId,
+      workspaceId: source.workspaceId,
+      ...(input.executingAgentId === undefined ? {} : { agentId: input.executingAgentId }),
+    };
+    const peer: SendPeerThreadMessageInput = {
+      signal: input.signal,
+      deliveryTimeoutMs: input.deliveryTimeoutMs,
+      cause: input.cause,
+      source,
+      target: input.target,
+      content: input.content,
+      idempotencyKey: input.idempotencyKey,
+      sender: input.sender,
+      allowWhenDisabled: input.allowWhenDisabled,
+    };
+    await this.requireThread(peer.source, caller, this.needsBridge(peer.target) || peer.allowWhenDisabled !== true);
+    if (this.needsBridge(peer.target)) return this.requireConnector().send(peer);
+    const target = this.requireLocalHost(peer.target);
+    if (sameThread(peer.source, target)) {
       throw new Error2(ErrorCodes.THREAD_SELF_SEND, 'A thread cannot send a message to itself.');
     }
     return this.sendProducedMessage({
       producer: {
         kind: 'peer_thread',
-        source: input.source,
-        sender: input.sender,
-        allowWhenDisabled: input.allowWhenDisabled,
+        source: peer.source,
+        sender: peer.sender,
+        allowWhenDisabled: peer.allowWhenDisabled,
       },
-      caller: input.source,
-      target: input.target,
-      content: input.content,
-      idempotencyKey: input.idempotencyKey,
-      signal: input.signal,
-      deliveryTimeoutMs: input.deliveryTimeoutMs,
-    }, input.allowWhenDisabled !== true);
+      caller,
+      target,
+      content: peer.content,
+      idempotencyKey: peer.idempotencyKey,
+      signal: peer.signal,
+      deliveryTimeoutMs: peer.deliveryTimeoutMs,
+    }, peer.allowWhenDisabled !== true);
   }
 
   private async sendProducedMessage(input: {

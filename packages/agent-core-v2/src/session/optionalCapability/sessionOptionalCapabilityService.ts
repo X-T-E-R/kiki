@@ -28,11 +28,11 @@ export class SessionOptionalCapabilityService extends Service implements ISessio
   }
 
   read(): Promise<SessionCapabilityView> {
-    return this.policy.readSession(this.session.sessionId);
+    return this.policy.readSession(this.session.sessionId, this.session.workspaceId);
   }
 
   set(id: OptionalCapabilityId, choice: CapabilityChoice): Promise<SessionCapabilityView> {
-    return this.policy.setChoice(this.session.sessionId, id, choice);
+    return this.policy.setChoice(this.session.sessionId, id, choice, this.session.workspaceId);
   }
 }
 

@@ -69,12 +69,14 @@ export interface IOptionalCapabilityPolicy {
   wireProjection(): Record<OptionalCapabilityId, OptionalCapabilityWireState>;
   choice(sessionId: string, id: OptionalCapabilityId): CapabilityChoice;
   load(sessionId: string): Promise<void>;
-  readSession(sessionId: string): Promise<SessionCapabilityView>;
+  readSession(sessionId: string, workspaceId?: string): Promise<SessionCapabilityView>;
   retain(sessionId: string, agentId: string, context: AgentCapabilityContext): void;
   release(sessionId: string, agentId: string): void;
   admit(id: OptionalCapabilityId, request: CapabilityAdmitRequest): CapabilityAdmission;
-  setChoice(sessionId: string, id: OptionalCapabilityId, choice: CapabilityChoice): Promise<SessionCapabilityView>;
+  setChoice(sessionId: string, id: OptionalCapabilityId, choice: CapabilityChoice, workspaceId?: string): Promise<SessionCapabilityView>;
   anyMayUse(id: OptionalCapabilityId): boolean;
+  noteComputerServers(servers: readonly { readonly name: string; readonly transport?: string; readonly command?: string; readonly args?: readonly string[] }[]): void;
+  computerServerNames(): readonly string[];
 }
 
 export const IOptionalCapabilityPolicy: ServiceIdentifier<IOptionalCapabilityPolicy> =

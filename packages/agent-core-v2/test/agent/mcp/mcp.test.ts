@@ -964,6 +964,47 @@ describe('AgentMcpService', () => {
     expect(release).toHaveBeenCalledTimes(1);
   });
 
+  it('finishes an in-flight computer call after the capability turns off', async () => {
+    const manager = new FakeMcpManager();
+    const base = fakeMcpClient();
+    let releaseCall!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseCall = resolve; });
+    const client = {
+      listTools: () => base.listTools(),
+      callTool: async (name: string, args: Record<string, unknown>, signal?: AbortSignal) => {
+        await gate;
+        return base.callTool(name, args, signal);
+      },
+      ping: (signal: AbortSignal) => base.ping(signal),
+    };
+    manager.setResolved('kiki-computer', client, await discoverTools(base));
+    const changes = new Emitter<{ readonly sessionId?: string }>();
+    let admitted = true;
+    ix.stub(IOptionalCapabilityPolicy, {
+      onDidChange: changes.event,
+      admit: () => ({ admitted, reason: admitted ? 'admitted' : 'session_off' }),
+      retain() {},
+      release() {},
+    });
+    ix.stub(IAgentScopeContext, { agentId: 'main' });
+    const service = createService(manager);
+    manager.connect('kiki-computer');
+    const registry = ix.get(IAgentToolRegistryService);
+    const tool = registry.resolve('mcp__kiki-computer__echo');
+    expect(tool).toBeDefined();
+    const running = executeTool(tool!, {
+      turnId: 1, toolCallId: 'tc-flight', args: { text: 'still here' }, signal: new AbortController().signal,
+    });
+    admitted = false;
+    changes.fire({});
+    expect(registry.resolve('mcp__kiki-computer__echo')).toBeUndefined();
+    releaseCall();
+    const finished = await running;
+    expect(finished.isError).toBeUndefined();
+    expect(finished.output).toBe('still here');
+    await (service as AgentMcpService).dispose();
+  });
+
   it.each([
     { identity: 'main', parent: undefined, tools: undefined, allowed: true },
     { identity: 'independent', parent: undefined, tools: undefined, allowed: true },

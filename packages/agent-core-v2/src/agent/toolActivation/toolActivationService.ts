@@ -19,6 +19,8 @@ import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionT
 import { ISessionDeliveryService } from '#/session/delivery/delivery';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 
+import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IAgentToolActivationService } from './toolActivation';
 import { toolGroupForName } from '#/agent/toolRegistry/toolGroups';
 
@@ -65,11 +67,35 @@ export class AgentToolActivationService extends Service implements IAgentToolAct
         }
       }),
     );
+    const capability = this.optionalCapabilityPolicy();
+    if (capability !== undefined) this._register(capability.onDidChange(() => { this.refreshConditionalRecords(); }));
   }
 
   async activate(): Promise<void> {
     await this.shippedProfiles.ready;
+    await this.awaitCapabilityDocument();
     this.activateRecords(this.contributions.items);
+  }
+
+  private optionalCapabilityPolicy(): IOptionalCapabilityPolicy | undefined {
+    try {
+      return this.instantiationService.invokeFunction((accessor) => accessor.get(IOptionalCapabilityPolicy)) ?? undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async awaitCapabilityDocument(): Promise<void> {
+    const policy = this.optionalCapabilityPolicy();
+    if (policy === undefined) return;
+    let sessionId: string | undefined;
+    try {
+      sessionId = this.instantiationService.invokeFunction((accessor) => accessor.get(ISessionContext))?.sessionId;
+    } catch {
+      sessionId = undefined;
+    }
+    if (sessionId === undefined) return;
+    await policy.load(sessionId).catch(() => undefined);
   }
 
   capabilities(): ReturnType<IAgentToolActivationService['capabilities']> {

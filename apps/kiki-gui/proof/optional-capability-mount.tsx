@@ -118,10 +118,6 @@ const client = {
   setSessionOptionalCapability(sessionId: string, body: { id: CapabilityId; choice: Choice }) {
     return Promise.resolve(writeChoice(sessionId, body.id, body.choice));
   },
-  setOptionalCapability(input: { sessionId: string; id: CapabilityId; choice: 'on' | 'off' }) {
-    writeChoice(input.sessionId, input.id, input.choice);
-    return Promise.resolve();
-  },
   getPluginUsage(target: { session_id?: string }) {
     return Promise.resolve(pluginUsage(target.session_id ?? ''));
   },
@@ -146,9 +142,7 @@ const client = {
       };
     },
   },
-} as unknown as KikiClient & {
-  setOptionalCapability(input: { sessionId: string; id: CapabilityId; choice: 'on' | 'off' }): Promise<void>;
-};
+} as unknown as KikiClient;
 
 const connection = {
   connectionId: scope.connectionId,

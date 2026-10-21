@@ -5,6 +5,7 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IConfigService } from '#/app/config/config';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
 import { MEMORY_SECTION, memoryEnabled, type MemoryConfig } from './configSection';
 import { IMemoryStore, memoryApplicability, type MemoryEntry } from './memoryStore';
 import type { MemoryPublicScopeKind, MemoryScope } from './memoryScopes';
@@ -42,14 +43,23 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
     @IInstantiationService private readonly instantiation: IInstantiationService,
     @ISessionContext private readonly session: ISessionContext,
     @IAgentScopeContext private readonly agent: IAgentScopeContext,
-  ) { super(); }
+  ) {
+    super();
+    const policy = this.optionalPolicy();
+    if (policy !== undefined) {
+      this._register(policy.onDidChange((event) => {
+        if (event.sessionId !== undefined && event.sessionId !== this.session.sessionId) return;
+        this.invalidate();
+      }));
+    }
+  }
 
   get(lastKnown?: string): Promise<string> {
     if (this.frozen !== undefined) return this.frozen;
     if (this.agent.agentId !== 'main') return this.frozen = Promise.resolve('');
     const settings = this.config.get<MemoryConfig>(MEMORY_SECTION);
     this.lastKnown = lastKnown ?? this.lastKnown;
-    this.frozen = this.render(settings).catch(() => {
+    this.frozen = this.project(settings).catch(() => {
       this.frozenRelated = [];
       this.nextUntil = undefined;
       return memoryStatus(settings, this.session.workspaceId, this.persona, this.lastKnown ? 'stale/degraded' : 'unavailable');
@@ -79,7 +89,7 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
   async liveSessionEntries(): Promise<readonly MemoryEntry[]> {
     if (this.agent.agentId !== 'main') return [];
     const settings = this.config.get<MemoryConfig>(MEMORY_SECTION);
-    if (!memoryEnabled(settings, this.session.workspaceId)) return [];
+    if (!(await this.memoryAdmitted(settings))) return [];
     try {
       const store = this.instantiation.invokeFunction((accessor) => accessor.get(IMemoryStore));
       const scopes = this.readScopes();
@@ -92,7 +102,7 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
   async resolveReferences(text: string): Promise<readonly string[]> {
     if (this.agent.agentId !== 'main') return [];
     const settings = this.config.get<MemoryConfig>(MEMORY_SECTION);
-    if (!memoryEnabled(settings, this.session.workspaceId)) return [];
+    if (!(await this.memoryAdmitted(settings))) return [];
     const ids = [...new Set([...text.matchAll(/\[(m_[a-zA-Z0-9_]+)\]/g)].map((match) => match[1]!))].slice(0, 20);
     if (ids.length === 0) return [];
     let store: IMemoryStore;
@@ -157,6 +167,41 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
   }
 
   invalidate(): void { this.frozen = undefined; this.frozenRelated = []; }
+
+  private optionalPolicy(): IOptionalCapabilityPolicy | undefined {
+    try {
+      const policy = this.instantiation.invokeFunction((accessor) => accessor.get(IOptionalCapabilityPolicy));
+      if (policy === undefined || typeof policy.admit !== 'function' || typeof policy.load !== 'function') return undefined;
+      return policy;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async memoryAdmitted(settings: MemoryConfig | undefined): Promise<boolean> {
+    if (!memoryEnabled(settings, this.session.workspaceId)) return false;
+    const policy = this.optionalPolicy();
+    if (policy === undefined) return true;
+    try {
+      await policy.load(this.session.sessionId);
+    } catch {
+      return false;
+    }
+    return policy.admit('memory', {
+      sessionId: this.session.sessionId,
+      workspaceId: this.session.workspaceId,
+      agentId: this.agent.agentId,
+    }).admitted;
+  }
+
+  private async project(settings: MemoryConfig): Promise<string> {
+    if (!(await this.memoryAdmitted(settings))) {
+      this.lastKnown = '';
+      this.frozenRelated = [];
+      return memoryStatus(settings, this.session.workspaceId, this.persona, 'disabled');
+    }
+    return this.render(settings);
+  }
 
   private async render(settings: MemoryConfig): Promise<string> {
     if (!memoryEnabled(settings, this.session.workspaceId) || settings.budget === 0) {

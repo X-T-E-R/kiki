@@ -137,15 +137,34 @@ describe('pending /new capabilities', () => {
     setPendingMcpChoice({ locator: { source: 'global', name: 'files' }, override: 'off', name: 'files' });
     const order: string[] = [];
     const setPluginUsage = vi.fn(async () => { order.push('plugin'); });
-    const setOptionalCapability = vi.fn(async () => { order.push('optional'); });
+    const setSessionOptionalCapability = vi.fn(async () => { order.push('optional'); });
     const setMcpSessionOverride = vi.fn(async () => { order.push('mcp'); });
     await applyPendingNewSessionCapabilities({
       setPluginUsage,
-      setOptionalCapability,
+      setSessionOptionalCapability,
       klient: { session: () => ({ agent: () => ({ setMcpSessionOverride }) }) },
     }, 'session-new');
     expect(order).toEqual(['plugin', 'optional', 'mcp']);
-    expect(setOptionalCapability).toHaveBeenCalledWith({ sessionId: 'session-new', id: 'web', choice: 'off' });
+    expect(setSessionOptionalCapability).toHaveBeenCalledWith('session-new', { id: 'web', choice: 'off' });
+    expect(pendingNewSessionCapabilities()).toEqual({ plugins: [], mcp: [] });
+  });
+
+  it('leaves an untouched draft unwritten and retries a refused optional choice', async () => {
+    const setSessionOptionalCapability = vi.fn(async () => undefined);
+    const klient = { session: () => ({ agent: () => ({ setMcpSessionOverride: async () => undefined }) }) };
+    await applyPendingNewSessionCapabilities({ setPluginUsage: async () => undefined, setSessionOptionalCapability, klient }, 'session-new');
+    expect(setSessionOptionalCapability).not.toHaveBeenCalled();
+
+    setPendingOptionalChoice('memory', 'on');
+    setPendingOptionalChoice('thread', 'inherit');
+    setSessionOptionalCapability.mockRejectedValueOnce(new Error('optional refused'));
+    await expect(applyPendingNewSessionCapabilities({ setPluginUsage: async () => undefined, setSessionOptionalCapability, klient }, 'session-new')).rejects.toThrow('optional refused');
+    expect(setSessionOptionalCapability).toHaveBeenCalledTimes(1);
+    expect(setSessionOptionalCapability).toHaveBeenCalledWith('session-new', { id: 'memory', choice: 'on' });
+    expect(pendingNewSessionCapabilities()).toEqual({ plugins: [], optional: [{ id: 'memory', choice: 'on' }], mcp: [] });
+
+    await applyPendingNewSessionCapabilities({ setPluginUsage: async () => undefined, setSessionOptionalCapability, klient }, 'session-new');
+    expect(setSessionOptionalCapability).toHaveBeenCalledTimes(2);
     expect(pendingNewSessionCapabilities()).toEqual({ plugins: [], mcp: [] });
   });
 });

@@ -214,7 +214,7 @@ export function clearPendingNewSessionCapabilities(): void {
 
 export interface PendingCapabilityClient {
   setPluginUsage(input: PluginUsageRequest): Promise<unknown>;
-  setOptionalCapability?(input: { readonly sessionId: string; readonly id: PendingOptionalCapabilityId; readonly choice: 'on' | 'off' }): Promise<unknown>;
+  setSessionOptionalCapability?(sessionId: string, body: { readonly id: PendingOptionalCapabilityId; readonly choice: 'on' | 'off' }): Promise<unknown>;
   klient: {
     session(id: string): {
       agent(id: string): {
@@ -247,9 +247,9 @@ export async function applyPendingNewSessionCapabilities(
     await client.setPluginUsage({ target: { session_id: sessionId }, plugin_id: choice.pluginId, override: choice.override });
   }
   if (optional.length > 0) {
-    if (client.setOptionalCapability === undefined) throw new Error('this connection cannot store optional capabilities');
+    if (client.setSessionOptionalCapability === undefined) throw new Error('this connection cannot store optional capabilities');
     for (const choice of optional) {
-      await client.setOptionalCapability({ sessionId, id: choice.id, choice: choice.choice });
+      await client.setSessionOptionalCapability(sessionId, { id: choice.id, choice: choice.choice });
     }
   }
   if (mcp.length > 0) {

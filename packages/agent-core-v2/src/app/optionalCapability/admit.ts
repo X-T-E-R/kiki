@@ -1,5 +1,6 @@
 import picomatch from 'picomatch';
 import { isBrowserOperationToolName } from '@kiki/agent-profiles/toolPolicy';
+import { qualifyMcpToolName, sanitizeMcpNamePart } from '#/mcpCore/tool-naming';
 
 export const OPTIONAL_CAPABILITY_IDS = ['browser', 'computer', 'memory', 'thread', 'web'] as const;
 export type OptionalCapabilityId = typeof OPTIONAL_CAPABILITY_IDS[number];
@@ -13,10 +14,9 @@ export function optionalCapabilityDocumentKey(hostId: string, sessionId: string)
 }
 
 const MEMORY_TOOLS = new Set(['MemoryRead', 'MemorySearch', 'MemoryWrite']);
-const THREAD_TOOLS = new Set(['ThreadList', 'ThreadRead', 'ThreadSend', 'ThreadWait', 'ThreadCreate']);
+const THREAD_TOOLS = new Set(['ThreadList', 'ThreadRead', 'ThreadSend', 'ThreadWait']);
 const WEB_TOOLS = new Set(['WebSearch', 'FetchURL']);
 const GLOB_MAGIC = /[*?[\]{}]/;
-const COMPUTER_SAMPLE = 'mcp__kiki-computer__screenshot';
 
 export interface CapabilityAdmissionInput {
   readonly allowed: boolean;
@@ -29,6 +29,7 @@ export interface CapabilityAdmissionInput {
   readonly declaredTools: readonly string[] | undefined;
   readonly taskTools: readonly string[] | undefined;
   readonly unresolved: boolean;
+  readonly computerServers?: readonly string[];
 }
 
 export type CapabilityDenyReason =
@@ -37,7 +38,8 @@ export type CapabilityDenyReason =
   | 'workspace_off'
   | 'session_off'
   | 'default_off'
-  | 'origin_unreadable';
+  | 'origin_unreadable'
+  | 'unbound';
 
 export interface CapabilityAdmission {
   readonly admitted: boolean;
@@ -48,18 +50,22 @@ export function isOptionalCapabilityId(value: string): value is OptionalCapabili
   return (OPTIONAL_CAPABILITY_IDS as readonly string[]).includes(value);
 }
 
-export function optionalCapabilityForTool(name: string): OptionalCapabilityId | undefined {
+export function optionalCapabilityForTool(name: string, computerServers: readonly string[] = []): OptionalCapabilityId | undefined {
   if (name === 'BrowserConnections' || name === 'BrowserTabs' || name === 'browser__*' || isBrowserOperationToolName(name) || name.startsWith('browser__')) return 'browser';
-  if (name.startsWith('mcp__kiki-computer__') || name.startsWith('mcp__kiki-computer')) return 'computer';
+  if (namesComputer(name, computerServers)) return 'computer';
   if (MEMORY_TOOLS.has(name)) return 'memory';
   if (THREAD_TOOLS.has(name)) return 'thread';
   if (WEB_TOOLS.has(name)) return 'web';
   return undefined;
 }
 
-export function namesOptionalCapability(id: OptionalCapabilityId, tools: readonly string[] | undefined): boolean {
+export function namesOptionalCapability(
+  id: OptionalCapabilityId,
+  tools: readonly string[] | undefined,
+  computerServers?: readonly string[],
+): boolean {
   if (tools === undefined) return false;
-  return tools.some((pattern) => pattern !== '*' && namesPattern(id, pattern));
+  return tools.some((pattern) => pattern !== '*' && namesPattern(id, pattern, computerServers ?? []));
 }
 
 export function admitOptionalCapability(id: OptionalCapabilityId, input: CapabilityAdmissionInput): CapabilityAdmission {
@@ -68,25 +74,32 @@ export function admitOptionalCapability(id: OptionalCapabilityId, input: Capabil
   if (!input.allowed) return { admitted: false, reason: 'allowed_off' };
   if (input.workspaceHardOff) return { admitted: false, reason: 'workspace_off' };
   if (input.sessionChoice === 'off') {
-    if (input.agentKind === 'child' && namesOptionalCapability(id, input.taskTools)) return { admitted: true, reason: 'admitted' };
+    if (input.agentKind === 'child' && namesOptionalCapability(id, input.taskTools, input.computerServers)) return { admitted: true, reason: 'admitted' };
     return { admitted: false, reason: 'session_off' };
   }
   if (input.sessionChoice === 'on') return { admitted: true, reason: 'admitted' };
   if (input.defaultOn) return { admitted: true, reason: 'admitted' };
-  const declared = input.toolsSource === 'declared' && namesOptionalCapability(id, input.declaredTools);
-  if (declared || namesOptionalCapability(id, input.taskTools)) return { admitted: true, reason: 'admitted' };
+  const declared = input.toolsSource === 'declared' && namesOptionalCapability(id, input.declaredTools, input.computerServers);
+  if (declared || namesOptionalCapability(id, input.taskTools, input.computerServers)) return { admitted: true, reason: 'admitted' };
   return { admitted: false, reason: 'default_off' };
 }
 
-function namesPattern(id: OptionalCapabilityId, pattern: string): boolean {
+function namesPattern(id: OptionalCapabilityId, pattern: string, computerServers: readonly string[]): boolean {
   if (id === 'browser') {
     return pattern === 'BrowserConnections' || pattern === 'BrowserTabs' || pattern === 'browser__*' || isBrowserOperationToolName(pattern);
   }
-  if (id === 'computer') {
-    if (pattern === 'mcp__*' || pattern.startsWith('mcp__kiki-computer')) return true;
-    return pattern.startsWith('mcp__') && GLOB_MAGIC.test(pattern) && picomatch.isMatch(COMPUTER_SAMPLE, pattern);
-  }
+  if (id === 'computer') return namesComputer(pattern, computerServers);
   if (id === 'memory') return MEMORY_TOOLS.has(pattern);
   if (id === 'thread') return THREAD_TOOLS.has(pattern);
   return WEB_TOOLS.has(pattern);
+}
+
+function namesComputer(pattern: string, servers: readonly string[]): boolean {
+  if (pattern === '*' || servers.length === 0) return false;
+  return servers.some((name) => {
+    const qualified = sanitizeMcpNamePart(name);
+    const sample = qualifyMcpToolName(name, 'screenshot');
+    if (pattern === sample || pattern === `mcp__${qualified}` || pattern === `mcp__${qualified}__*`) return true;
+    return pattern.startsWith('mcp__') && GLOB_MAGIC.test(pattern) && picomatch.isMatch(sample, pattern);
+  });
 }

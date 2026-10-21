@@ -447,6 +447,56 @@ describe('SettingsPage panel scopes', () => {
     expect(container.querySelector('[data-memory-workspace-effective]')?.textContent).toContain('Off');
   });
 
+  it('updates the capability config the allow switch reads, then retries a failed save', async () => {
+    const state = { allowed: true, host_locked: false, default_on: true, origin: 'home' as const, unresolved: false };
+    client.getConfig.mockResolvedValue({
+      optional_capabilities: {
+        browser: state,
+        computer: state,
+        memory: { ...state },
+        thread: { ...state, default_on: false },
+        web: state,
+      },
+    });
+    let enabled = true;
+    let fail = true;
+    client.getMemorySettings.mockImplementation(async () => ({ enabled, approval: 'auto' as const, budget: 2000, workspaces: {} }));
+    client.patchMemorySettings.mockImplementation(async (patch: { enabled?: boolean }) => {
+      if (fail && patch.enabled === false) {
+        fail = false;
+        throw new Error('memory save failed');
+      }
+      enabled = patch.enabled ?? enabled;
+      return { enabled, approval: 'auto' as const, budget: 2000, workspaces: {} };
+    });
+    const container = await renderSettings('/settings/memory');
+    await flush();
+    const allow = () => container.querySelector<HTMLInputElement>('#memory-enabled')!;
+    const fallback = () => container.querySelector<HTMLInputElement>('#memory-default-on')!;
+    expect(allow().checked).toBe(true);
+    expect(fallback().disabled).toBe(false);
+
+    await click(allow());
+    await flush();
+    expect(client.patchMemorySettings).toHaveBeenLastCalledWith({ enabled: false });
+    expect(allow().checked).toBe(true);
+    expect(fallback().disabled).toBe(false);
+
+    await click(allow());
+    await flush();
+    await flush();
+    expect(client.patchMemorySettings).toHaveBeenLastCalledWith({ enabled: false });
+    expect(allow().checked).toBe(false);
+    expect(fallback().disabled).toBe(true);
+
+    await click(allow());
+    await flush();
+    await flush();
+    expect(client.patchMemorySettings).toHaveBeenLastCalledWith({ enabled: true });
+    expect(allow().checked).toBe(true);
+    expect(fallback().disabled).toBe(false);
+  });
+
   it('shows other workspace overrides and refuses an out-of-range budget', async () => {
     client.getMemorySettings.mockResolvedValueOnce({ enabled: true, approval: 'review', budget: 2000, workspaces: { 'ws-alpha': false } });
     const container = await renderSettings('/settings/memory?workspace=ws-beta');

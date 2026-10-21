@@ -17,7 +17,7 @@ import {
   useNewSessionDraft,
   type NewSessionDraftState,
 } from './NewSessionDraft';
-import { clearPendingNewSessionCapabilities, pendingNewSessionCapabilities, setPendingPluginChoice, type PendingCapabilityScope } from './capabilities/newSessionCapabilities';
+import { clearPendingNewSessionCapabilities, pendingNewSessionCapabilities, setPendingOptionalChoice, setPendingPluginChoice, type PendingCapabilityScope } from './capabilities/newSessionCapabilities';
 
 const { client, navigate, scope } = vi.hoisted(() => ({
   scope: { id: 'local', spaceKey: 'local-space', connectionId: null as string | null, label: null as string | null },
@@ -32,6 +32,7 @@ const { client, navigate, scope } = vi.hoisted(() => ({
     createSession: vi.fn(),
     getPersona: vi.fn(),
     setPluginUsage: vi.fn(),
+    setSessionOptionalCapability: vi.fn(),
     previewAgentProfileFile: vi.fn((...args: unknown[]) => client.klient.rest.agents.previewFile(...args)),
   },
   navigate: vi.fn(),
@@ -78,6 +79,7 @@ beforeEach(() => {
   client.createSession.mockReset().mockResolvedValue({ id: 'session-new' });
   client.getPersona.mockReset();
   client.setPluginUsage.mockReset().mockResolvedValue({});
+  client.setSessionOptionalCapability.mockReset().mockResolvedValue({});
   clearPendingNewSessionCapabilities();
 });
 
@@ -2236,6 +2238,45 @@ describe('new-session SSH creation handoff', () => {
     expect(navigate).toHaveBeenCalledTimes(1);
     expect(pendingNewSessionCapabilities(submitted).plugins).toEqual([{ pluginId: 'media', override: 'off' }]);
     for (const other of others) expect(pendingNewSessionCapabilities(other).plugins).toEqual([{ pluginId: 'other-plugin', override: 'off' }]);
+  });
+
+  it('writes one optional choice before the first prompt and does not write an untouched row', async () => {
+    const capabilityScope: PendingCapabilityScope = { scopeId: scope.id, spaceKey: scope.spaceKey, connectionId: scope.connectionId, draftKey: 'new' };
+    setPendingOptionalChoice('web', 'off', capabilityScope);
+    setPendingOptionalChoice('thread', 'inherit', capabilityScope);
+    let accept: (() => void) | undefined;
+    client.setSessionOptionalCapability.mockImplementation(() => new Promise<void>((resolve) => { accept = resolve; }));
+    await renderDraft();
+    const state = await settleDraft((value) => value.selectionReady);
+    let sending: Promise<void> | undefined;
+    await act(async () => { sending = state.send('Look this up', []); });
+    await settleDraft(() => client.setSessionOptionalCapability.mock.calls.length > 0);
+    expect(client.setSessionOptionalCapability).toHaveBeenCalledExactlyOnceWith('session-new', { id: 'web', choice: 'off' });
+    expect(navigate).not.toHaveBeenCalled();
+    await act(async () => { accept!(); await sending; });
+    expect(navigate.mock.calls[0]?.[1].state.initialPrompt).toBe('Look this up');
+    expect(pendingNewSessionCapabilities(capabilityScope).optional).toBeUndefined();
+  });
+
+  it('keeps the draft when an optional choice fails and writes it on retry', async () => {
+    const capabilityScope: PendingCapabilityScope = { scopeId: scope.id, spaceKey: scope.spaceKey, connectionId: scope.connectionId, draftKey: 'new' };
+    setPendingOptionalChoice('memory', 'on', capabilityScope);
+    client.setSessionOptionalCapability.mockRejectedValueOnce(new Error('Optional apply failed'));
+    await renderDraft();
+    let state = await settleDraft((value) => value.selectionReady);
+    await act(async () => { state.updateDraft('Remember this'); });
+    state = latestDraftState!;
+    await act(async () => { await state.send('Remember this', []); });
+    expect(navigate).not.toHaveBeenCalled();
+    state = await settleDraft((value) => !value.busy && value.error === 'Optional apply failed');
+    expect(state.draft).toBe('Remember this');
+    expect(pendingNewSessionCapabilities(capabilityScope).optional).toEqual([{ id: 'memory', choice: 'on' }]);
+    await act(async () => { await state.send('Remember this', []); });
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+    expect(client.setSessionOptionalCapability).toHaveBeenCalledTimes(2);
+    expect(client.setSessionOptionalCapability).toHaveBeenLastCalledWith('session-new', { id: 'memory', choice: 'on' });
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(pendingNewSessionCapabilities(capabilityScope).optional).toBeUndefined();
   });
 });
 

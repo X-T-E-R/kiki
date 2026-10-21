@@ -115,7 +115,9 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
   ): boolean {
     const capabilities = this.capabilities.current;
     const session = this.session.current;
-    const capability = optionalCapabilityForTool(name);
+    const optional = this.optionalPolicy();
+    const computerServers = typeof optional?.computerServerNames === 'function' ? optional.computerServerNames() : [];
+    const capability = optionalCapabilityForTool(name, computerServers);
     const policy = session === undefined || capability === undefined ? undefined : this.optionalPolicy();
     if (policy !== undefined && session !== undefined && capability !== undefined) {
       this.note(policy, session.sessionId, session.workspaceId);

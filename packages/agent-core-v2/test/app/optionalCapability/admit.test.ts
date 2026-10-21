@@ -36,26 +36,31 @@ describe('admitOptionalCapability', () => {
     expect(admitOptionalCapability('web', input({ sessionChoice: 'off', taskTools: ['WebSearch'] }))).toEqual({ admitted: false, reason: 'session_off' });
     expect(admitOptionalCapability('web', input({ sessionChoice: 'off', agentKind: 'child', taskTools: ['*'] }))).toEqual({ admitted: false, reason: 'session_off' });
     expect(admitOptionalCapability('web', input({ sessionChoice: 'off', agentKind: 'child', taskTools: ['WebSearch'] })).admitted).toBe(true);
-    expect(admitOptionalCapability('computer', input({ sessionChoice: 'off', agentKind: 'child', taskTools: ['mcp__*'] })).admitted).toBe(true);
+    expect(admitOptionalCapability('computer', input({ sessionChoice: 'off', agentKind: 'child', taskTools: ['mcp__*'] })).admitted).toBe(false);
+    expect(admitOptionalCapability('computer', input({ sessionChoice: 'off', agentKind: 'child', taskTools: ['mcp__*'], computerServers: ['kiki-computer'] })).admitted).toBe(true);
   });
 
   it('opens inherit plus default-off only for a declared profile or this run, not a lone star or a builtin list', () => {
     expect(admitOptionalCapability('thread', input({ defaultOn: false, declaredTools: ['ThreadSend'], toolsSource: 'builtin-default' }))).toEqual({ admitted: false, reason: 'default_off' });
     expect(admitOptionalCapability('thread', input({ defaultOn: false, declaredTools: ['*'], toolsSource: 'declared' }))).toEqual({ admitted: false, reason: 'default_off' });
     expect(admitOptionalCapability('thread', input({ defaultOn: false, declaredTools: ['ThreadSend'], toolsSource: 'declared' })).admitted).toBe(true);
-    expect(admitOptionalCapability('thread', input({ defaultOn: false, taskTools: ['ThreadCreate'] })).admitted).toBe(true);
+    expect(admitOptionalCapability('thread', input({ defaultOn: false, taskTools: ['ThreadCreate'] })).admitted).toBe(false);
     expect(admitOptionalCapability('web', input({ defaultOn: true, sessionChoice: 'inherit' })).admitted).toBe(true);
     expect(admitOptionalCapability('browser', input({ sessionChoice: 'on', allowed: true })).admitted).toBe(true);
   });
 
   it('maps concrete tool names and ignores a star', () => {
     expect(optionalCapabilityForTool('browser__click')).toBe('browser');
-    expect(optionalCapabilityForTool('mcp__kiki-computer__screenshot')).toBe('computer');
-    expect(optionalCapabilityForTool('mcp__other__tool')).toBeUndefined();
+    expect(optionalCapabilityForTool('mcp__kiki-computer__screenshot')).toBeUndefined();
+    expect(optionalCapabilityForTool('mcp__kiki-computer__screenshot', ['kiki-computer'])).toBe('computer');
+    expect(optionalCapabilityForTool('mcp__desktop__screenshot', ['desktop'])).toBe('computer');
+    expect(optionalCapabilityForTool('mcp__other__tool', ['desktop'])).toBeUndefined();
     expect(optionalCapabilityForTool('MemoryWrite')).toBe('memory');
     expect(optionalCapabilityForTool('FetchURL')).toBe('web');
     expect(namesOptionalCapability('web', ['*'])).toBe(false);
-    expect(namesOptionalCapability('computer', ['mcp__kiki-computer__*'])).toBe(true);
+    expect(namesOptionalCapability('computer', ['*'], ['desktop'])).toBe(false);
+    expect(namesOptionalCapability('computer', ['mcp__kiki-computer__*'])).toBe(false);
+    expect(namesOptionalCapability('computer', ['mcp__desktop__*'], ['desktop'])).toBe(true);
     expect(optionalCapabilityDocumentKey('local', 's1')).toBe('local\u0000s1');
   });
 });
