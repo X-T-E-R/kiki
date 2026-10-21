@@ -61,7 +61,7 @@ A session's `delivery` is either `reply` or `message`. In message mode only succ
 
 ## Discuss in a room
 
-Create a room with two to six members, a classification workspace and a host. Persona members get their own message-mode sessions. The API also accepts existing threads (`kind: "thread"`), which reuse their own sessions, workspaces and permissions, need `[thread_communication] enabled = true`, and cannot be subagents. In the GUI, Ctrl/⌘-click threads in the sidebar and choose **Pull into a new room**, use **Add to room…** on a thread, add them from the **Threads** tab under **Add member**, or pick **Open a room with these threads** on a thread link. Three rules decide who wakes:
+Create a room with two to six members, a classification workspace and a host. Persona members get their own message-mode sessions. The API also accepts existing threads (`kind: "thread"`), which reuse their own sessions, workspaces and permissions, need thread communication admitted for that thread, and cannot be subagents. Factory settings allow thread communication and leave it off. Turn that thread's session on, or turn the default on, before it can join. A user `[thread_communication] enabled = false` turns it off completely, and the thread's profile does not override a session that is off. In the GUI, Ctrl/⌘-click threads in the sidebar and choose **Pull into a new room**, use **Add to room…** on a thread, add them from the **Threads** tab under **Add member**, or pick **Open a room with these threads** on a thread link. Three rules decide who wakes:
 
 1. A user mention wakes the named members; `@everyone` selects all members.
 2. A user message without mentions goes to the host, whether the host is a persona or a thread.

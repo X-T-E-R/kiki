@@ -265,7 +265,7 @@ Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`TaskStop`�
 - `ThreadSend({ room, content, mentions? })` 在当前线程已加入的房间发言。房间正文最多 20,000 字符，mentions 使用线程会话 ID 或角色 ID，省略重试键时使用工具调用 ID。ThreadSend 是这条线程在房间里说话的方式，线程里的正文留在线程里。用户消息没有 mention 时交给房间 host。成员发出的消息只唤醒被 mention 的成员。房间发送的 `delivered` 表示已记入房间日志，不表示所有成员已经回复；线程成员默认忙时排队。
 - `ThreadWait` 等待 1–8 条互不重复的本地或已批准 bridge 线程的 terminal、attention、lifecycle 或消息无法投递活动。跨 bridge 需要 `wait`，不会唤醒目标。`timeout_ms` 默认为 30,000，取值为 0–60,000，`0` 只检查一次；下次调用带上各自返回的 cursor，取消工具调用即可停止等待。
 
-`ThreadCreate` 默认启用，设置页的「权限 → 工具」可单独关闭，不影响另外 4 个线程工具。Peer 通信受 [`[thread_communication] enabled`](../configuration/config-files.md#thread-communication) 与持久化 workspace 覆盖控制。Bridge 入站另行默认关闭，由目标 owner 明确批准；关闭目标通信或入站会停止 bridge 投递，不删除会话。
+`ThreadCreate` 默认仍可用，设置页「权限 → 工具」可单独关闭，不影响另外 4 个线程工具。Peer 通信允许使用且默认关闭。用户把 `[thread_communication] enabled` 写成 `false` 是完全关闭；写成 `true` 会保持原先的默认开启，直到写入 [`optional_capabilities.defaults.thread`](../configuration/config-files.md#optional_capabilities)。当前会话关闭后，即使该会话的 Profile 点了这些工具，本会话的 peer 工具仍然关闭。只有这次子任务点名这些工具，才会打开该子任务。持久化的 workspace 邮箱覆盖仍然生效。Bridge 入站另行默认关闭，由目标 owner 明确批准；关闭目标通信或入站会停止 bridge 投递，不删除会话。
 
 只有来源 thread 的主 Agent 调用 `ThreadSend` 才会记录 peer 归属；REST 与 Klient 发送属于只指定目标的外部客户端输入。详见 [Agent 与子 Agent](../customization/agents-and-subagents.md#peer-thread-通信)。
 

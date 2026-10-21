@@ -31,6 +31,7 @@ import { mcpResultToExecutableOutput } from '#/agent/mcp/output';
 import { assertMcpInputSchema, type MCPToolDefinition } from '#/mcpCore/types';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import { IFlagService } from '#/app/flag/flag';
+import { IInstantiationService } from '#/_base/di/instantiation';
 import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IConfigService } from '#/app/config/config';
@@ -117,6 +118,7 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
     @IFlagService private readonly flags: IFlagService,
     @IConfigService private readonly config: IConfigService,
     @IAgentToolPolicyService private readonly policy: IAgentToolPolicyService,
+    @IInstantiationService private readonly instantiation: IInstantiationService,
   ) {
     super();
     const caller = { sessionId: this.session.sessionId, agentId: this.agent.agentId };
@@ -126,6 +128,16 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
     }));
     if (config.onDidSectionChange !== undefined) {
       this._register(config.onDidSectionChange(() => this.refreshLoaded()));
+    }
+    const capability = this.optionalCapabilityPolicy();
+    if (capability !== undefined) this._register(capability.onDidChange(() => { this.refreshLoaded(); }));
+  }
+
+  private optionalCapabilityPolicy(): IOptionalCapabilityPolicy | undefined {
+    try {
+      return this.instantiation.invokeFunction((accessor) => accessor.get(IOptionalCapabilityPolicy)) ?? undefined;
+    } catch {
+      return undefined;
     }
   }
 

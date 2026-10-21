@@ -80,6 +80,8 @@ export class AgentMcpService extends Service implements IAgentMcpService {
   declare readonly _serviceBrand: undefined;
   private readonly mcpTools = new Map<string, McpToolRegistration>();
   private readonly computerSessions = new Map<string, ComputerToolSession>();
+  private computerLease: { readonly sessionId: string; readonly agentId: string; readonly policy: IOptionalCapabilityPolicy } | undefined;
+  private computerLeaseArmed = false;
   private readonly pendingDiscoveries: Array<() => void> = [];
   private readonly refreshErrors = new Map<string, string>();
   private readonly sessionOverrides: Map<string, Exclude<McpSessionOverrideValue, 'inherit'>>;
@@ -532,8 +534,31 @@ export class AgentMcpService extends Service implements IAgentMcpService {
         declaredTools: source === 'declared' ? [...(profile.toolPolicyBase?.tools ?? profile.boundProfile?.tools ?? [])] : undefined,
         taskTools: profile.toolOverride?.tools === undefined ? undefined : [...profile.toolOverride.tools],
       });
+      this.armComputerLease(policy, sessionId, agent.agentId);
     }
     return policy.admit('computer', { sessionId, workspaceId, agentId: agent?.agentId }).admitted;
+  }
+
+  private armComputerLease(policy: IOptionalCapabilityPolicy, sessionId: string, agentId: string): void {
+    if (this.computerLease?.sessionId === sessionId && this.computerLease.agentId === agentId && this.computerLease.policy === policy) return;
+    const previous = this.computerLease;
+    if (previous !== undefined) previous.policy.release(previous.sessionId, previous.agentId);
+    this.computerLease = { sessionId, agentId, policy };
+    if (this.computerLeaseArmed) return;
+    this.computerLeaseArmed = true;
+    this._register({ dispose: () => {
+      const held = this.computerLease;
+      this.computerLease = undefined;
+      if (held !== undefined) held.policy.release(held.sessionId, held.agentId);
+    } });
+  }
+
+  private gateComputerCall(admitCall: (() => Promise<{ release(): void } | undefined>) | undefined): () => Promise<{ release(): void } | undefined> {
+    return async () => {
+      if (!this.computerAdmitted()) return undefined;
+      if (admitCall === undefined) return { release() {} };
+      return admitCall();
+    };
   }
 
   private registerConnectedMcpServer(entry: McpServerEntry): void {
@@ -598,6 +623,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     if (computer && !this.computerAdmitted()) {
       return { registered: [], collisions: [] };
     }
+    const callAdmission = computer ? this.gateComputerCall(admitCall) : admitCall;
     const qualifiedNames: string[] = [];
     const collisions: McpToolCollision[] = [];
     const seenInThisCall = new Map<string, string>();
@@ -627,7 +653,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
         this.registry.register(
           createMcpTool(qualified, tool, client, {
             serverName,
-            admitCall,
+            admitCall: callAdmission,
             onUnauthorized: (error, failedClient) =>
               this.mcpHandle.connectionManager.markNeedsAuth(serverName, error, failedClient),
             originalsDir: sessionMediaOriginalsDir(this.sessionContext.sessionDir),

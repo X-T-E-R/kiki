@@ -145,7 +145,7 @@ kiki -p "List changed files" --output-format stream-json
 
 多个 `kiki -p` 进程可以共享一个 `KIKI_HOME`，前提是每个进程使用不同的会话。Kiki 会串行化共享的 runtime owner 记录和会话索引写入，但每个会话仍然只允许一个活动写入者。不要同时对同一个会话运行两个 prompt；如果上一个进程应当很快释放会话，可以使用 `--wait-for-session <seconds>`。
 
-Thread communication 默认关闭。不使用 thread 工具的 print 运行不会初始化 mailbox。启用 thread communication 时，可以设置 `KIKI_THREAD_MAILBOX_TIMEOUT_MS` 调整有界 mailbox 调用超时。print 模式会为本次运行中已经打开的会话自动触发定时任务，但不会扫描 home 中的其它会话，也不会唤醒未打开的会话；不属于本次运行的任务仍需通过交互式 daemon 或 server 运行。若需要最大程度的隔离，或每个 worker 都需要独立缓存和配置，请为每个 worker 使用独立的 `KIKI_HOME`。
+Thread communication 允许使用，并且默认关闭。用户把 `[thread_communication] enabled` 写成 `false` 是完全关闭；写成 `true` 会保持原先的默认开启，直到写入 `[optional_capabilities.defaults] thread`。当前会话关闭后，即使 Profile 点了线程工具，该会话仍然关闭。只有这次子任务点名这些工具，才会打开该子任务。不使用 thread 工具的 print 运行不会初始化 mailbox。这次运行已经打开线程通信时，可以设置 `KIKI_THREAD_MAILBOX_TIMEOUT_MS` 调整有界 mailbox 调用超时。print 模式会为本次运行中已经打开的会话自动触发定时任务，但不会扫描 home 中的其它会话，也不会唤醒未打开的会话；不属于本次运行的任务仍需通过交互式 daemon 或 server 运行。若需要最大程度的隔离，或每个 worker 都需要独立缓存和配置，请为每个 worker 使用独立的 `KIKI_HOME`。
 
 ## 子命令
 

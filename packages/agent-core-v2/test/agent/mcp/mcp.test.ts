@@ -24,6 +24,7 @@ import { ITelemetryService } from '#/app/telemetry/telemetry';
 import type { McpConnectionManager, McpServerEntry } from '#/mcpCore/connection-manager';
 import { IMcpRegistryService, type McpRegistryEntry } from '#/app/mcpRegistry/mcpRegistry';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
 import { IAgentMcpService } from '#/agent/mcp/mcp';
 import { AgentMcpService } from '#/agent/mcp/mcpService';
 import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
@@ -315,6 +316,7 @@ describe('AgentMcpService', () => {
     if (options.store !== undefined) ix.stub(IAtomicDocumentStore, options.store);
     ix.stub(IAgentProfileService, {
       getModelProviderType: () => profileProviderType,
+      data: () => ({ modelCapabilities: UNKNOWN_CAPABILITY, thinkingLevel: '', systemPrompt: '' }),
     } satisfies Partial<IAgentProfileService>);
     ix.stub(ISessionMediaStore, {
       materialize: (input: SessionMediaMaterializeInput) => attachmentStore.materialize(input),
@@ -917,6 +919,49 @@ describe('AgentMcpService', () => {
     expect(registry.resolve('mcp__kiki-computer__echo')).toBeUndefined();
     sections.fire({ domain: COMPUTER_CONFIG_SECTION, source: 'set', value: { enabled: true }, previousValue: { enabled: true } });
     expect(registry.resolve('mcp__kiki-computer__echo')).toBeUndefined();
+  });
+
+  it('unloads computer tools when optional policy closes, refuses a stale call, and releases the agent lease on dispose', async () => {
+    const manager = new FakeMcpManager();
+    const counter = { calls: 0 };
+    const client = countingClient(fakeMcpClient(), counter);
+    manager.setResolved('kiki-computer', client, await discoverTools(client));
+    const changes = new Emitter<{ readonly sessionId?: string }>();
+    let admitted = true;
+    const retain = vi.fn();
+    const release = vi.fn();
+    ix.stub(IOptionalCapabilityPolicy, {
+      onDidChange: changes.event,
+      admit: () => ({ admitted, reason: admitted ? 'admitted' : 'session_off' }),
+      retain,
+      release,
+    });
+    ix.stub(IAgentScopeContext, { agentId: 'main' });
+    const service = createService(manager);
+    manager.connect('kiki-computer');
+    const registry = ix.get(IAgentToolRegistryService);
+    const tool = registry.resolve('mcp__kiki-computer__echo');
+    expect(tool).toBeDefined();
+    expect(retain).toHaveBeenCalled();
+    await executeTool(tool!, {
+      turnId: 1, toolCallId: 'tc-open', args: { text: 'once' }, signal: new AbortController().signal,
+    });
+    expect(counter.calls).toBe(1);
+    admitted = false;
+    changes.fire({});
+    expect(registry.resolve('mcp__kiki-computer__echo')).toBeUndefined();
+    const stale = await executeTool(tool!, {
+      turnId: 2, toolCallId: 'tc-stale', args: { text: 'again' }, signal: new AbortController().signal,
+    });
+    expect(stale.isError).toBe(true);
+    expect(counter.calls).toBe(1);
+    manager.disconnect('kiki-computer');
+    admitted = true;
+    changes.fire({});
+    expect(registry.resolve('mcp__kiki-computer__echo')).toBeUndefined();
+    await (service as AgentMcpService).dispose();
+    expect(release).toHaveBeenCalledWith('mcp-test-session', 'main');
+    expect(release).toHaveBeenCalledTimes(1);
   });
 
   it.each([

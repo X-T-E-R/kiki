@@ -7,6 +7,7 @@ import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
 import type { KikiConfigResponse } from '../../lib/client';
 import { useConnection } from '../../state/connection';
+import { heldByConversation, type McpSessionRow } from './sessionMcp';
 import { useMcpPicker } from './useMcpPicker';
 import {
   currentPendingCapabilityScope,
@@ -226,6 +227,23 @@ export function OptionalCapabilityRows({ sessionId }: { sessionId?: string }) {
   );
 }
 
+function mcpRailFact(row: McpSessionRow): I18nKey {
+  if (row.override === 'off') return 'composer.addMenu.mcpOffSession';
+  if (row.override === 'on') return 'composer.addMenu.mcpOnSession';
+  if (row.condition === 'plugin-off') return 'composer.addMenu.mcpPluginMuted';
+  if (row.condition === 'off-config') return 'composer.addMenu.mcpConfigOff';
+  if (row.condition === 'signed-out') return 'composer.addMenu.mcpNeedsAuth';
+  if (row.condition === 'live' || row.condition === 'on-here') return 'composer.addMenu.mcpSourceOn';
+  return 'composer.addMenu.mcpStateUnknown';
+}
+
+function mcpRailOrigin(row: McpSessionRow): I18nKey {
+  if (row.override !== 'inherit') return 'cap.source.session';
+  if (row.origin === 'plugin') return 'composer.addMenu.mcpFromPlugin';
+  if (row.origin === 'caller') return 'composer.addMenu.mcpFromConversation';
+  return 'composer.addMenu.mcpFromConfig';
+}
+
 export function SessionMcpRail({ sessionId }: { sessionId?: string }) {
   const { t } = useI18n();
   const mcp = useMcpPicker(sessionId);
@@ -235,28 +253,37 @@ export function SessionMcpRail({ sessionId }: { sessionId?: string }) {
       <p className="px-2 text-[12px] font-medium text-ink">{t('rail.mcp.title')}</p>
       <p className="px-2 text-[11px] leading-4 text-ink-faint">{t('rail.mcp.hint')}</p>
       {mcp.failed && mcp.items.length === 0 ? <p className="px-2 text-[12px] text-ink-faint">{t('composer.addMenu.mcpFailed')}</p> : null}
-      {mcp.items.map((row) => (
-        <div key={row.name} data-rail-mcp-server={row.name} className="flex items-center justify-between gap-2 px-2 py-1">
-          <span className="min-w-0 truncate text-[13px] text-ink">{row.name}</span>
-          {row.addressable && row.locator !== undefined ? (
-            <span className="flex shrink-0 gap-1">
-              {(['inherit', 'on', 'off'] as const).map((choice) => (
-                <button
-                  key={choice}
-                  type="button"
-                  data-rail-mcp-set={choice}
-                  aria-pressed={row.override === choice}
-                  disabled={mcp.busyName === row.name || !mcp.writable}
-                  onClick={() => { mcp.setOverride(row.locator!, choice, row.name); }}
-                  className={`min-h-6 rounded px-1.5 text-[11px] ${row.override === choice ? 'bg-paper text-ink' : 'text-ink-soft'} disabled:opacity-40`}
-                >
-                  {t(choice === 'inherit' ? 'cap.choice.inherit' : choice === 'on' ? 'cap.choice.on' : 'cap.choice.off')}
-                </button>
-              ))}
-            </span>
-          ) : null}
-        </div>
-      ))}
+      {mcp.items.map((row) => {
+        const factKey = mcpRailFact(row);
+        const originKey = mcpRailOrigin(row);
+        const pluginName = row.pluginLabel ?? '';
+        return (
+          <div key={row.name} data-rail-mcp-server={row.name} data-rail-mcp-effective={heldByConversation(row) ? 'true' : 'false'} data-rail-mcp-source={row.override === 'inherit' ? row.origin : 'session'} className="px-2 py-1">
+            <div className="flex items-center justify-between gap-2">
+              <span className="min-w-0 truncate text-[13px] text-ink">{row.name}</span>
+              {row.addressable && row.locator !== undefined ? (
+                <span className="flex shrink-0 gap-1">
+                  {(['inherit', 'on', 'off'] as const).map((choice) => (
+                    <button
+                      key={choice}
+                      type="button"
+                      data-rail-mcp-set={choice}
+                      aria-pressed={row.override === choice}
+                      disabled={mcp.busyName === row.name || !mcp.writable}
+                      onClick={() => { mcp.setOverride(row.locator!, choice, row.name); }}
+                      className={`min-h-6 rounded px-1.5 text-[11px] ${row.override === choice ? 'bg-paper text-ink' : 'text-ink-soft'} disabled:opacity-40`}
+                    >
+                      {t(choice === 'inherit' ? 'cap.choice.inherit' : choice === 'on' ? 'cap.choice.on' : 'cap.choice.off')}
+                    </button>
+                  ))}
+                </span>
+              ) : null}
+            </div>
+            <p data-rail-mcp-fact={row.name} className="text-[11px] leading-4 text-ink-faint">{t(factKey, factKey === 'composer.addMenu.mcpPluginMuted' || originKey === 'composer.addMenu.mcpFromPlugin' ? { name: pluginName } : undefined)}</p>
+            <p className="text-[11px] leading-4 text-ink-faint">{t(originKey, originKey === 'composer.addMenu.mcpFromPlugin' ? { name: pluginName } : undefined)}</p>
+          </div>
+        );
+      })}
       {mcp.failure === undefined ? null : <p role="alert" className="px-2 text-[12px] text-danger">{mcp.failure.message}</p>}
     </div>
   );

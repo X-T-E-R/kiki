@@ -115,7 +115,7 @@ export function refreshSessionAttention(queryClient: Pick<QueryClient, 'invalida
   void queryClient.invalidateQueries({ queryKey: ['activity-tasks', sessionId] });
 }
 
-interface ConnectionValue {
+export interface ConnectionValue {
   readonly connectionId: string | null;
   /**
    * Which kind of connection this window is holding. `connectionId` names a
@@ -1371,6 +1371,10 @@ export function useControllerRegistry(): ControllerRegistry {
 
 export function useOptionalControllerRegistry(): ControllerRegistry | null {
   return useContext(ControllerRegistryContext);
+}
+
+export function ConnectionScope({ value, children }: { readonly value: ConnectionValue; readonly children: ReactNode }) {
+  return <ConnectionContext.Provider value={value}>{children}</ConnectionContext.Provider>;
 }
 
 export function useConnection(): ConnectionValue {
