@@ -4,6 +4,7 @@ import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory'
 
 import { createDecorator, type ServicesAccessor } from '#/_base/di/instantiation';
 import { toInputJsonSchema } from '#/tool/input-schema';
+import THREAD_SEND_DESCRIPTION_SOURCE from './thread-send.md?raw';
 import type { AgentTool, ToolExecution } from '#/tool/toolContract';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
@@ -49,8 +50,17 @@ export const ReadThreadToolInputSchema = z
   .strict();
 
 export const SendMessageToThreadToolInputSchema = z.union([
-  z.object({ thread: ThreadRefSchema, content: z.string().min(1).max(100_000), idempotency_key: z.string().min(1).max(256) }).strict(),
-  z.object({ room: z.string().min(1).max(128), content: z.string().min(1).max(20_000), mentions: z.array(z.string().min(1).max(256)).max(6).optional(), idempotency_key: z.string().min(1).max(256).optional() }).strict(),
+  z.object({
+    thread: ThreadRefSchema,
+    content: z.string().min(1).max(100_000).describe('Input for the other thread. It arrives as a peer message from this thread.'),
+    idempotency_key: z.string().min(1).max(256).describe('Retries this same content. A different message with a used key fails.'),
+  }).strict(),
+  z.object({
+    room: z.string().min(1).max(128).describe('Id of a room this thread belongs to.'),
+    content: z.string().min(1).max(20_000).describe('What this thread says in the room. Text written in this thread stays here.'),
+    mentions: z.array(z.string().min(1).max(256)).max(6).optional().describe('Member ids to wake: a thread session id or a persona id. A member message wakes only these members. A user message with no mention goes to the room host.'),
+    idempotency_key: z.string().min(1).max(256).optional().describe('Retries this same room message. Omit it to reuse the tool call id.'),
+  }).strict(),
 ]);
 
 export const WaitThreadsToolInputSchema = z
@@ -195,8 +205,7 @@ export class SendMessageToThreadTool
 {
   declare readonly _serviceBrand: undefined;
   readonly name = 'ThreadSend';
-  readonly description =
-    'Send an explicit message to another thread in the executing home, or through an owner-approved one-way space bridge using bridge_id/connection_id. It arrives as a verified peer message attributed to this executing thread, not ordinary assistant text. A bridge requires separate send/wake authority; without wake the message remains pending. The message is stored durably, then delivered right away when possible: it starts a turn or joins the running one (`delivery: delivered`), otherwise waits in that thread\'s queue (`pending`); `undeliverable` means it was rejected. Sending can resume a cold thread and use model quota. You cannot send to your own thread. Reuse an `idempotency_key` only to retry the same content; a different message with a used key fails. Use ThreadWait to watch for the reply. Alternatively pass room instead of thread to post to a room you belong to: {room, content, mentions?}; mentions must be exact member IDs (thread sessionId or personaId), not display names. Only explicit room sends appear in the room, never ordinary assistant text. Room sends use the tool call id for retries when idempotency_key is omitted; room delivery means logged, not that every member has replied. A room send without mentions is logged but wakes no one; mention a member ID to request its attention. Only a user room message without mentions wakes the host. Thread members queue while busy by default; a successful catch-up covers older queued notifications.';
+  readonly description = THREAD_SEND_DESCRIPTION_SOURCE.replace(/\r?\n$/, '');
   readonly parameters = toInputJsonSchema(SendMessageToThreadToolInputSchema);
 
   constructor(

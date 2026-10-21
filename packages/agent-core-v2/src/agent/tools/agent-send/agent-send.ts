@@ -10,12 +10,12 @@ export const AgentSendInputSchema = z
       .trim()
       .min(1)
       .describe(
-        'Name or agent id of a direct child. Names come from the `name` parameter of the Agent tool; unnamed children are addressed by agent id. Call AgentList when unsure.',
+        'Name or agent id of a direct child. Names come from the `name` parameter of AgentRun; unnamed children are addressed by agent id. AgentList lists them.',
       ),
     message: z
       .string()
       .describe(
-        'Non-empty message to queue in the child mailbox. A running native child receives it at the next step boundary; an idle resumable child starts a new run; a running external child receives it on its next run.',
+        'Input the child needs to continue. A running native child takes it at the next step boundary; Codex or a steer-capable ACP child can take it during the run. A stopped child continues with its current binding.',
       ),
   })
   .strict();

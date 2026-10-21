@@ -51,6 +51,17 @@ interface PreparedExternalDelivery {
   readonly request: AgentRunRequest;
 }
 
+type WakeAttempt = 'landed' | 'other' | 'skipped';
+
+function continuationBlocked(error: Error2, messageId: string, targetAgentId: string): Error2 {
+  const details = error.details ?? {};
+  const safe: Record<string, unknown> = { messageId, targetAgentId };
+  for (const key of ['layer', 'current', 'limit', 'owner', 'agentId'] as const) {
+    if (details[key] !== undefined) safe[key] = details[key];
+  }
+  return new Error2(error.code, error.message, { details: safe });
+}
+
 export class AgentCollaborationMessagingService extends Disposable implements IAgentCollaborationMessagingService {
   declare readonly _serviceBrand: undefined;
   private readonly subscriptions = this._register(new DisposableMap<string>());
@@ -58,6 +69,10 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
   private readonly wakeTails = new Map<string, Promise<void>>();
   private readonly receiptTails = new Map<string, Promise<void>>();
   private readonly claimed = new Map<string, ClaimedAgentMessage>();
+  private readonly acknowledged = new Set<string>();
+  private readonly externalPrepared = new Map<string, string>();
+  private readonly externalEpoch = new Map<string, number>();
+  private readonly externalWaiters = new Map<string, Array<() => void>>();
 
   constructor(
     @IAgentCollaborationMessageStore private readonly store: IAgentCollaborationMessageStore,
@@ -152,18 +167,15 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
           idleWake,
           input.sourceAgentId,
           child?.agent === pinnedHandle ? child : undefined,
+          true,
         );
-        delivery.then(
-          () => {
-            const result = lease.dispose();
-            if (isPromiseLike(result)) result.catch(onUnexpectedError);
-          },
-          (error) => {
-            const result = lease.dispose();
-            if (isPromiseLike(result)) result.catch(onUnexpectedError);
-            onUnexpectedError(error);
-          },
-        ).catch(onUnexpectedError);
+        void delivery.finally(() => lease.dispose()).catch((error: unknown) => {
+          this.log.warn('Agent message delivery did not finish', {
+            messageId: acceptance.message.messageId,
+            targetAgentId: input.targetAgentId,
+            error,
+          });
+        });
         return acceptance;
       } catch (error) {
         await lease.dispose();
@@ -176,6 +188,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       idleWake,
       input.sourceAgentId,
       child,
+      false,
     );
     const refreshed = await this.store.accept(storedInput);
     return { ...acceptance, delivery: refreshed.delivery, resumed: resumed || undefined };
@@ -222,7 +235,15 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
                 handle.id,
                 () => this.recoverMailboxDelivery(handle.id, () => this.completeExternalDelivery(handle, prepared.messageId), context.signal),
               ));
+            } else {
+              afterStart(() => {
+                this.bumpExternalEpoch(handle.id);
+                return Promise.resolve();
+              });
             }
+            this.noteExternalPrepare(handle.id, prepared?.messageId);
+          } else {
+            this.noteExternalPrepare(handle.id, undefined);
           }
           await next();
           return;
@@ -252,22 +273,51 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     message: AgentMessageAcceptance['message'],
     idleWake: 'owned-child' | 'parent' | undefined,
     sourceAgentId: string,
-    child?: DispatchChild,
+    child: DispatchChild | undefined,
+    followBusyCompletion: boolean,
   ): Promise<boolean> {
     if (!this.kikiMailEnabled(handle)) return false;
-    const initialExecutionState = handle.accessor.get(IAgentExecutionService).status().state;
-    const initiallyIdle =
-      initialExecutionState === 'idle' &&
-      handle.accessor.get(IAgentLoopService).status().state === 'idle';
-    await this.serializeDelivery(handle.id, () => this.deliverRunning(handle));
-    if (this.hasMessage(handle, message.messageId) || idleWake === undefined) return false;
-    if (idleWake === 'owned-child' && !initiallyIdle && initialExecutionState !== 'broken') {
-      return false;
+    let observedStart = false;
+    let stall: string | undefined;
+    for (;;) {
+      await this.serializeDelivery(handle.id, () => this.deliverRunning(handle));
+      if (this.messageLanded(handle, message.messageId) || idleWake === undefined) return observedStart;
+      if (this.isStarting(handle)) {
+        if (!this.isExternalExecutor(handle) || this.externalPrepared.get(handle.id) === message.messageId) return observedStart;
+        const decision = await this.waitWhileExternalStarting(handle, message.messageId);
+        if (decision === 'included' || this.messageLanded(handle, message.messageId)) return observedStart;
+        continue;
+      }
+      if (this.admittedWorkWillRead(handle)) return observedStart;
+      if (this.executionBusy(handle)) {
+        if (!followBusyCompletion) return observedStart;
+        await handle.accessor.get(IAgentLoopService).settled();
+        await handle.accessor.get(IAgentExecutionService).settled();
+        continue;
+      }
+      const outcome = await this.serializeWake(handle.id, async () => {
+        if (this.messageLanded(handle, message.messageId)) return 'skipped' as const;
+        if (this.isStarting(handle) || this.executionBusy(handle) || this.admittedWorkWillRead(handle)) return 'skipped' as const;
+        return this.wakeWhenIdle(handle, message, idleWake, sourceAgentId, child);
+      });
+      if (outcome === 'landed' || outcome === 'other') observedStart = true;
+      if (this.messageLanded(handle, message.messageId)) return observedStart;
+      if (outcome === 'other') {
+        const mark = `${this.claimed.get(handle.id)?.queued.message.messageId ?? ''}|${this.acknowledged.size}`;
+        if (mark === stall) {
+          throw new Error2(
+            ErrorCodes.INTERNAL,
+            `Saved message "${message.messageId}" did not enter agent "${handle.id}".`,
+            { details: { messageId: message.messageId, targetAgentId: handle.id } },
+          );
+        }
+        stall = mark;
+        if (!followBusyCompletion && (this.isStarting(handle) || this.executionBusy(handle))) return observedStart;
+        continue;
+      }
+      if (followBusyCompletion && (this.isStarting(handle) || this.executionBusy(handle))) continue;
+      return observedStart;
     }
-    return this.serializeWake(handle.id, async () => {
-      if (this.hasMessage(handle, message.messageId)) return false;
-      return this.wakeWhenIdle(handle, message, idleWake, sourceAgentId, child);
-    });
   }
 
   private async deliverRunning(handle: IAgentScopeHandle): Promise<void> {
@@ -284,7 +334,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     idleWake: 'owned-child' | 'parent',
     sourceAgentId: string,
     child?: DispatchChild,
-  ): Promise<boolean> {
+  ): Promise<WakeAttempt> {
     const execution = handle.accessor.get(IAgentExecutionService);
     const loop = handle.accessor.get(IAgentLoopService);
     let executionState = execution.status().state;
@@ -292,22 +342,22 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       throw new Error2(
         ErrorCodes.INTERNAL,
         `Agent instance "${handle.id}" cannot be resumed because its executor is broken`,
-        { details: { agentId: handle.id } },
+        { details: { agentId: handle.id, messageId: message.messageId } },
       );
     }
-    if (executionState !== 'idle' && executionState !== 'running') return false;
+    if (executionState !== 'idle' && executionState !== 'running') return 'skipped';
     if (executionState === 'running') {
-      if (!this.isExternalExecutor(handle) && loop.status().state !== 'running') return false;
+      if (!this.isExternalExecutor(handle) && loop.status().state !== 'running') return 'skipped';
       await loop.settled();
       await execution.settled();
-      if (this.hasMessage(handle, message.messageId)) return false;
+      if (this.messageLanded(handle, message.messageId)) return 'skipped';
       executionState = execution.status().state;
     } else if (loop.status().state === 'running') {
       await loop.settled();
-      if (this.hasMessage(handle, message.messageId)) return false;
+      if (this.messageLanded(handle, message.messageId)) return 'skipped';
       executionState = execution.status().state;
     }
-    if (executionState !== 'idle') return false;
+    if (executionState !== 'idle') return 'skipped';
     const loopStatus = loop.status();
     const prompts = handle.accessor.get(IAgentPromptService).list();
     if (
@@ -315,8 +365,8 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       loopStatus.pendingTurnIds.length > 0 ||
       loopStatus.hasPendingRequests ||
       prompts.pending.length > 0
-    ) return false;
-    if (isExternalClientMain(await this.metadata.read(), handle.id)) return false;
+    ) return 'skipped';
+    if (isExternalClientMain(await this.metadata.read(), handle.id)) return 'skipped';
     return this.startWake(handle, message, idleWake, sourceAgentId, child);
   }
 
@@ -326,27 +376,28 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     idleWake: 'owned-child' | 'parent',
     sourceAgentId: string,
     child?: DispatchChild,
-  ): Promise<boolean> {
-    try {
-      const contextMessage = toContextMessage(message);
-      const run = await this.dispatch.runOnExisting(
-        child ?? await this.dispatchChild(handle),
-        { kind: 'mailbox', prompt: visibleAgentMessage(message), message: contextMessage },
-        { signal: new AbortController().signal },
-      );
-      if (idleWake === 'owned-child' && message.senderKind !== 'user') {
-        this.dispatch.recordDelegatedRun(sourceAgentId, handle.id);
+  ): Promise<WakeAttempt> {
+    for (;;) {
+      try {
+        const contextMessage = toContextMessage(message);
+        const run = await this.dispatch.runOnExisting(
+          child ?? await this.dispatchChild(handle),
+          { kind: 'mailbox', prompt: visibleAgentMessage(message), message: contextMessage },
+          { signal: new AbortController().signal },
+        );
+        if (idleWake === 'owned-child' && message.senderKind !== 'user') {
+          this.dispatch.recordDelegatedRun(sourceAgentId, handle.id);
+        }
+        const started = await run.started;
+        void started.completion.catch(() => {});
+        return this.messageLanded(handle, message.messageId) ? 'landed' : 'other';
+      } catch (error) {
+        if (!isError2(error)) throw error;
+        if (error.code === ErrorCodes.AGENT_ALREADY_RUNNING) return 'skipped';
+        if (error.code !== ErrorCodes.DISPATCH_LIMIT_EXCEEDED) throw error;
+        if (await this.awaitCapacityRelease(handle.id)) continue;
+        throw continuationBlocked(error, message.messageId, handle.id);
       }
-      const started = await run.started;
-      void started.completion.catch(() => {});
-      return true;
-    } catch (error) {
-      if (
-        isError2(error) &&
-        (error.code === ErrorCodes.AGENT_ALREADY_RUNNING ||
-          error.code === ErrorCodes.DISPATCH_LIMIT_EXCEEDED)
-      ) return false;
-      throw error;
     }
   }
 
@@ -375,6 +426,81 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
 
   private isExternalExecutor(handle: IAgentScopeHandle): boolean {
     return (handle.accessor.get(IAgentProfileService).data().executorId ?? 'native') !== 'native';
+  }
+
+  private messageLanded(handle: IAgentScopeHandle, messageId: string): boolean {
+    return this.acknowledged.has(messageId) || this.hasMessage(handle, messageId);
+  }
+
+  private admittedWorkWillRead(handle: IAgentScopeHandle): boolean {
+    const loop = handle.accessor.get(IAgentLoopService).status();
+    if (loop.pendingTurnIds.length > 0 || loop.hasPendingRequests) return true;
+    return handle.accessor.get(IAgentPromptService).list().pending.length > 0;
+  }
+
+  private isStarting(handle: IAgentScopeHandle): boolean {
+    return handle.accessor.get(IAgentExecutionService).status().state === 'starting';
+  }
+
+  private noteExternalPrepare(agentId: string, messageId: string | undefined): void {
+    if (messageId === undefined) this.externalPrepared.delete(agentId);
+    else this.externalPrepared.set(agentId, messageId);
+    this.bumpExternalEpoch(agentId);
+  }
+
+  private bumpExternalEpoch(agentId: string): void {
+    this.externalEpoch.set(agentId, (this.externalEpoch.get(agentId) ?? 0) + 1);
+    const waiters = this.externalWaiters.get(agentId);
+    if (waiters === undefined) return;
+    this.externalWaiters.delete(agentId);
+    for (const resolve of waiters) resolve();
+  }
+
+  private waitExternalEpoch(agentId: string, seen: number): Promise<void> {
+    if ((this.externalEpoch.get(agentId) ?? 0) !== seen) return Promise.resolve();
+    return new Promise((resolve) => {
+      const waiters = this.externalWaiters.get(agentId) ?? [];
+      waiters.push(resolve);
+      this.externalWaiters.set(agentId, waiters);
+    });
+  }
+
+  private async waitWhileExternalStarting(
+    handle: IAgentScopeHandle,
+    messageId: string,
+  ): Promise<'included' | 'continue'> {
+    for (;;) {
+      if (!this.isStarting(handle)) return 'continue';
+      if (this.externalPrepared.get(handle.id) === messageId) return 'included';
+      await this.waitExternalEpoch(handle.id, this.externalEpoch.get(handle.id) ?? 0);
+    }
+  }
+
+  private busyExecutionsExcept(agentId: string): readonly { id: string; settled: () => Promise<void> }[] {
+    const holders = [];
+    for (const candidate of this.lifecycle.list()) {
+      if (candidate.id === agentId) continue;
+      const execution = candidate.accessor.get(IAgentExecutionService);
+      const state = execution.status().state;
+      if (state !== 'starting' && state !== 'running' && state !== 'cancelling') continue;
+      holders.push({ id: candidate.id, settled: () => execution.settled() });
+    }
+    return holders;
+  }
+
+  private async awaitCapacityRelease(agentId: string): Promise<boolean> {
+    const holders = this.busyExecutionsExcept(agentId);
+    if (holders.length === 0) return false;
+    const before = holders.map((holder) => holder.id).sort().join('\0');
+    await Promise.all(holders.map((holder) => holder.settled()));
+    const after = this.busyExecutionsExcept(agentId).map((holder) => holder.id).sort().join('\0');
+    return after !== before;
+  }
+
+  private executionBusy(handle: IAgentScopeHandle): boolean {
+    const executionState = handle.accessor.get(IAgentExecutionService).status().state;
+    return executionState === 'running' || executionState === 'cancelling' ||
+      handle.accessor.get(IAgentLoopService).status().state === 'running';
   }
 
   private hasMessage(handle: IAgentScopeHandle, messageId: string): boolean {
@@ -420,6 +546,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       return false;
     }
     await this.store.markDelivered(pending.queued.claim);
+    this.acknowledged.add(pending.queued.message.messageId);
     if (this.claimed.get(handle.id) === pending) this.claimed.delete(handle.id);
     return true;
   }
@@ -476,13 +603,18 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     messageId: string,
   ): Promise<void> {
     const pending = this.claimed.get(handle.id);
-    if (pending?.queued.message.messageId !== messageId) return;
+    if (pending?.queued.message.messageId !== messageId) {
+      this.bumpExternalEpoch(handle.id);
+      return;
+    }
     if (!this.hasAppliedMessage(handle, pending)) {
       handle.accessor.get(IAgentContextMemoryService).appendObservable(
         toContextMessage(pending.queued.message),
       );
     }
-    await this.completeClaim(handle, pending);
+    const completed = await this.completeClaim(handle, pending);
+    if (completed && this.externalPrepared.get(handle.id) === messageId) this.externalPrepared.delete(handle.id);
+    this.bumpExternalEpoch(handle.id);
   }
 
   private deliverBeforeRun(handle: IAgentScopeHandle, signal?: AbortSignal): Promise<void> {

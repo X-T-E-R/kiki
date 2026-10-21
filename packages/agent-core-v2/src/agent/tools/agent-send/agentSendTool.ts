@@ -40,7 +40,7 @@ export class AgentSendTool implements IAgentSendTool {
 
   resolveExecution(args: AgentSendInput): ToolExecution {
     return {
-      description: 'Queueing a message for a child agent',
+      description: 'Sending input to a child agent',
       accesses: ToolAccesses.none(),
       approvalRule: this.name,
       execute: async (context) => this.run(args, context),

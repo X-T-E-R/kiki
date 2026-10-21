@@ -198,6 +198,41 @@ describe('PromptFieldRegistryService', () => {
     expect(resolved.fields.filter((field) => field.status === 'unsupported')).toHaveLength(3);
   });
 
+  it('accepts ThreadSend guidance on the main branch without replacing the default description', async () => {
+    const description = BUILTIN_PROMPT_FIELD_DEFINITIONS.find((field) => field.id === 'tool.thread-send.description');
+    const guidance = BUILTIN_PROMPT_FIELD_DEFINITIONS.find((field) => field.id === 'tool.thread-send.guidance');
+    expect(description).toMatchObject({
+      owner: 'tool.thread-send',
+      defaultTemplate: { kind: 'resource', value: 'agent/tools/thread-communication/thread-send.md' },
+      allowEmpty: false,
+      consumers: ['tool:ThreadSend'],
+    });
+    expect(guidance).toMatchObject({
+      owner: 'tool.thread-send',
+      defaultTemplate: { kind: 'inline', value: '' },
+      allowEmpty: true,
+      consumers: ['tool:ThreadSend'],
+    });
+    expect(applyToolPromptFields('ThreadSend', 'DEFAULT DESCRIPTION', { values: {}, fields: [] })).toBe('DEFAULT DESCRIPTION');
+    _clearPromptFieldContributionsForTests();
+    for (const field of [description!, guidance!]) registerPromptField(field);
+    ({ services } = createRegistry());
+    const registry = services.get(IPromptFieldRegistry);
+    const declaration = { main: { fields: { 'tool.thread-send.guidance': 'MAIN ONLY' } } };
+    const main = await registry.resolve({
+      profile: { surface: 'profile', overrides: [declaration] },
+      context: { delegationPosition: 'main' },
+    });
+    const sub = await registry.resolve({
+      profile: { surface: 'profile', overrides: [declaration] },
+      context: { delegationPosition: 'sub' },
+    });
+    expect(applyToolPromptFields('ThreadSend', 'DEFAULT DESCRIPTION', main))
+      .toBe('DEFAULT DESCRIPTION\n\nUser-configured guidance:\nMAIN ONLY');
+    expect(sub.values['tool.thread-send.guidance']).toBeUndefined();
+    expect(applyToolPromptFields('ThreadSend', 'DEFAULT DESCRIPTION', sub)).toBe('DEFAULT DESCRIPTION');
+  });
+
   it('replaces only the static AgentRun description and preserves its dynamic projection', () => {
     const description = `${AGENT_DESCRIPTION_BASE}\n\nDYNAMIC PROFILE LIST`;
     const rendered = applyToolPromptFields('AgentRun', description, {

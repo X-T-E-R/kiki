@@ -21,6 +21,7 @@ const STATIC_TOOL_FIELDS = [
   ['TodoList', 'agent/tools/todo-list/todo-list.md'],
   ['AgentRun', 'agent/tools/agent/agent.md'],
   ['AgentSend', 'agent/tools/agent-send/agent-send.md'],
+  ['ThreadSend', 'agent/tools/thread-communication/thread-send.md'],
   ['AgentList', 'agent/tools/agent-list/agent-list.md'],
   ['ReadMediaFile', 'agent/tools/read-media-file/read-media.md'],
   ['AskUserQuestion', 'agent/tools/ask-user-question/ask-user.md'],

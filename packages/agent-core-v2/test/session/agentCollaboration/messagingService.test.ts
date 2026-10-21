@@ -53,8 +53,10 @@ import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { AgentSendTool } from '#/agent/tools/agent-send/agentSendTool';
 import { IAgentLifecycleService, type IAgentLifecycleService as AgentLifecycle } from '#/session/agentLifecycle/agentLifecycle';
-import { IAgentCollaborationRegistry, COLLABORATION_LATEST_TASK_LABEL } from '#/session/agentCollaboration/registry';
+import { IAgentCollaborationRegistry, COLLABORATION_LATEST_TASK_LABEL, COLLABORATION_TASK_NAME_LABEL } from '#/session/agentCollaboration/registry';
 import {
   ISessionDispatchService,
   type DispatchChild,
@@ -74,9 +76,11 @@ import {
 import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { stubLog } from '../../_base/log/stubs';
+import { Error2, ErrorCodes } from '#/errors';
 import type { AgentRunRequest, RunAgentOptions } from '#/session/subagent/subagent';
 import { IWireService, type IWireService as Wire } from '#/wire/wire';
 import { agentService, createTestAgent } from '../../harness';
+import { executeTool } from '../../tools/fixtures/execute-tool';
 
 const signal = new AbortController().signal;
 const tempDirs: string[] = [];
@@ -290,14 +294,23 @@ describe('agent collaboration safe-boundary delivery', () => {
     await service.dispose();
   });
 
-  it('wakes an idle external child with the oldest backlog entry and leaves newer mail queued', async () => {
+  it('consumes an external backlog of two saved messages on the same binding without a manual resume', async () => {
     const store = mailboxStore(tempDir());
     const target = agentHandle('agent-target', { executorId: 'fake-external' });
-    const dispatch = dispatchHarness(async (child, request, options) => ({
-      child,
-      request: request as DispatchRun['request'],
-      started: target.execution.run(request as AgentRunRequest, { signal: options.signal }),
-    }));
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const dispatch = dispatchHarness(async (child, request, options) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      const started = target.execution.run(request as AgentRunRequest, { signal: options.signal }).finally(() => {
+        inFlight -= 1;
+      });
+      return {
+        child,
+        request: request as DispatchRun['request'],
+        started,
+      };
+    });
     const service = messagingService(
       store,
       lifecycleHarness([target.handle]).service,
@@ -311,24 +324,205 @@ describe('agent collaboration safe-boundary delivery', () => {
     await expect(service.send({
       ...sendInput('newer external mail', 'external-newer'),
       idleWake: 'owned-child',
-    })).resolves.toMatchObject({ delivery: 'queued', resumed: true });
+    })).resolves.toMatchObject({ delivery: 'delivered', resumed: true });
 
-    expect(target.remoteRequests[0]).toMatchObject({
-      kind: 'mailbox',
-      prompt: 'Message from agent "root" (main):\n\nolder external mail',
-      message: {
-        origin: expect.objectContaining({ kind: 'agent_message' }),
+    expect(target.remoteRequests.map((request) => request.kind === 'mailbox' ? request.prompt : request)).toEqual([
+      'Message from agent "root" (main):\n\nolder external mail',
+      'Message from agent "root" (main):\n\nnewer external mail',
+    ]);
+    expect(maxInFlight).toBe(1);
+    expect(await store.nextQueued('session-1', 'agent-target')).toBeUndefined();
+    service.dispose();
+  });
+
+  it('delivers external mail that arrives after prepare while that run is still starting', async () => {
+    const store = mailboxStore(tempDir());
+    let releaseStart!: () => void;
+    const startGate = new Promise<void>((resolve) => { releaseStart = resolve; });
+    let markPrepared!: () => void;
+    const prepared = new Promise<void>((resolve) => { markPrepared = resolve; });
+    const target = agentHandle('agent-target', {
+      executorId: 'fake-external',
+      pauseAfterWillRun: async () => {
+        markPrepared();
+        await startGate;
+        target.setRunning(false);
       },
     });
-    await target.execution.run(
-      { kind: 'prompt', prompt: 'manual continuation' },
-      { signal },
+    const dispatch = dispatchHarness(async (child, request, options) => ({
+      child,
+      request: request as DispatchRun['request'],
+      started: target.execution.run(request as AgentRunRequest, { signal: options.signal }),
+    }));
+    const service = messagingService(
+      store,
+      lifecycleHarness([target.handle]).service,
+      sessionContext(),
+      metadataHarness({ 'agent-target': {} }),
+      dispatch,
     );
-    expect(target.remoteRequests[1]).toEqual({
-      kind: 'prompt',
-      prompt: 'Message from agent "root" (main):\n\nnewer external mail\n\nmanual continuation',
+
+    const first = service.send({
+      ...sendInput('first external mail', 'external-starting-first'),
+      waitForRunningDelivery: false,
+      idleWake: 'owned-child',
+    });
+    await prepared;
+    const second = service.send({
+      ...sendInput('second external mail', 'external-starting-second'),
+      waitForRunningDelivery: false,
+      idleWake: 'owned-child',
+    });
+    await vi.waitFor(() => { expect(target.remoteRequests).toHaveLength(1); });
+    expect(dispatch.runOnExisting).toHaveBeenCalledTimes(1);
+    releaseStart();
+    await first;
+    await second;
+    await vi.waitFor(() => { expect(target.remoteRequests).toHaveLength(2); });
+    expect(target.remoteRequests[0]).toMatchObject({
+      kind: 'mailbox',
+      prompt: 'Message from agent "root" (main):\n\nfirst external mail',
+    });
+    expect(target.remoteRequests[1]).toMatchObject({
+      kind: 'mailbox',
+      prompt: 'Message from agent "root" (main):\n\nsecond external mail',
     });
     expect(await store.nextQueued('session-1', 'agent-target')).toBeUndefined();
+    expect(dispatch.runOnExisting).toHaveBeenCalledTimes(2);
+    await service.dispose();
+  });
+
+  it('continues a saved message after another child releases dispatch capacity', async () => {
+    const store = mailboxStore(tempDir());
+    const target = agentHandle('agent-target');
+    const holder = agentHandle('holder');
+    holder.setRunning(true);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(holder.execution, 'settled').mockImplementation(() => gate.then(() => {
+      holder.setRunning(false);
+    }));
+    const limit = new Error2(
+      ErrorCodes.DISPATCH_LIMIT_EXCEEDED,
+      'Subagent direct limit reached (1/1). No agent was started; wait for an active run to finish before dispatching again.',
+      { details: { layer: 'direct', current: 1, limit: 1, owner: 'main' } },
+    );
+    let attempts = 0;
+    const dispatch = dispatchHarness(async (child, request, options) => {
+      attempts += 1;
+      if (attempts === 1) throw limit;
+      await target.execution.hooks.onWillRun.run({ signal: options.signal });
+      return {
+        child,
+        request: request as DispatchRun['request'],
+        started: Promise.resolve({
+          agentId: child.agentId,
+          turn: {} as never,
+          completion: Promise.resolve({ summary: 'done' }),
+        }),
+      };
+    });
+    const service = messagingService(
+      store,
+      lifecycleHarness([target.handle, holder.handle]).service,
+      sessionContext(),
+      metadataHarness({ 'agent-target': {}, holder: {} }),
+      dispatch,
+    );
+    const accepted = await service.send({
+      ...sendInput('after capacity', 'capacity-release'),
+      waitForRunningDelivery: false,
+      idleWake: 'owned-child',
+    });
+    expect(accepted).toMatchObject({ delivery: 'queued' });
+    expect(accepted.resumed).toBeUndefined();
+    await vi.waitFor(() => { expect(attempts).toBe(1); });
+    expect(target.messages).toEqual([]);
+    release();
+    await vi.waitFor(() => { expect(attempts).toBe(2); });
+    await vi.waitFor(async () => {
+      expect((await store.accept(messageInput('after capacity', 'capacity-release'))).delivery).toBe('delivered');
+    });
+    expect(target.messages).toHaveLength(1);
+    service.dispose();
+  });
+
+  it('reports a dispatch limit and keeps the saved message retryable when no run will release capacity', async () => {
+    const store = mailboxStore(tempDir());
+    const target = agentHandle('agent-target');
+    const log = stubLog();
+    const warn = vi.spyOn(log, 'warn');
+    const limit = new Error2(
+      ErrorCodes.DISPATCH_LIMIT_EXCEEDED,
+      'Subagent direct limit reached (1/1). No agent was started; wait for an active run to finish before dispatching again.',
+      { details: { layer: 'direct', current: 1, limit: 1, owner: 'main' } },
+    );
+    let blocked = true;
+    const dispatch = dispatchHarness(async (child, request, options) => {
+      if (blocked) throw limit;
+      await target.execution.hooks.onWillRun.run({ signal: options.signal });
+      return {
+        child,
+        request: request as DispatchRun['request'],
+        started: Promise.resolve({
+          agentId: child.agentId,
+          turn: {} as never,
+          completion: Promise.resolve({ summary: 'done' }),
+        }),
+      };
+    });
+    const lifecycle = lifecycleHarness([target.handle]);
+    const service = messagingService(
+      store,
+      lifecycle.service,
+      sessionContext(),
+      metadataHarness({ 'agent-target': {} }),
+      dispatch,
+      residencyHarness(lifecycle.service).manager,
+      log,
+    );
+    const accepted = await service.send({
+      ...sendInput('kept for retry', 'capacity-block'),
+      waitForRunningDelivery: false,
+      idleWake: 'owned-child',
+    });
+    expect(accepted).toMatchObject({ delivery: 'queued' });
+    expect(accepted.resumed).toBeUndefined();
+    await vi.waitFor(() => { expect(warn).toHaveBeenCalled(); });
+    const payload = warn.mock.calls.at(-1)?.[1] as { messageId: string; error: Error2 };
+    expect(payload.messageId).toBe(accepted.message.messageId);
+    expect(payload.error).toMatchObject({
+      code: 'dispatch.limit_exceeded',
+      message: 'Subagent direct limit reached (1/1). No agent was started; wait for an active run to finish before dispatching again.',
+      details: { messageId: accepted.message.messageId, targetAgentId: 'agent-target', layer: 'direct', current: 1, limit: 1 },
+    });
+    expect((await store.accept(messageInput('kept for retry', 'capacity-block'))).delivery).toBe('queued');
+
+    const synchronous = await service.send({
+      ...sendInput('sync block', 'capacity-sync'),
+      idleWake: 'owned-child',
+    }).then(() => undefined, (error: unknown) => error);
+    expect(synchronous).toMatchObject({
+      code: 'dispatch.limit_exceeded',
+      message: expect.stringContaining('No agent was started'),
+      details: { targetAgentId: 'agent-target', layer: 'direct', limit: 1 },
+    });
+    const synchronousMessageId = (synchronous as Error2).details?.['messageId'];
+    expect(synchronousMessageId).toEqual(expect.any(String));
+    expect(synchronousMessageId).not.toBe(accepted.message.messageId);
+    expect((await store.accept(messageInput('kept for retry', 'capacity-block'))).delivery).toBe('queued');
+    expect((await store.accept(messageInput('sync block', 'capacity-sync'))).delivery).toBe('queued');
+
+    blocked = false;
+    await expect(service.send({
+      ...sendInput('kept for retry', 'capacity-block'),
+      idleWake: 'owned-child',
+    })).resolves.toMatchObject({
+      deduplicated: true,
+      delivery: 'delivered',
+      resumed: true,
+      message: { messageId: accepted.message.messageId },
+    });
     await service.dispose();
   });
 
@@ -1130,7 +1324,8 @@ describe('agent collaboration safe-boundary delivery', () => {
     target.setRunning(true);
     const lifecycle = lifecycleHarness([target.handle]);
     const residency = residencyHarness(lifecycle.service);
-    const service = messagingService(store, lifecycle.service, sessionContext(), metadataHarness({ 'agent-target': {} }), dispatchHarness(), residency.manager);
+    const dispatch = dispatchHarness();
+    const service = messagingService(store, lifecycle.service, sessionContext(), metadataHarness({ 'agent-target': {} }), dispatch, residency.manager);
 
     const acceptance = await service.send({
       ...sendInput('cancelled delivery', 'cancelled-delivery'),
@@ -1138,10 +1333,12 @@ describe('agent collaboration safe-boundary delivery', () => {
     });
     await waitUntil(() => target.pendingSteers() === 1);
     expect(residency.pins()).toBe(1);
-    target.setRunning(false);
+    target.setExecutionState('cancelling');
+    target.releaseSteers(false);
     await waitUntil(() => residency.pins() === 0);
     expect((await store.accept(messageInput('cancelled delivery', 'cancelled-delivery'))).delivery).toBe('queued');
     expect(acceptance.delivery).toBe('queued');
+    expect(dispatch.runOnExisting).not.toHaveBeenCalled();
     expect(await residency.manager.evictIfIdle?.('session-1')).toBe(true);
     await service.dispose();
   });
@@ -1446,12 +1643,27 @@ describe('agent collaboration safe-boundary delivery', () => {
     await service.dispose();
   });
 
-  it('keeps a raced running delivery queued until the target runs again without waking it', async () => {
+  it('continues a child whose run ends before the running delivery lands', async () => {
     const store = mailboxStore(tempDir());
     const target = agentHandle('agent-target');
     target.setRunning(true);
     const lifecycle = lifecycleHarness([target.handle]);
-    const dispatch = dispatchHarness();
+    const dispatch = dispatchHarness(async (child, request, options) => {
+      expect(request).toMatchObject({
+        kind: 'mailbox',
+        prompt: 'Message from agent "root" (main):\n\nafter race',
+      });
+      await target.execution.hooks.onWillRun.run({ signal: options.signal });
+      return {
+        child,
+        request: request as DispatchRun['request'],
+        started: Promise.resolve({
+          agentId: child.agentId,
+          turn: {} as never,
+          completion: new Promise<{ summary: string }>(() => {}),
+        }),
+      };
+    });
     const service = messagingService(
       store,
       lifecycle.service,
@@ -1461,19 +1673,15 @@ describe('agent collaboration safe-boundary delivery', () => {
     );
 
     const delivery = service.send({
-      ...sendInput('after race', 'running-race'),
+      ...sendInput('after race', 'running-race-continues'),
       idleWake: 'owned-child',
     });
     await waitUntil(() => target.pendingSteers() === 1);
     target.setRunning(false);
 
-    await expect(delivery).resolves.toMatchObject({ delivery: 'queued' });
-    expect(target.messages).toEqual([]);
-    expect(lifecycle.service.create).not.toHaveBeenCalled();
-    expect(dispatch.runOnExisting).not.toHaveBeenCalled();
-
-    await target.execution.hooks.onWillRun.run({ signal });
-
+    await expect(delivery).resolves.toMatchObject({ delivery: 'delivered', resumed: true });
+    expect(dispatch.runOnExisting).toHaveBeenCalledTimes(1);
+    expect(dispatch.recordDelegatedRun).toHaveBeenCalledWith('main', 'agent-target');
     expect(target.messages.map((message) => message.content[0])).toEqual([
       { type: 'text', text: 'Message from agent "root" (main):\n\nafter race' },
     ]);
@@ -1553,6 +1761,279 @@ describe('agent collaboration safe-boundary delivery', () => {
       await expect(target.execution.hooks.onWillRun.run({ signal })).rejects.toBe(invalid);
       expect(claim).toHaveBeenCalledTimes(2);
     } finally { await service.dispose(); }
+  });
+
+  it('keeps a cancelling child queued until cancellation settles, then continues it once', async () => {
+    const store = mailboxStore(tempDir());
+    const target = agentHandle('agent-target');
+    target.setExecutionState('cancelling');
+    vi.spyOn(target.execution, 'settled').mockImplementation(async () => {
+      target.setRunning(false);
+    });
+    const dispatch = dispatchHarness(async (child, request, options) => {
+      await target.execution.hooks.onWillRun.run({ signal: options.signal });
+      return {
+        child,
+        request: request as DispatchRun['request'],
+        started: Promise.resolve({
+          agentId: child.agentId,
+          turn: {} as never,
+          completion: Promise.resolve({ summary: 'done' }),
+        }),
+      };
+    });
+    const service = messagingService(store, lifecycleHarness([target.handle]).service, sessionContext(),
+      metadataHarness({ 'agent-target': {} }), dispatch);
+    const accepted = await service.send({
+      ...sendInput('after cancel', 'cancel-continue'),
+      waitForRunningDelivery: false,
+      idleWake: 'owned-child',
+    });
+    expect(accepted).toMatchObject({ delivery: 'queued' });
+    expect(accepted.resumed).toBeUndefined();
+    await vi.waitFor(() => { expect(dispatch.runOnExisting).toHaveBeenCalledTimes(1); });
+    await vi.waitFor(async () => {
+      expect((await store.accept(messageInput('after cancel', 'cancel-continue'))).delivery).toBe('delivered');
+    });
+    expect(dispatch.recordDelegatedRun).toHaveBeenCalledWith('main', 'agent-target');
+    service.dispose();
+  });
+
+  it('leaves a saved message for an already admitted next turn', async () => {
+    const store = mailboxStore(tempDir());
+    const target = agentHandle('agent-target');
+    vi.spyOn(target.handle.accessor.get(IAgentLoopService), 'status').mockReturnValue({
+      state: 'idle', activeTurnId: undefined, pendingTurnIds: [2], hasPendingRequests: false,
+    });
+    const dispatch = dispatchHarness();
+    const service = messagingService(store, lifecycleHarness([target.handle]).service, sessionContext(),
+      metadataHarness({ 'agent-target': {} }), dispatch);
+    await expect(service.send({
+      ...sendInput('for the next turn', 'admitted-next'),
+      idleWake: 'owned-child',
+    })).resolves.toMatchObject({ delivery: 'queued' });
+    expect(dispatch.runOnExisting).not.toHaveBeenCalled();
+    await target.execution.hooks.onWillRun.run({ signal });
+    expect(target.messages.map((message) => message.content[0])).toEqual([
+      { type: 'text', text: 'Message from agent "root" (main):\n\nfor the next turn' },
+    ]);
+    expect(await store.nextQueued('session-1', 'agent-target')).toBeUndefined();
+    service.dispose();
+  });
+
+  it('accepts an external steer without copying the message locally or starting another run', async () => {
+    const store = mailboxStore(tempDir());
+    const target = agentHandle('agent-target', { executorId: 'grok-acp' });
+    target.setRunning(true);
+    vi.spyOn(target.execution, 'steer').mockResolvedValue(true);
+    const dispatch = dispatchHarness();
+    const service = messagingService(store, lifecycleHarness([target.handle]).service, sessionContext(),
+      metadataHarness({ 'agent-target': {} }), dispatch);
+    await expect(service.send({
+      ...sendInput('during the external run', 'external-steer'),
+      idleWake: 'owned-child',
+    })).resolves.toMatchObject({ delivery: 'delivered' });
+    expect(target.messages).toEqual([]);
+    expect(dispatch.runOnExisting).not.toHaveBeenCalled();
+    service.dispose();
+  });
+
+  it('continues a running external child after its current run settles', async () => {
+    const store = mailboxStore(tempDir());
+    const target = agentHandle('agent-target', { executorId: 'grok-acp' });
+    target.setRunning(true);
+    let release!: () => void;
+    const settled = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(target.execution, 'settled').mockReturnValue(settled);
+    const dispatch = dispatchHarness(async (child, request, options) => ({
+      child,
+      request: request as DispatchRun['request'],
+      started: target.execution.run(request as AgentRunRequest, options),
+    }));
+    const service = messagingService(store, lifecycleHarness([target.handle]).service, sessionContext(),
+      metadataHarness({ 'agent-target': { type: 'sub', executor: 'grok-acp' } }), dispatch);
+    const accepted = await service.send({
+      ...sendInput('after this external run', 'external-follow'),
+      waitForRunningDelivery: false,
+      idleWake: 'owned-child',
+    });
+    expect(accepted).toMatchObject({ delivery: 'queued' });
+    expect(accepted.resumed).toBeUndefined();
+    expect(dispatch.runOnExisting).not.toHaveBeenCalled();
+    target.setRunning(false);
+    release();
+    await vi.waitFor(() => { expect(target.remoteRequests).toHaveLength(1); });
+    expect(target.remoteRequests[0]).toMatchObject({
+      kind: 'mailbox',
+      prompt: 'Message from agent "root" (main):\n\nafter this external run',
+    });
+    expect(dispatch.runOnExisting).toHaveBeenCalledTimes(1);
+    service.dispose();
+  });
+
+  it('retries one saved message without starting a second continuation', async () => {
+    const store = mailboxStore(tempDir());
+    const target = agentHandle('agent-target');
+    let runs = 0;
+    const dispatch = dispatchHarness(async (child, request, options) => {
+      runs += 1;
+      await target.execution.hooks.onWillRun.run({ signal: options.signal });
+      return {
+        child,
+        request: request as DispatchRun['request'],
+        started: Promise.resolve({ agentId: child.agentId, turn: {} as never, completion: Promise.resolve({ summary: 'done' }) }),
+      };
+    });
+    const service = messagingService(store, lifecycleHarness([target.handle]).service, sessionContext(),
+      metadataHarness({ 'agent-target': {} }), dispatch);
+    const input = { ...sendInput('same body', 'same-message'), waitForRunningDelivery: false, idleWake: 'owned-child' as const };
+    const [first, second] = await Promise.all([service.send(input), service.send(input)]);
+    expect(second.message.messageId).toBe(first.message.messageId);
+    expect(second.deduplicated).toBe(true);
+    await vi.waitFor(() => { expect(runs).toBe(1); });
+    await vi.waitFor(async () => {
+      expect((await store.accept(messageInput('same body', 'same-message'))).delivery).toBe('delivered');
+    });
+    expect(runs).toBe(1);
+    service.dispose();
+  });
+
+  it('does not overlap continuations when two messages arrive together', async () => {
+    const store = mailboxStore(tempDir());
+    const target = agentHandle('agent-target');
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const dispatch = dispatchHarness(async (child, request, options) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await target.execution.hooks.onWillRun.run({ signal: options.signal });
+      inFlight -= 1;
+      return {
+        child,
+        request: request as DispatchRun['request'],
+        started: Promise.resolve({ agentId: child.agentId, turn: {} as never, completion: Promise.resolve({ summary: 'done' }) }),
+      };
+    });
+    const service = messagingService(store, lifecycleHarness([target.handle]).service, sessionContext(),
+      metadataHarness({ 'agent-target': {} }), dispatch);
+    await Promise.all([
+      service.send({ ...sendInput('one', 'concurrent-one'), waitForRunningDelivery: false, idleWake: 'owned-child' }),
+      service.send({ ...sendInput('two', 'concurrent-two'), waitForRunningDelivery: false, idleWake: 'owned-child' }),
+    ]);
+    await vi.waitFor(async () => {
+      expect(await store.nextQueued('session-1', 'agent-target')).toBeUndefined();
+    });
+    expect(maxInFlight).toBe(1);
+    expect(target.messages).toHaveLength(2);
+    service.dispose();
+  });
+
+  it('keeps an accepted message when continuation fails and reports that failure', async () => {
+    const store = mailboxStore(tempDir());
+    const target = agentHandle('agent-target');
+    target.setExecutionState('broken');
+    const log = stubLog();
+    const warn = vi.spyOn(log, 'warn');
+    const lifecycle = lifecycleHarness([target.handle]);
+    const service = messagingService(store, lifecycle.service, sessionContext(),
+      metadataHarness({ 'agent-target': {} }), dispatchHarness(), residencyHarness(lifecycle.service).manager, log);
+    const accepted = await service.send({
+      ...sendInput('kept', 'broken-async'),
+      waitForRunningDelivery: false,
+      idleWake: 'owned-child',
+    });
+    expect(accepted.delivery).toBe('queued');
+    expect(accepted.message.messageId).toEqual(expect.any(String));
+    await vi.waitFor(() => { expect(warn).toHaveBeenCalled(); });
+    expect((await store.nextQueued('session-1', 'agent-target'))?.message.messageId).toBe(accepted.message.messageId);
+    service.dispose();
+  });
+
+  it('runs AgentSend through the real asynchronous messaging path', async () => {
+    const store = mailboxStore(tempDir());
+    const sender = createTestAgent();
+    const source: IAgentScopeHandle = {
+      id: 'main',
+      kind: LifecycleScope.Agent,
+      accessor: { get: <T>(id: ServiceIdentifier<T>): T => sender.get(id) },
+      dispose: () => {},
+    };
+    const target = agentHandle('agent-target');
+    const agents: Record<string, AgentMeta> = {
+      main: { type: 'main' },
+      'agent-target': {
+        type: 'sub',
+        parentAgentId: 'main',
+        delegator: { kind: 'agent', agentId: 'main' },
+        labels: { [COLLABORATION_TASK_NAME_LABEL]: 'chart_owner' },
+      },
+    };
+    const metadata = metadataHarness(agents);
+    let runs = 0;
+    const dispatch = dispatchHarness(async (child, request, options) => {
+      runs += 1;
+      expect(options.requesterAgentId).toBeUndefined();
+      expect(request).toMatchObject({ kind: 'mailbox' });
+      await target.execution.hooks.onWillRun.run({ signal: options.signal });
+      return {
+        child,
+        request: request as DispatchRun['request'],
+        started: Promise.resolve({
+          agentId: child.agentId,
+          turn: {} as never,
+          completion: new Promise<{ summary: string }>(() => {}),
+        }),
+      };
+    });
+    const lifecycle = lifecycleHarness([source, target.handle]);
+    const service = messagingService(store, lifecycle.service, sessionContext(), metadata, dispatch);
+    const tool = new AgentSendTool({ agentId: 'main' } as IAgentScopeContext, metadata, service);
+    const args = { target: 'chart_owner', message: '纵轴单位应为mm，数据不变。' };
+    try {
+      const saved = await executeTool(tool, { turnId: 1, toolCallId: 'tool-send-1', args, signal });
+      expect(saved.isError).toBeFalsy();
+      const receipt = JSON.parse(toolOutput(saved)) as { message_id: string; status: string; resumed?: boolean; deduplicated: boolean };
+      expect(receipt).toMatchObject({ status: 'queued', deduplicated: false });
+      expect(receipt.resumed).toBeUndefined();
+      expect(receipt.message_id).toEqual(expect.any(String));
+      await vi.waitFor(() => { expect(runs).toBe(1); });
+      await vi.waitFor(async () => {
+        expect((await store.accept(toolMessage(args.message, 'tool-send-1'))).delivery).toBe('delivered');
+      });
+      expect(target.messages.map((message) => message.content[0])).toEqual([
+        { type: 'text', text: 'Message from agent "root" (main):\n\n纵轴单位应为mm，数据不变。' },
+      ]);
+      expect(runs).toBe(1);
+      const again = await executeTool(tool, { turnId: 1, toolCallId: 'tool-send-1', args, signal });
+      const retry = JSON.parse(toolOutput(again)) as { status: string; deduplicated: boolean; message_id: string };
+      expect(retry).toMatchObject({ status: 'delivered', deduplicated: true, message_id: receipt.message_id });
+      expect(runs).toBe(1);
+
+      target.setRunning(true);
+      const running = await executeTool(tool, {
+        turnId: 2,
+        toolCallId: 'tool-send-2',
+        args: { target: 'chart_owner', message: '补一条运行中的输入' },
+        signal,
+      });
+      const runningReceipt = JSON.parse(toolOutput(running)) as { status: string; resumed?: boolean };
+      expect(runningReceipt).toMatchObject({ status: 'queued' });
+      expect(runningReceipt.resumed).toBeUndefined();
+      await waitUntil(() => target.pendingSteers() === 1);
+      expect(runs).toBe(1);
+      await target.beginStepBoundary(1);
+      await vi.waitFor(async () => {
+        expect((await store.accept(toolMessage('补一条运行中的输入', 'tool-send-2'))).delivery).toBe('delivered');
+      });
+      expect(runs).toBe(1);
+      expect(target.messages.map((message) => message.content[0])).toEqual([
+        { type: 'text', text: 'Message from agent "root" (main):\n\n纵轴单位应为mm，数据不变。' },
+        { type: 'text', text: 'Message from agent "root" (main):\n\n补一条运行中的输入' },
+      ]);
+    } finally {
+      service.dispose();
+      await sender.dispose();
+    }
   });
 
   it('resumes an interrupted claim while the original handler remains in flight', async () => {
@@ -2156,6 +2637,15 @@ function bootstrap(homeDir: string): IBootstrapService {
   };
 }
 
+function toolOutput(result: { readonly output: string | readonly unknown[] }): string {
+  expect(typeof result.output).toBe('string');
+  return result.output as string;
+}
+
+function toolMessage(content: string, idempotencyKey: string) {
+  return { ...messageInput(content, idempotencyKey), targetTaskName: 'chart_owner' };
+}
+
 function messageInput(content: string, idempotencyKey: string) {
   return {
     sessionId: 'session-1',
@@ -2333,7 +2823,10 @@ function lifecycleHarness(initial: readonly IAgentScopeHandle[]) {
 
 function agentHandle(
   agentId: string,
-  options: { readonly executorId?: string } = {},
+  options: {
+    readonly executorId?: string;
+    readonly pauseAfterWillRun?: () => Promise<void>;
+  } = {},
 ) {
   const messages: ContextMessage[] = [];
   const materialized: Record<string, true> = {};
@@ -2388,8 +2881,10 @@ function agentHandle(
           afterStartCallbacks.push(callback);
         },
       };
+      if (options.pauseAfterWillRun !== undefined) state = 'starting';
       await executionHooks.onWillRun.run(context);
       remoteRequests.push(context.request ?? request);
+      await options.pauseAfterWillRun?.();
       await Promise.allSettled(
         afterStartCallbacks.map(async (callback) => {
           await callback();
@@ -2484,8 +2979,12 @@ function agentHandle(
     remoteRequests,
     setRunning(running: boolean) {
       state = running ? 'running' : 'idle';
-      if (!running) {
-        for (const pending of pendingSteers.splice(0)) pending.resolve(false);
+      if (!running) this.releaseSteers(false);
+    },
+    releaseSteers(accepted: boolean) {
+      for (const pending of pendingSteers.splice(0)) {
+        if (accepted) memory.appendObservable(pending.message);
+        pending.resolve(accepted);
       }
     },
     setExecutionState(next: 'starting' | 'cancelling' | 'broken') {
