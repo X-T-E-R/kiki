@@ -392,17 +392,22 @@ describe('renderSystemPromptResult', () => {
     expect(prompt).toContain('SKILLS');
   });
 
-  it('ranks the cheapest reliable tool first and keeps computer control last', () => {
+  it('keeps recipient-focused collaboration in the effective prompt and supports replacing it', () => {
     const prompt = renderSystemPromptResult('', {}, { skillActive: true }).text;
-    const toolUse = prompt.split('# Intent, Continuity, and Tool Use\n')[1]!.split('# Reply Quality')[0]!;
+    const collaboration = prompt.split('# Delegation Brief Hygiene\n')[1]!.split('# General Guidelines for Research and Data Processing')[0]!;
 
-    expect(toolUse).toContain('start from whatever the user already told you works');
-    expect(toolUse).toContain('an existing CLI, MCP server, API, or short script');
-    expect(toolUse).toContain('repetitive work is where this pays off most');
-    expect(toolUse).toContain('a dedicated script or structured tool beats browser control');
-    expect(toolUse).toContain('Computer control is the last resort');
-    expect(toolUse).toContain('do not build a more complicated script just to avoid a GUI');
-    expect(toolUse).toContain('do not have to fail with one tool before trying the next');
+    expect(collaboration).toContain('understand their current assignment');
+    expect(collaboration).toContain('decide what this message changes for them');
+    expect(collaboration).toContain('give a ready interface or artifact to its actual consumer');
+    expect(collaboration).toContain('independent thread as a colleague');
+    expect(collaboration).toContain('let them reach their own judgment');
+
+    const overridden = renderSystemPromptResult('', {
+      promptFields: { 'system.delegation_brief_hygiene': '# Delegation Brief Hygiene\n\nCUSTOM COLLABORATION' },
+    }, { skillActive: true }).text;
+    expect(overridden).toContain('CUSTOM COLLABORATION');
+    expect(overridden).not.toContain('decide what this message changes for them');
+    expect(overridden).toContain('# General Guidelines for Research and Data Processing');
   });
 
   it('omits the skills section when the profile disables the Skill tool', () => {
