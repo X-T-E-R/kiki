@@ -478,6 +478,27 @@ describe('renderSystemPromptResult', () => {
     expect(toolUse).toContain('or require one tool to fail before choosing a better fit');
   });
 
+  it('keeps recipient-focused collaboration in the effective prompt and supports replacing it', () => {
+    const prompt = renderSystemPromptResult('', {}, { skillActive: true }).text;
+    const collaboration = prompt.split('# Delegation Brief Hygiene\n')[1]!.split('# General Guidelines for Research and Data Processing')[0]!;
+
+    expect(collaboration).toContain('understand their current assignment');
+    expect(collaboration).toContain('decide what this message changes for them');
+    expect(collaboration).toContain('give a ready interface or artifact to its actual consumer');
+    expect(collaboration).toContain('independent thread as a colleague');
+    expect(collaboration).toContain('let them reach their own judgment');
+    expect(collaboration).toContain('the child does not automatically share your memory');
+    expect(collaboration).toContain('changes only what its evidence supports');
+    expect(collaboration).toContain('Do not poll to keep the turn open');
+
+    const overridden = renderSystemPromptResult('', {
+      promptFields: { 'system.delegation_brief_hygiene': '# Delegation Brief Hygiene\n\nCUSTOM COLLABORATION' },
+    }, { skillActive: true }).text;
+    expect(overridden).toContain('CUSTOM COLLABORATION');
+    expect(overridden).not.toContain('decide what this message changes for them');
+    expect(overridden).toContain('# General Guidelines for Research and Data Processing');
+  });
+
   it('omits the skills section when the profile disables the Skill tool', () => {
     const prompt = renderSystemPromptResult('', { skills: 'SKILLS' }, { skillActive: false }).text;
 
