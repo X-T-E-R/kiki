@@ -18,10 +18,10 @@ const seeded = await fetch(`${endpoint}/api/config`, {
   headers,
   body: JSON.stringify({
     optional_capabilities: {
-      browser: state,
-      computer: state,
+      browser: { ...state, default_on: false },
+      computer: { ...state, default_on: false },
       memory: state,
-      thread: { ...state, default_on: false },
+      thread: state,
       web: state,
     },
   }),
@@ -31,9 +31,12 @@ const preview = await fetch(`${endpoint}/api/sessions/session_fixture_first_open
 const previewBody = await preview.json();
 assert.equal(preview.status, 200);
 assert.equal(previewBody.code, 0, JSON.stringify(previewBody));
+const previewBrowser = previewBody.data.rows.find((row) => row.id === 'browser');
+assert.equal(previewBrowser.reason, 'unbound');
+assert.equal(previewBrowser.source, 'default');
 const previewThread = previewBody.data.rows.find((row) => row.id === 'thread');
-assert.equal(previewThread.reason, 'unbound');
-assert.equal(previewThread.source, 'default');
+assert.equal(previewThread.effective, true);
+assert.equal(previewThread.default_on, true);
 process.env.KIKI_SERVER_URL = endpoint;
 const vite = await createServer({ root, server: { host: '127.0.0.1', port: 0, watch: { ignored: ['**/*.test.ts', '**/*.test.tsx'] } } });
 await vite.listen();
@@ -86,26 +89,31 @@ try {
   const thread = section.locator('[data-optional-capability="thread"]');
   await thread.waitFor({ state: 'visible', timeout: 15_000 });
   await expectText(thread, '线程通信');
-  await expectText(thread.locator('[data-optional-fact="thread"]'), '主代理尚未绑定');
-  assert.equal(await thread.locator('[data-segment="inherit"]').count(), 1);
-  evidence.checks.push('wide rail shows thread communication, the server unbound fact, and the segmented choice');
+  assert.equal(await thread.getAttribute('data-optional-effective'), 'true');
+  assert.equal(await section.locator('[data-optional-capability="web"]').getAttribute('data-optional-effective'), 'true');
+  assert.equal(await section.locator('[data-optional-capability="memory"]').getAttribute('data-optional-effective'), 'true');
+  const browserCap = section.locator('[data-optional-capability="browser"]');
+  assert.equal(await browserCap.getAttribute('data-optional-effective'), 'false');
+  assert.equal(await browserCap.getAttribute('data-optional-reason'), 'unbound');
+  assert.equal(await section.locator('[data-optional-capability="computer"]').getAttribute('data-optional-effective'), 'false');
+  evidence.checks.push('wide rail shows default-on thread/web/memory and default-off browser/computer');
   await thread.scrollIntoViewIfNeeded();
   await page.screenshot({ path: join(output, '05-rail-wide.png') });
-  await thread.locator('[data-segment="on"]').click();
-  await page.waitForFunction(() => document.querySelector('[data-optional-capability="thread"] [data-optional-fact="thread"]')?.textContent?.includes('本会话开启'));
-  evidence.checks.push('turning thread communication on shows the session source from the server row');
+  await browserCap.locator('[data-optional-set="on"]').click();
+  await page.waitForFunction(() => document.querySelector('[data-optional-capability="browser"] [data-optional-fact="browser"]')?.textContent?.includes('本会话开启'));
+  evidence.checks.push('turning browser on shows the session source and restore action from the server row');
   await page.setViewportSize({ width: 390, height: 844 });
   await showRail();
   const narrowSection = page.locator('[data-rail-capabilities]').first();
   await narrowSection.waitFor({ state: 'visible', timeout: 20_000 });
   const narrowFold = narrowSection.locator('button[aria-expanded]').first();
   if ((await narrowFold.getAttribute('aria-expanded')) !== 'true') await narrowFold.click();
-  const narrowThread = narrowSection.locator('[data-optional-capability="thread"]');
-  await narrowThread.waitFor({ state: 'visible', timeout: 15_000 });
-  await expectText(narrowThread.locator('[data-optional-fact="thread"]'), '本会话开启');
-  await narrowThread.scrollIntoViewIfNeeded();
+  const narrowBrowser = narrowSection.locator('[data-optional-capability="browser"]');
+  await narrowBrowser.waitFor({ state: 'visible', timeout: 15_000 });
+  await expectText(narrowBrowser.locator('[data-optional-fact="browser"]'), '本会话开启');
+  await narrowBrowser.scrollIntoViewIfNeeded();
   await page.screenshot({ path: join(output, '06-rail-narrow.png') });
-  evidence.checks.push('narrow shell keeps the same segmented control and the saved session choice');
+  evidence.checks.push('narrow shell keeps the same switch control and the saved session choice');
 
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.locator('[data-nav-settings]').filter({ visible: true }).first().click();

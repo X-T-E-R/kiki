@@ -8,8 +8,8 @@ import { useI18n } from '../../i18n';
 import type { KikiConfigResponse } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 import { Toggle } from '../controls';
-import { Segmented } from './primitives';
-import { heldByConversation, type McpSessionRow } from './sessionMcp';
+import { FOCUS_RING } from '../rail-variants/shell';
+import { heldByConversation, overrideForSwitch, type McpSessionRow } from './sessionMcp';
 import { useMcpPicker } from './useMcpPicker';
 import {
   currentPendingCapabilityScope,
@@ -38,10 +38,10 @@ const LABEL: Record<OptionalCapabilityId, I18nKey> = {
 };
 
 const FACTORY_DEFAULT: Record<OptionalCapabilityId, boolean> = {
-  browser: true,
-  computer: true,
+  browser: false,
+  computer: false,
   memory: true,
-  thread: false,
+  thread: true,
   web: true,
 };
 
@@ -142,6 +142,18 @@ function serverRows(view: OptionalCapabilitySessionResponse): RowModel[] {
   }));
 }
 
+function withOptimisticChoice(row: RowModel, choice: Choice | undefined): RowModel {
+  if (choice === undefined || choice === row.choice) return row;
+  const blocked = !row.allowed || row.unresolved || row.reason === 'workspace_off';
+  const effective = !blocked && (choice === 'on' || (choice === 'inherit' && row.defaultOn));
+  const source = !row.allowed || row.unresolved ? 'off' : choice === 'inherit' ? 'default' : 'session';
+  const reason = blocked ? row.reason
+    : choice === 'off' ? 'session_off'
+      : choice === 'on' || row.defaultOn ? 'admitted'
+        : 'default_off';
+  return { ...row, choice, effective, source, reason };
+}
+
 function factKey(row: RowModel): I18nKey {
   if (row.reason === 'workspace_off') return 'cap.fact.workspaceOff';
   if (row.reason === 'unbound') return 'cap.fact.unbound';
@@ -157,8 +169,11 @@ function factKey(row: RowModel): I18nKey {
 export function OptionalCapabilityRows({ sessionId }: { sessionId?: string }) {
   const { client, scopeId, spaceKey, connectionId } = useConnection();
   const { t, locale } = useI18n();
+  const localeRef = useRef(locale);
+  localeRef.current = locale;
   const queryClient = useQueryClient();
   const live = sessionId !== undefined && sessionId !== '';
+  const sessionScopeKey = `${scopeId}:${sessionId ?? 'draft'}`;
   const readPending = useCallback(
     () => pendingNewSessionCapabilities(currentPendingCapabilityScope({ scopeId, spaceKey, connectionId })),
     [connectionId, scopeId, spaceKey],
@@ -172,129 +187,247 @@ export function OptionalCapabilityRows({ sessionId }: { sessionId?: string }) {
   });
   const sessionQuery = useQuery({
     queryKey: ['optional-capabilities', scopeId, sessionId],
-    queryFn: () => client.getSessionOptionalCapabilities(sessionId!),
+    queryFn: async () => {
+      const view = await client.getSessionOptionalCapabilities(sessionId!);
+      const current = queryClient.getQueryData<OptionalCapabilitySessionResponse>(['optional-capabilities', scopeId, sessionId]);
+      return current !== undefined && view.revision < current.revision ? current : view;
+    },
     enabled: live && typeof client.getSessionOptionalCapabilities === 'function',
     staleTime: 5_000,
   });
-  const generation = useRef(0);
-  const [error, setError] = useState<string | undefined>();
-  const [busyId, setBusyId] = useState<OptionalCapabilityId | undefined>();
-  const rows = live && sessionQuery.data !== undefined
+  const nextGeneration = useRef(0);
+  const rowGenerations = useRef(new Map<string, number>());
+  const acceptedGenerations = useRef(new Map<string, number>());
+  const [optimistic, setOptimistic] = useState<Readonly<Record<string, Choice>>>({});
+  const [errors, setErrors] = useState<Readonly<Record<string, string>>>({});
+  const baseRows = live && sessionQuery.data !== undefined
     ? serverRows(sessionQuery.data)
     : draftRows(configQuery.data, pending.optional ?? []);
+  const rows = baseRows.map((row) =>
+    live ? withOptimisticChoice(row, optimistic[`${sessionScopeKey}:${row.id}`]) : row,
+  );
   const failed = live ? sessionQuery.isError : configQuery.isError && configQuery.data === undefined;
+  const currentError = errors[sessionScopeKey];
 
   const choose = (id: OptionalCapabilityId, choice: Choice) => {
     if (!live) {
       setPendingOptionalChoice(id, choice, currentPendingCapabilityScope({ scopeId, spaceKey, connectionId }));
       return;
     }
-    const mine = generation.current + 1;
-    generation.current = mine;
-    setBusyId(id);
-    setError(undefined);
+    const rowKey = `${sessionScopeKey}:${id}`;
+    const mine = ++nextGeneration.current;
+    rowGenerations.current.set(rowKey, mine);
+    setOptimistic((prev) => ({ ...prev, [rowKey]: choice }));
+    setErrors(({ [sessionScopeKey]: _cleared, ...rest }) => rest);
     void client.setSessionOptionalCapability(sessionId!, { id, choice }).then((view) => {
-      if (generation.current !== mine) return;
-      queryClient.setQueryData(['optional-capabilities', scopeId, sessionId], view);
+      if (rowGenerations.current.get(rowKey) !== mine) return;
+      rowGenerations.current.delete(rowKey);
+      setOptimistic(({ [rowKey]: _done, ...rest }) => rest);
+      queryClient.setQueryData<OptionalCapabilitySessionResponse>(
+        ['optional-capabilities', scopeId, sessionId],
+        (current) => {
+          if (current === undefined) {
+            acceptedGenerations.current.set(sessionScopeKey, Math.max(acceptedGenerations.current.get(sessionScopeKey) ?? 0, mine));
+            return view;
+          }
+          if (view.revision < current.revision) return current;
+          const latestMine = acceptedGenerations.current.get(sessionScopeKey) ?? 0;
+          if (view.revision === current.revision && mine < latestMine) {
+            const updatedRow = view.rows.find((candidate) => candidate.id === id);
+            if (updatedRow === undefined) return current;
+            return {
+              ...current,
+              rows: current.rows.map((row) => (row.id === id ? updatedRow : row)),
+            };
+          }
+          acceptedGenerations.current.set(sessionScopeKey, Math.max(latestMine, mine));
+          return view;
+        },
+      );
     }).catch((cause: unknown) => {
-      if (generation.current !== mine) return;
-      setError(errorText(locale, cause));
-    }).finally(() => {
-      if (generation.current === mine) setBusyId(undefined);
+      if (rowGenerations.current.get(rowKey) !== mine) return;
+      rowGenerations.current.delete(rowKey);
+      setOptimistic(({ [rowKey]: _rolledBack, ...rest }) => rest);
+      setErrors((prev) => ({ ...prev, [sessionScopeKey]: errorText(localeRef.current, cause) }));
     });
   };
 
-  if (failed && rows.length === 0) return <p className="px-2 py-1 text-[12px] text-ink-faint">{t('cap.unavailable')}</p>;
+  if (failed && rows.length === 0) return <p className="px-1 py-1 text-[12px] text-ink-faint">{t('cap.unavailable')}</p>;
   return (
-    <div className="space-y-1 px-1 py-1" data-optional-capabilities={live ? 'session' : 'draft'}>
-      {rows.map((row) => (
-        <div key={row.id} data-optional-capability={row.id} data-optional-choice={row.choice} data-optional-effective={row.effective ? 'true' : 'false'} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-2 py-1.5">
-          <div className="min-w-0">
-            <span className="text-[13px] text-ink">{t(LABEL[row.id])}</span>
-            <p data-optional-fact={row.id} data-optional-source={row.source} className="text-[12px] leading-4 text-ink-faint">
-              {t(factKey(row))}
-              <span> · {t(row.applies === 'next-step' ? 'cap.applies.nextStep' : 'cap.applies.nextModel')}</span>
-            </p>
+    <div data-optional-capabilities={live ? 'session' : 'draft'}>
+      {rows.map((row) => {
+        const blocked = !row.allowed || row.unresolved || row.reason === 'workspace_off';
+        const namedByProfile = row.reason === 'admitted' && row.choice === 'inherit' && !row.defaultOn;
+        const showInlineFact = blocked || namedByProfile || row.choice !== 'inherit';
+        const appliesText = t(row.applies === 'next-step' ? 'cap.applies.nextStep' : 'cap.applies.nextModel');
+        const fact = t(factKey(row));
+        const nextChoice: Choice = row.effective ? 'off' : 'on';
+        return (
+          <div
+            key={row.id}
+            data-optional-capability={row.id}
+            data-optional-choice={row.choice}
+            data-optional-effective={row.effective ? 'true' : 'false'}
+            data-optional-reason={row.reason}
+            title={`${t(LABEL[row.id])} · ${fact} · ${appliesText}`}
+            className="flex min-h-7 items-center justify-between gap-2.5 border-t border-hairline py-1 first:border-t-0"
+          >
+            <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+              <span
+                className={`truncate text-[12.5px] leading-5 ${
+                  row.effective ? 'text-ink' : blocked ? 'text-ink-faint' : 'text-ink-soft'
+                }`}
+              >
+                {t(LABEL[row.id])}
+              </span>
+              <span className="inline-flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-[11.5px] leading-4 text-ink-faint">
+                <span
+                  data-optional-fact={row.id}
+                  data-optional-source={row.source}
+                  className={showInlineFact ? (row.choice === 'on' ? 'text-selected-ink' : 'text-ink-faint') : 'sr-only'}
+                >
+                  {fact}
+                </span>
+                {row.choice !== 'inherit' ? (
+                  <button
+                    type="button"
+                    data-optional-restore={row.id}
+                    data-optional-set="inherit"
+                    onClick={() => { choose(row.id, 'inherit'); }}
+                    className={`rounded text-ink-faint underline decoration-dotted underline-offset-2 transition-colors hover:text-ink ${FOCUS_RING}`}
+                  >
+                    {t('rail.plugins.restore')}
+                  </button>
+                ) : null}
+              </span>
+            </div>
+            {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- delegates synthetic clicks targeted at data-optional-set to the inner checkbox */}
+            <span
+              className="flex shrink-0 items-center"
+              data-optional-toggle={row.id}
+              data-optional-set={nextChoice}
+              onClick={(event) => {
+                if (event.target !== event.currentTarget) return;
+                if (nextChoice === 'on' && blocked) return;
+                choose(row.id, nextChoice);
+              }}
+            >
+              <Toggle
+                id={`optional-cap-${live ? sessionId : 'draft'}-${row.id}`}
+                layout="bare"
+                label={t(LABEL[row.id])}
+                checked={row.effective}
+                disabled={blocked}
+                onChange={(next) => {
+                  if (next && blocked) return;
+                  choose(row.id, next ? 'on' : 'off');
+                }}
+              />
+            </span>
           </div>
-          <Segmented
-            value={row.choice}
-            ariaLabel={t(LABEL[row.id])}
-            options={[
-              { value: 'inherit', label: t('cap.choice.inherit') },
-              { value: 'on', label: t('cap.choice.on') },
-              { value: 'off', label: t('cap.choice.off') },
-            ]}
-            onChange={(choice) => {
-              if (busyId === row.id) return;
-              if (choice === 'on' && (!row.allowed || row.unresolved)) return;
-              choose(row.id, choice);
-            }}
-          />
-        </div>
-      ))}
-      {error === undefined ? null : <p role="alert" className="px-2 text-[12px] text-danger">{error}</p>}
+        );
+      })}
+      {currentError === undefined ? null : <p role="alert" className="pt-1 text-[12px] text-danger">{currentError}</p>}
     </div>
   );
 }
 
 function mcpRailFact(row: McpSessionRow): I18nKey {
-  if (row.override === 'off') return 'composer.addMenu.mcpOffSession';
-  if (row.override === 'on') return 'composer.addMenu.mcpOnSession';
+  if (row.override === 'off') return 'cap.fact.sessionOff';
+  if (row.override === 'on') return 'cap.fact.sessionOn';
   if (row.condition === 'plugin-off') return 'composer.addMenu.mcpPluginMuted';
-  if (row.condition === 'off-config') return 'composer.addMenu.mcpConfigOff';
+  if (row.condition === 'off-config') return 'cap.fact.defaultOff';
   if (row.condition === 'signed-out') return 'composer.addMenu.mcpNeedsAuth';
-  if (row.condition === 'live' || row.condition === 'on-here') return 'composer.addMenu.mcpSourceOn';
-  return 'composer.addMenu.mcpStateUnknown';
-}
-
-function mcpRailOrigin(row: McpSessionRow): I18nKey {
-  if (row.override !== 'inherit') return 'cap.source.session';
   if (row.origin === 'plugin') return 'composer.addMenu.mcpFromPlugin';
-  if (row.origin === 'caller') return 'composer.addMenu.mcpFromConversation';
-  return 'composer.addMenu.mcpFromConfig';
+  if (row.condition === 'live' || row.condition === 'on-here') return 'cap.fact.inheritOn';
+  return 'composer.addMenu.mcpStateUnknown';
 }
 
 export function SessionMcpRail({ sessionId }: { sessionId?: string }) {
   const { t } = useI18n();
   const mcp = useMcpPicker(sessionId);
-  if (!mcp.available) return null;
+  if (!mcp.available || (mcp.items.length === 0 && mcp.failure === undefined)) return null;
+  const activeCount = mcp.items.filter(heldByConversation).length;
   return (
-    <div className="space-y-1 px-1 py-1" data-rail-mcp>
-      <p className="px-2 text-[12px] font-medium text-ink">{t('rail.mcp.title')}</p>
-      <p className="px-2 text-[11px] leading-4 text-ink-faint">{t('rail.mcp.hint')}</p>
-      {mcp.failed && mcp.items.length === 0 ? <p className="px-2 text-[12px] text-ink-faint">{t('composer.addMenu.mcpFailed')}</p> : null}
-      {mcp.items.map((row) => {
-        const factKey = mcpRailFact(row);
-        const originKey = mcpRailOrigin(row);
+    <div className="mt-1.5 border-t border-hairline pt-1.5" data-rail-mcp>
+      <div className="flex items-baseline justify-between gap-1.5 pb-0.5 text-[11px] font-medium text-ink-faint">
+        <span>{t('rail.mcp.title')}</span>
+        {mcp.items.length > 0 ? <span className="font-normal tabular-nums">{activeCount}/{mcp.items.length}</span> : null}
+      </div>
+      <div>
+        {mcp.items.map((row) => {
+        const held = heldByConversation(row);
+        const rowBusy = mcp.busyName === row.name;
+        const checked = rowBusy && mcp.busyOn !== undefined ? mcp.busyOn : held;
+        const key = mcpRailFact(row);
         const pluginName = row.pluginLabel ?? '';
+        const fact = t(key, key === 'composer.addMenu.mcpPluginMuted' || key === 'composer.addMenu.mcpFromPlugin' ? { name: pluginName } : undefined);
+        const showInlineFact = row.override !== 'inherit' || row.condition === 'plugin-off' || row.condition === 'signed-out' || row.condition === 'failed';
+        const nextChoice: Choice = checked ? 'off' : 'on';
         return (
-          <div key={row.name} data-rail-mcp-server={row.name} data-rail-mcp-effective={heldByConversation(row) ? 'true' : 'false'} data-rail-mcp-source={row.override === 'inherit' ? row.origin : 'session'} className="px-2 py-1">
-            <div className="flex items-center justify-between gap-2">
-              <span className="min-w-0 truncate text-[13px] text-ink">{row.name}</span>
-              {row.addressable && row.locator !== undefined ? (
-                <span className="flex shrink-0 gap-1">
-                  {(['inherit', 'on', 'off'] as const).map((choice) => (
-                    <button
-                      key={choice}
-                      type="button"
-                      data-rail-mcp-set={choice}
-                      aria-pressed={row.override === choice}
-                      disabled={mcp.busyName === row.name || !mcp.writable}
-                      onClick={() => { mcp.setOverride(row.locator!, choice, row.name); }}
-                      className={`min-h-6 rounded px-1.5 text-[11px] ${row.override === choice ? 'bg-paper text-ink' : 'text-ink-soft'} disabled:opacity-40`}
-                    >
-                      {t(choice === 'inherit' ? 'cap.choice.inherit' : choice === 'on' ? 'cap.choice.on' : 'cap.choice.off')}
-                    </button>
-                  ))}
+          <div
+            key={row.name}
+            data-rail-mcp-server={row.name}
+            data-rail-mcp-effective={held ? 'true' : 'false'}
+            data-rail-mcp-source={row.override === 'inherit' ? row.origin : 'session'}
+            data-rail-mcp-override={row.override}
+            className="flex min-h-7 items-center justify-between gap-2.5 border-t border-hairline py-1 first:border-t-0"
+          >
+            <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+              <span className={`truncate text-[12.5px] leading-5 ${checked ? 'text-ink' : 'text-ink-soft'}`} title={row.name}>
+                {row.name}
+              </span>
+              <span className="inline-flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-[11.5px] leading-4 text-ink-faint">
+                <span
+                  data-rail-mcp-fact={row.name}
+                  className={showInlineFact ? (row.override === 'on' ? 'text-selected-ink' : 'text-ink-faint') : 'sr-only'}
+                >
+                  {fact}
                 </span>
-              ) : null}
+                {row.canRestore && row.locator !== undefined ? (
+                  <button
+                    type="button"
+                    data-rail-mcp-restore={row.name}
+                    data-rail-mcp-set="inherit"
+                    disabled={rowBusy || !mcp.writable}
+                    onClick={() => { mcp.setOverride(row.locator!, 'inherit', row.name); }}
+                    className={`rounded text-ink-faint underline decoration-dotted underline-offset-2 transition-colors hover:text-ink disabled:opacity-40 ${FOCUS_RING}`}
+                  >
+                    {t('rail.plugins.restore')}
+                  </button>
+                ) : null}
+              </span>
             </div>
-            <p data-rail-mcp-fact={row.name} className="text-[11px] leading-4 text-ink-faint">{t(factKey, factKey === 'composer.addMenu.mcpPluginMuted' || originKey === 'composer.addMenu.mcpFromPlugin' ? { name: pluginName } : undefined)}</p>
-            <p className="text-[11px] leading-4 text-ink-faint">{t(originKey, originKey === 'composer.addMenu.mcpFromPlugin' ? { name: pluginName } : undefined)}</p>
+            {row.addressable && row.locator !== undefined ? (
+              // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- delegates synthetic clicks targeted at data-rail-mcp-set to the inner checkbox
+              <span
+                className="flex shrink-0 items-center"
+                data-rail-mcp-toggle={row.name}
+                data-rail-mcp-set={nextChoice}
+                onClick={(event) => {
+                  if (event.target !== event.currentTarget) return;
+                  if (rowBusy || !mcp.writable) return;
+                  mcp.setOverride(row.locator!, overrideForSwitch(row, nextChoice === 'on'), row.name);
+                }}
+              >
+                <Toggle
+                  id={`rail-mcp-${sessionId ?? 'draft'}-${row.name}`}
+                  layout="bare"
+                  label={t('composer.addMenu.mcpToggle', { name: row.name })}
+                  checked={checked}
+                  disabled={rowBusy || !mcp.writable}
+                  onChange={(next) => {
+                    if (rowBusy || !mcp.writable) return;
+                    mcp.setOverride(row.locator!, overrideForSwitch(row, next), row.name);
+                  }}
+                />
+              </span>
+            ) : null}
           </div>
         );
-      })}
-      {mcp.failure === undefined ? null : <p role="alert" className="px-2 text-[12px] text-danger">{mcp.failure.message}</p>}
+        })}
+      </div>
+      {mcp.failure === undefined ? null : <p role="alert" className="pt-1 text-[12px] text-danger">{mcp.failure.message}</p>}
     </div>
   );
 }

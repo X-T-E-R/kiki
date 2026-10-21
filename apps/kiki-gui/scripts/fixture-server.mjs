@@ -2483,25 +2483,32 @@ class FixtureServer {
 
   optionalCapabilityView(sessionId) {
     const choices = this.optionalChoices.get(sessionId) ?? {};
-    const defaults = { browser: true, computer: true, memory: true, thread: false, web: true };
+    const defaults = { browser: false, computer: false, memory: true, thread: true, web: true };
     const applies = { browser: 'next-model-request', computer: 'next-model-request', memory: 'next-step', thread: 'next-step', web: 'next-model-request' };
     const rows = Object.keys(defaults).map((id) => {
+      const configState = this.config?.optional_capabilities?.[id];
+      const allowed = configState?.allowed ?? true;
+      const hostLocked = configState?.host_locked ?? false;
+      const unresolved = configState?.unresolved ?? false;
       const choice = choices[id] ?? 'inherit';
-      const defaultOn = defaults[id];
+      const defaultOn = configState?.default_on ?? defaults[id];
       let reason = 'default_off';
       let effective = false;
-      if (choice === 'off') reason = 'session_off';
+      if (unresolved) reason = 'origin_unreadable';
+      else if (!allowed && hostLocked) reason = 'host_locked';
+      else if (!allowed) reason = 'allowed_off';
+      else if (choice === 'off') reason = 'session_off';
       else if (choice === 'on') { reason = 'admitted'; effective = true; }
       else if (defaultOn) { reason = 'admitted'; effective = true; }
       else reason = 'unbound';
       return {
         id, choice, effective,
-        source: choice === 'inherit' ? 'default' : 'session',
+        source: !allowed || unresolved ? 'off' : choice === 'inherit' ? 'default' : 'session',
         reason,
-        allowed: true,
-        host_locked: false,
+        allowed,
+        host_locked: hostLocked,
         default_on: defaultOn,
-        unresolved: false,
+        unresolved,
         applies: applies[id],
       };
     });

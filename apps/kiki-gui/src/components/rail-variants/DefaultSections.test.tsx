@@ -25,15 +25,26 @@ import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AgentCapabilitiesResponse, PluginUsageItem, PluginUsageResponse } from '@kiki/protocol';
+import type { AgentCapabilitiesResponse, OptionalCapabilitySessionResponse, PluginUsageItem, PluginUsageResponse } from '@kiki/protocol';
 import { I18nProvider } from '../../i18n';
 import { buildAgentForest, type NoticeBlock } from '@kiki/session-core/session';
 import { translate } from '@kiki/session-core/i18n';
+import { OptionalCapabilityRows } from '../capabilities/optionalCapabilityUi';
+import { clearPendingNewSessionCapabilities } from '../capabilities/newSessionCapabilities';
 import { ActivityFeed, CapabilitiesBlock } from './DefaultSections';
 
-const { readCapabilities, getUsage } = vi.hoisted(() => ({ readCapabilities: vi.fn(), getUsage: vi.fn() }));
+const { readCapabilities, getUsage, getConfig, getSessionCaps, setSessionCap } = vi.hoisted(() => ({
+  readCapabilities: vi.fn(),
+  getUsage: vi.fn(),
+  getConfig: vi.fn(),
+  getSessionCaps: vi.fn(),
+  setSessionCap: vi.fn(),
+}));
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({
+    scopeId: 'test-scope',
+    spaceKey: 'local',
+    connectionId: 'test-conn',
     klient: {
       global: {
         agentPanel: {
@@ -42,6 +53,9 @@ vi.mock('../../state/connection', () => ({
       },
     },
     client: {
+      getConfig: () => getConfig(),
+      getSessionOptionalCapabilities: (sessionId: string) => getSessionCaps(sessionId),
+      setSessionOptionalCapability: (sessionId: string, body: unknown) => setSessionCap(sessionId, body),
       getPluginUsage: (target: unknown) => getUsage(target),
       setPluginUsage: () => Promise.reject(new Error('writes are not under test here')),
       listPluginMarketplace: () => Promise.resolve({ entries: [] }),
@@ -126,6 +140,11 @@ let container: HTMLDivElement;
 beforeEach(() => {
   readCapabilities.mockReset();
   getUsage.mockReset();
+  getConfig.mockReset();
+  getSessionCaps.mockReset();
+  setSessionCap.mockReset();
+  getConfig.mockResolvedValue({});
+  clearPendingNewSessionCapabilities();
   localStorage.clear();
   localStorage.setItem('kiki.locale', 'zh');
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -477,5 +496,213 @@ describe.each(['zh', 'en'] as const)('ActivityFeed compaction labels (%s)', (loc
     const row = container.querySelector('[data-inspector-recent] ol li')!;
     expect(row.textContent).toContain(expected);
     expect(row.querySelector('[title]')?.getAttribute('title')).toBe(expected);
+  });
+});
+
+function buildSessionCapabilities(
+  overrides: Partial<Record<'browser' | 'computer' | 'memory' | 'thread' | 'web', Partial<OptionalCapabilitySessionResponse['rows'][number]>>> = {},
+  revision = 1,
+): OptionalCapabilitySessionResponse {
+  const defaults = { browser: false, computer: false, memory: true, thread: true, web: true } as const;
+  return {
+    revision,
+    host_id: 'local',
+    rows: (['browser', 'computer', 'memory', 'thread', 'web'] as const).map((id) => {
+      const defaultOn = defaults[id];
+      const base: OptionalCapabilitySessionResponse['rows'][number] = {
+        id,
+        choice: 'inherit',
+        effective: defaultOn,
+        source: 'default',
+        reason: defaultOn ? 'admitted' : 'unbound',
+        allowed: true,
+        host_locked: false,
+        default_on: defaultOn,
+        unresolved: false,
+        applies: id === 'memory' || id === 'thread' ? 'next-step' : 'next-model-request',
+      };
+      return { ...base, ...overrides[id] };
+    }),
+  };
+}
+
+describe('OptionalCapabilityRows', () => {
+  it('applies the factory default matrix on draft (thread/web/memory on, browser/computer off) and isolates draft choices', async () => {
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <OptionalCapabilityRows />
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await settle();
+    expect(container.querySelector('[data-optional-capabilities]')?.getAttribute('data-optional-capabilities')).toBe('draft');
+    expect(container.querySelector('[data-optional-capability="browser"]')?.getAttribute('data-optional-effective')).toBe('false');
+    expect(container.querySelector('[data-optional-capability="computer"]')?.getAttribute('data-optional-effective')).toBe('false');
+    expect(container.querySelector('[data-optional-capability="memory"]')?.getAttribute('data-optional-effective')).toBe('true');
+    expect(container.querySelector('[data-optional-capability="thread"]')?.getAttribute('data-optional-effective')).toBe('true');
+    expect(container.querySelector('[data-optional-capability="web"]')?.getAttribute('data-optional-effective')).toBe('true');
+
+    // Toggle browser on in draft -> shows session override + restore default action
+    await act(async () => {
+      container.querySelector<HTMLElement>('[data-optional-capability="browser"] [data-optional-set="on"]')!.click();
+    });
+    expect(container.querySelector('[data-optional-capability="browser"]')?.getAttribute('data-optional-choice')).toBe('on');
+    expect(container.querySelector('[data-optional-capability="browser"]')?.getAttribute('data-optional-effective')).toBe('true');
+    expect(container.querySelector('[data-optional-fact="browser"]')?.textContent).toBe('本会话开启');
+    const restore = container.querySelector<HTMLButtonElement>('[data-optional-restore="browser"]');
+    expect(restore).not.toBeNull();
+
+    // Restore inheritance returns browser to inherit (off by default)
+    await act(async () => { restore!.click(); });
+    expect(container.querySelector('[data-optional-capability="browser"]')?.getAttribute('data-optional-choice')).toBe('inherit');
+    expect(container.querySelector('[data-optional-capability="browser"]')?.getAttribute('data-optional-effective')).toBe('false');
+    expect(container.querySelector('[data-optional-restore="browser"]')).toBeNull();
+  });
+
+  it('disables blocked capabilities and handles rapid switching, error rollback, and session isolation', async () => {
+    getSessionCaps.mockImplementation((sessionId: string) => {
+      if (sessionId === 'sess-a') {
+        return Promise.resolve(buildSessionCapabilities({
+          memory: { allowed: false, effective: false, source: 'off', reason: 'allowed_off' },
+        }));
+      }
+      return Promise.resolve(buildSessionCapabilities());
+    });
+
+    let rejectFirst!: (reason: unknown) => void;
+    let resolveSecond!: (value: OptionalCapabilitySessionResponse) => void;
+    setSessionCap
+      .mockImplementationOnce(() => new Promise<OptionalCapabilitySessionResponse>((_resolve, reject) => { rejectFirst = reject; }))
+      .mockImplementationOnce(() => new Promise<OptionalCapabilitySessionResponse>((resolve) => { resolveSecond = resolve; }))
+      .mockImplementationOnce(() => Promise.reject(new Error('write rejected')));
+
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <OptionalCapabilityRows sessionId="sess-a" />
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await settle();
+
+    // Hard-off capability is disabled and shows 完全关闭
+    const memoryInput = container.querySelector<HTMLInputElement>('#optional-cap-sess-a-memory')!;
+    expect(memoryInput.disabled).toBe(true);
+    expect(container.querySelector('[data-optional-fact="memory"]')?.textContent).toBe('完全关闭');
+
+    // Rapid switching on browser: click ON then immediately OFF before first request finishes
+    await act(async () => {
+      container.querySelector<HTMLElement>('[data-optional-capability="browser"] [data-optional-set="on"]')!.click();
+    });
+    expect(container.querySelector('[data-optional-capability="browser"]')?.getAttribute('data-optional-effective')).toBe('true');
+
+    await act(async () => {
+      container.querySelector<HTMLElement>('[data-optional-capability="browser"] [data-optional-set="off"]')!.click();
+    });
+    expect(container.querySelector('[data-optional-capability="browser"]')?.getAttribute('data-optional-choice')).toBe('off');
+    expect(container.querySelector('[data-optional-capability="browser"]')?.getAttribute('data-optional-effective')).toBe('false');
+
+    // Stale first rejection must not clobber the newer second click
+    await act(async () => { rejectFirst(new Error('stale failure')); });
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector('[data-optional-capability="browser"]')?.getAttribute('data-optional-choice')).toBe('off');
+
+    await act(async () => {
+      resolveSecond(buildSessionCapabilities({
+        browser: { choice: 'off', effective: false, source: 'session', reason: 'session_off' },
+      }));
+    });
+    await settle();
+    expect(container.querySelector('[data-optional-capability="browser"]')?.getAttribute('data-optional-choice')).toBe('off');
+
+    // A failing write rolls back optimistic state and reports alert on sess-a only
+    await act(async () => {
+      container.querySelector<HTMLElement>('[data-optional-capability="web"] [data-optional-set="off"]')!.click();
+    });
+    await settle();
+    expect(container.querySelector('[data-optional-capability="web"]')?.getAttribute('data-optional-effective')).toBe('true');
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('write rejected');
+
+    // Switching to sess-b does not bleed sess-a's error or session choice
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <OptionalCapabilityRows sessionId="sess-b" />
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await settle();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector('[data-optional-capability="browser"]')?.getAttribute('data-optional-choice')).toBe('inherit');
+  });
+
+  it('keeps whole-session snapshot monotonic when concurrent writes on different capabilities resolve out of order', async () => {
+    getSessionCaps.mockResolvedValue(buildSessionCapabilities({
+      memory: { choice: 'inherit', effective: false, default_on: false, source: 'default', reason: 'unbound' },
+    }, 0));
+
+    let resolveMemoryA!: (value: OptionalCapabilitySessionResponse) => void;
+    let resolveWebB!: (value: OptionalCapabilitySessionResponse) => void;
+    setSessionCap
+      .mockImplementationOnce(() => new Promise<OptionalCapabilitySessionResponse>((resolve) => { resolveMemoryA = resolve; }))
+      .mockImplementationOnce(() => new Promise<OptionalCapabilitySessionResponse>((resolve) => { resolveWebB = resolve; }));
+
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <OptionalCapabilityRows sessionId="sess-race" />
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await settle();
+
+    // 1. Dispatch request A: memory -> on (rev 1)
+    await act(async () => {
+      container.querySelector<HTMLElement>('[data-optional-capability="memory"] [data-optional-set="on"]')!.click();
+    });
+    // 2. Dispatch request B: web -> off (rev 2) before A returns
+    await act(async () => {
+      container.querySelector<HTMLElement>('[data-optional-capability="web"] [data-optional-set="off"]')!.click();
+    });
+    expect(container.querySelector('[data-optional-capability="memory"]')?.getAttribute('data-optional-choice')).toBe('on');
+    expect(container.querySelector('[data-optional-capability="web"]')?.getAttribute('data-optional-choice')).toBe('off');
+
+    // 3. Response B (rev 2, where both memory=on and web=off have landed) arrives FIRST
+    await act(async () => {
+      resolveWebB(buildSessionCapabilities({
+        memory: { choice: 'on', effective: true, default_on: false, source: 'session', reason: 'admitted' },
+        web: { choice: 'off', effective: false, source: 'session', reason: 'session_off' },
+      }, 2));
+    });
+    await settle();
+    expect(container.querySelector('[data-optional-capability="web"]')?.getAttribute('data-optional-choice')).toBe('off');
+    expect(container.querySelector('[data-optional-capability="web"]')?.getAttribute('data-optional-effective')).toBe('false');
+
+    // 4. Older response A (rev 1, where web was still inherit/on) arrives SECOND (out of order)
+    await act(async () => {
+      resolveMemoryA(buildSessionCapabilities({
+        memory: { choice: 'on', effective: true, default_on: false, source: 'session', reason: 'admitted' },
+        web: { choice: 'inherit', effective: true, source: 'default', reason: 'admitted' },
+      }, 1));
+    });
+    await settle();
+
+    // Late rev 1 snapshot must not overwrite rev 2's web=off state
+    expect(container.querySelector('[data-optional-capability="memory"]')?.getAttribute('data-optional-choice')).toBe('on');
+    expect(container.querySelector('[data-optional-capability="memory"]')?.getAttribute('data-optional-effective')).toBe('true');
+    expect(container.querySelector('[data-optional-capability="web"]')?.getAttribute('data-optional-choice')).toBe('off');
+    expect(container.querySelector('[data-optional-capability="web"]')?.getAttribute('data-optional-effective')).toBe('false');
   });
 });

@@ -1381,10 +1381,9 @@ export function AddMenu({
   const optionalBody = optional === undefined ? null : (
     <div data-add-optional-view>
       {backRow(t('composer.addMenu.optional'))}
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-1.5">
         <OptionalCapabilityRows sessionId={optional.sessionId} />
       </div>
-      <p className="px-3 pt-1 pb-1.5 text-[12px] leading-4 text-ink-faint">{t('composer.addMenu.optionalHint')}</p>
     </div>
   );
 

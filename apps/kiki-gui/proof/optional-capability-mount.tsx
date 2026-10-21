@@ -16,7 +16,7 @@ type CapabilityId = 'browser' | 'computer' | 'memory' | 'thread' | 'web';
 type Choice = 'inherit' | 'on' | 'off';
 
 const IDS: readonly CapabilityId[] = ['browser', 'computer', 'memory', 'thread', 'web'];
-const FACTORY: Record<CapabilityId, boolean> = { browser: true, computer: true, memory: true, thread: false, web: true };
+const FACTORY: Record<CapabilityId, boolean> = { browser: false, computer: false, memory: true, thread: true, web: true };
 const sessions = new Map<string, Partial<Record<CapabilityId, Choice>>>();
 const revisions = new Map<string, number>();
 const mcpChoices = new Map<string, Choice>();

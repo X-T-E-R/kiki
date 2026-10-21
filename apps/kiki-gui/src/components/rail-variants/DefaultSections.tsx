@@ -543,8 +543,10 @@ export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { se
       <FoldHead title={t('rail.capabilities.title')} summary={summary} open={open} onToggle={() => { setOpen((v) => !v); }} />
       {open ? (
         <div className="pt-1">
-          <OptionalCapabilityRows sessionId={sessionId} />
-          <SessionMcpRail sessionId={sessionId} />
+          <div className="mb-2">
+            <OptionalCapabilityRows sessionId={sessionId} />
+            <SessionMcpRail sessionId={sessionId} />
+          </div>
           {body}
         </div>
       ) : null}

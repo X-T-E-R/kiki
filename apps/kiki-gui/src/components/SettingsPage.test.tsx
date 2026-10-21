@@ -451,10 +451,10 @@ describe('SettingsPage panel scopes', () => {
     const state = { allowed: true, host_locked: false, default_on: true, origin: 'home' as const, unresolved: false };
     client.getConfig.mockResolvedValue({
       optional_capabilities: {
-        browser: state,
-        computer: state,
+        browser: { ...state, default_on: false },
+        computer: { ...state, default_on: false },
         memory: { ...state },
-        thread: { ...state, default_on: false },
+        thread: state,
         web: state,
       },
     });
