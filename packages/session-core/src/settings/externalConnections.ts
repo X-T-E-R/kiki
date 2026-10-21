@@ -61,8 +61,10 @@ export function createCloudflareConnection(client: ExternalConnectionClient) {
       return { state: 'available', source, version: info.version, status: await status() };
     },
     status,
-    async previewInstall(input: { readonly source: string; readonly sha256?: string }): Promise<PluginInstallPlan> {
-      const plan = await plugins.preview({ source: input.source, ...(digest(input.sha256)) });
+    async previewInstall(input: string | { readonly source: string; readonly sha256?: string }): Promise<PluginInstallPlan> {
+      const source = typeof input === 'string' ? input : input.source;
+      const sha256 = typeof input === 'string' ? undefined : input.sha256;
+      const plan = await plugins.preview({ source, ...digest(sha256) });
       if (plan.id !== CLOUDFLARE_PLUGIN_ID) throw new Error('The selected package is not the Cloudflare Tunnel plugin.');
       return plan;
     },

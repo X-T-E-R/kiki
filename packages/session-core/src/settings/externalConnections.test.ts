@@ -61,13 +61,22 @@ describe('Cloudflare external connection', () => {
     const f = fixture();
     await expect(f.api.installDependency(false as true)).rejects.toThrow('Install');
     expect(f.plugins.installPrerequisite).not.toHaveBeenCalled();
-    const plan = await f.api.previewInstall({ source: '/fixture/source' });
+    const plan = await f.api.previewInstall('/fixture/source');
     await f.api.install({ source: '/fixture/source', plan, consent: true });
     expect(f.plugins.preview).toHaveBeenCalledWith({ source: '/fixture/source' });
     expect(f.plugins.install).toHaveBeenCalledWith({ source: '/fixture/source', fingerprint: plan.fingerprint, consent: true });
     expect(f.plugins.setEnabled).toHaveBeenCalledWith('kiki-cloudflare', true);
     await f.api.installDependency(true);
     expect(f.plugins.installPrerequisite).toHaveBeenCalledWith('kiki-cloudflare', { id: 'cloudflared', consent: true });
+  });
+
+  it('accepts the original string preview and leaves checksum binding to the server', async () => {
+    const f = fixture();
+    const plan = await f.api.previewInstall('/fixture/source');
+    expect(plan).toBe(f.plan);
+    expect(f.plugins.preview).toHaveBeenCalledOnce();
+    expect(f.plugins.preview).toHaveBeenCalledWith({ source: '/fixture/source' });
+    expect(f.plugins.preview.mock.calls[0]?.[0]).not.toHaveProperty('sha256');
   });
 
   it('forwards the marketplace checksum and does not invent one', async () => {

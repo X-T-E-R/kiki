@@ -7,4 +7,4 @@
 "@kiki/cli": patch
 ---
 
-Install official ZIP plugins from the market with the published checksum, including Cloudflare from external connections and the TUI, without asking the reader to type it.
+Fix official ZIP plugin installation from settings and the TUI by using the published checksum.
