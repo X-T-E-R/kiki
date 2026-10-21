@@ -116,14 +116,30 @@ function groupsOf(schema: SettingsSchema, locale: string): readonly GroupChip[] 
   return groups;
 }
 
-export function PluginSettingsForm({ pluginId }: { readonly pluginId: string }) {
+export function PluginSettingsForm({
+  pluginId,
+  showEmptyNote = false,
+}: {
+  readonly pluginId: string;
+  readonly showEmptyNote?: boolean;
+}) {
   const { client } = useConnection();
-  const { t, locale } = useI18n();
+  const { t, tp, locale } = useI18n();
   const queryClient = useQueryClient();
   const queryKey = ['plugin-settings', pluginId] as const;
   const query = useQuery({ queryKey, queryFn: () => client.getPluginSettings(pluginId) });
   const view = query.data;
   const schema = schemaOf(view);
+  const hasConnectionFields = schema !== undefined && Object.keys(schema.schema.properties).some(
+    (key) => key === 'connectionId' || key.endsWith('__connectionId'),
+  );
+  const providersQuery = useQuery({
+    queryKey: ['providers'],
+    queryFn: () => client.listProviders(),
+    enabled: hasConnectionFields && typeof client.listProviders === 'function',
+    staleTime: 60_000,
+  });
+  const providers = providersQuery.data?.items ?? [];
   const [draft, setDraft] = useState<Draft | null>(null);
   const [baseline, setBaseline] = useState<Draft | null>(null);
   const [groupId, setGroupId] = useState<string | undefined>(undefined);
@@ -143,9 +159,14 @@ export function PluginSettingsForm({ pluginId }: { readonly pluginId: string }) 
   }, [view, dirty, saving]);
 
   if (query.isError) return <InlineError error={query.error} />;
-  if (view === undefined || schema === undefined || draft === null || baseline === null) return null;
+  if (view === undefined) return null;
+  if (schema === undefined || Object.keys(schema.schema.properties).length === 0) {
+    return showEmptyNote ? (
+      <p className="text-[13px] text-ink-faint" data-plugin-settings-none>{t('cap.settings.none')}</p>
+    ) : null;
+  }
+  if (draft === null || baseline === null) return null;
   const entries = Object.entries(schema.schema.properties);
-  if (entries.length === 0) return null;
   const secrets = new Set(view.secretsConfigured);
   const groups = groupsOf(schema, locale);
   const selected = groups.some((group) => group.id === groupId) ? groupId : groups[0]?.id;
@@ -164,8 +185,22 @@ export function PluginSettingsForm({ pluginId }: { readonly pluginId: string }) 
     if (property.group === undefined) return true;
     return groups.length < 2 || property.group === selected;
   });
-  if (visible.length === 0 && groups.length === 0) return null;
+  if (visible.length === 0 && groups.length === 0) {
+    return showEmptyNote ? (
+      <p className="text-[13px] text-ink-faint" data-plugin-settings-none>{t('cap.settings.none')}</p>
+    ) : null;
+  }
   const ordinary = visible.filter(([, property]) => property.advanced !== true);
+  const ungroupedOrdinary = groups.length >= 2
+    ? ordinary.filter(([, property]) => property.group === undefined)
+    : ordinary;
+  const groupedOrdinary = groups.length >= 2
+    ? [...ordinary.filter(([, property]) => property.group !== undefined)].sort(([keyA, propA], [keyB, propB]) => {
+      const aEnabled = keyA.endsWith('__enabled') && propA.type === 'boolean' ? 0 : 1;
+      const bEnabled = keyB.endsWith('__enabled') && propB.type === 'boolean' ? 0 : 1;
+      return aEnabled - bEnabled;
+    })
+    : [];
   const advanced = visible.filter(([, property]) => property.advanced === true);
 
   const save = async () => {
@@ -242,27 +277,48 @@ export function PluginSettingsForm({ pluginId }: { readonly pluginId: string }) 
         </div>
       );
     }
+    const isConnectionField = property.type === 'string' && (key === 'connectionId' || key.endsWith('__connectionId') || key === 'connection' || key.endsWith('__connection'));
     const choices = property.type === 'string' && property.enum !== undefined && property.enum.length > 0 ? property.enum : undefined;
-    const control = choices !== undefined ? (
+    const currentText = (draft[key] as string) ?? '';
+    const control = isConnectionField && providers.length > 0 ? (
+      <select id={fieldId} data-plugin-setting-connection={key} className={`${INPUT} h-8 py-1 ${issue?.key === key ? 'border-danger' : ''}`}
+        aria-invalid={issue?.key === key}
+        value={currentText}
+        onChange={(event) => { setDraft({ ...draft, [key]: event.target.value }); setIssue(null); }}>
+        <option value="">{t('cap.media.connection.selfManaged')}</option>
+        {currentText !== '' && !providers.some((item) => item.id === currentText) ? (
+          <option value={currentText}>{currentText}</option>
+        ) : null}
+        {providers.map((item) => {
+          const customName = (item as { name?: string }).name;
+          return (
+            <option key={item.id} value={item.id}>
+              {customName && customName !== item.id ? `${customName} (${item.id})` : item.id} · {t(`st.connections.kind.${item.type === 'account' ? 'account' : 'api'}` as Parameters<typeof t>[0])}
+              {item.has_api_key || item.oauth?.signed_in === true ? ` · ${tp('cap.media.connection.hasCredential', 1)}` : ''}
+            </option>
+          );
+        })}
+      </select>
+    ) : choices !== undefined ? (
       <select id={fieldId} className={`${INPUT} h-8 py-1 ${issue?.key === key ? 'border-danger' : ''}`}
         aria-invalid={issue?.key === key}
-        value={draft[key] as string}
+        value={currentText}
         onChange={(event) => { setDraft({ ...draft, [key]: event.target.value }); setIssue(null); }}>
-        <option value="">{property.default === undefined ? '—' : String(property.default)}</option>
+        <option value="">{property.default === undefined ? t('cap.media.setting.notSet') : String(property.default)}</option>
         {choices.map((choice) => <option key={choice} value={choice}>{choice}</option>)}
       </select>
     ) : property.multiline === true ? (
       <textarea id={fieldId} rows={3} className={`${INPUT} min-h-[4.5rem] py-1 ${issue?.key === key ? 'border-danger' : ''}`}
         aria-invalid={issue?.key === key}
         placeholder={property.default === undefined ? undefined : String(property.default)}
-        value={draft[key] as string}
+        value={currentText}
         onChange={(event) => { setDraft({ ...draft, [key]: event.target.value }); setIssue(null); }} />
     ) : (
-      <input id={fieldId} className={`${INPUT} h-8 py-1 ${property.type === 'number' ? 'font-mono' : ''} ${issue?.key === key ? 'border-danger' : ''}`}
+      <input id={fieldId} className={`${INPUT} h-8 py-1 ${property.type === 'number' || isConnectionField ? 'font-mono' : ''} ${issue?.key === key ? 'border-danger' : ''}`}
         inputMode={property.type === 'number' ? 'decimal' : undefined}
         aria-invalid={issue?.key === key}
         placeholder={property.default === undefined ? undefined : String(property.default)}
-        value={draft[key] as string}
+        value={currentText}
         onChange={(event) => { setDraft({ ...draft, [key]: event.target.value }); setIssue(null); }} />
     );
     return (
@@ -276,26 +332,37 @@ export function PluginSettingsForm({ pluginId }: { readonly pluginId: string }) 
   };
 
   return (
-    <section data-plugin-settings={pluginId} className="space-y-3">
+    <section data-plugin-settings={pluginId} className="space-y-4">
       <h2 className="text-[13px] font-medium text-ink">{t('cap.settings.title')}</h2>
-      <fieldset disabled={saving} className="min-w-0 space-y-3 disabled:opacity-60">
-        {groups.length >= 2 ? (
-          <div className="flex flex-wrap gap-1" role="tablist" data-plugin-setting-groups>
-            {groups.map((group) => (
-              <button key={group.id} type="button" role="tab" aria-selected={group.id === selected}
-                data-plugin-setting-group={group.id}
-                className={`h-7 rounded-md border px-2 text-[12px] ${group.id === selected ? 'border-ink text-ink' : 'border-hairline text-ink-soft hover:text-ink'}`}
-                onClick={() => { setGroupId(group.id); }}>
-                {group.title}
-              </button>
-            ))}
+      <fieldset disabled={saving} className="min-w-0 space-y-4 disabled:opacity-60">
+        {ungroupedOrdinary.length > 0 ? (
+          <div data-plugin-settings-global className={groups.length >= 2 && ungroupedOrdinary.length > 1 ? 'grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3' : 'space-y-3'}>
+            {ungroupedOrdinary.map(([key, property]) => renderField(key, property))}
           </div>
         ) : null}
-        {ordinary.map(([key, property]) => renderField(key, property))}
+        {groups.length >= 2 ? (
+          <div className="space-y-3 border-t border-hairline pt-3">
+            <div className="flex flex-wrap gap-1.5" role="tablist" data-plugin-setting-groups>
+              {groups.map((group) => (
+                <button key={group.id} type="button" role="tab" aria-selected={group.id === selected}
+                  data-plugin-setting-group={group.id}
+                  className={`h-7 rounded-md border px-2.5 text-[12px] transition-colors ${group.id === selected ? 'border-ink bg-selected font-medium text-selected-ink' : 'border-hairline text-ink-soft hover:border-hairline-strong hover:text-ink'}`}
+                  onClick={() => { setGroupId(group.id); }}>
+                  {group.title}
+                </button>
+              ))}
+            </div>
+            {groupedOrdinary.length > 0 ? (
+              <div className="space-y-3 rounded-lg border border-hairline bg-panel/30 p-3.5" data-plugin-setting-group-panel={selected}>
+                {groupedOrdinary.map(([key, property]) => renderField(key, property))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         {advanced.length > 0 ? (
-          <details data-plugin-settings-advanced>
-            <summary className="cursor-pointer text-[12px] text-ink-soft">{t('st.advanced.disclosure')}</summary>
-            <div className="mt-2 space-y-3">
+          <details data-plugin-settings-advanced className="border-t border-hairline pt-3">
+            <summary className="cursor-pointer text-[12px] font-medium text-ink-soft hover:text-ink">{t('st.advanced.disclosure')}</summary>
+            <div className="mt-3 space-y-3">
               {advanced.map(([key, property]) => renderField(key, property))}
             </div>
           </details>

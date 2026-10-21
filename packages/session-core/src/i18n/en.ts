@@ -7234,6 +7234,8 @@ export const en = {
   'cap.settings.secretReplace': 'Type a new value to replace',
   'cap.settings.secretRemove': 'Remove',
   'cap.settings.secretRemovePending': 'Removed when you save',
+  'cap.settings.none': 'This plugin has no additional settings.',
+  'cap.settings.panelOff': 'Turn on this plugin to open its settings panel.',
   'cap.detail.addsAfterInstall': 'The full list of tools, panels, commands and skins appears here after installing. The install sheet shows it before anything is installed.',
   'cap.detail.needs': 'What it needs',
   'cap.detail.needsOnPreview': 'Permissions and required programs are listed before you install.',

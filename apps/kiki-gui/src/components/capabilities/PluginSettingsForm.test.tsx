@@ -12,9 +12,10 @@ import { PluginSettingsForm } from './PluginSettingsForm';
 
 const getPluginSettings = vi.fn();
 const setPluginSettings = vi.fn();
+const listProviders = vi.fn(async () => ({ items: [] as { id: string; name?: string }[] }));
 
 vi.mock('../../state/connection', () => ({
-  useConnection: () => ({ client: { getPluginSettings, setPluginSettings } }),
+  useConnection: () => ({ client: { getPluginSettings, setPluginSettings, listProviders } }),
 }));
 
 const VIEW = {
@@ -66,7 +67,9 @@ async function render(): Promise<HTMLDivElement> {
   await act(async () => {
     root.render(<QueryClientProvider client={queryClient}><I18nProvider><PluginSettingsForm pluginId="demo" /></I18nProvider></QueryClientProvider>);
   });
-  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  for (let i = 0; i < 4; i++) {
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  }
   return container;
 }
 
@@ -237,5 +240,41 @@ describe('PluginSettingsForm', () => {
 
     await click(save(container));
     expect(setPluginSettings).toHaveBeenCalledWith('demo', { openai__baseUrl: 'https://example.test/openai' });
+  });
+
+  it('separates ungrouped global defaults from source group panels and offers a connection picker when model connections exist', async () => {
+    listProviders.mockResolvedValueOnce({
+      items: [
+        { id: 'openai-main', name: 'OpenAI Main' },
+        { id: 'proxy-gateway', name: 'Proxy Gateway' },
+      ],
+    });
+    getPluginSettings.mockResolvedValue({
+      schema: {
+        schemaVersion: 1,
+        schema: {
+          type: 'object',
+          properties: {
+            defaultImageProvider: { type: 'string', title: 'Default image provider', enum: ['openai-image', 'google-image'] },
+            openai__connectionId: { type: 'string', title: 'Connection ID', group: 'openai', groupTitle: 'OpenAI' },
+            openai__enabled: { type: 'boolean', title: 'Enabled', group: 'openai', groupTitle: 'OpenAI', default: true },
+            google__connectionId: { type: 'string', title: 'Connection ID', group: 'google', groupTitle: 'Google' },
+          },
+        },
+      },
+      values: { openai__connectionId: 'openai-main' },
+      secretsConfigured: [],
+    });
+
+    const container = await render();
+    expect(container.querySelector('[data-plugin-settings-global] [data-plugin-setting="defaultImageProvider"]')).not.toBeNull();
+    const panel = container.querySelector('[data-plugin-setting-group-panel="openai"]');
+    expect(panel).not.toBeNull();
+    expect(panel?.querySelector('[data-plugin-setting="defaultImageProvider"]')).toBeNull();
+    const picker = panel?.querySelector<HTMLSelectElement>('[data-plugin-setting-connection="openai__connectionId"]');
+    expect(picker).not.toBeNull();
+    expect(picker?.value).toBe('openai-main');
+    expect(picker?.textContent).toContain('OpenAI Main');
+    expect(picker?.textContent).toContain('Proxy Gateway');
   });
 });

@@ -188,6 +188,11 @@ export function handlePlugins(server, res, path, method, body) {
       // not land is observable rather than assumed impossible. The GET keeps
       // answering normally either way — which is exactly why a refused write
       // cannot be told from a good one by reading values back.
+      if (server.pluginSettingsFailNext === pluginId) {
+        server.pluginSettingsFailNext = undefined;
+        server.envelope(res, null, 40001, 'Could not save these settings. The previous values are unchanged.');
+        return true;
+      }
       const refusal = server.scenario?.data.pluginSettingsRefusals?.[pluginId];
       if (refusal !== undefined) {
         server.envelope(res, null, refusal.code ?? 40001, refusal.message ?? 'the host refused this write');

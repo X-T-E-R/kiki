@@ -257,7 +257,14 @@ function PluginSettingsBody({ plugin }: { readonly plugin: PluginSummary }) {
       />
     );
   }
-  return <PluginSettingsForm pluginId={plugin.id} />;
+  return (
+    <div className="space-y-2">
+      {panel !== undefined && !plugin.enabled ? (
+        <p className="text-[13px] text-ink-faint" data-plugin-settings-panel-off>{t('cap.settings.panelOff')}</p>
+      ) : null}
+      <PluginSettingsForm pluginId={plugin.id} showEmptyNote={panel === undefined} />
+    </div>
+  );
 }
 
 /** Back to the list, the plugin's own name, and the state it is in now. */

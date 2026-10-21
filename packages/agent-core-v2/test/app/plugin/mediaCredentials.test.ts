@@ -101,3 +101,64 @@ it('gives the script fields the host synthesizes Chinese text beside its own Eng
     expect(environment?.localizations?.['zh']?.title).toBe('环境变量（JSON）');
   } finally { await ix.dispose(); }
 });
+
+it('enriches ungrouped media plugin settings from mediaSources and mediaProviders metadata', async () => {
+  const config = new StubConfigService({ pluginSettings: {} });
+  const ix = new TestInstantiationService();
+  ix.stub(IConfigService, config);
+  ix.stub(IPluginService, {
+    getPluginInfo: async () => ({
+      manifest: {
+        kiki: {
+          permissions: { secrets: true },
+          mediaSources: [
+            { id: 'openai', label: 'OpenAI', settingsPrefix: 'openai__', kinds: ['image', 'tts'] },
+            { id: 'google', label: 'Google', settingsPrefix: 'google__', kinds: ['image', 'video'] },
+          ],
+          mediaProviders: [
+            { id: 'openai-image', kinds: ['image'], sourceId: 'openai' },
+            { id: 'google-image', kinds: ['image'], sourceId: 'google' },
+            { id: 'google-video', kinds: ['video'], sourceId: 'google' },
+            { id: 'openai-tts', kinds: ['tts'], sourceId: 'openai' },
+          ],
+          settings: {
+            schemaVersion: 1,
+            schema: {
+              type: 'object',
+              properties: {
+                defaultImageProvider: { type: 'string', title: 'Default image provider' },
+                defaultVideoProvider: { type: 'string', title: 'Default video provider' },
+                defaultTtsProvider: { type: 'string', title: 'Default TTS provider' },
+                openai__enabled: { type: 'boolean', title: 'Enabled', default: true },
+                openai__apiKey: { type: 'string', title: 'API key', secret: true },
+                openai__connectionId: { type: 'string', title: 'Connection ID' },
+                openai__removed: { type: 'boolean', title: 'Source removed' },
+                openai__cleared: { type: 'string', title: 'Cleared fields' },
+                scriptSources: { type: 'string', title: 'Custom script sources (JSON)' },
+              },
+            },
+          },
+        },
+      },
+    }),
+  } as unknown as IPluginService);
+  ix.set(IPluginSettingsService, new SyncDescriptor(PluginSettingsService));
+  try {
+    const settings = ix.get(IPluginSettingsService);
+    const props = (await settings.inspect('kiki-media')).schema?.schema.properties ?? {};
+    expect(props['defaultImageProvider']?.enum).toEqual(['openai-image', 'google-image']);
+    expect(props['defaultVideoProvider']?.enum).toEqual(['google-video']);
+    expect(props['defaultTtsProvider']?.enum).toEqual(['openai-tts']);
+    expect(props['defaultImageProvider']?.localizations?.['zh']?.title).toBe('默认图像来源');
+    expect(props['openai__apiKey']?.group).toBe('openai');
+    expect(props['openai__apiKey']?.groupTitle).toBe('OpenAI');
+    expect(props['openai__apiKey']?.localizations?.['zh']?.title).toBe('API 密钥');
+    expect(props['openai__connectionId']?.localizations?.['zh']?.title).toBe('Kiki 连接（可选）');
+    expect(props['openai__removed']?.hidden).toBe(true);
+    expect(props['openai__cleared']?.hidden).toBe(true);
+    expect(props['scriptSources']?.multiline).toBe(true);
+    expect(props['scriptSources']?.advanced).toBe(true);
+  } finally {
+    await ix.dispose();
+  }
+});

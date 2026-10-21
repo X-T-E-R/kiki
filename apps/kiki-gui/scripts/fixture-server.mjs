@@ -4847,6 +4847,9 @@ class FixtureServer {
 
   async handleControl(body, res) {
     switch (body.action) {
+      case 'plugin_settings_fail_next':
+        this.pluginSettingsFailNext = typeof body.plugin_id === 'string' ? body.plugin_id : undefined;
+        return this.envelope(res, { armed: this.pluginSettingsFailNext !== undefined });
       case 'cron_fail_next_write':
         // Arms a one-shot refusal of the next cron create/update, so the
         // panel's real-failure path (draft kept, panel open) is walkable

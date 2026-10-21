@@ -134,6 +134,64 @@ function isSettingsRequest(data: unknown): data is SettingsFrameRequest {
     && record['method'] === 'plugin.dirty';
 }
 
+const PANEL_HOST_BRIDGE_SCRIPT = `<script>(function(){
+const CHANNEL='kiki.panel.v1';
+const EN_MAP={'输出层设置':'Output Layer Settings','输出预设':'Output presets','删除':'Delete','新增预设':'Add from template','内置模板':'Built-in template','添加':'Add','名称':'Name','提示词':'Prompt instruction','Kiki 模型（留空不处理）':'Kiki model (blank to skip)','已有连接上的自定义模型':'Custom model on an existing connection','连接 ID':'Connection ID','自定义模型 ID':'Custom model ID','模型窗口 tokens':'Context window tokens','每组最大输出 tokens（留空不限制）':'Max output tokens per group (blank for unlimited)','阅读与历史':'Reading and history','每组 Unicode 字符':'Unicode characters per group','历史 tokens（0 关闭）':'History token budget (0 to disable)','向前预加载组数':'Preload groups before','向后预加载组数':'Preload groups after','保存':'Save','正在加载…':'Loading…','未保存':'Unsaved','已保存':'Saved'};
+const ZH_MAP=Object.fromEntries(Object.entries(EN_MAP).map(([k,v])=>[v,k]));
+function applyPresentation(p){
+  if(!p||typeof p!=='object')return;
+  const root=document.documentElement;
+  if(p.theme==='dark'||p.theme==='light')root.style.colorScheme=p.theme;
+  if(p.tokens&&typeof p.tokens==='object'){
+    for(const [k,v] of Object.entries(p.tokens)){if(typeof v==='string')root.style.setProperty(k,v);}
+    const aliases=[['--paper','--color-paper'],['--ink','--color-ink'],['--soft','--color-ink-soft'],['--line','--color-hairline'],['--accent','--color-accent']];
+    for(const [alias,src] of aliases){if(typeof p.tokens[src]==='string')root.style.setProperty(alias,p.tokens[src]);}
+  }
+  if(p.locale==='en'||p.locale==='zh'){
+    root.lang=p.locale==='zh'?'zh-CN':'en';
+    const dict=p.locale==='en'?EN_MAP:ZH_MAP;
+    for(const el of document.querySelectorAll('h2,label,summary,button,#status')){
+      const t=(el.textContent||'').trim();
+      if(dict[t])el.textContent=dict[t];
+    }
+    for(const el of document.querySelectorAll('[aria-label]')){
+      const a=el.getAttribute('aria-label')||'';
+      if(dict[a])el.setAttribute('aria-label',dict[a]);
+    }
+  }
+}
+let lastHeight=0;
+function reportHeight(){
+  const body=document.body,doc=document.documentElement;
+  if(!body||!doc)return;
+  const h=Math.max(body.scrollHeight||0,body.offsetHeight||0,doc.scrollHeight||0);
+  if(h>0&&Math.abs(h-lastHeight)>2){
+    lastHeight=h;
+    parent.postMessage({channel:CHANNEL,kind:'resize',height:h+16},'*');
+  }
+}
+window.addEventListener('message',function(e){
+  if(e.source!==parent||!e.data||e.data.channel!==CHANNEL)return;
+  if(e.data.kind==='init'||e.data.kind==='presentation'){
+    applyPresentation(e.data.presentation);
+    setTimeout(reportHeight,0);
+  }
+  if(e.data.kind==='response')setTimeout(reportHeight,0);
+});
+window.addEventListener('load',reportHeight);
+document.addEventListener('toggle',reportHeight,true);
+if(typeof ResizeObserver==='function'&&document.documentElement){
+  new ResizeObserver(reportHeight).observe(document.documentElement);
+}
+})();</script>`;
+
+function augmentPanelHtml(html: string): string {
+  if (/<\/body>/i.test(html)) {
+    return html.replace(/<\/body>/i, `${PANEL_HOST_BRIDGE_SCRIPT}</body>`);
+  }
+  return `${html}${PANEL_HOST_BRIDGE_SCRIPT}`;
+}
+
 export function PluginSettingsPanel({
   pluginId,
   panelId,
@@ -153,6 +211,7 @@ export function PluginSettingsPanel({
   const frameWindowRef = useRef<Window | null>(null);
   const [loadSeq, setLoadSeq] = useState(0);
   const [dirty, setDirty] = useState(false);
+  const [frameHeight, setFrameHeight] = useState<number | undefined>(undefined);
   // `meta.server_id` is the instance. The client wrapper is a new object on
   // later renders of the same server, so it is not part of the seat.
   const serverId = meta?.server_id ?? '';
@@ -162,6 +221,7 @@ export function PluginSettingsPanel({
     setRenderedIdentity(identity);
     setDirty(false);
     setLoadSeq(0);
+    setFrameHeight(undefined);
     seatRef.current += 1;
     frameWindowRef.current = null;
     recent.current = [];
@@ -210,6 +270,18 @@ export function PluginSettingsPanel({
     const onMessage = (event: MessageEvent) => {
       const frame = frameRef.current;
       if (frame === null || event.source !== frame.contentWindow || event.origin !== 'null') return;
+      if (
+        event.data !== null
+        && typeof event.data === 'object'
+        && (event.data as { channel?: unknown }).channel === CHANNEL
+        && (event.data as { kind?: unknown }).kind === 'resize'
+      ) {
+        const nextHeight = Number((event.data as { height?: unknown }).height);
+        if (Number.isFinite(nextHeight) && nextHeight >= 180 && nextHeight <= 4000) {
+          setFrameHeight(Math.ceil(nextHeight));
+        }
+        return;
+      }
       if (!isSettingsRequest(event.data)) return;
       const request = event.data;
       const generation = seatRef.current;
@@ -295,7 +367,7 @@ export function PluginSettingsPanel({
       key={identity}
       ref={frameRef}
       title={label}
-      srcDoc={documentQuery.data.html}
+      srcDoc={augmentPanelHtml(documentQuery.data.html)}
       sandbox="allow-scripts"
       referrerPolicy="no-referrer"
       onLoad={() => {
@@ -304,7 +376,8 @@ export function PluginSettingsPanel({
       }}
       data-plugin-panel={`${pluginId}:${panelId}`}
       data-plugin-settings-panel={pluginId}
-      className="block h-[32rem] max-h-[70vh] min-h-[22rem] w-full border-0 bg-paper"
+      style={{ height: frameHeight === undefined ? '38rem' : `${frameHeight}px` }}
+      className="block w-full border-0 bg-paper"
     />
   );
 }

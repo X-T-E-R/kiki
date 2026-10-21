@@ -7149,6 +7149,8 @@ export const zh = {
   'cap.settings.secretReplace': '输入新值以替换',
   'cap.settings.secretRemove': '删除',
   'cap.settings.secretRemovePending': '保存后删除',
+  'cap.settings.none': '此插件无需额外设置。',
+  'cap.settings.panelOff': '开启插件后可打开其设置面板。',
   'cap.detail.addsAfterInstall':
     '安装后会在这里显示工具、面板、命令和皮肤的完整列表。安装页会在安装前显示这些内容。',
   'cap.detail.needs': '所需条件',
