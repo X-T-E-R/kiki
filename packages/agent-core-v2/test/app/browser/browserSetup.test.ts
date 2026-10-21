@@ -7,6 +7,7 @@ import { Readable } from 'node:stream';
 import { TestInstantiationService } from '#/_base/di/test';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { BrowserError } from '#/app/browser/errors';
 import { IBrowserSetupService } from '#/app/browser/browserSetup';
 import { BrowserSetupService } from '#/app/browser/browserSetupService';
 import { CODEX_BRIDGE_PIN, codexBridgeResource, codexBridgeSelection, verifiedCodexBridge } from '#/app/browser/codexBrowser';
@@ -748,11 +749,76 @@ it('reuses the chosen Ego Lite CLI when several programs are installed', async (
     expect(again.cliPaths).toBeUndefined();
     expect(nodeCalls()).toBe(1);
     expect(f.upsert).toHaveBeenCalledTimes(1);
+    expect(f.connect).not.toHaveBeenCalled();
     mode = 'ready';
     const ready = await f.setup.connect('ego-lite', {});
     expect(ready).toMatchObject({ state: 'ready', connectionId: 'ego-lite' });
     expect(f.upsert).toHaveBeenCalledTimes(1);
     expect(f.rows[0]).toMatchObject({ cliPath: chosen });
+    expect(f.setDefault).not.toHaveBeenCalled();
+    expect(f.connect).toHaveBeenCalledTimes(1);
+    expect(f.connect).toHaveBeenCalledWith('ego-lite');
+  } finally {
+    if (previous === undefined) delete process.env['PATH'];
+    else process.env['PATH'] = previous;
+  }
+});
+
+it('opens Ego Lite admission after a ready check without changing the allow set', async () => {
+  const exe = 'C:\\ego-fixture\\ego-browser.exe';
+  const previous = process.env['PATH'];
+  process.env['PATH'] = 'C:\\ego-fixture';
+  let mode: 'ready' | 'onboarding' = 'ready';
+  const spawn = vi.fn(async (_command: string, args: readonly string[] = []) => {
+    const text = !args.includes('nodejs') ? '' : mode === 'ready' ? 'kiki-ego-ready\n' : 'Please complete the onboarding process first\n';
+    return { stdout: Readable.from([text]), stderr: Readable.from(['']), wait: async () => 0, kill: async () => undefined, dispose: async () => undefined };
+  });
+  const f = fixture({
+    hostProcess: { spawn } as never,
+    hostFs: {
+      mkdir: async () => undefined, writeText: async () => undefined, readText: async () => '', remove: async () => undefined, readdir: async () => [],
+      stat: async (file: string) => ({ isFile: file.replaceAll('/', '\\').toLowerCase() === exe.toLowerCase(), isDirectory: false, size: 0 }),
+    } as never,
+  });
+  try {
+    const ready = await f.setup.connect('ego-lite', { name: 'Desk', setDefault: true });
+    expect(ready.state).toBe('ready');
+    expect(f.upsert).toHaveBeenCalledWith('ego-lite', { type: 'ego-lite', name: 'Desk', enabled: true, cliPath: 'C:/ego-fixture/ego-browser.exe' });
+    expect(f.upsert.mock.calls[0]?.[1]).not.toHaveProperty('allowedBrowsers');
+    expect(f.connect).toHaveBeenCalledTimes(1);
+    expect(f.connect).toHaveBeenCalledWith('ego-lite');
+    expect(f.connect.mock.invocationCallOrder[0]).toBeGreaterThan(f.upsert.mock.invocationCallOrder[0] ?? 0);
+    expect(f.setDefault).not.toHaveBeenCalled();
+    mode = 'onboarding';
+    expect(await f.setup.connect('ego-lite', {})).toMatchObject({ state: 'needs_user_action', reason: 'ego_onboarding' });
+    expect(f.connect).toHaveBeenCalledTimes(1);
+  } finally {
+    if (previous === undefined) delete process.env['PATH'];
+    else process.env['PATH'] = previous;
+  }
+});
+
+it('keeps a ready Ego Lite check when the allow set does not include it yet', async () => {
+  const exe = 'C:\\ego-fixture\\ego-browser.exe';
+  const previous = process.env['PATH'];
+  process.env['PATH'] = 'C:\\ego-fixture';
+  const spawn = vi.fn(async (_command: string, args: readonly string[] = []) => ({
+    stdout: Readable.from([args.includes('nodejs') ? 'kiki-ego-ready\n' : '']), stderr: Readable.from(['']),
+    wait: async () => 0, kill: async () => undefined, dispose: async () => undefined,
+  }));
+  const f = fixture({
+    hostProcess: { spawn } as never,
+    hostFs: {
+      mkdir: async () => undefined, writeText: async () => undefined, readText: async () => '', remove: async () => undefined, readdir: async () => [],
+      stat: async (file: string) => ({ isFile: file.replaceAll('/', '\\').toLowerCase() === exe.toLowerCase(), isDirectory: false, size: 0 }),
+    } as never,
+  });
+  f.connect.mockRejectedValueOnce(new BrowserError('browser.disabled', 'Browser "ego-lite" is not in the allowed set.', { details: { reason: 'not_allowed' } }));
+  try {
+    const ready = await f.setup.connect('ego-lite', {});
+    expect(ready.state).toBe('ready');
+    expect(f.connect).toHaveBeenCalledWith('ego-lite');
+    expect(f.upsert.mock.calls[0]?.[1]).not.toHaveProperty('allowedBrowsers');
     expect(f.setDefault).not.toHaveBeenCalled();
   } finally {
     if (previous === undefined) delete process.env['PATH'];

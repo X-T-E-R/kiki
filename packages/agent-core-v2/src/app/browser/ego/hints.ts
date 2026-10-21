@@ -73,6 +73,48 @@ async function readStream(stream: NodeJS.ReadableStream): Promise<string> {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+export function expandRegistryPath(value: string, env: NodeJS.ProcessEnv): string {
+  return value.replace(/%([^%]+)%/g, (whole, name: string) => {
+    if (Object.prototype.hasOwnProperty.call(env, name)) return env[name] ?? whole;
+    const key = Object.keys(env).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
+    return key === undefined ? whole : env[key] ?? whole;
+  });
+}
+
+export function parseRegistryPathValue(text: string): string | undefined {
+  for (const line of text.split(/\r?\n/)) {
+    const match = /^\s+Path\s+REG_(?:SZ|EXPAND_SZ)\s+(.*)$/i.exec(line);
+    if (match === null) continue;
+    const value = match[1]?.trim() ?? '';
+    return value === '' ? undefined : value;
+  }
+  return undefined;
+}
+
+async function readRegistryPath(processes: IHostProcessService, key: string): Promise<string | undefined> {
+  let child: IHostProcess | undefined;
+  try {
+    child = await processes.spawn('reg.exe', ['query', key, '/v', 'Path'], { shell: false, windowsHide: true });
+    const [code, stdout] = await Promise.all([child.wait(), readStream(child.stdout)]);
+    if (code !== 0) return undefined;
+    return parseRegistryPathValue(stdout);
+  } catch {
+    return undefined;
+  } finally {
+    await child?.dispose();
+  }
+}
+
+export async function readRegisteredEgoPath(processes: IHostProcessService, env: NodeJS.ProcessEnv, platform = process.platform): Promise<string | undefined> {
+  if (platform !== 'win32') return undefined;
+  const [user, system] = await Promise.all([
+    readRegistryPath(processes, 'HKCU\\Environment'),
+    readRegistryPath(processes, 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment'),
+  ]);
+  const parts = [user, system].filter((part): part is string => part !== undefined).map((part) => expandRegistryPath(part, env));
+  return parts.length === 0 ? undefined : parts.join(delimiter);
+}
+
 export async function readEgoUninstallRecords(processes: IHostProcessService, platform = process.platform): Promise<readonly EgoUninstallRecord[]> {
   if (platform !== 'win32') return [];
   let child: IHostProcess | undefined;

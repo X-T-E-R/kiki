@@ -212,3 +212,49 @@ describe('contributed subagent opt-in default', () => {
     expect(isToolActiveComposed({ ...enabled, profile: { tools: [] } }, name, 'mcp')).toBe(false);
   });
 });
+
+describe('browser__ego_run host execution', () => {
+  const name = 'browser__ego_run';
+
+  it('follows a disabled shell group unless browser__ego_run or Bash is named exactly', () => {
+    expect(isToolActive({ tools: ['*'], disabledToolGroups: ['shell' as const] }, name)).toBe(false);
+    expect(isToolActive({ disabledToolGroups: ['shell' as const] }, name)).toBe(false);
+    expect(isToolActive({ tools: [name], disallowedTools: ['Bash'], disabledToolGroups: ['shell' as const] }, name)).toBe(true);
+    expect(isToolActive({ tools: ['Bash'], disabledToolGroups: ['shell' as const] }, name)).toBe(true);
+  });
+
+  it('uses the final Bash result when no layer names browser__ego_run', () => {
+    expect(isToolActiveComposed({ profile: { tools: ['*'] }, sessionDisabledTools: ['Bash'] }, name)).toBe(false);
+    expect(isToolActiveComposed({ profile: {}, workspaceDisabledTools: ['Bash'] }, name)).toBe(false);
+    expect(isToolActiveComposed({ profile: { tools: ['*'] }, global: { disabled: ['Bash'] } }, name)).toBe(false);
+    expect(isToolActiveComposed({ profile: { disabledToolGroups: ['shell' as const] } }, name)).toBe(false);
+    expect(isToolActiveComposed({ profile: { tools: ['*'], toolAllowPolicies: [['Read']] } }, name)).toBe(false);
+  });
+
+  it('keeps an exact browser__ego_run grant when Bash is denied elsewhere', () => {
+    expect(isToolActiveComposed({
+      profile: { tools: [name] }, sessionDisabledTools: ['Bash'], workspaceDisabledTools: ['Bash'],
+    }, name)).toBe(true);
+    expect(isToolActiveComposed({
+      profile: { tools: ['*'], disabledToolGroups: ['shell' as const] }, global: { enabled: [name] }, sessionDisabledTools: ['Bash'],
+    }, name)).toBe(true);
+    expect(isToolActiveComposed({ profile: { toolAllowPolicies: [[name]] }, global: { disabled: ['Bash'] } }, name)).toBe(true);
+    expect(isToolActiveComposed({ profile: { tools: [name] }, global: { enabled: ['Read'] } }, name)).toBe(false);
+    expect(isToolActiveComposed({ profile: { tools: [name], disallowedTools: ['browser__*'] } }, name)).toBe(false);
+    expect(isToolActiveComposed({ profile: { tools: [name] }, sessionDisabledTools: ['browser__*'] }, name)).toBe(false);
+    expect(isToolActiveComposed({ profile: { tools: [name], executionRestriction: 'research-readonly' } }, name)).toBe(false);
+  });
+
+  it('still requires the exact browser__ego_run name before a subagent can use it', () => {
+    expect(isToolActiveComposed({
+      profile: { tools: ['Bash'] },
+      subagent: { allowedTools: ['Bash', 'browser__*', '*'] },
+      subagentDefault: 'opt-in',
+    }, name)).toBe(false);
+    expect(isToolActiveComposed({
+      profile: { tools: ['Bash'] },
+      subagent: { allowedTools: [name] },
+      subagentDefault: 'opt-in',
+    }, name)).toBe(true);
+  });
+});

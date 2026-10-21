@@ -171,7 +171,7 @@ URL 简写与 `source` 形式接受同样的选项。inline 与 file 内容不�
 
 **`BrowserTabs`** 管理一条连接内的目标：`list`、`open`、`window`、`select`、`close` 与 `frame`（`main` 回到顶层 frame）。目标使用后端的 CDP target ID，不是标签序号或标签名，这些工具也不会跟随用户的前台标签。切换标签或 frame、或重新连接后，元素引用需要重新读取快照。
 
-**Ego Lite** 是另一种连接。请自行安装 Ego Lite，完成它自己的设置窗口，在浏览器设置里检查，再选中这条连接。Kiki 不会安装它，也不会导入 Chrome 的数据。`browser__ego_run` 接受可选的 `browser` id 和必填的 `script`，并在该连接里运行这段脚本。脚本里的 `shotDir` 是这次调用的绝对目录；写到那里的 png 和 jpeg，在 20 MiB 以内会附到时间线。在 Ego Lite 连接上，`BrowserTabs` 可以列出、打开、选中和关闭页面；标签 id 是页面标签，例如 `p1`，关闭只作用于 Agent 打开的标签。这里没有 window 和 frame。禁止浏览器工具时，Ego 脚本一并被禁止。子 Agent 需要点名这个脚本工具。
+**Ego Lite** 是另一种连接。请自行安装 Ego Lite，完成它自己的设置窗口，在浏览器设置里检查，再选中这条连接。Kiki 不会安装它，也不会导入 Chrome 的数据。`browser__ego_run` 接受可选的 `browser` id 和必填的 `script`，并在该连接里运行这段脚本。脚本里的 `shotDir` 是这次调用的绝对目录。截图要写成绝对文件，例如 `page.screenshot({ path: shotDir + '/shot.png' })`。写到这个目录里的 png 和 jpeg，在 20 MiB 以内会附到时间线。省略 `path` 时文件落在系统临时目录，不会被附上。在 Ego Lite 连接上，`BrowserTabs` 可以列出、打开、选中和关闭页面；标签 id 是页面标签，例如 `p1`，关闭只作用于 Agent 打开的标签。这里没有 window 和 frame。禁止浏览器工具时，Ego 脚本一并被禁止。子 Agent 需要点名这个脚本工具。
 
 结果会带上解析后的连接、运行会话、标签与 frame。由 Kiki 为该次调用命名的产物——截图、HAR、trace、profiler 输出或录制——在 20 MiB 以内会自动附到时间线；更大的文件留在执行主机上，需要通过现有文件通道取回。超时不代表动作已确认：重发之前先对同一目标重新观察。
 

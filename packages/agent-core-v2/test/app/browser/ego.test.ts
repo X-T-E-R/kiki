@@ -14,7 +14,7 @@ import { browserConnectionRecord, type BrowserResolvedConnection } from '#/app/b
 import type { BrowserRequestContext } from '#/app/browser/codexBrowser';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService } from '#/os/interface/hostProcess';
-import { egoRunExecution } from '#/agent/tools/browser/browserTools';
+import { AgentBrowserService, BrowserEgoRunTool, egoRunExecution, type IAgentBrowserService } from '#/agent/tools/browser/browserTools';
 import { toolApprovalRule } from '#/agent/tools/os/sshToolTarget';
 import type { Runtime } from '#/runtime/runtime';
 import { parseEgoUninstallExport } from '#/app/browser/ego/hints';
@@ -328,6 +328,68 @@ describe('Ego Lite control', () => {
       expect(browserConnectionRecord(configs.get('ego-lite')!)).toEqual({ id: 'ego-lite', name: 'Ego Lite', enabled: true, type: 'ego-lite', cliPath: exe, profileId: undefined, serverName: undefined });
       expect(browserConnectionRecord(configs.get('ego-lite')!)).not.toHaveProperty('endpointDisplay');
     } finally { await ix.dispose(); }
+  });
+});
+
+describe('Ego Lite discovery from the environment registry', () => {
+  it('reads the current user and system Path when the process environment is stale', async () => {
+    const exe = join('C:/ego-root/ego-registry', EXE);
+    const { fs } = memoryFs([exe]);
+    const proc = scripted((command, args) => {
+      expect(command).toBe('reg.exe');
+      const key = args[1] ?? '';
+      if (key === 'HKCU\\Environment') return { stdout: 'HKEY_CURRENT_USER\\Environment\r\n    Path    REG_EXPAND_SZ    %SystemRoot%\\ego-registry\r\n' };
+      if (key.includes('Session Manager\\Environment')) return { stdout: 'HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment\r\n    Path    REG_SZ    C:\\Windows\\system32\r\n' };
+      return { stdout: '' };
+    });
+    const runtime = new EgoBrowserRuntime(proc.service, fs, { PATH: 'C:\\stale', SystemRoot: 'C:\\ego-root' }, 'win32');
+    await expect(runtime.resolve(undefined)).resolves.toEqual({ kind: 'found', path: exe });
+    expect(proc.calls.map((call) => call.args[1])).toEqual(expect.arrayContaining([
+      'HKCU\\Environment',
+      'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment',
+    ]));
+    expect(proc.calls.every((call) => call.options?.shell === false && call.options?.windowsHide === true)).toBe(true);
+  });
+
+  it('keeps the process Path when the environment registry does not answer', async () => {
+    const exe = join('C:/stale', EXE);
+    const { fs } = memoryFs([exe]);
+    const proc = scripted(() => { throw new Error('reg unavailable'); });
+    const runtime = new EgoBrowserRuntime(proc.service, fs, { PATH: 'C:\\stale' }, 'win32');
+    await expect(runtime.resolve(undefined)).resolves.toEqual({ kind: 'found', path: exe });
+  });
+});
+
+describe('browser__ego_run on the service computer', () => {
+  it('describes an absolute screenshot file under shotDir', () => {
+    const tool = new BrowserEgoRunTool({} as IAgentBrowserService);
+    expect(tool.description).toContain("shotDir + '/shot.png'");
+    expect(tool.description).toContain('Omitting `path`');
+  });
+
+  it('refuses an SSH runtime instead of running the script locally', async () => {
+    const prepareFor = vi.fn();
+    const service = Object.create(AgentBrowserService.prototype) as AgentBrowserService;
+    Object.assign(service, { runtime: { inspect: () => ({ identity: { runtimeId: 'ssh:desk' } }), prepareFor } });
+    const result = await service.egoExecution({ script: 'console.log(1)' });
+    expect(result.isError).toBe(true);
+    expect(result).not.toHaveProperty('execute');
+    expect(prepareFor).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ output: expect.stringContaining('SSH') });
+    expect(JSON.stringify(result)).not.toContain('console.log(1)');
+  });
+
+  it('keeps a local runtime on the script approval', async () => {
+    const prepareFor = vi.fn();
+    const service = Object.create(AgentBrowserService.prototype) as AgentBrowserService;
+    Object.assign(service, { runtime: { inspect: () => ({ identity: { runtimeId: 'local' } }), prepareFor } });
+    const result = await service.egoExecution({ script: 'console.log(1)' });
+    const runtime = { identity: { runtimeId: 'local' } } as Runtime;
+    expect(prepareFor).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      display: { kind: 'command', command: 'console.log(1)', language: 'bash' },
+      approvalRule: toolApprovalRule('browser__ego_run', 'console.log(1)', runtime),
+    });
   });
 });
 

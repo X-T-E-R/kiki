@@ -277,8 +277,10 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
   async egoExecution(input: BrowserEgoRunInput): Promise<ToolExecution> {
     const args = BrowserEgoRunInputSchema.parse(input);
     const inspected = this.runtime.inspect();
-    const runtime = inspected.identity.runtimeId.startsWith('ssh:') ? await prepareToolRuntime(this.runtime, 'local') : inspected;
-    return egoRunExecution(args.script, runtime, (ctx) => this.egoRun(args, ctx.signal, ctx));
+    if (inspected.identity.runtimeId.startsWith('ssh:')) {
+      return { isError: true, output: 'Ego Lite runs on the computer where Kiki is running, not through an SSH workspace.' };
+    }
+    return egoRunExecution(args.script, inspected, (ctx) => this.egoRun(args, ctx.signal, ctx));
   }
 
   async egoRun(input: BrowserEgoRunInput, signal?: AbortSignal, ctx?: ExecutableToolContext): Promise<ExecutableToolResult> {
@@ -513,7 +515,7 @@ export const IBrowserEgoRunTool = createDecorator<IBrowserEgoRunTool>('browserEg
 export class BrowserEgoRunTool implements IBrowserEgoRunTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'browser__ego_run';
-  readonly description = 'Run one script in this agent\'s Ego Lite space. `task` is already bound to that space. `shotDir` is an absolute directory for this call; pass it as `page.screenshot({ path })`. Print `page.snapshot()` when the next step needs refs. Kiki does not install Ego Lite and does not import Chrome data.';
+  readonly description = 'Run one script in this agent\'s Ego Lite space. `task` is already bound to that space. `shotDir` is an absolute directory for this call; write a file such as `page.screenshot({ path: shotDir + \'/shot.png\' })`. A screenshot counts only when the script writes a png or jpeg there. Omitting `path` leaves the file in the system temp directory, and that file is not attached. Print `page.snapshot()` when the next step needs refs. Kiki does not install Ego Lite and does not import Chrome data.';
   readonly parameters = toInputJsonSchema(BrowserEgoRunInputSchema);
   constructor(@IAgentBrowserService private readonly browser: IAgentBrowserService) {}
   resolveExecution(input: BrowserEgoRunInput): Promise<ToolExecution> {

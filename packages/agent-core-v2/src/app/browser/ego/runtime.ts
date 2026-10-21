@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { delimiter } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { join } from 'pathe';
@@ -9,7 +10,7 @@ import type { BrowserTab } from '#/app/browser/browser';
 import type { BrowserResolvedConnection } from '#/app/browser/browserConfig';
 import { BrowserError } from '#/app/browser/errors';
 
-import { egoChildNames, egoFileExists, egoPathHits, readEgoUninstallRecords } from './hints';
+import { egoChildNames, egoFileExists, egoPathHits, readEgoUninstallRecords, readRegisteredEgoPath } from './hints';
 import {
   EGO_NAME_IN_USE, EGO_READY_MARKER, EGO_SDK_ENV, EGO_SPACE_FILE, EGO_USER_IN_CONTROL,
   classifyEgoCheck, egoSpaceName, resolveEgoCli, type EgoCliResolution,
@@ -205,7 +206,9 @@ export class EgoBrowserRuntime {
   async resolve(connection: BrowserResolvedConnection | undefined): Promise<EgoCliResolution> {
     const records = await readEgoUninstallRecords(this.processes, this.platform);
     const exists = async (file: string): Promise<boolean> => egoFileExists(this.files, file);
-    const pathHits = await egoPathHits(this.env['PATH'], exists);
+    const registered = await readRegisteredEgoPath(this.processes, this.env, this.platform);
+    const pathEnv = [registered, this.env['PATH']].filter((part): part is string => part !== undefined && part.trim() !== '').join(delimiter);
+    const pathHits = await egoPathHits(pathEnv === '' ? undefined : pathEnv, exists);
     const syncExists = new Map<string, boolean>();
     const remember = async (file: string): Promise<boolean> => {
       const known = syncExists.get(file);

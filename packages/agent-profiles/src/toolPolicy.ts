@@ -56,14 +56,26 @@ function allowListsPass(policy: ToolActivationPolicy, name: string, source: Tool
   return true;
 }
 
+export function egoHostScriptDenied(patterns: readonly string[] | undefined): boolean {
+  return patterns !== undefined && nonMcpDenied(patterns, 'browser__ego_run');
+}
+
+export function egoHostScriptExplicitlyGranted(policy: ToolActivationPolicy): boolean {
+  const lists = [policy.tools, ...(policy.toolAllowPolicies ?? [])].filter(
+    (candidate): candidate is readonly string[] => candidate !== undefined,
+  );
+  if (!lists.some((list) => list.includes('browser__ego_run'))) return false;
+  return lists.every((list) => list.includes('*') || list.includes('browser__ego_run'));
+}
+
 export function isToolActive(
   policy: ToolActivationPolicy,
   name: string,
   source: ToolSource = 'builtin',
 ): boolean {
   if (source === 'builtin' && isEgoHostScriptToolName(name)) {
-    if (policy.disallowedTools !== undefined && nonMcpDenied(policy.disallowedTools, name)) return false;
-    if (allowListsPass(policy, name, source)) return true;
+    if (egoHostScriptDenied(policy.disallowedTools)) return false;
+    if (egoHostScriptExplicitlyGranted(policy)) return true;
     return isToolActive(policy, 'Bash', 'builtin');
   }
   if (!allowListsPass(policy, name, source)) return false;

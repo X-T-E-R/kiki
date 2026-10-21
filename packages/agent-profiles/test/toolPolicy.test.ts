@@ -84,6 +84,18 @@ describe('shared profile tool matching', () => {
     }
   });
 
+  it('does not let an empty allow list or a star bypass a Bash deny for browser__ego_run', () => {
+    const name = 'browser__ego_run';
+    for (const active of [isToolActive, engineToolActive]) {
+      expect(active({}, name)).toBe(true);
+      expect(active({ tools: ['*'] }, name)).toBe(true);
+      expect(active({ disallowedTools: ['Bash'] }, name)).toBe(false);
+      expect(active({ tools: ['*'], disallowedTools: ['Bash'] }, name)).toBe(false);
+      expect(active({ tools: [name], disallowedTools: ['Bash'] }, name)).toBe(true);
+      expect(active({ tools: [name], disallowedTools: ['browser__*'] }, name)).toBe(false);
+    }
+  });
+
   it('uses parser normalization for null, empty and singleton wildcard without treating arbitrary raw stars as a glob', () => {
     for (const [field, expected] of [['tools: null', true], ['tools: []', false], ['tools: ["*"]', true]] as const) {
       const parsed = parseAgentFileText({ path: '/fixture/example.md', source: 'user',

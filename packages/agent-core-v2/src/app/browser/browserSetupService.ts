@@ -454,6 +454,14 @@ export class BrowserSetupService implements IBrowserSetupService {
         ...(saved?.serverName !== undefined && saved.serverName !== '' ? { serverName: saved.serverName } : {}),
       });
     }
+    if (probed.kind === 'ready' && found !== undefined) {
+      try {
+        await this.control.connect(EGO_LITE_CONNECTION_ID);
+      } catch (error) {
+        // The allow checkbox is a separate later step. Refusing admission must not turn a ready CLI check into a failure.
+        if (!(error instanceof BrowserError) || error.code !== 'browser.disabled' || error.details?.['reason'] !== 'not_allowed') throw error;
+      }
+    }
     return this.egoStatus();
   }
 
