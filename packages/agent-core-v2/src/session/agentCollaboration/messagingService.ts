@@ -81,8 +81,8 @@ function continuationFailureNotice(input: {
     `target_agent_id: ${input.targetAgentId}`,
     `error_code: ${input.code}`,
     `reason: ${input.reason}`,
-    `Retry this AgentSend call with the same idempotency key. That retry reuses message ${input.messageId}.`,
-    'Do not open a new remote session in place of this resume.',
+    `Resume this same child with AgentRun. Set resume to ${input.targetAgentId}, set prompt to an empty string, and set description to a short label. Message ${input.messageId} stays queued and enters that resume. Do not call AgentSend again. Do not repeat the saved message in the prompt.`,
+    'Do not set new_window. Do not open a new remote session in place of this resume.',
   ].join('\n');
 }
 

@@ -64,7 +64,7 @@ Agent 任务默认 2 小时超时，全局限制用 `[subagent] timeout_ms` 或 
 
 `AgentList` 返回直属子 Agent。默认列出运行中的和没有跟踪任务的；需要已结束或失败的，再传 `include_finished: true`。最多返回 50 条，运行中的排在前面。
 
-`AgentSend` 把子 Agent 继续工作所需的输入交给它。native 子 Agent 运行中时，消息在下一个 step 边界进入当前工作；Codex 和支持 steer 的 ACP 子 Agent 可以在运行期间收到。已经停止的子 Agent，包括运行刚好在消息进入上下文前结束的情况，会沿用原来的模型、profile、工具和上下文继续，这次运行结束时照常通知父 Agent。已保存的消息按顺序留在这同一个绑定上。`queued` 表示消息已保存，不表示运行已经开始。如果继续无法启动，已保存的消息仍在队列里，发送方会收到原因、error code、目标和原来的 message id。用同一次调用重试会复用这条消息。外部 resume 失败时不会另开一个新的远端会话。用 `name` 或 agent id 指定目标。
+`AgentSend` 把子 Agent 继续工作所需的输入交给它。native 子 Agent 运行中时，消息在下一个 step 边界进入当前工作；Codex 和支持 steer 的 ACP 子 Agent 可以在运行期间收到。已经停止的子 Agent，包括运行刚好在消息进入上下文前结束的情况，会沿用原来的模型、profile、工具和上下文继续，这次运行结束时照常通知父 Agent。已保存的消息按顺序留在这同一个绑定上。`queued` 表示消息已保存，不表示运行已经开始。如果继续无法启动，已保存的消息仍在队列里，发送方会收到原因、error code、目标和原来的 message id。用 AgentRun 继续同一个子 Agent：resume 设为该 agent id，prompt 设为空字符串，description 设为简短标签。不要再次调用 AgentSend，不要在 prompt 里重复这条已保存的消息，也不要设置 new_window。外部 resume 失败时不会另开一个新的远端会话。用 `name` 或 agent id 指定目标。
 
 `AgentNotify` 方向相反，只有 subagent 可用：它把一条 fire-and-forget 消息排进父 Agent 邮箱，父 Agent 运行时在下一个 step 边界读到，空闲时在下一次运行时读取。main agent 没有父 Agent，永远拿不到它。在 `config.toml` 里设 `[agents] notify_parent = false` 可全局关闭，默认开启。
 
