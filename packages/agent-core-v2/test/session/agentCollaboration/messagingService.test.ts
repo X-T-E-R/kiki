@@ -55,6 +55,7 @@ import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting'
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { SubagentToolInputSchema } from '#/agent/tools/agent/agent';
 import { AgentSendTool } from '#/agent/tools/agent-send/agentSendTool';
 import { IAgentLifecycleService, type IAgentLifecycleService as AgentLifecycle } from '#/session/agentLifecycle/agentLifecycle';
 import { IAgentCollaborationRegistry, COLLABORATION_LATEST_TASK_LABEL, COLLABORATION_TASK_NAME_LABEL } from '#/session/agentCollaboration/registry';
@@ -448,7 +449,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     service.dispose();
   });
 
-  it('reports a dispatch limit and keeps the saved message retryable when no run will release capacity', async () => {
+  it('reports a dispatch limit, tells the sender to resume, and still delivers the original message when capacity returns', async () => {
     const store = mailboxStore(tempDir());
     const target = agentHandle('agent-target');
     const log = stubLog();
@@ -499,8 +500,12 @@ describe('agent collaboration safe-boundary delivery', () => {
     expect(capacityNotice).toContain(accepted.message.messageId);
     expect(capacityNotice).toContain('agent-target');
     expect(capacityNotice).toContain('dispatch.limit_exceeded');
-    expect(capacityNotice).toContain('same idempotency key');
+    expect(capacityNotice).toContain('AgentRun');
+    expect(capacityNotice).toContain('empty string');
+    expect(capacityNotice).toContain('Do not call AgentSend again');
+    expect(capacityNotice).toContain('Do not set new_window');
     expect(capacityNotice).toContain('new remote session');
+    expect(capacityNotice).not.toContain('idempotency');
     expect(warn).toHaveBeenCalled();
     const payload = warn.mock.calls.at(-1)?.[1] as { messageId: string; error: Error2 };
     expect(payload.messageId).toBe(accepted.message.messageId);
@@ -539,7 +544,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     service.dispose();
   });
 
-  it('tells the AgentSend caller when an external resume fails and retries the same message', async () => {
+  it('tells the AgentSend caller when an external resume fails, and an empty-prompt resume consumes the saved message', async () => {
     const senderCtx = createTestAgent();
     const source: IAgentScopeHandle = {
       id: 'main',
@@ -555,26 +560,18 @@ describe('agent collaboration safe-boundary delivery', () => {
       { details: { resumeSupported: false, loadSupported: false } },
     );
     let opened = 0;
-    let rejectResume = true;
     const dispatch = dispatchHarness(async (child, request, options) => {
       opened += 1;
-      if (rejectResume) {
-        let current = request as DispatchRun['request'];
-        await child.agent.accessor.get(IAgentExecutionService).hooks.onWillRun.run({
-          signal: options.signal,
-          request: current,
-          replaceRequest: (replacement) => { current = replacement; },
-          afterStart: () => {},
-        });
-        const started = Promise.reject(resumeFailure);
-        void started.catch(() => {});
-        return { child, request: current, started };
-      }
-      const started = child.agent.accessor.get(IAgentExecutionService).run(
-        request as DispatchRun['request'],
-        { signal: options.signal },
-      );
-      return { child, request: request as DispatchRun['request'], started };
+      let current = request as DispatchRun['request'];
+      await child.agent.accessor.get(IAgentExecutionService).hooks.onWillRun.run({
+        signal: options.signal,
+        request: current,
+        replaceRequest: (replacement) => { current = replacement; },
+        afterStart: () => {},
+      });
+      const started = Promise.reject(resumeFailure);
+      void started.catch(() => {});
+      return { child, request: current, started };
     });
     const metadata = metadataHarness({
       main: { type: 'main' },
@@ -624,28 +621,29 @@ describe('agent collaboration safe-boundary delivery', () => {
       expect(notice).toContain('agent-target');
       expect(notice).toContain('executor.session_open_failed');
       expect(notice).toContain('The requested external session cannot be resumed or loaded');
-      expect(notice).toContain('same idempotency key');
+      expect(notice).toContain('Set resume to agent-target');
+      expect(notice).toContain('empty string');
+      expect(SubagentToolInputSchema.safeParse({
+        resume: 'agent-target',
+        prompt: '',
+        description: 'resume saved message',
+      }).success).toBe(true);
+      expect(notice).toContain('Do not call AgentSend again');
+      expect(notice).toContain('Do not set new_window');
       expect(notice).toContain('new remote session');
+      expect(notice).not.toContain('idempotency');
       expect(opened).toBe(1);
       expect(target.remoteRequests).toEqual([]);
       expect((await store.accept(saved)).delivery).toBe('queued');
 
-      rejectResume = false;
-      const second = await executeTool(tool, {
-        turnId: 1,
-        toolCallId: 'toolu_resume_1',
-        args: { target: 'researcher', message: 'continue the open session' },
-        signal,
-      });
-      expect(JSON.parse(toolOutput(second))).toMatchObject({
-        message_id: queued.message_id,
-        deduplicated: true,
-      });
-      await vi.waitFor(async () => {
-        expect((await store.accept(saved)).delivery).toBe('delivered');
-      });
-      expect(opened).toBe(2);
-      expect(target.remoteRequests).toHaveLength(1);
+      await target.execution.run({ kind: 'prompt', prompt: '' }, { signal });
+      expect(target.remoteRequests).toEqual([{
+        kind: 'prompt',
+        prompt: 'Message from agent "root" (main):\n\ncontinue the open session\n\n',
+      }]);
+      expect(await store.nextQueued('session-1', 'agent-target')).toBeUndefined();
+      expect((await store.accept(saved)).delivery).toBe('delivered');
+      expect(opened).toBe(1);
       await senderCtx.get(IAgentLoopService).settled();
     } finally {
       service.dispose();
@@ -712,8 +710,12 @@ describe('agent collaboration safe-boundary delivery', () => {
       });
       expect(dispatched[0]?.body).toContain(accepted.message.messageId);
       expect(dispatched[0]?.body).toContain('agent-target');
-      expect(dispatched[0]?.body).toContain('same idempotency key');
+      expect(dispatched[0]?.body).toContain('Set resume to agent-target');
+      expect(dispatched[0]?.body).toContain('empty string');
+      expect(dispatched[0]?.body).toContain('Do not call AgentSend again');
+      expect(dispatched[0]?.body).toContain('Do not set new_window');
       expect(dispatched[0]?.body).toContain('new remote session');
+      expect(dispatched[0]?.body).not.toContain('idempotency');
       expect((await store.accept(messageInput('resume the external session', 'external-open-failed'))).delivery).toBe('queued');
     } finally {
       service.dispose();

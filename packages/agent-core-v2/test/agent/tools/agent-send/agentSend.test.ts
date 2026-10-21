@@ -251,6 +251,14 @@ describe('AgentSend', () => {
         extra: true,
       }).success,
     ).toBe(false);
+    expect(
+      AgentSendInputSchema.safeParse({
+        target: NAMED_NAME,
+        message: 'hello',
+        idempotency_key: 'toolu_1',
+      }).success,
+    ).toBe(false);
+    expect(Object.keys(AgentSendInputSchema.shape).sort()).toEqual(['message', 'target']);
     expect(AgentSendInputSchema.safeParse({ target: NAMED_NAME, message: 'hello' }).success).toBe(
       true,
     );
