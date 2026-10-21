@@ -547,17 +547,35 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     handle: IAgentScopeHandle,
     messageId: string,
   ): Promise<'included' | 'continue'> {
+    const execution = handle.accessor.get(IAgentExecutionService);
+    let sawSettledWhileStarting = false;
     for (;;) {
       if (!this.isStarting(handle)) return 'continue';
       if (this.externalPrepared.get(handle.id) === messageId) return 'included';
-      await this.waitExternalEpoch(handle.id, this.externalEpoch.get(handle.id) ?? 0);
+      const seen = this.externalEpoch.get(handle.id) ?? 0;
+      const epochChanged = this.waitExternalEpoch(handle.id, seen);
+      if (sawSettledWhileStarting) {
+        await epochChanged;
+        continue;
+      }
+      const winner = await Promise.race([
+        epochChanged.then(() => 'epoch' as const),
+        execution.settled().then(() => 'settled' as const),
+      ]);
+      if (
+        winner === 'settled' &&
+        this.isStarting(handle) &&
+        (this.externalEpoch.get(handle.id) ?? 0) === seen
+      ) {
+        sawSettledWhileStarting = true;
+      }
     }
   }
 
-  private busyExecutionsExcept(agentId: string): readonly { id: string; settled: () => Promise<void> }[] {
+  private capacityHolders(targetAgentId: string): readonly { readonly id: string; readonly settled: () => Promise<void> }[] {
     const holders = [];
     for (const candidate of this.lifecycle.list()) {
-      if (candidate.id === agentId) continue;
+      if (candidate.id === targetAgentId || candidate.id === MAIN_AGENT_ID) continue;
       const execution = candidate.accessor.get(IAgentExecutionService);
       const state = execution.status().state;
       if (state !== 'starting' && state !== 'running' && state !== 'cancelling') continue;
@@ -567,12 +585,12 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
   }
 
   private async awaitCapacityRelease(agentId: string): Promise<boolean> {
-    const holders = this.busyExecutionsExcept(agentId);
+    const holders = this.capacityHolders(agentId);
     if (holders.length === 0) return false;
-    const before = holders.map((holder) => holder.id).sort().join('\0');
-    await Promise.all(holders.map((holder) => holder.settled()));
-    const after = this.busyExecutionsExcept(agentId).map((holder) => holder.id).sort().join('\0');
-    return after !== before;
+    const before = holders.map((holder) => holder.id).sort();
+    await Promise.race(holders.map((holder) => holder.settled()));
+    const after = this.capacityHolders(agentId).map((holder) => holder.id).sort();
+    return before.length !== after.length || before.some((id, index) => id !== after[index]);
   }
 
   private executionBusy(handle: IAgentScopeHandle): boolean {
