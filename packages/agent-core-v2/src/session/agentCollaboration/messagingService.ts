@@ -66,23 +66,28 @@ function continuationFailureReason(error: unknown): string {
   return 'The continuation did not start.';
 }
 
+function originalSessionCannotResume(execution: IAgentExecutionService | undefined): boolean {
+  if (execution?.status().state !== 'broken') return false;
+  return execution.canResumeBrokenOriginal() !== true;
+}
+
 function continuationFailureNotice(input: {
   readonly messageId: string;
   readonly targetAgentId: string;
   readonly code: string;
   readonly reason: string;
+  readonly unrecoverable: boolean;
 }): string {
-  const unrecoverable = input.reason.includes('original remote session cannot be resumed');
   return [
     'AgentSend continuation did not start.',
     `message_id: ${input.messageId}`,
     `target_agent_id: ${input.targetAgentId}`,
     `error_code: ${input.code}`,
     `reason: ${input.reason}`,
-    unrecoverable
+    input.unrecoverable
       ? `The executor is broken and the original remote session cannot be resumed. Message ${input.messageId} stays queued. Do not call AgentSend again. Do not open a new remote session.`
       : `Resume this same child with AgentRun. Set resume to ${input.targetAgentId}, set prompt to an empty string, and set description to a short label. Message ${input.messageId} stays queued and enters that resume. Do not call AgentSend again. Do not repeat the saved message in the prompt.`,
-    ...(unrecoverable ? [] : ['Do not set new_window. Do not open a new remote session in place of this resume.']),
+    ...(input.unrecoverable ? [] : ['Do not set new_window. Do not open a new remote session in place of this resume.']),
   ].join('\n');
 }
 
@@ -238,7 +243,14 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     this.log.warn('Agent message delivery did not finish', { messageId, targetAgentId, error });
     const sender = this.lifecycle.get(sourceAgentId);
     if (sender === undefined) return;
-    const text = continuationFailureNotice({ messageId, targetAgentId, code, reason });
+    const execution = this.lifecycle.get(targetAgentId)?.accessor.get(IAgentExecutionService);
+    const text = continuationFailureNotice({
+      messageId,
+      targetAgentId,
+      code,
+      reason,
+      unrecoverable: originalSessionCannotResume(execution),
+    });
     try {
       if (isExternalClientMain(await this.metadata.read(), sourceAgentId)) {
         await sender.accessor.get(IEventDispatcher).dispatch(new TaskNotified({

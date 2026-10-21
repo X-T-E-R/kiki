@@ -3,7 +3,7 @@ import { PassThrough, Readable, Writable } from 'node:stream';
 import { ndJsonStream } from '../../../../acp-client/node_modules/@agentclientprotocol/sdk/dist/acp.js';
 import { AcpProcessClient, type AcpOpenSessionOptions } from '@kiki/acp-client';
 import type { HostProcessLike } from '@kiki/acp-client';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import type { ServiceIdentifier } from '#/_base/di/instantiation';
@@ -53,6 +53,7 @@ import {
 } from '#/session/agentCollaboration/messageMailbox';
 import { AgentCollaborationMessagingService } from '#/session/agentCollaboration/messagingService';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
+import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import { SessionDispatchService } from '#/session/dispatch/dispatchService';
@@ -502,6 +503,174 @@ describe('recoverable ACP broken resume', () => {
       await remote.client.shutdown().catch(() => undefined);
       harness.ix.dispose();
       await senderCtx.dispose();
+    }
+  });
+
+  it('tells the sender when the first AgentSend resume is unsupported and does not promise AgentRun', async () => {
+    const remote = recordingClient(() => ({ capabilities: {} }), () => false);
+    const harness = createExecutionHarness({
+      agentId: CHILD,
+      client: remote.client,
+      modelBinding: 'argv',
+      permission: argvPermission,
+      prior: {
+        executorId: 'example-acp',
+        descriptorRevision: 'r1',
+        sessionEpoch: 1,
+        sessionRef: { executorId: 'example-acp', version: 1, ref: { sessionId: 'remote-original' } },
+      },
+    });
+    admitBrokenResume(harness.ix);
+    const metadata = sessionMetadata();
+    const mailbox = queuedStore(CHILD);
+    const notices: string[] = [];
+    const childLoop = {
+      enqueue: () => { throw new Error('child must not enqueue'); },
+      status: () => ({ state: 'idle' as const, pendingTurnIds: [], hasPendingRequests: false }),
+      settled: () => Promise.resolve(),
+      hooks: createHooks(['onWillBeginStep', 'onDidFinishStep']),
+    } as unknown as IAgentLoopService;
+    const handle: IAgentScopeHandle = {
+      id: CHILD,
+      kind: LifecycleScope.Agent,
+      accessor: {
+        get<T>(id: ServiceIdentifier<T>): T {
+          if (id === IAgentExecutionService) return harness.execution as T;
+          if (id === IAgentLoopService) return childLoop as T;
+          if (id === IAgentPromptService) return { list: () => ({ active: undefined, pending: [] }) } as T;
+          return harness.ix.get(id);
+        },
+      },
+      dispose: () => {},
+    };
+    const mainLoop = {
+      enqueue: (request: { resolveContextMessages(): readonly { content: readonly { type: string; text?: string }[] }[] }) => {
+        for (const message of request.resolveContextMessages()) {
+          notices.push(message.content.flatMap((part) => part.type === 'text' && part.text !== undefined ? [part.text] : []).join(''));
+        }
+      },
+      status: () => ({ state: 'idle' as const, pendingTurnIds: [], hasPendingRequests: false }),
+      settled: () => Promise.resolve(),
+      hooks: createHooks(['onWillBeginStep', 'onDidFinishStep']),
+    } as unknown as IAgentLoopService;
+    const mainExecution = {
+      status: () => ({ state: 'idle' as const }),
+      canResumeBrokenOriginal: () => false,
+      hooks: createHooks(['onWillRun']),
+      settled: async () => {},
+    } as unknown as IAgentExecutionService;
+    const main: IAgentScopeHandle = {
+      id: 'main',
+      kind: LifecycleScope.Agent,
+      accessor: {
+        get<T>(id: ServiceIdentifier<T>): T {
+          if (id === IAgentLoopService) return mainLoop as T;
+          if (id === IAgentExecutionService) return mainExecution as T;
+          if (id === IAgentPromptService) return { list: () => ({ active: undefined, pending: [] }) } as T;
+          return harness.ix.get(id);
+        },
+      },
+      dispose: () => {},
+    };
+    const lifecycle = {
+      _serviceBrand: undefined,
+      onDidCreate: () => ({ dispose() {} }),
+      onDidDispose: () => ({ dispose() {} }),
+      get: (id: string) => id === CHILD ? handle : id === 'main' ? main : undefined,
+      list: () => [main, handle],
+      create: async () => { throw new Error('unexpected create'); },
+    } as unknown as IAgentLifecycleService;
+    const session = {
+      _serviceBrand: undefined,
+      sessionId: 'session-1',
+      workspaceId: 'workspace-1',
+      sessionDir: 'session-dir',
+      metaScope: 'session/scope',
+      cwd: 'cwd',
+      scope: (subKey?: string) => subKey === undefined ? 'session/scope' : `session/scope/${subKey}`,
+    } as ISessionContext;
+    const messagingIx = new TestInstantiationService();
+    messagingIx.set(IAgentCollaborationMessageStore, mailbox.store);
+    messagingIx.set(IAgentLifecycleService, lifecycle);
+    messagingIx.set(ISessionContext, session);
+    messagingIx.set(ISessionMetadata, metadata);
+    messagingIx.set(ISessionDispatchService, {
+      runOnExisting: async (child, request, options) => {
+        const runRequest = typeof request === 'string' ? { kind: 'prompt' as const, prompt: request } : request;
+        return {
+          child,
+          request: runRequest,
+          started: harness.execution.run(runRequest, { signal: options.signal }),
+        };
+      },
+      recordDelegatedRun: () => {},
+    } as unknown as ISessionDispatchService);
+    messagingIx.set(ISessionManager, {
+      acquire: async () => ({
+        handle: {
+          id: 'session-1',
+          kind: LifecycleScope.Session,
+          accessor: {
+            get: <T>(id: ServiceIdentifier<T>): T => {
+              if (id === IAgentLifecycleService) return lifecycle as T;
+              throw new Error('unexpected session service');
+            },
+          },
+          dispose: () => {},
+        },
+        dispose: () => {},
+      }),
+    } as unknown as ISessionManager);
+    messagingIx.stub(ILogService, { warn: () => {}, info: () => {}, error: () => {}, debug: () => {} });
+    messagingIx.set(IAgentCollaborationMessagingService, new SyncDescriptor(AgentCollaborationMessagingService));
+    const messaging = messagingIx.get(IAgentCollaborationMessagingService) as AgentCollaborationMessagingService;
+    const saved = 'saved body that stays queued after an unsupported resume';
+    try {
+      expect(harness.execution.status()).toEqual({ state: 'idle' });
+      const accepted = await messaging.send({
+        sourceAgentId: 'main',
+        sourceTaskName: 'root',
+        targetAgentId: CHILD,
+        targetTaskName: 'researcher',
+        content: saved,
+        idempotencyKey: 'first-unsupported-resume',
+        waitForRunningDelivery: false,
+        idleWake: 'owned-child',
+      });
+      expect(accepted.delivery).toBe('queued');
+      expect(accepted.resumed).toBeUndefined();
+      await vi.waitFor(() => { expect(notices.length).toBeGreaterThan(0); });
+      const notice = notices.at(-1) ?? '';
+      expect(harness.execution.status()).toEqual({ state: 'broken' });
+      expect(harness.execution.canResumeBrokenOriginal()).toBe(false);
+      expect(harness.ix.get(IAgentExecutorRegistry).negotiated?.('example-acp', undefined)).toMatchObject({
+        resume: false,
+        load: false,
+      });
+      expect(notice).toContain(accepted.message.messageId);
+      expect(notice).toContain('executor.session_open_failed');
+      expect(notice).toContain('The requested external session cannot be resumed or loaded');
+      expect(notice).toContain(`Message ${accepted.message.messageId} stays queued`);
+      expect(notice).toContain('Do not call AgentSend again');
+      expect(notice).toContain('Do not open a new remote session');
+      expect(notice).not.toContain('AgentRun');
+      expect(notice).not.toContain('Set resume to');
+      expect(notice).not.toContain('empty string');
+      expect(notice).not.toContain('new_window');
+      expect(notice).not.toContain(`Agent instance "${CHILD}" is broken`);
+      expect(remote.opens[0]).toMatchObject({
+        requireResume: true,
+        sessionRef: { ref: { sessionId: 'remote-original' } },
+      });
+      expect(remote.histories.every((history) => history.sessionNewParams.length === 0)).toBe(true);
+      expect(mailbox.delivered()).toBe(false);
+      expect((await mailbox.store.nextQueued('session-1', CHILD))?.message.content).toBe(saved);
+    } finally {
+      messaging.dispose();
+      messagingIx.dispose();
+      await harness.execution.shutdown().catch(() => undefined);
+      await remote.client.shutdown().catch(() => undefined);
+      harness.ix.dispose();
     }
   });
 });
