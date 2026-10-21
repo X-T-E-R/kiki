@@ -856,7 +856,7 @@ export class SessionDispatchService implements ISessionDispatchService {
     const state = execution.status().state;
     if (state === 'idle') return;
     if (state === 'broken') {
-      if (execution.canResumeBrokenOriginal?.() === true || execution.canRetryBrokenExecution?.() === true) return;
+      if (execution.canResumeBrokenOriginal?.() || execution.canRetryBrokenExecution?.()) return;
       throw brokenOriginalResumeRefusal(child.id);
     }
     throw alreadyRunning(child.id);

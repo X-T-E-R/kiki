@@ -339,7 +339,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     ]);
     expect(maxInFlight).toBe(1);
     expect(await store.nextQueued('session-1', 'agent-target')).toBeUndefined();
-    service.dispose();
+    await service.dispose();
   });
 
   it('delivers external mail that arrives after prepare while that run is still starting', async () => {
@@ -459,7 +459,7 @@ describe('agent collaboration safe-boundary delivery', () => {
       expect(await store.nextQueued('session-1', 'agent-target')).toBeUndefined();
       expect(target.execution.status().state).toBe('idle');
       await second;
-      service.dispose();
+      await service.dispose();
     },
   );
 
@@ -515,7 +515,7 @@ describe('agent collaboration safe-boundary delivery', () => {
       expect((await store.accept(messageInput('after capacity', 'capacity-release'))).delivery).toBe('delivered');
     });
     expect(target.messages).toHaveLength(1);
-    service.dispose();
+    await service.dispose();
   });
 
   it('retries dispatch when one of two holders finishes and the other stays running', async () => {
@@ -579,7 +579,7 @@ describe('agent collaboration safe-boundary delivery', () => {
       expect((await store.accept(messageInput('after one holder', 'two-holder-release'))).delivery).toBe('delivered');
     });
     expect(target.messages).toHaveLength(1);
-    service.dispose();
+    await service.dispose();
   });
 
   it('reports a dispatch limit, tells the sender to resume, and still delivers the original message when capacity returns', async () => {
@@ -779,7 +779,7 @@ describe('agent collaboration safe-boundary delivery', () => {
       expect(opened).toBe(1);
       await senderCtx.get(IAgentLoopService).settled();
     } finally {
-      service.dispose();
+      await service.dispose();
       await senderCtx.dispose();
     }
   });
@@ -894,8 +894,8 @@ describe('agent collaboration safe-boundary delivery', () => {
       expect(await store.nextQueued('session-1', 'agent-target')).toBeUndefined();
       expect(result.output).not.toContain('saved body');
     } finally {
-      service.dispose();
-      disposables.dispose();
+      await service.dispose();
+      await disposables.dispose();
       await senderCtx.dispose();
     }
   });
@@ -967,7 +967,7 @@ describe('agent collaboration safe-boundary delivery', () => {
       expect(dispatched[0]?.body).not.toContain('idempotency');
       expect((await store.accept(messageInput('resume the external session', 'external-open-failed'))).delivery).toBe('queued');
     } finally {
-      service.dispose();
+      await service.dispose();
     }
   });
 
@@ -1754,7 +1754,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     expect(recoverNotice).toContain('empty string');
     expect(recoverNotice).toContain('Do not set new_window');
     expect(recoverNotice).not.toContain('original remote session cannot be resumed');
-    recoverable.dispose();
+    await recoverable.dispose();
 
     const refusedSender: ContextMessage[] = [];
     const refusedTarget = agentHandle('agent-target');
@@ -1783,7 +1783,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     expect(refusedNotice).not.toContain('Set resume to');
     expect(refusedNotice).not.toContain('empty string');
     expect(refusedNotice).not.toContain('new_window');
-    refused.dispose();
+    await refused.dispose();
   });
 
   it.each(['starting', 'cancelling'] as const)(
@@ -1883,6 +1883,67 @@ describe('agent collaboration safe-boundary delivery', () => {
     expect((await persisted.accept(messageInput('failed claim', 'failed-claim'))).delivery).toBe('queued');
     expect(await residency.manager.evictIfIdle?.('session-1')).toBe(true);
     await service.dispose();
+  });
+
+  it.each(['resolve', 'reject'] as const)('awaits asynchronous background lease release before reporting a failure (%s)', async (outcome) => {
+    const persisted = mailboxStore(tempDir());
+    const claimFailure = new Error('claim failed');
+    const releaseFailure = new Error('lease release failed');
+    const store = wrapStore(persisted, {
+      nextQueued: async () => { throw claimFailure; },
+    });
+    const target = agentHandle('agent-target');
+    target.setRunning(true);
+    const lifecycle = lifecycleHarness([target.handle]);
+    const residency = residencyHarness(lifecycle.service);
+    let finishRelease!: () => void;
+    const gate = new Promise<void>((resolve) => { finishRelease = resolve; });
+    const release = vi.fn(async () => {
+      await gate;
+      if (outcome === 'reject') throw releaseFailure;
+    });
+    const manager: ISessionManager = {
+      ...residency.manager,
+      acquire: async (sessionId, reason) => {
+        const lease = await residency.acquire(sessionId, reason);
+        return {
+          ...lease,
+          dispose: async () => {
+            try {
+              await release();
+            } finally {
+              lease.dispose();
+            }
+          },
+        };
+      },
+    };
+    const log = stubLog();
+    const warn = vi.spyOn(log, 'warn');
+    const service = messagingService(store, lifecycle.service, sessionContext(), metadataHarness({ 'agent-target': {} }), dispatchHarness(), manager, log);
+    try {
+      const accepted = await service.send({
+        ...sendInput('asynchronous release', 'asynchronous-release'),
+        waitForRunningDelivery: false,
+      });
+      expect(accepted.delivery).toBe('queued');
+      await vi.waitFor(() => { expect(release).toHaveBeenCalledOnce(); });
+      expect(residency.pins()).toBe(1);
+      expect(warn).not.toHaveBeenCalled();
+      finishRelease();
+      await vi.waitFor(() => {
+        expect(residency.pins()).toBe(0);
+        expect(warn).toHaveBeenCalledWith('Agent message delivery did not finish', {
+          messageId: accepted.message.messageId,
+          targetAgentId: 'agent-target',
+          error: outcome === 'reject' ? releaseFailure : claimFailure,
+        });
+      });
+      expect((await persisted.accept(messageInput('asynchronous release', 'asynchronous-release'))).delivery).toBe('queued');
+    } finally {
+      finishRelease();
+      await service.dispose();
+    }
   });
 
   it('persists sender receipts after recipient materialization and flush, before mailbox acknowledgement', async () => {
@@ -2314,7 +2375,7 @@ describe('agent collaboration safe-boundary delivery', () => {
       expect((await store.accept(messageInput('after cancel', 'cancel-continue'))).delivery).toBe('delivered');
     });
     expect(dispatch.recordDelegatedRun).toHaveBeenCalledWith('main', 'agent-target');
-    service.dispose();
+    await service.dispose();
   });
 
   it('leaves a saved message for an already admitted next turn', async () => {
@@ -2336,7 +2397,7 @@ describe('agent collaboration safe-boundary delivery', () => {
       { type: 'text', text: 'Message from agent "root" (main):\n\nfor the next turn' },
     ]);
     expect(await store.nextQueued('session-1', 'agent-target')).toBeUndefined();
-    service.dispose();
+    await service.dispose();
   });
 
   it('accepts an external steer without copying the message locally or starting another run', async () => {
@@ -2353,7 +2414,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     })).resolves.toMatchObject({ delivery: 'delivered' });
     expect(target.messages).toEqual([]);
     expect(dispatch.runOnExisting).not.toHaveBeenCalled();
-    service.dispose();
+    await service.dispose();
   });
 
   it('continues a running external child after its current run settles', async () => {
@@ -2386,7 +2447,7 @@ describe('agent collaboration safe-boundary delivery', () => {
       prompt: 'Message from agent "root" (main):\n\nafter this external run',
     });
     expect(dispatch.runOnExisting).toHaveBeenCalledTimes(1);
-    service.dispose();
+    await service.dispose();
   });
 
   it('retries one saved message without starting a second continuation', async () => {
@@ -2413,7 +2474,7 @@ describe('agent collaboration safe-boundary delivery', () => {
       expect((await store.accept(messageInput('same body', 'same-message'))).delivery).toBe('delivered');
     });
     expect(runs).toBe(1);
-    service.dispose();
+    await service.dispose();
   });
 
   it('does not overlap continuations when two messages arrive together', async () => {
@@ -2443,7 +2504,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     });
     expect(maxInFlight).toBe(1);
     expect(target.messages).toHaveLength(2);
-    service.dispose();
+    await service.dispose();
   });
 
   it('keeps an accepted message when continuation fails and reports that failure', async () => {
@@ -2464,7 +2525,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     expect(accepted.message.messageId).toEqual(expect.any(String));
     await vi.waitFor(() => { expect(warn).toHaveBeenCalled(); });
     expect((await store.nextQueued('session-1', 'agent-target'))?.message.messageId).toBe(accepted.message.messageId);
-    service.dispose();
+    await service.dispose();
   });
 
   it('runs AgentSend through the real asynchronous messaging path', async () => {
@@ -2549,7 +2610,7 @@ describe('agent collaboration safe-boundary delivery', () => {
         { type: 'text', text: 'Message from agent "root" (main):\n\n补一条运行中的输入' },
       ]);
     } finally {
-      service.dispose();
+      await service.dispose();
       await sender.dispose();
     }
   });
@@ -3242,7 +3303,7 @@ function residencyHarness(lifecycle: AgentLifecycle) {
     return {
       handle: {
         id: 'session-1',
-        kind: LifecycleScope.Session,
+        kind: LifecycleScope.Session as const,
         accessor: {
           get: <T>(id: ServiceIdentifier<T>): T => {
             if (id === IAgentLifecycleService) return lifecycle as T;

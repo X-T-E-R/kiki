@@ -1,6 +1,7 @@
 import {
   agent,
   methods,
+  ndJsonStream,
   RequestError,
   type AgentApp,
   type AgentCapabilities,
@@ -181,4 +182,11 @@ export function createInProcessScriptedAgent(
     });
 
   return { app, history };
+}
+
+export function connectInProcessScriptedAgent(
+  app: AgentApp,
+  ...streams: Parameters<typeof ndJsonStream>
+): void {
+  app.connect(ndJsonStream(...streams));
 }

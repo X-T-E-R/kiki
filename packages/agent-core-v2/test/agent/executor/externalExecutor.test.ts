@@ -1,4 +1,4 @@
-import { AcpClientError, mapAcpSessionNotification, parseExecutorSessionRefEnvelope, type AcpProcessClient } from '@kiki/acp-client';
+import { AcpClientError, mapAcpSessionNotification, parseExecutorSessionRefEnvelope } from '@kiki/acp-client';
 import type {
   AcpOpenSessionOptions,
   AcpOpenSessionResult,
@@ -6,6 +6,7 @@ import type {
   AcpElicitationRequest,
   AcpElicitationResponse,
   AcpPlanApprovalHandler,
+  AcpProcessClient,
   AcpPermissionDecision,
   AcpPermissionHandler,
   AcpSessionConfigOption,

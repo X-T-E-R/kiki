@@ -71,7 +71,7 @@ function continuationFailureReason(error: unknown): string {
 
 function originalSessionCannotResume(execution: IAgentExecutionService | undefined): boolean {
   if (execution?.status().state !== 'broken') return false;
-  return execution.canResumeBrokenOriginal() !== true && execution.canRetryBrokenExecution?.() !== true;
+  return !execution.canResumeBrokenOriginal() && !execution.canRetryBrokenExecution?.();
 }
 
 function continuationFailureNotice(input: {
@@ -210,14 +210,18 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
           child?.agent === pinnedHandle ? child : undefined,
           true,
         );
-        void delivery.finally(() => lease.dispose()).catch((error: unknown) => {
-          void this.reportContinuationFailure(
-            input.sourceAgentId,
-            acceptance.message.messageId,
-            input.targetAgentId,
-            error,
-          );
-        });
+        void (async () => {
+          try {
+            await delivery;
+          } finally {
+            await lease.dispose();
+          }
+        })().catch((error: unknown) => this.reportContinuationFailure(
+          input.sourceAgentId,
+          acceptance.message.messageId,
+          input.targetAgentId,
+          error,
+        )).catch(onUnexpectedError);
         return acceptance;
       } catch (error) {
         await lease.dispose();
@@ -432,12 +436,12 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     const loop = handle.accessor.get(IAgentLoopService);
     let executionState = execution.status().state;
     if (executionState === 'broken') {
-      if (execution.canRetryBrokenExecution?.() === true) {
+      if (execution.canRetryBrokenExecution?.()) {
         throw new Error2(ErrorCodes.INTERNAL,
           `Agent instance "${handle.id}" failed before a usable executor session remained. Resume the same child with AgentRun; the saved message stays queued.`,
           { details: { agentId: handle.id, messageId: message.messageId } });
       }
-      if (execution.canResumeBrokenOriginal?.() === true) {
+      if (execution.canResumeBrokenOriginal?.()) {
         throw new Error2(
           ErrorCodes.INTERNAL,
           `Agent instance "${handle.id}" is broken. Resume the original remote session with AgentRun; the saved message stays queued.`,
@@ -610,9 +614,9 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
   private async awaitCapacityRelease(agentId: string): Promise<boolean> {
     const holders = this.capacityHolders(agentId);
     if (holders.length === 0) return false;
-    const before = holders.map((holder) => holder.id).sort();
+    const before = holders.map((holder) => holder.id).toSorted();
     await Promise.race(holders.map((holder) => holder.settled()));
-    const after = this.capacityHolders(agentId).map((holder) => holder.id).sort();
+    const after = this.capacityHolders(agentId).map((holder) => holder.id).toSorted();
     return before.length !== after.length || before.some((id, index) => id !== after[index]);
   }
 

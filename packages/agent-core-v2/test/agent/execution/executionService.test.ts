@@ -1111,8 +1111,8 @@ describe('AgentExecutionService', () => {
     expect(service.canRetryBrokenExecution()).toBe(true);
     await expect(service.run({ kind: 'prompt', prompt: 'again' }, { signal })).rejects.toThrow(/has no registered provider/);
     expect(resolveExecutable).toHaveBeenCalledTimes(2);
-    void service.dispose();
-    ix.dispose();
+    await service.dispose();
+    await ix.dispose();
   });
 
   it('reuses a recoverable broken session and refuses binding or permission drift without creating one', async () => {
@@ -1186,14 +1186,14 @@ describe('AgentExecutionService', () => {
       message: expect.not.stringContaining('already running'),
     });
     expect(create).toHaveBeenCalledTimes(1);
-    void service.dispose();
-    ix.dispose();
+    await service.dispose();
+    await ix.dispose();
   });
 
   it('keeps an in-flight run busy instead of treating it as a recoverable broken resume', async () => {
     const ix = new TestInstantiationService();
     let release!: () => void;
-    const completion = new Promise<{ summary: string }>((resolve) => { release = () => resolve({ summary: 'ok' }); });
+    const completion = new Promise<{ summary: string }>((resolve) => { release = () => { resolve({ summary: 'ok' }); }; });
     const session: AgentExecutorSession = {
       run: async () => ({
         agentId: 'agent-test',
@@ -1231,8 +1231,8 @@ describe('AgentExecutionService', () => {
     await service.settled();
     expect(service.status()).toEqual({ state: 'broken' });
     expect(service.canResumeBrokenOriginal()).toBe(true);
-    void service.dispose();
-    ix.dispose();
+    await service.dispose();
+    await ix.dispose();
   });
 });
 
