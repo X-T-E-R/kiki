@@ -132,7 +132,7 @@ function sessionMetadata(): ISessionMetadata & { agents: Record<string, AgentMet
     ready: Promise.resolve(),
     agents,
     read: async () => ({ id: 'session-1', createdAt: 1, updatedAt: 1, archived: false, agents, custom: {} }),
-    updateAgent: async (agentId, update) => {
+    updateAgent: async (agentId: string, update: (current: AgentMeta) => AgentMeta) => {
       const current = agents[agentId];
       if (current !== undefined) agents[agentId] = update(current);
     },
@@ -319,9 +319,9 @@ describe('recoverable ACP broken resume', () => {
     messagingIx.set(ISessionContext, session);
     messagingIx.set(ISessionMetadata, metadata);
     messagingIx.stub(ISessionDispatchService, { runOnExisting: async () => { throw new Error('AgentSend must not dispatch while broken'); } });
-    messagingIx.stub(ILogService, { warn: () => {}, info: () => {}, error: () => {}, debug: () => {}, trace: () => {} });
+    messagingIx.stub(ILogService, { warn: () => {}, info: () => {}, error: () => {}, debug: () => {} });
     messagingIx.set(IAgentCollaborationMessagingService, new SyncDescriptor(AgentCollaborationMessagingService));
-    const messaging = messagingIx.get(IAgentCollaborationMessagingService);
+    const messaging = messagingIx.get(IAgentCollaborationMessagingService) as AgentCollaborationMessagingService;
     const toolIx = new TestInstantiationService();
     toolIx.stub(IAgentLifecycleService, lifecycle);
     toolIx.stub(ISessionMetadata, metadata);
@@ -336,7 +336,7 @@ describe('recoverable ACP broken resume', () => {
     toolIx.stub(IConfigService, { get: (() => undefined) as IConfigService['get'] });
     toolIx.stub(IModelCatalog, {});
     toolIx.stub(IModelService, {});
-    toolIx.stub(ILogService, { warn: () => {}, info: () => {}, error: () => {}, debug: () => {}, trace: () => {} });
+    toolIx.stub(ILogService, { warn: () => {}, info: () => {}, error: () => {}, debug: () => {} });
     toolIx.stub(IAgentScopeContext, { _serviceBrand: undefined, agentId: 'main', scope: (key?: string) => `agent/main/${key ?? ''}` });
     toolIx.stub(IAgentTaskService, senderCtx.get(IAgentTaskService));
     toolIx.stub(IAgentProfileService, senderCtx.get(IAgentProfileService));
@@ -347,7 +347,9 @@ describe('recoverable ACP broken resume', () => {
       setSessionDisabledTools: async () => {},
     });
     toolIx.stub(ISessionWorkspaceContext, { workDir: 'cwd' });
-    toolIx.stub(IAgentRuntimeService, { acquire: () => ({ runtime: {}, dispose: () => {} }) });
+    toolIx.stub(IAgentRuntimeService, {
+      acquire: (() => ({ runtime: {}, track: <T>(resource: T) => resource, dispose() {} })) as IAgentRuntimeService['acquire'],
+    });
     toolIx.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
     toolIx.set(ISubagentTool, new SyncDescriptor(SubagentTool));
     const fingerprint = () => (harness.ix.get(IAgentStateService).get(externalExecutorKey) as { bindingFingerprint?: string; sessionRef?: { ref: { sessionId?: string } } }).bindingFingerprint;
@@ -444,7 +446,7 @@ describe('recoverable ACP broken resume', () => {
       accessor: {
         get<T>(id: ServiceIdentifier<T>): T {
           if (id === IAgentExecutionService) return harness.execution as T;
-          if (id === IAgentProfileService) return harness.ix.get(IAgentProfileService);
+          if (id === IAgentProfileService) return harness.ix.get(IAgentProfileService) as T;
           if (id === IAgentLoopService) return { status: () => ({ state: 'idle', pendingTurnIds: [], hasPendingRequests: false }) } as T;
           return harness.ix.get(id);
         },
@@ -465,13 +467,15 @@ describe('recoverable ACP broken resume', () => {
     toolIx.stub(IConfigService, { get: (() => undefined) as IConfigService['get'] });
     toolIx.stub(IModelCatalog, {});
     toolIx.stub(IModelService, {});
-    toolIx.stub(ILogService, { warn: () => {}, info: () => {}, error: () => {}, debug: () => {}, trace: () => {} });
+    toolIx.stub(ILogService, { warn: () => {}, info: () => {}, error: () => {}, debug: () => {} });
     toolIx.stub(IAgentScopeContext, { _serviceBrand: undefined, agentId: 'main', scope: () => 'agent/main' });
     toolIx.stub(IAgentTaskService, senderCtx.get(IAgentTaskService));
     toolIx.stub(IAgentProfileService, senderCtx.get(IAgentProfileService));
     toolIx.stub(IAgentToolPolicyService, { isToolActive: () => true, isToolActiveForDisclosure: () => true, isToolActiveForProfile: () => true, setSessionDisabledTools: async () => {} });
     toolIx.stub(ISessionWorkspaceContext, { workDir: 'cwd' });
-    toolIx.stub(IAgentRuntimeService, { acquire: () => ({ runtime: {}, dispose: () => {} }) });
+    toolIx.stub(IAgentRuntimeService, {
+      acquire: (() => ({ runtime: {}, track: <T>(resource: T) => resource, dispose() {} })) as IAgentRuntimeService['acquire'],
+    });
     toolIx.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
     toolIx.set(ISubagentTool, new SyncDescriptor(SubagentTool));
     try {

@@ -416,6 +416,31 @@ describe('dispatch resume through model switch and real native run', () => {
     expect(ctx.get(IAgentStateService).get(contextWindowEpochKey)).toBe(0);
   });
 
+  it('admits only a recoverable broken child and still rejects a busy one', async () => {
+    const ctx = await host();
+    const execution = ctx.get(IAgentExecutionService);
+    const { dispatch, child, runs } = dispatchFor(ctx);
+    const start = vi.spyOn(runs, 'run');
+    vi.spyOn(execution, 'status').mockReturnValue({ state: 'broken' });
+    await expect(dispatch.runOnExisting(child, 'Must not start', options('native-broken'))).rejects.toMatchObject({
+      code: ErrorCodes.INTERNAL,
+      message: 'Agent instance "saved-child" is broken and its original remote session cannot be resumed. The saved message stays queued. Do not call AgentSend again. Do not open a new remote session.',
+    });
+    expect(start).not.toHaveBeenCalled();
+
+    vi.spyOn(execution, 'status').mockReturnValue({ state: 'starting' });
+    vi.spyOn(execution, 'canResumeBrokenOriginal').mockReturnValue(true);
+    await expect(dispatch.runOnExisting(child, 'Still busy', options('starting-broken'))).rejects.toMatchObject({
+      code: ErrorCodes.AGENT_ALREADY_RUNNING,
+    });
+    expect(start).not.toHaveBeenCalled();
+
+    vi.spyOn(execution, 'status').mockReturnValue({ state: 'broken' });
+    vi.spyOn(ctx.get(IAgentProfileService), 'prepareResumeBinding').mockRejectedValue(new Error('admitted past idle gate'));
+    await expect(dispatch.runOnExisting(child, 'Original remote', options('recoverable-broken'))).rejects.toThrow('admitted past idle gate');
+    expect(start).not.toHaveBeenCalled();
+  });
+
   it('retains todo and note values and sources through fresh resume', async () => {
     const ctx = await host();
     const todo = ctx.get(ISessionTodoService);
