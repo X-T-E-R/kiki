@@ -366,6 +366,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
   }
 
   private publishAutoCompactStatus(): void {
+    if ((this.profile.data().executorId ?? 'native') !== 'native') return;
     if (!this.profile.hasModel() || !this.profile.isRunnable()) return;
     try {
       const resolved = this.getAutoCompact();
