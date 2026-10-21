@@ -34,6 +34,11 @@ const CODEX_HELP = 'https://developers.openai.com/codex/app/chrome-extension';
 const CHROME_STORE = 'https://chromewebstore.google.com/detail/kimi-webbridge/fldmhceldgbpfpkbgopacenieobmligc';
 const EDGE_STORE = 'https://microsoftedge.microsoft.com/addons/detail/kimi-webbridge/bnlffdbcfnanfbknnlaflhlhkocccckg';
 const INDEPENDENT_ID = 'independent-browser';
+
+function sameCliPath(left: string | undefined, right: string | undefined): boolean {
+  if (left === undefined || right === undefined || left === '' || right === '') return false;
+  return left.replaceAll('\\', '/').toLowerCase() === right.replaceAll('\\', '/').toLowerCase();
+}
 const SHORTCUT_DESKTOP_FIXTURE = 'KIKI_BROWSER_SHORTCUT_DESKTOP';
 const SHORTCUT_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
@@ -419,6 +424,7 @@ export class BrowserSetupService implements IBrowserSetupService {
       ...(saved !== undefined ? { connectionId: saved.id } : {}),
       ...(reason !== undefined ? { reason } : {}),
       ...(error !== undefined ? { error } : {}),
+      ...(resolution.kind === 'choose' ? { cliPaths: resolution.paths.slice(0, 32) } : {}),
       ...(probe?.kind === 'ready' ? { checkedAt: probe.checkedAt } : {}),
     };
   }
@@ -426,20 +432,27 @@ export class BrowserSetupService implements IBrowserSetupService {
   private async connectEgo(input: BrowserSetupConnectInput): Promise<BrowserSetupStatus> {
     const listed = await this.connections.list();
     const existing = listed.connections.find((item) => item.id === EGO_LITE_CONNECTION_ID);
-    const base = existing?.type === 'ego-lite'
-      ? await this.connections.resolve(EGO_LITE_CONNECTION_ID)
-      : { id: EGO_LITE_CONNECTION_ID, type: 'ego-lite' as const, name: input.name ?? 'Ego Lite', enabled: true };
-    const probed = await this.egoRuntime.probe(base);
+    const resolved = existing?.type === 'ego-lite' ? await this.connections.resolve(EGO_LITE_CONNECTION_ID) : undefined;
+    const saved = resolved?.type === 'ego-lite' ? resolved : undefined;
+    const base = saved ?? { id: EGO_LITE_CONNECTION_ID, type: 'ego-lite' as const, name: input.name ?? 'Ego Lite', enabled: true };
+    const requested = input.cliPath?.trim();
+    const probed = await this.egoRuntime.probe(requested !== undefined && requested !== '' ? { ...base, cliPath: requested } : base);
     if (probed.resolution.kind === 'found') {
       const kind = probed.kind === 'ready' || probed.kind === 'onboarding' ? probed.kind : 'not_ready';
       this.egoLast = { kind, cliPath: probed.resolution.path, checkedAt: new Date().toISOString() };
     } else this.egoLast = undefined;
-    if (existing === undefined && probed.kind === 'ready' && probed.resolution.kind === 'found') {
+    const found = probed.resolution.kind === 'found' ? probed.resolution.path : undefined;
+    const selected = found !== undefined && requested !== undefined && requested !== '' && sameCliPath(found, requested);
+    const firstReady = existing === undefined && probed.kind === 'ready' && found !== undefined;
+    if (found !== undefined && (selected || firstReady) && !sameCliPath(saved?.cliPath, found)) {
       await this.control.upsert(EGO_LITE_CONNECTION_ID, {
-        type: 'ego-lite', name: input.name ?? 'Ego Lite', enabled: true, cliPath: probed.resolution.path,
+        type: 'ego-lite',
+        name: input.name ?? saved?.name ?? 'Ego Lite',
+        enabled: saved?.enabled ?? true,
+        cliPath: found,
+        ...(saved?.profileId !== undefined && saved.profileId !== '' ? { profileId: saved.profileId } : {}),
+        ...(saved?.serverName !== undefined && saved.serverName !== '' ? { serverName: saved.serverName } : {}),
       });
-    } else if (existing === undefined && probed.resolution.kind === 'choose') {
-      await this.control.upsert(EGO_LITE_CONNECTION_ID, { type: 'ego-lite', name: input.name ?? 'Ego Lite', enabled: true });
     }
     return this.egoStatus();
   }

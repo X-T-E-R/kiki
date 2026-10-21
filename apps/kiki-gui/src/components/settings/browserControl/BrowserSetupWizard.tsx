@@ -128,9 +128,13 @@ function BrowserRoute({ preset, active, onSelect }: {
   const [busy, setBusy] = useState<'prepare' | 'connect' | 'cancel' | 'open' | 'update' | 'shortcut' | 'allow' | 'default' | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [selectedBrowserId, setSelectedBrowserId] = useState(preset.browserId ?? '');
+  const [selectedCliPath, setSelectedCliPath] = useState('');
   useEffect(() => {
     setSelectedBrowserId(preset.browserId ?? '');
   }, [preset.browserId]);
+  useEffect(() => {
+    setSelectedCliPath((current) => (preset.cliPaths !== undefined && preset.cliPaths.includes(current) ? current : ''));
+  }, [preset.cliPaths]);
 
   const configQuery = useQuery({
     queryKey: ['config', scopeId],
@@ -421,9 +425,12 @@ function BrowserRoute({ preset, active, onSelect }: {
       let res: BrowserSetupStatus | undefined;
       if (action === 'prepare') res = await api.prepare(preset.preset, { consent: true });
       else if (action === 'connect') {
-        const body = preset.candidates !== undefined
-          ? { connectionId: preset.connectionId ?? (preset.preset === 'codex-browser' ? 'codex-browser' : undefined), browserId: selectedBrowserId || undefined }
-          : {};
+        const choosingCli = preset.cliPaths !== undefined && preset.cliPaths.length > 0;
+        const body = choosingCli
+          ? { cliPath: selectedCliPath }
+          : preset.candidates !== undefined
+            ? { connectionId: preset.connectionId ?? (preset.preset === 'codex-browser' ? 'codex-browser' : undefined), browserId: selectedBrowserId || undefined }
+            : {};
         res = await api.connectPreset(preset.preset, body);
       }
       else if (action === 'open') res = await api.openPreset(preset.preset, {});
@@ -455,12 +462,20 @@ function BrowserRoute({ preset, active, onSelect }: {
           setFeedback({ tone: 'info', text: t('st.browser.route.done.savedApprovalUnproven') });
           return;
         }
+        if (preset.preset === 'ego-lite' && res?.reason === 'ego_choose_cli') {
+          setFeedback(null);
+          return;
+        }
         if (res?.state !== 'connected' && res?.state !== 'ready') {
           setFeedback({ tone: 'error', text: res?.error ?? t('st.browser.outcome.connectIncomplete') });
           return;
         }
         if (res?.state === 'connected') {
           setFeedback(null);
+          return;
+        }
+        if (preset.preset === 'ego-lite' && res?.state === 'ready') {
+          setFeedback({ tone: 'info', text: t('st.browser.route.ready') });
           return;
         }
       }
@@ -618,6 +633,30 @@ function BrowserRoute({ preset, active, onSelect }: {
         </div>
       ) : null}
 
+      {preset.cliPaths !== undefined && preset.cliPaths.length > 0 ? (
+        <div className="mt-2.5 space-y-1.5" data-browser-cli-paths>
+          <div className="flex flex-wrap items-center gap-2">
+            <label htmlFor="ego-cli-select" className="text-[12px] font-medium text-ink-soft shrink-0">
+              {t('st.browser.fieldCliPath')}
+            </label>
+            <div className="min-w-0 max-w-full flex-1 sm:min-w-[240px] sm:flex-none">
+              <SettingsSelect
+                id="ego-cli-select"
+                ariaLabel={t('st.browser.fieldCliPath')}
+                dataAttr="data-browser-cli-select"
+                choices={preset.cliPaths.map((cliPath) => ({ value: cliPath, label: cliPath }))}
+                value={selectedCliPath}
+                emptyText={t('st.browser.route.egoCliPlaceholder')}
+                onChange={(cliPath) => { setSelectedCliPath(cliPath); }}
+                disabled={busy !== null}
+                variant="row"
+                mono
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {items.length > 0 ? (
         <div className="mt-3 space-y-2 rounded border border-hairline bg-surface/40 p-2.5" data-browser-source-items={preset.preset}>
           <div className="flex items-center justify-between text-[12px]">
@@ -727,7 +766,7 @@ function BrowserRoute({ preset, active, onSelect }: {
         )}
         {!routeActions || connect === undefined || (readiness !== 'ready' && preset.state !== 'needs_user_action' && preset.state !== 'failed' && preset.error === undefined) || busy !== null ? null : (
           <button type="button" className={openAction !== undefined ? SECONDARY_BUTTON : PRIMARY_BUTTON} data-browser-route-connect
-            disabled={busy !== null || (preset.candidates !== undefined && (!selectedBrowserId || selectedBrowserId === ''))}
+            disabled={busy !== null || (preset.candidates !== undefined && (!selectedBrowserId || selectedBrowserId === '')) || (preset.cliPaths !== undefined && preset.cliPaths.length > 0 && selectedCliPath === '')}
             onClick={() => { void act('connect'); }}>
             {busy === 'connect' ? t('st.browser.route.connecting')
               : preset.preset === 'ego-lite' ? t('st.browser.route.checkEgo')

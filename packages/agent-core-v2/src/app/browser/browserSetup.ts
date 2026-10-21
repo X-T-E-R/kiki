@@ -32,6 +32,7 @@ export interface BrowserSetupStatus {
   readonly connectionId?: string;
   readonly browserId?: string;
   readonly candidates?: readonly BrowserSetupCandidate[];
+  readonly cliPaths?: readonly string[];
   readonly connection?: BrowserStatus;
   readonly checkedAt?: string;
   readonly error?: string;
@@ -43,6 +44,7 @@ export interface BrowserSetupConnectInput {
   readonly browserId?: string;
   readonly name?: string;
   readonly setDefault?: boolean;
+  readonly cliPath?: string;
 }
 export interface BrowserSetupOpenInput {
   readonly connectionId?: string;

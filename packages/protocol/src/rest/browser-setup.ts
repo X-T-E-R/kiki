@@ -21,7 +21,8 @@ export const browserSetupStatusSchema = z.object({
   supported: z.boolean(), executionHost: z.string(), steps: z.array(browserSetupStepSchema), actions: z.array(browserSetupActionSchema),
   pluginId: z.string().optional(), skill: z.string().optional(), capabilityId: z.string().optional(),
   connectionId: browserIdSchema.optional(), browserId: codexBridgeBrowserIdSchema.optional(),
-  candidates: z.array(browserSetupCandidateSchema).max(20).optional(), connection: browserStatusSchema.optional(),
+  candidates: z.array(browserSetupCandidateSchema).max(20).optional(),
+  cliPaths: z.array(z.string().min(1).max(1024)).max(32).optional(), connection: browserStatusSchema.optional(),
   checkedAt: z.string().optional(), error: z.string().optional(), reason: z.string().optional(),
   sourceUrl: z.string().url(),
 }).strict();
@@ -33,6 +34,7 @@ export type BrowserSetupPrepareInput = z.infer<typeof browserSetupPrepareInputSc
 export const browserSetupConnectInputSchema = z.object({
   connectionId: browserIdSchema.optional(), browserId: codexBridgeBrowserIdSchema.optional(),
   name: z.string().trim().min(1).max(256).optional(), setDefault: z.boolean().optional(),
+  cliPath: z.string().trim().min(1).max(1024).optional(),
 }).strict();
 export type BrowserSetupConnectInput = z.infer<typeof browserSetupConnectInputSchema>;
 export const browserSetupOpenInputSchema = z.object({

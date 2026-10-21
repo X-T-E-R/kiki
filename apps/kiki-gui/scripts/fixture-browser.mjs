@@ -14,8 +14,9 @@
  *
  * The preset model mirrors `browserSetupService.ts`: two managed routes report
  * their own steps and action list, the native flag gate appears as a `feature`
- * step with an `enable_feature` action, and the external route is never
- * supported — it offers its documentation and nothing else.
+ * step with an `enable_feature` action, and Ego Lite is the external route.
+ * Its checks move installed → onboarding → a CLI choice → ready. Nothing here
+ * launches a browser.
  *
  * Scenario seeds (all optional):
  *   browser: {
@@ -87,6 +88,9 @@ function record(entry, host) {
       status,
     };
   }
+  if (entry.type === 'ego-lite') {
+    return { ...common, cliPath: entry.cliPath, profileId: entry.profileId, serverName: entry.serverName, status };
+  }
   return {
     ...common, driverPath: entry.driverPath, profilePath: entry.profilePath, executablePath: entry.executablePath,
     headed: entry.headed,
@@ -151,7 +155,23 @@ const PRESETS = {
     ],
     actions: [{ id: 'prepare' }, { id: 'choose_connection' }, { id: 'connect' }, { id: 'open_instructions', url: CODEX_HELP, target: 'documentation' }],
   },
+  'ego-lite': {
+    preset: 'ego-lite',
+    displayName: 'Ego Lite',
+    controlSurface: 'external-app',
+    supported: true,
+    state: 'needs_user_action',
+    reason: 'ego_installed',
+    sourceUrl: 'https://lite.ego.app/download?auto=1',
+    steps: [],
+    actions: [
+      { id: 'connect' },
+      { id: 'open_instructions', url: 'https://lite.ego.app/download?auto=1', target: 'documentation' },
+    ],
+  },
 };
+
+const EGO_CLI_PATHS = ['C:/Ego/0.6.0.16/ego-browser.exe', 'C:/Ego/0.6.0.15/ego-browser.exe'];
 
 /**
  * A preset as the list returns it. The managed routes take their readiness from
@@ -164,7 +184,8 @@ function presetStatus(browser, seed) {
   const override = browser.overrides?.[base.preset] ?? {};
   const steps = override.steps ?? base.steps;
   const state = override.state ?? base.state ?? (override.error !== undefined ? 'failed' : 'not_prepared');
-  const reason = override.reason ?? (override.error !== undefined ? undefined : base.reason);
+  const reason = override.reason ?? (override.egoPhase !== undefined || override.error !== undefined ? undefined : base.reason);
+  const cliPaths = Array.isArray(override.cliPaths) ? override.cliPaths : base.cliPaths;
   const candidates = override.candidates !== undefined ? override.candidates : base.candidates;
   const browserId = override.browserId ?? base.browserId;
   const flagOff = steps.some((step) => step.reason === 'feature_disabled');
@@ -187,10 +208,11 @@ function presetStatus(browser, seed) {
     error: override.error,
     reason,
     candidates,
+    ...(Array.isArray(cliPaths) ? { cliPaths } : {}),
     browserId,
   };
   if (base.controlSurface === 'external-app') {
-    return { ...base, executionHost: browser.host, ...common };
+    return { ...base, executionHost: browser.host, ...common, state };
   }
   return {
     preset: base.preset,
@@ -241,6 +263,35 @@ function handleSetup(server, browser, res, path, method, body) {
   if (name === 'connect') {
     if (override.connectError !== undefined) {
       server.envelope(res, null, 40001, override.connectError);
+      return true;
+    }
+    if (id === 'ego-lite') {
+      const phase = override.egoPhase ?? 'installed';
+      const chosen = typeof body?.cliPath === 'string' && EGO_CLI_PATHS.includes(body.cliPath) ? body.cliPath : undefined;
+      let next;
+      if (phase === 'installed') {
+        next = { egoPhase: 'onboarding', state: 'needs_user_action', reason: 'ego_onboarding', error: 'Please complete the onboarding process first' };
+      } else if (phase === 'onboarding' || (phase === 'choose' && chosen === undefined)) {
+        next = { egoPhase: 'choose', state: 'needs_user_action', reason: 'ego_choose_cli', cliPaths: EGO_CLI_PATHS };
+      } else if (chosen !== undefined) {
+        const current = find(browser, 'ego-lite');
+        const saved = {
+          ...(current ?? {}),
+          id: 'ego-lite', name: current?.name ?? 'Ego Lite', enabled: current?.enabled !== false, type: 'ego-lite',
+          cliPath: chosen, profileId: current?.profileId, serverName: current?.serverName,
+          status: current?.status ?? { state: 'idle', generation: 0 },
+        };
+        browser.connections = [...browser.connections.filter((entry) => entry.id !== 'ego-lite'), saved];
+        next = { egoPhase: 'ready', state: 'ready', connectionId: 'ego-lite' };
+      } else {
+        next = { egoPhase: 'ready', state: 'ready', connectionId: 'ego-lite' };
+      }
+      const merged = { ...override, ...next };
+      if (next.cliPaths === undefined) delete merged.cliPaths;
+      if (next.error === undefined) delete merged.error;
+      if (next.reason === undefined) delete merged.reason;
+      browser.overrides = { ...browser.overrides, [id]: merged };
+      server.envelope(res, presetStatus(browser, id));
       return true;
     }
     if (id === 'codex-browser') {
@@ -446,7 +497,15 @@ export function handleBrowser(server, res, path, query, method, body) {
     if (entry?.upsert !== undefined) { server.envelope(res, null, entry.upsert.code ?? 40001, entry.upsert.msg ?? 'browser.invalid'); return true; }
     if (typeof body?.name !== 'string' || body.name.trim() === '') { server.envelope(res, null, 40001, 'browser.invalid'); return true; }
     const next = { ...(entry ?? { id, status: { state: 'idle', generation: 0 } }), id, name: body.name.trim(), enabled: body.enabled !== false, type: body.type, driverPath: body.driverPath };
-    if (body.type === 'agent-browser-cdp') {
+    if (body.type === 'ego-lite') {
+      next.cliPath = typeof body.cliPath === 'string' && body.cliPath !== '' ? body.cliPath : entry?.cliPath;
+      next.profileId = typeof body.profileId === 'string' && body.profileId !== '' ? body.profileId : entry?.profileId;
+      next.serverName = typeof body.serverName === 'string' && body.serverName !== '' ? body.serverName : entry?.serverName;
+      next.profilePath = undefined;
+      next.executablePath = undefined;
+      next.headed = undefined;
+      next.endpoint = undefined;
+    } else if (body.type === 'agent-browser-cdp') {
       const endpoint = body.endpoint?.action === 'set' ? body.endpoint.value : entry?.endpoint;
       // The store refuses a CDP connection with no endpoint at all.
       if (typeof endpoint !== 'string' || endpoint === '') { server.envelope(res, null, 40001, 'A CDP endpoint is required for a new connection'); return true; }

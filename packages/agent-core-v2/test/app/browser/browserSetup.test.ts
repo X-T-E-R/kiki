@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { cp, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import { TestInstantiationService } from '#/_base/di/test';
@@ -693,6 +693,67 @@ it('checks Ego Lite from the installed CLI and does not launch nodejs while list
     expect(await f.setup.connect('ego-lite', {})).toMatchObject({ state: 'failed' });
     await expect(f.setup.prepare('ego-lite', { consent: true })).rejects.toMatchObject({ code: 'browser.unsupported' });
     expect(f.upsert).toHaveBeenCalledTimes(1);
+  } finally {
+    if (previous === undefined) delete process.env['PATH'];
+    else process.env['PATH'] = previous;
+  }
+});
+
+it('reuses the chosen Ego Lite CLI when several programs are installed', async () => {
+  const chosen = 'C:/ego-b/ego-browser.exe';
+  const previous = process.env['PATH'];
+  process.env['PATH'] = `C:\\ego-a${delimiter}C:\\ego-b`;
+  let mode: 'onboarding' | 'ready' = 'onboarding';
+  const spawn = vi.fn(async (_command: string, args: readonly string[] = []) => {
+    const node = args.includes('nodejs');
+    const text = !node ? '' : mode === 'ready' ? 'kiki-ego-ready\n' : 'Please complete the onboarding process first\n';
+    return { stdout: Readable.from([text]), stderr: Readable.from(['']), wait: async () => 0, kill: async () => undefined, dispose: async () => undefined };
+  });
+  const nodeCalls = () => spawn.mock.calls.filter((call) => (call[1] as readonly string[] | undefined)?.includes('nodejs')).length;
+  const known = new Set(['c:/ego-a/ego-browser.exe', 'c:/ego-b/ego-browser.exe']);
+  const f = fixture({
+    hostProcess: { spawn } as never,
+    hostFs: {
+      mkdir: async () => undefined,
+      writeText: async () => undefined,
+      readText: async () => '',
+      stat: async (file: string) => ({ isFile: known.has(file.replaceAll('\\', '/').toLowerCase()), isDirectory: false, size: 0 }),
+      readdir: async () => [],
+      remove: async () => undefined,
+    } as never,
+  });
+  try {
+    const listed = browserSetupStatusSchema.parse(await f.setup.status('ego-lite'));
+    expect(listed).toMatchObject({
+      state: 'needs_user_action', reason: 'ego_choose_cli',
+      cliPaths: ['C:/ego-a/ego-browser.exe', 'C:/ego-b/ego-browser.exe'],
+    });
+    expect(listed.connectionId).toBeUndefined();
+    expect(nodeCalls()).toBe(0);
+    expect(f.upsert).not.toHaveBeenCalled();
+    const unanswered = browserSetupStatusSchema.parse(await f.setup.connect('ego-lite', {}));
+    expect(unanswered).toMatchObject({ reason: 'ego_choose_cli', cliPaths: ['C:/ego-a/ego-browser.exe', 'C:/ego-b/ego-browser.exe'] });
+    expect(unanswered.connectionId).toBeUndefined();
+    expect(f.upsert).not.toHaveBeenCalled();
+    expect(nodeCalls()).toBe(0);
+    const onboarding = browserSetupStatusSchema.parse(await f.setup.connect('ego-lite', { cliPath: chosen }));
+    expect(onboarding).toMatchObject({ state: 'needs_user_action', reason: 'ego_onboarding', connectionId: 'ego-lite' });
+    expect(onboarding.cliPaths).toBeUndefined();
+    expect(f.upsert).toHaveBeenCalledTimes(1);
+    expect(f.upsert).toHaveBeenCalledWith('ego-lite', { type: 'ego-lite', name: 'Ego Lite', enabled: true, cliPath: chosen });
+    expect(f.rows).toEqual([expect.objectContaining({ id: 'ego-lite', type: 'ego-lite', cliPath: chosen })]);
+    expect(nodeCalls()).toBe(1);
+    const again = await f.setup.status('ego-lite');
+    expect(again).toMatchObject({ state: 'needs_user_action', reason: 'ego_onboarding', connectionId: 'ego-lite' });
+    expect(again.cliPaths).toBeUndefined();
+    expect(nodeCalls()).toBe(1);
+    expect(f.upsert).toHaveBeenCalledTimes(1);
+    mode = 'ready';
+    const ready = await f.setup.connect('ego-lite', {});
+    expect(ready).toMatchObject({ state: 'ready', connectionId: 'ego-lite' });
+    expect(f.upsert).toHaveBeenCalledTimes(1);
+    expect(f.rows[0]).toMatchObject({ cliPath: chosen });
+    expect(f.setDefault).not.toHaveBeenCalled();
   } finally {
     if (previous === undefined) delete process.env['PATH'];
     else process.env['PATH'] = previous;

@@ -340,6 +340,63 @@ const scenarios = [
     },
   },
   {
+    name: 'ego-lite',
+    fixture: 'ego-lite',
+    matrix: ['width'],
+    run: async ({ page, link, shot }) => {
+      const route = page.locator('[data-browser-route="ego-lite"]');
+      const check = route.locator('[data-browser-route-connect]');
+      const chosen = 'C:/Ego/0.6.0.15/ego-browser.exe';
+      await page.goto(link('/settings/browser-control'), { waitUntil: 'domcontentloaded', timeout: 60_000 });
+      await page.waitForSelector('[data-browser-route="kimi-webbridge"]', { timeout: 30_000 });
+      await page.waitForSelector('[data-browser-route="independent-browser"]', { timeout: 30_000 });
+      await page.waitForSelector('[data-browser-route="codex-browser"]', { timeout: 30_000 });
+      await page.waitForSelector('[data-browser-route="ego-lite"][data-browser-route-state="needs-action"]', { timeout: 30_000 });
+      if (await route.locator('[data-browser-route-prepare]').count() !== 0) throw new Error('Ego Lite must not offer Set up');
+      await route.scrollIntoViewIfNeeded();
+      await shot('ego-installed');
+
+      await check.click();
+      await page.waitForSelector('[data-browser-route="ego-lite"] [data-browser-route-error]', { timeout: 15_000 });
+      await route.scrollIntoViewIfNeeded();
+      await shot('ego-onboarding');
+
+      await check.click();
+      await page.waitForSelector('#ego-cli-select', { timeout: 15_000 });
+      await page.waitForFunction(() => {
+        const button = document.querySelector('[data-browser-route="ego-lite"] [data-browser-route-connect]');
+        return button instanceof HTMLButtonElement && button.disabled;
+      });
+      await route.scrollIntoViewIfNeeded();
+      await shot('ego-choose');
+
+      await page.locator('#ego-cli-select').click();
+      const option = page.locator(`[role="option"][data-option-value="${chosen}"]`);
+      await option.waitFor({ state: 'visible', timeout: 10_000 });
+      await option.click();
+      await page.waitForFunction(() => {
+        const button = document.querySelector('[data-browser-route="ego-lite"] [data-browser-route-connect]');
+        return button instanceof HTMLButtonElement && !button.disabled;
+      });
+      await check.click();
+      await page.waitForSelector('[data-browser-route="ego-lite"][data-browser-route-state="ready"]', { timeout: 15_000 });
+      await route.scrollIntoViewIfNeeded();
+      await shot('ego-ready');
+
+      await page.locator('[data-browser-advanced-region] summary').click();
+      await page.waitForSelector('[data-browser-connection="ego-lite"]', { timeout: 10_000 });
+      await page.locator('[data-browser-connection="ego-lite"]').click();
+      await page.waitForSelector('[data-browser-detail="ego-lite"]', { timeout: 10_000 });
+      await page.locator('[data-browser-detail="ego-lite"] [data-browser-advanced] summary').click();
+      const cli = page.locator('[data-browser-cli-input]');
+      await cli.waitFor({ state: 'visible', timeout: 10_000 });
+      const value = await cli.inputValue();
+      if (value !== chosen) throw new Error(`saved CLI path was ${JSON.stringify(value)}`);
+      await cli.scrollIntoViewIfNeeded();
+      await shot('ego-cli');
+    },
+  },
+  {
     // The card that has to be located loads its own data. This run holds that
     // read for 2.5s — past the window the page used to wait out — and requires
     // the flag row to end up in the viewport anyway.
