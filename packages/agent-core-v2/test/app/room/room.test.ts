@@ -372,7 +372,9 @@ describe('RoomService', () => {
     expect(calls[1]!.target).toMatchObject({ sessionId: 'thread-b', workspaceId: 'workspace' });
     expect(calls[1]!.content).toContain('Not mentioned yet');
     expect(calls[1]!.content).toContain('Member broadcast');
-    expect(calls[1]!.content).toContain('Ordinary assistant text is NOT posted');
+    expect(calls[1]!.content).toContain('Text in this thread stays in this thread');
+    expect(calls[1]!.content).toContain('A user message with no mention goes to the room host');
+    expect(calls[1]!.content).toContain('A member message wakes only the members it mentions');
     expect(calls[1]!.content).toContain('ThreadSend({room: "thread-room"');
     release(calls[1]!.id);
     await service.drain(room.id);

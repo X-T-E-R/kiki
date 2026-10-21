@@ -431,7 +431,7 @@ export class RoomService extends Disposable implements IRoomService {
     for (const member of members) {
       if (member.kind !== 'thread') continue;
       await this.appendSystem(room.id, 'member_joined', `${member.sessionId} joined the room.`, { memberId: member.sessionId, kind: 'thread' });
-      await this.remindThread(member.sessionId, `Joined room "${room.name}" (${room.id}). You are woken when mentioned, and a message that mentions no one goes to the room host. To speak there, use ThreadSend({room: "${room.id}", content, mentions?}). Your workspace and permissions are unchanged.`, 'room_joined');
+      await this.remindThread(member.sessionId, `Joined room "${room.name}" (${room.id}). A user message with no mention goes to the room host. A message that mentions you wakes you. Speak in the room with ThreadSend({room: "${room.id}", content, mentions?}). Your workspace and permissions stay as they are.`, 'room_joined');
     }
   }
 
@@ -1212,7 +1212,7 @@ export function renderRoomPrompt(room: {
     const suffix = card?.job === undefined ? '' : ` (${escapeXml(card.job)})`;
     return `${escapeXml(card?.name ?? id)}${suffix}`;
   }).join('; ');
-  return `<room name="${escapeXml(room.name)}">Your host is ${escapeXml(host?.name ?? room.host)}; members: ${roster}; the user is User. Only speak when mentioned by the user or assigned by the host; a room message is visible in the next wake. Do not repeat your own SendMessage output.</room>`;
+  return `<room name="${escapeXml(room.name)}">Your host is ${escapeXml(host?.name ?? room.host)}; members: ${roster}; the user is User. A user message with no mention goes to the host. A member message wakes only the members it mentions. The room log arrives with the next wake. Speak in the room with SendMessage.</room>`;
 }
 
 function renderCatchup(entries: readonly RoomLogEntry[], room: RoomDocument, member: RoomMember, sourceMessageId: string, cards: ReadonlyMap<string, PersonaCard> = new Map()): RoomCatchup {
@@ -1231,7 +1231,7 @@ function renderCatchup(entries: readonly RoomLogEntry[], room: RoomDocument, mem
     return `[${entry.id} ${author}]${mentions} ${entry.text}${attachments}`;
   }).join('\n');
   return {
-    content: `<room-messages room="${escapeXml(room.id)}" since="${escapeXml(cursor ?? '')}">${rows}\n</room-messages>\nYou were selected for room message ${escapeXml(sourceMessageId)}. ${member.kind === 'thread' ? `Ordinary assistant text is NOT posted to this room. To speak in the room, use ThreadSend({room: "${escapeXml(room.id)}", content, mentions?}); mentions use member ids: ${escapeXml(room.members.filter((candidate) => candidate.sessionId !== member.sessionId).map((candidate) => label(roomMemberId(candidate))).join('; '))}. A message that mentions no one goes to the room host. Your existing workspace and permissions are unchanged.` : 'Only SendMessage posts your speech to this room.'}`,
+    content: `<room-messages room="${escapeXml(room.id)}" since="${escapeXml(cursor ?? '')}">${rows}\n</room-messages>\nYou were selected for room message ${escapeXml(sourceMessageId)}. ${member.kind === 'thread' ? `Speak in this room with ThreadSend({room: "${escapeXml(room.id)}", content, mentions?}); mentions use member ids: ${escapeXml(room.members.filter((candidate) => candidate.sessionId !== member.sessionId).map((candidate) => label(roomMemberId(candidate))).join('; '))}. A user message with no mention goes to the room host. A member message wakes only the members it mentions. Text in this thread stays in this thread.` : 'SendMessage is how your speech enters this room.'}`,
     cursor: after.at(-1)?.id,
   };
 }

@@ -256,7 +256,7 @@ Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`BoardWrite
 - `ThreadList` 列出已启用且未归档的会话，可用 `workspace_id` 筛选。不选 bridge 时列执行 home，选定 bridge 时仅列批准的目标范围，需要 `read`。本地结果按更新时间从新到旧排列。`limit` 默认为 50，取值为 1–100；用返回的不透明 cursor 继续翻页。
 - `ThreadRead` 在本地读取已完成的主 Agent turn，不恢复冷会话。跨 bridge 需要 `read`，返回有界的 `view.transcript`、coverage 和 cursor；省略的正文或 frame 带 `contentRefs`。将返回的引用作为 `content_ref` 传入，可读取下一段有界 `view.segment`。`limit` 默认为 20，取值为 1–100。
 - `ThreadSend` 持久保存显式消息，执行中的主 Agent 会话作为已验证来源。传入目标、非空且最多 100,000 字符的 `content`，以及最多 256 字符的 `idempotency_key`。没有来源参数，同一个 key 只能用于同一条消息。Bridge 需要 `send`，投递到模型 prompt 或恢复冷线程还需 `wake`；没有 wake 时保持 pending。`delivered` 仅确认 prompt 投递，不代表已回复。Pending 使用原 key 最多重试 15 分钟，拒绝原因可查看 bridge receipts。普通 Assistant 正文不会自动转发。
-- `ThreadSend({ room, content, mentions? })` 在当前线程已加入的房间发言。房间正文最多 20,000 字符，mentions 使用线程会话 ID 或角色 ID，省略重试键时使用工具调用 ID。只有显式房间发送才进入日志，普通 Assistant 文本不会入群。房间发送的 `delivered` 表示已记入日志，不表示所有成员已经回复；线程成员默认忙时排队。
+- `ThreadSend({ room, content, mentions? })` 在当前线程已加入的房间发言。房间正文最多 20,000 字符，mentions 使用线程会话 ID 或角色 ID，省略重试键时使用工具调用 ID。ThreadSend 是这条线程在房间里说话的方式，线程里的正文留在线程里。用户消息没有 mention 时交给房间 host。成员发出的消息只唤醒被 mention 的成员。房间发送的 `delivered` 表示已记入房间日志，不表示所有成员已经回复；线程成员默认忙时排队。
 - `ThreadWait` 等待 1–8 条互不重复的本地或已批准 bridge 线程的 terminal、attention、lifecycle 或消息无法投递活动。跨 bridge 需要 `wait`，不会唤醒目标。`timeout_ms` 默认为 30,000，取值为 0–60,000，`0` 只检查一次；下次调用带上各自返回的 cursor，取消工具调用即可停止等待。
 
 `ThreadCreate` 默认启用，设置页的「权限 → 工具」可单独关闭，不影响另外 4 个线程工具。Peer 通信受 [`[thread_communication] enabled`](../configuration/config-files.md#thread-communication) 与持久化 workspace 覆盖控制。Bridge 入站另行默认关闭，由目标 owner 明确批准；关闭目标通信或入站会停止 bridge 投递，不删除会话。
@@ -309,9 +309,9 @@ Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRu
 
 **`AgentList`** 列出当前 Agent 的直属子 Agent。可选参数 `include_finished` 默认为 false。实例正在启动、运行或取消时，即使之前的后台任务已完成或超时，也会以 `running` 保持可见。执行器处于故障状态时显示 `errored`；其他情况采用最近一次后台任务状态，没有任务记录则为 `untracked`。传 `true` 才会额外包含已结束或出错的子 Agent。最多返回 50 条，运行中的排在前面；装不下的数量记在 `omitted`。每条记录含 `agent_id`、可选的 `name` 与 `profile`，以及 `status`。`running` 不代表一定有跟踪中的后台任务或之后的完成通知；用 `TaskList` 查看跟踪中的工作。
 
-**`AgentSend`** 把非空的 `message` 排进直属子 Agent 的邮箱。`target` 可以是 `AgentRun` 当时传入的 `name`，也可以是 agent id。子 Agent 以 native 方式运行时，消息会在下一个 step 边界被 steer 进其活跃 turn；跑在外部执行器上的子 Agent 无法被 steer，消息会等到它下一次运行开始时才被取走；空闲且可恢复的子 Agent 则以该消息启动一次新的运行，该次运行完成时父 Agent 照常收到完成通知。匹配到多个直属子 Agent、或一个都匹配不到时调用失败——先用 `AgentList` 再换成不含糊的值重试。邮箱满了说明未读排队消息太多，等子 Agent 消化一些再发。
+**`AgentSend`** 把非空的 `message` 发给直属子 Agent。`target` 可以是 `AgentRun` 当时传入的 `name`，也可以是 agent id。子 Agent 以 native 方式运行时，消息会在下一个 step 边界进入当前工作；Codex 和支持 steer 的 ACP 子 Agent 可以在运行期间收到。已经停止的子 Agent，包括运行在消息进入上下文之前结束的情况，会沿用原来的模型、profile、工具和上下文继续。外部子 Agent 已保存的消息按到达顺序进入这同一个绑定，一封接一封，不需要另一次 resume。调度容量已满时，这次继续会等到一个正在运行的子 Agent 结束，不会超出上限再开一跑。如果没有运行会释放容量，这条消息仍留在原来的 `message_id` 下，失败会写明为什么没有启动；用同一次调用重试会复用这条消息。这次继续是普通的子任务，完成时父 Agent 照常收到通知。匹配到多个直属子 Agent、或一个都匹配不到时调用失败——先用 `AgentList` 再换成不含糊的值重试。邮箱满了说明未读排队消息太多，等子 Agent 消化一些再发。
 
-返回结果包含 `message_id` 和 `queued` 或 `delivered` 状态。`queued` 表示邮箱已受理；投递可以并发完成，所以它并不说明这条消息此刻一定还没进上下文。`delivered` 只表示消息已送达收件方上下文，不代表子 Agent 已按它采取行动。`resumed: true` 表示确实观测到一次新运行启动；没有观测到运行启动时该字段会被省略，所以看不到它并不等于否定答案。收件方上下文持久化且邮箱确认投递后，发送者的 transcript 会记录投递回执，GUI 的「待送达」标记随之清除，即使没有打开子 Agent 的 transcript。回执在页面重载和历史回放后仍然有效。
+返回结果包含 `message_id` 和 `queued` 或 `delivered` 状态。`queued` 表示邮箱已受理，不表示已经有一次运行在进行。投递可以并发完成，所以它并不说明这条消息此刻一定还没进上下文。`delivered` 只表示消息已送达收件方上下文，不代表子 Agent 已按它采取行动。`resumed: true` 表示确实观测到一次新运行启动；没有观测到运行启动时该字段会被省略，所以看不到它并不等于否定答案。收件方上下文持久化且邮箱确认投递后，发送者的 transcript 会记录投递回执，GUI 的「待送达」标记随之清除，即使没有打开子 Agent 的 transcript。回执在页面重载和历史回放后仍然有效。
 
 **`AskUserQuestion`** 以结构化多选题的形式向用户提问，适用于需要消歧或选择方案的场景。`questions` 参数接受 1–4 道题，每道题需提供 `question`（以 `?` 结尾）、`options`（2–4 个选项，每项含 `label` 和 `description`）以及可选的 `header`（最多 12 字符）和 `multi_select`（默认 false）。系统自动附加"其他"选项。`background` 为 true 时启动后台问题任务并立即返回任务 ID。宿主未实现交互式提问能力时返回失败提示，Agent 应改为在文本回复中直接提问。
 
