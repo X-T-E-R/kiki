@@ -2,8 +2,10 @@ import type { ImProviderKind } from '@kiki/protocol';
 
 import {
   acceptsTelegramVoice,
+  ImSendError,
   type ImAdapterFactory,
   type ImInboundEvent,
+  type ImInboundIdentity,
   type ImOutboundFile,
   type ImOutboundText,
   type ImSessionAdapter,
@@ -69,6 +71,20 @@ export class FakeImAdapter implements ImSessionAdapter {
     const messageId = this.emptyMessageId ? '' : `m${++this.sequence}`;
     this.sent.push(message);
     return Promise.resolve({ messageId, messageIds: messageId.length > 0 ? [messageId] : [] });
+  }
+
+  async sendTextParts(message: { identity: ImInboundIdentity; parts: readonly string[]; code: string }): Promise<{ messageId: string; messageIds: readonly string[] }> {
+    const ids: string[] = [];
+    for (let index = 0; index < message.parts.length; index += 1) {
+      try {
+        const sent = await this.sendText({ identity: message.identity, text: message.parts[index] ?? '', code: message.code });
+        ids.push(...(sent.messageIds.length > 0 ? sent.messageIds : []));
+      } catch (error) {
+        const tooLong = error instanceof Error && error.message === 'too_long';
+        throw new ImSendError(tooLong ? 'too_long' : error instanceof Error ? error.message : 'send_failed', ids, index);
+      }
+    }
+    return { messageId: ids[0] ?? '', messageIds: ids };
   }
 
   editText(message: ImOutboundText & { messageId: string }): Promise<{ messageId: string; edited: boolean }> {

@@ -206,6 +206,12 @@ export class HubSessionAdapter implements ImSessionAdapter {
     return acceptedDelivery(sent);
   }
 
+  async sendTextParts(message: { identity: ImInboundIdentity; parts: readonly string[]; code: string }): Promise<{ messageId: string; messageIds: readonly string[] }> {
+    await this.useReplies();
+    const sent = await this.dispatch({ type: 'text_parts', target: this.target(message.identity), parts: message.parts }, message.identity);
+    return acceptedDelivery(sent);
+  }
+
   async editText(message: ImOutboundText & { readonly messageId: string }): Promise<{ messageId: string; edited: boolean }> {
     await this.useReplies();
     const sent = await this.dispatch({ type: 'edit_text', target: this.target(message.identity), message_id: message.messageId, text: message.text }, message.identity);

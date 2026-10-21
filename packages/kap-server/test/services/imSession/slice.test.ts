@@ -502,21 +502,78 @@ describe('long replies', () => {
     expect(file?.type === 'media' ? file.media.filename : '').toBe('reply.txt');
   });
 
-  it('does not truncate or mark a QQ message delivered when it is too long', async () => {
+  it('sends the whole QQ text after too_long and does not invent a shorter first send', async () => {
     const text = 'Q'.repeat(5000);
+    const accepted: string[] = [];
     let full = 0;
     const sent = await watch('qq_onebot_v11', 'onebot_v11', 'onebot=ws://127.0.0.1:6700', [
       { text, done: false, media: [] },
       { text, done: true, media: [] },
     ], async (message) => {
       if (message.type === 'text' && message.text === text) { full += 1; return { status: 'failed', message_ids: [], error_kind: 'too_long' }; }
+      if (message.type === 'text_parts') {
+        if (message.parts.some((part) => part.length >= text.length)) return { status: 'failed', message_ids: [], error_kind: 'too_long', failed_part: 0 };
+        accepted.push(...message.parts);
+        return { status: 'accepted', message_ids: message.parts.map((_, index) => `p${accepted.length}-${index}`) };
+      }
       if (message.type === 'media') return { status: 'failed', message_ids: [], error_kind: 'unsupported' };
       return { status: 'accepted', message_ids: ['n1'] };
     });
-    expect(full).toBeGreaterThanOrEqual(2);
+    expect(full).toBe(1);
+    expect(accepted.join('')).toBe(text);
+    expect(accepted.every((part) => part.length < text.length && part.length > 0)).toBe(true);
     expect(sent.some((item) => item.type === 'media')).toBe(false);
-    const delivered = sent.filter((item) => item.type === 'text' && item.text !== text);
-    expect(delivered.map((item) => item.type === 'text' ? item.text : '')).toEqual([NOTICE]);
-    expect(sent.filter((item) => item.type === 'text').every((item) => item.type === 'text' && (item.text === text || item.text === NOTICE))).toBe(true);
+    expect(sent.some((item) => item.type === 'text' && item.text === NOTICE)).toBe(false);
+    expect(sent.filter((item) => item.type === 'text_parts').flatMap((item) => item.type === 'text_parts' ? item.parts : []).join('')).toBe(text);
+  });
+
+  it('keeps accepted QQ segments and resumes only the unsent tail', async () => {
+    const text = Array.from({ length: 5000 }, (_, index) => String.fromCharCode(33 + (index % 90))).join('');
+    const accepted: string[] = [];
+    let blocked = false;
+    const sent = await watch('qq_onebot_v11', 'onebot_v11', 'onebot=ws://127.0.0.1:6700', [
+      { text, done: false, media: [] },
+      { text, done: true, media: [] },
+    ], async (message) => {
+      if (message.type === 'text' && message.text === text) return { status: 'failed', message_ids: [], error_kind: 'too_long' };
+      if (message.type === 'text_parts') {
+        if (message.parts.some((part) => part.length > 1000)) return { status: 'failed', message_ids: [], error_kind: 'too_long', failed_part: 0 };
+        if (message.parts.length > 1 && !blocked) {
+          blocked = true;
+          const kept = message.parts.slice(0, 2);
+          accepted.push(...kept);
+          return { status: 'failed', message_ids: ['a', 'b'], error_kind: 'unknown', failed_part: 2 };
+        }
+        accepted.push(...message.parts);
+        return { status: 'accepted', message_ids: message.parts.map((_, index) => `p${accepted.length}-${index}`) };
+      }
+      if (message.type === 'media') return { status: 'failed', message_ids: [], error_kind: 'unsupported' };
+      return { status: 'accepted', message_ids: ['n1'] };
+    });
+    expect(accepted.join('')).toBe(text);
+    expect(accepted.filter((part) => part === text.slice(0, 625)).length).toBe(1);
+    expect(accepted.filter((part) => part === text.slice(625, 1250)).length).toBe(1);
+    expect(accepted.filter((part) => part === text.slice(1250, 1875)).length).toBe(1);
+    expect(sent.filter((item) => item.type === 'text' && item.text === text).length).toBe(1);
+    expect(sent.some((item) => item.type === 'media')).toBe(false);
+    expect(sent.some((item) => item.type === 'text' && item.text === NOTICE)).toBe(false);
+    const failedBatch = sent.find((item) => item.type === 'text_parts' && item.parts.length > 1);
+    expect(failedBatch?.type === 'text_parts' ? failedBatch.parts[2] : '').toBe(text.slice(1875, 2500));
+  });
+
+  it('sends one QQ notice when a single character is still too long', async () => {
+    const text = 'QQQQ';
+    let notice = 0;
+    const sent = await watch('qq_onebot_v11', 'onebot_v11', 'onebot=ws://127.0.0.1:6700', [
+      { text, done: false, media: [] },
+      { text, done: true, media: [] },
+    ], async (message) => {
+      if (message.type === 'text' && message.text === NOTICE) { notice += 1; return { status: 'accepted', message_ids: ['n1'] }; }
+      if (message.type === 'media') return { status: 'failed', message_ids: [], error_kind: 'unsupported' };
+      return { status: 'failed', message_ids: [], error_kind: 'too_long', ...(message.type === 'text_parts' ? { failed_part: 0 } : {}) };
+    });
+    expect(notice).toBe(1);
+    expect(sent.some((item) => item.type === 'media')).toBe(false);
+    expect(sent.some((item) => item.type === 'text' && item.text === text)).toBe(true);
   });
 });

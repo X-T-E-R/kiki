@@ -74,6 +74,7 @@ interface ReplyLedger {
   failedText?: string;
   tooLongNotice?: string;
   undelivered?: boolean;
+  deliveredText?: string;
 }
 
 interface Stored {
@@ -725,6 +726,10 @@ export class ImSessionBridge {
       await this.publishFeishu(adapter, identity, text, ledger, edit);
       return;
     }
+    if (adapter.providerKind === 'onebot_v11' && adapter.textLimit === undefined) {
+      await this.publishQq(adapter, identity, text, ledger);
+      return;
+    }
     const parts = segmentText(text, adapter.textLimit);
     if (parts.length === 0) return;
     const head = parts[0]!;
@@ -849,6 +854,106 @@ export class ImSessionBridge {
       return true;
     }
     return false;
+  }
+
+  private async publishQq(adapter: ImSessionAdapter, identity: ImInboundIdentity, text: string, ledger: ReplyLedger): Promise<void> {
+    if (text.length === 0) return;
+    const delivered = ledger.deliveredText ?? '';
+    if (delivered.length > 0 && !text.startsWith(delivered)) ledger.deliveredText = '';
+    const base = ledger.deliveredText ?? '';
+    const pending = text.slice(base.length);
+    if (pending.length === 0) {
+      ledger.undelivered = false;
+      ledger.failedText = undefined;
+      ledger.lastText = text;
+      return;
+    }
+    let knownTooLong = base.length === 0 && ledger.failedText === text;
+    if (base.length === 0 && !knownTooLong) {
+      try {
+        const sent = await adapter.sendText({ identity, text, code: 'reply' });
+        this.keepIds(ledger, deliveryIds(sent));
+        ledger.deliveredText = text;
+        ledger.undelivered = false;
+        ledger.failedText = undefined;
+        ledger.lastText = text;
+        return;
+      } catch (error) {
+        if (!isTooLong(error)) throw error;
+        knownTooLong = true;
+      }
+    }
+    const outcome = await this.segmentQqRemainder(adapter, identity, pending, knownTooLong);
+    ledger.deliveredText = base + outcome.delivered;
+    this.keepIds(ledger, outcome.ids);
+    if (outcome.complete && ledger.deliveredText === text) {
+      ledger.undelivered = false;
+      ledger.failedText = undefined;
+      ledger.lastText = text;
+      return;
+    }
+    if (outcome.unsplittable && ledger.tooLongNotice !== text) {
+      ledger.tooLongNotice = text;
+      await this.send(adapter, identity, this.copy('tooLong'), 'too_long');
+    }
+    ledger.undelivered = true;
+    ledger.failedText = text;
+  }
+
+  private async segmentQqRemainder(adapter: ImSessionAdapter, identity: ImInboundIdentity, pending: string, knownTooLong: boolean): Promise<{ delivered: string; ids: string[]; complete: boolean; unsplittable: boolean }> {
+    let rest = pending;
+    let delivered = '';
+    const ids: string[] = [];
+    let shrink = knownTooLong;
+    while (rest.length > 0) {
+      const probe = await this.fittedQqPrefix(adapter, identity, rest, shrink);
+      shrink = false;
+      if (probe.kind === 'unsplittable') return { delivered, ids, complete: false, unsplittable: true };
+      if (probe.kind === 'failed') return { delivered, ids, complete: false, unsplittable: false };
+      delivered += probe.text;
+      ids.push(...probe.ids);
+      rest = rest.slice(probe.text.length);
+      if (rest.length === 0) break;
+      const parts = chunksOf(rest, codePoints(probe.text).length);
+      try {
+        const sent = await adapter.sendTextParts({ identity, parts, code: 'reply' });
+        ids.push(...deliveryIds(sent));
+        delivered += parts.join('');
+        rest = '';
+      } catch (error) {
+        if (!(error instanceof ImSendError)) throw error;
+        const failedPart = error.failedPart ?? 0;
+        const acceptedText = parts.slice(0, failedPart).join('');
+        delivered += acceptedText;
+        ids.push(...error.acceptedIds.filter((id) => id.length > 0));
+        rest = rest.slice(acceptedText.length);
+        if (error.message !== 'too_long') return { delivered, ids, complete: false, unsplittable: false };
+        shrink = failedPart === 0;
+        if (rest.length === 0) return { delivered, ids, complete: false, unsplittable: true };
+      }
+    }
+    return { delivered, ids, complete: rest.length === 0, unsplittable: false };
+  }
+
+  private async fittedQqPrefix(adapter: ImSessionAdapter, identity: ImInboundIdentity, rest: string, knownTooLong: boolean): Promise<{ kind: 'accepted'; text: string; ids: string[] } | { kind: 'failed' } | { kind: 'unsplittable' }> {
+    let candidate = knownTooLong ? halfPrefix(rest) : rest;
+    if (candidate === undefined) return { kind: 'unsplittable' };
+    while (true) {
+      try {
+        const sent = await adapter.sendTextParts({ identity, parts: [candidate], code: 'reply' });
+        return { kind: 'accepted', text: candidate, ids: deliveryIds(sent) };
+      } catch (error) {
+        if (error instanceof ImSendError && error.message !== 'too_long') return { kind: 'failed' };
+        if (!isTooLong(error)) throw error;
+        const next = halfPrefix(candidate);
+        if (next === undefined) return { kind: 'unsplittable' };
+        candidate = next;
+      }
+    }
+  }
+
+  private keepIds(ledger: ReplyLedger, ids: readonly string[]): void {
+    for (const id of ids) if (id.length > 0 && !ledger.messageIds.includes(id)) ledger.messageIds.push(id);
   }
 
   private async editOrSend(adapter: ImSessionAdapter, identity: ImInboundIdentity, ledger: ReplyLedger, index: number, text: string): Promise<void> {
@@ -1041,6 +1146,28 @@ function toStranger(record: StrangerRecord): ImStranger {
 function deliveryIds(sent: { messageId: string; messageIds?: readonly string[] }): string[] {
   const ids = sent.messageIds ?? (sent.messageId.length > 0 ? [sent.messageId] : []);
   return ids.filter((id) => id.length > 0);
+}
+
+function isTooLong(error: unknown): boolean {
+  return error instanceof Error && error.message === 'too_long';
+}
+
+function codePoints(text: string): string[] {
+  return Array.from(text);
+}
+
+function halfPrefix(text: string): string | undefined {
+  const units = codePoints(text);
+  if (units.length < 2) return undefined;
+  return units.slice(0, Math.floor(units.length / 2)).join('');
+}
+
+function chunksOf(text: string, unitWidth: number): string[] {
+  const units = codePoints(text);
+  const width = unitWidth < 1 ? units.length : unitWidth;
+  const parts: string[] = [];
+  for (let index = 0; index < units.length; index += width) parts.push(units.slice(index, index + width).join(''));
+  return parts;
 }
 
 function wireIdentity(identity: ImInboundIdentity): ImDiscovery['identity'] {

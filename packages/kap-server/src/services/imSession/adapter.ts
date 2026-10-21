@@ -72,6 +72,7 @@ export interface ImSessionAdapter {
   start(listener: (event: ImInboundEvent) => Promise<void>, options?: { readonly offset?: number }): Promise<{ readonly accountId: string; readonly conflict?: 'webhook'; readonly failed?: 'auth' }>;
   stop(): Promise<void>;
   sendText(message: ImOutboundText): Promise<{ readonly messageId: string; readonly messageIds?: readonly string[] }>;
+  sendTextParts(message: { readonly identity: ImInboundIdentity; readonly parts: readonly string[]; readonly code: string }): Promise<{ readonly messageId: string; readonly messageIds: readonly string[] }>;
   editText(message: ImOutboundText & { readonly messageId: string }): Promise<{ readonly messageId: string; readonly edited: boolean }>;
   sendFile(message: ImOutboundFile): Promise<{ readonly messageId: string; readonly deliveredAs: 'file' | 'image' | 'voice' }>;
   answerCallback(callbackQueryId: string): Promise<void>;
