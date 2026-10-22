@@ -1,9 +1,10 @@
 import { Disposable } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
-import { AsyncEmitter, type Event, type IWaitUntil } from '#/_base/event';
+import { AsyncEmitter, Emitter, type Event, type IWaitUntil } from '#/_base/event';
 
 import { deepEqual, diffRecords, isEmptyDiff } from '../recordDiff';
+import type { ProviderTransportDefaults } from '#/kosong/provider/requestCompression';
 
 import {
   type DefaultProviderChangedEvent,
@@ -19,6 +20,10 @@ export class ProviderService extends Disposable implements IProviderService {
   declare readonly _serviceBrand: undefined;
 
   private providers: Readonly<Record<string, ProviderConfig>> = {};
+  private transportDefaultsValue: ProviderTransportDefaults = {
+    requestCompression: undefined,
+    responsesWebSocket: undefined,
+  };
   private defaultProvider: string | undefined;
   private hydrated = false;
   private resolveReady!: () => void;
@@ -36,6 +41,8 @@ export class ProviderService extends Disposable implements IProviderService {
   );
   readonly onDidChangeDefaultProvider: Event<DefaultProviderChangedEvent & IWaitUntil> =
     this._onDidChangeDefaultProvider.event;
+  private readonly _onDidChangeTransportDefaults = this._register(new Emitter<void>());
+  readonly onDidChangeTransportDefaults: Event<void> = this._onDidChangeTransportDefaults.event;
 
   get(name: string): ProviderConfig | undefined {
     return this.providers[name];
@@ -82,6 +89,24 @@ export class ProviderService extends Disposable implements IProviderService {
   async setDefaultProvider(id: string | undefined): Promise<void> {
     await this.ready;
     await this.applyDefaultProvider(id);
+  }
+
+  transportDefaults(): ProviderTransportDefaults {
+    return this.transportDefaultsValue;
+  }
+
+  setTransportDefaults(defaults: ProviderTransportDefaults): void {
+    const next: ProviderTransportDefaults = {
+      requestCompression: defaults.requestCompression === undefined
+        ? undefined
+        : structuredClone(defaults.requestCompression),
+      responsesWebSocket: defaults.responsesWebSocket === undefined
+        ? undefined
+        : structuredClone(defaults.responsesWebSocket),
+    };
+    if (deepEqual(this.transportDefaultsValue, next)) return;
+    this.transportDefaultsValue = next;
+    this._onDidChangeTransportDefaults.fire();
   }
 
   private async applyRecords(next: Readonly<Record<string, ProviderConfig>>): Promise<void> {

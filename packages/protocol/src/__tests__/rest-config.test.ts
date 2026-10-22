@@ -41,6 +41,45 @@ describe('config REST protocol', () => {
     }
   });
 
+  it('keeps system transport sections, explicit off, partial fields, and null clears', () => {
+    const request_compression = {
+      encoding: 'zstd' as const,
+      targets: ['https://b.example.test/v1', 'https://a.example.test/v1'],
+      min_bytes: 0,
+      dictionary: false,
+    };
+    const responses_web_socket = { targets: ['https://example.test/v1'] };
+    expect(configResponseSchema.parse({ request_compression, responses_web_socket })).toMatchObject({
+      request_compression,
+      responses_web_socket,
+    });
+    expect(patchConfigRequestSchema.parse({ request_compression, responses_web_socket })).toEqual({
+      request_compression,
+      responses_web_socket,
+    });
+    expect(patchConfigRequestSchema.parse({
+      request_compression: { encoding: 'off' },
+      responses_web_socket: { off: true },
+    })).toEqual({
+      request_compression: { encoding: 'off' },
+      responses_web_socket: { off: true },
+    });
+    expect(patchConfigRequestSchema.parse({
+      request_compression: { min_bytes: 0, targets: request_compression.targets },
+    }).request_compression).toEqual({ min_bytes: 0, targets: request_compression.targets });
+    expect(patchConfigRequestSchema.parse({})).not.toHaveProperty('request_compression');
+    expect(patchConfigRequestSchema.parse({})).not.toHaveProperty('responses_web_socket');
+    expect(patchConfigRequestSchema.parse({ request_compression: null, responses_web_socket: null })).toEqual({
+      request_compression: null,
+      responses_web_socket: null,
+    });
+    expect(configResponseSchema.safeParse({ request_compression: null }).success).toBe(false);
+    expect(patchConfigRequestSchema.safeParse({
+      request_compression: { encoding: 'gzip', dictionary: true, targets: ['https://example.test/v1'] },
+    }).success).toBe(false);
+    expect(patchConfigRequestSchema.safeParse({ responses_web_socket: {} }).success).toBe(false);
+  });
+
   it('omits removed host dispatch policies from the typed request and response', () => {
     expect(patchConfigRequestSchema.parse({ subagent: {
       main_dispatch_policy: 'strict', subagent_dispatch_policy: 'advisory', allowed_tools: ['Read'],

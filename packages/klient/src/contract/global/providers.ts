@@ -6,6 +6,10 @@
  * packages can register new vendors without touching this schema.
  */
 
+import {
+  RequestCompressionLayerSchema,
+  ResponsesWebSocketLayerSchema,
+} from '@kiki/agent-core-v2/kosong/provider/requestCompression';
 import { RequestIdentityPolicySchema } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
 import { OAuthRefSchema as oAuthRefSchema } from '@kiki/agent-core-v2/kosong/provider/oauthRef';
 import { z } from 'zod';
@@ -28,6 +32,8 @@ const providerConfigObjectSchema = z.object({
   customHeaders: stringRecordSchema.optional(),
   defaultModel: z.string().optional(),
   requestIdentity: requestIdentityPolicySchema.optional(),
+  requestCompression: RequestCompressionLayerSchema.optional(),
+  responsesWebSocket: ResponsesWebSocketLayerSchema.optional(),
 
   type: providerTypeSchema.optional(),
   apiKey: z.string().optional(),

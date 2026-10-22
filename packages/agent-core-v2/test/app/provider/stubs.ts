@@ -17,5 +17,8 @@ export function stubProviderService(
     loadAll: () => {},
     replaceAll: async () => {},
     setDefaultProvider: async () => {},
+    transportDefaults: () => ({}),
+    setTransportDefaults: () => {},
+    onDidChangeTransportDefaults: () => ({ dispose: () => {} }),
   };
 }

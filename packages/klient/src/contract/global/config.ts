@@ -3,6 +3,10 @@
  * `agent-core-v2/app/config/config.ts`.
  */
 
+import {
+  RequestCompressionSystemSchema,
+  ResponsesWebSocketSystemSchema,
+} from '@kiki/agent-core-v2/kosong/provider/requestCompression';
 import { RequestIdentityPolicySchema } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
 import { z } from 'zod';
 
@@ -30,6 +34,12 @@ export const configSetInputSchema = z
     if (domain === 'requestIdentity') {
       addRequestIdentityIssues(value, ctx, [1], false);
     }
+    if (domain === 'requestCompression') {
+      addSchemaIssues(RequestCompressionSystemSchema, value, ctx, [1], false);
+    }
+    if (domain === 'responsesWebSocket') {
+      addSchemaIssues(ResponsesWebSocketSystemSchema, value, ctx, [1], false);
+    }
   });
 
 export const configReplaceInputSchema = z
@@ -37,6 +47,12 @@ export const configReplaceInputSchema = z
   .superRefine(([domain, value], ctx) => {
     if (domain === 'requestIdentity') {
       addRequestIdentityIssues(value, ctx, [1], true);
+    }
+    if (domain === 'requestCompression') {
+      addSchemaIssues(RequestCompressionSystemSchema, value, ctx, [1], true);
+    }
+    if (domain === 'responsesWebSocket') {
+      addSchemaIssues(ResponsesWebSocketSystemSchema, value, ctx, [1], true);
     }
   });
 
@@ -46,6 +62,12 @@ export const configReplaceSectionsInputSchema = z
     if (Object.hasOwn(sections, 'requestIdentity')) {
       addRequestIdentityIssues(sections['requestIdentity'], ctx, [0, 'requestIdentity'], true);
     }
+    if (Object.hasOwn(sections, 'requestCompression')) {
+      addSchemaIssues(RequestCompressionSystemSchema, sections['requestCompression'], ctx, [0, 'requestCompression'], true);
+    }
+    if (Object.hasOwn(sections, 'responsesWebSocket')) {
+      addSchemaIssues(ResponsesWebSocketSystemSchema, sections['responsesWebSocket'], ctx, [0, 'responsesWebSocket'], true);
+    }
   });
 
 function addRequestIdentityIssues(
@@ -54,11 +76,31 @@ function addRequestIdentityIssues(
   path: PropertyKey[],
   allowClear: boolean,
 ): void {
+  addSchemaIssues(RequestIdentityPolicySchema, value, ctx, path, allowClear);
+}
+
+function addSchemaIssues(
+  schema: z.ZodType,
+  value: unknown,
+  ctx: z.RefinementCtx,
+  path: PropertyKey[],
+  allowClear: boolean,
+): void {
   if (allowClear && (value === null || value === undefined)) return;
-  const parsed = RequestIdentityPolicySchema.safeParse(value);
-  if (parsed.success) return;
-  for (const issue of parsed.error.issues) {
-    ctx.addIssue({ ...issue, path: [...path, ...issue.path] });
+  try {
+    schema.parse(value);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      for (const issue of error.issues) {
+        ctx.addIssue({ ...issue, path: [...path, ...issue.path] });
+      }
+      return;
+    }
+    ctx.addIssue({
+      code: 'custom',
+      message: error instanceof Error ? error.message : String(error),
+      path,
+    });
   }
 }
 

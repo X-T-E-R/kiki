@@ -719,6 +719,10 @@ export {
   unsupportedImageMimeFromUrl,
 } from '#/agent/media/image-format-policy';
 export {
+  resolveRequestCompression,
+  resolveResponsesWebSocket,
+} from '#/kosong/provider/requestCompression';
+export {
   IMAGE_MIME_TYPES,
   providerImagePolicy,
   resolveImagePolicy,

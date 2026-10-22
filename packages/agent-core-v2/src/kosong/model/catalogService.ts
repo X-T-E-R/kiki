@@ -31,6 +31,7 @@ import {
   getProviderDefinition,
 } from '../provider/providerDefinition';
 import { resolveImagePolicy } from '../provider/providerImagePolicy';
+import { resolveRequestCompression, resolveResponsesWebSocket } from '../provider/requestCompression';
 
 import {
   type AuthProvider,
@@ -107,6 +108,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     this._register(this.models.onDidChangeModels(() => this.notifyConfigChanged()));
     this._register(this.providers.onDidChangeProviders(() => this.notifyConfigChanged()));
     this._register(this.providers.onDidChangeDefaultProvider(() => { this.notifyConfigChanged(); }));
+    this._register(this.providers.onDidChangeTransportDefaults(() => this.notifyConfigChanged()));
   }
 
   notifyConfigChanged(): void {
@@ -458,8 +460,14 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
         protocol,
         protocolSource: explainModelProtocol(routingModel, providerConfig)?.source,
         baseUrl: resolvedBaseUrl,
-        requestCompression: providerConfig?.requestCompression,
-        responsesWebSocket: providerConfig?.responsesWebSocket,
+        requestCompression: resolveRequestCompression(
+          this.providers.transportDefaults().requestCompression,
+          providerConfig?.requestCompression,
+        ),
+        responsesWebSocket: resolveResponsesWebSocket(
+          this.providers.transportDefaults().responsesWebSocket,
+          providerConfig?.responsesWebSocket,
+        ),
         headers: resolveOutboundHeaders(
           providerConfig?.type,
           providerConfig?.customHeaders,

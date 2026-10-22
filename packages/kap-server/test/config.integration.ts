@@ -746,6 +746,46 @@ timeout = 600
     );
   });
 
+  it('saves system transport sections and rejects an incomplete compression table', async () => {
+    await boot();
+    expect(await getConfig()).not.toHaveProperty('request_compression');
+    expect(await getConfig()).not.toHaveProperty('responses_web_socket');
+    const targets = ['https://b.example.test/v1', 'https://a.example.test/v1'];
+    const saved = await patchConfig({
+      request_compression: { encoding: 'zstd', targets, min_bytes: 1024, dictionary: true },
+      responses_web_socket: { targets },
+    });
+    expect(saved.request_compression).toEqual({ encoding: 'zstd', targets, min_bytes: 1024, dictionary: true });
+    expect(saved.responses_web_socket).toEqual({ targets });
+    const omitted = await patchConfig({ builtin_product_skills: true });
+    expect(omitted.request_compression).toEqual(saved.request_compression);
+    expect(omitted.responses_web_socket).toEqual(saved.responses_web_socket);
+    const off = await patchConfig({
+      request_compression: { encoding: 'off' },
+      responses_web_socket: { off: true },
+    });
+    expect(off.request_compression).toEqual({ encoding: 'off' });
+    expect(off.responses_web_socket).toEqual({ off: true });
+    const persisted = await readFile(join(home as string, 'config.toml'), 'utf-8');
+    expect(persisted).toContain('encoding = "off"');
+    expect(persisted).toContain('off = true');
+    const rejected = await authedFetch(server as RunningServer, base, '/api/config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ request_compression: { min_bytes: 0 }, yolo: true }),
+    });
+    const failure = (await rejected.json()) as Envelope<null>;
+    expect(failure.code).toBe(ErrorCode.VALIDATION_FAILED);
+    expect(failure.msg).toContain('request_compression needs encoding and targets');
+    expect((await getConfig()).request_compression).toEqual({ encoding: 'off' });
+    expect(await readFile(join(home as string, 'config.toml'), 'utf-8')).not.toContain('yolo');
+    const cleared = await patchConfig({ request_compression: null, responses_web_socket: null });
+    expect(cleared).not.toHaveProperty('request_compression');
+    expect(cleared).not.toHaveProperty('responses_web_socket');
+    expect(await readFile(join(home as string, 'config.toml'), 'utf-8')).not.toContain('[request_compression');
+    expect(await readFile(join(home as string, 'config.toml'), 'utf-8')).not.toContain('[responses_web_socket');
+  });
+
   it('rejects empty authored global request_identity layers', async () => {
     await boot();
     for (const request_identity of [{}, { overrides: {} }, { overrides: { client: {} } }]) {

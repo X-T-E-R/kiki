@@ -8,7 +8,21 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { OpenAIResponsesChatProvider, OpenAIResponsesStreamedMessage } from '#/kosong/provider/bases/openai/openai-responses';
 import { generate } from '#/kosong/contract/generate';
-import { ProvidersSectionSchema, providersFromToml, providersToToml } from '#/app/kosongConfig/configSection';
+import { ConfigRegistry } from '#/app/config/configService';
+import {
+  ProvidersSectionSchema,
+  RESPONSES_WEB_SOCKET_SECTION,
+  providersFromToml,
+  providersToToml,
+  requestIdentityFromToml,
+  requestIdentityToToml,
+} from '#/app/kosongConfig/configSection';
+import {
+  ResponsesWebSocketSystemSchema,
+  responsesWebSocketFromWire,
+  responsesWebSocketToWire,
+  resolveResponsesWebSocket,
+} from '#/kosong/provider/requestCompression';
 import type { Message } from '#/kosong/contract/message';
 import type { Tool } from '#/kosong/contract/tool';
 import {
@@ -761,6 +775,46 @@ describe('Responses WebSocket opt-in configuration', () => {
     expect(providersToToml(parsed, {})).toEqual(toml);
     expect(ProvidersSectionSchema.parse({ ordinary: { type: 'openai' } })['ordinary']?.responsesWebSocket).toBeUndefined();
     expect(() => ProvidersSectionSchema.parse({ gateway: { responsesWebSocket: { targets: ['https://other.test/v1?key=hidden'] } } })).toThrow();
+    expect(ProvidersSectionSchema.parse({ gateway: { responsesWebSocket: { off: true } } })['gateway']?.responsesWebSocket).toEqual({ off: true });
+  });
+
+  it('inherits a system target list and lets explicit off replace it', () => {
+    expect(new ConfigRegistry().getSection(RESPONSES_WEB_SOCKET_SECTION)).toMatchObject({
+      domain: RESPONSES_WEB_SOCKET_SECTION,
+      defaultValue: undefined,
+    });
+    const wire = { targets: ['https://example.test/v1'] };
+    expect(requestIdentityFromToml(wire)).toEqual(wire);
+    expect(requestIdentityToToml({ off: true })).toEqual({ off: true });
+    const targets = ['https://b.example.test/v1', 'https://a.example.test/v1'];
+    expect(responsesWebSocketToWire({ targets })).toEqual({ targets });
+    expect(responsesWebSocketToWire({ targets })?.targets).not.toBe(targets);
+    expect(responsesWebSocketFromWire({ off: true })).toEqual({ off: true });
+    expect(responsesWebSocketToWire(undefined)).toBeUndefined();
+    expect(() => ResponsesWebSocketSystemSchema.parse({})).toThrowError(
+      expect.objectContaining({ code: 'config.invalid', message: 'responses_web_socket needs targets or off' }),
+    );
+    expect(() => ResponsesWebSocketSystemSchema.parse({ off: true, targets })).toThrowError(
+      expect.objectContaining({ code: 'config.invalid' }),
+    );
+    expect(ResponsesWebSocketSystemSchema.parse({ off: true })).toEqual({ off: true });
+    expect(ResponsesWebSocketSystemSchema.parse({ targets })).toEqual({ targets });
+    const system = { targets: ['https://example.test/v1', 'https://backup.example.test/v1'] };
+    expect(resolveResponsesWebSocket(undefined, undefined)).toBeUndefined();
+    expect(resolveResponsesWebSocket(undefined, { targets: ['https://example.test/v1'] })).toEqual({
+      targets: ['https://example.test/v1'],
+    });
+    const inherited = resolveResponsesWebSocket(system, undefined);
+    expect(inherited).toEqual(system);
+    expect(inherited?.targets).not.toBe(system.targets);
+    expect(resolveResponsesWebSocket(system, { off: true })).toBeUndefined();
+    expect(resolveResponsesWebSocket({ off: true }, undefined)).toBeUndefined();
+    expect(resolveResponsesWebSocket({ off: true }, { targets: ['https://other.example.test/v1'] })).toEqual({
+      targets: ['https://other.example.test/v1'],
+    });
+    expect(resolveResponsesWebSocket(system, { targets: ['https://other.example.test/v1'] })).toEqual({
+      targets: ['https://other.example.test/v1'],
+    });
   });
 });
 

@@ -4,12 +4,27 @@ import { once } from 'node:events';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { ProviderConfigSchema, providersFromToml, providersToToml } from '#/app/kosongConfig/configSection';
+import { ConfigRegistry } from '#/app/config/configService';
+import {
+  ProviderConfigSchema,
+  REQUEST_COMPRESSION_SECTION,
+  providersFromToml,
+  providersToToml,
+  requestIdentityFromToml,
+  requestIdentityToToml,
+} from '#/app/kosongConfig/configSection';
 import { generate } from '#/kosong/contract/generate';
 import { APITimeoutError, isAbortError, isRetryableGenerateError, requestDeliveryProvenance } from '#/kosong/contract/errors';
 import { isRetryableCompactionError } from '#/agent/fullCompaction/compactionFailure';
 import type { Message } from '#/kosong/contract/message';
 import { createRequestCompressionFetch, withRequestCompressionDelivery } from '#/kosong/provider/bases/request-compression';
+import {
+  RequestCompressionSystemSchema,
+  RequestCompressionWireSchema,
+  requestCompressionFromWire,
+  requestCompressionToWire,
+  resolveRequestCompression,
+} from '#/kosong/provider/requestCompression';
 import { OpenAILegacyChatProvider } from '#/kosong/provider/bases/openai/openai-legacy';
 import { OpenAIResponsesChatProvider } from '#/kosong/provider/bases/openai/openai-responses';
 import { AnthropicChatProvider } from '#/kosong/provider/bases/anthropic/anthropic';
@@ -252,4 +267,92 @@ it('keeps simultaneous SDK attempt provenance isolated when one SDK discards its
   expect(isRetryableGenerateError(encoded.reason)).toBe(false);
   expect(requestDeliveryProvenance(ordinary.reason)).toBeUndefined();
   expect(isRetryableGenerateError(ordinary.reason)).toBe(true);
+});
+
+const systemZstd = {
+  encoding: 'zstd' as const,
+  targets: ['https://example.test/v1', 'https://backup.example.test/v1'],
+  minBytes: 2048,
+  dictionary: true,
+};
+
+describe('request compression system default', () => {
+  it('registers an absent system table and round-trips partial fields', () => {
+    expect(new ConfigRegistry().getSection(REQUEST_COMPRESSION_SECTION)).toMatchObject({
+      domain: REQUEST_COMPRESSION_SECTION,
+      defaultValue: undefined,
+    });
+    const wire = { encoding: 'zstd', targets: ['https://example.test/v1'], min_bytes: 2048, dictionary: true };
+    expect(requestIdentityFromToml(wire)).toEqual({
+      encoding: 'zstd', targets: ['https://example.test/v1'], minBytes: 2048, dictionary: true,
+    });
+    expect(requestIdentityToToml(requestIdentityFromToml(wire))).toEqual(wire);
+    expect(ProviderConfigSchema.parse({ requestCompression: { minBytes: 0 } }).requestCompression).toEqual({ minBytes: 0 });
+    expect(ProviderConfigSchema.safeParse({ requestCompression: {} }).success).toBe(false);
+    expect(ProviderConfigSchema.safeParse({
+      requestCompression: { encoding: 'gzip', targets: ['https://example.test/v1'], dictionary: true },
+    }).success).toBe(false);
+  });
+
+  it('inherits, replaces targets, and keeps dictionary consent until an explicit choice', () => {
+    expect(resolveRequestCompression(undefined, undefined)).toBeUndefined();
+    expect(resolveRequestCompression(undefined, {
+      encoding: 'gzip', targets: ['https://example.test/v1'], minBytes: 0,
+    })).toEqual({ encoding: 'gzip', targets: ['https://example.test/v1'], minBytes: 0 });
+    const inherited = resolveRequestCompression(systemZstd, undefined);
+    expect(inherited).toEqual(systemZstd);
+    expect(inherited?.encoding).toBe('zstd');
+    if (inherited?.encoding === 'zstd') expect(inherited.targets).not.toBe(systemZstd.targets);
+    expect(resolveRequestCompression(systemZstd, { minBytes: 0 })).toEqual({ ...systemZstd, minBytes: 0 });
+    expect(resolveRequestCompression(systemZstd, { dictionary: false })).toEqual({ ...systemZstd, dictionary: false });
+    expect(resolveRequestCompression(systemZstd, { targets: ['https://other.example.test/v1'] })).toEqual({
+      ...systemZstd, targets: ['https://other.example.test/v1'],
+    });
+    expect(resolveRequestCompression(systemZstd, { encoding: 'off' })).toEqual({ encoding: 'off' });
+    expect(resolveRequestCompression({ encoding: 'off' }, undefined)).toEqual({ encoding: 'off' });
+    expect(resolveRequestCompression({ encoding: 'off' }, {
+      encoding: 'gzip', targets: ['https://example.test/v1'],
+    })).toEqual({ encoding: 'gzip', targets: ['https://example.test/v1'] });
+    expect(resolveRequestCompression(systemZstd, {
+      encoding: 'gzip', targets: ['https://plain.example.test/v1'],
+    })).toEqual({ encoding: 'gzip', targets: ['https://plain.example.test/v1'], minBytes: 2048 });
+  });
+
+  it('keeps wire bytes for off, partial fields, and target order', () => {
+    const targets = ['https://b.example.test/v1', 'https://a.example.test/v1'];
+    const layer = { encoding: 'zstd' as const, targets, minBytes: 0, dictionary: false };
+    const wire = requestCompressionToWire(layer);
+    expect(wire).toEqual({ encoding: 'zstd', targets, min_bytes: 0, dictionary: false });
+    expect(wire?.targets).not.toBe(targets);
+    expect(requestCompressionFromWire(wire!)).toEqual(layer);
+    expect(requestCompressionToWire({ encoding: 'off' })).toEqual({ encoding: 'off' });
+    expect(requestCompressionToWire({ minBytes: 0, targets })).toEqual({ min_bytes: 0, targets });
+    expect(requestCompressionToWire(undefined)).toBeUndefined();
+    expect(RequestCompressionWireSchema.parse({ min_bytes: 0, targets })).toEqual({ min_bytes: 0, targets });
+  });
+
+  it('rejects an incomplete system table at config parse with config.invalid', () => {
+    expect(() => RequestCompressionSystemSchema.parse({ minBytes: 0 })).toThrowError(
+      expect.objectContaining({
+        code: 'config.invalid',
+        message: 'request_compression needs encoding and targets',
+      }),
+    );
+    expect(() => RequestCompressionSystemSchema.parse({ encoding: 'gzip', dictionary: true, targets: ['https://example.test/v1'] })).toThrowError(
+      expect.objectContaining({ code: 'config.invalid' }),
+    );
+    expect(RequestCompressionSystemSchema.parse({ encoding: 'off' })).toEqual({ encoding: 'off' });
+    expect(RequestCompressionSystemSchema.parse({
+      encoding: 'zstd', targets: ['https://example.test/v1'], minBytes: 1024, dictionary: true,
+    })).toMatchObject({ encoding: 'zstd', dictionary: true });
+  });
+
+  it('rejects a partial layer that cannot inherit encoding and targets', () => {
+    expect(() => resolveRequestCompression(undefined, { minBytes: 0 })).toThrowError(
+      expect.objectContaining({ code: 'config.invalid' }),
+    );
+    expect(() => resolveRequestCompression({ encoding: 'gzip', targets: ['https://example.test/v1'] }, { dictionary: true })).toThrowError(
+      expect.objectContaining({ code: 'config.invalid' }),
+    );
+  });
 });

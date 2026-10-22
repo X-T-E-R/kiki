@@ -68,7 +68,9 @@ import {
   DEFAULT_PROVIDER_SECTION,
   MODELS_SECTION,
   PROVIDERS_SECTION,
+  REQUEST_COMPRESSION_SECTION,
   REQUEST_IDENTITY_SECTION,
+  RESPONSES_WEB_SOCKET_SECTION,
   THINKING_SECTION,
 } from '#/app/kosongConfig/configSection';
 import type { Protocol } from '#/kosong/protocol/protocol';
@@ -1283,7 +1285,9 @@ function isResponsesTransportConfigSection(domain: string): boolean {
     case DEFAULT_PROVIDER_SECTION:
     case MODELS_SECTION:
     case PROVIDERS_SECTION:
+    case REQUEST_COMPRESSION_SECTION:
     case REQUEST_IDENTITY_SECTION:
+    case RESPONSES_WEB_SOCKET_SECTION:
     case THINKING_SECTION:
     case 'modelOverrides':
       return true;

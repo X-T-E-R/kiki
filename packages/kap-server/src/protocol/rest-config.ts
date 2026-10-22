@@ -22,6 +22,7 @@ import {
   ExtraAgentDirsConfigSchema,
 } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/configSection';
 import { WorkspaceInstanceConfigSchema } from '@kiki/agent-core-v2/workspace/workspaceInstance/configSection';
+import { RequestCompressionWireSchema, ResponsesWebSocketWireSchema } from '@kiki/agent-core-v2/kosong/provider/requestCompression';
 import { RequestIdentityPolicyWireSchema } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
 import { modelSwitchConfigSchema, modelSwitchConfigPatchSchema, agentExecutorDisplayConfigSchema, agentExecutorDisplayConfigPatchSchema, nbSearchConfigPatchSchema, nbSearchSourceConfigSchema, requestGovernanceConfigPatchSchema, retryConfigResponseSchema, retryConfigSchema, spaceUiConfigSchema, spaceUiConfigPatchSchema, sessionTitleConfigResponseSchema, sessionTitleConfigPatchSchema, interactionConfigResponseSchema, interactionConfigPatchSchema } from '@kiki/protocol';
 import { worktreeConfigSchema } from '@kiki/agent-core-v2/app/git/worktreeConfig';
@@ -123,6 +124,8 @@ const replaceableConfigDomainSchema = z.enum([
   'task',
   'identity',
   'request_identity',
+  'request_compression',
+  'responses_web_socket',
   'extra_agent_dirs',
   'skip_builtin_profile_installation',
   'disabled_named_profiles',
@@ -228,6 +231,8 @@ export const configResponseSchema = z.object({
   task: AgentTaskConfigSchema.optional(),
   identity: IdentityConfigSchema.optional(),
   request_identity: RequestIdentityPolicyWireSchema.optional(),
+  request_compression: RequestCompressionWireSchema.optional(),
+  responses_web_socket: ResponsesWebSocketWireSchema.optional(),
   extra_agent_dirs: ExtraAgentDirsConfigSchema,
   skip_builtin_profile_installation: SkipBuiltinProfileInstallationConfigSchema,
   disabled_named_profiles: DisabledNamedProfilesConfigSchema,
@@ -295,6 +300,8 @@ export const patchConfigRequestSchema = z.object({
   task: taskConfigRequestSchema.optional(),
   identity: identityConfigRequestSchema.optional(),
   request_identity: RequestIdentityPolicyWireSchema.nullable().optional(),
+  request_compression: RequestCompressionWireSchema.nullable().optional(),
+  responses_web_socket: ResponsesWebSocketWireSchema.nullable().optional(),
   extra_agent_dirs: ExtraAgentDirsConfigSchema,
   skip_builtin_profile_installation: SkipBuiltinProfileInstallationConfigSchema,
   disabled_named_profiles: DisabledNamedProfilesConfigSchema,

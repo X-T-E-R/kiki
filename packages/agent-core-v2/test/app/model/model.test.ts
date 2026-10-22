@@ -9,7 +9,9 @@ import {
   ModelsSectionSchema,
   modelsFromToml,
   modelsToToml,
+  REQUEST_COMPRESSION_SECTION,
   REQUEST_IDENTITY_SECTION,
+  RESPONSES_WEB_SOCKET_SECTION,
   requestIdentityFromToml,
   requestIdentityToToml,
 } from '#/app/kosongConfig/configSection';
@@ -194,6 +196,11 @@ describe('models config section', () => {
       domain: REQUEST_IDENTITY_SECTION,
       defaultValue: undefined,
     });
+  });
+
+  it('registers absent system transport sections', () => {
+    expect(new ConfigRegistry().getSection(REQUEST_COMPRESSION_SECTION)?.defaultValue).toBeUndefined();
+    expect(new ConfigRegistry().getSection(RESPONSES_WEB_SOCKET_SECTION)?.defaultValue).toBeUndefined();
   });
 
   it('deeply round-trips the global request identity TOML shape', () => {

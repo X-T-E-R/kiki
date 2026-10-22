@@ -32,7 +32,12 @@ import { ENV_MODEL_PROVIDER_KEY, type OAuthRef, type ProviderConfig, type Provid
 import type { ImagePolicyConfig } from '#/kosong/provider/providerImagePolicy';
 import { ProtocolSchema } from '#/kosong/protocol/protocol';
 import { RequestIdentityPolicySchema } from '#/kosong/requestIdentity/requestIdentityPolicy';
-import { ProviderTargetsSchema, RequestCompressionSchema } from '#/kosong/provider/requestCompression';
+import {
+  RequestCompressionLayerSchema,
+  RequestCompressionSystemSchema,
+  ResponsesWebSocketLayerSchema,
+  ResponsesWebSocketSystemSchema,
+} from '#/kosong/provider/requestCompression';
 
 export { ENV_MODEL_PROVIDER_KEY } from '#/kosong/provider/provider';
 
@@ -102,8 +107,8 @@ const ProviderConfigObjectSchema = z.object({
   defaultModel: z.string().optional(),
   defaults: GenerationParametersSchema.optional(),
   requestIdentity: RequestIdentityPolicySchema.optional(),
-  requestCompression: RequestCompressionSchema.optional(),
-  responsesWebSocket: z.object({ targets: ProviderTargetsSchema }).strict().optional(),
+  requestCompression: RequestCompressionLayerSchema.optional(),
+  responsesWebSocket: ResponsesWebSocketLayerSchema.optional(),
   images: ImagePolicyConfigSchema.optional(),
 
   type: ProviderTypeSchema.optional(),
@@ -250,6 +255,20 @@ export const requestIdentityToToml = (value: unknown): unknown =>
   isPlainObject(value) ? deepCamelToSnake(value) : value;
 
 registerConfigSection(REQUEST_IDENTITY_SECTION, RequestIdentityPolicySchema, {
+  fromToml: requestIdentityFromToml,
+  toToml: requestIdentityToToml,
+});
+
+export const REQUEST_COMPRESSION_SECTION = 'requestCompression';
+
+export const RESPONSES_WEB_SOCKET_SECTION = 'responsesWebSocket';
+
+registerConfigSection(REQUEST_COMPRESSION_SECTION, RequestCompressionSystemSchema, {
+  fromToml: requestIdentityFromToml,
+  toToml: requestIdentityToToml,
+});
+
+registerConfigSection(RESPONSES_WEB_SOCKET_SECTION, ResponsesWebSocketSystemSchema, {
   fromToml: requestIdentityFromToml,
   toToml: requestIdentityToToml,
 });

@@ -40,6 +40,10 @@ import { explainModelProtocol, resolveModelProtocol } from '#/kosong/model/model
 import type { ProviderConfig, ProvidersSection } from '#/kosong/provider/provider';
 import type { ImagePolicyConfig } from '#/kosong/provider/providerImagePolicy';
 import {
+  requestCompressionFromWire,
+  responsesWebSocketFromWire,
+} from '#/kosong/provider/requestCompression';
+import {
   requestIdentityFromWire,
   requestIdentityToWire,
   resolveProviderRequestIdentity,
@@ -495,6 +499,14 @@ function applyProviderPatch(provider: ProviderConfig, patch: PatchProviderReques
       next.requestIdentity = policy;
     }
   }
+  if (patch.request_compression !== undefined) {
+    if (patch.request_compression === null) setCleared(next, 'requestCompression');
+    else next.requestCompression = requestCompressionFromWire(patch.request_compression);
+  }
+  if (patch.responses_web_socket !== undefined) {
+    if (patch.responses_web_socket === null) setCleared(next, 'responsesWebSocket');
+    else next.responsesWebSocket = responsesWebSocketFromWire(patch.responses_web_socket);
+  }
   if (patch.images !== undefined) {
     if (patch.images === null) {
       setCleared(next, 'images');
@@ -777,6 +789,12 @@ export class ModelCatalogMutationService
         const policy = requestIdentityFromWire(request.request_identity);
         resolveProviderRequestIdentity({ requestIdentity: policy });
         provider.requestIdentity = policy;
+      }
+      if (request.request_compression !== undefined) {
+        provider.requestCompression = requestCompressionFromWire(request.request_compression);
+      }
+      if (request.responses_web_socket !== undefined) {
+        provider.responsesWebSocket = responsesWebSocketFromWire(request.responses_web_socket);
       }
       const nextModels: ModelsSection = { ...models };
       for (const entry of request.models ?? []) {

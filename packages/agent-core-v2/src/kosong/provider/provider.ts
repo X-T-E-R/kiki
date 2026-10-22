@@ -5,8 +5,13 @@ import type { Event, IWaitUntil } from '#/_base/event';
 import type { RequestIdentityPolicy } from '#/kosong/requestIdentity/requestIdentityPolicy';
 import type { ImagePolicyConfig } from '#/kosong/provider/providerImagePolicy';
 import type { GenerationParameters } from '#/kosong/contract/generationParameters';
-import type { RequestCompression } from '#/kosong/contract/requestCompression';
-import type { ResponsesWebSocketConfig } from '#/kosong/contract/responsesTransport';
+import type {
+  ProviderTransportDefaults,
+  RequestCompressionLayer,
+  ResponsesWebSocketLayer,
+} from '#/kosong/provider/requestCompression';
+
+export type { ProviderTransportDefaults, RequestCompressionLayer, ResponsesWebSocketLayer };
 
 export type ProviderType = string;
 
@@ -29,8 +34,8 @@ export interface ProviderConfig {
   defaultModel?: string;
   defaults?: GenerationParameters;
   requestIdentity?: RequestIdentityPolicy;
-  requestCompression?: RequestCompression;
-  responsesWebSocket?: ResponsesWebSocketConfig;
+  requestCompression?: RequestCompressionLayer;
+  responsesWebSocket?: ResponsesWebSocketLayer;
   images?: ImagePolicyConfig;
 
   type?: ProviderType;
@@ -66,6 +71,9 @@ export interface IProviderService {
   loadAll(providers: ProvidersSection, defaultProvider: string | undefined): void;
   replaceAll(providers: ProvidersSection): Promise<void>;
   setDefaultProvider(id: string | undefined): Promise<void>;
+  transportDefaults(): ProviderTransportDefaults;
+  setTransportDefaults(defaults: ProviderTransportDefaults): void;
+  readonly onDidChangeTransportDefaults: Event<void>;
 }
 
 export const IProviderService: ServiceIdentifier<IProviderService> =

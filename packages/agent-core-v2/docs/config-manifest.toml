@@ -8,7 +8,7 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (53 sections · 1 overlay(s))
+# Index (55 sections · 1 overlay(s))
 #   agentExecutorDisplay            src/app/agentExecutor/executorOverrides.ts
 #   agentExecutorOverrides          src/app/agentExecutor/executorOverrides.ts
 #   agentExecutors                  src/app/agentExecutor/configSection.ts
@@ -47,8 +47,10 @@
 #   prompt                          src/app/prompt/configSection.ts
 #   providers                       src/app/kosongConfig/configSection.ts
 #   recipes                         src/app/recipes/configSection.ts
+#   requestCompression              src/app/kosongConfig/configSection.ts
 #   requestGovernance               src/app/requestGovernance/configSection.ts
 #   requestIdentity                 src/app/kosongConfig/configSection.ts
+#   responsesWebSocket              src/app/kosongConfig/configSection.ts
 #   retry                           src/agent/stepRetry/configSection.ts
 #   sessionResidency                src/app/sessionManager/configSection.ts
 #   sessionTitle                    src/session/sessionTitle/configSection.ts
@@ -777,8 +779,13 @@ enter_approval_timeout_ms = 60000
         # responses: "prompt_cache_key" | "none"
         # messages: "metadata_user_id" | "none"
       # responses_metadata: "codex" | "none"
-  # request_compression: object | object | object
+  # request_compression: object
+    # encoding: "off" | "gzip" | "zstd"
+    # targets: string[]
+    # min_bytes: integer
+    # dictionary: boolean
   # responses_web_socket: object
+    # off: true
     # targets: string[]
   # images: object
     # accepted_types: "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/bmp" | "image/heic" | "image/heif" | "image/avif" | "image/tiff" | "image/x-icon"[]
@@ -809,6 +816,19 @@ enter_approval_timeout_ms = 60000
 
 [recipes]
 markets = []
+
+# ##########################################################################
+# requestCompression (config.toml: request_compression)
+#   owner: src/app/kosongConfig/configSection.ts
+#   scope: core
+#   hooks: custom fromToml · custom toToml
+# ##########################################################################
+
+[request_compression]
+# encoding: "off" | "gzip" | "zstd"
+# targets: string[]
+# min_bytes: integer
+# dictionary: boolean
 
 # ##########################################################################
 # requestGovernance (config.toml: request_governance)
@@ -854,6 +874,17 @@ rules = []
     # responses: "prompt_cache_key" | "none"
     # messages: "metadata_user_id" | "none"
   # responses_metadata: "codex" | "none"
+
+# ##########################################################################
+# responsesWebSocket (config.toml: responses_web_socket)
+#   owner: src/app/kosongConfig/configSection.ts
+#   scope: core
+#   hooks: custom fromToml · custom toToml
+# ##########################################################################
+
+[responses_web_socket]
+# off: true
+# targets: string[]
 
 # ##########################################################################
 # retry

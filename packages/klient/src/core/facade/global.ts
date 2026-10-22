@@ -84,6 +84,7 @@ import type {
   McpServerStopResult,
 } from '@kiki/agent-core-v2/app/mcpManagement/mcpManagement';
 import type { McpRevealedOAuthCredential, McpStoredOAuthCredential, McpStoredOAuthIdentity } from '@kiki/agent-core-v2/mcpCore/oauth/service';
+import type { RequestCompressionLayer, ResponsesWebSocketLayer } from '@kiki/agent-core-v2/kosong/provider/requestCompression';
 import type {
   AnonymousProviderInput,
   GenerateEvent,
@@ -232,21 +233,49 @@ export interface GlobalWorkspacesFacade {
 
 export interface GlobalConfigFacade {
   get(domain: 'requestIdentity'): Promise<RequestIdentityPolicy | undefined>;
+  get(domain: 'requestCompression'): Promise<RequestCompressionLayer | undefined>;
+  get(domain: 'responsesWebSocket'): Promise<ResponsesWebSocketLayer | undefined>;
   get<T = unknown>(domain: string): Promise<T>;
   getAll(): Promise<Record<string, unknown>>;
   inspect(
     domain: 'requestIdentity',
   ): Promise<ConfigInspectValue<RequestIdentityPolicy | undefined>>;
+  inspect(
+    domain: 'requestCompression',
+  ): Promise<ConfigInspectValue<RequestCompressionLayer | undefined>>;
+  inspect(
+    domain: 'responsesWebSocket',
+  ): Promise<ConfigInspectValue<ResponsesWebSocketLayer | undefined>>;
   inspect<T = unknown>(domain: string): Promise<ConfigInspectValue<T>>;
   set(input: {
     domain: 'requestIdentity';
     patch: RequestIdentityPolicy;
     target?: ConfigTargetLiteral;
   }): Promise<void>;
+  set(input: {
+    domain: 'requestCompression';
+    patch: RequestCompressionLayer;
+    target?: ConfigTargetLiteral;
+  }): Promise<void>;
+  set(input: {
+    domain: 'responsesWebSocket';
+    patch: ResponsesWebSocketLayer;
+    target?: ConfigTargetLiteral;
+  }): Promise<void>;
   set(input: { domain: string; patch: unknown; target?: ConfigTargetLiteral }): Promise<void>;
   replace(input: {
     domain: 'requestIdentity';
     value: RequestIdentityPolicy | undefined;
+    target?: ConfigTargetLiteral;
+  }): Promise<void>;
+  replace(input: {
+    domain: 'requestCompression';
+    value: RequestCompressionLayer | undefined;
+    target?: ConfigTargetLiteral;
+  }): Promise<void>;
+  replace(input: {
+    domain: 'responsesWebSocket';
+    value: ResponsesWebSocketLayer | undefined;
     target?: ConfigTargetLiteral;
   }): Promise<void>;
   replace(input: {
@@ -662,6 +691,8 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
             baseUrl: config.baseUrl,
             defaultModel: config.defaultModel,
             requestIdentity: config.requestIdentity,
+            requestCompression: config.requestCompression,
+            responsesWebSocket: config.responsesWebSocket,
             apiKey: config.auth.method === 'api-key' ? config.auth.apiKey : '',
           };
           return call('providerService', 'set', [idOrConfig, wire]) as Promise<void>;

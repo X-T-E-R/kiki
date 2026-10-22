@@ -146,6 +146,8 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 | `GET /api/config` | 读取全局配置（密钥字段脱敏） |
 | `POST /api/config` | 合并式更新配置，并广播 `event.config.changed` |
 
+`request_compression` 和 `responses_web_socket` 是这两次调用上的系统节。省略某一节则保持原值。JSON `null` 删除该节。压缩对象需要 `encoding` 和 `targets`，并可带 `min_bytes` 与 `dictionary`；或者只写 `encoding` 为 `"off"`，不再带其他字段。`dictionary` 只适用于 `zstd`。WebSocket 对象需要 `targets`，或者只写 `off: true` 且不带 `targets`。对象有值但不完整时请求会被拒绝，已保存的文件保持不变。
+
 会话标题提示词的读取、只读默认值，以及逐字段保存和删除方式见 [`session_title`](../configuration/config-files.md#session-title)。
 
 `hooks` 接受 legacy 命令规则数组，或 `schemaVersion: 2` 的声明式对象。读取和保存均保留完整值，包括 `rules`、`legacy`、`enabled`、`disabled` 和 `files`。嵌套 JSON 键使用 camelCase（`textFile`、`agentRoles`、`everyCompletedSteps`、`counterScope`、`partitionBy`），TOML 使用 snake_case。编辑时发送完整的 hooks 数组或对象；省略 `hooks` 不改动此配置，发送 `[]` 则清空。`null` 或不支持的规则形状返回校验错误码 `40001`，不改变已存文件。读取或保存配置不会执行 hook 命令。支持的事件和动作见 [Hooks](../customization/hooks.md)。
@@ -165,6 +167,8 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 | `POST /api/providers` | 创建供应商（201） |
 | `GET /api/providers/{provider_id}` | 读取供应商（含已存密钥） |
 | `PATCH /api/providers/{provider_id}` | 只修改提供的供应商字段 |
+
+`GET /api/providers` 和 `GET /api/providers/{provider_id}` 在供应商保存过 `request_compression` 或 `responses_web_socket` 时返回这两项。不完整的压缩对象、`encoding: "off"`、`off: true`，以及已保存的 `targets` 顺序都按原样返回，不会用系统节补齐。`POST /api/providers` 和 `PATCH /api/providers/{provider_id}` 接受同样的对象。PATCH 里的 JSON `null` 清除该供应商字段。省略的字段保持不变。
 | `DELETE /api/providers/{provider_id}` | 删除供应商（204） |
 | `POST /api/providers/{provider_id}:refresh` | 刷新该供应商的模型元数据 |
 | `POST /api/providers:{action}` | 集合级动作：`refresh` / `refresh_oauth` / `import_catalog` / `import_registry` |

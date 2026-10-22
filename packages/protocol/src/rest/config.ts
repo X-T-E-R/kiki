@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { requestIdentityPolicySchema } from '../modelCatalog';
+import { requestCompressionWireSchema, requestIdentityPolicySchema, responsesWebSocketWireSchema } from '../modelCatalog';
 import { browserControlSettingsPatchSchema, browserControlSettingsSchema } from './browser';
 import { interactionConfigSchema, askUserQuestionGuardWireSchema } from '../questionGuard';
 import { hooksConfigSchema } from './hooksConfig';
@@ -335,6 +335,8 @@ export const configResponseSchema = z.object({
   fast_model: z.string().optional(),
   models: z.record(z.string(), z.unknown()).optional(),
   request_identity: requestIdentityPolicySchema.optional(),
+  request_compression: requestCompressionWireSchema.optional(),
+  responses_web_socket: responsesWebSocketWireSchema.optional(),
   thinking: z.unknown().optional(),
   plan: planConfigResponseSchema.optional(),
   plan_mode: z.boolean().optional(),
@@ -379,6 +381,8 @@ export const patchConfigRequestSchema = z.object({
   fast_model: z.string().nullable().optional(),
   models: z.record(z.string(), z.unknown()).optional(),
   request_identity: requestIdentityPolicySchema.nullable().optional(),
+  request_compression: requestCompressionWireSchema.nullable().optional(),
+  responses_web_socket: responsesWebSocketWireSchema.nullable().optional(),
   thinking: z.unknown().optional(),
   plan: planConfigRequestSchema.optional(),
   plan_mode: z.boolean().optional(),
