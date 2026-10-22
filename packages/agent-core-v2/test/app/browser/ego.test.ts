@@ -331,10 +331,14 @@ describe('Ego Lite control', () => {
 });
 
 describe('Ego Lite discovered connection admission', () => {
-  it('lists and checks an installed CLI, then saves only on explicit selection without changing default or allow state', async () => {
+  it.each(['win32', 'linux'] as const)('lists and checks an installed CLI on %s, then saves only on explicit selection without changing default or allow state', async (platform) => {
+    const previousPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: platform });
     const previousPath = process.env['PATH'];
-    process.env['PATH'] = join(root, '0.6.0.16');
-    const { fs } = memoryFs([versioned]);
+    const fixtureRoot = platform === 'win32' ? root : '/EgoLite';
+    const fixtureVersioned = join(fixtureRoot, '0.6.0.16', EXE);
+    process.env['PATH'] = join(fixtureRoot, '0.6.0.16');
+    const { fs } = memoryFs([fixtureVersioned]);
     const configs = new Map<string, BrowserResolvedConnection>([
       ['other', { id: 'other', type: 'agent-browser-profile', name: 'Other', enabled: true }],
     ]);
@@ -365,7 +369,7 @@ describe('Ego Lite discovered connection admission', () => {
     ix.set(IBrowserControlService, new SyncDescriptor(BrowserControlService));
     const control = ix.get(IBrowserControlService);
     try {
-      expect(await control.discover()).toEqual([expect.objectContaining({ id: 'ego-lite', type: 'ego-lite', cliPath: versioned, status: expect.objectContaining({ state: 'idle' }) })]);
+      expect(await control.discover()).toEqual([expect.objectContaining({ id: 'ego-lite', type: 'ego-lite', cliPath: fixtureVersioned, status: expect.objectContaining({ state: 'idle' }) })]);
       expect(await control.probeDiscovered(false)).toMatchObject({ browser: 'ego-lite', state: 'idle' });
       expect(configs.has('ego-lite')).toBe(false);
       const beforeDenied = proc.calls.length;
@@ -381,7 +385,7 @@ describe('Ego Lite discovered connection admission', () => {
       expect(upsert).not.toHaveBeenCalled();
       native = true;
       expect(await control.probeDiscovered(true)).toMatchObject({ browser: 'ego-lite', state: 'ready' });
-      expect(upsert).toHaveBeenCalledWith('ego-lite', expect.objectContaining({ type: 'ego-lite', cliPath: versioned }));
+      expect(upsert).toHaveBeenCalledWith('ego-lite', expect.objectContaining({ type: 'ego-lite', cliPath: fixtureVersioned }));
       expect(setDefault).not.toHaveBeenCalled();
       expect((await control.list()).defaultBrowser).toBe('other');
       expect((await control.list()).allowedBrowsers).toBeUndefined();
@@ -389,6 +393,7 @@ describe('Ego Lite discovered connection admission', () => {
       await ix.dispose();
       if (previousPath === undefined) delete process.env['PATH'];
       else process.env['PATH'] = previousPath;
+      if (previousPlatform !== undefined) Object.defineProperty(process, 'platform', previousPlatform);
     }
   });
 });
