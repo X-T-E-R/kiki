@@ -441,22 +441,54 @@ describe('session event waiting', () => {
     expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 
+  it('adopts a native timer only when an async advance yields', async () => {
+    const realSetImmediate = globalThis.setImmediate;
+    const realClearImmediate = globalThis.clearImmediate;
+    vi.useFakeTimers();
+    let nativeFired = false;
+    // Fake-timer async advance yields with the real setImmediate. A native
+    // callback queued ahead of that yield calls the hijacked setTimeout and
+    // leaves a timer this wait does not own. Sync advance never yields.
+    const native = realSetImmediate(() => {
+      nativeFired = true;
+      globalThis.setTimeout(() => {}, 60_000);
+    });
+    try {
+      expect(vi.getTimerCount()).toBe(0);
+      vi.advanceTimersByTime(0);
+      expect(nativeFired).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(nativeFired).toBe(true);
+      expect(vi.getTimerCount()).toBe(1);
+    } finally {
+      realClearImmediate(native);
+      vi.useRealTimers();
+    }
+  });
+
   it('handles an event timeout before the operation rejects', async () => {
     vi.useFakeTimers();
     const unsubscribe = vi.fn();
     let rejectOperation!: (reason: Error) => void;
     const operation = new Promise<never>((_resolve, reject) => { rejectOperation = reject; });
+    const late = operation.catch((error: unknown) => error);
     try {
       const result = expect(waitForSessionEvent(
         { onEvent: () => unsubscribe },
         () => true,
         () => operation,
       )).rejects.toThrow('Timed out waiting for session event');
-      await vi.advanceTimersByTimeAsync(20_000);
+      // Sync advance does not yield to the native event loop, so a callback
+      // queued before the fake clock cannot adopt an unrelated timer here.
+      vi.advanceTimersByTime(20_000);
       await result;
       expect(unsubscribe).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
       rejectOperation(new Error('late operation failure'));
-      await vi.advanceTimersByTimeAsync(0);
+      await late;
+      await Promise.resolve();
+      vi.advanceTimersByTime(0);
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();
