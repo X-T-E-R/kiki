@@ -30,6 +30,8 @@ import {
   IBootstrapService,
   PromptEnqueued,
   PromptAccepted,
+  PromptAborted,
+  PromptStarted,
   promptRetryFor,
   IAtomicDocumentStore,
   IWireService,
@@ -1607,11 +1609,46 @@ describe('server-v2 /api prompts', () => {
       const records = (await readFile(join(session.accessor.get(ISessionContext).sessionDir, 'agents/main/wire.jsonl'), 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line));
       expect(records.filter(record => record.type === 'prompt.steered' && record.promptIds?.includes('boundary-now'))).toEqual([]);
       if (scenario === 'ended-target') {
+        expect(prompt.list().active?.id).toBe('unrelated-turn');
         const unrelated = loop.status().activeTurnId;
-        prompt.abort('unrelated-turn');
-        await vi.waitFor(() => expect(prompt.list().active?.id).toBe('boundary-now'));
-        expect(loop.status().activeTurnId).not.toBe(target);
-        expect(loop.status().activeTurnId).not.toBe(unrelated);
+        expect(unrelated).toEqual(expect.any(Number));
+        const events = main.accessor.get(IEventBus);
+        const terminal = promiseGate<'started' | 'aborted'>();
+        const started = events.subscribe(PromptStarted, (event) => {
+          if (event.promptId === 'boundary-now') terminal.resolve('started');
+        });
+        const aborted = events.subscribe(PromptAborted, (event) => {
+          if (event.promptId === 'boundary-now') terminal.resolve('aborted');
+        });
+        const step = promiseGate<number>();
+        const observe = loop.hooks.onWillBeginStep.register('boundary-now-turn', async (ctx, next) => {
+          if (ctx.turnId !== target && ctx.turnId !== unrelated) step.resolve(ctx.turnId);
+          await next();
+        }, { before: 'hold-test-turn' });
+        try {
+          prompt.abort('unrelated-turn');
+          type BoundaryArrival = { readonly aborted: true } | { readonly aborted: false; readonly turnId: number };
+          const arrived = (turnId: number): BoundaryArrival => ({ aborted: false, turnId });
+          const winner = await Promise.race<BoundaryArrival>([
+            step.promise.then(arrived),
+            terminal.promise.then((kind) => kind === 'aborted' ? { aborted: true } : step.promise.then(arrived)),
+          ]);
+          if (winner.aborted) throw new Error('queued boundary-now was aborted instead of starting its own turn');
+          expect(winner.turnId).not.toBe(target);
+          expect(winner.turnId).not.toBe(unrelated);
+          expect(prompt.list().active?.id).toBe('boundary-now');
+          expect(prompt.list().pending.some((item) => item.id === 'boundary-now')).toBe(false);
+          expect(loop.status().activeTurnId).toBe(winner.turnId);
+          expect(main.accessor.get(IAgentContextMemoryService).get().filter((message) => message.id === 'boundary-now')).toHaveLength(1);
+          await main.accessor.get(IWireService).flush();
+          const after = (await readFile(join(session.accessor.get(ISessionContext).sessionDir, 'agents/main/wire.jsonl'), 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line));
+          expect(after.filter((record) => record.type === 'prompt.steered' && record.promptIds?.includes('boundary-now'))).toEqual([]);
+          expect(after.filter((record) => record.type === 'turn.steer' && record.promptId === 'boundary-now')).toEqual([]);
+        } finally {
+          void started.dispose();
+          void aborted.dispose();
+          void observe.dispose();
+        }
       }
     } finally { gate.resolve(); resume.mockRestore(); prompt.abort('boundary-now'); }
   });
