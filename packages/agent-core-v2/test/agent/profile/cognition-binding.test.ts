@@ -20,7 +20,7 @@ import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
 import type { GenerateOptions } from '#/kosong/contract/provider';
 import { emptyUsage } from '#/kosong/contract/usage';
 import { IWireService } from '#/wire/wire';
-import { ConfigTarget, IConfigRegistry, IConfigService } from '#/app/config/config';
+import { IConfigRegistry, IConfigService } from '#/app/config/config';
 import { ConfigRegistry, ConfigService } from '#/app/config/configService';
 import { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { TomlAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
@@ -940,102 +940,151 @@ describe('per-model cognition overlay', () => {
     expect((await profile.getCognitionBinding()).slots?.steering).toBe('LOWER STEERING');
   });
 
-  it('resolves model Recipe paths from each declaring config through settings, saving and requests', async () => {
-    const a = join(homeDir, 'a');
-    const b = join(homeDir, 'b');
-    const writePack = async (home: string, body: string, temperature: number, version: string) => {
-      await mkdir(join(home, 'recipes'), { recursive: true });
-      await writeFile(join(home, 'recipes/body.md'), body);
-      await writeFile(join(home, 'recipes/focus.toml'), stringify({ schema_version: 1, id: 'focus', name: 'Focus', version, model: { parameters: { temperature } }, prompts: { system: { file: 'body.md' } } }));
+  function recipeReference(reference: string) {
+    return { provider: 'example', name: 'example-model', protocol: 'openai', max_context_size: 8192, recipe: reference };
+  }
+
+  async function writeRecipePack(home: string, body: string, temperature: number, version: string) {
+    await mkdir(join(home, 'recipes'), { recursive: true });
+    await writeFile(join(home, 'recipes/body.md'), body);
+    await writeFile(join(home, 'recipes/focus.toml'), stringify({ schema_version: 1, id: 'focus', name: 'Focus', version, model: { parameters: { temperature } }, prompts: { system: { file: 'body.md' } } }));
+  }
+
+  function bootDeclaringHome(home: string) {
+    let observed = '';
+    let sampling: GenerateOptions['sampling'];
+    const agent = ctx = createTestAgent({ autoConfigure: false }, homeDirServices(home), appServices((reg) => {
+      reg.define(IAtomicTomlDocumentStore, TomlAtomicDocumentStore);
+      reg.define(IConfigRegistry, ConfigRegistry); reg.define(IConfigService, ConfigService);
+      reg.define(IRecipeService, RecipeService); reg.define(IRecipeSourceReader, RecipeSourceReader);
+    }), llmGenerateServices(async (_provider, system, _tools, _messages, _callbacks, options) => {
+      observed = system; sampling = options?.sampling;
+      return { id: 'response', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }], toolCalls: [] }, usage: emptyUsage(), finishReason: 'completed', rawFinishReason: 'stop' };
+    }));
+    return {
+      config: agent.get(IConfigService),
+      mutations: agent.get(IModelCatalogMutationService),
+      profile: agent.get(IAgentProfileService),
+      recipes: agent.get(IRecipeService),
+      request: () => agent.get(IAgentLLMRequesterService).request({ tools: [] }),
+      system: () => observed,
+      sampling: () => sampling,
     };
-    await writePack(a, 'SPACE A', 0.25, '1.0.0');
-    await writePack(b, 'SPACE B', 0.75, '2.0.0');
-    const modelConfig = (reference: string) => ({ provider: 'example', name: 'example-model', protocol: 'openai', max_context_size: 8192, recipe: reference });
-    await writeFile(join(a, 'config.toml'), stringify({ providers: { example: { type: 'openai', base_url: 'https://example.test/v1' } }, models: { 'model.a': modelConfig('./recipes/focus.toml') }, default_model: 'model.a' }));
-    await writeFile(join(b, 'config.toml'), stringify({ providers: { example: { type: 'openai', base_url: 'https://child.example.test/v1' } }, models: { 'model.b': modelConfig('./recipes/focus.toml'), 'model.a': { parameters: { top_p: 0.6 } } }, default_model: 'model.b' }));
-    await writeFile(join(b, 'home.toml'), stringify({ schema: 1, id: 'h-example', name: 'Example', base: a, inherit: { credentials: 'isolated' } }));
-    let baseInstallation: string | undefined;
-    const run = async (home: string, alias: string, body: string, temperature: number, cycle: 'full' | 'normalize' | 'none', changedBody?: string) => {
-      let observed = '';
-      let sampling: GenerateOptions['sampling'];
-      ctx = createTestAgent({ autoConfigure: false }, homeDirServices(home), appServices((reg) => {
-        reg.define(IAtomicTomlDocumentStore, TomlAtomicDocumentStore);
-        reg.define(IConfigRegistry, ConfigRegistry); reg.define(IConfigService, ConfigService);
-        reg.define(IRecipeService, RecipeService); reg.define(IRecipeSourceReader, RecipeSourceReader);
-      }), llmGenerateServices(async (_provider, system, _tools, _messages, _callbacks, options) => {
-        observed = system; sampling = options?.sampling;
-        return { id: 'response', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }], toolCalls: [] }, usage: emptyUsage(), finishReason: 'completed', rawFinishReason: 'stop' };
-      }));
-      const config = ctx.get(IConfigService); await config.ready;
-      ctx.get(IModelService).loadAll(config.get('models'), alias);
-      const mutations = ctx.get(IModelCatalogMutationService);
-      const entity = await mutations.readModel(alias);
-      expect(entity.recipe_model_binding?.references?.[0]?.revision).toBeDefined();
-      expect(entity.effective_parameters?.temperature).toBe(temperature);
-      const role = normalizeAgentProfile({ name: DEFAULT_AGENT_PROFILE_NAME, systemPrompt: () => 'ROLE' });
-      const profile = ctx.get(IAgentProfileService);
-      await profile.bind({ resolvedProfile: role, model: alias });
-      await ctx.get(IAgentLLMRequesterService).request({ tools: [] });
-      expect(observed).toContain(body);
-      expect(sampling?.temperature).toBe(temperature);
-      if (cycle !== 'none') {
-        const updated = await mutations.updateModel(alias, { recipe: './recipes/../recipes/focus.toml' });
-        expect(updated.effective_parameters?.temperature).toBe(home === b ? 0.75 : temperature);
-        if (cycle === 'full') {
-          await mutations.updateModel(alias, { recipe: null });
-          await mutations.updateModel(alias, { recipe: './recipes/focus.toml' });
-        }
-        ctx.get(IModelService).loadAll(config.get('models'), alias);
-        await profile.bind({ resolvedProfile: role, model: alias });
-        await ctx.get(IAgentLLMRequesterService).request({ tools: [] });
-        const localTemperature = home === b ? 0.75 : temperature;
-        expect(observed).toContain(home === b ? 'SPACE B' : body);
-        expect(sampling?.temperature).toBe(localTemperature);
-      }
-      if (changedBody !== undefined) {
-        const frozen = await profile.getCognitionBinding();
-        await writeFile(join(home, 'recipes/body.md'), changedBody);
-        await ctx.get(IAgentLLMRequesterService).request({ tools: [] });
-        expect(await profile.getCognitionBinding()).toEqual(frozen);
-        expect(observed).not.toContain(changedBody);
-        await profile.rebuildPromptContext();
-        await ctx.get(IAgentLLMRequesterService).request({ tools: [] });
-        expect(observed).toContain(changedBody);
-      }
-      const recipes = ctx.get(IRecipeService);
-      if (home === a) {
-        baseInstallation = (await recipes.install({ preview_id: (await recipes.preview({ source: { locator: join(a, 'recipes/focus.toml') } })).preview_id, update_mode: 'pinned' })).installation_id;
-      } else if (baseInstallation !== undefined) {
-        expect((await recipes.get(baseInstallation))?.editable).toBe(false);
-        const inherited = await mutations.updateModel(alias, { recipe: `installation:${baseInstallation}` });
-        expect(inherited.effective_parameters?.temperature).toBe(0.25);
-        ctx.get(IModelService).loadAll(config.get('models'), alias);
-        await profile.bind({ resolvedProfile: role, model: alias });
-        await ctx.get(IAgentLLMRequesterService).request({ tools: [] });
-        expect(observed).toContain('SPACE A UPDATED');
-        expect(sampling?.temperature).toBe(0.25);
-        const disabled = await mutations.updateModel(alias, { recipe: 'off' });
-        expect(disabled.issues.some((issue) => issue.code === 'recipe-unavailable')).toBe(false);
-        ctx.get(IModelService).loadAll(config.get('models'), alias);
-        await profile.bind({ resolvedProfile: role, model: alias });
-        await ctx.get(IAgentLLMRequesterService).request({ tools: [] });
-        expect(observed).not.toContain('SPACE A UPDATED');
-        const inheritedRole = normalizeAgentProfile({ name: DEFAULT_AGENT_PROFILE_NAME, recipe: `installation:${baseInstallation}`, systemPrompt: () => 'INHERITED ROLE' });
-        await config.replace('experimental', { recipes: false }, ConfigTarget.Memory);
-        await expect(recipes.resolve(baseInstallation)).rejects.toThrow('Enable experimental recipes');
-        await config.replace('experimental', { recipes: true }, ConfigTarget.Memory);
-        await profile.bind({ resolvedProfile: inheritedRole, model: alias });
-        await ctx.get(IAgentLLMRequesterService).request({ tools: [] });
-        expect(observed).toContain('SPACE A UPDATED');
-        expect(observed).toContain('INHERITED ROLE');
-      }
-      await ctx.dispose(); ctx = undefined;
-    };
-    await run(b, 'model.a', 'SPACE A', 0.25, 'normalize');
-    await writeFile(join(b, 'recipes/body.md'), 'SPACE B UPDATED');
-    await run(a, 'model.a', 'SPACE A', 0.25, 'full', 'SPACE A UPDATED');
-    await writeFile(join(b, 'home.toml'), stringify({ schema: 1, id: 'h-example', name: 'Example', base: a, inherit: { config: false, agents: true, credentials: 'isolated' } }));
-    await writeFile(join(b, 'space-preferences.json'), JSON.stringify({ schema: 2, groups: { agents: 'follow' } }));
-    await run(b, 'model.b', 'SPACE B UPDATED', 0.75, 'none');
+  }
+
+  async function readSavedRecipe(home: ReturnType<typeof bootDeclaringHome>, alias: string, body: string, temperature: number) {
+    await home.config.ready;
+    ctx!.get(IModelService).loadAll(home.config.get('models'), alias);
+    const entity = await home.mutations.readModel(alias);
+    expect(entity.recipe_model_binding?.references?.[0]?.revision).toBeDefined();
+    expect(entity.effective_parameters?.temperature).toBe(temperature);
+    const role = normalizeAgentProfile({ name: DEFAULT_AGENT_PROFILE_NAME, systemPrompt: () => 'ROLE' });
+    await home.profile.bind({ resolvedProfile: role, model: alias });
+    await home.request();
+    expect(home.system()).toContain(body);
+    expect(home.sampling()?.temperature).toBe(temperature);
+    return role;
+  }
+
+  async function saveClearAndFreeze(home: ReturnType<typeof bootDeclaringHome>, directory: string, alias: string, role: ReturnType<typeof normalizeAgentProfile>, restoredBody: string, restoredTemperature: number, changedBody: string) {
+    const updated = await home.mutations.updateModel(alias, { recipe: './recipes/../recipes/focus.toml' });
+    expect(updated.effective_parameters?.temperature).toBe(restoredTemperature);
+    await home.mutations.updateModel(alias, { recipe: null });
+    await home.mutations.updateModel(alias, { recipe: './recipes/focus.toml' });
+    ctx!.get(IModelService).loadAll(home.config.get('models'), alias);
+    await home.profile.bind({ resolvedProfile: role, model: alias });
+    await home.request();
+    expect(home.system()).toContain(restoredBody);
+    expect(home.sampling()?.temperature).toBe(restoredTemperature);
+    const frozen = await home.profile.getCognitionBinding();
+    await writeFile(join(directory, 'recipes/body.md'), changedBody);
+    await home.request();
+    expect(await home.profile.getCognitionBinding()).toEqual(frozen);
+    expect(home.system()).not.toContain(changedBody);
+    await home.profile.rebuildPromptContext();
+    await home.request();
+    expect(home.system()).toContain(changedBody);
+  }
+
+  it('resolves an inherited child Recipe from the base file, then saves and freezes the local pack', async () => {
+    const base = join(homeDir, 'a');
+    const child = join(homeDir, 'b');
+    await writeRecipePack(base, 'SPACE A', 0.25, '1.0.0');
+    await writeRecipePack(child, 'SPACE B', 0.75, '2.0.0');
+    await writeFile(join(base, 'config.toml'), stringify({ providers: { example: { type: 'openai', base_url: 'https://example.test/v1' } }, models: { 'model.a': recipeReference('./recipes/focus.toml') }, default_model: 'model.a' }));
+    await writeFile(join(child, 'config.toml'), stringify({ providers: { example: { type: 'openai', base_url: 'https://child.example.test/v1' } }, models: { 'model.b': recipeReference('./recipes/focus.toml'), 'model.a': { parameters: { top_p: 0.6 } } }, default_model: 'model.b' }));
+    await writeFile(join(child, 'home.toml'), stringify({ schema: 1, id: 'h-example', name: 'Example', base, inherit: { credentials: 'isolated' } }));
+    const home = bootDeclaringHome(child);
+    const role = await readSavedRecipe(home, 'model.a', 'SPACE A', 0.25);
+    await saveClearAndFreeze(home, child, 'model.a', role, 'SPACE B', 0.75, 'SPACE B UPDATED');
+    expect(home.system()).toContain('SPACE B UPDATED');
+    expect(home.sampling()?.temperature).toBe(0.75);
+  });
+
+  it('resolves the declaring base Recipe through a saved clear and a frozen rebuild', async () => {
+    const base = join(homeDir, 'a');
+    await writeRecipePack(base, 'SPACE A', 0.25, '1.0.0');
+    await writeFile(join(base, 'config.toml'), stringify({ providers: { example: { type: 'openai', base_url: 'https://example.test/v1' } }, models: { 'model.a': recipeReference('./recipes/focus.toml') }, default_model: 'model.a' }));
+    const home = bootDeclaringHome(base);
+    const role = await readSavedRecipe(home, 'model.a', 'SPACE A', 0.25);
+    await saveClearAndFreeze(home, base, 'model.a', role, 'SPACE A', 0.25, 'SPACE A UPDATED');
+    expect(home.system()).toContain('SPACE A UPDATED');
+    expect(home.sampling()?.temperature).toBe(0.25);
+  });
+
+  it('resolves the child pack when config inheritance is off, then freezes that local body', async () => {
+    const base = join(homeDir, 'a');
+    const child = join(homeDir, 'b');
+    await writeRecipePack(base, 'SPACE A', 0.25, '1.0.0');
+    await writeRecipePack(child, 'SPACE B UPDATED', 0.75, '2.0.0');
+    await writeFile(join(base, 'config.toml'), stringify({ providers: { example: { type: 'openai', base_url: 'https://example.test/v1' } }, models: { 'model.a': recipeReference('./recipes/focus.toml') }, default_model: 'model.a' }));
+    await writeFile(join(child, 'config.toml'), stringify({ providers: { example: { type: 'openai', base_url: 'https://child.example.test/v1' } }, models: { 'model.b': recipeReference('./recipes/focus.toml'), 'model.a': { parameters: { top_p: 0.6 } } }, default_model: 'model.b' }));
+    await writeFile(join(child, 'home.toml'), stringify({ schema: 1, id: 'h-example', name: 'Example', base, inherit: { config: false, agents: true, credentials: 'isolated' } }));
+    await writeFile(join(child, 'space-preferences.json'), JSON.stringify({ schema: 2, groups: { agents: 'follow' } }));
+    const home = bootDeclaringHome(child);
+    const role = await readSavedRecipe(home, 'model.b', 'SPACE B UPDATED', 0.75);
+    await saveClearAndFreeze(home, child, 'model.b', role, 'SPACE B', 0.75, 'SPACE B SECOND UPDATE');
+    expect(home.system()).toContain('SPACE B SECOND UPDATE');
+    expect(home.system()).not.toContain('SPACE A');
+    expect(home.sampling()?.temperature).toBe(0.75);
+  });
+
+  it('uses an inherited base installation and profile Recipe when config inheritance is off', async () => {
+    const base = join(homeDir, 'a');
+    const child = join(homeDir, 'b');
+    await writeRecipePack(base, 'SPACE A UPDATED', 0.25, '1.0.0');
+    await writeRecipePack(child, 'SPACE B UPDATED', 0.75, '2.0.0');
+    await writeFile(join(base, 'config.toml'), stringify({ providers: { example: { type: 'openai', base_url: 'https://example.test/v1' } }, models: { 'model.a': recipeReference('./recipes/focus.toml') }, default_model: 'model.a' }));
+    await writeFile(join(child, 'config.toml'), stringify({ providers: { example: { type: 'openai', base_url: 'https://child.example.test/v1' } }, models: { 'model.b': recipeReference('./recipes/focus.toml'), 'model.a': { parameters: { top_p: 0.6 } } }, default_model: 'model.b' }));
+    await writeFile(join(child, 'home.toml'), stringify({ schema: 1, id: 'h-example', name: 'Example', base, inherit: { config: false, agents: true, credentials: 'isolated' } }));
+    await writeFile(join(child, 'space-preferences.json'), JSON.stringify({ schema: 2, groups: { agents: 'follow' } }));
+    const installer = bootDeclaringHome(base);
+    await installer.config.ready;
+    const installationId = (await installer.recipes.install({ preview_id: (await installer.recipes.preview({ source: { locator: join(base, 'recipes/focus.toml') } })).preview_id, update_mode: 'pinned' })).installation_id;
+    await ctx!.dispose();
+    const home = bootDeclaringHome(child);
+    const role = await readSavedRecipe(home, 'model.b', 'SPACE B UPDATED', 0.75);
+    expect((await home.recipes.get(installationId))?.editable).toBe(false);
+    const inherited = await home.mutations.updateModel('model.b', { recipe: `installation:${installationId}` });
+    expect(inherited.effective_parameters?.temperature).toBe(0.25);
+    ctx!.get(IModelService).loadAll(home.config.get('models'), 'model.b');
+    await home.profile.bind({ resolvedProfile: role, model: 'model.b' });
+    await home.request();
+    expect(home.system()).toContain('SPACE A UPDATED');
+    expect(home.sampling()?.temperature).toBe(0.25);
+    const disabled = await home.mutations.updateModel('model.b', { recipe: 'off' });
+    expect(disabled.issues.some((issue) => issue.code === 'recipe-unavailable')).toBe(false);
+    ctx!.get(IModelService).loadAll(home.config.get('models'), 'model.b');
+    await home.profile.bind({ resolvedProfile: role, model: 'model.b' });
+    await home.request();
+    expect(home.system()).not.toContain('SPACE A UPDATED');
+    const inheritedRole = normalizeAgentProfile({ name: DEFAULT_AGENT_PROFILE_NAME, recipe: `installation:${installationId}`, systemPrompt: () => 'INHERITED ROLE' });
+    await home.config.replace('experimental', { recipes: false });
+    await expect(home.recipes.resolve(installationId)).rejects.toThrow('Enable experimental recipes');
+    await home.config.replace('experimental', { recipes: true });
+    await home.profile.bind({ resolvedProfile: inheritedRole, model: 'model.b' });
+    await home.request();
+    expect(home.system()).toContain('SPACE A UPDATED');
+    expect(home.system()).toContain('INHERITED ROLE');
   });
 });
