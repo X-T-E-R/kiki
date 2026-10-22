@@ -16,6 +16,7 @@ import { IConfigService } from '#/app/config/config';
 import { IEventBus } from '#/app/event/eventBus';
 import { Event2, registerEvent2Class } from '#/app/event/event2';
 import { unwrapErrorCause } from '#/errors';
+import { requestDeliveryProvenance } from '#/kosong/contract/errors';
 import {
   IAgentLoopService,
   type LoopErrorContext,
@@ -130,10 +131,12 @@ export class AgentStepRetryService extends Disposable implements IAgentStepRetry
   }
 
   private shouldRetry(error: unknown): boolean {
+    if (requestDeliveryProvenance(error) !== undefined) return false;
     return resolveRetryPolicy(this.retryConfig(), unwrapErrorCause(error)).retry;
   }
 
   private async recover(context: LoopErrorContext): Promise<boolean> {
+    if (requestDeliveryProvenance(context.error) !== undefined) return false;
     const driver = context.failedDriver;
     if (driver === undefined || context.step === undefined) return false;
 

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { attachErrorDetails, unwrapErrorCause } from '#/errors';
+
 import {
   APIConnectionError,
   APIContextOverflowError,
@@ -14,8 +16,10 @@ import {
   classifyApiError,
   createAbortError,
   isAbortError,
+  ambiguousRequestDelivery,
   isRetryableGenerateError,
   normalizeAPIStatusError,
+  requestDeliveryProvenance,
   PROVIDER_API_ERROR_CODE,
   PROVIDER_FILTERED_ERROR_CODE,
   providerErrorKind,
@@ -343,5 +347,40 @@ describe('providerErrorKind', () => {
     expect(providerErrorKind(PROVIDER_API_ERROR_CODE)).toBe('unknown');
     expect(providerErrorKind(PROVIDER_FILTERED_ERROR_CODE)).toBe('filtered');
     expect(new ChatProviderError('boom').details).toEqual({ error_kind: 'unknown' });
+  });
+});
+
+describe('requestDeliveryProvenance', () => {
+  it('leaves a pre-stream HTTP failure unmarked so its existing retry decision stands', () => {
+    const unauthorized = new APIStatusError(401, 'unauthorized');
+    const rateLimit = new APIStatusError(429, 'slow down');
+    expect(requestDeliveryProvenance(unauthorized)).toBeUndefined();
+    expect(requestDeliveryProvenance(rateLimit)).toBeUndefined();
+    expect(requestDeliveryProvenance(new APIConnectionError('terminated'))).toBeUndefined();
+    expect(isRetryableGenerateError(rateLimit)).toBe(true);
+    expect(isRetryableGenerateError(new APIConnectionError('terminated'))).toBe(true);
+    expect(isRetryableGenerateError(unauthorized)).toBe(false);
+  });
+
+  it('keeps an unknown connection, timeout, or early EOF non-replayable after unwrapping', () => {
+    const eof = new ChatProviderError('OpenAI Responses stream ended before a terminal response event.');
+    for (const cause of [new APIConnectionError('terminated'), new APITimeoutError('timed out'), eof]) {
+      const wrapped = ambiguousRequestDelivery(cause);
+      expect(requestDeliveryProvenance(wrapped)).toBe('unknown');
+      expect(requestDeliveryProvenance(unwrapErrorCause(wrapped))).toBe('unknown');
+      expect(isRetryableGenerateError(unwrapErrorCause(wrapped))).toBe(false);
+      expect(wrapped.message).toBe('Request delivery is uncertain; generation was not retried.');
+      expect((unwrapErrorCause(wrapped) as Error).message).toBe(cause.message);
+    }
+  });
+
+  it('keeps a parsed provider event executable and non-replayable without replacing its status', () => {
+    const parsed = attachErrorDetails(new APIStatusError(429, 'slow down', 'req-429', null, 'trace-429'), {
+      errorSource: 'provider_event',
+    });
+    expect(requestDeliveryProvenance(parsed)).toBe('executed');
+    expect(requestDeliveryProvenance(unwrapErrorCause(parsed))).toBe('executed');
+    expect(isRetryableGenerateError(unwrapErrorCause(parsed))).toBe(false);
+    expect(parsed).toMatchObject({ statusCode: 429, message: 'slow down', requestId: 'req-429', traceId: 'trace-429' });
   });
 });

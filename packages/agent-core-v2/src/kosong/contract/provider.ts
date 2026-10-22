@@ -45,6 +45,7 @@ export interface StreamedMessage {
   readonly rawFinishReason: string | null;
   readonly traceId?: string | null;
   readonly diagnostics?: StreamDiagnostics;
+  commitMessage?(message: Message): void;
 }
 
 export interface ProviderRequestAuth {
