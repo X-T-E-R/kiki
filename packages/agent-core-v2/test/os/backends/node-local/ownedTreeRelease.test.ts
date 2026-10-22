@@ -114,8 +114,8 @@ describe.skipIf(process.platform !== 'win32')('owned Windows process tree releas
 
   afterEach(async () => {
     for (const proc of owned.splice(0)) {
-      try { await proc.kill(); } catch { undefined; }
-      try { await proc.dispose(); } catch { undefined; }
+      try { await proc.kill(); } catch {}
+      try { await proc.dispose(); } catch {}
     }
     vi.unstubAllEnvs();
     await disposables.dispose();

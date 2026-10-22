@@ -38,15 +38,18 @@ function alive(pid: number | undefined): boolean {
 
 async function readWorkingSet(pid: number): Promise<number | undefined> {
   return new Promise((resolve) => {
-    const child = spawn('powershell.exe', [
+    const windows = process.platform === 'win32';
+    const command = windows ? 'powershell.exe' : 'ps';
+    const args = windows ? [
       '-NoProfile',
       '-Command',
       `try { (Get-Process -Id ${pid} -ErrorAction Stop).WorkingSet64 } catch { '' }`,
-    ], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+    ] : ['-o', 'rss=', '-p', String(pid)];
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
     let out = '';
     child.stdout?.on('data', (chunk: Buffer) => { out += chunk.toString(); });
     child.on('close', () => {
-      const value = Number(out.trim());
+      const value = Number(out.trim()) * (windows ? 1 : 1024);
       resolve(Number.isFinite(value) && value > 0 ? value : undefined);
     });
     child.on('error', () => resolve(undefined));

@@ -1563,6 +1563,9 @@ describe('ModelCatalog enumeration', () => {
         {
           id: 'k2',
           effective_protocol: 'openai',
+          protocol_source: 'vendor',
+          endpoint_source: 'provider',
+          auth_source: 'provider',
           provider_id: 'kimi',
           remote_id: 'kimi-k2',
           display_name: 'Kimi K2',
@@ -1573,6 +1576,9 @@ describe('ModelCatalog enumeration', () => {
         {
           id: 'turbo',
           effective_protocol: 'openai',
+          protocol_source: 'vendor',
+          endpoint_source: 'provider',
+          auth_source: 'provider',
           provider_id: 'kimi',
           remote_id: 'kimi-turbo',
           display_name: 'Kimi Turbo',
@@ -1581,6 +1587,9 @@ describe('ModelCatalog enumeration', () => {
         {
           id: 'gpt4o',
           effective_protocol: 'openai',
+          protocol_source: 'provider',
+          endpoint_source: 'none',
+          auth_source: 'none',
           provider_id: 'openai',
           remote_id: 'gpt-4o',
           display_name: 'gpt-4o',
@@ -1875,7 +1884,7 @@ describe('ModelCatalog enumeration', () => {
     });
     try {
       await expect(catalog.listModels()).resolves.toEqual([
-        { id: 'bad', provider_id: '', remote_id: 'bad-model', display_name: 'Bad', max_context_size: 1000 },
+        { id: 'bad', provider_id: '', remote_id: 'bad-model', display_name: 'Bad', max_context_size: 1000, endpoint_source: 'model', auth_source: 'model' },
       ]);
     } finally {
       await host.dispose();
@@ -1993,6 +2002,9 @@ describe('ModelCatalog setDefaultModel', () => {
         model: {
           id: 'turbo',
           effective_protocol: 'openai',
+          protocol_source: 'vendor',
+          endpoint_source: 'provider',
+          auth_source: 'provider',
           provider_id: 'kimi',
           remote_id: 'kimi-turbo',
           display_name: 'Kimi Turbo',

@@ -352,6 +352,9 @@ describe('server-v2 /api model/provider catalog', () => {
         capabilities: ['thinking'],
         effective_capabilities: ['thinking'],
         effective_protocol: 'openai',
+        protocol_source: 'vendor',
+        endpoint_source: 'provider',
+        auth_source: 'provider',
         request_identity: { overrides: { request: { logical_id: 'none' } } },
       },
       {
@@ -361,6 +364,9 @@ describe('server-v2 /api model/provider catalog', () => {
         display_name: 'Kimi Turbo',
         max_context_size: 32768,
         effective_protocol: 'openai',
+        protocol_source: 'vendor',
+        endpoint_source: 'provider',
+        auth_source: 'provider',
       },
       {
         id: 'gpt4o',
@@ -370,6 +376,9 @@ describe('server-v2 /api model/provider catalog', () => {
         max_context_size: 128000,
         effective_capabilities: ['image_in', 'tool_use'],
         effective_protocol: 'openai',
+        protocol_source: 'provider',
+        endpoint_source: 'none',
+        auth_source: 'none',
       },
     ]);
   });
@@ -512,6 +521,9 @@ describe('server-v2 /api model/provider catalog', () => {
         display_name: 'Kimi Turbo',
         max_context_size: 32768,
         effective_protocol: 'openai',
+        protocol_source: 'vendor',
+        endpoint_source: 'provider',
+        auth_source: 'provider',
       },
     });
 

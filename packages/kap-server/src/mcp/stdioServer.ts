@@ -22,7 +22,7 @@ export async function runKikiMcpStdio(
     endpoint: config.endpoint, token: config.delegationToken, fetch: options.fetch,
   }) : undefined;
   const contextCatalog = await context?.catalog(AbortSignal.timeout(15_000));
-  const server = await createKikiMcpServer(config, {
+  const server = createKikiMcpServer(config, {
     ...options, contextCatalog, contextCall: context?.call, contextList: context?.catalog,
   });
   await server.connect(new StdioServerTransport());
