@@ -39,7 +39,7 @@ function tool(
 
 const TOOLS: readonly AgentToolCapability[] = [
   tool('Read', 'os/backends', 'enabled'),
-  tool('Write', 'os/backends', 'disabled', { unavailableReasonCode: 'tool_policy_disabled' }),
+  tool('Write', 'os/backends', 'disabled', { policyAllowed: false, unavailableReasonCode: 'tool_policy_disabled' }),
   tool('Grep', 'os/backends', 'enabled'),
   tool('Glob', 'os/backends', 'enabled'),
   tool('Bash', 'os/backends', 'enabled'),
@@ -319,6 +319,7 @@ describe('capability tool groups', () => {
     expect(meta).toContain('内置');
     expect(text('[data-tool-group-item="Read"]')).toContain('开启');
     expect(text('[data-tool-group-item="Write"]')).toContain('未开启');
+    expect(container.querySelector<HTMLElement>('[data-tool-group-item="Write"]')?.dataset['toolPolicyAllowed']).toBe('false');
   });
 
   it('opens the complete group, including the tools that are off', async () => {
@@ -330,6 +331,18 @@ describe('capability tool groups', () => {
     expect(text('[data-tool-group-section="off"]')).toContain('未开启');
     // The panel is a read-only view: no bulk toggle exists.
     expect(container.querySelector('[data-tool-group-detail] input[type="checkbox"]')).toBeNull();
+  });
+
+  it('labels current-request availability separately from the tool state', async () => {
+    await render([
+      tool('Deferred', 'deferred', 'enabled', { requestState: 'loadable' }),
+      tool('Current', 'deferred', 'enabled', { requestState: 'available' }),
+    ]);
+    await click(chip('builtin:deferred'));
+    expect(text('[data-tool-group-item="Deferred"]')).toContain('下次请求可加载');
+    expect(text('[data-tool-group-item="Current"]')).toContain('当前请求已包含');
+    await click(container.querySelector<HTMLButtonElement>('[data-tool-group-item="Deferred"]')!);
+    expect(container.querySelector('[data-tool-request-state-label="loadable"]')?.textContent).toBe('下次请求可加载');
   });
 
   it('opens every member of an extension group, not just its first tool', async () => {

@@ -116,12 +116,12 @@ function connectionOf(value: string): McpConnection {
  */
 export function rowCondition(source: RowSource): McpRowCondition {
   if (source.override === 'off') return 'off-here';
-  if (source.override === 'on') return 'on-here';
-  if (source.connection === 'disabled') return source.origin === 'plugin' ? 'plugin-off' : 'off-config';
   if (source.authStatus === 'oauth-required' || source.authStatus === 'oauth-expired') return 'signed-out';
-  if (source.connection === 'connected') return 'live';
   if (source.connection === 'connecting') return 'connecting';
   if (source.connection === 'failed') return 'failed';
+  if (source.connection === 'disabled') return source.origin === 'plugin' ? 'plugin-off' : 'off-config';
+  if (source.override === 'on') return 'on-here';
+  if (source.connection === 'connected') return 'live';
   if (source.connection === 'enabled') return 'live';
   return 'unavailable';
 }

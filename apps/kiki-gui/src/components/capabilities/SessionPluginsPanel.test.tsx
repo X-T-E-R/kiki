@@ -25,10 +25,13 @@ import type { PluginUsageItem, PluginUsageResponse } from '@kiki/protocol';
 import { I18nProvider } from '../../i18n';
 import { SessionPluginsPanel } from './SessionPluginsPanel';
 
-const { getUsage, setUsage } = vi.hoisted(() => ({ getUsage: vi.fn(), setUsage: vi.fn() }));
+const { getUsage, setUsage, getCapabilities } = vi.hoisted(() => ({ getUsage: vi.fn(), setUsage: vi.fn(), getCapabilities: vi.fn() }));
 
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({
+    klient: {
+      global: { agentPanel: { read: (query: unknown) => getCapabilities(query) } },
+    },
     client: {
       getPluginUsage: (target: unknown) => getUsage(target),
       setPluginUsage: (input: unknown) => setUsage(input),
@@ -48,6 +51,8 @@ beforeEach(() => {
   localStorage.setItem('kiki.locale', 'zh');
   getUsage.mockReset();
   setUsage.mockReset();
+  getCapabilities.mockReset();
+  getCapabilities.mockResolvedValue({ tools: [] });
 });
 
 afterEach(() => {
@@ -128,6 +133,62 @@ describe('SessionPluginsPanel', () => {
     // itself is the list.
     expect(container.querySelector('[data-rail-plugin="demo"]')).not.toBeNull();
     expect(container.querySelector('[data-rail-plugins] [aria-expanded]')).toBeNull();
+  });
+
+  it('shows a selected plugin tool that policy denies instead of calling it ready', async () => {
+    getUsage.mockResolvedValue(answer());
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(['agentCapabilities', { session_id: 'sess-a', agent_id: 'main' }], { tools: [{
+      name: 'plugin__demo__run', source: 'plugin', category: 'plugin', state: 'disabled',
+      policy_allowed: false, request_state: 'unavailable', unavailable_reason_code: 'tool_policy_disabled',
+    }] });
+    await render('sess-a', client);
+    await settle();
+    const row = container.querySelector<HTMLElement>('[data-rail-plugin="demo"]')!;
+    expect(row.querySelector('[data-rail-plugin-capability-state="unavailable"]')?.textContent).toContain('工具策略');
+  });
+
+  it('shows request unavailability even when the server has no detailed reason', async () => {
+    getUsage.mockResolvedValue(answer());
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(['agentCapabilities', { session_id: 'sess-a', agent_id: 'main' }], { tools: [{
+      name: 'plugin__demo__run', source: 'plugin', category: 'plugin', state: 'enabled',
+      policy_allowed: true, request_state: 'unavailable',
+    }] });
+    await render('sess-a', client);
+    await settle();
+    expect(container.querySelector('[data-rail-plugin-capability-state="unavailable"]')?.textContent).toContain('当前请求不可用');
+  });
+
+  it('shows a selected plugin tool whose schema is not in the current registry', async () => {
+    getUsage.mockResolvedValue(answer());
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(['agentCapabilities', { session_id: 'sess-a', agent_id: 'main' }], { tools: [{
+      name: 'plugin__demo__run', source: 'plugin', category: 'plugin', state: 'unknown',
+      policy_allowed: true, request_state: 'unavailable', unavailable_reason_code: 'tool_not_registered',
+    }] });
+    await render('sess-a', client);
+    await settle();
+    const row = container.querySelector<HTMLElement>('[data-rail-plugin="demo"]')!;
+    expect(row.querySelector('[data-rail-plugin-capability-state="unavailable"]')?.textContent).toContain('schema');
+  });
+
+  it('hides stale callability after switching a plugin off without a refresh', async () => {
+    getUsage.mockResolvedValue(answer({ plugins: [item({ effective: true, session_override: 'on' })] }));
+    setUsage.mockResolvedValue(answer({ revision: 8, plugins: [item({ effective: false, session_override: 'off' })] }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(['agentCapabilities', { session_id: 'sess-a', agent_id: 'main' }], { tools: [{
+      name: 'plugin__demo__run', source: 'plugin', category: 'plugin', state: 'unknown',
+      policy_allowed: true, request_state: 'unavailable', unavailable_reason_code: 'tool_not_registered',
+    }] });
+    await render('sess-a', client);
+    await settle();
+    const row = container.querySelector<HTMLElement>('[data-rail-plugin="demo"]')!;
+    expect(row.querySelector('[data-rail-plugin-capability-state]')).not.toBeNull();
+    await act(async () => { row.querySelector<HTMLInputElement>('input[type=checkbox]')!.click(); });
+    await settle();
+    expect(row.dataset['effective']).toBe('false');
+    expect(row.querySelector('[data-rail-plugin-capability-state]')).toBeNull();
   });
 
   it('reads a session row from its own session override, not the workspace one', async () => {
@@ -282,6 +343,38 @@ describe('SessionPluginsPanel', () => {
     });
     await settle();
     expect(container.querySelector('[data-rail-plugins-applying]')!.textContent).toBe('正在应用，你的选择已经保存。');
+  });
+
+  it('lets a slow plugin on be withdrawn, ignoring the late on response', async () => {
+    let resolveOn!: (value: PluginUsageResponse) => void;
+    let resolveOff!: (value: PluginUsageResponse) => void;
+    setUsage.mockImplementation((input: { override: string }) => input.override === 'on'
+      ? new Promise<PluginUsageResponse>((resolve) => { resolveOn = resolve; })
+      : new Promise<PluginUsageResponse>((resolve) => { resolveOff = resolve; }));
+    getUsage.mockResolvedValue(answer({ plugins: [item({ effective: false, session_override: 'inherit' })] }));
+    await render();
+    await settle();
+    const row = container.querySelector<HTMLElement>('[data-rail-plugin="demo"]')!;
+    const toggle = row.querySelector<HTMLInputElement>('input[type=checkbox]')!;
+    await act(async () => { toggle.click(); });
+    await settle();
+    expect(toggle.checked).toBe(true);
+    await act(async () => { toggle.click(); });
+    await settle();
+    expect(toggle.checked).toBe(false);
+    await act(async () => {
+      resolveOn(answer({ revision: 8, plugins: [item({ effective: true, session_override: 'on' })] }));
+      await new Promise((done) => setTimeout(done, 0));
+    });
+    await settle();
+    expect(row.dataset['effective']).toBe('false');
+    await act(async () => {
+      resolveOff(answer({ revision: 9, plugins: [item({ effective: false, session_override: 'off' })] }));
+      await new Promise((done) => setTimeout(done, 0));
+    });
+    await settle();
+    expect(row.dataset['override']).toBe('off');
+    expect(row.dataset['effective']).toBe('false');
   });
 
   it('reports the server’s errors and keeps the last good value after a failed save', async () => {

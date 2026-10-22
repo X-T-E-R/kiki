@@ -89,15 +89,23 @@ describe('a conversation’s MCP rows', () => {
   });
 
   it('keeps a conversation’s own addition apart from a source that has the server off', () => {
-    // `on` admits a server the configuration turns off; the row it produces is
-    // this conversation's decision, and its caption says so.
     const [added] = mcpSessionRows({
       writable: true,
       capabilities: [global('muted', { override: 'on', connection: 'connecting', config: { transport: 'stdio', command: 'npx', enabled: false } })],
     });
-    expect(added!.condition).toBe('on-here');
+    expect(added!.condition).toBe('connecting');
     expect(heldByConversation(added!)).toBe(true);
     expect(added!.addressable).toBe(true);
+  });
+
+  it('keeps a selected server failed when an on override is still held', () => {
+    const [failed] = mcpSessionRows({
+      writable: true,
+      capabilities: [global('muted', { override: 'on', connection: 'failed', error: 'schema load failed' })],
+    });
+    expect(failed!.condition).toBe('failed');
+    expect(heldByConversation(failed!)).toBe(true);
+    expect(failed!.error).toBe('schema load failed');
   });
 
   it('draws no switch where this build has no port to write, and one where it has', () => {

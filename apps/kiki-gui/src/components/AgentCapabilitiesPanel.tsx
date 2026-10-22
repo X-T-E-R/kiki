@@ -98,6 +98,8 @@ export function AgentCapabilitiesPanel({ query }: { query: AgentCapabilitiesQuer
                   name: tool.name,
                   source: tool.source,
                   state: tool.state,
+                  policyAllowed: tool.policy_allowed,
+                  requestState: tool.request_state,
                   unavailableReason: tool.unavailable_reason,
                   unavailableReasonCode: tool.unavailable_reason_code,
                 }))}

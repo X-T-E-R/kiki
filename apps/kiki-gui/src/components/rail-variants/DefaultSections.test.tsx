@@ -563,6 +563,30 @@ describe('OptionalCapabilityRows', () => {
     expect(container.querySelector('[data-optional-restore="browser"]')).toBeNull();
   });
 
+  it('shows a selected browser capability that policy denies instead of calling it ready', async () => {
+    getSessionCaps.mockResolvedValue(buildSessionCapabilities({
+      browser: { choice: 'on', effective: true, source: 'session', reason: 'admitted' },
+    }));
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(['agentCapabilities', { session_id: 'sess-browser', agent_id: 'main' }], {
+      context: 'live', owner: { profile: 'agent', agent_id: 'main' }, available: true,
+      tools: [{ name: 'BrowserTabs', source: 'builtin', category: 'browser', state: 'disabled', policy_allowed: false,
+        request_state: 'unavailable', unavailable_reason_code: 'tool_policy_disabled' }],
+      skills: [], targets: [],
+    });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <OptionalCapabilityRows sessionId="sess-browser" />
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await settle();
+    expect(container.querySelector('[data-optional-callability="unavailable"]')?.textContent).toContain('工具策略');
+  });
+
   it('disables blocked capabilities and handles rapid switching, error rollback, and session isolation', async () => {
     getSessionCaps.mockImplementation((sessionId: string) => {
       if (sessionId === 'sess-a') {

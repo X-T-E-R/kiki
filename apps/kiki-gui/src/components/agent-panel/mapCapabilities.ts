@@ -14,6 +14,10 @@ export const CAPABILITY_REASON_LABEL_KEYS: Readonly<Record<AgentCapabilityReason
   skill_model_invocation_disabled: 'capabilityReason.skill_model_invocation_disabled',
   snapshot_inventory_only: 'capabilityReason.snapshot_inventory_only',
   tool_policy_disabled: 'capabilityReason.tool_policy_disabled',
+  tool_not_registered: 'capabilityReason.tool_not_registered',
+  plugin_catalog_failed: 'capabilityReason.plugin_catalog_failed',
+  plugin_usage_disabled: 'capabilityReason.plugin_usage_disabled',
+  plugin_usage_unavailable: 'capabilityReason.plugin_usage_unavailable',
   runtime_not_connected: 'capabilityReason.runtime_not_connected',
   activation_condition_unmet: 'capabilityReason.activation_condition_unmet',
   approval_pending: 'capabilityReason.approval_pending',
@@ -181,6 +185,8 @@ export function mapPanelTools(
   if (!tools) return [];
   return tools.map((tool) => ({
     ...tool,
+    policyAllowed: tool.policy_allowed,
+    requestState: tool.request_state,
     unavailableReason: tool.unavailable_reason,
     unavailableReasonCode: tool.unavailable_reason_code,
     parametersSchema: tool.parameters ? JSON.stringify(tool.parameters, null, 2) : undefined,

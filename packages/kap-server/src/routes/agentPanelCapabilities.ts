@@ -6,16 +6,23 @@ import {
   IConfigService,
   IModelCatalog,
   IModelService,
+  IPluginHostService,
+  IPluginUsageService,
   ISubagentTool,
   ISessionAgentProfileCatalog,
+  ISessionContext,
   ISessionToolPolicy,
   type IAgentScopeHandle,
+  type PluginToolRegistration,
   type ProfileData,
   type Scope,
 } from '@kiki/agent-core-v2';
 import { spawnConstraintOrigin } from '@kiki/agent-core-v2/app/agentProfileCatalog/applySubagentLease';
 import type { SkillDefinition } from '@kiki/agent-core-v2/app/skillCatalog/types';
 import { IAgentToolActivationService } from '@kiki/agent-core-v2/agent/toolActivation/toolActivation';
+import { IAgentMcpService } from '@kiki/agent-core-v2/agent/mcp/mcp';
+import { qualifyMcpToolName } from '@kiki/agent-core-v2/mcpCore/tool-naming';
+import { IAgentToolSelectService } from '@kiki/agent-core-v2/agent/toolSelect/toolSelect';
 import { isToolActiveComposed, type GlobalToolsPolicy } from '@kiki/agent-core-v2/agent/toolPolicy/evaluate';
 import { isAgentNotifyAvailable } from '@kiki/agent-core-v2/agent/tools/agent-notify/agent-notify';
 import { getAgentToolContributions } from '@kiki/agent-core-v2/agent/toolRegistry/toolContribution';
@@ -199,37 +206,133 @@ export async function livePanelCapabilities(agent: IAgentScopeHandle): Promise<P
   });
   const registry = agent.accessor.get(IAgentToolRegistryService).list();
   const policy = agent.accessor.get(IAgentToolPolicyService);
+  const toolSelect = agent.accessor.get(IAgentToolSelectService);
+  const requestTools = safeShapeTools(toolSelect, registry);
+  const requestToolNames = new Set(requestTools?.map((tool) => tool.name) ?? []);
   const contributions = agent.accessor.get(IAgentToolActivationService).capabilities();
+  const contributionByName = new Map(contributions.map((contribution) => [contribution.name, contribution]));
+  const mcp = agent.accessor.get(IAgentMcpService);
+  const connectedMcpTools = new Set(mcp.list().filter((server) => server.status === 'connected').flatMap((server) =>
+    (mcp.resolved(server.name)?.tools ?? []).map((tool) => qualifyMcpToolName(server.name, tool.name))));
+  const pluginHost = agent.accessor.get(IPluginHostService);
+  const pluginUsage = agent.accessor.get(IPluginUsageService);
+  const sessionContext = agent.accessor.get(ISessionContext);
+  let pluginCatalogFailed = false;
+  let pluginDefinitions: readonly PluginToolRegistration[] = [];
+  try { pluginDefinitions = await pluginHost.list(); } catch { pluginCatalogFailed = true; }
+  const pluginUsageStates = new Map<string, 'allowed' | 'disabled' | 'unavailable'>();
+  for (const pluginId of new Set(pluginDefinitions.map((entry) => entry.pluginId))) {
+    try {
+      if (!pluginUsage.enabled()) {
+        pluginUsageStates.set(pluginId, 'allowed');
+        continue;
+      }
+      const allowed = await pluginUsage.allows(sessionContext.workspaceId, pluginId, sessionContext.sessionId);
+      pluginUsageStates.set(pluginId, allowed ? 'allowed' : 'disabled');
+    } catch {
+      pluginUsageStates.set(pluginId, 'unavailable');
+    }
+  }
+  const pluginByToolName = new Map(pluginDefinitions.map((entry) => [pluginToolName(entry.pluginId, entry.definition.name), entry]));
   const tools = new Map<string, NonNullable<AgentCapabilitiesProducerResponse['tools']>[number]>();
   for (const contribution of contributions) {
-    const active = policy.isToolActive(contribution.name, contribution.source);
-    const unavailableReason = !active ? 'Disabled by effective tool policy'
-      : !contribution.runtimeAvailable ? 'Required runtime capability is not connected'
-        : !contribution.conditionAvailable ? 'Tool activation condition is not satisfied' : undefined;
-    const unavailableReasonCode = !active ? 'tool_policy_disabled'
-      : !contribution.runtimeAvailable ? 'runtime_not_connected'
-        : !contribution.conditionAvailable ? 'activation_condition_unmet' : undefined;
+    const policyAllowed = policy.isToolActive(contribution.name, contribution.source);
+    const plugin = pluginByToolName.get(contribution.name);
+    const usageState = plugin === undefined
+      ? contribution.source === 'plugin' && pluginCatalogFailed ? 'catalog-failed' : 'allowed'
+      : pluginUsageStates.get(plugin.pluginId) ?? (pluginCatalogFailed ? 'catalog-failed' : 'allowed');
+    const registered = registry.some((tool) => tool.name === contribution.name);
+    const availability = panelToolAvailability({
+      policyAllowed,
+      runtimeAvailable: contribution.runtimeAvailable,
+      conditionAvailable: contribution.conditionAvailable,
+      registered,
+      usageState,
+    });
     tools.set(contribution.name, {
       name: contribution.name, source: contribution.source, category: contribution.category,
       group: contribution.group,
-      state: !active ? 'disabled' : !contribution.runtimeAvailable ? 'disconnected'
-        : !contribution.conditionAvailable ? 'disabled' : 'enabled',
-      unavailable_reason: unavailableReason,
-      unavailable_reason_code: unavailableReasonCode,
+      policy_allowed: policyAllowed,
+      request_state: panelRequestState({
+        policyAllowed,
+        registered,
+        currentRequest: requestToolNames.has(contribution.name),
+        loadable: safeIsLoadable(toolSelect, contribution.name),
+        usable: availability.state === 'enabled' || availability.state === 'approval-required',
+        requestShapeReady: requestTools !== undefined,
+      }),
+      state: availability.state,
+      unavailable_reason: availability.reason,
+      unavailable_reason_code: availability.reasonCode,
     });
   }
   for (const tool of registry) {
     const previous = tools.get(tool.name);
-    const active = policy.isToolActive(tool.name, tool.source);
+    const contribution = contributionByName.get(tool.name);
+    const policyAllowed = policy.isToolActive(tool.name, tool.source);
+    const plugin = pluginByToolName.get(tool.name);
+    const usageState = plugin === undefined
+      ? tool.source === 'plugin' && pluginCatalogFailed ? 'catalog-failed' : 'allowed'
+      : pluginUsageStates.get(plugin.pluginId) ?? (pluginCatalogFailed ? 'catalog-failed' : 'allowed');
+    const availability = panelToolAvailability({
+      policyAllowed,
+      runtimeAvailable: tool.source === 'mcp' ? connectedMcpTools.has(tool.name) : contribution?.runtimeAvailable ?? true,
+      conditionAvailable: contribution?.conditionAvailable ?? true,
+      registered: true,
+      usageState,
+    });
     tools.set(tool.name, {
       name: tool.name, description: tool.description, source: tool.source,
       category: previous?.category ?? tool.source,
       group: previous?.group ?? toolGroupForName(tool.name),
-      state: active ? previous?.state ?? 'enabled' : 'disabled',
-      unavailable_reason: active ? previous?.unavailable_reason : 'Disabled by effective tool policy',
-      unavailable_reason_code: active ? previous?.unavailable_reason_code : 'tool_policy_disabled',
+      policy_allowed: policyAllowed,
+      request_state: panelRequestState({
+        policyAllowed,
+        registered: true,
+        currentRequest: requestToolNames.has(tool.name),
+        loadable: safeIsLoadable(toolSelect, tool.name),
+        usable: availability.state === 'enabled' || availability.state === 'approval-required',
+        requestShapeReady: requestTools !== undefined,
+      }),
+      state: availability.state,
+      unavailable_reason: availability.reason,
+      unavailable_reason_code: availability.reasonCode,
       parameters: tool.parameters,
       read_only: (data.executionRestriction === 'research-readonly' || READ_ONLY_DISPLAY_TOOL_NAMES.has(tool.name)) ? true : undefined,
+    });
+  }
+  for (const entry of pluginDefinitions) {
+    const name = pluginToolName(entry.pluginId, entry.definition.name);
+    if (tools.has(name)) continue;
+    const policyAllowed = policy.isToolActive(name, 'plugin');
+    const usageState = pluginUsageStates.get(entry.pluginId) ?? (pluginCatalogFailed ? 'unavailable' : 'allowed');
+    const availability = panelToolAvailability({
+      policyAllowed,
+      runtimeAvailable: true,
+      conditionAvailable: true,
+      registered: false,
+      usageState,
+    });
+    tools.set(name, {
+      name,
+      description: entry.definition.description,
+      source: 'plugin',
+      category: 'plugin',
+      group: toolGroupForName(name),
+      policy_allowed: policyAllowed,
+      request_state: panelRequestState({
+        policyAllowed,
+        registered: false,
+        currentRequest: false,
+        loadable: false,
+        usable: false,
+        requestShapeReady: requestTools !== undefined,
+      }),
+      state: availability.state,
+      unavailable_reason: availability.reason,
+      unavailable_reason_code: availability.reasonCode,
+      parameters: entry.definition.parameters,
+      read_only: data.executionRestriction === 'research-readonly' ? true : undefined,
     });
   }
   for (const interaction of agent.accessor.get(ISessionInteractionService).listPending('approval', { agentId: agent.id })) {
@@ -247,6 +350,59 @@ export async function livePanelCapabilities(agent: IAgentScopeHandle): Promise<P
     tools: [...tools.values()].toSorted((a, b) => a.name.localeCompare(b.name)),
     skills: panelSkills(skills.catalog.listSkills(), policy.isToolActive('Skill')),
   };
+}
+
+export function pluginToolName(pluginId: string, name: string): string {
+  return `plugin__${pluginId.replaceAll('-', '_')}__${name}`;
+}
+
+type RegisteredToolInfo = ReturnType<IAgentToolRegistryService['list']>[number];
+
+function safeShapeTools(
+  toolSelect: IAgentToolSelectService,
+  entries: readonly RegisteredToolInfo[],
+): readonly RegisteredToolInfo[] | undefined {
+  try { return toolSelect.shapeTools(entries); } catch { return undefined; }
+}
+
+function safeIsLoadable(toolSelect: IAgentToolSelectService | undefined, name: string): boolean {
+  if (toolSelect === undefined) return false;
+  try { return toolSelect.isLoadable(name); } catch { return false; }
+}
+
+export function panelRequestState(input: {
+  readonly policyAllowed: boolean;
+  readonly registered: boolean;
+  readonly currentRequest: boolean;
+  readonly loadable: boolean;
+  readonly usable: boolean;
+  readonly requestShapeReady: boolean;
+}): 'available' | 'loadable' | 'unavailable' {
+  if (!input.policyAllowed || !input.registered || !input.usable || !input.requestShapeReady) return 'unavailable';
+  if (input.currentRequest) return 'available';
+  if (input.loadable) return 'loadable';
+  return 'unavailable';
+}
+
+export function panelToolAvailability(input: {
+  readonly policyAllowed: boolean;
+  readonly runtimeAvailable: boolean;
+  readonly conditionAvailable: boolean;
+  readonly registered: boolean;
+  readonly usageState: 'allowed' | 'disabled' | 'unavailable' | 'catalog-failed';
+}): {
+  readonly state: NonNullable<AgentCapabilitiesProducerResponse['tools']>[number]['state'];
+  readonly reason?: string;
+  readonly reasonCode?: NonNullable<AgentCapabilitiesProducerResponse['tools']>[number]['unavailable_reason_code'];
+} {
+  if (!input.policyAllowed) return { state: 'disabled', reason: 'Disabled by effective tool policy', reasonCode: 'tool_policy_disabled' };
+  if (input.usageState === 'disabled') return { state: 'disabled', reason: 'This plugin is not enabled for the current session or workspace', reasonCode: 'plugin_usage_disabled' };
+  if (input.usageState === 'unavailable') return { state: 'unknown', reason: 'The plugin session usage could not be checked', reasonCode: 'plugin_usage_unavailable' };
+  if (input.usageState === 'catalog-failed') return { state: 'unknown', reason: 'The installed plugin tool manifest could not be loaded', reasonCode: 'plugin_catalog_failed' };
+  if (!input.runtimeAvailable) return { state: 'disconnected', reason: 'Required runtime capability is not connected', reasonCode: 'runtime_not_connected' };
+  if (!input.conditionAvailable) return { state: 'disabled', reason: 'Tool activation condition is not satisfied', reasonCode: 'activation_condition_unmet' };
+  if (!input.registered) return { state: 'unknown', reason: 'This tool is allowed by the current policy, but its executable schema is not registered yet', reasonCode: 'tool_not_registered' };
+  return { state: 'enabled' };
 }
 
 export function frozenPanelModelProfile(

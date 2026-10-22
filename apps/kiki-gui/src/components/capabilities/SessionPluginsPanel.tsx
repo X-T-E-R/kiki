@@ -35,12 +35,12 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { Link, useLocation } from 'react-router-dom';
 
-import type { PluginUsageItem, PluginUsageResponse, PluginUsageTarget } from '@kiki/protocol';
+import type { AgentCapabilitiesResponse, PluginUsageItem, PluginUsageResponse, PluginUsageTarget } from '@kiki/protocol';
 import { errorText, type I18nKey, type Locale } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
-import { isCapabilityUnsupportedError } from '../agent-panel/mapCapabilities';
+import { capabilityReasonText, isCapabilityUnsupportedError } from '../agent-panel/mapCapabilities';
 import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
 import { FOCUS_RING } from '../rail-variants/shell';
 import { Spinner } from '../icons';
@@ -67,12 +67,12 @@ import {
 } from './pluginUsage';
 import { PLUGIN_QUERY_KEYS, useInvalidatePlugins, usePluginMarketplace } from './usePlugins';
 
-type UsageRead = UseQueryResult<PluginUsageResponse, Error>;
+type UsageRead = UseQueryResult<PluginUsageResponse>;
 
 export function SessionPluginsPanel({ sessionId }: { readonly sessionId: string }) {
   const { t, locale } = useI18n();
   const location = useLocation();
-  const { client } = useConnection();
+  const { client, klient } = useConnection();
   const queryClient = useQueryClient();
   const invalidatePlugins = useInvalidatePlugins();
   const target: PluginUsageTarget = useMemo(() => ({ session_id: sessionId }), [sessionId]);
@@ -101,6 +101,13 @@ export function SessionPluginsPanel({ sessionId }: { readonly sessionId: string 
   const read = useQuery({
     queryKey: PLUGIN_QUERY_KEYS.usage(sessionId),
     queryFn: () => client.getPluginUsage(target),
+    staleTime: 5_000,
+    retry: false,
+  });
+  const capabilityRead = useQuery({
+    queryKey: ['agentCapabilities', { session_id: sessionId, agent_id: 'main' }],
+    queryFn: ({ signal }) => klient.global.agentPanel.read({ session_id: sessionId, agent_id: 'main' }, { signal }),
+    enabled: false,
     staleTime: 5_000,
     retry: false,
   });
@@ -139,6 +146,7 @@ export function SessionPluginsPanel({ sessionId }: { readonly sessionId: string 
       if (previous === undefined || !isStaleRevision(previous.revision, response.revision)) {
         queryClient.setQueryData(PLUGIN_QUERY_KEYS.usage(sessionId), response);
       }
+      void queryClient.invalidateQueries({ queryKey: ['agentCapabilities'] });
     },
     onError: (error, input, request) => {
       if (request === undefined || latestRequests.current.get(request.key) !== request.requestId) return;
@@ -166,9 +174,11 @@ export function SessionPluginsPanel({ sessionId }: { readonly sessionId: string 
     // A home-blocked row has no session answer to give, so a click on it is
     // ignored rather than turned into a write the server would reject.
     if (rowToggleIntent(item) === undefined) return;
-    // The checkbox reports the state being asked for; `effective` is the one
-    // in force. Asking for what already holds is not a change.
-    if (enabled === item.effective) return;
+    // The checkbox reports the state being asked for; include the latest
+    // optimistic intent so a slow `on` can be withdrawn with a new `off`.
+    const optimistic = pending[rowKey(item.id)];
+    const effective = optimistic === undefined ? item.effective : optimistic === 'on';
+    if (enabled === effective) return;
     send(item.id, enabled ? 'on' : 'off');
   };
 
@@ -220,6 +230,7 @@ export function SessionPluginsPanel({ sessionId }: { readonly sessionId: string 
               pending={pending[rowKey(item.id)]}
               failure={failures[rowKey(item.id)]}
               busy={write.isPending && write.variables?.pluginId === item.id}
+              capability={effectivePluginOn(item, pending[rowKey(item.id)]) ? pluginCapabilityFor(item.id, capabilityRead.data?.tools) : undefined}
               settingsSearch={location.search}
               onToggle={onToggle}
               onRestore={onRestore}
@@ -331,6 +342,33 @@ const REASON_KEY: Readonly<Record<NonNullable<PluginUsageItem['reason']>, I18nKe
   global_disabled: 'rail.plugins.reason.globalOff',
 };
 
+type PluginCapabilityTool = NonNullable<AgentCapabilitiesResponse['tools']>[number];
+
+function effectivePluginOn(item: PluginUsageItem, pending: 'on' | 'off' | undefined): boolean {
+  return pending === undefined ? item.effective : pending === 'on';
+}
+
+function pluginCapabilityFor(pluginId: string, tools: readonly PluginCapabilityTool[] | undefined): PluginCapabilityTool | undefined {
+  if (tools === undefined) return undefined;
+  const prefix = `plugin__${pluginId.replaceAll('-', '_')}__`;
+  const candidates = tools.filter((tool) => tool.name.startsWith(prefix));
+  return candidates.toSorted((left, right) => capabilityRank(left) - capabilityRank(right))[0];
+}
+
+function capabilityRank(tool: PluginCapabilityTool): number {
+  if (tool.policy_allowed === false) return 0;
+  if (tool.request_state === 'unavailable' || tool.state === 'disabled' || tool.state === 'disconnected' || tool.state === 'unknown') return 1;
+  if (tool.request_state === 'loadable') return 2;
+  return 3;
+}
+
+function pluginCapabilityText(t: (key: I18nKey) => string, tool: PluginCapabilityTool | undefined): string | undefined {
+  if (tool === undefined) return undefined;
+  if (tool.request_state === 'loadable') return t('capabilityReason.tool_loadable');
+  if (capabilityRank(tool) < 3) return capabilityReasonText(t, tool.unavailable_reason_code, tool.unavailable_reason) ?? t('agentPanel.request.unavailable');
+  return undefined;
+}
+
 /**
  * One plugin in this session: what it is, whether it is actually usable here,
  * which level decided, and the choice that changes it.
@@ -340,6 +378,7 @@ function PluginUsageRow({
   pending,
   failure,
   busy,
+  capability,
   settingsSearch,
   onToggle,
   onRestore,
@@ -348,6 +387,7 @@ function PluginUsageRow({
   readonly pending?: 'on' | 'off';
   readonly failure?: string;
   readonly busy: boolean;
+  readonly capability?: PluginCapabilityTool;
   readonly settingsSearch: string;
   readonly onToggle: (item: PluginUsageItem, enabled: boolean) => void;
   readonly onRestore: (item: PluginUsageItem) => void;
@@ -363,6 +403,7 @@ function PluginUsageRow({
     item.mcpServerCount > 0 ? t('rail.plugins.counts.mcp', { count: item.mcpServerCount }) : '',
   ].filter((text) => text !== '');
   const source = pending === undefined ? overrideSource(item) : 'session';
+  const capabilityText = pluginCapabilityText(t, capability);
 
   return (
     <li className="border-t border-hairline py-1.5 first:border-t-0" data-rail-plugin={item.id} data-override={pending ?? item.session_override ?? item.override} data-effective={String(effective)}>
@@ -375,7 +416,7 @@ function PluginUsageRow({
           // wrap the row onto three lines in a narrow rail.
           layout="bare"
           checked={effective}
-          disabled={busy || state.kind === 'blocked'}
+          disabled={state.kind === 'blocked'}
           onChange={(enabled) => { onToggle(item, enabled); }}
         />
       </div>
@@ -386,6 +427,14 @@ function PluginUsageRow({
           </span>
         ) : contributions.length > 0 ? (
           <span className="text-ink-faint">{contributions.join(' · ')}</span>
+        ) : null}
+        {capabilityText !== undefined ? (
+          <span
+            data-rail-plugin-capability-state={capability?.request_state ?? capability?.state}
+            className={capability?.policy_allowed === false ? 'text-danger' : 'text-ink-faint'}
+          >
+            {capabilityText}
+          </span>
         ) : null}
         {!blocked ? <SourceTag source={source} /> : null}
         {item.app_service ? (

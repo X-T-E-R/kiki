@@ -21,8 +21,8 @@ export function createToolGroupsWalker({ page, shot, view, webUrl, fixtureUrl, f
   // The fixtures' copy is asserted through the app's own dictionaries; these
   // few probes are the words this walk keys on.
   const C = view.locale === 'zh'
-    ? { custom: '自定义工具', on: '开启', off: '未开启', unknown: '状态未确认', pending: '待确认', gone: '已不在', noMatch: '没有匹配的工具或分组', showing: '显示', hits: '命中', group: '组' }
-    : { custom: 'Custom tools', on: 'on', off: 'Off', unknown: 'State unconfirmed', pending: 'awaiting approval', gone: 'no longer in the current tool list', noMatch: 'No matching tools or groups', showing: 'Showing', hits: 'matched', group: 'group' };
+    ? { custom: '自定义工具', on: '开启', off: '未开启', unknown: '状态未确认', pending: '待确认', loadable: '下次请求可加载', gone: '已不在', noMatch: '没有匹配的工具或分组', showing: '显示', hits: '命中', group: '组' }
+    : { custom: 'Custom tools', on: 'on', off: 'Off', unknown: 'State unconfirmed', pending: 'awaiting approval', loadable: 'Loadable for the next request', gone: 'no longer in the current tool list', noMatch: 'No matching tools or groups', showing: 'Showing', hits: 'matched', group: 'group' };
 
   const rail = () => page.locator('[data-session-rail]');
   const section = () => rail().locator('[data-rail-capabilities]');
@@ -103,13 +103,27 @@ export function createToolGroupsWalker({ page, shot, view, webUrl, fixtureUrl, f
     await page.goto(link(`/s/${SID}`), { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('textarea, [data-transcript-scroll]', { timeout: 20_000 });
     await logPalette();
-    // Below lg the session page has no rail and no rail control at all (the
-    // accepted behaviour this slice must not reopen); the narrow pass records
-    // that and nothing opens a second drawer over it.
+    // Below lg the rail is a drawer. Open the existing control and verify the
+    // same capability surface without allowing a second overlay or overflow.
     if (view.width < 1024) {
-      await expectCount(page.locator('[data-rail-toggle]'), 0, 'narrow rail toggle');
-      await expectCount(page.locator('[data-capability-group-chip]:visible'), 0, 'narrow visible chips');
+      await expectCount(page.locator('[data-rail-toggle]'), 1, 'narrow rail toggle');
+      await page.locator('[data-rail-toggle]').click();
+      await rail().waitFor({ timeout: 10_000 });
+      await openCapabilities();
+      await expectNoOverflow('narrow capability rail');
       await shot('tg-narrow-page');
+      await rail().locator('[data-capability-groups-more]').click();
+      await openChip('plugin:release_kit');
+      const pluginDetail = rail().locator('[data-tool-group-detail="plugin:release_kit"]');
+      await pluginDetail.waitFor({ timeout: 5_000 });
+      await expectText(pluginDetail, C.loadable, 'narrow loadable state');
+      await expectNoOverflow('narrow loadable detail');
+      await shot('tg-narrow-loadable');
+      await pluginDetail.locator('[data-tool-group-item]').click();
+      await rail().locator('[data-tool-detail]').waitFor({ timeout: 5_000 });
+      await expectText(rail().locator('[data-tool-detail]'), C.loadable, 'narrow tool request state');
+      await expectNoOverflow('narrow tool request detail');
+      await shot('tg-narrow-loadable-tool');
       return;
     }
     await openRail();
@@ -297,7 +311,17 @@ export function createToolGroupsWalker({ page, shot, view, webUrl, fixtureUrl, f
     await rail().locator('[data-tool-group-back]').click();
     // A server whose owner was never reported gets its own explicit group.
     if (await chip('mcp:unknown').count() !== 1) throw new Error('an unreported MCP owner needs its own group');
-
+    await openChip('plugin:release_kit');
+    const pluginDetail = rail().locator('[data-tool-group-detail="plugin:release_kit"]');
+    await pluginDetail.waitFor({ timeout: 5_000 });
+    await expectText(pluginDetail, C.loadable, 'loadable state');
+    await expectNoOverflow('loadable detail');
+    await shot('tg-loadable');
+    await pluginDetail.locator('[data-tool-group-item]').click();
+    await rail().locator('[data-tool-detail]').waitFor({ timeout: 5_000 });
+    await expectText(rail().locator('[data-tool-detail]'), C.loadable, 'tool request state');
+    await expectNoOverflow('tool request detail');
+    await shot('tg-loadable-tool');
   }
 
   /** The rail at its own minimum width: the tightest real column this panel lives in. */

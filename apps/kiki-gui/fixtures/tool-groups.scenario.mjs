@@ -109,7 +109,7 @@ const TOOLS = [
   // An MCP tool whose server was never reported: its own explicit group.
   t('mcp__unreported', 'mcp', 'enabled', 'mcp'),
   // Two plugins, one of them not connected.
-  plugin('release_kit', 'stage_tag', 'enabled'),
+  plugin('release_kit', 'stage_tag', 'enabled', { request_state: 'loadable', policy_allowed: true }),
   plugin('browser_bridge', 'open_tab', 'disconnected', NOT_CONNECTED),
 ];
 

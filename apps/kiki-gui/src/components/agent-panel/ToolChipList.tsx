@@ -42,6 +42,8 @@ export interface ToolChipItem {
   readonly name: string;
   readonly icon?: string;
   readonly state?: CapabilityState;
+  readonly policyAllowed?: boolean;
+  readonly requestState?: 'available' | 'loadable' | 'unavailable';
   readonly readOnly?: boolean;
   readonly unavailableReason?: string;
   readonly unavailableReasonCode?: string;
@@ -66,7 +68,7 @@ export const ToolChipList = memo(function ToolChipList({
         {items.map((item) => {
           const reason = capabilityReasonText(t, item.unavailableReasonCode, item.unavailableReason);
           return (
-            <p key={item.key} className="break-words">
+            <p key={item.key} data-tool-policy-allowed={item.policyAllowed === undefined ? undefined : String(item.policyAllowed)} data-tool-request-state={item.requestState} className="break-words">
               {item.name}
               {item.source !== undefined ? ` · ${item.source}` : ''}
               {item.state !== undefined ? ` · ${t(CAPABILITY_STATE_LABEL_KEYS[item.state])}` : ''}

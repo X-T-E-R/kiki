@@ -253,7 +253,7 @@ describe('named agent profile REST protocol', () => {
         launch_unavailable_reason: 'Blocked by strict subagent policy',
         launch_unavailable_reason_code: 'strict_subagent_policy_blocked',
       }],
-      tools: [{ name: 'AgentRun', source: 'builtin', category: 'agent', state: 'disabled',
+      tools: [{ name: 'AgentRun', source: 'builtin', category: 'agent', state: 'disabled', policy_allowed: false, request_state: 'unavailable',
         unavailable_reason: 'Disabled by effective tool policy', unavailable_reason_code: 'tool_policy_disabled' }],
       skills: [{ name: 'workspace-skill', description: 'Example', source: 'project', scope: 'workspace',
         path: 'skills/example', state: 'disabled', unavailable_reason: 'Skill tool is not active for this agent',
@@ -263,8 +263,10 @@ describe('named agent profile REST protocol', () => {
     expect(parsed.targets[0]?.unavailable_reason_code).toBe('model_not_configured');
     expect(parsed.targets[0]?.launch_unavailable_reason_code).toBe('strict_subagent_policy_blocked');
     expect(parsed.tools?.[0]?.unavailable_reason_code).toBe('tool_policy_disabled');
+    expect(parsed.tools?.[0]?.policy_allowed).toBe(false);
+    expect(parsed.tools?.[0]?.request_state).toBe('unavailable');
     expect(parsed.skills?.[0]?.unavailable_reason_code).toBe('skill_tool_inactive');
-    expect(agentCapabilityReasonCodeSchema.options).toHaveLength(25);
+    expect(agentCapabilityReasonCodeSchema.options).toHaveLength(29);
 
     const futurePayload = {
       context: 'live' as const,

@@ -12,6 +12,9 @@ import {
   IAgentProfileRegistry,
   IAgentProfileService,
   IAgentPromptService,
+  IAgentMcpService,
+  IAgentToolRegistryService,
+  IAgentToolSelectService,
   IAgentUsageService,
   IUsageFactStore,
   IAppendLogStore,
@@ -47,7 +50,7 @@ import { type RunningServer, startServer } from '../src/start';
 import { registerAgentProfilesRoute } from '../src/routes/agentProfiles';
 import { authedFetch } from './helpers/auth';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
-import { panelSkills } from '../src/routes/agentPanelCapabilities';
+import { panelRequestState, panelSkills, panelToolAvailability, pluginToolName } from '../src/routes/agentPanelCapabilities';
 import { acquireWorkspaceProfileCatalog } from '../src/routes/agentProfileCapabilities';
 import { RuntimeSkillDiscovery } from '@kiki/agent-core-v2/workspace/workspaceSkillCatalog/runtimeSkillDiscovery';
 import {
@@ -138,6 +141,28 @@ describe('GET /api/agents', () => {
     });
   });
 
+  it('separates selection from schema callability for live tools', () => {
+    expect(panelToolAvailability({ policyAllowed: true, runtimeAvailable: true, conditionAvailable: true, registered: false, usageState: 'allowed' })).toMatchObject({
+      state: 'unknown', reasonCode: 'tool_not_registered',
+    });
+    expect(panelToolAvailability({ policyAllowed: false, runtimeAvailable: true, conditionAvailable: true, registered: true, usageState: 'allowed' })).toMatchObject({
+      state: 'disabled', reasonCode: 'tool_policy_disabled',
+    });
+    expect(panelToolAvailability({ policyAllowed: true, runtimeAvailable: false, conditionAvailable: true, registered: true, usageState: 'allowed' })).toMatchObject({
+      state: 'disconnected', reasonCode: 'runtime_not_connected',
+    });
+    expect(panelToolAvailability({ policyAllowed: true, runtimeAvailable: true, conditionAvailable: true, registered: false, usageState: 'unavailable' })).toMatchObject({
+      state: 'unknown', reasonCode: 'plugin_usage_unavailable',
+    });
+    expect(panelToolAvailability({ policyAllowed: true, runtimeAvailable: true, conditionAvailable: true, registered: false, usageState: 'catalog-failed' })).toMatchObject({
+      state: 'unknown', reasonCode: 'plugin_catalog_failed',
+    });
+    expect(panelRequestState({ policyAllowed: true, registered: true, currentRequest: true, loadable: true, usable: true, requestShapeReady: true })).toBe('available');
+    expect(panelRequestState({ policyAllowed: true, registered: true, currentRequest: false, loadable: true, usable: true, requestShapeReady: true })).toBe('loadable');
+    expect(panelRequestState({ policyAllowed: true, registered: true, currentRequest: false, loadable: false, usable: true, requestShapeReady: true })).toBe('unavailable');
+    expect(pluginToolName('demo-plugin', 'run')).toBe('plugin__demo_plugin__run');
+  });
+
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base: string;
@@ -200,15 +225,68 @@ describe('GET /api/agents', () => {
     const nativePath = join(home!, 'native.md');
     await writeFile(externalPath, externalText);
     await writeFile(nativePath, nativeText);
-    await writeFile(join(home!, 'config.toml'), 'default_model = "stub"\n[providers.stub]\ntype = "openai"\nbase_url = "http://127.0.0.1:9999"\napi_key = "YOUR_API_KEY"\n[models.stub]\nprovider = "stub"\nmodel = "stub"\nmax_context_size = 1000\ncapabilities = ["thinking"]\nsupport_efforts = ["low", "high"]\ndefault_effort = "high"\n');
+    await mkdir(join(home!, 'agents'), { recursive: true });
+    await writeFile(join(home!, 'agents', 'deferred.md'), '---\nname: deferred\ndescription: Deferred fixture\nmain: true\nmodel_alias: stub\ntools: [SelectTools, CallTool, "mcp__*"]\n---\nDEFERRED_FIXTURE\n');
+    await writeFile(join(home!, 'config.toml'), 'default_model = "stub"\n[providers.stub]\ntype = "openai"\nbase_url = "http://127.0.0.1:9999"\napi_key = "YOUR_API_KEY"\n[models.stub]\nprovider = "stub"\nmodel = "stub"\nmax_context_size = 1000\ncapabilities = ["thinking", "tool_use"]\nsupport_efforts = ["low", "high"]\ndefault_effort = "high"\n');
+    vi.stubEnv('KIKI_EXPERIMENTAL_TOOL_SELECT', '1');
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     base = `http://127.0.0.1:${server.port}`;
     const created = await (await authedFetch(server, base, '/api/sessions', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ metadata: { cwd: home } }),
+      body: JSON.stringify({ metadata: { cwd: home }, agent_config: { profile: 'deferred', model: 'stub', permission_mode: 'yolo' } }),
     })).json() as Envelope<{ id: string }>;
     expect(created.code, created.msg).toBe(0);
     const main = await ensureMainAgent(server.core.accessor.get(ISessionManager).get(created.data.id)!);
+    const deferredName = 'mcp__fixture__deferred';
+    const registry = main.accessor.get(IAgentToolRegistryService);
+    const mcp = main.accessor.get(IAgentMcpService);
+    const mcpStatus = vi.spyOn(mcp, 'list').mockReturnValue([{ name: 'fixture', status: 'connected', transport: 'stdio', toolCount: 1 }]);
+    const mcpResolved = vi.spyOn(mcp, 'resolved').mockReturnValue({ client: {} as never, tools: [{ name: 'deferred', description: 'Deferred fixture tool', parameters: { type: 'object' } }], rawTools: [], enabledNames: new Set(['deferred']) });
+    const deferredRegistration = registry.register({
+      name: deferredName,
+      description: 'Deferred fixture tool',
+      parameters: { type: 'object', properties: {} },
+      resolveExecution: () => ({ approvalRule: deferredName, execute: async () => ({ output: 'fixture' }) }),
+    }, { source: 'mcp' });
+    try {
+      const select = main.accessor.get(IAgentToolSelectService);
+      expect(select.enabled()).toBe(true);
+      expect(select.isLoadable(deferredName)).toBe(true);
+      const readPanel = async () => {
+        const response = await authedFetch(server!, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=main`);
+        const body = await response.json() as Envelope<unknown>;
+        expect(body.code, body.msg).toBe(0);
+        return agentCapabilitiesResponseSchema.parse(body.data);
+      };
+      expect((await readPanel()).tools?.find((tool) => tool.name === deferredName)).toMatchObject({
+        policy_allowed: true, state: 'enabled', request_state: 'loadable',
+      });
+      const shapeFailure = vi.spyOn(select, 'shapeTools').mockImplementation(() => {
+        throw new Error('fixture shaping failed');
+      });
+      try {
+        expect((await readPanel()).tools?.find((tool) => tool.name === deferredName)).toMatchObject({
+          policy_allowed: true, state: 'enabled', request_state: 'unavailable',
+        });
+      } finally {
+        shapeFailure.mockRestore();
+      }
+      expect((await readPanel()).tools?.find((tool) => tool.name === deferredName)?.request_state).toBe('loadable');
+      select.load([deferredName]);
+      expect((await readPanel()).tools?.find((tool) => tool.name === deferredName)).toMatchObject({
+        policy_allowed: true, state: 'enabled', request_state: 'available',
+      });
+      mcpStatus.mockReturnValue([{ name: 'fixture', status: 'failed', transport: 'stdio', toolCount: 1 }]);
+      expect((await readPanel()).tools?.find((tool) => tool.name === deferredName)).toMatchObject({ state: 'disconnected', request_state: 'unavailable', unavailable_reason_code: 'runtime_not_connected' });
+      mcpStatus.mockReturnValue([]);
+      expect((await readPanel()).tools?.find((tool) => tool.name === deferredName)?.request_state).toBe('unavailable');
+      deferredRegistration.dispose();
+      expect((await readPanel()).tools?.some((tool) => tool.name === deferredName)).toBe(false);
+    } finally {
+      deferredRegistration.dispose();
+      mcpStatus.mockRestore();
+      mcpResolved.mockRestore();
+    }
     main.accessor.get(IAgentLoopService).hooks.onWillBeginStep.register('hold-file-selection', async (ctx) => {
       await new Promise<void>((resolve) => {
         if (ctx.signal.aborted) resolve();
@@ -265,6 +343,7 @@ describe('GET /api/agents', () => {
     } finally {
       held.finish();
       mocked.mockRestore();
+      vi.unstubAllEnvs();
     }
   }, 60_000);
 

@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState, useSyncExternalStore } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { OptionalCapabilitySessionResponse } from '@kiki/protocol';
+import type { AgentCapabilitiesResponse, OptionalCapabilitySessionResponse } from '@kiki/protocol';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
@@ -9,6 +9,7 @@ import type { KikiConfigResponse } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 import { Toggle } from '../controls';
 import { FOCUS_RING } from '../rail-variants/shell';
+import { capabilityReasonText } from '../agent-panel/mapCapabilities';
 import { heldByConversation, overrideForSwitch, type McpSessionRow } from './sessionMcp';
 import { useMcpPicker } from './useMcpPicker';
 import {
@@ -166,8 +167,30 @@ function factKey(row: RowModel): I18nKey {
   return 'cap.fact.defaultOff';
 }
 
+type OptionalCapabilityTool = NonNullable<AgentCapabilitiesResponse['tools']>[number];
+
+function browserCapability(tools: readonly OptionalCapabilityTool[] | undefined): OptionalCapabilityTool | undefined {
+  if (tools === undefined) return undefined;
+  const browser = tools.filter((tool) => tool.category === 'browser' || tool.name.startsWith('browser__'));
+  return browser.toSorted((left, right) => optionalCapabilityToolRank(left) - optionalCapabilityToolRank(right))[0];
+}
+
+function optionalCapabilityToolRank(tool: OptionalCapabilityTool): number {
+  if (tool.policy_allowed === false) return 0;
+  if (tool.request_state === 'unavailable' || tool.state === 'disabled' || tool.state === 'disconnected' || tool.state === 'unknown') return 1;
+  if (tool.request_state === 'loadable') return 2;
+  return 3;
+}
+
+function optionalCapabilityToolText(t: (key: I18nKey) => string, tool: OptionalCapabilityTool | undefined): string | undefined {
+  if (tool === undefined) return undefined;
+  if (tool.request_state === 'loadable') return t('capabilityReason.tool_loadable');
+  if (optionalCapabilityToolRank(tool) < 3) return capabilityReasonText(t, tool.unavailable_reason_code, tool.unavailable_reason) ?? t('agentPanel.request.unavailable');
+  return undefined;
+}
+
 export function OptionalCapabilityRows({ sessionId }: { sessionId?: string }) {
-  const { client, scopeId, spaceKey, connectionId } = useConnection();
+  const { client, klient, scopeId, spaceKey, connectionId } = useConnection();
   const { t, locale } = useI18n();
   const localeRef = useRef(locale);
   localeRef.current = locale;
@@ -195,6 +218,13 @@ export function OptionalCapabilityRows({ sessionId }: { sessionId?: string }) {
     enabled: live && typeof client.getSessionOptionalCapabilities === 'function',
     staleTime: 5_000,
   });
+  const capabilityQuery = useQuery({
+    queryKey: ['agentCapabilities', { session_id: sessionId, agent_id: 'main' }],
+    queryFn: ({ signal }) => klient.global.agentPanel.read({ session_id: sessionId!, agent_id: 'main' }, { signal }),
+    enabled: false,
+    staleTime: 5_000,
+    retry: false,
+  });
   const nextGeneration = useRef(0);
   const rowGenerations = useRef(new Map<string, number>());
   const acceptedGenerations = useRef(new Map<string, number>());
@@ -206,6 +236,7 @@ export function OptionalCapabilityRows({ sessionId }: { sessionId?: string }) {
   const rows = baseRows.map((row) =>
     live ? withOptimisticChoice(row, optimistic[`${sessionScopeKey}:${row.id}`]) : row,
   );
+  const browserTool = live ? browserCapability(capabilityQuery.data?.tools) : undefined;
   const failed = live ? sessionQuery.isError : configQuery.isError && configQuery.data === undefined;
   const currentError = errors[sessionScopeKey];
 
@@ -244,6 +275,7 @@ export function OptionalCapabilityRows({ sessionId }: { sessionId?: string }) {
           return view;
         },
       );
+      void queryClient.invalidateQueries({ queryKey: ['agentCapabilities'] });
     }).catch((cause: unknown) => {
       if (rowGenerations.current.get(rowKey) !== mine) return;
       rowGenerations.current.delete(rowKey);
@@ -261,6 +293,9 @@ export function OptionalCapabilityRows({ sessionId }: { sessionId?: string }) {
         const showInlineFact = blocked || namedByProfile || row.choice !== 'inherit';
         const appliesText = t(row.applies === 'next-step' ? 'cap.applies.nextStep' : 'cap.applies.nextModel');
         const fact = t(factKey(row));
+        const capabilityText = row.id === 'browser' && (row.choice === 'on' || row.effective)
+          ? optionalCapabilityToolText(t, browserTool)
+          : undefined;
         const nextChoice: Choice = row.effective ? 'off' : 'on';
         return (
           <div
@@ -288,6 +323,14 @@ export function OptionalCapabilityRows({ sessionId }: { sessionId?: string }) {
                 >
                   {fact}
                 </span>
+                {capabilityText !== undefined ? (
+                  <span
+                    data-optional-callability={browserTool?.request_state ?? browserTool?.state}
+                    className={browserTool?.policy_allowed === false ? 'text-danger' : 'text-ink-faint'}
+                  >
+                    {capabilityText}
+                  </span>
+                ) : null}
                 {row.choice !== 'inherit' ? (
                   <button
                     type="button"
@@ -334,6 +377,8 @@ export function OptionalCapabilityRows({ sessionId }: { sessionId?: string }) {
 
 function mcpRailFact(row: McpSessionRow): I18nKey {
   if (row.override === 'off') return 'cap.fact.sessionOff';
+  if (row.condition === 'connecting') return 'composer.addMenu.mcpStateUnknown';
+  if (row.condition === 'failed') return 'composer.addMenu.mcpStateUnknown';
   if (row.override === 'on') return 'cap.fact.sessionOn';
   if (row.condition === 'plugin-off') return 'composer.addMenu.mcpPluginMuted';
   if (row.condition === 'off-config') return 'cap.fact.defaultOff';

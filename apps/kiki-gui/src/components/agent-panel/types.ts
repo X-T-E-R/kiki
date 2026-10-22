@@ -88,6 +88,9 @@ export interface AgentToolCapability {
   readonly category: string;
   readonly description?: string;
   readonly state: CapabilityState;
+  /** Effective profile/global policy admission, separate from current request availability. */
+  readonly policyAllowed?: boolean;
+  readonly requestState?: 'available' | 'loadable' | 'unavailable';
   readonly unavailableReason?: string;
   readonly unavailableReasonCode?: string;
   readonly source?: string;

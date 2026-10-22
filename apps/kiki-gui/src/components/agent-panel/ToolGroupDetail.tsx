@@ -51,6 +51,12 @@ function stateWordTone(state: CapabilityState): string {
   return 'text-ink-faint';
 }
 
+const REQUEST_STATE_LABEL_KEYS = {
+  available: 'agentPanel.request.available',
+  loadable: 'agentPanel.request.loadable',
+  unavailable: 'agentPanel.request.unavailable',
+} as const;
+
 /** The four sections, in the order the panel always reads them. */
 const BUCKETS = [
   { id: 'on', labelKey: 'inspector.cap.stateOn' },
@@ -89,6 +95,8 @@ function ToolRow({ tool, group, onOpen, register }: {
         type="button"
         ref={(element) => { register(tool.name, element); }}
         data-tool-group-item={tool.name}
+        data-tool-policy-allowed={tool.policyAllowed === undefined ? undefined : String(tool.policyAllowed)}
+        data-tool-request-state={tool.requestState}
         onClick={onOpen}
         className={ROW}
       >
@@ -101,6 +109,11 @@ function ToolRow({ tool, group, onOpen, register }: {
               {name}
             </span>
             <span className={`ml-auto shrink-0 text-[11px] ${stateWordTone(tool.state)}`}>{t(stateWordKey(tool.state))}</span>
+            {tool.requestState !== undefined ? (
+              <span data-tool-request-state-label={tool.requestState} className="shrink-0 text-[10px] text-ink-faint">
+                {t(REQUEST_STATE_LABEL_KEYS[tool.requestState])}
+              </span>
+            ) : null}
           </span>
           {detail !== undefined ? (
             <span className="block truncate text-[11.5px] leading-4 text-ink-faint" title={detail}>{detail}</span>
