@@ -95,7 +95,7 @@
     "pathe": "^2.0.3",
     "postject": "1.0.0-alpha.6",
     "semver": "^7.7.4",
-    "smol-toml": "^1.6.1",
+    "smol-toml": "^1.9.0",
     "tsx": "^4.21.0",
     "yazl": "^3.3.1",
     "zod": "^4.3.6"
@@ -108,6 +108,6 @@
     "@kiki/protocol": "workspace:^",
     "@kiki/session-core": "workspace:^",
     "@kiki/transcript": "workspace:^",
-    "ws": "^8.18.0"
+    "ws": "^8.21.0"
   }
 }

@@ -2,12 +2,14 @@
   description = "Kiki CLI";
 
   inputs = {
-    # Locked nixos-25.11 still packages nodejs_24 at 24.15.0. On 2026-10-22 the
+    # Locked nixos-25.11 packages nodejs_24 at 24.15.0. On 2026-10-22 the
     # branch tips are 24.18.0 (nixos-25.11) and 24.21.0 (nixos-unstable), both
-    # older than Node.js 24.22.1. Moving this pin to either tip would still
-    # fail the SEA floor. nodejsFor keeps pkgs.nodejs_24 once that package is
-    # >= 24.22.1 and otherwise uses the official 24.22.1 dist with the
-    # published SHA-256 from https://nodejs.org/dist/v24.22.1/SHASUMS256.txt.
+    # older than Node.js 24.22.1, so this pin stays. nodejsFor keeps
+    # pkgs.nodejs_24 and, while that package is older, overrides its version
+    # and source tarball. That keeps the nixpkgs source build, including
+    # headers, npm, and platform outputs. The patch list is the one nixpkgs
+    # uses for nodejs 24.21; the 24.15-only configure-emulator and OpenSSL
+    # fetchpatches are not applied.
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
   };
 
@@ -33,77 +35,58 @@
         );
 
       minNodeVersion = "24.22.1";
+      # node-v24.22.1.tar.xz from https://nodejs.org/dist/v24.22.1/SHASUMS256.txt
+      nodejsSourceHash = "sha256-T1N5eWKAza6wwvNY/QS2oWzE+336g7WoyRqdljtDUjE=";
 
-      # Official dist used only while pkgs.nodejs_24 is older than the
-      # October 2026 security release. Linux binaries are patched onto the
-      # Nix dynamic linker; darwin uses the upstream binary as-is.
-      officialNodeDist = {
-        "x86_64-linux" = {
-          file = "node-v24.22.1-linux-x64.tar.xz";
-          hash = "sha256-bBcqmrZxj3uAH7WnvUhq8u5eMnWAhqBLhPzOKqdwleY=";
-          sourceRoot = "node-v24.22.1-linux-x64";
-        };
-        "aarch64-linux" = {
-          file = "node-v24.22.1-linux-arm64.tar.xz";
-          hash = "sha256-26v3ocv5R+YFn/rSwnuABB25feoeVTtir97n8T/KM24=";
-          sourceRoot = "node-v24.22.1-linux-arm64";
-        };
-        "x86_64-darwin" = {
-          file = "node-v24.22.1-darwin-x64.tar.gz";
-          hash = "sha256-0TJVfn7iuFrwiwyMNDOOZcZDDyI40B9ydyjvQtyDsDU=";
-          sourceRoot = "node-v24.22.1-darwin-x64";
-        };
-        "aarch64-darwin" = {
-          file = "node-v24.22.1-darwin-arm64.tar.gz";
-          hash = "sha256-icaCWT12zUQjP6U7FWMmTn3py7GJytFpE1xbT637wKc=";
-          sourceRoot = "node-v24.22.1-darwin-arm64";
-        };
-      };
-
-      officialNodejs =
-        pkgs:
-        let
-          system = pkgs.stdenv.hostPlatform.system;
-          dist = officialNodeDist.${system} or (throw "No official Node.js ${minNodeVersion} dist for ${system}");
-        in
-        pkgs.stdenv.mkDerivation {
-          pname = "nodejs";
-          version = minNodeVersion;
-          src = pkgs.fetchurl {
-            url = "https://nodejs.org/dist/v${minNodeVersion}/${dist.file}";
-            inherit (dist) hash;
-          };
-          inherit (dist) sourceRoot;
-          nativeBuildInputs = lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.patchelf ];
-          dontConfigure = true;
-          dontBuild = true;
-          dontStrip = true;
-          dontPatchELF = true;
-          installPhase = ''
-            runHook preInstall
-            mkdir -p "$out"
-            cp -a . "$out/"
-            runHook postInstall
-          '';
-          postInstall = lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
-            patchelf \
-              --set-interpreter ${pkgs.stdenv.cc.bintools.dynamicLinker} \
-              --set-rpath ${pkgs.stdenv.cc.cc.lib}/lib \
-              "$out/bin/node"
-          '';
-        };
-
-      # Stay on the 24.x package. A newer nixpkgs nodejs_24 replaces the
-      # official dist; an older one must not be copied into the SEA binary.
+      # Stay on the 24.x source derivation. A packaged nodejs_24 at or above
+      # the floor is used as-is. An older one is rebuilt from the official
+      # 24.22.1 source so SEA does not copy the vulnerable 24.15.0 binary.
       nodejsFor =
         pkgs:
         let
           packaged = pkgs.nodejs_24;
+          patchDir = "${pkgs.path}/pkgs/development/web/nodejs";
+          host = pkgs.stdenv.hostPlatform;
+          build = pkgs.stdenv.buildPlatform;
         in
         if lib.versionAtLeast packaged.version minNodeVersion then
           packaged
         else
-          officialNodejs pkgs;
+          packaged.overrideAttrs (_old: {
+            version = minNodeVersion;
+            src = pkgs.fetchurl {
+              url = "https://nodejs.org/dist/v${minNodeVersion}/node-v${minNodeVersion}.tar.xz";
+              hash = nodejsSourceHash;
+            };
+            patches =
+              (lib.optional (!(host.emulatorAvailable pkgs.buildPackages)) (pkgs.fetchpatch2 {
+                url = "https://raw.githubusercontent.com/buildroot/buildroot/2f0c31bffdb59fb224387e35134a6d5e09a81d57/package/nodejs/nodejs-src/0003-include-obj-name-in-shared-intermediate.patch";
+                hash = "sha256-3g4aS+NmmUYNOYRNc6UMJKYoaTlpP5Knt9UHegx+o0Y=";
+              }))
+              ++ lib.optionals (host != build && host.isFreeBSD) [
+                (pkgs.fetchpatch2 {
+                  url = "https://raw.githubusercontent.com/rubyjs/libv8-node/62476a398d4c9c1a670240a3b070d69544be3761/patch/v8-no-assert-trivially-copyable.patch";
+                  hash = "sha256-hSTLljmVzYmc3WAVeRq9EPYluXGXFeWVXkykufGQPVw=";
+                })
+              ]
+              ++ [
+                "${patchDir}/configure-armv6-vfpv2.patch"
+                "${patchDir}/node-npm-build-npm-package-logic.patch"
+                "${patchDir}/use-correct-env-in-tests.patch"
+                "${patchDir}/bin-sh-node-run-v22.patch"
+                "${patchDir}/use-nix-codesign.patch"
+              ]
+              ++ lib.optionals build.isDarwin [
+                "${patchDir}/gyp-patches-set-fallback-value-for-CLT-darwin.patch"
+              ]
+              ++ lib.optionals (!build.isDarwin) [
+                (pkgs.fetchpatch2 {
+                  url = "https://github.com/nodejs/node/commit/869d0cbca3b0b5e594b3254869a34d549664e089.patch?full_index=1";
+                  hash = "sha256-BBBShQwU20TSY8GtPehQ9i3AH4ZKUGIr8O0bRsgrpNo=";
+                  revert = true;
+                })
+              ];
+          });
 
       pnpmFor =
         pkgs:

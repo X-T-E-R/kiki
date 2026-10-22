@@ -131,7 +131,8 @@ void test('local and release Node gates accept patched lines and reject affected
 
   const flake = await read('flake.nix');
   assert.match(flake, /minNodeVersion = "24\.22\.1"/);
-  assert.match(flake, /node-v24\.22\.1-linux-x64\.tar\.xz/);
-  assert.match(flake, /sha256-bBcqmrZxj3uAH7WnvUhq8u5eMnWAhqBLhPzOKqdwleY=/);
-  assert.match(flake, /officialNodejs pkgs/);
+  assert.match(flake, /node-v24\.22\.1\.tar\.xz/);
+  assert.match(flake, /sha256-T1N5eWKAza6wwvNY\/QS2oWzE\+336g7WoyRqdljtDUjE=/);
+  assert.match(flake, /packaged\.overrideAttrs/);
+  assert.match(flake, /pkgs\.nodejs_24/);
 });

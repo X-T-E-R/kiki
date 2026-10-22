@@ -91,8 +91,8 @@
     "pdfjs-dist": "4.10.38",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "react-router-dom": "^7.14.1",
-    "smol-toml": "^1.6.1",
+    "react-router-dom": "^7.18.2",
+    "smol-toml": "^1.9.0",
     "streamdown": "^2.2.0"
   },
   "devDependencies": {
@@ -106,8 +106,8 @@
     "playwright": "1.60.0",
     "tailwindcss": "^4.1.4",
     "typescript": "6.0.2",
-    "vite": "^6.3.3",
+    "vite": "^6.4.4",
     "vitest": "4.1.4",
-    "ws": "^8.18.0"
+    "ws": "^8.21.0"
   }
 }
