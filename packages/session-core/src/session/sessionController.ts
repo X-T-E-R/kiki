@@ -42,6 +42,7 @@ import {
   API_CODES,
   ApiError,
   DEFAULT_TRANSCRIPT_GRADES,
+  isDefiniteSessionAbsenceMessage,
   isUnconfirmedTransportError,
   transcriptGradesForFocus,
   type AgentTranscriptResponse,
@@ -206,6 +207,10 @@ function errorMessage(error: unknown, fallback: string): string {
       : fallback;
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
+}
+
 /**
  * Why a "send now" did not reach the running turn. `submit` and `refused`
  * leave nothing behind on the server, so the text belongs back in the
@@ -230,6 +235,7 @@ export class SessionController {
   private viewHandle: SessionViewSubscription | undefined;
   private connectionGeneration: number | undefined;
   private viewAttachment = 0;
+  private openGeneration = 0;
   readonly sessionId: string;
   private state: SessionViewState;
   private publishedState: SessionViewState;
@@ -534,15 +540,18 @@ export class SessionController {
 
   /** Initial sync: snapshot shell → subscribe_v2 with per-agent grades. */
   async open(): Promise<void> {
+    const generation = ++this.openGeneration;
+    const attachment = this.viewAttachment;
     try {
       const snapshot = await this.readSnapshot();
-      if (this.closed || this.isSuspended) return;
+      if (this.closed || this.isSuspended || generation !== this.openGeneration || attachment !== this.viewAttachment) return;
       this.setState(this.applyTranscriptShellSnapshot(snapshot));
       this.transcriptGrades = this.requestedTranscriptGrades();
       this.attachView({ seq: snapshot.as_of_seq, epoch: snapshot.epoch });
       void this.refreshDurableIngress();
     } catch (error) {
-      if (this.closed || this.isSuspended) return;
+      if (this.closed || this.isSuspended || generation !== this.openGeneration || attachment !== this.viewAttachment) return;
+      if (isAbortError(error)) return;
       this.setState(setLoadError(this.state, errorMessage(error, 'Could not load session')));
     }
   }
@@ -639,10 +648,12 @@ export class SessionController {
     } catch (error) {
       if (this.closed || this.isSuspended || attachment !== this.viewAttachment) return;
       const code = error instanceof ApiError || error instanceof RPCError ? error.code : undefined;
+      const message = errorMessage(error, 'Could not load session');
       // A session deleted while its view was parked surfaces the same way a
-      // fresh open does; any other failure leaves the live subscription in charge.
-      if (code === API_CODES.SESSION_NOT_FOUND) {
-        this.setState(setLoadError(this.state, errorMessage(error, 'Could not load session')));
+      // fresh open does. Other 40401 failures are missing history or content
+      // and leave the live subscription in charge.
+      if (code === API_CODES.SESSION_NOT_FOUND && isDefiniteSessionAbsenceMessage(message)) {
+        this.setState(setLoadError(this.state, message));
       }
     }
   }

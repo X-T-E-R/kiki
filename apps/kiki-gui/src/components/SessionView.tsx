@@ -971,6 +971,17 @@ type ModelSource = ComposerModelSource;
 /** How long the not-found card stays before /s/:id falls back home. */
 export const NOT_FOUND_FALLBACK_MS = 3000;
 
+/** True when `pathname` is this session or one of its child routes. */
+export function sessionRouteOwnsSession(pathname: string, sessionId: string): boolean {
+  const prefix = `/s/${sessionId}`;
+  return pathname === prefix || pathname.startsWith(`${prefix}/`);
+}
+
+/** Leave for /new only when this session is definitely gone and the route is still its own. */
+export function sessionAbsenceShouldLeaveRoute(message: string, sessionId: string, pathname: string): boolean {
+  return isSessionNotFoundMessage(message) && sessionRouteOwnsSession(pathname, sessionId);
+}
+
 /**
  * Permission/plan pills are controlled by the server-reported store
  * fields (snapshot agent_config + `agent.status.updated`): another client —
@@ -1820,6 +1831,8 @@ export function SessionView({
   // find and filter changes never come through here.
   const navigateTimeline = useTimelineNavigation();
   const location = useLocation();
+  const sessionPathRef = useRef(location.pathname);
+  sessionPathRef.current = location.pathname;
   const agentMatch = useMatch('/s/:id/agent/:agentId');
   const selectedAgentId = agentMatch?.params.agentId;
   const [railMode] = useRailMode();
@@ -2409,14 +2422,16 @@ export function SessionView({
     }
   }, [planOverride, state.loaded, state.planMode]);
 
-  // A deleted/unknown session can never recover: toast the reason, keep the
+  // A session that is definitely gone cannot recover: toast the reason, keep the
   // card visible for a beat, then fall back home (clearing the remembered id
-  // so `/` doesn't redirect straight back into the 404).
+  // so `/` doesn't redirect straight back into the 404). History and content
+  // failures stay here, and the timer does not leave a route it no longer owns.
   const loadError = state.loadError;
   useEffect(() => {
-    if (loadError === undefined || !isSessionNotFoundMessage(loadError)) return;
+    if (loadError === undefined || !sessionAbsenceShouldLeaveRoute(loadError, sessionId, sessionPathRef.current)) return;
     pushToast({ tone: 'info', text: t('sv.sessionGone') });
     const timer = setTimeout(() => {
+      if (!sessionAbsenceShouldLeaveRoute(loadError, sessionId, sessionPathRef.current)) return;
       if (readLastSessionId() === sessionId) writeLastSessionId(undefined);
       void navigate('/new', { replace: true });
     }, NOT_FOUND_FALLBACK_MS);

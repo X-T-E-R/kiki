@@ -142,7 +142,7 @@ import {
   type ProviderModelDraft,
   type RemoteModelsProbe,
 } from '@kiki/session-core/settings';
-import { API_CODES, ApiError } from '@kiki/session-core/transport';
+import { API_CODES, ApiError, isDefiniteSessionAbsenceMessage } from '@kiki/session-core/transport';
 
 import { recordConnectionEvent } from '../state/connectionDiagnostics';
 import type { UsageResponseWire } from './usageV2';
@@ -155,12 +155,11 @@ export function isSessionIndexBuildingError(error: unknown): boolean {
 
 /**
  * True when a human-readable load error (ApiError's `${msg} (code ${code})`
- * string) reports a missing session — drives the /s/:id auto-fallback.
+ * string) says the session entity is gone. A bare 40401 is not enough:
+ * history, content, and cwd failures share that code and must keep the route.
  */
 export function isSessionNotFoundMessage(message: string): boolean {
-  return (
-    message.includes('session.not_found') || message.includes(`code ${API_CODES.SESSION_NOT_FOUND}`)
-  );
+  return isDefiniteSessionAbsenceMessage(message);
 }
 
 /**

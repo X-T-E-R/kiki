@@ -6,7 +6,7 @@ import { readLastSessionId, writeLastSessionId } from '@kiki/session-core/settin
 import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import { createBotRoomApi } from '../lib/botRooms';
-import { API_CODES, ApiError, isSessionNotFoundMessage } from '../lib/client';
+import { isSessionNotFoundMessage } from '../lib/client';
 import { markSpaceViewRoute, writeSpaceViewRoute } from '../lib/spaceViewState';
 import { useConnection, useOptionalControllerRegistry } from '../state/connection';
 
@@ -53,8 +53,7 @@ export function SpaceViewState({ children }: { readonly children: ReactNode }) {
           await client.getSession(sessionId);
           return true;
         } catch (error) {
-          if ((error instanceof ApiError && error.code === API_CODES.SESSION_NOT_FOUND) ||
-            (error instanceof Error && isSessionNotFoundMessage(error.message))) return false;
+          if (error instanceof Error && isSessionNotFoundMessage(error.message)) return false;
           throw error;
         }
       }

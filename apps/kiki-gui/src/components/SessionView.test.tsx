@@ -60,6 +60,8 @@ import { toolErrorFullText, toolErrorSummary } from './ToolCard';
 import { projectUserText } from './Transcript';
 import {
   NOT_FOUND_FALLBACK_MS,
+  sessionAbsenceShouldLeaveRoute,
+  sessionRouteOwnsSession,
 
   activateSkillWithConditionalClear,
   captureSkillRequest,
@@ -2149,6 +2151,20 @@ describe('ContextMeter', () => {
 describe('session-not-found fallback', () => {
   it('waits three seconds before falling back home', () => {
     expect(NOT_FOUND_FALLBACK_MS).toBe(3000);
+  });
+
+  it('leaves only a definite absence while this session still owns the route', () => {
+    const gone = 'session sess-a does not exist (code 40401)';
+    expect(sessionRouteOwnsSession('/s/sess-a', 'sess-a')).toBe(true);
+    expect(sessionRouteOwnsSession('/s/sess-a/agent/main', 'sess-a')).toBe(true);
+    expect(sessionRouteOwnsSession('/s/sess-ab', 'sess-a')).toBe(false);
+    expect(sessionAbsenceShouldLeaveRoute(gone, 'sess-a', '/s/sess-a')).toBe(true);
+    expect(sessionAbsenceShouldLeaveRoute(gone, 'sess-a', '/s/sess-a/agent/main')).toBe(true);
+    expect(sessionAbsenceShouldLeaveRoute('session not found: sess-a (code 40401)', 'sess-a', '/s/sess-a')).toBe(false);
+    expect(sessionAbsenceShouldLeaveRoute('content unavailable (code 40401)', 'sess-a', '/s/sess-a')).toBe(false);
+    expect(sessionAbsenceShouldLeaveRoute('session sess-a has no recoverable cwd (code 40401)', 'sess-a', '/s/sess-a')).toBe(false);
+    expect(sessionAbsenceShouldLeaveRoute(gone, 'sess-a', '/s/sess-b')).toBe(false);
+    expect(sessionAbsenceShouldLeaveRoute(gone, 'sess-a', '/new')).toBe(false);
   });
 });
 

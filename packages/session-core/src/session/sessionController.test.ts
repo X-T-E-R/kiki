@@ -9,7 +9,7 @@ import type {
   AgentTranscriptResponse,
   SessionTransport as KikiClient,
 } from '../transport';
-import { ApiError, API_CODES } from '../transport';
+import { ApiError, API_CODES, isDefiniteSessionAbsenceMessage } from '../transport';
 import { readDraft, readComposerState, resetDraftMemoryForTests, resetComposerMemoryForTests, writeDraft, subscribeDraftAppends, restorePromptToDraft } from '../composer/drafts';
 import { buildPromptContent } from '../composer/attachments';
 import { resolveSelectedEffort } from '../settings/agentSettings';
@@ -754,6 +754,112 @@ describe('SessionController pipeline', () => {
     expect(signal?.aborted).toBe(true);
     await opening;
     expect(controller.getState().loaded).toBe(false);
+    expect(controller.getState().loadError).toBeUndefined();
+  });
+
+  it('does not record an aborted snapshot as a load failure', async () => {
+    const abort = new Error('The operation was aborted');
+    abort.name = 'AbortError';
+    const controller = new SessionController(
+      {} as KikiClient,
+      fakeView({ snapshot: vi.fn().mockRejectedValue(abort) }, {}),
+      'session_test',
+    );
+    await controller.open();
+    expect(controller.getState().loaded).toBe(false);
+    expect(controller.getState().loadError).toBeUndefined();
+  });
+
+  it('records a definite absence and keeps an internal history miss visible', async () => {
+    const gone = new SessionController(
+      {} as KikiClient,
+      fakeView({
+        snapshot: vi.fn().mockRejectedValue(new ApiError({
+          code: API_CODES.SESSION_NOT_FOUND,
+          msg: 'session session_test does not exist',
+          data: null,
+        })),
+      }, {}),
+      'session_test',
+    );
+    await gone.open();
+    expect(gone.getState().loadError).toContain('does not exist');
+    expect(isDefiniteSessionAbsenceMessage(gone.getState().loadError ?? '')).toBe(true);
+    gone.close();
+
+    const history = new SessionController(
+      {} as KikiClient,
+      fakeView({
+        snapshot: vi.fn().mockRejectedValue(new ApiError({
+          code: API_CODES.SESSION_NOT_FOUND,
+          msg: 'session not found: session_test',
+          data: null,
+        })),
+      }, {}),
+      'session_test',
+    );
+    await history.open();
+    expect(history.getState().loaded).toBe(false);
+    expect(history.getState().loadError).toContain('session not found: session_test');
+    expect(isDefiniteSessionAbsenceMessage(history.getState().loadError ?? '')).toBe(false);
+    history.close();
+  });
+
+  it('ignores a superseded snapshot failure after a later open succeeds', async () => {
+    const first = deferred<SessionSnapshotResponse>();
+    const second = deferred<SessionSnapshotResponse>();
+    let calls = 0;
+    const view: SessionViewFacade = {
+      ...fakeView({ snapshot: vi.fn() }, {}),
+      snapshot: vi.fn(() => {
+        calls += 1;
+        return calls === 1 ? first.promise : second.promise;
+      }),
+    };
+    const controller = new SessionController({} as KikiClient, view, 'session_test');
+    const opening = controller.open();
+    const retry = controller.open();
+    second.resolve(snapshot());
+    await retry;
+    expect(controller.getState().loaded).toBe(true);
+    first.reject(new ApiError({
+      code: API_CODES.SESSION_NOT_FOUND,
+      msg: 'session session_test does not exist',
+      data: null,
+    }));
+    await opening;
+    expect(controller.getState().loaded).toBe(true);
+    expect(controller.getState().loadError).toBeUndefined();
+    controller.close();
+  });
+
+  it('leaves a parked view in place when a later shell refresh is only a history miss', async () => {
+    const reads = vi.fn()
+      .mockResolvedValueOnce(snapshot())
+      .mockRejectedValueOnce(new ApiError({
+        code: API_CODES.SESSION_NOT_FOUND,
+        msg: 'session not found: session_test',
+        data: null,
+      }))
+      .mockRejectedValueOnce(new ApiError({
+        code: API_CODES.SESSION_NOT_FOUND,
+        msg: 'session session_test does not exist',
+        data: null,
+      }));
+    const controller = new SessionController(
+      {} as KikiClient, fakeView({ snapshot: reads }, {}), 'session_test',
+    );
+    await controller.open();
+    expect(controller.getState().loaded).toBe(true);
+    controller.suspend();
+    await controller.resume();
+    expect(controller.getState().loaded).toBe(true);
+    expect(controller.getState().loadError).toBeUndefined();
+    controller.suspend();
+    await controller.resume();
+    expect(controller.getState().loadError).toContain('does not exist');
+    expect(isDefiniteSessionAbsenceMessage(controller.getState().loadError ?? '')).toBe(true);
+    controller.close();
   });
 
   it('refreshes a waking child on creation, drops it on disposal, and reads a new agent row', async () => {

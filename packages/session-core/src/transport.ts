@@ -96,6 +96,19 @@ export function isUnconfirmedTransportError(error: unknown): boolean {
   return error instanceof ApiError && error.source === 'transport';
 }
 
+/**
+ * The session entity itself is gone. Code 40401 is also used for a missing
+ * history page, content body, cold baseline, or cwd, so those stay on the
+ * open conversation instead of reading as deletion.
+ */
+export function isDefiniteSessionAbsenceMessage(message: string): boolean {
+  if (message.includes('session.not_found')) return true;
+  if (/\bsession\s+\S+\s+does not exist\b/i.test(message)) return true;
+  if (/\bsession\s+\S+\s+not found\b/i.test(message)) return true;
+  if (/\bsession not found\b/i.test(message) && !/\bsession not found\s*:/i.test(message)) return true;
+  return false;
+}
+
 export const DEFAULT_TRANSCRIPT_GRADES: TranscriptGradeSpec = {
   '*': 'off',
   main: 'delta',

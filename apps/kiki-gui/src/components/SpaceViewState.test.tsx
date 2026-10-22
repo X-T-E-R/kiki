@@ -226,6 +226,51 @@ describe('space view route validation', () => {
     expect(mounted).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    'session not found: existing',
+    'content unavailable',
+    'session existing has no recoverable cwd',
+  ])('keeps a legal session open when getSession fails with %s', async (msg) => {
+    writeLastSessionId('existing');
+    writeSpaceViewRoute('/s/existing');
+    getSession.mockRejectedValue(new ApiError({ code: API_CODES.SESSION_NOT_FOUND, msg, data: null }));
+    await render('/s/existing');
+    expect(container.querySelector('output')?.textContent).toBe('/s/existing');
+    expect(container.querySelector('[data-target]')).not.toBeNull();
+    expect(mounted).toHaveBeenCalledOnce();
+    expect(readLastSessionId()).toBe('existing');
+    expect(readSpaceViewRoute()).toBe('/s/existing');
+  });
+
+  it('still leaves when metadata says the session does not exist', async () => {
+    writeLastSessionId('deleted');
+    getSession.mockRejectedValue(new ApiError({ code: API_CODES.SESSION_NOT_FOUND, msg: 'session deleted does not exist', data: null }));
+    await render('/s/deleted');
+    expect(container.querySelector('output')?.textContent).toBe('/new');
+    expect(mounted).not.toHaveBeenCalled();
+    expect(readLastSessionId()).toBeUndefined();
+  });
+
+  it('does not let a stale not-found for the previous session replace the current route', async () => {
+    let rejectDeleted!: (error: Error) => void;
+    getSession.mockImplementation((id: string) => {
+      if (id === 'deleted') return new Promise((_resolve, reject) => { rejectDeleted = reject; });
+      return Promise.resolve({ id });
+    });
+    await render('/s/deleted');
+    expect(mounted).not.toHaveBeenCalled();
+    await act(async () => { await navigateRoute('/s/kept'); });
+    await flush();
+    expect(container.querySelector('output')?.textContent).toBe('/s/kept');
+    expect(mounted).toHaveBeenCalledOnce();
+    await act(async () => {
+      rejectDeleted(new ApiError({ code: API_CODES.SESSION_NOT_FOUND, msg: 'session deleted does not exist', data: null }));
+    });
+    await flush();
+    expect(container.querySelector('output')?.textContent).toBe('/s/kept');
+    expect(container.querySelector('[data-target]')).not.toBeNull();
+  });
+
   it('cleans up and navigates away if retained controller session is definitely not found on server', async () => {
     retainedControllers.mockReturnValue([{ sessionId: 'gone-retained' }]);
     let fail!: (error: Error) => void;
