@@ -99,7 +99,7 @@ jobs:
       - name: Install Nix
         uses: cachix/install-nix-action@v31
         with:
-          nix-path: nixpkgs=channel:nixos-unstable
+          nix_path: nixpkgs=channel:nixos-unstable
 
       - name: Build
         id: build

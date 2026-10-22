@@ -135,4 +135,13 @@ void test('local and release Node gates accept patched lines and reject affected
   assert.match(flake, /sha256-T1N5eWKAza6wwvNY\/QS2oWzE\+336g7WoyRqdljtDUjE=/);
   assert.match(flake, /packaged\.overrideAttrs/);
   assert.match(flake, /pkgs\.nodejs_24/);
+  assert.match(flake, /configureFlags = lib\.filter/);
+  assert.match(flake, /flag != "--shared-libuv"/);
+  assert.match(flake, /lib\.strings\.hasPrefix "--shared-libuv-libpath="/);
+  assert.match(flake, /buildInputs = lib\.filter \(input: input != pkgs\.libuv\)/);
+  assert.match(flake, /postInstall = lib\.replaceStrings/);
+
+  const nixWorkflow = await read('.github/workflows/nix-build.yml');
+  assert.match(nixWorkflow, /nix_path: nixpkgs=channel:nixos-unstable/);
+  assert.doesNotMatch(nixWorkflow, /nix-path:/);
 });

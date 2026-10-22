@@ -52,12 +52,27 @@
         if lib.versionAtLeast packaged.version minNodeVersion then
           packaged
         else
-          packaged.overrideAttrs (_old: {
+          packaged.overrideAttrs (old: {
             version = minNodeVersion;
             src = pkgs.fetchurl {
               url = "https://nodejs.org/dist/v${minNodeVersion}/node-v${minNodeVersion}.tar.xz";
               hash = nodejsSourceHash;
             };
+            # Node.js 24.22.1 uses f_frsize from its bundled libuv. The locked
+            # nixpkgs libuv is 1.51.0, before that field was added, so keep the
+            # official bundled-libuv configure mode instead of patching Node or
+            # changing the whole nixpkgs input.
+            configureFlags = lib.filter (
+              flag:
+              flag != "--shared-libuv"
+              && !(lib.strings.hasPrefix "--shared-libuv-libpath=" flag)
+            ) old.configureFlags;
+            # Do not expose the older shared-libuv headers over Node's bundled
+            # headers; node-gyp must see the same uv_statfs_t as the binary.
+            buildInputs = lib.filter (input: input != pkgs.libuv) old.buildInputs;
+            postInstall = lib.replaceStrings [
+              "${lib.getDev pkgs.libuv}/include/*"
+            ] [ "" ] old.postInstall;
             patches =
               (lib.optional (!(host.emulatorAvailable pkgs.buildPackages)) (pkgs.fetchpatch2 {
                 url = "https://raw.githubusercontent.com/buildroot/buildroot/2f0c31bffdb59fb224387e35134a6d5e09a81d57/package/nodejs/nodejs-src/0003-include-obj-name-in-shared-intermediate.patch";
