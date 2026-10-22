@@ -103,6 +103,110 @@ describe('google-genai trailing model turn', () => {
     expect(history[3]).toMatchObject({ toolCallId: 'alpha_1' });
   });
 
+  it('keeps parallel function responses together and puts later user text in a new turn', async () => {
+    const history = [
+      user('go'),
+      {
+        role: 'assistant',
+        content: [{ type: 'think', think: 'plan', encrypted: THINK_SIGNATURE }],
+        toolCalls: [
+          call('alpha_1', 'alpha', CALL_SIGNATURE),
+          unsignedCall('beta_1', 'beta'),
+        ],
+      },
+      tool('beta_1', 'b-out'),
+      tool('alpha_1', 'a-out'),
+      user('Thanks'),
+    ] satisfies Message[];
+    const seen = installFetch(okSse);
+    await drainGenerate('gemini-4-argon', history);
+    expect(seen).toHaveLength(1);
+    const contents = contentsOf(seen[0]!);
+    expect(contents.map((content) => content['role'])).toEqual(['user', 'model', 'user', 'user']);
+    expect(partKinds(contents[2])).toEqual(['function_response', 'function_response']);
+    expect(partsOf(contents[2]).map((part) => responseOf(part))).toEqual([
+      { name: 'alpha', output: 'a-out' },
+      { name: 'beta', output: 'b-out' },
+    ]);
+    expect(partKinds(contents[3])).toEqual(['text']);
+    expect(mixedUserContents(contents)).toEqual([]);
+    const calls = partsOf(contents[1]);
+    expect(calls[1]?.['thoughtSignature']).toBe(CALL_SIGNATURE);
+    expect(calls[2]?.['thoughtSignature']).toBeUndefined();
+    expect(history.at(-1)).toEqual(user('Thanks'));
+  });
+
+  it('does not merge a user note that arrives before a function response', async () => {
+    const history = [
+      user('Hi'),
+      {
+        role: 'assistant',
+        content: [],
+        toolCalls: [call('alpha_1', 'alpha', CALL_SIGNATURE)],
+      },
+      user('note'),
+      tool('alpha_1', 'a-out'),
+    ] satisfies Message[];
+    const seen = installFetch(okSse);
+    await drainGenerate('gemini-4-argon', history);
+    const contents = contentsOf(seen[0]!);
+    expect(contents.map((content) => content['role'])).toEqual(['user', 'model', 'user', 'user']);
+    expect(partKinds(contents[2])).toEqual(['text']);
+    expect(partKinds(contents[3])).toEqual(['function_response']);
+    expect(mixedUserContents(contents)).toEqual([]);
+    expect(partsOf(contents[1])[0]?.['thoughtSignature']).toBe(CALL_SIGNATURE);
+    expect(history[2]).toEqual(user('note'));
+  });
+
+  it('keeps sequential function responses separate from each other and from the next user text', async () => {
+    const history = [
+      user('go'),
+      {
+        role: 'assistant',
+        content: [],
+        toolCalls: [call('alpha_1', 'alpha', CALL_SIGNATURE)],
+      },
+      tool('alpha_1', 'a-out'),
+      {
+        role: 'assistant',
+        content: [],
+        toolCalls: [call('beta_1', 'beta', SECOND_CALL_SIGNATURE)],
+      },
+      tool('beta_1', 'b-out'),
+      user('Thanks'),
+    ] satisfies Message[];
+    const seen = installFetch(okSse);
+    await drainGenerate('gemini-4-argon', history);
+    const contents = contentsOf(seen[0]!);
+    expect(contents.map((content) => content['role'])).toEqual(['user', 'model', 'user', 'model', 'user', 'user']);
+    expect(partKinds(contents[2])).toEqual(['function_response']);
+    expect(partKinds(contents[4])).toEqual(['function_response']);
+    expect(partKinds(contents[5])).toEqual(['text']);
+    expect(partsOf(contents[1])[0]?.['thoughtSignature']).toBe(CALL_SIGNATURE);
+    expect(partsOf(contents[3])[0]?.['thoughtSignature']).toBe(SECOND_CALL_SIGNATURE);
+    expect(mixedUserContents(contents)).toEqual([]);
+  });
+
+  it('does not fold tool media into the following user text', async () => {
+    const history = [
+      user('go'),
+      {
+        role: 'assistant',
+        content: [],
+        toolCalls: [call('alpha_1', 'alpha', CALL_SIGNATURE)],
+      },
+      toolWithImage('alpha_1', 'a-out'),
+      user('Thanks'),
+    ] satisfies Message[];
+    const seen = installFetch(okSse);
+    await drainGenerate('gemini-4-argon', history);
+    const contents = contentsOf(seen[0]!);
+    expect(contents.map((content) => content['role'])).toEqual(['user', 'model', 'user', 'user']);
+    expect(partKinds(contents[2])).toEqual(['function_response', 'media']);
+    expect(partKinds(contents[3])).toEqual(['text']);
+    expect(mixedUserContents(contents)).toEqual([]);
+  });
+
   it('refuses a function-call tail that has no function response', async () => {
     const history = [
       user('go'),
@@ -278,6 +382,28 @@ function lastRole(request: SeenRequest): unknown {
   return contentsOf(request).at(-1)?.['role'];
 }
 
+function partKinds(content: Record<string, unknown> | undefined): string[] {
+  const kinds: string[] = [];
+  for (const part of partsOf(content)) {
+    if (part['functionCall'] !== undefined) kinds.push('function_call');
+    else if (part['functionResponse'] !== undefined) kinds.push('function_response');
+    else if (part['fileData'] !== undefined || part['inlineData'] !== undefined) kinds.push('media');
+    else if (part['thought'] === true) kinds.push('thought');
+    else if (typeof part['text'] === 'string' && part['text'].trim().length > 0) kinds.push('text');
+  }
+  return kinds;
+}
+
+function mixedUserContents(contents: ReadonlyArray<Record<string, unknown>>): number[] {
+  const mixed: number[] = [];
+  contents.forEach((content, index) => {
+    if (content['role'] !== 'user') return;
+    const kinds = partKinds(content);
+    if (kinds.includes('function_response') && kinds.includes('text')) mixed.push(index);
+  });
+  return mixed;
+}
+
 function functionName(part: Record<string, unknown>, key: 'functionCall' | 'functionResponse'): string | undefined {
   const value = part[key];
   if (typeof value !== 'object' || value === null) return undefined;
@@ -307,6 +433,22 @@ function call(id: string, name: string, signature: string): Message['toolCalls']
   return { type: 'function', id, name, arguments: '{}', extras: { thought_signature_b64: signature } };
 }
 
+function unsignedCall(id: string, name: string): Message['toolCalls'][number] {
+  return { type: 'function', id, name, arguments: '{}' };
+}
+
 function tool(toolCallId: string, text: string): Message {
   return { role: 'tool', toolCallId, content: [{ type: 'text', text }], toolCalls: [] };
+}
+
+function toolWithImage(toolCallId: string, text: string): Message {
+  return {
+    role: 'tool',
+    toolCallId,
+    content: [
+      { type: 'text', text },
+      { type: 'image_url', imageUrl: { url: 'https://example.test/a.png' } },
+    ],
+    toolCalls: [],
+  };
 }

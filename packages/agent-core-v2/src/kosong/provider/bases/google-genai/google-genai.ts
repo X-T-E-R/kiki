@@ -527,21 +527,25 @@ export function messagesToGoogleGenAIContents(messages: Message[]): GoogleConten
 
   return mergeConsecutiveUserMessages(contents, {
     isUser: (content) => content.role === 'user',
-    isToolResultOnly: (content) =>
-      content.parts.length > 0 &&
-      content.parts.every((part) => part.functionResponse !== undefined),
-    merge: (last, next) => {
-      const lastStartsWithFunctionResponse =
-        last.parts[0]?.functionResponse !== undefined;
-      const nextHasFunctionResponse = next.parts.some(
-        (part) => part.functionResponse !== undefined,
-      );
-      if (lastStartsWithFunctionResponse && !nextHasFunctionResponse) {
-        return { ...next, parts: [...next.parts, ...last.parts] };
-      }
-      return { ...last, parts: [...last.parts, ...next.parts] };
-    },
+    isToolResultOnly: isGoogleFunctionResponseCarrier,
+    canMerge: (last, next) =>
+      (isGoogleFunctionResponseCarrier(last) && isGoogleFunctionResponseCarrier(next))
+      || (isGoogleOrdinaryUserContent(last) && isGoogleOrdinaryUserContent(next)),
+    merge: (last, next) => ({ ...last, parts: [...last.parts, ...next.parts] }),
   });
+}
+
+function googlePartHasOrdinaryText(part: GooglePart): boolean {
+  return part.thought !== true && typeof part.text === 'string' && part.text.trim().length > 0;
+}
+
+function isGoogleFunctionResponseCarrier(content: GoogleContent): boolean {
+  return content.parts.some((part) => part.functionResponse !== undefined)
+    && !content.parts.some(googlePartHasOrdinaryText);
+}
+
+function isGoogleOrdinaryUserContent(content: GoogleContent): boolean {
+  return !content.parts.some((part) => part.functionResponse !== undefined);
 }
 
 export class GoogleGenAIStreamedMessage implements StreamedMessage {
