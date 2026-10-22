@@ -15,7 +15,7 @@ import {
 const root = resolve('C:/fixture/repository');
 const entry = (file, projectName) => ({ file: resolve(root, file), projectName });
 
-test('partitions future GUI and ordinary tests from the collected project identity', () => {
+await test('partitions future GUI and ordinary tests from the collected project identity', () => {
   const futureGui = entry('apps/kiki-gui/src/future/newSurface.e2e.tsx', 'gui');
   const futureOrdinary = entry('packages/future/test/newCapability.integration.ts', 'future');
   const media = entry(MEDIA_TEST_FILE, 'kap-server');
@@ -27,7 +27,7 @@ test('partitions future GUI and ordinary tests from the collected project identi
   });
 });
 
-test('requires the three lanes and all ordinary shards to equal the original root collection', () => {
+await test('requires the three lanes and all ordinary shards to equal the original root collection', () => {
   const gui = entry('apps/kiki-gui/src/App.test.tsx', 'gui');
   const media = entry(MEDIA_TEST_FILE, 'kap-server');
   const first = entry('packages/example/test/first.test.ts', 'example');
@@ -48,7 +48,7 @@ test('requires the three lanes and all ordinary shards to equal the original roo
   });
 });
 
-test('rejects omissions, lane overlap, and shard overlap', () => {
+await test('rejects omissions, lane overlap, and shard overlap', () => {
   const gui = entry('apps/kiki-gui/src/App.test.tsx', 'gui');
   const ordinary = entry('packages/example/test/example.test.ts', 'example');
 
@@ -77,7 +77,7 @@ test('rejects omissions, lane overlap, and shard overlap', () => {
   }, root), /ordinary shard 2 overlaps/);
 });
 
-test('unknown workflow and runner modes recover to full', () => {
+await test('unknown workflow and runner modes recover to full', () => {
   assert.equal(resolveRequestedMode(undefined), 'partitioned');
   assert.equal(resolveRequestedMode('partitioned'), 'partitioned');
   assert.equal(resolveRequestedMode('full'), 'full');
@@ -85,7 +85,7 @@ test('unknown workflow and runner modes recover to full', () => {
   assert.deepEqual(vitestArguments('unexpected'), ['run']);
 });
 
-test('builds selectors without omitting integration, e2e, or TSX files', () => {
+await test('builds selectors without omitting integration, e2e, or TSX files', () => {
   assert.deepEqual(vitestArguments('ordinary'), ['run', '--project=!gui']);
   assert.deepEqual(vitestArguments('gui'), ['run', '--project=gui']);
   assert.deepEqual(vitestArguments('media'), ['run', '--project=kap-server', MEDIA_TEST_FILE]);
@@ -96,7 +96,7 @@ test('builds selectors without omitting integration, e2e, or TSX files', () => {
   assert.throws(() => parseShard('6/5'), /invalid shard/);
 });
 
-test('keeps expensive environments out of ordinary shards and preserves complete fallback', () => {
+await test('keeps expensive environments out of ordinary shards and preserves complete fallback', () => {
   const workflow = readFileSync(resolve(import.meta.dirname, '../.github/workflows/ci.yml'), 'utf8');
   const ordinary = workflow.match(/\n  test:\n([\s\S]*?)\n  test-gui:/)?.[1];
   const gui = workflow.match(/\n  test-gui:\n([\s\S]*?)\n  test-media-preview:/)?.[1];
@@ -109,6 +109,8 @@ test('keeps expensive environments out of ordinary shards and preserves complete
   assert.match(ordinary, /Rebuild host PTY dependency/);
   assert.match(gui ?? '', /mcr\.microsoft\.com\/playwright:v1\.60\.0-noble@sha256:83192064/);
   assert.match(gui ?? '', /run gui/);
+  assert.match(media ?? '', /s\|http:\/\/azure\.archive\.ubuntu\.com\/ubuntu\|http:\/\/archive\.ubuntu\.com\/ubuntu\|g/);
+  assert.match(media ?? '', /cat \/etc\/apt\/apt-mirrors\.txt/);
   assert.match(media ?? '', /--no-install-recommends ffmpeg/);
   assert.match(media ?? '', /run media/);
   assert.match(full ?? '', /--no-install-recommends ffmpeg/);
