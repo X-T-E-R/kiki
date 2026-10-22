@@ -150,10 +150,20 @@ export class HistoryCanonicalReader {
     const reducer = new TranscriptFactReducer(draft);
     const adapter = new TranscriptWireAdapter(agent);
     adapter.restore({ ...adapter.checkpoint(), legacyTurnOrdinal: seed.legacyTurn, recordOrdinal: seed.ordinal });
-    const logical = await openLogicalWire(context.wirePath);
-    const handle = logical === undefined ? await open(context.wirePath, 'r') : undefined;
+    let logical: LogicalWire | undefined;
+    let handle: FileHandle | undefined;
+    const releaseRead = async (): Promise<void> => {
+      const currentLogical = logical;
+      const currentHandle = handle;
+      logical = undefined;
+      handle = undefined;
+      currentLogical?.close();
+      if (currentHandle !== undefined) await currentHandle.close();
+    };
     let bytesRead = 0;
     try {
+      logical = await openLogicalWire(context.wirePath);
+      handle = logical === undefined ? await open(context.wirePath, 'r') : undefined;
       for (const span of spans) {
         signal?.throwIfAborted();
         const size = span.end - span.start;
@@ -175,6 +185,8 @@ export class HistoryCanonicalReader {
         this.replayRecords += 1;
         const turn = draft.getTurn(turnId);
         if (turn !== undefined && (turn.prompt !== undefined || (turn.attachmentIds?.length ?? 0) > 0)) {
+          await releaseRead();
+          signal?.throwIfAborted();
           const proof = await historyNavigationProof(context.wirePath, manifest.offset);
           signal?.throwIfAborted();
           if (generation !== this.generation || !matchesNavigationProof(manifest.source, proof) ||
@@ -184,8 +196,7 @@ export class HistoryCanonicalReader {
       }
       return { status: manifest.complete && spans.length < 32 ? 'not_found' : 'preparing' };
     } finally {
-      logical?.close();
-      if (handle !== undefined) await handle.close();
+      await releaseRead();
     }
   }
 
@@ -438,8 +449,16 @@ export class HistoryCanonicalReader {
     const adapter = new TranscriptWireAdapter(agent, { turn: (id) => draft.getTurn(id),
       tool: (id) => draft.getToolCall(id), task: (id) => draft.getTask(id) });
     adapter.restore({ ...adapter.checkpoint(), legacyTurnOrdinal: seed.legacyTurn, recordOrdinal: seed.ordinal });
-    const logical = await openLogicalWire(input.wirePath);
-    const handle = logical === undefined ? await open(input.wirePath, 'r') : undefined;
+    let logical: LogicalWire | undefined;
+    let handle: FileHandle | undefined;
+    const releaseRead = async (): Promise<void> => {
+      const currentLogical = logical;
+      const currentHandle = handle;
+      logical = undefined;
+      handle = undefined;
+      currentLogical?.close();
+      if (currentHandle !== undefined) await currentHandle.close();
+    };
     let sliceBytes = 0;
     let sliceRecords = 0;
     let totalBytes = 0;
@@ -448,6 +467,8 @@ export class HistoryCanonicalReader {
     let expectedOrdinal = seed.ordinal;
     this.replays += 1;
     try {
+      logical = await openLogicalWire(input.wirePath);
+      handle = logical === undefined ? await open(input.wirePath, 'r') : undefined;
       for (;;) {
         signal.throwIfAborted();
         const page = input.db.canonicalSources(input.scope, turnId, ordinal, 128);
@@ -486,6 +507,8 @@ export class HistoryCanonicalReader {
         }
         if (page.length < 128) break;
       }
+      await releaseRead();
+      signal.throwIfAborted();
       const proof = await historyNavigationProof(input.wirePath, input.manifest.offset);
       signal.throwIfAborted();
       if (!matchesNavigationProof(input.manifest.source, proof) ||
@@ -495,8 +518,7 @@ export class HistoryCanonicalReader {
       if (turn === undefined) throw new Error('history_canonical_locator_incomplete');
       return { ...draft.snapshot(), items: [turn] };
     } finally {
-      logical?.close();
-      if (handle !== undefined) await handle.close();
+      await releaseRead();
     }
   }
 
