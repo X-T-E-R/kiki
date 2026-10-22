@@ -1,4 +1,6 @@
-import { open, stat } from 'node:fs/promises';
+import { open, stat, type FileHandle } from 'node:fs/promises';
+
+import { openLogicalWire, readLogicalInto, type LogicalWire } from './logicalWireRead';
 
 import { AgentTranscriptDraft, TranscriptFactReducer, TranscriptWireAdapter,
   type AgentTranscriptSnapshot, type ContentSource, type ToolCallFrame, type TranscriptFrame, type TranscriptTurn } from '@kiki/transcript';
@@ -7,6 +9,18 @@ import { historyNavigationProof, matchesNavigationProof, type HistoryNavigationP
 import { hashHistoryRecord } from './historySource';
 import type { HistoryNavScan } from './historyLocatorStore';
 import type { TranscriptService } from '../transcript/transcriptService';
+
+async function readAddressedBytes(
+  logical: LogicalWire | undefined,
+  handle: FileHandle | undefined,
+  buffer: Buffer,
+  offset: number,
+  length: number,
+  position: number,
+): Promise<number> {
+  if (logical !== undefined) return readLogicalInto(logical, buffer, offset, length, position);
+  return (await handle!.read(buffer, offset, length, position)).bytesRead;
+}
 
 const CACHE_BYTES = 4 << 20;
 const CACHE_ENTRIES = 32;
@@ -136,7 +150,8 @@ export class HistoryCanonicalReader {
     const reducer = new TranscriptFactReducer(draft);
     const adapter = new TranscriptWireAdapter(agent);
     adapter.restore({ ...adapter.checkpoint(), legacyTurnOrdinal: seed.legacyTurn, recordOrdinal: seed.ordinal });
-    const handle = await open(context.wirePath, 'r');
+    const logical = await openLogicalWire(context.wirePath);
+    const handle = logical === undefined ? await open(context.wirePath, 'r') : undefined;
     let bytesRead = 0;
     try {
       for (const span of spans) {
@@ -148,11 +163,11 @@ export class HistoryCanonicalReader {
         let offset = 0;
         while (offset < size) {
           signal?.throwIfAborted();
-          const read = await handle.read(bytes, offset, size - offset, span.start + offset);
-          if (read.bytesRead === 0) throw new Error('history_source_changed');
-          offset += read.bytesRead;
-          bytesRead += read.bytesRead;
-          this.replayBytes += read.bytesRead;
+          const readCount = await readAddressedBytes(logical, handle, bytes, offset, size - offset, span.start + offset);
+          if (readCount === 0) throw new Error('history_source_changed');
+          offset += readCount;
+          bytesRead += readCount;
+          this.replayBytes += readCount;
         }
         if (hashHistoryRecord(bytes) !== span.digest) throw new Error('history_source_changed');
         adapter.restore({ ...adapter.checkpoint(), recordOrdinal: span.ordinal });
@@ -168,7 +183,10 @@ export class HistoryCanonicalReader {
         }
       }
       return { status: manifest.complete && spans.length < 32 ? 'not_found' : 'preparing' };
-    } finally { await handle.close(); }
+    } finally {
+      logical?.close();
+      if (handle !== undefined) await handle.close();
+    }
   }
 
   async readEntity(session: string, agent: string, source: ContentSource, signal?: AbortSignal): Promise<CanonicalEntityLookup> {
@@ -420,7 +438,8 @@ export class HistoryCanonicalReader {
     const adapter = new TranscriptWireAdapter(agent, { turn: (id) => draft.getTurn(id),
       tool: (id) => draft.getToolCall(id), task: (id) => draft.getTask(id) });
     adapter.restore({ ...adapter.checkpoint(), legacyTurnOrdinal: seed.legacyTurn, recordOrdinal: seed.ordinal });
-    const handle = await open(input.wirePath, 'r');
+    const logical = await openLogicalWire(input.wirePath);
+    const handle = logical === undefined ? await open(input.wirePath, 'r') : undefined;
     let sliceBytes = 0;
     let sliceRecords = 0;
     let totalBytes = 0;
@@ -448,12 +467,12 @@ export class HistoryCanonicalReader {
           let offset = 0;
           while (offset < size) {
             signal.throwIfAborted();
-            const read = await handle.read(bytes, offset, size - offset, span.start + offset);
-            this.replayBytes += read.bytesRead;
-            sliceBytes += read.bytesRead;
-            totalBytes += read.bytesRead;
-            if (read.bytesRead === 0) throw new Error('history_source_changed');
-            offset += read.bytesRead;
+            const readCount = await readAddressedBytes(logical, handle, bytes, offset, size - offset, span.start + offset);
+            this.replayBytes += readCount;
+            sliceBytes += readCount;
+            totalBytes += readCount;
+            if (readCount === 0) throw new Error('history_source_changed');
+            offset += readCount;
           }
           if (hashHistoryRecord(bytes) !== span.digest) throw new Error('history_source_changed');
           if (span.ordinal !== expectedOrdinal) adapter.restore({ ...adapter.checkpoint(), recordOrdinal: span.ordinal });
@@ -475,7 +494,10 @@ export class HistoryCanonicalReader {
       const turn = draft.getTurn(turnId);
       if (turn === undefined) throw new Error('history_canonical_locator_incomplete');
       return { ...draft.snapshot(), items: [turn] };
-    } finally { await handle.close(); }
+    } finally {
+      logical?.close();
+      if (handle !== undefined) await handle.close();
+    }
   }
 
   private getCached(key: string, fingerprint: string): CacheEntry | undefined {

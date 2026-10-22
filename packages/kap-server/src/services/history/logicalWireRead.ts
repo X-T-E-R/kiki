@@ -18,6 +18,19 @@ export interface LogicalWire extends WireByteSource {
   close(): void;
 }
 
+export async function readLogicalInto(
+  source: LogicalWire,
+  buffer: Buffer,
+  offset: number,
+  length: number,
+  position: number,
+): Promise<number> {
+  const chunk = await source.readAt(position, length);
+  const count = Math.min(chunk.byteLength, length);
+  if (count > 0) buffer.set(chunk.subarray(0, count), offset);
+  return count;
+}
+
 export async function openLogicalWire(wirePath: string): Promise<LogicalWire | undefined> {
   const address = wireFileAddress(wirePath);
   const storage = new FileStorageService(address.baseDir);
