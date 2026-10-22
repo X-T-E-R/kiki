@@ -160,8 +160,8 @@ describe('PluginUsageService', () => {
     const listener = service.onDidChange(event => {
       if (event.sessionId === 'session-b' && fail) { fail = false; event.waitUntil(Promise.reject(new Error('host activation failed'))); }
     });
-    await expect(session.set('demo', 'off')).resolves.toMatchObject({ overrides: { demo: true }, applyState: 'failed', errors: ['Error: host activation failed'] });
-    await expect(service.readSession('workspace-b', 'session-b')).resolves.toMatchObject({ overrides: { demo: true }, applyState: 'failed', errors: ['Error: host activation failed'] });
+    await expect(session.set('demo', 'off')).resolves.toMatchObject({ overrides: { demo: false }, applyState: 'failed', errors: ['Error: host activation failed'] });
+    await expect(service.readSession('workspace-b', 'session-b')).resolves.toMatchObject({ overrides: { demo: false }, applyState: 'failed', errors: ['Error: host activation failed'] });
     listener.dispose();
     await expect(session.set('demo', 'off')).resolves.toMatchObject({ overrides: { demo: false }, applyState: 'applied' });
     await expect(service.allows('workspace-b', 'demo', 'session-b')).resolves.toBe(false);
@@ -216,27 +216,40 @@ describe('PluginUsageService', () => {
     await expect(service.allows('workspace-a', 'demo')).resolves.toBe(true);
   });
 
-  it('restores the last workspace selection after an apply failure', async () => {
+  it('keeps an explicit off after an apply failure and retries the same choice', async () => {
     const { service } = create();
     const failedApply = deferred<void>();
-    service.onDidChange((event) => {
-      event.waitUntil(failedApply.promise);
-    });
-
-    await expect(
-      service.set({ workspaceId: 'workspace-a', pluginId: 'demo', override: 'off' }),
-    ).resolves.toMatchObject({ revision: 1, applyState: 'pending' });
+    const listener = service.onDidChange((event) => { event.waitUntil(failedApply.promise); });
+    await expect(service.set({ workspaceId: 'workspace-a', pluginId: 'demo', override: 'off' }))
+      .resolves.toMatchObject({ revision: 1, applyState: 'pending' });
     failedApply.reject(new Error('apply failed'));
-
     await vi.waitFor(async () => {
-      expect((await service.read('workspace-a')).revision).toBe(2);
+      expect((await service.read('workspace-a')).applyState).toBe('failed');
     });
     await expect(service.read('workspace-a')).resolves.toMatchObject({
-      revision: 2,
-      overrides: {},
-      applyState: 'failed',
-      errors: ['Error: apply failed'],
+      revision: 1, overrides: { demo: false }, applyState: 'failed', errors: ['Error: apply failed'],
     });
-    await expect(service.allows('workspace-a', 'demo')).resolves.toBe(true);
+    await expect(service.allows('workspace-a', 'demo')).resolves.toBe(false);
+    listener.dispose();
+    await expect(service.set({ workspaceId: 'workspace-a', pluginId: 'demo', override: 'off' }))
+      .resolves.toMatchObject({ revision: 2, overrides: { demo: false }, applyState: 'applied', errors: [] });
+  });
+
+  it('accepts session off while an older activation is still loading and ignores its late completion', async () => {
+    const { service, documents } = create();
+    const session = sessionUsage(service, documents, 'session-old');
+    const loading = deferred<void>();
+    service.onDidChange(event => {
+      if (event.revision === 1) event.waitUntil(loading.promise);
+    });
+    const enabling = session.set('demo', 'on');
+    await vi.waitFor(async () => {
+      expect(await session.read()).toMatchObject({ overrides: { demo: true }, applyState: 'pending' });
+    });
+    await expect(session.set('demo', 'off')).resolves.toMatchObject({ revision: 2, overrides: { demo: false }, applyState: 'applied' });
+    loading.resolve();
+    await enabling;
+    await expect(session.read()).resolves.toMatchObject({ revision: 2, overrides: { demo: false }, applyState: 'applied' });
+    await expect(service.allows('workspace-b', 'demo', 'session-old')).resolves.toBe(false);
   });
 });

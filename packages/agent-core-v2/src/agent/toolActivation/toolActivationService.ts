@@ -69,12 +69,14 @@ export class AgentToolActivationService extends Service implements IAgentToolAct
     );
     const capability = this.optionalCapabilityPolicy();
     if (capability !== undefined) this._register(capability.onDidChange(() => { this.refreshConditionalRecords(); }));
+    this._register(this.toolPolicyGate.onDidChange(() => { this.refreshConditionalRecords(); }));
+    this._register(this.toolRegistry.registerPreparation(() => this.activate()));
   }
 
   async activate(): Promise<void> {
     await this.shippedProfiles.ready;
     await this.awaitCapabilityDocument();
-    this.activateRecords(this.contributions.items);
+    this.refreshConditionalRecords();
   }
 
   private optionalCapabilityPolicy(): IOptionalCapabilityPolicy | undefined {
@@ -167,16 +169,15 @@ export class AgentToolActivationService extends Service implements IAgentToolAct
   }
 
   private refreshRuntimeRecords(): void {
-    for (const record of this.contributions.items) {
-      if (!this.runtimeAllows(record)) this.deactivateRecord(record);
-    }
-    this.activateRecords(this.contributions.items);
+    this.refreshConditionalRecords();
   }
 
   private refreshConditionalRecords(): void {
     this.instantiationService.invokeFunction((accessor) => {
       for (const record of this.contributions.items) {
-        if (record.options.when?.(accessor) === false || !this.policyService.isToolActiveForDisclosure(record.options.name, record.options.source ?? 'builtin')) {
+        if (!this.runtimeAllows(record) || record.options.when?.(accessor) === false ||
+          !isToolActive({ disallowedTools: this.toolPolicyGate.disabledTools }, record.options.name, record.options.source ?? 'builtin') ||
+          !this.policyService.isToolActiveForDisclosure(record.options.name, record.options.source ?? 'builtin')) {
           this.deactivateRecord(record);
         }
       }

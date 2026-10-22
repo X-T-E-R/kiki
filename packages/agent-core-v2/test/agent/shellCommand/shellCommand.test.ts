@@ -157,9 +157,12 @@ describe('AgentShellCommandService', () => {
     const registry = {
       _serviceBrand: undefined,
       register: () => ({ dispose: () => {} }),
+      registerPreparation: () => ({ dispose() {} }),
+      prepare: async () => {},
       list: () => [fakeBash],
+      listReferences: () => [{ name: 'Bash', source: 'builtin' as const }],
       resolve: () => fakeBash,
-    } as unknown as IAgentToolRegistryService;
+    } satisfies IAgentToolRegistryService;
     ctx = createTestAgent(agentService(IAgentToolRegistryService, registry));
     const events: { type: string; commandId?: string; taskId?: string }[] = [];
     ctx.get(IEventBus).subscribe((event) => events.push(event as (typeof events)[number]));
@@ -193,6 +196,8 @@ describe('AgentShellCommandService', () => {
     const emptyRegistry: IAgentToolRegistryService = {
       _serviceBrand: undefined,
       register: () => ({ dispose: () => {} }),
+      registerPreparation: () => ({ dispose() {} }),
+      prepare: async () => {},
       list: () => [],
       listReferences: () => [],
       resolve: () => undefined,

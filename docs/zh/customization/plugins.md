@@ -84,7 +84,7 @@ Plugin 的大部分内容是声明式的：Skills、Agent、提示词文本、�
 
 选择按具体程度生效：会话优先于工作区，工作区优先于全局默认值。**恢复默认**删除本地覆盖。明确被全局禁用或无效的插件不能在局部开启，请先在插件设置中恢复主开关。Profile 的工具限制仍然生效。
 
-关闭插件会从该范围撤下工具、Skills、命令、插件 Agent、hooks 和面板入口，已经获准开始的调用可以完成。插件指令在下一安全步骤刷新；选择保存完成不会改写已经发出的请求或过去的消息。**正在应用**表示目录或运行时仍在应用变化。应用失败时会恢复原来的选择并显示错误。
+关闭插件会从该范围撤下工具、Skills、命令、插件 Agent、hooks 和面板入口，已经获准开始的调用可以完成。工具公告与插件指令会在同一对话的下一次模型步骤前更新，已经发出的请求和过去的消息保持不变。**正在应用**表示目录或运行时仍在应用变化。应用失败时保留你已保存的选择并显示错误；解决原因后可重试同一选择。失败或迟到的启用结果不会撤销关闭选择。
 
 App 类型插件使用当前连接的 Kiki home 所拥有的共享后台服务，不是每个工作区一个进程。局部关闭不会停止这个服务或另一会话正在执行的工作；服务存在也不会让未开启的范围取得工具。全局停用与卸载仍在插件设置中管理。使用范围既不撤销安装同意，也不是受信插件代码的沙箱。
 
@@ -604,7 +604,7 @@ HTTP server（远程服务）：
 
 ### Notion 资料与写回
 
-`kiki-notion` 是 Kiki 维护的连接配置与工作流，使用 [Notion 官方托管 MCP](https://developers.notion.com/guides/mcp/get-started-with-mcp)，并非 Notion 背书的集成。从 **Official** 页签安装 **Kiki Notion**，审阅预览后启用。源码位于独立的 [Kiki Plugins 仓库](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-notion)，不在 Kiki 源码树中；本地开发时怎么装那个检出目录，见[改一个官方 plugin](#改一个官方-plugin)。解压包则使用包含 `kimi.plugin.json` 的目录。在**能力 → 扩展与工具 → MCP** 中对 `plugin-kiki-notion:notion` 完成常规浏览器 OAuth 授权，没有 token 字段要填。若已打开的对话还没发现新 MCP 连接，用 `/reload` 或新对话加载。
+`kiki-notion` 是 Kiki 维护的连接配置与工作流，使用 [Notion 官方托管 MCP](https://developers.notion.com/guides/mcp/get-started-with-mcp)，并非 Notion 背书的集成。从 **Official** 页签安装 **Kiki Notion**，审阅预览后启用。源码位于独立的 [Kiki Plugins 仓库](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-notion)，不在 Kiki 源码树中；本地开发时怎么装那个检出目录，见[改一个官方 plugin](#改一个官方-plugin)。解压包则使用包含 `kimi.plugin.json` 的目录。在**能力 → 扩展与工具 → MCP** 中对 `plugin-kiki-notion:notion` 完成常规浏览器 OAuth 授权，没有 token 字段要填。已打开的对话会在下一次模型步骤前收到更新后的工具目录；连接不可用时，请先解决 MCP 设置中显示的错误。
 
 让 `/skill:notion-workspace` 搜索指定页面、teamspace 或工作区，读取关键原文，把带来源链接的简报保存到本地路径。需要写回时，给出目标页面 URL/ID 以及追加还是更新——只做总结不会改动 Notion。写回请求不增加 plugin 专属确认，Kiki 原有的工具审批照常生效。套餐与工具限制、过滤条件被忽略、缺失 subtree、异步写入未完成都会如实报告，不会被当成完整覆盖或写回成功。访问还取决于工作区权限与管理员政策；安装不授权升级套餐或付费。
 

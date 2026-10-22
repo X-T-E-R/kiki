@@ -88,6 +88,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
   private readonly pendingDiscoveries: Array<() => void> = [];
   private readonly refreshErrors = new Map<string, string>();
   private readonly sessionOverrides: Map<string, Exclude<McpSessionOverrideValue, 'inherit'>>;
+  private readonly sessionServerKeys = new Map<string, string>();
   private readonly sessionOverridesLoaded: Promise<void>;
   private readonly sessionOverridesReady: Promise<void>;
   private overrideWrites: Promise<void> = Promise.resolve();
@@ -132,6 +133,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
       this._register(capabilityPolicy.onDidChange(() => { this.reopenComputerSessions(); }));
       this.watchComputerServers(capabilityPolicy);
     }
+    this._register(this.registry.registerPreparation(() => this.waitForInitialLoad()));
     loop.hooks.onWillBeginStep.register('mcp', async (ctx, next) => {
       await this.waitForInitialLoad(ctx.signal);
       await next();
@@ -225,9 +227,9 @@ export class AgentMcpService extends Service implements IAgentMcpService {
   }
 
   setMcpSessionOverride(input: McpSessionOverride): Promise<McpSessionCapability> {
-    const work = this.overrideWrites.catch(() => undefined).then(() => this.applyMcpSessionOverride(input));
-    this.overrideWrites = work.then(() => undefined, () => undefined);
-    return work;
+    const write = this.overrideWrites.then(() => this.selectMcpSessionOverride(input));
+    this.overrideWrites = write.then(() => undefined, () => undefined);
+    return write.then(({ selected, target }) => this.applyMcpSessionOverride(input, selected, target));
   }
 
   async refreshCapabilities(): Promise<void> {
@@ -235,6 +237,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     const registry = this.serverRegistry;
     if (registry !== undefined) {
       const catalog = await registry.list({ cwd: this.workspaceCwd() });
+      this.updateSessionServerKeys(catalog);
       const effective = effectiveEntries(catalog);
       for (const entry of catalog) {
         const override = this.sessionOverrides.get(mcpLocatorKey(toMcpLocator(entry)));
@@ -273,8 +276,8 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     }
   }
 
-  private async applyMcpSessionOverride(input: McpSessionOverride): Promise<McpSessionCapability> {
-    await this.waitForInitialLoad();
+  private async selectMcpSessionOverride(input: McpSessionOverride): Promise<{ selected: McpRegistryEntry; target?: McpRegistryEntry }> {
+    await Promise.all([this.mcpHandle.ready, this.sessionOverridesLoaded]);
     const registry = this.requireServerRegistry();
     const catalog = await registry.list({ cwd: this.workspaceCwd() });
     const selected = catalog.find((entry) => sameMcpLocator(toMcpLocator(entry), input.locator));
@@ -295,7 +298,13 @@ export class AgentMcpService extends Service implements IAgentMcpService {
       );
     }
     await this.persistSessionOverride(mcpLocatorKey(input.locator), input.override);
-    if (sameRegistryEntry(selected, target)) {
+    this.updateSessionServerKeys(catalog);
+    return { selected, target };
+  }
+
+  private async applyMcpSessionOverride(input: McpSessionOverride, selected: McpRegistryEntry, target?: McpRegistryEntry): Promise<McpSessionCapability> {
+    const current = this.sessionOverrides.get(mcpLocatorKey(input.locator)) ?? 'inherit';
+    if (current === input.override && sameRegistryEntry(selected, target)) {
       if (input.override === 'off') {
         this.mcpHandle.setServerEnabled?.(selected.name, false);
         this.unregisterMcpServer(selected.name);
@@ -327,11 +336,28 @@ export class AgentMcpService extends Service implements IAgentMcpService {
   }
 
   private async enableSessionServer(entry: McpRegistryEntry): Promise<void> {
+    if (this.sessionServerOff(entry.name)) return;
     if (this.mcpHandle.enableConfiguredServer !== undefined) {
       await this.mcpHandle.enableConfiguredServer(entry.name, { ...entry.config, enabled: true }, entry.source);
     } else {
       this.mcpHandle.setServerEnabled?.(entry.name, true);
     }
+    if (this.sessionServerOff(entry.name)) {
+      this.mcpHandle.setServerEnabled?.(entry.name, false);
+      this.unregisterMcpServer(entry.name);
+    }
+  }
+
+  private updateSessionServerKeys(catalog: readonly McpRegistryEntry[]): void {
+    this.sessionServerKeys.clear();
+    for (const entry of effectiveEntries(catalog).values()) {
+      this.sessionServerKeys.set(entry.name, mcpLocatorKey(toMcpLocator(entry)));
+    }
+  }
+
+  private sessionServerOff(name: string): boolean {
+    const key = this.sessionServerKeys.get(name);
+    return key !== undefined && this.sessionOverrides.get(key) === 'off';
   }
 
   private async loadSessionOverrides(): Promise<void> {
@@ -346,6 +372,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
 
   private async restoreSessionOverrides(): Promise<void> {
     const catalog = await this.serverRegistry.list({ cwd: this.workspaceCwd() });
+    this.updateSessionServerKeys(catalog);
     const effective = effectiveEntries(catalog);
     for (const entry of catalog) {
       const override = this.sessionOverrides.get(mcpLocatorKey(toMcpLocator(entry)));
@@ -466,6 +493,11 @@ export class AgentMcpService extends Service implements IAgentMcpService {
 
   private handleMcpServerStatusChange(entry: McpServerEntry): void {
     if (!this.mcpHandle.isBaselineServer(entry.name)) return;
+    if (this.sessionServerOff(entry.name)) {
+      this.mcpHandle.setServerEnabled?.(entry.name, false);
+      this.unregisterMcpServer(entry.name);
+      return;
+    }
     void this.dispatcher.dispatch(
       new McpServerStatus({
         server: {
@@ -589,9 +621,9 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     } });
   }
 
-  private gateComputerCall(admitCall: (() => Promise<{ release(): void } | undefined>) | undefined): () => Promise<{ release(): void } | undefined> {
+  private gateSessionCall(serverName: string, computer: boolean, admitCall: (() => Promise<{ release(): void } | undefined>) | undefined): () => Promise<{ release(): void } | undefined> {
     return async () => {
-      if (!this.computerAdmitted()) return undefined;
+      if (this.sessionServerOff(serverName) || (computer && !this.computerAdmitted())) return undefined;
       if (admitCall === undefined) return { release() {} };
       return admitCall();
     };
@@ -656,10 +688,10 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     const computer = isComputerMcpConfig(this.mcpHandle.connectionManager.configOf(serverName));
     if (computer) this.computerSessions.set(serverName, { client, tools, enabledNames: enabledTools, admitCall });
     this.unregisterMcpServer(serverName);
-    if (computer && !this.computerAdmitted()) {
+    if (this.sessionServerOff(serverName) || (computer && !this.computerAdmitted())) {
       return { registered: [], collisions: [] };
     }
-    const callAdmission = computer ? this.gateComputerCall(admitCall) : admitCall;
+    const callAdmission = this.gateSessionCall(serverName, computer, admitCall);
     const qualifiedNames: string[] = [];
     const collisions: McpToolCollision[] = [];
     const seenInThisCall = new Map<string, string>();

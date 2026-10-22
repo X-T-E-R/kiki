@@ -4,15 +4,18 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Emitter } from '#/_base/event';
-import { AgentPluginToolService } from '#/agent/userTool/pluginToolService';
-import type { IPluginService } from '#/app/plugin/plugin';
-import type { IPluginUsageService, PluginUsageChange } from '#/app/pluginUsage/pluginUsage';
-import type { IPluginHostService } from '#/app/plugin/pluginHostService';
-import type { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
-import type { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
-import type { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
-import type { ISessionContext } from '#/session/sessionContext/sessionContext';
-import type { IAgentProfileService } from '#/agent/profile/profile';
+import { AgentPluginToolService, IAgentPluginToolService } from '#/agent/userTool/pluginToolService';
+import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService, type PluginUsageChange } from '#/app/pluginUsage/pluginUsage';
+import { IPluginHostService } from '#/app/plugin/pluginHostService';
+import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
+import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { IAgentProfileService } from '#/agent/profile/profile';
+import { TestInstantiationService } from '#/_base/di/testInstantiationService';
+import { SyncDescriptor } from '#/_base/di/descriptors';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
 import type { ExecutableTool, RunnableToolExecution } from '#/tool/toolContract';
@@ -33,9 +36,8 @@ function setup(workspace: string, usage?: IPluginUsageService, workspaceId = 'wo
     accesses: [{ kind: 'file' as const, operation: 'write' as const, path: '$.file' }, { kind: 'all' as const }],
     disclosure: 'deferred' as const,
   } }]), execute: vi.fn(async () => ({ output: 'created' })) } as unknown as IPluginHostService;
-  const tools = new Map<string, ExecutableTool>();
-  const registry = { register: (tool: ExecutableTool) => { tools.set(tool.name, tool); return { dispose: () => { tools.delete(tool.name); } }; },
-    resolve: (name: string) => tools.get(name) } as unknown as IAgentToolRegistryService;
+  const registry = new AgentToolRegistryService();
+  const tools = { get: (name: string) => registry.resolve(name), has: (name: string) => registry.resolve(name) !== undefined };
   const runtime = new FakeRuntime({ workspaceId: 'w', runtimeId: 'local', generation: '1' },
     { pathClass: process.platform === 'win32' ? 'win32' : 'posix' });
   const fs = new HostFileSystem();
@@ -43,18 +45,18 @@ function setup(workspace: string, usage?: IPluginUsageService, workspaceId = 'wo
   const runtimeService = { inspect: () => runtime, acquire: () => ({ runtime, dispose() {} }) } as unknown as IAgentRuntimeService;
   const workspaceCtx = { workDir: workspace, additionalDirs: [] } as unknown as ISessionWorkspaceContext;
   const profile = { getModelCapabilities: () => ({ image_in: true }) } as unknown as IAgentProfileService;
-  const service = new AgentPluginToolService(
-    plugin,
-    hosts,
-    registry,
-    runtimeService,
-    workspaceCtx,
-    profile,
-    undefined,
-    usage,
-    { workspaceId } as ISessionContext,
-  );
-  return { service, tools, hosts, fs };
+  const container = new TestInstantiationService();
+  container.set(IPluginService, plugin);
+  container.set(IPluginHostService, hosts);
+  container.set(IAgentToolRegistryService, registry);
+  container.set(IAgentRuntimeService, runtimeService);
+  container.set(ISessionWorkspaceContext, workspaceCtx);
+  container.set(IAgentProfileService, profile);
+  if (usage !== undefined) container.set(IPluginUsageService, usage);
+  container.set(ISessionContext, { workspaceId, sessionId: 'session-old' } as ISessionContext);
+  container.set(IAgentPluginToolService, new SyncDescriptor(AgentPluginToolService));
+  const service = container.get(IAgentPluginToolService);
+  return { service: { ready: () => service.ready(), dispose: () => container.dispose() }, tools, hosts, fs, registry };
 }
 
 function usageState(): {
@@ -95,6 +97,73 @@ function deferred<T>(): {
 const context = { turnId: 1, toolCallId: 'one', signal: new AbortController().signal };
 
 describe('plugin file target admission', () => {
+  it('prepares a hot catalog before a safe boundary and keeps unchanged registrations stable', async () => {
+    const state = usageState();
+    const h = setup(await dir(), state.usage);
+    try {
+      await h.service.ready();
+      const original = h.tools.get('plugin__kiki_office__office_create');
+      const loading = deferred<void>();
+      const entered = deferred<void>();
+      const list = h.hosts.list.bind(h.hosts);
+      vi.mocked(h.hosts.list).mockImplementationOnce(async () => {
+        entered.resolve();
+        await loading.promise;
+        return list();
+      });
+      const change = state.fire('workspace-a');
+      await entered.promise;
+      let prepared = false;
+      const preparation = h.registry.prepare().then(() => { prepared = true; });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      try {
+        expect(prepared).toBe(false);
+        expect(h.tools.get('plugin__kiki_office__office_create')).toBe(original);
+      } finally { loading.resolve(); }
+      await Promise.all([change, preparation]);
+      expect(prepared).toBe(true);
+      expect(h.tools.get('plugin__kiki_office__office_create')).toBe(original);
+    } finally { await h.service.dispose(); }
+  });
+
+  it('never lands a stale on snapshot after a newer off while catalog loading is in flight', async () => {
+    const state = usageState();
+    let allowed = false;
+    let gate: ReturnType<typeof deferred<boolean>> | undefined;
+    const h = setup(await dir(), { ...state.usage, allows: async () => gate === undefined ? allowed : gate.promise });
+    try {
+      await h.service.ready();
+      gate = deferred<boolean>();
+      const stale = gate;
+      const enabling = state.fire('workspace-a');
+      await vi.waitFor(() => { expect(h.hosts.list).toHaveBeenCalledTimes(2); });
+      gate = undefined;
+      allowed = false;
+      const disabling = state.fire('workspace-a');
+      stale.resolve(true);
+      await Promise.all([enabling, disabling, h.registry.prepare()]);
+      expect(h.tools.has('plugin__kiki_office__office_create')).toBe(false);
+    } finally { await h.service.dispose(); }
+  });
+
+  it('withdraws an off tool even when the catalog fails and leaves ordinary preparation usable', async () => {
+    const state = usageState();
+    let allowed = true;
+    const h = setup(await dir(), { ...state.usage, allows: async () => allowed });
+    try {
+      await h.service.ready();
+      expect(h.tools.has('plugin__kiki_office__office_create')).toBe(true);
+      allowed = false;
+      vi.mocked(h.hosts.list).mockRejectedValueOnce(new Error('fixture catalog unavailable'));
+      await expect(state.fire('workspace-a')).rejects.toThrow('fixture catalog unavailable');
+      expect(h.tools.has('plugin__kiki_office__office_create')).toBe(false);
+      await expect(h.registry.prepare()).resolves.toBeUndefined();
+      await state.fire('workspace-a');
+      await h.registry.prepare();
+      expect(h.tools.has('plugin__kiki_office__office_create')).toBe(false);
+    } finally { await h.service.dispose(); }
+  });
+
   it('resolves $.file into a real target and only passes the approved outside target to its own host', async () => {
     const workspace = await dir();
     const outside = await dir();

@@ -173,6 +173,7 @@ describe('AgentToolActivationService', () => {
   let deliveryMode: 'reply' | 'message' = 'reply';
   const gateData: { disabledTools: readonly string[] } = { disabledTools: [] };
   const runtimeChangeEmitter = new Emitter<void>();
+  const gateChangeEmitter = new Emitter<void>();
   const configChangeEmitter = new Emitter<ConfigSectionChangedEvent>();
   const runtimeData = {
     available: true,
@@ -226,7 +227,7 @@ describe('AgentToolActivationService', () => {
           get disabledTools() {
             return gateData.disabledTools;
           },
-          onDidChange: Event.None as Event<void>,
+          onDidChange: gateChangeEmitter.event,
         } satisfies ISessionToolPolicyGate);
         reg.definePartialInstance(ISessionDeliveryService, {
           effectiveMode: () => deliveryMode,
@@ -661,6 +662,36 @@ describe('AgentToolActivationService', () => {
     const registry = ix.get(IAgentToolRegistryService);
     expect(registry.resolve('Alpha')).toBeInstanceOf(AlphaTool);
     expect(registry.resolve('Beta')).toBeUndefined();
+  });
+
+  it('reconciles a hot workspace veto without rebuilding the agent or reconstructing the tool', async () => {
+    registerAgentToolService(IAlphaTool, AlphaTool, { name: 'Alpha' });
+    const ix = createActivationHost();
+    await ix.get(IAgentToolActivationService).activate();
+    const registry = ix.get(IAgentToolRegistryService);
+    const original = registry.resolve('Alpha');
+    gateData.disabledTools = ['Alpha'];
+    gateChangeEmitter.fire();
+    expect(registry.resolve('Alpha')).toBeUndefined();
+    gateData.disabledTools = [];
+    gateChangeEmitter.fire();
+    expect(registry.resolve('Alpha')).toBe(original);
+    expect(alphaConstructions).toBe(1);
+  });
+
+  it('withdraws a newly denied profile tool at preparation even without a status event', async () => {
+    registerAgentToolService(IAlphaTool, AlphaTool, { name: 'Alpha' });
+    const ix = createActivationHost();
+    await ix.get(IAgentToolActivationService).activate();
+    const registry = ix.get(IAgentToolRegistryService);
+    const original = registry.resolve('Alpha');
+    profileData.disallowedTools = ['Alpha'];
+    await registry.prepare();
+    expect(registry.resolve('Alpha')).toBeUndefined();
+    profileData.disallowedTools = [];
+    await registry.prepare();
+    expect(registry.resolve('Alpha')).toBe(original);
+    expect(alphaConstructions).toBe(1);
   });
 
   it('is idempotent and picks up newly allowed tools on re-activation', async () => {

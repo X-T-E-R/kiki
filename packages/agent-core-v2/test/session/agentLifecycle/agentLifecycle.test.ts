@@ -359,6 +359,8 @@ describe('AgentLifecycleService', () => {
     ix.stub(IAgentToolRegistryService, {
       _serviceBrand: undefined,
       register: () => ({ dispose: () => {} }),
+      registerPreparation: () => ({ dispose() {} }),
+      prepare: async () => {},
       resolve: () => undefined,
       list: () => [],
       listReferences: () => [],
@@ -653,6 +655,8 @@ describe('AgentLifecycleService', () => {
           if (tools.get(tool.name) === tool) tools.delete(tool.name);
         } };
       },
+      registerPreparation: () => ({ dispose() {} }),
+      prepare: async () => {},
       resolve: (name: string) => tools.get(name),
       list: () => [],
       listReferences: () => [...tools.keys()].map((name) => ({ name, source: 'builtin' as const })),
@@ -1737,8 +1741,13 @@ describe('AgentLifecycleService', () => {
     } as unknown as IBootstrapService);
     ix.stub(IAgentToolRegistryService, {
       _serviceBrand: undefined,
+      register: () => ({ dispose() {} }),
+      registerPreparation: () => ({ dispose() {} }),
+      prepare: async () => {},
+      list: () => [],
       listReferences: () => [],
-    } as unknown as IAgentToolRegistryService);
+      resolve: () => undefined,
+    } satisfies IAgentToolRegistryService);
     ix.stub(IBuiltinAgentProfileLoader, {
       _serviceBrand: undefined,
       list: () => [],

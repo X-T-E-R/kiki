@@ -1153,7 +1153,7 @@ describe('AgentToolSelectService executor interception', () => {
     h.contextMemory.history.push(schemaMessage(tool.name));
     expect(h.sut.shapeTools(h.registry.list()).find((entry) => entry.name === tool.name)?.deferred).toBe(true);
     await plugin.dispose();
-    expect(h.sut.shapeHistory(h.contextMemory.get())).toBe(h.contextMemory.get());
+    expect(h.sut.shapeHistory(h.contextMemory.get()).flatMap((message) => message.tools ?? [])).toEqual([]);
     expect(h.sut.shapeTools(h.registry.list()).map((entry) => entry.name)).not.toContain(tool.name);
     disposables.add(h.registry.register(new EchoTool(tool.name), { source: 'plugin', disclosure: 'deferred' }));
     expect(h.sut.load([tool.name]).alreadyAvailable).toEqual([tool.name]);

@@ -5,6 +5,7 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
 
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { ContextSpliced } from '#/agent/contextMemory/contextEvents';
 import { isCompactionSummaryMessage } from '#/agent/contextMemory/compactionHandoff';
 import { isDeliveryVisibleMessage } from '#/agent/contextMemory/messageDelivery';
@@ -38,6 +39,7 @@ export class AgentContextInjectorService extends Service implements IAgentContex
     @IAgentSystemReminderService private readonly reminders: IAgentSystemReminderService,
     @IEventBus private readonly eventBus: IEventBus,
     @ILogService private readonly log: ILogService,
+    @IAgentToolRegistryService private readonly tools: IAgentToolRegistryService,
   ) {
     super();
     this._register(
@@ -94,10 +96,10 @@ export class AgentContextInjectorService extends Service implements IAgentContex
     next: (context?: BeforeStepContext) => Promise<void>,
   ): Promise<void> {
     const rearmed = this.takeCompactionRearm();
-    await this.inject(ctx.firstStepOfTurn || rearmed);
+    await this.inject(ctx.firstStepOfTurn || rearmed, ctx.signal);
     await next();
     if (this.takeCompactionRearm()) {
-      await this.inject(true);
+      await this.inject(true, ctx.signal);
     }
   }
 
@@ -108,7 +110,8 @@ export class AgentContextInjectorService extends Service implements IAgentContex
     return pending;
   }
 
-  private async inject(isNewTurn: boolean): Promise<void> {
+  private async inject(isNewTurn: boolean, signal?: AbortSignal): Promise<void> {
+    await this.tools.prepare(signal);
     const parts: CapabilityDeltaPart[] = [];
     const priority = (name: string) => name === 'profile_capabilities_changed' || name === 'capabilities_rebuilt' ? -2
       : name === 'runtime_snapshot' ? -1 : name === 'agents_md' ? 1 : 0;

@@ -475,11 +475,51 @@ describe('AgentMcpService', () => {
       .resolves.toMatchObject({ connection: 'connected', override: 'on' });
     expect(enable).toHaveBeenCalledTimes(1);
     expect(enable.mock.calls[0]?.[0]).toBe('selected');
-    expect(ix.get(IAgentToolRegistryService).resolve('mcp__selected__echo')).toBeDefined();
+    const tool = ix.get(IAgentToolRegistryService).resolve('mcp__selected__echo')!;
+    expect(tool).toBeDefined();
+    const prepared = await tool.resolveExecution({ text: 'not started' });
+    if (prepared.isError === true) throw new Error('expected a runnable MCP tool');
     await service.setMcpSessionOverride({ locator: { source: 'global', name: 'selected' }, override: 'off' });
+    expect(ix.get(IAgentToolRegistryService).resolve('mcp__selected__echo')).toBeUndefined();
+    await expect(prepared.execute({ turnId: 1, toolCallId: 'closed-server', signal: new AbortController().signal }))
+      .resolves.toMatchObject({ isError: true, output: expect.stringContaining('no longer available') });
+    manager.connect('selected');
     expect(ix.get(IAgentToolRegistryService).resolve('mcp__selected__echo')).toBeUndefined();
     expect(manager.get('selected')?.status).toBe('connected');
     expect(enable).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['activation', 'refresh'] as const)('does not let a late %s reopen a server after an explicit session off', async (kind) => {
+    const manager = new FakeMcpManager();
+    const client = fakeMcpClient();
+    manager.setResolved('selected', client, await discoverTools(client));
+    let release!: () => void;
+    let entered!: () => void;
+    const loading = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    let calls = 0;
+    const service = createService(manager, Promise.resolve(), () => true, {
+      registryEntries: [registryEntry('selected', { enabled: false })],
+      enableConfiguredServer: async name => {
+        if (++calls > (kind === 'activation' ? 0 : 1)) { entered(); await loading; }
+        manager.connect(name);
+        ix.get(ISessionMcpHandle).setServerEnabled?.(name, true);
+      },
+    });
+    const locator = { source: 'global' as const, name: 'selected' };
+    let pending: Promise<unknown>;
+    if (kind === 'activation') pending = service.setMcpSessionOverride({ locator, override: 'on' });
+    else {
+      await service.setMcpSessionOverride({ locator, override: 'on' });
+      pending = service.refreshCapabilities();
+    }
+    try {
+      await started;
+      await service.setMcpSessionOverride({ locator, override: 'off' });
+    } finally { release(); }
+    await pending;
+    expect(ix.get(IAgentToolRegistryService).resolve('mcp__selected__echo')).toBeUndefined();
+    await expect(service.listMcpSessionCapabilities()).resolves.toMatchObject([{ override: 'off', connection: 'disabled' }]);
   });
 
   it('restores a persisted off intent before admitting capabilities', async () => {
@@ -567,12 +607,16 @@ describe('AgentMcpService', () => {
         settled = true;
       });
 
+    let prepared = false;
+    const preparation = ix.get(IAgentToolRegistryService).prepare().then(() => { prepared = true; });
     await Promise.resolve();
     expect(settled).toBe(false);
+    expect(prepared).toBe(false);
 
     releaseReady();
-    await step;
+    await Promise.all([step, preparation]);
     expect(settled).toBe(true);
+    expect(prepared).toBe(true);
   });
 
   it('resolves through the IAgentMcpService binding with no manager', () => {

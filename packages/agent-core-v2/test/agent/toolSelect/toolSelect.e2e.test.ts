@@ -30,7 +30,15 @@ import { SessionSkillCatalogService } from '#/session/sessionSkillCatalog/skillC
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import '#/agent/tools/select-tools/selectToolsTool';
 
-import { appService, createTestAgent, type TestAgentContext } from '../../harness';
+import { appService, createTestAgent, InMemoryWireRecordPersistence, type TestAgentContext } from '../../harness';
+import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginHostService } from '#/app/plugin/pluginHostService';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import { ISessionPluginUsageService } from '#/session/pluginUsage/sessionPluginUsageService';
+import { IAgentPluginToolService } from '#/agent/userTool/pluginToolService';
+import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { stubPluginService } from '../../app/plugin/stubs';
 
 const MCP_ALPHA = 'mcp__srv__alpha';
 const DASHBOARD_TOOL = 'dashboard_create';
@@ -168,7 +176,91 @@ describe('progressive tool disclosure end-to-end', () => {
     await ctx.dispose();
   });
 
-  it('discloses and executes only valid browser namespace tools under the same selection', async () => {
+  it('restores a persisted old session, hot-enables a deferred plugin, loads its real schema and executes a read without rebinding', async () => {
+    registration?.dispose();
+    registration = undefined;
+    await ctx.dispose();
+    const persistence = new InMemoryWireRecordPersistence();
+    const documents = new Map<string, unknown>();
+    const store: IAtomicDocumentStore = {
+      _serviceBrand: undefined,
+      get: async <T>(scope: string, key: string) => documents.get(`${scope}:${key}`) as T | undefined,
+      set: async <T>(scope: string, key: string, value: T) => { documents.set(`${scope}:${key}`, value); },
+      update: async <T>(scope: string, key: string, update: (current: T | undefined) => T | undefined) => {
+        const value = update(documents.get(`${scope}:${key}`) as T | undefined);
+        if (value === undefined) documents.delete(`${scope}:${key}`);
+        else documents.set(`${scope}:${key}`, value);
+        return value;
+      },
+      delete: async (scope, key) => { documents.delete(`${scope}:${key}`); },
+      list: async (scope, prefix = '') => [...documents.keys()].filter(key => key.startsWith(`${scope}:${prefix}`)).map(key => key.slice(scope.length + 1)),
+      watch: () => () => ({ dispose() {} }),
+      acquire: () => ({ dispose() {} }),
+    };
+    const name = 'plugin__example_mail__Mailbox';
+    const execute = vi.fn(async () => ({ output: 'fixture folders: 2' }));
+    let finishLoading: (() => void) | undefined;
+    let loading: Promise<void> | undefined;
+    const hosts = {
+      list: async () => {
+        await loading;
+        return [{ pluginId: 'example-mail', definition: { schemaVersion: 1, name: 'Mailbox', description: 'List fixture folders.',
+          disclosure: 'deferred', accesses: [], parameters: { type: 'object', properties: { action: { const: 'folders' } }, required: ['action'], additionalProperties: false } } }];
+      },
+      execute,
+    } as unknown as IPluginHostService;
+    let initialConfig: ReturnType<IConfigService['getAll']> | undefined;
+    const open = (restore: boolean) => createTestAgent(
+      { sessionId: 'persisted-capability-session', persistence, autoConfigure: !restore, initialConfig },
+      appService(IAtomicDocumentStore, store),
+      appService(IPluginService, stubPluginService({ sessionStarts: [] })),
+      appService(IPluginHostService, hosts),
+    );
+    ctx = open(false);
+    ctx.configure({ provider: OPENAI_PROVIDER, tools: ['*'], modelCapabilities: DISCLOSURE_CAPABILITIES });
+    await ctx.rpc.setPermission({ mode: 'yolo' });
+    await ctx.get(ISessionPluginUsageService).set('example-mail', 'off');
+    ctx.mockNextResponse({ type: 'text', text: 'saved before plugin activation' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'baseline old session' }] });
+    await ctx.untilTurnEnd();
+    await ctx.expectResumeMatches();
+    initialConfig = structuredClone(ctx.get(IConfigService).getAll());
+    await ctx.dispose();
+    ctx = open(true);
+    await ctx.restorePersisted();
+    await ctx.get(IAgentPluginToolService).ready();
+    const usage = ctx.get(IPluginUsageService);
+    usage.registerPluginStateReader(() => ({ allowed: true, globalEnabled: false }));
+    expect(ctx.get(IAgentToolRegistryService).resolve(name)).toBeUndefined();
+    const binding = ctx.get(IAgentProfileService).data().boundProfile;
+    loading = new Promise<void>((resolve) => { finishLoading = resolve; });
+    const enabled = ctx.get(ISessionPluginUsageService).set('example-mail', 'on');
+    await vi.waitFor(async () => { expect((await usage.readSession(ctx.get(ISessionContext).workspaceId, 'persisted-capability-session')).applyState).toBe('pending'); });
+    ctx.mockNextResponse(selectToolsCall('select-fixture-mail', [name]));
+    ctx.mockNextResponse({ type: 'function', id: 'read-fixture-mail', name, arguments: '{"action":"folders"}' });
+    ctx.mockNextResponse({ type: 'text', text: 'read complete' });
+    const prompting = ctx.rpc.prompt({ input: [{ type: 'text', text: 'list fixture folders' }] });
+    await Promise.resolve();
+    expect(ctx.llmCalls).toHaveLength(0);
+    finishLoading!();
+    await Promise.all([enabled, prompting]);
+    await ctx.untilTurnEnd();
+    expect(ctx.get(IAgentProfileService).data().boundProfile).toEqual(binding);
+    expect(historyText(ctx.llmCalls[0]!.history)).toContain(name);
+    expect(ctx.llmCalls[0]!.tools.some(tool => tool.name === name)).toBe(false);
+    expect(historyText(ctx.llmCalls[1]!.history)).toContain('"action":{"const":"folders"}');
+    expect(execute).toHaveBeenCalledTimes(1);
+    await ctx.get(ISessionPluginUsageService).set('example-mail', 'off');
+    ctx.mockNextResponse({ type: 'text', text: 'off observed' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'confirm the current catalog' }] });
+    await ctx.untilTurnEnd();
+    const last = ctx.llmCalls.at(-1)!;
+    expect(historyText(last.history)).toContain(`<tools_removed>\n${name}\n</tools_removed>`);
+    expect(last.history.flatMap(message => message.tools ?? []).some(tool => tool.name === name)).toBe(false);
+    expect(ctx.get(IAgentToolRegistryService).resolve(name)).toBeUndefined();
+  });
+
+  it('hot-enables valid browser tools and withdraws them on off without changing the binding', async () => {
     registration?.dispose();
     registration = undefined;
     const name = 'browser__codex_browser_js';
@@ -177,16 +269,48 @@ describe('progressive tool disclosure end-to-end', () => {
     ctx.get(IAgentToolRegistryService).register(browser, { source: 'builtin' });
     ctx.get(IAgentToolRegistryService).register(rejected, { source: 'builtin' });
     const session = ctx.get(ISessionContext);
-    await ctx.get(IOptionalCapabilityPolicy).setChoice(session.sessionId, 'browser', 'on', session.workspaceId);
+    const policy = ctx.get(IOptionalCapabilityPolicy);
     ctx.configure({ provider: OPENAI_PROVIDER, modelCapabilities: DISCLOSURE_CAPABILITIES, tools: ['browser__*'] });
+    const binding = ctx.get(IAgentProfileService).data().boundProfile;
+    await policy.setChoice(session.sessionId, 'browser', 'off', session.workspaceId);
+    ctx.mockNextResponse({ type: 'text', text: 'browser off' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'observe initial browser state' }] });
+    await ctx.untilTurnEnd();
+    expect(toolNames(ctx.llmCalls.at(-1)!.tools)).not.toContain(name);
+    await policy.setChoice(session.sessionId, 'browser', 'on', session.workspaceId);
     ctx.mockNextResponse({ type: 'function', id: 'call-browser', name, arguments: '{}' });
     ctx.mockNextResponse({ type: 'text', text: 'done' });
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'use the mock browser operation' }] });
     await ctx.untilTurnEnd();
     expect(browser.calls).toBe(1);
     expect(rejected.calls).toBe(0);
-    expect(toolNames(ctx.llmCalls[0]!.tools)).toContain(name);
-    expect(toolNames(ctx.llmCalls[0]!.tools)).not.toContain(rejected.name);
+    expect(toolNames(ctx.llmCalls.at(-1)!.tools)).toContain(name);
+    expect(toolNames(ctx.llmCalls.at(-1)!.tools)).not.toContain(rejected.name);
+    await policy.setChoice(session.sessionId, 'browser', 'off', session.workspaceId);
+    ctx.mockNextResponse({ type: 'function', id: 'closed-browser', name, arguments: '{}' });
+    ctx.mockNextResponse({ type: 'text', text: 'closed call rejected' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'observe closed browser state' }] });
+    await ctx.untilTurnEnd();
+    expect(toolNames(ctx.llmCalls.at(-1)!.tools)).not.toContain(name);
+    expect(browser.calls).toBe(1);
+    expect(ctx.get(IAgentProfileService).data().boundProfile).toEqual(binding);
+  });
+
+  it('distinguishes a registered but denied plugin from an unknown name without widening the profile', async () => {
+    const name = 'plugin__example_mail__Mailbox';
+    const denied = new StubMcpTool(name);
+    ctx.get(IAgentToolRegistryService).register(denied, { source: 'plugin' });
+    ctx.configure({ provider: OPENAI_PROVIDER, modelCapabilities: DISCLOSURE_CAPABILITIES, tools: ['mcp__*'] });
+    ctx.mockNextResponse(selectToolsCall('select-denied', [name, 'plugin__missing__Tool']));
+    ctx.mockNextResponse({ type: 'function', id: 'call-denied', name, arguments: '{}' });
+    ctx.mockNextResponse({ type: 'text', text: 'done' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'inspect denied and missing names' }] });
+    await ctx.untilTurnEnd();
+    const text = historyText(ctx.get(IAgentContextMemoryService).get());
+    expect(text).toContain(`Tool "${name}" is registered but is not loadable under the current tool policy.`);
+    expect(text).toContain('Unknown tool: plugin__missing__Tool.');
+    expect(denied.calls).toBe(0);
+    expect(ctx.llmCalls.every(call => ![...call.tools, ...call.history.flatMap(message => message.tools ?? [])].some(tool => tool.name === name))).toBe(true);
   });
 
   it('does not reannounce unchanged loadable tools on consecutive steps in one turn', async () => {

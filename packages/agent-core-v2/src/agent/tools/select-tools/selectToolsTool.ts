@@ -1,6 +1,7 @@
 import { toInputJsonSchema } from '#/tool/input-schema';
 import type { ToolExecution } from '#/tool/toolContract';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
+import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IAgentToolSelectService, SELECT_TOOLS_TOOL_NAME } from '#/agent/toolSelect/toolSelect';
 
 import {
@@ -24,13 +25,15 @@ export class SelectToolsTool implements ISelectToolsTool {
 
   constructor(
     @IAgentToolSelectService private readonly toolSelect: IAgentToolSelectService,
+    @IAgentToolRegistryService private readonly registry: IAgentToolRegistryService,
   ) {}
 
   resolveExecution(args: SelectToolsInput): ToolExecution {
     return {
       description: `Loading ${args.names.join(', ')}`,
       approvalRule: this.name,
-      execute: async () => {
+      execute: async (context) => {
+        await this.registry.prepare(context.signal);
         if (!this.toolSelect.enabled()) {
           return {
             output: `${SELECT_TOOLS_TOOL_NAME} is not available for the current model.`,
@@ -45,7 +48,9 @@ export class SelectToolsTool implements ISelectToolsTool {
           lines.push(`Already available: ${alreadyAvailable.join(', ')}`);
         }
         for (const name of unknown) {
-          lines.push(`Unknown tool: ${name}. Pick from the latest announced tools list.`);
+          lines.push(this.registry.resolve(name) === undefined
+            ? `Unknown tool: ${name}. Pick from the latest announced tools list.`
+            : `Tool "${name}" is registered but is not loadable under the current tool policy. Check this agent's capability status; enabling a plugin or connection does not override its tool restrictions.`);
         }
         const isError = toLoad.length === 0 && alreadyAvailable.length === 0;
         return isError ? { output: lines.join('\n'), isError } : { output: lines.join('\n') };
