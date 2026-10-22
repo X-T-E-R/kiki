@@ -122,7 +122,7 @@ describe('optional capability session routes', () => {
     const view = await read(harness.app, 's1');
     expect(view.data.host_id).toBe('local');
     expect(row(view, 'memory')).toMatchObject({ choice: 'inherit', effective: false, source: 'off', reason: 'allowed_off' });
-    expect(row(view, 'thread')).toMatchObject({ choice: 'inherit', effective: false, source: 'default', reason: 'unbound' });
+    expect(row(view, 'thread')).toMatchObject({ choice: 'inherit', effective: true, source: 'default', reason: 'admitted' });
     expect(row(view, 'web')).toMatchObject({ choice: 'inherit', effective: true, source: 'default', reason: 'admitted' });
   });
 
@@ -144,7 +144,7 @@ describe('optional capability session routes', () => {
     expect(row(view, 'web')).toMatchObject({ choice: 'off', effective: false, source: 'session', reason: 'session_off' });
     const other = await read(harness.app, 's2');
     expect(row(other, 'web')).toMatchObject({ choice: 'inherit', effective: true, reason: 'admitted' });
-    expect(row(other, 'thread')).toMatchObject({ choice: 'inherit', effective: false, reason: 'unbound' });
+    expect(row(other, 'thread')).toMatchObject({ choice: 'inherit', effective: true, source: 'default', reason: 'admitted' });
   });
 
   it('restores a failed write and keeps a later revision that landed during the failure', async () => {

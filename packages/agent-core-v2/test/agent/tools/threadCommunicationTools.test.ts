@@ -132,12 +132,14 @@ describe('thread communication tools', () => {
     expect('execute' in execution).toBe(true);
     if (!('execute' in execution)) throw new Error('Expected executable send tool resolution.');
     await execution.execute({} as never);
-    expect(sent).toEqual([{
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
       source: {
         hostId: 'local-host',
         workspaceId: 'workspace-a',
         sessionId: 'ambient-a',
       },
+      executingAgentId: 'main',
       target: {
         hostId: 'local-host',
         workspaceId: 'workspace-b',
@@ -145,7 +147,7 @@ describe('thread communication tools', () => {
       },
       content: 'from ambient',
       idempotencyKey: 'ambient-key',
-    }]);
+    });
     } finally { await ix.dispose(); }
   });
 
