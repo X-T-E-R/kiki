@@ -394,4 +394,31 @@ describe('replay checkpoint tail', () => {
     const part = grown?.message?.content[0];
     expect(part !== undefined && 'text' in part ? String(part.text).length : 0).toBe(REPLAY_CHECKPOINT_GROWTH_BYTES);
   }, 20_000);
+
+  it('restores a batch of independent journals from exact checkpoints', async () => {
+    const batch = 8;
+    const storages: CountingStorage[] = [];
+    for (let index = 0; index < batch; index += 1) {
+      const storage = new CountingStorage();
+      const first = harness(storage);
+      await seed(first.wire);
+      await first.dispatcher.restore();
+      await expect(first.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(true);
+      storages.push(storage);
+    }
+    let streamBytes = 0;
+    const started = Date.now();
+    for (const storage of storages) {
+      storage.streamBytes = 0;
+      const reopened = harness(storage);
+      const reads = watchReads(reopened.wire);
+      await reopened.dispatcher.restore();
+      expect(reads.full).toBe(0);
+      expect(reads.tails).toEqual([]);
+      expect(texts(reopened.state)).toEqual(['prefix-user', 'prefix-assistant']);
+      streamBytes += storage.streamBytes;
+    }
+    expect(streamBytes).toBeLessThan(batch * 1024 * 1024);
+    expect(Date.now() - started).toBeLessThan(10_000);
+  });
 });
