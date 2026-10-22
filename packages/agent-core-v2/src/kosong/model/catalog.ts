@@ -47,6 +47,7 @@ export interface Model {
   readonly name: string;
   readonly aliases: readonly string[];
   readonly protocol: Protocol;
+  readonly protocolSource?: 'model' | 'provider' | 'vendor';
   readonly baseUrl?: string;
   readonly headers: Readonly<Record<string, string>>;
 

@@ -356,6 +356,8 @@ display_name = "Kimi for Coding (custom)"
 
 `[models."<alias>".overrides]` 接受普通模型字段，例如 `max_context_size`、`max_input_size`、`max_output_size`、`capabilities`、`display_name`、`reasoning_key`、`adaptive_thinking`、`support_efforts`、`default_effort`、`off_effort`、`service_tier`、`request_params`、`context_budget`、`auto_compact` 与 `max_completion_tokens`。不接受身份 / 路由字段：`provider`、`model`、`protocol`、`beta_api` 和 `base_url`。把这些字段写进 `overrides` 会在加载配置时给出警告，且不会改到模型；请写在模型自身上。模型设置页会标出这条警告，并显示有效格式、端点和凭据来自模型、提供商还是环境变量，不显示密钥或端点地址。对这些新增字段，先得到模型 alias 的有效配置（包括其 `overrides`），再按 "模型 alias → profile 顶层 → 命中的 `model_profiles` 条目" 合并：`request_params` 逐键覆盖，`service_tier` 使用最后一个明确值；`context_budget` 和 `max_completion_tokens` 是限制，取各层声明值的最小值，并继续受模型容量与输出上限约束。省略限制表示不增加限制。
 
+Recipe 可以覆盖支持的模型提示词与生成参数，但不改变模型的提供商、请求格式、端点或凭据。Recipe 中的路由字段会被拒绝；请把这些字段写在模型自身上。通过程序传入的模型设置覆盖也遵循这一规则，包括嵌套在 `overrides` 中的路由字段。
+
 无需修改配置文件也可以临时切换模型——通过 `KIKI_MODEL_*` 环境变量在内存里合成一个临时供应商，详见[用环境变量定义模型](./env-vars.md#用环境变量定义模型-kiki-model)。
 
 ### 模型认知

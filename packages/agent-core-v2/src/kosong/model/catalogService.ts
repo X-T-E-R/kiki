@@ -3,7 +3,7 @@ import { assertProviderCredential, assertProviderHeaders, parseKimiCodeCustomHea
 import { IRequestAdmission, type RequestAdmissionPort } from './requestAdmission';
 import { Disposable } from '#/_base/di/lifecycle';
 import { applyModelSettings } from './modelSettings';
-import { resolveModelProtocol } from './modelProtocol';
+import { explainModelProtocol, resolveModelProtocol } from './modelProtocol';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Error2 } from '#/_base/errors/errors';
@@ -456,6 +456,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
         name: wireName,
         aliases: model.aliases ?? [],
         protocol,
+        protocolSource: explainModelProtocol(routingModel, providerConfig)?.source,
         baseUrl: resolvedBaseUrl,
         headers: resolveOutboundHeaders(
           providerConfig?.type,

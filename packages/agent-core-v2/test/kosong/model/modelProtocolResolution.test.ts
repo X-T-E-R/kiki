@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createScopedTestHost } from '#/_base/di/test';
 import { IConfigService } from '#/app/config/config';
+import { LlmRequest } from '#/agent/llmRequester/llmRequestOps';
 import { RecipeModelSettingsSchema, applyRecipeModelSettings } from '#/app/recipes/recipeModelSettings';
 import { HostRequestHeadersAdapter } from '#/app/kosongConfig/hostRequestHeadersAdapter';
 import type { ChatProviderError } from '#/kosong/contract/errors';
@@ -145,6 +146,9 @@ describe('model protocol resolution', () => {
       expect(catalog.inspect('gemini').resolved).toMatchObject({ protocol: 'google-genai', protocolSource: 'model' });
       expect(catalog.inspect('kimi').resolved).toMatchObject({ protocol: 'openai', protocolSource: 'vendor' });
       expect(catalog.inspect('kimi').sources['resolved.protocol']?.detail).toContain('baseProtocol');
+      expect(catalog.getRequester('chat').model.protocolSource).toBe('provider');
+      expect(catalog.getRequester('gemini').model.protocolSource).toBe('model');
+      expect(catalog.getRequester('kimi').model.protocolSource).toBe('vendor');
       const connection = catalog.getConnectionRequester('edge', 'remote-name', 8192);
       expect(connection.model.protocol).toBe('openai');
       expect(connection.model.baseUrl).toBe('https://provider.example.test/v1');
@@ -196,7 +200,7 @@ describe('model protocol resolution', () => {
     } finally { void host.dispose(); }
   });
 
-  it('keeps an explicit route under a legal recipe and records a raw routing overlay', () => {
+  it('keeps an explicit route under a legal recipe and rejects raw routing overlays', () => {
     const { host, catalog } = gatewayHost();
     try {
       const legal = catalog.get('gemini', { displayName: 'Recipe label' });
@@ -205,14 +209,62 @@ describe('model protocol resolution', () => {
       expect(legal.displayName).toBe('Recipe label');
       expect(applyRecipeModelSettings(gatewayModel, { displayName: 'Recipe label' }).protocol).toBe('google-genai');
       expect(RecipeModelSettingsSchema.safeParse({ protocol: 'openai', baseUrl: 'https://other.example.test', provider: 'other' }).success).toBe(false);
-
-      const overlaid = applyModelSettings(gatewayModel, { protocol: 'openai', baseUrl: 'https://other.example.test', provider: 'other' });
+      expect(() => applyModelSettings(gatewayModel, {
+        protocol: 'openai', baseUrl: 'https://other.example.test', provider: 'other',
+      })).toThrow('Model settings cannot override connection fields: protocol, baseUrl, provider');
+      expect(() => catalog.get('gemini', { protocol: 'openai' })).toThrow('Set them on the model itself.');
+      expect(catalog.get('gemini').protocol).toBe('google-genai');
+      expect(catalog.getRequester('gemini').model.baseUrl).toBe(gatewayModel.baseUrl);
       expect(gatewayModel.protocol).toBe('google-genai');
-      expect(overlaid.protocol).toBe('openai');
-      expect(overlaid.baseUrl).toBe('https://other.example.test');
-      expect(overlaid.provider).toBe('other');
-      expect(catalog.get('gemini', { protocol: 'openai' }).protocol).toBe('openai');
     } finally { void host.dispose(); }
+  });
+
+  it('rejects nested and snake-case connection overlays without exposing their values', () => {
+    for (const settings of [
+      { base_url: 'https://other.example.test' },
+      { apiKey: 'fixture-secret' },
+      { overrides: { provider: 'other', apiKey: 'fixture-secret' } },
+    ]) {
+      try {
+        applyModelSettings(gatewayModel, settings);
+        expect.fail('Expected an invalid connection overlay');
+      } catch (error) {
+        expect(error).toMatchObject({ code: 'config.invalid' });
+        expect((error as Error).message).not.toContain('fixture-secret');
+        expect((error as Error).message).not.toContain('https://');
+      }
+    }
+  });
+
+  it('preserves legal parameter overlays and leaves the saved model unchanged', () => {
+    const saved: ModelRecord = {
+      ...gatewayModel,
+      parameters: { thinkingEffort: 'high' },
+      overrides: { maxCompletionTokens: 1024, displayName: 'Saved label' },
+    };
+    const before = structuredClone(saved);
+    const effective = applyModelSettings(saved, {
+      parameters: { maxCompletionTokens: 2048 },
+      displayName: 'Recipe label',
+    });
+    expect(effective.parameters).toEqual({ thinkingEffort: 'high', maxCompletionTokens: 2048 });
+    expect(effective.overrides).toEqual({ maxCompletionTokens: 1024 });
+    expect(effective.protocol).toBe(gatewayModel.protocol);
+    expect(effective.provider).toBe(gatewayModel.provider);
+    expect(saved).toEqual(before);
+  });
+});
+
+describe('request protocol provenance schema', () => {
+  it('retains optional protocol evidence and accepts historical requests without it', () => {
+    const legacy = {
+      kind: 'loop', provider: 'google-genai', model: 'gemini-example', toolSelect: false,
+      systemPromptHash: 'system-fixture', toolsHash: 'tools-fixture', messageCount: 1,
+    };
+    expect(LlmRequest.schema.parse(legacy)).toEqual(legacy);
+    expect(LlmRequest.schema.parse({ ...legacy, protocol: 'google-genai', protocol_source: 'model' }))
+      .toMatchObject({ provider: 'google-genai', protocol: 'google-genai', protocol_source: 'model' });
+    expect(LlmRequest.schema.safeParse({ ...legacy, protocol_source: 'guessed' }).success).toBe(false);
   });
 });
 
