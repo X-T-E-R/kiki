@@ -71,8 +71,15 @@ describe.skipIf(process.platform !== 'win32')('owned Windows process tree releas
       const file = process.argv[2];
       const role = process.argv[3] || 'root';
       fs.appendFileSync(file, String(process.pid) + '\\n');
-      if (role !== 'leaf') {
-        spawn(process.execPath, [__filename, file, role === 'root' ? 'mid' : 'leaf'], { stdio: 'ignore', detached: true });
+      if (role === 'exit' || role === 'gone') {
+        spawn(process.execPath, [__filename, file, 'leaf'], { stdio: 'ignore', detached: true });
+        setTimeout(() => process.exit(0), role === 'exit' ? 200 : 100);
+        return;
+      }
+      if (role === 'root' || role === 'brief') {
+        spawn(process.execPath, [__filename, file, role === 'brief' ? 'gone' : 'mid'], { stdio: 'ignore', detached: true });
+      } else if (role === 'mid') {
+        spawn(process.execPath, [__filename, file, 'leaf'], { stdio: 'ignore', detached: true });
       }
       setInterval(() => {}, 1000);
     `);
@@ -208,4 +215,97 @@ describe.skipIf(process.platform !== 'win32')('owned Windows process tree releas
     expect(alive(sentinel.pid)).toBe(true);
     console.log(JSON.stringify({ case: 'success-then-backend-stop', leafAliveUntilBackendStop: true, aliveAfterBackendStop: 0, sentinelAlive: true }));
   }, 15_000);
+
+  const bash = 'C:/Program Files/Git/bin/bash.exe';
+
+  function bashQuote(text: string): string {
+    return `'${text.replaceAll('\\', '/').replaceAll("'", "'\\''")}'`;
+  }
+
+  async function spawnBash(command: string): Promise<IHostProcess> {
+    const proc = await service.spawn(bash, ['-c', command], {
+      ownedProcessTree: true,
+      ownedProcessLifetime: 'owner',
+    });
+    owned.push(proc);
+    proc.stdin.end();
+    return proc;
+  }
+
+  it('timeout zeroes a Bash pipeline after an intermediate parent has exited', async () => {
+    const file = join(directory, 'bash-timeout-pids.txt');
+    const sentinel = await service.spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)']);
+    owned.push(sentinel);
+    const command = `${bashQuote(process.execPath)} ${bashQuote(treeScript)} ${bashQuote(file)} brief | cat`;
+    const proc = await spawnBash(command);
+    const taskId = tasks.registerTask(new ProcessTask(proc, command, 'bash timeout'), {
+      detached: true,
+      timeoutMs: 3_000,
+    });
+    let pids: number[] = [];
+    await vi.waitFor(async () => {
+      pids = await readPids(file);
+      expect(pids).toHaveLength(3);
+      expect(pids.filter(alive)).toHaveLength(2);
+    }, { timeout: 4_000 });
+    expect(alive(proc.pid)).toBe(true);
+    const result = await tasks.wait(taskId, 8_000);
+    expect(result?.status).toBe('timed_out');
+    expect(pids.filter(alive)).toEqual([]);
+    expect(alive(proc.pid)).toBe(false);
+    expect(alive(sentinel.pid)).toBe(true);
+    console.log(JSON.stringify({ case: 'bash-timeout', descendants: pids.length, aliveAfter: 0, sentinelAlive: true }));
+  }, 20_000);
+
+  it('cancel zeroes a Bash pipeline after an intermediate parent has exited', async () => {
+    const file = join(directory, 'bash-cancel-pids.txt');
+    const sentinel = await service.spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)']);
+    owned.push(sentinel);
+    const command = `${bashQuote(process.execPath)} ${bashQuote(treeScript)} ${bashQuote(file)} brief | cat`;
+    const proc = await spawnBash(command);
+    const taskId = tasks.registerTask(new ProcessTask(proc, command, 'bash cancel'), { detached: true });
+    let pids: number[] = [];
+    await vi.waitFor(async () => {
+      pids = await readPids(file);
+      expect(pids).toHaveLength(3);
+      expect(pids.filter(alive)).toHaveLength(2);
+    }, { timeout: 4_000 });
+    const result = await tasks.stop(taskId, 'TaskStop');
+    expect(result?.status).toBe('killed');
+    expect(pids.filter(alive)).toEqual([]);
+    expect(alive(sentinel.pid)).toBe(true);
+    console.log(JSON.stringify({ case: 'bash-cancel', descendants: pids.length, aliveAfter: 0, sentinelAlive: true }));
+  }, 20_000);
+
+  it('kills grandchildren through the job after the parent Bash has already exited', async () => {
+    const file = join(directory, 'bash-shell-exit-pids.txt');
+    const sentinel = await service.spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)']);
+    owned.push(sentinel);
+    const command = `${bashQuote(process.execPath)} ${bashQuote(treeScript)} ${bashQuote(file)} exit >/dev/null 2>&1 & exit 0`;
+    const proc = await spawnBash(command);
+    const taskId = tasks.registerTask(new ProcessTask(proc, command, 'bash shell exit'), { detached: true });
+    const result = await tasks.wait(taskId, 8_000);
+    expect(result?.status).toBe('completed');
+    expect(proc.exitCode).toBe(0);
+    expect(alive(proc.pid)).toBe(false);
+    let grandchildren: number[] = [];
+    await vi.waitFor(async () => {
+      const pids = await readPids(file);
+      grandchildren = pids.filter(alive);
+      expect(pids.length).toBeGreaterThanOrEqual(2);
+      expect(grandchildren).toHaveLength(1);
+    }, { timeout: 4_000 });
+    const helperPid = (proc as unknown as { child: { pid?: number } }).child.pid;
+    expect(alive(helperPid)).toBe(true);
+    await proc.kill();
+    expect(grandchildren.filter(alive)).toEqual([]);
+    await vi.waitFor(() => { expect(alive(helperPid)).toBe(false); }, { timeout: 3_000 });
+    expect(alive(sentinel.pid)).toBe(true);
+    console.log(JSON.stringify({
+      case: 'bash-shell-exited-first',
+      grandchildrenBeforeKill: grandchildren.length,
+      aliveAfterJobKill: 0,
+      sentinelAlive: true,
+    }));
+  }, 20_000);
 });

@@ -286,7 +286,8 @@ class WindowsProcessTree implements IHostProcess {
       this.code = Number(line.slice(5));
       this.exited.resolve(this.code);
     } else if (line === 'empty' && this.ownerLifetime) {
-      void this.shutdownOwner().catch((error: unknown) => { this.cleanupFailure = error; });
+      const afterKill = this.killPromise ?? Promise.resolve();
+      void afterKill.then(() => this.shutdownOwner()).catch((error: unknown) => { this.cleanupFailure = error; });
     } else if (line.startsWith('error:watch:')) {
       this.cleanupFailure = this.decodeError(line);
     } else if (line.startsWith('error:launch:')) {
