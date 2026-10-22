@@ -21,6 +21,8 @@ import {
 import { dirname, extname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { verifySidecarReceipt } from '../../kimi-code/scripts/native/release-receipt.mjs';
+
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const GUI_ROOT = resolve(SCRIPT_DIR, '..');
 const KIKI_ROOT = resolve(GUI_ROOT, '..', '..');
@@ -28,6 +30,7 @@ const BINARIES_DIR = resolve(GUI_ROOT, 'src-tauri', 'binaries');
 const KIMI_PACKAGE_JSON = resolve(KIKI_ROOT, 'apps', 'kimi-code', 'package.json');
 const SIDECAR_NAME = 'kiki-server';
 const SIDECAR_MANIFEST_VERSION = 2;
+const RELEASE_SIDECAR_MODE = 'verified-prebuilt';
 
 const RUST_TO_SEA_TARGET = new Map([
   ['x86_64-pc-windows-msvc', 'win32-x64'],
@@ -84,6 +87,15 @@ export function defaultSeaSource(target) {
   return resolve(KIKI_ROOT, 'apps', 'kimi-code', 'dist-native', 'bin', seaTarget, executable);
 }
 
+export function prebuiltReceiptRequired(env = process.env) {
+  const mode = env['KIKI_SIDECAR_RELEASE_MODE'];
+  if (mode === undefined) return false;
+  if (mode !== RELEASE_SIDECAR_MODE) {
+    throw new Error(`KIKI_SIDECAR_RELEASE_MODE must be ${RELEASE_SIDECAR_MODE}.`);
+  }
+  return true;
+}
+
 export function readKimiServerVersion(packageJsonPath = KIMI_PACKAGE_JSON) {
   const parsed = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
   if (typeof parsed.version !== 'string' || parsed.version.trim() === '') {
@@ -98,6 +110,7 @@ export function createSidecarManifest(
   serverVersion,
   buildId,
   buildChannel = 'dev',
+  releaseSource,
 ) {
   const bytes = statSync(sidecarPath).size;
   const sha256 = createHash('sha256').update(readFileSync(sidecarPath)).digest('hex');
@@ -109,6 +122,7 @@ export function createSidecarManifest(
     serverVersion,
     buildId: buildId?.trim() || sha256,
     buildChannel,
+    releaseSource,
   };
 }
 
@@ -122,11 +136,16 @@ function resolveHostTarget() {
   }
 }
 
-export function stageSidecar({ argv = process.argv.slice(2), env = process.env } = {}) {
+export function stageSidecar({
+  argv = process.argv.slice(2),
+  env = process.env,
+  binariesDir = BINARIES_DIR,
+  packageJsonPath = KIMI_PACKAGE_JSON,
+} = {}) {
   const target = parseTargetArg(argv) ?? env['TAURI_TARGET_TRIPLE'] ?? resolveHostTarget();
   const source = resolve(env['KIKI_SIDECAR_SOURCE'] ?? defaultSeaSource(target));
-  const destination = resolve(BINARIES_DIR, sidecarFileName(target));
-  const manifestPath = resolve(BINARIES_DIR, sidecarManifestFileName(target));
+  const destination = resolve(binariesDir, sidecarFileName(target));
+  const manifestPath = resolve(binariesDir, sidecarManifestFileName(target));
 
   if (!existsSync(source)) {
     throw new Error(
@@ -146,17 +165,52 @@ export function stageSidecar({ argv = process.argv.slice(2), env = process.env }
     throw new Error(`Windows target ${target} requires an .exe sidecar source: ${source}`);
   }
 
-  mkdirSync(BINARIES_DIR, { recursive: true });
+  let releaseSource;
+  if (prebuiltReceiptRequired(env)) {
+    const receiptPath = env['KIKI_SIDECAR_RECEIPT'];
+    const prepareReceiptPath = env['KIKI_RELEASE_INPUT_RECEIPT'];
+    const catalogPath = env['KIKI_BUILT_IN_CATALOG_FILE'];
+    if (receiptPath === undefined || prepareReceiptPath === undefined || catalogPath === undefined) {
+      throw new Error('Verified release sidecar mode requires its native receipt, release input receipt, and catalog.');
+    }
+    const receipt = verifySidecarReceipt({
+      receiptPath: resolve(receiptPath),
+      sourcePath: source,
+      rustTarget: target,
+      prepareReceiptPath: resolve(prepareReceiptPath),
+      catalogPath: resolve(catalogPath),
+      expected: {
+        repository: env['KIKI_RELEASE_REPOSITORY'],
+        sourceSha: env['KIKI_BUILD_SHA'],
+        tag: env['KIKI_RELEASE_TAG'],
+        version: env['KIKI_VERSION'],
+        channel: env['KIKI_UPDATE_CHANNEL'],
+        runId: env['KIKI_RELEASE_RUN_ID'],
+        producerAttempt: env['KIKI_RELEASE_PREPARE_ATTEMPT'],
+        candidateAttempt: env['KIKI_RELEASE_CANDIDATE_ATTEMPT'],
+        prepareArtifactId: env['KIKI_RELEASE_PREPARE_ARTIFACT_ID'],
+      },
+    });
+    releaseSource = {
+      sourceSha: receipt.sourceSha,
+      prepareIdentity: receipt.prepare.identity,
+      prepareArtifactId: receipt.prepare.artifactId,
+      producerAttempt: receipt.workflow.producerAttempt,
+    };
+  }
+
+  mkdirSync(binariesDir, { recursive: true });
   copyFileSync(source, destination);
   if (!target.includes('windows')) chmodSync(destination, 0o755);
 
-  const serverVersion = readKimiServerVersion();
+  const serverVersion = readKimiServerVersion(packageJsonPath);
   const manifest = createSidecarManifest(
     destination,
     target,
     serverVersion,
     env['KIKI_BUILD_SHA'],
     env['KIKI_UPDATE_CHANNEL']?.trim() || 'dev',
+    releaseSource,
   );
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 

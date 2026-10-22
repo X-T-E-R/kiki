@@ -48,54 +48,21 @@ jobs:
             exit 1
           fi
 
-  cli-native:
-    name: CLI native bundles
+  prepare:
+    name: Freeze release inputs
     needs: validate
-    uses: ./.github/workflows/_native-build.yml
-    with:
-      upload-artifact-prefix: kiki-agent
-      retention-days: 7
-      sign-macos: false
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
-
-  desktop-bundle:
-    name: Desktop (${{ matrix.name }})
-    needs: validate
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: windows-x64
-            os: windows-latest
-            target: x86_64-pc-windows-msvc
-            bundles: nsis
-          - name: linux-x64
-            os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            bundles: appimage,deb
-          - name: macos-arm64
-            os: macos-latest
-            target: aarch64-apple-darwin
-            bundles: dmg
-          - name: macos-x64
-            os: macos-15-intel
-            target: x86_64-apple-darwin
-            bundles: dmg
-
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      producer-attempt: ${{ steps.input.outputs.producer-attempt }}
+      source-sha: ${{ steps.input.outputs.source-sha }}
     steps:
-      - name: Checkout release tag
+      - name: Checkout release commit
         uses: actions/checkout@v6
-
-      - name: Install Tauri Linux dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libssl-dev
+        with:
+          ref: ${{ github.ref }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -104,158 +71,69 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
-          cache: pnpm
 
-      - name: Setup Rust target
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Rebuild Linux PTY dependency
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          printf '["node-pty"]\n' > "$RUNNER_TEMP/ci-native-build-allowlist.json"
-          pnpm --config.onlyBuiltDependenciesFile="$RUNNER_TEMP/ci-native-build-allowlist.json" --filter @kiki/agent-core-v2 rebuild node-pty
-
-      - name: Test release scripts
-        shell: bash
-        run: |
-          node --test apps/kiki-gui/scripts/desktop-version.test.mjs apps/kiki-gui/scripts/desktop-release-manifest.test.mjs apps/kiki-gui/scripts/desktop-release-feed.test.mjs
-          pnpm --filter @kiki/gui run desktop:version:check
-          pnpm --filter @kiki/gui run desktop:prepare:test
-
-      - name: Generate built-in catalog
-        shell: bash
-        run: |
-          catalog="$RUNNER_TEMP/kiki-built-in-catalog.json"
-          node apps/kimi-code/scripts/update-catalog.mjs --out "$catalog"
-          echo "KIKI_BUILT_IN_CATALOG_FILE=$catalog" >> "$GITHUB_ENV"
-
-      - name: Build and smoke-test native sidecar
-        shell: bash
-        run: |
-          pnpm --filter @kiki/cli run build:native:release
-          pnpm --filter @kiki/cli run test:native:smoke
-
-      - name: Generate temporary updater key (Windows)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          password="$(node -e "console.log(require('crypto').randomUUID().replace(/-/g,''))")"
-          key_path="$RUNNER_TEMP/kiki-build-updater.key"
-          pnpm --filter @kiki/gui exec tauri signer generate --ci --password "$password" --write-keys "$key_path"
-          delimiter="KIKI_SIGNING_KEY_$(node -e "console.log(require('crypto').randomUUID().replace(/-/g,''))")"
-          {
-            echo "TAURI_SIGNING_PRIVATE_KEY<<$delimiter"
-            printf '%s' "$(cat "$key_path")"
-            echo
-            echo "$delimiter"
-            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$password"
-          } >> "$GITHUB_ENV"
-
-      - name: Build and stage desktop bundles
-        env:
-          KIKI_VERSION: ${{ needs.validate.outputs.version }}
-          KIKI_BUILD_SHA: ${{ github.sha }}
-          KIKI_UPDATE_CHANNEL: ${{ needs.validate.outputs.channel }}
-          KIKI_UPDATER_PUBLIC_KEY: ${{ vars.KIKI_UPDATER_PUBLIC_KEY }}
-          KIKI_TAURI_CONFIG_PATH: ${{ runner.temp }}/kiki-tauri-release-config.json
-          KIKI_RUST_TARGET: ${{ matrix.target }}
-          KIKI_BUNDLES: ${{ matrix.bundles }}
+      - name: Fetch catalog and write immutable input receipt
+        id: input
         shell: bash
         run: |
           set -euo pipefail
-          if [ "$RUNNER_OS" = 'Windows' ]; then
-            export KIKI_DISTRIBUTION=github
-            if [ -z "$KIKI_UPDATER_PUBLIC_KEY" ]; then
-              echo 'KIKI_UPDATER_PUBLIC_KEY repository variable is required.' >&2
-              exit 1
-            fi
-          else
-            export KIKI_DISTRIBUTION=manual
-            unset KIKI_UPDATER_PUBLIC_KEY
-          fi
-          node -e '
-            const fs = require("node:fs");
-            const windows = process.env.RUNNER_OS === "Windows";
-            const config = {
-              version: process.env.KIKI_VERSION,
-              bundle: {
-                createUpdaterArtifacts: windows,
-                resources: ["../THIRD_PARTY_NOTICES.md"],
-              },
-            };
-            if (windows) config.plugins = { updater: { pubkey: process.env.KIKI_UPDATER_PUBLIC_KEY } };
-            fs.writeFileSync(process.env.KIKI_TAURI_CONFIG_PATH, JSON.stringify(config));
-          '
-          pnpm --filter @kiki/gui exec tauri build --ci --target "$KIKI_RUST_TARGET" --bundles "$KIKI_BUNDLES" --config "$KIKI_TAURI_CONFIG_PATH"
+          source_sha="$(git rev-parse HEAD)"
+          input="$RUNNER_TEMP/kiki-release-input"
+          mkdir -p "$input"
+          node apps/kimi-code/scripts/update-catalog.mjs --out "$input/built-in-catalog.json"
+          node apps/kimi-code/scripts/native/release-receipt.mjs prepare \
+            --catalog "$input/built-in-catalog.json" \
+            --output "$input/release-input.json" \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-sha "$source_sha" \
+            --tag "$GITHUB_REF_NAME" \
+            --version '${{ needs.validate.outputs.version }}' \
+            --channel '${{ needs.validate.outputs.channel }}' \
+            --run-id "$GITHUB_RUN_ID" \
+            --producer-attempt "$GITHUB_RUN_ATTEMPT"
+          {
+            echo "source-sha=$source_sha"
+            echo "producer-attempt=$GITHUB_RUN_ATTEMPT"
+          } >> "$GITHUB_OUTPUT"
 
-          bundle_dir="apps/kiki-gui/src-tauri/target/$KIKI_RUST_TARGET/release/bundle"
-          stage="$RUNNER_TEMP/kiki-release-candidate"
-          mkdir -p "$stage"
-          shopt -s nullglob
-          case "$RUNNER_OS" in
-            Windows)
-              bundles=("$bundle_dir"/nsis/*-setup.exe)
-              if [ "${#bundles[@]}" -ne 1 ] || [ ! -f "${bundles[0]}.sig" ]; then
-                echo 'Expected one NSIS installer and temporary updater signature.' >&2
-                exit 1
-              fi
-              cp "${bundles[0]}" "$stage/"
-              ;;
-            Linux)
-              appimages=("$bundle_dir"/appimage/*.AppImage)
-              debs=("$bundle_dir"/deb/*.deb)
-              if [ "${#appimages[@]}" -ne 1 ] || [ "${#debs[@]}" -ne 1 ]; then
-                echo 'Expected one AppImage and one deb bundle.' >&2
-                exit 1
-              fi
-              bundles=("${appimages[0]}" "${debs[0]}")
-              ;;
-            macOS)
-              bundles=("$bundle_dir"/dmg/*.dmg)
-              if [ "${#bundles[@]}" -ne 1 ]; then
-                echo 'Expected one dmg bundle.' >&2
-                exit 1
-              fi
-              ;;
-          esac
-          shopt -u nullglob
-          if [ "$RUNNER_OS" != 'Windows' ]; then
-            for bundle in "${bundles[@]}"; do
-              cp "$bundle" "$stage/"
-              node -e '
-                const fs = require("node:fs");
-                const crypto = require("node:crypto");
-                const path = require("node:path");
-                const file = process.argv[1];
-                const digest = crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
-                fs.writeFileSync(`${file}.sha256`, `${digest}  ${path.basename(file)}\n`);
-              ' "$stage/$(basename "$bundle")"
-            done
-          fi
-
-      - name: Upload unsigned release candidate
+      - name: Upload immutable release input
+        id: upload
         uses: actions/upload-artifact@v7
         with:
-          name: kiki-desktop-${{ matrix.name }}-${{ needs.validate.outputs.version }}
-          path: ${{ runner.temp }}/kiki-release-candidate/*
+          name: kiki-release-input-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kiki-release-input/
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 7
+
+  cli-native:
+    name: Native and desktop target builds
+    needs:
+      - validate
+      - prepare
+    uses: ./.github/workflows/_native-build.yml
+    with:
+      retention-days: 7
+      sign-macos: false
+      build-desktop: true
+      prepare-artifact-id: ${{ needs.prepare.outputs.artifact-id }}
+      prepare-run-attempt: ${{ needs.prepare.outputs.producer-attempt }}
+      release-source-sha: ${{ needs.prepare.outputs.source-sha }}
+      release-tag: ${{ github.ref_name }}
+      release-version: ${{ needs.validate.outputs.version }}
+      release-channel: ${{ needs.validate.outputs.channel }}
+    permissions:
+      contents: read
 
   publish:
     name: Publish GitHub Release
     needs:
       - validate
+      - prepare
       - cli-native
-      - desktop-bundle
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
+      actions: read
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
@@ -263,10 +141,15 @@ jobs:
       KIKI_TAG: ${{ github.ref_name }}
       KIKI_VERSION: ${{ needs.validate.outputs.version }}
       KIKI_CHANNEL: ${{ needs.validate.outputs.channel }}
+      KIKI_SOURCE_SHA: ${{ needs.prepare.outputs.source-sha }}
+      KIKI_PREPARE_ARTIFACT_ID: ${{ needs.prepare.outputs.artifact-id }}
+      KIKI_PREPARE_ATTEMPT: ${{ needs.prepare.outputs.producer-attempt }}
 
     steps:
-      - name: Checkout release tag
+      - name: Checkout release commit
         uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.source-sha }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -281,24 +164,52 @@ jobs:
       - name: Install signing tool
         run: pnpm install --frozen-lockfile
 
-      - name: Download desktop release candidates
+      - name: Download immutable release input
         uses: actions/download-artifact@v8
         with:
-          pattern: kiki-desktop-*-${{ needs.validate.outputs.version }}
-          path: release-candidate
-          merge-multiple: true
+          artifact-ids: ${{ needs.prepare.outputs.artifact-id }}
+          path: ${{ runner.temp }}/kiki-release-input
 
-      - name: Download CLI native executables
-        uses: actions/download-artifact@v8
-        with:
-          pattern: kiki-agent-*
-          path: cli-native
-          merge-multiple: true
-
-      - name: Validate downloaded build candidates
+      - name: Select one target artifact per platform
+        id: target-artifacts
         shell: bash
         run: |
           set -euo pipefail
+          api="$RUNNER_TEMP/target-artifacts.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" > "$api"
+          node apps/kimi-code/scripts/native/release-receipt.mjs select-artifacts \
+            --api-json "$api" \
+            --run-id "$GITHUB_RUN_ID" \
+            --current-attempt "$GITHUB_RUN_ATTEMPT" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Download selected target release candidates
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ steps.target-artifacts.outputs.artifact-ids }}
+          path: target-candidates
+
+      - name: Validate and assemble exact target candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          input="$RUNNER_TEMP/kiki-release-input"
+          node apps/kimi-code/scripts/native/release-receipt.mjs verify-candidates \
+            --artifacts target-candidates \
+            --native-output cli-native \
+            --desktop-output release-candidate \
+            --receipt "$input/release-input.json" \
+            --catalog "$input/built-in-catalog.json" \
+            --prepare-artifact-id "$KIKI_PREPARE_ARTIFACT_ID" \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-sha "$KIKI_SOURCE_SHA" \
+            --tag "$KIKI_TAG" \
+            --version "$KIKI_VERSION" \
+            --channel "$KIKI_CHANNEL" \
+            --run-id "$GITHUB_RUN_ID" \
+            --prepare-attempt "$KIKI_PREPARE_ATTEMPT"
+          echo "KIKI_BUILT_IN_CATALOG_FILE=$input/built-in-catalog.json" >> "$GITHUB_ENV"
+
           shopt -s nullglob
           installers=(release-candidate/*-setup.exe)
           appimages=(release-candidate/*.AppImage)
@@ -322,12 +233,14 @@ jobs:
             ( cd cli-native && sha256sum -c "$binary.sha256" )
           done
 
-      - name: Create draft release
+      - name: Create or resume exact release
         shell: bash
         run: |
+          set -euo pipefail
           if gh release view "$KIKI_TAG" >/dev/null 2>&1; then
-            echo "Release $KIKI_TAG already exists. Refusing to overwrite its assets." >&2
-            exit 1
+            is_draft="$(gh release view "$KIKI_TAG" --json isDraft --jq .isDraft)"
+            echo "Resuming existing release $KIKI_TAG (draft=$is_draft); every existing asset must match before reuse."
+            exit 0
           fi
           notes_file=".github/release-notes/kiki-${KIKI_VERSION}.md"
           args=(release create "$KIKI_TAG" --verify-tag --draft --title "Kiki $KIKI_VERSION")
@@ -346,6 +259,7 @@ jobs:
       - name: Sign updater with production key
         shell: bash
         env:
+          KIKI_UPDATER_PUBLIC_KEY: ${{ vars.KIKI_UPDATER_PUBLIC_KEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
@@ -357,21 +271,53 @@ jobs:
             exit 1
           fi
           installer="$(realpath "${installers[0]}")"
-          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
-            echo 'TAURI_SIGNING_PRIVATE_KEY secret is required to publish the updater signature.' >&2
+          installer_name="$(basename "$installer")"
+          remote_assets="$(gh release view "$KIKI_TAG" --json assets --jq '.assets[].name')"
+          recovery="$RUNNER_TEMP/release-recovery"
+          mkdir -p "$recovery"
+          if grep -Fxq "$installer_name" <<<"$remote_assets"; then
+            gh release download "$KIKI_TAG" --pattern "$installer_name" --dir "$recovery"
+            if ! cmp -s "$installer" "$recovery/$installer_name"; then
+              echo "Existing release installer differs: $installer_name" >&2
+              exit 1
+            fi
+          fi
+          if grep -Fxq "$installer_name.sig" <<<"$remote_assets"; then
+            gh release download "$KIKI_TAG" --pattern "$installer_name.sig" --dir "$recovery"
+            cp "$recovery/$installer_name.sig" "$installer.sig"
+          else
+            if [ "$(gh release view "$KIKI_TAG" --json isDraft --jq .isDraft)" != 'true' ]; then
+              echo "Published release is missing updater signature; refusing to mutate public assets: $installer_name.sig" >&2
+              exit 1
+            fi
+            if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+              echo 'TAURI_SIGNING_PRIVATE_KEY secret is required to publish the updater signature.' >&2
+              exit 1
+            fi
+            pnpm --filter @kiki/gui exec tauri signer sign "$installer"
+          fi
+          if [ ! -s "$installer.sig" ]; then
+            echo 'Production updater signature is missing or empty.' >&2
             exit 1
           fi
-          pnpm --filter @kiki/gui exec tauri signer sign "$installer"
-          if [ ! -f "$installer.sig" ]; then
-            echo 'Production updater signing did not create a signature.' >&2
-            exit 1
-          fi
+          node apps/kiki-gui/scripts/verify-updater-signature.mjs \
+            --installer "$installer" \
+            --signature "$installer.sig" \
+            --public-key "$KIKI_UPDATER_PUBLIC_KEY"
 
       - name: Create versioned release metadata
         shell: bash
         run: |
           installer="$(find release-candidate -maxdepth 1 -name '*.exe' | head -n 1)"
-          published_at="$(node -e "console.log(new Date().toISOString())")"
+          remote_assets="$(gh release view "$KIKI_TAG" --json assets --jq '.assets[].name')"
+          if grep -Fxq 'latest.json' <<<"$remote_assets"; then
+            recovery="$RUNNER_TEMP/release-recovery"
+            mkdir -p "$recovery"
+            gh release download "$KIKI_TAG" --pattern latest.json --dir "$recovery"
+            published_at="$(node -e "console.log(JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).pub_date)" "$recovery/latest.json")"
+          else
+            published_at="$(node -e "console.log(new Date().toISOString())")"
+          fi
           notes_file=".github/release-notes/kiki-${KIKI_VERSION}.md"
           notes=''
           if [ -f "$notes_file" ]; then
@@ -405,7 +351,27 @@ jobs:
             assets+=("$asset")
           done
           shopt -u nullglob
-          gh release upload "$KIKI_TAG" "${assets[@]}"
+          remote_assets="$(gh release view "$KIKI_TAG" --json assets --jq '.assets[].name')"
+          is_draft="$(gh release view "$KIKI_TAG" --json isDraft --jq .isDraft)"
+          recovery="$RUNNER_TEMP/release-recovery/upload"
+          mkdir -p "$recovery"
+          for asset in "${assets[@]}"; do
+            name="$(basename "$asset")"
+            if grep -Fxq "$name" <<<"$remote_assets"; then
+              gh release download "$KIKI_TAG" --pattern "$name" --dir "$recovery"
+              if ! cmp -s "$asset" "$recovery/$name"; then
+                echo "Existing release asset differs: $name" >&2
+                exit 1
+              fi
+              echo "Reusing exact existing release asset: $name"
+            else
+              if [ "$is_draft" != 'true' ]; then
+                echo "Published release is missing asset; refusing to mutate public assets: $name" >&2
+                exit 1
+              fi
+              gh release upload "$KIKI_TAG" "$asset"
+            fi
+          done
 
       - name: Validate draft assets
         shell: bash
@@ -462,12 +428,25 @@ jobs:
         run: |
           set -euo pipefail
           pnpm --filter @kiki/gui run desktop:version:check
-          export KIKI_BUILT_IN_CATALOG_FILE="$RUNNER_TEMP/kiki-npm-built-in-catalog.json"
-          node apps/kimi-code/scripts/update-catalog.mjs --out "$KIKI_BUILT_IN_CATALOG_FILE"
+          test -f "$KIKI_BUILT_IN_CATALOG_FILE"
           export KIKI_AUTH_NATIVE_ARTIFACT_ROOT="$PWD/cli-native/auth-native"
           export KIKI_WINDOWS_PROCESS_HELPER_ARTIFACT="$PWD/cli-native/windows-process-helper/win32-x64/windows-process-helper.exe"
           pnpm --filter @kiki/cli run build
           node apps/kimi-code/scripts/npm/stage.mjs
+          node apps/kimi-code/scripts/native/release-receipt.mjs stage-npm \
+            --npm-root apps/kimi-code/dist-npm \
+            --output apps/kimi-code/dist-npm/release-receipt.json \
+            --receipt "$RUNNER_TEMP/kiki-release-input/release-input.json" \
+            --catalog "$KIKI_BUILT_IN_CATALOG_FILE" \
+            --prepare-artifact-id "$KIKI_PREPARE_ARTIFACT_ID" \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-sha "$KIKI_SOURCE_SHA" \
+            --tag "$KIKI_TAG" \
+            --version "$KIKI_VERSION" \
+            --channel "$KIKI_CHANNEL" \
+            --run-id "$GITHUB_RUN_ID" \
+            --prepare-attempt "$KIKI_PREPARE_ATTEMPT" \
+            --candidate-attempt "$GITHUB_RUN_ATTEMPT"
 
       - name: Smoke-test isolated npm CLI install
         shell: bash
@@ -480,6 +459,19 @@ jobs:
           npm install --prefix "$test_dir/install" --omit=optional --no-audit --no-fund --registry=https://registry.npmjs.org/ "$test_dir/$tarball"
           "$test_dir/install/node_modules/.bin/kiki" --version | grep -Fx "$KIKI_VERSION"
           "$test_dir/install/node_modules/.bin/kiki" desktop --help
+          node apps/kimi-code/scripts/native/release-receipt.mjs verify-npm \
+            --npm-root apps/kimi-code/dist-npm \
+            --receipt apps/kimi-code/dist-npm/release-receipt.json \
+            --prepare-receipt "$RUNNER_TEMP/kiki-release-input/release-input.json" \
+            --catalog "$KIKI_BUILT_IN_CATALOG_FILE" \
+            --prepare-artifact-id "$KIKI_PREPARE_ARTIFACT_ID" \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-sha "$KIKI_SOURCE_SHA" \
+            --tag "$KIKI_TAG" \
+            --version "$KIKI_VERSION" \
+            --channel "$KIKI_CHANNEL" \
+            --run-id "$GITHUB_RUN_ID" \
+            --prepare-attempt "$KIKI_PREPARE_ATTEMPT"
 
       - name: Publish validated release
         run: gh release edit "$KIKI_TAG" --draft=false
@@ -495,5 +487,19 @@ jobs:
             exit 1
           fi
           for kind in lite full; do
-            npm publish "apps/kimi-code/dist-npm/$kind" --access public --registry=https://registry.npmjs.org/
+            package="apps/kimi-code/dist-npm/$kind"
+            name="$(node -p "require('./$package/package.json').name")"
+            expected="$(npm pack "$package" --silent --json --dry-run --registry=https://registry.npmjs.org/ | node -e "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>console.log(JSON.parse(s)[0].integrity))")"
+            published="$(npm view "$name@$KIKI_VERSION" dist.integrity --json --registry=https://registry.npmjs.org/ 2>/dev/null || true)"
+            published="${published%\"}"
+            published="${published#\"}"
+            if [ -n "$published" ]; then
+              if [ "$published" != "$expected" ]; then
+                echo "Published npm package differs: $name@$KIKI_VERSION" >&2
+                exit 1
+              fi
+              echo "Reusing exact npm package: $name@$KIKI_VERSION"
+            else
+              npm publish "$package" --access public --registry=https://registry.npmjs.org/
+            fi
           done

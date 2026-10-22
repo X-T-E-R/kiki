@@ -30,9 +30,48 @@ void test('public CLI and desktop sidecar builds use the release SEA policy inde
   assert.match(native, /run build:native:release\r?\n/);
   const desktop = await read('.github/workflows/kiki-desktop-release.yml');
   assert.ok(!desktop.includes('run build:native:sea'));
-  assert.match(desktop, /run build:native:release\r?\n/);
+  assert.doesNotMatch(desktop, /^  desktop-bundle:/m);
+  assert.match(desktop, /build-desktop: true/);
+  assert.match(desktop, /uses: \.\/\.github\/workflows\/_native-build\.yml/);
   const build = await read('apps/kimi-code/scripts/native/build.mjs');
   assert.match(build, /runSignStep\(macosSigningOptions\(values\['sign-macos'\]\)\)/);
+});
+
+void test('desktop release freezes one catalog and keeps native to desktop ordering per target', async () => {
+  const release = await read('.github/workflows/kiki-desktop-release.yml');
+  const native = await read('.github/workflows/_native-build.yml');
+
+  assert.equal((release.match(/update-catalog\.mjs/g) ?? []).length, 1);
+  assert.match(release, /^  prepare:/m);
+  assert.match(release, /artifact-id: \$\{\{ steps\.upload\.outputs\.artifact-id \}\}/);
+  assert.match(release, /prepare-artifact-id: \$\{\{ needs\.prepare\.outputs\.artifact-id \}\}/);
+  assert.match(release, /select-artifacts/);
+  assert.match(release, /artifact-ids: \$\{\{ steps\.target-artifacts\.outputs\.artifact-ids \}\}/);
+  assert.match(release, /verify-candidates/);
+  assert.doesNotMatch(release, /pattern: kiki-agent-|pattern: kiki-desktop-/);
+
+  const build = native.indexOf('- name: Build native executable');
+  const smoke = native.indexOf('- name: Smoke test native executable');
+  const receipt = native.indexOf('- name: Write native source receipt');
+  const desktop = native.indexOf('- name: Build and stage desktop bundles');
+  const upload = native.indexOf('- name: Upload immutable target candidate');
+  assert.ok(build >= 0 && build < smoke && smoke < receipt && receipt < desktop && desktop < upload);
+  assert.match(native, /kiki-release-target-\$\{\{ github\.run_id \}\}-\$\{\{ matrix\.target \}\}-\$\{\{ github\.run_attempt \}\}/);
+  assert.match(native, /if: inputs\.prepare-artifact-id == ''[\s\S]*name: \$\{\{ inputs\.upload-artifact-prefix \}\}-\$\{\{ matrix\.target \}\}/);
+  assert.match(native, /if: inputs\.build-desktop && matrix\.desktop-name != ''/);
+  assert.doesNotMatch(release, /needs:[\s\S]{0,80}desktop-bundle/);
+
+  const publish = release.slice(release.indexOf('  publish:'));
+  assert.doesNotMatch(publish, /update-catalog\.mjs/);
+  assert.match(publish, /test -f "\$KIKI_BUILT_IN_CATALOG_FILE"/);
+  assert.match(publish, /Published npm package differs/);
+  assert.match(publish, /Existing release asset differs/);
+  assert.match(publish, /refusing to mutate public assets/);
+  const signatureVerify = publish.indexOf('verify-updater-signature.mjs');
+  const manifest = publish.indexOf('desktop-release-manifest.mjs');
+  assert.ok(signatureVerify >= 0 && signatureVerify < manifest);
+  assert.match(publish, /--public-key "\$KIKI_UPDATER_PUBLIC_KEY"/);
+  assert.match(publish, /stage-npm/);
 });
 
 void test('every Pages artifact contains feeds before upload and deployment', async () => {
