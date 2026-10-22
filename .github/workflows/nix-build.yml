@@ -2,14 +2,26 @@ name: Nix Build
 
 on:
   workflow_dispatch:
+    inputs:
+      cold_node_cache:
+        description: Skip cache restore and rebuild the Node toolchain from a clean hosted runner
+        type: boolean
+        default: false
+      trusted_cache_write:
+        description: Allow this explicitly trusted dispatch to write the shared Node cache
+        type: boolean
+        default: false
   pull_request:
     branches:
       - main
+      - kiki
   push:
     branches:
       - main
+      - kiki
 
 permissions:
+  actions: read
   contents: read
   pull-requests: write
 
@@ -91,6 +103,9 @@ jobs:
     name: nix build .#kiki
     needs: check-workspace-sync
     runs-on: ubuntu-latest
+    env:
+      NIX_STORE_COMPAT_EPOCH: 1
+      TRUSTED_CACHE_WRITE: ${{ (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) || (github.event_name == 'workflow_dispatch' && inputs.trusted_cache_write) }}
 
     steps:
       - name: Checkout
@@ -101,12 +116,115 @@ jobs:
         with:
           nix_path: nixpkgs=channel:nixos-unstable
 
+      - name: Resolve Node derivation cache key
+        id: node
+        run: |
+          set -euo pipefail
+          SYSTEM="$(nix eval --raw --impure --expr builtins.currentSystem)"
+          DRV_PATH="$(nix eval --raw ".#packages.${SYSTEM}.ci-nodejs.drvPath")"
+          DRV_IDENTITY="$(basename "$DRV_PATH")"
+          CACHE_KEY="nix-node-v1-${SYSTEM}-${NIX_STORE_COMPAT_EPOCH}-${DRV_IDENTITY}"
+          {
+            echo "system=$SYSTEM"
+            echo "drv-path=$DRV_PATH"
+            echo "drv-identity=$DRV_IDENTITY"
+            echo "cache-key=$CACHE_KEY"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Restore exact Node store cache
+        id: restore-node-cache
+        if: github.event_name != 'workflow_dispatch' || inputs.cold_node_cache != true
+        continue-on-error: true
+        uses: nix-community/cache-nix-action/restore@7df957e333c1e5da7721f60227dbba6d06080569
+        with:
+          primary-key: ${{ steps.node.outputs.cache-key }}
+          backend: actions
+          save: false
+
+      - name: Record Node cache restore
+        if: always()
+        env:
+          COLD_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.cold_node_cache }}
+          RESTORE_HIT: ${{ steps.restore-node-cache.outputs.hit-primary-key }}
+          RESTORE_OUTCOME: ${{ steps.restore-node-cache.outcome }}
+        run: |
+          {
+            echo "### Nix Node cache"
+            echo "- key: \`${{ steps.node.outputs.cache-key }}\`"
+            echo "- cold mode: \`${COLD_MODE:-false}\`"
+            echo "- restore outcome: \`${RESTORE_OUTCOME}\`"
+            echo "- exact-key hit: \`${RESTORE_HIT:-false}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Reject an unsafe cache restore
+        if: steps.restore-node-cache.outcome == 'failure'
+        run: |
+          echo "::error::The Nix store cache could not be restored safely. Re-run this commit with the cold_node_cache dispatch input instead of building on a partially restored store."
+          exit 1
+
+      - name: Build and verify every Node output
+        id: build-node
+        run: |
+          set -euo pipefail
+          DRV_PATH="${{ steps.node.outputs.drv-path }}"
+          ROOT_DIR="$RUNNER_TEMP/ci-nodejs-gcroots"
+          mkdir -p "$ROOT_DIR"
+          nix build '.#ci-nodejs^*' --print-build-logs --out-link "$RUNNER_TEMP/ci-nodejs"
+          mapfile -t OUTPUTS < <(nix-store --query --outputs "$DRV_PATH")
+          test "${#OUTPUTS[@]}" -gt 0
+          for output in "${OUTPUTS[@]}"; do
+            test -e "$output"
+            nix-store --add-root "$ROOT_DIR/$(basename "$output")" --indirect --realise "$output" >/dev/null
+          done
+          NAR_BYTES="$(nix path-info --json --recursive "${OUTPUTS[@]}" | jq '[to_entries[].value.narSize] | add // 0')"
+          STORE_BYTES="$(du -sb /nix/store | awk '{print $1}')"
+          {
+            echo "outputs=${#OUTPUTS[@]}"
+            echo "nar-bytes=$NAR_BYTES"
+            echo "store-bytes=$STORE_BYTES"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "- verified outputs: \`${#OUTPUTS[@]}\`"
+            echo "- rooted closure NAR bytes: \`$NAR_BYTES\`"
+            echo "- store bytes before save: \`$STORE_BYTES\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save verified Node store cache
+        id: save-node-cache
+        if: steps.restore-node-cache.outputs.hit-primary-key != 'true' && env.TRUSTED_CACHE_WRITE == 'true'
+        continue-on-error: true
+        uses: nix-community/cache-nix-action/save@7df957e333c1e5da7721f60227dbba6d06080569
+        with:
+          primary-key: ${{ steps.node.outputs.cache-key }}
+          backend: actions
+          gc-max-store-size-linux: 3G
+
+      - name: Record saved Node cache size
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE_KEY: ${{ steps.node.outputs.cache-key }}
+          CACHE_SAVE_OUTCOME: ${{ steps.save-node-cache.outcome }}
+        run: |
+          set -euo pipefail
+          CACHE_BYTES="$(gh api --method GET "/repos/$GITHUB_REPOSITORY/actions/caches" -f key="$CACHE_KEY" --jq '.actions_caches[0].size_in_bytes // empty' 2>/dev/null || true)"
+          STORE_BYTES="$(du -sb /nix/store | awk '{print $1}')"
+          {
+            echo "- save permitted: \`${TRUSTED_CACHE_WRITE}\`"
+            echo "- save outcome: \`${CACHE_SAVE_OUTCOME}\`"
+            echo "- store bytes after save GC: \`$STORE_BYTES\`"
+            echo "- reported cache bytes: \`${CACHE_BYTES:-not-yet-reported}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Build
         id: build
         run: |
           set -euo pipefail
           LOG_FILE="$(mktemp)"
-          if nix build .#kiki --print-build-logs 2>&1 | tee "$LOG_FILE"; then
+          if {
+            nix build .#kiki --print-build-logs 2>&1 | tee "$LOG_FILE"
+            ./result/bin/kiki --version 2>&1 | tee -a "$LOG_FILE"
+          }; then
             echo "BUILD_FAILED=false" >> "$GITHUB_OUTPUT"
           else
             echo "BUILD_FAILED=true" >> "$GITHUB_OUTPUT"
@@ -189,3 +307,9 @@ jobs:
       - name: Fail the job if build failed
         if: steps.build.outputs.BUILD_FAILED == 'true'
         run: exit 1
+
+      - name: Fail after application verification if the cache save failed
+        if: steps.save-node-cache.outcome == 'failure'
+        run: |
+          echo "::error::The Node toolchain and application were verified, but the shared Node cache was not saved. Re-run the trusted workflow to complete the cache contract."
+          exit 1

@@ -310,6 +310,7 @@
         in
         {
           inherit kiki;
+          ci-nodejs = nodejs;
           default = kiki;
         }
       );
