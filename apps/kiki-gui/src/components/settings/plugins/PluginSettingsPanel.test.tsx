@@ -306,10 +306,9 @@ describe('the settings slot reads and saves the media document', () => {
   });
 
   it('keeps a nested label and summary button editable after the locale flips', async () => {
-    const scenario = (await import('../../../../fixtures/plugin-settings-pages.scenario.mjs')).default as {
-      pluginPanels: Record<string, Array<{ html: string }>>;
-    };
+    const scenario = (await import('../../../../fixtures/plugin-settings-pages.scenario.mjs')).default;
     const pluginHtml = scenario.pluginPanels['kiki-output-layer']?.[0]?.html;
+    if (pluginHtml === undefined) throw new Error('kiki-output-layer panel html is missing');
     expect(pluginHtml).toContain('<label id="name-label">');
     expect(pluginHtml).toContain('<summary id="actions">');
     getPluginPanelDocument.mockResolvedValue({ html: pluginHtml });
