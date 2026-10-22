@@ -631,9 +631,11 @@ describe('KimiHarness config API', () => {
 
     const features = await harness.getExperimentalFeatures();
 
-    // The registry order is the engine's; the SDK must forward the whole
-    // catalog, not a filtered subset. (secondary-model left the registry with
-    // the model-inheritance removal.)
+    // The registry order is the engine's import order; the SDK must forward the
+    // whole catalog, not a filtered subset. native_browser registers from
+    // app/browser/flag.ts when optionalCapability/policyService loads it, and
+    // auto_session_title registers later from session/sessionTitle/flag.ts.
+    // (secondary-model left the registry with the model-inheritance removal.)
     expect(features.map((feature) => feature.id)).toEqual([
       'plugin_app_lifecycle',
       'recipes',
@@ -641,8 +643,8 @@ describe('KimiHarness config API', () => {
       'native_ssh',
       'session_idle_eviction',
       'task_wait',
-      'auto_session_title',
       'native_browser',
+      'auto_session_title',
       'local_session_resume',
       'plugin_workspace_usage',
       'tool-select',
