@@ -73,6 +73,36 @@ export const promptConfigSchema = z.object({
 }).strict();
 export type PromptConfig = z.infer<typeof promptConfigSchema>;
 
+export const retryPolicySchema = z.object({
+  match: z.string().min(1),
+  models: z.array(z.string().min(1)).min(1).optional(),
+  providers: z.array(z.string().min(1)).min(1).optional(),
+  max_attempts: z.number().int().min(1).optional(),
+  backoff: z.number().int().min(0).optional(),
+  retry: z.boolean().optional(),
+}).strict();
+export type RetryPolicy = z.infer<typeof retryPolicySchema>;
+
+export const retryConfigSchema = z.object({
+  max_attempts: z.number().int().min(1).optional(),
+  policies: z.array(retryPolicySchema).optional(),
+}).strict();
+export type RetryConfig = z.infer<typeof retryConfigSchema>;
+
+export const retryPolicyResponseSchema = z.object({
+  match: z.string().min(1),
+  models: z.array(z.string().min(1)).min(1).optional(),
+  providers: z.array(z.string().min(1)).min(1).optional(),
+  maxAttempts: z.number().int().min(1).optional(),
+  backoff: z.number().int().min(0).optional(),
+  retry: z.boolean(),
+}).strict();
+export const retryConfigResponseSchema = z.object({
+  maxAttempts: z.number().int().min(1).optional(),
+  policies: z.array(retryPolicyResponseSchema).optional(),
+}).strict();
+export type RetryConfigResponse = z.infer<typeof retryConfigResponseSchema>;
+
 export const providerConfigResponseSchema = z.object({
   type: z.string(),
   base_url: z.string().optional(),
@@ -331,7 +361,7 @@ export const configResponseSchema = z.object({
   experimental: z.record(z.string(), z.boolean()).optional(),
   skip_builtin_profile_installation: z.array(z.string()).optional(),
   disabled_named_profiles: z.array(z.string()).optional(),
-  retry: z.unknown().optional(),
+  retry: retryConfigResponseSchema.optional(),
   plugins: z.object({ marketplaceUrl: z.string().optional() }).passthrough().optional(),
   raw: z.record(z.string(), z.unknown()).optional(),
 });
@@ -391,7 +421,7 @@ export const patchConfigRequestSchema = z.object({
   /** Per-engine launch overrides keyed by executor id; a null value removes a field. */
   agent_executor_overrides: z.record(z.string(), z.unknown()).optional(),
   request_governance: requestGovernanceConfigPatchSchema.optional(),
-  retry: z.unknown().optional(),
+  retry: retryConfigSchema.optional(),
   plugins: z.object({ marketplace_url: z.string().optional() }).optional(),
   optional_capabilities: optionalCapabilitiesPatchSchema.optional(),
 });

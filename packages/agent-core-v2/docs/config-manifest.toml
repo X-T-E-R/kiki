@@ -866,6 +866,8 @@ rules = []
 # max_attempts: integer
 # policies: object[] — one entry per item:
   # match: string
+  # models: string[]
+  # providers: string[]
   # max_attempts: integer
   # backoff: integer
   # retry: boolean (default: true)

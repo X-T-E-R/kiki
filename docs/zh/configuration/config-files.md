@@ -576,7 +576,7 @@ history = ["as I said", "earlier", "之前", "我说过"]
 
 ## `retry`
 
-`retry` 可为指定的单步错误定制总尝试次数与固定退避时间。默认情况下，可重试的单步最多尝试 5 次，重试前依次等待 2、4、8、16 秒，并加入最多 25% 的随机抖动（总计 30–37.5 秒）。provider 返回的 `Retry-After` 值或命中策略的固定 `backoff` 会替代对应的默认等待时间。本节及每条策略都是严格配置：未知字段会被拒绝，不会静默忽略。
+`retry` 可为指定的单步错误定制总尝试次数与固定退避时间。默认情况下，可重试的单步最多尝试 5 次，重试前依次等待 2、4、8、16 秒，并加入最多 25% 的随机抖动（总计 30–37.5 秒）。provider 返回的 `Retry-After` 值或命中策略的固定 `backoff` 会替代对应的默认等待时间。策略还可限定精确的模型和 provider 配置键，避免一个 provider 的临时故障改变其它渠道的重试行为。本节及每条策略都是严格配置：未知字段会被拒绝，不会静默忽略。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
@@ -587,26 +587,27 @@ history = ["as I said", "earlier", "之前", "我说过"]
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `match` | `string` | 是 | 与错误码和错误名称匹配的正则表达式（按模式匹配文本的规则） |
+| `match` | `string` | 是 | 与错误码和错误名称匹配的 JavaScript 正则表达式（按模式匹配文本的规则）；`(?i)` 等内联修饰符无效，该策略会被忽略并产生配置警告 |
+| `models` | `array<string>` | 否 | 精确的规范 `[models]` 配置键；仅绑定模型在列表中时生效 |
+| `providers` | `array<string>` | 否 | 精确的 `[providers]` 配置键；仅绑定 provider 在列表中时生效 |
 | `max_attempts` | `integer` | 否 | 命中错误的最大总尝试次数（含首次尝试）；优先于本节的总预算 |
 | `backoff` | `integer` | 否 | 每次重试前固定等待的毫秒数；provider 返回的 retry-after 提示仍优先 |
 | `retry` | `boolean` | 否 | 默认为 `true`。`false` 可抑制 Kiki 内建判定原本会重试的错误；`true` 不能强制重试被判定为不可重试的错误 |
 
-策略从上到下检查，因此应把更具体的正则表达式放在更宽泛的规则之前：
+策略从上到下检查。`models` 或 `providers` 不包含当前绑定时会跳过该策略，余下策略中首个 `match` 命中错误的策略生效；同时设置两个 selector（选择条件）时必须全部命中。省略两个 selector 时保持原有的全局逐错误行为。
+
+下面的配置只为一个原生 Google GenAI Argon 绑定的 HTTP 429 提供最多 20 次总尝试；其它模型和 provider 仍使用默认的 5 次：
 
 ```toml
-[retry]
-max_attempts = 4
-
 [[retry.policies]]
 match = '^provider\.rate_limit$'
-max_attempts = 6
-backoff = 1000
-
-[[retry.policies]]
-match = '^provider\.'
-retry = false
+models = ['gemini-4-argon']
+providers = ['google-native']
+max_attempts = 20
+backoff = 15000
 ```
+
+请把 `gemini-4-argon` 和 `google-native` 替换成 `[models]` 与 `[providers]` 表中的精确配置键。仅当 provider 未返回 `Retry-After` 时才使用 `backoff`。该策略不会让 HTTP 400、额度耗尽、部分输出、送达状态不明或已经执行的失败变成可重试；`retry = true` 不会越过 Kiki 的不可重试判定。
 
 ## `transcript_memory`
 

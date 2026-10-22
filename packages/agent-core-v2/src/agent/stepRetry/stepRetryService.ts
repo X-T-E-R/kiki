@@ -24,10 +24,12 @@ import {
 import { LOOP_CONTROL_SECTION, type LoopControl } from '#/agent/loop/configSection';
 import { TurnStarted } from '#/agent/loop/turnEvents';
 import { IAgentStateService } from '#/agent/state/agentState';
+import { IAgentProfileService } from '#/agent/profile/profile';
+import { IModelCatalog } from '#/kosong/model/catalog';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 
 import { RETRY_SECTION, type RetryConfig } from './configSection';
-import { resolveRetryPolicy } from './retryPolicy';
+import { resolveRetryPolicy, type RetryBindingIdentity } from './retryPolicy';
 import { IAgentStepRetryService } from './stepRetry';
 
 const DEFAULT_STEP_RETRY_BASE_DELAY_MS = 2_000;
@@ -85,6 +87,8 @@ export class AgentStepRetryService extends Disposable implements IAgentStepRetry
     @IEventBus private readonly eventBus: IEventBus,
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
     @IAgentStateService private readonly states: IAgentStateService,
+    @IAgentProfileService private readonly profile: IAgentProfileService,
+    @IModelCatalog private readonly models: IModelCatalog,
   ) {
     super();
     this.states.contributeState(stepRetryLastFailedDriverIdKey);
@@ -130,9 +134,20 @@ export class AgentStepRetryService extends Disposable implements IAgentStepRetry
     return this.config.get<RetryConfig | undefined>(RETRY_SECTION);
   }
 
+  private retryBinding(): RetryBindingIdentity {
+    const modelAlias = this.profile.data().modelAlias;
+    if (modelAlias === undefined) return {};
+    try {
+      const model = this.models.get(modelAlias, this.profile.getRecipeModelSettings(modelAlias));
+      return { model: model.id, provider: model.providerName };
+    } catch {
+      return { model: modelAlias };
+    }
+  }
+
   private shouldRetry(error: unknown): boolean {
     if (requestDeliveryProvenance(error) !== undefined) return false;
-    return resolveRetryPolicy(this.retryConfig(), unwrapErrorCause(error)).retry;
+    return resolveRetryPolicy(this.retryConfig(), unwrapErrorCause(error), this.retryBinding()).retry;
   }
 
   private async recover(context: LoopErrorContext): Promise<boolean> {
@@ -148,7 +163,7 @@ export class AgentStepRetryService extends Disposable implements IAgentStepRetry
 
     const error = unwrapErrorCause(context.error);
     const retryConfig = this.retryConfig();
-    const decision = resolveRetryPolicy(retryConfig, error);
+    const decision = resolveRetryPolicy(retryConfig, error, this.retryBinding());
     const maxAttempts = Math.max(
       decision.maxAttempts ??
         retryConfig?.maxAttempts ??

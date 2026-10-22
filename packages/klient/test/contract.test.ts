@@ -7,7 +7,9 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import type { ConfigResponse } from '@kiki/protocol';
 import type { CapabilityStep, CapabilityStatus, CapabilityStepReason } from '@kiki/agent-core-v2/app/capability/types';
+import type { HttpRestConfigPatch } from '../src/core/facade/http-rest.js';
 import { capabilityStepSchema, capabilityStatusSchema } from '../src/contract/global/capabilities.js';
 
 import { pluginManifestSchema } from '../src/contract/global/plugins.js';
@@ -35,6 +37,36 @@ import {
 import { modelConfigSchema } from '../src/contract/global/models.js';
 
 import { sessionViewSubscribeInputSchema, sessionViewTranscriptPageInputSchema, sessionViewSignalSchema } from '../src/contract/session/view.js';
+
+describe('HTTP config facade contract', () => {
+  it('carries scoped retry selectors through Klient request and response types', () => {
+    const patch: HttpRestConfigPatch = {
+      retry: {
+        policies: [{
+          match: '^provider\\.rate_limit$',
+          models: ['gemini-4-argon'],
+          providers: ['google-native'],
+          max_attempts: 20,
+        }],
+      },
+    };
+    const response: ConfigResponse = {
+      providers: {},
+      retry: {
+        policies: [{
+          match: '^provider\\.rate_limit$',
+          models: ['gemini-4-argon'],
+          providers: ['google-native'],
+          maxAttempts: 20,
+          retry: true,
+        }],
+      },
+    };
+
+    expect(patch.retry?.policies?.[0]?.providers).toEqual(['google-native']);
+    expect(response.retry?.policies?.[0]?.models).toEqual(['gemini-4-argon']);
+  });
+});
 
 describe('goal budget edit contract', () => {
   it('preserves omitted fields and explicit clears without adding a separate procedure', () => {

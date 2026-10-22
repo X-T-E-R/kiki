@@ -513,6 +513,137 @@ describe('stepRetry plugin', () => {
     ]);
   });
 
+  it('applies a policy only when both model and provider selectors match the bound request', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    ctx = createRetryTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        throw new APIProviderRateLimitError('slow down');
+      }),
+      {
+        initialConfig: {
+          retry: {
+            policies: [{
+              match: '^provider\\.rate_limit$',
+              models: ['mock-model'],
+              providers: ['test-provider'],
+              maxAttempts: 2,
+              backoff: 0,
+            }],
+          },
+        },
+      },
+    );
+
+    const result = await runTurn(1);
+
+    expect(result.type).toBe('failed');
+    expect(calls).toBe(2);
+    expect(rpcEvents('turn.step.retrying')).toEqual([
+      expect.objectContaining({ args: expect.objectContaining({ maxAttempts: 2, delayMs: 0 }) }),
+    ]);
+  });
+
+  it('skips selector-mismatched policies without changing the default retry budget', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    ctx = createRetryTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        throw new APIProviderRateLimitError('slow down');
+      }),
+      {
+        initialConfig: {
+          retry: {
+            policies: [{
+              match: '^provider\\.rate_limit$',
+              models: ['other-model'],
+              providers: ['other-provider'],
+              maxAttempts: 1,
+              backoff: 0,
+            }],
+          },
+        },
+      },
+    );
+
+    const result = await runTurn(1);
+
+    expect(result.type).toBe('failed');
+    expect(calls).toBe(5);
+    expect(rpcEvents('turn.step.retrying')).toHaveLength(4);
+    expect(rpcEvents('turn.step.retrying')[0]).toEqual(
+      expect.objectContaining({ args: expect.objectContaining({ maxAttempts: 5 }) }),
+    );
+  });
+
+  it('keeps first-match order among policies whose selectors match', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    ctx = createRetryTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        throw new APIProviderRateLimitError('slow down');
+      }),
+      {
+        initialConfig: {
+          retry: {
+            policies: [
+              { match: '^provider\\.rate_limit$', models: ['other-model'], maxAttempts: 1 },
+              { match: '^provider\\.rate_limit$', providers: ['test-provider'], maxAttempts: 3, backoff: 0 },
+              { match: '^provider\\.rate_limit$', maxAttempts: 4 },
+            ],
+          },
+        },
+      },
+    );
+
+    const result = await runTurn(1);
+
+    expect(result.type).toBe('failed');
+    expect(calls).toBe(3);
+    expect(rpcEvents('turn.step.retrying')).toHaveLength(2);
+    expect(rpcEvents('turn.step.retrying')[0]).toEqual(
+      expect.objectContaining({ args: expect.objectContaining({ maxAttempts: 3, delayMs: 0 }) }),
+    );
+  });
+
+  it.each([
+    ['HTTP 400', () => new APIStatusError(400, 'invalid request')],
+    ['unknown delivery', () => Object.assign(new Error('delivery outcome unknown'), { name: 'UnknownDeliveryError' })],
+    ['partial output', () => Object.assign(new Error('partial output retained'), { name: 'PartialOutputError' })],
+    ['already executed', () => Object.assign(new Error('request already executed'), { name: 'AlreadyExecutedError' })],
+  ])('does not let retry = true force a non-retryable %s failure', async (_case, makeError) => {
+    vi.useFakeTimers();
+    let calls = 0;
+    ctx = createRetryTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        throw makeError();
+      }),
+      {
+        initialConfig: {
+          retry: {
+            policies: [{
+              match: '.*',
+              models: ['mock-model'],
+              providers: ['test-provider'],
+              maxAttempts: 10,
+              retry: true,
+            }],
+          },
+        },
+      },
+    );
+
+    const result = await runTurn(1);
+
+    expect(result.type).toBe('failed');
+    expect(calls).toBe(1);
+    expect(rpcEvents('turn.step.retrying')).toEqual([]);
+  });
+
   it('honors the retry section attempt budget when no policy matches', async () => {
     vi.useFakeTimers();
     let calls = 0;

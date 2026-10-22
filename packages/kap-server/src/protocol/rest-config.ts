@@ -23,7 +23,7 @@ import {
 } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/configSection';
 import { WorkspaceInstanceConfigSchema } from '@kiki/agent-core-v2/workspace/workspaceInstance/configSection';
 import { RequestIdentityPolicyWireSchema } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
-import { modelSwitchConfigSchema, modelSwitchConfigPatchSchema, agentExecutorDisplayConfigSchema, agentExecutorDisplayConfigPatchSchema, nbSearchConfigPatchSchema, nbSearchSourceConfigSchema, requestGovernanceConfigPatchSchema, spaceUiConfigSchema, spaceUiConfigPatchSchema, sessionTitleConfigResponseSchema, sessionTitleConfigPatchSchema, interactionConfigResponseSchema, interactionConfigPatchSchema } from '@kiki/protocol';
+import { modelSwitchConfigSchema, modelSwitchConfigPatchSchema, agentExecutorDisplayConfigSchema, agentExecutorDisplayConfigPatchSchema, nbSearchConfigPatchSchema, nbSearchSourceConfigSchema, requestGovernanceConfigPatchSchema, retryConfigResponseSchema, retryConfigSchema, spaceUiConfigSchema, spaceUiConfigPatchSchema, sessionTitleConfigResponseSchema, sessionTitleConfigPatchSchema, interactionConfigResponseSchema, interactionConfigPatchSchema } from '@kiki/protocol';
 import { worktreeConfigSchema } from '@kiki/agent-core-v2/app/git/worktreeConfig';
 import { SessionResidencyConfigSchema } from '@kiki/agent-core-v2/app/sessionManager/configSection';
 import { z } from 'zod';
@@ -237,7 +237,7 @@ export const configResponseSchema = z.object({
   optional_capabilities: optionalCapabilitiesResponseSchema.optional(),
   prompt: PromptConfigSchema.optional(),
   task_board: TaskBoardConfigSchema.optional(),
-  retry: z.unknown().optional(),
+  retry: retryConfigResponseSchema.optional(),
   raw: z.record(z.string(), z.unknown()).optional(),
   origins: z.record(z.string(), z.record(z.string(), z.enum(['default', 'preset', 'base', 'home', 'env', 'memory']))).optional(),
 });
@@ -304,7 +304,7 @@ export const patchConfigRequestSchema = z.object({
   optional_capabilities: optionalCapabilitiesPatchSchema.optional(),
   prompt: PromptConfigPatchSchema.optional(),
   task_board: TaskBoardConfigSchema.optional(),
-  retry: z.unknown().optional(),
+  retry: retryConfigSchema.optional(),
   request_governance: requestGovernanceConfigPatchSchema.optional(),
   replace_domains: z.array(replaceableConfigDomainSchema).optional(),
   agent_executor_overrides: z.record(z.string(), z.unknown()).optional(),

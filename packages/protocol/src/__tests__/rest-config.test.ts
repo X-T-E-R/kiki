@@ -74,6 +74,53 @@ describe('config REST protocol', () => {
     });
   });
 
+  it('validates scoped retry policies on patch and response surfaces', () => {
+    const patch = {
+      retry: {
+        max_attempts: 5,
+        policies: [{
+          match: '^provider\\.rate_limit$',
+          models: ['gemini-4-argon'],
+          providers: ['google-native'],
+          max_attempts: 20,
+          backoff: 15_000,
+          retry: true,
+        }],
+      },
+    };
+    expect(patchConfigRequestSchema.parse(patch)).toEqual(patch);
+    expect(configResponseSchema.parse({
+      providers: {},
+      retry: {
+        maxAttempts: 5,
+        policies: [{
+          match: '^provider\\.rate_limit$',
+          models: ['gemini-4-argon'],
+          providers: ['google-native'],
+          maxAttempts: 20,
+          backoff: 15_000,
+          retry: true,
+        }],
+      },
+    }).retry).toEqual({
+      maxAttempts: 5,
+      policies: [{
+        match: '^provider\\.rate_limit$',
+        models: ['gemini-4-argon'],
+        providers: ['google-native'],
+        maxAttempts: 20,
+        backoff: 15_000,
+        retry: true,
+      }],
+    });
+    expect(patchConfigRequestSchema.safeParse({
+      retry: { policies: [{ match: '429', models: [] }] },
+    }).success).toBe(false);
+    expect(patchConfigRequestSchema.safeParse({
+      retry: { policies: [{ match: '429', provider: 'google-native' }] },
+    }).success).toBe(false);
+  });
+
   it('omits the retired telemetry patch field', () => {
     expect(patchConfigRequestSchema.parse({ telemetry: false })).toEqual({});
   });
