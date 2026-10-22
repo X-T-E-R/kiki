@@ -23,6 +23,10 @@ import type {
 } from '#/kosong/contract/provider';
 import type { Tool } from '#/kosong/contract/tool';
 import type { TokenUsage } from '#/kosong/contract/usage';
+import type { RequestCompression } from '#/kosong/contract/requestCompression';
+import { createRequestCompressionFetch } from '../request-compression';
+import { guardRequestDelivery } from '../request-delivery';
+import { matchesProviderTarget } from '../../providerTarget';
 
 import {
   convertChatCompletionStreamToolCall,
@@ -106,6 +110,7 @@ export interface OpenAILegacyOptions {
   thinkingEffort?: ThinkingEffort | undefined;
   httpClient?: unknown;
   defaultHeaders?: Record<string, string>;
+  requestCompression?: RequestCompression;
   toolMessageConversion?: ToolMessageConversion | undefined;
   clientFactory?: (auth: ProviderRequestAuth) => OpenAI;
   hooks?: OpenAIChatCompletionsHooks | undefined;
@@ -498,6 +503,8 @@ export class OpenAILegacyChatProvider implements ChatProvider {
   private readonly _apiKey: string | undefined;
   private readonly _baseUrl: string | undefined;
   private readonly _defaultHeaders: Record<string, string> | undefined;
+  private readonly _requestCompression: ReturnType<typeof createRequestCompressionFetch>;
+  private readonly _guardDelivery: boolean;
   private readonly _reasoningKeyDialect: ReasoningKeyDialect;
   private readonly _offEffort: string | undefined;
   private readonly _thinkingEffort: ThinkingEffort | undefined;
@@ -518,6 +525,9 @@ export class OpenAILegacyChatProvider implements ChatProvider {
     this._apiKey = apiKey === undefined || apiKey.length === 0 ? undefined : apiKey;
     this._baseUrl = options.baseUrl ?? 'https://api.openai.com/v1';
     this._defaultHeaders = options.defaultHeaders;
+    this._requestCompression = createRequestCompressionFetch(options.requestCompression);
+    this._guardDelivery = options.requestCompression !== undefined && options.requestCompression.encoding !== 'off' &&
+      matchesProviderTarget(`${this._baseUrl.replace(/\/$/, '')}/chat/completions`, options.requestCompression.targets);
     this._model = options.model;
     this._stream = options.stream ?? true;
     this._hooks = options.hooks;
@@ -639,7 +649,7 @@ export class OpenAILegacyChatProvider implements ChatProvider {
           options?.signal ? { signal: options.signal } : undefined,
         )
         .withResponse();
-      return new OpenAILegacyStreamedMessage(
+      return guardRequestDelivery(new OpenAILegacyStreamedMessage(
         data as unknown as
           | OpenAI.Chat.ChatCompletion
           | AsyncIterable<OpenAI.Chat.ChatCompletionChunk>,
@@ -648,7 +658,7 @@ export class OpenAILegacyChatProvider implements ChatProvider {
         parseTraceId(response.headers),
         this._hooks?.extractUsage,
         this._hooks?.convertError,
-      );
+      ), this._guardDelivery);
     } catch (error: unknown) {
       throw convertOpenAIError(error, this._hooks?.convertError);
     }
@@ -756,7 +766,7 @@ export class OpenAILegacyChatProvider implements ChatProvider {
       apiKey,
       baseURL: this._baseUrl,
       maxRetries: 0,
-      fetch: requestIdentityFetchForAuth(auth),
+      fetch: this._requestCompression(requestIdentityFetchForAuth(auth)),
     };
     const defaultHeaders = mergeRequestHeaders(this._defaultHeaders, undefined, auth?.headers);
     if (defaultHeaders !== undefined) {

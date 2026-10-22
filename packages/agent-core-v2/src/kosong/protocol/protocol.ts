@@ -4,6 +4,7 @@ import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiatio
 import type { ModelCapability } from '#/kosong/contract/capability';
 import type { InspectionSource } from '#/kosong/contract/inspection';
 import type { ChatProvider } from '#/kosong/contract/provider';
+import type { RequestCompression } from '#/kosong/contract/requestCompression';
 
 import type { ProtocolBaseId, ResolvedAdapterIdentity } from './protocolBase';
 
@@ -32,6 +33,7 @@ export interface ProtocolAdapterConfig {
   readonly modelName: string;
   readonly apiKey?: string;
   readonly defaultHeaders?: Readonly<Record<string, string>>;
+  readonly requestCompression?: RequestCompression;
   readonly providerOptions?: ProtocolProviderOptions;
 }
 

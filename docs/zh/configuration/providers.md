@@ -44,6 +44,32 @@ protocol = "openai_responses"
 
 [模型 REST API](../server/rest-api.md#模型与供应商) 分别返回已保存的 `protocol` 和求解后的请求格式 `effective_protocol`。保存格式不会测试连接是否可用。
 
+## 请求压缩
+
+网关明确支持压缩请求体时，可在其供应商配置中设置 `request_compression`。此配置适用于 Responses、Messages 和 Chat Completions；其他协议保持原有传输路径。
+
+```toml
+[providers.gateway.request_compression]
+encoding = "gzip"
+targets = ["https://example.com/v1"]
+min_bytes = 1024
+```
+
+`targets` 列出已支持压缩的 HTTP(S) API 基础地址，请求必须匹配来源和路径边界；把模型切到其他端点不会自动为新地址启用压缩。`min_bytes` 按 UTF-8 请求体字节计数，默认 1024。空请求体、小包、流式请求体、已有编码或非 JSON 请求体保持不变；只有压缩后更小才采用压缩结果。删除此表或设置 `encoding = "off"` 即可关闭。
+
+使用普通 zstd 时，改为 `encoding = "zstd"`。gzip 和普通 zstd 都不会要求网关留存请求体。若网关还实现了 Portway 请求字典扩展，可单独明确同意临时留存请求体：
+
+```toml
+[providers.gateway.request_compression]
+encoding = "zstd"
+targets = ["https://example.com/v1"]
+dictionary = true
+```
+
+`dictionary = true` 要求网关缓存精确请求字节，其中可能包含消息、媒体、工具结果和签名。Kiki 只在有容量上限的进程内存中保存已确认的字典，最长十分钟。字典确认只表示字节已缓存，不表示模型生成完成。每次请求仍由完整本地历史构建，不会从猜测的模型输出重建编辑或压缩后的历史。
+
+只有带明确标记的推理前解码拒绝才允许切换编码重试，最多三次。响应丢失或送达不确定时，不会自动重新生成。目标不支持压缩时，先关闭压缩再发起新请求，不依赖自动尝试未知格式。
+
 ## `/provider` — 交互式供应商管理
 
 不想手动编辑 TOML？在 TUI 里输入 `/provider` 打开**供应商管理器**，可以以交互方式添加或删除供应商。

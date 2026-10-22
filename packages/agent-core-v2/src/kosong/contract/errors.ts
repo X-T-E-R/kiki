@@ -283,7 +283,25 @@ export function isImageFormatError(error: unknown): boolean {
   return false;
 }
 
+export function isAmbiguousRequestDelivery(error: unknown): boolean {
+  const visited = new Set<unknown>();
+  while (error instanceof Error && !visited.has(error)) {
+    if (error instanceof Error2 && error.details?.['request_delivery'] === 'ambiguous') return true;
+    visited.add(error);
+    error = error.cause;
+  }
+  return false;
+}
+
+export function ambiguousRequestDelivery(error: unknown): ChatProviderError {
+  return new ChatProviderError('Request delivery is uncertain; generation was not retried.', undefined, {
+    cause: error,
+    details: { request_delivery: 'ambiguous' },
+  });
+}
+
 export function isRetryableGenerateError(error: unknown): boolean {
+  if (isAmbiguousRequestDelivery(error)) return false;
   if (error instanceof APIConnectionError || error instanceof APITimeoutError) {
     return true;
   }

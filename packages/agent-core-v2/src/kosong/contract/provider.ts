@@ -2,6 +2,7 @@ import type { Message, StreamedMessagePart, VideoURLPart } from './message';
 import type { Tool } from './tool';
 import type { TokenUsage } from './usage';
 import type { StreamDiagnostics } from './streamDiagnostics';
+import type { ResponsesRequestTransport } from './responsesTransport';
 
 export type ThinkingEffort = 'off' | 'on' | (string & {});
 
@@ -110,6 +111,7 @@ export interface GenerateOptions {
   onStreamEnd?: (stats?: StreamDecodeStats) => void;
   onTraceId?: (traceId: string | null) => void;
   requestIdentity?: RequestIdentityWireOptions;
+  responsesTransport?: ResponsesRequestTransport;
 }
 
 /** The L0 `ChatProvider` wire contract (the file is named `provider`, but this is the contract, not an
