@@ -441,28 +441,54 @@ describe('session event waiting', () => {
     expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 
-  it('adopts a native timer only when an async advance yields', async () => {
+  it('adopts its own timeout only after an async yield', async () => {
     const realSetImmediate = globalThis.setImmediate;
     const realClearImmediate = globalThis.clearImmediate;
     vi.useFakeTimers();
+    const due = 1_000;
     let nativeFired = false;
-    // Fake-timer async advance yields with the real setImmediate. A native
-    // callback queued ahead of that yield calls the hijacked setTimeout and
-    // leaves a timer this wait does not own. Sync advance never yields.
+    let fired = false;
+    let cancelledFired = false;
+    let fireHandle: ReturnType<typeof globalThis.setTimeout> | undefined;
+    let cancelHandle: ReturnType<typeof globalThis.setTimeout> | undefined;
+    // Async advance yields through the real setImmediate. This callback is
+    // queued ahead of that yield and arms two timeouts on the hijacked clock.
+    // Sync advance does not yield, so neither timeout is armed yet. Other
+    // native callbacks can arm timers in the same yield, so this test watches
+    // only the handles it holds.
     const native = realSetImmediate(() => {
       nativeFired = true;
-      globalThis.setTimeout(() => {}, 60_000);
+      fireHandle = globalThis.setTimeout(() => {
+        fired = true;
+      }, due);
+      cancelHandle = globalThis.setTimeout(() => {
+        cancelledFired = true;
+      }, due);
     });
     try {
-      expect(vi.getTimerCount()).toBe(0);
+      expect(nativeFired).toBe(false);
       vi.advanceTimersByTime(0);
       expect(nativeFired).toBe(false);
-      expect(vi.getTimerCount()).toBe(0);
+      expect(fired).toBe(false);
+      expect(cancelledFired).toBe(false);
       await vi.advanceTimersByTimeAsync(0);
       expect(nativeFired).toBe(true);
-      expect(vi.getTimerCount()).toBe(1);
+      if (fireHandle === undefined || cancelHandle === undefined) {
+        throw new Error('native callback did not schedule its timeouts');
+      }
+      expect(fired).toBe(false);
+      expect(cancelledFired).toBe(false);
+      vi.advanceTimersByTime(due - 1);
+      expect(fired).toBe(false);
+      expect(cancelledFired).toBe(false);
+      globalThis.clearTimeout(cancelHandle);
+      vi.advanceTimersByTime(1);
+      expect(fired).toBe(true);
+      expect(cancelledFired).toBe(false);
     } finally {
       realClearImmediate(native);
+      if (fireHandle !== undefined) globalThis.clearTimeout(fireHandle);
+      if (cancelHandle !== undefined) globalThis.clearTimeout(cancelHandle);
       vi.useRealTimers();
     }
   });
