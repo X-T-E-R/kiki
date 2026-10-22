@@ -305,6 +305,126 @@ describe('the settings slot reads and saves the media document', () => {
     }
   });
 
+  it('keeps a nested label and summary button editable after the locale flips', async () => {
+    const scenario = (await import('../../../../fixtures/plugin-settings-pages.scenario.mjs')).default as {
+      pluginPanels: Record<string, Array<{ html: string }>>;
+    };
+    const pluginHtml = scenario.pluginPanels['kiki-output-layer']?.[0]?.html;
+    expect(pluginHtml).toContain('<label id="name-label">');
+    expect(pluginHtml).toContain('<summary id="actions">');
+    getPluginPanelDocument.mockResolvedValue({ html: pluginHtml });
+    const { frame } = await renderPanel();
+    const srcdoc = frame.getAttribute('srcdoc') ?? '';
+    expect(srcdoc).not.toContain('EN_MAP');
+    expect(srcdoc).not.toContain("querySelectorAll('h2,label,summary,button,#status')");
+
+    const probe = document.createElement('iframe');
+    document.body.append(probe);
+    const patches: unknown[] = [];
+    const onMessage = (event: MessageEvent) => {
+      const data = event.data as { channel?: string; kind?: string; method?: string; id?: number; values?: unknown };
+      if (data?.channel !== 'kiki.panel.v1' || data.kind !== 'request' || event.source !== probe.contentWindow) return;
+      if (data.method === 'plugin.settings.patch') patches.push(data.values);
+      const result = data.method === 'plugin.settings.get'
+        ? { values: { presetName: 'Reading' } }
+        : data.method === 'plugin.settings.patch'
+          ? { values: data.values }
+          : true;
+      const response = new MessageEvent('message', {
+        data: { channel: 'kiki.panel.v1', kind: 'response', id: data.id, ok: true, result },
+      });
+      Object.defineProperty(response, 'source', { value: window });
+      probe.contentWindow?.dispatchEvent(response);
+    };
+    window.addEventListener('message', onMessage);
+    let restorePost: (() => void) | undefined;
+    try {
+      const win = probe.contentWindow as (Window & { __kikiFixture?: boolean; eval: (source: string) => void }) | null;
+      const doc = probe.contentDocument;
+      expect(win).not.toBeNull();
+      expect(doc).not.toBeNull();
+      const sources = [...srcdoc.matchAll(/<script>([\s\S]*?)<\/script>/gi)].map((match) => match[1] ?? '');
+      doc?.open();
+      doc?.write(srcdoc.replace(/<script[\s\S]*?<\/script>/gi, ''));
+      doc?.close();
+      const parentWindow = win?.parent as (Window & { postMessage: (message: unknown, target?: string) => void }) | undefined;
+      if (parentWindow !== undefined) {
+        const originalPost = parentWindow.postMessage.bind(parentWindow);
+        restorePost = () => { parentWindow.postMessage = originalPost; };
+        parentWindow.postMessage = (message: unknown) => {
+          setTimeout(() => onMessage({ data: message, source: win } as MessageEvent), 0);
+        };
+      }
+      try {
+        for (const source of sources) win?.eval(source);
+      } catch (error) {
+        throw new Error(`panel script failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+      }
+      expect(win?.__kikiFixture).toBe(true);
+      const deliver = (data: unknown) => {
+        const event = new MessageEvent('message', { data });
+        Object.defineProperty(event, 'source', { value: win?.parent ?? window });
+        win?.dispatchEvent(event);
+      };
+      const present = (locale: string) => {
+        deliver({
+          channel: 'kiki.panel.v1',
+          kind: 'presentation',
+          presentation: { locale, theme: 'light', tokens: { '--color-paper': 'rgb(1, 2, 3)', '--color-ink': '#111' } },
+        });
+      };
+      const inputOf = () => doc?.querySelector('label#name-label input#name') as HTMLInputElement | null;
+      const saveOf = () => doc?.querySelector('summary#actions button#save') as HTMLButtonElement | null;
+      const labelText = () => (doc?.getElementById('name-label')?.childNodes[0]?.textContent ?? '').trim();
+      for (let i = 0; i < 20 && inputOf()?.value !== 'Reading'; i += 1) {
+        await new Promise((done) => setTimeout(done, 0));
+      }
+      const input = inputOf();
+      const save = saveOf();
+      expect(input).not.toBeNull();
+      expect(save).not.toBeNull();
+      expect(labelText()).toBe('名称');
+
+      present('en');
+      await new Promise((done) => setTimeout(done, 0));
+      expect(inputOf()).toBe(input);
+      expect(saveOf()).toBe(save);
+      expect(labelText()).toBe('Name');
+      expect(doc?.documentElement.lang).toBe('en');
+      expect(doc?.documentElement.style.getPropertyValue('--paper')).toBe('rgb(1, 2, 3)');
+      expect(input?.value).toBe('Reading');
+      if (input !== null) input.value = 'Night reading';
+      input?.dispatchEvent(new Event('input', { bubbles: true }));
+      save?.click();
+      for (let i = 0; i < 20 && patches.length === 0; i += 1) {
+        await new Promise((done) => setTimeout(done, 0));
+      }
+      expect(patches).toEqual([{ presetName: 'Night reading' }]);
+      expect(inputOf()).toBe(input);
+      expect(saveOf()).toBe(save);
+      expect(input?.value).toBe('Night reading');
+
+      present('zh');
+      await new Promise((done) => setTimeout(done, 0));
+      expect(inputOf()).toBe(input);
+      expect(saveOf()).toBe(save);
+      expect(labelText()).toBe('名称');
+      expect(input?.value).toBe('Night reading');
+      expect(doc?.documentElement.lang).toBe('zh-CN');
+
+      present('fr');
+      await new Promise((done) => setTimeout(done, 0));
+      expect(inputOf()).toBe(input);
+      expect(saveOf()).toBe(save);
+      expect(labelText()).toBe('名称');
+      expect(doc?.documentElement.lang).toBe('zh-CN');
+    } finally {
+      restorePost?.();
+      window.removeEventListener('message', onMessage);
+      probe.remove();
+    }
+  });
+
   it('reports the panel unsaved bit and clears it when the save lands', async () => {
     const reports: Array<readonly [string, boolean]> = [];
     const container = document.createElement('div');

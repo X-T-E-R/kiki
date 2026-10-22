@@ -220,18 +220,44 @@ export default {
         main{padding:16px 18px 20px;max-width:42rem}
         h2{margin:0 0 12px;font-size:16px;font-weight:600}
         label{display:block;margin:10px 0 4px;font-size:13px}
-        input{box-sizing:border-box;width:100%;max-width:28rem;height:32px;padding:0 8px;border:1px solid var(--color-hairline,#d9d0c3);border-radius:6px;background:var(--color-panel,#fffdf8);color:inherit}
-        button{margin-top:14px;height:32px;padding:0 12px;border:0;border-radius:6px;background:var(--color-accent,#8a5a2b);color:var(--color-on-accent,#fff);cursor:pointer}
+        input{box-sizing:border-box;display:block;width:100%;max-width:28rem;height:32px;margin-top:4px;padding:0 8px;border:1px solid var(--color-hairline,#d9d0c3);border-radius:6px;background:var(--color-panel,#fffdf8);color:inherit}
+        summary{margin-top:14px}
+        summary button,button#save{margin-left:8px;height:32px;padding:0 12px;border:0;border-radius:6px;background:var(--color-accent,#8a5a2b);color:var(--color-on-accent,#fff);cursor:pointer}
         #status{min-height:1.2em;margin:8px 0 0;font-size:12px;color:var(--color-ink-soft,#6d6256)}
         #status[data-tone="error"]{color:var(--color-danger,#9b2c2c)}
       </style></head><body><main>
-        <h2>输出层设置</h2>
-        <label for="name">名称</label>
-        <input id="name" value="">
-        <button id="save" type="button">保存</button>
+        <h2 id="title">输出层设置</h2>
+        <label id="name-label">名称<input id="name" value=""></label>
+        <details open>
+          <summary id="actions">保存<button id="save" type="button">保存</button></summary>
+        </details>
         <p id="status">正在加载…</p>
       </main><script>
         const CHANNEL='kiki.panel.v1';
+        const COPY={
+          zh:{title:'输出层设置',name:'名称',summary:'保存',save:'保存',loading:'正在加载…',saved:'已保存'},
+          en:{title:'Output layer settings',name:'Name',summary:'Save',save:'Save',loading:'Loading…',saved:'Saved'},
+        };
+        let locale='zh';
+        function textNode(el){
+          for(const node of el.childNodes){ if(node.nodeType===3) return node; }
+          const created=document.createTextNode('');
+          el.insertBefore(created, el.firstChild);
+          return created;
+        }
+        function paint(id, text){
+          const el=document.getElementById(id);
+          if(el) textNode(el).nodeValue=text;
+        }
+        function applyCopy(next){
+          if(next!=='zh'&&next!=='en') return;
+          locale=next;
+          const pack=COPY[locale];
+          paint('title', pack.title);
+          paint('name-label', pack.name);
+          paint('actions', pack.summary);
+          paint('save', pack.save);
+        }
         let seq=0;
         const pending=new Map();
         function ask(method, extra){
@@ -241,7 +267,9 @@ export default {
         }
         window.addEventListener('message', (event)=>{
           const data=event.data;
-          if(!data || data.channel!==CHANNEL || data.kind!=='response') return;
+          if(!data || data.channel!==CHANNEL) return;
+          if(data.kind==='init'||data.kind==='presentation') applyCopy(data.presentation&&data.presentation.locale);
+          if(data.kind!=='response') return;
           const waiter=pending.get(data.id);
           if(!waiter) return;
           pending.delete(data.id);
@@ -250,13 +278,12 @@ export default {
         const name=document.getElementById('name');
         const status=document.getElementById('status');
         name.addEventListener('input', ()=>{ ask('plugin.dirty',{dirty:true}); });
-        const savedLabel=()=>document.documentElement.lang.startsWith('zh')?'已保存':'Saved';
         document.getElementById('save').addEventListener('click', async ()=>{
           status.dataset.tone='';
-          status.textContent=savedLabel();
+          status.textContent=COPY[locale].saved;
           try {
             await ask('plugin.settings.patch',{values:{presetName:name.value}});
-            status.textContent=savedLabel();
+            status.textContent=COPY[locale].saved;
           } catch (error) {
             status.dataset.tone='error';
             status.textContent=error.message||'failed';
@@ -266,6 +293,7 @@ export default {
           name.value=(view&&view.values&&view.values.presetName)||'';
           status.textContent='';
         }).catch((error)=>{ status.dataset.tone='error'; status.textContent=error.message||'failed'; });
+        window.__kikiFixture=true;
       </script></body></html>`,
     }],
   },

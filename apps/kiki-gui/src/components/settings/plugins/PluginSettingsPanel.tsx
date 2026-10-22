@@ -11,9 +11,12 @@
  * The frame cannot see the host's fonts, CSS variables or i18n, so `init`
  * carries an optional `presentation` — locale, resolved theme and the live
  * color tokens the panel needs — and a `presentation` message pushes updates
- * when the theme or locale flips. Everything in it is optional: a panel from
- * before this field keeps working, and a host that never sends it leaves the
- * panel on its own defaults.
+ * when the theme or locale flips. The host applies the locale, theme and
+ * tokens to the frame. It does not rewrite the panel's text or controls. A
+ * panel may read the locale and update its own wording; one that does not
+ * keeps the text it shipped with. Everything in the message is optional: a
+ * panel from before this field keeps working, and a host that never sends it
+ * leaves the panel on its own defaults.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -136,8 +139,6 @@ function isSettingsRequest(data: unknown): data is SettingsFrameRequest {
 
 const PANEL_HOST_BRIDGE_SCRIPT = `<script>(function(){
 const CHANNEL='kiki.panel.v1';
-const EN_MAP={'输出层设置':'Output Layer Settings','输出预设':'Output presets','删除':'Delete','新增预设':'Add from template','内置模板':'Built-in template','添加':'Add','名称':'Name','提示词':'Prompt instruction','Kiki 模型（留空不处理）':'Kiki model (blank to skip)','已有连接上的自定义模型':'Custom model on an existing connection','连接 ID':'Connection ID','自定义模型 ID':'Custom model ID','模型窗口 tokens':'Context window tokens','每组最大输出 tokens（留空不限制）':'Max output tokens per group (blank for unlimited)','阅读与历史':'Reading and history','每组 Unicode 字符':'Unicode characters per group','历史 tokens（0 关闭）':'History token budget (0 to disable)','向前预加载组数':'Preload groups before','向后预加载组数':'Preload groups after','保存':'Save','正在加载…':'Loading…','未保存':'Unsaved','已保存':'Saved'};
-const ZH_MAP=Object.fromEntries(Object.entries(EN_MAP).map(([k,v])=>[v,k]));
 function applyPresentation(p){
   if(!p||typeof p!=='object')return;
   const root=document.documentElement;
@@ -147,18 +148,7 @@ function applyPresentation(p){
     const aliases=[['--paper','--color-paper'],['--ink','--color-ink'],['--soft','--color-ink-soft'],['--line','--color-hairline'],['--accent','--color-accent']];
     for(const [alias,src] of aliases){if(typeof p.tokens[src]==='string')root.style.setProperty(alias,p.tokens[src]);}
   }
-  if(p.locale==='en'||p.locale==='zh'){
-    root.lang=p.locale==='zh'?'zh-CN':'en';
-    const dict=p.locale==='en'?EN_MAP:ZH_MAP;
-    for(const el of document.querySelectorAll('h2,label,summary,button,#status')){
-      const t=(el.textContent||'').trim();
-      if(dict[t])el.textContent=dict[t];
-    }
-    for(const el of document.querySelectorAll('[aria-label]')){
-      const a=el.getAttribute('aria-label')||'';
-      if(dict[a])el.setAttribute('aria-label',dict[a]);
-    }
-  }
+  if(p.locale==='en'||p.locale==='zh')root.lang=p.locale==='zh'?'zh-CN':'en';
 }
 let lastHeight=0;
 function reportHeight(){
