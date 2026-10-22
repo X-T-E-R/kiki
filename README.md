@@ -7,7 +7,7 @@
 
 Hand Kiki a folder and a task: map an unfamiliar codebase, work through a stack of PDFs and spreadsheets, finish a draft, or ship a change. It reads what is there, plans, and works in place. When a job divides, it hands parts to subagents you can put on different models, and goals, a queue, and memory keep the work moving across turns.
 
-Sessions, files, and history stay in your local Kiki home, and model requests go only to the providers or local servers you connect. It is open source (MIT). The desktop app, the terminal UI, and the browser UI all connect to one local daemon, so a session you start in one is the same session you open in another.
+Work files stay in the folder you choose, sessions, history, and configuration stay in your local Kiki home, and model requests go only to the providers or local servers you connect. It is open source (MIT). The desktop app, the terminal UI, and the browser UI all connect to one local daemon, so a session you start in one is the same session you open in another.
 
 ![The Kiki workbench: a lead session with the subagents it dispatched, an active goal, and a queued message.](marketing/shots/wl-hero-workbench.en.light.png)
 
@@ -80,7 +80,7 @@ The lead agent splits your task and dispatches subagents, and each one can run a
 
 ![One session, several models: each agent in the dispatch tree bound to a different model.](marketing/shots/r05-multi-model-fleet.en.light.png)
 
-Agents themselves are Markdown files you own: the frontmatter sets tools, model, effort, and which agents it may dispatch, and the body is the system prompt. Save the file and the next dispatch uses it; a session already running keeps the snapshot it started with until you rebuild its context. Frontmatter keys are closed, so an unrecognised field fails the load with a diagnostic naming it — including another tool's `model` or `mode` key, which you migrate rather than drop in. You can build one by copying an existing profile, from a shipped template, or blank.
+Agents themselves are Markdown files you own: the frontmatter sets tools, model, effort, and which agents it may dispatch, and the body is the system prompt. Save the file and the next dispatch uses it, while a session already running keeps the snapshot it started with until you rebuild its context. You can create a profile by copying an existing one, starting from a shipped template, or starting blank.
 
 Open any dispatched subagent to read its own transcript, and message it from its own composer. While the agent works, what you type joins a queue rather than cutting in, and each queued message can go out when the agent is idle, after its subagents finish, or after its background tasks finish. Long commands move to the background and notify the agent when they finish, so it never has to poll. See [One workbench, many lines](https://x-t-e-r.github.io/kiki/en/features/workbench) and [Agents and Sub-Agents](https://x-t-e-r.github.io/kiki/en/customization/agents-and-subagents).
 
@@ -120,7 +120,7 @@ A persona is not an agent profile. A profile is execution configuration — tool
 
 ### Skills, plugins, and tool connections
 
-A plugin can add skills, agents, MCP servers, hooks, commands, and tools; browse and install them on the Capabilities page. The catalog carries, among others, Kiki Extract for local PDF and Office files, Kiki Office Suite, Kiki Work for local CSV checks, Kiki Writing, Kiki Notion, Kiki Media, Kimi Datasource, and Kimi Browser Extension — each one installed, configured, and enabled on its own. Sessions stay on your machine; there is no cloud relay. See [Make it yours to extend](https://x-t-e-r.github.io/kiki/en/features/extend) and [Plugins](https://x-t-e-r.github.io/kiki/en/customization/plugins).
+A plugin can add skills, agents, MCP servers, hooks, commands, and tools; browse and install them on the Capabilities page. The catalog carries, among others, Kiki Extract for local PDF and Office files, Kiki Office Suite, Kiki Work for local CSV checks, Kiki Writing, Kiki Notion, Kiki Media, and Kimi Datasource — each one installed, configured, and enabled on its own — while browser control connects to Ego Lite, a browser extension (Codex / ChatGPT or Kimi Browser Extension), an independent profile, or CDP. Sessions stay on your machine; there is no cloud relay. See [Make it yours to extend](https://x-t-e-r.github.io/kiki/en/features/extend) and [Plugins](https://x-t-e-r.github.io/kiki/en/customization/plugins).
 
 ## Your data, your machines
 

@@ -22,7 +22,7 @@ features:
     details: "When a job divides, the main agent dispatches isolated subagents — a fast model to explore, another to write or implement, a third vendor to review. Open any subagent's own transcript, while background tasks notify the lead when they finish."
     link: ./features/workbench
   - title: "Reusable roles in plain Markdown"
-    details: "Each agent profile is one Markdown file: frontmatter sets its model, effort, allowed tools, and which child agents it may dispatch; the body is its system prompt. If a subagent has no model bound, dispatch fails with `model.not_configured` instead of silently using an expensive one."
+    details: "Each agent profile is one Markdown file you own: frontmatter sets its model, thinking effort, allowed tools, and which child agents it may dispatch; the body is its system prompt. Start from built-in roles like `explore`, `implementer`, and `reviewer`, or write your own."
     link: ./features/agent-workflows
   - title: "Work that outlives a single turn"
     details: "Keep a target in view across turns with `/goal`, queue messages while the agent is busy with per-message send timing, run cron prompts while a Kiki process holds the session, and keep undoable memory across global, workspace, and persona scopes."
@@ -31,7 +31,7 @@ features:
     details: "Give a recurring collaborator a name, standing rules, isolated memory, and a fixed daily conversation — or pull two to six personas and existing threads into a room to work through one topic under a host and a message budget."
     link: ./features/people
   - title: "Documents, Office files, data, browser, and media"
-    details: "Install plugins from the catalog when the work leaves plain text: extract local PDFs and Office files into Markdown (`Kiki Extract`), edit Word, Excel, and PowerPoint (`Kiki Office Suite`), audit CSVs (`Kiki Work`), query market or academic data, drive your logged-in browser, or generate media."
+    details: "When work goes beyond plain text, connect a browser (Ego Lite, an extension, or an isolated profile) or install plugins for what you need: extract local PDFs and Office files (`Kiki Extract`), edit Word, Excel, and PowerPoint (`Kiki Office Suite`), audit CSVs (`Kiki Work`), query data (`Kimi Datasource`), or generate media (`Kiki Media`)."
     link: ./features/extend
   - title: "Prompts, tools, and approvals you can change"
     details: "Replace any named part of the built-in prompt globally, per model, or per agent — down to rewriting one tool description a model misuses — inspect the effective prompt with `kiki prompt-fields`, and choose between Manual, Auto, Approve for me, and YOLO."
@@ -40,6 +40,6 @@ features:
     details: "The Usage page names the concurrency rule holding each waiting request back, marks calls where a provider returned no usage as unknown instead of a fake zero, and syncs content-free stats only after you preview and approve the payload."
     link: ./features/daily
   - title: "Your machine, your phone, your other tools"
-    details: "Sessions and credentials stay in your local Kiki home. Isolate work and personal spaces, pair a WeChat or QQ chat to reply and approve from your phone, import Claude Code or Codex history, or connect editors over `kiki acp` and `kiki seat`."
+    details: "Work files stay in your folder while sessions, history, and credentials stay in your local Kiki home. Isolate work and personal spaces, pair a WeChat or QQ chat to reply and approve from your phone, import earlier history as a session or archive, or connect editors over `kiki acp` and `kiki seat`."
     link: ./features/spaces
 ---

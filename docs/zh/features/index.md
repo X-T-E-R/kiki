@@ -4,7 +4,7 @@ title: 功能介绍
 
 # 功能介绍
 
-Kiki 是一个跑在你机器上的开源 AI 智能体工作台。你把一个文件夹和想要的结果交给它——讲清一个陌生代码库、核对一摞 PDF 与表格、写出一份报告，或是完成跨文件的工程改动——主会话会做计划，把能切开的活交给子智能体，并让目标跨轮次留在视线里。会话、文件和历史都在你本机的 Kiki home 下；模型请求只发往你自己连接的供应商或本地服务。
+Kiki 是一个跑在你机器上的开源 AI 智能体工作台。你把一个文件夹和想要的结果交给它——讲清一个陌生代码库、核对一摞 PDF 与表格、写出一份报告，或是完成跨文件的工程改动——主会话会做计划，把能切开的活交给子智能体，并让目标跨轮次留在视线里。工作文件留在你选定的文件夹里；会话、历史和配置保存在你本机的 Kiki home 下，模型请求只发往你自己连接的供应商或本地服务。
 
 桌面应用、终端界面（`kiki`）和浏览器界面（`kiki web`）连接同一个本地守护进程，在一个窗口开的活，换一个窗口接着做。
 
@@ -18,7 +18,7 @@ Kiki 是一个跑在你机器上的开源 AI 智能体工作台。你把一个�
 
 | 页面 | 什么时候看 | 讲什么 |
 | --- | --- | --- |
-| [一个工作台，好几条线](/zh/features/workbench) | 一件事比一轮对话或一个模型更大 | 主智能体派发上下文隔离的子智能体、为不同角色绑定不同模型或不同厂商（未绑模型时直接报 `model.not_configured`）、点开任意子智能体自己的记录，以及跑完自动回来报到的后台任务 |
+| [一个工作台，好几条线](/zh/features/workbench) | 一件事比一轮对话或一个模型更大 | 主智能体派发上下文隔离的子智能体、为不同角色绑定不同模型或不同厂商、点开任意子智能体自己的记录，以及跑完自动回来报到的后台任务 |
 | [Agent Profiles](/zh/features/agent-workflows) | 想把反复出现的角色沉淀下来，不必每次重讲 | 每个角色一份 Markdown：模型、思考档位、工具、系统提示词，以及它能派发哪些子智能体；自带角色与模板（`explore`、`implementer`、`reviewer`），以及文件改动对新派发与在途会话的生效边界 |
 | [长时间的活](/zh/features/long-work) | 活要跑几小时、跨几天，或者按计划重复 | `/goal` 跨轮次推进、智能体忙碌时可逐条指定送达时机的消息队列、定时提示词（有 Kiki 进程持有该会话时触发）、可选的 `kiki-task-board` 工作区需求看板插件、上下文续接（`Summarize`、`Fresh`、`Auto`），以及全局、工作区、角色三层可逐条撤销的记忆 |
 | [能一起干活的人](/zh/features/people) | 想要一个长期搭档，或者几个视角一起讨论同一话题 | 带自己的长期规则、独立记忆和固定日常对话入口的角色，以及两到六个角色或现有线程在主持人和发言预算下讨论同一话题的房间 |
@@ -31,15 +31,15 @@ Kiki 是一个跑在你机器上的开源 AI 智能体工作台。你把一个�
 | --- | --- | --- |
 | [每天用的桌面](/zh/features/daily) | 盯花费、盯进度，或者有请求正在排队等待 | 折叠的工具步骤、消息批注、「需要你」审批托盘、跟随焦点智能体的右栏，以及用量页：带完整性标记的历史费用、直接点名限流规则的实时队列、预览同意后才启用的无正文外部同步 |
 | [每一层都归你](/zh/features/freedom) | 某个模型老用错工具，或者你想管住连接与审批尺度 | 细到单条工具描述的提示词字段覆写（全局、按模型或按智能体，用 `kiki prompt-fields` 核对）、一张列表管理连接与 OAuth（含直接复用本机已有的 ChatGPT 或 Grok Build 登录）、权限模式（`manual`、`auto`、`review`、`yolo`），以及生命周期 hooks |
-| [扩展](/zh/features/extend) | 活离开了纯文本：文档、表格、数据、浏览器、媒体 | 从目录里按需安装的插件（把本地 PDF/Office 转为 Markdown 的 `Kiki Extract`、`Kiki Office Suite`、`Kiki Work`、`Kiki Writing`、`Kiki Notion`、`Kiki Media`、`Kimi Datasource`、`Kimi Browser Extension` 等）、`/skill` 工作流、MCP 服务器，以及具名可查的联网搜索与抓取通道 |
+| [扩展](/zh/features/extend) | 活离开了纯文本：文档、表格、数据、浏览器、媒体 | 按需连接外部工具或从目录安装插件（把本地 PDF/Office 转为 Markdown 的 `Kiki Extract`、`Kiki Office Suite`、`Kiki Work`、`Kiki Writing`、`Kiki Notion`、`Kiki Media`、`Kimi Datasource` 等）、多来源浏览器控制（Ego Lite、浏览器扩展或独立受管浏览器）、`/skill` 工作流、MCP 服务器，以及具名可查的联网搜索与抓取通道 |
 | [外观](/zh/features/look) | 想让窗口贴合自己的阅读习惯 | 六套内置浅色与深色皮肤、强调色与字体微调、带对比度检查的本地图片或视频背景，以及外观包 |
 
 ## 跨机器、手机与外部工具
 
-会话放在本机的 Kiki home 下，只有你开口时才会打开一扇门。
+会话与配置放在本机的 Kiki home 下，只有你开口时才会打开一扇门。
 
 | 页面 | 什么时候看 | 讲什么 |
 | --- | --- | --- |
 | [数据与机器都在你手上](/zh/features/spaces) | 工作与个人账号要分开，或者要跨机器干活 | 凭据可共享或独立的多个空间、Work 模式预设、两边各自批准的远端 Kiki 连接、不授浏览权的单向 thread bridge、一次性链接的 Web 访问，以及加入会话的 SSH 主机 |
 | [手机会话](/zh/features/phone) | 人不在电脑前，有一步在等你回复或审批 | 把微信或 QQ 聊天绑到角色或会话、选择新消息是排队还是并入当前回合，并在手机上回答待处理的提问与审批 |
-| [带过来，也接得进外面](/zh/features/ecosystem) | 你已经在用 Claude Code、Codex、Cursor、Zed 或 JetBrains | 把 Claude Code、Codex、Pi、Grok Build、OpenCode 的历史对话导成可继续的 Kiki 会话或只读归档、通过 `kiki acp` 在编辑器里使用 Kiki、用 `kiki seat` 为入站 MCP 客户端固定席位，以及让子智能体跑在外部 harness 上 |
+| [带过来，也接得进外面](/zh/features/ecosystem) | 你已经在用 Claude Code、Codex、Cursor、Zed 或 JetBrains | 把 Claude Code、Codex、Pi、Grok Build、OpenCode 的历史对话导成可继续的 Kiki 会话或只读归档（导入前先预览保留与损失项）、通过 `kiki acp` 在编辑器里使用 Kiki、用 `kiki seat` 为入站 MCP 客户端固定席位，以及让子智能体跑在外部 harness 上 |

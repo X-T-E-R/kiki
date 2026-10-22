@@ -7,7 +7,7 @@
 
 把一个文件夹和一件事交给 Kiki：摸清陌生代码库、核对一摞 PDF 与表格、写完一份初稿，或者推进一处改动。它会先读里面有什么、做计划，就在原地动手。活能拆开时，它会把子任务分给可绑定不同模型的子智能体，再用目标、消息队列和记忆让工作跨轮次持续推进。
 
-会话、文件和历史留在你本机的 Kiki home 下，模型请求只发往你自己连接的供应商或本地服务。项目基于 MIT 协议开源。桌面应用、终端界面和浏览器界面连的是同一个本地守护进程，在一个地方开的会话，换个界面打开还是它。
+工作文件留在你选定的文件夹里，会话、历史和配置留在你本机的 Kiki home 下，模型请求只发往你自己连接的供应商或本地服务。项目基于 MIT 协议开源。桌面应用、终端界面和浏览器界面连的是同一个本地守护进程，在一个地方开的会话，换个界面打开还是它。
 
 ![Kiki 工作台：主会话派出的子智能体、进行中的目标和一条排队消息。](marketing/shots/wl-hero-workbench.zh.light.png)
 
@@ -80,7 +80,7 @@ npm 安装时，`kiki-agent` 包含 CLI/TUI，并下载对应的桌面构建校�
 
 ![同一个会话里用了好几种模型：派发树中每个智能体绑定不同的模型。](marketing/shots/r05-multi-model-fleet.zh.light.png)
 
-智能体本身是你自己的 Markdown 文件：frontmatter 写工具、模型、思考强度和能派发谁，正文就是系统提示词。保存文件后，下一次派发就会用上新内容；已经在跑的会话保留启动时的快照，直到你重建它的上下文。Frontmatter 字段集合是封闭的，写进未识别的字段会在加载时报错并点名该字段——包括别的工具里的 `model` 或 `mode` 字段，需要先迁移而不是直接照搬。新建时可以从现有 profile 复制、从内置模板起，或者从空白开始。
+智能体本身是你自己的 Markdown 文件：frontmatter 写工具、模型、思考强度和能派发谁，正文就是系统提示词。保存文件后，下一次派发就会用上新内容；已经在跑的会话保留启动时的快照，直到你重建它的上下文。新建时可以从现有 profile 复制、从内置模板起，或者从空白开始。
 
 点开任何一个被派出去的子智能体就能读它自己的记录，也能在它自己的输入框里给它发消息。智能体干活时，你打的字进队列而不是打断它，每条排队消息可以选空闲后、子智能体完成后，或任务完成后发出。耗时的命令转到后台，跑完自动通知智能体，它不用反复去查。见[一个工作台，好几条线](https://x-t-e-r.github.io/kiki/zh/features/workbench)和 [Agent 与 subagent](https://x-t-e-r.github.io/kiki/zh/customization/agents-and-subagents)。
 
@@ -120,7 +120,7 @@ npm 安装时，`kiki-agent` 包含 CLI/TUI，并下载对应的桌面构建校�
 
 ### 技能、插件与工具连接
 
-插件可以加入技能、智能体、MCP 服务器、hooks、命令和工具，在「能力」页浏览安装。目录里提供用于本地 PDF 与 Office 提取的 Kiki Extract、Kiki Office Suite、用于本地 CSV 核对的 Kiki Work、Kiki Writing、Kiki Notion、Kiki Media、Kimi Datasource 和 Kimi Browser Extension 等——每一项各自独立安装、配置与启用。会话留在你自己的机器上，不经过云端中转。见[扩展](https://x-t-e-r.github.io/kiki/zh/features/extend)和[插件](https://x-t-e-r.github.io/kiki/zh/customization/plugins)。
+插件可以加入技能、智能体、MCP 服务器、hooks、命令和工具，在「能力」页浏览安装。目录里提供用于本地 PDF 与 Office 提取的 Kiki Extract、Kiki Office Suite、用于本地 CSV 核对的 Kiki Work、Kiki Writing、Kiki Notion、Kiki Media 和 Kimi Datasource 等——每一项各自独立安装、配置与启用；浏览器控制则可按需连接 Ego Lite、浏览器扩展（Codex / ChatGPT 或 Kimi Browser Extension）、独立受管浏览器或 CDP。会话留在你自己的机器上，不经过云端中转。见[扩展](https://x-t-e-r.github.io/kiki/zh/features/extend)和[插件](https://x-t-e-r.github.io/kiki/zh/customization/plugins)。
 
 ## 数据与机器都在你手上
 
