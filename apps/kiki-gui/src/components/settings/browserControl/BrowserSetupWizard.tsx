@@ -295,6 +295,12 @@ function BrowserRoute({ preset, active, onSelect }: {
         ...(existingConn.profileId !== undefined ? { profileId: existingConn.profileId } : {}),
         ...(existingConn.serverName !== undefined ? { serverName: existingConn.serverName } : {}),
       });
+    } else if (existingConn.type === 'webbridge-command') {
+      await browserApi(client).upsert(existingConn.id, {
+        type: 'webbridge-command',
+        name: existingConn.name,
+        enabled: nextEnabled,
+      });
     }
   };
 

@@ -184,8 +184,13 @@ it('prepares the official pinned plugin and daemon with consent, then waits for 
   expect(waiting).toMatchObject({ state: 'needs_user_action', controlSurface: 'plugin-skill' });
   expect(waiting.steps.find((step) => step.id === 'extension')?.state).toBe('user_action');
   expect(f.fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/command'))).toHaveLength(0);
+  expect(f.upsert).not.toHaveBeenCalled();
+  expect(f.connect).not.toHaveBeenCalled();
   f.extension();
-  expect(await f.setup.connect('kimi-webbridge', {})).toMatchObject({ state: 'connected', checkedAt: expect.any(String), skill: 'kimi-webbridge' });
+  expect(await f.setup.connect('kimi-webbridge', {})).toMatchObject({ state: 'connected', checkedAt: expect.any(String), skill: 'kimi-webbridge', connectionId: 'webbridge-command' });
+  expect(f.upsert).toHaveBeenCalledWith('webbridge-command', { type: 'webbridge-command', name: 'Kimi browser extension', enabled: true });
+  expect(f.connect).toHaveBeenCalledWith('webbridge-command');
+  expect(f.rows.some((row) => row.id === 'kimi-webbridge')).toBe(false);
 });
 
 it('reuses an installed plugin and does not replace it on preparation', async () => {
@@ -978,9 +983,22 @@ it('does not probe or install a source that is switched off', async () => {
 });
 
 it('keeps a CDP connection on the independent browser source', () => {
-  expect(browserSourceOfConnection({ type: 'agent-browser-cdp' })).toBe('independent-browser');
+  expect(browserSourceOfConnection({ type: 'agent-browser-cdp', id: 'kimi-webbridge' })).toBe('independent-browser');
   expect(browserSourceOfConnection({ type: 'agent-browser-profile' })).toBe('independent-browser');
   expect(browserSourceOfConnection({ type: 'ego-lite' })).toBe('ego-lite');
+  expect(browserSourceOfConnection({ type: 'webbridge-command', id: 'invoice' })).toBe('kimi-webbridge');
+});
+
+it('does not rewrite a CDP row when the WebBridge command id is already another type', async () => {
+  const f = fixture();
+  f.existing();
+  f.extension();
+  f.rows.push({ id: 'webbridge-command', name: 'edge-kimi', enabled: true, type: 'agent-browser-cdp' });
+  const result = await f.setup.connect('kimi-webbridge', {});
+  expect(result).toMatchObject({ state: 'needs_user_action', reason: 'connection_conflict', connectionId: 'webbridge-command' });
+  expect(f.upsert).not.toHaveBeenCalled();
+  expect(f.connect).not.toHaveBeenCalled();
+  expect(f.rows[0]).toMatchObject({ id: 'webbridge-command', type: 'agent-browser-cdp', name: 'edge-kimi' });
 });
 
 async function readShortcut(host: HostProcessService, shortcutPath: string): Promise<{ target: string; arguments: string }> {

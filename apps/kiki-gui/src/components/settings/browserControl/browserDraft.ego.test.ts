@@ -18,3 +18,14 @@ describe('ego-lite connection draft', () => {
     expect(draftIssues({ ...draft, cliPath: 'relative.exe' }, []).cliPath).toBe('st.browser.pathInvalid');
   });
 });
+
+describe('webbridge command connection draft', () => {
+  it('writes the command type and no endpoint or driver', () => {
+    const draft = draftOf({ id: 'webbridge-command', name: 'Kimi browser extension', enabled: true, type: 'webbridge-command' });
+    const input = parseBrowserInput(browserConnectionInput(draft));
+    expect(input).toEqual({ type: 'webbridge-command', name: 'Kimi browser extension', enabled: true });
+    expect(input).not.toHaveProperty('endpoint');
+    expect(input).not.toHaveProperty('driverPath');
+    expect(draftIssues(draft, []).endpoint).toBeUndefined();
+  });
+});

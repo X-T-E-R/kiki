@@ -129,8 +129,9 @@ export function registerBrowserRoutes(app: BrowserRouteHost, core: Scope): void 
       reply.send(okEnvelope({ browser: parsed.id, status: await control().status(parsed.id), tabs }, req.id));
     } else if (parsed.action === 'catalog') {
       const tools = await control().catalog(parsed.id);
+      const connectionType = (await store().resolve(parsed.id)).type;
       reply.send(okEnvelope({ browser: parsed.id, status: await control().status(parsed.id), backendToolCount: tools.length,
-        contextIsolation: (await store().resolve(parsed.id)).type === 'codex-extension' ? 'official-extension-tab-ids' : 'opaque-context-through-window', capabilities: tools.map((tool) => ({ name: tool.name, description: tool.description,
+        contextIsolation: connectionType === 'codex-extension' ? 'official-extension-tab-ids' : connectionType === 'webbridge-command' ? 'extension-command-session' : 'opaque-context-through-window', capabilities: tools.map((tool) => ({ name: tool.name, description: tool.description,
           group: browserToolGroup(tool.name), surface: isBrowserOperation(tool.name) ? 'operation' : /^agent_browser_(?:connect|close|tab_|frame_|window_)/.test(tool.name) ? 'lifecycle' : 'administrative',
           inputSchema: req.query.includeSchema === 'true' ? tool.inputSchema : undefined })) }, req.id));
     } else reply.send(okEnvelope(await control().status(parsed.id), req.id));

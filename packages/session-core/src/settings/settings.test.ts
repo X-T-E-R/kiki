@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { computerControlPreference, computerControlPreferencePatch, isComputerControlEnabled, computerControlEnabledPatch, isComputerToolPolicyDenied, isComputerToolPolicyPartiallyDenied } from './computerControl';
-import { isBrowserControlEnabled, browserControlEnabledPatch, isBrowserToolPolicyDenied, isBrowserToolPolicyPartiallyDenied, isBrowserConnectionEffectiveAllowed, effectiveAllowedBrowserCount } from './browserControl';
+import { isBrowserControlEnabled, browserControlEnabledPatch, isBrowserToolPolicyDenied, isBrowserToolPolicyPartiallyDenied, isBrowserConnectionEffectiveAllowed, effectiveAllowedBrowserCount, browserSourceOfConnectionType } from './browserControl';
 import { patchConfigRequestSchema } from '@kiki/protocol';
 
 import {
@@ -2291,5 +2291,9 @@ describe('browser-control settings helpers', () => {
     expect(effectiveAllowedBrowserCount([cdp], true, ['cdp'], ['independent-browser'])).toBe(0);
     expect(effectiveAllowedBrowserCount([cdp], true, ['cdp'], ['kimi-webbridge'])).toBe(1);
     expect(isBrowserConnectionEffectiveAllowed({ id: 'kimi-webbridge', enabled: true }, true, ['kimi-webbridge'], ['kimi-webbridge'])).toBe(false);
+    expect(browserSourceOfConnectionType('agent-browser-cdp', 'kimi-webbridge')).toBe('independent-browser');
+    expect(browserSourceOfConnectionType('webbridge-command', 'invoice')).toBe('kimi-webbridge');
+    expect(isBrowserConnectionEffectiveAllowed({ id: 'invoice', enabled: true, type: 'webbridge-command' }, true, ['invoice'], ['kimi-webbridge'])).toBe(false);
+    expect(isBrowserConnectionEffectiveAllowed({ id: 'kimi-webbridge', enabled: true, type: 'agent-browser-cdp' }, true, ['kimi-webbridge'], ['kimi-webbridge'])).toBe(true);
   });
 });

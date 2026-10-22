@@ -102,8 +102,9 @@ export function codexConnectionIdForNewPipe(
 
 /**
  * Whether a saved connection belongs on a setup route.
- * Codex is the extension type, the managed route is a profile or CDP connection,
- * and Kimi only the connection the server named — Kimi has no per-browser id.
+ * Codex is the extension type, Ego Lite is its own type, a WebBridge command
+ * row belongs to Kimi, and profile or CDP rows stay on the independent route
+ * even when their id is kimi-webbridge.
  */
 export function browserPresetOwnsConnection(
   preset: BrowserPresetId,
@@ -112,7 +113,7 @@ export function browserPresetOwnsConnection(
 ): boolean {
   if (preset === 'codex-browser') return connection.type === 'codex-extension';
   if (preset === 'ego-lite') return connection.type === 'ego-lite';
-  if (preset === 'kimi-webbridge') return namedConnectionId !== undefined && connection.id === namedConnectionId;
+  if (preset === 'kimi-webbridge') return connection.type === 'webbridge-command';
   if (preset === 'independent-browser') return connection.type === 'agent-browser-profile' || connection.type === 'agent-browser-cdp';
   return namedConnectionId !== undefined && connection.id === namedConnectionId;
 }

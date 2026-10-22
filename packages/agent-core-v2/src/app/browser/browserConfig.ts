@@ -20,11 +20,13 @@ const egoLite = {
   name: common.name, enabled: common.enabled, type: z.literal('ego-lite'),
   cliPath: absolutePath.optional(), profileId: z.string().trim().min(1).max(256).optional(), serverName: z.string().trim().min(1).max(256).optional(),
 };
+const webbridgeCommand = { name: common.name, enabled: common.enabled, type: z.literal('webbridge-command') };
 export const BrowserStoredConnectionSchema = z.discriminatedUnion('type', [
   z.object(official).strict(),
   z.object({ ...common, type: z.literal('agent-browser-profile'), profilePath: absolutePath.optional(), executablePath: absolutePath.optional(), headed: z.boolean().optional() }).strict(),
   z.object({ ...common, type: z.literal('agent-browser-cdp'), endpointSecret: endpoint }).strict(),
   z.object(egoLite).strict(),
+  z.object(webbridgeCommand).strict(),
 ]);
 export type BrowserStoredConnection = z.infer<typeof BrowserStoredConnectionSchema>;
 export type BrowserResolvedConnection = BrowserStoredConnection & { readonly id: string };
@@ -38,6 +40,7 @@ export const BrowserConnectionInputSchema = z.discriminatedUnion('type', [
   z.object({ ...common, type: z.literal('agent-browser-profile'), profilePath: absolutePath.optional(), executablePath: absolutePath.optional(), headed: z.boolean().optional() }).strict(),
   z.object({ ...common, type: z.literal('agent-browser-cdp'), endpoint: BrowserEndpointEditSchema }).strict(),
   z.object(egoLite).strict(),
+  z.object(webbridgeCommand).strict(),
 ]);
 export type BrowserConnectionInput = z.infer<typeof BrowserConnectionInputSchema>;
 
@@ -47,8 +50,8 @@ export type BrowserSourceId = z.infer<typeof BrowserSourceIdSchema>;
 export function browserSourceOfConnection(connection: { readonly type: BrowserStoredConnection['type']; readonly id?: string }): BrowserSourceId {
   if (connection.type === 'ego-lite') return 'ego-lite';
   if (connection.type === 'codex-extension') return 'codex-browser';
-  if (connection.type === 'agent-browser-profile' || connection.type === 'agent-browser-cdp') return 'independent-browser';
-  return 'kimi-webbridge';
+  if (connection.type === 'webbridge-command') return 'kimi-webbridge';
+  return 'independent-browser';
 }
 
 export const BrowserConfigSchema = z.object({
@@ -103,7 +106,7 @@ export interface BrowserConnectionRecord {
   readonly id: string;
   readonly name: string;
   readonly enabled: boolean;
-  readonly type: 'agent-browser-profile' | 'agent-browser-cdp' | 'codex-extension' | 'ego-lite';
+  readonly type: 'agent-browser-profile' | 'agent-browser-cdp' | 'codex-extension' | 'ego-lite' | 'webbridge-command';
   readonly runtimeRoot?: string;
   readonly browserId?: string;
   readonly driverPath?: string;

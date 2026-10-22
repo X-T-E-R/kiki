@@ -831,7 +831,7 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 | `disabled_sources` | `string[]` | 已关闭的来源：`kimi-webbridge`、`independent-browser`、`codex-browser`、`ego-lite`。关闭来源不会清空 `allowed_browsers` |
 | `connections` | `table` | 每条连接一个条目，以连接的固定 id 为 key |
 
-每个条目通过 `type`（`agent-browser-profile` 或 `agent-browser-cdp`）、`name`、`enabled` 以及该接法所需字段描述一条连接；每种接法的字段见设置页。字段与接法不符的条目会被拒绝，已保存的文件保持不变。存入的 CDP 地址按凭据对待：页面显示掩码，只有显式请求时才读取明文。
+每个条目通过 `type`（`agent-browser-profile`、`agent-browser-cdp` 或 `webbridge-command`）、`name`、`enabled` 以及该接法所需字段描述一条连接；每种接法的字段见设置页。`webbridge-command` 没有 endpoint，也没有驱动路径。它和 CDP 是两条连接。字段与接法不符的条目会被拒绝，已保存的文件保持不变。存入的 CDP 地址按凭据对待：页面显示掩码，只有显式请求时才读取明文。
 
 ## `computer_control`
 

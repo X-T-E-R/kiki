@@ -68,6 +68,7 @@ const NATIVE_BROWSER_FLAG_TRIP = `/settings/${NATIVE_BROWSER_FLAG_HOME}#${experi
 
 function typeLabel(t: ReturnType<typeof useI18n>['t'], type: BrowserConnectionType): string {
   if (type === 'ego-lite') return t('st.browser.type.ego-lite');
+  if (type === 'webbridge-command') return t('st.browser.type.webbridge-command');
   return t(type === 'codex-extension' ? 'st.browser.type.codex-extension' : type === 'agent-browser-cdp' ? 'st.browser.type.cdp' : 'st.browser.type.profile');
 }
 
@@ -80,6 +81,7 @@ function typeLabel(t: ReturnType<typeof useI18n>['t'], type: BrowserConnectionTy
 function locationLabel(t: ReturnType<typeof useI18n>['t'], row: BrowserConnectionRow): string {
   if (row.type === 'codex-extension') return row.browserId ?? t('st.browser.location.unknown');
   if (row.type === 'ego-lite') return row.cliPath ?? t('st.browser.type.ego-lite');
+  if (row.type === 'webbridge-command') return t('st.browser.location.webbridge');
   if (row.type === 'agent-browser-profile') return t('st.browser.location.server');
   return endpointHost(row.endpointDisplay) ?? t('st.browser.location.unknown');
 }
@@ -427,7 +429,7 @@ export function BrowserConnectionCard() {
           {LIVE_STATES.has(selectedStatus.state) ? <Hint>{ownershipText(selectedStatus.ownership)}</Hint> : null}
           {/* What checking really does, while pressing it is still a decision. */}
           {dirty || LIVE_STATES.has(selectedStatus.state) ? null : (
-            <Hint>{t(draft.type === 'agent-browser-cdp' ? 'st.browser.checkHintCdp' : 'st.browser.checkHintProfile')}</Hint>
+            <Hint>{t(draft.type === 'webbridge-command' ? 'st.browser.checkHintWebbridge' : draft.type === 'agent-browser-cdp' ? 'st.browser.checkHintCdp' : 'st.browser.checkHintProfile')}</Hint>
           )}
           {dirty && LIVE_STATES.has(selectedStatus.state) ? <Hint>{t('st.browser.saveEndsSession')}</Hint> : null}
 
@@ -465,6 +467,7 @@ export function BrowserConnectionCard() {
               ] : [
                 { value: 'agent-browser-profile', label: t('st.browser.type.profileLong'), hint: t('st.browser.type.profileHint') },
                 { value: 'agent-browser-cdp', label: t('st.browser.type.cdpLong'), hint: t('st.browser.type.cdpHint') },
+                { value: 'webbridge-command', label: t('st.browser.type.webbridgeCommandLong'), hint: t('st.browser.type.webbridgeCommandHint') },
               ]}
               onChange={(type) => { setDraft({ ...draft, type }); }} />
           </div>
@@ -496,6 +499,8 @@ export function BrowserConnectionCard() {
                 onChange={(serverName) => { setDraft({ ...draft, serverName }); }} />
             </div>
           </AdvancedDetails>
+        ) : draft.type === 'webbridge-command' ? (
+          <Hint>{t('st.browser.type.webbridgeCommandHint')}</Hint>
         ) : draft.type === 'agent-browser-profile' ? (
           <div className="space-y-4">
             <div className="space-y-1" data-browser-headed>
@@ -571,7 +576,7 @@ export function BrowserConnectionCard() {
         title={t('st.browser.deleteTitle', { name: draft.original?.name ?? '' })}
         body={t('st.browser.deleteBody')}
         consequences={[
-          ...(draft.type === 'agent-browser-cdp' ? [t('st.browser.deleteConsequenceCdp')] : draft.type === 'ego-lite' ? [t('st.browser.deleteConsequenceEgo')] : [t('st.browser.deleteConsequenceProfile')]),
+          ...(draft.type === 'agent-browser-cdp' ? [t('st.browser.deleteConsequenceCdp')] : draft.type === 'ego-lite' ? [t('st.browser.deleteConsequenceEgo')] : draft.type === 'webbridge-command' ? [t('st.browser.deleteConsequenceWebbridge')] : [t('st.browser.deleteConsequenceProfile')]),
           ...(selectedStatus !== undefined && LIVE_STATES.has(selectedStatus.state) ? [t('st.browser.deleteEndsSession')] : []),
           ...(query.data?.defaultBrowser === draft.original?.id ? [t('st.browser.deleteDefault')] : []),
         ]}

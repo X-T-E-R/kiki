@@ -62,6 +62,7 @@ export type BrowserSourceId = 'kimi-webbridge' | 'independent-browser' | 'codex-
 export function browserSourceOfConnectionType(type?: string, id?: string): BrowserSourceId | undefined {
   if (type === 'ego-lite') return 'ego-lite';
   if (type === 'codex-extension') return 'codex-browser';
+  if (type === 'webbridge-command') return 'kimi-webbridge';
   if (type === 'agent-browser-profile' || type === 'agent-browser-cdp') return 'independent-browser';
   if (id === 'kimi-webbridge') return 'kimi-webbridge';
   return undefined;

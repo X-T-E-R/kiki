@@ -845,7 +845,7 @@ Any registered flag can be overridden here by id, with a boolean value. Every bu
 | `disabled_sources` | `string[]` | Sources that are off: `kimi-webbridge`, `independent-browser`, `codex-browser`, `ego-lite`. Turning a source off does not clear `allowed_browsers` |
 | `connections` | `table` | One entry per connection, keyed by the connection's fixed id |
 
-Each entry describes one connection through its `type` (`agent-browser-profile` or `agent-browser-cdp`), `name`, `enabled`, and the fields that style needs; the settings page shows the fields for each style. An entry whose fields do not match its style is rejected and the saved file is left unchanged. A stored CDP address counts as a credential: the page masks it and reveals it only when asked.
+Each entry describes one connection through its `type` (`agent-browser-profile`, `agent-browser-cdp`, or `webbridge-command`), `name`, `enabled`, and the fields that style needs; the settings page shows the fields for each style. `webbridge-command` has no endpoint and no driver path. It is a separate connection from CDP. An entry whose fields do not match its style is rejected and the saved file is left unchanged. A stored CDP address counts as a credential: the page masks it and reveals it only when asked.
 
 ## `computer_control`
 

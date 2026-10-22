@@ -8,7 +8,8 @@
  * behind it (`agent-core-v2/src/app/browser/browserConfig.ts`): a display name,
  * a stable id, an optional managed-driver path, and a type branch — profile
  * paths for a browser Kiki starts, a CDP endpoint for a browser that already
- * exists, and CLI fields for an installed Ego Lite app. Ego Lite has no endpoint.
+ * exists, CLI fields for an installed Ego Lite app, and no endpoint for a
+ * WebBridge command connection. Ego Lite and WebBridge command have no endpoint.
  */
 
 import { browserConnectionInputSchema, browserIdSchema } from '@kiki/protocol';
@@ -160,6 +161,7 @@ export function browserConnectionInput(draft: BrowserDraft): BrowserConnectionIn
       ...(serverName === '' ? {} : { serverName }),
     };
   }
+  if (draft.type === 'webbridge-command') return { type: 'webbridge-command', name, enabled: draft.enabled };
   return { name, enabled: draft.enabled, driverPath: driver, type: 'agent-browser-cdp', endpoint: endpointEdit(draft.endpoint) };
 }
 

@@ -224,8 +224,11 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
         if (retained.size === 0) this.loadedCatalog.delete(browser);
         else this.loadedCatalog.set(browser, { backend, tools: [...retained.values()] });
         this.refreshLoaded();
+        const commandConnection = conn?.type === 'webbridge-command';
         return this.json({ browser, backend, namespace: backend, backendToolCount: tools.length,
-          contextIsolation: backend === 'official-cua-repl'
+          contextIsolation: commandConnection
+            ? 'WebBridge command drives the Kimi extension on a fixed local bridge. BrowserTabs lists, selects and closes tabs. Window and frame tools are not available. agent_browser_cdp_action sends the extension command action and does not attach DevTools.'
+            : backend === 'official-cua-repl'
             ? 'Official extension browser/tab ids are preserved. Use codex_browser_js and its runtime documentation; window/frame emulation is unsupported.'
             : backend === 'codex-browser-bridge'
               ? 'Tools that declare tab_id use this agent\'s selected tab. codex_claim_tab keeps the user-tab id returned by codex_user_tabs. The bridge writes its own session id on the pipe frame; Kiki caller metadata stays on the MCP request and is not copied onto that frame. Approval remains the existing elicitation.'
@@ -251,8 +254,8 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
       signal?.throwIfAborted();
       const browser = await this.choose(input.browser, input.action === 'list' ? 'read' : 'operate');
       const connection = await this.store.resolve(browser);
-      if (connection.type === 'ego-lite' && (input.action === 'window' || input.action === 'frame')) {
-        throw new BrowserError('browser.unsupported', 'The Ego Lite Page API has no window or frame method');
+      if ((connection.type === 'ego-lite' || connection.type === 'webbridge-command') && (input.action === 'window' || input.action === 'frame')) {
+        throw new BrowserError('browser.unsupported', connection.type === 'ego-lite' ? 'The Ego Lite Page API has no window or frame method' : 'The WebBridge command connection has no window or frame method');
       }
       const requestContext = this.requestContext(ctx);
       if (input.action === 'list') return this.json({ browser, status: await this.control.status(browser), selected: this.selections.get(browser), tabs: await this.control.tabs(browser, signal, requestContext) });
@@ -260,8 +263,11 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
       const caller = { sessionId: this.session.sessionId, agentId: this.agent.agentId };
       if (input.action === 'select' || input.action === 'close') {
         const tabs = await this.control.tabs(browser, signal, requestContext);
-        if (!tabs.some((tab) => tab.targetId === input.target)) throw new BrowserError('browser.target', 'Use a current targetId from BrowserTabs list, not a positional tab number or label');
-        const result = await this.control.invoke({ browser, caller, requestContext, tool: input.action === 'select' ? 'agent_browser_tab_switch' : 'agent_browser_tab_close', args: { tab: input.target } }, signal);
+        const selected = tabs.find((tab) => tab.targetId === input.target);
+        if (selected === undefined) throw new BrowserError('browser.target', 'Use a current targetId from BrowserTabs list, not a positional tab number or label');
+        if (connection.type === 'webbridge-command' && (selected.url === undefined || selected.url === '')) throw new BrowserError('browser.target', 'Use a current targetId from BrowserTabs list, not a positional tab number or label');
+        const args = connection.type === 'webbridge-command' ? { tab: input.target, url: selected.url } : { tab: input.target };
+        const result = await this.control.invoke({ browser, caller, requestContext, tool: input.action === 'select' ? 'agent_browser_tab_switch' : 'agent_browser_tab_close', args }, signal);
         const data = browserResponse(result.result);
         if (data.success === true) {
           if (input.action === 'select') this.selections.set(browser, { tab: input.target, generation: result.generation });
