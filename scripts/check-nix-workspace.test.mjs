@@ -111,6 +111,30 @@ void test("Node 24 Nix override keeps SQLite bundled with its matching headers",
   assert.doesNotMatch(override, /--without-sqlite/);
 });
 
+void test("Nix source includes the external harness manifest and every bundled adapter asset", async () => {
+  const flake = readFileSync(new URL("../flake.nix", import.meta.url), "utf8");
+  const sourceStart = flake.indexOf("src = lib.fileset.toSource");
+  const sourceEnd = flake.indexOf("pnpmWorkspaces =", sourceStart);
+  assert.ok(sourceStart >= 0 && sourceEnd > sourceStart);
+  assert.match(flake.slice(sourceStart, sourceEnd), /\.\/scripts\/external-harness\s/);
+
+  const { SOURCE_OWNED_ADAPTER_FILES } = await import("./external-harness/production-manifest.mjs");
+  const { collectSourceOwnedAdapterAssets } = await import("../apps/kimi-code/scripts/native/external-harness-assets.mjs");
+  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+  for (const name of ["production-manifest.mjs", ...SOURCE_OWNED_ADAPTER_FILES]) {
+    assert.ok(statSync(join(repoRoot, "scripts/external-harness", name)).size > 0, name);
+  }
+  const assets = await collectSourceOwnedAdapterAssets({
+    appRoot: join(repoRoot, "apps/kimi-code"),
+    repoRoot,
+    target: "linux-x64",
+  });
+  assert.deepEqual(
+    assets.runtimeFiles.map((file) => file.key),
+    SOURCE_OWNED_ADAPTER_FILES.map((name) => `external-harness/${name}`),
+  );
+});
+
 void test("Nix build compiles every plugin-sdk export before the GUI bundle", () => {
   const flake = readFileSync(new URL("../flake.nix", import.meta.url), "utf8");
   const buildStart = flake.indexOf("buildPhase = ''");

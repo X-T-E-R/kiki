@@ -207,6 +207,7 @@
               fileset = lib.fileset.unions (
                 [
                   ./build
+                  ./scripts/external-harness
                   ./vendor
                   ./.npmrc
                   ./.nvmrc
