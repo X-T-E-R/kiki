@@ -68,6 +68,17 @@ it.each([false, true])('owns the initial metadata write before the media fixture
     () => { finished = true; return undefined; },
     (error: unknown) => { finished = true; return error; },
   );
+  const cleanup = async (): Promise<void> => {
+    release.resolve();
+    await observed;
+    try {
+      await fresh.dispose();
+    } catch (error) {
+      if (!fail || error !== failure) throw error;
+    }
+  };
+  let bodyError: unknown;
+  let bodyFailed = false;
   try {
     await started;
     await fresh.ready;
@@ -81,15 +92,23 @@ it.each([false, true])('owns the initial metadata write before the media fixture
       expect(persisted).toMatchObject({ id: fresh.get(ISessionContext).sessionId, agents: {} });
       expect(await metadata.read()).toMatchObject({ id: persisted.id, agents: persisted.agents });
     }
-  } finally {
-    release.resolve();
-    await observed;
-    try {
-      await fresh.dispose();
-    } catch (error) {
-      if (!fail || error !== failure) throw error;
-    }
+  } catch (error) {
+    bodyFailed = true;
+    bodyError = error;
   }
+  let cleanupError: unknown;
+  let cleanupFailed = false;
+  try {
+    await cleanup();
+  } catch (error) {
+    cleanupFailed = true;
+    cleanupError = error;
+  }
+  if (bodyFailed && cleanupFailed) {
+    throw new AggregateError([bodyError, cleanupError], 'Plugin media fixture cleanup failed');
+  }
+  if (bodyFailed) throw bodyError;
+  if (cleanupFailed) throw cleanupError;
 });
 
 it('snapshots session file_id and admitted runtime paths to host staging while retaining URL references', async () => {
