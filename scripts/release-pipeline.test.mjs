@@ -149,3 +149,75 @@ void test('local and release Node gates accept patched lines and reject affected
   assert.match(nixWorkflow, /nix_path: nixpkgs=channel:nixos-unstable/);
   assert.doesNotMatch(nixWorkflow, /nix-path:/);
 });
+
+void test('Nix cache keys and stages preserve the verified Node boundary', async () => {
+  const flake = await read('flake.nix');
+  const workflow = await read('.github/workflows/nix-build.yml');
+  const actionCommit = '7df957e333c1e5da7721f60227dbba6d06080569';
+
+  assert.match(flake, /ci-nodejs = nodejs;/);
+  assert.match(flake, /pnpm --filter=@kiki\/plugin-sdk run build/);
+  assert.match(workflow, /pull_request:\r?\n\s+branches:\r?\n\s+- main\r?\n\s+- kiki/);
+  assert.match(workflow, /push:\r?\n\s+branches:\r?\n\s+- main\r?\n\s+- kiki/);
+  assert.match(workflow, /NIX_STORE_COMPAT_EPOCH: 1/);
+  assert.match(workflow, /DRV_PATH="\$\(nix eval --raw "\.#packages\.\$\{SYSTEM\}\.ci-nodejs\.drvPath"\)"/);
+  assert.match(workflow, /DRV_IDENTITY="\$\(basename "\$DRV_PATH"\)"/);
+  assert.match(workflow, /CACHE_KEY="nix-node-v1-\$\{SYSTEM\}-\$\{NIX_STORE_COMPAT_EPOCH\}-\$\{DRV_IDENTITY\}"/);
+
+  const restore = workflow.indexOf(`nix-community/cache-nix-action/restore@${actionCommit}`);
+  const nodeBuild = workflow.indexOf("nix build '.#ci-nodejs^*' --print-build-logs");
+  const saveStep = workflow.indexOf('- name: Save verified Node store cache');
+  const save = workflow.indexOf(`nix-community/cache-nix-action/save@${actionCommit}`);
+  const appBuild = workflow.indexOf('nix build .#kiki --print-build-logs');
+  assert.ok(restore >= 0 && restore < nodeBuild && nodeBuild < saveStep && saveStep < save && save < appBuild);
+
+  const restoreBlock = workflow.slice(restore, nodeBuild);
+  assert.match(restoreBlock, /primary-key: \$\{\{ steps\.node\.outputs\.cache-key \}\}/);
+  assert.match(restoreBlock, /save: false/);
+  assert.doesNotMatch(restoreBlock, /restore-prefixes/);
+  assert.doesNotMatch(restoreBlock, /paths:/);
+  assert.match(workflow, /cold_node_cache/);
+  assert.match(workflow, /Reject an unsafe cache restore/);
+  assert.match(workflow, /partially restored store/);
+
+  const verifiedNodeBlock = workflow.slice(nodeBuild, save);
+  assert.match(verifiedNodeBlock, /nix-store --query --outputs/);
+  assert.match(verifiedNodeBlock, /--add-root/);
+  assert.match(verifiedNodeBlock, /nix path-info --json --recursive/);
+  assert.match(verifiedNodeBlock, /store bytes before save/);
+  assert.doesNotMatch(verifiedNodeBlock, /--no-check|doCheck\s*=\s*false/);
+
+  const saveBlock = workflow.slice(saveStep, appBuild);
+  assert.match(saveBlock, /steps\.restore-node-cache\.outputs\.hit-primary-key != 'true'/);
+  assert.match(saveBlock, /env\.TRUSTED_CACHE_WRITE == 'true'/);
+  assert.match(saveBlock, /continue-on-error: true/);
+  assert.match(saveBlock, /gc-max-store-size-linux: 3G/);
+  assert.match(saveBlock, /store bytes after save GC/);
+  assert.match(saveBlock, /reported cache bytes/);
+  assert.doesNotMatch(saveBlock, /restore-prefixes|purge: true|pnpmDeps|\/home\//);
+  assert.match(workflow, /github\.event_name == 'push'.*github\.event\.repository\.default_branch/);
+  assert.match(workflow, /github\.event_name == 'workflow_dispatch'.*inputs\.trusted_cache_write/);
+  assert.match(workflow, /\.\/result\/bin\/kiki --version/);
+
+  const cacheKey = ({ system, epoch, drvPath }) =>
+    `nix-node-v1-${system}-${epoch}-${drvPath.split('/').at(-1)}`;
+  const baseline = cacheKey({
+    system: 'x86_64-linux', epoch: 1, drvPath: '/nix/store/aaaaaaaa-nodejs-24.22.1.drv',
+  });
+  assert.equal(
+    baseline,
+    cacheKey({ system: 'x86_64-linux', epoch: 1, drvPath: '/nix/store/aaaaaaaa-nodejs-24.22.1.drv' }),
+  );
+  assert.notEqual(
+    baseline,
+    cacheKey({ system: 'x86_64-linux', epoch: 1, drvPath: '/nix/store/bbbbbbbb-nodejs-24.22.1.drv' }),
+  );
+  assert.notEqual(
+    baseline,
+    cacheKey({ system: 'aarch64-linux', epoch: 1, drvPath: '/nix/store/aaaaaaaa-nodejs-24.22.1.drv' }),
+  );
+  assert.notEqual(
+    baseline,
+    cacheKey({ system: 'x86_64-linux', epoch: 2, drvPath: '/nix/store/aaaaaaaa-nodejs-24.22.1.drv' }),
+  );
+});
