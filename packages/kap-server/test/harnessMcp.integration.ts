@@ -360,7 +360,7 @@ describe('native harness tool parity', () => {
       expect(rejected.output).toContain('the user rejected the approval request');
       expect(rejected.output).not.toContain('turn_ended');
       const endedCall = context.call({ name: 'plugin_approval_revoke_fixture', arguments: {} });
-      let ended: { output?: string; isError?: boolean } | undefined;
+      let ended: Awaited<typeof endedCall> | undefined;
       void endedCall.then((value) => { ended = value; });
       await vi.waitFor(() => { expect(interaction.listPending('approval'), JSON.stringify(ended)).toHaveLength(1); });
       const ending = interaction.listPending('approval')[0]!;
