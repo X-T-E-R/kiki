@@ -30,8 +30,9 @@ function fileSet(entries, root = repositoryRoot) {
   return new Set(entries.map((entry) => normalizedFile(entry, root)));
 }
 
+/** @param {Iterable<string>} values */
 function sorted(values) {
-  return [...values].toSorted();
+  return [...values].toSorted((left, right) => left.localeCompare(right));
 }
 
 function difference(left, right) {
@@ -107,14 +108,14 @@ export function assertPartitionCollections({ full, ordinary, gui, media, shards 
   assertSameFiles('gui', guiFiles, fileSet(expected.gui, root));
   assertSameFiles('media', mediaFiles, fileSet(expected.media, root));
 
-  for (const [leftName, left, rightName, right] of [
-    ['ordinary', ordinaryFiles, 'gui', guiFiles],
-    ['ordinary', ordinaryFiles, 'media', mediaFiles],
-    ['gui', guiFiles, 'media', mediaFiles],
+  for (const pair of [
+    { names: 'ordinary/gui', left: ordinaryFiles, right: guiFiles },
+    { names: 'ordinary/media', left: ordinaryFiles, right: mediaFiles },
+    { names: 'gui/media', left: guiFiles, right: mediaFiles },
   ]) {
-    const overlap = intersection(left, right);
+    const overlap = intersection(pair.left, pair.right);
     if (overlap.size > 0) {
-      throw new Error(`${leftName}/${rightName} overlap: ${JSON.stringify(sorted(overlap))}`);
+      throw new Error(`${pair.names} overlap: ${JSON.stringify(sorted(overlap))}`);
     }
   }
 
