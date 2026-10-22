@@ -67,7 +67,8 @@ function beginSummarize(ctx: TestAgentContext, input: { instruction?: string } =
   }));
 }
 
-function fixtureRequestTokens(ctx: TestAgentContext, text: readonly string[]): number {
+async function fixtureRequestTokens(ctx: TestAgentContext, text: readonly string[]): Promise<number> {
+  await ctx.ready;
   const tools = ctx.get(IAgentToolSelectService).shapeTools(ctx.get(IAgentToolRegistryService).list());
   return ctx.tokenCounting.requestSize({
     systemPrompt: ctx.get(IAgentProfileService).getSystemPrompt(),
@@ -497,12 +498,13 @@ describe('FullCompaction', () => {
       type: 'text',
       text: expect.stringContaining('The conversation so far has been compacted'),
     });
+    const tokensBefore = await fixtureRequestTokens(ctx, THREE_EXCHANGE_TEXT);
     expect(records).toContainEqual({
       event: 'compaction_finished',
       properties: expect.objectContaining({
         agent_id: 'main',
         source: 'manual',
-        tokens_before: fixtureRequestTokens(ctx, THREE_EXCHANGE_TEXT),
+        tokens_before: tokensBefore,
         tokens_after: expect.any(Number),
         duration_ms: expect.any(Number),
         compacted_count: 6,
@@ -867,7 +869,7 @@ describe('FullCompaction', () => {
       session_id: 'test-session',
       cwd: dir,
       trigger: 'auto',
-      token_count: fixtureRequestTokens(ctx, THREE_EXCHANGE_TEXT),
+      token_count: await fixtureRequestTokens(ctx, THREE_EXCHANGE_TEXT),
     });
     expect(post).toMatchObject({
       hook_event_name: 'PostCompact',
@@ -946,7 +948,7 @@ describe('FullCompaction', () => {
     });
     ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
-    const tokensBefore = fixtureRequestTokens(ctx, TWO_EXCHANGE_TEXT);
+    const tokensBefore = await fixtureRequestTokens(ctx, TWO_EXCHANGE_TEXT);
     const compacted = ctx.once('full_compaction.complete');
     const completed = ctx.once('compaction.completed');
 
@@ -1464,7 +1466,7 @@ describe('FullCompaction', () => {
     });
     ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
-    const tokensBefore = fixtureRequestTokens(ctx, TWO_EXCHANGE_TEXT);
+    const tokensBefore = await fixtureRequestTokens(ctx, TWO_EXCHANGE_TEXT);
     const failed = ctx.once('error');
 
     await beginSummarize(ctx, {});
@@ -1711,7 +1713,7 @@ describe('FullCompaction', () => {
     });
     ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
-    const tokensBefore = fixtureRequestTokens(ctx, TWO_EXCHANGE_TEXT);
+    const tokensBefore = await fixtureRequestTokens(ctx, TWO_EXCHANGE_TEXT);
     const failed = ctx.once('error');
 
     await beginSummarize(ctx, {});
@@ -2268,7 +2270,7 @@ describe('FullCompaction', () => {
       event: 'compaction_finished',
       properties: expect.objectContaining({
         source: 'auto',
-        tokens_before: fixtureRequestTokens(ctx, [...THREE_EXCHANGE_TEXT, 'Answer after compacting']),
+        tokens_before: await fixtureRequestTokens(ctx, [...THREE_EXCHANGE_TEXT, 'Answer after compacting']),
         tokens_after: expect.any(Number),
         compacted_count: 4,
         retry_count: 0,
