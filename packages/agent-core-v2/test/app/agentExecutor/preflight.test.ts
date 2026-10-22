@@ -8,6 +8,9 @@ import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
 import { AgentExecutionService } from '#/agent/execution/executionService';
 import { IAgentExecutionService } from '#/agent/execution/execution';
+import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
+import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { ISessionTodoService } from '#/session/todo/sessionTodo';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentProfileService } from '#/agent/profile/profile';
@@ -614,6 +617,10 @@ describe('AgentExecutorPreflightService', () => {
     services.stub(IModelCatalog, {});
     services.stub(IRequestGovernance, { acquireAgent: async () => ({ release: () => {} }) });
     services.set(IAgentExecutionService, new SyncDescriptor(AgentExecutionService));
+    const reconcileAllAtSafeBoundary = vi.fn(async () => {});
+    services.stub(IAgentContextInjectorService, { reconcileAllAtSafeBoundary });
+    services.stub(IAgentContextMemoryService, { get: () => [] });
+    services.stub(ISessionTodoService, { getTodos: () => [], getNotes: () => ({ notes: {} }) });
     const execution = services.get(IAgentExecutionService);
 
     expect(first.descriptor.command).toBe('kimi');
@@ -624,6 +631,7 @@ describe('AgentExecutorPreflightService', () => {
       { kind: 'prompt', prompt: 'work' },
       { signal: new AbortController().signal },
     )).rejects.toThrow(/descriptor.*changed/i);
+    expect(reconcileAllAtSafeBoundary).toHaveBeenCalledOnce();
     await execution.shutdown();
   });
 
