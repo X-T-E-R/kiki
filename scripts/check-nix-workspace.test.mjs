@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
 
@@ -107,4 +109,84 @@ void test("Node 24 Nix override keeps SQLite bundled with its matching headers",
   assert.match(override, /input != pkgs\.sqlite/);
   assert.match(override, /getDev pkgs\.sqlite/);
   assert.doesNotMatch(override, /--without-sqlite/);
+});
+
+void test("Nix build compiles every plugin-sdk export before the GUI bundle", () => {
+  const flake = readFileSync(new URL("../flake.nix", import.meta.url), "utf8");
+  const buildStart = flake.indexOf("buildPhase = ''");
+  const installStart = flake.indexOf("installPhase = ''");
+  assert.ok(buildStart >= 0 && installStart > buildStart);
+  const buildPhase = flake.slice(buildStart, installStart);
+  const sdkBuild = buildPhase.indexOf("pnpm --filter=@kiki/plugin-sdk run build\n");
+  const nativeBuild = buildPhase.indexOf("pnpm --filter=@kiki/cli run build:native:sea");
+  assert.ok(sdkBuild >= 0 && nativeBuild > sdkBuild);
+  assert.equal(buildPhase.indexOf("pnpm --filter=@kiki/plugin-sdk run build"), sdkBuild);
+  assert.doesNotMatch(buildPhase, /rollupOptions|plugin-sdk\/dist/);
+
+  const pkg = JSON.parse(
+    readFileSync(new URL("../packages/plugin-sdk/package.json", import.meta.url), "utf8"),
+  );
+  assert.equal(pkg.scripts.build, "tsc -p tsconfig.build.json");
+  assert.equal(pkg.scripts.prepare, "pnpm build");
+  assert.equal(pkg.scripts.prepack, "pnpm build");
+
+  const tsconfig = JSON.parse(
+    readFileSync(new URL("../packages/plugin-sdk/tsconfig.build.json", import.meta.url), "utf8"),
+  );
+  assert.deepEqual(tsconfig.include, ["src"]);
+  assert.equal(tsconfig.compilerOptions.rootDir, "src");
+  assert.equal(tsconfig.compilerOptions.outDir, "dist");
+  assert.equal(tsconfig.compilerOptions.module, "NodeNext");
+
+  const emitted = [];
+  for (const [key, value] of Object.entries(pkg.exports)) {
+    assert.equal(typeof value, "object");
+    const stem = key === "." ? "index" : key.slice(2);
+    assert.equal(value.default, `./dist/${stem}.js`);
+    assert.equal(value.types, `./dist/${stem}.d.ts`);
+    assert.equal(
+      existsSync(new URL(`../packages/plugin-sdk/src/${stem}.ts`, import.meta.url)),
+      true,
+      stem,
+    );
+    emitted.push(`${stem}.js`, `${stem}.d.ts`);
+  }
+  for (const name of ["media.js", "session-import.js", "media-download.js", "index.js"]) {
+    assert.ok(emitted.includes(name));
+  }
+
+  const outDir = mkdtempSync(join(tmpdir(), "kiki-plugin-sdk-dist-"));
+  fixtures.push(outDir);
+  const compiled = spawnSync(
+    process.execPath,
+    [
+      fileURLToPath(new URL("../node_modules/typescript/lib/tsc.js", import.meta.url)),
+      "-p",
+      fileURLToPath(new URL("../packages/plugin-sdk/tsconfig.build.json", import.meta.url)),
+      "--outDir",
+      outDir,
+      "--rootDir",
+      fileURLToPath(new URL("../packages/plugin-sdk/src", import.meta.url)),
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    compiled.status,
+    0,
+    `${compiled.stdout}\n${compiled.stderr}`,
+  );
+  for (const name of emitted) {
+    const file = join(outDir, name);
+    assert.equal(existsSync(file), true, name);
+    assert.ok(statSync(file).size > 0, name);
+  }
+  assert.equal(
+    existsSync(join(outDir, "media.js")) &&
+      readFileSync(join(outDir, "media.js"), "utf8").includes("mediaKindSchema"),
+    true,
+  );
+  assert.equal(
+    readFileSync(join(outDir, "session-import.js"), "utf8").includes("sessionSourceDefinitionSchema"),
+    true,
+  );
 });
