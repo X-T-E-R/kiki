@@ -154,6 +154,8 @@ export function parseArguments(argv) {
     } else if (value === '--paths') {
       while (rest[index + 1] && !rest[index + 1].startsWith('--')) options.paths.push(rest[++index]);
       if (options.paths.length === 0) throw new Error('--paths requires at least one repository path');
+    } else if (value === '--') {
+      continue;
     } else if (value === '--receipt') {
       options.receipt = rest[++index];
       if (!options.receipt) throw new Error('--receipt requires a file path');
@@ -235,7 +237,7 @@ function focusedCommands(changes, affected) {
   const commands = [];
   if (projects.length > 0) {
     const vitestArgs = ['exec', 'vitest', 'related', '--run', '--maxWorkers=2', '--passWithNoTests=false'];
-    for (const project of projects) vitestArgs.push(`--project=${project}`);
+    for (const project of projects) vitestArgs.push(`--project=${String(project)}`);
     vitestArgs.push(...related);
     commands.push(command('affected root Vitest relation', vitestArgs));
   }
@@ -422,7 +424,9 @@ export async function runCommands(commands, { root, env, logDirectory, spawnImpl
       log.write(`\nspawn error: ${error.message}\n`);
     });
     const exitCode = await new Promise(resolveExit => {
-      child.on('close', code => resolveExit(code ?? 1));
+      child.on('close', code => {
+        resolveExit(code ?? 1);
+      });
     });
     const endedAt = new Date().toISOString();
     await new Promise(resolveLog => {

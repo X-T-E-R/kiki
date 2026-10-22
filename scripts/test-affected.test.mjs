@@ -48,6 +48,8 @@ test('parses argument modes without allowing an ambiguous base and path set', ()
     mode: 'focused', base: 'HEAD~1', paths: [], planOnly: true, receipt: undefined,
   });
   assert.deepEqual(parseArguments(['focused', '--paths', 'a.ts', 'b.ts', '--receipt', 'out.json']).paths, ['a.ts', 'b.ts']);
+  assert.deepEqual(parseArguments(['focused', '--', '--paths', 'a.ts']).paths, ['a.ts']);
+  assert.equal(parseArguments(['full', '--', '--plan']).planOnly, true);
   assert.throws(() => parseArguments(['focused', '--base', 'HEAD', '--path', 'a.ts']), /mutually exclusive/);
   assert.throws(() => parseArguments(['full', '--path', 'a.ts']), /does not accept/);
 });
