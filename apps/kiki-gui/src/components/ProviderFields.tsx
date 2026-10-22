@@ -128,6 +128,10 @@ interface ProviderModelCatalogChoice {
   readonly protocol?: ModelProtocol;
   readonly effectiveProtocol?: ModelProtocol;
   readonly protocolSource?: 'model' | 'provider' | 'vendor';
+  readonly endpointSource?: 'model' | 'provider' | 'env' | 'vendor' | 'none';
+  readonly authSource?: 'model' | 'provider' | 'env' | 'vendor' | 'none';
+  readonly endpointEnv?: string;
+  readonly authEnv?: string;
   readonly source: ProviderModelChoiceSource;
 }
 
@@ -141,6 +145,10 @@ function configuredCatalogChoice(model: ModelCatalogItem): ProviderModelCatalogC
     protocol: model.protocol,
     effectiveProtocol: model.effective_protocol,
     protocolSource: model.protocol_source,
+    endpointSource: model.endpoint_source,
+    authSource: model.auth_source,
+    endpointEnv: model.endpoint_env,
+    authEnv: model.auth_env,
     source: 'configured',
   };
 }
@@ -745,6 +753,10 @@ function ModelDraftRow({
             value={protocol}
             resolved={resolvedProtocol}
             source={resolvedProtocol === undefined ? undefined : selectedChoice?.protocolSource}
+            endpointSource={selectedChoice?.source === 'configured' ? selectedChoice.endpointSource : undefined}
+            authSource={selectedChoice?.source === 'configured' ? selectedChoice.authSource : undefined}
+            endpointEnv={selectedChoice?.source === 'configured' ? selectedChoice.endpointEnv : undefined}
+            authEnv={selectedChoice?.source === 'configured' ? selectedChoice.authEnv : undefined}
             onChange={onProtocolChange}
             showHint={false}
           />

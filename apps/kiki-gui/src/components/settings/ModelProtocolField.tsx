@@ -11,7 +11,7 @@
  * the option says which one, so following the provider is never a guess.
  */
 
-import type { ModelProtocol, ModelProtocolSource } from '@kiki/protocol';
+import type { BindingOrigin, ModelProtocol, ModelProtocolSource } from '@kiki/protocol';
 
 import { useI18n } from '../../i18n';
 import { Hint } from '../controls';
@@ -24,7 +24,22 @@ const PROTOCOL_SOURCE_LABEL = {
   vendor: 'st.modelProtocol.source.vendor',
 } as const;
 
-export function ModelProtocolField({ model, value, resolved, source, onChange, disabled = false, showHint = true }: {
+const ORIGIN_LABEL = {
+  model: 'st.modelProtocol.origin.model',
+  provider: 'st.modelProtocol.origin.provider',
+  env: 'st.modelProtocol.origin.env',
+  vendor: 'st.modelProtocol.origin.vendor',
+  none: 'st.modelProtocol.origin.none',
+} as const;
+
+const ENV_NAME = /^[A-Z][A-Z0-9_]*$/;
+
+function originText(label: string, source: BindingOrigin, envName: string | undefined): string {
+  if (source !== 'env' || envName === undefined || !ENV_NAME.test(envName)) return label;
+  return `${label} (${envName})`;
+}
+
+export function ModelProtocolField({ model, value, resolved, source, endpointSource, authSource, endpointEnv, authEnv, onChange, disabled = false, showHint = true }: {
   /** Alias or remote id, only for the accessible name. */
   model: string;
   value: ModelProtocolChoice;
@@ -36,6 +51,11 @@ export function ModelProtocolField({ model, value, resolved, source, onChange, d
   resolved?: ModelProtocol;
   /** Where `resolved` came from. Pass it only while the stored value inherits. */
   source?: ModelProtocolSource;
+  /** Where the effective endpoint and credential come from. Names only; never a URL or a key. */
+  endpointSource?: BindingOrigin;
+  authSource?: BindingOrigin;
+  endpointEnv?: string;
+  authEnv?: string;
   onChange: (next: ModelProtocolChoice) => void;
   disabled?: boolean;
   showHint?: boolean;
@@ -68,6 +88,12 @@ export function ModelProtocolField({ model, value, resolved, source, onChange, d
             format: t(MODEL_PROTOCOL_LABEL[effectiveFormat]),
             source: t(PROTOCOL_SOURCE_LABEL[effectiveSource]),
           })}
+          {endpointSource !== undefined || authSource !== undefined
+            ? ` · ${t('st.modelProtocol.bindingOrigins', {
+              endpoint: originText(t(ORIGIN_LABEL[endpointSource ?? 'none']), endpointSource ?? 'none', endpointEnv),
+              credential: originText(t(ORIGIN_LABEL[authSource ?? 'none']), authSource ?? 'none', authEnv),
+            })}`
+            : ''}
         </p>
       ) : null}
       {showHint ? <Hint>{t('st.modelProtocol.hint')}</Hint> : null}

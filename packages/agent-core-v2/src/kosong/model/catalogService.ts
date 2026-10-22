@@ -233,7 +233,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
       const providerType = this.providerTypeOf(record);
       try {
         const model = this.get(modelId);
-        const option = { item: toProtocolModel(model, record, providerType), model };
+        const option = { item: toProtocolModel(model, record, providerType, this.providerConfigOf(record)), model };
         const identity = this.managedCatalogIdentity(model);
         if (identity === undefined) {
           items.push(option.item);
@@ -250,7 +250,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
           items[existing.index] = option.item;
         }
       } catch {
-        items.push(toProtocolModelFallback(modelId, record, providerType));
+        items.push(toProtocolModelFallback(modelId, record, providerType, this.providerConfigOf(record)));
       }
     }
     return items;
@@ -316,7 +316,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     await this.models.setDefaultModel(canonicalId);
     return {
       default_model: canonicalId,
-      model: toProtocolModel(model, record, this.providerTypeOf(record)),
+      model: toProtocolModel(model, record, this.providerTypeOf(record), this.providerConfigOf(record)),
     };
   }
 
@@ -331,9 +331,13 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
   }
 
   private providerTypeOf(record: ModelRecord): string | undefined {
+    return this.providerConfigOf(record)?.type ?? record.protocol;
+  }
+
+  private providerConfigOf(record: ModelRecord): ProviderConfig | undefined {
     const providerId =
       record.providerId ?? record.provider ?? this.providers.getDefaultProvider();
-    return this.providers.get(providerId ?? '')?.type ?? record.protocol;
+    return providerId === undefined ? undefined : this.providers.get(providerId);
   }
 
   private buildModel(

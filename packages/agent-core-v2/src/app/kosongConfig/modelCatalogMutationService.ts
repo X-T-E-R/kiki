@@ -25,11 +25,11 @@ import { composeRecipeLayers, recipeReferences } from '#/app/recipes/recipeOverl
 import { Error2, ErrorCodes } from '#/errors';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
-import { ConfigTarget, IConfigService } from '#/app/config/config';
+import { ConfigTarget, IConfigService, type ConfigDiagnostic } from '#/app/config/config';
 import { deepEqual } from '#/app/config/sectionDiff';
 import { camelToSnake, transformPlainObject } from '#/app/config/toml';
 import { CONFIG_INVALID_ERROR_CODE } from '#/kosong/contract/errors';
-import { toProtocolProvider } from '#/kosong/model/catalog';
+import { modelBindingOriginFields, toProtocolProvider } from '#/kosong/model/catalog';
 import { resolveProviderCredentialState } from '#/kosong/model/catalogService';
 import { ModelCatalogErrors } from '#/kosong/model/errors';
 import { deriveProviderId, nonEmpty } from '#/kosong/model/modelAuth';
@@ -224,14 +224,25 @@ function modelIssues(
   return issues;
 }
 
+function rejectedOverrideFields(id: string, diagnostics: readonly ConfigDiagnostic[]): string | undefined {
+  const prefix = `[models] entry '${id}' overrides rejected `;
+  const hit = diagnostics.find((item) => item.domain === MODELS_SECTION && item.message.startsWith(prefix));
+  if (hit === undefined) return undefined;
+  const fields = hit.message.slice(prefix.length).split(';')[0]?.trim();
+  return fields === undefined || fields.length === 0 ? undefined : fields;
+}
+
 function modelEntity(
   id: string,
   record: ModelRecord,
   providers: ProvidersSection,
   defaultProvider: string | undefined,
+  diagnostics: readonly ConfigDiagnostic[] = [],
 ): ModelEntity {
   const ref = resolveProviderRef(record, defaultProvider);
-  const explained = explainModelProtocol(record, providers[ref.providerId]);
+  const provider = ref.source === 'flat' ? undefined : providers[ref.providerId];
+  const explained = explainModelProtocol(record, provider);
+  const rejected = rejectedOverrideFields(id, diagnostics);
   const generation = resolveGenerationParameters(providers[ref.providerId], record);
   const usage = {
     main: resolveModelUsage(generation, record, 'main'),
@@ -281,9 +292,19 @@ function modelEntity(
     protocol: record.protocol,
     effective_protocol: explained?.protocol,
     protocol_source: explained?.source,
+    ...modelBindingOriginFields(record, provider),
     base_url: record.baseUrl,
     revision: revisionOf(record),
-    issues: [...modelIssues(record, providers, ref), ...(record.recipe !== undefined ? [{ code: 'recipe-selected', severity: 'warning' as const, path: 'recipe', message: 'Recipe selected; saved model prompts and Recipe-covered settings are retained but ignored. Role, persona and workspace instructions remain active.' }] : [])],
+    issues: [
+      ...modelIssues(record, providers, ref),
+      ...(rejected === undefined ? [] : [{
+        code: ModelIssueCodes.OVERRIDE_ROUTING_REJECTED,
+        severity: 'warning' as const,
+        path: 'overrides',
+        message: rejected,
+      }]),
+      ...(record.recipe !== undefined ? [{ code: 'recipe-selected', severity: 'warning' as const, path: 'recipe', message: 'Recipe selected; saved model prompts and Recipe-covered settings are retained but ignored. Role, persona and workspace instructions remain active.' }] : []),
+    ],
   };
 }
 
@@ -580,7 +601,7 @@ export class ModelCatalogMutationService
       const resolved = await this.recipes.resolve(resolveModelRecipeReference(saved.recipe, id, this.config, this.bootstrap));
       const record = effectiveModelsOf(this.config)[id]!;
       const recipe = composeRecipeLayers([{ surface: 'model', installation_id: saved.recipe, resolved }], record.overrides)!;
-      const effective = modelEntity(id, applyRecipeModelSettings(record, recipe.model), effectiveProvidersOf(this.config), defaultProviderOf(this.config));
+      const effective = modelEntity(id, applyRecipeModelSettings(record, recipe.model), effectiveProvidersOf(this.config), defaultProviderOf(this.config), this.config.diagnostics());
       const localSources = Object.fromEntries(Object.entries(resolveGenerationParameters(undefined, { overrides: record.overrides }).sources).map(([key, value]) => [key, value.detail]));
       const sources = (values: Record<string, string>) => Object.fromEntries(Object.entries(values).map(([key, source]) => {
         const field = key.replaceAll(/_([a-z])/gu, (_, letter: string) => letter.toUpperCase());
@@ -612,7 +633,7 @@ export class ModelCatalogMutationService
     if (record === undefined) {
       throw new Error2(ModelCatalogErrors.codes.MODEL_NOT_FOUND, `model ${id} does not exist`);
     }
-    return modelEntity(id, record, effectiveProvidersOf(this.config), defaultProviderOf(this.config));
+    return modelEntity(id, record, effectiveProvidersOf(this.config), defaultProviderOf(this.config), this.config.diagnostics());
   }
 
   async createModel(input: CreateModelRequest): Promise<ModelEntity> {
@@ -663,7 +684,7 @@ export class ModelCatalogMutationService
       await this.writeSections({
         [MODELS_SECTION]: { ...models, [id]: record },
       });
-      return modelEntity(id, record, providers, defaultProviderOf(this.config));
+      return modelEntity(id, record, providers, defaultProviderOf(this.config), this.config.diagnostics());
     });
   }
 

@@ -435,7 +435,7 @@ function collectOverrideRoutingDiagnostics(rawModels: unknown): ConfigDiagnostic
     if (rejected.length === 0) continue;
     diagnostics.push({
       domain: MODELS_SECTION,
-      severity: 'error',
+      severity: 'warning',
       message: `[models] entry '${alias}' overrides rejected ${rejected.join(', ')}; set those fields on the model itself. They were not applied.`,
     });
   }

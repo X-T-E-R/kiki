@@ -279,9 +279,9 @@ KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 | `auto_compact` | `integer` | 否 | 该模型的自动压缩点，写绝对 token 数。profile 或会话层的值优先；不改变模型窗口上限。该字段也可写在本模型的 `overrides` 表中 |
 | `max_completion_tokens` | `integer` | 否 | 单次请求补全 token 的上限。跨层取最小值，且受模型输出上限约束 |
 | `off_effort` | `string` | 否 | 关闭 Thinking 时在线上传输的 effort 编码（如 xai grok 的 `none`）。仅对声明了该编码的模型（catalog 会导入）有意义：设置后选择 Off 会发送这个值而不是省略 effort 字段——对默认就会推理的模型，这是真正关闭推理的唯一方式 |
-| `protocol` | `string` | 否 | 此模型的请求格式：`anthropic`、`openai`、`openai_responses` 或 `google-genai`。解析顺序是该字段，然后是本身属于这四值之一的供应商类型，最后是厂商基座格式。与供应商类型不同是合法的网关选择。不接受写入 `overrides`；写在那里会被报告且不会生效 |
+| `protocol` | `string` | 否 | 此模型的请求格式：`anthropic`、`openai`、`openai_responses` 或 `google-genai`。解析顺序是该字段，然后是本身属于这四值之一的供应商类型，最后是厂商基座格式。与供应商类型不同是合法的网关选择。不接受写入 `overrides`；写在那里会给出警告且不会生效 |
 | `beta_api` | `boolean` | 否 | 仅 `anthropic` 传输层：让请求走 beta Messages API 端点而不是标准端点。不接受写入 `overrides` |
-| `base_url` | `string` | 否 | 模型级端点。即使省略 `protocol`，解析时也优先于供应商的 `base_url`，且它本身不改变请求格式。不接受写入 `overrides`；写在那里会被报告且不会生效 |
+| `base_url` | `string` | 否 | 模型级端点。即使省略 `protocol`，解析时也优先于供应商的 `base_url`，且它本身不改变请求格式。不接受写入 `overrides`；写在那里会给出警告且不会生效 |
 | `display_name` | `string` | 否 | UI 中显示的名称，未设时回退到 `model` |
 | `aliases` | `array<string>` | 否 | 该模型的额外路由键。任意一项精确匹配都会解析到这个表键，包含 `/` 的旧名称也可以。这是重命名表键后让旧名称继续可用的正规做法。两个模型声明同一段 alias 字符串会报错 |
 | `reasoning_key` | `string` | 否 | 仅 `openai` 供应商。当网关用非标准字段名返回推理内容时才需要设置；默认自动识别 `reasoning_content` / `reasoning_details` / `reasoning` |
@@ -354,7 +354,7 @@ max_context_size = 131072
 display_name = "Kimi for Coding (custom)"
 ```
 
-`[models."<alias>".overrides]` 接受普通模型字段，例如 `max_context_size`、`max_input_size`、`max_output_size`、`capabilities`、`display_name`、`reasoning_key`、`adaptive_thinking`、`support_efforts`、`default_effort`、`off_effort`、`service_tier`、`request_params`、`context_budget`、`auto_compact` 与 `max_completion_tokens`。不接受身份 / 路由字段：`provider`、`model`、`protocol`、`beta_api` 和 `base_url`。把这些字段写进 `overrides` 会在加载配置时被报告，且不会改到模型；请写在模型自身上。对这些新增字段，先得到模型 alias 的有效配置（包括其 `overrides`），再按 "模型 alias → profile 顶层 → 命中的 `model_profiles` 条目" 合并：`request_params` 逐键覆盖，`service_tier` 使用最后一个明确值；`context_budget` 和 `max_completion_tokens` 是限制，取各层声明值的最小值，并继续受模型容量与输出上限约束。省略限制表示不增加限制。
+`[models."<alias>".overrides]` 接受普通模型字段，例如 `max_context_size`、`max_input_size`、`max_output_size`、`capabilities`、`display_name`、`reasoning_key`、`adaptive_thinking`、`support_efforts`、`default_effort`、`off_effort`、`service_tier`、`request_params`、`context_budget`、`auto_compact` 与 `max_completion_tokens`。不接受身份 / 路由字段：`provider`、`model`、`protocol`、`beta_api` 和 `base_url`。把这些字段写进 `overrides` 会在加载配置时给出警告，且不会改到模型；请写在模型自身上。模型设置页会标出这条警告，并显示有效格式、端点和凭据来自模型、提供商还是环境变量，不显示密钥或端点地址。对这些新增字段，先得到模型 alias 的有效配置（包括其 `overrides`），再按 "模型 alias → profile 顶层 → 命中的 `model_profiles` 条目" 合并：`request_params` 逐键覆盖，`service_tier` 使用最后一个明确值；`context_budget` 和 `max_completion_tokens` 是限制，取各层声明值的最小值，并继续受模型容量与输出上限约束。省略限制表示不增加限制。
 
 无需修改配置文件也可以临时切换模型——通过 `KIKI_MODEL_*` 环境变量在内存里合成一个临时供应商，详见[用环境变量定义模型](./env-vars.md#用环境变量定义模型-kiki-model)。
 

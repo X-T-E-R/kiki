@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { generationParametersSchema, modelBehaviorWireSchema, modelBehaviorToWire, modelProtocolSourceSchema } from '@kiki/protocol';
+import { bindingOriginSchema, generationParametersSchema, modelBehaviorWireSchema, modelBehaviorToWire, modelProtocolSourceSchema } from '@kiki/protocol';
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { ModelCapability } from '#/kosong/contract/capability';
@@ -21,7 +21,7 @@ import {
 
 import type { ModelInspection } from './inspection';
 import type { ModelRecord, ModelUsagePosition } from './model';
-import { effectiveModelConfig } from './modelAuth';
+import { effectiveModelConfig, explainModelAuthOrigin, explainModelEndpointOrigin } from './modelAuth';
 import { explainModelProtocol } from './modelProtocol';
 import { parametersToWire, type GenerationParameters, type ResolvedModelUsage } from './parameters';
 import type { ModelRequester } from './modelRequester';
@@ -105,6 +105,10 @@ export const modelCatalogItemSchema = z.object({
   protocol: ProtocolSchema.optional(),
   effective_protocol: ProtocolSchema.optional(),
   protocol_source: modelProtocolSourceSchema.optional(),
+  endpoint_source: bindingOriginSchema.optional(),
+  endpoint_env: z.string().min(1).optional(),
+  auth_source: bindingOriginSchema.optional(),
+  auth_env: z.string().min(1).optional(),
   support_efforts: z.array(z.string()).optional(),
   default_effort: z.string().optional(),
   service_tier: z.enum(['auto', 'default', 'flex', 'priority']).optional(),
@@ -170,6 +174,7 @@ export function toProtocolModel(
   model: Model,
   record: ModelRecord,
   providerType?: string,
+  provider?: Pick<ProviderConfig, 'baseUrl' | 'type' | 'env' | 'apiKey' | 'oauth'>,
 ): ModelCatalogItem {
   const effective = effectiveModelConfig(record, providerType ?? model.providerType);
   const explained = explainModelProtocol(record, providerOf(providerType ?? model.providerType));
@@ -180,6 +185,7 @@ export function toProtocolModel(
     protocol: record.protocol,
     effective_protocol: model.protocol,
     protocol_source: explained?.source,
+    ...modelBindingOriginFields(record, provider ?? providerOf(providerType ?? model.providerType)),
     provider_id: model.providerName,
     remote_id: model.name ?? model.id,
     display_name: model.displayName ?? model.name ?? model.id,
@@ -205,6 +211,7 @@ export function toProtocolModelFallback(
   modelId: string,
   record: ModelRecord,
   providerType?: string,
+  provider?: Pick<ProviderConfig, 'baseUrl' | 'type' | 'env' | 'apiKey' | 'oauth'>,
 ): ModelCatalogItem {
   const effective = effectiveModelConfig(record, providerType);
   const explained = explainModelProtocol(record, providerOf(providerType));
@@ -214,6 +221,7 @@ export function toProtocolModelFallback(
     protocol: record.protocol,
     effective_protocol: explained?.protocol,
     protocol_source: explained?.source,
+    ...modelBindingOriginFields(record, provider ?? providerOf(providerType)),
     provider_id: effective.provider ?? effective.providerId ?? '',
     remote_id: remoteId,
     display_name: effective.displayName ?? remoteId,
@@ -234,6 +242,20 @@ export function toProtocolModelFallback(
 
 function providerOf(providerType: string | undefined): { readonly type: string } | undefined {
   return providerType === undefined ? undefined : { type: providerType };
+}
+
+export function modelBindingOriginFields(
+  record: ModelRecord,
+  provider?: Pick<ProviderConfig, 'baseUrl' | 'type' | 'env' | 'apiKey' | 'oauth'>,
+): Pick<ModelCatalogItem, 'endpoint_source' | 'endpoint_env' | 'auth_source' | 'auth_env'> {
+  const endpoint = explainModelEndpointOrigin(record, provider);
+  const auth = explainModelAuthOrigin(record, provider);
+  return {
+    endpoint_source: endpoint.source,
+    ...(endpoint.source === 'env' && endpoint.envName !== undefined ? { endpoint_env: endpoint.envName } : {}),
+    auth_source: auth.source,
+    ...(auth.source === 'env' && auth.envName !== undefined ? { auth_env: auth.envName } : {}),
+  };
 }
 
 function modelCapabilityNames(capabilities: ModelCapability): string[] {

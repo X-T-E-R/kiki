@@ -18,6 +18,7 @@ import { ModelCatalog } from '#/kosong/model/catalogService';
 import { IHostRequestHeaders } from '#/kosong/model/hostRequestHeaders';
 import { IModelService, type ModelRecord, type ModelsSection } from '#/kosong/model/model';
 import '#/kosong/model/modelService';
+import { explainModelAuthOrigin, explainModelEndpointOrigin } from '#/kosong/model/modelAuth';
 import { IModelOAuthTokens } from '#/kosong/model/modelOAuth';
 import { applyModelSettings } from '#/kosong/model/modelSettings';
 
@@ -69,7 +70,7 @@ function gatewayHost() {
 }
 
 describe('model protocol resolution', () => {
-  it('uses the explicit model protocol, model endpoint, and provider account together', () => {
+  it('uses the explicit model protocol, model endpoint, and provider account together', async () => {
     const { host, catalog } = gatewayHost();
     try {
       const view = catalog.inspect('gemini');
@@ -80,6 +81,22 @@ describe('model protocol resolution', () => {
       expect(view.sources['resolved.baseUrl']?.detail).toBe('model.baseUrl');
       expect(view.resolved.auth.kind).toBe('apiKey');
       expect(view.sources['resolved.auth']?.detail).toBe("provider 'edge' apiKey");
+      expect(explainModelEndpointOrigin(gatewayModel, gatewayProvider)).toEqual({
+        source: 'model',
+        baseUrl: 'https://model.example.test/gemini',
+      });
+      expect(explainModelAuthOrigin(gatewayModel, gatewayProvider)).toEqual({ source: 'provider' });
+      const listed = (await catalog.listModels()).find((item) => item.id === 'gemini');
+      expect(listed).toMatchObject({
+        effective_protocol: 'google-genai',
+        protocol_source: 'model',
+        endpoint_source: 'model',
+        auth_source: 'provider',
+      });
+      expect(listed).not.toHaveProperty('endpoint_env');
+      expect(listed).not.toHaveProperty('auth_env');
+      expect(JSON.stringify(listed)).not.toContain('fixture-gateway-key');
+      expect(JSON.stringify(listed)).not.toContain('https://');
       expect(view.resolved.providerType).toBe('openai');
       expect(catalog.get('gemini').protocol).toBe('google-genai');
       expect(catalog.getRequester('gemini').model.protocol).toBe('google-genai');
@@ -99,7 +116,12 @@ describe('model protocol resolution', () => {
       expect(view.resolved.protocol).toBe('openai');
       expect(view.resolved.protocolSource).toBe('provider');
       expect(view.resolved.baseUrl).toBe('https://model.example.test/v1');
+      expect(view.resolved.baseUrl).not.toBe(gatewayProvider.baseUrl);
       expect(view.sources['resolved.baseUrl']?.detail).toBe('model.baseUrl');
+      expect(explainModelEndpointOrigin(
+        { baseUrl: 'https://model.example.test/v1' },
+        gatewayProvider,
+      )).toEqual({ source: 'model', baseUrl: 'https://model.example.test/v1' });
       expect(view.resolved.auth.kind).toBe('apiKey');
       expect(view.sources['resolved.auth']?.detail).toBe("provider 'edge' apiKey");
     } finally { void host.dispose(); }
@@ -142,6 +164,7 @@ describe('model protocol resolution', () => {
       expect(view.resolved.protocolSource).toBe('model');
       expect(view.resolved.baseUrl).toBe('https://model.example.test/gemini');
       expect(view.resolved.auth).toEqual({ kind: 'oauth', oauthProviderKey: 'edge' });
+      expect(explainModelAuthOrigin(gatewayModel, { type: 'openai', oauth: { storage: 'file', key: 'edge-account' } })).toEqual({ source: 'provider' });
       expect(view.sources['resolved.auth']?.detail).toBe("provider 'edge' oauth");
     } finally { void host.dispose(); }
   });
@@ -163,6 +186,13 @@ describe('model protocol resolution', () => {
       expect(view.resolved.auth.kind).toBe('apiKey');
       expect(view.sources['resolved.auth']?.detail).toContain('OPENAI_API_KEY');
       expect(view.sources['resolved.auth']?.detail).not.toContain('GOOGLE_API_KEY');
+      const origin = explainModelAuthOrigin(gatewayModel, {
+        type: 'openai',
+        env: { OPENAI_API_KEY: 'fixture-openai-env', GOOGLE_API_KEY: 'fixture-google-env' },
+      });
+      expect(origin).toEqual({ source: 'env', envName: 'OPENAI_API_KEY' });
+      expect(JSON.stringify(origin)).not.toContain('fixture-openai-env');
+      expect(JSON.stringify(origin)).not.toContain('fixture-google-env');
     } finally { void host.dispose(); }
   });
 

@@ -1055,6 +1055,7 @@ const MODEL_ISSUE_KEYS: Readonly<Record<string, I18nKey>> = {
   'model.max_context_size_missing': 'st.models.issue.contextMissing',
   'model.protocol_unresolved': 'st.models.issue.protocolUnresolved',
   'model.request_identity_invalid': 'st.models.issue.requestIdentityInvalid',
+  'model.override_routing_rejected': 'st.models.issue.overrideRouting',
 };
 
 function hasCapability(item: ModelCatalogItem, capability: string): boolean {
@@ -1868,7 +1869,12 @@ function ModelCatalogRowEditor({
           <p role="status" className="rounded-md bg-amber-card px-3 py-1.5 text-[12px] leading-4 text-amber-ink">
             {entity.issues.map((issue) => {
               const key = MODEL_ISSUE_KEYS[issue.code];
-              return `${issue.path}: ${key === undefined ? issue.message : t(key)}`;
+              const text = key === undefined
+                ? issue.message
+                : issue.code === 'model.override_routing_rejected'
+                  ? t(key, { fields: issue.message })
+                  : t(key);
+              return `${issue.path}: ${text}`;
             }).join(' · ')}
           </p>
         ) : null}
@@ -1932,6 +1938,10 @@ function ModelCatalogRowEditor({
               value={protocol}
               resolved={resolvedProtocol}
               source={protocolBaseline === 'inherit' ? entity.protocol_source : undefined}
+              endpointSource={entity.endpoint_source}
+              authSource={entity.auth_source}
+              endpointEnv={entity.endpoint_env}
+              authEnv={entity.auth_env}
               onChange={setProtocol}
               disabled={saving}
               showHint={false}

@@ -344,6 +344,38 @@ describe('ModelCatalogCard row editor', () => {
     });
   });
 
+  it('shows format, endpoint, and credential sources and the ignored override fields', async () => {
+    getModel.mockResolvedValue({
+      ...ENTITY,
+      protocol: 'google-genai',
+      effective_protocol: 'google-genai',
+      protocol_source: 'model',
+      endpoint_source: 'model',
+      auth_source: 'env',
+      auth_env: 'OPENAI_API_KEY',
+      base_url: 'https://model.example.test/gemini?key=secret-token',
+      issues: [{ code: 'model.override_routing_rejected', severity: 'warning', path: 'overrides', message: 'base_url, protocol' }],
+    });
+    const container = await renderCard();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Edit parameters for kimi-code/kimi-k2"]',
+      )!.click();
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    const line = container.querySelector('[data-effective-protocol]')?.textContent;
+    expect(line).toBe('Effective format: Google GenAI · this model · endpoint model · credential env (OPENAI_API_KEY)');
+    expect(line).not.toContain('secret-token');
+    expect(line).not.toContain('model.example.test');
+    expect(line).not.toContain('https://');
+    const banner = container.querySelector('[role="status"]')?.textContent;
+    expect(banner).toContain('These override fields were ignored: base_url, protocol.');
+    expect(banner).not.toContain('secret-token');
+    expect(banner).not.toContain('https://');
+  });
+
   it('saves a chosen request format as a sparse protocol patch', async () => {
     getModel.mockResolvedValue({ ...ENTITY, effective_protocol: 'openai' });
     const container = await renderCard();

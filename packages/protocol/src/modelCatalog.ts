@@ -11,6 +11,10 @@ export type ModelProtocol = z.infer<typeof modelProtocolSchema>;
 export const modelProtocolSourceSchema = z.enum(['model', 'provider', 'vendor']);
 export type ModelProtocolSource = z.infer<typeof modelProtocolSourceSchema>;
 
+/** Where an effective endpoint or credential came from. Values are names, never the URL or the key. */
+export const bindingOriginSchema = z.enum(['model', 'provider', 'env', 'vendor', 'none']);
+export type BindingOrigin = z.infer<typeof bindingOriginSchema>;
+
 export const providerCatalogStatusSchema = z.enum([
   'connected',
   'error',
@@ -205,6 +209,10 @@ export const modelCatalogItemSchema = z.object({
   protocol: modelProtocolSchema.optional(),
   effective_protocol: modelProtocolSchema.optional(),
   protocol_source: modelProtocolSourceSchema.optional(),
+  endpoint_source: bindingOriginSchema.optional(),
+  endpoint_env: z.string().min(1).optional(),
+  auth_source: bindingOriginSchema.optional(),
+  auth_env: z.string().min(1).optional(),
   support_efforts: z.array(z.string()).optional(),
   default_effort: z.string().optional(),
   service_tier: serviceTierSchema.optional(),
@@ -443,6 +451,10 @@ export const modelEntitySchema = z.object({
   protocol: modelProtocolSchema.optional(),
   effective_protocol: modelProtocolSchema.optional(),
   protocol_source: modelProtocolSourceSchema.optional(),
+  endpoint_source: bindingOriginSchema.optional(),
+  endpoint_env: z.string().min(1).optional(),
+  auth_source: bindingOriginSchema.optional(),
+  auth_env: z.string().min(1).optional(),
   base_url: z.string().min(1).optional(),
   revision: z.string().min(1),
   issues: z.array(modelIssueSchema),

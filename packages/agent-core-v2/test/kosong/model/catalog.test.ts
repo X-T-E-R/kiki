@@ -1458,6 +1458,9 @@ describe('wire projection (pure)', () => {
       const record = (catalogSections['models'] as Record<string, ModelRecord>)['k2']!;
       expect(toProtocolModel(catalog.get('k2'), record, 'kimi')).toEqual({
         effective_protocol: 'openai',
+        protocol_source: 'vendor',
+        endpoint_source: 'vendor',
+        auth_source: 'none',
         id: 'k2',
         provider_id: 'kimi',
         remote_id: 'kimi-k2',
@@ -1491,6 +1494,8 @@ describe('wire projection (pure)', () => {
       capabilities: ['thinking'],
       effective_protocol: 'openai',
       protocol_source: 'vendor',
+      endpoint_source: 'vendor',
+      auth_source: 'none',
       support_efforts: undefined,
       default_effort: undefined,
       request_identity: undefined,
