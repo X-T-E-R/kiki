@@ -281,6 +281,7 @@ describe('server /api/sessions/query', () => {
     let enteredResolve = (): void => {};
     const entered = new Promise<void>((resolve) => { enteredResolve = resolve; });
     const list = vi.spyOn(index, 'listRecent').mockImplementation(async (query) => {
+      if (query.includeArchived !== false || query.limit !== 500) return raw.call(index, query);
       depth += 1;
       const outer = depth === 1;
       try {
@@ -321,6 +322,7 @@ describe('server /api/sessions/query', () => {
       await responseClosed;
       releaseSecond();
       await new Promise<void>((resolve) => { setImmediate(resolve); });
+      await index.listRecent({ includeArchived: true, limit: 100 });
       expect(calls).toBe(2);
     } finally {
       releaseSecond();
