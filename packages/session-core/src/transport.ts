@@ -96,16 +96,33 @@ export function isUnconfirmedTransportError(error: unknown): boolean {
   return error instanceof ApiError && error.source === 'transport';
 }
 
+const API_ERROR_CODE_SUFFIX = /\s*\(code -?\d+\)$/;
+
 /**
- * The session entity itself is gone. Code 40401 is also used for a missing
- * history page, content body, cold baseline, or cwd, so those stay on the
- * open conversation instead of reading as deletion.
+ * The whole error text is one of the sentences the server emits when the
+ * session entity itself is gone. A longer internal error that only contains
+ * the words is not absence.
+ *
+ * Kept sentences, and where they are produced:
+ * - `session.not_found` — protocol reason (`packages/protocol/src/error-codes.ts`)
+ * - `session <id> does not exist`, `temporary session <id> does not exist`
+ *   — index or handle miss (`packages/kap-server/src/routes/sessions.ts`,
+ *   `routes/snapshot.ts`, `services/messages/messageHistory.ts`)
+ * - `session <id> not found` — live handle miss
+ *   (`packages/kap-server/src/transport/dispatcher.ts`,
+ *   `transport/businessSnapshotDispatcher.ts`, title generate in `routes/sessions.ts`)
+ * - `session not found` — preview and media when the session record is absent
+ *   (`routes/documentPreview.ts`, `routes/sessionMedia.ts`)
+ *
+ * `session not found: <id>` is the history page, cold baseline, and transcript
+ * route (`transport/klient/sessionViewHttp.ts`, `routes/transcript.ts`).
  */
 export function isDefiniteSessionAbsenceMessage(message: string): boolean {
-  if (message.includes('session.not_found')) return true;
-  if (/\bsession\s+\S+\s+does not exist\b/i.test(message)) return true;
-  if (/\bsession\s+\S+\s+not found\b/i.test(message)) return true;
-  if (/\bsession not found\b/i.test(message) && !/\bsession not found\s*:/i.test(message)) return true;
+  const text = message.replace(API_ERROR_CODE_SUFFIX, '').trim();
+  if (text === 'session.not_found') return true;
+  if (/^session not found$/i.test(text)) return true;
+  if (/^(?:temporary )?session \S+ does not exist$/i.test(text)) return true;
+  if (/^session \S+ not found$/i.test(text)) return true;
   return false;
 }
 

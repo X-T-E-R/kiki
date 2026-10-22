@@ -401,9 +401,12 @@ describe('isSessionNotFoundMessage', () => {
   it('keeps a legal session when 40401 is an internal resource miss', () => {
     expect(isSessionNotFoundMessage('Could not load session (code 40401)')).toBe(false);
     expect(isSessionNotFoundMessage('session not found: sess-1 (code 40401)')).toBe(false);
+    expect(isSessionNotFoundMessage('session not found while reading history (code 40401)')).toBe(false);
+    expect(isSessionNotFoundMessage('transcript page failed: session not found (code 40401)')).toBe(false);
     expect(isSessionNotFoundMessage('content unavailable (code 40401)')).toBe(false);
     expect(isSessionNotFoundMessage('session sess-1 has no recoverable cwd (code 40401)')).toBe(false);
     expect(isSessionNotFoundMessage('Agent "main" does not exist (code 40401)')).toBe(false);
+    expect(isSessionNotFoundMessage('agent main not found in session sess-1 (code 40401)')).toBe(false);
   });
 
   it('rejects other load failures', () => {
