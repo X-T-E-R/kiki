@@ -24,6 +24,8 @@
 
 - Reduce startup memory used by attached MCP bridge processes and release them when the caller exits.
 
+- Identify the Windows service and CLI as Kiki in process details.
+
 - Fix checkpoint scheduling and usage persistence during session recovery and shutdown.
 
 - Advance replay checkpoints during long conversations and save them before removing an agent.
