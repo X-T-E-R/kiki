@@ -8,6 +8,8 @@ import {
 import { BugIndicatingError } from '#/_base/errors/errors';
 import {
   APIConnectionError,
+  ambiguousRequestDelivery,
+  isAmbiguousRequestDelivery,
   APIProviderQuotaExhaustedError,
   APITimeoutError,
   ChatProviderError,
@@ -119,6 +121,7 @@ export function convertOpenAIError(
   convertErrorHook?: (error: unknown) => ChatProviderError | undefined,
 ): ChatProviderError {
   throwIfAbortError(error);
+  if (isAmbiguousRequestDelivery(error)) return ambiguousRequestDelivery(error);
   if (error instanceof ChatProviderError) {
     return error;
   }

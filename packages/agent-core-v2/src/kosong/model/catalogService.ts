@@ -458,6 +458,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
         protocol,
         protocolSource: explainModelProtocol(routingModel, providerConfig)?.source,
         baseUrl: resolvedBaseUrl,
+        requestCompression: providerConfig?.requestCompression,
         headers: resolveOutboundHeaders(
           providerConfig?.type,
           providerConfig?.customHeaders,

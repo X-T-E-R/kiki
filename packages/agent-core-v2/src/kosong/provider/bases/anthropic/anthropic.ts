@@ -23,6 +23,8 @@ import type {
 
 import {
   APIConnectionError,
+  ambiguousRequestDelivery,
+  isAmbiguousRequestDelivery,
   APITimeoutError,
   ChatProviderError,
   classifyBaseApiError,
@@ -54,6 +56,10 @@ import type {
 } from '#/kosong/contract/provider';
 import type { Tool } from '#/kosong/contract/tool';
 import type { TokenUsage } from '#/kosong/contract/usage';
+import type { RequestCompression } from '#/kosong/contract/requestCompression';
+import { createRequestCompressionFetch } from '../request-compression';
+import { guardRequestDelivery } from '../request-delivery';
+import { matchesProviderTarget } from '../../providerTarget';
 
 import { providerImagePolicy } from '../../providerImagePolicy';
 import {
@@ -129,6 +135,7 @@ export interface AnthropicOptions {
   defaultMaxTokens?: number | undefined;
   betaFeatures?: string[] | undefined;
   defaultHeaders?: Record<string, string>;
+  requestCompression?: RequestCompression;
   metadata?: Record<string, string> | undefined;
   stream?: boolean | undefined;
   adaptiveThinking?: boolean | undefined;
@@ -518,6 +525,7 @@ export function convertAnthropicError(
   convertErrorHook?: (error: unknown) => ChatProviderError | undefined,
 ): ChatProviderError {
   throwIfAbortError(error);
+  if (isAmbiguousRequestDelivery(error)) return ambiguousRequestDelivery(error);
   if (error instanceof ChatProviderError) {
     return error;
   }
@@ -909,6 +917,8 @@ export class AnthropicChatProvider implements ChatProvider {
   private readonly _apiKey: string | undefined;
   private readonly _baseUrl: string | undefined;
   private readonly _defaultHeaders: Record<string, string | null> | undefined;
+  private readonly _requestCompression: ReturnType<typeof createRequestCompressionFetch>;
+  private readonly _guardDelivery: boolean;
   private readonly _clientFactory: ((auth: ProviderRequestAuth) => Anthropic) | undefined;
   private readonly _adaptiveThinking: boolean | undefined;
   private readonly _supportEfforts: readonly string[] | undefined;
@@ -932,6 +942,9 @@ export class AnthropicChatProvider implements ChatProvider {
       options.apiKey === undefined || options.apiKey.length === 0 ? undefined : options.apiKey;
     this._baseUrl = options.baseUrl;
     this._defaultHeaders = options.defaultHeaders;
+    this._requestCompression = createRequestCompressionFetch(options.requestCompression);
+    this._guardDelivery = options.requestCompression !== undefined && options.requestCompression.encoding !== 'off' &&
+      matchesProviderTarget(`${(this._baseUrl ?? 'https://api.anthropic.com').replace(/\/$/, '')}/v1/messages`, options.requestCompression.targets);
     this._clientFactory = options.clientFactory;
     this._client = this._apiKey === undefined ? undefined : this._buildClient(this._apiKey);
     this._generationKwargs = {
@@ -1163,7 +1176,7 @@ export class AnthropicChatProvider implements ChatProvider {
               { ...createParams, stream: true } as unknown as MessageCreateParamsStreaming,
               finalRequestOptions,
             );
-        return new AnthropicStreamedMessage(stream, true, this._hooks?.convertError);
+        return guardRequestDelivery(new AnthropicStreamedMessage(stream, true, this._hooks?.convertError), this._guardDelivery);
       } catch (error: unknown) {
         throw convertAnthropicError(error, this._hooks?.convertError);
       }
@@ -1179,7 +1192,7 @@ export class AnthropicChatProvider implements ChatProvider {
             { ...createParams, stream: false } as unknown as MessageCreateParams,
             finalRequestOptions,
           );
-      return new AnthropicStreamedMessage(response, false, this._hooks?.convertError);
+      return guardRequestDelivery(new AnthropicStreamedMessage(response, false, this._hooks?.convertError), this._guardDelivery);
     } catch (error: unknown) {
       throw convertAnthropicError(error, this._hooks?.convertError);
     }
@@ -1285,7 +1298,7 @@ export class AnthropicChatProvider implements ChatProvider {
   }
 
   private _buildClient(apiKey: string, auth?: ProviderRequestAuth, observer?: RawResponseObserver): Anthropic {
-    const fetchImpl = requestIdentityFetchForAuth(auth);
+    const fetchImpl = this._requestCompression(requestIdentityFetchForAuth(auth));
     return new Anthropic({
       apiKey,
       authToken: null,

@@ -499,8 +499,8 @@ importers:
         specifier: ^1.1.0
         version: 1.1.0
       openai:
-        specifier: ^6.34.0
-        version: 6.34.0(ws@8.22.0)(zod@4.3.6)
+        specifier: ^7.42.0
+        version: 7.42.0(google-auth-library@10.6.2)(undici@7.30.1)(ws@8.22.0)(zod@4.3.6)
       pathe:
         specifier: ^2.0.3
         version: 2.0.3
@@ -528,6 +528,9 @@ importers:
       undici:
         specifier: 7.30.1
         version: 7.30.1
+      ws:
+        specifier: ^8.22.0
+        version: 8.22.0
       yauzl:
         specifier: ^3.3.0
         version: 3.3.0
@@ -559,6 +562,9 @@ importers:
       '@types/tar':
         specifier: ^7.0.87
         version: 7.0.87
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
       '@types/yauzl':
         specifier: ^2.10.3
         version: 2.10.3
@@ -6681,13 +6687,28 @@ packages:
     resolution: {integrity: sha512-YgBpdJHPyQ2UE5x+hlSXcnejzAvD0b22U2OuAP+8OnlJT+PjWPxtgmGqKKc+RgTM63U9gN0YzrYc71R2WT/hTA==}
     engines: {node: '>=18'}
 
-  openai@6.34.0:
-    resolution: {integrity: sha512-yEr2jdGf4tVFYG6ohmr3pF6VJuveP0EA/sS8TBx+4Eq5NT10alu5zg2dmxMXMgqpihRDQlFGpRt2XwsGj+Fyxw==}
-    hasBin: true
+  openai@7.42.0:
+    resolution: {integrity: sha512-RziM2bxp1k24mTLtunije+OOCGRC+qtK0YNYPWkrTdKJLJ65WYW+rPYxlLbnBzU4WwINFCFa0OjCgbsX+fif/w==}
+    engines: {node: '>=22.0.0'}
     peerDependencies:
-      ws: 8.22.0
+      '@aws-sdk/credential-provider-node': '>=3.972.0 <4'
+      '@smithy/hash-node': '>=4.3.0 <5'
+      '@smithy/signature-v4': '>=5.4.0 <6'
+      google-auth-library: '>=9.15.1 <11'
+      undici: 7.30.1
+      ws: ^8.21.0
       zod: ^3.25 || ^4.0
     peerDependenciesMeta:
+      '@aws-sdk/credential-provider-node':
+        optional: true
+      '@smithy/hash-node':
+        optional: true
+      '@smithy/signature-v4':
+        optional: true
+      google-auth-library:
+        optional: true
+      undici:
+        optional: true
       ws:
         optional: true
       zod:
@@ -14976,8 +14997,10 @@ snapshots:
       is-inside-container: 1.0.0
       wsl-utils: 0.1.0
 
-  openai@6.34.0(ws@8.22.0)(zod@4.3.6):
+  openai@7.42.0(google-auth-library@10.6.2)(undici@7.30.1)(ws@8.22.0)(zod@4.3.6):
     optionalDependencies:
+      google-auth-library: 10.6.2
+      undici: 7.30.1
       ws: 8.22.0
       zod: 4.3.6
 

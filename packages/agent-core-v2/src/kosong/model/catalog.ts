@@ -5,6 +5,7 @@ import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiatio
 import type { ModelCapability } from '#/kosong/contract/capability';
 import type { ProviderRequestAuth, ServiceTier } from '#/kosong/contract/provider';
 import type { TokenUsage } from '#/kosong/contract/usage';
+import type { RequestCompression } from '#/kosong/contract/requestCompression';
 import { ProtocolSchema, type Protocol, type ProtocolProviderOptions } from '#/kosong/protocol/protocol';
 
 import { ENV_MODEL_PROVIDER_KEY, type ProviderConfig } from '../provider/provider';
@@ -49,6 +50,7 @@ export interface Model {
   readonly protocol: Protocol;
   readonly protocolSource?: 'model' | 'provider' | 'vendor';
   readonly baseUrl?: string;
+  readonly requestCompression?: RequestCompression;
   readonly headers: Readonly<Record<string, string>>;
 
   readonly capabilities: ModelCapability;

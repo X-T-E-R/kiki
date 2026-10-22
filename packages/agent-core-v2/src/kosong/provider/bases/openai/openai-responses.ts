@@ -31,6 +31,10 @@ import type {
 } from '#/kosong/contract/provider';
 import type { Tool } from '#/kosong/contract/tool';
 import type { TokenUsage } from '#/kosong/contract/usage';
+import type { RequestCompression } from '#/kosong/contract/requestCompression';
+import { createRequestCompressionFetch } from '../request-compression';
+import { guardRequestDelivery } from '../request-delivery';
+import { matchesProviderTarget } from '../../providerTarget';
 import { ProtocolErrors } from '#/kosong/protocol/errors';
 import { RequestIdentityErrors } from '#/kosong/requestIdentity/errors';
 
@@ -385,6 +389,7 @@ export interface OpenAIResponsesOptions {
   thinkingEffort?: ThinkingEffort | undefined;
   httpClient?: unknown;
   defaultHeaders?: Record<string, string>;
+  requestCompression?: RequestCompression;
   toolMessageConversion?: ToolMessageConversion | undefined;
   clientFactory?: (auth: ProviderRequestAuth) => OpenAI;
   convertError?: (error: unknown) => ChatProviderError | undefined;
@@ -1186,6 +1191,8 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
   private readonly _apiKey: string | undefined;
   private readonly _baseUrl: string | undefined;
   private readonly _defaultHeaders: Record<string, string> | undefined;
+  private readonly _requestCompression: ReturnType<typeof createRequestCompressionFetch>;
+  private readonly _guardDelivery: boolean;
   private readonly _thinkingEffort: ThinkingEffort | undefined;
   private readonly _offEffort: string | undefined;
   private readonly _generationKwargs: OpenAIResponsesGenerationKwargs;
@@ -1200,6 +1207,9 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
     this._apiKey = apiKey === undefined || apiKey.length === 0 ? undefined : apiKey;
     this._baseUrl = options.baseUrl ?? 'https://api.openai.com/v1';
     this._defaultHeaders = options.defaultHeaders;
+    this._requestCompression = createRequestCompressionFetch(options.requestCompression);
+    this._guardDelivery = options.requestCompression !== undefined && options.requestCompression.encoding !== 'off' &&
+      matchesProviderTarget(`${this._baseUrl.replace(/\/$/, '')}/responses`, options.requestCompression.targets);
     this._model = options.model;
     this._stream = true;
     this._thinkingEffort = options.thinkingEffort;
@@ -1377,7 +1387,7 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
               return data;
             })
           : await responsePromise;
-      return new OpenAIResponsesStreamedMessage(response, this._stream, this._convertErrorHook);
+      return guardRequestDelivery(new OpenAIResponsesStreamedMessage(response, this._stream, this._convertErrorHook), this._guardDelivery);
     } catch (error: unknown) {
       const diagnostics: StreamDiagnostics | undefined = this._stream ? {
         ...createStreamDiagnostics(),
@@ -1402,7 +1412,7 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
       apiKey,
       baseURL: this._baseUrl,
       maxRetries: 0,
-      fetch: requestIdentityFetchForAuth(auth),
+      fetch: this._requestCompression(requestIdentityFetchForAuth(auth)),
     };
     const defaultHeaders = mergeRequestHeaders(this._defaultHeaders, undefined, auth?.headers);
     if (defaultHeaders !== undefined) {

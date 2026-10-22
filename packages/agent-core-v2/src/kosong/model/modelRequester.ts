@@ -10,6 +10,7 @@ import type {
   RawResponseObserver,
   VideoUploadInput,
 } from '#/kosong/contract/provider';
+import type { ResponsesRequestTransport } from '#/kosong/contract/responsesTransport';
 import type { Tool } from '#/kosong/contract/tool';
 import type { TokenUsage } from '#/kosong/contract/usage';
 
@@ -63,6 +64,7 @@ export interface ModelRequestParams {
   readonly onTraceId?: (traceId: string | null) => void;
   readonly rawResponseObserver?: RawResponseObserver;
   readonly requestIdentity?: RequestIdentityWireOptions;
+  readonly responsesTransport?: ResponsesRequestTransport;
   readonly attribution?: RequestAttribution;
 }
 

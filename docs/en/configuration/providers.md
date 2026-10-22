@@ -44,6 +44,32 @@ Replace the example endpoint and remote IDs with your service's values. Both mod
 
 The [model REST API](../server/rest-api.md#models-and-providers) reports the saved `protocol` separately from `effective_protocol`, the resolved request format. Saving a format does not test connectivity.
 
+## Request compression
+
+For a gateway that explicitly supports compressed request bodies, configure `request_compression` on its provider. This applies to Responses, Messages, and Chat Completions; other protocols keep their existing transport.
+
+```toml
+[providers.gateway.request_compression]
+encoding = "gzip"
+targets = ["https://example.com/v1"]
+min_bytes = 1024
+```
+
+`targets` lists supported HTTP(S) API base URLs. A request must match the origin and path boundary; changing a model to another endpoint does not enable compression there. `min_bytes` counts UTF-8 body bytes and defaults to 1024. Empty, smaller, streaming, already encoded, and non-JSON bodies are left unchanged. Kiki uses the compressed body only when it is smaller. Remove this table or set `encoding = "off"` to disable compression.
+
+To use ordinary zstd instead, set `encoding = "zstd"`. Neither gzip nor ordinary zstd asks the gateway to retain request bodies. If the gateway also implements the Portway request-dictionary extension, you may explicitly consent to temporary body retention:
+
+```toml
+[providers.gateway.request_compression]
+encoding = "zstd"
+targets = ["https://example.com/v1"]
+dictionary = true
+```
+
+`dictionary = true` asks the gateway to cache exact request bytes, which can include messages, media, tool results, and signatures. Kiki keeps acknowledged dictionaries only in bounded process memory, for up to ten minutes. A dictionary acknowledgement confirms cached bytes, not completed model generation. Every request is still built from the full local history; a changed or compacted history is never reconstructed from guessed model output.
+
+Only a marked, pre-execution decoding rejection permits an encoding fallback, with at most three attempts. A lost response or uncertain delivery does not trigger a second generation. If a target does not support compression, disable it before starting a new request rather than relying on automatic format probing.
+
 ## `/provider` — interactive provider management
 
 Prefer not to edit TOML by hand? Type `/provider` in the TUI to open the **provider manager**, where you can interactively add or remove providers.

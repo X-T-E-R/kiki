@@ -5,6 +5,7 @@ import type { Event, IWaitUntil } from '#/_base/event';
 import type { RequestIdentityPolicy } from '#/kosong/requestIdentity/requestIdentityPolicy';
 import type { ImagePolicyConfig } from '#/kosong/provider/providerImagePolicy';
 import type { GenerationParameters } from '#/kosong/contract/generationParameters';
+import type { RequestCompression } from '#/kosong/contract/requestCompression';
 
 export type ProviderType = string;
 
@@ -27,6 +28,7 @@ export interface ProviderConfig {
   defaultModel?: string;
   defaults?: GenerationParameters;
   requestIdentity?: RequestIdentityPolicy;
+  requestCompression?: RequestCompression;
   images?: ImagePolicyConfig;
 
   type?: ProviderType;

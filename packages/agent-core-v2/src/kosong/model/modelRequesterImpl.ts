@@ -58,6 +58,7 @@ export class ModelRequesterImpl implements ModelRequester {
       modelName: model.name,
       apiKey: '',
       defaultHeaders: model.headers,
+      requestCompression: model.requestCompression,
       providerOptions: model.providerOptions,
     });
     return this.cachedChatProvider;
@@ -178,6 +179,7 @@ export class ModelRequesterImpl implements ModelRequester {
       onTraceId: params?.onTraceId,
       rawResponseObserver: params?.rawResponseObserver,
       requestIdentity: params?.requestIdentity,
+      responsesTransport: params?.responsesTransport,
       responseFormat: input.responseFormat,
     };
 

@@ -32,6 +32,7 @@ import { ENV_MODEL_PROVIDER_KEY, type OAuthRef, type ProviderConfig, type Provid
 import type { ImagePolicyConfig } from '#/kosong/provider/providerImagePolicy';
 import { ProtocolSchema } from '#/kosong/protocol/protocol';
 import { RequestIdentityPolicySchema } from '#/kosong/requestIdentity/requestIdentityPolicy';
+import { RequestCompressionSchema } from '#/kosong/provider/requestCompression';
 
 export { ENV_MODEL_PROVIDER_KEY } from '#/kosong/provider/provider';
 
@@ -101,6 +102,7 @@ const ProviderConfigObjectSchema = z.object({
   defaultModel: z.string().optional(),
   defaults: GenerationParametersSchema.optional(),
   requestIdentity: RequestIdentityPolicySchema.optional(),
+  requestCompression: RequestCompressionSchema.optional(),
   images: ImagePolicyConfigSchema.optional(),
 
   type: ProviderTypeSchema.optional(),
@@ -169,7 +171,7 @@ function providerEntryFromToml(data: Record<string, unknown>): Record<string, un
     const targetKey = snakeToCamel(key);
     if (targetKey === 'oauth') {
       out[targetKey] = isPlainObject(value) ? deepSnakeToCamel(value) : value;
-    } else if (targetKey === 'requestIdentity' || targetKey === 'images' || targetKey === 'defaults') {
+    } else if (targetKey === 'requestIdentity' || targetKey === 'requestCompression' || targetKey === 'images' || targetKey === 'defaults') {
       out[targetKey] = isPlainObject(value) ? deepSnakeToCamel(value) : value;
     } else if (targetKey === 'env' || targetKey === 'customHeaders') {
       out[targetKey] = isPlainObject(value) ? cloneRecord(value) : value;
@@ -200,7 +202,7 @@ function providerEntryToToml(
   for (const [key, value] of Object.entries(provider)) {
     if (key === 'oauth' && isPlainObject(value)) {
       out[camelToSnake(key)] = deepCamelToSnake(value);
-    } else if ((key === 'requestIdentity' || key === 'images' || key === 'defaults') && isPlainObject(value)) {
+    } else if ((key === 'requestIdentity' || key === 'requestCompression' || key === 'images' || key === 'defaults') && isPlainObject(value)) {
       out[camelToSnake(key)] = deepCamelToSnake(value);
     } else if ((key === 'env' || key === 'customHeaders') && value !== undefined) {
       out[camelToSnake(key)] = cloneRecord(value);

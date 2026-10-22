@@ -18,6 +18,7 @@ import type {
   StreamedMessage,
 } from '#/kosong/contract/provider';
 import type { Tool } from '#/kosong/contract/tool';
+import type { ResponsesRequestTransport } from '#/kosong/contract/responsesTransport';
 import { emptyUsage, type TokenUsage } from '#/kosong/contract/usage';
 import { ProtocolErrors } from '#/kosong/protocol/errors';
 import type { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
@@ -322,6 +323,10 @@ describe('ModelRequesterImpl request execution', () => {
     const provider = new FakeChatProvider();
     const requester = new ModelRequesterImpl(modelWith(staticAuth('sk-1')), registryReturning(provider));
     const signal = AbortSignal.timeout(1000);
+    const responsesTransport: ResponsesRequestTransport = {
+      request: async () => ({ async *[Symbol.asyncIterator]() {} }),
+      close: vi.fn(),
+    };
 
     await collect(
       requester.request(
@@ -348,6 +353,7 @@ describe('ModelRequesterImpl request execution', () => {
           requestIdentity: {
             responsesClientMetadata: { turn_id: '00000000-0000-7000-8000-000000000004' },
           },
+          responsesTransport,
         },
       ),
     );
@@ -373,6 +379,7 @@ describe('ModelRequesterImpl request execution', () => {
     expect(options?.requestIdentity?.responsesClientMetadata).toEqual({
       turn_id: '00000000-0000-7000-8000-000000000004',
     });
+    expect(options?.responsesTransport).toBe(responsesTransport);
   });
 
   it('omits the thinking intent when no effort is requested', async () => {

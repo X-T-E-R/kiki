@@ -2873,9 +2873,9 @@ describe('outbound transport', () => {
 function finalizedResponse(output: OpenAIResponse['output'], status: OpenAIResponse['status']): OpenAIResponse {
   return {
     id: 'resp_finalized', created_at: 1, object: 'response', model: 'gpt-5', output, output_text: '', status,
-    error: null, incomplete_details: null, instructions: null, metadata: null,
+    error: null, incomplete_details: null, instructions: null, metadata: null, access_programs: null,
     parallel_tool_calls: true, temperature: null, top_p: null, tool_choice: 'auto', tools: [],
-    usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5, input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } },
+    usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } },
   };
 }
 
@@ -2978,7 +2978,7 @@ describe('Responses finalized text', () => {
     const events: ResponseStreamEvent[] = [
       { type: 'response.created', sequence_number: 0, response: finalizedResponse([], 'in_progress') },
       { type: 'response.output_item.added', sequence_number: 1, output_index: 0, item: { ...item, arguments: '', status: 'in_progress' } },
-      { type: 'response.function_call_arguments.done', sequence_number: 2, output_index: 0, item_id: item.id, name: item.name, arguments: item.arguments },
+      { type: 'response.function_call_arguments.done', sequence_number: 2, output_index: 0, item_id: item.id, arguments: item.arguments },
       { type: 'response.output_item.done', sequence_number: 3, output_index: 0, item },
       { type: 'response.completed', sequence_number: 4, response: finalizedResponse([item], 'completed') },
     ];
