@@ -225,20 +225,23 @@ Where new plugins can be discovered from is different from which media sources a
 
 ## Official Plugins
 
-The **Official** tab holds seven entries. Five are Kiki's own, built in the [Kiki Plugins repository](https://github.com/X-T-E-R/kiki-plugins) and documented on this page:
+The **Official** tab lists plugins maintained in the [Kiki Plugins repository](https://github.com/X-T-E-R/kiki-plugins) alongside upstream entries maintained by Kimi:
 
-- **[Kiki Writing](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-writing)**, **[Kiki Extract](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-extract)** and **[Kiki Office Suite](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-office)** — the document and writing tools described in [Local document extraction](#local-document-extraction) and below
-- **[Kiki Notion](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-notion)** — connect to Notion's hosted MCP service (see [Notion material and write-back](#notion-material-and-write-back))
-- **[Kiki Media](#media-sources)** — one package with ten built-in service sources and your own scripts
+- **[Kiki Extract](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-extract)**, **[Kiki Office Suite](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-office)**, **[Kiki Work](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-work)**, and **[Kiki Writing](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-writing)** — convert local PDF, Office, HTML, and text files into readable Markdown (see [Local document extraction](#local-document-extraction)), create and edit local Word, Excel, and PowerPoint files, audit CSV/TSV keys and reconcile two tables locally without modifying or uploading them, and work in a focused manuscript panel with a draft command
+- **[Kiki Notion](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-notion)** — connect to Notion's hosted MCP service to search, summarize with source links, and write back to a specified page on request (see [Notion material and write-back](#notion-material-and-write-back))
+- **[Kiki Media](#media-sources)** — one package with ten built-in image, video, and speech service sources plus your own local scripts
+- **[Task board](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-task-board)** (`kiki-task-board`) — persistent requirement cards for a workspace, linked to the sessions working on them (see [Task board](../guides/sessions.md#task-board))
+- **[Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/)** (`kiki-cloudflare`) and **[Kiki Sites](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-sites)** (`kiki-sites`) — connect an existing Cloudflare Tunnel and manage its Kiki-owned connector, or connect code hosting and deploy sites and apps through official service CLIs and APIs
+- **[Desktop Pet](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-pet)** (`kiki-pet`) — an isolated native desktop companion that reacts to Kiki tasks, imports Codex pets, and carries a pet-making skill
 
-The two Kimi entries are maintained by Kimi and published on Kimi's own CDN rather than the plugin repository:
+The Kimi entries are maintained by Moonshot AI and published on Kimi's own CDN rather than the Kiki plugin repository:
 
-- **[Kimi Datasource](#kimi-datasource)** — query market data, macro indicators, company records, academic literature and Chinese law in natural language
-- **[Kimi Browser Extension](#kimi-browser-extension)** — let AI drive the browser you already use
+- **[Kimi Datasource](#kimi-datasource)** — query market data, macro indicators, company records, academic literature, and Chinese law in natural language (requires Kimi Code OAuth sign-in and plan quota)
+- **[Kimi Browser Extension](#kimi-browser-extension)** — let AI drive the browser you already use (requires installing the matching browser extension)
 
-**[Kimi Computer Use](#kimi-computer-use)** is not in the tab at all; it installs from a direct URL, in its own section below.
+**[Kimi Computer Use](#kimi-computer-use)** is not in the tab; it installs from a direct URL in its own section below.
 
-**Curated** is separate: three third-party plugins from Kimi partners, each pinned to a specific commit.
+**Curated** is separate: third-party plugins (such as `superpowers`, `vercel-plugin`, and `modern-web-guidance`), each pinned to a specific commit so you can preview imported contributions before enabling.
 
 ### Installing and upgrading
 

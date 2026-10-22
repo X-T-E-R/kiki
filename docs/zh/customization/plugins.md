@@ -225,20 +225,23 @@ Kiki Media 的三个设置分别指定图像、视频和语音默认来源，都
 
 ## 官方插件
 
-**Official** 页签里共 7 条。其中 5 条是 Kiki 自带的，在 [Kiki Plugins 仓库](https://github.com/X-T-E-R/kiki-plugins) 开发，本页有它们的说明：
+**Official** 页签列出在 [Kiki Plugins 仓库](https://github.com/X-T-E-R/kiki-plugins) 维护的 Kiki 官方插件，以及由 Kimi 维护的上游插件：
 
-- **[Kiki Writing](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-writing)**、**[Kiki Extract](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-extract)** 和 **[Kiki Office Suite](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-office)**：文档与写作工具，见[本地文档提取](#本地文档提取)及下文
-- **[Kiki Notion](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-notion)**：连接 Notion 官方托管 MCP 服务（见[Notion 资料与写回](#notion-资料与写回)）
-- **[Kiki Media](#媒体来源)**：一个包，内置 10 家服务来源，也支持你自己的脚本
+- **[Kiki Extract](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-extract)**、**[Kiki Office Suite](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-office)**、**[Kiki Work](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-work)** 和 **[Kiki Writing](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-writing)**：把本地 PDF、Office、HTML 与文本文件转成可读的 Markdown（见[本地文档提取](#本地文档提取)），在本机创建、读取和编辑 Word、Excel 与 PowerPoint 文件，在本机核对 CSV/TSV 键并对照两张表（不改原文件、不上传），以及使用专注的手稿面板与续写草稿命令
+- **[Kiki Notion](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-notion)**：连接 Notion 官方托管 MCP 服务，检索资料、产出带出处的简报，并按要求写回指定页面（见[Notion 资料与写回](#notion-资料与写回)）
+- **[Kiki Media](#媒体来源)**：一个包，内置 10 家图像、视频与语音服务来源，也支持添加你自己的本地脚本
+- **[Task board](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-task-board)**（`kiki-task-board`）：工作区里长期保存的需求卡片，关联到处理该需求的会话（见[任务看板](../guides/sessions.md#任务看板)）
+- **[Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/)**（`kiki-cloudflare`）和 **[Kiki Sites](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-sites)**（`kiki-sites`）：连接已有的 Cloudflare 隧道并管理随 Kiki 常驻的连接器，或连接代码托管并用官方服务 CLI 与 API 部署站点或应用
+- **[Desktop Pet](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-pet)**（`kiki-pet`）：随 Kiki 任务反应的隔离桌面伴侣，可导入 Codex 宠物，并附带制作 Skill
 
-最后两条由 Kimi 官方维护，发布在 Kimi 自己的 CDN 上，不在插件仓库里：
+以下两条由 Moonshot AI 维护，发布在 Kimi 自己的 CDN 上，不在 Kiki 插件仓库里：
 
-- **[Kimi Datasource](#kimi-datasource)**：用自然语言查询金融行情、宏观经济、企业工商、学术文献和法律法规
-- **[Kimi Browser Extension](#kimi-browser-extension)**：让 AI 直接操控你自己的浏览器，完成各类网页操作
+- **[Kimi Datasource](#kimi-datasource)**：用自然语言查询金融行情、宏观经济、企业工商、学术文献和法律法规（需 Kimi Code OAuth 登录并消耗套餐额度）
+- **[Kimi Browser Extension](#kimi-browser-extension)**：让 AI 直接操控你已登录的浏览器完成网页操作（需配合安装浏览器扩展）
 
 **[Kimi Computer Use](#kimi-computer-use)** 不在这个页签里，它从直链安装，见下文单独一节。
 
-**Curated** 是另一回事：3 个 Kimi 合作伙伴的第三方 plugin，每一条都锁定在某个确定的 commit 上。
+**Curated** 是另一类：第三方精选插件（如 `superpowers`、`vercel-plugin`、`modern-web-guidance`），每一条都锁定在具体 commit 上，启用前可先预览导入的贡献项。
 
 ### 安装与升级
 

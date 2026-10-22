@@ -5,9 +5,9 @@
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Docs](https://img.shields.io/badge/docs-online-blue)](https://x-t-e-r.github.io/kiki/en/) <br>
 [Documentation](https://x-t-e-r.github.io/kiki/en/) · [All features](https://x-t-e-r.github.io/kiki/en/features/) · [Screenshot tour](marketing/gallery.en.md) · [Issues](https://github.com/X-T-E-R/kiki/issues) · [Acknowledgements](ACKNOWLEDGEMENTS.md) · [中文](README.zh-CN.md)
 
-Hand Kiki a task in a folder. It reads, plans, and does the work there — bringing in helper agents when the task is bigger than one — and keeps the work going with memory, a task board, and schedules. It is open source and runs on your machine.
+Hand Kiki a folder and a task: map an unfamiliar codebase, work through a stack of PDFs and spreadsheets, finish a draft, or ship a change. It reads what is there, plans, and works in place. When a job divides, it hands parts to subagents you can put on different models, and goals, a queue, and memory keep the work moving across turns.
 
-The desktop app, the terminal UI, and the browser UI all connect to one local daemon, so a session you start in one is the same session you open in another.
+Sessions, files, and history stay in your local Kiki home, and model requests go only to the providers or local servers you connect. It is open source (MIT). The desktop app, the terminal UI, and the browser UI all connect to one local daemon, so a session you start in one is the same session you open in another.
 
 ![The Kiki workbench: a lead session with the subagents it dispatched, an active goal, and a queued message.](marketing/shots/wl-hero-workbench.en.light.png)
 
@@ -31,6 +31,12 @@ Run `/login` and pick Kimi Code OAuth or a Kimi Platform API key — other provi
 
 ```
 Take a look at this project and explain its main directories.
+```
+
+The same shape works when the folder is not code. PDF, Office, and HTML extraction is a plugin, not part of the base install: add [Kiki Extract](https://x-t-e-r.github.io/kiki/en/customization/plugins#local-document-extraction) from the catalog (it needs Python with MarkItDown for PDF and Office formats), then ask:
+
+```
+Read the PDFs in ./sources, check their figures against budget.xlsx, and write summary.md with the file each number came from.
 ```
 
 New sessions start in **Auto**: routine work runs on its own, and you are still asked before it touches sensitive files or runs dangerous commands. `/permission` switches among Ask every time (`manual`), Auto (`auto`), Approve for me (`review`), and Full access (`yolo`).
@@ -74,7 +80,7 @@ The lead agent splits your task and dispatches subagents, and each one can run a
 
 ![One session, several models: each agent in the dispatch tree bound to a different model.](marketing/shots/r05-multi-model-fleet.en.light.png)
 
-Agents themselves are Markdown files you own: the frontmatter sets tools, model, effort, and which agents it may dispatch, and the body is the system prompt. Kiki watches those folders and reloads edits in about 200 ms. You can build one by copying an existing profile, from a shipped template, or blank — no need to hand-write a file first.
+Agents themselves are Markdown files you own: the frontmatter sets tools, model, effort, and which agents it may dispatch, and the body is the system prompt. Save the file and the next dispatch uses it; a session already running keeps the snapshot it started with until you rebuild its context. Frontmatter keys are closed, so an unrecognised field fails the load with a diagnostic naming it — including another tool's `model` or `mode` key, which you migrate rather than drop in. You can build one by copying an existing profile, from a shipped template, or blank.
 
 Open any dispatched subagent to read its own transcript, and message it from its own composer. While the agent works, what you type joins a queue rather than cutting in, and each queued message can go out when the agent is idle, after its subagents finish, or after its background tasks finish. Long commands move to the background and notify the agent when they finish, so it never has to poll. See [One workbench, many lines](https://x-t-e-r.github.io/kiki/en/features/workbench) and [Agents and Sub-Agents](https://x-t-e-r.github.io/kiki/en/customization/agents-and-subagents).
 
@@ -98,7 +104,7 @@ A goal keeps the target in view across turns instead of restating the task each 
 
 Memory is what outlives the session: preferences, feedback, verified project facts, and references, kept as global, per workspace, or per persona. You can read every entry, and undo any change one operation at a time — including a delete. Set approval to `review` and proposed writes wait in an inbox instead of applying themselves. See the [memory guide](https://x-t-e-r.github.io/kiki/en/guides/memory).
 
-Each workspace also has a board where requirements are cards that link to the sessions working on them, and the agent reads and updates it. Scheduled prompts cover the recurring case: a prompt fires on a cron schedule while a Kiki process holds that session open. See [Work that runs long](https://x-t-e-r.github.io/kiki/en/features/long-work).
+Each workspace can also add a board (via the optional `kiki-task-board` plugin) where requirements are cards that link to the sessions working on them, and the agent reads and updates it. Scheduled prompts cover the recurring case: a prompt fires on a cron schedule while a Kiki process holds that session open. See [Work that runs long](https://x-t-e-r.github.io/kiki/en/features/long-work).
 
 ## Extend Kiki when needed
 
@@ -114,13 +120,13 @@ A persona is not an agent profile. A profile is execution configuration — tool
 
 ### Skills, plugins, and tool connections
 
-A plugin can add skills, agents, MCP servers, hooks, commands, and tools; browse and install them on the Capabilities page, and the official marketplace includes Kiki Office Suite and Kiki Writing. Sessions stay on your machine — there is no cloud relay.
+A plugin can add skills, agents, MCP servers, hooks, commands, and tools; browse and install them on the Capabilities page. The catalog carries, among others, Kiki Extract for local PDF and Office files, Kiki Office Suite, Kiki Work for local CSV checks, Kiki Writing, Kiki Notion, Kiki Media, Kimi Datasource, and Kimi Browser Extension — each one installed, configured, and enabled on its own. Sessions stay on your machine; there is no cloud relay. See [Make it yours to extend](https://x-t-e-r.github.io/kiki/en/features/extend) and [Plugins](https://x-t-e-r.github.io/kiki/en/customization/plugins).
 
 ## Your data, your machines
 
 A **space** is a Kiki you open, with its own shortcuts, window behavior, and credential scope — shared with the main space or isolated — so a work Kiki and a personal Kiki can sit side by side without sharing what they sign in to.
 
-**Remote connections** point one Kiki home at another with an approval on each side, and every connection is one row with its own state. A **thread bridge** is narrower: a one-way channel for messages between two homes that never grants browsing access. **Web access** opens this Kiki in a browser on another device through a single-use link, and turning it off revokes every link without stopping work already running. **SSH hosts** joined to a session belong to that session, so the timeline stays clean. See [Your data, your machines](https://x-t-e-r.github.io/kiki/en/features/spaces).
+**Remote connections** point one Kiki home at another with an approval on each side, and every connection is one row with its own state. A **thread bridge** is narrower: a one-way channel for messages between two homes that never grants browsing access. **Web access** opens this Kiki in a browser on another device through a single-use link, and turning it off revokes every link without stopping work already running. **SSH hosts** joined to a session belong to that session, so the timeline stays clean. Pair a WeChat or QQ chat to a persona or session to reply and approve steps when you are away from the desk. See [Your data, your machines](https://x-t-e-r.github.io/kiki/en/features/spaces) and [Phone session](https://x-t-e-r.github.io/kiki/en/features/phone).
 
 ## Bring in history, plug in other tools
 
