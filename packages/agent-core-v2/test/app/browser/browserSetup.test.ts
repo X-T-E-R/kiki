@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { cp, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import { TestInstantiationService } from '#/_base/di/test';
@@ -681,6 +681,7 @@ it('keeps a failed Codex prepare from saving a connection', async () => {
 });
 
 it('checks Ego Lite from the installed CLI and does not launch nodejs while listing status', async () => {
+  Object.defineProperty(process, 'platform', { value: 'win32' });
   const exe = 'C:\\ego-fixture\\ego-browser.exe';
   const previous = process.env['PATH'];
   process.env['PATH'] = 'C:\\ego-fixture';
@@ -736,9 +737,10 @@ it('checks Ego Lite from the installed CLI and does not launch nodejs while list
 });
 
 it('reuses the chosen Ego Lite CLI when several programs are installed', async () => {
+  Object.defineProperty(process, 'platform', { value: 'win32' });
   const chosen = 'C:/ego-b/ego-browser.exe';
   const previous = process.env['PATH'];
-  process.env['PATH'] = `C:\\ego-a${delimiter}C:\\ego-b`;
+  process.env['PATH'] = 'C:\\ego-a;C:\\ego-b';
   let mode: 'onboarding' | 'ready' = 'onboarding';
   const spawn = vi.fn(async (_command: string, args: readonly string[] = []) => {
     const node = args.includes('nodejs');
@@ -800,6 +802,7 @@ it('reuses the chosen Ego Lite CLI when several programs are installed', async (
 });
 
 it('opens Ego Lite admission after a ready check without changing the allow set', async () => {
+  Object.defineProperty(process, 'platform', { value: 'win32' });
   const exe = 'C:\\ego-fixture\\ego-browser.exe';
   const previous = process.env['PATH'];
   process.env['PATH'] = 'C:\\ego-fixture';
@@ -834,6 +837,7 @@ it('opens Ego Lite admission after a ready check without changing the allow set'
 });
 
 it('keeps a ready Ego Lite check when the allow set does not include it yet', async () => {
+  Object.defineProperty(process, 'platform', { value: 'win32' });
   const exe = 'C:\\ego-fixture\\ego-browser.exe';
   const previous = process.env['PATH'];
   process.env['PATH'] = 'C:\\ego-fixture';
@@ -862,6 +866,7 @@ it('keeps a ready Ego Lite check when the allow set does not include it yet', as
 });
 
 it('admits Ego Lite when the user allows it, without a second check or an automatic allow write', async () => {
+  Object.defineProperty(process, 'platform', { value: 'win32' });
   const exe = 'C:\\ego-fixture\\ego-browser.exe';
   const previous = process.env['PATH'];
   process.env['PATH'] = 'C:\\ego-fixture';
@@ -913,6 +918,7 @@ it('admits Ego Lite when the user allows it, without a second check or an automa
 });
 
 it('auto-probes a real Citro Ego Lite install path on status read and gates disabled sources without losing allowed connections', async () => {
+  Object.defineProperty(process, 'platform', { value: 'win32' });
   const exe = 'C:\\Users\\fixture\\AppData\\Local\\Programs\\Citro\\ego-lite\\active_version_dir\\ego-browser.exe';
   const previous = process.env['PATH'];
   process.env['PATH'] = 'C:\\Users\\fixture\\AppData\\Local\\Programs\\Citro\\ego-lite\\active_version_dir';

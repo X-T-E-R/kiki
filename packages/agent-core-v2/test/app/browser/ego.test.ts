@@ -1,5 +1,4 @@
 import { Readable } from 'node:stream';
-import { delimiter } from 'node:path';
 import { join } from 'pathe';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -17,7 +16,7 @@ import { IHostProcessService } from '#/os/interface/hostProcess';
 import { AgentBrowserService, BrowserEgoRunTool, egoRunExecution, type IAgentBrowserService } from '#/agent/tools/browser/browserTools';
 import { toolApprovalRule } from '#/agent/tools/os/sshToolTarget';
 import type { Runtime } from '#/runtime/runtime';
-import { parseEgoUninstallExport } from '#/app/browser/ego/hints';
+import { egoPathHits, parseEgoUninstallExport } from '#/app/browser/ego/hints';
 import {
   classifyEgoCheck, egoSpaceName, resolveEgoCli, type EgoUninstallRecord,
 } from '#/app/browser/ego/resolveCli';
@@ -355,6 +354,21 @@ describe('Ego Lite discovery from the environment registry', () => {
     const { fs } = memoryFs([exe]);
     const proc = scripted(() => { throw new Error('reg unavailable'); });
     const runtime = new EgoBrowserRuntime(proc.service, fs, { PATH: 'C:\\stale' }, 'win32');
+    await expect(runtime.resolve(undefined)).resolves.toEqual({ kind: 'found', path: exe });
+  });
+
+  it('splits a win32 Path on semicolons and keeps the drive letter', async () => {
+    const first = join('C:/ego-a', EXE);
+    const second = join('C:/ego-b', EXE);
+    const hits = await egoPathHits('C:\\ego-a;C:\\ego-b', async (file) => file === first || file === second, 'win32');
+    expect(hits).toEqual([first, second]);
+  });
+
+  it('splits a linux PATH on colons when that platform is injected on any host', async () => {
+    const exe = join('/opt/ego-a', EXE);
+    const { fs } = memoryFs([exe]);
+    const proc = scripted(() => { throw new Error('reg unavailable'); });
+    const runtime = new EgoBrowserRuntime(proc.service, fs, { PATH: '/opt/ego-a:/opt/ego-b' }, 'linux');
     await expect(runtime.resolve(undefined)).resolves.toEqual({ kind: 'found', path: exe });
   });
 });

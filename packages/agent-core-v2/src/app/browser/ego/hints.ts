@@ -1,4 +1,4 @@
-import { delimiter } from 'node:path';
+import { posix, win32 } from 'node:path';
 import { join } from 'pathe';
 
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
@@ -24,10 +24,14 @@ export async function egoChildNames(files: IHostFileSystem, directory: string): 
   }
 }
 
-export async function egoPathHits(pathEnv: string | undefined, exists: (file: string) => Promise<boolean>): Promise<string[]> {
+export function egoPathDelimiter(platform: NodeJS.Platform = process.platform): string {
+  return platform === 'win32' ? win32.delimiter : posix.delimiter;
+}
+
+export async function egoPathHits(pathEnv: string | undefined, exists: (file: string) => Promise<boolean>, platform: NodeJS.Platform = process.platform): Promise<string[]> {
   if (pathEnv === undefined || pathEnv.trim() === '') return [];
   const hits: string[] = [];
-  for (const directory of pathEnv.split(delimiter)) {
+  for (const directory of pathEnv.split(egoPathDelimiter(platform))) {
     if (directory.trim() === '') continue;
     const candidate = join(directory, EGO_BROWSER_EXE);
     if (await exists(candidate) && !hits.includes(candidate)) hits.push(candidate);
@@ -113,7 +117,7 @@ export async function readRegisteredEgoPath(processes: IHostProcessService, env:
     readRegistryPath(processes, 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment'),
   ]);
   const parts = [user, system].filter((part): part is string => part !== undefined).map((part) => expandRegistryPath(part, env));
-  return parts.length === 0 ? undefined : parts.join(delimiter);
+  return parts.length === 0 ? undefined : parts.join(egoPathDelimiter(platform));
 }
 
 export async function readEgoUninstallRecords(processes: IHostProcessService, platform = process.platform): Promise<readonly EgoUninstallRecord[]> {
