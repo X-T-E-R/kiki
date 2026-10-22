@@ -18,6 +18,7 @@ import { IAgentProfileCapabilityChangesService } from '#/agent/toolSelect/profil
 import { IAgentCapabilityRebuildService } from '#/agent/capabilityRebuild/capabilityRebuild';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
 import { IConfigService } from '#/app/config/config';
+import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { MEMORY_SECTION, type MemoryConfig } from '#/app/memory/configSection';
 import { THREAD_COMMUNICATION_SECTION } from '#/app/threadCommunication/configSection';
@@ -136,6 +137,12 @@ function historyText(history: readonly ContextMessage[]): string {
     .join('\n');
 }
 
+async function closeMemoryAndThread(agent: TestAgentContext): Promise<void> {
+  const config = agent.get(IConfigService);
+  await config.replace(MEMORY_SECTION, { enabled: false, approval: 'auto', budget: 2_000, workspaces: {} } satisfies MemoryConfig);
+  await config.replace(THREAD_COMMUNICATION_SECTION, { enabled: false });
+}
+
 describe('progressive tool disclosure end-to-end', () => {
   let ctx: TestAgentContext;
   let alpha: StubMcpTool;
@@ -144,6 +151,7 @@ describe('progressive tool disclosure end-to-end', () => {
   beforeEach(async () => {
     vi.stubEnv(TOOL_SELECT_FLAG_ENV, '1');
     ctx = createTestAgent();
+    await closeMemoryAndThread(ctx);
     ctx.get(IAgentToolSelectService);
     ctx.get(IAgentToolSelectAnnouncementsService);
     ctx.get(IAgentToolSelectSchemasService);
@@ -168,6 +176,8 @@ describe('progressive tool disclosure end-to-end', () => {
     const rejected = new StubMcpTool('browser__unrelated_admin');
     ctx.get(IAgentToolRegistryService).register(browser, { source: 'builtin' });
     ctx.get(IAgentToolRegistryService).register(rejected, { source: 'builtin' });
+    const session = ctx.get(ISessionContext);
+    await ctx.get(IOptionalCapabilityPolicy).setChoice(session.sessionId, 'browser', 'on', session.workspaceId);
     ctx.configure({ provider: OPENAI_PROVIDER, modelCapabilities: DISCLOSURE_CAPABILITIES, tools: ['browser__*'] });
     ctx.mockNextResponse({ type: 'function', id: 'call-browser', name, arguments: '{}' });
     ctx.mockNextResponse({ type: 'text', text: 'done' });

@@ -2584,7 +2584,31 @@ function configService(readConfig: () => KimiConfig): IConfigService {
     replace,
     reload: () => Promise.resolve(),
     diagnostics: () => [],
+    origins: (domain: string) => {
+      const stored = memory.has(domain) ? memory.get(domain) : undefined;
+      const base = (readConfig() as Record<string, unknown>)[domain];
+      const value = stored ?? base;
+      if (value === undefined) return {};
+      return sectionOrigins(value, stored !== undefined ? 'memory' : 'home');
+    },
   } as unknown as IConfigService;
+}
+
+function sectionOrigins(value: unknown, origin: 'memory' | 'home'): Record<string, 'memory' | 'home'> {
+  const result: Record<string, 'memory' | 'home'> = {};
+  const visit = (entry: unknown, path: string[]): void => {
+    if (entry !== null && typeof entry === 'object' && !Array.isArray(entry)) {
+      const record = entry as Record<string, unknown>;
+      const keys = Object.keys(record);
+      if (keys.length > 0) {
+        for (const key of keys) visit(record[key], [...path, key]);
+        return;
+      }
+    }
+    if (path.length > 0) result[path.join('.')] = origin;
+  };
+  visit(value, []);
+  return result;
 }
 
 function configWithEnvOverrides(config: KimiConfig): KimiConfig {
