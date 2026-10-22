@@ -327,7 +327,10 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
     }
     if (action === 'check') return this.json(await this.control.probeDiscovered(false, signal));
     const status = await this.control.probeDiscovered(true, signal);
-    if (status.state === 'ready') this.selected = EGO_LITE_CONNECTION_ID;
+    if (status.state === 'ready') {
+      this.selected = EGO_LITE_CONNECTION_ID;
+      this.initialized = true;
+    }
     return this.json({ ...status, selectedBrowser: this.selected });
   }
 
@@ -563,8 +566,8 @@ registerAgentToolService(IBrowserEgoRunTool, BrowserEgoRunTool, { name: 'browser
 function browserEgoCapabilityWhen(accessor: ServicesAccessor): boolean {
   if (!browserCapabilityWhen(accessor)) return false;
   const config = present(accessor, IConfigService)?.get<BrowserConfig>(BROWSER_CONFIG_SECTION);
-  const connection = config?.connections?.[EGO_LITE_CONNECTION_ID];
-  return connection?.type === 'ego-lite' && connection.enabled && config?.disabledSources?.includes('ego-lite') !== true;
+  const hasEnabledEgo = Object.values(config?.connections ?? {}).some((connection) => connection.type === 'ego-lite' && connection.enabled);
+  return hasEnabledEgo && config?.disabledSources?.includes('ego-lite') !== true;
 }
 
 function browserCapabilityWhen(accessor: ServicesAccessor): boolean {

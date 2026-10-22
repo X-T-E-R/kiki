@@ -2,14 +2,25 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 import { describe, expect, it, vi } from 'vitest';
+import { DisposableStore } from '#/_base/di/lifecycle';
 import { createDecorator } from '#/_base/di/instantiation';
+import { Service } from '#/_base/di/service';
 import { SyncDescriptor } from '#/_base/di/descriptors';
-import { TestInstantiationService } from '#/_base/di/test';
-import { AgentBrowserService, IAgentBrowserService, IBrowserConnectionsTool, BrowserConnectionsTool, IBrowserTabsTool, BrowserTabsTool } from '#/agent/tools/browser/browserTools';
+import { createServices, TestInstantiationService } from '#/_base/di/test';
+import { Event } from '#/_base/event';
+import { AgentBrowserService, IAgentBrowserService, IBrowserConnectionsTool, BrowserConnectionsTool, IBrowserTabsTool, BrowserTabsTool, IBrowserEgoRunTool, BrowserEgoRunTool } from '#/agent/tools/browser/browserTools';
+import { AgentToolActivationService } from '#/agent/toolActivation/toolActivationService';
+import { IAgentToolActivationService } from '#/agent/toolActivation/toolActivation';
+import { AgentToolContribution, getAgentToolContributions } from '#/agent/toolRegistry/toolContribution';
+import { IAgentProfileService } from '#/agent/profile/profile';
+import { ISessionDeliveryService } from '#/session/delivery/delivery';
+import { IShippedAgentProfileManager } from '#/app/shippedAgentProfiles/shippedAgentProfileManager';
+import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { isToolActive } from '#/agent/toolPolicy/evaluate';
 import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
+import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -23,6 +34,7 @@ import { IBrowserControlService, type BrowserInvocation, type BrowserInvocationR
 import { IBrowserConnectionStore } from '#/app/browser/browserConnectionStore';
 import { IConfigService, type ConfigSectionChangedEvent } from '#/app/config/config';
 import { BROWSER_CONFIG_SECTION, type BrowserConfig } from '#/app/browser/browserConfig';
+import { BrowserError } from '#/app/browser/errors';
 import { EXPERIMENTAL_SECTION, IFlagService } from '#/app/flag/flag';
 import { Emitter } from '#/_base/event';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
@@ -67,6 +79,13 @@ function sameBrowserControl(connections: BrowserConfig['connections']): { sectio
 
 function publishBrowser(sections: Emitter<ConfigSectionChangedEvent>, config: BrowserConfig): void {
   sections.fire({ domain: BROWSER_CONFIG_SECTION, source: 'set', value: config, previousValue: {} });
+}
+
+class BrowserContributionAssembly extends Service {
+  constructor() {
+    super();
+    for (const record of getAgentToolContributions()) this.provide(AgentToolContribution, record);
+  }
 }
 
 describe('native browser agent selection, schema and local file channel', () => {
@@ -453,5 +472,101 @@ describe('native browser agent selection, schema and local file channel', () => 
       expect((await closed).isError).toBe(true);
       expect(registry.list()).toHaveLength(0);
     } finally { await ix.dispose(); }
+  });
+
+  it('keeps an explicitly selected discovered Ego connection for a later omitted-browser call', async () => {
+    const ix = new TestInstantiationService();
+    const sections = new Emitter<ConfigSectionChangedEvent>();
+    const connections: BrowserConfig['connections'] = {
+      other: { type: 'agent-browser-profile', name: 'Other', enabled: true },
+    };
+    const config: BrowserConfig = { connections };
+    const store = {
+      list: async () => ({ connections: Object.entries(connections).map(([id, entry]) => ({ ...entry, id })), defaultBrowser: 'other' }),
+      resolve: async (id: string) => {
+        const entry = connections[id];
+        if (entry === undefined) throw new BrowserError('browser.not_found', `Unknown browser connection "${id}"`);
+        return { ...entry, id };
+      },
+    };
+    const runtime = Object.assign(new FakeRuntime({ workspaceId: 'fixture', runtimeId: 'local', generation: '1' }, { pathClass: process.platform === 'win32' ? 'win32' : 'posix' }), { fs: new HostFileSystem() });
+    const invoke = vi.fn(async (input: BrowserInvocation): Promise<BrowserInvocationResult> => ({
+      browser: input.browser, executionHost: 'fixture-host', runtimeSession: 'ego-space', generation: 1,
+      result: { isError: false, content: [{ type: 'text', text: 'done' }], structuredContent: { response: { success: true, data: {} } } },
+    }));
+    const probeDiscovered = vi.fn(async () => {
+      connections['ego-lite'] = { type: 'ego-lite', name: 'Ego Lite', enabled: true, cliPath: 'C:/EgoLite/ego-browser.exe' };
+      return { browser: 'ego-lite', state: 'ready' as const, executionHost: 'fixture-host', generation: 1 };
+    });
+    ix.stub(IBrowserConnectionStore, store);
+    ix.stub(defaults, { ready: Promise.resolve('other') });
+    ix.stub(IAgentScopeContext, { agentId: 'main' });
+    ix.stub(ISessionContext, { sessionId: 'fixture-session', sessionDir: '/fixture/session' });
+    ix.stub(ISessionWorkspaceContext, { workDir: '/fixture', additionalDirs: [] });
+    ix.stub(IAgentRuntimeService, { inspect: () => runtime });
+    ix.stub(ISessionMediaStore, {});
+    ix.stub(ISessionInteractionService, { hasConsumer: () => false });
+    ix.stub(IFlagService, { enabled: () => true });
+    ix.stub(IConfigService, { onDidSectionChange: sections.event, get: <T>() => config as T });
+    ix.stub(IAgentToolPolicyService, { isToolActiveForDisclosure: () => true });
+    ix.set(IAgentToolRegistryService, new SyncDescriptor(AgentToolRegistryService));
+    ix.set(IEventBus, new SyncDescriptor(EventBusService));
+    ix.stub(IBrowserControlService, {
+      endTurn: async () => undefined,
+      discover: async () => [],
+      probeDiscovered,
+      status: async (id: string) => ({ browser: id, state: 'ready' as const, executionHost: 'fixture-host', generation: 1 }),
+      invoke,
+    });
+    ix.set(IAgentBrowserService, new SyncDescriptor(AgentBrowserService));
+    try {
+      const service = ix.get(IAgentBrowserService);
+      const signal = new AbortController().signal;
+      const selected = await service.connections({ action: 'select', browser: 'ego-lite' }, signal);
+      expect(selected.isError).not.toBe(true);
+      expect(probeDiscovered).toHaveBeenCalledWith(true, signal);
+      const execution = await service.egoExecution({ script: 'console.log(1)' });
+      const result = await execute(execution);
+      expect(result.isError).not.toBe(true);
+      expect(invoke).toHaveBeenCalledWith(expect.objectContaining({ browser: 'ego-lite', tool: 'browser__ego_run' }), expect.any(AbortSignal));
+    } finally { await ix.dispose(); }
+  });
+
+  it('activates browser__ego_run for a custom enabled Ego id and withdraws it when the source is off', async () => {
+    const browser = sameBrowserControl({ customEgo: { type: 'ego-lite', name: 'Custom Ego', enabled: true, cliPath: 'C:/EgoLite/ego-browser.exe' } });
+    browser.config.allowedBrowsers = ['customEgo'];
+    const disposables = new DisposableStore();
+    const ix = createServices(disposables, {
+      strict: true,
+      additionalServices: (reg) => {
+        reg.definePartialInstance(IAgentProfileService, { data: () => ({ modelCapabilities: UNKNOWN_CAPABILITY, thinkingLevel: '', systemPrompt: '' }) });
+        reg.definePartialInstance(IConfigService, browser.configService);
+        reg.definePartialInstance(IFlagService, { enabled: () => true });
+        reg.definePartialInstance(IAgentToolPolicyService, { isToolActiveForDisclosure: () => true });
+        reg.definePartialInstance(IAgentRuntimeService, { onDidChange: Event.None as Event<void>, isAvailable: () => true });
+        reg.definePartialInstance(ISessionDeliveryService, { effectiveMode: () => 'reply', onDidChangeEffective: Event.None as Event<'reply'> });
+        reg.definePartialInstance(IShippedAgentProfileManager, { ready: Promise.resolve(), onDidChange: Event.None as Event<void>, isCleanActivePath: () => false });
+        reg.definePartialInstance(ISessionToolPolicyGate, { disabledTools: [], onDidChange: Event.None as Event<void> });
+        reg.definePartialInstance(IAgentBrowserService, { connections: async () => ({ output: '' }), tabs: async () => ({ output: '' }), egoExecution: async () => ({ isError: true, output: '' }), egoRun: async () => ({ output: '' }) });
+        reg.define(IBrowserConnectionsTool, BrowserConnectionsTool);
+        reg.define(IBrowserTabsTool, BrowserTabsTool);
+        reg.define(IBrowserEgoRunTool, BrowserEgoRunTool);
+        reg.define(IAgentToolRegistryService, AgentToolRegistryService);
+        reg.define(IAgentToolActivationService, AgentToolActivationService);
+        reg.define(IEventBus, EventBusService);
+      },
+    });
+    disposables.add(ix.createInstance(BrowserContributionAssembly));
+    try {
+      await ix.get(IAgentToolActivationService).activate();
+      const registry = ix.get(IAgentToolRegistryService);
+      expect(registry.resolve('browser__ego_run')).toBeInstanceOf(BrowserEgoRunTool);
+      browser.config.disabledSources = ['ego-lite'];
+      publishBrowser(browser.sections, browser.config);
+      expect(registry.resolve('browser__ego_run')).toBeUndefined();
+      browser.config.disabledSources = undefined;
+      publishBrowser(browser.sections, browser.config);
+      expect(registry.resolve('browser__ego_run')).toBeInstanceOf(BrowserEgoRunTool);
+    } finally { await disposables.dispose(); }
   });
 });

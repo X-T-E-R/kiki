@@ -141,6 +141,7 @@ export class BrowserControlService implements IBrowserControlService {
     const saved = listed.connections.find((item) => item.id === EGO_LITE_CONNECTION_ID && item.type === 'ego-lite');
     if (saved !== undefined) return connect ? this.connect(EGO_LITE_CONNECTION_ID, signal) : this.check(EGO_LITE_CONNECTION_ID, signal);
     signal?.throwIfAborted();
+    await this.assertAllowed(EGO_LITE_CONNECTION_ID);
     const resolution = await this.egoResolution(true);
     const checkedAt = new Date().toISOString();
     if (resolution.kind !== 'found') {

@@ -339,6 +339,7 @@ describe('Ego Lite discovered connection admission', () => {
       ['other', { id: 'other', type: 'agent-browser-profile', name: 'Other', enabled: true }],
     ]);
     let native = true;
+    let allowed: readonly string[] | undefined;
     const setDefault = vi.fn(async () => undefined);
     const upsert = vi.fn(async (id: string, input: Parameters<IBrowserConnectionStore['upsert']>[1]) => {
       if (input.type !== 'ego-lite') throw new Error('fixture only admits Ego Lite');
@@ -353,7 +354,7 @@ describe('Ego Lite discovered connection admission', () => {
     ix.stub(IHostFileSystem, fs);
     ix.stub(IBrowserBackendFactory, { open: vi.fn(async () => { throw new Error('managed backend must not open'); }) });
     ix.stub(IBrowserConnectionStore, {
-      list: async () => ({ connections: [...configs.values()].map(({ id, name, type, enabled }) => ({ id, name, type, enabled })), defaultBrowser: 'other' }),
+      list: async () => ({ connections: [...configs.values()].map(({ id, name, type, enabled }) => ({ id, name, type, enabled })), defaultBrowser: 'other', ...(allowed !== undefined ? { allowedBrowsers: allowed } : {}) }),
       resolve: async (id: string) => {
         const found = configs.get(id);
         if (found === undefined) throw new BrowserError('browser.not_found', `Unknown browser connection "${id}"`);
@@ -367,6 +368,14 @@ describe('Ego Lite discovered connection admission', () => {
       expect(await control.discover()).toEqual([expect.objectContaining({ id: 'ego-lite', type: 'ego-lite', cliPath: versioned, status: expect.objectContaining({ state: 'idle' }) })]);
       expect(await control.probeDiscovered(false)).toMatchObject({ browser: 'ego-lite', state: 'idle' });
       expect(configs.has('ego-lite')).toBe(false);
+      const beforeDenied = proc.calls.length;
+      allowed = [];
+      await expect(control.probeDiscovered(true)).rejects.toMatchObject({ code: 'browser.disabled', details: { reason: 'not_allowed' } });
+      expect(proc.calls.length).toBe(beforeDenied);
+      expect(upsert).not.toHaveBeenCalled();
+      expect((await control.list()).allowedBrowsers).toEqual([]);
+      expect((await control.list()).defaultBrowser).toBe('other');
+      allowed = undefined;
       native = false;
       await expect(control.probeDiscovered(true)).rejects.toMatchObject({ code: 'browser.disabled', details: { reason: 'feature_disabled' } });
       expect(upsert).not.toHaveBeenCalled();

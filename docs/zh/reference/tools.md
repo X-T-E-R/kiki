@@ -165,13 +165,13 @@ URL 简写与 `source` 形式接受同样的选项。inline 与 file 内容不�
 
 浏览器工具只在 `native_browser` 实验开关打开时出现，它们通过 Kiki 服务机上随附的受管 agent-browser 后端驱动已保存的连接。设置页与各接法指向的目标见[浏览器控制](../guides/settings.md#浏览器控制)。
 
-**`BrowserConnections`** 操作连接本身：`action: "list"`（默认）返回已保存的连接与新会话默认项，`"select"` 绑定本 Agent 要用的连接，`"status"` 与 `"check"` 读取运行状态，`"connect"` 与 `"disconnect"` 启动或附着、以及释放连接，`"tools"` 按需加载后端的页面操作。连接只按已保存的 id 指定，显示名称不会被解析成 id。省略 `browser` 时使用本 Agent 绑定的连接或新会话默认项，不会退回到猜测的或仅仅处于就绪状态的浏览器。
+**`BrowserConnections`** 操作连接本身：`action: "list"`（默认）返回已保存的连接、新会话默认项，以及发现到但尚未保存的 Ego Lite 候选；`"select"` 绑定本 Agent 要用的连接，`"status"` 与 `"check"` 读取运行状态，`"connect"` 与 `"disconnect"` 启动或附着、以及释放连接，`"tools"` 按需加载后端的页面操作。选中发现到的 Ego 候选时才会明确保存并连接；之后连接按已保存的 id 指定，包括自定义 id，显示名称不会被解析成 id。省略 `browser` 时使用本 Agent 绑定的连接或新会话默认项，不会退回到猜测的或仅仅处于就绪状态的浏览器。
 
 `"tools"` 只注册你点名的分组或工具名。每个已加载操作会成为名为 `browser__agent_browser_<名称>` 的工具，保留后端自己的 schema，并额外接受 `browser` 与 `browserTab`。快照返回的元素引用只在产生它的浏览器、标签和 frame 内有效，页面变化后需重新读取快照。浏览器安装、插件与跨会话管理类操作不作为页面工具提供。
 
 **`BrowserTabs`** 管理一条连接内的目标：`list`、`open`、`window`、`select`、`close` 与 `frame`（`main` 回到顶层 frame）。目标使用后端的 CDP target ID，不是标签序号或标签名，这些工具也不会跟随用户的前台标签。切换标签或 frame、或重新连接后，元素引用需要重新读取快照。
 
-**Ego Lite** 是另一种连接。请自行安装 Ego Lite，完成它自己的设置窗口，在浏览器设置里检查，再选中这条连接。Kiki 不会安装它，也不会导入 Chrome 的数据。`browser__ego_run` 接受可选的 `browser` id 和必填的 `script`，并在该连接里运行这段脚本。脚本里的 `shotDir` 是这次调用的绝对目录。截图要写成绝对文件，例如 `page.screenshot({ path: shotDir + '/shot.png' })`。写到这个目录里的 png 和 jpeg，在 20 MiB 以内会附到时间线。省略 `path` 时文件落在系统临时目录，不会被附上。在 Ego Lite 连接上，`BrowserTabs` 可以列出、打开、选中和关闭页面；标签 id 是页面标签，例如 `p1`，关闭只作用于 Agent 打开的标签。这里没有 window 和 frame。禁止浏览器工具时，Ego 脚本一并被禁止。子 Agent 需要点名这个脚本工具。
+**Ego Lite** 是另一种连接。请自行安装 Ego Lite，完成它自己的设置窗口，在浏览器设置里检查，再选中这条连接。Kiki 不会安装它，也不会导入 Chrome 的数据。Agent 选中 Ego 连接后，省略 `browser` 的后续调用会继续使用这条选择；需要在多条 Ego 连接间切换时，请传入已保存的 id。`browser__ego_run` 接受可选的 `browser` id 和必填的 `script`，并在该连接里运行这段脚本。脚本里的 `shotDir` 是这次调用的绝对目录。截图要写成绝对文件，例如 `page.screenshot({ path: shotDir + '/shot.png' })`。写到这个目录里的 png 和 jpeg，在 20 MiB 以内会附到时间线。省略 `path` 时文件落在系统临时目录，不会被附上。在 Ego Lite 连接上，`BrowserTabs` 可以列出、打开、选中和关闭页面；标签 id 是页面标签，例如 `p1`，关闭只作用于 Agent 打开的标签。这里没有 window 和 frame。禁止浏览器工具时，Ego 脚本一并被禁止。子 Agent 需要点名这个脚本工具。
 
 结果会带上解析后的连接、运行会话、标签与 frame。由 Kiki 为该次调用命名的产物——截图、HAR、trace、profiler 输出或录制——在 20 MiB 以内会自动附到时间线；更大的文件留在执行主机上，需要通过现有文件通道取回。超时不代表动作已确认：重发之前先对同一目标重新观察。
 
