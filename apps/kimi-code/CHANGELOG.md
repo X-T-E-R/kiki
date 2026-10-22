@@ -22,6 +22,8 @@
 
 - [`acf19a1`](https://github.com/X-T-E-R/kiki/commit/acf19a157db5a7a363a51bea376875254acd863f) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix conversations that failed to archive because their saved transcript could not be certified.
 
+- [`5e518ad`](https://github.com/X-T-E-R/kiki/commit/5e518ad55f8c99fe0b25d7252ef1b519bbf07f6c) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Keep a directed thread bridge on the host, workspace, and session.
+
 - [`59a604a`](https://github.com/X-T-E-R/kiki/commit/59a604afb863f030584266a7908f7ca180f5342f) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add browser control switches with independent browser allowances and default selection.
 
 - [`3b061ed`](https://github.com/X-T-E-R/kiki/commit/3b061ed3c29c297d6d926af3a1ee1c7df3be1141) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Report disconnected browser tab lists accurately.
@@ -72,6 +74,8 @@
 
 - [`6b9ef49`](https://github.com/X-T-E-R/kiki/commit/6b9ef49a755fd4918e2c2031e97fa4f8d1dac253) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Keep focus and the caret in the conversation opened by a handoff.
 
+- [`c8117ca`](https://github.com/X-T-E-R/kiki/commit/c8117cab658a91380bf61dd313aae6eb4c8d2699) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Keep the computer-control machine line blank until the connected server reports its platform.
+
 - [`b717d39`](https://github.com/X-T-E-R/kiki/commit/b717d39994dadad7c0002556a3bd250f6205c101) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add a direct switch for computer control in settings.
 
 - [`da8a77a`](https://github.com/X-T-E-R/kiki/commit/da8a77a2b0596088b1a895c93a916934d099028e) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Correct allowed browser counts and partially disabled control indicators.
@@ -87,6 +91,8 @@
 - [`3dfc26c`](https://github.com/X-T-E-R/kiki/commit/3dfc26c2620460a3e9759c90e475c55064d84cdd) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add Ego Lite as a browser connection. Install it from the official site, then check it in browser settings and select it for an agent.
 
 - [`48753cf`](https://github.com/X-T-E-R/kiki/commit/48753cf616d01133e065426f0211ddfd9642f1c4) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix Ego Lite readiness checks on Windows.
+
+- [`8241923`](https://github.com/X-T-E-R/kiki/commit/824192312792749ad2e3544f233e0ad2006ff4ba) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Find an installed Ego Lite browser using that machine's PATH separator.
 
 - [`ddb0aac`](https://github.com/X-T-E-R/kiki/commit/ddb0aacc7df58a291b958df0d140eed4f5dd3e83) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix continuity reminders when starting or resuming external agents.
 
