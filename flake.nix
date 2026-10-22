@@ -276,6 +276,11 @@
                     "await runVerifyStep({ requireGatekeeper: false });" \
                     "// runVerifyStep skipped in nix sandbox (sigtool lacks -dv)"
               ''}
+              # pnpmConfigHook installs with --ignore-scripts, so the
+              # @kiki/plugin-sdk prepare step never emits dist. Package
+              # exports point only at that dist, and the GUI vite build
+              # inside build:native:sea resolves every subpath from it.
+              pnpm --filter=@kiki/plugin-sdk run build
               pnpm --filter=@kiki/cli run build:native:sea
               runHook postBuild
             '';
