@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import type { MCPToolDefinition } from '#/mcpCore/types';
 
-import type { BrowserTab } from './browser';
+import type { BrowserCaller, BrowserTab } from './browser';
 
 const BASE = 'http://127.0.0.1:10086';
 const PROBE_SESSION = 'kiki-browser-setup-check';
@@ -62,8 +62,17 @@ export function cdpPublicError(endpoint: string, withheld: string): string {
   return isCommandEndpointPath(endpoint) ? COMMAND_MISUSE : withheld;
 }
 
-export function webbridgeCommandSession(connectionId: string): string {
-  return `kiki-cmd-${createHash('sha256').update(connectionId).digest('hex').slice(0, 24)}`;
+/** Connection session when `caller` is omitted. A caller gets a distinct session so one agent's navigate cannot move another's current tab. */
+export function webbridgeCommandSession(connectionId: string, caller?: Pick<BrowserCaller, 'sessionId' | 'agentId'>): string {
+  const hash = createHash('sha256');
+  hash.update(connectionId);
+  if (caller !== undefined) {
+    hash.update('\0');
+    hash.update(caller.sessionId);
+    hash.update('\0');
+    hash.update(caller.agentId);
+  }
+  return `kiki-cmd-${hash.digest('hex').slice(0, 24)}`;
 }
 
 export class WebbridgeCommandError extends Error {
@@ -286,20 +295,20 @@ export function webbridgeCommandCatalog(): MCPToolDefinition[] {
   const url = { type: 'string', minLength: 1 };
   const selector = { type: 'string', minLength: 1, description: 'An @e ref from the latest snapshot, or a CSS selector.' };
   return [
-    { name: 'agent_browser_open', description: 'Open a URL in the current WebBridge tab. This is the navigate command with newTab false.', inputSchema: toolSchema({ url, label: { type: 'string' } }, ['url']) },
-    { name: 'agent_browser_tab_new', description: 'Open a URL in a new WebBridge tab. This is the navigate command with newTab true.', inputSchema: toolSchema({ url, label: { type: 'string' } }, ['url']) },
-    { name: 'agent_browser_tab_list', description: 'List tabs in this WebBridge command session.', inputSchema: toolSchema({}) },
-    { name: 'agent_browser_tab_switch', description: 'Bind the WebBridge command tab opened by the last navigate. The protocol cannot select a different tab by id, and this does not call find_tab or match a URL.', inputSchema: toolSchema({ tab: { type: 'string', minLength: 1, description: 'The command tab id returned when that tab was opened. Not a DevTools target id.' } }, ['tab']) },
-    { name: 'agent_browser_tab_close', description: 'Close the WebBridge command tab opened by the last navigate. This does not choose a tab by URL.', inputSchema: toolSchema({ tab: { type: 'string', minLength: 1 } }, ['tab']) },
-    { name: 'agent_browser_snapshot', description: 'Read the current WebBridge tab as an accessibility tree. Element refs look like @e1.', inputSchema: toolSchema({}) },
-    { name: 'agent_browser_click', description: 'Click a selector on the current WebBridge tab.', inputSchema: toolSchema({ selector }, ['selector']) },
-    { name: 'agent_browser_fill', description: 'Replace the value of an input on the current WebBridge tab.', inputSchema: toolSchema({ selector, value: { type: 'string' } }, ['selector', 'value']) },
-    { name: 'agent_browser_eval', description: 'Evaluate JavaScript on the current WebBridge tab. The script is sent as the evaluate code.', inputSchema: toolSchema({ script: { type: 'string', minLength: 1 } }, ['script']) },
-    { name: 'agent_browser_screenshot', description: 'Capture the current WebBridge tab. The command returns a file path.', inputSchema: toolSchema({ format: { type: 'string', enum: ['png', 'jpeg'] }, quality: { type: 'number' }, selector, path: { type: 'string' } }) },
-    { name: 'agent_browser_network', description: 'Read WebBridge network data. cmd is start, stop, list, or detail.', inputSchema: toolSchema({ cmd: { type: 'string', enum: ['start', 'stop', 'list', 'detail'] }, filter: { type: 'string' }, requestId: { type: 'string' } }, ['cmd']) },
-    { name: 'agent_browser_upload', description: 'Upload files through a selector on the current WebBridge tab.', inputSchema: toolSchema({ selector, files: { type: 'array', items: { type: 'string' } } }, ['selector', 'files']) },
-    { name: 'agent_browser_pdf', description: 'Save the current WebBridge page as a PDF.', inputSchema: toolSchema({ paper_format: { type: 'string' }, landscape: { type: 'boolean' }, scale: { type: 'number' }, print_background: { type: 'boolean' }, path: { type: 'string' } }) },
-    { name: 'agent_browser_cdp_action', description: 'Send one chrome.debugger method through the WebBridge command action. This does not attach a DevTools endpoint.', inputSchema: toolSchema({ method: { type: 'string', minLength: 1 }, params: { type: 'object' } }, ['method']) },
-    { name: 'agent_browser_end_session', description: 'Close the tabs this WebBridge command session opened. Use it only when the user asks to close them.', inputSchema: toolSchema({}) },
+    { name: 'agent_browser_open', description: 'Open a URL in this caller\'s current WebBridge tab. This is the navigate command with newTab false.', inputSchema: toolSchema({ url, label: { type: 'string' } }, ['url']) },
+    { name: 'agent_browser_tab_new', description: 'Open a URL in a new WebBridge tab for this caller. This is the navigate command with newTab true.', inputSchema: toolSchema({ url, label: { type: 'string' } }, ['url']) },
+    { name: 'agent_browser_tab_list', description: 'List tabs for this caller\'s WebBridge command session.', inputSchema: toolSchema({}) },
+    { name: 'agent_browser_tab_switch', description: 'Bind this caller\'s WebBridge command tab: the tab its own last navigate opened. The protocol cannot select a different tab by id. This does not call find_tab or match a URL.', inputSchema: toolSchema({ tab: { type: 'string', minLength: 1, description: 'The command tab id returned when this caller opened that tab. Not a DevTools target id.' } }, ['tab']) },
+    { name: 'agent_browser_tab_close', description: 'Close this caller\'s current WebBridge command tab: the tab its own last navigate opened. A different tab id is not closed, and this does not choose a tab by URL.', inputSchema: toolSchema({ tab: { type: 'string', minLength: 1 } }, ['tab']) },
+    { name: 'agent_browser_snapshot', description: 'Read this caller\'s current WebBridge tab as an accessibility tree. Element refs look like @e1.', inputSchema: toolSchema({}) },
+    { name: 'agent_browser_click', description: 'Click a selector on this caller\'s current WebBridge tab.', inputSchema: toolSchema({ selector }, ['selector']) },
+    { name: 'agent_browser_fill', description: 'Replace the value of an input on this caller\'s current WebBridge tab.', inputSchema: toolSchema({ selector, value: { type: 'string' } }, ['selector', 'value']) },
+    { name: 'agent_browser_eval', description: 'Evaluate JavaScript on this caller\'s current WebBridge tab. The script is sent as the evaluate code.', inputSchema: toolSchema({ script: { type: 'string', minLength: 1 } }, ['script']) },
+    { name: 'agent_browser_screenshot', description: 'Capture this caller\'s current WebBridge tab. The command returns a file path.', inputSchema: toolSchema({ format: { type: 'string', enum: ['png', 'jpeg'] }, quality: { type: 'number' }, selector, path: { type: 'string' } }) },
+    { name: 'agent_browser_network', description: 'Read WebBridge network data for this caller\'s current tab. cmd is start, stop, list, or detail.', inputSchema: toolSchema({ cmd: { type: 'string', enum: ['start', 'stop', 'list', 'detail'] }, filter: { type: 'string' }, requestId: { type: 'string' } }, ['cmd']) },
+    { name: 'agent_browser_upload', description: 'Upload files through a selector on this caller\'s current WebBridge tab.', inputSchema: toolSchema({ selector, files: { type: 'array', items: { type: 'string' } } }, ['selector', 'files']) },
+    { name: 'agent_browser_pdf', description: 'Save this caller\'s current WebBridge page as a PDF.', inputSchema: toolSchema({ paper_format: { type: 'string' }, landscape: { type: 'boolean' }, scale: { type: 'number' }, print_background: { type: 'boolean' }, path: { type: 'string' } }) },
+    { name: 'agent_browser_cdp_action', description: 'Send one chrome.debugger method through the WebBridge command action on this caller\'s current tab. This does not attach a DevTools endpoint.', inputSchema: toolSchema({ method: { type: 'string', minLength: 1 }, params: { type: 'object' } }, ['method']) },
+    { name: 'agent_browser_end_session', description: 'Close the tabs this caller\'s WebBridge command session opened. Another caller\'s session stays open. Use it only when the user asks to close them.', inputSchema: toolSchema({}) },
   ];
 }

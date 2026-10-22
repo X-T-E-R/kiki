@@ -227,7 +227,7 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
         const commandConnection = conn?.type === 'webbridge-command';
         return this.json({ browser, backend, namespace: backend, backendToolCount: tools.length,
           contextIsolation: commandConnection
-            ? 'WebBridge command drives the Kimi extension on a fixed local bridge. BrowserTabs lists the session tabs. Page actions stay on the tab the last navigate opened; another tab id is not selected by URL. Window and frame tools are not available. agent_browser_cdp_action sends the extension command action and does not attach DevTools.'
+            ? 'WebBridge command drives the Kimi extension on a fixed local bridge. Each caller has its own command session and the tab that caller\'s last navigate opened. Page actions stay on that tab. Another tab id is not selected by URL. Window and frame tools are not available. agent_browser_cdp_action sends the extension command action and does not attach DevTools.'
             : backend === 'official-cua-repl'
             ? 'Official extension browser/tab ids are preserved. Use codex_browser_js and its runtime documentation; window/frame emulation is unsupported.'
             : backend === 'codex-browser-bridge'

@@ -27,8 +27,10 @@ interface LiveBrowser {
   admitting: boolean;
   oldPid?: number;
   observation?: { binding: string; refs: Set<string> };
-  /** Command tab opened by the last navigate in this connection, as a `wb:` token. Not a DevTools target id. */
-  commandTab?: string;
+  /** Per-caller command tab from that caller's last navigate, as a `wb:` token. Not a DevTools target id. */
+  commandTabs?: Map<string, string>;
+  /** Element refs keyed by caller, tab, frame, and generation. One caller's snapshot does not replace another's. */
+  commandObservations?: Map<string, Set<string>>;
   target?: { tab: string; frame: string };
   captures?: Map<string, string>;
 }
@@ -368,7 +370,7 @@ export class BrowserControlService implements IBrowserControlService {
   async tabs(id: string, signal?: AbortSignal, context?: BrowserRequestContext): Promise<readonly BrowserTab[]> {
     const type = (await this.store.resolve(id)).type;
     if (type === 'ego-lite') return this.egoTabs(id, signal, context);
-    if (type === 'webbridge-command') return this.commandListTabs(id, signal);
+    if (type === 'webbridge-command') return this.commandListTabs(id, signal, context?.caller);
     const live = await this.live(id);
     return this.enqueue(live, async () => {
       await this.assertAdmission(live);
@@ -769,9 +771,7 @@ export class BrowserControlService implements IBrowserControlService {
       const checkedAt = new Date().toISOString();
       if (live.admitting && live.status.state === 'ready' && !usable) {
         live.admitting = false;
-        live.observation = undefined;
-        live.target = undefined;
-        live.commandTab = undefined;
+        this.clearCommandTargets(live);
         live.status = { ...live.status, state: 'disconnected', generation: live.status.generation + 1, checkedAt, currentCall: undefined,
           error: 'WebBridge is not ready. No page command was sent.', failure: undefined };
         return { ...live.status };
@@ -789,9 +789,7 @@ export class BrowserControlService implements IBrowserControlService {
   private async commandRecheck(live: LiveBrowser): Promise<BrowserStatus> {
     const bridge = await readWebbridgeStatus();
     const checkedAt = new Date().toISOString();
-    live.observation = undefined;
-    live.target = undefined;
-    live.commandTab = undefined;
+    this.clearCommandTargets(live);
     live.admitting = false;
     if (bridge?.running !== true) {
       live.status = { ...live.status, state: 'disconnected', generation: live.status.generation + 1, checkedAt, currentCall: undefined,
@@ -839,21 +837,19 @@ export class BrowserControlService implements IBrowserControlService {
     signal?.throwIfAborted();
     live.admitting = false;
     live.tools = undefined;
-    live.observation = undefined;
-    live.target = undefined;
-    live.commandTab = undefined;
+    this.clearCommandTargets(live);
     live.status = { ...live.status, state: 'disconnected', generation: live.status.generation + 1, currentCall: undefined,
       checkedAt: new Date().toISOString(), error: undefined, failure: undefined };
     return { ...live.status };
   }
 
-  private async commandListTabs(id: string, signal?: AbortSignal): Promise<readonly BrowserTab[]> {
+  private async commandListTabs(id: string, signal?: AbortSignal, caller?: BrowserCaller): Promise<readonly BrowserTab[]> {
     const live = await this.live(id);
     return this.enqueue(live, async () => {
       await this.assertAdmission(live);
       this.assertReady(live);
       try {
-        const data = await sendWebbridgeCommand({ action: 'list_tabs', args: {}, session: webbridgeCommandSession(id), signal });
+        const data = await sendWebbridgeCommand({ action: 'list_tabs', args: {}, session: webbridgeCommandSession(id, caller), signal });
         return commandTabsFromData(data);
       } catch (error) {
         this.commandFail(live, error);
@@ -884,10 +880,12 @@ export class BrowserControlService implements IBrowserControlService {
       }
       const binding = JSON.stringify([input.caller.sessionId, input.caller.agentId, input.tab, input.frame ?? 'main', live.status.generation]);
       const refs = elementRefs(input.args);
-      if (refs.length > 0 && (live.observation?.binding !== binding || refs.some((ref) => !live.observation?.refs.has(ref)))) {
+      const knownRefs = live.commandObservations?.get(binding);
+      if (refs.length > 0 && (knownRefs === undefined || refs.some((ref) => !knownRefs.has(ref)))) {
         throw new BrowserError('browser.target', 'Element references no longer belong to this agent/tab/frame observation; take a fresh snapshot');
       }
-      const session = webbridgeCommandSession(live.connection.id);
+      const session = webbridgeCommandSession(live.connection.id, input.caller);
+      const bound = this.commandTabOf(live, input.caller);
       live.status = { ...live.status, state: 'running', currentCall: { ...input.caller, tool: input.tool, tab: input.tab } };
       try {
         signal?.throwIfAborted();
@@ -896,48 +894,46 @@ export class BrowserControlService implements IBrowserControlService {
         if (input.tool === 'agent_browser_tab_switch' || input.tool === 'agent_browser_tab_close') {
           const requested = textArg(input.args, 'tab') ?? input.tab;
           const numeric = requested === undefined ? undefined : commandTabIdFromToken(requested);
-          if (numeric === undefined || requested !== live.commandTab) {
+          if (numeric === undefined || requested !== bound) {
             throw new BrowserError('browser.unsupported', input.tool === 'agent_browser_tab_close'
-              ? 'The WebBridge command protocol closes its current tab only. This tab id is not that tab, and it was not closed.'
+              ? 'The WebBridge command protocol closes this caller\'s current tab only. This tab id is not that tab, and it was not closed.'
               : 'The WebBridge command protocol cannot select a tab by id. find_tab matches a URL and can hit a different tab, so this tab was not selected.');
           }
           if (input.tool === 'agent_browser_tab_close') {
             data = await sendWebbridgeCommand({ action: 'close_tab', args: {}, session, signal });
-            live.observation = undefined;
-            live.target = undefined;
-            live.commandTab = undefined;
+            this.dropCallerCommand(live, input.caller);
           } else data = { tabId: numeric };
           target = requested;
         } else {
           const mapped = webbridgeCommandForTool(input.tool, input.args);
           if (mapped.kind === 'unsupported') throw new BrowserError('browser.unsupported', `WebBridge command does not run ${input.tool}`);
           if (mapped.kind === 'invalid') throw new BrowserError('browser.invalid', mapped.message);
-          if (commandUsesBoundTab(input.tool)) {
-            if (live.commandTab === undefined) throw new BrowserError('browser.target', 'Open a WebBridge tab with navigate before this action. The command bridge uses that tab and does not take a tab id on the action.');
-            if (input.tab !== live.commandTab) throw new BrowserError('browser.target', 'This action stays on the WebBridge command tab opened by navigate. Pass that same tab id.');
+          const reusesCurrentTab = mapped.action === 'navigate' && mapped.args['newTab'] !== true;
+          if (commandUsesBoundTab(input.tool) || reusesCurrentTab) {
+            if (bound === undefined) throw new BrowserError('browser.target', 'Open a WebBridge tab with navigate before this action. The command bridge uses that caller\'s tab and does not take a tab id on the action.');
+            if (input.tab !== bound) throw new BrowserError('browser.target', 'This action stays on the WebBridge command tab this caller opened. Pass that same tab id.');
           }
+          // The daemon injects this session's current tab. A client tab id is not a public field and is not sent.
           data = await sendWebbridgeCommand({ action: mapped.action, args: mapped.args, session, signal });
           if (mapped.action === 'snapshot') data = commandSnapshotData(data);
           if (mapped.action === 'navigate') {
-            live.observation = undefined;
-            live.target = undefined;
+            this.dropCallerCommand(live, input.caller);
             try { target = commandTabTokenFromWire(data['tabId']); }
             catch (error) {
               if (!(error instanceof WebbridgeCommandError)) throw error;
-              live.commandTab = undefined;
               throw new BrowserError('browser.target', 'WebBridge navigate did not return a command tab id');
             }
-            live.commandTab = target;
+            live.commandTabs ??= new Map();
+            live.commandTabs.set(this.commandCallerKey(input.caller), target);
           } else if (mapped.action === 'close_session') {
-            live.observation = undefined;
-            live.target = undefined;
-            live.commandTab = undefined;
+            this.dropCallerCommand(live, input.caller);
           }
         }
         if (input.tool === 'agent_browser_snapshot') {
           const returned = data['refs'];
-          live.observation = { binding, refs: new Set(returned !== null && typeof returned === 'object' ? Object.keys(returned).map((ref) => ref.replace(/^@/, '')) : []) };
-        } else if (refs.length > 0) live.observation = undefined;
+          live.commandObservations ??= new Map();
+          live.commandObservations.set(binding, new Set(returned !== null && typeof returned === 'object' ? Object.keys(returned).map((ref) => ref.replace(/^@/, '')) : []));
+        } else if (refs.length > 0) live.commandObservations?.delete(binding);
         live.status = { ...live.status, state: live.admitting ? 'ready' : 'stopping', currentCall: undefined, checkedAt: new Date().toISOString() };
         return this.commandResult(live, session, input, data, target);
       } catch (error) {
@@ -961,11 +957,33 @@ export class BrowserControlService implements IBrowserControlService {
     return new BrowserError('browser.execution_failed', error instanceof Error ? error.message : String(error), lost ? { details: { reason: 'outcome_unknown' } } : undefined);
   }
 
-  private commandFail(live: LiveBrowser, error: unknown): void {
-    live.admitting = false;
+  private commandCallerKey(caller: BrowserCaller): string {
+    return `${caller.sessionId}\0${caller.agentId}`;
+  }
+
+  private commandTabOf(live: LiveBrowser, caller: BrowserCaller): string | undefined {
+    return live.commandTabs?.get(this.commandCallerKey(caller));
+  }
+
+  private clearCommandTargets(live: LiveBrowser): void {
     live.observation = undefined;
     live.target = undefined;
-    live.commandTab = undefined;
+    live.commandTabs = undefined;
+    live.commandObservations = undefined;
+  }
+
+  private dropCallerCommand(live: LiveBrowser, caller: BrowserCaller): void {
+    live.commandTabs?.delete(this.commandCallerKey(caller));
+    if (live.commandObservations === undefined) return;
+    const prefix = `${JSON.stringify([caller.sessionId, caller.agentId]).slice(0, -1)},`;
+    for (const key of live.commandObservations.keys()) {
+      if (key.startsWith(prefix)) live.commandObservations.delete(key);
+    }
+  }
+
+  private commandFail(live: LiveBrowser, error: unknown): void {
+    live.admitting = false;
+    this.clearCommandTargets(live);
     const lost = error instanceof WebbridgeCommandError && error.kind === 'lost';
     live.status = { ...live.status, state: lost ? 'unconfirmed' : 'failed', currentCall: undefined,
       failure: { code: error instanceof BrowserError ? error.code : 'browser.execution_failed', reason: lost ? 'outcome_unknown' : undefined },

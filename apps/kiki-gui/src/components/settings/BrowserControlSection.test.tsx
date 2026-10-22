@@ -983,6 +983,31 @@ describe('BrowserControlSection', () => {
     expect(container.textContent).not.toContain('Not connected');
   });
 
+  it('opens a WebBridge command connection into the wide and narrow detail', async () => {
+    list.mockResolvedValue({ connections: [{
+      id: 'webbridge-command', name: 'Kimi browser extension', enabled: true, type: 'webbridge-command',
+      status: browserStatus({ browser: 'webbridge-command', ownership: 'external-browser' }),
+    }] });
+    await render();
+    await settleUntil('[data-browser-connection="webbridge-command"]');
+
+    // No row is open, so the card is the list and there is no detail pane.
+    expect(query('[data-settings-list-detail]')).toBeNull();
+    expect(query('[data-secret-field]')).toBeNull();
+
+    await click('[data-browser-connection="webbridge-command"]');
+    const layout = query('[data-settings-list-detail]');
+    const columns = layout === null ? [] : [...layout.children];
+    expect(layout?.getAttribute('data-narrow-pane')).toBe('detail');
+    expect(layout?.className).toContain('md:grid-cols-[minmax(168px,0.75fr)_minmax(0,1.7fr)]');
+    expect(columns[0]?.className).toContain('max-md:hidden');
+    expect(columns[1]?.className).not.toContain('max-md:hidden');
+    expect(container.textContent).toContain('Drives the Kimi extension through the fixed local command bridge. It does not attach CDP and has no endpoint.');
+    expect(query('[data-secret-field]')).toBeNull();
+    expect(query('[data-browser-driver-input]')).toBeNull();
+    expect(query('[data-browser-endpoint-host]')).toBeNull();
+  });
+
   it('offers the running actions only while the draft matches the saved configuration', async () => {
     list.mockResolvedValue({ connections: [profileRow()] });
 
