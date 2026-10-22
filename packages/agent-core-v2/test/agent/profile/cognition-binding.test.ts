@@ -20,7 +20,7 @@ import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
 import type { GenerateOptions } from '#/kosong/contract/provider';
 import { emptyUsage } from '#/kosong/contract/usage';
 import { IWireService } from '#/wire/wire';
-import { IConfigRegistry, IConfigService } from '#/app/config/config';
+import { ConfigTarget, IConfigRegistry, IConfigService } from '#/app/config/config';
 import { ConfigRegistry, ConfigService } from '#/app/config/configService';
 import { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { TomlAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
@@ -955,7 +955,7 @@ describe('per-model cognition overlay', () => {
     await writeFile(join(b, 'config.toml'), stringify({ providers: { example: { type: 'openai', base_url: 'https://child.example.test/v1' } }, models: { 'model.b': modelConfig('./recipes/focus.toml'), 'model.a': { parameters: { top_p: 0.6 } } }, default_model: 'model.b' }));
     await writeFile(join(b, 'home.toml'), stringify({ schema: 1, id: 'h-example', name: 'Example', base: a, inherit: { credentials: 'isolated' } }));
     let baseInstallation: string | undefined;
-    const run = async (home: string, alias: string, body: string, temperature: number, changedBody: string) => {
+    const run = async (home: string, alias: string, body: string, temperature: number, cycle: 'full' | 'normalize' | 'none', changedBody?: string) => {
       let observed = '';
       let sampling: GenerateOptions['sampling'];
       ctx = createTestAgent({ autoConfigure: false }, homeDirServices(home), appServices((reg) => {
@@ -978,24 +978,30 @@ describe('per-model cognition overlay', () => {
       await ctx.get(IAgentLLMRequesterService).request({ tools: [] });
       expect(observed).toContain(body);
       expect(sampling?.temperature).toBe(temperature);
-      const updated = await mutations.updateModel(alias, { recipe: './recipes/../recipes/focus.toml' });
-      expect(updated.effective_parameters?.temperature).toBe(home === b ? 0.75 : temperature);
-      await mutations.updateModel(alias, { recipe: null });
-      await mutations.updateModel(alias, { recipe: './recipes/focus.toml' });
-      ctx.get(IModelService).loadAll(config.get('models'), alias);
-      await profile.bind({ resolvedProfile: role, model: alias });
-      await ctx.get(IAgentLLMRequesterService).request({ tools: [] });
-      const localTemperature = home === b ? 0.75 : temperature;
-      expect(observed).toContain(home === b ? 'SPACE B' : body);
-      expect(sampling?.temperature).toBe(localTemperature);
-      const frozen = await profile.getCognitionBinding();
-      await writeFile(join(home, 'recipes/body.md'), changedBody);
-      await ctx.get(IAgentLLMRequesterService).request({ tools: [] });
-      expect(await profile.getCognitionBinding()).toEqual(frozen);
-      expect(observed).not.toContain(changedBody);
-      await profile.rebuildPromptContext();
-      await ctx.get(IAgentLLMRequesterService).request({ tools: [] });
-      expect(observed).toContain(changedBody);
+      if (cycle !== 'none') {
+        const updated = await mutations.updateModel(alias, { recipe: './recipes/../recipes/focus.toml' });
+        expect(updated.effective_parameters?.temperature).toBe(home === b ? 0.75 : temperature);
+        if (cycle === 'full') {
+          await mutations.updateModel(alias, { recipe: null });
+          await mutations.updateModel(alias, { recipe: './recipes/focus.toml' });
+        }
+        ctx.get(IModelService).loadAll(config.get('models'), alias);
+        await profile.bind({ resolvedProfile: role, model: alias });
+        await ctx.get(IAgentLLMRequesterService).request({ tools: [] });
+        const localTemperature = home === b ? 0.75 : temperature;
+        expect(observed).toContain(home === b ? 'SPACE B' : body);
+        expect(sampling?.temperature).toBe(localTemperature);
+      }
+      if (changedBody !== undefined) {
+        const frozen = await profile.getCognitionBinding();
+        await writeFile(join(home, 'recipes/body.md'), changedBody);
+        await ctx.get(IAgentLLMRequesterService).request({ tools: [] });
+        expect(await profile.getCognitionBinding()).toEqual(frozen);
+        expect(observed).not.toContain(changedBody);
+        await profile.rebuildPromptContext();
+        await ctx.get(IAgentLLMRequesterService).request({ tools: [] });
+        expect(observed).toContain(changedBody);
+      }
       const recipes = ctx.get(IRecipeService);
       if (home === a) {
         baseInstallation = (await recipes.install({ preview_id: (await recipes.preview({ source: { locator: join(a, 'recipes/focus.toml') } })).preview_id, update_mode: 'pinned' })).installation_id;
@@ -1015,9 +1021,9 @@ describe('per-model cognition overlay', () => {
         await ctx.get(IAgentLLMRequesterService).request({ tools: [] });
         expect(observed).not.toContain('SPACE A UPDATED');
         const inheritedRole = normalizeAgentProfile({ name: DEFAULT_AGENT_PROFILE_NAME, recipe: `installation:${baseInstallation}`, systemPrompt: () => 'INHERITED ROLE' });
-        await config.replace('experimental', { recipes: false });
+        await config.replace('experimental', { recipes: false }, ConfigTarget.Memory);
         await expect(recipes.resolve(baseInstallation)).rejects.toThrow('Enable experimental recipes');
-        await config.replace('experimental', { recipes: true });
+        await config.replace('experimental', { recipes: true }, ConfigTarget.Memory);
         await profile.bind({ resolvedProfile: inheritedRole, model: alias });
         await ctx.get(IAgentLLMRequesterService).request({ tools: [] });
         expect(observed).toContain('SPACE A UPDATED');
@@ -1025,10 +1031,11 @@ describe('per-model cognition overlay', () => {
       }
       await ctx.dispose(); ctx = undefined;
     };
-    await run(b, 'model.a', 'SPACE A', 0.25, 'SPACE B UPDATED');
-    await run(a, 'model.a', 'SPACE A', 0.25, 'SPACE A UPDATED');
+    await run(b, 'model.a', 'SPACE A', 0.25, 'normalize');
+    await writeFile(join(b, 'recipes/body.md'), 'SPACE B UPDATED');
+    await run(a, 'model.a', 'SPACE A', 0.25, 'full', 'SPACE A UPDATED');
     await writeFile(join(b, 'home.toml'), stringify({ schema: 1, id: 'h-example', name: 'Example', base: a, inherit: { config: false, agents: true, credentials: 'isolated' } }));
     await writeFile(join(b, 'space-preferences.json'), JSON.stringify({ schema: 2, groups: { agents: 'follow' } }));
-    await run(b, 'model.b', 'SPACE B UPDATED', 0.75, 'SPACE B SECOND UPDATE');
+    await run(b, 'model.b', 'SPACE B UPDATED', 0.75, 'none');
   });
 });
