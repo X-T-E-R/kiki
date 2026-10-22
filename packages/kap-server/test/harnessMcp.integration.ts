@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { IHarnessMcpService, IAgentProfileService, IAgentExecutorRegistry, IAgentProfileRegistry, normalizeAgentProfile,
+import { IHarnessMcpService, IAgentProfileService, IAgentExecutorRegistry, IAgentProfileRegistry, IAgentLoopService, IAgentPromptService, normalizeAgentProfile,
   ensureMainAgent, resumeSessionById, type IAgentScopeHandle } from '@kiki/agent-core-v2';
 import { acquireHarnessMcp } from '@kiki/agent-core-v2/agent/execution/harnessMcpLease';
 import { executionBindingSchema, type ExecutionSelection } from '@kiki/protocol';
@@ -203,6 +203,7 @@ describe('native harness tool parity', () => {
     const client = new Client({ name: 'native-harness-fixture', version: '1' });
     let lease: Awaited<ReturnType<IHarnessMcpService['acquire']>> | undefined;
     let mcp: ReturnType<typeof createKikiMcpServer> | undefined;
+    let settleHeldChild = async (): Promise<void> => {};
     try {
       const endpoint = `http://127.0.0.1:${server.port}`;
       const created = await fetch(`${endpoint}/api/sessions`, { method: 'POST', headers: authHeaders(server, { 'content-type': 'application/json' }), body: JSON.stringify({ metadata: { cwd: home } }) });
@@ -235,6 +236,27 @@ describe('native harness tool parity', () => {
       } finally { mainLease.dispose(); }
       const lifecycle = session.accessor.get(IAgentLifecycleService);
       const child = await lifecycle.create({ agentId: 'bridge-child', delegator: { kind: 'agent', agentId: 'main' } });
+      const loop = child.accessor.get(IAgentLoopService);
+      let resolveHeldTurn!: (turnId: number) => void;
+      const heldTurn = new Promise<number>((resolve) => { resolveHeldTurn = resolve; });
+      const hold = loop.hooks.onWillBeginStep.register('hold-child-approval-turn', async (ctx) => {
+        resolveHeldTurn(ctx.turnId);
+        await new Promise<void>((resolve) => {
+          if (ctx.signal.aborted) resolve();
+          else ctx.signal.addEventListener('abort', () => { resolve(); }, { once: true });
+        });
+        ctx.signal.throwIfAborted();
+      }, { before: 'context-injector' });
+      let released = false;
+      settleHeldChild = async () => {
+        if (released) return;
+        released = true;
+        const status = loop.status();
+        for (const id of status.pendingTurnIds) loop.cancel(id);
+        if (status.activeTurnId !== undefined) loop.cancel(status.activeTurnId);
+        void hold.dispose();
+        await loop.settled();
+      };
       const profile = child.accessor.get(IAgentProfileService);
       const original = profile.data();
       child.accessor.get(IAgentPermissionModeService).setMode('yolo');
@@ -310,14 +332,51 @@ describe('native harness tool parity', () => {
         parameters: { type: 'object', properties: {} }, resolveExecution: () => ({
           approvalRule: 'plugin_approval_fixture', accesses: ToolAccesses.all(), execute: async () => ({ output: 'approved' }),
         }) }, { source: 'plugin' });
+      registry.register({ name: 'plugin_approval_revoke_fixture', description: 'Approval revoke fixture',
+        parameters: { type: 'object', properties: {} }, resolveExecution: () => ({
+          approvalRule: 'plugin_approval_revoke_fixture', accesses: ToolAccesses.all(), execute: async () => ({ output: 'approved' }),
+        }) }, { source: 'plugin' });
+      const prompts = child.accessor.get(IAgentPromptService);
+      const running = loop.status();
+      const started = running.activeTurnId === undefined && running.pendingTurnIds.length === 0
+        ? prompts.submit({ input: [{ type: 'text', text: 'Hold the child turn across the approval.' }] })
+        : undefined;
+      const turnId = await new Promise<number>((resolve, reject) => {
+        void heldTurn.then(resolve, reject);
+        if (started !== undefined) void started.then(() => undefined, reject);
+      });
+      expect(loop.status().activeTurnId).toBe(turnId);
       const pendingCall = context.call({ name: 'plugin_approval_fixture', arguments: {} });
       let outcome: unknown;
       void pendingCall.then((value) => { outcome = value; });
       await vi.waitFor(() => expect(interaction.listPending('approval'), JSON.stringify(outcome)).toHaveLength(1));
       const pending = interaction.listPending('approval')[0]!;
       expect(pending.origin.agentId).toBe(child.id);
+      expect(pending.origin.turnId).toBe(turnId);
+      expect(loop.status().activeTurnId).toBe(turnId);
       interaction.respond(pending.id, { decision: 'rejected' });
-      expect((await pendingCall).isError).toBe(true);
+      const rejected = await pendingCall;
+      expect(rejected.isError).toBe(true);
+      expect(rejected.output).toContain('the user rejected the approval request');
+      expect(rejected.output).not.toContain('turn_ended');
+      const endedCall = context.call({ name: 'plugin_approval_revoke_fixture', arguments: {} });
+      let ended: { output?: string; isError?: boolean } | undefined;
+      void endedCall.then((value) => { ended = value; });
+      await vi.waitFor(() => { expect(interaction.listPending('approval'), JSON.stringify(ended)).toHaveLength(1); });
+      const ending = interaction.listPending('approval')[0]!;
+      expect(ending.origin.agentId).toBe(child.id);
+      expect(ending.origin.turnId).toBe(turnId);
+      expect(loop.status().activeTurnId).toBe(turnId);
+      for (const id of loop.status().pendingTurnIds) loop.cancel(id);
+      expect(loop.status().activeTurnId).toBe(turnId);
+      loop.cancel(turnId);
+      await vi.waitFor(() => {
+        expect(ended).toEqual({ output: 'Tool "plugin_approval_revoke_fixture" was not run because the system cancelled the approval request (turn_ended).', isError: true });
+        expect(interaction.listPending('approval')).toHaveLength(0);
+      });
+      await prompts.drain(new Error('approval fixture released the held turn'));
+      await settleHeldChild();
+      expect(loop.status().activeTurnId).toBeUndefined();
       interaction.releaseConsumer('child-bridge-test');
       await registrations[1]!.dispose();
       expect((await client.listTools()).tools.map((tool) => tool.name)).not.toContain('kiki_mcp_fixture');
@@ -335,6 +394,7 @@ describe('native harness tool parity', () => {
       lease.dispose();
       await expect(context.catalog()).rejects.toThrow('Unauthorized');
     } finally {
+      await settleHeldChild();
       await client.close();
       await mcp?.close();
       lease?.dispose();
