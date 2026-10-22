@@ -421,8 +421,11 @@ describe('request identity contract validation', () => {
     expect(configSetInputSchema.safeParse(['requestCompression', { encoding: 'zstd', targets: ['https://example.test/v1'] }]).success).toBe(true);
     expect(configReplaceInputSchema.safeParse(['requestCompression', undefined]).success).toBe(true);
     expect(configReplaceInputSchema.safeParse(['responsesWebSocket', null]).success).toBe(true);
-    expect(configSetInputSchema.safeParse(['requestCompression', { minBytes: 0 }]).success).toBe(false);
+    expect(configSetInputSchema.safeParse(['requestCompression', { minBytes: 0 }]).success).toBe(true);
+    expect(configSetInputSchema.safeParse(['requestCompression', { encoding: 'gzip', dictionary: true }]).success).toBe(false);
     expect(configSetInputSchema.safeParse(['responsesWebSocket', {}]).success).toBe(false);
+    expect(configReplaceInputSchema.safeParse(['requestCompression', { minBytes: 0 }]).success).toBe(false);
+    expect(configReplaceSectionsInputSchema.safeParse([{ requestCompression: { minBytes: 0 } }]).success).toBe(false);
     expect(configReplaceSectionsInputSchema.safeParse([{ responsesWebSocket: { targets: ['https://example.test/v1'] } }]).success).toBe(true);
     expect(providerConfigSchema.parse({ requestCompression: compression, responsesWebSocket: socket })).toEqual({
       requestCompression: compression,

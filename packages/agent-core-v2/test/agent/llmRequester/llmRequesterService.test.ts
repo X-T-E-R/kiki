@@ -1,7 +1,9 @@
 import { createControlledPromise } from '@antfu/utils';
+import { readFileSync } from 'node:fs';
 import { release as osRelease } from 'node:os';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { WebSocket, WebSocketServer } from 'ws';
 import { OpenAIResponsesChatProvider } from '#/kosong/provider/bases/openai/openai-responses';
 import { OpenAILegacyChatProvider } from '#/kosong/provider/bases/openai/openai-legacy';
 import { AnthropicChatProvider } from '#/kosong/provider/bases/anthropic/anthropic';
@@ -632,71 +634,128 @@ describe('AgentLLMRequesterService Responses WebSocket lifecycle', () => {
     }
   });
 
-  it('keeps an in-flight request and uses the next effective transport after releasing the old socket', async () => {
-    const oldCompression = { encoding: 'gzip' as const, targets: ['https://old.example.test/v1'] };
-    const oldSocket = { targets: ['https://old.example.test/v1'] };
-    const nextCompression = { encoding: 'zstd' as const, targets: ['https://new.example.test/v1'], dictionary: false };
-    const nextSocket = { targets: ['https://new.example.test/v1'] };
-    let releaseFirst: () => void = () => undefined;
-    const firstGate = new Promise<void>((resolve) => {
-      releaseFirst = resolve;
+  it('lets a real in-flight Responses socket reach terminal before rotating the next request', async () => {
+    const capabilities = readFileSync(
+      new URL('../../kosong/provider/fixtures/responses-ws-capabilities.json', import.meta.url),
+      'utf8',
+    ).trim();
+    const server = createServer();
+    const sockets = new Set<WebSocket>();
+    const webSockets = new WebSocketServer({ server });
+    webSockets.on('headers', (headers) => {
+      headers.push(`X-Responses-WebSocket-Capabilities: ${capabilities}`);
     });
-    const calls = { value: 0 };
-    const seen: Array<{ compression: unknown; socket: unknown; transport: unknown }> = [];
-    const requester = createRequester({ value: 0 }, null, [], undefined, {
-      protocol: 'openai_responses',
-      requestCompression: oldCompression,
-      responsesWebSocket: oldSocket,
+    let firstSocket: WebSocket | undefined;
+    let resolveFirstFrame: () => void = () => undefined;
+    const firstFrame = new Promise<void>((resolve) => {
+      resolveFirstFrame = resolve;
     });
-    requester.request = async function* (_input, _signal, params) {
-      calls.value += 1;
-      const snapshot = {
-        compression: requester.model.requestCompression,
-        socket: requester.model.responsesWebSocket,
-        transport: params?.responsesTransport,
-      };
-      if (calls.value === 1) await firstGate;
-      seen.push(snapshot);
-      yield {
-        type: 'finish',
-        message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }], toolCalls: [] },
-        providerFinishReason: 'completed',
-        rawFinishReason: 'stop',
-        id: 'resp-1',
-      };
+    let connections = 0;
+    const sendCompleted = (socket: WebSocket, id: string, text: string): void => {
+      const output = [{
+        id: `msg_${id}`,
+        role: 'assistant',
+        status: 'completed',
+        type: 'message',
+        content: [{ annotations: [], text, type: 'output_text' }],
+      }];
+      socket.send(JSON.stringify({
+        content_index: 0,
+        delta: text,
+        item_id: `msg_${id}`,
+        output_index: 0,
+        sequence_number: 1,
+        type: 'response.output_text.delta',
+      }));
+      socket.send(JSON.stringify({
+        response: { id, output, status: 'completed', usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+        sequence_number: 2,
+        type: 'response.completed',
+      }));
     };
+    webSockets.on('connection', (socket) => {
+      const connection = connections;
+      connections += 1;
+      sockets.add(socket);
+      socket.on('close', () => sockets.delete(socket));
+      socket.on('message', () => {
+        const id = connection === 0 ? 'resp_old' : 'resp_new';
+        socket.send(JSON.stringify({
+          response: { id, output: [], status: 'in_progress' },
+          sequence_number: 0,
+          type: 'response.created',
+        }));
+        if (connection === 0) {
+          firstSocket = socket;
+          resolveFirstFrame();
+        } else {
+          sendCompleted(socket, id, 'new transport');
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const model: Model = {
+      ...createRequester({ value: 0 }, null).model,
+      protocol: 'openai_responses',
+      baseUrl,
+      responsesWebSocket: { targets: [baseUrl] },
+      authProvider: { getAuth: async () => ({ apiKey: 'YOUR_API_KEY' }) },
+    };
+    const provider = new OpenAIResponsesChatProvider({
+      model: model.name,
+      baseUrl,
+      apiKey: 'YOUR_API_KEY',
+      responsesWebSocket: { targets: [baseUrl] },
+    });
+    const requester = new ModelRequesterImpl(model, {
+      createChatProvider: () => provider,
+    } as unknown as IProtocolAdapterRegistry);
     const dispose = vi.spyOn(ResponsesWebSocketTransport.prototype, 'dispose');
     const sectionChanges = new Emitter<ConfigChangedEvent>();
     const catalogReads = { value: 0 };
     const { service } = createService(requester, undefined, { sectionChanges, catalogReads });
-    const changed = { domain: 'requestCompression', source: 'set' as const, value: undefined, previousValue: undefined };
     try {
       const pending = service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
-      while (calls.value === 0) await new Promise((resolve) => setImmediate(resolve));
-      expect(calls.value).toBe(1);
+      await firstFrame;
       const readsDuringFlight = catalogReads.value;
-      expect(readsDuringFlight).toBeGreaterThan(0);
-      sectionChanges.fire(changed);
+      sectionChanges.fire({
+        domain: 'requestCompression',
+        source: 'set',
+        value: undefined,
+        previousValue: undefined,
+      });
       await new Promise((resolve) => setImmediate(resolve));
-      expect(calls.value).toBe(1);
-      expect(catalogReads.value).toBe(readsDuringFlight);
-      expect(dispose).toHaveBeenCalledTimes(1);
-      Object.assign(requester.model, { requestCompression: nextCompression, responsesWebSocket: nextSocket });
-      releaseFirst();
-      await pending;
-      expect(seen[0]).toMatchObject({ compression: oldCompression, socket: oldSocket });
-      expect(seen[0]?.transport).toBeDefined();
-      await service.request({ source: { type: 'turn', turnId: 1, step: 2 } });
-      expect(calls.value).toBe(2);
+      expect(firstSocket?.readyState).toBe(WebSocket.OPEN);
+      expect(dispose).not.toHaveBeenCalled();
+      sendCompleted(firstSocket!, 'resp_old', 'old transport completed');
+      await expect(pending).resolves.toMatchObject({
+        message: { content: [{ type: 'text', text: 'old transport completed' }] },
+      });
+      await vi.waitFor(() => {
+        expect(dispose).toHaveBeenCalledTimes(1);
+      });
+
+      await expect(service.request({ source: { type: 'turn', turnId: 1, step: 2 } })).resolves.toMatchObject({
+        message: { content: [{ type: 'text', text: 'new transport' }] },
+      });
+      expect(connections).toBe(2);
       expect(catalogReads.value).toBeGreaterThan(readsDuringFlight);
-      expect(seen[1]).toMatchObject({ compression: nextCompression, socket: nextSocket });
-      expect(seen[1]?.transport).toBeDefined();
-      expect(seen[1]?.transport).not.toBe(seen[0]?.transport);
-      expect(dispose.mock.calls.length).toBeGreaterThanOrEqual(1);
     } finally {
-      releaseFirst();
       sectionChanges.dispose();
       await (service as unknown as { dispose(): void | Promise<void> }).dispose();
+      for (const socket of sockets) socket.terminate();
+      await new Promise<void>((resolve) => {
+        webSockets.close(() => {
+          resolve();
+        });
+      });
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => {
+        server.close(() => {
+          resolve();
+        });
+      });
       dispose.mockRestore();
     }
   });

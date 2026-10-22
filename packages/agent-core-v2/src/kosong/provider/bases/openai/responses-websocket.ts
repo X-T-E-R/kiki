@@ -561,7 +561,10 @@ export class ResponsesWebSocketTransport {
   private _lifetimeTimer: ReturnType<typeof setTimeout> | undefined;
   private _lifetimeExpired = false;
   private _inFlight = false;
+  private _retired = false;
   private _disposed = false;
+  private _retirePromise: Promise<void> | undefined;
+  private _resolveRetire: (() => void) | undefined;
   private readonly _nativeOutput = new WeakMap<object, readonly unknown[]>();
 
   get capabilities(): ResponsesWebSocketCapabilities | undefined {
@@ -573,10 +576,26 @@ export class ResponsesWebSocketTransport {
     this._closeCurrent();
   }
 
+  retire(): Promise<void> {
+    if (this._disposed) return Promise.resolve();
+    if (!this._retired) {
+      this._retired = true;
+      this._retirePromise = new Promise<void>((resolve) => {
+        this._resolveRetire = resolve;
+      });
+      this._clearBaseline();
+      if (!this._inFlight) this.dispose();
+    }
+    return this._retirePromise!;
+  }
+
   dispose(): void {
     if (this._disposed) return;
     this._disposed = true;
+    this._retired = true;
     this._closeCurrent();
+    this._resolveRetire?.();
+    this._resolveRetire = undefined;
   }
 
   async request(
@@ -620,10 +639,10 @@ export class ResponsesWebSocketTransport {
     fullParams: Record<string, unknown>,
     options: ResponsesWebSocketCreateOptions = {},
   ): Promise<AsyncIterable<unknown>> {
-    if (this._disposed) {
+    if (this._disposed || this._retired) {
       throw new ResponsesWebSocketError(
-        'Responses WebSocket transport has been disposed.',
-        'responses_websocket_disposed',
+        'Responses WebSocket transport is no longer accepting requests.',
+        this._disposed ? 'responses_websocket_disposed' : 'responses_websocket_retired',
       );
     }
     if (this._inFlight) {
@@ -685,6 +704,7 @@ export class ResponsesWebSocketTransport {
       this._inFlight = false;
       if (abortHandler !== undefined) options.signal?.removeEventListener('abort', abortHandler);
       if (sendAttempted) this._closeCurrent();
+      if (this._retired) this.dispose();
       if (options.signal?.aborted) {
         this._closeCurrent();
         throw createAbortError();
@@ -1063,7 +1083,9 @@ export class ResponsesWebSocketTransport {
         await iterator.return?.();
       } finally {
         this._inFlight = false;
-        if (!keepConnection || (this._lifetimeExpired && this._socket === connection.socket)) {
+        if (this._retired) {
+          this.dispose();
+        } else if (!keepConnection || (this._lifetimeExpired && this._socket === connection.socket)) {
           this._closeCurrent(connection.socket);
         }
       }
