@@ -45,6 +45,15 @@ function harness() {
   return { values, origins, docs, config, policy };
 }
 
+function closeThreadByHomeDefault(values: Record<string, unknown>, origins: Record<string, Record<string, string>>): void {
+  const section = values[OPTIONAL_CAPABILITIES_SECTION] as { defaults: Record<string, boolean> };
+  section.defaults['thread'] = false;
+  origins[OPTIONAL_CAPABILITIES_SECTION] = {
+    ...origins[OPTIONAL_CAPABILITIES_SECTION],
+    'defaults.thread': 'home',
+  };
+}
+
 describe('optional capability review follow-up', () => {
   it('keeps a saved off closed while its document is loading and after a failed read', async () => {
     const { config } = harness();
@@ -135,7 +144,9 @@ describe('optional capability review follow-up', () => {
   });
 
   it('registers a static tool that was never admitted when the session turns on', async () => {
-    const { config, policy } = harness();
+    const { values, origins, config, policy } = harness();
+    closeThreadByHomeDefault(values, origins);
+    expect(policy.globalState('thread')).toMatchObject({ allowed: true, defaultOn: false });
     const registered = new AgentToolRegistryService();
     const toolId = Symbol('review-ThreadRead');
     const tool = { name: 'ThreadRead', description: 'review fixture', parameters: {}, resolveExecution: () => ({ output: '' }) };
@@ -163,6 +174,7 @@ describe('optional capability review follow-up', () => {
       { items: [{ id: toolId, options: { name: 'ThreadRead' } }], onDidChange: Event.None } as never,
     );
     await activation.activate();
+    expect(policy.admit('thread', { sessionId: 'hot-session', workspaceId: 'open', agentId: 'main' })).toEqual({ admitted: false, reason: 'default_off' });
     expect(registered.resolve('ThreadRead')).toBeUndefined();
     await policy.setChoice('hot-session', 'thread', 'on');
     expect(policy.admit('thread', { sessionId: 'hot-session', workspaceId: 'open', agentId: 'main' }).admitted).toBe(true);
@@ -193,8 +205,9 @@ describe('optional capability review follow-up', () => {
 
   it('keeps the executing agent on a peer send without accepting a forged public caller', async () => {
     const { values, origins, policy } = harness();
+    closeThreadByHomeDefault(values, origins);
     policy.retain('send-session', 'main', { workspaceId: 'open', agentKind: 'main', toolsSource: 'declared', declaredTools: ['ThreadSend'] });
-    const accepted: Array<{ producer: { source?: { agentId?: string; executingAgentId?: string } } }> = [];
+    const accepted: Array<{ producer: { kind?: string; source?: { agentId?: string; executingAgentId?: string } } }> = [];
     const threads = Object.assign(Object.create(ThreadCommunicationService.prototype), {
       hostId: 'review-host',
       capabilities: { ready: Promise.resolve() },
@@ -226,15 +239,25 @@ describe('optional capability review follow-up', () => {
     expect(accepted).toHaveLength(1);
     expect(accepted[0]?.producer.source).not.toHaveProperty('agentId');
     expect(accepted[0]?.producer.source).not.toHaveProperty('executingAgentId');
+    await threads.sendMessage({
+      target: { hostId: 'local', workspaceId: 'open', sessionId: 'target' },
+      content: 'public fixture',
+      idempotencyKey: 'public-key',
+      executingAgentId: 'main',
+      agentId: 'main',
+      source: { sessionId: 'send-session', agentId: 'main' },
+    } as never);
+    expect(accepted.at(-1)?.producer).toEqual({ kind: 'external_client' });
+    const delivered = accepted.length;
 
     await policy.setChoice('send-session', 'thread', 'off');
     await expect(execute()).rejects.toMatchObject({ code: 'thread.disabled' });
-    expect(accepted).toHaveLength(1);
+    expect(accepted).toHaveLength(delivered);
     await policy.setChoice('send-session', 'thread', 'inherit');
     origins[THREAD_COMMUNICATION_SECTION] = { enabled: 'home' };
     values[THREAD_COMMUNICATION_SECTION] = { enabled: false };
     await expect(execute()).rejects.toMatchObject({ code: 'thread.disabled' });
-    expect(accepted).toHaveLength(1);
+    expect(accepted).toHaveLength(delivered);
 
     delete origins[THREAD_COMMUNICATION_SECTION];
     delete values[THREAD_COMMUNICATION_SECTION];
@@ -245,7 +268,7 @@ describe('optional capability review follow-up', () => {
       idempotencyKey: 'forged-key',
       executingAgentId: 'main',
     } as never)).rejects.toMatchObject({ code: 'thread.disabled' });
-    expect(accepted).toHaveLength(1);
+    expect(accepted).toHaveLength(delivered);
     await policy.dispose();
   });
 
