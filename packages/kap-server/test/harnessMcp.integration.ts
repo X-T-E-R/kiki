@@ -535,7 +535,8 @@ it('launches advertised native agents from the public generic caller without a p
   const home = await mkdtemp(join(tmpdir(), 'native-agent-caller-'));
   const fixture = join(home, 'neutral-acp.mjs');
   const audit = join(home, 'launches.ndjson');
-  await writeFile(fixture, `import {agent,ndJsonStream,PROTOCOL_VERSION} from ${JSON.stringify(pathToFileURL(require.resolve('@agentclientprotocol/sdk')).href)};
+  const acpRequire = createRequire(new URL('../../acp-client/package.json', import.meta.url));
+  await writeFile(fixture, `import {agent,ndJsonStream,PROTOCOL_VERSION} from ${JSON.stringify(pathToFileURL(acpRequire.resolve('@agentclientprotocol/sdk')).href)};
 import {Readable,Writable} from 'node:stream'; import {appendFile} from 'node:fs/promises'; import {randomUUID} from 'node:crypto';
 const sessions=new Map(); const config=s=>[{id:'agent-choice',name:'Native agent',category:'native_agent',type:'select',currentValue:s.agent,options:[{value:'specialist',name:'Specialist'}]}];
 const conn=agent({name:'neutral-acp',version:'1'}).onRequest('initialize',()=>({protocolVersion:PROTOCOL_VERSION,agentCapabilities:{}}))
