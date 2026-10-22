@@ -109,6 +109,46 @@ test('fixture serves the GUI global facades through typed contracts and shared f
   } finally { await client.close(); await fixture.stop(); }
 });
 
+test('model fixture separates catalog projections and persists protocol overrides with stable revisions', async () => {
+  const fixture = await startFixtureServer({ port: 0, scenario: 'models-page' });
+  const endpoint = `http://127.0.0.1:${fixture.http.address().port}`;
+  const client = createKlient({ endpoint, token: FIXTURE_TOKEN, WebSocket });
+  const id = 'managed:github-copilot/gemini-2.5-pro';
+  const models = client.global.kosong;
+  try {
+    const methods = await client.global.auth.methods();
+    assert.equal(methods.find((method) => method.id === 'grok-build').connection_state, 'signed_out');
+    assert.equal(methods.find((method) => method.id === 'kimi-code').quota.unit, 'percent');
+    const listed = (await models.listModels()).find((item) => item.id === id);
+    assert.equal(listed.protocol, 'google-genai');
+    assert.equal(listed.issues, undefined);
+    assert.equal(listed.base_url, undefined);
+    const original = await models.readModel(id);
+    assert.equal(original.effective_protocol, 'google-genai');
+    assert.equal(original.protocol_source, 'model');
+    assert.equal(original.endpoint_source, 'model');
+    assert.equal(original.auth_env, 'OPENAI_API_KEY');
+    assert.equal(original.issues[0].code, 'model.override_routing_rejected');
+    const saved = await models.updateModel(id, { base_revision: original.revision, protocol: 'anthropic' });
+    const reopened = await models.readModel(id);
+    assert.equal(reopened.protocol, 'anthropic');
+    assert.equal(reopened.effective_protocol, 'anthropic');
+    assert.equal(reopened.revision, saved.revision);
+    assert.notEqual(reopened.revision, original.revision);
+    assert.equal(reopened.base_url, original.base_url);
+    assert.deepEqual(reopened.issues, original.issues);
+    const inherited = await models.updateModel(id, { base_revision: reopened.revision, protocol: null });
+    assert.equal(inherited.protocol, undefined);
+    assert.equal(inherited.effective_protocol, 'openai');
+    assert.equal(inherited.protocol_source, 'provider');
+    assert.equal((await models.readModel(id)).revision, inherited.revision);
+    await assert.rejects(models.updateModel(id, { base_revision: original.revision, protocol: 'google-genai' }), /revision_conflict/);
+    const restored = await models.updateModel(id, { base_revision: inherited.revision, protocol: 'google-genai' });
+    assert.equal(restored.revision, original.revision);
+    assert.equal((await models.listModels()).find((item) => item.id === id).effective_protocol, 'google-genai');
+  } finally { await client.close(); await fixture.stop(); }
+});
+
 test('shared terminal uses the existing FakeTerminal for replay, input, resize, exit and session isolation', async () => {
   const fixture = await startFixtureServer({ port: 0, scenario: 'terminal' });
   const endpoint = `http://127.0.0.1:${fixture.http.address().port}`;

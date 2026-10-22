@@ -52,6 +52,7 @@ const { agentEvents } = await tsImport('../../../packages/klient/src/contract/ag
 const busEvents = new Map(Object.values(globalEvents).filter((event) => event.kind === 'bus').map((event) => [event.type, event.schema]));
 const agentStreamEvents = new Map(Object.values(agentEvents).filter((event) => event.kind === 'stream').map((event) => [event.type, event.schema]));
 const terminalWire = await tsImport('../../../packages/protocol/src/ws-control.ts', import.meta.url);
+const { modelCatalogItemSchema } = await tsImport('../../../packages/protocol/src/modelCatalog.ts', import.meta.url);
 // The production bounded-content functions: a fixture that cuts a body must cut
 // it exactly the way kap-server does, and read segments back the same way.
 const bounded = await tsImport('../../../packages/kap-server/src/transport/klient/boundedContent.ts', import.meta.url);
@@ -342,11 +343,55 @@ function applyRecipeBinding(model, recipe, recipes) {
   };
 }
 
+const MODEL_PROTOCOLS = new Set(['anthropic', 'openai', 'openai_responses', 'google-genai']);
+const VENDOR_BASE_PROTOCOLS = {
+  kimi: 'openai',
+  vertexai: 'google-genai',
+};
+
+function explainFixtureModelProtocol(model, provider) {
+  if (typeof model?.protocol === 'string' && MODEL_PROTOCOLS.has(model.protocol)) {
+    return { effective_protocol: model.protocol, protocol_source: 'model' };
+  }
+  const providerType = provider?.type;
+  if (typeof providerType === 'string') {
+    if (MODEL_PROTOCOLS.has(providerType)) {
+      return { effective_protocol: providerType, protocol_source: 'provider' };
+    }
+    const vendorProtocol = VENDOR_BASE_PROTOCOLS[providerType];
+    if (vendorProtocol !== undefined) {
+      return { effective_protocol: vendorProtocol, protocol_source: 'vendor' };
+    }
+  }
+  if (typeof model?.effective_protocol === 'string' && MODEL_PROTOCOLS.has(model.effective_protocol)) {
+    return {
+      effective_protocol: model.effective_protocol,
+      protocol_source: typeof model.protocol_source === 'string' ? model.protocol_source : undefined,
+    };
+  }
+  return {};
+}
+
+function projectModelCatalogItem(model) {
+  return modelCatalogItemSchema.parse(model);
+}
+
 function revisionOf(value) {
   // Derived projections are the server's own answer rather than stored state, so
   // they must not move the revision: two reads of the same model have to produce
   // the same base_revision or every CAS would conflict with itself.
-  const { usage_effective: _effective, usage_sources: _sources, revision: _revision, ...stored } = value;
+  const {
+    usage_effective: _effective,
+    usage_sources: _sources,
+    effective_parameters: _effectiveParameters,
+    parameter_sources: _parameterSources,
+    cognition_bodies: _cognitionBodies,
+    effective_protocol: _effectiveProtocol,
+    protocol_source: _protocolSource,
+    issues: _issues,
+    revision: _revision,
+    ...stored
+  } = value;
   return revisionOfValue(stored);
 }
 
@@ -897,7 +942,7 @@ export class FixtureKlient {
         };
       }
       case 'modelResolver.listModels':
-        return modelItems();
+        return modelItems().map(projectModelCatalogItem);
       case 'modelResolver.listProviders':
         return providerItems();
       case 'modelResolver.getProvider': {
@@ -912,18 +957,20 @@ export class FixtureKlient {
         if (model === undefined) throw invalid('model.not_found', 40412);
         server.config.default_model = modelId;
         if (server.auth !== null) server.auth.default_model = modelId;
-        return { default_model: modelId, model };
+        return { default_model: modelId, model: projectModelCatalogItem(model) };
       }
       case 'modelCatalogMutation.readModel': {
         const [modelId] = args;
         const item = modelItems().find((entry) => entry.id === modelId);
         if (item === undefined) throw invalid('model.not_found', 40413);
+        const provider = providerItems().find((entry) => entry.id === item.provider_id);
         return {
           effective_parameters: {},
           parameter_sources: {},
           ...item,
+          ...explainFixtureModelProtocol(item, provider),
           max_input_size: item.max_input_size,
-          issues: [],
+          issues: item.issues ?? [],
           revision: revisionOf(item),
           provider_source: 'provider',
           cognition_bodies: projectCognitionBodies(item),
@@ -948,6 +995,12 @@ export class FixtureKlient {
           if (patch.auto_compact === null) delete next.auto_compact;
           else next.auto_compact = patch.auto_compact;
         }
+        if (patch.protocol !== undefined) {
+          if (patch.protocol === null) delete next.protocol;
+          else next.protocol = patch.protocol;
+          const provider = providerItems().find((entry) => entry.id === next.provider_id);
+          Object.assign(next, explainFixtureModelProtocol(next, provider));
+        }
         mergeUsagePolicy(next, patch.usage);
         applyPromptObjects(next, patch);
         applyRecipeBinding(next, patch.recipe, server.recipes);
@@ -958,13 +1011,24 @@ export class FixtureKlient {
         items[index] = next;
         server.models = items;
         server.modelsDeclared = true;
-        return { effective_parameters: {}, parameter_sources: {}, ...next, issues: [], revision: revisionOf(next), provider_source: 'provider', cognition_bodies: projectCognitionBodies(next) };
+        const provider = providerItems().find((entry) => entry.id === next.provider_id);
+        return {
+          effective_parameters: {},
+          parameter_sources: {},
+          ...next,
+          ...explainFixtureModelProtocol(next, provider),
+          issues: next.issues ?? [],
+          revision: revisionOf(next),
+          provider_source: 'provider',
+          cognition_bodies: projectCognitionBodies(next),
+        };
       }
       case 'modelCatalogMutation.createModel': {
         const [input] = args;
         const id = input.id ?? `${input.provider_id}/${input.remote_id}`;
         const items = modelItems();
         if (items.some((entry) => entry.id === id)) throw invalid('model.already_exists', 40942);
+        const provider = providerItems().find((entry) => entry.id === input.provider_id);
         const created = {
           id,
           provider_id: input.provider_id,
@@ -973,10 +1037,19 @@ export class FixtureKlient {
           max_context_size: input.max_context_size ?? 0,
           capabilities: input.capabilities,
           support_efforts: input.support_efforts,
+          protocol: input.protocol,
         };
+        Object.assign(created, explainFixtureModelProtocol(created, provider));
         server.models = [...items, created];
         server.modelsDeclared = true;
-        return { ...created, issues: [], revision: revisionOf(created), provider_source: 'provider' };
+        return {
+          effective_parameters: {},
+          parameter_sources: {},
+          ...created,
+          issues: [],
+          revision: revisionOf(created),
+          provider_source: 'provider',
+        };
       }
       case 'modelCatalogMutation.deleteModel': {
         const [modelId] = args;

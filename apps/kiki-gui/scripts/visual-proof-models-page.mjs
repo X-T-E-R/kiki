@@ -29,15 +29,15 @@ export function createModelsPageWalker({ page, shot, resizeViewport, setProofThe
     const { theme, width } = view;
     await open('/settings/ai?tab=providers', '[data-connections-empty]');
     await shot(name('empty-connections', theme, width));
-    await open('/settings/ai?tab=models', '[data-models-empty]');
+    await open('/settings/ai?tab=models', '#st-card-models [data-list-empty="none"]');
     await shot(name('empty-models', theme, width));
   }
 
   async function populated() {
     const { theme, width } = view;
     // Theme and width come from the job (registry `matrix`): one pass per context.
-    // Model list (default tab) — one default line, grouped by connection.
-    await open('/settings/ai', '[data-model-row]');
+    // Model list — one default line, grouped by connection.
+    await open('/settings/ai?tab=models', '[data-model-row]');
     const defaults = await page.locator('[data-model-row][data-default="true"]').count();
     if (defaults !== 1) throw new Error(`expected one default row, saw ${defaults}`);
     await shot(name('list', theme, width));
@@ -47,14 +47,78 @@ export function createModelsPageWalker({ page, shot, resizeViewport, setProofThe
     await page.waitForTimeout(200);
     await shot(name('search', theme, width));
     await page.fill(search, '');
-    // Detail: common fields first, Advanced collapsed.
+    // Detail 1: inherited protocol from provider (`openai`) with provider origins.
     await page.click('[data-model-row="managed:github-copilot/claude-sonnet-4.5"] button[aria-expanded]');
-    await page.waitForSelector('[data-model-row-editor="managed:github-copilot/claude-sonnet-4.5"] [data-model-context-fields]', { timeout: 10_000 });
-    await scrollTo('[data-model-row="managed:github-copilot/claude-sonnet-4.5"]');
+    const sonnetEditor = '[data-model-row-editor="managed:github-copilot/claude-sonnet-4.5"]';
+    await page.waitForSelector(`${sonnetEditor} [data-model-context-fields]`, { timeout: 10_000 });
+    await page.waitForSelector(`${sonnetEditor} [data-model-protocol-field="inherit"]`, { timeout: 5000 });
+    const sonnetEffective = (await page.locator(`${sonnetEditor} [data-effective-protocol]`).textContent())?.trim() ?? '';
+    if (!sonnetEffective.includes('Chat Completions')) {
+      throw new Error(`expected inherited Chat Completions effective protocol line, saw "${sonnetEffective}"`);
+    }
+    const expectedInheritedSub = locale === 'zh'
+      ? ['供应商类型', '端点 提供商', '凭据 提供商']
+      : ['provider type', 'endpoint provider', 'credential provider'];
+    for (const token of expectedInheritedSub) {
+      if (!sonnetEffective.includes(token)) {
+        throw new Error(`expected "${token}" in inherited effective line, saw "${sonnetEffective}"`);
+      }
+    }
+    await scrollTo(`${sonnetEditor} [data-model-protocol-field]`);
     await shot(name('detail', theme, width));
+    await page.click(`${sonnetEditor} [data-model-editor-tab="advanced"]`);
+    await page.waitForSelector('[data-advanced="model-managed:github-copilot/claude-sonnet-4.5"] > button', { timeout: 5000 });
     await page.click('[data-advanced="model-managed:github-copilot/claude-sonnet-4.5"] > button');
     await scrollTo('[data-advanced="model-managed:github-copilot/claude-sonnet-4.5"]');
     await shot(name('detail-advanced', theme, width));
+    await page.locator('[data-model-detail="managed:github-copilot/claude-sonnet-4.5"] header button').click();
+    await page.locator(sonnetEditor).waitFor({ state: 'detached' });
+
+    // Detail 2: model-level explicit protocol (`google-genai`) different from provider (`openai`),
+    // model endpoint + env credential (`OPENAI_API_KEY`) + override routing warning, plus interactive save.
+    await page.click('[data-model-row="managed:github-copilot/gemini-2.5-pro"] button[aria-expanded]');
+    const geminiEditor = '[data-model-row-editor="managed:github-copilot/gemini-2.5-pro"]';
+    await page.waitForSelector(`${geminiEditor} [data-model-protocol-field="google-genai"]`, { timeout: 10_000 });
+    const geminiEffective = (await page.locator(`${geminiEditor} [data-effective-protocol]`).textContent())?.trim() ?? '';
+    const expectedExplicitSub = locale === 'zh'
+      ? ['Google GenAI', '此模型', '端点 模型', '凭据 环境变量 (OPENAI_API_KEY)']
+      : ['Google GenAI', 'this model', 'endpoint model', 'credential env (OPENAI_API_KEY)'];
+    for (const token of expectedExplicitSub) {
+      if (!geminiEffective.includes(token)) {
+        throw new Error(`expected "${token}" in explicit effective line, saw "${geminiEffective}"`);
+      }
+    }
+    const geminiIssue = (await page.locator(`${geminiEditor} [role="status"]`).first().textContent())?.trim() ?? '';
+    if (!geminiIssue.includes('overrides:') || !geminiIssue.includes('base_url, protocol')) {
+      throw new Error(`expected override routing warning in gemini editor, saw "${geminiIssue}"`);
+    }
+    await scrollTo(`${geminiEditor} [data-model-protocol-field]`);
+    await shot(name('detail-protocol', theme, width));
+    const geminiPanel = '[data-model-detail="managed:github-copilot/gemini-2.5-pro"]';
+    const reopenGemini = async () => {
+      await page.locator(`${geminiPanel} header button`).click();
+      await page.locator(geminiEditor).waitFor({ state: 'detached' });
+      await page.click('[data-model-row="managed:github-copilot/gemini-2.5-pro"] button[aria-expanded]');
+    };
+    // Reopen after each save so the assertion observes stored state, not only a draft.
+    for (const protocol of ['anthropic', 'google-genai']) {
+      await page.click(`${geminiEditor} [data-model-protocol-field] [data-searchable-select] > button`);
+      await page.click(`[data-select-panel] [data-option-value="${protocol}"]`);
+      await page.waitForSelector(`${geminiEditor} [data-model-protocol-field="${protocol}"]`, { timeout: 5000 });
+      await page.locator(`${geminiEditor} [data-model-editor-actions] > button`).first().click();
+      await page.waitForSelector(`${geminiEditor} [data-saved-tick]`, { timeout: 5000 });
+      await reopenGemini();
+      await page.waitForSelector(`${geminiEditor} [data-model-protocol-field="${protocol}"]`, { timeout: 5000 });
+      const savedEffective = (await page.locator(`${geminiEditor} [data-effective-protocol]`).textContent())?.trim() ?? '';
+      const expectedFormat = protocol === 'anthropic' ? 'Messages' : 'Google GenAI';
+      if (!savedEffective.includes(expectedFormat)) {
+        throw new Error(`expected stored protocol ${expectedFormat}, saw "${savedEffective}"`);
+      }
+      await scrollTo(`${geminiEditor} [data-model-protocol-field]`);
+      await shot(name(`detail-saved-${protocol}`, theme, width));
+    }
+    await page.locator(`${geminiPanel} header button`).click();
+    await page.locator(geminiEditor).waitFor({ state: 'detached' });
 
     // Connections: four kinds, DeepSeek in error from its last test.
     await open('/settings/ai?tab=providers', '[data-connection-row]');
@@ -92,6 +156,8 @@ export function createModelsPageWalker({ page, shot, resizeViewport, setProofThe
     // New connection: API lane, then a protocol form, then the account lane.
     await page.click('[data-add-connection]');
     await page.waitForSelector('[data-connection-method-picker]', { timeout: 5000 });
+    await page.click('[data-connection-source-choice="manual"]');
+    await page.waitForSelector('[data-provider-protocol="openai"]', { timeout: 5000 });
     await scrollTo('#st-card-providers-add');
     await shot(name('add-api', theme, width));
     await page.click('[data-provider-protocol="openai"]');
