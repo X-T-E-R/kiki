@@ -46,7 +46,22 @@ protocol = "openai_responses"
 
 ## 请求压缩
 
-网关明确支持压缩请求体时，可在其供应商配置中设置 `request_compression`。此配置适用于 Responses、Messages 和 Chat Completions；其他协议保持原有传输路径。
+请求压缩在你配置之前保持关闭。`[request_compression]` 作用于每个没有单独设置的供应商。供应商表按字段覆盖，并继承未写的字段：省略的 `targets`、`min_bytes` 或 `dictionary` 保持系统表里的值。供应商一旦写下 `targets`，就按原顺序整体替换系统列表，不会把两份列表接在一起。不写供应商键则继承。供应商设置 `encoding = "off"` 时，即使系统表已开启，该供应商也不压缩。没有系统表时，只有本来就写了 `request_compression` 的供应商会压缩。
+
+```toml
+[request_compression]
+encoding = "zstd"
+targets = ["https://example.com/v1"]
+min_bytes = 1024
+dictionary = true
+
+[providers.gateway.request_compression]
+min_bytes = 0
+```
+
+上面的供应商仍使用 zstd、同一组目标地址和字典同意，只改了体积阈值。省略 `dictionary` 会保留系统选择。`dictionary = false` 表示该供应商拒绝留存。`dictionary` 只适用于 zstd。保存任一张表后，下一次模型请求即生效。`POST /api/config` 写入系统表。`GET /api/providers` 按已保存的内容返回供应商表，包括不完整字段、`encoding` 为 `"off"`，以及原来的 `targets` 顺序。
+
+网关明确支持压缩请求体时，此配置适用于 Responses、Messages 和 Chat Completions；其他协议保持原有传输路径。写下一个目标地址并不会跳过网关自己的压缩支持。
 
 ```toml
 [providers.gateway.request_compression]
@@ -55,7 +70,7 @@ targets = ["https://example.com/v1"]
 min_bytes = 1024
 ```
 
-`targets` 列出已支持压缩的 HTTP(S) API 基础地址，请求必须匹配来源和路径边界；把模型切到其他端点不会自动为新地址启用压缩。`min_bytes` 按 UTF-8 请求体字节计数，默认 1024。空请求体、小包、流式请求体、已有编码或非 JSON 请求体保持不变；只有压缩后更小才采用压缩结果。删除此表或设置 `encoding = "off"` 即可关闭。
+`targets` 列出已支持压缩的 HTTP(S) API 基础地址，请求必须匹配来源和路径边界；把模型切到其他端点不会自动为新地址启用压缩。`min_bytes` 按 UTF-8 请求体字节计数，默认 1024。空请求体、小包、流式请求体、已有编码或非 JSON 请求体保持不变；只有压缩后更小才采用压缩结果。删除供应商表即恢复继承；设置 `encoding = "off"` 则只关闭该供应商。删除系统表后，所有未单独设置的供应商不再压缩。
 
 使用普通 zstd 时，改为 `encoding = "zstd"`。gzip 和普通 zstd 都不会要求网关留存请求体。若网关还实现了 Portway 请求字典扩展，可单独明确同意临时留存请求体：
 
@@ -72,18 +87,23 @@ dictionary = true
 
 ## 通过 WebSocket 增量传输 Responses
 
+Responses WebSocket 在你配置之前保持关闭。`[responses_web_socket]` 作用于每个没有单独设置的供应商。供应商表整体替换系统值。供应商写下 `targets` 时，按原顺序替换系统列表，不会追加。不写供应商键则继承。`off = true` 让该供应商保持普通 HTTP，即使系统表列出了目标。没有系统表时，只有写了 `responses_web_socket` 的供应商会打开连接。保存任一张表后，下一次模型请求即生效，并关闭已打开的连接。
+
 网关在握手中通过 `X-Responses-WebSocket-Capabilities` 声明支持版本 1 时，可明确启用连接内的 Responses 历史复用：
 
 ```toml
+[responses_web_socket]
+targets = ["https://example.com/v1"]
+
 [providers.gateway]
 type = "openai_responses"
 base_url = "https://example.com/v1"
 
-[providers.gateway.responses_web_socket]
-targets = ["https://example.com/v1"]
+[providers.other.responses_web_socket]
+off = true
 ```
 
-目标必须匹配 Responses 端点的来源和路径边界。Kiki 使用官方 OpenAI SDK，每个 Agent 各持一个连接；上次已完成响应仍匹配本地历史时，只发送新增输入。辅助请求、其他 Agent 和 fork 不共享这条历史。取消请求会关闭连接；模型、凭据、策略或上下文变化时，会重建连接或发送完整请求。删除 `responses_web_socket` 即可保持普通 HTTP 请求。
+目标必须匹配 Responses 端点的来源和路径边界。写下一个目标地址并不会跳过握手。Kiki 使用官方 OpenAI SDK，每个 Agent 各持一个连接；上次已完成响应仍匹配本地历史时，只发送新增输入。辅助请求、其他 Agent 和 fork 不共享这条历史。取消请求会关闭连接；模型、凭据、策略或上下文变化时，会重建连接或发送完整请求。删除供应商表即恢复继承；设置 `off = true` 则该供应商保持普通 HTTP。删除系统表后，所有未单独设置的供应商保持普通 HTTP。
 
 网关会在连接上临时保存原生请求和响应项。与 HTTP 请求字典不同，这些状态随生成完成提交，不由字典确认推进。未知输出字段保留在内存中的附属状态里，后续发送完整请求，不用于增量请求。
 

@@ -15,7 +15,7 @@ import { agentExecutorOverridesFromToml, agentExecutorOverridesToToml } from '@k
 import { agentExecutorsToToml } from '@kiki/agent-core-v2/app/agentExecutor/configSection';
 import { MODEL_SWITCH_SECTION, modelSwitchPreferencesToToml } from '@kiki/agent-core-v2/app/modelSwitchPreferences/configSection';
 import { modelGenerationMigrationApplyRequestSchema, modelGenerationMigrationApplyResponseSchema, modelGenerationMigrationPreviewSchema, modelGenerationMigrationRestoreRequestSchema, modelGenerationMigrationRestoreResponseSchema } from '@kiki/protocol';
-import { REQUEST_IDENTITY_SECTION } from '@kiki/agent-core-v2/app/kosongConfig/configSection';
+import { REQUEST_COMPRESSION_SECTION, REQUEST_IDENTITY_SECTION, RESPONSES_WEB_SOCKET_SECTION } from '@kiki/agent-core-v2/app/kosongConfig/configSection';
 import { IRequestIdentityCatalog } from '@kiki/agent-core-v2/app/requestIdentity/requestIdentityCatalog';
 import { providerCredentialFields } from '@kiki/agent-core-v2/kosong/model/catalog';
 import type { ProviderConfig } from '@kiki/agent-core-v2/kosong/provider/provider';
@@ -41,6 +41,16 @@ import {
   type NbSearchConfig,
   type NbSearchSourceConfig,
 } from '@kiki/agent-core-v2/app/nbSearch/configSection';
+import {
+  requestCompressionFromWire,
+  requestCompressionToWire,
+  RequestCompressionSystemSchema,
+  responsesWebSocketFromWire,
+  responsesWebSocketToWire,
+  ResponsesWebSocketSystemSchema,
+  type RequestCompressionLayer,
+  type ResponsesWebSocketLayer,
+} from '@kiki/agent-core-v2/kosong/provider/requestCompression';
 import {
   requestIdentityFromWire,
   requestIdentityToWire,
@@ -116,15 +126,25 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
         const config = core.accessor.get(IConfigService);
         await config.ready;
         const requestIdentity = req.body.request_identity;
+        const requestCompression = req.body.request_compression;
+        const responsesWebSocket = req.body.responses_web_socket;
         const camelPatch = convertKeysSnakeToCamel(req.body) as Record<string, unknown>;
         const replaceDomains = new Set(
           ((camelPatch['replaceDomains'] as string[] | undefined) ?? []).map(snakeToCamel),
         );
         delete camelPatch['replaceDomains'];
         delete camelPatch[REQUEST_IDENTITY_SECTION];
+        delete camelPatch[REQUEST_COMPRESSION_SECTION];
+        delete camelPatch[RESPONSES_WEB_SOCKET_SECTION];
         if (requestIdentity !== undefined && requestIdentity !== null) {
           await core.accessor.get(IRequestIdentityCatalog).ready;
           resolveRequestIdentityLayers(requestIdentityFromWire(requestIdentity));
+        }
+        if (requestCompression !== undefined && requestCompression !== null) {
+          RequestCompressionSystemSchema.parse(requestCompressionFromWire(requestCompression));
+        }
+        if (responsesWebSocket !== undefined && responsesWebSocket !== null) {
+          ResponsesWebSocketSystemSchema.parse(responsesWebSocketFromWire(responsesWebSocket));
         }
         const subagent = camelPatch[SUBAGENT_SECTION];
         const requestedModels = [
@@ -235,6 +255,20 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
           await config.replace(
             REQUEST_IDENTITY_SECTION,
             requestIdentity === null ? null : requestIdentityFromWire(requestIdentity),
+            ConfigTarget.User,
+          );
+        }
+        if (requestCompression !== undefined) {
+          await config.replace(
+            REQUEST_COMPRESSION_SECTION,
+            requestCompression === null ? null : requestCompressionFromWire(requestCompression),
+            ConfigTarget.User,
+          );
+        }
+        if (responsesWebSocket !== undefined) {
+          await config.replace(
+            RESPONSES_WEB_SOCKET_SECTION,
+            responsesWebSocket === null ? null : responsesWebSocketFromWire(responsesWebSocket),
             ConfigTarget.User,
           );
         }
@@ -442,6 +476,10 @@ function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigSer
       wire['model_switch'] = modelSwitchPreferencesToToml(value, {});
     } else if (domain === REQUEST_IDENTITY_SECTION) {
       wire['request_identity'] = requestIdentityToWire(value as RequestIdentityPolicy);
+    } else if (domain === REQUEST_COMPRESSION_SECTION) {
+      wire['request_compression'] = requestCompressionToWire(value as RequestCompressionLayer);
+    } else if (domain === RESPONSES_WEB_SOCKET_SECTION) {
+      wire['responses_web_socket'] = responsesWebSocketToWire(value as ResponsesWebSocketLayer);
     } else if (domain === 'permission' && isPlainObject(value)) {
       const publicValue = splitConfigCredentials({ [domain]: value }).config[domain];
       if (isPlainObject(publicValue)) {

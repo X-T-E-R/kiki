@@ -1011,6 +1011,69 @@ describe('ModelCatalog caching and config-event invalidation', () => {
       await host.dispose();
     }
   });
+
+  it('applies system transport defaults until a provider overrides them and drops the cache on change', async () => {
+    const gateway = { type: 'openai', apiKey: 'sk-gateway', baseUrl: 'https://gateway.example.test/v1' };
+    const { host, catalog, providers } = createHost({
+      providers: { gateway, plain: { type: 'openai', apiKey: 'sk-plain', baseUrl: 'https://plain.example.test/v1' } },
+      models: {
+        chat: { provider: 'gateway', model: 'remote-chat', maxContextSize: 8192, protocol: 'openai' },
+        messages: { provider: 'gateway', model: 'remote-messages', maxContextSize: 8192, protocol: 'anthropic' },
+        responses: { provider: 'gateway', model: 'remote-responses', maxContextSize: 8192, protocol: 'openai_responses' },
+        plain: { provider: 'plain', model: 'remote-plain', maxContextSize: 8192, protocol: 'openai' },
+      },
+    });
+    const systemCompression = {
+      encoding: 'zstd' as const,
+      targets: ['https://gateway.example.test/v1'],
+      minBytes: 2048,
+      dictionary: true,
+    };
+    const systemSocket = { targets: ['https://gateway.example.test/v1'] };
+    try {
+      expect(catalog.get('chat').requestCompression).toBeUndefined();
+      expect(catalog.get('responses').responsesWebSocket).toBeUndefined();
+      const before = catalog.get('chat');
+      providers.setTransportDefaults({ requestCompression: systemCompression, responsesWebSocket: systemSocket });
+      const inherited = catalog.get('chat');
+      expect(inherited).not.toBe(before);
+      expect(inherited.requestCompression).toEqual(systemCompression);
+      expect(catalog.get('messages').requestCompression).toEqual(systemCompression);
+      expect(catalog.get('responses')).toMatchObject({
+        requestCompression: systemCompression,
+        responsesWebSocket: systemSocket,
+      });
+      expect(catalog.get('plain').requestCompression).toEqual(systemCompression);
+
+      await providers.set('gateway', { ...gateway, requestCompression: { minBytes: 0 }, responsesWebSocket: { off: true } });
+      expect(catalog.get('chat').requestCompression).toEqual({ ...systemCompression, minBytes: 0 });
+      expect(catalog.get('responses').responsesWebSocket).toBeUndefined();
+      expect(catalog.get('plain').responsesWebSocket).toEqual(systemSocket);
+
+      await providers.set('gateway', { ...gateway, requestCompression: { encoding: 'off' } });
+      expect(catalog.get('chat').requestCompression).toEqual({ encoding: 'off' });
+      expect(catalog.get('plain').requestCompression).toEqual(systemCompression);
+
+      await providers.set('gateway', gateway);
+      expect(catalog.get('chat').requestCompression).toEqual(systemCompression);
+      expect(catalog.get('responses').responsesWebSocket).toEqual(systemSocket);
+
+      const stable = catalog.get('chat');
+      providers.setTransportDefaults({
+        requestCompression: structuredClone(systemCompression),
+        responsesWebSocket: structuredClone(systemSocket),
+      });
+      expect(catalog.get('chat')).toBe(stable);
+
+      providers.setTransportDefaults({});
+      expect(catalog.get('chat').requestCompression).toBeUndefined();
+      expect(catalog.get('responses').responsesWebSocket).toBeUndefined();
+      providers.setTransportDefaults({ requestCompression: { minBytes: 0 } });
+      expect(() => catalog.get('chat')).toThrowError(expect.objectContaining({ code: 'config.invalid' }));
+    } finally {
+      await host.dispose();
+    }
+  });
 });
 
 describe('headers merge order', () => {

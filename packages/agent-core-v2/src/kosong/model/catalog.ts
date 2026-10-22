@@ -17,6 +17,12 @@ import {
   type ResolvedImagePolicy,
 } from '../provider/providerImagePolicy';
 import {
+  requestCompressionToWire,
+  responsesWebSocketToWire,
+  RequestCompressionWireSchema,
+  ResponsesWebSocketWireSchema,
+} from '../provider/requestCompression';
+import {
   RequestIdentityPolicyWireSchema,
   requestIdentityToWire,
 } from '../requestIdentity/requestIdentityPolicy';
@@ -138,6 +144,8 @@ export const providerCatalogItemSchema = z.object({
   default_model: z.string().min(1).optional(),
   defaults: generationParametersSchema.optional(),
   request_identity: RequestIdentityPolicyWireSchema.optional(),
+  request_compression: RequestCompressionWireSchema.optional(),
+  responses_web_socket: ResponsesWebSocketWireSchema.optional(),
   images: imagePolicyWireSchema.optional(),
   api_key: z.string().min(1).optional(),
   api_key_env: z.string().min(1).optional(),
@@ -292,6 +300,8 @@ export function toProtocolProvider(
     default_model: defaultModel,
     defaults: parametersToWire(provider.defaults),
     request_identity: requestIdentityToWire(provider.requestIdentity),
+    request_compression: requestCompressionToWire(provider.requestCompression),
+    responses_web_socket: responsesWebSocketToWire(provider.responsesWebSocket),
     images: imagePolicyToWire(provider.images),
     api_key_env: key.api_key_env,
     has_api_key: credential.hasApiKey,

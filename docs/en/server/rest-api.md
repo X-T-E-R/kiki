@@ -146,6 +146,8 @@ The response uses schema version `1` with independent sources and meters. Each m
 | `GET /api/config` | Read the global config (secret fields redacted) |
 | `POST /api/config` | Merge-patch the config; broadcasts `event.config.changed` |
 
+`request_compression` and `responses_web_socket` are system sections on both calls. Omit a section to leave it unchanged. JSON `null` removes it. A compression object needs `encoding` and `targets`, with optional `min_bytes` and `dictionary`, or `encoding` set to `"off"` and no other fields. `dictionary` applies only to `zstd`. A WebSocket object needs `targets`, or `off: true` and no targets. An incomplete object is rejected and the saved file stays unchanged.
+
 Session-title prompt reads, read-only defaults and field-level save/delete patches are documented under [`session_title`](../configuration/config-files.md#session-title).
 
 The `hooks` value accepts a legacy command-rule array or a declarative object with `schemaVersion: 2`. Both reads and saves retain the complete value, including `rules`, `legacy`, `enabled`, `disabled`, and `files`. Nested JSON keys use camelCase (`textFile`, `agentRoles`, `everyCompletedSteps`, `counterScope`, `partitionBy`); TOML uses snake_case. Send the complete hooks array or object when editing it; omit `hooks` to leave it unchanged, or send `[]` to clear it. `null` and unsupported rule shapes return validation code `40001` without changing the saved file. Reading or saving configuration does not execute hook commands. See [Hooks](../customization/hooks.md) for supported events and actions.
@@ -165,6 +167,8 @@ The `hooks` value accepts a legacy command-rule array or a declarative object wi
 | `POST /api/providers` | Create a provider (201) |
 | `GET /api/providers/{provider_id}` | Read a provider (reveals the stored key) |
 | `PATCH /api/providers/{provider_id}` | Change only the supplied provider fields |
+
+`GET /api/providers` and `GET /api/providers/{provider_id}` include `request_compression` and `responses_web_socket` when that provider saved them. A partial compression object, `encoding: "off"`, `off: true`, and the saved `targets` order come back as stored. The read does not fill those fields from the system section. `POST /api/providers` and `PATCH /api/providers/{provider_id}` accept the same objects. JSON `null` on PATCH clears that provider field. Omitted fields stay unchanged.
 | `DELETE /api/providers/{provider_id}` | Delete a provider (204) |
 | `POST /api/providers/{provider_id}:refresh` | Refresh one provider's model metadata |
 | `POST /api/providers:{action}` | Collection actions: `refresh` / `refresh_oauth` / `import_catalog` / `import_registry` |

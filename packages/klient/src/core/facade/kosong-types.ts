@@ -9,6 +9,10 @@ import type { Message, StreamedMessagePart } from '@kiki/agent-core-v2/kosong/co
 import type { Tool } from '@kiki/agent-core-v2/kosong/contract/tool';
 import type { TokenUsage } from '@kiki/agent-core-v2/kosong/contract/usage';
 import type { ResponseFormat } from '@kiki/agent-core-v2/kosong/contract/provider';
+import type {
+  RequestCompressionLayer,
+  ResponsesWebSocketLayer,
+} from '@kiki/agent-core-v2/kosong/provider/requestCompression';
 import type { RequestIdentityPolicy as CoreRequestIdentityPolicy } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
 
 export type RequestIdentityPolicy = CoreRequestIdentityPolicy;
@@ -33,6 +37,8 @@ export interface ProviderInput {
   auth: ProviderAuth;
   defaultModel?: string;
   requestIdentity?: RequestIdentityPolicy;
+  requestCompression?: RequestCompressionLayer;
+  responsesWebSocket?: ResponsesWebSocketLayer;
 }
 
 /**

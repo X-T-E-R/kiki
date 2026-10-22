@@ -46,7 +46,22 @@ The [model REST API](../server/rest-api.md#models-and-providers) reports the sav
 
 ## Request compression
 
-For a gateway that explicitly supports compressed request bodies, configure `request_compression` on its provider. This applies to Responses, Messages, and Chat Completions; other protocols keep their existing transport.
+Request compression stays off until you configure it. `[request_compression]` applies to every provider that does not set its own table. A provider table replaces individual fields and inherits the rest: an omitted `targets` list, `min_bytes`, or `dictionary` stays as the system set it. `targets`, when set, replaces the system list in order; Kiki does not add the two lists together. Leave the provider key unset to inherit. `encoding = "off"` on a provider turns compression off for that provider even when the system table turns it on. With no system table, only providers that already set `request_compression` compress.
+
+```toml
+[request_compression]
+encoding = "zstd"
+targets = ["https://example.com/v1"]
+min_bytes = 1024
+dictionary = true
+
+[providers.gateway.request_compression]
+min_bytes = 0
+```
+
+The provider above keeps zstd, the same targets, and dictionary consent, and changes only the size threshold. Omit `dictionary` to keep the system choice. `dictionary = false` refuses retention for that provider. `dictionary` applies only to zstd. Saving either table applies on the next model request. `POST /api/config` writes the system table. `GET /api/providers` returns a provider table as saved, including a partial table, `encoding` set to `"off"`, and the original `targets` order.
+
+For a gateway that explicitly supports compressed request bodies, this applies to Responses, Messages, and Chat Completions; other protocols keep their existing transport. A saved target does not skip the gateway's own compression support.
 
 ```toml
 [providers.gateway.request_compression]
@@ -55,7 +70,7 @@ targets = ["https://example.com/v1"]
 min_bytes = 1024
 ```
 
-`targets` lists supported HTTP(S) API base URLs. A request must match the origin and path boundary; changing a model to another endpoint does not enable compression there. `min_bytes` counts UTF-8 body bytes and defaults to 1024. Empty, smaller, streaming, already encoded, and non-JSON bodies are left unchanged. Kiki uses the compressed body only when it is smaller. Remove this table or set `encoding = "off"` to disable compression.
+`targets` lists supported HTTP(S) API base URLs. A request must match the origin and path boundary; changing a model to another endpoint does not enable compression there. `min_bytes` counts UTF-8 body bytes and defaults to 1024. Empty, smaller, streaming, already encoded, and non-JSON bodies are left unchanged. Kiki uses the compressed body only when it is smaller. Remove the provider table to inherit again, or set `encoding = "off"` to disable compression for that provider. Remove the system table to leave every unset provider uncompressed.
 
 To use ordinary zstd instead, set `encoding = "zstd"`. Neither gzip nor ordinary zstd asks the gateway to retain request bodies. If the gateway also implements the Portway request-dictionary extension, you may explicitly consent to temporary body retention:
 
@@ -72,18 +87,23 @@ Only a marked, pre-execution decoding rejection permits an encoding fallback, wi
 
 ## Incremental Responses over WebSocket
 
+Responses WebSocket stays off until you configure it. `[responses_web_socket]` applies to every provider that does not set its own table. A provider table replaces that value as a whole. `targets`, when set on the provider, replaces the system list in order and is not added to it. Omit the provider key to inherit. `off = true` keeps that provider on ordinary HTTP even when the system table lists targets. With no system table, only providers that set `responses_web_socket` open a socket. Saving either table applies on the next model request and closes an open socket.
+
 For a gateway that advertises the version 1 `X-Responses-WebSocket-Capabilities` handshake, opt in to connection-local Responses history:
 
 ```toml
+[responses_web_socket]
+targets = ["https://example.com/v1"]
+
 [providers.gateway]
 type = "openai_responses"
 base_url = "https://example.com/v1"
 
-[providers.gateway.responses_web_socket]
-targets = ["https://example.com/v1"]
+[providers.other.responses_web_socket]
+off = true
 ```
 
-The target must match the origin and path boundary of the Responses endpoint. Kiki uses the official OpenAI SDK, keeps one socket per Agent, and sends only new input when the previous completed response still matches the local history. Helper requests, other Agents, and forks do not share that history. Canceling a request closes its socket; model, credentials, policy, and context changes reset the connection or send a full request. Remove `responses_web_socket` to keep ordinary HTTP requests.
+The target must match the origin and path boundary of the Responses endpoint. A saved target does not skip the handshake. Kiki uses the official OpenAI SDK, keeps one socket per Agent, and sends only new input when the previous completed response still matches the local history. Helper requests, other Agents, and forks do not share that history. Canceling a request closes its socket; model, credentials, policy, and context changes reset the connection or send a full request. Remove the provider table to inherit again, or set `off = true` to keep ordinary HTTP for that provider. Remove the system table to leave every unset provider on ordinary HTTP.
 
 The gateway temporarily retains native request and response items on the connection. Unlike HTTP request dictionaries, this state follows completed generation, not dictionary acknowledgements. Unknown output fields are retained in an in-memory sidecar and sent in full rather than used for an incremental request.
 

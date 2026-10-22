@@ -11,6 +11,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore, toDisposable } from '#/_base/di/lifecycle';
+import { Emitter } from '#/_base/event';
+import type { ConfigChangedEvent } from '#/app/config/config';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage } from '#/agent/contextMemory/types';
@@ -250,6 +252,8 @@ function createService(
     readonly systemPrompt?: () => string;
     readonly tools?: readonly ToolInfo[];
     readonly advertisedProfiles?: ReadonlyMap<string, { line: string; signature: string }>;
+    readonly sectionChanges?: Emitter<ConfigChangedEvent>;
+    readonly catalogReads?: { value: number };
   } = {},
 ) {
   const ix = disposables.add(new TestInstantiationService());
@@ -356,6 +360,7 @@ function createService(
       if (section === 'requestIdentity') return options.globalRequestIdentity?.value;
       return undefined;
     }) as IConfigService['get'],
+    onDidSectionChange: options.sectionChanges?.event,
   };
   const log = { info: () => undefined, warn: () => undefined };
   const telemetryRecords: TelemetryRecord[] = [];
@@ -465,7 +470,10 @@ function createService(
   ix.stub(IModelCatalog, {
     _serviceBrand: undefined,
     get: () => requester.model,
-    getRequester: () => requester,
+    getRequester: () => {
+      if (options.catalogReads !== undefined) options.catalogReads.value += 1;
+      return requester;
+    },
     findByName: () => [],
   });
   ix.stub(IModelService, {
@@ -595,6 +603,102 @@ describe('AgentLLMRequesterService Responses WebSocket lifecycle', () => {
     expect(firstCaptured[0]?.responsesTransport).toBeDefined();
     expect(secondCaptured[0]?.responsesTransport).toBeDefined();
     expect(firstCaptured[0]?.responsesTransport).not.toBe(secondCaptured[0]?.responsesTransport);
+  });
+
+  it('closes the Agent socket when system transport config changes', async () => {
+    const requester = createRequester({ value: 0 }, null, [], undefined, { protocol: 'openai_responses' });
+    Object.assign(requester.model, { responsesWebSocket: { targets: ['https://example.test'] } });
+    const captured = captureRequestParams(requester);
+    const dispose = vi.spyOn(ResponsesWebSocketTransport.prototype, 'dispose');
+    const sectionChanges = new Emitter<ConfigChangedEvent>();
+    const { service } = createService(requester, undefined, { sectionChanges });
+    const changed = { domain: 'prompt', source: 'set' as const, value: undefined, previousValue: undefined };
+    try {
+      await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+      const first = captured[0]?.responsesTransport;
+      sectionChanges.fire({ ...changed, domain: 'prompt' });
+      await service.request({ source: { type: 'turn', turnId: 1, step: 2 } });
+      expect(captured[1]?.responsesTransport).toBe(first);
+      sectionChanges.fire({ ...changed, domain: 'requestCompression' });
+      await service.request({ source: { type: 'turn', turnId: 1, step: 3 } });
+      expect(captured[2]?.responsesTransport).toBeDefined();
+      expect(captured[2]?.responsesTransport).not.toBe(first);
+      sectionChanges.fire({ ...changed, domain: 'responsesWebSocket' });
+      expect(dispose).toHaveBeenCalledTimes(2);
+    } finally {
+      sectionChanges.dispose();
+      await (service as unknown as { dispose(): void | Promise<void> }).dispose();
+      dispose.mockRestore();
+    }
+  });
+
+  it('keeps an in-flight request and uses the next effective transport after releasing the old socket', async () => {
+    const oldCompression = { encoding: 'gzip' as const, targets: ['https://old.example.test/v1'] };
+    const oldSocket = { targets: ['https://old.example.test/v1'] };
+    const nextCompression = { encoding: 'zstd' as const, targets: ['https://new.example.test/v1'], dictionary: false };
+    const nextSocket = { targets: ['https://new.example.test/v1'] };
+    let releaseFirst: () => void = () => undefined;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const calls = { value: 0 };
+    const seen: Array<{ compression: unknown; socket: unknown; transport: unknown }> = [];
+    const requester = createRequester({ value: 0 }, null, [], undefined, {
+      protocol: 'openai_responses',
+      requestCompression: oldCompression,
+      responsesWebSocket: oldSocket,
+    });
+    requester.request = async function* (_input, _signal, params) {
+      calls.value += 1;
+      const snapshot = {
+        compression: requester.model.requestCompression,
+        socket: requester.model.responsesWebSocket,
+        transport: params?.responsesTransport,
+      };
+      if (calls.value === 1) await firstGate;
+      seen.push(snapshot);
+      yield {
+        type: 'finish',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }], toolCalls: [] },
+        providerFinishReason: 'completed',
+        rawFinishReason: 'stop',
+        id: 'resp-1',
+      };
+    };
+    const dispose = vi.spyOn(ResponsesWebSocketTransport.prototype, 'dispose');
+    const sectionChanges = new Emitter<ConfigChangedEvent>();
+    const catalogReads = { value: 0 };
+    const { service } = createService(requester, undefined, { sectionChanges, catalogReads });
+    const changed = { domain: 'requestCompression', source: 'set' as const, value: undefined, previousValue: undefined };
+    try {
+      const pending = service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+      while (calls.value === 0) await new Promise((resolve) => setImmediate(resolve));
+      expect(calls.value).toBe(1);
+      const readsDuringFlight = catalogReads.value;
+      expect(readsDuringFlight).toBeGreaterThan(0);
+      sectionChanges.fire(changed);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(calls.value).toBe(1);
+      expect(catalogReads.value).toBe(readsDuringFlight);
+      expect(dispose).toHaveBeenCalledTimes(1);
+      Object.assign(requester.model, { requestCompression: nextCompression, responsesWebSocket: nextSocket });
+      releaseFirst();
+      await pending;
+      expect(seen[0]).toMatchObject({ compression: oldCompression, socket: oldSocket });
+      expect(seen[0]?.transport).toBeDefined();
+      await service.request({ source: { type: 'turn', turnId: 1, step: 2 } });
+      expect(calls.value).toBe(2);
+      expect(catalogReads.value).toBeGreaterThan(readsDuringFlight);
+      expect(seen[1]).toMatchObject({ compression: nextCompression, socket: nextSocket });
+      expect(seen[1]?.transport).toBeDefined();
+      expect(seen[1]?.transport).not.toBe(seen[0]?.transport);
+      expect(dispose.mock.calls.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      releaseFirst();
+      sectionChanges.dispose();
+      await (service as unknown as { dispose(): void | Promise<void> }).dispose();
+      dispose.mockRestore();
+    }
   });
 });
 

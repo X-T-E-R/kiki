@@ -438,7 +438,7 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         ...revisionConflictErrors,
       },
       description:
-        'Partially update one provider connection. The body never carries a model list: models are their own entities, so saving a connection field can no longer rebuild or drop them. `base_url`/`default_model`/`request_identity` accept `null` to clear; `api_key` is tri-state (omitted keeps the stored key, "" clears it, any other value replaces it). The path id is the identity — connections are not renamed in place. OAuth-managed providers may update base_url/default_model/request_identity only; type and credential changes are rejected. Answers 200 with `{provider, revision}`.',
+        'Partially update one provider connection. The body never carries a model list: models are their own entities, so saving a connection field can no longer rebuild or drop them. `base_url`/`default_model`/`request_identity`/`request_compression`/`responses_web_socket` accept `null` to clear; `api_key` is tri-state (omitted keeps the stored key, "" clears it, any other value replaces it). The path id is the identity — connections are not renamed in place. OAuth-managed providers may update base_url/default_model/request_identity/request_compression/responses_web_socket only; type and credential changes are rejected. Answers 200 with `{provider, revision}`.',
       tags: ['providers'],
       operationId: 'patchProvider',
     },

@@ -480,6 +480,55 @@ describe('server-v2 /api model/provider catalog', () => {
     expect(noKey.body.data).not.toHaveProperty('api_key');
   });
 
+  it('projects saved provider transport layers and clears them without filling system defaults', async () => {
+    const targets = ['https://b.example.test/v1', 'https://a.example.test/v1'];
+    await boot([
+      CATALOG_TOML,
+      '[providers.kimi.request_compression]',
+      'min_bytes = 0',
+      'targets = ["https://b.example.test/v1", "https://a.example.test/v1"]',
+      '',
+      '[providers.kimi.responses_web_socket]',
+      'targets = ["https://api.example.test/v1"]',
+      '',
+      '[providers.openai.request_compression]',
+      'encoding = "off"',
+      '',
+      '[providers.openai.responses_web_socket]',
+      'off = true',
+      '',
+    ].join('\n'));
+    const list = await getJson<{ items: Array<Record<string, unknown>> }>('/api/providers');
+    const kimi = list.body.data.items.find((item) => item['id'] === 'kimi');
+    const openai = list.body.data.items.find((item) => item['id'] === 'openai');
+    expect(kimi?.['request_compression']).toEqual({ min_bytes: 0, targets });
+    expect(kimi?.['responses_web_socket']).toEqual({ targets: ['https://api.example.test/v1'] });
+    expect(openai?.['request_compression']).toEqual({ encoding: 'off' });
+    expect(openai?.['responses_web_socket']).toEqual({ off: true });
+    const before = await getJson<Record<string, unknown>>('/api/providers/kimi');
+    const response = await fetch(`${base}/api/providers/kimi`, {
+      method: 'PATCH',
+      headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
+      body: JSON.stringify({ request_compression: null, base_revision: before.body.data['revision'] }),
+    } as never);
+    const cleared = (await response.json()) as Envelope<{ provider: Record<string, unknown> }>;
+    expect(cleared.code).toBe(0);
+    expect(cleared.data.provider).not.toHaveProperty('request_compression');
+    expect(cleared.data.provider['responses_web_socket']).toEqual({ targets: ['https://api.example.test/v1'] });
+    const afterClear = await getJson<Record<string, unknown>>('/api/providers/kimi');
+    expect(afterClear.body.data).not.toHaveProperty('request_compression');
+    expect(afterClear.body.data['responses_web_socket']).toEqual({ targets: ['https://api.example.test/v1'] });
+    const replaced = await fetch(`${base}/api/providers/openai`, {
+      method: 'PATCH',
+      headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
+      body: JSON.stringify({ request_compression: { min_bytes: 0, targets } }),
+    } as never);
+    const partial = (await replaced.json()) as Envelope<{ provider: Record<string, unknown> }>;
+    expect(partial.code).toBe(0);
+    expect(partial.data.provider['request_compression']).toEqual({ min_bytes: 0, targets });
+    expect(partial.data.provider['responses_web_socket']).toEqual({ off: true });
+  });
+
   it('returns only the declared environment variable name for env-backed provider keys', async () => {
     await boot([
       '[providers.kimi]',

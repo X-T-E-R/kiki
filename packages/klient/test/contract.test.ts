@@ -416,6 +416,18 @@ describe('request identity contract validation', () => {
     expect(providerConfigSchema.parse({ requestIdentity: camel })).toEqual({
       requestIdentity: camel,
     });
+    const compression = { minBytes: 0, targets: ['https://b.example.test/v1', 'https://a.example.test/v1'] };
+    const socket = { off: true as const };
+    expect(configSetInputSchema.safeParse(['requestCompression', { encoding: 'zstd', targets: ['https://example.test/v1'] }]).success).toBe(true);
+    expect(configReplaceInputSchema.safeParse(['requestCompression', undefined]).success).toBe(true);
+    expect(configReplaceInputSchema.safeParse(['responsesWebSocket', null]).success).toBe(true);
+    expect(configSetInputSchema.safeParse(['requestCompression', { minBytes: 0 }]).success).toBe(false);
+    expect(configSetInputSchema.safeParse(['responsesWebSocket', {}]).success).toBe(false);
+    expect(configReplaceSectionsInputSchema.safeParse([{ responsesWebSocket: { targets: ['https://example.test/v1'] } }]).success).toBe(true);
+    expect(providerConfigSchema.parse({ requestCompression: compression, responsesWebSocket: socket })).toEqual({
+      requestCompression: compression,
+      responsesWebSocket: socket,
+    });
     expect(modelConfigSchema.parse({ requestIdentity: camel })).toEqual({
       requestIdentity: camel,
     });
