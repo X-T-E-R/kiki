@@ -120,11 +120,16 @@ export async function readRegisteredEgoPath(processes: IHostProcessService, env:
   return parts.length === 0 ? undefined : parts.join(egoPathDelimiter(platform));
 }
 
-export async function readEgoUninstallRecords(processes: IHostProcessService, platform = process.platform): Promise<readonly EgoUninstallRecord[]> {
-  if (platform !== 'win32') return [];
+const EGO_UNINSTALL_KEYS = [
+  'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+  'HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+  'HKLM\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+] as const;
+
+async function readUninstallHive(processes: IHostProcessService, key: string): Promise<readonly EgoUninstallRecord[]> {
   let child: IHostProcess | undefined;
   try {
-    child = await processes.spawn('reg.exe', ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall', '/s'], { shell: false, windowsHide: true });
+    child = await processes.spawn('reg.exe', ['query', key, '/s'], { shell: false, windowsHide: true });
     (child.stdin as { end?: () => void } | undefined)?.end?.();
     const [code, stdout] = await Promise.all([child.wait(), readStream(child.stdout)]);
     if (code !== 0) return [];
@@ -134,4 +139,16 @@ export async function readEgoUninstallRecords(processes: IHostProcessService, pl
   } finally {
     await child?.dispose();
   }
+}
+
+export async function readEgoUninstallRecords(processes: IHostProcessService, platform = process.platform): Promise<readonly EgoUninstallRecord[]> {
+  if (platform !== 'win32') return [];
+  const records: EgoUninstallRecord[] = [];
+  for (const key of EGO_UNINSTALL_KEYS) {
+    for (const record of await readUninstallHive(processes, key)) {
+      const known = records.some((item) => item.displayName === record.displayName && item.installLocation === record.installLocation && item.displayVersion === record.displayVersion);
+      if (!known) records.push(record);
+    }
+  }
+  return records;
 }

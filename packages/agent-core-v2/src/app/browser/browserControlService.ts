@@ -15,7 +15,7 @@ import type { BrowserRequestContext } from './codexBrowser';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService } from '#/os/interface/hostProcess';
 import { EgoBrowserRuntime, egoTabBody, egoUserOutput } from './ego/runtime';
-import { EGO_LITE_CONNECTION_ID } from './ego/resolveCli';
+import { EGO_LITE_CONNECTION_ID, type EgoCliResolution } from './ego/resolveCli';
 
 interface LiveBrowser {
   connection: BrowserResolvedConnection;
@@ -85,6 +85,8 @@ export async function admitEgoAfterAllow(
   }
 }
 
+const UNCONFIRMED_RECHECK_MS = 10_000;
+
 export function browserToolGroup(name: string): string {
   if (/network|har|headers|credentials|offline/.test(name)) return 'network';
   if (/cookies|storage|state_/.test(name)) return 'state';
@@ -98,6 +100,8 @@ export class BrowserControlService implements IBrowserControlService {
   declare readonly _serviceBrand: undefined;
   private readonly connections = new Map<string, LiveBrowser>();
   private readonly ego: EgoBrowserRuntime;
+  private egoFound: Promise<EgoCliResolution> | undefined;
+  private egoFoundAt = 0;
   constructor(
     @IBrowserConnectionStore private readonly store: IBrowserConnectionStore,
     @IBrowserBackendFactory private readonly factory: IBrowserBackendFactory,
@@ -114,6 +118,56 @@ export class BrowserControlService implements IBrowserControlService {
       defaultBrowser: configured.defaultBrowser,
       ...(configured.allowedBrowsers !== undefined ? { allowedBrowsers: configured.allowedBrowsers } : {}),
       ...(configured.disabledSources !== undefined ? { disabledSources: configured.disabledSources } : {}) };
+  }
+
+  async discover() {
+    const listed = await this.store.list();
+    if (listed.disabledSources?.includes('ego-lite') === true) return [];
+    if (listed.connections.some((item) => item.id === EGO_LITE_CONNECTION_ID || item.type === 'ego-lite')) return [];
+    const resolution = await this.egoResolution();
+    if (resolution.kind !== 'found') return [];
+    const status: BrowserStatus = { browser: EGO_LITE_CONNECTION_ID, state: 'idle', executionHost: hostname(), generation: 0, ownership: 'external-browser' };
+    return [{ id: EGO_LITE_CONNECTION_ID, type: 'ego-lite' as const, name: 'Ego Lite', enabled: true, cliPath: resolution.path, status }];
+  }
+
+  async probeDiscovered(connect: boolean, signal?: AbortSignal): Promise<BrowserStatus> {
+    const listed = await this.store.list();
+    if (listed.disabledSources?.includes('ego-lite') === true) {
+      throw new BrowserError('browser.disabled', 'This browser source is disabled', { details: { reason: 'connection_disabled' } });
+    }
+    if (!this.flags.enabled(NATIVE_BROWSER_FLAG_ID)) {
+      throw new BrowserError('browser.disabled', 'Browser control is disabled', { details: { reason: 'feature_disabled' } });
+    }
+    const saved = listed.connections.find((item) => item.id === EGO_LITE_CONNECTION_ID && item.type === 'ego-lite');
+    if (saved !== undefined) return connect ? this.connect(EGO_LITE_CONNECTION_ID, signal) : this.check(EGO_LITE_CONNECTION_ID, signal);
+    signal?.throwIfAborted();
+    const resolution = await this.egoResolution(true);
+    const checkedAt = new Date().toISOString();
+    if (resolution.kind !== 'found') {
+      return { browser: EGO_LITE_CONNECTION_ID, state: 'requires_action', executionHost: hostname(), generation: 0, ownership: 'external-browser', checkedAt,
+        failure: { code: 'browser.requires_action' }, error: resolution.kind === 'choose' ? 'Choose one Ego Lite CLI path' : 'Ego Lite is not installed' };
+    }
+    const draft = { id: EGO_LITE_CONNECTION_ID, type: 'ego-lite' as const, name: 'Ego Lite', enabled: true, cliPath: resolution.path };
+    const probed = await this.ego.probe(draft, signal);
+    if (probed.kind !== 'ready') {
+      const onboarding = probed.kind === 'onboarding';
+      return { browser: EGO_LITE_CONNECTION_ID, state: 'requires_action', executionHost: hostname(), generation: 0, ownership: 'external-browser', checkedAt: new Date().toISOString(),
+        failure: { code: 'browser.requires_action' }, error: onboarding ? 'Please complete the onboarding process first' : 'Ego Lite is not ready' };
+    }
+    if (!connect) {
+      return { browser: EGO_LITE_CONNECTION_ID, state: 'idle', executionHost: hostname(), generation: 0, ownership: 'external-browser', checkedAt: new Date().toISOString() };
+    }
+    await this.upsert(EGO_LITE_CONNECTION_ID, { type: 'ego-lite', name: 'Ego Lite', enabled: true, cliPath: resolution.path });
+    this.egoFound = undefined;
+    return this.egoProbe(EGO_LITE_CONNECTION_ID, signal, true);
+  }
+
+  private egoResolution(refresh = false): Promise<EgoCliResolution> {
+    if (refresh || this.egoFound === undefined || Date.now() - this.egoFoundAt > 30_000) {
+      this.egoFoundAt = Date.now();
+      this.egoFound = this.ego.resolve(undefined).then((value) => value, () => ({ kind: 'missing' as const }));
+    }
+    return this.egoFound;
   }
 
   async upsert(id: string, input: BrowserConnectionInput) {
@@ -143,7 +197,7 @@ export class BrowserControlService implements IBrowserControlService {
     if ((await this.store.resolve(id)).type === 'ego-lite') return this.egoProbe(id, signal, false);
     const live = await this.live(id);
     return this.enqueue(live, async () => {
-      if (live.status.state === 'unconfirmed') return this.confirmStopped(live);
+      if (live.status.state === 'unconfirmed') return this.recheckUnconfirmed(live, signal);
       await this.assertAdmission(live);
       try {
         const backend = await this.backend(live);
@@ -496,26 +550,100 @@ export class BrowserControlService implements IBrowserControlService {
     return { ...live.status };
   }
 
+  private daemonStopped(info: { readonly success?: boolean; readonly data?: Record<string, unknown> }, oldPid: number | undefined): boolean {
+    const data = info.data;
+    let oldPidAlive = oldPid !== undefined;
+    if (oldPid !== undefined) {
+      try { process.kill(oldPid, 0); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') oldPidAlive = false; }
+    }
+    return info.success === true && data?.['active'] === false && data['pid'] === null && data['runtime'] === null && !oldPidAlive;
+  }
+
   private async confirmStopped(live: LiveBrowser): Promise<BrowserStatus> {
     if (live.backend === undefined) return { ...live.status };
     if (live.backend.official !== undefined) return this.closeOfficial(live);
     const info = browserResponse(await this.call(live, 'agent_browser_session_info', {}));
-    const data = info.data;
-    let oldPidAlive = live.oldPid !== undefined;
-    if (live.oldPid !== undefined) {
-      try { process.kill(live.oldPid, 0); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') oldPidAlive = false; }
-    }
-    if (info.success === true && data?.['active'] === false && data['pid'] === null && data['runtime'] === null && !oldPidAlive) {
-      await live.backend.close();
-      live.backend = undefined;
-      live.tools = undefined;
-      live.captures = undefined;
-      live.target = undefined;
-      live.observation = undefined;
-      live.status = { ...live.status, state: 'disconnected', generation: live.status.generation + 1, error: undefined, failure: undefined, checkedAt: new Date().toISOString() };
-    }
+    if (this.daemonStopped(info, live.oldPid)) await this.markDaemonStopped(live);
     return { ...live.status };
+  }
+
+  private async markDaemonStopped(live: LiveBrowser): Promise<void> {
+    await live.backend?.close();
+    live.backend = undefined;
+    live.tools = undefined;
+    live.captures = undefined;
+    live.target = undefined;
+    live.observation = undefined;
+    live.status = { ...live.status, state: 'disconnected', generation: live.status.generation + 1, error: undefined, failure: undefined, checkedAt: new Date().toISOString() };
+  }
+
+  private limit<T>(work: Promise<T>, ms: number, signal?: AbortSignal): Promise<T | 'timeout'> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let timer: NodeJS.Timeout | undefined;
+      const onAbort = (): void => finish(() => reject(signal?.reason ?? new Error('The browser check was cancelled')));
+      const finish = (settle: () => void): void => {
+        if (settled) return;
+        settled = true;
+        if (timer !== undefined) clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+        settle();
+      };
+      timer = setTimeout(() => finish(() => resolve('timeout')), ms);
+      timer.unref?.();
+      if (signal?.aborted === true) { onAbort(); return; }
+      signal?.addEventListener('abort', onAbort, { once: true });
+      work.then((value) => finish(() => resolve(value)), (error: unknown) => finish(() => reject(error)));
+    });
+  }
+
+  private async executionVerdict(live: LiveBrowser, signal: AbortSignal | undefined, gate: { open: boolean }): Promise<'stopped' | 'alive'> {
+    if (live.backend === undefined) {
+      if (gate.open) live.status = { ...live.status, state: 'disconnected', generation: live.status.generation + 1, error: undefined, failure: undefined, checkedAt: new Date().toISOString() };
+      return 'stopped';
+    }
+    if (live.backend.official !== undefined) {
+      await live.backend.official.tabs(undefined, signal);
+      return 'alive';
+    }
+    const info = browserResponse(await this.call(live, 'agent_browser_session_info', {}, signal));
+    if (this.daemonStopped(info, live.oldPid)) {
+      if (gate.open) await this.markDaemonStopped(live);
+      return 'stopped';
+    }
+    if (info.success === true && info.data?.['active'] === true) return 'alive';
+    throw new BrowserError('browser.execution_failed', 'Browser check did not confirm the execution state');
+  }
+
+  private async recheckUnconfirmed(live: LiveBrowser, signal?: AbortSignal): Promise<BrowserStatus> {
+    signal?.throwIfAborted();
+    const gate = { open: true };
+    try {
+      const verdict = await this.limit(this.executionVerdict(live, signal, gate), UNCONFIRMED_RECHECK_MS, signal);
+      gate.open = false;
+      if (verdict === 'timeout') {
+        live.status = { ...live.status, state: 'unconfirmed', currentCall: undefined, checkedAt: new Date().toISOString(),
+          failure: { code: 'browser.execution_failed', reason: 'outcome_unknown' },
+          error: 'The browser check timed out. The previous command was not replayed and the browser was left running.' };
+        return { ...live.status };
+      }
+      if (verdict === 'stopped') return { ...live.status };
+      live.observation = undefined;
+      live.target = undefined;
+      live.admitting = false;
+      live.status = { ...live.status, state: 'idle', generation: live.status.generation + 1, currentCall: undefined, checkedAt: new Date().toISOString(),
+        failure: { code: 'browser.execution_failed', reason: 'outcome_unknown' },
+        error: 'The browser is still running. The timed-out command was not replayed. Connect again and select the tab before the next action.' };
+      return { ...live.status };
+    } catch (error) {
+      gate.open = false;
+      if (signal?.aborted === true) throw error;
+      live.status = { ...live.status, state: 'unconfirmed', currentCall: undefined, checkedAt: new Date().toISOString(),
+        failure: { code: 'browser.execution_failed', reason: 'outcome_unknown' },
+        error: 'The browser check did not confirm the execution state. The previous command was not replayed and the browser was left running.' };
+      return { ...live.status };
+    }
   }
 
   private async egoProbe(id: string, signal: AbortSignal | undefined, connect: boolean): Promise<BrowserStatus> {

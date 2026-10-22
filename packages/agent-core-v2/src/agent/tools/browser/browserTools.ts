@@ -36,6 +36,7 @@ import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IConfigService } from '#/app/config/config';
 import { NATIVE_BROWSER_FLAG_ID } from '#/app/browser/flag';
+import { EGO_LITE_CONNECTION_ID } from '#/app/browser/ego/resolveCli';
 import { resolveRealPathAccess, resolveRealPathAccessPath, type WorkspaceConfig } from '#/tool/path-access';
 import { ToolAccesses, type AgentTool, type ExecutableToolContext, type ExecutableToolResult, type ToolExecution, type ToolFileAccess } from '#/tool/toolContract';
 import type { Runtime } from '#/runtime/runtime';
@@ -193,7 +194,16 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
   async connections(input: BrowserConnectionsInput, signal?: AbortSignal, ctx?: ExecutableToolContext): Promise<ExecutableToolResult> {
     try {
       signal?.throwIfAborted();
-      if (input.action === 'list') return this.json({ ...(await this.control.list()), selectedBrowser: this.selected });
+      if (input.action === 'list') {
+        const listed = await this.control.list();
+        const discovered = await this.control.discover();
+        const seen = new Set(listed.connections.map((item) => item.id));
+        return this.json({ ...listed, connections: [...listed.connections, ...discovered.filter((item) => !seen.has(item.id))], selectedBrowser: this.selected });
+      }
+      if (input.browser === EGO_LITE_CONNECTION_ID && (input.action === 'check' || input.action === 'connect' || input.action === 'select' || input.action === 'status')) {
+        const discovered = await this.unsavedEgo(input.action, signal);
+        if (discovered !== undefined) return discovered;
+      }
       const browser = await this.choose(input.browser, input.action === 'status' || input.action === 'disconnect' || input.action === 'tools' ? 'read' : 'operate');
       signal?.throwIfAborted();
       if (input.action === 'select') return this.json({ selectedBrowser: browser, status: await this.control.status(browser), selectedTab: this.selections.get(browser) });
@@ -300,6 +310,25 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
       }, signal);
       return await this.output(result, ctx);
     } catch (error) { return this.error(error); }
+  }
+
+  private async unsavedEgo(action: BrowserConnectionsInput['action'], signal?: AbortSignal): Promise<ExecutableToolResult | undefined> {
+    try {
+      await this.store.resolve(EGO_LITE_CONNECTION_ID);
+      return undefined;
+    } catch (error) {
+      if (!(error instanceof BrowserError) || error.code !== 'browser.not_found') throw error;
+    }
+    if (action === 'status') {
+      const found = await this.control.discover();
+      const row = found.find((item) => item.id === EGO_LITE_CONNECTION_ID);
+      if (row === undefined) throw new BrowserError('browser.not_found', `Unknown browser connection "${EGO_LITE_CONNECTION_ID}"`);
+      return this.json({ ...row.status, selectedBrowser: this.selected });
+    }
+    if (action === 'check') return this.json(await this.control.probeDiscovered(false, signal));
+    const status = await this.control.probeDiscovered(true, signal);
+    if (status.state === 'ready') this.selected = EGO_LITE_CONNECTION_ID;
+    return this.json({ ...status, selectedBrowser: this.selected });
   }
 
   private async choose(explicit: string | undefined, intent: 'read' | 'operate'): Promise<string> {
@@ -494,7 +523,7 @@ export const IBrowserConnectionsTool = createDecorator<IBrowserConnectionsTool>(
 export class BrowserConnectionsTool implements IBrowserConnectionsTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'BrowserConnections';
-  readonly description = 'Discover saved browser connections, explicitly select/connect one, inspect its real execution state, or disconnect it. Loading groups/tools exposes the donor\'s typed deep-control operations on demand, without loading the entire catalog. Omitted browser uses only this agent\'s selected connection or the new-session default; never a guessed ready browser.';
+  readonly description = 'Discover saved browser connections and an installed Ego Lite CLI. Check, select, or connect one explicitly, inspect its real execution state, or disconnect it. A check does not replay a timed-out command or stop the browser. Loading groups/tools exposes the donor\'s typed deep-control operations on demand, without loading the entire catalog. Omitted browser uses only this agent\'s selected connection or the new-session default; never a guessed ready browser.';
   readonly parameters = toInputJsonSchema(BrowserConnectionsInputSchema);
   constructor(@IAgentBrowserService private readonly browser: IAgentBrowserService) {}
   resolveExecution(input: BrowserConnectionsInput): ToolExecution {
@@ -534,7 +563,8 @@ registerAgentToolService(IBrowserEgoRunTool, BrowserEgoRunTool, { name: 'browser
 function browserEgoCapabilityWhen(accessor: ServicesAccessor): boolean {
   if (!browserCapabilityWhen(accessor)) return false;
   const config = present(accessor, IConfigService)?.get<BrowserConfig>(BROWSER_CONFIG_SECTION);
-  return config?.disabledSources?.includes('ego-lite') !== true;
+  const connection = config?.connections?.[EGO_LITE_CONNECTION_ID];
+  return connection?.type === 'ego-lite' && connection.enabled && config?.disabledSources?.includes('ego-lite') !== true;
 }
 
 function browserCapabilityWhen(accessor: ServicesAccessor): boolean {

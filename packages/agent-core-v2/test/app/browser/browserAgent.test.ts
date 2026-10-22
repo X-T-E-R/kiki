@@ -264,6 +264,7 @@ describe('native browser agent selection, schema and local file channel', () => 
       catalog: async () => catalog, status: async () => ({ browser: 'bridge', state: 'ready' as const, executionHost: 'fixture-host', generation: 1 }),
       tabs: async () => [{ tabId: '7', targetId: '7' }], invoke, endTurn: async () => undefined, connect,
       list: async () => ({ connections: [{ ...bridge, id: 'bridge', status: { browser: 'bridge', state: 'idle' as const, executionHost: 'fixture-host', generation: 0 } }] }),
+      discover: async () => [],
     });
     ix.set(IAgentBrowserService, new SyncDescriptor(AgentBrowserService));
     try {
@@ -348,6 +349,7 @@ describe('native browser agent selection, schema and local file channel', () => 
       tabs: async () => [{ tabId: '7', targetId: '7' }],
       invoke, endTurn: async () => undefined, connect: async (id: string) => ({ browser: id, state: 'ready' as const, executionHost: 'fixture-host', generation: 1 }),
       list: async () => ({ connections: connections.map((item) => ({ ...item, status: { browser: item.id, state: 'idle' as const, executionHost: 'fixture-host', generation: 0 } })), allowedBrowsers: allowed }),
+      discover: async () => [],
     });
     ix.set(IAgentBrowserService, new SyncDescriptor(AgentBrowserService));
     try {

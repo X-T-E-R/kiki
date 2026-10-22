@@ -10,6 +10,7 @@ import { IBrowserControlService } from '#/app/browser/browser';
 import { BrowserControlService } from '#/app/browser/browserControlService';
 import { IBrowserBackendFactory } from '#/app/browser/browserBackend';
 import { browserConnectionRecord, type BrowserResolvedConnection } from '#/app/browser/browserConfig';
+import { BrowserError } from '#/app/browser/errors';
 import type { BrowserRequestContext } from '#/app/browser/codexBrowser';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService } from '#/os/interface/hostProcess';
@@ -326,6 +327,60 @@ describe('Ego Lite control', () => {
       expect(browserConnectionRecord(configs.get('ego-lite')!)).toEqual({ id: 'ego-lite', name: 'Ego Lite', enabled: true, type: 'ego-lite', cliPath: exe, profileId: undefined, serverName: undefined });
       expect(browserConnectionRecord(configs.get('ego-lite')!)).not.toHaveProperty('endpointDisplay');
     } finally { await ix.dispose(); }
+  });
+});
+
+describe('Ego Lite discovered connection admission', () => {
+  it('lists and checks an installed CLI, then saves only on explicit selection without changing default or allow state', async () => {
+    const previousPath = process.env['PATH'];
+    process.env['PATH'] = join(root, '0.6.0.16');
+    const { fs } = memoryFs([versioned]);
+    const configs = new Map<string, BrowserResolvedConnection>([
+      ['other', { id: 'other', type: 'agent-browser-profile', name: 'Other', enabled: true }],
+    ]);
+    let native = true;
+    const setDefault = vi.fn(async () => undefined);
+    const upsert = vi.fn(async (id: string, input: Parameters<IBrowserConnectionStore['upsert']>[1]) => {
+      if (input.type !== 'ego-lite') throw new Error('fixture only admits Ego Lite');
+      const record: Extract<BrowserResolvedConnection, { type: 'ego-lite' }> = { ...input, id };
+      configs.set(id, record);
+      return browserConnectionRecord(record);
+    });
+    const proc = scripted((_command, args) => args.includes('nodejs') ? { code: 0, stdout: 'kiki-ego-ready\n' } : { code: 0, stdout: '' });
+    const ix = new TestInstantiationService();
+    ix.stub(IFlagService, { enabled: () => native });
+    ix.stub(IHostProcessService, proc.service);
+    ix.stub(IHostFileSystem, fs);
+    ix.stub(IBrowserBackendFactory, { open: vi.fn(async () => { throw new Error('managed backend must not open'); }) });
+    ix.stub(IBrowserConnectionStore, {
+      list: async () => ({ connections: [...configs.values()].map(({ id, name, type, enabled }) => ({ id, name, type, enabled })), defaultBrowser: 'other' }),
+      resolve: async (id: string) => {
+        const found = configs.get(id);
+        if (found === undefined) throw new BrowserError('browser.not_found', `Unknown browser connection "${id}"`);
+        return found;
+      },
+      upsert, remove: async (id: string) => { configs.delete(id); }, setDefault, revealEndpoint: async () => undefined,
+    });
+    ix.set(IBrowserControlService, new SyncDescriptor(BrowserControlService));
+    const control = ix.get(IBrowserControlService);
+    try {
+      expect(await control.discover()).toEqual([expect.objectContaining({ id: 'ego-lite', type: 'ego-lite', cliPath: versioned, status: expect.objectContaining({ state: 'idle' }) })]);
+      expect(await control.probeDiscovered(false)).toMatchObject({ browser: 'ego-lite', state: 'idle' });
+      expect(configs.has('ego-lite')).toBe(false);
+      native = false;
+      await expect(control.probeDiscovered(true)).rejects.toMatchObject({ code: 'browser.disabled', details: { reason: 'feature_disabled' } });
+      expect(upsert).not.toHaveBeenCalled();
+      native = true;
+      expect(await control.probeDiscovered(true)).toMatchObject({ browser: 'ego-lite', state: 'ready' });
+      expect(upsert).toHaveBeenCalledWith('ego-lite', expect.objectContaining({ type: 'ego-lite', cliPath: versioned }));
+      expect(setDefault).not.toHaveBeenCalled();
+      expect((await control.list()).defaultBrowser).toBe('other');
+      expect((await control.list()).allowedBrowsers).toBeUndefined();
+    } finally {
+      await ix.dispose();
+      if (previousPath === undefined) delete process.env['PATH'];
+      else process.env['PATH'] = previousPath;
+    }
   });
 });
 

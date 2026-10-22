@@ -282,6 +282,36 @@ describe('browser connection execution ownership', () => {
     } finally { await f.ix.dispose(); }
   });
 
+  it('keeps an unknown outcome after a timed-out state check without replaying the action', async () => {
+    const f = fixture();
+    let release: (() => void) | undefined;
+    let hanging = true;
+    vi.useFakeTimers();
+    try {
+      await f.control.connect('a');
+      f.handlers.set('a:agent_browser_click', async () => { throw new Error('response lost after dispatch'); });
+      await expect(f.control.invoke({ browser: 'a', caller, tool: 'agent_browser_click', args: {}, tab: 'a-tab' })).rejects.toThrow('response lost');
+      f.handlers.set('a:agent_browser_session_info', async () => {
+        if (hanging) return new Promise<MCPToolResult>((resolve) => { release = () => resolve(response({ active: true, pid: null, runtime: null })); });
+        return response({ active: false, pid: null, runtime: null });
+      });
+      const checking = f.control.check('a');
+      for (let turn = 0; turn < 8 && release === undefined; turn++) await Promise.resolve();
+      expect(release).toBeTypeOf('function');
+      await vi.advanceTimersByTimeAsync(10_000);
+      await expect(checking).resolves.toMatchObject({ state: 'unconfirmed', failure: { reason: 'outcome_unknown' } });
+      expect(f.calls.filter((call) => call.name === 'agent_browser_click')).toHaveLength(1);
+      hanging = false;
+      release?.();
+      await vi.waitFor(() => expect(f.calls.filter((call) => call.name === 'agent_browser_session_info')).toHaveLength(2));
+    } finally {
+      hanging = false;
+      release?.();
+      vi.useRealTimers();
+      await f.ix.dispose();
+    }
+  });
+
   it('rejects references from another agent, frame, or an overwritten snapshot before dispatch', async () => {
     const f = fixture();
     try {

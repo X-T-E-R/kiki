@@ -55,6 +55,10 @@ export interface BrowserInvocationResult {
 export interface IBrowserControlService {
   readonly _serviceBrand: undefined;
   list(): Promise<{ readonly connections: readonly (BrowserConnectionRecord & { readonly status: BrowserStatus })[]; readonly defaultBrowser?: string; readonly allowedBrowsers?: readonly string[]; readonly disabledSources?: readonly BrowserSourceId[] }>;
+  /** Installed Ego Lite that is not saved yet. Does not launch the CLI or change config. */
+  discover(): Promise<readonly (BrowserConnectionRecord & { readonly status: BrowserStatus })[]>;
+  /** Check or connect the discovered Ego Lite CLI. Connect saves that one connection and leaves default, allowlist, and other sources unchanged. */
+  probeDiscovered(connect: boolean, signal?: AbortSignal): Promise<BrowserStatus>;
   upsert(id: string, input: BrowserConnectionInput): Promise<BrowserConnectionRecord>;
   remove(id: string): Promise<void>;
   status(id: string): Promise<BrowserStatus>;
