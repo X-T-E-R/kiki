@@ -25,6 +25,7 @@ import { IWorkspaceService } from '#/app/workspace/workspace';
 import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import '#/agent/tools/todo-list/todoListTool';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { IConfigService } from '#/app/config/config';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
@@ -57,6 +58,31 @@ class DirectoryMemoryStorage extends InMemoryStorageService {
     return [...new Set([...await super.list(scope, prefix), ...nested.filter((key) => prefix === undefined || key.startsWith(prefix))])];
   }
 }
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function installReadableCapabilityOrigins(ctx: TestAgentContext): void {
+  const config = ctx.get(IConfigService);
+  if (typeof config.origins === 'function') return;
+  const origins = (domain: string): Record<string, 'memory'> => {
+    let value: unknown;
+    try { value = config.get(domain); } catch { return {}; }
+    const result: Record<string, 'memory'> = {};
+    const visit = (entry: unknown, path: string[]): void => {
+      if (isRecord(entry) && Object.keys(entry).length > 0) {
+        for (const [key, child] of Object.entries(entry)) visit(child, [...path, key]);
+        return;
+      }
+      if (path.length === 0) return;
+      result[path.join('.')] = 'memory';
+    };
+    visit(value, []);
+    return result;
+  };
+  Object.defineProperty(config, 'origins', { configurable: true, value: origins });
+}
+
 function memoryAgent(storage?: IFileSystemStorageService, agentId = 'main'): TestAgentContext {
   const willCreate = new Emitter<IAgentScopeHandle>();
   const didCreate = new Emitter<IAgentScopeHandle>();
@@ -74,6 +100,7 @@ function memoryAgent(storage?: IFileSystemStorageService, agentId = 'main'): Tes
     agentService(IAgentScopeContext, { _serviceBrand: undefined, agentId, scope: (key) => `sessions/test-workspace/test-session/agents/${agentId}${key ? `/${key}` : ''}` }),
     appService(IFileSystemStorageService, storage ?? new DirectoryMemoryStorage()),
     { autoConfigure: storage === undefined, initialConfig: { [MEMORY_SECTION]: MemoryConfigSchema.parse({}), [LOOP_CONTROL_SECTION]: LoopControlSchema.parse({}) } });
+  installReadableCapabilityOrigins(ctx);
   contexts.push(ctx);
   handle = { id: agentId, kind: 'agent', accessor: { get: (id) => ctx.get(id) }, dispose: () => {} };
   ctx.get(ISessionTodoService);

@@ -18,6 +18,7 @@ import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { SessionMetadata } from '#/session/sessionMetadata/sessionMetadataService';
 import { ISessionStateService } from '#/session/state/sessionState';
 import { SessionStateService } from '#/session/state/sessionStateService';
+import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { AgentLifecycleService } from '#/session/agentLifecycle/agentLifecycleService';
 import { LocalRuntime } from '#/runtime/localRuntime';
@@ -91,9 +92,16 @@ it('discloses local directory instructions for main and a lifecycle-created chil
       expect.soft(instruction).toBeDefined();
       expect.soft(JSON.stringify(instruction) ?? '').toContain('Nested instructions');
       expect.soft(JSON.stringify(instruction) ?? '').toContain('Host: local');
+      expect.soft(JSON.stringify(instruction) ?? '').not.toContain('Host: ssh:');
+      expect.soft(JSON.stringify(messages)).not.toContain('SSH tools can target a configured remote host');
       expect.soft(providerError).not.toHaveBeenCalledWith('context provider failed; skipping it', expect.objectContaining({ name: 'agents_md' }));
       expect(service.inspect()).toBe(runtime);
-      expect.soft(flagRead).not.toHaveBeenCalledWith('native_ssh');
+      expect(service.inspect().identity.runtimeId).toBe('local');
+      expect(flags.enabled('native_ssh')).toBe(false);
+      const readTool = accessor.get(IAgentToolRegistryService).resolve('Read');
+      const properties = (readTool?.parameters as { properties?: Record<string, unknown> } | undefined)?.properties ?? {};
+      expect(properties).not.toHaveProperty('host');
+      expect(accessor.get(IAgentToolRegistryService).list().some((tool) => tool.name.toLowerCase().includes('ssh'))).toBe(false);
       providerError.mockRestore();
     }
     expect(acquisitions.mock.calls.every(([binding]) => binding.runtimeId === 'local')).toBe(true);
