@@ -149,7 +149,7 @@ Thread communication is allowed and off by default. A user setting of `[thread_c
 
 ## Subcommands
 
-`kiki` provides the following subcommands: `serve` (start, reuse, or stop the shared daemon), `seat` (manage external-caller seats), `mcp` (run the stdio MCP edge), `doctor` (diagnose the daemon connection), `prompt-fields` (discover and validate prompt fields), `login` (non-interactive OAuth login), `acp` (ACP IDE mode), `web` (the compatible foreground REST/WebSocket/web service), `export` (export a session), and `provider` (manage providers).
+`kiki` provides the following subcommands: `serve` (start, reuse, or stop the shared daemon), `seat` (manage external-caller seats), `mcp` (run the stdio MCP edge), `doctor` (diagnose the daemon connection), `prompt-fields` (discover and validate prompt fields), `login` (non-interactive OAuth login), `acp` (ACP IDE mode), `web` (the compatible foreground REST/WebSocket/web service), `session` (inspect or seal a persisted session without resuming it), `export` (export a session), and `provider` (manage providers).
 
 ### `kiki serve`
 
@@ -424,6 +424,31 @@ Multiple instances can run concurrently under the same home: each registers itse
 #### `kiki web rotate-token`
 
 Replace the persistent remote owner token in `<home>/server.token`. The old token becomes invalid and affected peer streams stop; running instances observe the change without restarting. This does not rotate the private local-owner capability in `server.local-owner`. Remote sources must update their credentials before reconnecting.
+
+### `kiki session`
+
+Inspect or seal one persisted session without resuming it. `show` prints that session's timeline and agent tree. `list` (alias `ls`) lists persisted sessions in the local home.
+
+`seal` stores a sealed copy of each agent journal in the session. Later reads of a sealed journal use that copy, while the original `wire.jsonl` stays on disk at its current size, so the command does not reduce the original file's disk use. The extra sealed data can increase the space the home uses. `unseal` removes the seal. The original file is not modified, and later reads use that file again.
+
+```sh
+kiki session seal session_01HZ...XYZ
+kiki session unseal session_01HZ...XYZ --json
+```
+
+| Argument / option | Description |
+| --- | --- |
+| `<session>` | Session link, `session_<uuid>`, or bare UUID |
+| `--json` | Print stable machine-readable JSON |
+| `--workspace <workspace-id>` | Select one copy when that session id exists in more than one workspace |
+
+A session held by another Kiki process is refused. The command exits with an error and leaves the journal unchanged. With `--json`, the error code is `session_active`.
+
+If a sealed journal is already being read, `seal` and `unseal` wait until that read finishes or the reading process exits. They do not remove the sealed copy while the read is open.
+
+A damaged seal fails the read with `Cold journal cannot be read` (`storage.corrupted`). Kiki does not silently switch that read to the raw file. `unseal` still removes the seal and leaves the original file unchanged, so later reads use the file again.
+
+On success, the text reports how many journals were sealed or unsealed and that the original wire file stays on disk. `--json` prints `schemaVersion`, `action` (`seal` or `unseal`), `sessionId`, `workspaceId`, `wires`, and `originalRetained` set to `true`.
 
 ### `kiki export`
 

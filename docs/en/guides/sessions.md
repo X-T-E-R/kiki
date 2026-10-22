@@ -24,6 +24,8 @@ Sessions are saved under `$KIKI_HOME/sessions/` (default: `~/.kiki/sessions/`), 
 - `state.json`: session metadata such as title and creation time.
 - `agents/*/wire.jsonl`: the agent event stream, used for session recovery and replay. It also carries a request trace — the tool definitions, request parameters, and MCP tool listings sent to the model — for debugging.
 
+[`kiki session seal`](../reference/command.md#kiki-session) keeps each `wire.jsonl` and does not shrink it. An active session is refused. A read that is already open waits. A damaged seal fails instead of quietly using the raw file, and [`kiki session unseal`](../reference/command.md#kiki-session) removes the seal so later reads use the original file again.
+
 ::: warning
 Do not manually edit files inside the `sessions/` directory — doing so may prevent sessions from being restored correctly.
 :::

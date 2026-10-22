@@ -89,7 +89,7 @@ Inside each session directory:
 
 - **`state.json`**: session metadata including title, `lastPrompt`, creation/update timestamps, and `forkedFrom`.
 - **`upcoming-goals.json`**: the TUI-only queue created by `/goal next <objective>`. It is not part of the agent conversation until a queued goal is promoted after the current goal completes.
-- **`agents/main/wire.jsonl`**: the main Agent's complete communication record, used for session resumption and replay.
+- **`agents/main/wire.jsonl`**: the main Agent's complete communication record, used for session resumption and replay. [`kiki session seal`](../reference/command.md#kiki-session) leaves this file in place, so its size does not drop; [`kiki session unseal`](../reference/command.md#kiki-session) removes the seal without modifying the file.
 - **`agents/main/plans/`**: plan files written in Plan mode, named by plan id (`<id>.md`).
 - **`agents/agent-0/` etc.**: sub-Agent instance directories, each containing their own `wire.jsonl`.
 - **`logs/kimi-code.log`**: diagnostic log for this session; only present when a diagnostic event occurs.

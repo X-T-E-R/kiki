@@ -149,7 +149,7 @@ Thread communication 允许使用，并且默认关闭。用户把 `[thread_comm
 
 ## 子命令
 
-`kiki` 提供以下子命令：`serve`（启动、复用或停止共享 daemon）、`seat`（管理外部调用方席位）、`mcp`（运行 stdio MCP 边）、`doctor`（诊断 daemon 连接）、`prompt-fields`（发现与校验提示词字段）、`login`（非交互式 OAuth 登录）、`acp`（ACP IDE 模式）、`web`（兼容的前台 REST/WebSocket/web 服务）、`export`（导出会话）和 `provider`（管理供应商）。
+`kiki` 提供以下子命令：`serve`（启动、复用或停止共享 daemon）、`seat`（管理外部调用方席位）、`mcp`（运行 stdio MCP 边）、`doctor`（诊断 daemon 连接）、`prompt-fields`（发现与校验提示词字段）、`login`（非交互式 OAuth 登录）、`acp`（ACP IDE 模式）、`web`（兼容的前台 REST/WebSocket/web 服务）、`session`（不恢复会话，直接查看或封存已保存的会话）、`export`（导出会话）和 `provider`（管理供应商）。
 
 ### `kiki serve`
 
@@ -424,6 +424,31 @@ kiki web --port 58628    # 指定绑定端口
 #### `kiki web rotate-token`
 
 替换 `<home>/server.token` 中持久化的远端 owner token。旧 token 失效，受影响的 peer 流停止；运行中的实例无需重启即可发现变化。这不会轮换 `server.local-owner` 中的私有本地管理凭据。远端源须更新凭据后才能重新连接。
+
+### `kiki session`
+
+不恢复会话，直接查看或封存一个已保存的会话。`show` 打印该会话的时间线和 Agent 树。`list`（别名 `ls`）列出本机 home 里已保存的会话。
+
+`seal` 为会话里每个 Agent journal 保存一份封存副本。封存之后的读取使用这份副本，原来的 `wire.jsonl` 仍留在磁盘上，大小不变，所以这条命令不会减少原文件占用。额外的封存数据可能让 home 占用变大。`unseal` 去掉封存。原文件不会被修改，之后的读取重新使用该文件。
+
+```sh
+kiki session seal session_01HZ...XYZ
+kiki session unseal session_01HZ...XYZ --json
+```
+
+| 参数 / 选项 | 说明 |
+| --- | --- |
+| `<session>` | 会话链接、`session_<uuid>` 或纯 UUID |
+| `--json` | 打印稳定的机器可读 JSON |
+| `--workspace <workspace-id>` | 同一个会话 id 出现在多个工作区时，指定其中一份 |
+
+另一个 Kiki 进程正占用该会话时，命令拒绝执行，journal 保持原样。使用 `--json` 时，错误码是 `session_active`。
+
+如果封存后的 journal 已经在被读取，`seal` 和 `unseal` 会等到这次读取结束，或读取它的进程退出。读取还开着时，不会删掉封存副本。
+
+封存损坏时，读取失败并报告 `Cold journal cannot be read`（`storage.corrupted`）。Kiki 不会悄悄改去读原始文件。`unseal` 仍然去掉封存，并保持原文件不变，之后的读取重新使用该文件。
+
+成功时，文本会说明封存或解除了几个 journal，以及原始 wire 文件仍留在磁盘上。`--json` 打印 `schemaVersion`、`action`（`seal` 或 `unseal`）、`sessionId`、`workspaceId`、`wires`，以及值为 `true` 的 `originalRetained`。
 
 ### `kiki export`
 
