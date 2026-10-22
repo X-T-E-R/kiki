@@ -403,7 +403,17 @@ describe('replay checkpoint tail', () => {
     first.wire.journalSha256 = async (byteLength: number) => {
       if (!nested) {
         nested = true;
-        await first.dispatcher.dispatch(prompt('during-save', 1));
+        await first.dispatcher.dispatch(new PromptEnqueued({
+          schemaVersion: 1,
+          promptId: 'prompt-1',
+          userMessageId: 'prompt-1',
+          createdAt: '2026-10-12T00:00:00.000Z',
+          message: message('user', 'during-save'),
+          alreadyMaterialized: false,
+          appendTiming: 'agent_idle',
+          revision: 1,
+          queueIndex: 1,
+        }));
       }
       return original?.(byteLength);
     };
