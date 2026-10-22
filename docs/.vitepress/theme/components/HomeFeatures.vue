@@ -205,9 +205,16 @@ const allText = computed(() => isZh.value ? '全部功能' : 'All features')
   gap: 6px;
   font-size: 13.5px;
   font-weight: 600;
-  color: var(--vp-c-brand-1);
+  /* The label carries the card's only small text, so it takes the ink token
+     and clears AA (the brand orange measures 3.5:1 at this size). The arrow
+     keeps the brand colour: decoration, not text. */
+  color: var(--vp-c-text-1);
   margin-top: auto;
   transition: transform var(--kiki-transition);
+}
+
+.KikiFeatures__cta svg {
+  color: var(--vp-c-brand-1);
 }
 
 .KikiFeatures__card:hover .KikiFeatures__cta {
@@ -226,13 +233,16 @@ const allText = computed(() => isZh.value ? '全部功能' : 'All features')
   gap: 6px;
   font-size: 15px;
   font-weight: 600;
-  color: var(--vp-c-brand-1);
+  color: var(--vp-c-text-1);
   text-decoration: none;
-  transition: transform var(--kiki-transition), color var(--kiki-transition);
+  transition: transform var(--kiki-transition);
+}
+
+.KikiFeatures__allLink svg {
+  color: var(--vp-c-brand-1);
 }
 
 .KikiFeatures__allLink:hover {
-  color: var(--vp-c-brand-2);
   transform: translateX(3px);
 }
 
