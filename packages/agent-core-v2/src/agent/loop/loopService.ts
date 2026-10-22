@@ -1093,7 +1093,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       if (!hookStopTurn && isRealThinkOnlyCompletion(response)) {
         if (this.llmRequester.supportsAssistantPrefill?.() === false) {
           try {
-            void this.dispatcher.dispatch(new WarningIssued({
+            await this.dispatcher.dispatch(new WarningIssued({
               code: 'google-model-turn-prefill',
               message: 'Gemini kept this thinking result and cannot continue from a model turn. Send another message to continue.',
             }));
