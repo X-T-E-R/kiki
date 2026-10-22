@@ -4,6 +4,30 @@
 
 ### Patch Changes
 
+- Update the bundled Node.js runtime and affected dependencies for the October security fixes.
+
+- Fix scrolling in setup when the window is small.
+
+- Add workspace shortcuts for new conversations and keep input history navigation at the text boundaries.
+
+- Keep conversations open when history loading fails.
+
+- Keep selected Ego Lite connections available to later browser calls, including custom connection ids.
+
+- Prevent delayed browser shutdown results from clearing a newer connection.
+
+- Show each model's effective request format, endpoint, and credential source.
+
+- Prevent model-setting overlays from replacing a model's connection or credentials, and warn about unsupported routing overrides.
+
+- Preserve native Gemini tool-result boundaries and resume continuation responses.
+
+- Reduce startup memory used by attached MCP bridge processes and release them when the caller exits.
+
+- Fix checkpoint scheduling and usage persistence during session recovery and shutdown.
+
+- Advance replay checkpoints during long conversations and save them before removing an agent.
+
 - [`b944299`](https://github.com/X-T-E-R/kiki/commit/b94429933e435c8a35b1e1df57e696ce9c440bb6) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Clarify how agents delegate work and exchange task results.
 
 - [`9f22b9d`](https://github.com/X-T-E-R/kiki/commit/9f22b9dd41487c401be1b533c8daa49427632a76) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - A follow-up to a child joins its current run, or continues that child when the run has already ended.
