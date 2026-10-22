@@ -61,7 +61,7 @@
   "dependencies": {
     "@antfu/utils": "^9.3.0",
     "@anthropic-ai/sdk": "^0.95.2",
-    "@google/genai": "^1.49.0",
+    "@google/genai": "^2.29.1",
     "@jsquash/webp": "^1.5.0",
     "@kiki/acp-client": "workspace:^",
     "@kiki/agent-profiles": "workspace:^",

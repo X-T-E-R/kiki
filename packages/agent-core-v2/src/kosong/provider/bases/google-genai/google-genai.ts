@@ -953,6 +953,7 @@ export class GoogleGenAIChatProvider implements ChatProvider {
 
     const config: Record<string, unknown> = {
       ...kwargs,
+      automaticContinuation: true,
       systemInstruction: systemPrompt,
       ...(tools.length > 0 ? { tools: tools.map((t) => toolToGoogleGenAI(t)) } : {}),
     };

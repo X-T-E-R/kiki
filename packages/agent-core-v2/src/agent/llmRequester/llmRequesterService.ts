@@ -173,6 +173,7 @@ interface ResolvedLLMRequest {
 
 interface LLMRequestLogInput {
   readonly protocol: Protocol;
+  readonly protocolSource?: 'model' | 'provider' | 'vendor';
   readonly providerType?: string;
   readonly modelName: string;
   readonly modelAlias?: string;
@@ -491,6 +492,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
       this.warnAboutAnthropicThinkingEffort(request);
       const logInput: LLMRequestLogInput = {
         protocol: request.model.protocol,
+        protocolSource: request.model.protocolSource,
         providerType: request.model.providerType,
         modelName: request.model.name,
         modelAlias: request.modelAlias,
@@ -1126,6 +1128,8 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
       kind: requestKindForRecord(fields),
       advertisedProfiles,
       provider: input.protocol,
+      protocol: input.protocol,
+      protocol_source: input.protocolSource,
       model: input.modelName,
       modelAlias: input.modelAlias,
       thinkingEffort: input.thinkingEffort ?? undefined,

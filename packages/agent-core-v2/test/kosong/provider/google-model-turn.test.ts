@@ -281,6 +281,71 @@ describe('google-genai trailing model turn', () => {
     expect(stream.rawFinishReason).toBe('CONTINUATION');
   });
 
+  it('uses the SDK continuation token with the same request and accumulates the response', async () => {
+    const seen = installFetchSequence([
+      () => responseSse({
+        candidates: [{
+          content: { role: 'model', parts: [{ thought: true, text: 'partial thought', thoughtSignature: THINK_SIGNATURE }] },
+          finishReason: 'CONTINUATION',
+          continuationToken: 'token-fixture',
+        }],
+        usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 2 },
+      }),
+      () => responseSse({
+        candidates: [{ content: { role: 'model', parts: [{ text: 'final answer' }] }, finishReason: 'STOP' }],
+        usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 3 },
+      }),
+    ]);
+    const provider = new GoogleGenAIChatProvider({ model: 'gemini-4-argon', apiKey: KEY, stream: true });
+    const stream = await provider.generate(
+      'system instructions',
+      [{ name: 'fixture', description: 'fixture tool', parameters: { type: 'object' } }],
+      [user('Hi')],
+      { auth: { apiKey: KEY }, maxCompletionTokens: 7 },
+    );
+    const parts = [];
+    for await (const part of stream) parts.push(part);
+
+    expect(seen).toHaveLength(2);
+    const first = JSON.parse(seen[0]!.body ?? '') as Record<string, unknown>;
+    const second = JSON.parse(seen[1]!.body ?? '') as Record<string, unknown>;
+    expect(second['contents']).toEqual(first['contents']);
+    expect(second['systemInstruction']).toEqual(first['systemInstruction']);
+    expect(second['tools']).toEqual(first['tools']);
+    expect(second['generationConfig']).toEqual(first['generationConfig']);
+    expect(second['continuationToken']).toBe('token-fixture');
+    expect((first['generationConfig'] as Record<string, unknown>)['maxOutputTokens']).toBe(7);
+    expect(parts).toEqual([
+      { type: 'think', think: 'partial thought', encrypted: THINK_SIGNATURE },
+      { type: 'text', text: 'final answer' },
+    ]);
+    expect(stream.finishReason).toBe('completed');
+    expect(stream.rawFinishReason).toBe('STOP');
+    expect(stream.usage).toMatchObject({ inputOther: 8, output: 5 });
+  });
+
+  it('does not continue MAX_TOKENS or change the explicit output budget', async () => {
+    const seen = installFetch(() => responseSse({
+      candidates: [{
+        content: { role: 'model', parts: [{ text: 'bounded' }] },
+        finishReason: 'MAX_TOKENS',
+        continuationToken: 'token-ignore',
+      }],
+      usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 7 },
+    }));
+    const provider = new GoogleGenAIChatProvider({ model: 'gemini-4-argon', apiKey: KEY, stream: true });
+    const stream = await provider.generate('system', [], [user('Hi')], {
+      auth: { apiKey: KEY },
+      maxCompletionTokens: 7,
+    });
+    for await (const part of stream) void part;
+    expect(seen).toHaveLength(1);
+    const body = JSON.parse(seen[0]!.body ?? '') as Record<string, unknown>;
+    expect((body['generationConfig'] as Record<string, unknown>)['maxOutputTokens']).toBe(7);
+    expect(stream.finishReason).toBe('truncated');
+    expect(stream.rawFinishReason).toBe('MAX_TOKENS');
+  });
+
   it('keeps an ordinary user continuation as the last turn after parallel tool images', async () => {
     const imageTail = [
       user('go'),
@@ -477,6 +542,15 @@ function installFetch(response: () => Response): SeenRequest[] {
   return seen;
 }
 
+function installFetchSequence(responses: readonly (() => Response)[]): SeenRequest[] {
+  let index = 0;
+  return installFetch(() => {
+    const response = responses[index++];
+    if (response === undefined) throw new Error(`unexpected fetch call ${index}`);
+    return response();
+  });
+}
+
 async function readBody(
   input: Parameters<typeof fetch>[0],
   init: Parameters<typeof fetch>[1],
@@ -486,6 +560,13 @@ async function readBody(
   if (typeof body === 'string') return body;
   if (body instanceof Uint8Array) return new TextDecoder().decode(body);
   return undefined;
+}
+
+function responseSse(payload: Record<string, unknown>): Response {
+  return new Response(`data: ${JSON.stringify(payload)}\n\n`, {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream' },
+  });
 }
 
 function okSse(): Response {

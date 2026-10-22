@@ -638,6 +638,23 @@ describe('AgentLLMRequesterService parameter budgets', () => {
 });
 
 describe('AgentLLMRequesterService native tool and shared prompt preparation', () => {
+  it('records protocol and source from the bound requester model', async () => {
+    const { service, records } = createService(
+      createRequester({ value: 0 }, null, [], undefined, {
+        protocol: 'google-genai',
+        protocolSource: 'provider',
+      }),
+      undefined,
+    );
+    await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+    const request = records.find((record) => record.type === 'llm.request');
+    expect(request).toMatchObject({
+      provider: 'google-genai',
+      protocol: 'google-genai',
+      protocol_source: 'provider',
+    });
+  });
+
   it('records only profiles actually advertised by the request schema and none when AgentRun is absent', async () => {
     const line = '- explore: Scoped evidence';
     const advertisedProfiles = new Map([
