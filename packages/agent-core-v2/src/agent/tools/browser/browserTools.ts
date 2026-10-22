@@ -227,7 +227,7 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
         const commandConnection = conn?.type === 'webbridge-command';
         return this.json({ browser, backend, namespace: backend, backendToolCount: tools.length,
           contextIsolation: commandConnection
-            ? 'WebBridge command drives the Kimi extension on a fixed local bridge. BrowserTabs lists, selects and closes tabs. Window and frame tools are not available. agent_browser_cdp_action sends the extension command action and does not attach DevTools.'
+            ? 'WebBridge command drives the Kimi extension on a fixed local bridge. BrowserTabs lists the session tabs. Page actions stay on the tab the last navigate opened; another tab id is not selected by URL. Window and frame tools are not available. agent_browser_cdp_action sends the extension command action and does not attach DevTools.'
             : backend === 'official-cua-repl'
             ? 'Official extension browser/tab ids are preserved. Use codex_browser_js and its runtime documentation; window/frame emulation is unsupported.'
             : backend === 'codex-browser-bridge'
@@ -265,8 +265,7 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
         const tabs = await this.control.tabs(browser, signal, requestContext);
         const selected = tabs.find((tab) => tab.targetId === input.target);
         if (selected === undefined) throw new BrowserError('browser.target', 'Use a current targetId from BrowserTabs list, not a positional tab number or label');
-        if (connection.type === 'webbridge-command' && (selected.url === undefined || selected.url === '')) throw new BrowserError('browser.target', 'Use a current targetId from BrowserTabs list, not a positional tab number or label');
-        const args = connection.type === 'webbridge-command' ? { tab: input.target, url: selected.url } : { tab: input.target };
+        const args = { tab: input.target };
         const result = await this.control.invoke({ browser, caller, requestContext, tool: input.action === 'select' ? 'agent_browser_tab_switch' : 'agent_browser_tab_close', args }, signal);
         const data = browserResponse(result.result);
         if (data.success === true) {

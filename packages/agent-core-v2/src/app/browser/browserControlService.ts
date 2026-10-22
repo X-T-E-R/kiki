@@ -16,7 +16,7 @@ import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService } from '#/os/interface/hostProcess';
 import { EgoBrowserRuntime, egoTabBody, egoUserOutput } from './ego/runtime';
 import { EGO_LITE_CONNECTION_ID, type EgoCliResolution } from './ego/resolveCli';
-import { cdpPublicError, commandSnapshotData, commandTabsFromData, readWebbridgeStatus, sendWebbridgeCommand, webbridgeCommandCatalog, webbridgeCommandForTool, webbridgeCommandSession, WebbridgeCommandError } from './browserWebbridge';
+import { cdpPublicError, commandSnapshotData, commandTabIdFromToken, commandTabsFromData, commandTabTokenFromWire, commandUsesBoundTab, readWebbridgeStatus, sendWebbridgeCommand, webbridgeCommandCatalog, webbridgeCommandForTool, webbridgeCommandSession, WebbridgeCommandError } from './browserWebbridge';
 
 interface LiveBrowser {
   connection: BrowserResolvedConnection;
@@ -27,6 +27,8 @@ interface LiveBrowser {
   admitting: boolean;
   oldPid?: number;
   observation?: { binding: string; refs: Set<string> };
+  /** Command tab opened by the last navigate in this connection, as a `wb:` token. Not a DevTools target id. */
+  commandTab?: string;
   target?: { tab: string; frame: string };
   captures?: Map<string, string>;
 }
@@ -769,6 +771,7 @@ export class BrowserControlService implements IBrowserControlService {
         live.admitting = false;
         live.observation = undefined;
         live.target = undefined;
+        live.commandTab = undefined;
         live.status = { ...live.status, state: 'disconnected', generation: live.status.generation + 1, checkedAt, currentCall: undefined,
           error: 'WebBridge is not ready. No page command was sent.', failure: undefined };
         return { ...live.status };
@@ -788,6 +791,7 @@ export class BrowserControlService implements IBrowserControlService {
     const checkedAt = new Date().toISOString();
     live.observation = undefined;
     live.target = undefined;
+    live.commandTab = undefined;
     live.admitting = false;
     if (bridge?.running !== true) {
       live.status = { ...live.status, state: 'disconnected', generation: live.status.generation + 1, checkedAt, currentCall: undefined,
@@ -837,6 +841,7 @@ export class BrowserControlService implements IBrowserControlService {
     live.tools = undefined;
     live.observation = undefined;
     live.target = undefined;
+    live.commandTab = undefined;
     live.status = { ...live.status, state: 'disconnected', generation: live.status.generation + 1, currentCall: undefined,
       checkedAt: new Date().toISOString(), error: undefined, failure: undefined };
     return { ...live.status };
@@ -889,26 +894,44 @@ export class BrowserControlService implements IBrowserControlService {
         let data: Record<string, unknown>;
         let target = input.tab;
         if (input.tool === 'agent_browser_tab_switch' || input.tool === 'agent_browser_tab_close') {
-          let page = textArg(input.args, 'url');
-          if (page === undefined) {
-            const tabs = commandTabsFromData(await sendWebbridgeCommand({ action: 'list_tabs', args: {}, session, signal }));
-            page = tabs.find((tab) => tab.targetId === (textArg(input.args, 'tab') ?? input.tab))?.url;
+          const requested = textArg(input.args, 'tab') ?? input.tab;
+          const numeric = requested === undefined ? undefined : commandTabIdFromToken(requested);
+          if (numeric === undefined || requested !== live.commandTab) {
+            throw new BrowserError('browser.unsupported', input.tool === 'agent_browser_tab_close'
+              ? 'The WebBridge command protocol closes its current tab only. This tab id is not that tab, and it was not closed.'
+              : 'The WebBridge command protocol cannot select a tab by id. find_tab matches a URL and can hit a different tab, so this tab was not selected.');
           }
-          if (page === undefined || page === '') throw new BrowserError('browser.target', 'Use a current targetId from BrowserTabs list, not a positional tab number or label');
-          data = await sendWebbridgeCommand({ action: 'find_tab', args: { url: page }, session, signal });
-          if (input.tool === 'agent_browser_tab_close') data = await sendWebbridgeCommand({ action: 'close_tab', args: {}, session, signal });
-          live.observation = undefined;
-          live.target = undefined;
+          if (input.tool === 'agent_browser_tab_close') {
+            data = await sendWebbridgeCommand({ action: 'close_tab', args: {}, session, signal });
+            live.observation = undefined;
+            live.target = undefined;
+            live.commandTab = undefined;
+          } else data = { tabId: numeric };
+          target = requested;
         } else {
           const mapped = webbridgeCommandForTool(input.tool, input.args);
           if (mapped.kind === 'unsupported') throw new BrowserError('browser.unsupported', `WebBridge command does not run ${input.tool}`);
           if (mapped.kind === 'invalid') throw new BrowserError('browser.invalid', mapped.message);
+          if (commandUsesBoundTab(input.tool)) {
+            if (live.commandTab === undefined) throw new BrowserError('browser.target', 'Open a WebBridge tab with navigate before this action. The command bridge uses that tab and does not take a tab id on the action.');
+            if (input.tab !== live.commandTab) throw new BrowserError('browser.target', 'This action stays on the WebBridge command tab opened by navigate. Pass that same tab id.');
+          }
           data = await sendWebbridgeCommand({ action: mapped.action, args: mapped.args, session, signal });
           if (mapped.action === 'snapshot') data = commandSnapshotData(data);
-          if (mapped.action === 'navigate' || mapped.action === 'close_session') {
+          if (mapped.action === 'navigate') {
             live.observation = undefined;
-            const opened = data['tabId'];
-            if (typeof opened === 'number' || typeof opened === 'string') target = String(opened);
+            live.target = undefined;
+            try { target = commandTabTokenFromWire(data['tabId']); }
+            catch (error) {
+              if (!(error instanceof WebbridgeCommandError)) throw error;
+              live.commandTab = undefined;
+              throw new BrowserError('browser.target', 'WebBridge navigate did not return a command tab id');
+            }
+            live.commandTab = target;
+          } else if (mapped.action === 'close_session') {
+            live.observation = undefined;
+            live.target = undefined;
+            live.commandTab = undefined;
           }
         }
         if (input.tool === 'agent_browser_snapshot') {
@@ -942,6 +965,7 @@ export class BrowserControlService implements IBrowserControlService {
     live.admitting = false;
     live.observation = undefined;
     live.target = undefined;
+    live.commandTab = undefined;
     const lost = error instanceof WebbridgeCommandError && error.kind === 'lost';
     live.status = { ...live.status, state: lost ? 'unconfirmed' : 'failed', currentCall: undefined,
       failure: { code: error instanceof BrowserError ? error.code : 'browser.execution_failed', reason: lost ? 'outcome_unknown' : undefined },

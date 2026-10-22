@@ -152,16 +152,44 @@ export async function sendWebbridgeCommand(input: {
   return commandData(payload, response.status);
 }
 
+/** Canonical command-tab token. `wb:` keeps the decimal id reversible and distinct from a DevTools target id. */
+export function commandTabTokenFromWire(id: unknown): string {
+  const digits = typeof id === 'number' ? String(id) : id;
+  if (typeof digits !== 'string' || !/^(0|[1-9]\d*)$/.test(digits)) throw new WebbridgeCommandError('rejected', 'WebBridge returned invalid tab identities');
+  const numeric = Number(digits);
+  if (!Number.isSafeInteger(numeric) || numeric < 0 || String(numeric) !== digits) throw new WebbridgeCommandError('rejected', 'WebBridge returned invalid tab identities');
+  return `wb:${numeric}`;
+}
+
+export function commandTabIdFromToken(token: string): number | undefined {
+  const digits = /^wb:(0|[1-9]\d*)$/.exec(token)?.[1];
+  if (digits === undefined) return undefined;
+  const id = Number(digits);
+  return Number.isSafeInteger(id) && String(id) === digits ? id : undefined;
+}
+
+const BOUND_TAB_TOOLS = new Set([
+  'agent_browser_snapshot', 'agent_browser_click', 'agent_browser_fill', 'agent_browser_eval',
+  'agent_browser_screenshot', 'agent_browser_upload', 'agent_browser_pdf', 'agent_browser_network', 'agent_browser_cdp_action',
+]);
+
+export function commandUsesBoundTab(tool: string): boolean {
+  return BOUND_TAB_TOOLS.has(tool);
+}
+
 export function commandTabsFromData(data: Record<string, unknown>): BrowserTab[] {
   const tabs = data['tabs'];
   if (!Array.isArray(tabs)) throw new WebbridgeCommandError('rejected', 'WebBridge returned invalid tab identities');
+  const seen = new Set<string>();
   return tabs.map((tab) => {
     const id = tab !== null && typeof tab === 'object' ? (tab as { tabId?: unknown }).tabId : undefined;
-    if (typeof id !== 'number' && (typeof id !== 'string' || id === '')) throw new WebbridgeCommandError('rejected', 'WebBridge returned invalid tab identities');
-    const text = String(id);
+    const token = commandTabTokenFromWire(id);
+    if (seen.has(token)) throw new WebbridgeCommandError('rejected', 'WebBridge returned invalid tab identities');
+    seen.add(token);
     const record = tab as { title?: unknown; url?: unknown; active?: unknown; groupTitle?: unknown };
     return {
-      tabId: text, targetId: text,
+      tabId: token,
+      targetId: token,
       title: typeof record.title === 'string' ? record.title : undefined,
       url: typeof record.url === 'string' ? record.url : undefined,
       active: typeof record.active === 'boolean' ? record.active : undefined,
@@ -261,8 +289,8 @@ export function webbridgeCommandCatalog(): MCPToolDefinition[] {
     { name: 'agent_browser_open', description: 'Open a URL in the current WebBridge tab. This is the navigate command with newTab false.', inputSchema: toolSchema({ url, label: { type: 'string' } }, ['url']) },
     { name: 'agent_browser_tab_new', description: 'Open a URL in a new WebBridge tab. This is the navigate command with newTab true.', inputSchema: toolSchema({ url, label: { type: 'string' } }, ['url']) },
     { name: 'agent_browser_tab_list', description: 'List tabs in this WebBridge command session.', inputSchema: toolSchema({}) },
-    { name: 'agent_browser_tab_switch', description: 'Select a WebBridge tab by the URL returned from the tab list. This is find_tab and does not attach DevTools.', inputSchema: toolSchema({ url }, ['url']) },
-    { name: 'agent_browser_tab_close', description: 'Close the current WebBridge tab after it has been selected.', inputSchema: toolSchema({}) },
+    { name: 'agent_browser_tab_switch', description: 'Bind the WebBridge command tab opened by the last navigate. The protocol cannot select a different tab by id, and this does not call find_tab or match a URL.', inputSchema: toolSchema({ tab: { type: 'string', minLength: 1, description: 'The command tab id returned when that tab was opened. Not a DevTools target id.' } }, ['tab']) },
+    { name: 'agent_browser_tab_close', description: 'Close the WebBridge command tab opened by the last navigate. This does not choose a tab by URL.', inputSchema: toolSchema({ tab: { type: 'string', minLength: 1 } }, ['tab']) },
     { name: 'agent_browser_snapshot', description: 'Read the current WebBridge tab as an accessibility tree. Element refs look like @e1.', inputSchema: toolSchema({}) },
     { name: 'agent_browser_click', description: 'Click a selector on the current WebBridge tab.', inputSchema: toolSchema({ selector }, ['selector']) },
     { name: 'agent_browser_fill', description: 'Replace the value of an input on the current WebBridge tab.', inputSchema: toolSchema({ selector, value: { type: 'string' } }, ['selector', 'value']) },

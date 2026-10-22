@@ -9,6 +9,7 @@ import { BrowserControlService, browserManagedLifecycle, isBrowserOperation } fr
 import { IBrowserBackendFactory, type BrowserBackend } from '#/app/browser/browserBackend';
 import { BrowserConnectionInputSchema, BrowserStoredConnectionSchema, type BrowserResolvedConnection } from '#/app/browser/browserConfig';
 import { browserResponse } from '#/app/browser/browserControlService';
+import { commandTabIdFromToken, commandTabsFromData } from '#/app/browser/browserWebbridge';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService } from '#/os/interface/hostProcess';
 import type { MCPToolResult } from '#/mcpCore/types';
@@ -77,7 +78,9 @@ function tool(data: Record<string, unknown>): MCPToolResult {
   return { isError: false, content: [{ type: 'text', text: JSON.stringify(data) }], structuredContent: { response: { success: true, data } } };
 }
 
-function installPeer(mode: 'ok' | 'lost-snapshot' | 'lost-list' | 'reject' | 'unreachable' = 'ok') {
+function installPeer(mode: 'ok' | 'lost-snapshot' | 'lost-list' | 'reject' | 'unreachable' = 'ok', peer: { tabs?: readonly Record<string, unknown>[]; navigateTabId?: number } = {}) {
+  const tabs = peer.tabs ?? [{ tabId: 1622118901, url: 'https://example.test/invoice', title: 'Invoice', active: true }];
+  const navigateTabId = peer.navigateTabId ?? 1622118901;
   const requests: Posted[] = [];
   vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init?: RequestInit) => {
     const url = String(input);
@@ -89,8 +92,9 @@ function installPeer(mode: 'ok' | 'lost-snapshot' | 'lost-list' | 'reject' | 'un
     if (mode === 'reject') return json({ ok: false, error: 'extension refused' });
     if (mode === 'lost-snapshot' && body?.action === 'snapshot') throw Object.assign(new Error('The operation was aborted'), { name: 'AbortError' });
     if (mode === 'lost-list' && requests.filter((item) => item.body?.action === 'list_tabs').length > 1) throw Object.assign(new Error('The operation was aborted'), { name: 'TimeoutError' });
-    if (body?.action === 'list_tabs') return envelope({ tabs: [{ tabId: 1622118901, url: 'https://example.test/invoice', title: 'Invoice', active: true }] });
-    if (body?.action === 'find_tab') return envelope({ url: body.args?.['url'], tabId: 1622118901 });
+    if (body?.action === 'list_tabs') return envelope({ tabs: tabs.map((tab) => ({ ...tab })) });
+    if (body?.action === 'navigate') return envelope({ url: body.args?.['url'], tabId: navigateTabId });
+    if (body?.action === 'find_tab') return envelope({ url: body.args?.['url'], tabId: navigateTabId });
     if (body?.action === 'snapshot') return envelope({ url: 'https://example.test/invoice', title: 'Invoice', tree: 'button @e12' });
     if (body?.action === 'click') return envelope({ tag: 'button', text: 'ok' });
     if (body?.action === 'close_tab') return envelope({ closed: true });
@@ -180,8 +184,15 @@ describe('webbridge command control', () => {
     try {
       await f.control.connect('webbridge-command');
       const tabs = await f.control.tabs('webbridge-command');
-      expect(tabs).toEqual([{ tabId: '1622118901', targetId: '1622118901', title: 'Invoice', url: 'https://example.test/invoice', active: true, label: undefined }]);
-      const tab = '1622118901';
+      expect(tabs).toEqual([{ tabId: 'wb:1622118901', targetId: 'wb:1622118901', title: 'Invoice', url: 'https://example.test/invoice', active: true, label: undefined }]);
+      expect(commandTabIdFromToken('wb:1622118901')).toBe(1622118901);
+      expect(commandTabIdFromToken('wb:1622118902')).toBe(1622118902);
+      expect(commandTabIdFromToken('1622118901')).toBeUndefined();
+      expect(tabs[0]?.targetId).not.toBe('1622118901');
+      expect(() => commandTabsFromData({ tabs: [{ tabId: 1622118901 }, { tabId: 1622118901 }] })).toThrow(/invalid tab identities/);
+      const opened = await f.control.invoke({ browser: 'webbridge-command', caller, tool: 'agent_browser_tab_new', args: { url: 'https://example.test/invoice' } });
+      const tab = opened.tab;
+      expect(tab).toBe('wb:1622118901');
       await expect(f.control.invoke({ browser: 'webbridge-command', caller, tool: 'agent_browser_click', args: { selector: '@e12' }, tab })).rejects.toMatchObject({ code: 'browser.target' });
       expect(posts(requests, 'click')).toHaveLength(0);
       const shot = await f.control.invoke({ browser: 'webbridge-command', caller, tool: 'agent_browser_snapshot', args: {}, tab });
@@ -191,8 +202,62 @@ describe('webbridge command control', () => {
       expect(posts(requests, 'click')[0]?.body?.args).toEqual({ selector: '@e12' });
       const selected = await f.control.invoke({ browser: 'webbridge-command', caller, tool: 'agent_browser_tab_switch', args: { tab, url: 'https://example.test/invoice' }, tab });
       expect(browserResponse(selected.result).success).toBe(true);
-      expect(posts(requests, 'find_tab')).toEqual([expect.objectContaining({ body: expect.objectContaining({ action: 'find_tab', args: { url: 'https://example.test/invoice' } }) })]);
+      expect(posts(requests, 'find_tab')).toHaveLength(0);
+      expect(posts(requests, 'navigate')).toHaveLength(1);
       expect(posts(requests, 'list_tabs')).toHaveLength(2);
+    } finally { await f.ix.dispose(); }
+  });
+
+  it('keeps two tabs that share a URL on their own command ids', async () => {
+    const f = controlFixture();
+    const requests = installPeer('ok', { tabs: [
+      { tabId: 1622118901, url: 'https://example.test/invoice', title: 'Invoice A', active: true },
+      { tabId: 1622118902, url: 'https://example.test/invoice', title: 'Invoice B', active: false },
+    ] });
+    try {
+      await f.control.connect('webbridge-command');
+      const opened = await f.control.invoke({ browser: 'webbridge-command', caller, tool: 'agent_browser_tab_new', args: { url: 'https://example.test/invoice' } });
+      const openedTab = opened.tab;
+      const other = 'wb:1622118902';
+      expect(openedTab).toBe('wb:1622118901');
+      const listed = await f.control.tabs('webbridge-command');
+      expect(listed.map((tab) => tab.tabId)).toEqual(['wb:1622118901', 'wb:1622118902']);
+      expect(listed[0]?.url).toBe(listed[1]?.url);
+      expect(listed[0]?.targetId).toBe('wb:1622118901');
+      await expect(f.control.invoke({ browser: 'webbridge-command', caller, tool: 'agent_browser_tab_switch', args: { tab: other, url: listed[1]?.url }, tab: other })).rejects.toMatchObject({ code: 'browser.unsupported' });
+      await expect(f.control.invoke({ browser: 'webbridge-command', caller, tool: 'agent_browser_snapshot', args: {}, tab: other })).rejects.toMatchObject({ code: 'browser.target' });
+      await expect(f.control.invoke({ browser: 'webbridge-command', caller, tool: 'agent_browser_tab_close', args: { tab: other }, tab: other })).rejects.toMatchObject({ code: 'browser.unsupported' });
+      const bound = await f.control.invoke({ browser: 'webbridge-command', caller, tool: 'agent_browser_tab_switch', args: { tab: openedTab }, tab: openedTab });
+      expect(browserResponse(bound.result).data?.['tabId']).toBe(1622118901);
+      const shot = await f.control.invoke({ browser: 'webbridge-command', caller, tool: 'agent_browser_snapshot', args: {}, tab: openedTab });
+      expect(browserResponse(shot.result).data?.['refs']).toMatchObject({ e12: true });
+      await expect(f.control.invoke({ browser: 'webbridge-command', caller, tool: 'agent_browser_click', args: { selector: '@e12' }, tab: other })).rejects.toMatchObject({ code: 'browser.target' });
+      const closed = await f.control.invoke({ browser: 'webbridge-command', caller, tool: 'agent_browser_tab_close', args: { tab: openedTab }, tab: openedTab });
+      expect(browserResponse(closed.result).success).toBe(true);
+      expect(posts(requests, 'find_tab')).toHaveLength(0);
+      expect(posts(requests, 'snapshot')).toHaveLength(1);
+      expect(posts(requests, 'click')).toHaveLength(0);
+      expect(posts(requests, 'close_tab')).toEqual([expect.objectContaining({ body: expect.objectContaining({ action: 'close_tab', args: {} }) })]);
+      expect(posts(requests, 'navigate')[0]?.body?.args).toEqual({ url: 'https://example.test/invoice', newTab: true });
+    } finally { await f.ix.dispose(); }
+  });
+
+  it('rejects a stale element ref and a ref used outside its snapshot scope', async () => {
+    const f = controlFixture();
+    const requests = installPeer();
+    try {
+      await f.control.connect('webbridge-command');
+      const opened = await f.control.invoke({ browser: 'webbridge-command', caller, tool: 'agent_browser_tab_new', args: { url: 'https://example.test/invoice' } });
+      const tab = opened.tab ?? 'wb:1622118901';
+      await f.control.invoke({ browser: 'webbridge-command', caller, tool: 'agent_browser_snapshot', args: {}, tab });
+      await expect(f.control.invoke({ browser: 'webbridge-command', caller, tool: 'agent_browser_click', args: { selector: '@e99' }, tab })).rejects.toMatchObject({ code: 'browser.target' });
+      await expect(f.control.invoke({ browser: 'webbridge-command', caller: { sessionId: 'fixture-session', agentId: 'other' }, tool: 'agent_browser_click', args: { selector: '@e12' }, tab })).rejects.toMatchObject({ code: 'browser.target' });
+      await expect(f.control.invoke({ browser: 'webbridge-command', caller, tool: 'agent_browser_click', args: { selector: '@e12' }, tab: 'wb:1622118902' })).rejects.toMatchObject({ code: 'browser.target' });
+      expect(posts(requests, 'click')).toHaveLength(0);
+      expect(posts(requests, 'find_tab')).toHaveLength(0);
+      const clicked = await f.control.invoke({ browser: 'webbridge-command', caller, tool: 'agent_browser_click', args: { selector: '@e12' }, tab });
+      expect(browserResponse(clicked.result).success).toBe(true);
+      expect(posts(requests, 'click')).toHaveLength(1);
     } finally { await f.ix.dispose(); }
   });
 
@@ -201,16 +266,17 @@ describe('webbridge command control', () => {
     const requests = installPeer('lost-snapshot');
     try {
       await f.control.connect('webbridge-command');
-      await expect(f.control.invoke({ browser: 'webbridge-command', caller, tool: 'agent_browser_snapshot', args: {}, tab: '1622118901' })).rejects.toMatchObject({ code: 'browser.execution_failed' });
+      const opened = await f.control.invoke({ browser: 'webbridge-command', caller, tool: 'agent_browser_tab_new', args: { url: 'https://example.test/invoice' } });
+      await expect(f.control.invoke({ browser: 'webbridge-command', caller, tool: 'agent_browser_snapshot', args: {}, tab: opened.tab })).rejects.toMatchObject({ code: 'browser.execution_failed' });
       expect(posts(requests, 'snapshot')).toHaveLength(1);
       const lost = await f.control.status('webbridge-command');
       expect(lost).toMatchObject({ state: 'unconfirmed', failure: { code: 'browser.execution_failed', reason: 'outcome_unknown' } });
       const checked = await f.control.check('webbridge-command');
-      expect(posts(requests)).toHaveLength(2);
+      expect(posts(requests)).toHaveLength(3);
       expect(requests.filter((item) => item.url.endsWith('/status'))).toHaveLength(1);
       expect(checked).toMatchObject({ state: 'idle', generation: lost.generation + 1, failure: { reason: 'outcome_unknown' } });
       expect(checked.error).toContain('not replayed');
-      await expect(f.control.invoke({ browser: 'webbridge-command', caller, tool: 'agent_browser_snapshot', args: {}, tab: '1622118901' })).rejects.toMatchObject({ code: 'browser.disconnected' });
+      await expect(f.control.invoke({ browser: 'webbridge-command', caller, tool: 'agent_browser_snapshot', args: {}, tab: opened.tab })).rejects.toMatchObject({ code: 'browser.disconnected' });
       expect(posts(requests, 'snapshot')).toHaveLength(1);
       expect(f.factory.open).not.toHaveBeenCalled();
     } finally { await f.ix.dispose(); }
