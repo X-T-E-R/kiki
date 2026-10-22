@@ -40,7 +40,11 @@ export class SelectToolsTool implements ISelectToolsTool {
             isError: true,
           };
         }
-        const { toLoad, alreadyAvailable, unknown } = this.toolSelect.load(args.names);
+        const selection = this.toolSelect.load(args.names);
+        const available = new Set(this.toolSelect.shapeTools(this.registry.list()).map(tool => tool.name));
+        const toLoad = selection.toLoad;
+        const alreadyAvailable = [...selection.alreadyAvailable, ...selection.unknown.filter(name => available.has(name))];
+        const unknown = selection.unknown.filter(name => !available.has(name));
 
         const lines: string[] = [];
         if (toLoad.length > 0) lines.push(`Loaded: ${toLoad.join(', ')}`);

@@ -218,6 +218,10 @@ describe('progressive tool disclosure end-to-end', () => {
     );
     ctx = open(false);
     ctx.configure({ provider: OPENAI_PROVIDER, tools: ['*'], modelCapabilities: DISCLOSURE_CAPABILITIES });
+    await ctx.get(IAgentProfileService).bind({
+      resolvedProfile: normalizeAgentProfile({ name: 'fixture-main', tools: ['*'], systemPrompt: () => 'Use the available fixture tools.' }),
+      model: OPENAI_PROVIDER.model,
+    });
     await ctx.rpc.setPermission({ mode: 'yolo' });
     await ctx.get(ISessionPluginUsageService).set('example-mail', 'off');
     ctx.mockNextResponse({ type: 'text', text: 'saved before plugin activation' });
@@ -233,6 +237,7 @@ describe('progressive tool disclosure end-to-end', () => {
     usage.registerPluginStateReader(() => ({ allowed: true, globalEnabled: false }));
     expect(ctx.get(IAgentToolRegistryService).resolve(name)).toBeUndefined();
     const binding = ctx.get(IAgentProfileService).data().boundProfile;
+    expect(binding).toBeDefined();
     loading = new Promise<void>((resolve) => { finishLoading = resolve; });
     const enabled = ctx.get(ISessionPluginUsageService).set('example-mail', 'on');
     await vi.waitFor(async () => { expect((await usage.readSession(ctx.get(ISessionContext).workspaceId, 'persisted-capability-session')).applyState).toBe('pending'); });
@@ -311,6 +316,15 @@ describe('progressive tool disclosure end-to-end', () => {
     expect(text).toContain('Unknown tool: plugin__missing__Tool.');
     expect(denied.calls).toBe(0);
     expect(ctx.llmCalls.every(call => ![...call.tools, ...call.history.flatMap(message => message.tools ?? [])].some(tool => tool.name === name))).toBe(true);
+  });
+
+  it('reports a resident tool as already available rather than policy denied', async () => {
+    ctx.configure({ provider: OPENAI_PROVIDER, modelCapabilities: DISCLOSURE_CAPABILITIES });
+    ctx.mockNextResponse(selectToolsCall('resident-read', ['Read']));
+    ctx.mockNextResponse({ type: 'text', text: 'done' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'inspect the resident tool' }] });
+    await ctx.untilTurnEnd();
+    expect(historyText(ctx.get(IAgentContextMemoryService).get())).toContain('Already available: Read');
   });
 
   it('does not reannounce unchanged loadable tools on consecutive steps in one turn', async () => {
