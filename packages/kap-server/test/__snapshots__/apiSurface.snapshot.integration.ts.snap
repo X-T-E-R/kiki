@@ -58,6 +58,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "DELETE",
+      "/api/im/sessions/bindings/{id}",
+    ],
+    [
+      "DELETE",
       "/api/mcp/servers/{name}",
     ],
     [
@@ -378,6 +382,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/im/sessions",
+    ],
+    [
+      "GET",
+      "/api/im/sessions/catalog",
+    ],
+    [
+      "GET",
       "/api/klient/session-view/{sessionId}/snapshot",
     ],
     [
@@ -690,6 +702,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/sessions/{session_id}/optional-capabilities",
+    ],
+    [
+      "GET",
       "/api/sessions/{session_id}/persona-settings",
     ],
     [
@@ -955,6 +971,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "PATCH",
       "/api/homes/{id}",
+    ],
+    [
+      "PATCH",
+      "/api/im/sessions/bindings/{id}",
     ],
     [
       "PATCH",
@@ -1235,6 +1255,38 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/homes/{tail}",
+    ],
+    [
+      "POST",
+      "/api/im/sessions/discoveries/{id}/confirm",
+    ],
+    [
+      "POST",
+      "/api/im/sessions/discoveries/{id}/dismiss",
+    ],
+    [
+      "POST",
+      "/api/im/sessions/instances/{id}/check",
+    ],
+    [
+      "POST",
+      "/api/im/sessions/instances/{id}/listen",
+    ],
+    [
+      "POST",
+      "/api/im/sessions/paste",
+    ],
+    [
+      "POST",
+      "/api/im/sessions/wechat/qrcode",
+    ],
+    [
+      "POST",
+      "/api/im/sessions/wechat/qrcode/{id}/cancel",
+    ],
+    [
+      "POST",
+      "/api/im/sessions/wechat/qrcode/{id}/poll",
     ],
     [
       "POST",
@@ -1658,6 +1710,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/sessions/{session_id}/optional-capabilities",
+    ],
+    [
+      "POST",
       "/api/sessions/{session_id}/persona-settings",
     ],
     [
@@ -1919,6 +1975,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "PUT",
       "/api/gui/shortcuts",
+    ],
+    [
+      "PUT",
+      "/api/im/sessions/policy",
     ],
     [
       "PUT",
