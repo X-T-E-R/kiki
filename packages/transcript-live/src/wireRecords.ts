@@ -18,6 +18,11 @@ export interface WireRecordSpan {
   readonly ordinal: number;
 }
 
+export interface WireByteSource {
+  readonly size: number;
+  readAt(position: number, length: number): Promise<Uint8Array>;
+}
+
 export interface WireRecordsStreamOptions {
   readonly chunkBytes?: number;
   readonly maxBytes?: number;
@@ -29,6 +34,7 @@ export interface WireRecordsStreamOptions {
   readonly signal?: AbortSignal;
   readonly onRecord: (record: ContextRecord, span: WireRecordSpan, raw?: Uint8Array) => unknown;
   readonly includeRawRecord?: boolean;
+  readonly byteSource?: WireByteSource;
 }
 
 export interface WireRecordsStreamResult {
@@ -199,13 +205,14 @@ export async function streamWireRecords(
   };
 
   signal?.throwIfAborted();
-  const handle = await open(wirePath, 'r');
+  const source = options.byteSource;
+  const handle = source === undefined ? await open(wirePath, 'r') : undefined;
   try {
-    const info = await handle.stat();
-    if (!Number.isSafeInteger(info.size) || info.size < 0) {
+    const infoSize = source !== undefined ? source.size : (await handle!.stat()).size;
+    if (!Number.isSafeInteger(infoSize) || infoSize < 0) {
       throw new Error(`wire.jsonl: invalid size for ${wirePath}`);
     }
-    const fileSize = Math.min(info.size, endByteOffset ?? info.size);
+    const fileSize = Math.min(infoSize, endByteOffset ?? infoSize);
     if (startByteOffset > fileSize) {
       throw new Error(`wire.jsonl: start offset exceeds file size for ${wirePath}`);
     }
@@ -218,15 +225,24 @@ export async function streamWireRecords(
         break;
       }
       const length = Math.min(chunkBytes, fileSize - position, remainingBytes);
-      const chunk = Buffer.allocUnsafe(length);
-      const { bytesRead: read } = await handle.read(chunk, 0, length, position);
+      let read: number;
+      let chunk: Buffer;
+      if (source !== undefined) {
+        const bytes = await source.readAt(position, length);
+        read = Math.min(bytes.byteLength, length);
+        chunk = Buffer.from(bytes.subarray(0, read));
+      } else {
+        const allocated = Buffer.allocUnsafe(length);
+        read = (await handle!.read(allocated, 0, length, position)).bytesRead;
+        chunk = allocated.subarray(0, read);
+      }
       if (read === 0) {
         throw new Error(`wire.jsonl: file changed during streaming read for ${wirePath}`);
       }
       position += read;
       bytesRead += read;
       remainingBytes -= read;
-      absorb(chunk.subarray(0, read));
+      absorb(chunk);
     }
     if (!stopped && lineBytes > 0) {
       if (endByteOffset !== undefined) stop('partial_tail');
@@ -236,7 +252,7 @@ export async function streamWireRecords(
       }
     }
   } finally {
-    await handle.close().catch(() => undefined);
+    await handle?.close().catch(() => undefined);
   }
   return {
     recordCount,
@@ -286,6 +302,7 @@ export async function streamWireRecordsAwaited(
       startRecordOrdinal: (optionalLimit(options.startRecordOrdinal) ?? 0) + recordCount,
       signal: options.signal,
       includeRawRecord: options.includeRawRecord,
+      byteSource: options.byteSource,
       onRecord: (record, span, raw) => {
         pending.push({ record, span, raw });
         batchBytes += span.endByteOffset - span.startByteOffset;

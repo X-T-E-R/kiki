@@ -2,6 +2,8 @@ import { open } from 'node:fs/promises';
 
 import type { ContextRecord } from '@kiki/transcript-live';
 
+import { openLogicalWire } from '../history/logicalWireRead';
+
 export interface BoundedWireScanOptions {
   readonly maxBytes: number;
   readonly chunkBytes?: number;
@@ -21,7 +23,8 @@ export async function readWireRecordsBounded(
     throw new Error(`wire.jsonl: bounded read exceeds budget for ${wirePath}`);
   }
   const chunkBytes = Math.max(1, Math.floor(options.chunkBytes ?? 64 * 1024));
-  const handle = await open(wirePath, 'r');
+  const opened = await openLogicalWire(wirePath);
+  const handle = opened === undefined ? await open(wirePath, 'r') : undefined;
   let position = 0;
   let pending = Buffer.alloc(0);
   let lineNumber = 0;
@@ -29,13 +32,20 @@ export async function readWireRecordsBounded(
     while (position < fileSize) {
       const length = Math.min(chunkBytes, fileSize - position);
       const chunk = Buffer.allocUnsafe(length);
-      const result = await handle.read(chunk, 0, length, position);
-      if (result.bytesRead === 0) {
+      let read: number;
+      if (opened !== undefined) {
+        const bytes = await opened.readAt(position, length);
+        read = Math.min(bytes.byteLength, length);
+        chunk.set(bytes.subarray(0, read));
+      } else {
+        read = (await handle!.read(chunk, 0, length, position)).bytesRead;
+      }
+      const readChunk = chunk.subarray(0, read);
+      if (read === 0) {
         throw new Error(`wire.jsonl: file changed during bounded read for ${wirePath}`);
       }
-      position += result.bytesRead;
-      options.onRead?.(result.bytesRead);
-      const readChunk = chunk.subarray(0, result.bytesRead);
+      position += read;
+      options.onRead?.(read);
       pending = pending.length === 0 ? readChunk : Buffer.concat([pending, readChunk]);
       for (;;) {
         const newline = pending.indexOf(0x0a);
@@ -55,7 +65,8 @@ export async function readWireRecordsBounded(
     }
     return position;
   } finally {
-    await handle.close().catch(() => undefined);
+    opened?.close();
+    await handle?.close().catch(() => undefined);
   }
 }
 

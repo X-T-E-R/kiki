@@ -21,6 +21,7 @@ import {
 
 export { COLD_SEGMENT_BYTES, coldManifestKey, logicalByteSize, openPinnedLogicalRead, readLogicalBytes } from '#/persistence/coldSegmentLog';
 export type { PinnedLogicalRead } from '#/persistence/coldSegmentLog';
+export { readLogicalRange, readPinnedRange, wireFileAddress } from '#/persistence/logicalWireFile';
 
 const textEncoder = new TextEncoder();
 const TRANSIENT_APPEND_ERRNOS = new Set(['EBUSY', 'EPERM', 'EACCES']);

@@ -56,7 +56,6 @@ import {
 import {
   bindSessionTranscript,
   descriptorFromMeta,
-  streamWireRecords,
   type ContextRecord,
   WIRE_COLD_READ_MAX_BYTES,
   WIRE_COLD_READ_MAX_LINE_BYTES,
@@ -71,6 +70,7 @@ import {
 } from '@kiki/transcript-live';
 
 import type { HistoryLocatorStore } from '../history/historyLocatorStore';
+import { openLogicalWire, streamLogicalWireRecords } from '../history/logicalWireRead';
 import { CanonicalEntityPreparingError, type CanonicalToolLookup } from '../history/historyCanonicalReader';
 
 import {
@@ -476,7 +476,7 @@ export class TranscriptService {
       maxCacheBytes: nonNegativeLimit(limits?.maxCacheBytes, DEFAULT_TOOL_CALL_COUNT_CACHE_BYTES),
       readChunkBytes: positiveLimit(limits?.readChunkBytes, DEFAULT_TOOL_CALL_COUNT_READ_CHUNK_BYTES),
     };
-    this.wireRecordReader = deps.wireRecordReader ?? streamWireRecords;
+    this.wireRecordReader = deps.wireRecordReader ?? streamLogicalWireRecords;
     const coldReadLimits = deps.coldReadLimits;
     this.coldReadLimits = {
       maxBytes: nonNegativeLimit(coldReadLimits?.maxBytes, WIRE_COLD_READ_MAX_BYTES),
@@ -2127,62 +2127,69 @@ export class TranscriptService {
 
   private async alignRecordStart(wirePath: string, offset: number, signal: AbortSignal): Promise<number> {
     if (offset <= 0) return 0;
-    const lower = 0;
-    const handle = await open(wirePath, 'r');
+    const opened = await openLogicalWire(wirePath);
+    if (opened === undefined) {
+      await (await open(wirePath, 'r')).close();
+      return 0;
+    }
     try {
       let cursor = offset;
-      while (cursor > lower) {
+      while (cursor > 0) {
         signal.throwIfAborted();
-        const length = Math.min(64 * 1024, cursor - lower);
+        const length = Math.min(64 * 1024, cursor);
         const position = cursor - length;
-        const chunk = Buffer.allocUnsafe(length);
-        const { bytesRead } = await handle.read(chunk, 0, length, position);
-        if (bytesRead === 0) break;
-        this.coldReadBytes += bytesRead;
-        const newline = chunk.subarray(0, bytesRead).lastIndexOf(0x0a);
+        const bytes = await opened.readAt(position, length);
+        if (bytes.byteLength === 0) break;
+        this.coldReadBytes += bytes.byteLength;
+        const newline = Buffer.from(bytes).lastIndexOf(0x0a);
         if (newline >= 0) return position + newline + 1;
         cursor = position;
       }
     } finally {
-      await handle.close().catch(() => undefined);
+      opened.close();
     }
-    return lower;
+    return 0;
   }
 
   private async turnPrefixId(wirePath: string, offset: number, signal: AbortSignal): Promise<string | undefined> {
-    const handle = await open(wirePath, 'r');
+    const opened = await openLogicalWire(wirePath);
+    if (opened === undefined) {
+      await (await open(wirePath, 'r')).close();
+      return undefined;
+    }
     try {
       signal.throwIfAborted();
-      const chunk = Buffer.allocUnsafe(512);
-      const { bytesRead } = await handle.read(chunk, 0, chunk.length, offset);
-      this.coldReadBytes += bytesRead;
-      return bytesRead === 0 ? undefined : turnIdInPrefix(chunk.subarray(0, bytesRead).toString('utf8'));
+      const bytes = await opened.readAt(offset, 512);
+      this.coldReadBytes += bytes.byteLength;
+      return bytes.byteLength === 0 ? undefined : turnIdInPrefix(Buffer.from(bytes).toString('utf8'));
     } finally {
-      await handle.close().catch(() => undefined);
+      opened.close();
     }
   }
 
   private async nextRecordBoundary(wirePath: string, offset: number, fileSize: number, signal: AbortSignal): Promise<number> {
     if (offset >= fileSize) return fileSize;
-    const limit = fileSize;
-    const handle = await open(wirePath, 'r');
+    const opened = await openLogicalWire(wirePath);
+    if (opened === undefined) {
+      await (await open(wirePath, 'r')).close();
+      return fileSize;
+    }
     try {
       let cursor = offset;
-      while (cursor < limit) {
+      while (cursor < fileSize) {
         signal.throwIfAborted();
-        const length = Math.min(64 * 1024, limit - cursor);
-        const chunk = Buffer.allocUnsafe(length);
-        const { bytesRead } = await handle.read(chunk, 0, length, cursor);
-        if (bytesRead === 0) break;
-        this.coldReadBytes += bytesRead;
-        const newline = chunk.subarray(0, bytesRead).indexOf(0x0a);
+        const length = Math.min(64 * 1024, fileSize - cursor);
+        const bytes = await opened.readAt(cursor, length);
+        if (bytes.byteLength === 0) break;
+        this.coldReadBytes += bytes.byteLength;
+        const newline = Buffer.from(bytes).indexOf(0x0a);
         if (newline >= 0) return cursor + newline + 1;
-        cursor += bytesRead;
+        cursor += bytes.byteLength;
       }
     } finally {
-      await handle.close().catch(() => undefined);
+      opened.close();
     }
-    return Math.min(fileSize, limit);
+    return fileSize;
   }
 
   private readWireRange(wirePath: string, start: number, end: number, signal: AbortSignal): ReturnType<TranscriptService['readWireRangeInLane']> {
