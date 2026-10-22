@@ -5,7 +5,7 @@ import { createGzip } from 'node:zlib';
 
 import type { RequestCompression } from '#/kosong/contract/requestCompression';
 import { ambiguousRequestDelivery, createAbortError, isAmbiguousRequestDelivery } from '#/kosong/contract/errors';
-import { RequestDictionaryTransport } from './request-dictionary';
+import { bodyInitBytes, RequestDictionaryTransport } from './request-dictionary';
 
 const compressionDelivery = new AsyncLocalStorage<{ failed: boolean }>();
 
@@ -67,6 +67,6 @@ export function createRequestCompressionFetch(config: RequestCompression | undef
     if (compressed.length >= bytes.length) return fetchImpl(input, init);
     headers.set('content-encoding', 'gzip');
     headers.set('content-length', String(compressed.length));
-    return send(input, { ...init, headers, body: compressed });
+    return send(input, { ...init, headers, body: bodyInitBytes(compressed) });
   };
 }
