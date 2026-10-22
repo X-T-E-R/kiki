@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 
@@ -220,4 +221,48 @@ void test('Nix cache keys and stages preserve the verified Node boundary', async
     baseline,
     cacheKey({ system: 'x86_64-linux', epoch: 2, drvPath: '/nix/store/aaaaaaaa-nodejs-24.22.1.drv' }),
   );
+});
+
+void test('Nix application build failure cannot be hidden by a stale successful result', async (t) => {
+  const workflow = await read('.github/workflows/nix-build.yml');
+  const buildStep = workflow.indexOf('      - name: Build\n');
+  const runBody = workflow.indexOf('        run: |\n', buildStep) + '        run: |\n'.length;
+  const nextStep = workflow.indexOf('\n      - name:', runBody);
+  assert.ok(buildStep >= 0 && runBody > buildStep && nextStep > runBody);
+  const buildScript = workflow.slice(runBody, nextStep).split('\n')
+    .map((line) => line.startsWith('          ') ? line.slice(10) : line)
+    .join('\n');
+
+  await mkdir(join(root, '.tmp'), { recursive: true });
+  const scratch = await mkdtemp(join(root, '.tmp/nix-build-shell-test-'));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const fakeBin = join(scratch, 'fake-bin');
+  const resultBin = join(scratch, 'result/bin');
+  await mkdir(fakeBin, { recursive: true });
+  await mkdir(resultBin, { recursive: true });
+  const fakeNix = join(fakeBin, 'nix');
+  const staleKiki = join(resultBin, 'kiki');
+  await writeFile(fakeNix, '#!/usr/bin/env bash\nprintf "fake nix\\n"\nexit "$FAKE_NIX_EXIT"\n');
+  await writeFile(staleKiki, '#!/usr/bin/env bash\nprintf "smoke\\n" >> "$PWD/smoke-marker"\n');
+  await chmod(fakeNix, 0o755);
+  await chmod(staleKiki, 0o755);
+
+  const bash = process.platform === 'win32' ? 'C:\\Program Files\\Git\\usr\\bin\\bash.exe' : 'bash';
+  const harness = `export PATH="$PWD/fake-bin:$PATH"\nexport GITHUB_OUTPUT="$PWD/github-output"\n${buildScript}`;
+  const execute = async (nixExit) => {
+    await rm(join(scratch, 'github-output'), { force: true });
+    await rm(join(scratch, 'smoke-marker'), { force: true });
+    const result = spawnSync(bash, ['-c', harness], {
+      cwd: scratch,
+      encoding: 'utf8',
+      env: { ...process.env, FAKE_NIX_EXIT: String(nixExit) },
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    return readFile(join(scratch, 'github-output'), 'utf8');
+  };
+
+  assert.match(await execute(1), /^BUILD_FAILED=true$/m);
+  await assert.rejects(readFile(join(scratch, 'smoke-marker')), /ENOENT/);
+  assert.match(await execute(0), /^BUILD_FAILED=false$/m);
+  assert.equal(await readFile(join(scratch, 'smoke-marker'), 'utf8'), 'smoke\n');
 });
