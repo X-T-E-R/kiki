@@ -312,6 +312,42 @@ describe('browser connection execution ownership', () => {
     }
   });
 
+  it('does not let a late stopped confirmation clear a newer backend', async () => {
+    const f = fixture();
+    let releaseClose!: () => void;
+    const closeGate = new Promise<void>((resolve) => { releaseClose = resolve; });
+    const originalOpen = f.factory.open.getMockImplementation()!;
+    let closeCalls = 0;
+    const oldClose = vi.fn(async () => {
+      closeCalls += 1;
+      if (closeCalls === 1) await closeGate;
+    });
+    f.factory.open.mockImplementationOnce(async (config) => ({ ...(await originalOpen(config)), close: oldClose }));
+    vi.useFakeTimers();
+    try {
+      await f.control.connect('a');
+      f.handlers.set('a:agent_browser_click', async () => { throw new Error('response lost after dispatch'); });
+      await expect(f.control.invoke({ browser: 'a', caller, tool: 'agent_browser_click', args: {}, tab: 'a-tab' })).rejects.toThrow('response lost');
+      f.handlers.set('a:agent_browser_session_info', async () => response({ active: false, pid: null, runtime: null }));
+      const checking = f.control.check('a');
+      for (let turn = 0; turn < 8 && closeCalls === 0; turn++) await Promise.resolve();
+      expect(oldClose).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await expect(checking).resolves.toMatchObject({ state: 'unconfirmed', failure: { reason: 'outcome_unknown' } });
+      expect((await f.control.disconnect('a')).state).toBe('disconnected');
+      expect(oldClose).toHaveBeenCalledTimes(2);
+      const fresh = await f.control.connect('a');
+      expect(fresh.state).toBe('ready');
+      releaseClose();
+      for (let turn = 0; turn < 8; turn++) await Promise.resolve();
+      expect(await f.control.status('a')).toMatchObject({ state: 'ready', generation: fresh.generation });
+    } finally {
+      releaseClose();
+      vi.useRealTimers();
+      await f.ix.dispose();
+    }
+  });
+
   it('rejects references from another agent, frame, or an overwritten snapshot before dispatch', async () => {
     const f = fixture();
     try {

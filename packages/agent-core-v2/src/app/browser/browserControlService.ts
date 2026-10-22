@@ -562,21 +562,29 @@ export class BrowserControlService implements IBrowserControlService {
   }
 
   private async confirmStopped(live: LiveBrowser): Promise<BrowserStatus> {
-    if (live.backend === undefined) return { ...live.status };
-    if (live.backend.official !== undefined) return this.closeOfficial(live);
+    const backend = live.backend;
+    if (backend === undefined) return { ...live.status };
+    if (backend.official !== undefined) return this.closeOfficial(live);
+    const generation = live.status.generation;
     const info = browserResponse(await this.call(live, 'agent_browser_session_info', {}));
-    if (this.daemonStopped(info, live.oldPid)) await this.markDaemonStopped(live);
+    if (this.daemonStopped(info, live.oldPid)) await this.markDaemonStopped(live, backend, generation);
     return { ...live.status };
   }
 
-  private async markDaemonStopped(live: LiveBrowser): Promise<void> {
-    await live.backend?.close();
+  private async markDaemonStopped(
+    live: LiveBrowser,
+    backend: BrowserBackend,
+    generation: number,
+    gate?: { readonly open: boolean },
+  ): Promise<void> {
+    await backend.close();
+    if (gate?.open === false || live.backend !== backend || live.status.generation !== generation) return;
     live.backend = undefined;
     live.tools = undefined;
     live.captures = undefined;
     live.target = undefined;
     live.observation = undefined;
-    live.status = { ...live.status, state: 'disconnected', generation: live.status.generation + 1, error: undefined, failure: undefined, checkedAt: new Date().toISOString() };
+    live.status = { ...live.status, state: 'disconnected', generation: generation + 1, error: undefined, failure: undefined, checkedAt: new Date().toISOString() };
   }
 
   private limit<T>(work: Promise<T>, ms: number, signal?: AbortSignal): Promise<T | 'timeout'> {
@@ -600,17 +608,19 @@ export class BrowserControlService implements IBrowserControlService {
   }
 
   private async executionVerdict(live: LiveBrowser, signal: AbortSignal | undefined, gate: { open: boolean }): Promise<'stopped' | 'alive'> {
-    if (live.backend === undefined) {
-      if (gate.open) live.status = { ...live.status, state: 'disconnected', generation: live.status.generation + 1, error: undefined, failure: undefined, checkedAt: new Date().toISOString() };
+    const backend = live.backend;
+    const generation = live.status.generation;
+    if (backend === undefined) {
+      if (gate.open) live.status = { ...live.status, state: 'disconnected', generation: generation + 1, error: undefined, failure: undefined, checkedAt: new Date().toISOString() };
       return 'stopped';
     }
-    if (live.backend.official !== undefined) {
-      await live.backend.official.tabs(undefined, signal);
+    if (backend.official !== undefined) {
+      await backend.official.tabs(undefined, signal);
       return 'alive';
     }
     const info = browserResponse(await this.call(live, 'agent_browser_session_info', {}, signal));
     if (this.daemonStopped(info, live.oldPid)) {
-      if (gate.open) await this.markDaemonStopped(live);
+      await this.markDaemonStopped(live, backend, generation, gate);
       return 'stopped';
     }
     if (info.success === true && info.data?.['active'] === true) return 'alive';
