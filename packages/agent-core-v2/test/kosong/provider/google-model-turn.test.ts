@@ -26,12 +26,13 @@ afterEach(() => {
 });
 
 describe('google-genai trailing model turn', () => {
-  it('refuses a signed think-only tail on gemini-4 before fetch and keeps history', async () => {
+  it('resends a signed think-only tail on gemini-4 without the model turn', async () => {
     const history = [user('Hi'), assistantThink('earlier reasoning', THINK_SIGNATURE)];
     const seen = installFetch(okSse);
-    const caught = await captureGenerate('gemini-4-argon', history);
-    expect(seen).toHaveLength(0);
-    expectLocalRefusal(caught, 'model_prefill', ['thought_signature', 'thought', 'thought_text']);
+    await drainGenerate('gemini-4-argon', history);
+    expect(seen).toHaveLength(1);
+    expect(contentsOf(seen[0]!).map((content) => content['role'])).toEqual(['user']);
+    expect(signaturesOfRequest(seen[0]!)).toEqual([]);
     expect(history).toEqual([user('Hi'), assistantThink('earlier reasoning', THINK_SIGNATURE)]);
   });
 
@@ -345,11 +346,13 @@ describe('google-genai trailing model turn', () => {
     expect(history[1]).toEqual(assistantText('   '));
   });
 
-  it('treats a signature-only think tail as a non-empty model turn', async () => {
+  it('resends a signature-only think tail without putting that part on the wire', async () => {
     const history = [user('Hi'), assistantThink('', THINK_SIGNATURE)];
     const seen = installFetch(okSse);
-    expectLocalRefusal(await captureGenerate('gemini-4-argon', history), 'model_prefill', ['thought_signature', 'thought']);
-    expect(seen).toHaveLength(0);
+    await drainGenerate('gemini-4-argon', history);
+    expect(seen).toHaveLength(1);
+    expect(contentsOf(seen[0]!).map((content) => content['role'])).toEqual(['user']);
+    expect(signaturesOfRequest(seen[0]!)).toEqual([]);
     expect(history[1]?.content[0]).toMatchObject({ type: 'think', encrypted: THINK_SIGNATURE });
   });
 
@@ -467,6 +470,17 @@ function partsOf(content: Record<string, unknown> | undefined): Array<Record<str
   const parts = content?.['parts'];
   if (!Array.isArray(parts)) return [];
   return parts.filter((part): part is Record<string, unknown> => typeof part === 'object' && part !== null);
+}
+
+function signaturesOfRequest(request: SeenRequest): string[] {
+  const signatures: string[] = [];
+  for (const content of contentsOf(request)) {
+    for (const part of partsOf(content)) {
+      const signature = part['thoughtSignature'];
+      if (typeof signature === 'string') signatures.push(signature);
+    }
+  }
+  return signatures;
 }
 
 function lastRole(request: SeenRequest): unknown {

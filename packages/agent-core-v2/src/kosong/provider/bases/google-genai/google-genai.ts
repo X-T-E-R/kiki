@@ -225,12 +225,34 @@ function omitEmptyTrailingGoogleContents(contents: readonly GoogleContent[]): Go
   return end === contents.length ? [...contents] : contents.slice(0, end);
 }
 
+function isThinkOnlyModelContent(content: GoogleContent): boolean {
+  if (content.role !== 'model') return false;
+  const kinds = uniqueGooglePartKinds(content.parts.flatMap(googlePartKinds));
+  return kinds.length > 0 && kinds.every((kind) =>
+    kind === 'thought' || kind === 'thought_signature' || kind === 'thought_text');
+}
+
+function omitTrailingThinkOnlyModelContents(contents: readonly GoogleContent[]): GoogleContent[] {
+  let end = contents.length;
+  while (end > 0) {
+    const content = contents[end - 1];
+    if (content === undefined || !isThinkOnlyModelContent(content)) break;
+    end -= 1;
+  }
+  return contents.slice(0, end);
+}
+
 function outboundGoogleGenAIContents(
   modelName: string,
   contents: readonly GoogleContent[],
 ): GoogleContent[] {
   if (!googleGenAIRejectsTrailingModelTurn(modelName)) return [...contents];
   const wire = omitEmptyTrailingGoogleContents(contents);
+  const continued = omitTrailingThinkOnlyModelContents(wire);
+  const continuedTail = lastNonEmptyGoogleContent(continued);
+  if (continuedTail.tail !== 'empty' && continuedTail.tail !== 'model_prefill' && continuedTail.tail !== 'model_function_call') {
+    return continued;
+  }
   const classified = lastNonEmptyGoogleContent(wire);
   if (classified.tail !== 'model_prefill' && classified.tail !== 'model_function_call') return wire;
   const reason = classified.tail === 'model_function_call'

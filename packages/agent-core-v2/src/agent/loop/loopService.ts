@@ -49,7 +49,6 @@ import type {
 } from '#/app/telemetry/events';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IEventDispatcher } from '#/state/eventDispatcher';
-import { WarningIssued } from '#/agent/profile/profileOps';
 import { LOOP_CONTROL_SECTION, type LoopControl } from './configSection';
 import {
   createMaxStepsExceededError,
@@ -123,6 +122,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   private readonly pendingTurns: TurnJob[] = [];
   private readonly heldAdmissions: HeldAdmission[] = [];
   private activeTurnJob: TurnJob | undefined;
+  private googleThinkResends = 0;
   private lastTurnResult: TurnResult['type'] | undefined;
   private readonly settleWaiters: Array<() => void> = [];
   private quiescenceDepth = 0;
@@ -1013,6 +1013,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     await this.hooks.onWillBeginStep.run({ turnId, step: currentStep, firstStepOfTurn, signal, ...stepIdentity });
     const markStepStarted = this.beginStep(turnId, signal, currentStep, stepUuid, onStarted);
     let stepEndAppended = false;
+    if (firstStepOfTurn) this.googleThinkResends = 0;
     try {
       const streamParts = this.createStreamPartHandler(
         turnId,
@@ -1092,17 +1093,18 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       );
       if (!hookStopTurn && isRealThinkOnlyCompletion(response)) {
         if (this.llmRequester.supportsAssistantPrefill?.() === false) {
-          try {
-            await this.dispatcher.dispatch(new WarningIssued({
-              code: 'google-model-turn-prefill',
-              message: 'Gemini kept this thinking result and cannot continue from a model turn. Send another message to continue.',
-            }));
-          } catch (error) {
-            onUnexpectedError(error);
+          if (this.googleThinkResends >= 1) {
+            throw new Error2(
+              ErrorCodes.LOOP_MAX_STEPS_EXCEEDED,
+              'Gemini returned only thinking again. This SDK cannot send a continuation token, so the turn stopped after one resend.',
+              { details: { google_think_resend_bound: 1 } },
+            );
           }
-        } else {
-          this.enqueue(new ContinuationStepRequest());
+          this.googleThinkResends += 1;
         }
+        this.enqueue(new ContinuationStepRequest());
+      } else {
+        this.googleThinkResends = 0;
       }
       await this.runBoundaryRequests(turnId, signal);
       return { stopReason: finishReason, hookStopTurn };
