@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isRequestGovernanceError } from '#/app/requestGovernance/errors';
 import { LifecycleScope } from '#/app/scopes';
+import { Disposable, MutableDisposable } from '#/_base/di/lifecycle';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { ContextSpliced } from '#/agent/contextMemory/contextEvents';
 import {
   IAgentContextProjectorService,
   type MediaStripSnapshot,
@@ -21,6 +23,7 @@ import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
 import { IAgentMediaResolverService } from '#/agent/media/mediaResolver';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import { IConfigService } from '#/app/config/config';
+import { IEventBus } from '#/app/event/eventBus';
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
 import { INbSearchService } from '#/app/nbSearch/nbSearch';
 import { PROMPT_SECTION, type PromptConfig } from '#/app/prompt/configSection';
@@ -36,11 +39,13 @@ import {
   APIRequestTooLargeError,
   APIStatusError,
   classifyApiError,
+  requestDeliveryProvenance,
   isImageFormatError,
   isRecoverableRequestStructureError,
   isRetryableGenerateError,
 } from '#/kosong/contract/errors';
 import { isToolCall, type Message, type StreamedMessagePart } from '#/kosong/contract/message';
+import type { ResponsesRequestTransport } from '#/kosong/contract/responsesTransport';
 import { type ThinkingEffort } from '#/kosong/contract/provider';
 import { type Tool } from '#/kosong/contract/tool';
 import { emptyUsage, inputTotal, type TokenUsage } from '#/kosong/contract/usage';
@@ -59,15 +64,20 @@ import { IModelService } from '#/kosong/model/model';
 import { completionBudgetParams, resolveCompletionBudget } from '#/kosong/model/completionBudget';
 import { resolveThinkingKeep, type ThinkingConfig } from '#/kosong/model/thinking';
 import {
+  DEFAULT_MODEL_SECTION,
+  DEFAULT_PROVIDER_SECTION,
+  MODELS_SECTION,
   PROVIDERS_SECTION,
   REQUEST_IDENTITY_SECTION,
   THINKING_SECTION,
 } from '#/app/kosongConfig/configSection';
 import type { Protocol } from '#/kosong/protocol/protocol';
 import { googleGenAIRejectsTrailingModelTurn } from '#/kosong/provider/bases/google-genai/googleModelTurn';
-import type {
-  ProviderConfig,
-  ProvidersSection,
+import { ResponsesWebSocketTransport } from '#/kosong/provider/bases/openai/responses-websocket';
+import {
+  IProviderService,
+  type ProviderConfig,
+  type ProvidersSection,
 } from '#/kosong/provider/provider';
 import { getProviderDefinition, usesKimiToolSchema } from '#/kosong/provider/providerDefinition';
 import {
@@ -217,7 +227,7 @@ export const llmRequesterEmittedThinkingEffortWarningsKey = defineState<Set<stri
   () => new Set(),
 );
 
-export class AgentLLMRequesterService implements IAgentLLMRequesterService {
+export class AgentLLMRequesterService extends Disposable implements IAgentLLMRequesterService {
   declare readonly _serviceBrand: undefined;
 
   private retryAttribution: { key: string; value: import('#/kosong/model/requestAdmission').RequestAttribution } | undefined;
@@ -225,6 +235,9 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
   private readonly frozenTurnTools = new Map<number, readonly Tool[]>();
   private previousToolset: { hash: string; tools: readonly LlmRequestToolSchema[] } | undefined;
   private responseCapture: AnthropicResponseCapture | undefined;
+  private readonly responsesTransport = this._register(new MutableDisposable<ResponsesWebSocketTransport>());
+  private responsesTransportModel: Model | undefined;
+  private responsesTransportKey: string | undefined;
 
   armAnthropicResponseCapture(input: AnthropicResponseCaptureInput): AnthropicResponseCaptureStatus {
     if (input?.sessionId !== this.sessionContext.sessionId || input?.agentId !== this.agentContext.agentId) {
@@ -268,6 +281,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     @INbSearchService private readonly nbSearch: INbSearchService,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IModelService private readonly modelService: IModelService,
+    @IProviderService private readonly providers: IProviderService,
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
     @ILogService private readonly log: ILogService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
@@ -276,13 +290,30 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     @IRequestIdentityRegistry private readonly requestIdentities: IRequestIdentityRegistry,
     @IRequestIdentityCatalog private readonly identityCatalog: IRequestIdentityCatalog,
     @IAppendLogStore private readonly captureLogs: IAppendLogStore,
+    @IEventBus private readonly eventBus: IEventBus,
   ) {
+    super();
     this.states.contributeState(llmRequestTraceKey);
     this.states.contributeState(llmRequesterLastConfigLogSignatureKey);
     this.states.contributeState(llmRequesterTurnConfigsKey);
     this.states.contributeState(llmRequesterMediaDegradedTurnsKey);
     this.states.contributeState(llmRequesterMediaStrippedTurnsKey);
     this.states.contributeState(llmRequesterEmittedThinkingEffortWarningsKey);
+    this._register(this.eventBus.subscribe(ContextSpliced, (event) => {
+      if (event.deleteCount > 0) this.closeResponsesTransport();
+    }));
+    const onDidSectionChange = this.config.onDidSectionChange;
+    if (onDidSectionChange !== undefined) {
+      this._register(onDidSectionChange(({ domain }) => {
+        if (isResponsesTransportConfigSection(domain)) this.closeResponsesTransport();
+      }));
+    }
+    this._register(this.providers.onDidChangeProviders(() => this.closeResponsesTransport()));
+    this._register(this.providers.onDidChangeDefaultProvider(() => this.closeResponsesTransport()));
+    const onDidChangeModels = this.modelService.onDidChangeModels;
+    if (onDidChangeModels !== undefined) {
+      this._register(onDidChangeModels(() => this.closeResponsesTransport()));
+    }
   }
 
   private get lastConfigLogSignature(): string | undefined {
@@ -309,6 +340,31 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     return this.states.get(llmRequesterEmittedThinkingEffortWarningsKey);
   }
 
+  private closeResponsesTransport(): void {
+    this.responsesTransport.clear();
+    this.responsesTransportModel = undefined;
+    this.responsesTransportKey = undefined;
+  }
+
+  private ensureResponsesTransport(
+    request: Pick<ResolvedLLMRequest, 'model' | 'source' | 'identity'>,
+  ): ResponsesRequestTransport | undefined {
+    const model = request.model;
+    const config = model.responsesWebSocket;
+    if (request.source?.type !== 'turn' || model.protocol !== 'openai_responses' || config === undefined || config.targets.length === 0) {
+      this.closeResponsesTransport();
+      return undefined;
+    }
+    const key = responsesTransportKey(model, request.identity);
+    if (this.responsesTransport.value === undefined || this.responsesTransportModel !== model || this.responsesTransportKey !== key) {
+      this.closeResponsesTransport();
+      this.responsesTransportModel = model;
+      this.responsesTransportKey = key;
+      this.responsesTransport.value = new ResponsesWebSocketTransport();
+    }
+    return this.responsesTransport.value;
+  }
+
   prepareTurnConfig(turnId: number): PreparedTurnRequestConfig | undefined {
     if (!this.profile.hasProvider()) return undefined;
     const config = this.getOrCreateTurnConfig(turnId);
@@ -330,6 +386,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
   invalidatePromptSnapshots(): number {
     const invalidated = this.turnConfigs.size;
     this.turnConfigs.clear();
+    this.closeResponsesTransport();
     return invalidated;
   }
 
@@ -360,6 +417,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     signal: AbortSignal | undefined,
   ): Promise<AgentLLMRequestFinish> {
     signal?.throwIfAborted();
+    if (overrides.source?.type !== 'turn') this.closeResponsesTransport();
     const startedAt = Date.now();
     trace.set(undefined);
     try {
@@ -628,6 +686,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
         if (this.retryAttribution?.value === attribution) this.retryAttribution = undefined;
         return result;
       } catch (error) {
+        if (requestDeliveryProvenance(error) !== undefined) throw error;
         const nextPolicy = this.nextProjectionPolicyForError(
           error,
           policy,
@@ -643,6 +702,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
         }
         const raw = unwrapErrorCause(error);
         if (
+          requestDeliveryProvenance(error) !== undefined ||
           !this.infiniteRetryEnabled ||
           isRequestGovernanceError(error) ||
           isAbortError(error) ||
@@ -680,7 +740,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     signal: AbortSignal | undefined,
     captureMediaStripPolicy: () => { readonly strip: MediaStripSnapshot },
   ): ProjectionPolicy | undefined {
-    if (signal?.aborted === true) return undefined;
+    if (signal?.aborted === true || requestDeliveryProvenance(error) !== undefined) return undefined;
     const raw = unwrapErrorCause(error);
     const media = policy?.media;
     if (
@@ -946,22 +1006,23 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
       ? turnConfig?.promptFields ?? this.profile.getPromptFieldSnapshot()
       : this.profile.getPromptFieldSnapshot({ anchor: true });
     const promptVariables = customPromptVariables(this.profile.data().boundProfile?.promptBase?.inputs?.variables ?? promptConfig?.variables);
-    return {
+    const params: ModelRequestParams = {
+      ...baseParams,
+      cacheKey: identityProjection.cacheKey,
+      requestParams: withIdentityParams(
+        stripRequestIdentityBodyParams(stripKikiReservedRequestParams(baseParams.requestParams)),
+        identityProjection.params,
+      ),
+      ...budgetParams,
+      usedContextTokens: useServerOutputDefault ? usedContextTokens : budgetParams?.usedContextTokens,
+      usedContextTokensTrusted: overrides.messages === undefined && this.tokenCounting.isCurrentContextMeasured(),
+      headers: identityProjection.headers,
+      requestIdentity: identityProjection.wire,
+    };
+    const request: ResolvedLLMRequest = {
       requester,
       model: requester.model,
-      params: {
-        ...baseParams,
-        cacheKey: identityProjection.cacheKey,
-        requestParams: withIdentityParams(
-          stripRequestIdentityBodyParams(stripKikiReservedRequestParams(baseParams.requestParams)),
-          identityProjection.params,
-        ),
-        ...budgetParams,
-        usedContextTokens: useServerOutputDefault ? usedContextTokens : budgetParams?.usedContextTokens,
-        usedContextTokensTrusted: overrides.messages === undefined && this.tokenCounting.isCurrentContextMeasured(),
-        headers: identityProjection.headers,
-        requestIdentity: identityProjection.wire,
-      },
+      params,
       identity,
       modelAlias: resolved.modelAlias,
       thinkingEffort: resolved.thinkingLevel,
@@ -982,6 +1043,13 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
         bindingRevision: cognition.bindingRevision,
         anchorSteps: cognition.config?.anchor === undefined ? undefined : cognition.config.anchorSteps ?? 1,
         anchorScope: cognition.config?.anchor === undefined ? undefined : cognition.config.anchorScope ?? 'session',
+      },
+    };
+    return {
+      ...request,
+      params: {
+        ...params,
+        responsesTransport: this.ensureResponsesTransport(request),
       },
     };
   }
@@ -1207,6 +1275,49 @@ class MutableLLMRequestTrace implements LLMRequestTrace {
 function requestIdentityTurnKey(source: AgentLLMRequestSource | undefined): string {
   if (source?.turnId !== undefined) return `turn:${String(source.turnId)}`;
   return `operation:${source?.type === 'operation' ? (source.requestKind ?? 'unknown') : 'unknown'}:${randomUUID()}`;
+}
+
+function isResponsesTransportConfigSection(domain: string): boolean {
+  switch (domain) {
+    case DEFAULT_MODEL_SECTION:
+    case DEFAULT_PROVIDER_SECTION:
+    case MODELS_SECTION:
+    case PROVIDERS_SECTION:
+    case REQUEST_IDENTITY_SECTION:
+    case THINKING_SECTION:
+    case 'modelOverrides':
+      return true;
+    default:
+      return false;
+  }
+}
+
+function responsesTransportKey(
+  model: Model,
+  identity: RequestIdentityAttemptContext,
+): string {
+  const value = {
+    model: {
+      id: model.id,
+      name: model.name,
+      protocol: model.protocol,
+      providerName: model.providerName,
+      providerType: model.providerType,
+      baseUrl: model.baseUrl,
+      headers: model.headers,
+      requestCompression: model.requestCompression,
+      providerOptions: model.providerOptions,
+      responsesWebSocket: model.responsesWebSocket,
+    },
+    policy: identity.policy,
+    hostRequestHeaders: identity.hostRequestHeaders,
+    isKimiProvider: identity.isKimiProvider,
+  };
+  try {
+    return fingerprint(JSON.stringify(value) ?? '');
+  } catch {
+    return fingerprint(`${model.id}\u0000${model.name}\u0000${model.providerName}`);
+  }
 }
 
 function validateRequestIdentityHeaderCollisions(

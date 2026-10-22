@@ -1,5 +1,10 @@
 import { createControlledPromise } from '@antfu/utils';
 import { release as osRelease } from 'node:os';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { OpenAIResponsesChatProvider } from '#/kosong/provider/bases/openai/openai-responses';
+import { ModelRequesterImpl } from '#/kosong/model/modelRequesterImpl';
+import type { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
@@ -70,9 +75,10 @@ import type { ToolInfo } from '#/tool/toolContract';
 import { toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
 import { SshHostStore } from '#/app/ssh/sshHosts';
 import type { ModelCapability } from '#/kosong/contract/capability';
+import { ResponsesWebSocketTransport } from '#/kosong/provider/bases/openai/responses-websocket';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import { IModelService, type ModelRecord } from '#/kosong/model/model';
-import type { ProvidersSection } from '#/kosong/provider/provider';
+import { IProviderService, type ProvidersSection } from '#/kosong/provider/provider';
 import type { RequestIdentityPolicy } from '#/kosong/requestIdentity/requestIdentityPolicy';
 import '#/kosong/provider/providers/kimi/kimi.contrib';
 import {
@@ -398,6 +404,10 @@ function createService(
   });
   ix.stub(IAgentUsageService, usage);
   ix.stub(IConfigService, config);
+  ix.stub(IProviderService, {
+    onDidChangeProviders: () => toDisposable(() => {}),
+    onDidChangeDefaultProvider: () => toDisposable(() => {}),
+  });
   ix.stub(IAgentIdentity, {
     resolved: async () => identitySnapshot,
     current: () => identitySnapshot,
@@ -534,6 +544,54 @@ describe('AgentLLMRequesterService prompt snapshot invalidation', () => {
     expect(service.invalidatePromptSnapshots()).toBe(1);
     await service.request({ source: { type: 'turn', turnId: 7, step: 3 } });
     expect(captured.at(-1)?.systemPrompt).toBe('prompt-new');
+  });
+});
+
+describe('AgentLLMRequesterService Responses WebSocket lifecycle', () => {
+  it('shares only the main turn lineage and disposes the transport on helper/rebase boundaries', async () => {
+    const requester = createRequester({ value: 0 }, null, [], undefined, { protocol: 'openai_responses' });
+    Object.assign(requester.model, { responsesWebSocket: { targets: ['https://example.test'] } });
+    const captured = captureRequestParams(requester);
+    const dispose = vi.spyOn(ResponsesWebSocketTransport.prototype, 'dispose');
+    const { service } = createService(requester, undefined);
+    try {
+      await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+      const first = captured[0]?.responsesTransport;
+      expect(first).toBeDefined();
+      await service.request({ source: { type: 'turn', turnId: 1, step: 2 } });
+      await service.request({ source: { type: 'turn', turnId: 2, step: 1 } });
+      expect(captured[1]?.responsesTransport).toBe(first);
+      expect(captured[2]?.responsesTransport).toBe(first);
+
+      await service.request({ source: { type: 'operation', requestKind: 'full_compaction' } });
+      expect(captured[3]?.responsesTransport).toBeUndefined();
+      expect(dispose).toHaveBeenCalledTimes(1);
+
+      await service.request({ source: { type: 'turn', turnId: 3, step: 1 } });
+      expect(captured[4]?.responsesTransport).toBeDefined();
+      expect(captured[4]?.responsesTransport).not.toBe(first);
+      expect(service.invalidatePromptSnapshots()).toBe(1);
+      expect(dispose).toHaveBeenCalledTimes(2);
+    } finally {
+      await (service as unknown as { dispose(): void | Promise<void> }).dispose();
+      dispose.mockRestore();
+    }
+  });
+
+  it('creates a distinct transport for each Agent service instance', async () => {
+    const firstRequester = createRequester({ value: 0 }, null, [], undefined, { protocol: 'openai_responses' });
+    const secondRequester = createRequester({ value: 0 }, null, [], undefined, { protocol: 'openai_responses' });
+    Object.assign(firstRequester.model, { responsesWebSocket: { targets: ['https://example.test'] } });
+    Object.assign(secondRequester.model, { responsesWebSocket: { targets: ['https://example.test'] } });
+    const firstCaptured = captureRequestParams(firstRequester);
+    const secondCaptured = captureRequestParams(secondRequester);
+    const first = createService(firstRequester, undefined).service;
+    const second = createService(secondRequester, undefined).service;
+    await first.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+    await second.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+    expect(firstCaptured[0]?.responsesTransport).toBeDefined();
+    expect(secondCaptured[0]?.responsesTransport).toBeDefined();
+    expect(firstCaptured[0]?.responsesTransport).not.toBe(secondCaptured[0]?.responsesTransport);
   });
 });
 
@@ -2243,5 +2301,58 @@ describe('Anthropic raw capture management port', () => {
     await service.request(); expect(params.at(-1)?.rawResponseObserver).toBeUndefined();
     service.armAnthropicResponseCapture({ ...input, providerId: 'other' });
     await service.request(); expect(params.at(-1)?.rawResponseObserver).toBeUndefined();
+  });
+});
+
+describe('AgentLLMRequesterService production delivery provenance', () => {
+  it.each([
+    { kind: 'unknown connection', status: undefined, message: 'terminated' },
+    { kind: 'partial rate limit', status: 429, message: 'rate limit after partial output' },
+    { kind: 'partial media rejection', status: 413, message: 'request entity too large' },
+    { kind: 'partial structure rejection', status: 400, message: 'messages: `tool_use` ids must be unique' },
+  ])('does not replay $kind through projection or infinite retry', async ({ status, message }) => {
+    let calls = 0;
+    const server = createServer((request, response) => {
+      calls += 1;
+      request.resume();
+      request.on('end', () => {
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        if (status === undefined) {
+          response.write(': connected\n\n');
+          setImmediate(() => response.destroy());
+          return;
+        }
+        const events = [
+          { type: 'response.created', response: { id: 'resp_partial', output: [], status: 'in_progress' } },
+          { type: 'response.output_text.delta', item_id: 'msg_partial', output_index: 0, content_index: 0, delta: 'partial' },
+          { type: 'error', code: 'synthetic_rejection', message, status },
+        ];
+        response.end(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''));
+      });
+    });
+    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve); });
+    const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const model = { ...createRequester({ value: 0 }, null).model, protocol: 'openai_responses' as const, baseUrl,
+      authProvider: { getAuth: async () => ({ apiKey: 'YOUR_API_KEY' }) } };
+    const provider = new OpenAIResponsesChatProvider({ model: model.name, baseUrl, apiKey: 'YOUR_API_KEY',
+      requestCompression: { encoding: 'gzip', targets: [baseUrl], minBytes: 0 },
+      convertError: (event) => {
+        if (typeof event !== 'object' || event === null) return undefined;
+        const raw = event as Record<string, unknown>;
+        return typeof raw['status'] === 'number' && typeof raw['message'] === 'string'
+          ? new APIStatusError(raw['status'], raw['message']) : undefined;
+      },
+    });
+    const requester = new ModelRequesterImpl(model, { createChatProvider: () => provider } as unknown as IProtocolAdapterRegistry);
+    const { service } = createService(requester, undefined, { env: { [KIKI_INFINITE_RETRY_ENV]: '1' } });
+    try {
+      const result = service.request({ source: { type: 'turn', turnId: 1, step: 1 } }, undefined, AbortSignal.timeout(2_000));
+      if (status === undefined) await expect(result).rejects.toThrow('Request delivery is uncertain');
+      else await expect(result).rejects.toMatchObject({ statusCode: status, message });
+      expect(calls).toBe(1);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => { server.close(() => resolve()); });
+    }
   });
 });

@@ -70,6 +70,25 @@ dictionary = true
 
 Only a marked, pre-execution decoding rejection permits an encoding fallback, with at most three attempts. A lost response or uncertain delivery does not trigger a second generation. If a target does not support compression, disable it before starting a new request rather than relying on automatic format probing.
 
+## Incremental Responses over WebSocket
+
+For a gateway that advertises the version 1 `X-Responses-WebSocket-Capabilities` handshake, opt in to connection-local Responses history:
+
+```toml
+[providers.gateway]
+type = "openai_responses"
+base_url = "https://example.com/v1"
+
+[providers.gateway.responses_web_socket]
+targets = ["https://example.com/v1"]
+```
+
+The target must match the origin and path boundary of the Responses endpoint. Kiki uses the official OpenAI SDK, keeps one socket per Agent, and sends only new input when the previous completed response still matches the local history. Helper requests, other Agents, and forks do not share that history. Canceling a request closes its socket; model, credentials, policy, and context changes reset the connection or send a full request. Remove `responses_web_socket` to keep ordinary HTTP requests.
+
+The gateway temporarily retains native request and response items on the connection. Unlike HTTP request dictionaries, this state follows completed generation, not dictionary acknowledgements. Unknown output fields are retained in an in-memory sidecar and sent in full rather than used for an incremental request.
+
+If the gateway explicitly reports missing history before execution, Kiki sends the full current history once. A pre-execution unsupported upstream format or prompt policy can fall back to a full HTTP request. Access denials and uncertain or partial responses are not replayed. This path supports `response.create` generation only; it does not enable background generation, steering, or `generate:false` warmup.
+
 ## `/provider` — interactive provider management
 
 Prefer not to edit TOML by hand? Type `/provider` in the TUI to open the **provider manager**, where you can interactively add or remove providers.

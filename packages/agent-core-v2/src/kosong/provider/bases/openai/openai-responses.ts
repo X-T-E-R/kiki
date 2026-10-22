@@ -6,7 +6,9 @@ import {
   APIContextOverflowError,
   APIProviderQuotaExhaustedError,
   APIProviderRateLimitError,
+  APIStatusError,
   ChatProviderError,
+  ambiguousRequestDelivery,
   createAbortError,
   isAbortError,
   isContextOverflowErrorCode,
@@ -32,6 +34,8 @@ import type {
 import type { Tool } from '#/kosong/contract/tool';
 import type { TokenUsage } from '#/kosong/contract/usage';
 import type { RequestCompression } from '#/kosong/contract/requestCompression';
+import type { ResponsesWebSocketConfig } from '#/kosong/contract/responsesTransport';
+import { ResponsesWebSocketError } from './responses-websocket';
 import { createRequestCompressionFetch } from '../request-compression';
 import { guardRequestDelivery } from '../request-delivery';
 import { matchesProviderTarget } from '../../providerTarget';
@@ -53,6 +57,7 @@ import {
   type ToolMessageConversion,
 } from './openai-common';
 import {
+  finalizeProviderRequestHeaders,
   mergeProviderRequestAuth,
   requestIdentityFetchForAuth,
   mergeRequestHeaders,
@@ -122,6 +127,13 @@ function asRawObject(value: unknown): RawObject | null {
     return null;
   }
   return value as RawObject;
+}
+
+function transportStatusError(error: unknown): APIStatusError | undefined {
+  if (!(error instanceof ResponsesWebSocketError) || error.status === undefined || error.status < 400 || error.status > 599) return undefined;
+  return attachErrorDetails(new APIStatusError(error.status, error.message), {
+    errorSource: 'provider_event', nativeCode: error.code, execution: error.execution,
+  });
 }
 
 function readStringField(object: RawObject, key: string): string | undefined {
@@ -390,6 +402,7 @@ export interface OpenAIResponsesOptions {
   httpClient?: unknown;
   defaultHeaders?: Record<string, string>;
   requestCompression?: RequestCompression;
+  responsesWebSocket?: ResponsesWebSocketConfig;
   toolMessageConversion?: ToolMessageConversion | undefined;
   clientFactory?: (auth: ProviderRequestAuth) => OpenAI;
   convertError?: (error: unknown) => ChatProviderError | undefined;
@@ -647,6 +660,56 @@ function convertMessage(
   return result;
 }
 
+function projectRepresentableResponseOutput(output: readonly unknown[], model: string, toolConversion: ToolMessageConversion): { input: readonly unknown[]; incremental: boolean } | undefined {
+  const expected: Message = { role: 'assistant', content: [], toolCalls: [] };
+  let incremental = true;
+  const append = (part: ContentPart): void => {
+    const last = expected.content.at(-1);
+    if (last?.type === 'text' && part.type === 'text') last.text += part.text;
+    else if (last?.type === 'think' && part.type === 'think' && last.encrypted === undefined) {
+      last.think += part.think;
+      last.encrypted = part.encrypted;
+    } else expected.content.push(part);
+  };
+  for (const raw of output) {
+    const item = asRawObject(raw);
+    if (item === null || (item['status'] !== undefined && item['status'] !== 'completed')) return undefined;
+    const type = item['type'];
+    const allowed = type === 'message' ? ['type', 'id', 'status', 'role', 'content']
+      : type === 'function_call' ? ['type', 'id', 'status', 'call_id', 'name', 'arguments']
+      : type === 'reasoning' ? ['type', 'id', 'status', 'summary', 'encrypted_content'] : [];
+    if (allowed.length === 0) { incremental = false; continue; }
+    if (Object.keys(item).some((key) => !allowed.includes(key))) incremental = false;
+    if (type === 'message') {
+      if (item['role'] !== 'assistant' || !Array.isArray(item['content'])) return undefined;
+      for (const rawContent of item['content']) {
+        const content = asRawObject(rawContent);
+        if (content === null) return undefined;
+        if (content['type'] !== 'output_text') { incremental = false; continue; }
+        if (typeof content['text'] !== 'string') return undefined;
+        if (Object.keys(content).some((key) => !['type', 'text', 'annotations', 'logprobs'].includes(key)) ||
+          (content['annotations'] !== undefined && (!Array.isArray(content['annotations']) || content['annotations'].length !== 0)) ||
+          (content['logprobs'] !== undefined && (!Array.isArray(content['logprobs']) || content['logprobs'].length !== 0))) incremental = false;
+        if (content['text']) append({ type: 'text', text: content['text'] });
+      }
+    } else if (type === 'function_call') {
+      if (typeof item['call_id'] !== 'string' || typeof item['name'] !== 'string' || typeof item['arguments'] !== 'string') return undefined;
+      expected.toolCalls.push({ type: 'function', id: item['call_id'], name: item['name'], arguments: item['arguments'] });
+    } else {
+      if (!Array.isArray(item['summary']) || (item['encrypted_content'] !== undefined && typeof item['encrypted_content'] !== 'string')) return undefined;
+      let text = '';
+      for (const rawSummary of item['summary']) {
+        const summary = asRawObject(rawSummary);
+        if (summary === null || summary['type'] !== 'summary_text' || typeof summary['text'] !== 'string' ||
+          Object.keys(summary).some((key) => !['type', 'text'].includes(key))) return undefined;
+        text += summary['text'];
+      }
+      append({ type: 'think', think: text, encrypted: item['encrypted_content'] as string | undefined });
+    }
+  }
+  return { input: convertMessage(expected, model, toolConversion), incremental };
+}
+
 function convertTool(tool: Tool): ResponseToolParam {
   return {
     type: 'function',
@@ -706,6 +769,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
     private readonly _convertErrorHook?:
       | ((error: unknown) => ChatProviderError | undefined)
       | undefined,
+    private readonly _commitMessage?: (responseId: string, message: Message) => void,
   ) {
     if (isStream) {
       this._diagnostics = createStreamDiagnostics();
@@ -713,6 +777,10 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
     } else {
       this._iter = this._convertNonStreamResponse(response as RawObject);
     }
+  }
+
+  commitMessage(message: Message): void {
+    if (this._id !== null) this._commitMessage?.(this._id, message);
   }
 
   get id(): string | null {
@@ -1176,7 +1244,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
         throw attachStreamDiagnostics(createAbortError(), diagnostics);
       }
       if (diagnostics.endSource !== 'event_error' && diagnostics.endSource !== 'eof') diagnostics.endSource = readingEvent ? 'sdk_error' : 'local_error';
-      throw attachStreamDiagnostics(convertOpenAIError(error, this._convertErrorHook), diagnostics);
+      throw attachStreamDiagnostics(transportStatusError(error) ?? convertOpenAIError(error, this._convertErrorHook), diagnostics);
     } finally {
       if (diagnostics.endSource === 'in_progress') diagnostics.endSource = 'cancelled';
     }
@@ -1192,6 +1260,7 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
   private readonly _baseUrl: string | undefined;
   private readonly _defaultHeaders: Record<string, string> | undefined;
   private readonly _requestCompression: ReturnType<typeof createRequestCompressionFetch>;
+  private readonly _responsesWebSocket: ResponsesWebSocketConfig | undefined;
   private readonly _guardDelivery: boolean;
   private readonly _thinkingEffort: ThinkingEffort | undefined;
   private readonly _offEffort: string | undefined;
@@ -1208,6 +1277,7 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
     this._baseUrl = options.baseUrl ?? 'https://api.openai.com/v1';
     this._defaultHeaders = options.defaultHeaders;
     this._requestCompression = createRequestCompressionFetch(options.requestCompression);
+    this._responsesWebSocket = options.responsesWebSocket;
     this._guardDelivery = options.requestCompression !== undefined && options.requestCompression.encoding !== 'off' &&
       matchesProviderTarget(`${this._baseUrl.replace(/\/$/, '')}/responses`, options.requestCompression.targets);
     this._model = options.model;
@@ -1371,6 +1441,30 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
         );
       }
 
+      const transport = options?.responsesTransport;
+      if (transport !== undefined && this._responsesWebSocket !== undefined &&
+        matchesProviderTarget(`${client.baseURL.replace(/\/$/, '')}/responses`, this._responsesWebSocket.targets)) {
+        const auth = mergeProviderRequestAuth(options?.auth, options?.headers);
+        const headers = finalizeProviderRequestHeaders(mergeRequestHeaders(this._defaultHeaders, undefined, auth?.headers), auth);
+        let fullInput: readonly unknown[] | undefined;
+        try {
+          options?.onRequestSent?.();
+          const response = await transport.request(createParams, {
+            baseUrl: client.baseURL,
+            apiKey: requireProviderApiKey('OpenAIResponsesChatProvider', auth, this._apiKey),
+            headers: Object.fromEntries(headers),
+            signal: options?.signal,
+            canonicalOutput: (output) => projectRepresentableResponseOutput(output, this._model, this._toolMessageConversion),
+            onFullInput: (input) => { fullInput = input; },
+          });
+          return guardRequestDelivery(new OpenAIResponsesStreamedMessage(response, true, this._convertErrorHook,
+            (id, message) => transport.commitResponse(id, convertMessage(message, this._model, this._toolMessageConversion))), true);
+        } catch (error) {
+          if (isAbortError(error)) throw error;
+          if (!(error instanceof ResponsesWebSocketError && error.safeHttpFallback)) throw transportStatusError(error) ?? ambiguousRequestDelivery(error);
+          if (fullInput !== undefined) createParams['input'] = fullInput;
+        }
+      }
       options?.onRequestSent?.();
       const responsePromise = (
         client.responses as {

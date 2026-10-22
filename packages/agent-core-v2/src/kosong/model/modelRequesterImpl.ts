@@ -6,6 +6,7 @@ import {
   APIStatusError,
   CONFIG_INVALID_ERROR_CODE,
   isAbortError,
+  requestDeliveryProvenance,
   VideoUploadUnsupportedError,
 } from '#/kosong/contract/errors';
 import type { VideoURLPart } from '#/kosong/contract/message';
@@ -59,6 +60,7 @@ export class ModelRequesterImpl implements ModelRequester {
       apiKey: '',
       defaultHeaders: model.headers,
       requestCompression: model.requestCompression,
+      responsesWebSocket: model.responsesWebSocket,
       providerOptions: model.providerOptions,
     });
     return this.cachedChatProvider;
@@ -276,7 +278,7 @@ export class ModelRequesterImpl implements ModelRequester {
   }
 
   private shouldForceRefresh(error: unknown): boolean {
-    return this.authProvider.canRefresh === true && isUnauthorizedStatusError(error);
+    return requestDeliveryProvenance(error) === undefined && this.authProvider.canRefresh === true && isUnauthorizedStatusError(error);
   }
 }
 
