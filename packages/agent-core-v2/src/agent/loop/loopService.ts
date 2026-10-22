@@ -49,6 +49,7 @@ import type {
 } from '#/app/telemetry/events';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IEventDispatcher } from '#/state/eventDispatcher';
+import { WarningIssued } from '#/agent/profile/profileOps';
 import { LOOP_CONTROL_SECTION, type LoopControl } from './configSection';
 import {
   createMaxStepsExceededError,
@@ -1090,7 +1091,18 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         stepIdentity,
       );
       if (!hookStopTurn && isRealThinkOnlyCompletion(response)) {
-        this.enqueue(new ContinuationStepRequest());
+        if (this.llmRequester.supportsAssistantPrefill?.() === false) {
+          try {
+            void this.dispatcher.dispatch(new WarningIssued({
+              code: 'google-model-turn-prefill',
+              message: 'Gemini kept this thinking result and cannot continue from a model turn. Send another message to continue.',
+            }));
+          } catch (error) {
+            onUnexpectedError(error);
+          }
+        } else {
+          this.enqueue(new ContinuationStepRequest());
+        }
       }
       await this.runBoundaryRequests(turnId, signal);
       return { stopReason: finishReason, hookStopTurn };

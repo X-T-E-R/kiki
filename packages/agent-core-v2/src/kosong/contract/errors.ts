@@ -304,7 +304,12 @@ export function isRetryableGenerateError(error: unknown): boolean {
       (error.statusCode >= 500 && error.statusCode <= 599)
     );
   }
-  return error instanceof ChatProviderError && !isImageFormatError(error);
+  if (error instanceof ChatProviderError) {
+    const tail = error.details?.['google_content_tail'];
+    if (tail === 'model_prefill' || tail === 'model_function_call') return false;
+    return !isImageFormatError(error);
+  }
+  return false;
 }
 
 const NETWORK_RE = /network|connection|connect|disconnect|terminated/i;

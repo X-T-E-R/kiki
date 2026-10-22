@@ -64,6 +64,7 @@ import {
   THINKING_SECTION,
 } from '#/app/kosongConfig/configSection';
 import type { Protocol } from '#/kosong/protocol/protocol';
+import { googleGenAIRejectsTrailingModelTurn } from '#/kosong/provider/bases/google-genai/googleModelTurn';
 import type {
   ProviderConfig,
   ProvidersSection,
@@ -311,6 +312,18 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     if (!this.profile.hasProvider()) return undefined;
     const config = this.getOrCreateTurnConfig(turnId);
     return { thinkingEffort: config.resolved.thinkingLevel };
+  }
+
+  supportsAssistantPrefill(): boolean {
+    try {
+      if (!this.profile.hasProvider()) return true;
+      const alias = this.profile.resolveModelContext().modelAlias;
+      const model = this.modelCatalog.get(alias);
+      if (model.protocol !== 'google-genai') return true;
+      return !googleGenAIRejectsTrailingModelTurn(model.name);
+    } catch {
+      return true;
+    }
   }
 
   invalidatePromptSnapshots(): number {

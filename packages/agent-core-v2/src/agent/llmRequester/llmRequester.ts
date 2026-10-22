@@ -59,6 +59,7 @@ export interface IAgentLLMRequesterService {
   readonly _serviceBrand: undefined;
 
   prepareTurnConfig(turnId: number): PreparedTurnRequestConfig | undefined;
+  supportsAssistantPrefill?(): boolean;
   invalidatePromptSnapshots(): number;
   /** Arms an in-memory, default-off diagnostic lease for this exact session/agent and provider/model/effort. Captures future Anthropic SSE bytes in a separate logs append-log, never request/auth headers or canonical history. Expiry is within two hours; 1–100 attempts, 8 MiB per response and 64 MiB per lease are ceilings, not coverage claims. */
   armAnthropicResponseCapture(input: AnthropicResponseCaptureInput): AnthropicResponseCaptureStatus;

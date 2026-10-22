@@ -21,6 +21,7 @@ import type { Tool } from '#/kosong/contract/tool';
 import type { TokenUsage } from '#/kosong/contract/usage';
 
 import { mergeConsecutiveUserMessages } from '../merge-user-messages';
+import { googleGenAIRejectsTrailingModelTurn } from './googleModelTurn';
 import {
   mergeProviderRequestAuth,
   mergeRequestHeaders,
@@ -146,6 +147,107 @@ interface GooglePart {
   };
   thoughtSignature?: string;
   [key: string]: unknown;
+}
+
+const GOOGLE_PART_KIND_ORDER = [
+  'function_call',
+  'function_response',
+  'thought_signature',
+  'media',
+  'thought',
+  'thought_text',
+  'text',
+] as const;
+
+type GooglePartKind = (typeof GOOGLE_PART_KIND_ORDER)[number];
+
+type GoogleContentTail =
+  | 'empty'
+  | 'user'
+  | 'function_response'
+  | 'model_prefill'
+  | 'model_function_call';
+
+const GEMINI_MODEL_TURN_SENTENCE = 'Requests ending with a model turn are not supported.';
+
+function googlePartKinds(part: GooglePart): GooglePartKind[] {
+  const kinds: GooglePartKind[] = [];
+  if (part.functionCall !== undefined) kinds.push('function_call');
+  if (part.functionResponse !== undefined) kinds.push('function_response');
+  if (typeof part.thoughtSignature === 'string' && part.thoughtSignature.length > 0) {
+    kinds.push('thought_signature');
+  }
+  if (part['inlineData'] !== undefined || part['fileData'] !== undefined) kinds.push('media');
+  const text = typeof part.text === 'string' ? part.text.trim() : '';
+  if (part.thought === true) {
+    if (text.length > 0 || kinds.includes('thought_signature')) kinds.push('thought');
+    if (text.length > 0) kinds.push('thought_text');
+  } else if (text.length > 0) {
+    kinds.push('text');
+  }
+  return kinds;
+}
+
+function uniqueGooglePartKinds(kinds: readonly GooglePartKind[]): GooglePartKind[] {
+  return GOOGLE_PART_KIND_ORDER.filter((kind) => kinds.includes(kind));
+}
+
+function lastNonEmptyGoogleContent(contents: readonly GoogleContent[]): {
+  readonly tail: GoogleContentTail;
+  readonly kinds: readonly GooglePartKind[];
+} {
+  for (let index = contents.length - 1; index >= 0; index -= 1) {
+    const content = contents[index];
+    if (content === undefined) continue;
+    const kinds = uniqueGooglePartKinds(content.parts.flatMap(googlePartKinds));
+    if (kinds.length === 0) continue;
+    if (content.role === 'model') {
+      return {
+        tail: kinds.includes('function_call') ? 'model_function_call' : 'model_prefill',
+        kinds,
+      };
+    }
+    return {
+      tail: kinds.includes('function_response') ? 'function_response' : 'user',
+      kinds,
+    };
+  }
+  return { tail: 'empty', kinds: [] };
+}
+
+function omitEmptyTrailingGoogleContents(contents: readonly GoogleContent[]): GoogleContent[] {
+  let end = contents.length;
+  while (end > 0) {
+    const content = contents[end - 1];
+    if (content !== undefined && content.parts.some((part) => googlePartKinds(part).length > 0)) break;
+    end -= 1;
+  }
+  return end === contents.length ? [...contents] : contents.slice(0, end);
+}
+
+function outboundGoogleGenAIContents(
+  modelName: string,
+  contents: readonly GoogleContent[],
+): GoogleContent[] {
+  if (!googleGenAIRejectsTrailingModelTurn(modelName)) return [...contents];
+  const wire = omitEmptyTrailingGoogleContents(contents);
+  const classified = lastNonEmptyGoogleContent(wire);
+  if (classified.tail !== 'model_prefill' && classified.tail !== 'model_function_call') return wire;
+  const reason = classified.tail === 'model_function_call'
+    ? 'the last non-empty contents turn is a model function call without a function response'
+    : 'the last non-empty contents turn has role model';
+  throw new ChatProviderError(
+    `Native Gemini request refused locally because ${reason}. Gemini documents this shape as HTTP 400 INVALID_ARGUMENT: '${GEMINI_MODEL_TURN_SENTENCE}'`,
+    undefined,
+    {
+      details: {
+        google_content_tail: classified.tail,
+        content_count: wire.length,
+        tail_role: 'model',
+        tail_part_kinds: classified.kinds,
+      },
+    },
+  );
 }
 
 function toolCallIdToName(toolCallId: string, toolNameById: Map<string, string>): string {
@@ -808,7 +910,7 @@ export class GoogleGenAIChatProvider implements ChatProvider {
       throw createAbortError();
     }
 
-    const contents = messagesToGoogleGenAIContents(history);
+    const contents = outboundGoogleGenAIContents(this._model, messagesToGoogleGenAIContents(history));
 
     let kwargs: GoogleGenAIGenerationKwargs = { ...this._generationKwargs };
 
