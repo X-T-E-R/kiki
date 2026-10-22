@@ -223,6 +223,21 @@ void test('Nix cache keys and stages preserve the verified Node boundary', async
   );
 });
 
+void test('Nix prepares the host PTY offline before collecting native assets', async () => {
+  const flake = await read('flake.nix');
+  const buildInputs = flake.slice(flake.indexOf('nativeBuildInputs = ['), flake.indexOf('dontStrip = true;'));
+  assert.match(buildInputs, /pkgs\.python3/);
+  assert.match(flake, /export npm_config_nodedir=\$\{nodejs\}/);
+  assert.match(flake, /export npm_config_python=\$\{pkgs\.python3\}\/bin\/python3/);
+  assert.match(flake, /export npm_config_build_from_source=true/);
+  assert.ok(flake.includes('printf \'["node-pty"]\\n\' > "$TMPDIR/kiki-native-build-allowlist.json"'));
+  const rebuild = flake.indexOf('pnpm --config.onlyBuiltDependenciesFile="$TMPDIR/kiki-native-build-allowlist.json" --filter @kiki/agent-core-v2 rebuild node-pty');
+  const load = flake.indexOf('pnpm --filter @kiki/agent-core-v2 exec node -e \'require("node-pty")\'');
+  const sdk = flake.indexOf('pnpm --filter=@kiki/plugin-sdk run build');
+  const sea = flake.indexOf('pnpm --filter=@kiki/cli run build:native:sea');
+  assert.ok(rebuild >= 0 && rebuild < load && load < sdk && sdk < sea);
+});
+
 void test('Nix application build failure cannot be hidden by a stale successful result', async (t) => {
   const workflow = await read('.github/workflows/nix-build.yml');
   const buildStep = workflow.indexOf('      - name: Build\n');
