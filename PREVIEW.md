@@ -17,7 +17,7 @@ In the bundled desktop app, full-text indexing is **off by default**. Enable the
 - Queries have work and time limits. Broad queries and two-character ASCII literal queries can return incomplete results; this is reported in the search response. Narrow the query or scope it to a session/workspace. Results during a build may cover only part of the archive, and stale results may lag recent changes.
 - A first build needs additional disk space and time. The new index is stored under `<KIKI_HOME>/search-index-v2`; the old `search-index` directory is not automatically removed. Do not delete session data to repair a search index. Disable search and restart if indexing interferes with your work.
 - External engines require their own installed executables, authentication and supported protocols. The settings checks are not a guarantee that an external provider or engine will accept every request.
-- Standalone npm development requires Node.js 24.15.0 or later. Windows requires Git Bash. The macOS desktop download is unsigned and not notarized; follow the verification and first-open instructions in the README.
+- Standalone npm development requires Node.js 24.22.1 or later, or Node.js 26.12.1 or later. Windows requires Git Bash. The macOS desktop download is unsigned and not notarized; follow the verification and first-open instructions in the README.
 
 Keep backups of workspaces and session data before trying experimental settings. Local session storage does not mean requests are offline: model, search and integration providers receive the data required by the calls you configure. Review tool permissions and provider settings before running an agent on sensitive material.
 

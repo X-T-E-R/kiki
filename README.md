@@ -22,7 +22,7 @@ The desktop app, the terminal UI, and the browser UI all connect to one local da
 ### In the terminal
 
 ```sh
-npm install -g kiki-agent   # needs Node.js 24.15.0+; a desktop build is linked below
+npm install -g kiki-agent   # needs Node.js 24.22.1+ or 26.12.1+; a desktop build is linked below
 cd your-project
 kiki                        # terminal UI; `kiki web` for the browser, `kiki desktop` for the app
 ```
@@ -132,7 +132,7 @@ Any built-in prompt field can be replaced, down to a single tool description, gl
 
 ## Develop
 
-Requirements: Node.js ≥ 24.15.0, pnpm 10.33.0.
+Requirements: Node.js 24.22.1+ or 26.12.1+, pnpm 10.33.0.
 
 ```sh
 git clone https://github.com/X-T-E-R/kiki.git && cd kiki && pnpm install

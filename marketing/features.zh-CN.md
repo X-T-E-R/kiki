@@ -4,7 +4,7 @@
 
 ## 从这里开始
 
-- **安装与首次运行。** npm 需要 Node.js 24.15.0+，也可以从 [GitHub Releases](https://github.com/X-T-E-R/kiki/releases) 下载桌面版。新会话默认是「自动」；`/permission` 在「每步询问」（`manual`）、「自动」（`auto`）、「替我审批」（`review`）和「完全放行」（`yolo`）之间切换。[安装 →](https://x-t-e-r.github.io/kiki/zh/getting-started/installation)
+- **安装与首次运行。** npm 需要 Node.js 24.22.1+ 或 26.12.1+，也可以从 [GitHub Releases](https://github.com/X-T-E-R/kiki/releases) 下载桌面版。新会话默认是「自动」；`/permission` 在「每步询问」（`manual`）、「自动」（`auto`）、「替我审批」（`review`）和「完全放行」（`yolo`）之间切换。[安装 →](https://x-t-e-r.github.io/kiki/zh/getting-started/installation)
 - **首次运行先讲能做什么。** 桌面版欢迎页先介绍 Kiki 能帮你做什么，再给几条导览路线；侧栏的 **发现 Kiki** 一直留着它们，起步建议没连模型也能填进草稿。[首次启动 →](https://x-t-e-r.github.io/kiki/zh/getting-started/first-launch)
 - **三个界面，一个守护进程。** 桌面应用、终端里的 `kiki` 和 `kiki web` 读写同一批会话。[桌面版 →](https://x-t-e-r.github.io/kiki/zh/getting-started/desktop-app) · [本地服务 →](https://x-t-e-r.github.io/kiki/zh/server/local-server)
 - **登录。** Kimi Code OAuth 或 Kimi 开放平台 API 密钥开箱即用；Anthropic、OpenAI 兼容服务、OpenAI Responses API、Gemini、Vertex AI 都能接。[平台与模型 →](https://x-t-e-r.github.io/kiki/zh/configuration/providers)

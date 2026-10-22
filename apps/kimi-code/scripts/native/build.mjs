@@ -7,6 +7,7 @@ import { runSeaBlobStep } from './02-sea-blob.mjs';
 import { macosSigningOptions, runSignStep } from './04-sign.mjs';
 import { runVerifyStep } from './05-verify.mjs';
 import { run } from './exec.mjs';
+import { nodeRuntimeRejection } from './node-runtime.mjs';
 import { appRoot, nativeIntermediatesDir } from './paths.mjs';
 import { BUILT_IN_CATALOG_ENV } from '../built-in-catalog.mjs';
 
@@ -24,11 +25,9 @@ if (!['local', 'release'].includes(profile)) {
 }
 
 function ensureNodeVersion() {
-  const [major, minor] = process.versions.node.split('.').map(Number);
-  if (major < 24 || (major === 24 && minor < 15)) {
-    console.error(
-      `Kiki native SEA build requires Node.js >=24.15.0, current ${process.versions.node}.`,
-    );
+  const rejection = nodeRuntimeRejection(process.versions.node);
+  if (rejection !== null) {
+    console.error(rejection);
     process.exit(1);
   }
 }

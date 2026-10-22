@@ -2,6 +2,8 @@ import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { NODE_RUNTIME_RANGE } from '../native/node-runtime.mjs';
+
 export const NPM_DISTRIBUTIONS = [['lite', 'kiki-agent-lite'], ['full', 'kiki-agent']];
 
 export async function stageNpmDistributions(root = resolve(import.meta.dirname, '../..')) {
@@ -26,7 +28,7 @@ export async function stageNpmDistributions(root = resolve(import.meta.dirname, 
       repository: source.repository,
       type: 'module',
       bin: { kiki: 'dist/main.mjs' },
-      engines: { node: '>=24.15.0' },
+      engines: { node: NODE_RUNTIME_RANGE },
       dependencies: { ws: source.dependencies.ws },
       optionalDependencies: source.optionalDependencies,
       files: kind === 'lite' ? ['dist', 'native', 'README.md'] : ['dist', 'native', 'desktop', 'scripts', 'README.md'],

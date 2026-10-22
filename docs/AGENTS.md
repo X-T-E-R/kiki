@@ -194,7 +194,7 @@ Outline prompt:
 
 ```
 * Install and upgrade
-  * System requirements: Node.js 24.15.0+, recommend pnpm
+  * System requirements: Node.js 24.22.1+ or 26.12.1+, recommend pnpm
   * Install, upgrade, uninstall steps
 ```
 
@@ -205,7 +205,7 @@ Outline prompt:
 
 ### System requirements
 
-- Node.js 24.15.0+
+- Node.js 24.22.1+ or 26.12.1+
 - Recommend pnpm
 
 ### Install
@@ -222,7 +222,7 @@ Outline prompt:
 ```markdown
 ## Install and upgrade
 
-Kiki CLI requires Node.js 24.15.0 or later. We recommend using pnpm for installation and management.
+Kiki CLI requires Node.js 24.22.1 or later on the 24 line, or Node.js 26.12.1 or later. We recommend using pnpm for installation and management.
 
 If you haven't installed pnpm yet, please refer to the pnpm installation docs first. Install Kiki CLI:
 

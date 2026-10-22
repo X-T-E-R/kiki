@@ -11,3 +11,6 @@ overrides:
   "ssh2@1.17.0>cpu-features": "-"
   "ssh2@1.17.0>nan": "-"
   "kiki>tailwindcss": "4.1.18"
+  "protobufjs": "7.6.6"
+  "proxy-addr": "2.0.8"
+  "undici": "7.30.1"

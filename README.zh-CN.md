@@ -22,7 +22,7 @@
 ### 用终端
 
 ```sh
-npm install -g kiki-agent   # 需要 Node.js 24.15.0+；也可以直接下载下方的桌面版
+npm install -g kiki-agent   # 需要 Node.js 24.22.1+ 或 26.12.1+；也可以直接下载下方的桌面版
 cd your-project
 kiki                        # 终端界面；`kiki web` 打开浏览器界面，`kiki desktop` 打开桌面应用
 ```
@@ -132,7 +132,7 @@ npm 安装时，`kiki-agent` 包含 CLI/TUI，并下载对应的桌面构建校�
 
 ## 开发
 
-环境要求：Node.js ≥ 24.15.0，pnpm 10.33.0。
+环境要求：Node.js 24.22.1+ 或 26.12.1+，pnpm 10.33.0。
 
 ```sh
 git clone https://github.com/X-T-E-R/kiki.git && cd kiki && pnpm install

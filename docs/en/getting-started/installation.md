@@ -51,7 +51,7 @@ For a terminal-only install, pick the standalone executable for your platform fr
 
 Download the file together with its `<filename>.sha256` companion, compare the two hashes, rename the executable to `kiki`, run `chmod +x kiki`, and put it somewhere on your `PATH`. A standalone executable needs no Node.js. Once the desktop app is installed, `kiki desktop` opens it; without an installation it prints a download link.
 
-With Node.js 24.15.0 or later you can install from npm instead:
+With Node.js 24.22.1 or later, or Node.js 26.12.1 or later, you can install from npm instead:
 
 ```sh
 npm install -g kiki-agent       # CLI/TUI and the matching desktop build
@@ -65,7 +65,7 @@ Both npm packages use the [Windows Bash requirements above](#install-the-desktop
 
 ### Development from source
 
-Working on the CLI itself needs Node.js `24.15.0` or later and pnpm `10.33.0`. The repository is a pnpm (Node.js package manager) workspace; from its root:
+Working on the CLI itself needs Node.js `24.22.1` or later on the 24 line, or Node.js `26.12.1` or later, and pnpm `10.33.0`. Node.js 25 and Node.js 26 releases before `26.12.1` are not supported. The repository is a pnpm (Node.js package manager) workspace; from its root:
 
 ```sh
 node --version

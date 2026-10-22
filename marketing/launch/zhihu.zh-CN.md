@@ -71,7 +71,7 @@ files = ["prompt/deepseek.toml"]
 ## 六、想试的话
 
 ```sh
-npm i -g kiki-agent   # Node.js 24.15+
+npm i -g kiki-agent   # Node.js 24.22.1+ 或 26.12.1+
 kiki                  # 终端；kiki web 浏览器；kiki desktop 桌面应用
 ```
 

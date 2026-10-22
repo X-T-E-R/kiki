@@ -4,7 +4,7 @@ What each capability does for you, and where to read the details. The online **F
 
 ## Start here
 
-- **Install and first run.** Node.js 24.15.0+ for npm, or a desktop build from [GitHub Releases](https://github.com/X-T-E-R/kiki/releases). New sessions start in Auto; `/permission` switches among Ask every time (`manual`), Auto (`auto`), Approve for me (`review`), and Full access (`yolo`). [Installation →](https://x-t-e-r.github.io/kiki/en/getting-started/installation)
+- **Install and first run.** Node.js 24.22.1+ or 26.12.1+ for npm, or a desktop build from [GitHub Releases](https://github.com/X-T-E-R/kiki/releases). New sessions start in Auto; `/permission` switches among Ask every time (`manual`), Auto (`auto`), Approve for me (`review`), and Full access (`yolo`). [Installation →](https://x-t-e-r.github.io/kiki/en/getting-started/installation)
 - **A first run that starts with what it is for.** The desktop welcome shows what Kiki can help you do, then offers a few guided routes; **Discover Kiki** in the sidebar keeps them, and starters fill a draft without calling a model. [First launch →](https://x-t-e-r.github.io/kiki/en/getting-started/first-launch)
 - **Three surfaces, one daemon.** The desktop app, `kiki` in the terminal, and `kiki web` read and write the same sessions. [Desktop app →](https://x-t-e-r.github.io/kiki/en/getting-started/desktop-app) · [Local server →](https://x-t-e-r.github.io/kiki/en/server/local-server)
 - **Sign in.** Kimi Code OAuth or a Kimi Platform API key out of the box; Anthropic, OpenAI-compatible services, the OpenAI Responses API, Gemini, and Vertex AI can be added. [Providers and models →](https://x-t-e-r.github.io/kiki/en/configuration/providers)

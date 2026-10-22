@@ -37,7 +37,7 @@
 ```
 项目地址：https://github.com/X-T-E-R/kiki （MIT 开源）
 文档：https://x-t-e-r.github.io/kiki/zh/
-安装：npm i -g kiki-agent（Node 24.15+），或 GitHub Releases 下载桌面版
+安装：npm i -g kiki-agent（Node 24.22.1+ 或 26.12.1+），或 GitHub Releases 下载桌面版
 章节：00:00 开场 / 01:00 分工 / 02:00 派活 / 03:00 中途改需求 / 04:00 出问题了 / 05:00 活不会丢 / 05:45 改提示词
 视频是真实录屏（部分加速），不代表任何性能测试。
 ```

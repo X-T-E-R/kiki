@@ -51,7 +51,7 @@ Windows 的 SmartScreen 提示与更新细节见 [Kiki 桌面版](./desktop-app.
 
 把可执行文件和同名的 `<文件名>.sha256` 一起下载并比较哈希，然后改名为 `kiki`，执行 `chmod +x kiki`，放到 `PATH` 下的任意目录即可。独立可执行文件不需要 Node.js。桌面版安装之后，`kiki desktop` 会直接打开它；未安装时则会打印下载链接。
 
-有 Node.js 24.15.0 或更新版本时，也可以从 npm 安装：
+有 Node.js 24.22.1 或该 24 线的更新版本，或者 Node.js 26.12.1 及更新版本时，也可以从 npm 安装：
 
 ```sh
 npm install -g kiki-agent       # CLI/TUI + 对应平台的桌面版
@@ -65,7 +65,7 @@ kiki --version
 
 ### 从源码开发
 
-需要 Node.js `24.15.0` 或更高版本和 pnpm `10.33.0`。仓库是 pnpm（Node.js 的包管理器）工作区，在仓库根目录执行：
+需要 24 线上的 Node.js `24.22.1` 或更高版本，或者 Node.js `26.12.1` 或更高版本，以及 pnpm `10.33.0`。Node.js 25，以及 `26.12.1` 之前的 Node.js 26，不受支持。仓库是 pnpm（Node.js 的包管理器）工作区，在仓库根目录执行：
 
 ```sh
 node --version

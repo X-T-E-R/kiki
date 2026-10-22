@@ -24,7 +24,7 @@ kiki --version
 
 ### Installing from npm
 
-With Node.js 24.15.0 or later you can also install from npm. Pick **one** of these — they both provide the same `kiki` command, and installing both leaves you with a conflict:
+With Node.js 24.22.1 or later, or Node.js 26.12.1 or later, you can also install from npm. Pick **one** of these — they both provide the same `kiki` command, and installing both leaves you with a conflict:
 
 - `kiki-agent` — CLI/TUI plus a checksum-verified desktop download
 - `kiki-agent-lite` — CLI/TUI only

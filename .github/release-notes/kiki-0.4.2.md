@@ -17,7 +17,7 @@ Telegram, Feishu, QQ/OneBot, and WeChat have different message and attachment su
 
 Update the desktop app and server together. Windows x64 uses the NSIS installer and includes the CLI. Linux x64 offers AppImage and deb packages; macOS offers Apple Silicon and Intel dmg packages.
 
-For desktop and CLI through npm, use Node.js 24.15 or newer:
+For desktop and CLI through npm, use Node.js 24.22.1 or later on the 24 line, or Node.js 26.12.1 or later. Node.js 25 and Node.js 26 releases before 26.12.1 are not supported:
 
 ```sh
 npm install -g kiki-agent@0.4.2

@@ -5,6 +5,7 @@ import test from 'node:test';
 
 import { seaRuntimeOptions } from '../apps/kimi-code/scripts/native/02-sea-blob.mjs';
 import { macosSigningOptions } from '../apps/kimi-code/scripts/native/04-sign.mjs';
+import { NODE_RUNTIME_RANGE, nodeRuntimeAccepted, nodeRuntimeRejection } from '../apps/kimi-code/scripts/native/node-runtime.mjs';
 import { NPM_DISTRIBUTIONS, stageNpmDistributions } from '../apps/kimi-code/scripts/npm/stage.mjs';
 
 const root = resolve(import.meta.dirname, '..');
@@ -81,6 +82,7 @@ void test('npm stages preserve public distribution names and synchronized worksp
     assert.equal(staged.version, source.version);
     assert.equal(staged.publishConfig.registry, 'https://registry.npmjs.org/');
     assert.equal(staged.scripts?.postinstall, kind === 'full' ? 'node scripts/desktop-postinstall.mjs' : undefined);
+    assert.equal(staged.engines.node, NODE_RUNTIME_RANGE);
     assert.equal(await readFile(join(app, 'dist-npm', kind, 'dist/main.mjs'), 'utf8'), 'export {};');
   }
   await writeFile(join(gui, 'package.json'), JSON.stringify({ version: '1.2.4' }));
@@ -91,4 +93,45 @@ void test('npm stages preserve public distribution names and synchronized worksp
   for (const [, name] of NPM_DISTRIBUTIONS) assert.ok(setup.includes(`\`${name}\``));
   assert.ok(!setup.includes('kiki-cli-lite'));
   assert.match(setup, /separate workspace-package channel using `changeset publish`/);
+});
+
+void test('local and release Node gates accept patched lines and reject affected 26.x', async () => {
+  const accepted = ['24.22.1', '24.23.0', '26.12.1', '26.13.4', '27.0.0', 'v24.22.1'];
+  const rejected = [
+    '24.22.0', '24.21.0', '24.19.0', '24.15.0', '24.14.1',
+    '26.12.0', '26.11.0', '26.0.0', '25.0.0', '25.9.1',
+    '22.23.4', '23.11.0', '24.22.1-rc.1', '26.12.1-rc.0', '27.0.0-rc.1',
+  ];
+  for (const version of accepted) {
+    assert.equal(nodeRuntimeAccepted(version), true, version);
+    assert.equal(nodeRuntimeRejection(version), null, version);
+  }
+  for (const version of rejected) {
+    assert.equal(nodeRuntimeAccepted(version), false, version);
+    assert.match(nodeRuntimeRejection(version) ?? '', new RegExp(`current ${version.replaceAll('.', '\\.')}`));
+  }
+
+  const build = await read('apps/kimi-code/scripts/native/build.mjs');
+  const check = build.indexOf('nodeRuntimeRejection(process.versions.node)');
+  const bundle = build.indexOf('await runBundleStep()');
+  assert.ok(check >= 0 && bundle >= 0 && check < bundle);
+  assert.match(build, /default: 'local'/);
+  assert.equal(await read('.nvmrc'), '24.22.1\n');
+  assert.equal(NODE_RUNTIME_RANGE, '>=24.22.1 <25 || >=26.12.1');
+
+  const manifests = [
+    'package.json',
+    'apps/kimi-code/package.json',
+    'packages/auth-native/package.json',
+    'packages/pi-tui/package.json',
+  ];
+  for (const manifest of manifests) {
+    assert.equal(JSON.parse(await read(manifest)).engines.node, NODE_RUNTIME_RANGE, manifest);
+  }
+
+  const flake = await read('flake.nix');
+  assert.match(flake, /minNodeVersion = "24\.22\.1"/);
+  assert.match(flake, /node-v24\.22\.1-linux-x64\.tar\.xz/);
+  assert.match(flake, /sha256-bBcqmrZxj3uAH7WnvUhq8u5eMnWAhqBLhPzOKqdwleY=/);
+  assert.match(flake, /officialNodejs pkgs/);
 });

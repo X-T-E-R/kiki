@@ -2,9 +2,12 @@
   description = "Kiki CLI";
 
   inputs = {
-    # Pinned to the 25.11 release channel because nixpkgs-unstable currently
-    # ships nodejs_24 = 24.14.1, which trips the >= 24.15.0 floor that the
-    # native SEA build enforces (see apps/kimi-code/scripts/native/build.mjs).
+    # Locked nixos-25.11 still packages nodejs_24 at 24.15.0. On 2026-10-22 the
+    # branch tips are 24.18.0 (nixos-25.11) and 24.21.0 (nixos-unstable), both
+    # older than Node.js 24.22.1. Moving this pin to either tip would still
+    # fail the SEA floor. nodejsFor keeps pkgs.nodejs_24 once that package is
+    # >= 24.22.1 and otherwise uses the official 24.22.1 dist with the
+    # published SHA-256 from https://nodejs.org/dist/v24.22.1/SHASUMS256.txt.
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
   };
 
@@ -29,23 +32,78 @@
           })
         );
 
-      minNodeVersion = "24.15.0";
+      minNodeVersion = "24.22.1";
 
-      # Hardcode to Node.js 24.x; fail the evaluation if the pinned nixpkgs
-      # does not offer a new enough 24.x.
+      # Official dist used only while pkgs.nodejs_24 is older than the
+      # October 2026 security release. Linux binaries are patched onto the
+      # Nix dynamic linker; darwin uses the upstream binary as-is.
+      officialNodeDist = {
+        "x86_64-linux" = {
+          file = "node-v24.22.1-linux-x64.tar.xz";
+          hash = "sha256-bBcqmrZxj3uAH7WnvUhq8u5eMnWAhqBLhPzOKqdwleY=";
+          sourceRoot = "node-v24.22.1-linux-x64";
+        };
+        "aarch64-linux" = {
+          file = "node-v24.22.1-linux-arm64.tar.xz";
+          hash = "sha256-26v3ocv5R+YFn/rSwnuABB25feoeVTtir97n8T/KM24=";
+          sourceRoot = "node-v24.22.1-linux-arm64";
+        };
+        "x86_64-darwin" = {
+          file = "node-v24.22.1-darwin-x64.tar.gz";
+          hash = "sha256-0TJVfn7iuFrwiwyMNDOOZcZDDyI40B9ydyjvQtyDsDU=";
+          sourceRoot = "node-v24.22.1-darwin-x64";
+        };
+        "aarch64-darwin" = {
+          file = "node-v24.22.1-darwin-arm64.tar.gz";
+          hash = "sha256-icaCWT12zUQjP6U7FWMmTn3py7GJytFpE1xbT637wKc=";
+          sourceRoot = "node-v24.22.1-darwin-arm64";
+        };
+      };
+
+      officialNodejs =
+        pkgs:
+        let
+          system = pkgs.stdenv.hostPlatform.system;
+          dist = officialNodeDist.${system} or (throw "No official Node.js ${minNodeVersion} dist for ${system}");
+        in
+        pkgs.stdenv.mkDerivation {
+          pname = "nodejs";
+          version = minNodeVersion;
+          src = pkgs.fetchurl {
+            url = "https://nodejs.org/dist/v${minNodeVersion}/${dist.file}";
+            inherit (dist) hash;
+          };
+          inherit (dist) sourceRoot;
+          nativeBuildInputs = lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.patchelf ];
+          dontConfigure = true;
+          dontBuild = true;
+          dontStrip = true;
+          dontPatchELF = true;
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out"
+            cp -a . "$out/"
+            runHook postInstall
+          '';
+          postInstall = lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+            patchelf \
+              --set-interpreter ${pkgs.stdenv.cc.bintools.dynamicLinker} \
+              --set-rpath ${pkgs.stdenv.cc.cc.lib}/lib \
+              "$out/bin/node"
+          '';
+        };
+
+      # Stay on the 24.x package. A newer nixpkgs nodejs_24 replaces the
+      # official dist; an older one must not be copied into the SEA binary.
       nodejsFor =
         pkgs:
         let
-          node = pkgs.nodejs_24;
+          packaged = pkgs.nodejs_24;
         in
-        if lib.versionAtLeast node.version minNodeVersion then
-          node
+        if lib.versionAtLeast packaged.version minNodeVersion then
+          packaged
         else
-          throw ''
-            Kiki requires Node.js >= ${minNodeVersion},
-            but nixpkgs only offers ${node.version}.
-            Pin a newer nixpkgs revision or update minNodeVersion in flake.nix.
-          '';
+          officialNodejs pkgs;
 
       pnpmFor =
         pkgs:

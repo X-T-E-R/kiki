@@ -67,7 +67,7 @@ kiki prompt-fields explain tool.web-search.description --model deepseek
 
 - 桌面、终端（`kiki`）、浏览器（`kiki web`）共用一个本地守护进程；Zed / JetBrains 可以通过 ACP 接。
 - Claude Code、OpenCode 的 agent 文件直接能加载。
-- 安装：`npm i -g kiki-agent`（Node 24.15+），或 GitHub Releases 下桌面版。
+- 安装：`npm i -g kiki-agent`（Node 24.22.1+ 或 26.12.1+），或 GitHub Releases 下桌面版。
 
 ## 实话
 
