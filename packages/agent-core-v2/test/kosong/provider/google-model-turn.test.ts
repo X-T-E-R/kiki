@@ -235,6 +235,44 @@ describe('google-genai trailing model turn', () => {
     expect(history[2]?.content[1]).toMatchObject({ type: 'image_url' });
   });
 
+  it('keeps an ordinary user continuation as the last turn after parallel tool images', async () => {
+    const imageTail = [
+      user('go'),
+      {
+        role: 'assistant',
+        content: [],
+        toolCalls: [
+          call('ReadMediaFile_a', 'ReadMediaFile', CALL_SIGNATURE),
+          unsignedCall('ReadMediaFile_b', 'ReadMediaFile'),
+          unsignedCall('ReadMediaFile_c', 'ReadMediaFile'),
+        ],
+      },
+      readMediaResult('ReadMediaFile_c', 'fig-c.png', 'tradeoff'),
+      readMediaResult('ReadMediaFile_a', 'fig-a.png', 'simple'),
+      readMediaResult('ReadMediaFile_b', 'fig-b.png', 'path'),
+    ] satisfies Message[];
+    const continued = [...imageTail, user('Continue in text.')];
+    const imageSeen = installFetch(okSse);
+    await drainGenerate('gemini-4-argon', imageTail);
+    vi.unstubAllGlobals();
+    const continuedSeen = installFetch(okSse);
+    await drainGenerate('gemini-4-argon', continued);
+    const imageContents = contentsOf(imageSeen[0]!);
+    const continuedContents = contentsOf(continuedSeen[0]!);
+    expect(imageContents.map((content) => content['role'])).toEqual(['user', 'model', 'user']);
+    expect(partKinds(imageContents[2])).toEqual(['function_response', 'function_response', 'function_response']);
+    expect(continuedContents.map((content) => content['role'])).toEqual(['user', 'model', 'user', 'user']);
+    expect(partsOf(continuedContents[2]).map((part) => responseMedia(part))).toEqual(
+      partsOf(imageContents[2]).map((part) => responseMedia(part)),
+    );
+    expect(partKinds(continuedContents[3])).toEqual(['text']);
+    expect(partsOf(continuedContents[3])).toEqual([{ text: 'Continue in text.' }]);
+    expect(mixedUserContents(imageContents)).toEqual([]);
+    expect(mixedUserContents(continuedContents)).toEqual([]);
+    expect(continued.at(-1)).toEqual(user('Continue in text.'));
+    expect(continued[2]?.content[1]).toEqual(imageTail[2]?.content[1]);
+  });
+
   it('does not fold tool media into the following user text', async () => {
     const history = [
       user('go'),
