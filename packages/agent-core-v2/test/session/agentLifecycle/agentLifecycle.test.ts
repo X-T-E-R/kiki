@@ -860,6 +860,39 @@ describe('AgentLifecycleService', () => {
     }));
   });
 
+  it('writes a replay checkpoint before the agent scope is disposed', async () => {
+    const svc = ix.get(IAgentLifecycleService);
+    const handle = await svc.create({ agentId: 'main' });
+    const save = vi.spyOn(handle.accessor.get(IEventDispatcher), 'saveReplayCheckpoint');
+    await svc.remove('main');
+    expect(save).toHaveBeenCalledOnce();
+    expect(svc.get('main')).toBeUndefined();
+    expect([...atomicDocs.keys()].some((key) => key.endsWith('replay-checkpoints/engine-v1'))).toBe(true);
+  });
+
+  it('still disposes the agent and keeps the journal when the checkpoint save does not land', async () => {
+    const log = recordingAppendLog();
+    ix.stub(IAppendLogStore, log.store);
+    const svc = ix.get(IAgentLifecycleService);
+    const handle = await svc.create({ agentId: 'main' });
+    const kept = log.appended.map((record) => record.type);
+    expect(kept.length).toBeGreaterThan(0);
+    vi.spyOn(handle.accessor.get(IEventDispatcher), 'saveReplayCheckpoint').mockResolvedValue(false);
+    const dispose = vi.spyOn(handle, 'dispose');
+    await expect(svc.remove('main')).rejects.toThrow('Replay checkpoint was not saved');
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(svc.get('main')).toBeUndefined();
+    expect(log.rewritten).toBeUndefined();
+    const survived: string[] = [];
+    for await (const record of log.store.read<WireRecord>(
+      'sessions/ws_test/sess_test/agents/main',
+      AGENT_WIRE_RECORD_KEY,
+    )) {
+      survived.push(record.type);
+    }
+    expect(survived).toEqual(kept);
+  });
+
   it('preserves only pending prompts when removal explicitly requests shutdown mode', async () => {
     const svc = ix.get(IAgentLifecycleService);
     await svc.create({ agentId: 'main' });

@@ -864,6 +864,13 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         }
       }, 'persistence');
       await collect(async () => {
+        const dispatcher = handle.accessor.get(IEventDispatcher);
+        if (dispatcher.saveReplayCheckpoint === undefined) return;
+        if (await dispatcher.saveReplayCheckpoint() !== true) {
+          throw new Error('Replay checkpoint was not saved');
+        }
+      }, 'persistence');
+      await collect(async () => {
         await handle.dispose();
         disposed = true;
       }, 'cleanup');
