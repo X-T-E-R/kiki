@@ -242,6 +242,7 @@
               (pkgs.pnpmConfigHook.override { inherit pnpm; })
               pkgs.cargo
               pkgs.rustc
+              pkgs.python3
               pkgs.rustPlatform.cargoSetupHook
               pkgs.makeWrapper
             ]
@@ -277,10 +278,16 @@
                     "await runVerifyStep({ requireGatekeeper: false });" \
                     "// runVerifyStep skipped in nix sandbox (sigtool lacks -dv)"
               ''}
-              # pnpmConfigHook installs with --ignore-scripts, so the
-              # @kiki/plugin-sdk prepare step never emits dist. Package
-              # exports point only at that dist, and the GUI vite build
-              # inside build:native:sea resolves every subpath from it.
+              # pnpmConfigHook skips lifecycle scripts. Build the host PTY
+              # from source against the sandbox's Node headers, without
+              # downloading headers or enabling unrelated install scripts.
+              export npm_config_nodedir=${nodejs}
+              export npm_config_python=${pkgs.python3}/bin/python3
+              export npm_config_build_from_source=true
+              printf '["node-pty"]\n' > "$TMPDIR/kiki-native-build-allowlist.json"
+              pnpm --config.onlyBuiltDependenciesFile="$TMPDIR/kiki-native-build-allowlist.json" --filter @kiki/agent-core-v2 rebuild node-pty
+              pnpm --filter @kiki/agent-core-v2 exec node -e 'require("node-pty")'
+              # The SDK's package exports also require its generated dist.
               pnpm --filter=@kiki/plugin-sdk run build
               pnpm --filter=@kiki/cli run build:native:sea
               runHook postBuild
