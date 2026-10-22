@@ -13,6 +13,8 @@ export interface StdioClientLifetime {
   readonly exit?: (code: number) => void;
 }
 
+type CloseOutcome = { readonly kind: 'ok' } | { readonly kind: 'timeout' } | { readonly kind: 'error'; readonly error: unknown };
+
 export function retainUntilStdioClientEnds(options: StdioClientLifetime): Promise<void> {
   const stdin = options.stdin ?? process.stdin;
   const parentPid = options.parentPid ?? process.ppid;
@@ -21,7 +23,7 @@ export function retainUntilStdioClientEnds(options: StdioClientLifetime): Promis
   const isParentAlive = options.isParentAlive ?? parentProcessAlive;
   let settled = false;
   let timer: ReturnType<typeof setInterval> | undefined;
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const finish = (): void => {
       if (settled) return;
       settled = true;
@@ -29,15 +31,32 @@ export function retainUntilStdioClientEnds(options: StdioClientLifetime): Promis
       stdin.off('close', finish);
       if (timer !== undefined) clearInterval(timer);
       let budget: ReturnType<typeof setTimeout> | undefined;
-      void Promise.race([
-        Promise.resolve(options.close()).then(() => undefined, () => undefined),
-        new Promise<void>((release) => {
-          budget = setTimeout(release, closeBudgetMs);
-        }),
-      ]).then(() => {
+      const closed = new Promise<CloseOutcome>((settle) => {
+        try {
+          const result = options.close();
+          Promise.resolve(result).then(
+            () => settle({ kind: 'ok' }),
+            (error: unknown) => settle({ kind: 'error', error }),
+          );
+        } catch (error) {
+          settle({ kind: 'error', error });
+        }
+      });
+      const timed = new Promise<CloseOutcome>((settle) => {
+        budget = setTimeout(() => settle({ kind: 'timeout' }), closeBudgetMs);
+      });
+      void Promise.race([closed, timed]).then((outcome) => {
         if (budget !== undefined) clearTimeout(budget);
-        options.exit?.(0);
-        resolve();
+        if (outcome.kind === 'ok') {
+          options.exit?.(0);
+          resolve();
+          return;
+        }
+        const diagnostic = cleanupDiagnostic(outcome, closeBudgetMs);
+        process.stderr.write(`${diagnostic}\n`);
+        process.exitCode = 1;
+        options.exit?.(1);
+        reject(new Error(diagnostic));
       });
     };
     if (stdin.readableEnded === true) {
@@ -53,6 +72,26 @@ export function retainUntilStdioClientEnds(options: StdioClientLifetime): Promis
       timer.unref?.();
     }
   });
+}
+
+function cleanupDiagnostic(outcome: Exclude<CloseOutcome, { readonly kind: 'ok' }>, closeBudgetMs: number): string {
+  const record: {
+    event: 'stdio-cleanup';
+    reason: 'timeout' | 'close-error';
+    closeBudgetMs: number;
+    exitCode: 1;
+    message?: string;
+  } = {
+    event: 'stdio-cleanup',
+    reason: outcome.kind === 'timeout' ? 'timeout' : 'close-error',
+    closeBudgetMs,
+    exitCode: 1,
+  };
+  if (outcome.kind === 'error') {
+    const message = outcome.error instanceof Error ? outcome.error.message : String(outcome.error);
+    record.message = message.replace(/[\r\n]+/g, ' ');
+  }
+  return JSON.stringify(record);
 }
 
 function parentProcessAlive(pid: number): boolean {

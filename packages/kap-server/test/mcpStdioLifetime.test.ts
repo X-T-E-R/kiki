@@ -13,6 +13,19 @@ afterEach(() => {
   }
 });
 
+function captureStderr(): { text: () => string; restore: () => void } {
+  let text = '';
+  const previous = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    text += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString();
+    return true;
+  }) as typeof process.stderr.write;
+  return {
+    text: () => text,
+    restore: () => { process.stderr.write = previous; },
+  };
+}
+
 function alive(pid: number | undefined): boolean {
   if (pid === undefined) return false;
   try {
@@ -44,36 +57,36 @@ describe('stdio MCP client lifetime', () => {
   it('stays up while the caller is alive and exits once after stdin ends', async () => {
     const stdin = new PassThrough();
     let closes = 0;
-    let exits = 0;
+    let code = -1;
     const done = retainUntilStdioClientEnds({
       stdin,
       parentPid: process.pid,
       pollMs: 20,
       closeBudgetMs: 50,
       close: async () => { closes += 1; },
-      exit: () => { exits += 1; },
+      exit: (status) => { code = status; },
     });
     await new Promise((resolve) => setTimeout(resolve, 60));
-    expect(exits).toBe(0);
+    expect(code).toBe(-1);
     stdin.resume();
     stdin.end();
     await done;
     expect(closes).toBe(1);
-    expect(exits).toBe(1);
+    expect(code).toBe(0);
   });
 
   it('releases when the parent pid is gone even if stdin is still open', async () => {
     const stdin = new PassThrough();
-    let exits = 0;
+    let code = -1;
     await retainUntilStdioClientEnds({
       stdin,
       parentPid: 2_147_483_646,
       pollMs: 20,
       closeBudgetMs: 50,
       close: async () => undefined,
-      exit: () => { exits += 1; },
+      exit: (status) => { code = status; },
     });
-    expect(exits).toBe(1);
+    expect(code).toBe(0);
     expect(stdin.readableEnded).toBe(false);
   });
 
@@ -95,22 +108,94 @@ describe('stdio MCP client lifetime', () => {
     expect(exits).toBe(1);
   });
 
-  it('waits for close before exiting and still exits if close exceeds its budget', async () => {
+  it('reports a close budget expiry on stderr and does not resolve successfully', async () => {
     const stdin = new PassThrough();
-    let exits = 0;
+    let code = -1;
     const started = Date.now();
-    const done = retainUntilStdioClientEnds({
-      stdin,
-      parentPid: process.pid,
-      closeBudgetMs: 40,
-      close: () => new Promise(() => undefined),
-      exit: () => { exits += 1; },
-    });
-    stdin.resume();
-    stdin.end();
-    await done;
-    expect(exits).toBe(1);
-    expect(Date.now() - started).toBeGreaterThanOrEqual(30);
+    const previousCode = process.exitCode;
+    const diagnostic = captureStderr();
+    try {
+      const done = retainUntilStdioClientEnds({
+        stdin,
+        parentPid: process.pid,
+        closeBudgetMs: 40,
+        close: () => new Promise(() => undefined),
+        exit: (status) => { code = status; },
+      });
+      stdin.resume();
+      stdin.end();
+      await expect(done).rejects.toThrow(/"reason":"timeout"/);
+      expect(code).toBe(1);
+      expect(process.exitCode).toBe(1);
+      expect(JSON.parse(diagnostic.text())).toEqual({
+        event: 'stdio-cleanup',
+        reason: 'timeout',
+        closeBudgetMs: 40,
+        exitCode: 1,
+      });
+      expect(Date.now() - started).toBeGreaterThanOrEqual(30);
+    } finally {
+      diagnostic.restore();
+      process.exitCode = previousCode;
+    }
+  });
+
+  it('captures a synchronous close throw and leaves another node process alive', async () => {
+    const sentinel = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore', windowsHide: true });
+    children.push(sentinel);
+    const stdin = new PassThrough();
+    let code = -1;
+    const previousCode = process.exitCode;
+    const diagnostic = captureStderr();
+    try {
+      const done = retainUntilStdioClientEnds({
+        stdin,
+        parentPid: process.pid,
+        closeBudgetMs: 500,
+        close: () => { throw new Error('sync-close'); },
+        exit: (status) => { code = status; },
+      });
+      stdin.resume();
+      stdin.end();
+      await expect(done).rejects.toThrow(/"reason":"close-error"/);
+      expect(code).toBe(1);
+      expect(process.exitCode).toBe(1);
+      expect(JSON.parse(diagnostic.text())).toEqual({
+        event: 'stdio-cleanup',
+        reason: 'close-error',
+        closeBudgetMs: 500,
+        exitCode: 1,
+        message: 'sync-close',
+      });
+      expect(alive(sentinel.pid)).toBe(true);
+    } finally {
+      diagnostic.restore();
+      process.exitCode = previousCode;
+    }
+  });
+
+  it('captures a rejected close and reports it instead of exiting successfully', async () => {
+    const stdin = new PassThrough();
+    let code = -1;
+    const previousCode = process.exitCode;
+    const diagnostic = captureStderr();
+    try {
+      const done = retainUntilStdioClientEnds({
+        stdin,
+        parentPid: process.pid,
+        closeBudgetMs: 500,
+        close: async () => { throw new Error('async-close'); },
+        exit: (status) => { code = status; },
+      });
+      stdin.resume();
+      stdin.end();
+      await expect(done).rejects.toThrow(/"message":"async-close"/);
+      expect(code).toBe(1);
+      expect(JSON.parse(diagnostic.text()).message).toBe('async-close');
+    } finally {
+      diagnostic.restore();
+      process.exitCode = previousCode;
+    }
   });
 
   it('exits after the watched parent process exits while stdin stays open', async () => {

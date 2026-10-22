@@ -12,7 +12,16 @@ async function main(): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  await runKikiMcpStdio(config);
+  try {
+    await runKikiMcpStdio(config);
+  } catch (error) {
+    const code = process.exitCode;
+    if (typeof code !== 'number' || code <= 0) {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      process.exit(1);
+    }
+    process.exit(code);
+  }
   process.exit(0);
 }
 

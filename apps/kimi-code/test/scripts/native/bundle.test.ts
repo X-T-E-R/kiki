@@ -104,6 +104,21 @@ describe('SEA native package imports', () => {
       const prompted = spawnSync(process.execPath, [bundle, '-p', 'mcp', '--attached'], { encoding: 'utf8', timeout: 10_000 });
       expect(prompted.status).toBe(0);
       expect(prompted.stdout).toBe('application-loaded\n');
+      const valued = spawnSync(process.execPath, [bundle, '--agent', 'mcp', '--attached'], { encoding: 'utf8', timeout: 10_000 });
+      expect(valued.status).toBe(0);
+      expect(valued.stdout).toBe('application-loaded\n');
+      const illegal = spawnSync(process.execPath, [bundle, 'mcp', '--client', 'fixture', '--tools', '--attached'], { encoding: 'utf8', timeout: 10_000 });
+      expect(illegal.status).toBe(1);
+      expect(illegal.stdout).toBe('');
+      expect(illegal.stderr).toBe('--client cannot be combined with --attached or --workspace.\n');
+      const missingTools = spawnSync(process.execPath, [bundle, 'mcp', '--client', 'fixture', '--attached'], { encoding: 'utf8', timeout: 10_000 });
+      expect(missingTools.status).toBe(1);
+      expect(missingTools.stdout).toBe('');
+      expect(missingTools.stderr).toBe('--tools is required with --client.\n');
+      const workspaceClient = spawnSync(process.execPath, [bundle, 'mcp', '--workspace', 'C:/fixture', '--client', 'fixture', '--tools'], { encoding: 'utf8', timeout: 10_000 });
+      expect(workspaceClient.status).toBe(1);
+      expect(workspaceClient.stdout).toBe('');
+      expect(workspaceClient.stderr).toBe('--client cannot be combined with --attached or --workspace.\n');
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }

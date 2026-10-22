@@ -7,7 +7,11 @@ void (async () => {
     await runKikiMcpStdio(kikiMcpConfigFromEnv(process.env));
     process.exit(0);
   } catch (error) {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    process.exit(1);
+    const code = process.exitCode;
+    if (typeof code !== 'number' || code <= 0) {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      process.exit(1);
+    }
+    process.exit(code);
   }
 })();
