@@ -96,7 +96,7 @@ describe('extractToolOutputMedia', () => {
       { type: 'text', text: 'embedded body', attachment: { fileId: 'resource', mimeType: 'application/octet-stream', size: 3, name: 'resource.bin' } },
     ])).toEqual({ text: 'embedded body', media: [
       { kind: 'image', fileId: 'image', mime: 'image/png', size: 3, name: 'answer.png' },
-      { kind: 'file', fileId: 'audio', mime: 'audio/wav', size: 2, name: 'answer.wav' },
+      { kind: 'audio', fileId: 'audio', mime: 'audio/wav', size: 2, name: 'answer.wav' },
       { kind: 'file', fileId: 'resource', mime: 'application/octet-stream', size: 3, name: 'resource.bin' },
     ] });
   });
