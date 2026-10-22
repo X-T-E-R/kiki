@@ -201,6 +201,10 @@ export function ComputerControlSection() {
   const serverFacts = [platformDisplay(platform), envQuery.data?.arch]
     .filter((part): part is string => part !== undefined && part !== '')
     .join(' · ');
+  // "No platform" is a settled empty report. Until env data arrives the line stays blank.
+  const machineLine = envQuery.isSuccess
+    ? (serverFacts === '' ? t('st.computer.machineUnknown') : serverFacts)
+    : '';
 
   const reportFailure = (error: unknown) => {
     setFeedback({ tone: 'error', text: errorText(locale, error) });
@@ -306,7 +310,7 @@ export function ComputerControlSection() {
             <div id="st-card-computer-machine" className="space-y-2 border-t border-hairline pt-2.5">
               <SettingField label={t('st.computer.machineLabel')} labelId="computer-machine-label">
                 <span className="font-mono text-[12px] text-ink" data-computer-platform>
-                  {serverFacts === '' ? t('st.computer.machineUnknown') : serverFacts}
+                  {machineLine}
                 </span>
                 <button type="button" className={SECONDARY_BUTTON} data-computer-check-btn
                   disabled={checking}

@@ -112,12 +112,13 @@ async function settle() {
   }
 }
 
-async function settleUntil(selector: string) {
+async function settleUntil(selector: string, text?: string) {
   for (let i = 0; i < 60; i++) {
-    if (container.querySelector(selector) !== null) return;
+    const node = container.querySelector(selector);
+    if (node !== null && (text === undefined || (node.textContent?.includes(text) ?? false))) return;
     await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
   }
-  throw new Error(`Timed out waiting for ${selector}`);
+  throw new Error(text === undefined ? `Timed out waiting for ${selector}` : `Timed out waiting for ${selector} to contain ${text}`);
 }
 
 async function render(guard?: DirtyGuardValue) {
@@ -444,7 +445,8 @@ describe('ComputerControlSection', () => {
 
     connection.scopeId = 'ssh:office-mac';
     mcpList.mockResolvedValue([managedEntry({ name: 'office-mac-computer' })]);
-    env.mockResolvedValue({ platform: 'darwin', arch: 'arm64' } as never);
+    const macEnv = deferred<{ platform: string; arch: string }>();
+    env.mockReturnValue(macEnv.promise as never);
     await act(async () => { root.render(
       <QueryClientProvider client={queries}>
         <I18nProvider>
@@ -457,6 +459,11 @@ describe('ComputerControlSection', () => {
     await settleUntil('[data-computer-connection="office-mac-computer"]');
 
     expect(query('[data-computer-connection="kiki-computer"]')).toBeNull();
+    const pendingPlatform = query('[data-computer-platform]')?.textContent ?? '';
+    expect(pendingPlatform).not.toContain('Windows');
+    expect(pendingPlatform).not.toContain('The server reported no platform');
+    await act(async () => { macEnv.resolve({ platform: 'darwin', arch: 'arm64' }); });
+    await settleUntil('[data-computer-platform]', 'macOS · arm64');
     expect(query('[data-computer-platform]')?.textContent).toContain('macOS · arm64');
   });
 
