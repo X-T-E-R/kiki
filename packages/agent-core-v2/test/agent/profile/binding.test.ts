@@ -649,6 +649,7 @@ describe('AgentProfileService.bind', () => {
       sessionService(ISessionAgentProfileCatalog, catalog),
       hostEnvironmentServices(homeDir, hostPathClass),
     );
+    await ctx.ready;
     await ctx.get(IModelService).set('mock-pin', {
       provider: 'test-provider', model: 'mock-pin', maxContextSize: 1_000_000, defaultEffort: 'off',
     });
@@ -1680,6 +1681,7 @@ describe('AgentProfileService.bind', () => {
       sessionService(ISessionAgentProfileCatalog, routedCatalog(MOCK_MODEL)),
       hostEnvironmentServices(homeDir, hostPathClass),
     );
+    await ctx.ready;
     const canonicalId = `test-provider/${MOCK_MODEL}`;
     await ctx.get(IModelService).replaceAll({
       [canonicalId]: {
@@ -1847,6 +1849,7 @@ describe('AgentProfileService.bind', () => {
       hostEnvironmentServices(homeDir, hostPathClass),
       sessionService(ISessionAgentProfileCatalog, routedCatalog()),
     );
+    await ctx.ready;
     await ctx.get(IModelService).set('other-model', {
       provider: 'test-provider',
       model: 'other-model',
@@ -3305,7 +3308,10 @@ describe('AgentProfileService.bind', () => {
 
   it.each(['profile', 'dispatch'] as const)('makes browser and computer opt-in usable through %s selection and revocable on resume', async (selection) => {
     const names = ['*', 'BrowserConnections', 'BrowserTabs', 'browser__*', 'mcp__kiki-computer__*'];
-    const original = resumeProfile({ tools: selection === 'profile' ? names : ['Read'] });
+    const original = resumeProfile({
+      tools: selection === 'profile' ? names : ['Read'],
+      toolsSource: selection === 'profile' ? 'declared' : undefined,
+    });
     ctx = createTestAgent({ ...nativeResumeOptions(), autoConfigure: false, cwd: homeDir },
       agentService(IAgentScopeContext, makeAgentScopeContext({ agentId: 'agent-tools', parentAgentId: 'main', agentScope: 'agents/agent-tools' })),
       sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(original)), hostEnvironmentServices(homeDir, hostPathClass));
@@ -3365,7 +3371,7 @@ describe('AgentProfileService.bind', () => {
     const result: ToolExecutionResult[] = [];
     for await (const value of ctx.get(IAgentToolExecutorService).execute([{ id: 'peer-read', type: 'function', name: 'ThreadRead', arguments: JSON.stringify({ thread: { workspace_id: 'workspace-1', session_id: 'peer' } }) }], { signal: new AbortController().signal, turnId: 1 })) result.push(value);
     expect(result[0]?.result.isError).not.toBe(true);
-    expect(readThread).toHaveBeenCalledWith(expect.objectContaining({ caller: { hostId: 'local', workspaceId: 'test-workspace', sessionId: 'test-session' } }));
+    expect(readThread).toHaveBeenCalledWith(expect.objectContaining({ caller: { hostId: 'local', workspaceId: 'test-workspace', sessionId: 'test-session', agentId: 'agent-tools' } }));
     await commitResumeBinding(await profile.prepareResumeBinding({ toolOverride: { tools: [], disallowedTools: [] } }));
     expect(profile.data().activeToolNames).toEqual([]);
     expect(profile.data().disallowedTools).toEqual(['Write']);
