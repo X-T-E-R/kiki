@@ -3,7 +3,7 @@ import { realpath } from 'node:fs/promises';
 import { platform } from 'node:os';
 import { normalize, resolve } from 'node:path';
 
-import { createExternalClientStdioBridge, kikiMcpConfigFromEnv, runKikiMcpStdio } from '@kiki/kap-server';
+import { createExternalClientStdioBridge, kikiMcpConfigFromEnv, runExternalClientStdioBridge, runKikiMcpStdio } from '@kiki/kap-server';
 import type { Command } from 'commander';
 
 import { resolveKikiHome } from './home';
@@ -39,19 +39,25 @@ export function registerMcpCommand(program: Command, dependencies: McpCommandDep
         if (options.tools !== true) throw new Error('--tools is required with --client.');
         if (options.attached === true || options.workspace !== undefined) throw new Error('--client cannot be combined with --attached or --workspace.');
         const connection = await ensureServerImpl({ homeDir: resolveKikiHome(options.home) });
-        await createExternalClientStdioBridgeImpl({
+        const bridge = {
           connectionId: options.client,
-          resolveCredential: (connectionId) => daemonRequestImpl<ExternalClientLocalCredential>(
+          resolveCredential: (connectionId: string) => daemonRequestImpl<ExternalClientLocalCredential>(
             connection,
             'POST',
             `/api/external-clients/${encodeURIComponent(connectionId)}/credential`,
             {},
           ),
-        });
-        return;
+        };
+        if (dependencies.createExternalClientStdioBridge !== undefined) {
+          await createExternalClientStdioBridgeImpl(bridge);
+          return;
+        }
+        await runExternalClientStdioBridge(bridge);
+        process.exit(0);
       }
       if (options.attached === true) {
         await runKikiMcpStdioImpl(kikiMcpConfigFromEnvImpl(process.env));
+        if (dependencies.runKikiMcpStdio === undefined) process.exit(0);
         return;
       }
       if (options.workspace === undefined) throw new Error('--workspace is required for delegation MCP mode.');
@@ -67,6 +73,7 @@ export function registerMcpCommand(program: Command, dependencies: McpCommandDep
         sessionId: seat.sessionId,
         workspacePath: seat.workspace,
       });
+      if (dependencies.runKikiMcpStdio === undefined) process.exit(0);
     });
 }
 

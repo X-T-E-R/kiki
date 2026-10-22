@@ -13,6 +13,7 @@ async function main(): Promise<void> {
     return;
   }
   await runKikiMcpStdio(config);
+  process.exit(0);
 }
 
-await main();
+void main();

@@ -12,6 +12,8 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
+import { retainUntilStdioClientEnds } from '../stdioLifetime';
+
 export interface ExternalClientLocalCredential {
   readonly mcpUrl: URL | string;
   readonly token: string;
@@ -105,7 +107,8 @@ export async function createExternalClientStdioBridge(
 }
 
 export async function runExternalClientStdioBridge(options: ExternalClientStdioBridgeOptions): Promise<void> {
-  await createExternalClientStdioBridge(options);
+  const bridge = await createExternalClientStdioBridge(options);
+  await retainUntilStdioClientEnds({ close: () => bridge.close() });
 }
 
 function parseExternalClientEndpoint(value: URL | string): URL {

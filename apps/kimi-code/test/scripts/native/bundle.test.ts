@@ -54,15 +54,22 @@ describe('SEA native package imports', () => {
     try {
       const main = join(dir, 'main.ts');
       const indexer = join(dir, 'indexer.ts');
+      const attached = join(dir, 'attached.ts');
       writeFileSync(main, "console.log('application-loaded');\n");
       writeFileSync(indexer, "export async function runSqliteIndexerCommand(path: string) { if (!path) throw new Error('missing-index-path'); console.log(JSON.stringify({ indexer: path })); }\n");
+      writeFileSync(attached, "console.log('attached-mcp-loaded');\n");
       expect(nativeConfig.entry).toEqual(['./src/native-entry.ts']);
       await build({
         ...nativeConfig,
         config: false,
         entry: [resolve(import.meta.dirname, '../../../src/native-entry.ts')],
         outDir: join(dir, 'out'),
-        alias: { ...nativeConfig.alias, './main': main, '@kiki/kap-server/sqlite-indexer-runtime': indexer },
+        alias: {
+          ...nativeConfig.alias,
+          './main': main,
+          './mcp-sea-entry': attached,
+          '@kiki/kap-server/sqlite-indexer-runtime': indexer,
+        },
       });
       const bundle = join(dir, 'out/main.cjs');
       const indexed = spawnSync(process.execPath, ['--max-old-space-size=384', bundle, '__search-indexer', 'example.sqlite'], { encoding: 'utf8', timeout: 10_000 });
@@ -90,6 +97,13 @@ describe('SEA native package imports', () => {
       expect(normal.status).toBe(0);
       expect(normal.stderr).toBe('');
       expect(normal.stdout).toBe('application-loaded\n');
+      const attachedProcess = spawnSync(process.execPath, [bundle, 'mcp', '--workspace', 'C:/fixture', '--attached'], { encoding: 'utf8', timeout: 10_000 });
+      expect(attachedProcess.status).toBe(0);
+      expect(attachedProcess.stderr).toBe('');
+      expect(attachedProcess.stdout).toBe('attached-mcp-loaded\n');
+      const prompted = spawnSync(process.execPath, [bundle, '-p', 'mcp', '--attached'], { encoding: 'utf8', timeout: 10_000 });
+      expect(prompted.status).toBe(0);
+      expect(prompted.stdout).toBe('application-loaded\n');
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }

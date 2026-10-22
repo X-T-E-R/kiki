@@ -8,6 +8,7 @@ import {
   type KikiMcpConfig,
   type KikiMcpServerOptions,
 } from './server';
+import { retainUntilStdioClientEnds } from './stdioLifetime';
 
 export async function runKikiMcpStdio(
   config: KikiMcpConfig,
@@ -21,5 +22,9 @@ export async function runKikiMcpStdio(
     endpoint: config.endpoint, token: config.delegationToken, fetch: options.fetch,
   }) : undefined;
   const contextCatalog = await context?.catalog(AbortSignal.timeout(15_000));
-  await createKikiMcpServer(config, { ...options, contextCatalog, contextCall: context?.call, contextList: context?.catalog }).connect(new StdioServerTransport());
+  const server = await createKikiMcpServer(config, {
+    ...options, contextCatalog, contextCall: context?.call, contextList: context?.catalog,
+  });
+  await server.connect(new StdioServerTransport());
+  await retainUntilStdioClientEnds({ close: () => server.close() });
 }
