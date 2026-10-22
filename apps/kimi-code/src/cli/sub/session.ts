@@ -1,6 +1,11 @@
 import type { Command } from 'commander';
 
-import { discardRetainedSession, sealRetainedSession } from '@kiki/agent-core-v2/persistence/retainedJournal';
+import {
+  discardPersistedSession,
+  isPersistedSessionBusy,
+  sealPersistedSession,
+  type PersistedSessionMaintenance,
+} from '@kiki/node-sdk';
 
 import { resolveKikiHome } from '#/kiki/home';
 import {
@@ -30,6 +35,8 @@ export interface SessionCommandDeps {
   readonly inspectSession: (options: InspectSessionOptions) => Promise<SessionInspection>;
   readonly followSession: (options: FollowSessionOptions) => AsyncIterable<SessionInspection>;
   readonly listSessions: (homeDir: string) => Promise<readonly SessionLocationSummary[]>;
+  readonly sealSession?: (input: PersistedSessionMaintenance) => ReturnType<typeof sealPersistedSession>;
+  readonly discardSession?: (input: PersistedSessionMaintenance) => ReturnType<typeof discardPersistedSession>;
   readonly stdout: WritableLike;
   readonly stderr: WritableLike;
   readonly exit: (code: number) => void;
@@ -142,9 +149,15 @@ async function handleSessionJournal(
 ): Promise<void> {
   try {
     const located = await locateOfflineSession(deps, reference, options.workspace);
+    const maintenance: PersistedSessionMaintenance = {
+      homeDir: deps.homeDir(),
+      workspaceId: located.workspaceId,
+      sessionId: located.sessionId,
+      sessionDir: located.sessionDir,
+    };
     const wires = action === 'seal'
-      ? (await sealRetainedSession(located.sessionDir)).length
-      : await discardRetainedSession(located.sessionDir);
+      ? (await (deps.sealSession ?? sealPersistedSession)(maintenance)).length
+      : await (deps.discardSession ?? discardPersistedSession)(maintenance);
     const payload = {
       schemaVersion: 1,
       action,
@@ -161,7 +174,13 @@ async function handleSessionJournal(
       ? `${JSON.stringify(payload, null, 2)}\n`
       : `${verb} ${wires} wire journal${wires === 1 ? '' : 's'} in ${located.sessionId}. ${kept}\n`);
   } catch (error) {
-    writeError(deps, error, options.json);
+    writeError(
+      deps,
+      isPersistedSessionBusy(error) && error instanceof Error
+        ? new SessionInspectionError('session_active', error.message)
+        : error,
+      options.json,
+    );
   }
 }
 
@@ -259,7 +278,7 @@ export function registerSessionCommand(parent: Command, overrides: Partial<Sessi
 
   session
     .command('seal')
-    .description('Seal one persisted session for logical journal reads. The original wire file stays on disk.')
+    .description('Seal one persisted session for logical journal reads. The original wire file stays on disk. A session held by another Kiki process is refused.')
     .argument('<session>', 'Session link, session_<uuid>, or bare UUID.')
     .option('--json', 'Print stable machine-readable JSON.')
     .option('--workspace <workspace-id>', 'Select one copy when the session exists in multiple workspaces.')
@@ -272,7 +291,7 @@ export function registerSessionCommand(parent: Command, overrides: Partial<Sessi
 
   session
     .command('unseal')
-    .description('Discard one session seal and read the original wire file directly. The wire file is not modified.')
+    .description('Discard one session seal and read the original wire file directly. The wire file is not modified. A session held by another Kiki process is refused.')
     .argument('<session>', 'Session link, session_<uuid>, or bare UUID.')
     .option('--json', 'Print stable machine-readable JSON.')
     .option('--workspace <workspace-id>', 'Select one copy when the session exists in multiple workspaces.')
@@ -316,6 +335,8 @@ function createDefaultDeps(overrides: Partial<SessionCommandDeps>): SessionComma
     inspectSession: overrides.inspectSession ?? inspectOfflineSession,
     followSession: overrides.followSession ?? followOfflineSession,
     listSessions: overrides.listSessions ?? ((homeDir) => listOfflineSessions({ homeDir })),
+    sealSession: overrides.sealSession,
+    discardSession: overrides.discardSession,
     stdout: overrides.stdout ?? process.stdout,
     stderr: overrides.stderr ?? process.stderr,
     exit: overrides.exit ?? ((code: number) => {

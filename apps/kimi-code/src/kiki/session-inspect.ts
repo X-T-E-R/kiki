@@ -47,7 +47,8 @@ export type SessionInspectionErrorCode =
   | 'workspace_not_found'
   | 'damaged_session'
   | 'agent_not_found'
-  | 'ambiguous_agent';
+  | 'ambiguous_agent'
+  | 'session_active';
 
 export class SessionInspectionError extends Error {
   constructor(

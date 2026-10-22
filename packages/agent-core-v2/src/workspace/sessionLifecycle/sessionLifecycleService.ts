@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 
 import { join } from 'pathe';
 
@@ -36,6 +36,7 @@ import { IRetainedUsageService } from '#/app/retainedUsage/retainedUsage';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { ErrorCodes, Error2, isError2 } from '#/errors';
 import { IHostFileSystem, type HostDirEntry } from '#/os/interface/hostFileSystem';
+import { SESSION_LOCK_SCOPE, sessionLockKey } from '#/persistence/backends/node-fs/fileLock';
 import {
   type AppendLogTruncation,
   IAppendLogStore,
@@ -130,7 +131,6 @@ type MaterializeSessionOptions = Omit<CreateSessionOptions, 'sessionId'> & {
 };
 
 const NO_ABORT = new AbortController().signal;
-const SESSION_LOCK_SCOPE = 'session-locks';
 const CHECKPOINT_IDLE_DELAY_MS = 1_000;
 
 const SESSION_CREATE_RELOAD_SKILL_SOURCES: readonly string[] = [
@@ -294,10 +294,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     if (this.sessionLocks.has(sessionId)) return;
     const releasing = this.lockReleases.get(sessionId);
     if (releasing !== undefined) await releasing;
-    const lockKey = `${createHash('sha256')
-      .update(this.sessionScope(sessionId))
-      .digest('hex')}.lock`;
-    const lock = await this.storage.acquireLock(SESSION_LOCK_SCOPE, lockKey, {
+    const lock = await this.storage.acquireLock(SESSION_LOCK_SCOPE, sessionLockKey(this.sessionScope(sessionId)), {
       waitForMs: Math.max(0, waitForSessionMs),
       owner: {
         sessionId,

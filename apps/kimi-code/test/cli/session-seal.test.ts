@@ -85,4 +85,35 @@ describe('kiki session seal', () => {
     await expect(stat(join(sessionDir, 'agents', 'main', 'wire.jsonl.segments.json'))).rejects.toMatchObject({ code: 'ENOENT' });
     expect(await readFile(wirePath)).toEqual(journal);
   });
+
+  it('refuses a session the host reports as active and leaves the journal untouched', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'kiki-session-seal-busy-'));
+    cleanup.push(homeDir);
+    const sessionDir = join(homeDir, 'sessions', 'wd_alpha', SESSION_ID);
+    const wirePath = join(sessionDir, 'agents', 'main', 'wire.jsonl');
+    const journal = Buffer.from('{"type":"turn_begin"}\n');
+    await mkdir(join(sessionDir, 'agents', 'main'), { recursive: true });
+    await writeFile(wirePath, journal);
+    const stderr: string[] = [];
+    const exitCodes: number[] = [];
+    const program = new Command('kiki');
+    registerSessionCommand(program, {
+      homeDir: () => homeDir,
+      stdout: { write: () => true },
+      stderr: { write: (chunk) => (stderr.push(chunk), true) },
+      exit: ((code: number) => {
+        exitCodes.push(code);
+      }) as SessionCommandDeps['exit'],
+      sealSession: () => Promise.reject(Object.assign(new Error(`Session "${SESSION_ID}" is active in another process`), {
+        code: 'storage.locked',
+      })),
+    });
+
+    await program.parseAsync(['node', 'kiki', 'session', 'seal', SESSION_ID, '--json']);
+
+    expect(exitCodes).toEqual([1]);
+    expect(JSON.parse(stderr.join('')).error.code).toBe('session_active');
+    expect(await readFile(wirePath)).toEqual(journal);
+    await expect(stat(join(sessionDir, 'agents', 'main', 'wire.jsonl.segments.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
 });

@@ -41,6 +41,12 @@ interface InspectedLock {
   readonly mine: boolean;
 }
 
+export const SESSION_LOCK_SCOPE = 'session-locks';
+
+export function sessionLockKey(scope: string): string {
+  return `${createHash('sha256').update(scope).digest('hex')}.lock`;
+}
+
 const DEFAULT_LEASE_MS = 120_000;
 const DEFAULT_RENEW_INTERVAL_MS = 15_000;
 const TAKEOVER_SETTLE_BASE_MS = 60;
@@ -132,7 +138,7 @@ function hookExit(): void {
 
 /** Removes dead or corrupted session locks only when no live watch protects them. */
 export async function cleanupExpiredSessionLocks(homeDir: string): Promise<number> {
-  const directory = join(homeDir, 'session-locks');
+  const directory = join(homeDir, SESSION_LOCK_SCOPE);
   let entries: string[];
   try {
     entries = await readdir(directory);
@@ -155,8 +161,7 @@ export async function cleanupExpiredSessionLocks(homeDir: string): Promise<numbe
 }
 
 export async function isSessionLockActive(homeDir: string, scope: string): Promise<boolean> {
-  const key = `${createHash('sha256').update(scope).digest('hex')}.lock`;
-  const path = join(homeDir, 'session-locks', key);
+  const path = join(homeDir, SESSION_LOCK_SCOPE, sessionLockKey(scope));
   try {
     return await new FileLock(path, {}, {}).isActive();
   } catch (error) {

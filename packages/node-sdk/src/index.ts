@@ -86,6 +86,12 @@ export { resolveKikiHome, analyzeBashCommand, matchBashPattern, matchesBashRuleS
 // by hosts (e.g. the CLI's server telemetry bootstrap) that need to inspect
 // config without spinning up a full engine.
 export { effectiveModelAlias, loadRuntimeConfigSafe, readMergedConfigData, resolveConfigPath } from '#/config';
+export {
+  discardPersistedSession,
+  isPersistedSessionBusy,
+  sealPersistedSession,
+} from '#/retained-session';
+export type { PersistedSessionMaintenance } from '#/retained-session';
 export { limitAgentReplayByTurns } from '#/wire/replay-turns';
 export { normalizeWorkDir, sameWorkDir } from '#/v2/session-mapper';
 export { parseAgentFileText } from '@kiki/agent-core-v2';
