@@ -6,7 +6,7 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Emitter, type Event } from '#/_base/event';
 
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
-import { discardColdSegments, logicalByteSize, readLogicalBytes, sealColdSegments } from '#/persistence/coldSegmentLog';
+import { discardColdSegments, discardColdUnlocked, readLogicalBytes, sealColdSegments, withColdExclusive } from '#/persistence/coldSegmentLog';
 import {
   AppendLogCorruptedError,
   IAppendLogStore,
@@ -19,8 +19,8 @@ import {
   type ColdSealResult,
 } from '#/persistence/interface/appendLogStore';
 
-export { COLD_SEGMENT_BYTES, coldManifestKey } from '#/persistence/coldSegmentLog';
-export { logicalByteSize, readLogicalBytes };
+export { COLD_SEGMENT_BYTES, coldManifestKey, logicalByteSize, openPinnedLogicalRead, readLogicalBytes } from '#/persistence/coldSegmentLog';
+export type { PinnedLogicalRead } from '#/persistence/coldSegmentLog';
 
 const textEncoder = new TextEncoder();
 const TRANSIENT_APPEND_ERRNOS = new Set(['EBUSY', 'EPERM', 'EACCES']);
@@ -223,15 +223,30 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
     const prepared = this.prepareProjections(scope, key, records);
     const rewrite = priorSettled.then(async () => {
       try {
-        await discardColdSegments(this.storage, scope, key);
-        const generation = randomUUID();
-        await this.storage.write(scope, `${key}.generation`, textEncoder.encode(generation), { atomic: true });
-        state.position = undefined;
-        await this.storage.write(scope, key, encoded, { atomic: true });
-        const boundary = encoded.slice(-4096);
-        state.position = { generation, offset: encoded.byteLength, boundary };
+        let committed: { generation: string; offset: number; boundary: Uint8Array } | undefined;
+        await withColdExclusive(scope, key, async () => {
+          await discardColdUnlocked(this.storage, scope, key);
+          const generation = randomUUID();
+          await this.storage.write(scope, `${key}.generation`, textEncoder.encode(generation), { atomic: true });
+          state.position = undefined;
+          await this.storage.write(scope, key, encoded, { atomic: true });
+          const boundary = encoded.slice(-4096);
+          committed = { generation, offset: encoded.byteLength, boundary };
+        });
+        if (committed === undefined) return false;
+        state.position = committed;
         state.storageFailure = undefined;
-        for (const commit of prepared) await commit({ scope, key, generation, start: 0, end: encoded.byteLength, boundaryHash: boundaryProof(boundary), rewrite: true });
+        for (const commit of prepared) {
+          await commit({
+            scope,
+            key,
+            generation: committed.generation,
+            start: 0,
+            end: committed.offset,
+            boundaryHash: boundaryProof(committed.boundary),
+            rewrite: true,
+          });
+        }
         return true;
       } catch (error) {
         state.storageFailure = { error };
@@ -243,13 +258,27 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
   }
 
   async sealCold(scope: string, key: string, sealedCut: number, options?: ColdSealOptions): Promise<ColdSealResult> {
-    await this.flush(scope, key);
-    return sealColdSegments(this.storage, scope, key, sealedCut, options);
+    const state = this.state(scope, key);
+    const prior = state.flushPromise ?? state.ready;
+    const priorSettled = prior.then(() => undefined, () => undefined);
+    let result!: ColdSealResult;
+    const operation = priorSettled.then(async () => {
+      result = await sealColdSegments(this.storage, scope, key, sealedCut, options);
+      return false;
+    });
+    await this.ownFlush(scope, key, state, operation, { value: false });
+    return result;
   }
 
   async discardCold(scope: string, key: string): Promise<void> {
-    await this.flush(scope, key);
-    await discardColdSegments(this.storage, scope, key);
+    const state = this.state(scope, key);
+    const prior = state.flushPromise ?? state.ready;
+    const priorSettled = prior.then(() => undefined, () => undefined);
+    const operation = priorSettled.then(async () => {
+      await discardColdSegments(this.storage, scope, key);
+      return false;
+    });
+    await this.ownFlush(scope, key, state, operation, { value: false });
   }
 
   async flush(...target: [] | [scope: string, key: string]): Promise<void> {

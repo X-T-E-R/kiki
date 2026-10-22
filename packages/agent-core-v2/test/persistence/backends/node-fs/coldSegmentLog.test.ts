@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { deflateRawSync } from 'node:zlib';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'pathe';
@@ -45,6 +46,7 @@ class RecordingStorage extends InMemoryStorageService {
 
 class FailOnSecondSegment extends InMemoryStorageService {
   private segmentWrites = 0;
+  readonly writtenSegments: string[] = [];
 
   override async write(
     scope: string,
@@ -52,8 +54,9 @@ class FailOnSecondSegment extends InMemoryStorageService {
     data: Uint8Array,
     options?: { atomic?: boolean; signal?: AbortSignal },
   ): Promise<void> {
-    if (key.includes('.segments/') && ++this.segmentWrites === 2) throw new Error('disk full');
+    if (key.includes('.segments/') && key.endsWith('.deflate') && ++this.segmentWrites === 2) throw new Error('disk full');
     await super.write(scope, key, data, options);
+    if (key.endsWith('.deflate')) this.writtenSegments.push(key);
   }
 }
 
@@ -169,7 +172,9 @@ describe('cold segment journal', () => {
     storage.opened.length = 0;
     const page = await concatBytes(readLogicalBytes(storage, SCOPE, KEY, { start: SEGMENT_BYTES, end: SEGMENT_BYTES + 40 }));
     expect(page).toEqual(journal.bytes.subarray(SEGMENT_BYTES, SEGMENT_BYTES + 41));
-    expect(storage.opened.filter((key) => key.endsWith('.deflate'))).toEqual([`${KEY}.segments/000001.deflate`]);
+    expect(storage.opened.filter((key) => key.endsWith('.deflate'))).toEqual([
+      expect.stringMatching(/\.segments\/[0-9a-f-]{36}\/000001\.deflate$/),
+    ]);
     expect(storage.opened).not.toContain(KEY);
 
     storage.opened.length = 0;
@@ -227,7 +232,8 @@ describe('cold segment journal', () => {
     await failing.write(SCOPE, KEY, journal.bytes);
     await expect(failingLog.sealCold(SCOPE, KEY, journal.sealedCut, { segmentBytes: SEGMENT_BYTES })).rejects.toThrow('disk full');
     expect(await failing.read(SCOPE, coldManifestKey(KEY))).toBeUndefined();
-    expect(await failing.read(SCOPE, `${KEY}.segments/000000.deflate`)).toBeUndefined();
+    expect(failing.writtenSegments.length).toBeGreaterThan(0);
+    for (const segmentKey of failing.writtenSegments) expect(await failing.read(SCOPE, segmentKey)).toBeUndefined();
     expect(Buffer.from((await failing.read(SCOPE, KEY))!)).toEqual(journal.bytes);
 
     const cancelled = new InMemoryStorageService();
@@ -251,7 +257,10 @@ describe('cold segment journal', () => {
     const journal = buildJournal();
     await storage.write(SCOPE, KEY, journal.bytes);
     await log.sealCold(SCOPE, KEY, journal.sealedCut, { segmentBytes: SEGMENT_BYTES });
-    await storage.delete(SCOPE, `${KEY}.segments/000001.deflate`);
+    const published = JSON.parse(Buffer.from((await storage.read(SCOPE, coldManifestKey(KEY)))!).toString('utf8')) as {
+      segments: Array<{ key: string }>;
+    };
+    await storage.delete(SCOPE, published.segments[1]!.key);
     const missing = log.read<WireRecord>(SCOPE, KEY)[Symbol.asyncIterator]();
     await expect(missing.next()).rejects.toMatchObject({ code: StorageErrors.codes.STORAGE_CORRUPTED });
     expect(Buffer.from((await storage.read(SCOPE, KEY))!)).toEqual(journal.bytes);
@@ -327,5 +336,261 @@ describe('cold segment journal', () => {
       await storage.close();
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it('rejects an oversized deflate at the inflate bound', async () => {
+    const storage = new RecordingStorage();
+    const log = new AppendLogStore(storage);
+    disposables.add(log);
+    const journal = buildJournal();
+    await storage.write(SCOPE, KEY, journal.bytes);
+    await log.sealCold(SCOPE, KEY, journal.sealedCut, { segmentBytes: SEGMENT_BYTES });
+    const manifest = JSON.parse(Buffer.from((await storage.read(SCOPE, coldManifestKey(KEY)))!).toString('utf8')) as {
+      segments: Array<{ key: string }>;
+    };
+    const bomb = deflateRawSync(Buffer.alloc(256 * 1024), { level: 6 });
+    await storage.write(SCOPE, manifest.segments[0]!.key, bomb);
+    await expect(concatBytes(readLogicalBytes(storage, SCOPE, KEY, { start: 0, end: 31 }))).rejects.toMatchObject({
+      code: StorageErrors.codes.STORAGE_CORRUPTED,
+      details: { reason: 'segment' },
+      cause: { code: 'ERR_BUFFER_TOO_LARGE' },
+    });
+
+    const bulky = new RecordingStorage();
+    const bulkyLog = new AppendLogStore(bulky);
+    disposables.add(bulkyLog);
+    await bulky.write(SCOPE, KEY, journal.bytes);
+    await bulkyLog.sealCold(SCOPE, KEY, journal.sealedCut, { segmentBytes: SEGMENT_BYTES });
+    const published = JSON.parse(Buffer.from((await bulky.read(SCOPE, coldManifestKey(KEY)))!).toString('utf8')) as {
+      segments: Array<{ key: string }>;
+    };
+    await bulky.write(SCOPE, published.segments[0]!.key, Buffer.alloc(64 * 1024));
+    bulky.opened.length = 0;
+    await expect(concatBytes(readLogicalBytes(bulky, SCOPE, KEY, { start: 0, end: 31 }))).rejects.toMatchObject({
+      code: StorageErrors.codes.STORAGE_CORRUPTED,
+      details: { reason: 'segment' },
+    });
+    expect(bulky.opened.filter((key) => key.endsWith('.deflate'))).toEqual([]);
+    expect(Buffer.from((await bulky.read(SCOPE, KEY))!)).toEqual(journal.bytes);
+  });
+
+  it('keeps a published seal when a reseal is cancelled and holds the next seal behind it', async () => {
+    const journal = buildJournal();
+    let armCancel = false;
+    const cancelStorage = new (class extends InMemoryStorageService {
+      override async write(
+        scope: string,
+        key: string,
+        data: Uint8Array,
+        options?: { atomic?: boolean; signal?: AbortSignal },
+      ): Promise<void> {
+        if (armCancel && key.endsWith('.deflate')) throw new DOMException('The operation was aborted', 'AbortError');
+        await super.write(scope, key, data, options);
+      }
+    })();
+    const cancelLog = new AppendLogStore(cancelStorage);
+    disposables.add(cancelLog);
+    await cancelStorage.write(SCOPE, KEY, journal.bytes);
+    await cancelLog.sealCold(SCOPE, KEY, journal.sealedCut, { segmentBytes: SEGMENT_BYTES });
+    const published = Buffer.from((await cancelStorage.read(SCOPE, coldManifestKey(KEY)))!);
+    const segments = (JSON.parse(published.toString('utf8')) as { segments: Array<{ key: string }> }).segments;
+    armCancel = true;
+    await expect(cancelLog.sealCold(SCOPE, KEY, journal.sealedCut, { segmentBytes: SEGMENT_BYTES })).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    expect(Buffer.from((await cancelStorage.read(SCOPE, coldManifestKey(KEY)))!)).toEqual(published);
+    for (const segment of segments) expect(await cancelStorage.read(SCOPE, segment.key)).toBeDefined();
+    expect(await concatBytes(readLogicalBytes(cancelStorage, SCOPE, KEY))).toEqual(journal.bytes);
+    expect(Buffer.from((await cancelStorage.read(SCOPE, KEY))!)).toEqual(journal.bytes);
+
+    let manifestWrites = 0;
+    let heldNow = false;
+    let deflatesWhileHeld = 0;
+    let releaseHold!: () => void;
+    const hold = new Promise<void>((resolve) => { releaseHold = resolve; });
+    let markHeld!: () => void;
+    const held = new Promise<void>((resolve) => { markHeld = resolve; });
+    const gated = new (class extends InMemoryStorageService {
+      override async write(
+        scope: string,
+        key: string,
+        data: Uint8Array,
+        options?: { atomic?: boolean; signal?: AbortSignal },
+      ): Promise<void> {
+        if (heldNow && key.endsWith('.deflate')) deflatesWhileHeld += 1;
+        if (key.endsWith('.segments.json')) {
+          manifestWrites += 1;
+          if (manifestWrites === 2) {
+            heldNow = true;
+            markHeld();
+            await hold;
+            heldNow = false;
+          }
+        }
+        await super.write(scope, key, data, options);
+      }
+    })();
+    const gatedLog = new AppendLogStore(gated);
+    disposables.add(gatedLog);
+    await gated.write(SCOPE, KEY, journal.bytes);
+    await gatedLog.sealCold(SCOPE, KEY, journal.sealedCut, { segmentBytes: SEGMENT_BYTES });
+    const firstManifest = Buffer.from((await gated.read(SCOPE, coldManifestKey(KEY)))!);
+    const firstSeal = gatedLog.sealCold(SCOPE, KEY, journal.sealedCut, { segmentBytes: SEGMENT_BYTES });
+    await held;
+    const secondSeal = gatedLog.sealCold(SCOPE, KEY, journal.sealedCut, { segmentBytes: SEGMENT_BYTES });
+    await new Promise<void>((resolve) => { setImmediate(resolve); });
+    expect(deflatesWhileHeld).toBe(0);
+    expect(Buffer.from((await gated.read(SCOPE, coldManifestKey(KEY)))!)).toEqual(firstManifest);
+    releaseHold();
+    await firstSeal;
+    await secondSeal;
+    const finalManifest = JSON.parse(Buffer.from((await gated.read(SCOPE, coldManifestKey(KEY)))!).toString('utf8')) as {
+      segments: Array<{ key: string }>;
+    };
+    for (const segment of finalManifest.segments) expect(await gated.read(SCOPE, segment.key)).toBeDefined();
+    expect(await concatBytes(readLogicalBytes(gated, SCOPE, KEY))).toEqual(journal.bytes);
+    expect(Buffer.from((await gated.read(SCOPE, KEY))!)).toEqual(journal.bytes);
+  });
+
+  it('finishes an in-flight logical read before discard removes its segments', async () => {
+    let releaseRead!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseRead = resolve; });
+    let markRead!: () => void;
+    const readingSegment = new Promise<void>((resolve) => { markRead = resolve; });
+    let blocked = false;
+    const storage = new (class extends InMemoryStorageService {
+      override async read(scope: string, key: string): Promise<Uint8Array | undefined> {
+        if (!blocked && key.endsWith('.deflate')) {
+          blocked = true;
+          markRead();
+          await gate;
+        }
+        return super.read(scope, key);
+      }
+    })();
+    const log = new AppendLogStore(storage);
+    disposables.add(log);
+    const journal = buildJournal();
+    await storage.write(SCOPE, KEY, journal.bytes);
+    await log.sealCold(SCOPE, KEY, journal.sealedCut, { segmentBytes: SEGMENT_BYTES });
+    const published = JSON.parse(Buffer.from((await storage.read(SCOPE, coldManifestKey(KEY)))!).toString('utf8')) as {
+      segments: Array<{ key: string }>;
+    };
+    const pinnedKey = published.segments[0]!.key;
+    const pending = concatBytes(readLogicalBytes(storage, SCOPE, KEY));
+    await readingSegment;
+    const discarding = log.discardCold(SCOPE, KEY);
+    await new Promise<void>((resolve) => { setImmediate(resolve); });
+    expect(await storage.read(SCOPE, pinnedKey)).toBeDefined();
+    releaseRead();
+    expect(await pending).toEqual(journal.bytes);
+    await discarding;
+    expect(await storage.read(SCOPE, coldManifestKey(KEY))).toBeUndefined();
+    expect(await concatBytes(readLogicalBytes(storage, SCOPE, KEY))).toEqual(journal.bytes);
+    expect(Buffer.from((await storage.read(SCOPE, KEY))!)).toEqual(journal.bytes);
+  });
+
+  it('does not interleave a rewrite with a seal of the previous bytes', async () => {
+    let arm = false;
+    let releaseWrite!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseWrite = resolve; });
+    let markWrite!: () => void;
+    const writing = new Promise<void>((resolve) => { markWrite = resolve; });
+    let deflatesWhileHeld = 0;
+    let heldNow = false;
+    const storage = new (class extends InMemoryStorageService {
+      override async write(
+        scope: string,
+        key: string,
+        data: Uint8Array,
+        options?: { atomic?: boolean; signal?: AbortSignal },
+      ): Promise<void> {
+        if (heldNow && key.endsWith('.deflate')) deflatesWhileHeld += 1;
+        if (arm && key === KEY) {
+          arm = false;
+          heldNow = true;
+          markWrite();
+          await gate;
+          heldNow = false;
+        }
+        await super.write(scope, key, data, options);
+      }
+    })();
+    const log = new AppendLogStore(storage);
+    disposables.add(log);
+    const journal = buildJournal();
+    await storage.write(SCOPE, KEY, journal.bytes);
+    await log.sealCold(SCOPE, KEY, journal.sealedCut, { segmentBytes: SEGMENT_BYTES });
+    arm = true;
+    const rewriting = log.rewrite(SCOPE, KEY, [{ type: 'note', id: 'replaced' }]);
+    await writing;
+    const sealing = log.sealCold(SCOPE, KEY, journal.sealedCut, { segmentBytes: SEGMENT_BYTES });
+    await new Promise<void>((resolve) => { setImmediate(resolve); });
+    expect(deflatesWhileHeld).toBe(0);
+    expect(await storage.read(SCOPE, coldManifestKey(KEY))).toBeUndefined();
+    releaseWrite();
+    await rewriting;
+    await expect(sealing).rejects.toMatchObject({ name: 'BugIndicatingError' });
+    expect(await storage.read(SCOPE, coldManifestKey(KEY))).toBeUndefined();
+    expect(await collect(log)).toEqual([{ type: 'note', id: 'replaced' }]);
+  });
+
+  it('does not publish or serve sealed bytes under a different generation', async () => {
+    const journal = buildJournal();
+    const next = Buffer.from(journal.bytes);
+    const needle = Buffer.from('NEEDLE_COLD');
+    next.set(Buffer.from('NEEDLE_NEW!'), next.indexOf(needle));
+    expect(next.byteLength).toBe(journal.bytes.byteLength);
+    let generationReads = 0;
+    const fresh: string[] = [];
+    const swapping = new (class extends InMemoryStorageService {
+      override async read(scope: string, key: string): Promise<Uint8Array | undefined> {
+        if (key === `${KEY}.generation`) {
+          generationReads += 1;
+          if (generationReads === 2) {
+            await super.write(scope, KEY, next);
+            await super.write(scope, `${KEY}.generation`, Buffer.from('gen-2\n'));
+          }
+        }
+        return super.read(scope, key);
+      }
+
+      override async write(
+        scope: string,
+        key: string,
+        data: Uint8Array,
+        options?: { atomic?: boolean; signal?: AbortSignal },
+      ): Promise<void> {
+        await super.write(scope, key, data, options);
+        if (key.endsWith('.deflate')) fresh.push(key);
+      }
+    })();
+    const swappingLog = new AppendLogStore(swapping);
+    disposables.add(swappingLog);
+    await swapping.write(SCOPE, KEY, journal.bytes);
+    await swapping.write(SCOPE, `${KEY}.generation`, Buffer.from('gen-1\n'));
+    await expect(swappingLog.sealCold(SCOPE, KEY, journal.sealedCut, { segmentBytes: SEGMENT_BYTES })).rejects.toMatchObject({
+      code: StorageErrors.codes.STORAGE_CORRUPTED,
+      details: { reason: 'generation' },
+    });
+    expect(await swapping.read(SCOPE, coldManifestKey(KEY))).toBeUndefined();
+    for (const segmentKey of fresh) expect(await swapping.read(SCOPE, segmentKey)).toBeUndefined();
+    expect(await concatBytes(readLogicalBytes(swapping, SCOPE, KEY))).toEqual(next);
+    expect(Buffer.from((await swapping.read(SCOPE, KEY))!)).toEqual(next);
+
+    const published = new InMemoryStorageService();
+    const publishedLog = new AppendLogStore(published);
+    disposables.add(publishedLog);
+    await published.write(SCOPE, KEY, journal.bytes);
+    await published.write(SCOPE, `${KEY}.generation`, Buffer.from('gen-1\n'));
+    await publishedLog.sealCold(SCOPE, KEY, journal.sealedCut, { segmentBytes: SEGMENT_BYTES });
+    await published.write(SCOPE, KEY, next);
+    await published.write(SCOPE, `${KEY}.generation`, Buffer.from('gen-2\n'));
+    const iterator = readLogicalBytes(published, SCOPE, KEY)[Symbol.asyncIterator]();
+    await expect(iterator.next()).rejects.toMatchObject({
+      code: StorageErrors.codes.STORAGE_CORRUPTED,
+      details: { reason: 'generation' },
+    });
+    expect(Buffer.from((await published.read(SCOPE, KEY))!)).toEqual(next);
   });
 });

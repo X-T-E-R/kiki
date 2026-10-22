@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
 
 import { BugIndicatingError } from '#/_base/errors/errors';
@@ -17,6 +17,7 @@ const COLD_LEVEL = 6;
 const COLD_FORMAT = 1;
 const MAX_SEGMENTS = 4096;
 const YIELD_BYTES = 64 * 1024;
+const SEAL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 interface ColdSegment {
   readonly logicalStart: number;
@@ -33,15 +34,84 @@ interface ColdManifest {
   readonly sealedCut: number;
   readonly logicalSize: number;
   readonly generation: string;
+  readonly sealId: string;
   readonly segments: readonly ColdSegment[];
+}
+
+interface ColdTurn {
+  readonly ready: Promise<void>;
+  readonly finish: () => void;
+}
+
+const coldChains = new Map<string, Promise<void>>();
+
+interface SealPin {
+  count: number;
+  readonly waiters: Array<() => void>;
+}
+
+const sealPins = new Map<string, SealPin>();
+
+function pinId(scope: string, key: string, sealId: string): string {
+  return `${scope}\0${key}\0${sealId}`;
+}
+
+function pinSeal(scope: string, key: string, sealId: string): () => void {
+  const id = pinId(scope, key, sealId);
+  const entry = sealPins.get(id) ?? { count: 0, waiters: [] };
+  entry.count += 1;
+  sealPins.set(id, entry);
+  return () => {
+    entry.count -= 1;
+    if (entry.count > 0) return;
+    sealPins.delete(id);
+    const waiters = entry.waiters.splice(0);
+    for (const wake of waiters) wake();
+  };
+}
+
+function waitUnpinned(scope: string, key: string, sealId: string): Promise<void> {
+  const entry = sealPins.get(pinId(scope, key, sealId));
+  if (entry === undefined || entry.count === 0) return Promise.resolve();
+  return new Promise((resolve) => {
+    entry.waiters.push(resolve);
+  });
+}
+
+function takeTurn(scope: string, key: string): ColdTurn {
+  const id = `${scope}\0${key}`;
+  let finish!: () => void;
+  const current = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const ready = (coldChains.get(id) ?? Promise.resolve()).then(() => undefined, () => undefined);
+  coldChains.set(id, current);
+  void current.finally(() => {
+    if (coldChains.get(id) === current) coldChains.delete(id);
+  });
+  return { ready, finish };
+}
+
+export async function withColdExclusive<T>(scope: string, key: string, body: () => Promise<T>): Promise<T> {
+  const turn = takeTurn(scope, key);
+  await turn.ready;
+  try {
+    return await body();
+  } finally {
+    turn.finish();
+  }
 }
 
 export function coldManifestKey(key: string): string {
   return `${key}.segments.json`;
 }
 
-function coldSegmentKey(key: string, index: number): string {
-  return `${key}.segments/${index.toString(10).padStart(6, '0')}.deflate`;
+function coldSegmentKey(key: string, sealId: string, index: number): string {
+  return `${key}.segments/${sealId}/${index.toString(10).padStart(6, '0')}.deflate`;
+}
+
+function deflateInputLimit(outputBytes: number): number {
+  return outputBytes + Math.ceil(outputBytes / 16) + 1024;
 }
 
 function corrupted(scope: string, key: string, reason: string, cause?: unknown): StorageError {
@@ -96,8 +166,8 @@ function sha256(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-function planSegments(key: string, sealedCut: number, segmentBytes: number): ColdSegment[] | undefined {
-  if (segmentBytes < 1 || Math.ceil(sealedCut / segmentBytes) > MAX_SEGMENTS) return undefined;
+function planSegments(key: string, sealId: string, sealedCut: number, segmentBytes: number): ColdSegment[] | undefined {
+  if (!SEAL_ID.test(sealId) || segmentBytes < 1 || Math.ceil(sealedCut / segmentBytes) > MAX_SEGMENTS) return undefined;
   const segments: ColdSegment[] = [];
   let start = 0;
   while (start < sealedCut) {
@@ -106,7 +176,7 @@ function planSegments(key: string, sealedCut: number, segmentBytes: number): Col
       logicalStart: start,
       logicalEnd: end,
       uncompressedSha256: '',
-      key: coldSegmentKey(key, segments.length),
+      key: coldSegmentKey(key, sealId, segments.length),
     });
     start = end;
   }
@@ -121,12 +191,13 @@ function isManifest(value: unknown, key: string): ColdManifest | undefined {
   const sealedCut = raw['sealedCut'];
   const logicalSize = raw['logicalSize'];
   const generation = raw['generation'];
+  const sealId = raw['sealId'];
   const listed = raw['segments'];
   if (!Number.isSafeInteger(segmentBytes) || (segmentBytes as number) < 1 || (segmentBytes as number) > COLD_SEGMENT_BYTES) return undefined;
   if (!Number.isSafeInteger(sealedCut) || (sealedCut as number) < 0) return undefined;
   if (!Number.isSafeInteger(logicalSize) || (logicalSize as number) < (sealedCut as number)) return undefined;
-  if (typeof generation !== 'string' || !Array.isArray(listed)) return undefined;
-  const expected = planSegments(key, sealedCut as number, segmentBytes as number);
+  if (typeof generation !== 'string' || typeof sealId !== 'string' || !Array.isArray(listed)) return undefined;
+  const expected = planSegments(key, sealId, sealedCut as number, segmentBytes as number);
   if (expected === undefined || listed.length !== expected.length) return undefined;
   const segments: ColdSegment[] = [];
   for (let index = 0; index < expected.length; index += 1) {
@@ -151,6 +222,7 @@ function isManifest(value: unknown, key: string): ColdManifest | undefined {
     sealedCut: sealedCut as number,
     logicalSize: logicalSize as number,
     generation,
+    sealId,
     segments,
   };
 }
@@ -173,15 +245,57 @@ async function loadManifest(
   return manifest;
 }
 
+async function loadMatchedManifest(
+  storage: IFileSystemStorageService,
+  scope: string,
+  key: string,
+): Promise<ColdManifest | undefined> {
+  const manifest = await loadManifest(storage, scope, key);
+  if (manifest === undefined) return undefined;
+  if (await generationOf(storage, scope, key) !== manifest.generation) throw corrupted(scope, key, 'generation');
+  return manifest;
+}
+
 async function removeSegments(
   storage: IFileSystemStorageService,
   scope: string,
   keys: readonly string[],
 ): Promise<void> {
-  for (const key of keys) await storage.delete(scope, key);
+  for (const segmentKey of keys) await storage.delete(scope, segmentKey);
 }
 
-export async function discardColdSegments(
+function sealIdOf(bytes: Uint8Array): string | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return undefined;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+  const sealId = (parsed as { sealId?: unknown }).sealId;
+  return typeof sealId === 'string' ? sealId : undefined;
+}
+
+function listedSegmentKeys(bytes: Uint8Array, key: string): string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return [];
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
+  const listed = (parsed as { segments?: unknown }).segments;
+  if (!Array.isArray(listed)) return [];
+  const keys: string[] = [];
+  for (const item of listed) {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) continue;
+    const segmentKey = (item as { key?: unknown }).key;
+    if (typeof segmentKey === 'string' && segmentKey.startsWith(`${key}.segments/`)) keys.push(segmentKey);
+  }
+  return keys;
+}
+
+export async function discardColdUnlocked(
   storage: IFileSystemStorageService,
   scope: string,
   key: string,
@@ -189,30 +303,25 @@ export async function discardColdSegments(
   const bytes = await storage.read(scope, coldManifestKey(key));
   await storage.delete(scope, coldManifestKey(key));
   if (bytes === undefined) return;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(new TextDecoder().decode(bytes));
-  } catch {
-    return;
-  }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return;
-  const listed = (parsed as { segments?: unknown }).segments;
-  if (!Array.isArray(listed)) return;
-  for (const item of listed) {
-    if (item === null || typeof item !== 'object' || Array.isArray(item)) continue;
-    const segmentKey = (item as { key?: unknown }).key;
-    if (typeof segmentKey === 'string' && segmentKey.startsWith(`${key}.segments/`)) {
-      await storage.delete(scope, segmentKey);
-    }
-  }
+  const sealId = sealIdOf(bytes);
+  if (sealId !== undefined) await waitUnpinned(scope, key, sealId);
+  await removeSegments(storage, scope, listedSegmentKeys(bytes, key));
 }
 
-export async function sealColdSegments(
+export async function discardColdSegments(
+  storage: IFileSystemStorageService,
+  scope: string,
+  key: string,
+): Promise<void> {
+  await withColdExclusive(scope, key, () => discardColdUnlocked(storage, scope, key));
+}
+
+async function sealUnlocked(
   storage: IFileSystemStorageService,
   scope: string,
   key: string,
   sealedCut: number,
-  options: ColdSealOptions = {},
+  options: ColdSealOptions,
 ): Promise<ColdSealResult> {
   options.signal?.throwIfAborted();
   const size = await storage.size(scope, key);
@@ -229,9 +338,12 @@ export async function sealColdSegments(
       throw new BugIndicatingError('cold seal cut is not a record boundary');
     }
   }
-  const planned = planSegments(key, sealedCut, segmentBytes);
+  const generation = await generationOf(storage, scope, key);
+  const sealId = randomUUID();
+  const planned = planSegments(key, sealId, sealedCut, segmentBytes);
   if (planned === undefined) throw new BugIndicatingError('cold seal exceeds 4096 segments');
   const written: ColdSegment[] = [];
+  let committed = false;
   try {
     for (const plan of planned) {
       options.signal?.throwIfAborted();
@@ -250,7 +362,7 @@ export async function sealColdSegments(
     }
     const sizeAfter = await storage.size(scope, key);
     if (sizeAfter === undefined || sizeAfter < size) throw corrupted(scope, key, 'changed-during-seal');
-    const generation = await generationOf(storage, scope, key);
+    if (await generationOf(storage, scope, key) !== generation) throw corrupted(scope, key, 'generation');
     const manifest: ColdManifest = {
       format: COLD_FORMAT,
       codec: COLD_CODEC,
@@ -259,13 +371,28 @@ export async function sealColdSegments(
       sealedCut,
       logicalSize: size,
       generation,
+      sealId,
       segments: written,
     };
+    const manifestKey = coldManifestKey(key);
+    const previous = await storage.read(scope, manifestKey);
     options.signal?.throwIfAborted();
-    await storage.write(scope, coldManifestKey(key), new TextEncoder().encode(JSON.stringify(manifest)), {
+    await storage.write(scope, manifestKey, new TextEncoder().encode(JSON.stringify(manifest)), {
       atomic: true,
       signal: options.signal,
     });
+    if (await generationOf(storage, scope, key) !== generation) {
+      if (previous === undefined) await storage.delete(scope, manifestKey);
+      else await storage.write(scope, manifestKey, previous, { atomic: true });
+      throw corrupted(scope, key, 'generation');
+    }
+    committed = true;
+    const fresh = new Set(written.map((segment) => segment.key));
+    if (previous !== undefined) {
+      const previousId = sealIdOf(previous);
+      if (previousId !== undefined && previousId !== sealId) await waitUnpinned(scope, key, previousId);
+      await removeSegments(storage, scope, listedSegmentKeys(previous, key).filter((segmentKey) => !fresh.has(segmentKey))).catch(() => undefined);
+    }
     return {
       format: COLD_FORMAT,
       codec: COLD_CODEC,
@@ -278,10 +405,19 @@ export async function sealColdSegments(
       originalRetained: true,
     };
   } catch (error) {
-    await removeSegments(storage, scope, written.map((segment) => segment.key)).catch(() => undefined);
-    await storage.delete(scope, coldManifestKey(key)).catch(() => undefined);
+    if (!committed) await removeSegments(storage, scope, written.map((segment) => segment.key)).catch(() => undefined);
     throw error;
   }
+}
+
+export function sealColdSegments(
+  storage: IFileSystemStorageService,
+  scope: string,
+  key: string,
+  sealedCut: number,
+  options: ColdSealOptions = {},
+): Promise<ColdSealResult> {
+  return withColdExclusive(scope, key, () => sealUnlocked(storage, scope, key, sealedCut, options));
 }
 
 export async function logicalByteSize(
@@ -289,11 +425,13 @@ export async function logicalByteSize(
   scope: string,
   key: string,
 ): Promise<number | undefined> {
-  const manifest = await loadManifest(storage, scope, key);
-  const size = await storage.size(scope, key);
-  if (manifest === undefined) return size;
-  if (size === undefined || size < manifest.sealedCut) throw corrupted(scope, key, 'original-shrunk');
-  return size;
+  return withColdExclusive(scope, key, async () => {
+    const manifest = await loadMatchedManifest(storage, scope, key);
+    const size = await storage.size(scope, key);
+    if (manifest === undefined) return size;
+    if (size === undefined || size < manifest.sealedCut) throw corrupted(scope, key, 'original-shrunk');
+    return size;
+  });
 }
 
 function slices(bytes: Uint8Array, start: number, end: number): Uint8Array[] {
@@ -304,18 +442,21 @@ function slices(bytes: Uint8Array, start: number, end: number): Uint8Array[] {
   return parts;
 }
 
-export async function* readLogicalBytes(
+async function inflateBounded(compressed: Uint8Array, outputBytes: number): Promise<Uint8Array> {
+  if (compressed.byteLength > deflateInputLimit(outputBytes)) {
+    throw Object.assign(new Error('deflate input exceeds the segment bound'), { code: 'ERR_BUFFER_TOO_LARGE' });
+  }
+  return inflateRawSync(compressed, { maxOutputLength: outputBytes });
+}
+
+async function* readPinned(
   storage: IFileSystemStorageService,
   scope: string,
   key: string,
-  range?: StorageReadRange,
-  options?: StorageReadOptions,
+  manifest: ColdManifest,
+  range: StorageReadRange | undefined,
+  options: StorageReadOptions | undefined,
 ): AsyncIterable<Uint8Array> {
-  const manifest = await loadManifest(storage, scope, key);
-  if (manifest === undefined) {
-    yield* storage.readStream(scope, key, range, options);
-    return;
-  }
   const size = await storage.size(scope, key);
   if (size === undefined || size < manifest.sealedCut) throw corrupted(scope, key, 'original-shrunk');
   const start = range?.start ?? 0;
@@ -327,23 +468,26 @@ export async function* readLogicalBytes(
   const end = Math.min(requestedEnd, size - 1);
   const needed = manifest.segments.filter((segment) => segment.logicalStart <= end && segment.logicalEnd > start);
   for (const segment of needed) {
-    if (await storage.size(scope, segment.key) === undefined) throw corrupted(scope, key, 'segment-missing');
+    const expected = segment.logicalEnd - segment.logicalStart;
+    if (expected < 1 || expected > manifest.segmentBytes) throw corrupted(scope, key, 'segment');
+    const sized = await storage.size(scope, segment.key);
+    if (sized === undefined) throw corrupted(scope, key, 'segment-missing');
+    if (sized > deflateInputLimit(expected)) throw corrupted(scope, key, 'segment');
   }
   for (const segment of needed) {
     options?.signal?.throwIfAborted();
+    const expected = segment.logicalEnd - segment.logicalStart;
     const compressed = await storage.read(scope, segment.key, options);
     if (compressed === undefined) throw corrupted(scope, key, 'segment-missing');
     let plain: Uint8Array;
     try {
-      plain = inflateRawSync(compressed);
+      plain = await inflateBounded(compressed, expected);
     } catch (error) {
       throw corrupted(scope, key, 'segment', error);
     }
-    const expected = segment.logicalEnd - segment.logicalStart;
     if (plain.byteLength !== expected || sha256(plain) !== segment.uncompressedSha256) {
       throw corrupted(scope, key, 'segment');
     }
-    if (plain.byteLength > manifest.segmentBytes) throw corrupted(scope, key, 'segment');
     const localStart = Math.max(0, start - segment.logicalStart);
     const localEnd = Math.min(plain.byteLength, end - segment.logicalStart + 1);
     for (const part of slices(plain, localStart, localEnd)) yield part;
@@ -351,5 +495,57 @@ export async function* readLogicalBytes(
   if (end >= manifest.sealedCut) {
     const hotStart = Math.max(start, manifest.sealedCut);
     yield* storage.readStream(scope, key, { start: hotStart, end }, options);
+  }
+}
+
+export interface PinnedLogicalRead {
+  readonly size: number | undefined;
+  read(range?: StorageReadRange, options?: StorageReadOptions): AsyncIterable<Uint8Array>;
+  close(): void;
+}
+
+export async function openPinnedLogicalRead(
+  storage: IFileSystemStorageService,
+  scope: string,
+  key: string,
+): Promise<PinnedLogicalRead> {
+  let manifest: ColdManifest | undefined;
+  let size: number | undefined;
+  let release = (): void => {};
+  await withColdExclusive(scope, key, async () => {
+    manifest = await loadMatchedManifest(storage, scope, key);
+    size = await storage.size(scope, key);
+    if (manifest !== undefined) {
+      if (size === undefined || size < manifest.sealedCut) throw corrupted(scope, key, 'original-shrunk');
+      release = pinSeal(scope, key, manifest.sealId);
+    }
+  });
+  let closed = false;
+  return {
+    size,
+    read(range, options) {
+      if (manifest === undefined) return storage.readStream(scope, key, range, options);
+      return readPinned(storage, scope, key, manifest, range, options);
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      release();
+    },
+  };
+}
+
+export async function* readLogicalBytes(
+  storage: IFileSystemStorageService,
+  scope: string,
+  key: string,
+  range?: StorageReadRange,
+  options?: StorageReadOptions,
+): AsyncIterable<Uint8Array> {
+  const pinned = await openPinnedLogicalRead(storage, scope, key);
+  try {
+    yield* pinned.read(range, options);
+  } finally {
+    pinned.close();
   }
 }
