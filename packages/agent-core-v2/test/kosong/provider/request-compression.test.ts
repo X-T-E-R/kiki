@@ -6,9 +6,10 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { ProviderConfigSchema, providersFromToml, providersToToml } from '#/app/kosongConfig/configSection';
 import { generate } from '#/kosong/contract/generate';
-import { isRetryableGenerateError } from '#/kosong/contract/errors';
+import { APITimeoutError, isAbortError, isRetryableGenerateError, requestDeliveryProvenance } from '#/kosong/contract/errors';
+import { isRetryableCompactionError } from '#/agent/fullCompaction/compactionFailure';
 import type { Message } from '#/kosong/contract/message';
-import { createRequestCompressionFetch } from '#/kosong/provider/bases/request-compression';
+import { createRequestCompressionFetch, withRequestCompressionDelivery } from '#/kosong/provider/bases/request-compression';
 import { OpenAILegacyChatProvider } from '#/kosong/provider/bases/openai/openai-legacy';
 import { OpenAIResponsesChatProvider } from '#/kosong/provider/bases/openai/openai-responses';
 import { AnthropicChatProvider } from '#/kosong/provider/bases/anthropic/anthropic';
@@ -136,4 +137,119 @@ describe('request compression', () => {
     expect(isRetryableGenerateError(failure)).toBe(false);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
+});
+
+const timeoutProviders = [
+  { name: 'Messages', Provider: AnthropicChatProvider },
+  { name: 'Chat', Provider: OpenAILegacyChatProvider },
+  { name: 'Responses HTTP', Provider: OpenAIResponsesChatProvider },
+] as const;
+
+async function productionTimeout(
+  Provider: typeof AnthropicChatProvider | typeof OpenAILegacyChatProvider | typeof OpenAIResponsesChatProvider,
+  encoding: 'gzip' | 'zstd' | undefined,
+  callerAbort = false,
+): Promise<{ error: unknown; sent: Array<{ encoding: string | null; decodedBytes: number }> }> {
+  const sent: Array<{ encoding: string | null; decodedBytes: number }> = [];
+  let entered!: () => void;
+  const didSend = new Promise<void>((resolve) => { entered = resolve; });
+  const caller = new AbortController();
+  vi.useFakeTimers();
+  vi.stubGlobal('fetch', async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const request = new Request(input, init);
+    const bytes = Buffer.from(await request.arrayBuffer());
+    const coding = request.headers.get('content-encoding');
+    const decoded = coding === 'gzip' ? gunzipSync(bytes) : coding === 'zstd' ? zstdDecompressSync(bytes) : bytes;
+    sent.push({ encoding: coding, decodedBytes: decoded.length });
+    entered();
+    return new Promise<Response>((_resolve, reject) => {
+      const abort = (): void => { reject(new DOMException('The operation was aborted.', 'AbortError')); };
+      if (request.signal.aborted) abort();
+      else request.signal.addEventListener('abort', abort, { once: true });
+    });
+  });
+  try {
+    const baseUrl = 'https://example.test/v1';
+    const provider = new Provider({ model: 'synthetic', apiKey: 'YOUR_API_KEY', baseUrl,
+      requestCompression: encoding === undefined ? undefined : { encoding, targets: [baseUrl], minBytes: 0 } });
+    const result = generate(provider, 'Synthetic timeout fixture', [], history, undefined, { signal: caller.signal })
+      .then(() => { throw new Error('Expected the request to time out'); }, (error: unknown) => error);
+    await didSend;
+    if (callerAbort) caller.abort();
+    else await vi.advanceTimersByTimeAsync(600_001);
+    return { error: await result, sent };
+  } finally {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  }
+}
+
+function causeMessages(error: unknown): string[] {
+  const messages: string[] = [];
+  const visited = new Set<unknown>();
+  while (error instanceof Error && !visited.has(error)) {
+    visited.add(error);
+    messages.push(error.message);
+    error = error.cause;
+  }
+  return messages;
+}
+
+describe.each(timeoutProviders)('$name SDK timeout delivery', ({ Provider }) => {
+  it.each(['gzip', 'zstd'] as const)('preserves unknown delivery after an actual %s send through the production SDK and provider', async (encoding) => {
+    const { error, sent } = await productionTimeout(Provider, encoding);
+    expect(sent).toEqual([{ encoding, decodedBytes: expect.any(Number) }]);
+    expect(sent[0]?.decodedBytes).toBeGreaterThan(1024);
+    expect(requestDeliveryProvenance(error)).toBe('unknown');
+    expect(isAbortError(error)).toBe(false);
+    expect(isRetryableGenerateError(error)).toBe(false);
+    expect(isRetryableCompactionError(error)).toBe(false);
+    expect(causeMessages(error).some((message) => message.includes('Request timed out'))).toBe(true);
+  });
+
+  it('keeps an ordinary uncompressed SDK timeout retryable', async () => {
+    const { error, sent } = await productionTimeout(Provider, undefined);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.encoding).toBeNull();
+    expect(error).toBeInstanceOf(APITimeoutError);
+    expect(requestDeliveryProvenance(error)).toBeUndefined();
+    expect(isRetryableGenerateError(error)).toBe(true);
+    expect(isRetryableCompactionError(error)).toBe(true);
+  });
+
+  it.each(['gzip', 'zstd'] as const)('keeps the original caller cancellation distinct from the SDK timeout after a %s send', async (encoding) => {
+    const { error, sent } = await productionTimeout(Provider, encoding, true);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.encoding).toBe(encoding);
+    expect(isAbortError(error)).toBe(true);
+    expect(requestDeliveryProvenance(error)).toBeUndefined();
+    expect(isRetryableGenerateError(error)).toBe(false);
+    expect(isRetryableCompactionError(error)).toBe(false);
+  });
+});
+
+it('keeps simultaneous SDK attempt provenance isolated when one SDK discards its fetch cause', async () => {
+  const compressed = createRequestCompressionFetch({ encoding: 'gzip', targets: ['https://example.test/v1'], minBytes: 0 })(
+    async () => { throw new DOMException('The operation was aborted.', 'AbortError'); },
+  );
+  const [encoded, ordinary] = await Promise.allSettled([
+    withRequestCompressionDelivery(undefined, async () => {
+      try {
+        await compressed('https://example.test/v1/responses', {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: 'synthetic '.repeat(400),
+        });
+      } catch {
+        throw new APITimeoutError('SDK timeout without a fetch cause');
+      }
+    }),
+    withRequestCompressionDelivery(undefined, async () => {
+      await Promise.resolve();
+      throw new APITimeoutError('Ordinary SDK timeout');
+    }),
+  ]);
+  if (encoded.status !== 'rejected' || ordinary.status !== 'rejected') throw new Error('Expected both attempts to fail');
+  expect(requestDeliveryProvenance(encoded.reason)).toBe('unknown');
+  expect(isRetryableGenerateError(encoded.reason)).toBe(false);
+  expect(requestDeliveryProvenance(ordinary.reason)).toBeUndefined();
+  expect(isRetryableGenerateError(ordinary.reason)).toBe(true);
 });

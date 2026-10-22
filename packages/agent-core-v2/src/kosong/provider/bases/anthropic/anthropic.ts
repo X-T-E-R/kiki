@@ -57,7 +57,7 @@ import type {
 import type { Tool } from '#/kosong/contract/tool';
 import type { TokenUsage } from '#/kosong/contract/usage';
 import type { RequestCompression } from '#/kosong/contract/requestCompression';
-import { createRequestCompressionFetch } from '../request-compression';
+import { createRequestCompressionFetch, withRequestCompressionDelivery } from '../request-compression';
 import { guardRequestDelivery } from '../request-delivery';
 import { matchesProviderTarget } from '../../providerTarget';
 
@@ -1167,15 +1167,15 @@ export class AnthropicChatProvider implements ChatProvider {
 
     if (this._stream) {
       try {
-        const stream = useBetaApi
-          ? await client.beta.messages.create(
+        const stream = await withRequestCompressionDelivery(options?.signal, async () => useBetaApi
+          ? client.beta.messages.create(
               { ...createParams, stream: true } as unknown as MessageCreateParamsStreaming,
               finalRequestOptions,
             )
-          : await client.messages.create(
+          : client.messages.create(
               { ...createParams, stream: true } as unknown as MessageCreateParamsStreaming,
               finalRequestOptions,
-            );
+            ));
         return guardRequestDelivery(new AnthropicStreamedMessage(stream, true, this._hooks?.convertError), this._guardDelivery);
       } catch (error: unknown) {
         throw convertAnthropicError(error, this._hooks?.convertError);
@@ -1183,15 +1183,15 @@ export class AnthropicChatProvider implements ChatProvider {
     }
 
     try {
-      const response = useBetaApi
-        ? await client.beta.messages.create(
+      const response = await withRequestCompressionDelivery(options?.signal, async () => useBetaApi
+        ? client.beta.messages.create(
             { ...createParams, stream: false } as unknown as MessageCreateParams,
             finalRequestOptions,
           )
-        : await client.messages.create(
+        : client.messages.create(
             { ...createParams, stream: false } as unknown as MessageCreateParams,
             finalRequestOptions,
-          );
+          ));
       return guardRequestDelivery(new AnthropicStreamedMessage(response, false, this._hooks?.convertError), this._guardDelivery);
     } catch (error: unknown) {
       throw convertAnthropicError(error, this._hooks?.convertError);

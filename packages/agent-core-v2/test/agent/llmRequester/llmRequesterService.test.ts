@@ -3,6 +3,8 @@ import { release as osRelease } from 'node:os';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { OpenAIResponsesChatProvider } from '#/kosong/provider/bases/openai/openai-responses';
+import { OpenAILegacyChatProvider } from '#/kosong/provider/bases/openai/openai-legacy';
+import { AnthropicChatProvider } from '#/kosong/provider/bases/anthropic/anthropic';
 import { ModelRequesterImpl } from '#/kosong/model/modelRequesterImpl';
 import type { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -62,6 +64,7 @@ import {
   APIProviderRateLimitError,
   APIRequestTooLargeError,
   APIStatusError,
+  requestDeliveryProvenance,
 } from '#/kosong/contract/errors';
 import { emptyUsage, type TokenUsage } from '#/kosong/contract/usage';
 import {
@@ -2353,6 +2356,53 @@ describe('AgentLLMRequesterService production delivery provenance', () => {
     } finally {
       server.closeAllConnections();
       await new Promise<void>((resolve) => { server.close(() => resolve()); });
+    }
+  });
+});
+
+describe.each([
+  { protocol: 'anthropic', Provider: AnthropicChatProvider },
+  { protocol: 'openai', Provider: OpenAILegacyChatProvider },
+  { protocol: 'openai_responses', Provider: OpenAIResponsesChatProvider },
+] as const)('Agent requester $protocol SDK timeout', ({ protocol, Provider }) => {
+  it.each(['gzip', 'zstd'] as const)('sends %s once through the production SDK/provider/requester with infinite retry enabled', async (encoding) => {
+    const sent: Array<string | null> = [];
+    let entered!: () => void;
+    const didSend = new Promise<void>((resolve) => { entered = resolve; });
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const request = new Request(input, init);
+      sent.push(request.headers.get('content-encoding'));
+      entered();
+      return new Promise<Response>((_resolve, reject) => {
+        const abort = (): void => { reject(new DOMException('The operation was aborted.', 'AbortError')); };
+        if (request.signal.aborted) abort();
+        else request.signal.addEventListener('abort', abort, { once: true });
+      });
+    });
+    const baseUrl = 'https://example.test/v1';
+    const getAuth = vi.fn(async () => ({ apiKey: 'YOUR_API_KEY' }));
+    const model = { ...createRequester({ value: 0 }, null).model, protocol, baseUrl,
+      authProvider: { canRefresh: true, getAuth } };
+    const provider = new Provider({ model: model.name, baseUrl, apiKey: 'YOUR_API_KEY',
+      requestCompression: { encoding, targets: [baseUrl], minBytes: 0 } });
+    const requester = new ModelRequesterImpl(model, { createChatProvider: () => provider } as unknown as IProtocolAdapterRegistry);
+    const { service } = createService(requester, undefined, { env: { [KIKI_INFINITE_RETRY_ENV]: '1' } });
+    try {
+      const result = service.request({ source: { type: 'turn', turnId: 1, step: 1 },
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'synthetic-timeout-history '.repeat(4000) }], toolCalls: [] }] })
+        .then(() => { throw new Error('Expected the request to time out'); }, (error: unknown) => error);
+      await didSend;
+      await vi.advanceTimersByTimeAsync(600_001);
+      const error = await result;
+      expect(requestDeliveryProvenance(error)).toBe('unknown');
+      expect(error).toMatchObject({ message: 'Request delivery is uncertain; generation was not retried.' });
+      expect(sent).toEqual([encoding]);
+      expect(getAuth).toHaveBeenCalledTimes(1);
+    } finally {
+      await (service as AgentLLMRequesterService).dispose();
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
     }
   });
 });

@@ -1,10 +1,25 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { Readable, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createGzip } from 'node:zlib';
 
 import type { RequestCompression } from '#/kosong/contract/requestCompression';
-import { ambiguousRequestDelivery } from '#/kosong/contract/errors';
+import { ambiguousRequestDelivery, createAbortError, isAmbiguousRequestDelivery } from '#/kosong/contract/errors';
 import { RequestDictionaryTransport } from './request-dictionary';
+
+const compressionDelivery = new AsyncLocalStorage<{ failed: boolean }>();
+
+/** Preserves a sent compression attempt across SDK errors that discard their fetch cause. */
+export async function withRequestCompressionDelivery<T>(signal: AbortSignal | undefined, request: () => PromiseLike<T>): Promise<T> {
+  const attempt = { failed: false };
+  try {
+    return await compressionDelivery.run(attempt, async () => request());
+  } catch (error) {
+    if (signal?.aborted) throw createAbortError();
+    if (attempt.failed && !isAmbiguousRequestDelivery(error)) throw ambiguousRequestDelivery(error);
+    throw error;
+  }
+}
 
 export function createRequestCompressionFetch(config: RequestCompression | undefined): (fetchImpl: typeof fetch) => typeof fetch {
   if (config === undefined || config.encoding === 'off') return (fetchImpl) => fetchImpl;
@@ -31,7 +46,11 @@ export function createRequestCompressionFetch(config: RequestCompression | undef
       try {
         return await fetchImpl(requestInput, requestInit);
       } catch (error) {
-        if (signal?.aborted) throw error;
+        const attempt = compressionDelivery.getStore();
+        if (attempt !== undefined) {
+          attempt.failed = true;
+          throw error;
+        }
         throw ambiguousRequestDelivery(error);
       }
     };

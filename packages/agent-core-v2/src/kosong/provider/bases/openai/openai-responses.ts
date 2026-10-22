@@ -36,7 +36,7 @@ import type { TokenUsage } from '#/kosong/contract/usage';
 import type { RequestCompression } from '#/kosong/contract/requestCompression';
 import type { ResponsesWebSocketConfig } from '#/kosong/contract/responsesTransport';
 import { ResponsesWebSocketError } from './responses-websocket';
-import { createRequestCompressionFetch } from '../request-compression';
+import { createRequestCompressionFetch, withRequestCompressionDelivery } from '../request-compression';
 import { guardRequestDelivery } from '../request-delivery';
 import { matchesProviderTarget } from '../../providerTarget';
 import { ProtocolErrors } from '#/kosong/protocol/errors';
@@ -1466,21 +1466,22 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
         }
       }
       options?.onRequestSent?.();
-      const responsePromise = (
-        client.responses as {
-          create(params: unknown, opts?: unknown): Promise<unknown> & {
-            withResponse?: () => Promise<{ data: unknown; response: Response }>;
-          };
-        }
-      ).create(createParams, options?.signal ? { signal: options.signal } : undefined);
-      const response =
-        options?.requestIdentity?.onResponseHeaders !== undefined &&
-        responsePromise.withResponse !== undefined
-          ? await responsePromise.withResponse().then(({ data, response: rawResponse }) => {
+      const response = await withRequestCompressionDelivery(options?.signal, async () => {
+        const responsePromise = (
+          client.responses as {
+            create(params: unknown, opts?: unknown): Promise<unknown> & {
+              withResponse?: () => Promise<{ data: unknown; response: Response }>;
+            };
+          }
+        ).create(createParams, options?.signal ? { signal: options.signal } : undefined);
+        return options?.requestIdentity?.onResponseHeaders !== undefined &&
+          responsePromise.withResponse !== undefined
+          ? responsePromise.withResponse().then(({ data, response: rawResponse }) => {
               options.requestIdentity?.onResponseHeaders?.(rawResponse.headers);
               return data;
             })
-          : await responsePromise;
+          : responsePromise;
+      });
       return guardRequestDelivery(new OpenAIResponsesStreamedMessage(response, this._stream, this._convertErrorHook), this._guardDelivery);
     } catch (error: unknown) {
       const diagnostics: StreamDiagnostics | undefined = this._stream ? {

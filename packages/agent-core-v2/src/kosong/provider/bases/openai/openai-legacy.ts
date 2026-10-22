@@ -24,7 +24,7 @@ import type {
 import type { Tool } from '#/kosong/contract/tool';
 import type { TokenUsage } from '#/kosong/contract/usage';
 import type { RequestCompression } from '#/kosong/contract/requestCompression';
-import { createRequestCompressionFetch } from '../request-compression';
+import { createRequestCompressionFetch, withRequestCompressionDelivery } from '../request-compression';
 import { guardRequestDelivery } from '../request-delivery';
 import { matchesProviderTarget } from '../../providerTarget';
 
@@ -643,12 +643,12 @@ export class OpenAILegacyChatProvider implements ChatProvider {
         mergeProviderRequestAuth(options?.auth, options?.headers),
       );
       options?.onRequestSent?.();
-      const { data, response } = await client.chat.completions
+      const { data, response } = await withRequestCompressionDelivery(options?.signal, () => client.chat.completions
         .create(
           finalParams as unknown as OpenAI.Chat.ChatCompletionCreateParamsNonStreaming,
           options?.signal ? { signal: options.signal } : undefined,
         )
-        .withResponse();
+        .withResponse());
       return guardRequestDelivery(new OpenAILegacyStreamedMessage(
         data as unknown as
           | OpenAI.Chat.ChatCompletion
