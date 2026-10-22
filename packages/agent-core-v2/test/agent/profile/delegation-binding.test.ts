@@ -3,7 +3,7 @@ import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Event } from '#/_base/event';
 import { renderPromptTemplateResult, renderSystemPromptResult } from '@kiki/agent-profiles/profileShared';
@@ -32,6 +32,21 @@ import {
   sessionService,
   type TestAgentContext,
 } from '../../harness';
+
+const renameGate = vi.hoisted(() => ({
+  beforeRename: undefined as undefined | ((source: string, target: string) => Promise<void> | void),
+}));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    rename: async (source: string, target: string) => {
+      await renameGate.beforeRename?.(source, target);
+      return actual.rename(source, target);
+    },
+  };
+});
 
 const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 
@@ -428,6 +443,60 @@ describe('delegation context at bind', () => {
         delegationPosition: 'sub',
       }),
     ).rejects.toSatisfy((error) => isError2(error) && error.code === ErrorCodes.CONFIG_INVALID);
+  });
+
+  it('settles the denied sub bind metadata create before dispose returns', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (error: unknown): void => { unhandled.push(error); };
+    process.on('unhandledRejection', onUnhandled);
+    const unexpected = new Set<string>();
+    const priorError = console.error;
+    console.error = (...args: unknown[]) => {
+      if (args[0] === '[unexpected]') unexpected.add(args.map(String).join(' '));
+      priorError(...args);
+    };
+    let releaseRename = (): void => {};
+    const released = new Promise<void>((resolve) => { releaseRename = resolve; });
+    let markEntered = (): void => {};
+    const entered = new Promise<void>((resolve) => { markEntered = resolve; });
+    let held = false;
+    renameGate.beforeRename = async (_source, target) => {
+      const path = target.replaceAll('\\', '/');
+      if (!path.endsWith('session-meta/state.json') || held) return;
+      held = true;
+      markEntered();
+      await released;
+    };
+    const custom = normalizeAgentProfile({ name: 'open-child', systemPrompt: () => 'OPEN' });
+    try {
+      ctx = createTestAgent(
+        homeDirServices(homeDir),
+        sessionService(ISessionAgentProfileCatalog, catalogWith(custom)),
+        { initialConfig: { subagent: { denyModels: [MOCK_MODEL] } } },
+      );
+      await expect(ctx.get(IAgentProfileService).bind({
+        profile: 'open-child',
+        model: MOCK_MODEL,
+        delegationPosition: 'sub',
+      })).rejects.toSatisfy((error) => isError2(error) && error.code === ErrorCodes.CONFIG_INVALID);
+      const disposePromise = ctx.dispose();
+      let disposeSettled = false;
+      void disposePromise.then(() => { disposeSettled = true; }, () => { disposeSettled = true; });
+      await entered;
+      for (let i = 0; i < 40; i += 1) await new Promise<void>((resolve) => { setImmediate(resolve); });
+      expect(disposeSettled).toBe(false);
+      releaseRename();
+      await disposePromise;
+      await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      for (let i = 0; i < 8; i += 1) await new Promise<void>((resolve) => { setImmediate(resolve); });
+      expect(unhandled).toEqual([]);
+      expect([...unexpected].filter((line) => line.includes('storage write failed'))).toEqual([]);
+    } finally {
+      releaseRename();
+      renameGate.beforeRename = undefined;
+      console.error = priorError;
+      process.off('unhandledRejection', onUnhandled);
+    }
   });
 
   it('does not bind [subagent].deny_models against the main agent', async () => {

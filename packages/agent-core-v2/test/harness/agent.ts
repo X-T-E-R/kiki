@@ -137,6 +137,9 @@ import {
   IFileSystemStorageService,
   ISessionApprovalService,
   ISessionMetadata,
+  drainSessionMetadataWrites,
+  ISessionDeliveryService,
+  IHomeRuntimeService,
   IAgentTaskService,
   IBlobStore,
   BlobStoreService,
@@ -1958,11 +1961,23 @@ export class AgentTestContext {
   async close(_reason = 'Agent runtime test closed'): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    for (const disposable of this.disposables.splice(0)) {
-      await disposable.dispose();
+    try {
+      await this.settleOpenHomeIo();
+    } finally {
+      for (const disposable of this.disposables.splice(0)) {
+        await disposable.dispose();
+      }
+      await this.closeWire();
+      await this.root.dispose();
     }
-    await this.closeWire();
-    await this.root.dispose();
+  }
+
+  private async settleOpenHomeIo(): Promise<void> {
+    const metadataReady = this.session.accessor.get(ISessionMetadata).ready;
+    const deliveryReady = this.session.accessor.get(ISessionDeliveryService).ready;
+    await Promise.all([metadataReady, deliveryReady]);
+    await drainSessionMetadataWrites();
+    await this.root.accessor.get(IHomeRuntimeService).close();
   }
 
   async dispose(): Promise<void> {
