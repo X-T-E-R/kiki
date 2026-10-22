@@ -1008,6 +1008,50 @@ describe('BrowserControlSection', () => {
     expect(query('[data-browser-endpoint-host]')).toBeNull();
   });
 
+  it('names the WebBridge command actions and releases only the control session', async () => {
+    const row = {
+      id: 'webbridge-command', name: 'Kimi browser extension', enabled: true, type: 'webbridge-command' as const,
+      status: browserStatus({
+        browser: 'webbridge-command', state: 'ready', generation: 2, ownership: 'external-browser',
+        checkedAt: '2026-10-22T13:58:00.000Z',
+      }),
+    };
+    const released = {
+      ...row,
+      status: browserStatus({
+        browser: 'webbridge-command', state: 'disconnected', generation: 3, ownership: 'external-browser',
+        checkedAt: '2026-10-22T13:59:00.000Z',
+      }),
+    };
+    list.mockResolvedValueOnce({ connections: [row] }).mockResolvedValue({ connections: [released] });
+    disconnect.mockResolvedValue(released.status);
+
+    await render();
+    await settleUntil('[data-browser-connection="webbridge-command"]');
+    await click('[data-browser-connection="webbridge-command"]');
+
+    const check = query<HTMLButtonElement>('[data-browser-check]');
+    const connectButton = query<HTMLButtonElement>('[data-browser-connect]');
+    expect(check?.textContent).toBe('Check bridge');
+    expect(check?.title).toBe('Checks the local WebBridge status. It does not open a page or repeat a page command.');
+    expect(connectButton?.textContent).toBe('Connect extension');
+    expect(container.textContent).not.toContain('Check components');
+    expect(container.textContent).not.toContain('Start browser');
+    expect(container.textContent).not.toContain('Checking starts the managed driver');
+    expect(container.textContent).toContain('the borrowed browser stays');
+    expect(container.textContent).not.toContain('an instance Kiki started is closed');
+    expect(container.textContent).not.toContain('ends this browser instance, which Kiki started');
+
+    await click('[data-browser-disconnect]');
+    expect(disconnect).toHaveBeenCalledWith('webbridge-command');
+    await settleUntil('[data-browser-outcome="disconnect:disconnected"]');
+    const outcome = query('[data-browser-outcome="disconnect:disconnected"]');
+    expect(outcome?.textContent).toContain('Control disconnected.');
+    expect(outcome?.textContent).toContain('the borrowed browser stays');
+    expect(container.textContent).not.toContain('an instance Kiki started is closed');
+    expect(container.textContent).not.toContain('ends this browser instance, which Kiki started');
+  });
+
   it('offers the running actions only while the draft matches the saved configuration', async () => {
     list.mockResolvedValue({ connections: [profileRow()] });
 

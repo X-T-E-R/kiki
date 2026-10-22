@@ -10796,6 +10796,8 @@ export const en = {
   'st.browser.checkHintProfile': 'Checking starts the managed driver and reads its session and tab state; it does not open a browser page.',
   'st.browser.checkHintCdp': 'Checks the managed driver. After attachment it also reads targets; checking alone does not attach to the CDP endpoint.',
   'st.browser.checkHintWebbridge': 'Checks the local WebBridge status. It does not open a page or repeat a page command.',
+  'st.browser.checkWebbridge': 'Check bridge',
+  'st.browser.connectWebbridge': 'Connect extension',
   'st.browser.connecting': 'Connecting…',
   'st.browser.connectProfile': 'Start browser',
   'st.browser.connectCdp': 'Attach browser',

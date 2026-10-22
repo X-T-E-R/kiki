@@ -421,6 +421,12 @@ const scenarios = [
         ? '检查本地 WebBridge 状态。不会打开页面，也不会再发一次页面命令。'
         : 'Checks the local WebBridge status. It does not open a page or repeat a page command.';
       const savedName = view.locale === 'zh' ? 'Kimi 命令桥' : 'Kimi command';
+      const checkLabel = view.locale === 'zh' ? '检查桥接' : 'Check bridge';
+      const connectLabel = view.locale === 'zh' ? '连接扩展' : 'Connect extension';
+      const release = view.locale === 'zh'
+        ? '断开只结束 Kiki 的控制会话，借用的浏览器保留；下次连接会重新核对页面。'
+        : 'Disconnecting only ends Kiki’s control session; the borrowed browser stays. The next attach re-checks its pages.';
+      const closesBrowser = view.locale === 'zh' ? 'Kiki 启动的实例会被关闭' : 'an instance Kiki started is closed';
       await page.goto(link('/settings/browser-control'), { waitUntil: 'domcontentloaded', timeout: 60_000 });
       await page.waitForSelector('[data-browser-route="kimi-webbridge"]', { timeout: 30_000 });
       await page.locator('[data-browser-advanced-region] summary').click();
@@ -440,6 +446,9 @@ const scenarios = [
       const connect = detail.locator('[data-browser-connect]');
       if (await check.isDisabled()) throw new Error('check is not reachable on a clean WebBridge draft');
       if (await connect.isDisabled()) throw new Error('connect is not reachable on a clean WebBridge draft');
+      if ((await check.innerText()).trim() !== checkLabel) throw new Error(`check label was ${JSON.stringify(await check.innerText())}`);
+      if ((await connect.innerText()).trim() !== connectLabel) throw new Error(`connect label was ${JSON.stringify(await connect.innerText())}`);
+      if (await check.getAttribute('title') !== checkHint) throw new Error(`check title was ${JSON.stringify(await check.getAttribute('title'))}`);
       await detail.locator('[data-browser-detail-name]').scrollIntoViewIfNeeded();
       await shot('command-detail');
       await page.getByText(hint, { exact: true }).first().scrollIntoViewIfNeeded();
@@ -457,9 +466,12 @@ const scenarios = [
       await connect.click();
       const connected = await (await connectResponse).json();
       if (connected.code !== 0 || connected.data?.state !== 'ready') throw new Error(`connect did not adopt the fixture ready state: ${JSON.stringify(connected)}`);
+      if (connected.data?.ownership !== 'external-browser') throw new Error(`connect echo ownership was ${JSON.stringify(connected.data?.ownership)}`);
       if (connected.data?.driverVersion !== undefined) throw new Error('connect echo carries a driver version');
       await page.waitForSelector('[data-browser-outcome="connect:ready"]', { timeout: 10_000 });
-      await detail.locator('[data-browser-outcome="connect:ready"]').scrollIntoViewIfNeeded();
+      await page.getByText(release, { exact: true }).first().waitFor({ timeout: 10_000 });
+      if (await page.getByText(closesBrowser).count() !== 0) throw new Error('disconnect copy says a browser instance is closed');
+      await page.getByText(release, { exact: true }).first().scrollIntoViewIfNeeded();
       await shot('command-connected');
 
       await page.fill('[data-browser-name-input]', savedName);
@@ -481,6 +493,20 @@ const scenarios = [
       await page.waitForFunction((name) => document.querySelector('[data-browser-detail-name]')?.textContent?.includes(name) === true, savedName);
       await detail.locator('[data-browser-detail-name]').scrollIntoViewIfNeeded();
       await shot('command-saved');
+
+      const disconnectResponse = page.waitForResponse((response) =>
+        response.url().includes('/browser/connections/webbridge-command:disconnect') && response.request().method() === 'POST');
+      await detail.locator('[data-browser-disconnect]').click();
+      const disconnected = await (await disconnectResponse).json();
+      if (disconnected.code !== 0 || disconnected.data?.state !== 'disconnected' || disconnected.data?.ownership !== 'external-browser') {
+        throw new Error(`disconnect did not release the external browser: ${JSON.stringify(disconnected)}`);
+      }
+      await page.waitForSelector('[data-browser-outcome="disconnect:disconnected"]', { timeout: 10_000 });
+      const disconnectedText = await page.locator('[data-browser-outcome="disconnect:disconnected"]').innerText();
+      if (!disconnectedText.includes(release)) throw new Error(`disconnect outcome missed the release sentence: ${disconnectedText}`);
+      if (disconnectedText.includes(closesBrowser)) throw new Error('disconnect outcome says a browser instance is closed');
+      await page.locator('[data-browser-outcome="disconnect:disconnected"]').scrollIntoViewIfNeeded();
+      await shot('command-disconnected');
 
       if (view.width <= 600) {
         const back = page.locator('[data-browser-back]');

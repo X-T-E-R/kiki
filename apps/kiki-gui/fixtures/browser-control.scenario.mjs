@@ -157,7 +157,7 @@ export default {
         name: 'Kimi browser extension',
         enabled: true,
         type: 'webbridge-command',
-        status: { state: 'idle', generation: 0 },
+        status: { state: 'idle', generation: 0, ownership: 'external-browser' },
       },
     ],
   },

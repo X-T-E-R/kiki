@@ -365,16 +365,16 @@ export function BrowserConnectionCard() {
             <span className="ml-auto flex flex-wrap items-center gap-2">
               <button type="button" className={SECONDARY_BUTTON} data-browser-check
                 disabled={busy !== null || saving || dirty || !draft.enabled}
-                title={t(draft.type === 'ego-lite' ? 'st.browser.checkHintEgo' : draft.type === 'agent-browser-cdp' ? 'st.browser.checkHintCdp' : 'st.browser.checkHintProfile')}
+                title={t(draft.type === 'ego-lite' ? 'st.browser.checkHintEgo' : draft.type === 'agent-browser-cdp' ? 'st.browser.checkHintCdp' : draft.type === 'webbridge-command' ? 'st.browser.checkHintWebbridge' : 'st.browser.checkHintProfile')}
                 onClick={() => { void run('check', () => browserApi(client).check(draft.id)); }}>
                 {busy === 'check' ? t('st.browser.checking')
-                  : t(draft.type === 'ego-lite' ? 'st.browser.checkEgo' : draft.type === 'agent-browser-cdp' ? 'st.browser.checkCdp' : 'st.browser.checkProfile')}
+                  : t(draft.type === 'ego-lite' ? 'st.browser.checkEgo' : draft.type === 'agent-browser-cdp' ? 'st.browser.checkCdp' : draft.type === 'webbridge-command' ? 'st.browser.checkWebbridge' : 'st.browser.checkProfile')}
               </button>
               <button type="button" className={SECONDARY_BUTTON} data-browser-connect
                 disabled={busy !== null || saving || dirty || !draft.enabled || LIVE_BLOCKING_CONNECT.has(selectedStatus.state)}
                 onClick={() => { void run('connect', () => browserApi(client).connect(draft.id)); }}>
                 {busy === 'connect' ? t('st.browser.connecting')
-                  : t(draft.type === 'ego-lite' ? 'st.browser.connectEgo' : draft.type === 'agent-browser-cdp' ? 'st.browser.connectCdp' : 'st.browser.connectProfile')}
+                  : t(draft.type === 'ego-lite' ? 'st.browser.connectEgo' : draft.type === 'agent-browser-cdp' ? 'st.browser.connectCdp' : draft.type === 'webbridge-command' ? 'st.browser.connectWebbridge' : 'st.browser.connectProfile')}
               </button>
               {LIVE_STATES.has(selectedStatus.state) ? (
                 // Releasing uses the connection as it is saved, not the form:

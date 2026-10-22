@@ -10700,6 +10700,8 @@ export const zh = {
   'st.browser.checkHintProfile': '检查会启动受管驱动并读取它的会话与标签状态，不打开浏览器页面。',
   'st.browser.checkHintCdp': '检测受管驱动。已经连接时还会读取目标；单独检查不会连接 CDP 地址。',
   'st.browser.checkHintWebbridge': '检查本地 WebBridge 状态。不会打开页面，也不会再发一次页面命令。',
+  'st.browser.checkWebbridge': '检查桥接',
+  'st.browser.connectWebbridge': '连接扩展',
   'st.browser.connecting': '正在连接…',
   'st.browser.connectProfile': '启动浏览器',
   'st.browser.connectCdp': '附着浏览器',
