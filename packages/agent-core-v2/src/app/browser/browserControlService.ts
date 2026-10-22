@@ -27,9 +27,7 @@ interface LiveBrowser {
   admitting: boolean;
   oldPid?: number;
   observation?: { binding: string; refs: Set<string> };
-  /** Per-caller command tab from that caller's last navigate, as a `wb:` token. Not a DevTools target id. */
   commandTabs?: Map<string, string>;
-  /** Element refs keyed by caller, tab, frame, and generation. One caller's snapshot does not replace another's. */
   commandObservations?: Map<string, Set<string>>;
   target?: { tab: string; frame: string };
   captures?: Map<string, string>;
@@ -913,7 +911,6 @@ export class BrowserControlService implements IBrowserControlService {
             if (bound === undefined) throw new BrowserError('browser.target', 'Open a WebBridge tab with navigate before this action. The command bridge uses that caller\'s tab and does not take a tab id on the action.');
             if (input.tab !== bound) throw new BrowserError('browser.target', 'This action stays on the WebBridge command tab this caller opened. Pass that same tab id.');
           }
-          // The daemon injects this session's current tab. A client tab id is not a public field and is not sent.
           data = await sendWebbridgeCommand({ action: mapped.action, args: mapped.args, session, signal });
           if (mapped.action === 'snapshot') data = commandSnapshotData(data);
           if (mapped.action === 'navigate') {

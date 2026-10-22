@@ -10,6 +10,7 @@
  *
  *   node scripts/capture-browser-control.mjs              # en/light/1440
  *   node scripts/capture-browser-control.mjs --matrix=all # locale × theme × width
+ *   node scripts/capture-browser-control.mjs --only=webbridge-command --matrix=all
  *
  * Output: `.tmp/browser-control-shots` (override with KIKI_PROOF_OUTPUT_DIR).
  */
@@ -406,6 +407,94 @@ const scenarios = [
       if (value !== chosen) throw new Error(`saved CLI path was ${JSON.stringify(value)}`);
       await cli.scrollIntoViewIfNeeded();
       await shot('ego-cli');
+    },
+  },
+  {
+    name: 'webbridge-command',
+    fixture: 'browser-control',
+    matrix: ['width'],
+    run: async ({ page, view, link, shot }) => {
+      const hint = view.locale === 'zh'
+        ? '通过固定的本地 command 桥驱动 Kimi 扩展。不附着 CDP，也没有 endpoint。'
+        : 'Drives the Kimi extension through the fixed local command bridge. It does not attach CDP and has no endpoint.';
+      const checkHint = view.locale === 'zh'
+        ? '检查本地 WebBridge 状态。不会打开页面，也不会再发一次页面命令。'
+        : 'Checks the local WebBridge status. It does not open a page or repeat a page command.';
+      const savedName = view.locale === 'zh' ? 'Kimi 命令桥' : 'Kimi command';
+      await page.goto(link('/settings/browser-control'), { waitUntil: 'domcontentloaded', timeout: 60_000 });
+      await page.waitForSelector('[data-browser-route="kimi-webbridge"]', { timeout: 30_000 });
+      await page.locator('[data-browser-advanced-region] summary').click();
+      const row = page.locator('[data-browser-connection="webbridge-command"]');
+      await row.waitFor({ state: 'visible', timeout: 30_000 });
+      await row.scrollIntoViewIfNeeded();
+      await shot('command-list');
+
+      await openConnection(page, 'webbridge-command');
+      const detail = page.locator('[data-browser-detail="webbridge-command"]');
+      await page.getByText(hint, { exact: true }).first().waitFor({ timeout: 10_000 });
+      await page.getByText(checkHint, { exact: true }).first().waitFor({ timeout: 10_000 });
+      if (await page.locator('[data-secret-field]').count() !== 0) throw new Error('webbridge detail shows an endpoint field');
+      if (await page.locator('[data-browser-driver-input]').count() !== 0) throw new Error('webbridge detail shows a driver path');
+      if (await detail.locator('[data-browser-driver-line]').count() !== 0) throw new Error('webbridge detail shows a driver version');
+      const check = detail.locator('[data-browser-check]');
+      const connect = detail.locator('[data-browser-connect]');
+      if (await check.isDisabled()) throw new Error('check is not reachable on a clean WebBridge draft');
+      if (await connect.isDisabled()) throw new Error('connect is not reachable on a clean WebBridge draft');
+      await detail.locator('[data-browser-detail-name]').scrollIntoViewIfNeeded();
+      await shot('command-detail');
+      await page.getByText(hint, { exact: true }).first().scrollIntoViewIfNeeded();
+      await shot('command-hint');
+
+      const checkResponse = page.waitForResponse((response) =>
+        response.url().includes('/browser/connections/webbridge-command:check') && response.request().method() === 'POST');
+      await check.click();
+      const checked = await (await checkResponse).json();
+      if (checked.code !== 0 || checked.data?.state !== 'idle') throw new Error(`check did not keep the fixture idle state: ${JSON.stringify(checked)}`);
+      await page.waitForSelector('[data-browser-outcome="check:idle"]', { timeout: 10_000 });
+
+      const connectResponse = page.waitForResponse((response) =>
+        response.url().includes('/browser/connections/webbridge-command:connect') && response.request().method() === 'POST');
+      await connect.click();
+      const connected = await (await connectResponse).json();
+      if (connected.code !== 0 || connected.data?.state !== 'ready') throw new Error(`connect did not adopt the fixture ready state: ${JSON.stringify(connected)}`);
+      if (connected.data?.driverVersion !== undefined) throw new Error('connect echo carries a driver version');
+      await page.waitForSelector('[data-browser-outcome="connect:ready"]', { timeout: 10_000 });
+      await detail.locator('[data-browser-outcome="connect:ready"]').scrollIntoViewIfNeeded();
+      await shot('command-connected');
+
+      await page.fill('[data-browser-name-input]', savedName);
+      await page.waitForSelector('[data-settings-draft]:not([hidden])', { timeout: 10_000 });
+      const saveResponse = page.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return url.pathname.endsWith('/browser/connections/webbridge-command') && response.request().method() === 'PUT';
+      });
+      await page.locator('[data-settings-draft] button').first().click();
+      const saved = await (await saveResponse).json();
+      const connection = saved.data?.connection;
+      if (saved.code !== 0 || connection?.type !== 'webbridge-command' || connection?.name !== savedName) {
+        throw new Error(`save did not echo the renamed WebBridge connection: ${JSON.stringify(saved)}`);
+      }
+      for (const key of ['endpoint', 'endpointDisplay', 'endpointConfigured', 'driverPath', 'profilePath', 'executablePath', 'cliPath']) {
+        if (connection[key] !== undefined) throw new Error(`save echo carries ${key}`);
+      }
+      await page.waitForSelector('[data-saved-tick]', { timeout: 30_000 });
+      await page.waitForFunction((name) => document.querySelector('[data-browser-detail-name]')?.textContent?.includes(name) === true, savedName);
+      await detail.locator('[data-browser-detail-name]').scrollIntoViewIfNeeded();
+      await shot('command-saved');
+
+      if (view.width <= 600) {
+        const back = page.locator('[data-browser-back]');
+        if (!await back.isVisible()) throw new Error('narrow detail has no way back to the list');
+        await back.click();
+        await row.waitFor({ state: 'visible', timeout: 10_000 });
+        if (await page.locator('[data-browser-detail="webbridge-command"]').count() !== 0) throw new Error('narrow back left the detail open');
+        await row.scrollIntoViewIfNeeded();
+        await shot('command-back-list');
+      } else {
+        if (!await row.isVisible()) throw new Error('wide layout hid the connection list beside the detail');
+        await row.scrollIntoViewIfNeeded();
+        await shot('command-list-beside-detail');
+      }
     },
   },
   {

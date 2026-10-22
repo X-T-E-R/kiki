@@ -5,8 +5,9 @@
  * and the conditions that make the walk worth taking — a route whose extension
  * still needs a person, a route already connected, a connection that has never
  * been connected and whose connect the gated server refuses, a CDP connection
- * borrowed from another machine, a disabled one, and a connection whose managed
- * driver is the wrong build.
+ * borrowed from another machine, a disabled one, a connection whose managed
+ * driver is the wrong build, and a WebBridge command connection with no
+ * endpoint and no driver.
  *
  * The walk in scripts/capture-browser-control.mjs creates, checks, connects,
  * disconnects and deletes through the real controls; nothing is patched into
@@ -150,6 +151,13 @@ export default {
         driverPath: MANAGED,
         profilePath: 'C:\\Users\\fixture\\kiki\\browsers\\legacy',
         status: { state: 'idle', generation: 0, ownership: 'managed-profile' },
+      },
+      {
+        id: 'webbridge-command',
+        name: 'Kimi browser extension',
+        enabled: true,
+        type: 'webbridge-command',
+        status: { state: 'idle', generation: 0 },
       },
     ],
   },

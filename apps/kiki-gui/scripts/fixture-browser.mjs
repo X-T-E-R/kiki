@@ -28,6 +28,7 @@
  *       id, name, enabled, type,
  *       profilePath?, executablePath?, driverPath?, headed?,   // agent-browser-profile
  *       endpoint?,                                    // agent-browser-cdp (never returned)
+ *                                                      // webbridge-command: id, name, enabled, type, status only
  *       status: { state, generation, ... },           // what the service reports
  *       tabs?: [{ tabId, targetId, title?, url?, active?, label? }],  // the daemon's own list
  *       catalog?: [{ name, description, group?, surface?, inputSchema? }],  // backend tools
@@ -95,6 +96,7 @@ function record(entry, host) {
   if (entry.type === 'ego-lite') {
     return { ...common, cliPath: entry.cliPath, profileId: entry.profileId, serverName: entry.serverName, status };
   }
+  if (entry.type === 'webbridge-command') return { ...common, status };
   return {
     ...common, driverPath: entry.driverPath, profilePath: entry.profilePath, executablePath: entry.executablePath,
     headed: entry.headed,
@@ -552,6 +554,15 @@ export function handleBrowser(server, res, path, query, method, body) {
       next.profilePath = undefined;
       next.executablePath = undefined;
       next.headed = undefined;
+    } else if (body.type === 'webbridge-command') {
+      next.driverPath = undefined;
+      next.profilePath = undefined;
+      next.executablePath = undefined;
+      next.headed = undefined;
+      next.endpoint = undefined;
+      next.cliPath = undefined;
+      next.profileId = undefined;
+      next.serverName = undefined;
     } else {
       next.profilePath = body.profilePath;
       next.executablePath = body.executablePath;
