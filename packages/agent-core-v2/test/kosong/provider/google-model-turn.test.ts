@@ -187,6 +187,54 @@ describe('google-genai trailing model turn', () => {
     expect(mixedUserContents(contents)).toEqual([]);
   });
 
+  it('places three parallel tool images inside their function responses', async () => {
+    const history = [
+      user('go'),
+      {
+        role: 'assistant',
+        content: [],
+        toolCalls: [
+          call('ReadMediaFile_a', 'ReadMediaFile', CALL_SIGNATURE),
+          unsignedCall('ReadMediaFile_b', 'ReadMediaFile'),
+          unsignedCall('ReadMediaFile_c', 'ReadMediaFile'),
+        ],
+      },
+      readMediaResult('ReadMediaFile_c', 'fig-c.png', 'tradeoff'),
+      readMediaResult('ReadMediaFile_a', 'fig-a.png', 'simple'),
+      readMediaResult('ReadMediaFile_b', 'fig-b.png', 'path'),
+    ] satisfies Message[];
+    const seen = installFetch(okSse);
+    await drainGenerate('gemini-4-argon', history);
+    expect(seen).toHaveLength(1);
+    const contents = contentsOf(seen[0]!);
+    expect(contents.map((content) => content['role'])).toEqual(['user', 'model', 'user']);
+    expect(partKinds(contents[2])).toEqual(['function_response', 'function_response', 'function_response']);
+    expect(partsOf(contents[2]).some((part) => part['inlineData'] !== undefined || part['text'] !== undefined)).toBe(false);
+    expect(partsOf(contents[2]).map((part) => responseMedia(part))).toEqual([
+      {
+        name: 'ReadMediaFile',
+        output: '<image path="fig-a.png"></image>Read image file.',
+        parts: [{ inlineData: { mimeType: 'image/png', data: 'simple' } }],
+      },
+      {
+        name: 'ReadMediaFile',
+        output: '<image path="fig-b.png"></image>Read image file.',
+        parts: [{ inlineData: { mimeType: 'image/png', data: 'path' } }],
+      },
+      {
+        name: 'ReadMediaFile',
+        output: '<image path="fig-c.png"></image>Read image file.',
+        parts: [{ inlineData: { mimeType: 'image/png', data: 'tradeoff' } }],
+      },
+    ]);
+    const calls = partsOf(contents[1]);
+    expect(calls[0]?.['thoughtSignature']).toBe(CALL_SIGNATURE);
+    expect(calls[1]?.['thoughtSignature']).toBeUndefined();
+    expect(calls[2]?.['thoughtSignature']).toBeUndefined();
+    expect(mixedUserContents(contents)).toEqual([]);
+    expect(history[2]?.content[1]).toMatchObject({ type: 'image_url' });
+  });
+
   it('does not fold tool media into the following user text', async () => {
     const history = [
       user('go'),
@@ -202,7 +250,12 @@ describe('google-genai trailing model turn', () => {
     await drainGenerate('gemini-4-argon', history);
     const contents = contentsOf(seen[0]!);
     expect(contents.map((content) => content['role'])).toEqual(['user', 'model', 'user', 'user']);
-    expect(partKinds(contents[2])).toEqual(['function_response', 'media']);
+    expect(partKinds(contents[2])).toEqual(['function_response']);
+    expect(responseMedia(partsOf(contents[2])[0]!)).toEqual({
+      name: 'alpha',
+      output: 'a-out',
+      parts: [{ fileData: { fileUri: 'https://example.test/a.png', mimeType: 'image/png' } }],
+    });
     expect(partKinds(contents[3])).toEqual(['text']);
     expect(mixedUserContents(contents)).toEqual([]);
   });
@@ -439,6 +492,36 @@ function unsignedCall(id: string, name: string): Message['toolCalls'][number] {
 
 function tool(toolCallId: string, text: string): Message {
   return { role: 'tool', toolCallId, content: [{ type: 'text', text }], toolCalls: [] };
+}
+
+function responseMedia(part: Record<string, unknown>): {
+  name: string | undefined;
+  output: unknown;
+  parts: unknown;
+} {
+  const value = part['functionResponse'];
+  const response = typeof value === 'object' && value !== null
+    ? value as { name?: unknown; response?: { output?: unknown }; parts?: unknown }
+    : undefined;
+  return {
+    name: typeof response?.name === 'string' ? response.name : undefined,
+    output: response?.response?.output,
+    parts: response?.parts,
+  };
+}
+
+function readMediaResult(toolCallId: string, fileName: string, payload: string): Message {
+  return {
+    role: 'tool',
+    toolCallId,
+    content: [
+      { type: 'text', text: `<image path="${fileName}">` },
+      { type: 'image_url', imageUrl: { url: `data:image/png;base64,${payload}` } },
+      { type: 'text', text: '</image>' },
+      { type: 'text', text: 'Read image file.' },
+    ],
+    toolCalls: [],
+  };
 }
 
 function toolWithImage(toolCallId: string, text: string): Message {
