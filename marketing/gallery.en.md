@@ -44,7 +44,7 @@ Scheduled tasks send prompts into sessions on a cron schedule while a Kiki proce
 
 ![The scheduled-tasks panel with recurring, one-shot, and paused entries.](shots/d05-cron-panel.en.light.png)
 
-Each workspace has a requirement board that outlasts any one session, and each card links to the sessions working on it.
+With the optional `kiki-task-board` plugin, each workspace gets a requirement board that outlasts any one session, and each card links to the sessions working on it.
 
 ![The workspace task board.](shots/r04-task-board.en.light.png)
 

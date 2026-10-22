@@ -2,32 +2,33 @@
 
 **Title** (≤ 80 chars):
 
-Show HN: Kiki – an open-source agent workbench where you can rewrite every prompt
+Show HN: Kiki – Open-source local agent workbench with per-role models & prompts
 
 Alternates:
-- Show HN: Kiki – run Claude Code agent files on any model, mixed per role
-- Show HN: Kiki – a local AI agent workbench (desktop, TUI, browser, one daemon)
+- Show HN: Kiki – a local agent workbench where each role gets its own model
+- Show HN: Kiki – override any prompt field, down to one tool description
+- Show HN: Kiki – desktop, TUI, and browser on one local daemon
 
 **URL:** https://github.com/X-T-E-R/kiki
 
 **First comment (post immediately):**
 
-Hi HN. Kiki is an MIT-licensed AI agent workbench that runs on your machine. It has a desktop app, a TUI, and a browser UI, all on one local daemon and one session store. It started as a fork of Kimi Code and is now developed independently.
+Hi HN. Kiki is an MIT-licensed AI agent workbench that runs on your machine. The desktop app, the terminal UI (`kiki`), and the browser UI (`kiki web`) connect to one local daemon and share the same store under your local Kiki home: sessions, history, and configuration. Your project folders stay where they are. Model requests go only to the providers or local servers you configure. It started as a fork of Kimi Code and is now developed independently.
 
-I built it because I wanted every layer of the agent to be something I could open and change:
+I built it for work that outgrows a single chat turn or a single model — mapping or refactoring an unfamiliar repo, reconciling a folder of PDFs and spreadsheets into a cited summary, or running research and writing workflows — without locking the agent's instructions and routing inside a black box:
 
-- **Agents are files.** Each agent is a Markdown file. The frontmatter holds its tools, its model, and which agents it may dispatch, and the body is its system prompt. Claude Code and OpenCode agent files load as they are. Edits reload after about 200 ms, and running agents keep the snapshot they started with.
-- **Models per role.** The lead agent can run on one vendor, workers on cheap models (DeepSeek, GLM, anything OpenAI-compatible), and a reviewer on a third vendor. A subagent never silently falls back to the caller's model: if no model is bound, the dispatch fails.
-- **Prompt fields.** Every named piece of the built-in prompt can be overridden globally, per model alias, or per agent, down to a single tool's description. `kiki prompt-fields explain <field> --agent X --model Y` shows the effective value and the source chain. I use this mostly to rewrite tool descriptions for smaller models.
-- **Long, parallel work.** The lead agent dispatches subagents and background tasks itself and is notified when they finish, so it doesn't poll. Messages you send while it's busy go into a queue, and each message can wait for idle, for subagents to finish, or for tasks to finish. There is also a per-workspace requirement board the agent reads and writes, which outlives sessions, plus `/goal` and cron prompts.
-- Zed and JetBrains can use it over ACP (`kiki acp`).
+- **Per-role model bindings.** The main agent plans and dispatches isolated subagents (`AgentRun`, `AgentList`, `AgentSend`). You can bind the lead to a frontier model, read-only explorers or workers to cheaper or local OpenAI-compatible endpoints, and a reviewer to a third vendor so it doesn't share the implementer's blind spots. A subagent never silently inherits the parent's expensive model: with no model bound and no default set, dispatch fails with `model.not_configured`.
+- **Agents are plain Markdown files.** Each profile sets tools, model, effort, and permitted child agents in frontmatter, with the system prompt as the body. Saved edits apply to the next dispatch, while a running session keeps its startup snapshot until you rebuild its context. Frontmatter keys are closed, so a field carried over from another tool fails the load and is named rather than silently ignored; the docs hold the migration mapping.
+- **Prompt field overrides down to one tool description.** Smaller models often fail by misusing one specific tool rather than failing to reason altogether. Every named piece of the built-in prompt — down to `tool.web-search.description` — can be overridden globally, per model alias, or per agent. `kiki prompt-fields explain <field> --agent X --model Y` prints the effective text and the layer it came from.
+- **Steerable long-running work.** Background commands and subagents notify the lead when they finish instead of polling. Messages you send while the agent is busy join a queue where each message picks its own delivery timing: when idle, after subagents finish, or after tasks finish. `/goal` across turns, cron prompts (firing while a Kiki process holds that session open), undoable memory (global / workspace / persona), and requirement cards from the optional `kiki-task-board` plugin carry work across sessions.
+- **Live concurrency and honest cost.** The Usage page's Live tab names the exact concurrency rule holding a waiting request back, and History marks calls where a provider returned no usage as unknown rather than faking a zero.
+- **When the work leaves plain text.** Catalog plugins add local PDF/Office-to-Markdown extraction (`Kiki Extract`; PDF and Office input need Python with MarkItDown on the machine running Kiki), local Word/Excel/PowerPoint editing (`Kiki Office Suite`), local CSV reconciliation (`Kiki Work`), manuscript drafting (`Kiki Writing`), and media generation (`Kiki Media`). Kimi Datasource answers market, macro, company, literature, and Chinese-law queries after a Kimi Code OAuth sign-in, and spends plan quota.
+- **Browsers and other tools.** Browser control is a system capability rather than one plugin: drive the browser you already use through the Kimi Browser Extension and its store extension, run a browser Kiki manages, attach an existing one over CDP, or select an Ego Lite install you set up yourself. Conversation history from Claude Code, Codex, Pi, Grok Build, or OpenCode imports as continuable sessions or read-only archives. `kiki acp` runs Kiki inside Zed or JetBrains, `kiki seat` fixes a seat for inbound MCP clients, and a subagent can run on an external harness.
 
 Honest limits:
-- It's early (0.x), and there are rough edges.
-- The macOS build is unsigned and not notarized.
-- Windows needs Git for Windows.
-- Kimi works out of the box; other providers need a config entry.
-- The README images are rendered by the real UI from example data. They aren't benchmarks, and I'm not making any performance claims.
-- A lot of what's here (subagents, multiple models, goals) exists in other tools too. The parts I haven't seen elsewhere are the prompt-field layering and the per-message queue timing.
+- Current release is `0.4.1` (`0.x`), and there are rough edges.
+- The macOS `.dmg` is unsigned and not notarized (`Control-click → Open` on first launch); Windows requires Git for Windows; npm install requires Node.js 24.22.1+ or 26.12.1+.
+- Kimi works out of the box; Anthropic, OpenAI-compatible services, OpenAI Responses API, Gemini, Vertex AI, and local ChatGPT / GitHub Copilot / Grok Build OAuth sign-ins are added in Settings or `config.toml`.
+- Screenshots in the repo are rendered by the real UI from example scenes, not benchmarks.
 
-Feedback I'd most like: the agent-file format, and which prompt fields you'd want exposed that aren't.
+Feedback I'd most appreciate: the Markdown profile contract, and which prompt fields or execution hooks you wish agent tools exposed.

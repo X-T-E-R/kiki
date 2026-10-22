@@ -11,8 +11,8 @@
 
 ## 每个智能体各用各的模型
 
-- **子智能体，各用各的模型。** 主智能体自己派子智能体，每个智能体可以绑不同供应商的模型，强模型负责规划，便宜的模型跑日常。每个子智能体有独立上下文，对话记录随时点开看。[具名子 Agent →](https://x-t-e-r.github.io/kiki/zh/customization/agents-and-subagents#具名子-agent)
-- **智能体就是你自己的文件。** 每个智能体一份 Markdown：frontmatter 写工具、模型、思考强度和能派发谁，正文就是系统提示词。可以从现有 profile 复制、从内置模板起，或者从空白开始。[Agent 文件格式 →](https://x-t-e-r.github.io/kiki/zh/customization/agents-and-subagents#agent-文件格式)
+- **子智能体，各用各的模型。** 主智能体自己派子智能体，每个智能体可以绑不同供应商的模型，强模型负责规划，便宜的模型跑日常。没绑模型、也没有配默认模型的角色不会借用主会话那个贵模型：派发直接报 `model.not_configured`。每个子智能体有独立上下文，对话记录随时点开看。[具名子 Agent →](https://x-t-e-r.github.io/kiki/zh/customization/agents-and-subagents#具名子-agent)
+- **智能体就是你自己的文件。** 每个智能体一份 Markdown：frontmatter 写工具、模型、思考强度和能派发谁，正文就是系统提示词。保存后，下一次派发就用新内容；已经在跑的会话保留启动时的快照，直到你重建它的上下文。Frontmatter 字段集合是封闭的，从别的工具带过来的字段会在加载时报错并点名，迁移就从那里开始。可以从现有 profile 复制、从内置模板起，或者从空白开始。[Agent 文件格式 →](https://x-t-e-r.github.io/kiki/zh/customization/agents-and-subagents#agent-文件格式)
 - **把别的智能体当引擎用。** 一个 profile 可以通过 ACP 或 Codex app-server 跑在 Claude Code、Codex、Cursor、Gemini CLI、Kimi CLI、OpenCode 或 Grok Build 上。[派遣能力 →](https://x-t-e-r.github.io/kiki/zh/guides/settings#派遣能力)
 - **后台任务。** 耗时的命令和子智能体丢到后台跑，跑完结果自动回到智能体手里。[后台任务 →](https://x-t-e-r.github.io/kiki/zh/reference/tools#后台任务)
 
@@ -21,7 +21,7 @@
 - **目标。** `/goal` 给智能体一个跨多轮持续推进的目标，可以编辑、暂停和取消。[目标模式 →](https://x-t-e-r.github.io/kiki/zh/guides/goals)
 - **消息队列。** 智能体忙着时你发的消息先进队而不是打断，每条可以选空闲后、子智能体完成后，或任务完成后发出。[队列 →](https://x-t-e-r.github.io/kiki/zh/guides/interface#输入框)
 - **定时提示词。** 智能体可以安排一次性或按 cron 表达式重复的提示词。只要还有 Kiki 进程持有那个已打开的会话，计划就会触发。[定时任务 →](https://x-t-e-r.github.io/kiki/zh/reference/tools#定时任务)
-- **任务看板。** 每个工作区一块看板，需求是卡片，关联到正在处理它的会话；主智能体也能读写。[任务看板 →](https://x-t-e-r.github.io/kiki/zh/guides/sessions#任务看板) · [专题介绍 →](task-board.zh-CN.md)
+- **任务看板。** 装上可选的 `kiki-task-board` 插件后，每个工作区一块看板，需求是卡片，关联到正在处理它的会话；主智能体也能读写。[任务看板 →](https://x-t-e-r.github.io/kiki/zh/guides/sessions#任务看板) · [专题介绍 →](task-board.zh-CN.md)
 - **上下文撑得住。** 压缩点由你定；到了压缩点，智能体压成摘要、只从工作笔记重启，或每次自己判断。[上下文压缩 →](https://x-t-e-r.github.io/kiki/zh/guides/sessions#上下文压缩)
 - **记忆。** 事实按全局、工作区或角色跨会话留下，改动历史可以逐条撤销。[记忆 →](https://x-t-e-r.github.io/kiki/zh/guides/memory)
 
@@ -46,6 +46,7 @@
 - **Thread bridge。** 两个 home 之间传消息的单向通道，永远不授予 GUI 浏览权限。[`kiki bridges` →](https://x-t-e-r.github.io/kiki/zh/reference/command#kiki-bridges)
 - **Web 访问。** 用一条一次性链接把这个 Kiki 开给另一台设备上的浏览器；关掉时撤销所有链接，但不会停掉正在跑的活。[Web 访问 →](https://x-t-e-r.github.io/kiki/zh/server/local-server#在浏览器里使用-kiki)
 - **会话内 SSH。** 加入会话的主机属于这个会话，所以时间线保持干净。[输入框 →](https://x-t-e-r.github.io/kiki/zh/guides/interface#输入框)
+- **手机会话。** 把微信或 QQ 聊天绑到角色或会话，人不在电脑前也能在手机上回消息、回答待处理的提问与审批。[手机会话 →](https://x-t-e-r.github.io/kiki/zh/features/phone)
 
 ## 每一层都归你
 
@@ -63,7 +64,8 @@
 ## 外观与扩展
 
 - **皮肤与外观。** 六套内置皮肤、图片或视频背景，以及把配色和素材打包在一起的外观包。[GUI 皮肤 →](https://x-t-e-r.github.io/kiki/zh/customization/skins)
-- **插件。** 插件可以加入技能、智能体、MCP 服务器、hooks、命令和工具，在「能力」页浏览安装。[插件 →](https://x-t-e-r.github.io/kiki/zh/customization/plugins)
+- **插件。** 插件可以加入技能、智能体、MCP 服务器、hooks、命令和工具，在「能力」页浏览安装。目录里覆盖本地 PDF 与 Office 提取（`Kiki Extract`，处理这些格式需要本机备好 Python 与 MarkItDown）、在本机创建和编辑 Word、Excel、PowerPoint（`Kiki Office Suite`）、在本机核对 CSV（`Kiki Work`）、手稿撰写（`Kiki Writing`）、Notion 检索与写回（`Kiki Notion`）、媒体生成（`Kiki Media`），以及需要 Kimi Code OAuth 与套餐额度的 Kimi Datasource。每一项各自独立安装、配置与启用。[插件 →](https://x-t-e-r.github.io/kiki/zh/customization/plugins)
 - **Skills。** 可复用的工作流，同时注册成可以用 `/名字` 触发的斜杠命令。[Agent Skills →](https://x-t-e-r.github.io/kiki/zh/customization/skills)
 - **MCP 服务器。** 通过 stdio、HTTP 或 SSE 连接外部工具。[MCP →](https://x-t-e-r.github.io/kiki/zh/server/mcp)
 - **联网搜索与抓取。** 搜索和抓取走可查看的具名通道；GitHub 和 Context7 不用密钥，同一供应商的多个密钥自动轮换、出错冷却。[搜索与抓取 →](https://x-t-e-r.github.io/kiki/zh/guides/settings#搜索与抓取) · [专题介绍 →](nb-search.zh-CN.md)
+- **浏览器控制。** 驱动你已经在用的浏览器、让 Kiki 自己跑一个浏览器、用 CDP 接一个已经在跑的浏览器，或者选你自己装好的 Ego Lite；来源配置好并允许之后，浏览器工具才会进入会话。[浏览器控制 →](https://x-t-e-r.github.io/kiki/zh/guides/settings#浏览器控制)

@@ -10,7 +10,21 @@ title: 扩展
 
 插件是打包单位。一个插件可以贡献 Skill、智能体、MCP 服务器、hooks、命令、工具和沙箱面板，你可以在**能力 → 扩展与工具**里浏览、安装和配置。带 `.claude-plugin/plugin.json` 清单的 Claude Code 插件也能装，还可以让 Kiki 指向你自己的市场 JSON。
 
-官方市场由 Kimi 维护，目前有三条：**Kimi Datasource**（用自然语言查市场行情、宏观指标、企业注册、学术文献和法律法规）、**Kimi Browser Extension**（让 AI 驱动你自己的浏览器）、**Kimi Computer Use**（让 AI 操作你的桌面应用）。另外两个能力是独立插件，不属于这三条：**Kiki Extract** 把本地 PDF、Office、HTML 或文本文件转成 `Read` 和 `Grep` 能用的 Markdown；**Kiki Notion** 是面向 Notion 官方托管 MCP 服务的配置和工作流。提取文件是一次读取动作——让已有文档变得可被搜索，它既不创建也不编辑 Office 文档。安装插件本身不会执行它的 hooks——只有匹配的事件发生、且插件处于启用状态时才会触发。见[插件](/zh/customization/plugins)。
+目录就是 **Official** 页签：Kiki 自建插件与 Kimi 维护的上游条目并列，按任务需要逐个安装。
+
+- **Kiki Extract** 把本地 PDF、Office、HTML 或文本文件转成 `Read` 和 `Grep` 能用的 Markdown。这是一次读取动作：原件既不会被创建也不会被修改，处理 PDF 或 Office 需要运行 Kiki 的机器上备好 Python 与 MarkItDown。
+- **Kiki Office Suite** 在本机创建和编辑 Word、Excel、PowerPoint 文件。
+- **Kiki Work** 在本机核对 CSV/TSV 键并对照两张表，不改原件也不上传。
+- **Kiki Writing** 提供专注的手稿面板与续写草稿命令。
+- **Kiki Notion** 连接 Notion 官方托管 MCP 服务，只写回你点名的页面。
+- **Task board**（`kiki-task-board`）为每个工作区保存需求卡片，并关联到正在处理它的会话。
+- **Cloudflare Tunnel** 和 **Kiki Sites** 负责把本地服务开出去或部署站点。
+- **Kimi Datasource** 用自然语言查行情、宏观指标、企业工商、学术文献与中文法律法规；需要先用 Kimi Code OAuth 登录，查询会消耗套餐额度。
+- **Kimi Browser Extension** 驱动你已经在用的浏览器，需要在扩展商店安装配套扩展并在那里批准。
+
+浏览器控制是一项系统能力，不只靠某一个插件：除了 Kimi 扩展，Kiki 也能自己跑一个浏览器、用 CDP 接一个已经在跑的，或者用你自己装好的 Ego Lite。见[浏览器控制](/zh/guides/settings#浏览器控制)。**Kimi Computer Use** 不在这个页签，从直链安装。
+
+每个插件各自安装、配置和启用。安装插件本身不会执行它的 hooks——只有匹配的事件发生、且插件处于启用状态时才会触发。见[插件](/zh/customization/plugins)。
 
 媒体生成使用媒体插件提供的图片、视频或语音**来源**，在**能力 → 扩展与工具 → 插件 → 媒体来源**里配置。无需额外的实验开关：安装并启用插件、配置并启用来源后，按需发起生成。保存或列出来源不会启动任务。来源访问与授权见 [媒体来源](/zh/customization/plugins#媒体来源)。
 
