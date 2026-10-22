@@ -36,7 +36,7 @@ import { deriveProviderId, nonEmpty } from '#/kosong/model/modelAuth';
 import { IModelOAuthTokens } from '#/kosong/model/modelOAuth';
 import type { ModelRecord, ModelsSection } from '#/kosong/model/model';
 import { parametersFromWire, parametersToWire, patchGenerationParameters, resolveGenerationParameters, patchModelUsagePolicy, resolveModelUsage, usagePolicyFromWire, usagePolicyToWire, usageParametersToWire } from '#/kosong/model/parameters';
-import { resolveModelProtocol } from '#/kosong/model/modelProtocol';
+import { explainModelProtocol, resolveModelProtocol } from '#/kosong/model/modelProtocol';
 import type { ProviderConfig, ProvidersSection } from '#/kosong/provider/provider';
 import type { ImagePolicyConfig } from '#/kosong/provider/providerImagePolicy';
 import {
@@ -231,6 +231,7 @@ function modelEntity(
   defaultProvider: string | undefined,
 ): ModelEntity {
   const ref = resolveProviderRef(record, defaultProvider);
+  const explained = explainModelProtocol(record, providers[ref.providerId]);
   const generation = resolveGenerationParameters(providers[ref.providerId], record);
   const usage = {
     main: resolveModelUsage(generation, record, 'main'),
@@ -278,7 +279,8 @@ function modelEntity(
     recipe: record.recipe,
     overrides: shallowSnake(record.overrides),
     protocol: record.protocol,
-    effective_protocol: resolveModelProtocol(record, providers[ref.providerId]),
+    effective_protocol: explained?.protocol,
+    protocol_source: explained?.source,
     base_url: record.baseUrl,
     revision: revisionOf(record),
     issues: [...modelIssues(record, providers, ref), ...(record.recipe !== undefined ? [{ code: 'recipe-selected', severity: 'warning' as const, path: 'recipe', message: 'Recipe selected; saved model prompts and Recipe-covered settings are retained but ignored. Role, persona and workspace instructions remain active.' }] : [])],

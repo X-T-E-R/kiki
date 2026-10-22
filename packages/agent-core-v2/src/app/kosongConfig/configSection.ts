@@ -394,6 +394,23 @@ function unwrapWrapperSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
   return current;
 }
 
+const OVERRIDE_ROUTING_KEYS = new Set([
+  'provider',
+  'provider_id',
+  'providerId',
+  'model',
+  'name',
+  'aliases',
+  'protocol',
+  'base_url',
+  'baseUrl',
+  'api_key',
+  'apiKey',
+  'oauth',
+  'beta_api',
+  'betaApi',
+]);
+
 function collectMalformedModelEntries(rawModels: unknown): ConfigDiagnostic[] {
   if (!isPlainObject(rawModels)) return [];
   const diagnostics: ConfigDiagnostic[] = [];
@@ -404,6 +421,22 @@ function collectMalformedModelEntries(rawModels: unknown): ConfigDiagnostic[] {
       domain: MODELS_SECTION,
       severity: 'warning',
       message: malformedModelMessage(alias, entry),
+    });
+  }
+  return diagnostics;
+}
+
+function collectOverrideRoutingDiagnostics(rawModels: unknown): ConfigDiagnostic[] {
+  if (!isPlainObject(rawModels)) return [];
+  const diagnostics: ConfigDiagnostic[] = [];
+  for (const [alias, entry] of Object.entries(rawModels)) {
+    if (!isPlainObject(entry) || !isPlainObject(entry['overrides'])) continue;
+    const rejected = Object.keys(entry['overrides']).filter((key) => OVERRIDE_ROUTING_KEYS.has(key)).sort();
+    if (rejected.length === 0) continue;
+    diagnostics.push({
+      domain: MODELS_SECTION,
+      severity: 'error',
+      message: `[models] entry '${alias}' overrides rejected ${rejected.join(', ')}; set those fields on the model itself. They were not applied.`,
     });
   }
   return diagnostics;
@@ -533,7 +566,7 @@ registerConfigSection(MODELS_SECTION, ModelsSectionSchema, {
   defaultValue: {},
   fromToml: modelsFromToml,
   toToml: modelsToToml,
-  collectDiagnostics: collectMalformedModelEntries,
+  collectDiagnostics: (raw) => [...collectMalformedModelEntries(raw), ...collectOverrideRoutingDiagnostics(raw)],
   entryKeyed: ModelRecordSchema,
 });
 

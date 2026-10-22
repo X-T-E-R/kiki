@@ -8,6 +8,9 @@ export * from './questionGuard';
 export const modelProtocolSchema = z.enum(['anthropic', 'openai', 'openai_responses', 'google-genai']);
 export type ModelProtocol = z.infer<typeof modelProtocolSchema>;
 
+export const modelProtocolSourceSchema = z.enum(['model', 'provider', 'vendor']);
+export type ModelProtocolSource = z.infer<typeof modelProtocolSourceSchema>;
+
 export const providerCatalogStatusSchema = z.enum([
   'connected',
   'error',
@@ -201,6 +204,7 @@ export const modelCatalogItemSchema = z.object({
   effective_capabilities: z.array(z.string()).optional(),
   protocol: modelProtocolSchema.optional(),
   effective_protocol: modelProtocolSchema.optional(),
+  protocol_source: modelProtocolSourceSchema.optional(),
   support_efforts: z.array(z.string()).optional(),
   default_effort: z.string().optional(),
   service_tier: serviceTierSchema.optional(),
@@ -438,6 +442,7 @@ export const modelEntitySchema = z.object({
   overrides: modelOverridesSchema.optional(),
   protocol: modelProtocolSchema.optional(),
   effective_protocol: modelProtocolSchema.optional(),
+  protocol_source: modelProtocolSourceSchema.optional(),
   base_url: z.string().min(1).optional(),
   revision: z.string().min(1),
   issues: z.array(modelIssueSchema),

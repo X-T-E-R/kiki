@@ -1931,6 +1931,7 @@ function ModelCatalogRowEditor({
               model={entity.id}
               value={protocol}
               resolved={resolvedProtocol}
+              source={protocolBaseline === 'inherit' ? entity.protocol_source : undefined}
               onChange={setProtocol}
               disabled={saving}
               showHint={false}

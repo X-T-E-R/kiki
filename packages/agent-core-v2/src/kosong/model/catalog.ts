@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { generationParametersSchema, modelBehaviorWireSchema, modelBehaviorToWire } from '@kiki/protocol';
+import { generationParametersSchema, modelBehaviorWireSchema, modelBehaviorToWire, modelProtocolSourceSchema } from '@kiki/protocol';
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { ModelCapability } from '#/kosong/contract/capability';
@@ -22,6 +22,7 @@ import {
 import type { ModelInspection } from './inspection';
 import type { ModelRecord, ModelUsagePosition } from './model';
 import { effectiveModelConfig } from './modelAuth';
+import { explainModelProtocol } from './modelProtocol';
 import { parametersToWire, type GenerationParameters, type ResolvedModelUsage } from './parameters';
 import type { ModelRequester } from './modelRequester';
 
@@ -103,6 +104,7 @@ export const modelCatalogItemSchema = z.object({
   effective_capabilities: z.array(z.string()).optional(),
   protocol: ProtocolSchema.optional(),
   effective_protocol: ProtocolSchema.optional(),
+  protocol_source: modelProtocolSourceSchema.optional(),
   support_efforts: z.array(z.string()).optional(),
   default_effort: z.string().optional(),
   service_tier: z.enum(['auto', 'default', 'flex', 'priority']).optional(),
@@ -170,12 +172,14 @@ export function toProtocolModel(
   providerType?: string,
 ): ModelCatalogItem {
   const effective = effectiveModelConfig(record, providerType ?? model.providerType);
+  const explained = explainModelProtocol(record, providerOf(providerType ?? model.providerType));
   const effectiveCapabilities = modelCapabilityNames(model.capabilities);
   if (model.alwaysThinking) effectiveCapabilities.push('always_thinking');
   return {
     id: model.id,
     protocol: record.protocol,
     effective_protocol: model.protocol,
+    protocol_source: explained?.source,
     provider_id: model.providerName,
     remote_id: model.name ?? model.id,
     display_name: model.displayName ?? model.name ?? model.id,
@@ -203,11 +207,13 @@ export function toProtocolModelFallback(
   providerType?: string,
 ): ModelCatalogItem {
   const effective = effectiveModelConfig(record, providerType);
+  const explained = explainModelProtocol(record, providerOf(providerType));
   const remoteId = effective.name ?? effective.model ?? modelId;
   return {
     id: modelId,
     protocol: record.protocol,
-    effective_protocol: undefined,
+    effective_protocol: explained?.protocol,
+    protocol_source: explained?.source,
     provider_id: effective.provider ?? effective.providerId ?? '',
     remote_id: remoteId,
     display_name: effective.displayName ?? remoteId,
@@ -224,6 +230,10 @@ export function toProtocolModelFallback(
     request_identity: requestIdentityToWire(record.requestIdentity),
     images: imagePolicyToWire(record.images),
   };
+}
+
+function providerOf(providerType: string | undefined): { readonly type: string } | undefined {
+  return providerType === undefined ? undefined : { type: providerType };
 }
 
 function modelCapabilityNames(capabilities: ModelCapability): string[] {

@@ -127,6 +127,7 @@ interface ProviderModelCatalogChoice {
    */
   readonly protocol?: ModelProtocol;
   readonly effectiveProtocol?: ModelProtocol;
+  readonly protocolSource?: 'model' | 'provider' | 'vendor';
   readonly source: ProviderModelChoiceSource;
 }
 
@@ -139,6 +140,7 @@ function configuredCatalogChoice(model: ModelCatalogItem): ProviderModelCatalogC
     supportEfforts: model.support_efforts ?? [],
     protocol: model.protocol,
     effectiveProtocol: model.effective_protocol,
+    protocolSource: model.protocol_source,
     source: 'configured',
   };
 }
@@ -742,6 +744,7 @@ function ModelDraftRow({
             model={rowLabel || String(n)}
             value={protocol}
             resolved={resolvedProtocol}
+            source={resolvedProtocol === undefined ? undefined : selectedChoice?.protocolSource}
             onChange={onProtocolChange}
             showHint={false}
           />

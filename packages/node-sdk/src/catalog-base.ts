@@ -86,10 +86,10 @@ export interface CatalogModel {
    */
   readonly alwaysThinking?: boolean;
   /**
-   * Per-model protocol override from the catalog entry's `provider` field
-   * (gateway providers serving this model over the Anthropic protocol).
+   * Per-model protocol override from the catalog entry's `provider` field.
+   * Stored when that wire is itself a model protocol.
    */
-  readonly protocol?: 'anthropic';
+  readonly protocol?: 'anthropic' | 'openai' | 'openai_responses' | 'google-genai';
   /** Endpoint paired with {@link protocol}, adapted to the wire's SDK convention. */
   readonly baseUrl?: string;
   readonly capability: ModelCapability;
@@ -477,17 +477,20 @@ function applyModelProviderOverride(
     return model;
   }
 
-  // Only Anthropic-direction overrides are materializable (the alias schema
-  // cannot express other per-model protocols), and only with a usable
-  // endpoint. Anything else would be imported under the provider's wire —
-  // the silently wrong protocol — so the model is skipped instead. Examples:
-  // freemodel's gpt entries on an Anthropic provider, Claude models on
-  // google-vertex (whose wire here is Gemini-mode Vertex), or a google-genai
-  // override on an OpenAI gateway.
-  if (overrideWire === 'anthropic' && usableApi !== undefined) {
-    return { ...model, protocol: 'anthropic', baseUrl: adaptBaseUrlForWire(usableApi, 'anthropic') };
+  // Keep a per-model wire the model record can store. Vendor types such as
+  // vertexai are not model protocols and stay skipped, instead of being
+  // imported on the provider's wire.
+  if (isModelWireProtocol(overrideWire) && usableApi !== undefined) {
+    return { ...model, protocol: overrideWire, baseUrl: adaptBaseUrlForWire(usableApi, overrideWire) };
   }
   return undefined;
+}
+
+const MODEL_WIRE_PROTOCOLS = ['anthropic', 'openai', 'openai_responses', 'google-genai'] as const;
+type ModelWireProtocol = (typeof MODEL_WIRE_PROTOCOLS)[number];
+
+function isModelWireProtocol(value: string | undefined): value is ModelWireProtocol {
+  return value !== undefined && (MODEL_WIRE_PROTOCOLS as readonly string[]).includes(value);
 }
 
 function inferOverrideWire(npm: string): ProviderType | undefined {

@@ -251,6 +251,52 @@ describe('applyCatalogProvider', () => {
     expect(plain?.baseUrl).toBeUndefined();
   });
 
+  it('keeps google-genai and openai per-model wires and skips vertex', () => {
+    const models = catalogProviderModels({
+      id: 'gateway',
+      npm: '@ai-sdk/anthropic',
+      api: 'https://gateway.example.test/anthropic',
+      models: {
+        'vendor/gemini-model': {
+          id: 'vendor/gemini-model',
+          limit: { context: 8192 },
+          provider: { npm: '@google/genai', api: 'https://gateway.example.test/gemini' },
+        },
+        'vendor/chat-model': {
+          id: 'vendor/chat-model',
+          limit: { context: 8192 },
+          provider: { npm: '@ai-sdk/openai', api: 'https://gateway.example.test/chat/v1' },
+        },
+        'vendor/vertex-model': {
+          id: 'vendor/vertex-model',
+          limit: { context: 8192 },
+          provider: { npm: '@ai-sdk/google-vertex', api: 'https://us-central1-aiplatform.googleapis.com/v1' },
+        },
+      },
+    });
+    const config = { providers: {} } as KimiConfig;
+    applyCatalogProvider(config, {
+      providerId: 'gateway',
+      wire: 'anthropic',
+      baseUrl: 'https://gateway.example.test/anthropic',
+      apiKey: 'sk',
+      models,
+      selectedModelId: 'vendor/gemini-model',
+      thinking: false,
+    });
+
+    expect(config.models?.['gateway/vendor/gemini-model']).toMatchObject({
+      protocol: 'google-genai',
+      baseUrl: 'https://gateway.example.test/gemini',
+    });
+    expect(config.models?.['gateway/vendor/chat-model']).toMatchObject({
+      protocol: 'openai',
+      baseUrl: 'https://gateway.example.test/chat/v1',
+    });
+    expect(models.find((model) => model.id === 'vendor/vertex-model')).toBeUndefined();
+    expect(config.models?.['gateway/vendor/vertex-model']).toBeUndefined();
+  });
+
   it('maps always-thinking models to always_thinking and carries the off encoding', () => {
     const models = catalogProviderModels({
       id: 'gateway',

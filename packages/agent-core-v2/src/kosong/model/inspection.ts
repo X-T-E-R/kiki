@@ -13,6 +13,7 @@ import { getProviderDefinition } from '../provider/providerDefinition';
 import type { ResolvedImagePolicy } from '../provider/providerImagePolicy';
 
 import type { ModelRecord } from './model';
+import { explainModelProtocol } from './modelProtocol';
 import type { GenerationParameters, ResolvedGenerationParameters } from './parameters';
 import type { ResolvedModelAuthMaterial } from './model.types';
 
@@ -24,6 +25,7 @@ export interface InspectedAuth {
 
 export interface InspectedResolvedModel {
   readonly protocol: Protocol;
+  readonly protocolSource?: 'model' | 'provider' | 'vendor';
   readonly providerType?: string;
   readonly providerName: string;
   readonly baseUrl?: string;
@@ -402,6 +404,7 @@ export function assembleModelInspection(args: {
     },
     resolved: {
       protocol: model.protocol,
+      protocolSource: explainModelProtocol(configured, providerConfig)?.source,
       providerType: model.providerType,
       providerName: model.providerName,
       baseUrl: model.baseUrl,

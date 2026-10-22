@@ -1489,6 +1489,8 @@ describe('wire projection (pure)', () => {
       display_name: 'Kimi K2',
       max_context_size: 131072,
       capabilities: ['thinking'],
+      effective_protocol: 'openai',
+      protocol_source: 'vendor',
       support_efforts: undefined,
       default_effort: undefined,
       request_identity: undefined,

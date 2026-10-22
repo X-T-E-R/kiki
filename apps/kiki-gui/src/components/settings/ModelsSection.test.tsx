@@ -314,7 +314,7 @@ describe('ModelCatalogCard row editor', () => {
   });
 
   it('names the resolved provider format on the inherit option without writing it', async () => {
-    getModel.mockResolvedValue({ ...ENTITY, effective_protocol: 'openai' });
+    getModel.mockResolvedValue({ ...ENTITY, effective_protocol: 'openai', protocol_source: 'provider' });
     const container = await renderCard();
     await act(async () => {
       container.querySelector<HTMLButtonElement>(
@@ -327,6 +327,7 @@ describe('ModelCatalogCard row editor', () => {
     const field = container.querySelector<HTMLElement>('[data-model-protocol-field]')!;
     expect(field.dataset['modelProtocolField']).toBe('inherit');
     expect((await optionLabels(field))[0]).toBe('Provider default · Chat Completions');
+    expect(field.querySelector('[data-effective-protocol]')?.textContent).toBe('Effective format: Chat Completions · provider type');
 
     const nameInput = container.querySelector<HTMLInputElement>(
       'input[aria-label="Display name for kimi-code/kimi-k2"]',

@@ -51,7 +51,7 @@ export interface ModelsDevModel {
   readonly supportEfforts?: readonly string[];
   readonly offEffort?: string;
   readonly alwaysThinking?: boolean;
-  readonly protocol?: 'anthropic';
+  readonly protocol?: 'anthropic' | 'openai' | 'openai_responses' | 'google-genai';
   readonly baseUrl?: string;
   readonly capability: ModelCapability;
 }
@@ -307,10 +307,17 @@ function applyModelProviderOverride(
     return model;
   }
 
-  if (overrideWire === 'anthropic' && usableApi !== undefined) {
-    return { ...model, protocol: 'anthropic', baseUrl: adaptBaseUrlForWire(usableApi, 'anthropic') };
+  if (isModelWireProtocol(overrideWire) && usableApi !== undefined) {
+    return { ...model, protocol: overrideWire, baseUrl: adaptBaseUrlForWire(usableApi, overrideWire) };
   }
   return undefined;
+}
+
+const MODEL_WIRE_PROTOCOLS = ['anthropic', 'openai', 'openai_responses', 'google-genai'] as const;
+type ModelWireProtocol = (typeof MODEL_WIRE_PROTOCOLS)[number];
+
+function isModelWireProtocol(value: string | undefined): value is ModelWireProtocol {
+  return value !== undefined && (MODEL_WIRE_PROTOCOLS as readonly string[]).includes(value);
 }
 
 function inferOverrideWire(npm: string): ProviderType | undefined {
