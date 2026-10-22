@@ -301,6 +301,11 @@ describe('server /api/sessions/query', () => {
         depth -= 1;
       }
     });
+    const responseClosed = new Promise<void>((resolve) => {
+      server!.app.server.once('request', (_request, response) => {
+        response.once('close', resolve);
+      });
+    });
     const controller = new AbortController();
     const pending = authedFetch(
       server as RunningServer,
@@ -312,10 +317,10 @@ describe('server /api/sessions/query', () => {
     try {
       await entered;
       controller.abort();
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      releaseSecond();
       await expect(pending).rejects.toThrow();
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      await responseClosed;
+      releaseSecond();
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
       expect(calls).toBe(2);
     } finally {
       releaseSecond();
