@@ -62,6 +62,8 @@ export class WireService extends Service implements IWireService {
   private sealedPrefix: { readonly size: number; readonly sha256: string } | undefined;
   private prefixHash: Hash | undefined;
   private prefixHashLength = 0;
+  private journalGeneration = 0;
+  private journalHashOperation: Promise<void> = Promise.resolve();
   private appendedBytes = 0;
   private readonly appendListeners = new Set<(appendedBytes: number) => void>();
   private transcriptVerification: {
@@ -407,34 +409,42 @@ export class WireService extends Service implements IWireService {
 
   async journalSha256(byteLength: number): Promise<string | undefined> {
     if (!Number.isSafeInteger(byteLength) || byteLength < 0) return undefined;
+    const previous = this.journalHashOperation;
+    const operation = previous.then(() => this.computeJournalSha256(byteLength));
+    this.journalHashOperation = operation.then(() => undefined, () => undefined);
+    return operation;
+  }
+
+  private async computeJournalSha256(byteLength: number): Promise<string | undefined> {
     await this.flush();
+    const generation = this.journalGeneration;
     const size = await this.storage.size(this.wireScope, AGENT_WIRE_RECORD_KEY) ?? 0;
     if (byteLength > size) return undefined;
-    if (this.prefixHash === undefined || this.prefixHashLength > byteLength) {
-      this.prefixHash = createHash('sha256');
-      this.prefixHashLength = 0;
-    }
-    if (this.prefixHashLength < byteLength) {
-      const start = this.prefixHashLength;
+    const hash = this.prefixHash !== undefined && this.prefixHashLength <= byteLength
+      ? this.prefixHash.copy()
+      : createHash('sha256');
+    const start = this.prefixHash !== undefined && this.prefixHashLength <= byteLength
+      ? this.prefixHashLength
+      : 0;
+    if (start < byteLength) {
       let read = 0;
       for await (const chunk of this.storage.readStream(this.wireScope, AGENT_WIRE_RECORD_KEY, {
         start,
         end: byteLength - 1,
       })) {
-        this.prefixHash.update(chunk);
+        hash.update(chunk);
         read += chunk.byteLength;
       }
-      if (read !== byteLength - start) {
-        this.prefixHash = undefined;
-        this.prefixHashLength = 0;
-        return undefined;
-      }
-      this.prefixHashLength = byteLength;
+      if (read !== byteLength - start || generation !== this.journalGeneration) return undefined;
     }
-    return this.prefixHash.copy().digest('hex');
+    if (generation !== this.journalGeneration) return undefined;
+    this.prefixHash = hash;
+    this.prefixHashLength = byteLength;
+    return hash.copy().digest('hex');
   }
 
   private resetJournalPrefix(): void {
+    this.journalGeneration += 1;
     this.prefixHash = undefined;
     this.prefixHashLength = 0;
     this.appendedBytes = 0;

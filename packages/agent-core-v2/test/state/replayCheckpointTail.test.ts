@@ -1,4 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
@@ -54,6 +56,8 @@ beforeEach(() => {
   disposables = new DisposableStore();
 });
 afterEach(async () => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
   await disposables.dispose();
 });
 
@@ -190,6 +194,16 @@ async function bytesOf(storage: InMemoryStorageService): Promise<Uint8Array> {
   const bytes = await storage.read(SCOPE, AGENT_WIRE_RECORD_KEY);
   if (bytes === undefined) throw new Error('journal missing');
   return bytes;
+}
+
+function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((next) => { resolve = next; });
+  return { promise, resolve };
+}
+
+async function ticks(): Promise<void> {
+  for (let index = 0; index < 20; index += 1) await Promise.resolve();
 }
 
 describe('replay checkpoint tail', () => {
@@ -354,6 +368,165 @@ describe('replay checkpoint tail', () => {
     const digest = await first.wire.journalSha256?.(grown);
     expect(digest).toMatch(/^[a-f0-9]{64}$/);
     expect(storage.streamBytes).toBe(grown - size);
+  });
+
+  it('does not commit a streamed digest after the read fails', async () => {
+    const storage = new CountingStorage();
+    const first = harness(storage);
+    await seed(first.wire);
+    const bytes = await bytesOf(storage);
+    const correct = createHash('sha256').update(bytes).digest('hex');
+    const originalRead = storage.readStream.bind(storage);
+    let fail = true;
+    storage.readStream = async function* (scope, key, range) {
+      if (fail && key === AGENT_WIRE_RECORD_KEY) {
+        fail = false;
+        yield bytes.subarray(0, 4);
+        throw new Error('injected stream failure');
+      }
+      yield* originalRead(scope, key, range);
+    };
+
+    await expect(first.wire.journalSha256!(bytes.byteLength)).rejects.toThrow('injected stream failure');
+    await expect(first.wire.journalSha256!(bytes.byteLength)).resolves.toBe(correct);
+  });
+
+  it('serializes concurrent prefix digest requests without sharing a mutable hash', async () => {
+    const storage = new CountingStorage();
+    const first = harness(storage);
+    await seed(first.wire);
+    const bytes = await bytesOf(storage);
+    const correct = createHash('sha256').update(bytes).digest('hex');
+    const entered = deferred();
+    const release = deferred();
+    const originalRead = storage.readStream.bind(storage);
+    let firstRead = true;
+    storage.readStream = async function* (scope, key, range) {
+      if (firstRead && key === AGENT_WIRE_RECORD_KEY) {
+        firstRead = false;
+        yield bytes.subarray(0, 4);
+        entered.resolve();
+        await release.promise;
+        yield bytes.subarray(4);
+        return;
+      }
+      yield* originalRead(scope, key, range);
+    };
+
+    const a = first.wire.journalSha256!(bytes.byteLength);
+    await entered.promise;
+    const b = first.wire.journalSha256!(bytes.byteLength);
+    release.resolve();
+    await expect(Promise.all([a, b])).resolves.toEqual([correct, correct]);
+  });
+
+  it('keeps growth pending when a later append lands during checkpoint I/O', async () => {
+    const first = await checkpointed();
+    vi.useFakeTimers();
+    const originalSet = first.docs.set.bind(first.docs);
+    const entered = deferred();
+    const release = deferred();
+    let writes = 0;
+    first.docs.set = async (scope, key, value) => {
+      if (key === CHECKPOINT_KEY) {
+        writes += 1;
+        entered.resolve();
+        if (writes === 1) await release.promise;
+      }
+      return originalSet(scope, key, value);
+    };
+
+    const saving = first.dispatcher.saveReplayCheckpoint!();
+    await entered.promise;
+    await first.dispatcher.dispatch(new PromptEnqueued({
+      schemaVersion: 1,
+      promptId: 'prompt-during-save',
+      userMessageId: 'prompt-during-save',
+      createdAt: '2026-10-22T00:00:00.000Z',
+      message: message('user', 'x'.repeat(REPLAY_CHECKPOINT_GROWTH_BYTES + 1)),
+      alreadyMaterialized: false,
+      appendTiming: 'agent_idle',
+      revision: 2,
+      queueIndex: 2,
+    }));
+    await first.wire.flush();
+    await vi.advanceTimersByTimeAsync(1_000);
+    release.resolve();
+    await expect(saving).resolves.toBe(true);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    const checkpoint = await first.docs.get<{ wire: { size: number } }>(CHECKPOINT_SCOPE, CHECKPOINT_KEY);
+    const size = (await bytesOf(first.storage)).byteLength;
+    expect(writes).toBeGreaterThanOrEqual(2);
+    expect(checkpoint?.wire.size).toBe(size);
+  });
+
+  it('does not rearm a failed growth save after dispatcher disposal', async () => {
+    const first = await checkpointed();
+    vi.useFakeTimers();
+    const entered = deferred();
+    const release = deferred();
+    let writes = 0;
+    first.docs.set = async (_scope, key) => {
+      if (key === CHECKPOINT_KEY) {
+        writes += 1;
+        entered.resolve();
+        await release.promise;
+        throw new Error('persistent checkpoint failure');
+      }
+    };
+
+    await first.dispatcher.dispatch(new PromptEnqueued({
+      schemaVersion: 1,
+      promptId: 'prompt-failure',
+      userMessageId: 'prompt-failure',
+      createdAt: '2026-10-22T00:00:00.000Z',
+      message: message('user', 'x'.repeat(REPLAY_CHECKPOINT_GROWTH_BYTES + 1)),
+      alreadyMaterialized: false,
+      appendTiming: 'agent_idle',
+      revision: 3,
+      queueIndex: 3,
+    }));
+    await first.wire.flush();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await entered.promise;
+    await (first.dispatcher as unknown as { dispose(): void | Promise<void> }).dispose();
+    expect(vi.getTimerCount()).toBe(0);
+    release.resolve();
+    await ticks();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(writes).toBe(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('runs restore hooks without waiting for the optional checkpoint write', async () => {
+    const first = harness();
+    await first.wire.seal();
+    const entered = deferred();
+    const release = deferred();
+    const originalSet = first.docs.set.bind(first.docs);
+    first.docs.set = async (scope, key, value) => {
+      if (key === CHECKPOINT_KEY) {
+        entered.resolve();
+        await release.promise;
+      }
+      return originalSet(scope, key, value);
+    };
+    let restoredHook = false;
+    let settled = false;
+    first.dispatcher.hooks.onDidRestore.register('test', async (_context, next) => {
+      restoredHook = true;
+      await next();
+    });
+
+    const restoring = first.dispatcher.restore().then(() => { settled = true; });
+    await entered.promise;
+    await ticks();
+    expect(first.state.get(promptQueueKey).order).toEqual([]);
+    expect(settled).toBe(true);
+    expect(restoredHook).toBe(true);
+    release.resolve();
+    await restoring;
   });
 
   it('checkpoints a long run once the journal grows, then reopens on that snapshot', async () => {

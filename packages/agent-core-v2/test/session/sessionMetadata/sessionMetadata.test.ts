@@ -209,6 +209,45 @@ describe('SessionMetadata', () => {
     expect(mirror.recorded.at(-1)?.usage).toEqual((await meta.read()).usage);
   });
 
+  it('flushes delayed usage during direct metadata disposal', async () => {
+    const meta = ix.get(ISessionMetadata) as SessionMetadata;
+    await meta.ready;
+    meta.recordUsage('example-model', {
+      inputOther: 1,
+      output: 2,
+      inputCacheRead: 0,
+      inputCacheCreation: 0,
+    });
+
+    await meta.dispose();
+
+    const persisted = await ix.get(IAtomicDocumentStore).get<{ usage?: { total?: { output?: number } } }>(META_SCOPE, 'state.json');
+    expect(persisted?.usage?.total?.output).toBe(2);
+  });
+
+  it('propagates usage write failures from drain and retries them on direct disposal', async () => {
+    const meta = ix.get(ISessionMetadata) as SessionMetadata;
+    await meta.ready;
+    const storage = ix.get(IFileSystemStorageService);
+    const original = storage.write.bind(storage);
+    storage.write = async (scope, key, data, options) => {
+      if (key === 'state.json') throw new Error('injected usage write failure');
+      return original(scope, key, data, options);
+    };
+    meta.recordUsage('example-model', {
+      inputOther: 1,
+      output: 2,
+      inputCacheRead: 0,
+      inputCacheCreation: 0,
+    });
+
+    await expect(drainSessionMetadataWrites(false)).rejects.toThrow('injected usage write failure');
+    storage.write = original;
+    await meta.dispose();
+    const persisted = await ix.get(IAtomicDocumentStore).get<{ usage?: { total?: { output?: number } } }>(META_SCOPE, 'state.json');
+    expect(persisted?.usage?.total?.output).toBe(2);
+  });
+
   it('writes one session document for several usage records', async () => {
     const storage = ix.get(IFileSystemStorageService);
     let stateWrites = 0;

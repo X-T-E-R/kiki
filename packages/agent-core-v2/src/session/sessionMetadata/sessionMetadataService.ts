@@ -27,12 +27,20 @@ const USAGE_FLUSH_DELAY_MS = 1_000;
 
 const pendingWrites = new Set<Promise<void>>();
 const pendingActivityPropagation = new Set<Promise<void>>();
-const pendingUsageFlushes = new Set<() => void>();
+const pendingUsageFlushes = new Set<() => Promise<void>>();
 
 /** Pass false while holding a session lifecycle lock; propagation may be queued behind that lock. */
 export async function drainSessionMetadataWrites(includeActivityPropagation = true): Promise<void> {
-  for (const flush of [...pendingUsageFlushes]) flush();
-  await Promise.all(includeActivityPropagation ? [...pendingWrites, ...pendingActivityPropagation] : [...pendingWrites]);
+  const flushResults = await Promise.allSettled([...pendingUsageFlushes].map((flush) => flush()));
+  const pendingResults = await Promise.allSettled(
+    includeActivityPropagation
+      ? [...pendingWrites, ...pendingActivityPropagation]
+      : [...pendingWrites],
+  );
+  const failures = [...flushResults, ...pendingResults]
+    .flatMap((result) => result.status === 'rejected' ? [result.reason] : []);
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, 'Session metadata writes failed');
 }
 
 export function trackSessionMetadataWork(work: Promise<void>): void {
@@ -50,6 +58,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   declare readonly _serviceBrand: undefined;
 
   private disposed = false;
+  private disposing = false;
   readonly ready: Promise<void>;
   readonly onDidChangeMetadata: Event<SessionMetadataChangedEvent>;
 
@@ -61,31 +70,52 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   private createdDocument = false;
   private usageDirty = false;
   private usageTimer: ReturnType<typeof setTimeout> | undefined;
-  private readonly flushUsage = (): void => {
+  private usageFlushInFlight: Promise<void> | undefined;
+  private readonly flushUsage = (): Promise<void> => {
     if (this.usageTimer !== undefined) {
       clearTimeout(this.usageTimer);
       this.usageTimer = undefined;
     }
-    if (!this.usageDirty || this.disposed) return;
-    void this.enqueueUpdate(async () => {
-      if (this.disposed || !this.usageDirty) return;
-      this.usageDirty = false;
-      await this.store.set(this.scope, META_KEY, encodeSessionMeta(this.data));
-      if (this.usageDirty || this.disposed) return;
-      this.mirrorToReadModel();
-      this._onDidChangeMetadata.fire({ changed: ['usage'] });
-    }).catch((error: unknown) => {
-      this.usageDirty = true;
-      if (!this.disposed && this.usageTimer === undefined) {
-        this.usageTimer = setTimeout(this.flushUsage, USAGE_FLUSH_DELAY_MS);
-        this.usageTimer.unref?.();
-      }
-      this.log.warn('session usage metadata write failed', {
-        sessionId: this.ctx.sessionId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
+    if (!this.usageDirty || this.disposed) return Promise.resolve();
+    const ongoing = this.usageFlushInFlight;
+    if (ongoing !== undefined) return ongoing;
+    const flush = this.flushUsageNow();
+    this.usageFlushInFlight = flush;
+    void flush.then(
+      () => {
+        if (this.usageFlushInFlight === flush) this.usageFlushInFlight = undefined;
+      },
+      () => {
+        if (this.usageFlushInFlight === flush) this.usageFlushInFlight = undefined;
+      },
+    );
+    return flush;
   };
+  private readonly onUsageTimer = (): void => {
+    void this.flushUsage().catch(() => {});
+  };
+
+  private async flushUsageNow(): Promise<void> {
+    while (!this.disposed && this.usageDirty) {
+      this.usageDirty = false;
+      try {
+        await this.enqueueUpdate(async () => {
+          if (this.disposed) return;
+          await this.store.set(this.scope, META_KEY, encodeSessionMeta(this.data));
+          if (this.usageDirty || this.disposed) return;
+          this.mirrorToReadModel();
+          this._onDidChangeMetadata.fire({ changed: ['usage'] });
+        });
+      } catch (error) {
+        this.usageDirty = true;
+        this.log.warn('session usage metadata write failed', {
+          sessionId: this.ctx.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    }
+  }
 
   constructor(
     @ISessionStateService private readonly states: ISessionStateService,
@@ -108,6 +138,36 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     this.scope = ctx.metaScope;
     this.onDidChangeMetadata = this._onDidChangeMetadata.event;
     this.ready = this.load();
+  }
+
+  override async dispose(): Promise<void> {
+    if (this.disposed) return;
+    this.disposing = true;
+    let flushError: unknown;
+    let flushFailed = false;
+    try {
+      await this.flushUsage();
+    } catch (error) {
+      flushFailed = true;
+      flushError = error;
+    }
+    this.disposed = true;
+    pendingUsageFlushes.delete(this.flushUsage);
+    if (this.usageTimer !== undefined) clearTimeout(this.usageTimer);
+    this.usageTimer = undefined;
+    let disposeError: unknown;
+    let disposeFailed = false;
+    try {
+      await super.dispose();
+    } catch (error) {
+      disposeFailed = true;
+      disposeError = error;
+    }
+    if (flushFailed && disposeFailed) {
+      throw new AggregateError([flushError, disposeError], 'Session metadata disposal failed');
+    }
+    if (flushFailed) throw flushError;
+    if (disposeFailed) throw disposeError;
   }
 
   private get data(): SessionMeta {
@@ -137,11 +197,11 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   }
 
   recordUsage(model: string, usage: TokenUsage): void {
-    if (this.disposed) return;
+    if (this.disposed || this.disposing) return;
     this.data = { ...this.data, usage: addSessionUsage(this.data.usage, model, usage) };
     this.usageDirty = true;
     if (this.usageTimer !== undefined) return;
-    this.usageTimer = setTimeout(this.flushUsage, USAGE_FLUSH_DELAY_MS);
+    this.usageTimer = setTimeout(this.onUsageTimer, USAGE_FLUSH_DELAY_MS);
     this.usageTimer.unref?.();
   }
 

@@ -879,7 +879,7 @@ describe('AgentLifecycleService', () => {
     expect(kept.length).toBeGreaterThan(0);
     vi.spyOn(handle.accessor.get(IEventDispatcher), 'saveReplayCheckpoint').mockResolvedValue(false);
     const dispose = vi.spyOn(handle, 'dispose');
-    await expect(svc.remove('main')).rejects.toThrow('Replay checkpoint was not saved');
+    await expect(svc.remove('main')).resolves.toBeUndefined();
     expect(dispose).toHaveBeenCalledOnce();
     expect(svc.get('main')).toBeUndefined();
     expect(log.rewritten).toBeUndefined();

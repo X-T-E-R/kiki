@@ -4,6 +4,7 @@ import { IInstantiationService } from '#/_base/di/instantiation';
 import { Disposable, type IDisposable } from '#/_base/di/lifecycle';
 import { isPromiseLike } from '#/_base/lifecycle/disposer';
 import { Emitter } from '#/_base/event';
+import { ILogService } from '#/_base/log/log';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Error2, ErrorCodes, isError2 } from '#/errors';
 import { join } from 'pathe';
@@ -121,6 +122,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     @ISessionInteractionService private readonly interaction: ISessionInteractionService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
+    @ILogService private readonly log: ILogService,
   ) {
     super();
     this._register(
@@ -864,12 +866,19 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         }
       }, 'persistence');
       await collect(async () => {
-        const dispatcher = handle.accessor.get(IEventDispatcher);
-        if (dispatcher.saveReplayCheckpoint === undefined) return;
-        if (await dispatcher.saveReplayCheckpoint() !== true) {
-          throw new Error('Replay checkpoint was not saved');
+        try {
+          const dispatcher = handle.accessor.get(IEventDispatcher);
+          if (dispatcher.saveReplayCheckpoint === undefined) return;
+          if (await dispatcher.saveReplayCheckpoint() !== true) {
+            this.log.warn('agent replay checkpoint was not saved before removal', { agentId });
+          }
+        } catch (error) {
+          this.log.warn('agent replay checkpoint failed before removal', {
+            agentId,
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
-      }, 'persistence');
+      }, 'cleanup');
       await collect(async () => {
         await handle.dispose();
         disposed = true;

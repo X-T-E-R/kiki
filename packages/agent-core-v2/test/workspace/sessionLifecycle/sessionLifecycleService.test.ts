@@ -66,6 +66,7 @@ interface Fixture {
   readonly closed: SessionClosedEvent[];
   readonly terminals: { live: number };
   readonly mirror: { hold(): void; release(): void };
+  readonly activity: { busy: boolean; mainTurnActive: boolean; pendingInteraction: string };
   readonly drainRetirements: { fail: boolean };
   readonly cleanupStages: Array<{ operationId: string; sessionId: string; stage: string }>;
 }
@@ -81,6 +82,7 @@ function fixture(terminalService?: ISessionTerminalService, agentAccessor?: Serv
   const drainRetirements = { fail: false };
   const cleanupStages: Fixture['cleanupStages'] = [];
   const closed: SessionClosedEvent[] = [];
+  const activity: Fixture['activity'] = { busy: false, mainTurnActive: false, pendingInteraction: 'none' };
   const dispose = vi.fn<() => Promise<void>>(() => Promise.resolve());
   let releaseMirror: () => void = () => {};
   const mirror = {
@@ -97,7 +99,7 @@ function fixture(terminalService?: ISessionTerminalService, agentAccessor?: Serv
   const sessionAccessor = accessor([
     [
       ISessionActivityView,
-      { state: () => ({ busy: false, mainTurnActive: false, pendingInteraction: 'none' }) },
+      { state: () => activity },
     ],
     [IAgentLifecycleService, {
       countPendingBackgroundTasks: () => 0,
@@ -161,7 +163,7 @@ function fixture(terminalService?: ISessionTerminalService, agentAccessor?: Serv
   service.onDidCloseSession((event) => closed.push(event));
   const sessions = (service as unknown as { sessions: Map<string, ISessionScopeHandle> }).sessions;
   sessions.set(handle.id, handle);
-  return { service, handle, dispose, closed, terminals, mirror, drainRetirements, cleanupStages };
+  return { service, handle, dispose, closed, terminals, mirror, activity, drainRetirements, cleanupStages };
 }
 
 describe('SessionLifecycleService create persistence ownership', () => {
@@ -518,7 +520,7 @@ describe('SessionLifecycleService unload', () => {
     }
   });
 
-  it('closes all resources when the preliminary replay checkpoint fails', async () => {
+  it('closes all resources when an optional replay checkpoint fails', async () => {
     const durableFailure = new Error2(ErrorCodes.STORAGE_DISK_FULL, 'Example checkpoint storage is full');
     const remove = vi.fn(async () => {});
     const agentAccessor = Object.assign(accessor([
@@ -530,13 +532,37 @@ describe('SessionLifecycleService unload', () => {
     internals.sessionLocks.set('session-1', { release });
     const receipts: unknown[] = [];
     fx.service.onDidCleanup!((receipt) => receipts.push(receipt));
-    await expect(fx.service.close('session-1')).rejects.toBe(durableFailure);
+    await expect(fx.service.close('session-1')).resolves.toBeUndefined();
     expect(remove).toHaveBeenCalledOnce();
     expect(fx.dispose).toHaveBeenCalledOnce();
     expect(release).toHaveBeenCalledOnce();
     expect(receipts).toContainEqual(expect.objectContaining({
-      callerOutcome: 'rejected', failureDomain: 'persistence', errorCode: 'storage.disk_full', resourcesAfter: 0,
+      callerOutcome: 'resolved', cleanupOutcome: 'closed', resourcesAfter: 0,
     }));
+  });
+
+  it('cancels a busy session without waiting for a regenerative checkpoint', async () => {
+    let release!: () => void;
+    const checkpointGate = new Promise<void>((resolve) => { release = resolve; });
+    const checkpoint = vi.fn(async () => {
+      await checkpointGate;
+      return true;
+    });
+    const remove = vi.fn(async () => {});
+    const agentAccessor = Object.assign(accessor([
+      [IEventDispatcher, { saveReplayCheckpoint: checkpoint }],
+    ]), { remove });
+    const fx = fixture(undefined, agentAccessor);
+    fx.activity.busy = true;
+
+    const closing = fx.service.close('session-1');
+    await drainMicrotasks();
+    expect(remove).toHaveBeenCalledOnce();
+    expect(checkpoint).not.toHaveBeenCalled();
+    expect(fx.dispose).toHaveBeenCalledOnce();
+    await closing;
+    release();
+    await fx.service.dispose();
   });
 
   it('rejects the original durable agent failure after session disposal and lock release', async () => {

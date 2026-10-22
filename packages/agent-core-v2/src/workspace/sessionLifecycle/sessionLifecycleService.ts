@@ -132,7 +132,6 @@ type MaterializeSessionOptions = Omit<CreateSessionOptions, 'sessionId'> & {
 const NO_ABORT = new AbortController().signal;
 const SESSION_LOCK_SCOPE = 'session-locks';
 const CHECKPOINT_IDLE_DELAY_MS = 1_000;
-const CHECKPOINT_RETRY_DELAY_MS = 5_000;
 
 const SESSION_CREATE_RELOAD_SKILL_SOURCES: readonly string[] = [
   'user',
@@ -650,9 +649,13 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       this.checkpointTimers.delete(sessionId);
       void this.saveReplayCheckpoints(sessionId, handle).then((saved) => {
         if (saved || this.sessions.get(sessionId) !== handle) return;
-        this.scheduleCheckpoint(sessionId, handle, CHECKPOINT_RETRY_DELAY_MS);
-      }, () => {
-        if (this.sessions.get(sessionId) === handle) this.scheduleCheckpoint(sessionId, handle, CHECKPOINT_RETRY_DELAY_MS);
+        this.log.warn('session replay checkpoint was not saved', { sessionId });
+      }, (error: unknown) => {
+        if (this.sessions.get(sessionId) !== handle) return;
+        this.log.warn('session replay checkpoint failed', {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
       });
     }, delay);
     timer.unref?.();
@@ -720,7 +723,18 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         }
       };
       await collect('will_close', () => this.announceWillClose({ sessionId, handle, reason: 'exit' }), 'cleanup');
-      await collect('replay_checkpoints', async () => { await this.saveReplayCheckpoints(sessionId, handle); }, 'persistence');
+      await collect('replay_checkpoints', () => {
+        const activity = handle.accessor.get(ISessionActivityView).state();
+        if (activity.busy || activity.pendingInteraction !== 'none') return;
+        void this.saveReplayCheckpoints(sessionId, handle).then((saved) => {
+          if (!saved) this.log.warn('session replay checkpoint was not saved during close', { sessionId });
+        }, (error: unknown) => {
+          this.log.warn('session replay checkpoint failed during close', {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }, 'cleanup');
       await collect('checkpoint_scheduling', () => this.disposeCheckpointScheduling(sessionId), 'cleanup');
       let usageFallback: SessionUsageSummary | undefined;
       await collect('usage_snapshot', () => { usageFallback = aggregateSessionUsage(handle); }, 'cleanup');
