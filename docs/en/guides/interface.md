@@ -22,7 +22,9 @@ Long tool output and other large fields arrive in stages. **Continue loading** p
 
 ## Input box
 
-The input box accepts free-form text. `Enter` sends; `Shift-Enter` / `Ctrl-J` insert a newline. When it is empty, `↑` / `↓` browse what you have typed before in this working directory. You can paste images and video from the clipboard, as long as the current model accepts them — [Interaction and input](/en/guides/interaction) covers the details.
+The input box accepts free-form text. `Enter` sends; `Shift-Enter` / `Ctrl-J` insert a newline. You can paste images and video from the clipboard, as long as the current model accepts them — [Interaction and input](/en/guides/interaction) covers the details.
+
+`↑` and `↓` move the caret inside the draft, including on a wrapped line. They browse earlier prompts only from the start of the text (`↑`) or the end (`↓`): this conversation keeps its own list, and the new-session page keeps one for that workspace. A text selection, `Shift`, an IME composition, or an open `/` or `@` menu keeps the key. `Esc`, or `↓` past the newest entry, restores the draft from before that browse.
 
 Select a passage in the conversation and choose **Quote** to add it above the input box. You can add several passages and remove each one separately. Sending includes those passages; references added while a send is awaiting confirmation stay in the draft. Type `@` to find workspace files, then choose **Load more** or scroll to the end of the matches to load another page.
 
@@ -70,7 +72,7 @@ Older `.doc`, `.xls`, `.ppt` and OpenDocument `.odt`, `.ods`, `.odp` files do no
 
 ## Sessions and workspaces
 
-The session list groups sessions by workspace; pick one to resume, or start a new draft there. If a saved model, profile (the agent's configuration file) or effort is no longer available, the entry stays visible with a diagnostic instead of quietly switching you to a different model. [Workspace and session management](/en/guides/sessions) covers the rest.
+The session list groups sessions by workspace; pick one to resume, or start a new draft there. When the list is grouped by workspace, a plus on a workspace title starts a draft in that workspace. [Starting and resuming sessions](/en/guides/sessions#starting-and-resuming-sessions) says which headings have the plus and what it leaves alone. If a saved model, profile (the agent's configuration file) or effort is no longer available, the entry stays visible with a diagnostic instead of quietly switching you to a different model. [Workspace and session management](/en/guides/sessions) covers the rest.
 
 Above the list sits the sidebar's own navigation. Memory, personas and usage are visible by default; the task board, scheduled tasks, capabilities and **Discover Kiki** start under **More tools**, which expands in place and remembers whether you left it open. **Settings → General → Sidebar tools** decides which destinations stay visible, and the same list is in the View options menu at the top of the list. Your saved choices stay in place.
 

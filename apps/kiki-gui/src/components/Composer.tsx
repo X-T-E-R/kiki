@@ -1417,18 +1417,21 @@ export function Composer({
   };
 
   /**
-   * C-1 recall walk. ArrowUp enters from an empty draft or a caret on the
-   * first line; once browsing, ↑ ages and ↓ youthens, and ↓ past the newest
-   * entry hands the pre-browse draft back. Returns false when the keypress is
-   * not ours (no history, caret mid-text) so the caret keeps its native move.
+   * C-1 recall walk. ↑ steps to an older prompt only when the caret is at the
+   * start of the text; ↓ steps newer, and ↓ past the newest entry hands the
+   * pre-browse draft back, only when the caret is at the end. A wrapped line
+   * is not the start. The same edges apply while already browsing. Returns
+   * false when the keypress is not ours so the caret keeps its native move.
    */
   const recallHistory = (delta: -1 | 1): boolean => {
     if (inputHistory.length === 0) return false;
+    const node = textareaRef.current;
+    if (node === null || node.selectionStart !== node.selectionEnd) return false;
+    const atStart = node.selectionStart === 0;
+    const atEnd = node.selectionStart === node.value.length;
+    if (delta === -1 ? !atStart : !atEnd) return false;
     if (historyIndexRef.current === null) {
       if (delta !== -1) return false;
-      const caret = textareaRef.current?.selectionStart ?? 0;
-      const firstLineEnd = text.indexOf('\n');
-      if (text !== '' && firstLineEnd !== -1 && caret > firstLineEnd) return false;
       historySnapshotRef.current = text;
       historyIndexRef.current = inputHistory.length - 1;
     } else {
@@ -2291,6 +2294,7 @@ export function Composer({
     if (
       (event.key === 'ArrowUp' || event.key === 'ArrowDown') &&
       menu === null &&
+      !event.shiftKey &&
       !event.ctrlKey && !event.metaKey && !event.altKey &&
       recallHistory(event.key === 'ArrowUp' ? -1 : 1)
     ) {

@@ -727,6 +727,7 @@ export const zh = {
   'sidebar.pinWorkspace': '置顶该工作区',
   'sidebar.unpinWorkspace': '取消置顶该工作区',
   'sidebar.pinWorkspaceFor': '置顶工作区「{name}」',
+  'sidebar.newSessionInWorkspace': '在「{name}」中新建会话',
   'sidebar.unpinWorkspaceFor': '取消置顶工作区「{name}」',
   'sidebar.workspaceAll': '全部工作区',
   'sidebar.collapseSidebar': '折叠侧栏',

@@ -6194,6 +6194,159 @@ async function scenarioSettingsAppearance() {
   });
 }
 
+/**
+ * Workspace-row new session and composer history edges.
+ * Reuses the two-workspace sidebar fixture. The open conversation is workspace
+ * B; the plus on workspace A must not follow it.
+ */
+async function scenarioWorkspaceHistory() {
+  const wsA = 'wd_fixture_000000000000';
+  const wsB = 'wd_fixture_000000000001';
+  await page.waitForSelector('[data-view-menu-toggle]', { timeout: 15_000 });
+  await page.waitForSelector('textarea[data-composer]', { timeout: 20_000 });
+  await page.fill('textarea[data-composer]', 'keep this draft');
+
+  await pickViewOption('[data-group-by="workspace"]');
+  await closeViewMenu();
+  await page.waitForSelector(`[data-session-group-new="${wsA}"]`, { timeout: 10_000 });
+  if (await page.locator('[data-session-group-new="pinned"]').count() !== 0) {
+    throw new Error('pinned group forged a new-session target');
+  }
+
+  await selectSession('ws-b beta');
+  const sessionDraft = 'session draft stays';
+  await page.fill('textarea[data-composer]', sessionDraft);
+
+  const headerA = page.locator(`[data-session-group-header="${wsA}"]`);
+  await headerA.hover();
+  const plusA = page.locator(`[data-session-group-new="${wsA}"]`);
+  const hoverOpacity = Number(await plusA.evaluate((element) => getComputedStyle(element).opacity));
+  if (hoverOpacity < 0.9) throw new Error(`workspace plus stayed hidden on hover (${hoverOpacity})`);
+  await shot('workspace-new-hover');
+  await plusA.focus();
+  const focusOpacity = Number(await plusA.evaluate((element) => getComputedStyle(element).opacity));
+  if (focusOpacity < 0.9) throw new Error(`workspace plus stayed hidden on focus (${focusOpacity})`);
+  await shot('workspace-new-focus');
+
+  const expandedBefore = await page.locator(`[data-session-group="${wsA}"]`).getAttribute('aria-expanded');
+  if (expandedBefore !== 'true') throw new Error(`workspace A was already folded (${expandedBefore})`);
+  await plusA.click();
+  await page.waitForURL(new RegExp(`/new\\?workspace=${wsA}`), { timeout: 10_000 });
+  const opened = new URL(page.url());
+  if (opened.searchParams.get('workspace') !== wsA) {
+    throw new Error(`new draft did not use workspace A: ${opened.search}`);
+  }
+  if (opened.searchParams.get('workspace') === wsB) {
+    throw new Error('new draft followed the open session workspace');
+  }
+  await page.waitForFunction((name) => {
+    const chip = document.querySelector('[data-hero-workspace]');
+    const text = chip?.textContent ?? '';
+    return text.includes(name) && !text.includes('other');
+  }, 'fixture', { timeout: 10_000 });
+  await page.waitForFunction(() => {
+    const node = document.querySelector('textarea[data-composer]');
+    return node instanceof HTMLTextAreaElement && node.value === 'keep this draft';
+  }, undefined, { timeout: 10_000 });
+  const expandedAfter = await page.locator(`[data-session-group="${wsA}"]`).getAttribute('aria-expanded');
+  if (expandedAfter !== 'true') throw new Error('the workspace plus folded the group');
+  if (await page.locator('aside').getByText('Fixture: ws-a alpha', { exact: false }).count() === 0) {
+    throw new Error('workspace A rows disappeared after the plus');
+  }
+  await shot('workspace-new-target-a');
+
+  await selectSession('ws-b beta');
+  await page.waitForFunction((expected) => {
+    const node = document.querySelector('textarea[data-composer]');
+    return node instanceof HTMLTextAreaElement && node.value === expected;
+  }, sessionDraft, { timeout: 10_000 });
+  await shot('workspace-session-draft-restored');
+
+  await page.fill('textarea[data-composer]', 'boundary prompt');
+  await page.press('textarea[data-composer]', 'Enter');
+  await page.waitForFunction(() => {
+    const node = document.querySelector('textarea[data-composer]');
+    const sent = document.body.textContent?.includes('boundary prompt') === true;
+    return sent && node instanceof HTMLTextAreaElement && node.value === '';
+  }, undefined, { timeout: 15_000 });
+
+  const wrapped = `${'alpha '.repeat(80).trim()}`;
+  await page.fill('textarea[data-composer]', wrapped);
+  const textarea = page.locator('textarea[data-composer]');
+  await textarea.focus();
+  const before = await textarea.evaluate((node) => {
+    const at = Math.min(180, node.value.length - 1);
+    node.setSelectionRange(at, at);
+    return node.selectionStart;
+  });
+  await page.keyboard.press('ArrowUp');
+  const moved = await textarea.evaluate((node) => ({ start: node.selectionStart, value: node.value }));
+  if (moved.value !== wrapped) throw new Error(`ArrowUp replaced wrapped text: ${moved.value.slice(0, 80)}`);
+  if (moved.start >= before) {
+    throw new Error(`ArrowUp did not move the caret inside wrapped text (${before} -> ${moved.start})`);
+  }
+  await shot('composer-wrap-arrow-up');
+
+  const multiline = 'line one stays\nline two stays';
+  await page.fill('textarea[data-composer]', multiline);
+  await textarea.evaluate((node, value) => {
+    node.focus();
+    const at = value.indexOf('\n') + 3;
+    node.setSelectionRange(at, at);
+  }, multiline);
+  await page.keyboard.press('ArrowUp');
+  if (await textarea.inputValue() !== multiline) {
+    throw new Error('ArrowUp on the second line replaced the draft');
+  }
+  await textarea.evaluate((node) => {
+    node.focus();
+    node.setSelectionRange(2, 2);
+  });
+  await page.keyboard.press('ArrowUp');
+  if (await textarea.inputValue() !== multiline) {
+    throw new Error('ArrowUp on the first logical line, not the text start, replaced the draft');
+  }
+
+  await textarea.evaluate((node) => {
+    node.focus();
+    node.setSelectionRange(0, 0);
+  });
+  await page.keyboard.press('ArrowUp');
+  await page.waitForFunction(() => {
+    const node = document.querySelector('textarea[data-composer]');
+    return node instanceof HTMLTextAreaElement && node.value === 'boundary prompt';
+  }, undefined, { timeout: 5_000 });
+
+  await textarea.evaluate((node) => {
+    node.focus();
+    node.setSelectionRange(node.value.length, node.value.length);
+  });
+  await page.keyboard.press('ArrowUp');
+  if (await textarea.inputValue() !== 'boundary prompt') {
+    throw new Error('ArrowUp while browsing ignored the end boundary');
+  }
+  await textarea.evaluate((node) => {
+    node.focus();
+    node.setSelectionRange(0, 0);
+  });
+  await page.keyboard.press('Shift+ArrowUp');
+  if (await textarea.inputValue() !== 'boundary prompt') {
+    throw new Error('Shift+ArrowUp recalled history');
+  }
+  await page.keyboard.press('Escape');
+  if (await textarea.inputValue() !== multiline) {
+    throw new Error(`Escape did not restore the draft: ${await textarea.inputValue()}`);
+  }
+  await shot('composer-history-restored');
+
+  await page.click('[data-new-session]');
+  await page.waitForURL(/\/new(?:\?|$)/, { timeout: 10_000 });
+  const globalNew = new URL(page.url());
+  if (globalNew.searchParams.has('workspace')) {
+    throw new Error(`the global new-session button pinned a workspace: ${globalNew.search}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 
 /**
@@ -6232,6 +6385,7 @@ const ENTRY_EXTRA = {
   cockpit: { fixture: 'rail-scale' },
   // Two engines' own facts, read from the one fixture that carries both.
   'codex-claude-engine-facts': { fixture: 'external-main' },
+  'workspace-history': { fixture: 'sidebar-organize' },
 };
 
 /** Walk order. `responsive` shrinks the viewport, so it stays last. */
@@ -6267,6 +6421,7 @@ const BODIES = [
   ['resync-hold', scenarioResyncHold],
   ['session-pages', scenarioSessionPages],
   ['sidebar-organize', scenarioSidebarOrganize],
+  ['workspace-history', scenarioWorkspaceHistory],
   ['empty-states', scenarioEmptyStates],
   ['new-no-workspace', scenarioNewNoWorkspace],
   ['first-run', scenarioFirstRun],

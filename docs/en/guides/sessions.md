@@ -56,6 +56,8 @@ On the **New session** page in the desktop app or browser you can pick an existi
 
 When one workspace is selected in the sidebar, **New session** uses that workspace. A failed workspace list is not an empty list: your draft and choices stay in place. Use **Retry**, explicitly choose automatic creation, or enter an absolute folder path.
 
+In the workspace view, the title row of a real workspace shows a plus while you point at it, focus it, or use a touch screen. The plus starts a draft in that row's workspace, not the workspace of the conversation that is open, and it does not change the default workspace or fold the group. Pinned and ungrouped headings are not workspaces, so they have no plus. An unsaved editor still asks before the page changes, and a draft you already typed stays.
+
 To use a [Profile Markdown file](../customization/agent-profiles.md) directly, open the execution menu beside the composer and choose **Use a profile file…**. Enter its path on the connected host, preview it, then choose **Use this profile**. Relative paths use the selected workspace or directory; automatic workspace creation requires an absolute path. A valid file does not need to appear in the main-profile menu, and selecting it does not register or copy it. If preview fails, keep the draft and retry or choose another profile.
 
 Stopping creation keeps the draft and waits for the request's result; it does not undo a session already created on the server. Once creation is confirmed, send again with the same choices to reuse that session, or choose **Open created session** without sending. If a timeout leaves the result unconfirmed, check the session list before trying again — another attempt may create a second session.

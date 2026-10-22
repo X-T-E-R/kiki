@@ -51,6 +51,7 @@ import {
   type SessionRowState,
   SESSION_SORT_ORDERS,
   sessionStatusOf,
+  WORKSPACE_UNGROUPED_KEY,
   shortCwd,
   splitByRanges,
   togglePinned,
@@ -1665,12 +1666,18 @@ export function Sidebar({
           };
           // The workspace view gives every bucket (workspaces, Pinned,
           // Ungrouped) one header, WorkspaceGroupHeader: fold, count, the
-          // current-workspace mark, and pin for a registered workspace. Time
-          // buckets keep the plain T5 label, 28px tall. A folded group still
-          // says when something inside needs you or is running.
+          // current-workspace mark, pin, and — for a registered workspace —
+          // a new-session plus. Time buckets keep the plain T5 label, 28px
+          // tall. A folded group still says when something inside needs you
+          // or is running.
           const foldedLife = collapsed ? foldedGroupLife(group.nodes, seen) : 'idle';
           if (collapsible) {
             const workspace = workspaceOptions.find((entry) => entry.id === group.key);
+            const workspaceTarget = workspace !== undefined
+              && group.key !== 'pinned'
+              && group.key !== WORKSPACE_UNGROUPED_KEY
+              ? workspace
+              : undefined;
             return (
               <div
                 key={group.key}
@@ -1695,6 +1702,9 @@ export function Sidebar({
                   pinBusy={workspacePinBusy}
                   onToggle={() => { toggleGroupCollapsed(group.key); }}
                   onTogglePin={workspace === undefined ? undefined : () => { toggleWorkspacePin(workspace); }}
+                  onNewInWorkspace={workspaceTarget === undefined ? undefined : () => {
+                    void navigate(`/new?workspace=${encodeURIComponent(workspaceTarget.id)}`);
+                  }}
                 />
                 {shown.map((node) => renderRow(node, false))}
                 {hidden > 0 || (expanded && !collapsed && group.nodes.length > WORKSPACE_GROUP_PREVIEW) ? (
@@ -2701,9 +2711,10 @@ function RoomListMenu({
 /**
  * A bucket header in the workspace view (a workspace, Pinned, Ungrouped):
  * fold toggle (chevron in the rows' 7px state column), name, count, and for
- * a registered workspace the pin toggle in the trailing slot. The workspace
- * holding the open session says so; a folded one still marks what inside
- * needs you or is running. Toggle and pin are sibling buttons, never nested.
+ * a registered workspace the new-session plus and pin toggle in the trailing
+ * slots. The workspace holding the open session says so; a folded one still
+ * marks what inside needs you or is running. Toggle, plus, and pin are
+ * sibling buttons, never nested.
  */
 function WorkspaceGroupHeader({
   groupKey,
@@ -2718,6 +2729,7 @@ function WorkspaceGroupHeader({
   pinBusy,
   onToggle,
   onTogglePin,
+  onNewInWorkspace,
 }: {
   groupKey: string;
   label: string;
@@ -2732,6 +2744,8 @@ function WorkspaceGroupHeader({
   pinBusy: boolean;
   onToggle: () => void;
   onTogglePin: (() => void) | undefined;
+  /** Opens /new in this header's workspace. Absent for Pinned and Ungrouped. */
+  onNewInWorkspace: (() => void) | undefined;
 }) {
   const { t } = useI18n();
   const pinned = workspace?.pinned === true;
@@ -2757,6 +2771,7 @@ function WorkspaceGroupHeader({
           <LifeMark markId={`group:${groupKey}`} life={foldedLife} still />
         </span>
       ) : null}
+      {onNewInWorkspace !== undefined ? <span aria-hidden className="w-7 shrink-0" /> : null}
       {/* Trailing slot, as wide as the pin action: a kept pin mark, which
           the action takes over on hover / focus. */}
       <span
@@ -2785,6 +2800,21 @@ function WorkspaceGroupHeader({
         </button>
       ) : (
         <p data-session-group={groupKey} title={workspace?.root} className={rowClass}>{body}</p>
+      )}
+      {onNewInWorkspace === undefined ? null : (
+        <button
+          type="button"
+          data-session-group-new={groupKey}
+          aria-label={t('sidebar.newSessionInWorkspace', { name: label })}
+          title={t('sidebar.newSessionInWorkspace', { name: label })}
+          onClick={(event) => {
+            event.stopPropagation();
+            onNewInWorkspace();
+          }}
+          className="absolute top-1/2 right-10 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-ink-faint transition-[opacity,background-color,color] duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.06] hover:text-ink focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink opacity-0 group-focus-within/ws:opacity-100 group-hover/ws:opacity-100 [@media(hover:none)]:opacity-100"
+        >
+          <Icon name="plus" size={14} />
+        </button>
       )}
       {onTogglePin === undefined ? null : (
         <button

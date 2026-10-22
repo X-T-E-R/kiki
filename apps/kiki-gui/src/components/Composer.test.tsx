@@ -3039,6 +3039,13 @@ async function pressKey(
   });
 }
 
+async function placeCaret(textarea: HTMLTextAreaElement, start: number, end = start): Promise<void> {
+  await act(async () => {
+    textarea.focus();
+    textarea.setSelectionRange(start, end);
+  });
+}
+
 /** Flush the requestAnimationFrame caret landings (jsdom rAF runs on a timer). */
 async function flushCaret(): Promise<void> {
   await act(async () => {
@@ -3134,7 +3141,7 @@ describe('Composer ＋ menu', () => {
 });
 
 describe('Composer input history', () => {
-  it('recalls sent prompts with ArrowUp from an empty draft and walks both ways', async () => {
+  it('recalls sent prompts from the text boundaries and walks only from those edges', async () => {
     pushInputHistory('s_hist', 'first prompt');
     pushInputHistory('s_hist', 'second prompt');
     const { container } = await renderStatefulComposer({ sessionId: 's_hist' });
@@ -3143,13 +3150,28 @@ describe('Composer input history', () => {
 
     await pressKey(textarea, { key: 'ArrowUp' });
     expect(textarea.value).toBe('second prompt');
+    await flushCaret();
+    await placeCaret(textarea, textarea.value.length);
+    // At the end of a recalled prompt, ↑ stays inside the text.
+    await pressKey(textarea, { key: 'ArrowUp' });
+    expect(textarea.value).toBe('second prompt');
+
+    await placeCaret(textarea, 0);
     await pressKey(textarea, { key: 'ArrowUp' });
     expect(textarea.value).toBe('first prompt');
+    await flushCaret();
+    await placeCaret(textarea, 0);
     // The oldest entry sticks — no wrap-around.
     await pressKey(textarea, { key: 'ArrowUp' });
     expect(textarea.value).toBe('first prompt');
+    // ↓ inside the prompt does not youthen.
+    await pressKey(textarea, { key: 'ArrowDown' });
+    expect(textarea.value).toBe('first prompt');
+    await placeCaret(textarea, textarea.value.length);
     await pressKey(textarea, { key: 'ArrowDown' });
     expect(textarea.value).toBe('second prompt');
+    await flushCaret();
+    await placeCaret(textarea, textarea.value.length);
     // ArrowDown past the newest entry hands the pre-browse draft back.
     await pressKey(textarea, { key: 'ArrowDown' });
     expect(textarea.value).toBe('');
@@ -3161,6 +3183,7 @@ describe('Composer input history', () => {
     const textarea = composerTextarea(container);
 
     await typeText(textarea, 'draft in progress');
+    await placeCaret(textarea, 0);
     await pressKey(textarea, { key: 'ArrowUp' });
     expect(textarea.value).toBe('older prompt');
     await pressKey(textarea, { key: 'Escape' });
@@ -3183,21 +3206,64 @@ describe('Composer input history', () => {
     expect(textarea.value).toBe('older prompt, edited');
   });
 
-  it('refuses to enter history when the caret sits past the first line', async () => {
+  it('leaves multiline and wrapped drafts alone until the caret is at the text edge', async () => {
     pushInputHistory('s_hist', 'older prompt');
+    pushInputHistory('s_hist', 'newer prompt');
     const { container } = await renderStatefulComposer({ sessionId: 's_hist' });
     const textarea = composerTextarea(container);
 
     await typeText(textarea, 'line one\nline two');
-    // The native setter landed the caret at the end (second line).
+    await placeCaret(textarea, textarea.value.length);
     await pressKey(textarea, { key: 'ArrowUp' });
     expect(textarea.value).toBe('line one\nline two');
-    // A caret on the FIRST line of a non-empty draft still enters history.
-    await act(async () => {
-      textarea.setSelectionRange(2, 2);
-    });
+    // The first logical line is not the top of the text.
+    await placeCaret(textarea, 2);
     await pressKey(textarea, { key: 'ArrowUp' });
-    expect(textarea.value).toBe('older prompt');
+    expect(textarea.value).toBe('line one\nline two');
+    await placeCaret(textarea, 0);
+    await pressKey(textarea, { key: 'ArrowUp' });
+    expect(textarea.value).toBe('newer prompt');
+    await flushCaret();
+
+    await placeCaret(textarea, 4);
+    await pressKey(textarea, { key: 'ArrowUp' });
+    await pressKey(textarea, { key: 'ArrowDown' });
+    expect(textarea.value).toBe('newer prompt');
+
+    const wrapped = 'alpha '.repeat(30).trim();
+    await pressKey(textarea, { key: 'Escape' });
+    expect(textarea.value).toBe('line one\nline two');
+    await typeText(textarea, wrapped);
+    await placeCaret(textarea, 12);
+    await pressKey(textarea, { key: 'ArrowUp' });
+    await pressKey(textarea, { key: 'ArrowDown' });
+    expect(textarea.value).toBe(wrapped);
+    await placeCaret(textarea, 0);
+    await pressKey(textarea, { key: 'ArrowUp' });
+    expect(textarea.value).toBe('newer prompt');
+  });
+
+  it('keeps Shift, a selection, and IME composition on the draft', async () => {
+    pushInputHistory('s_hist', 'older prompt');
+    const { container } = await renderStatefulComposer({ sessionId: 's_hist' });
+    const textarea = composerTextarea(container);
+    await typeText(textarea, 'keep this draft');
+
+    await placeCaret(textarea, 0);
+    await pressKey(textarea, { key: 'ArrowUp', shiftKey: true });
+    expect(textarea.value).toBe('keep this draft');
+
+    await placeCaret(textarea, 0, 4);
+    await pressKey(textarea, { key: 'ArrowUp' });
+    expect(textarea.value).toBe('keep this draft');
+
+    await placeCaret(textarea, 0);
+    await pressKey(textarea, { key: 'ArrowUp', keyCode: 229 });
+    expect(textarea.value).toBe('keep this draft');
+
+    await placeCaret(textarea, textarea.value.length);
+    await pressKey(textarea, { key: 'ArrowDown', shiftKey: true });
+    expect(textarea.value).toBe('keep this draft');
   });
 
   it('records a send and recalls it afterwards', async () => {

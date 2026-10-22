@@ -736,6 +736,7 @@ export const en = {
   'sidebar.pinWorkspace': 'Pin this workspace to the top',
   'sidebar.unpinWorkspace': 'Unpin this workspace',
   'sidebar.pinWorkspaceFor': 'Pin the workspace {name} to the top',
+  'sidebar.newSessionInWorkspace': 'New session in {name}',
   'sidebar.unpinWorkspaceFor': 'Unpin the workspace {name}',
   'sidebar.workspaceAll': 'All workspaces',
   'sidebar.collapseSidebar': 'Collapse sidebar',

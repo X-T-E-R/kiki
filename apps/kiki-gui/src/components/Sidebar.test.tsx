@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 
-import { act, type ComponentProps } from 'react';
+import { act, useLayoutEffect, type ComponentProps, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation, type NavigateOptions, type To } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -14,6 +14,7 @@ import {
   isPinnedSession,
   mergeConversationItems,
   SESSION_PIN_META_KEY,
+  WORKSPACE_UNGROUPED_KEY,
   type ConversationListItem,
   type SessionGroup,
   type SessionSortOrder,
@@ -37,6 +38,7 @@ import { readWorkspaceGroupMemory, writeWorkspaceGroupMemory } from '../lib/side
 import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
 import { createViewState } from '@kiki/session-core/session';
 import { canAbortActiveTurn, shouldHandleGlobalAbortOnEscape } from './SessionView';
+import { DirtyGuardContext, useDirtyGuardState } from './dirtyGuard';
 import {
   mergeSearchPages,
   searchNextPageParam,
@@ -269,10 +271,32 @@ type SidebarProps = ComponentProps<typeof Sidebar>;
 
 /** Tests still hand the mount plain session groups; the wrap into
  * conversation items happens here so every body keeps its old shape. */
+type SidebarGuard = {
+  dirty: boolean;
+  rawNavigate: (target: To | number, options?: NavigateOptions) => void;
+  seat?: { current: ReturnType<typeof useDirtyGuardState> | null };
+};
+
 type SidebarOverrides = Omit<Partial<SidebarProps>, 'sessionGroups'> & {
   sessionGroups?: readonly SessionGroup<Session | ConversationListItem>[];
   initialEntries?: readonly string[];
+  guard?: SidebarGuard;
 };
+
+function MaybeGuard({ guard, children }: { guard: SidebarGuard | undefined; children: ReactNode }) {
+  if (guard === undefined) return children;
+  return <GuardFrame guard={guard}>{children}</GuardFrame>;
+}
+
+function GuardFrame({ guard, children }: { guard: SidebarGuard; children: ReactNode }) {
+  const location = useLocation();
+  const state = useDirtyGuardState(location, guard.rawNavigate);
+  if (guard.seat !== undefined) guard.seat.current = state;
+  useLayoutEffect(() => {
+    state.value.reportDirty('unsaved-editor', guard.dirty);
+  });
+  return <DirtyGuardContext.Provider value={state.value}>{children}</DirtyGuardContext.Provider>;
+}
 
 async function mount(
   overrides: SidebarOverrides = {},
@@ -286,7 +310,7 @@ async function mount(
   roots.push(root);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   if (cachedSessions.length > 0) client.setQueryData(['sessions', 'cached'], { pages: [{ items: cachedSessions }] });
-  const { sessionGroups: rawGroups, initialEntries, ...rest } = overrides;
+  const { sessionGroups: rawGroups, initialEntries, guard, ...rest } = overrides;
   const sessionGroups = (rawGroups ?? []).map((group) => ({
     ...group,
     items: group.items.map((item) => ('kind' in item ? item : threadItem(item))),
@@ -297,6 +321,7 @@ async function mount(
         <I18nProvider>
           <HostProvider host={host}>
             <MemoryRouter initialEntries={initialEntries as string[] | undefined}>
+              <MaybeGuard guard={guard}>
               <Sidebar
                 activeSessionId={undefined}
                 sessions={[]}
@@ -319,6 +344,7 @@ async function mount(
                 onSortBy={() => {}}
                 {...rest}
               />
+              </MaybeGuard>
             </MemoryRouter>
           </HostProvider>
         </I18nProvider>
@@ -2407,6 +2433,85 @@ describe('Sidebar workspace groups', () => {
     const header = container.querySelector('[data-session-group-header="ws_a"]')!;
     const tinted = [...header.querySelectorAll('[class*="text-selected-ink"], [class*="text-accent"], [class*="text-section-ink"]')];
     expect(tinted.map((node) => node.hasAttribute('data-session-group-current'))).toEqual([true]);
+  });
+
+  it('starts a draft in the row workspace, not the open session, and keeps the fold', async () => {
+    const onNewSession = vi.fn();
+    const rawNavigate = vi.fn();
+    const seat = { current: null as ReturnType<typeof useDirtyGuardState> | null };
+    const orphan = { ...session('orphan'), workspace_id: 'missing' };
+    const { container } = await mount({
+      ...grouped(),
+      activeSessionId: 'b1',
+      onNewSession,
+      sessions: [inA, inB, orphan],
+      sessionGroups: [
+        { key: 'pinned', label: 'Pinned', items: [inB] },
+        { key: 'ws_a', label: 'alpha', items: [inA] },
+        { key: 'ws_b', label: 'beta', items: [inB] },
+        { key: WORKSPACE_UNGROUPED_KEY, label: 'Ungrouped', items: [orphan] },
+      ],
+      guard: { dirty: true, rawNavigate, seat },
+    });
+    const plusA = container.querySelector<HTMLButtonElement>('[data-session-group-new="ws_a"]')!;
+    const plusB = container.querySelector<HTMLButtonElement>('[data-session-group-new="ws_b"]')!;
+    expect(plusA.closest('[data-session-group]')).toBeNull();
+    expect(plusA.getAttribute('aria-label')).toBe('New session in alpha');
+    expect(plusA.className).toContain('group-hover/ws:opacity-100');
+    expect(plusA.className).toContain('group-focus-within/ws:opacity-100');
+    expect(plusA.className).toContain('[@media(hover:none)]:opacity-100');
+    expect(plusA.className).toContain('focus-visible:opacity-100');
+    expect(container.querySelector('[data-session-group-new="pinned"]')).toBeNull();
+    expect(container.querySelector(`[data-session-group-new="${WORKSPACE_UNGROUPED_KEY}"]`)).toBeNull();
+    expect(container.querySelector('[data-session-group="ws_a"]')?.getAttribute('aria-expanded')).toBe('true');
+
+    await act(async () => { plusA.click(); });
+    expect(onNewSession).not.toHaveBeenCalled();
+    expect(rawNavigate).not.toHaveBeenCalled();
+    expect(seat.current?.pending).toBe(true);
+    expect(container.querySelector('[data-session-row="a1"]')).not.toBeNull();
+    expect(container.querySelector('[data-session-group="ws_a"]')?.getAttribute('aria-expanded')).toBe('true');
+
+    await act(async () => { await seat.current?.confirm(); });
+    expect(rawNavigate).toHaveBeenCalledExactlyOnceWith('/new?workspace=ws_a', undefined);
+    expect(container.querySelector('[data-session-group="ws_a"]')?.getAttribute('aria-expanded')).toBe('true');
+
+    rawNavigate.mockClear();
+    await act(async () => { plusB.click(); });
+    expect(rawNavigate).not.toHaveBeenCalled();
+    await act(async () => { seat.current?.cancel(); });
+    expect(rawNavigate).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-session-row="b1"]')).not.toBeNull();
+  });
+
+  it('uses the same new-session path immediately when nothing is unsaved', async () => {
+    const onNewSession = vi.fn();
+    const rawNavigate = vi.fn();
+    const { container } = await mount({
+      ...grouped(),
+      activeSessionId: 'b1',
+      onNewSession,
+      guard: { dirty: false, rawNavigate },
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-session-group-new="ws_a"]')!.click();
+    });
+    expect(rawNavigate).toHaveBeenCalledExactlyOnceWith('/new?workspace=ws_a', undefined);
+    expect(onNewSession).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-session-group="ws_a"]')?.getAttribute('aria-expanded')).toBe('true');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-new-session]')!.click(); });
+    expect(onNewSession).toHaveBeenCalledOnce();
+    expect(rawNavigate).toHaveBeenCalledOnce();
+  });
+
+  it('does not offer a workspace plus outside the workspace view', async () => {
+    const { container } = await mount({
+      ...grouped(),
+      groupBy: 'time',
+      sessionGroups: [{ key: 'today', label: 'Today', items: [inA, inB] }],
+    });
+    expect(container.querySelector('[data-session-group-new]')).toBeNull();
+    expect(container.querySelector('[data-new-session]')).not.toBeNull();
   });
 
   it('never preview-truncates Pinned, and folds it with "collapse all"', async () => {
