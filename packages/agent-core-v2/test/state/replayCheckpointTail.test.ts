@@ -461,6 +461,62 @@ describe('replay checkpoint tail', () => {
     expect(checkpoint?.wire.size).toBe(size);
   });
 
+  it('schedules one successor when a revision-cancelled save saw a new append', async () => {
+    const first = await checkpointed();
+    vi.useFakeTimers();
+    const previous = await first.docs.get<{ wire: { size: number } }>(CHECKPOINT_SCOPE, CHECKPOINT_KEY);
+    const originalHash = first.wire.journalSha256!.bind(first.wire);
+    const entered = deferred();
+    const release = deferred();
+    let hashes = 0;
+    first.wire.journalSha256 = async (byteLength: number) => {
+      hashes += 1;
+      if (hashes === 1) {
+        entered.resolve();
+        await release.promise;
+      }
+      return originalHash(byteLength);
+    };
+
+    await first.dispatcher.dispatch(new PromptEnqueued({
+      schemaVersion: 1,
+      promptId: 'prompt-cancelled',
+      userMessageId: 'prompt-cancelled',
+      createdAt: '2026-10-22T00:00:00.000Z',
+      message: message('user', 'x'.repeat(REPLAY_CHECKPOINT_GROWTH_BYTES + 1)),
+      alreadyMaterialized: false,
+      appendTiming: 'agent_idle',
+      revision: 4,
+      queueIndex: 4,
+    }));
+    await first.wire.flush();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await entered.promise;
+    await first.dispatcher.dispatch(new PromptEnqueued({
+      schemaVersion: 1,
+      promptId: 'prompt-after-cancel',
+      userMessageId: 'prompt-after-cancel',
+      createdAt: '2026-10-22T00:00:00.000Z',
+      message: message('user', 'tail'),
+      alreadyMaterialized: false,
+      appendTiming: 'agent_idle',
+      revision: 5,
+      queueIndex: 5,
+    }));
+    await first.wire.flush();
+    await vi.advanceTimersByTimeAsync(1_000);
+    release.resolve();
+    await ticks();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    const checkpoint = await first.docs.get<{ wire: { size: number } }>(CHECKPOINT_SCOPE, CHECKPOINT_KEY);
+    const size = (await bytesOf(first.storage)).byteLength;
+    expect(previous?.wire.size).toBeLessThan(size);
+    expect(checkpoint?.wire.size).toBe(size);
+    expect(hashes).toBeGreaterThanOrEqual(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('does not rearm a failed growth save after dispatcher disposal', async () => {
     const first = await checkpointed();
     vi.useFakeTimers();

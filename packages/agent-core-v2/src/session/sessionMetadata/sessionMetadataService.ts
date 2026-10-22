@@ -76,9 +76,9 @@ export class SessionMetadata extends Service implements ISessionMetadata {
       clearTimeout(this.usageTimer);
       this.usageTimer = undefined;
     }
-    if (!this.usageDirty || this.disposed) return Promise.resolve();
     const ongoing = this.usageFlushInFlight;
     if (ongoing !== undefined) return ongoing;
+    if (!this.usageDirty || this.disposed) return Promise.resolve();
     const flush = this.flushUsageNow();
     this.usageFlushInFlight = flush;
     void flush.then(

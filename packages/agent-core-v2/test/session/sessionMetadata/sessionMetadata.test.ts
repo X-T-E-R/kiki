@@ -48,6 +48,16 @@ function makeContext(): ISessionContext {
   });
 }
 
+function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((next) => { resolve = next; });
+  return { promise, resolve };
+}
+
+async function ticks(): Promise<void> {
+  for (let index = 0; index < 30; index += 1) await Promise.resolve();
+}
+
 describe('SessionMetadata', () => {
   let disposables: DisposableStore;
   let ix: TestInstantiationService;
@@ -246,6 +256,65 @@ describe('SessionMetadata', () => {
     await meta.dispose();
     const persisted = await ix.get(IAtomicDocumentStore).get<{ usage?: { total?: { output?: number } } }>(META_SCOPE, 'state.json');
     expect(persisted?.usage?.total?.output).toBe(2);
+  });
+
+  it('waits for an already queued usage flush during direct disposal', async () => {
+    const meta = ix.get(ISessionMetadata) as SessionMetadata;
+    await meta.ready;
+    const storage = ix.get(IFileSystemStorageService);
+    const original = storage.write.bind(storage);
+    const entered = deferred();
+    const release = deferred();
+    let first = true;
+    storage.write = async (scope, key, data, options) => {
+      if (first && key === 'state.json') {
+        first = false;
+        entered.resolve();
+        await release.promise;
+      }
+      return original(scope, key, data, options);
+    };
+    vi.useFakeTimers();
+    const prior = meta.setTitle('already-writing');
+    await entered.promise;
+    meta.recordUsage('example-model', { inputOther: 1, output: 2, inputCacheRead: 0, inputCacheCreation: 0 });
+    await vi.advanceTimersByTimeAsync(1_000);
+    let settled = false;
+    const disposing = meta.dispose().then(() => { settled = true; });
+    await ticks();
+    expect(settled).toBe(false);
+    release.resolve();
+    await prior;
+    await disposing;
+    const persisted = await ix.get(IAtomicDocumentStore).get<{ usage?: { total?: { output?: number } } }>(META_SCOPE, 'state.json');
+    expect(persisted?.usage?.total?.output).toBe(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('propagates rejection from an in-flight usage timer through drain', async () => {
+    const meta = ix.get(ISessionMetadata) as SessionMetadata;
+    await meta.ready;
+    const storage = ix.get(IFileSystemStorageService);
+    const original = storage.write.bind(storage);
+    const entered = deferred();
+    const release = deferred();
+    storage.write = async () => {
+      entered.resolve();
+      await release.promise;
+      throw new Error('injected timer usage failure');
+    };
+    vi.useFakeTimers();
+    meta.recordUsage('example-model', { inputOther: 1, output: 2, inputCacheRead: 0, inputCacheCreation: 0 });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await entered.promise;
+    const draining = drainSessionMetadataWrites(false);
+    await ticks();
+    release.resolve();
+    await expect(draining).rejects.toThrow('injected timer usage failure');
+    expect(vi.getTimerCount()).toBe(0);
+    storage.write = original;
+    await drainSessionMetadataWrites(false);
+    await meta.dispose();
   });
 
   it('writes one session document for several usage records', async () => {

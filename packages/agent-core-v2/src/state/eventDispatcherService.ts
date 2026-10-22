@@ -467,12 +467,22 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     const ongoing = this.checkpointSave;
     if (ongoing !== undefined) return ongoing;
     const generation = this.checkpointGeneration;
+    const startedAppendedBytes = this.wire.appendedByteCount?.();
     const save = this.writeReplayCheckpoint(generation);
     this.checkpointSave = save;
     try {
       const saved = await save;
-      if (saved && this.isCheckpointGenerationCurrent(generation)) {
-        this.noteJournalGrowth(this.wire.appendedByteCount?.() ?? this.growthCheckpointBaseline);
+      if (this.isCheckpointGenerationCurrent(generation)) {
+        const appendedBytes = this.wire.appendedByteCount?.();
+        if (saved) {
+          this.noteJournalGrowth(appendedBytes ?? this.growthCheckpointBaseline);
+        } else if (
+          startedAppendedBytes !== undefined &&
+          appendedBytes !== undefined &&
+          appendedBytes > startedAppendedBytes
+        ) {
+          this.noteJournalGrowth(appendedBytes);
+        }
       }
       return saved;
     } finally {
