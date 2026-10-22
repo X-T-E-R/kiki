@@ -59,7 +59,7 @@ dictionary = true
 min_bytes = 0
 ```
 
-上面的供应商仍使用 zstd、同一组目标地址和字典同意，只改了体积阈值。省略 `dictionary` 会保留系统选择。`dictionary = false` 表示该供应商拒绝留存。`dictionary` 只适用于 zstd。保存任一张表后，下一次模型请求即生效。`POST /api/config` 写入系统表。`GET /api/providers` 按已保存的内容返回供应商表，包括不完整字段、`encoding` 为 `"off"`，以及原来的 `targets` 顺序。
+上面的供应商仍使用 zstd、同一组目标地址和字典同意，只改了体积阈值。省略 `dictionary` 会保留系统选择。`dictionary = false` 表示该供应商拒绝留存。`dictionary` 只适用于 zstd。保存任一张表后，下一次模型请求即生效；已经在途的请求继续使用发起时的配置。`POST /api/config` 写入系统表。`GET /api/providers` 按已保存的内容返回供应商表，包括不完整字段、`encoding` 为 `"off"`，以及原来的 `targets` 顺序。
 
 网关明确支持压缩请求体时，此配置适用于 Responses、Messages 和 Chat Completions；其他协议保持原有传输路径。写下一个目标地址并不会跳过网关自己的压缩支持。
 
@@ -87,7 +87,7 @@ dictionary = true
 
 ## 通过 WebSocket 增量传输 Responses
 
-Responses WebSocket 在你配置之前保持关闭。`[responses_web_socket]` 作用于每个没有单独设置的供应商。供应商表整体替换系统值。供应商写下 `targets` 时，按原顺序替换系统列表，不会追加。不写供应商键则继承。`off = true` 让该供应商保持普通 HTTP，即使系统表列出了目标。没有系统表时，只有写了 `responses_web_socket` 的供应商会打开连接。保存任一张表后，下一次模型请求即生效，并关闭已打开的连接。
+Responses WebSocket 在你配置之前保持关闭。`[responses_web_socket]` 作用于每个没有单独设置的供应商。供应商表整体替换系统值。供应商写下 `targets` 时，按原顺序替换系统列表，不会追加。不写供应商键则继承。`off = true` 让该供应商保持普通 HTTP，即使系统表列出了目标。没有系统表时，只有写了 `responses_web_socket` 的供应商会打开连接。保存任一张表后，下一次模型请求即生效。空闲连接会立即关闭；正在服务在途请求的连接会保持到该请求完成、失败或被取消，下一次请求再使用新连接。
 
 网关在握手中通过 `X-Responses-WebSocket-Capabilities` 声明支持版本 1 时，可明确启用连接内的 Responses 历史复用：
 

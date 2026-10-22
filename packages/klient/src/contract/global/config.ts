@@ -4,7 +4,9 @@
  */
 
 import {
+  RequestCompressionLayerSchema,
   RequestCompressionSystemSchema,
+  ResponsesWebSocketLayerSchema,
   ResponsesWebSocketSystemSchema,
 } from '@kiki/agent-core-v2/kosong/provider/requestCompression';
 import { RequestIdentityPolicySchema } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
@@ -35,10 +37,10 @@ export const configSetInputSchema = z
       addRequestIdentityIssues(value, ctx, [1], false);
     }
     if (domain === 'requestCompression') {
-      addSchemaIssues(RequestCompressionSystemSchema, value, ctx, [1], false);
+      addSchemaIssues(RequestCompressionLayerSchema, value, ctx, [1], false);
     }
     if (domain === 'responsesWebSocket') {
-      addSchemaIssues(ResponsesWebSocketSystemSchema, value, ctx, [1], false);
+      addSchemaIssues(ResponsesWebSocketLayerSchema, value, ctx, [1], false);
     }
   });
 

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isRequestGovernanceError } from '#/app/requestGovernance/errors';
 import { LifecycleScope } from '#/app/scopes';
-import { Disposable, MutableDisposable } from '#/_base/di/lifecycle';
+import { Disposable, toDisposable } from '#/_base/di/lifecycle';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
@@ -237,7 +237,8 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
   private readonly frozenTurnTools = new Map<number, readonly Tool[]>();
   private previousToolset: { hash: string; tools: readonly LlmRequestToolSchema[] } | undefined;
   private responseCapture: AnthropicResponseCapture | undefined;
-  private readonly responsesTransport = this._register(new MutableDisposable<ResponsesWebSocketTransport>());
+  private responsesTransport: ResponsesWebSocketTransport | undefined;
+  private readonly responsesTransports = new Set<ResponsesWebSocketTransport>();
   private responsesTransportModel: Model | undefined;
   private responsesTransportKey: string | undefined;
 
@@ -295,6 +296,14 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     @IEventBus private readonly eventBus: IEventBus,
   ) {
     super();
+    this._register(toDisposable(() => {
+      this.responsesTransport?.dispose();
+      this.responsesTransport = undefined;
+      for (const transport of this.responsesTransports) transport.dispose();
+      this.responsesTransports.clear();
+      this.responsesTransportModel = undefined;
+      this.responsesTransportKey = undefined;
+    }));
     this.states.contributeState(llmRequestTraceKey);
     this.states.contributeState(llmRequesterLastConfigLogSignatureKey);
     this.states.contributeState(llmRequesterTurnConfigsKey);
@@ -343,9 +352,15 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
   }
 
   private closeResponsesTransport(): void {
-    this.responsesTransport.clear();
+    const transport = this.responsesTransport;
+    this.responsesTransport = undefined;
     this.responsesTransportModel = undefined;
     this.responsesTransportKey = undefined;
+    if (transport === undefined) return;
+    this.responsesTransports.add(transport);
+    void transport.retire().then(() => {
+      this.responsesTransports.delete(transport);
+    });
   }
 
   private ensureResponsesTransport(
@@ -358,13 +373,13 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       return undefined;
     }
     const key = responsesTransportKey(model, request.identity);
-    if (this.responsesTransport.value === undefined || this.responsesTransportModel !== model || this.responsesTransportKey !== key) {
+    if (this.responsesTransport === undefined || this.responsesTransportModel !== model || this.responsesTransportKey !== key) {
       this.closeResponsesTransport();
       this.responsesTransportModel = model;
       this.responsesTransportKey = key;
-      this.responsesTransport.value = new ResponsesWebSocketTransport();
+      this.responsesTransport = new ResponsesWebSocketTransport();
     }
-    return this.responsesTransport.value;
+    return this.responsesTransport;
   }
 
   prepareTurnConfig(turnId: number): PreparedTurnRequestConfig | undefined {

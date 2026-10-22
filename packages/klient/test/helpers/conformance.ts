@@ -581,6 +581,35 @@ export function defineKlientConformance(
       }
     });
 
+    it('config requestCompression merges a partial set and rejects it without a complete system value', async () => {
+      const config = target.klient.global.config;
+      const before = await config.inspect('requestCompression');
+      try {
+        await config.replace({
+          domain: 'requestCompression',
+          value: {
+            encoding: 'zstd',
+            targets: ['https://example.test/v1'],
+            minBytes: 1024,
+          },
+        });
+        await config.set({ domain: 'requestCompression', patch: { minBytes: 0 } });
+        expect(await config.get('requestCompression')).toEqual({
+          encoding: 'zstd',
+          targets: ['https://example.test/v1'],
+          minBytes: 0,
+        });
+
+        await config.replace({ domain: 'requestCompression', value: undefined });
+        await expect(
+          config.set({ domain: 'requestCompression', patch: { minBytes: 0 } }),
+        ).rejects.toThrow();
+        expect(await config.get('requestCompression')).toBeUndefined();
+      } finally {
+        await config.replace({ domain: 'requestCompression', value: before.userValue });
+      }
+    });
+
     it('config replaceSections writes several domains and clears undefined ones', async () => {
       const config = target.klient.global.config;
       const beforeProviders = await config.inspect<Record<string, unknown>>('providers');

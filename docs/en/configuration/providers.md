@@ -59,7 +59,7 @@ dictionary = true
 min_bytes = 0
 ```
 
-The provider above keeps zstd, the same targets, and dictionary consent, and changes only the size threshold. Omit `dictionary` to keep the system choice. `dictionary = false` refuses retention for that provider. `dictionary` applies only to zstd. Saving either table applies on the next model request. `POST /api/config` writes the system table. `GET /api/providers` returns a provider table as saved, including a partial table, `encoding` set to `"off"`, and the original `targets` order.
+The provider above keeps zstd, the same targets, and dictionary consent, and changes only the size threshold. Omit `dictionary` to keep the system choice. `dictionary = false` refuses retention for that provider. `dictionary` applies only to zstd. Saving either table applies on the next model request; a request already in flight keeps the settings it started with. `POST /api/config` writes the system table. `GET /api/providers` returns a provider table as saved, including a partial table, `encoding` set to `"off"`, and the original `targets` order.
 
 For a gateway that explicitly supports compressed request bodies, this applies to Responses, Messages, and Chat Completions; other protocols keep their existing transport. A saved target does not skip the gateway's own compression support.
 
@@ -87,7 +87,7 @@ Only a marked, pre-execution decoding rejection permits an encoding fallback, wi
 
 ## Incremental Responses over WebSocket
 
-Responses WebSocket stays off until you configure it. `[responses_web_socket]` applies to every provider that does not set its own table. A provider table replaces that value as a whole. `targets`, when set on the provider, replaces the system list in order and is not added to it. Omit the provider key to inherit. `off = true` keeps that provider on ordinary HTTP even when the system table lists targets. With no system table, only providers that set `responses_web_socket` open a socket. Saving either table applies on the next model request and closes an open socket.
+Responses WebSocket stays off until you configure it. `[responses_web_socket]` applies to every provider that does not set its own table. A provider table replaces that value as a whole. `targets`, when set on the provider, replaces the system list in order and is not added to it. Omit the provider key to inherit. `off = true` keeps that provider on ordinary HTTP even when the system table lists targets. With no system table, only providers that set `responses_web_socket` open a socket. Saving either table applies on the next model request. An idle socket closes immediately; a socket serving an in-flight request stays open until that request completes, fails, or is canceled, then the next request uses a new connection.
 
 For a gateway that advertises the version 1 `X-Responses-WebSocket-Capabilities` handshake, opt in to connection-local Responses history:
 
