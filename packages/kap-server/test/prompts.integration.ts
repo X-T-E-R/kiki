@@ -2553,9 +2553,9 @@ describe('server-v2 /api prompts', () => {
     const child = await createHeldChild(id);
     const wire = child.accessor.get(IWireService);
     const flush = wire.flush.bind(wire);
-    let calls = 0;
+    let failFlush = false;
     const flushSpy = vi.spyOn(wire, 'flush').mockImplementation(async () => {
-      if (++calls >= 2) throw new Error('storage flush failed');
+      if (failFlush) throw new Error('storage flush failed');
       return flush();
     });
     const loop = child.accessor.get(IAgentLoopService);
@@ -2563,6 +2563,7 @@ describe('server-v2 /api prompts', () => {
     const turnResults: Promise<unknown>[] = [];
     const turnSpy = vi.spyOn(loop, 'enqueue').mockImplementation((...args) => {
       const receipt = enqueueTurn(...args);
+      failFlush = true;
       turnResults.push(receipt.assigned.then(({ turn }) => turn.result).then(
         (result) => ({ result }),
         (error: unknown) => ({ error }),
@@ -2575,6 +2576,7 @@ describe('server-v2 /api prompts', () => {
     try {
       const first = await call<null>('POST', `/api/sessions/${id}/prompts`, payload);
       expect(first.body.code).not.toBe(0);
+      await vi.waitFor(() => { expect(turnSpy).toHaveBeenCalledTimes(1); });
       const retry = await call<null>('POST', `/api/sessions/${id}/prompts`, payload);
       expect(retry.body.code).not.toBe(0);
       expect(enqueue).toHaveBeenCalledTimes(1);
@@ -2589,7 +2591,10 @@ describe('server-v2 /api prompts', () => {
       flushSpy.mockRestore();
       enqueue.mockRestore();
       turnSpy.mockRestore();
-      prompt.abort(payload.prompt_id);
+      const queue = prompt.list();
+      if (queue.active?.id === payload.prompt_id || queue.launching?.id === payload.prompt_id || queue.pending.some(item => item.id === payload.prompt_id)) {
+        prompt.abort(payload.prompt_id);
+      }
       expect(await loop.recoverPersistence()).toBe(true);
       await loop.settled();
       await Promise.all(turnResults);

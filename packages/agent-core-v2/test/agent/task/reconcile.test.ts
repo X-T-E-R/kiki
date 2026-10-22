@@ -203,6 +203,7 @@ describe('AgentTaskService — loadFromDisk + reconcile', () => {
           command: 'sleep 9999',
           description: 'restore hook check',
           pid: 4242,
+          terminalNotificationSuppressed: true,
         }),
       );
 

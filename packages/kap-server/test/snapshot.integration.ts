@@ -1623,8 +1623,10 @@ describe('server-v2 session operation lease', () => {
     const gate = deferred();
     const reached = deferred();
     vi.spyOn(wire, 'flush').mockImplementation(async () => {
-      reached.resolve();
-      await gate.promise;
+      if (manager.residencyReport!().pinnedSessions > 0) {
+        reached.resolve();
+        await gate.promise;
+      }
       return flush();
     });
     const response = fetch(`${base}/api/sessions/${sessionId}/messages`, {
