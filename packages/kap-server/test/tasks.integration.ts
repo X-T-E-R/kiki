@@ -9,6 +9,7 @@ import {
   getLiveSessionById,
   IModelCatalog,
   IAtomicDocumentStore,
+  IEventDispatcher,
   IFileSystemStorageService,
   ISessionMetadata,
   IAppendLogStore,
@@ -453,6 +454,9 @@ describe('server-v2 /api/sessions/{sid}/tasks', () => {
     const running = grandTasks.registerTask(fakeTask('process'));
     const dispatch = childTasks.registerTask({ ...fakeTask('agent'), toInfo: (base) => ({ ...base, kind: 'agent', agentId: 'grandchild' }) });
     await flush();
+    await Promise.all(lifecycle.list().map(async (agent) => {
+      await agent.accessor.get(IEventDispatcher).saveReplayCheckpoint?.();
+    }));
     const roster = lifecycle.list().map((agent) => agent.id);
     const createSpy = vi.spyOn(lifecycle, 'create');
     const wireSpy = vi.spyOn(server!.core.accessor.get(IAppendLogStore), 'read');
