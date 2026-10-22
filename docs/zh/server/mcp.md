@@ -41,7 +41,9 @@ MCP server 配置写在 `mcp.json` 中，分两层：
 
 在 TUI 中运行 `/kiki-ops 帮我配置 MCP` 可以交互式地新增、编辑或删除 server，无需手动编辑 JSON 文件。运行 `/mcp` 可查看当前所有 server 的连接状态。
 
-从配置中删除某个 server 不会打断进行中的会话：该 server 在 `/mcp` 中仍显示为 `removed`，其工具在这些会话中保持可见，但调用会失败并返回移除提示；新会话则完全不会注册这些工具。反过来，会话进行中新增的 server——无论是编辑 `mcp.json` 还是安装 plugin——都不会注册到已打开的会话中，只会加入之后创建的会话。
+从配置中删除 server 后，`/mcp` 会保留 `removed` 条目供排查，但其工具会从已打开的会话和后续模型请求中撤下。已获准的调用可以完成，保存的会话历史不会删除。新配置的 server 不会自动加入每个已打开的会话；可用会话的 MCP 开关将它加入当前会话。关闭开关只撤销当前会话的访问，不修改源配置，也不会绕过权限规则。
+
+连接失败或重连中的 server 不提供可调用工具或 schema。下次模型请求前，如果该 server 之前曾正常连接、仍在配置中且仍获准，Kiki 会尝试重连；重连失败时保持不可用，不妨碍请求继续使用其他能力。恢复连接后会复用会话原先加载的工具选择。已移除或明确关闭的 server 不会因此重新开启。如果连接仍正常，只是工具列表刷新失败，Kiki 会报告刷新错误，并保留上次可用的工具目录。
 
 当 Kiki 在不受信任的文件夹中发现项目级 MCP server 时，工作区信任提示会显示每个 server 的传输方式和启动目标。提示默认选中 `Trust this folder`；请在确认前核对列出的命令与参数或远程 URL。信任文件夹后，该工作区的项目级 MCP server 才会启用。
 
@@ -85,7 +87,7 @@ MCP server 配置写在 `mcp.json` 中，分两层：
 
 HTTP 与 SSE server 支持通过 `headers` 或 `bearerTokenEnvVar` 提供静态凭证。需要 OAuth 时，运行 `/kiki-ops 帮我登录 MCP <server-name>` 完成浏览器授权。如果该 server 的授权元数据声明支持 `offline_access`，Kiki 会在登录时一并请求这个 scope，以便之后能续期而不必重新登录；否则按你原本的 scope 授权。声明支持该 scope 的 server 仍可能多显示一次同意页，也不保证一定签发 refresh token。已经登录过的 server 保留现有授权并继续用它续期——新增 scope 不会把你登出。
 
-Plugins 也可以在 manifest 中声明 MCP servers。Plugin 声明的 servers 默认启用，可以在 `/plugins` 中禁用或重新启用：禁用或移除后，已打开会话中的工具调用会失败并返回移除提示；重新启用则会让该 server 立即重连到已打开的会话并恢复工具——前提是会话创建时这个 server 已存在（包括重新启用 `mcp.json` 中 `enabled: false` 的条目）。全新出现的 server 仍遵循上一段的规则：只加入之后创建的会话。详见 [Plugins](../customization/plugins.md#plugin-中的-mcp-servers)。
+Plugins 也可以在 manifest 中声明 MCP servers。通过插件的使用范围控件，可在工作区或会话中启用或禁用其贡献。禁用或移除插件会停止新的工具访问；启用插件会将获准的 MCP 贡献应用到已有会话，无需新建会话。会话明确关闭的 MCP server 会保持关闭，插件源自身禁用的 server 也不能通过会话开关启用。详见 [Plugins](../customization/plugins.md#plugin-中的-mcp-servers)。
 
 ::: warning 注意
 项目级 `.kiki/mcp.json` 中的 stdio 条目会在会话启动时执行本地命令，只在你信任的仓库里启用。

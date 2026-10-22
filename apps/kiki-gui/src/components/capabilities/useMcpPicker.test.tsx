@@ -326,3 +326,130 @@ describe('an MCP write that outlives its conversation', () => {
     }
   });
 });
+
+describe('a slow MCP on withdrawn by a newer off', () => {
+  const NOTES: McpServerLocator = { source: 'global', name: 'notes' };
+
+  function deferred() {
+    let resolve!: (value: McpSessionCapability) => void;
+    let reject!: (reason: Error) => void;
+    const promise = new Promise<McpSessionCapability>((ok, fail) => { resolve = ok; reject = fail; });
+    return { promise, resolve, reject };
+  }
+
+  /** Later refetches must not hide what the write reply itself did to the cache. */
+  function hangRefetch(): void {
+    surface.list.mockImplementation(() => new Promise(() => {}));
+  }
+
+  it('does not let the late on capability re-hold the server', async () => {
+    const on = deferred();
+    const off = deferred();
+    surface.list.mockResolvedValue([capability({ connection: 'disabled', config: { transport: 'stdio', command: 'npx', enabled: false } })]);
+    surface.write.mockImplementation((_id: string, input: { override: string }) => input.override === 'on' ? on.promise : off.promise);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const render = harness(queryClient);
+    await render();
+    hangRefetch();
+
+    await act(async () => { picker!.setOverride(LOCATOR, 'on', 'files'); });
+    expect(picker?.busyOn).toBe(true);
+    await act(async () => { picker!.setOverride(LOCATOR, 'off', 'files'); });
+    expect(picker?.busyOn).toBe(false);
+    expect(picker?.busyName).toBe('files');
+
+    await act(async () => { on.resolve(capability({ override: 'on', connection: 'connected' })); });
+    await settle();
+    expect(rowsFor(queryClient, 'session-a')[0]?.override).toBe('inherit');
+    expect(picker?.busyOn).toBe(false);
+    expect(picker?.busyName).toBe('files');
+    expect(picker?.items[0]?.override).toBe('inherit');
+    expect(picker?.failure).toBeUndefined();
+
+    await act(async () => { off.resolve(capability({ override: 'off', connection: 'disabled' })); });
+    await settle();
+    expect(rowsFor(queryClient, 'session-a')[0]?.override).toBe('off');
+    expect(picker?.items[0]?.override).toBe('off');
+    expect(picker?.busyName).toBeUndefined();
+  });
+
+  it('does not let the failed on roll back a newer off', async () => {
+    const on = deferred();
+    const off = deferred();
+    surface.list.mockResolvedValue([capability({ connection: 'connected', override: 'inherit' })]);
+    surface.write.mockImplementation((_id: string, input: { override: string }) => input.override === 'on' ? on.promise : off.promise);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const render = harness(queryClient);
+    await render();
+    hangRefetch();
+
+    await act(async () => { picker!.setOverride(LOCATOR, 'on', 'files'); });
+    await act(async () => { picker!.setOverride(LOCATOR, 'off', 'files'); });
+    await act(async () => { off.resolve(capability({ override: 'off', connection: 'disabled' })); });
+    await settle();
+    expect(rowsFor(queryClient, 'session-a')[0]?.override).toBe('off');
+
+    await act(async () => { on.reject(new Error('the slow on failed')); });
+    await settle();
+    expect(rowsFor(queryClient, 'session-a')[0]?.override).toBe('off');
+    expect(picker?.items[0]?.override).toBe('off');
+    expect(picker?.failure).toBeUndefined();
+    expect(picker?.busyName).toBeUndefined();
+  });
+
+  it('keeps the newer off busy when the older on fails first', async () => {
+    const on = deferred();
+    const off = deferred();
+    surface.list.mockResolvedValue([capability({ connection: 'disabled', config: { transport: 'stdio', command: 'npx', enabled: false } })]);
+    surface.write.mockImplementation((_id: string, input: { override: string }) => input.override === 'on' ? on.promise : off.promise);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const render = harness(queryClient);
+    await render();
+    hangRefetch();
+
+    await act(async () => { picker!.setOverride(LOCATOR, 'on', 'files'); });
+    await act(async () => { picker!.setOverride(LOCATOR, 'off', 'files'); });
+    await act(async () => { on.reject(new Error('the slow on failed')); });
+    await settle();
+    expect(picker?.failure).toBeUndefined();
+    expect(picker?.busyName).toBe('files');
+    expect(picker?.busyOn).toBe(false);
+    expect(rowsFor(queryClient, 'session-a')[0]?.override).toBe('inherit');
+
+    await act(async () => { off.resolve(capability({ override: 'off', connection: 'disabled' })); });
+    await settle();
+    expect(rowsFor(queryClient, 'session-a')[0]?.override).toBe('off');
+    expect(picker?.busyName).toBeUndefined();
+  });
+
+  it('does not let one server’s late on clear another server’s busy', async () => {
+    const filesOn = deferred();
+    const notesOff = deferred();
+    surface.list.mockResolvedValue([
+      capability(),
+      capability({ locator: NOTES, runtimeName: 'notes' }),
+    ]);
+    surface.write.mockImplementation((_id: string, input: { locator: McpServerLocator; override: string }) =>
+      input.locator.source === 'global' && input.locator.name === 'notes' ? notesOff.promise : filesOn.promise);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const render = harness(queryClient);
+    await render();
+    hangRefetch();
+
+    await act(async () => { picker!.setOverride(LOCATOR, 'on', 'files'); });
+    await act(async () => { picker!.setOverride(NOTES, 'off', 'notes'); });
+    expect(picker?.busyName).toBe('notes');
+    expect(picker?.busyOn).toBe(false);
+
+    await act(async () => { filesOn.resolve(capability({ override: 'on' })); });
+    await settle();
+    expect(rowsFor(queryClient, 'session-a').find((row) => row.runtimeName === 'files')?.override).toBe('on');
+    expect(rowsFor(queryClient, 'session-a').find((row) => row.runtimeName === 'notes')?.override).toBe('inherit');
+    expect(picker?.busyName).toBe('notes');
+
+    await act(async () => { notesOff.resolve(capability({ locator: NOTES, runtimeName: 'notes', override: 'off', connection: 'disabled' })); });
+    await settle();
+    expect(rowsFor(queryClient, 'session-a').find((row) => row.runtimeName === 'notes')?.override).toBe('off');
+    expect(picker?.busyName).toBeUndefined();
+  });
+});

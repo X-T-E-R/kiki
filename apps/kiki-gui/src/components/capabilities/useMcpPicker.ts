@@ -121,6 +121,9 @@ interface McpRequestIdentity {
   readonly connectionKey: string;
   readonly client: KikiClient;
   readonly queryClient: Pick<QueryClient, 'setQueryData'>;
+  /** Monotonic id for this server on this conversation. Older replies must not land. */
+  readonly requestId: number;
+  readonly serverKey: string;
 }
 
 /**
@@ -153,6 +156,7 @@ interface McpPickBusy {
   readonly action: McpPickAction;
   /** The value a switch was just asked for, so the control shows the choice. */
   readonly on?: boolean;
+  readonly requestId: number;
 }
 
 interface McpPickFailureNotice extends McpPickFailure {
@@ -168,6 +172,11 @@ export function useMcpPicker(sessionId: string | undefined) {
   const [failure, setFailure] = useState<McpPickFailureNotice | undefined>(undefined);
   const [busy, setBusy] = useState<McpPickBusy | undefined>(undefined);
   const [settleUntil, setSettleUntil] = useState(0);
+  // One generation per server. A slow on and the off that withdraws it share a
+  // server key; whichever was sent later is the only reply allowed to change
+  // that server's cache, failure, or busy flag.
+  const nextWrite = useRef(0);
+  const latestWrite = useRef(new Map<string, number>());
   // Read by a write that outlives this render, so a late failure is written in
   // the language the reader is actually looking at when it lands.
   const localeRef = useRef(locale);
@@ -256,6 +265,28 @@ export function useMcpPicker(sessionId: string | undefined) {
     [client, connectionKey],
   );
 
+  const beginWrite = (name: string) => {
+    const requestId = ++nextWrite.current;
+    const serverKey = `${connectionKey}\u0000${sessionId ?? ''}\u0000${name}`;
+    latestWrite.current.set(serverKey, requestId);
+    return { requestId, serverKey };
+  };
+  const takeLatestWrite = (
+    request: McpRequestIdentity | undefined,
+  ): request is McpRequestIdentity => {
+    if (request === undefined || latestWrite.current.get(request.serverKey) !== request.requestId) return false;
+    latestWrite.current.delete(request.serverKey);
+    return true;
+  };
+  const clearWriteBusy = (request: McpRequestIdentity | undefined) => {
+    if (request === undefined) return;
+    setBusy((current) => {
+      if (current === undefined || current.requestId !== request.requestId) return current;
+      if (current.sessionId !== request.sessionId || current.connectionKey !== request.connectionKey || current.client !== request.client) return current;
+      return undefined;
+    });
+  };
+
   const write = useMutation<McpSessionCapability, Error, { locator: McpServerLocator; override: McpOverride; name: string }, McpRequestIdentity>({
     mutationFn: async (input: { locator: McpServerLocator; override: McpOverride; name: string }) => {
       if (port === undefined) throw new Error('this build cannot write a conversation’s MCP servers');
@@ -263,6 +294,7 @@ export function useMcpPicker(sessionId: string | undefined) {
     },
     onMutate: (input): McpRequestIdentity => {
       setFailure(undefined);
+      const { requestId, serverKey } = beginWrite(input.name);
       setBusy({
         sessionId,
         connectionKey,
@@ -270,15 +302,17 @@ export function useMcpPicker(sessionId: string | undefined) {
         name: input.name,
         action: input.override === 'inherit' ? 'restore' : 'switch',
         on: input.override !== 'off',
+        requestId,
       });
       // `onMutate` runs while this request is being sent, so the identity it
       // returns is this conversation and connection — the reply updates that
       // one and nothing else, however far the user has moved on.
-      return { key, sessionId, connectionKey, client, queryClient };
+      return { key, sessionId, connectionKey, client, queryClient, requestId, serverKey };
     },
     onSuccess: (capability, _input, request) => {
-      // A reply without its request identity cannot update any cache.
-      if (request === undefined) return;
+      // A stale on must not write its capability over a newer off, and a reply
+      // without its request identity cannot update any cache.
+      if (!takeLatestWrite(request)) return;
       // The request owns its connection's QueryClient. This keeps a late reply
       // useful when returning to the original host without writing into the
       // replacement host's cache.
@@ -293,12 +327,13 @@ export function useMcpPicker(sessionId: string | undefined) {
       if (requestIsCurrent(request)) settle();
     },
     onError: (error, input, request) => {
-      if (request === undefined) return;
+      // The failed on's rollback is "leave the cache as the latest write left
+      // it". Applying that failure after a newer off would put the on back.
+      if (!takeLatestWrite(request)) return;
       setFailure({ sessionId: request.sessionId, connectionKey: request.connectionKey, client: request.client, name: input.name, message: errorText(localeRef.current, error) });
     },
     onSettled: (_data, _error, _input, request) => {
-      if (request === undefined) return;
-      setBusy((current) => current !== undefined && (current.sessionId !== request.sessionId || current.connectionKey !== request.connectionKey || current.client !== request.client) ? current : undefined);
+      clearWriteBusy(request);
     },
   });
 
@@ -311,17 +346,20 @@ export function useMcpPicker(sessionId: string | undefined) {
     },
     onMutate: (input): McpRequestIdentity => {
       setFailure(undefined);
-      setBusy({ sessionId, connectionKey, client, name: input.name, action: 'retry' });
-      return { key, sessionId, connectionKey, client, queryClient };
+      const { requestId, serverKey } = beginWrite(input.name);
+      setBusy({ sessionId, connectionKey, client, name: input.name, action: 'retry', requestId });
+      return { key, sessionId, connectionKey, client, queryClient, requestId, serverKey };
     },
-    onSuccess: (_data, _input, request) => { if (requestIsCurrent(request)) settle(); },
+    onSuccess: (_data, _input, request) => {
+      if (!takeLatestWrite(request)) return;
+      if (requestIsCurrent(request)) settle();
+    },
     onError: (error, input, request) => {
-      if (request === undefined) return;
+      if (!takeLatestWrite(request)) return;
       setFailure({ sessionId: request.sessionId, connectionKey: request.connectionKey, client: request.client, name: input.name, message: errorText(localeRef.current, error) });
     },
     onSettled: (_data, _error, _input, request) => {
-      if (request === undefined) return;
-      setBusy((current) => current !== undefined && (current.sessionId !== request.sessionId || current.connectionKey !== request.connectionKey || current.client !== request.client) ? current : undefined);
+      clearWriteBusy(request);
     },
   });
 

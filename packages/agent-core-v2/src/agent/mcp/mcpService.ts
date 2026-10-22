@@ -30,6 +30,7 @@ import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { createMcpAuthTool } from '#/agent/mcp/tools/auth';
 import { createMcpTool } from '#/agent/mcp/tools/mcp';
@@ -87,6 +88,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
   private computerLeaseArmed = false;
   private readonly pendingDiscoveries: Array<() => void> = [];
   private readonly refreshErrors = new Map<string, string>();
+  private readonly reconnectableServerTools = new Map<string, readonly string[]>();
   private readonly sessionOverrides: Map<string, Exclude<McpSessionOverrideValue, 'inherit'>>;
   private readonly sessionServerKeys = new Map<string, string>();
   private readonly sessionOverridesLoaded: Promise<void>;
@@ -108,6 +110,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     @IInstantiationService private readonly instantiation: IInstantiationService,
     @IConfigService private readonly configService: IConfigService,
     @IMcpRegistryService private readonly serverRegistry: IMcpRegistryService,
+    @ref(IAgentToolPolicyService) private readonly toolPolicy: LiveRef<IAgentToolPolicyService>,
   ) {
     super();
     this.sessionOverrides = mcpHandle.selection?.overrides ?? new Map();
@@ -133,7 +136,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
       this._register(capabilityPolicy.onDidChange(() => { this.reopenComputerSessions(); }));
       this.watchComputerServers(capabilityPolicy);
     }
-    this._register(this.registry.registerPreparation(() => this.waitForInitialLoad()));
+    this._register(this.registry.registerPreparation(() => this.prepareCapabilities()));
     loop.hooks.onWillBeginStep.register('mcp', async (ctx, next) => {
       await this.waitForInitialLoad(ctx.signal);
       await next();
@@ -174,6 +177,20 @@ export class AgentMcpService extends Service implements IAgentMcpService {
       : policy.load(this.sessionContext.sessionId).catch(() => undefined);
     const ready = Promise.all([this.mcpHandle.ready, this.sessionOverridesReady, document]).then(() => undefined);
     return signal === undefined ? ready : abortable(ready, signal);
+  }
+
+  private async prepareCapabilities(): Promise<void> {
+    await this.waitForInitialLoad();
+    const policy = this.toolPolicy.current;
+    if (policy === undefined) return;
+    const manager = this.mcpHandle.connectionManager;
+    await Promise.all([...this.reconnectableServerTools].map(async ([name, tools]) => {
+      if (manager.get(name)?.status !== 'failed' || this.sessionServerOff(name) ||
+        !this.mcpHandle.isBaselineServer(name) || manager.configOf(name)?.enabled === false ||
+        !tools.some((tool) => policy.isToolActive(tool, 'mcp')) ||
+        (isComputerMcpConfig(manager.configOf(name)) && !this.computerAdmitted())) return;
+      try { await manager.reconnectAndJoin(name); } catch { }
+    }));
   }
 
   initialLoadDurationMs(): number {
@@ -447,9 +464,10 @@ export class AgentMcpService extends Service implements IAgentMcpService {
       origin: entry.source,
       config: toMcpServerConfigView(entry.config),
       authStatus: toSessionAuthStatus(entry.config, managerEntry?.status),
-      connection: refreshError === undefined ? connection : 'failed',
+      connection,
       override,
       error,
+      errorCode: refreshError === undefined ? undefined : 'tool_catalog_refresh_failed',
     };
   }
 
@@ -486,6 +504,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     }
     this._register(
       this.onStatusChange((entry) => {
+        this.refreshErrors.delete(entry.name);
         this.handleMcpServerStatusChange(entry);
       }),
     );
@@ -494,6 +513,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
   private handleMcpServerStatusChange(entry: McpServerEntry): void {
     if (!this.mcpHandle.isBaselineServer(entry.name)) return;
     if (this.sessionServerOff(entry.name)) {
+      this.reconnectableServerTools.delete(entry.name);
       this.mcpHandle.setServerEnabled?.(entry.name, false);
       this.unregisterMcpServer(entry.name);
       return;
@@ -513,24 +533,20 @@ export class AgentMcpService extends Service implements IAgentMcpService {
       this.registerConnectedMcpServer(entry);
       return;
     }
+    if (entry.status !== 'failed' && entry.status !== 'pending') this.reconnectableServerTools.delete(entry.name);
     this.computerSessions.delete(entry.name);
     if (entry.status === 'needs-auth') {
       this.registerNeedsAuthMcpServer(entry);
       return;
     }
-    if (entry.status === 'failed' || entry.status === 'pending' || entry.status === 'removed') {
-      return;
-    }
-    if (entry.status === 'disabled') {
-      const removed = this.unregisterMcpServer(entry.name);
-      if (removed) {
-        void this.dispatcher.dispatch(
-          new ToolListUpdated({
-            reason: 'mcp.disconnected',
-            serverName: entry.name,
-          }),
-        );
-      }
+    const removed = this.unregisterMcpServer(entry.name);
+    if (removed) {
+      void this.dispatcher.dispatch(
+        new ToolListUpdated({
+          reason: 'mcp.disconnected',
+          serverName: entry.name,
+        }),
+      );
     }
   }
 
@@ -622,10 +638,15 @@ export class AgentMcpService extends Service implements IAgentMcpService {
   }
 
   private gateSessionCall(serverName: string, computer: boolean, admitCall: (() => Promise<{ release(): void } | undefined>) | undefined): () => Promise<{ release(): void } | undefined> {
+    const available = () => !this.sessionServerOff(serverName) &&
+      this.mcpHandle.connectionManager.get(serverName)?.status === 'connected' &&
+      (!computer || this.computerAdmitted());
     return async () => {
-      if (this.sessionServerOff(serverName) || (computer && !this.computerAdmitted())) return undefined;
-      if (admitCall === undefined) return { release() {} };
-      return admitCall();
+      if (!available()) return undefined;
+      const lease = admitCall === undefined ? { release() {} } : await admitCall();
+      if (available()) return lease;
+      lease?.release();
+      return undefined;
     };
   }
 
@@ -643,6 +664,8 @@ export class AgentMcpService extends Service implements IAgentMcpService {
       void this.dispatcher.dispatch(new ToolListUpdated({ reason: 'mcp.disconnected', serverName: entry.name }));
       return;
     }
+    if (result.registered.length > 0) this.reconnectableServerTools.set(entry.name, result.registered);
+    else this.reconnectableServerTools.delete(entry.name);
     this.emitMcpToolCollisions(entry.name, result.collisions);
     this.recordDiscovery(entry.name, resolved.rawTools, resolved.enabledNames, result.collisions);
     void this.dispatcher.dispatch(

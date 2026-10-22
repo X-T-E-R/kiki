@@ -17,8 +17,11 @@
  * about every conversation; "Off for this conversation" is one the reader just
  * made and can reverse. A row that collapsed them would either hide a switch the
  * reader can use or offer one that would change more than they asked for. A
- * plugin that switches its own server off is a third case: the engine refuses to
- * admit it here, so the row names the plugin and draws no switch.
+ * plugin that switches its own server off is a third case: with no session
+ * decision the engine refuses to admit it here, so the row names the plugin and
+ * draws no switch. An explicit session on stays held and can be withdrawn. The
+ * connection still says the runtime has not admitted it, and that on does not
+ * turn the source configuration into a global grant.
  *
  * `d5ab936c2` closed the engine side: `agent.listMcpSessionCapabilities()` and
  * `agent.setMcpSessionOverride({ locator, override })` are the port, and the
@@ -70,6 +73,11 @@ export interface McpSessionRow {
   readonly configEnabled: boolean;
   readonly override: McpOverride;
   readonly error?: string;
+  /**
+   * Present only when the engine set `tool_catalog_refresh_failed`. The row
+   * never reads this out of the error sentence.
+   */
+  readonly errorCode?: 'tool_catalog_refresh_failed';
   readonly locator?: McpServerLocator;
   /**
    * True when a write can be addressed and shown: the engine named a locator for
@@ -96,6 +104,7 @@ interface RowSource {
   readonly connection: string;
   readonly override: McpOverride;
   readonly error?: string;
+  readonly errorCode?: string;
 }
 
 const TRANSPORTS: readonly string[] = ['stdio', 'http', 'sse'];
@@ -112,15 +121,17 @@ function connectionOf(value: string): McpConnection {
 /**
  * Which condition the row is in. The conversation's own override leads, because
  * it is what this reader chose and can change here; only where nothing was
- * overridden do the source and the live connection answer.
+ * overridden do the source and the live connection answer. A disabled connection
+ * is that source answer — it must not swallow an explicit on, and it must not
+ * be read as the source now allowing the server everywhere.
  */
 export function rowCondition(source: RowSource): McpRowCondition {
   if (source.override === 'off') return 'off-here';
   if (source.authStatus === 'oauth-required' || source.authStatus === 'oauth-expired') return 'signed-out';
   if (source.connection === 'connecting') return 'connecting';
   if (source.connection === 'failed') return 'failed';
-  if (source.connection === 'disabled') return source.origin === 'plugin' ? 'plugin-off' : 'off-config';
   if (source.override === 'on') return 'on-here';
+  if (source.connection === 'disabled') return source.origin === 'plugin' ? 'plugin-off' : 'off-config';
   if (source.connection === 'connected') return 'live';
   if (source.connection === 'enabled') return 'live';
   return 'unavailable';
@@ -179,6 +190,7 @@ export function mcpSessionRows(input: {
     connection: capability.connection,
     override: capability.override,
     error: capability.error,
+    errorCode: capability.errorCode,
   }, input.writable));
 }
 
@@ -232,7 +244,9 @@ export function mcpFallbackRows(input: {
 /**
  * Rows for /new, before a conversation exists. The management catalog is the
  * source; a choice the reader already made on this draft replaces inherit.
- * A plugin that has switched its own server off stays unaddressable.
+ * A plugin that has switched its own server off stays unaddressable until this
+ * draft explicitly turns it on. That on leaves the connection disabled — the
+ * source is still refusing it — and keeps the switch so the choice can be revoked.
  */
 export function draftMcpRows(input: {
   readonly servers: readonly {
@@ -293,6 +307,7 @@ function rowsFrom(source: RowSource, writable: boolean): McpSessionRow {
     configEnabled: source.configEnabled,
     override: source.override,
     error: source.error === undefined || source.error === '' ? undefined : source.error,
+    errorCode: source.errorCode === 'tool_catalog_refresh_failed' ? 'tool_catalog_refresh_failed' : undefined,
     locator,
     addressable,
     canReconnect: source.connection === 'failed' && source.override !== 'off',
@@ -306,4 +321,19 @@ function rowsFrom(source: RowSource, writable: boolean): McpSessionRow {
  */
 export function overrideForSwitch(_row: McpSessionRow, on: boolean): McpOverride {
   return on ? 'on' : 'off';
+}
+
+/**
+ * The warning a connected row may show. The known refresh code selects the
+ * translated sentence and keeps the engine sentence beside it. Any other
+ * code, or none, keeps that engine sentence alone. A connection that is not
+ * connected has no warning here.
+ */
+export function mcpConnectedCatalogWarning(
+  row: Pick<McpSessionRow, 'connection' | 'error' | 'errorCode'>,
+): { readonly translated: boolean; readonly detail?: string } | undefined {
+  if (row.connection !== 'connected') return undefined;
+  if (row.errorCode === 'tool_catalog_refresh_failed') return { translated: true, detail: row.error };
+  if (row.error === undefined) return undefined;
+  return { translated: false, detail: row.error };
 }

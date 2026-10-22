@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { ContextMessage } from '#/agent/contextMemory/types';
+import type { ExecutableToolContext } from '#/tool/toolContract';
 import {
   IAgentContextMemoryService,
   IAgentShellCommandService,
@@ -140,14 +141,15 @@ describe('AgentShellCommandService', () => {
 
   it('carries the foreground task id on shell events for mid-attach consumers', async () => {
     const fakeBash = {
+      name: 'Bash',
+      description: 'Fixture shell command',
+      parameters: { type: 'object' },
+      source: 'builtin' as const,
       resolveExecution: async () => ({
         isError: false as const,
         description: 'run',
         approvalRule: 'Bash',
-        execute: async (ctx: {
-          onForegroundTaskStart?: (taskId: string) => void;
-          onUpdate?: (update: { kind: string; text: string }) => void;
-        }) => {
+        execute: async (ctx: ExecutableToolContext) => {
           ctx.onForegroundTaskStart?.('task-9');
           ctx.onUpdate?.({ kind: 'stdout', text: 'hi' });
           return { isError: false, output: 'hi' };

@@ -1237,6 +1237,7 @@ export const zh = {
   'composer.addMenu.mcpRetrying': '正在重新连接…',
   'composer.addMenu.mcpUseConfig': '用配置',
   'composer.addMenu.mcpStateUnknown': '状态未报告',
+  'composer.addMenu.mcpCatalogRefreshFailed': '工具列表刷新失败，继续使用上次可用的工具。',
   'composer.addMenu.mcpNoWrite': '当前 Kiki 版本无法为对话加入或移出 MCP 服务器；这里显示的是它已有的。',
   'composer.addMenu.mcpWriteFailed': '无法修改 {name}：{detail}',
   'composer.addMenu.mcpDismiss': '关闭',

@@ -10,7 +10,7 @@ import { useConnection } from '../../state/connection';
 import { Toggle } from '../controls';
 import { FOCUS_RING } from '../rail-variants/shell';
 import { capabilityReasonText } from '../agent-panel/mapCapabilities';
-import { heldByConversation, overrideForSwitch, type McpSessionRow } from './sessionMcp';
+import { heldByConversation, mcpConnectedCatalogWarning, overrideForSwitch, type McpSessionRow } from './sessionMcp';
 import { useMcpPicker } from './useMcpPicker';
 import {
   currentPendingCapabilityScope,
@@ -388,6 +388,17 @@ function mcpRailFact(row: McpSessionRow): I18nKey {
   return 'composer.addMenu.mcpStateUnknown';
 }
 
+/**
+ * What an explicit session on still has to admit about the runtime. The switch
+ * stays on; this line is why it is not a connected server and not a global grant.
+ */
+function mcpRuntimeNote(row: McpSessionRow): I18nKey | undefined {
+  if (row.override !== 'on' || row.connection !== 'disabled') return undefined;
+  if (row.origin === 'plugin') return 'composer.addMenu.mcpPluginMuted';
+  if (!row.configEnabled) return 'composer.addMenu.mcpConfigOff';
+  return 'st.mcp.status.disconnected';
+}
+
 export function SessionMcpRail({ sessionId }: { sessionId?: string }) {
   const { t } = useI18n();
   const mcp = useMcpPicker(sessionId);
@@ -405,8 +416,15 @@ export function SessionMcpRail({ sessionId }: { sessionId?: string }) {
         const rowBusy = mcp.busyName === row.name;
         const checked = rowBusy && mcp.busyOn !== undefined ? mcp.busyOn : held;
         const key = mcpRailFact(row);
+        const runtimeKey = mcpRuntimeNote(row);
         const pluginName = row.pluginLabel ?? '';
-        const fact = t(key, key === 'composer.addMenu.mcpPluginMuted' || key === 'composer.addMenu.mcpFromPlugin' ? { name: pluginName } : undefined);
+        const named = (factKey: I18nKey) => factKey === 'composer.addMenu.mcpPluginMuted' || factKey === 'composer.addMenu.mcpFromPlugin' ? { name: pluginName } : undefined;
+        const fact = t(key, named(key));
+        const runtime = runtimeKey === undefined ? undefined : t(runtimeKey, named(runtimeKey));
+        // Connected plus this warning is still this conversation's server.
+        // The known refresh code uses the translated sentence and keeps the
+        // engine sentence under it. Anything else stays the engine sentence.
+        const catalogWarning = mcpConnectedCatalogWarning(row);
         const showInlineFact = row.override !== 'inherit' || row.condition === 'plugin-off' || row.condition === 'signed-out' || row.condition === 'failed';
         const nextChoice: Choice = checked ? 'off' : 'on';
         return (
@@ -414,6 +432,7 @@ export function SessionMcpRail({ sessionId }: { sessionId?: string }) {
             key={row.name}
             data-rail-mcp-server={row.name}
             data-rail-mcp-effective={held ? 'true' : 'false'}
+            data-rail-mcp-connection={row.connection}
             data-rail-mcp-source={row.override === 'inherit' ? row.origin : 'session'}
             data-rail-mcp-override={row.override}
             className="flex min-h-7 items-center justify-between gap-2.5 border-t border-hairline py-1 first:border-t-0"
@@ -429,12 +448,16 @@ export function SessionMcpRail({ sessionId }: { sessionId?: string }) {
                 >
                   {fact}
                 </span>
+                {runtime === undefined ? null : (
+                  <span data-rail-mcp-runtime={row.name}>{runtime}</span>
+                )}
                 {row.canRestore && row.locator !== undefined ? (
                   <button
                     type="button"
                     data-rail-mcp-restore={row.name}
                     data-rail-mcp-set="inherit"
-                    disabled={rowBusy || !mcp.writable}
+                    // Same as the switch: saving does not lock the way back.
+                    disabled={!mcp.writable}
                     onClick={() => { mcp.setOverride(row.locator!, 'inherit', row.name); }}
                     className={`rounded text-ink-faint underline decoration-dotted underline-offset-2 transition-colors hover:text-ink disabled:opacity-40 ${FOCUS_RING}`}
                   >
@@ -442,6 +465,14 @@ export function SessionMcpRail({ sessionId }: { sessionId?: string }) {
                   </button>
                 ) : null}
               </span>
+              {catalogWarning === undefined ? null : (
+                <span role="status" data-rail-mcp-warning={row.name} className="basis-full text-[11.5px] leading-4 text-ink-soft">
+                  {catalogWarning.translated ? t('composer.addMenu.mcpCatalogRefreshFailed') : catalogWarning.detail}
+                  {catalogWarning.translated && catalogWarning.detail !== undefined ? (
+                    <span data-rail-mcp-warning-detail={row.name} className="mt-0.5 block text-ink-faint">{catalogWarning.detail}</span>
+                  ) : null}
+                </span>
+              )}
             </div>
             {row.addressable && row.locator !== undefined ? (
               // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- delegates synthetic clicks targeted at data-rail-mcp-set to the inner checkbox
@@ -451,7 +482,7 @@ export function SessionMcpRail({ sessionId }: { sessionId?: string }) {
                 data-rail-mcp-set={nextChoice}
                 onClick={(event) => {
                   if (event.target !== event.currentTarget) return;
-                  if (rowBusy || !mcp.writable) return;
+                  if (!mcp.writable) return;
                   mcp.setOverride(row.locator!, overrideForSwitch(row, nextChoice === 'on'), row.name);
                 }}
               >
@@ -460,9 +491,11 @@ export function SessionMcpRail({ sessionId }: { sessionId?: string }) {
                   layout="bare"
                   label={t('composer.addMenu.mcpToggle', { name: row.name })}
                   checked={checked}
-                  disabled={rowBusy || !mcp.writable}
+                  // Busy is only the saving notice. A slow on has to stay
+                  // revocable; the picker drops the late reply.
+                  disabled={!mcp.writable}
                   onChange={(next) => {
-                    if (rowBusy || !mcp.writable) return;
+                    if (!mcp.writable) return;
                     mcp.setOverride(row.locator!, overrideForSwitch(row, next), row.name);
                   }}
                 />

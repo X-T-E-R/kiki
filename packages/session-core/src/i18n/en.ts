@@ -1249,6 +1249,7 @@ export const en = {
   'composer.addMenu.mcpRemoved': 'Removed for this conversation',
   'composer.addMenu.mcpUseConfig': 'Use config',
   'composer.addMenu.mcpStateUnknown': 'State not reported',
+  'composer.addMenu.mcpCatalogRefreshFailed': 'Tool list refresh failed. Using the last available tools.',
   'composer.addMenu.mcpNoWrite': 'This Kiki build cannot add or remove a conversation’s MCP servers; this list shows what it has.',
   'composer.addMenu.mcpWriteFailed': 'Could not change {name}: {detail}',
   'composer.addMenu.mcpDismiss': 'Dismiss',

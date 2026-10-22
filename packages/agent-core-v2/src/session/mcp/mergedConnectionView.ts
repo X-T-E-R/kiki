@@ -8,6 +8,7 @@ import { abortable } from '#/_base/utils/abort';
 
 export class MergedMcpConnectionView implements McpConnectionView {
   private readonly sessionHidden = new Set<string>();
+  private readonly sourceHidden = new Set<string>();
   private readonly listeners = new Set<McpStatusListener>();
 
   constructor(
@@ -22,23 +23,23 @@ export class MergedMcpConnectionView implements McpConnectionView {
 
   list(): readonly McpServerEntry[] {
     const baseEntries = this.base.list().filter((entry) => !this.overlayNames.has(entry.name));
-    return [...baseEntries, ...this.overlay.list()].filter((entry) => !this.sessionHidden.has(entry.name));
+    return [...baseEntries, ...this.overlay.list()].filter((entry) => !this.isHidden(entry.name));
   }
 
   get(name: string): McpServerEntry | undefined {
-    return this.sessionHidden.has(name) ? undefined : this.owner(name).get(name);
+    return this.isHidden(name) ? undefined : this.owner(name).get(name);
   }
 
   configOf(name: string): ReturnType<McpConnectionView['configOf']> {
-    return this.sessionHidden.has(name) ? undefined : this.owner(name).configOf(name);
+    return this.isHidden(name) ? undefined : this.owner(name).configOf(name);
   }
 
   resolved(name: string): ReturnType<McpConnectionView['resolved']> {
-    return this.sessionHidden.has(name) ? undefined : this.owner(name).resolved(name);
+    return this.isHidden(name) ? undefined : this.owner(name).resolved(name);
   }
 
   getRemoteServerUrl(name: string): string | undefined {
-    return this.sessionHidden.has(name) ? undefined : this.owner(name).getRemoteServerUrl(name);
+    return this.isHidden(name) ? undefined : this.owner(name).getRemoteServerUrl(name);
   }
 
   markNeedsAuth(
@@ -46,21 +47,21 @@ export class MergedMcpConnectionView implements McpConnectionView {
     error: unknown,
     client?: import('#/mcpCore/types').MCPClient,
   ): Promise<boolean> {
-    return this.sessionHidden.has(name)
+    return this.isHidden(name)
       ? Promise.resolve(false)
       : this.owner(name).markNeedsAuth(name, error, client);
   }
 
   reconnect(name: string): Promise<void> {
-    return this.sessionHidden.has(name) ? Promise.resolve() : this.owner(name).reconnect(name);
+    return this.isHidden(name) ? Promise.resolve() : this.owner(name).reconnect(name);
   }
 
   reconnectAndJoin(name: string): Promise<void> {
-    return this.sessionHidden.has(name) ? Promise.resolve() : this.owner(name).reconnectAndJoin(name);
+    return this.isHidden(name) ? Promise.resolve() : this.owner(name).reconnectAndJoin(name);
   }
 
   refreshToolList(name: string): Promise<void> {
-    if (this.sessionHidden.has(name)) return Promise.resolve();
+    if (this.isHidden(name)) return Promise.resolve();
     return this.owner(name).refreshToolList?.(name) ?? Promise.resolve();
   }
 
@@ -80,22 +81,36 @@ export class MergedMcpConnectionView implements McpConnectionView {
   setServerEnabled(name: string, enabled: boolean): boolean {
     const entry = this.owner(name).get(name);
     if (entry === undefined && enabled) return false;
-    const wasHidden = this.sessionHidden.has(name);
+    const wasHidden = this.isHidden(name);
     if (enabled) this.sessionHidden.delete(name);
     else this.sessionHidden.add(name);
-    if (entry !== undefined && wasHidden !== this.sessionHidden.has(name)) {
-      const next = this.sessionHidden.has(name) ? { ...entry, status: 'disabled' as const, toolCount: 0 } : entry;
+    if (entry !== undefined && wasHidden !== this.isHidden(name)) {
+      const next = this.isHidden(name) ? { ...entry, status: 'disabled' as const, toolCount: 0 } : entry;
       this.emit(next);
     }
     return entry !== undefined;
   }
 
   clearServerOverride(name: string): boolean {
-    const entry = this.owner(name).get(name);
-    if (entry === undefined && !this.sessionHidden.has(name)) return false;
     const wasHidden = this.sessionHidden.delete(name);
-    if (wasHidden && entry !== undefined) this.emit(entry);
+    if (wasHidden && !this.isHidden(name)) {
+      const entry = this.owner(name).get(name);
+      if (entry !== undefined) this.emit(entry);
+    }
     return wasHidden;
+  }
+
+  setSourceEnabled(name: string, enabled: boolean): void {
+    const wasHidden = this.isHidden(name);
+    if (enabled) this.sourceHidden.delete(name);
+    else this.sourceHidden.add(name);
+    if (wasHidden === this.isHidden(name)) return;
+    const entry = this.owner(name).get(name);
+    if (entry !== undefined) this.emit(this.isHidden(name) ? { ...entry, status: 'disabled', toolCount: 0 } : entry);
+  }
+
+  private isHidden(name: string): boolean {
+    return this.sessionHidden.has(name) || this.sourceHidden.has(name);
   }
 
   replaceOverlayNames(names: ReadonlySet<string>): void {
@@ -105,12 +120,12 @@ export class MergedMcpConnectionView implements McpConnectionView {
   onStatusChange(listener: McpStatusListener): () => void {
     this.listeners.add(listener);
     const unsubscribeBase = this.base.onStatusChange((entry) => {
-      if (entry.status !== 'removed' && !this.overlayNames.has(entry.name) && !this.sessionHidden.has(entry.name)) {
+      if (!this.overlayNames.has(entry.name) && !this.isHidden(entry.name)) {
         listener(entry);
       }
     });
     const unsubscribeOverlay = this.overlay.onStatusChange((entry) => {
-      if (entry.status !== 'removed' && !this.sessionHidden.has(entry.name)) listener(entry);
+      if (!this.isHidden(entry.name)) listener(entry);
     });
     return () => {
       this.listeners.delete(listener);

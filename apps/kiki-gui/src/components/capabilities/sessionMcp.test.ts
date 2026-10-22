@@ -5,8 +5,10 @@ import { describe, expect, it } from 'vitest';
 import type { McpServerLocator, McpSessionCapability } from '@kiki/klient';
 
 import {
+  draftMcpRows,
   heldByConversation,
   heldCount,
+  mcpConnectedCatalogWarning,
   mcpFallbackRows,
   mcpRowMatches,
   mcpSessionRows,
@@ -108,6 +110,76 @@ describe('a conversation’s MCP rows', () => {
     expect(failed!.error).toBe('schema load failed');
   });
 
+  it('carries the catalog refresh code without reading it out of the error sentence', () => {
+    const engine = 'MCP tool catalog refresh failed (Error)';
+    const [named, lookalike, failed] = mcpSessionRows({
+      writable: true,
+      capabilities: [
+        global('files', { override: 'on', connection: 'connected', error: engine, errorCode: 'tool_catalog_refresh_failed' }),
+        { ...global('plain', { override: 'on', connection: 'connected', error: engine }), errorCode: 'other_failure' } as unknown as McpSessionCapability,
+        global('broken', { override: 'on', connection: 'failed', error: 'schema load failed', errorCode: 'tool_catalog_refresh_failed' }),
+      ],
+    });
+    expect(named!.condition).toBe('on-here');
+    expect(named!.override).toBe('on');
+    expect(named!.connection).toBe('connected');
+    expect(named!.error).toBe(engine);
+    expect(named!.errorCode).toBe('tool_catalog_refresh_failed');
+    expect(mcpConnectedCatalogWarning(named!)).toEqual({ translated: true, detail: engine });
+
+    expect(lookalike!.error).toBe(engine);
+    expect(lookalike!.errorCode).toBeUndefined();
+    expect(lookalike!.condition).toBe('on-here');
+    expect(mcpConnectedCatalogWarning(lookalike!)).toEqual({ translated: false, detail: engine });
+
+    expect(failed!.condition).toBe('failed');
+    expect(failed!.override).toBe('on');
+    expect(failed!.connection).toBe('failed');
+    expect(failed!.errorCode).toBe('tool_catalog_refresh_failed');
+    expect(mcpConnectedCatalogWarning(failed!)).toBeUndefined();
+  });
+
+  it('keeps an explicit on held and revocable when the connection is still disabled', () => {
+    const [sourceOff] = mcpSessionRows({
+      writable: true,
+      capabilities: [global('muted', {
+        override: 'on',
+        connection: 'disabled',
+        config: { transport: 'stdio', command: 'npx', enabled: false },
+      })],
+    });
+    expect(sourceOff!.condition).toBe('on-here');
+    expect(heldByConversation(sourceOff!)).toBe(true);
+    expect(sourceOff!.addressable).toBe(true);
+    expect(sourceOff!.override).toBe('on');
+    expect(sourceOff!.connection).toBe('disabled');
+    // The session choice does not rewrite the source into a global grant.
+    expect(sourceOff!.configEnabled).toBe(false);
+
+    const [runtimeDown] = mcpSessionRows({
+      writable: true,
+      capabilities: [global('files', { override: 'on', connection: 'disabled' })],
+    });
+    expect(runtimeDown!.condition).toBe('on-here');
+    expect(runtimeDown!.connection).toBe('disabled');
+    expect(runtimeDown!.configEnabled).toBe(true);
+    expect(heldByConversation(runtimeDown!)).toBe(true);
+
+    const [pluginOn] = mcpSessionRows({
+      writable: true,
+      capabilities: [plugin('notes', {
+        override: 'on',
+        connection: 'disabled',
+        config: { transport: 'sse', url: 'https://research.example.test/mcp', enabled: false },
+      })],
+    });
+    expect(pluginOn!.condition).toBe('on-here');
+    expect(pluginOn!.addressable).toBe(true);
+    expect(heldByConversation(pluginOn!)).toBe(true);
+    expect(pluginOn!.connection).toBe('disabled');
+    expect(pluginOn!.configEnabled).toBe(false);
+  });
+
   it('draws no switch where this build has no port to write, and one where it has', () => {
     const disabled = global('files', { connection: 'disabled', config: { transport: 'stdio', command: 'npx', enabled: false } });
     expect(mcpSessionRows({ writable: false, capabilities: [disabled] })[0]!.addressable).toBe(false);
@@ -175,6 +247,51 @@ describe('a conversation’s MCP rows', () => {
     expect(mcpRowMatches(row!, 'research')).toBe(true);
     expect(mcpRowMatches(row!, 'sse')).toBe(true);
     expect(mcpRowMatches(row!, 'files')).toBe(false);
+  });
+});
+
+describe('a /new draft’s MCP rows', () => {
+  const mail = {
+    name: 'mail',
+    source: 'plugin',
+    origin: 'kiki-mail',
+    config: { transport: 'stdio', enabled: false },
+    plugin: { id: 'kiki-mail', name: 'mail' },
+  };
+  const pendingOn = {
+    locator: { source: 'plugin' as const, pluginId: 'kiki-mail', serverName: 'mail' },
+    override: 'on' as const,
+    name: 'mail',
+  };
+
+  it('keeps a pending on when the plugin source has the server off', () => {
+    const [row] = draftMcpRows({ servers: [mail], pending: [pendingOn] });
+    expect(row!.condition).toBe('on-here');
+    expect(row!.condition).not.toBe('plugin-off');
+    expect(heldByConversation(row!)).toBe(true);
+    expect(row!.addressable).toBe(true);
+    expect(row!.override).toBe('on');
+    expect(row!.connection).toBe('disabled');
+    expect(row!.configEnabled).toBe(false);
+  });
+
+  it('draws no switch when that plugin source is off and the draft has not chosen', () => {
+    const [row] = draftMcpRows({ servers: [mail], pending: [] });
+    expect(row!.condition).toBe('plugin-off');
+    expect(row!.addressable).toBe(false);
+    expect(heldByConversation(row!)).toBe(false);
+    expect(row!.override).toBe('inherit');
+  });
+
+  it('keeps an explicit draft off as this draft’s off', () => {
+    const [row] = draftMcpRows({
+      servers: [mail],
+      pending: [{ ...pendingOn, override: 'off' }],
+    });
+    expect(row!.condition).toBe('off-here');
+    expect(heldByConversation(row!)).toBe(false);
+    expect(row!.addressable).toBe(true);
+    expect(row!.connection).toBe('disabled');
   });
 });
 

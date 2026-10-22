@@ -12,6 +12,7 @@ export interface ISessionMcpOverlay {
     source?: 'global' | 'plugin' | 'caller',
   ): Promise<void>;
   clearConfiguredServer?(runtimeName: string): Promise<void>;
+  removeConfiguredServer?(runtimeName: string, source: 'global' | 'plugin'): Promise<void>;
   configuredServers?(): Readonly<Record<string, McpServerConfig>>;
   setCallerServers?(names: ReadonlySet<string>): void;
   shutdown(): Promise<void>;

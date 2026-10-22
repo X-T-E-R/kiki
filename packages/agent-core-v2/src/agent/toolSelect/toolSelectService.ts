@@ -151,8 +151,7 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
   private isHistoricallyDisabled(name: string): boolean {
     const info = this.toolRegistry.list().find((entry) => entry.name === name);
     if (info !== undefined) return !this.toolPolicy.isToolActive(name, info.source);
-    return name.startsWith('plugin__') || name.startsWith('browser__') ||
-      (isMcpToolName(name) && !this.toolPolicy.isToolActive(name, 'mcp'));
+    return name.startsWith('plugin__') || name.startsWith('browser__') || isMcpToolName(name);
   }
 
   load(names: readonly string[]): LoadToolsResult {
@@ -316,7 +315,6 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
         this.toolPolicy.isToolActive(name, info.source)
       );
     }
-    if (isMcpToolName(name)) return this.toolPolicy.isToolActive(name, 'mcp');
     return false;
   }
 

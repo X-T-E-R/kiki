@@ -35,6 +35,7 @@ import { QUIET_BUTTON, StatusDot } from './capabilities/primitives';
 import {
   heldByConversation,
   heldCount,
+  mcpConnectedCatalogWarning,
   mcpRowMatches,
   overrideForSwitch,
   type McpOverride,
@@ -581,9 +582,8 @@ function SkillRow({ item, onInsert, result = false }: { item: SlashItem; onInser
  * its row and its reason rather than disappearing, so a reader who expected it
  * finds out why it cannot be used.
  */
-function PluginRow({ plugin, busy, onToggle, result = false }: {
+function PluginRow({ plugin, onToggle, result = false }: {
   plugin: AddMenuPlugin;
-  busy: boolean;
   onToggle: (pluginId: string, enabled: boolean) => void;
   result?: boolean;
 }) {
@@ -627,7 +627,9 @@ function PluginRow({ plugin, busy, onToggle, result = false }: {
           label={t('composer.addMenu.pluginToggle', { name: plugin.name })}
           layout="bare"
           checked={plugin.enabled}
-          disabled={busy || !plugin.available}
+          // Busy only paints the choice just made. A slow on stays revocable;
+          // the picker drops the late reply. A master denial stays disabled.
+          disabled={!plugin.available}
           onChange={(enabled) => { onToggle(plugin.id, enabled); }}
         />
       </span>
@@ -695,12 +697,14 @@ function McpRow({ row, busy, retrying, busyOn, onOverride, onReconnect, result =
   // One caption names the plugin that owns the off, so it needs the name the
   // read carried; every other caption is a complete phrase.
   const state = t(stateKey, stateKey === 'composer.addMenu.mcpPluginMuted' ? { name: row.pluginLabel ?? '' } : undefined);
-  // The engine's own error text is the row's second line only where the caption
-  // cannot carry it: a failed connection and a locator whose source is gone.
-  // Everywhere else the caption is the reader's word for the same fact, and
-  // printing both would say it twice.
+  // A failed connection, or a locator whose source is gone, has no caption that
+  // can carry the engine's sentence, so that sentence replaces the caption.
+  // A connected server whose tool list failed to refresh stays usable. The
+  // known code uses the translated sentence and keeps the engine sentence
+  // under it; any other connected error stays that engine sentence.
   const showsEngineError = row.error !== undefined && (row.condition === 'failed' || row.condition === 'unavailable');
   const detail = showsEngineError ? row.error! : state;
+  const catalogWarning = mcpConnectedCatalogWarning(row);
   const locator = row.locator;
   // The engine reports which level configured a server, not a path: a global
   // entry comes from the MCP configuration, a plugin entry names its plugin, and
@@ -731,6 +735,14 @@ function McpRow({ row, busy, retrying, busyOn, onOverride, onReconnect, result =
         <span className={`mt-0.5 block truncate text-[12px] leading-snug ${showsEngineError ? 'text-danger' : 'text-ink-faint'}`}>
           {detail}
         </span>
+        {catalogWarning === undefined ? null : (
+          <span role="status" data-add-mcp-warning={row.name} className="mt-0.5 block text-[12px] leading-4 text-ink-soft">
+            {catalogWarning.translated ? t('composer.addMenu.mcpCatalogRefreshFailed') : catalogWarning.detail}
+            {catalogWarning.translated && catalogWarning.detail !== undefined ? (
+              <span data-add-mcp-warning-detail={row.name} className="mt-0.5 block text-ink-faint">{catalogWarning.detail}</span>
+            ) : null}
+          </span>
+        )}
         <span className="mt-0.5 block truncate text-[11px] leading-4 text-ink-faint">{origin}</span>
       </span>
       <span className="flex shrink-0 flex-col items-end gap-0.5">
@@ -739,7 +751,8 @@ function McpRow({ row, busy, retrying, busyOn, onOverride, onReconnect, result =
             label={t('composer.addMenu.mcpToggle', { name: row.name })}
             layout="bare"
             checked={checked}
-            disabled={busy}
+            // Busy only paints the choice just made. A slow on stays revocable
+            // from this switch and from Use config; the picker drops the late reply.
             onChange={(on) => { onOverride(locator, overrideForSwitch(row, on), row.name); }}
           />
         ) : null}
@@ -756,7 +769,7 @@ function McpRow({ row, busy, retrying, busyOn, onOverride, onReconnect, result =
         {row.canRestore && locator !== undefined ? (
           <button
             type="button"
-            disabled={busy}
+            data-add-mcp-restore={row.name}
             onClick={() => { onOverride(locator, 'inherit', row.name); }}
             className={`${QUIET_BUTTON} min-h-6 px-1 text-[11px]`}
           >
@@ -1113,7 +1126,7 @@ export function AddMenu({
   const insertSkill = (item: SlashItem) => { close(); skills?.onInsert(item); };
   // A plugin pick is a scope write, not a draft edit: the panel stays open so
   // the switch the reader just flipped is still there, and nothing is sent.
-  const busyPlugins = plugins?.busyId;
+
   const busyMcp = mcp?.busyName;
   const togglePlugin = (pluginId: string, enabled: boolean) => { plugins?.onToggle(pluginId, enabled); };
   const mentionFile = (hit: FsSearchHit) => { close(); files?.onMention(hit); };
@@ -1211,7 +1224,7 @@ export function AddMenu({
         <>
           <GroupLabel>{t('composer.addMenu.plugins')}</GroupLabel>
           {pluginMatches.slice(0, SEARCH_ROW_LIMIT).map((plugin) => (
-            <PluginRow key={plugin.id} plugin={plugin} busy={busyPlugins === plugin.id} onToggle={togglePlugin} result />
+            <PluginRow key={plugin.id} plugin={plugin} onToggle={togglePlugin} result />
           ))}
         </>
       ) : null}
@@ -1371,7 +1384,7 @@ export function AddMenu({
           : plugins.failed && plugins.items.length === 0 ? note(t('composer.addMenu.pluginsFailed'), 'danger')
           : pluginMatches.length === 0 ? note(trimmed === '' ? t('composer.addMenu.pluginsEmpty') : t('composer.addMenu.noMatch', { query: trimmed }))
           : pluginMatches.map((plugin) => (
-            <PluginRow key={plugin.id} plugin={plugin} busy={busyPlugins === plugin.id} onToggle={togglePlugin} />
+            <PluginRow key={plugin.id} plugin={plugin} onToggle={togglePlugin} />
           ))}
       </div>
       <p className="px-3 pt-1 pb-1.5 text-[12px] leading-4 text-ink-faint">{t('composer.addMenu.pluginsHint')}</p>
