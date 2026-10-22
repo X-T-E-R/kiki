@@ -232,7 +232,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector {
     if (!sameIdentity(link.grant.source, this.admission.identity) || !sameIdentity(link.grant.target, descriptor.target)) denied('bridge_identity_mismatch');
     return link;
   }
-  private source(source: { workspaceId: string; sessionId: string } | undefined): ThreadRef { if (source === undefined) denied('bridge_source_required'); return { hostId: this.admission.identity.hostId, ...source }; }
+  private source(source: { workspaceId: string; sessionId: string } | undefined): ThreadRef { if (source === undefined) denied('bridge_source_required'); return plainRef({ hostId: this.admission.identity.hostId, ...source }); }
   async list(input: ListThreadsInput): Promise<ListThreadsResult> {
     const link = this.choose(input, input.caller);
     const result = await this.remote<ListThreadsResult>(link, 'list', { bridgeId: link.grant.id, revision: link.grant.revision, source: this.source(input.caller), workspaceId: input.workspaceId, cursor: input.cursor, limit: input.limit }, input.signal);
