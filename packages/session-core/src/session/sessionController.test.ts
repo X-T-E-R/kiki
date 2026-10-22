@@ -838,6 +838,11 @@ describe('SessionController pipeline', () => {
       .mockResolvedValueOnce(snapshot())
       .mockRejectedValueOnce(new ApiError({
         code: API_CODES.SESSION_NOT_FOUND,
+        msg: 'session session_test not found',
+        data: null,
+      }))
+      .mockRejectedValueOnce(new ApiError({
+        code: API_CODES.SESSION_NOT_FOUND,
         msg: 'session not found: session_test',
         data: null,
       }))
@@ -851,6 +856,11 @@ describe('SessionController pipeline', () => {
     );
     await controller.open();
     expect(controller.getState().loaded).toBe(true);
+    controller.suspend();
+    await controller.resume();
+    expect(controller.getState().loaded).toBe(true);
+    expect(controller.getState().loadError).toBeUndefined();
+    expect(isDefiniteSessionAbsenceMessage('session session_test not found (code 40401)')).toBe(false);
     controller.suspend();
     await controller.resume();
     expect(controller.getState().loaded).toBe(true);

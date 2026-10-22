@@ -99,21 +99,20 @@ export function isUnconfirmedTransportError(error: unknown): boolean {
 const API_ERROR_CODE_SUFFIX = /\s*\(code -?\d+\)$/;
 
 /**
- * The whole error text is one of the sentences the server emits when the
- * session entity itself is gone. A longer internal error that only contains
- * the words is not absence.
+ * The whole error text says the session entity is gone. A sentence having a
+ * producer is not enough.
  *
- * Kept sentences, and where they are produced:
+ * Entity gone:
  * - `session.not_found` — protocol reason (`packages/protocol/src/error-codes.ts`)
  * - `session <id> does not exist`, `temporary session <id> does not exist`
- *   — index or handle miss (`packages/kap-server/src/routes/sessions.ts`,
- *   `routes/snapshot.ts`, `services/messages/messageHistory.ts`)
- * - `session <id> not found` — live handle miss
- *   (`packages/kap-server/src/transport/dispatcher.ts`,
- *   `transport/businessSnapshotDispatcher.ts`, title generate in `routes/sessions.ts`)
+ *   — index or stored-handle miss (`packages/kap-server/src/routes/sessions.ts`
+ *   GET, `routes/snapshot.ts`, `services/messages/messageHistory.ts`)
  * - `session not found` — preview and media when the session record is absent
  *   (`routes/documentPreview.ts`, `routes/sessionMedia.ts`)
  *
+ * Not entity gone: `session <id> not found`. `businessSnapshotDispatcher.ts`
+ * and `transport/dispatcher.ts` throw it when `getLiveSessionById` misses.
+ * That is a missing live handle, not proof the stored session is gone.
  * `session not found: <id>` is the history page, cold baseline, and transcript
  * route (`transport/klient/sessionViewHttp.ts`, `routes/transcript.ts`).
  */
@@ -122,7 +121,6 @@ export function isDefiniteSessionAbsenceMessage(message: string): boolean {
   if (text === 'session.not_found') return true;
   if (/^session not found$/i.test(text)) return true;
   if (/^(?:temporary )?session \S+ does not exist$/i.test(text)) return true;
-  if (/^session \S+ not found$/i.test(text)) return true;
   return false;
 }
 

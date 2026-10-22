@@ -2161,6 +2161,7 @@ describe('session-not-found fallback', () => {
     expect(sessionAbsenceShouldLeaveRoute(gone, 'sess-a', '/s/sess-a')).toBe(true);
     expect(sessionAbsenceShouldLeaveRoute(gone, 'sess-a', '/s/sess-a/agent/main')).toBe(true);
     expect(sessionAbsenceShouldLeaveRoute('session not found: sess-a (code 40401)', 'sess-a', '/s/sess-a')).toBe(false);
+    expect(sessionAbsenceShouldLeaveRoute('session sess-a not found (code 40401)', 'sess-a', '/s/sess-a')).toBe(false);
     expect(sessionAbsenceShouldLeaveRoute('content unavailable (code 40401)', 'sess-a', '/s/sess-a')).toBe(false);
     expect(sessionAbsenceShouldLeaveRoute('session sess-a has no recoverable cwd (code 40401)', 'sess-a', '/s/sess-a')).toBe(false);
     expect(sessionAbsenceShouldLeaveRoute(gone, 'sess-a', '/s/sess-b')).toBe(false);
