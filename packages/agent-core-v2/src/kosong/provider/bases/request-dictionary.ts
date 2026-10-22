@@ -311,7 +311,7 @@ export class RequestDictionaryTransport {
     const entries = this._entries.get(scopeKey);
     if (entries === undefined) return undefined;
     let selected: DictionaryEntry | undefined;
-    for (const entry of [...entries.values()]) {
+    for (const entry of entries.values()) {
       if (now - entry.storedAt >= this._ttlMs) {
         this.drop(scopeKey, entry);
         continue;
@@ -448,7 +448,7 @@ export class RequestDictionaryTransport {
 
   private prune(now: number): void {
     for (const [scopeKey, entries] of this._entries) {
-      for (const entry of [...entries.values()]) {
+      for (const entry of entries.values()) {
         if (now - entry.storedAt >= this._ttlMs) this.drop(scopeKey, entry);
       }
     }
