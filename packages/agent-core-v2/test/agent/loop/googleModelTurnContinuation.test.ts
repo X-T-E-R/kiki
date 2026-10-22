@@ -5,6 +5,7 @@ import { IEventBus } from '#/app/event/eventBus';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { WarningIssued } from '#/agent/profile/profileOps';
+import { TurnStepRetrying } from '#/agent/stepRetry/stepRetryService';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import type { ChatProvider } from '#/kosong/contract/provider';
@@ -19,18 +20,32 @@ const SIGNATURE = 'sig-fixture';
 const PROMPT = 'Complete the task and report the result.';
 
 describe('google model-turn continuation', () => {
-  it('continues a gemini-4 think-only result in the same turn without a model tail', async () => {
+  it('retries a gemini-4 think-only STOP from the original snapshot', async () => {
     const generateContentStream = scriptedStream([thinkChunk(), textChunk('Visible answer')]);
     const local = googleAgent('gemini-4-argon', generateContentStream);
     const warnings: WarningIssued[] = [];
+    const retries: TurnStepRetrying[] = [];
     local.get(IEventBus).subscribe(WarningIssued, (event) => warnings.push(event));
+    local.get(IEventBus).subscribe(TurnStepRetrying, (event) => retries.push(event));
     try {
       const terminal = await (await prompt(local)).completion;
-      expect(terminal).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 2 } });
+      expect(terminal).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 1 } });
       expect(generateContentStream).toHaveBeenCalledTimes(2);
       expect(warnings.some((warning) => warning.code === 'google-model-turn-prefill')).toBe(false);
+      expect(contentsOf(generateContentStream.mock.calls[1]?.[0])).toEqual(
+        contentsOf(generateContentStream.mock.calls[0]?.[0]),
+      );
       expect(contentsOf(generateContentStream.mock.calls[1]?.[0]).at(-1)?.['role']).toBe('user');
       expect(signaturesOf(generateContentStream.mock.calls[1]?.[0])).toEqual([]);
+      expect(retries).toHaveLength(1);
+      expect(retries[0]).toMatchObject({
+        failedAttempt: 1,
+        nextAttempt: 2,
+        maxAttempts: 2,
+        delayMs: 0,
+        errorName: 'GeminiThinkOnlyStop',
+      });
+      expect(retries[0]?.errorMessage.toLowerCase().includes('prefill')).toBe(false);
       expect(storedThink(local)).toEqual([{ type: 'think', think: THINKING, encrypted: SIGNATURE }]);
       expect(local.get(IAgentUsageService).status().currentTurn).toMatchObject({
         inputOther: 10,
@@ -69,7 +84,11 @@ describe('google model-turn continuation', () => {
       expect(terminal).toMatchObject({ state: 'completed', result: { type: 'completed' } });
       expect(toolRuns).toBe(1);
       expect(generateContentStream).toHaveBeenCalledTimes(3);
+      expect(contentsOf(generateContentStream.mock.calls[1]?.[0])).toEqual(
+        contentsOf(generateContentStream.mock.calls[0]?.[0]),
+      );
       expect(contentsOf(generateContentStream.mock.calls[1]?.[0]).at(-1)?.['role']).toBe('user');
+      expect(signaturesOf(generateContentStream.mock.calls[1]?.[0])).toEqual([]);
       expect(signaturesOf(generateContentStream.mock.calls[2]?.[0])).toContain(SIGNATURE);
       expect(contentsOf(generateContentStream.mock.calls[2]?.[0]).at(-1)?.['role']).toBe('user');
       expect(storedThink(local)).toEqual([{ type: 'think', think: THINKING, encrypted: SIGNATURE }]);
@@ -103,7 +122,10 @@ describe('google model-turn continuation', () => {
       const terminal = await (await prompt(local)).completion;
       expect(terminal).toMatchObject({
         state: 'failed',
-        result: { type: 'failed', error: { code: 'loop.max_steps_exceeded', details: { google_think_resend_bound: 1 } } },
+        result: { type: 'failed', error: {
+          code: 'provider.api_error',
+          details: { google_stop: 'think_snapshot_exhausted', google_think_snapshot_retries: 1 },
+        } },
       });
       expect(generateContentStream).toHaveBeenCalledTimes(2);
       expect(storedThink(local)).toEqual([
@@ -115,11 +137,36 @@ describe('google model-turn continuation', () => {
     }
   });
 
+  it('stops a gemini-4 CONTINUATION instead of completing the turn', async () => {
+    const generateContentStream = scriptedStream([continuationChunk(), textChunk('should not send')]);
+    const local = googleAgent('gemini-4-argon', generateContentStream);
+    const retries: TurnStepRetrying[] = [];
+    local.get(IEventBus).subscribe(TurnStepRetrying, (event) => retries.push(event));
+    try {
+      const terminal = await (await prompt(local)).completion;
+      expect(terminal).toMatchObject({
+        state: 'failed',
+        result: { type: 'failed', error: {
+          code: 'provider.api_error',
+          details: { google_stop: 'continuation_unsupported', raw_finish_reason: 'CONTINUATION' },
+        } },
+      });
+      expect(generateContentStream).toHaveBeenCalledTimes(1);
+      expect(retries).toEqual([]);
+      expect(storedThink(local)).toEqual([{ type: 'think', think: THINKING, encrypted: SIGNATURE }]);
+      expect(promptCount(local, PROMPT)).toBe(1);
+    } finally {
+      await local.dispose();
+    }
+  });
+
   it('still continues a gemini-2.5 think-only result and echoes the signature', async () => {
     const generateContentStream = scriptedStream([thinkChunk(), textChunk('Visible answer')]);
     const local = googleAgent('gemini-2.5-flash', generateContentStream);
     const warnings: WarningIssued[] = [];
+    const retries: TurnStepRetrying[] = [];
     local.get(IEventBus).subscribe(WarningIssued, (event) => warnings.push(event));
+    local.get(IEventBus).subscribe(TurnStepRetrying, (event) => retries.push(event));
     try {
       const terminal = await (await prompt(local)).completion;
       expect(terminal).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 2 } });
@@ -128,6 +175,7 @@ describe('google model-turn continuation', () => {
       const second = generateContentStream.mock.calls[1]?.[0];
       expect(contentsOf(second).at(-1)?.['role']).toBe('model');
       expect(signaturesOf(second)).toEqual([SIGNATURE]);
+      expect(retries).toEqual([]);
       expect(promptCount(local, PROMPT)).toBe(1);
       await local.expectResumeMatches();
     } finally {
@@ -208,6 +256,22 @@ function signaturesOf(params: unknown): string[] {
     }
   }
   return signatures;
+}
+
+function continuationChunk(): () => AsyncGenerator<Record<string, unknown>> {
+  return async function* continuation() {
+    yield {
+      candidates: [{
+        content: {
+          role: 'model',
+          parts: [{ thought: true, text: THINKING, thoughtSignature: SIGNATURE }],
+        },
+        finishReason: 'CONTINUATION',
+      }],
+      usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 2 },
+      responseId: 'resp-continuation',
+    };
+  };
 }
 
 function thinkChunk(): () => AsyncGenerator<Record<string, unknown>> {

@@ -276,6 +276,19 @@ describe('generate() stream normalization', () => {
     },
   );
 
+  it('returns a CONTINUATION thinking partial instead of treating it as an empty response', async () => {
+    class ContinuationStream extends FakeStreamedMessage {
+      override readonly finishReason: FinishReason | null = 'other';
+      override readonly rawFinishReason: string | null = 'CONTINUATION';
+    }
+    const parts = [{ type: 'think' as const, think: 'partial thought', encrypted: 'sig-fixture' }];
+    const { provider } = createFakeProvider(new ContinuationStream(parts));
+    const result = await generate(provider, SYSTEM_PROMPT, NO_TOOLS, HISTORY);
+    expect(result.finishReason).toBe('other');
+    expect(result.rawFinishReason).toBe('CONTINUATION');
+    expect(result.message.content).toEqual(parts);
+  });
+
   it('marks a provider-filtered thinking-only response as non-retryable', async () => {
     class FilteredStream extends FakeStreamedMessage {
       override readonly finishReason: FinishReason | null = 'filtered';

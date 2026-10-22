@@ -31,11 +31,13 @@ import {
   type StreamedMessagePart,
   type ToolCall,
 } from '#/kosong/contract/message';
-import { type TokenUsage } from '#/kosong/contract/usage';
+import { addUsage, type TokenUsage } from '#/kosong/contract/usage';
+import { ChatProviderError, isRetryableGenerateError } from '#/kosong/contract/errors';
 import { BugIndicatingError, ErrorCodes, Error2, isError2, toKimiErrorPayload } from '#/errors';
 import { OrderedHookSlot } from '#/hooks';
 
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import type { ContextMessage } from '#/agent/contextMemory/types';
 import { deliveryOriginOf, newDeliveryId } from '#/agent/contextMemory/messageDelivery';
 import { newMessageId } from '#/agent/contextMemory/messageId';
 import { isVacuousContentPart } from '#/agent/contextMemory/vacuousContent';
@@ -90,6 +92,7 @@ import {
   TurnStepStarted,
   type TurnInterruptReason,
 } from './turnEvents';
+import { TurnStepRetrying } from '#/agent/stepRetry/stepRetryService';
 import { TurnCancel, TurnEnded, turnKey, TurnPrompt } from './turnOps';
 
 export type LoopInterruptReason = 'aborted' | 'max_steps' | 'error';
@@ -1021,6 +1024,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         stepUuid,
         markStepStarted,
       );
+      const snapshot = sealedGoogleRequestSnapshot(this.context.get());
       const request = this.llmRequester.start(
         {
           source: { type: 'turn', turnId, step: currentStep },
@@ -1041,6 +1045,75 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       }
       this.lastRequestTraceId = request.trace.traceId;
       this.appendResponseContent(turnId, currentStep, stepUuid, response, streamParts);
+      if (
+        isRealThinkOnlyCompletion(response) &&
+        this.llmRequester.supportsAssistantPrefill?.() === false
+      ) {
+        if (this.googleThinkResends >= 1) {
+          this.sealGoogleProtocolStep(turnId, currentStep, stepUuid, response, markStepStarted);
+          stepEndAppended = true;
+          throw googleThinkSnapshotExhausted(response);
+        }
+        this.googleThinkResends += 1;
+        await this.dispatcher.dispatch(new TurnStepRetrying({
+          turnId,
+          step: currentStep,
+          stepId: stepUuid,
+          failedAttempt: 1,
+          nextAttempt: 2,
+          maxAttempts: 2,
+          delayMs: 0,
+          errorName: 'GeminiThinkOnlyStop',
+          errorMessage:
+            'Gemini finished with STOP and only thinking. Official continuation requires finishReason CONTINUATION plus a continuationToken, which this SDK cannot send. Retrying the original request snapshot once.',
+        }));
+        const retryTask = this.llmRequester.start(
+          {
+            messages: snapshot,
+            source: { type: 'turn', turnId, step: currentStep },
+            onAttemptRetry: () => {
+              streamParts.discardAttemptParts();
+            },
+          },
+          streamParts.handle,
+          signal,
+        );
+        this.activeRequestTrace = retryTask.trace;
+        let retry: AgentLLMRequestFinish;
+        try {
+          retry = await retryTask.result;
+        } catch (error) {
+          this.sealGoogleProtocolStep(turnId, currentStep, stepUuid, response, markStepStarted);
+          stepEndAppended = true;
+          if (isRetryableGenerateError(error)) {
+            throw new ChatProviderError(
+              `Gemini think-only snapshot retry failed (${toErrorMessage(error)}). The stored thinking was kept. This SDK cannot send a continuationToken, so the turn stopped without a completed answer.`,
+              undefined,
+              { details: {
+                google_stop: 'think_snapshot_exhausted',
+                google_think_snapshot_retries: 1,
+                raw_finish_reason: response.rawFinishReason ?? 'STOP',
+              } },
+            );
+          }
+          throw error;
+        }
+        this.lastRequestTraceId = retryTask.trace.traceId;
+        this.appendResponseContent(turnId, currentStep, stepUuid, retry, streamParts);
+        response = { ...retry, usage: addUsage(response.usage, retry.usage) };
+        if (response.rawFinishReason === 'CONTINUATION' || isRealThinkOnlyCompletion(response)) {
+          this.sealGoogleProtocolStep(turnId, currentStep, stepUuid, response, markStepStarted);
+          stepEndAppended = true;
+          throw response.rawFinishReason === 'CONTINUATION'
+            ? googleContinuationUnsupported(response)
+            : googleThinkSnapshotExhausted(response);
+        }
+      }
+      if (response.rawFinishReason === 'CONTINUATION') {
+        this.sealGoogleProtocolStep(turnId, currentStep, stepUuid, response, markStepStarted);
+        stepEndAppended = true;
+        throw googleContinuationUnsupported(response);
+      }
       if (
         this.scope.parentAgentId !== undefined &&
         response.providerFinishReason === 'completed' &&
@@ -1093,14 +1166,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       );
       if (!hookStopTurn && isRealThinkOnlyCompletion(response)) {
         if (this.llmRequester.supportsAssistantPrefill?.() === false) {
-          if (this.googleThinkResends >= 1) {
-            throw new Error2(
-              ErrorCodes.LOOP_MAX_STEPS_EXCEEDED,
-              'Gemini returned only thinking again. This SDK cannot send a continuation token, so the turn stopped after one resend.',
-              { details: { google_think_resend_bound: 1 } },
-            );
-          }
-          this.googleThinkResends += 1;
+          throw googleThinkSnapshotExhausted(response);
         }
         this.enqueue(new ContinuationStepRequest());
       } else {
@@ -1298,6 +1364,34 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     }
     finishReason = stopTurn ? 'completed' : 'tool_calls';
     return finishReason;
+  }
+
+  private sealGoogleProtocolStep(
+    turnId: number,
+    currentStep: number,
+    stepUuid: string,
+    response: AgentLLMRequestFinish,
+    markStepStarted: () => void,
+  ): void {
+    markStepStarted();
+    const timing = response.timing;
+    this.context.appendLoopEvent({
+      type: 'step.end',
+      uuid: stepUuid,
+      turnId: String(turnId),
+      step: currentStep,
+      finishReason: 'other',
+      usage: response.usage,
+      llmFirstTokenLatencyMs: timing?.firstTokenLatencyMs,
+      llmStreamDurationMs: timing?.streamDurationMs,
+      llmRequestBuildMs: timing?.requestBuildMs,
+      llmServerFirstTokenMs: timing?.serverFirstTokenMs,
+      llmServerDecodeMs: timing?.serverDecodeMs,
+      llmClientConsumeMs: timing?.clientConsumeMs,
+      messageId: response.providerMessageId,
+      providerFinishReason: response.providerFinishReason,
+      rawFinishReason: response.rawFinishReason,
+    });
   }
 
   private finishStep(
@@ -1541,6 +1635,37 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         partialContent.splice(0).filter((entry) => !isVacuousContentPart(entry.part)),
     };
   }
+}
+
+function sealedGoogleRequestSnapshot(messages: readonly ContextMessage[]): ContextMessage[] {
+  return messages.filter((message) => message.partial !== true).map((message) => ({
+    ...message,
+    content: message.content.slice(),
+    toolCalls: message.toolCalls.slice(),
+  }));
+}
+
+function googleContinuationUnsupported(response: AgentLLMRequestFinish): ChatProviderError {
+  return new ChatProviderError(
+    'Gemini finished with CONTINUATION. Official continuation resends the same contents, system instruction, tools, and config with the latest continuationToken and does not append this partial output. This SDK cannot send a continuationToken, so the turn stopped with the partial response kept and no completed answer.',
+    undefined,
+    { details: {
+      google_stop: 'continuation_unsupported',
+      raw_finish_reason: response.rawFinishReason ?? 'CONTINUATION',
+    } },
+  );
+}
+
+function googleThinkSnapshotExhausted(response: AgentLLMRequestFinish): ChatProviderError {
+  return new ChatProviderError(
+    'Gemini finished with STOP and only thinking again. Official continuation applies only when finishReason is CONTINUATION and a continuationToken is present. This SDK cannot send that token. The original request was retried once from its snapshot, and this turn stopped with both thinking responses kept.',
+    undefined,
+    { details: {
+      google_stop: 'think_snapshot_exhausted',
+      google_think_snapshot_retries: 1,
+      raw_finish_reason: response.rawFinishReason ?? 'STOP',
+    } },
+  );
 }
 
 function isRealThinkOnlyCompletion(response: AgentLLMRequestFinish): boolean {

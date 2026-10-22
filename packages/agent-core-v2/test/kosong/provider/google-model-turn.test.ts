@@ -26,13 +26,15 @@ afterEach(() => {
 });
 
 describe('google-genai trailing model turn', () => {
-  it('resends a signed think-only tail on gemini-4 without the model turn', async () => {
+  it('refuses a signed think-only tail on gemini-4', async () => {
     const history = [user('Hi'), assistantThink('earlier reasoning', THINK_SIGNATURE)];
     const seen = installFetch(okSse);
-    await drainGenerate('gemini-4-argon', history);
-    expect(seen).toHaveLength(1);
-    expect(contentsOf(seen[0]!).map((content) => content['role'])).toEqual(['user']);
-    expect(signaturesOfRequest(seen[0]!)).toEqual([]);
+    expectLocalRefusal(
+      await captureGenerate('gemini-4-argon', history),
+      'model_prefill',
+      ['thought_signature', 'thought', 'thought_text'],
+    );
+    expect(seen).toHaveLength(0);
     expect(history).toEqual([user('Hi'), assistantThink('earlier reasoning', THINK_SIGNATURE)]);
   });
 
@@ -236,6 +238,49 @@ describe('google-genai trailing model turn', () => {
     expect(history[2]?.content[1]).toMatchObject({ type: 'image_url' });
   });
 
+  it('keeps gemini-2.5 tool images beside the function response', async () => {
+    const history = [
+      user('go'),
+      {
+        role: 'assistant',
+        content: [],
+        toolCalls: [call('ReadMediaFile_a', 'ReadMediaFile', CALL_SIGNATURE)],
+      },
+      readMediaResult('ReadMediaFile_a', 'fig-a.png', 'simple'),
+      user('Continue in text.'),
+    ] satisfies Message[];
+    const seen = installFetch(okSse);
+    await drainGenerate('gemini-2.5-flash', history);
+    const contents = contentsOf(seen[0]!);
+    expect(contents.map((content) => content['role'])).toEqual(['user', 'model', 'user', 'user']);
+    expect(partKinds(contents[2])).toEqual(['function_response', 'media']);
+    expect(responseMedia(partsOf(contents[2])[0]!).parts).toEqual([]);
+    expect(partsOf(contents[2])[1]).toMatchObject({ inlineData: { mimeType: 'image/png', data: 'simple' } });
+    expect(partKinds(contents[3])).toEqual(['text']);
+    expect(mixedUserContents(contents)).toEqual([]);
+    vi.unstubAllGlobals();
+    const nested = installFetch(okSse);
+    await drainGenerate('gemini-3-flash-preview', history);
+    const nestedContents = contentsOf(nested[0]!);
+    expect(partKinds(nestedContents[2])).toEqual(['function_response']);
+    expect(responseMedia(partsOf(nestedContents[2])[0]!).parts).toEqual([
+      { inlineData: { mimeType: 'image/png', data: 'simple' } },
+    ]);
+    expect(partKinds(nestedContents[3])).toEqual(['text']);
+  });
+
+  it('keeps CONTINUATION off the STOP completion reason', async () => {
+    installFetch(() => new Response(
+      'data: {"candidates":[{"content":{"role":"model","parts":[{"text":"partial"}]},"finishReason":"CONTINUATION"}]}\n\n',
+      { status: 200, headers: { 'content-type': 'text/event-stream' } },
+    ));
+    const provider = new GoogleGenAIChatProvider({ model: 'gemini-4-argon', apiKey: KEY, stream: true });
+    const stream = await provider.generate('system', [], [user('Hi')], { auth: { apiKey: KEY } });
+    for await (const part of stream) void part;
+    expect(stream.finishReason).toBe('other');
+    expect(stream.rawFinishReason).toBe('CONTINUATION');
+  });
+
   it('keeps an ordinary user continuation as the last turn after parallel tool images', async () => {
     const imageTail = [
       user('go'),
@@ -346,13 +391,15 @@ describe('google-genai trailing model turn', () => {
     expect(history[1]).toEqual(assistantText('   '));
   });
 
-  it('resends a signature-only think tail without putting that part on the wire', async () => {
+  it('refuses a signature-only think tail on gemini-4', async () => {
     const history = [user('Hi'), assistantThink('', THINK_SIGNATURE)];
     const seen = installFetch(okSse);
-    await drainGenerate('gemini-4-argon', history);
-    expect(seen).toHaveLength(1);
-    expect(contentsOf(seen[0]!).map((content) => content['role'])).toEqual(['user']);
-    expect(signaturesOfRequest(seen[0]!)).toEqual([]);
+    expectLocalRefusal(
+      await captureGenerate('gemini-4-argon', history),
+      'model_prefill',
+      ['thought_signature', 'thought'],
+    );
+    expect(seen).toHaveLength(0);
     expect(history[1]?.content[0]).toMatchObject({ type: 'think', encrypted: THINK_SIGNATURE });
   });
 

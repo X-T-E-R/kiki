@@ -191,6 +191,15 @@ describe('isRetryableGenerateError', () => {
     expect(isRetryableGenerateError(new ChatProviderError('upstream failure'))).toBe(true);
   });
 
+  it('does not retry a Gemini continuation or think-only snapshot stop', () => {
+    expect(isRetryableGenerateError(new ChatProviderError('stop', undefined, {
+      details: { google_stop: 'continuation_unsupported' },
+    }))).toBe(false);
+    expect(isRetryableGenerateError(new ChatProviderError('stop', undefined, {
+      details: { google_stop: 'think_snapshot_exhausted' },
+    }))).toBe(false);
+  });
+
   it.each([
     ['Invalid data URL for image: data:image/png;base64'],
     [

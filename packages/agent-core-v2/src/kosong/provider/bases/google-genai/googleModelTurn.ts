@@ -10,3 +10,11 @@ export function googleGenAIRejectsTrailingModelTurn(modelName: string): boolean 
   if (major > 3) return true;
   return major === 3 && minor >= 6;
 }
+
+export function googleGenAINestsFunctionResponseMedia(modelName: string): boolean {
+  const leaf = modelName.split('/').pop()?.trim().toLowerCase() ?? '';
+  const match = /^gemini-(\d+)/.exec(leaf);
+  if (match === null) return false;
+  const major = Number(match[1]);
+  return Number.isInteger(major) && major >= 3;
+}

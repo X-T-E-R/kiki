@@ -21,7 +21,10 @@ import type { Tool } from '#/kosong/contract/tool';
 import type { TokenUsage } from '#/kosong/contract/usage';
 
 import { mergeConsecutiveUserMessages } from '../merge-user-messages';
-import { googleGenAIRejectsTrailingModelTurn } from './googleModelTurn';
+import {
+  googleGenAINestsFunctionResponseMedia,
+  googleGenAIRejectsTrailingModelTurn,
+} from './googleModelTurn';
 import {
   mergeProviderRequestAuth,
   mergeRequestHeaders,
@@ -50,6 +53,8 @@ function normalizeGoogleGenAIFinishReason(raw: unknown): {
   switch (rawString) {
     case 'STOP':
       return { finishReason: 'completed', rawFinishReason: rawString };
+    case 'CONTINUATION':
+      return { finishReason: 'other', rawFinishReason: rawString };
     case 'MAX_TOKENS':
       return { finishReason: 'truncated', rawFinishReason: rawString };
     case 'SAFETY':
@@ -225,34 +230,12 @@ function omitEmptyTrailingGoogleContents(contents: readonly GoogleContent[]): Go
   return end === contents.length ? [...contents] : contents.slice(0, end);
 }
 
-function isThinkOnlyModelContent(content: GoogleContent): boolean {
-  if (content.role !== 'model') return false;
-  const kinds = uniqueGooglePartKinds(content.parts.flatMap(googlePartKinds));
-  return kinds.length > 0 && kinds.every((kind) =>
-    kind === 'thought' || kind === 'thought_signature' || kind === 'thought_text');
-}
-
-function omitTrailingThinkOnlyModelContents(contents: readonly GoogleContent[]): GoogleContent[] {
-  let end = contents.length;
-  while (end > 0) {
-    const content = contents[end - 1];
-    if (content === undefined || !isThinkOnlyModelContent(content)) break;
-    end -= 1;
-  }
-  return contents.slice(0, end);
-}
-
 function outboundGoogleGenAIContents(
   modelName: string,
   contents: readonly GoogleContent[],
 ): GoogleContent[] {
   if (!googleGenAIRejectsTrailingModelTurn(modelName)) return [...contents];
   const wire = omitEmptyTrailingGoogleContents(contents);
-  const continued = omitTrailingThinkOnlyModelContents(wire);
-  const continuedTail = lastNonEmptyGoogleContent(continued);
-  if (continuedTail.tail !== 'empty' && continuedTail.tail !== 'model_prefill' && continuedTail.tail !== 'model_function_call') {
-    return continued;
-  }
   const classified = lastNonEmptyGoogleContent(wire);
   if (classified.tail !== 'model_prefill' && classified.tail !== 'model_function_call') return wire;
   const reason = classified.tail === 'model_function_call'
@@ -408,6 +391,7 @@ function messageToGoogleGenAI(message: Message): GoogleContent {
 function toolMessageToFunctionResponseParts(
   message: Message,
   toolNameById: Map<string, string>,
+  nestMedia: boolean,
 ): GooglePart[] {
   if (message.role !== 'tool') {
     throw new ChatProviderError('Expected a tool message.');
@@ -441,14 +425,15 @@ function toolMessageToFunctionResponseParts(
     functionResponse: {
       name: toolCallIdToName(message.toolCallId, toolNameById),
       response: { output: textOutput },
-      parts: mediaParts,
+      parts: nestMedia ? mediaParts : [],
     },
   };
 
-  return [functionResponsePart];
+  return nestMedia ? [functionResponsePart] : [functionResponsePart, ...mediaParts];
 }
 
-export function messagesToGoogleGenAIContents(messages: Message[]): GoogleContent[] {
+export function messagesToGoogleGenAIContents(messages: Message[], modelName = ''): GoogleContent[] {
+  const nestFunctionResponseMedia = googleGenAINestsFunctionResponseMedia(modelName);
   const contents: GoogleContent[] = [];
   const toolNameById = new Map<string, string>();
 
@@ -525,7 +510,7 @@ export function messagesToGoogleGenAIContents(messages: Message[]): GoogleConten
 
         const parts: GooglePart[] = [];
         for (const toolMsg of sortedToolMessages) {
-          parts.push(...toolMessageToFunctionResponseParts(toolMsg, toolNameById));
+          parts.push(...toolMessageToFunctionResponseParts(toolMsg, toolNameById, nestFunctionResponseMedia));
         }
         contents.push({ role: 'user', parts });
         i = j;
@@ -537,7 +522,7 @@ export function messagesToGoogleGenAIContents(messages: Message[]): GoogleConten
     }
 
     if (message.role === 'tool') {
-      const parts: GooglePart[] = toolMessageToFunctionResponseParts(message, toolNameById);
+      const parts: GooglePart[] = toolMessageToFunctionResponseParts(message, toolNameById, nestFunctionResponseMedia);
       contents.push({ role: 'user', parts });
       i += 1;
       continue;
@@ -936,7 +921,7 @@ export class GoogleGenAIChatProvider implements ChatProvider {
       throw createAbortError();
     }
 
-    const contents = outboundGoogleGenAIContents(this._model, messagesToGoogleGenAIContents(history));
+    const contents = outboundGoogleGenAIContents(this._model, messagesToGoogleGenAIContents(history, this._model));
 
     let kwargs: GoogleGenAIGenerationKwargs = { ...this._generationKwargs };
 

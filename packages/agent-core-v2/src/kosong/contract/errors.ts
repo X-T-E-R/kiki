@@ -307,6 +307,8 @@ export function isRetryableGenerateError(error: unknown): boolean {
   if (error instanceof ChatProviderError) {
     const tail = error.details?.['google_content_tail'];
     if (tail === 'model_prefill' || tail === 'model_function_call') return false;
+    const stop = error.details?.['google_stop'];
+    if (stop === 'continuation_unsupported' || stop === 'think_snapshot_exhausted') return false;
     return !isImageFormatError(error);
   }
   return false;
