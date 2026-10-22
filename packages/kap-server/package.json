@@ -25,6 +25,10 @@
       "types": "./src/contract.ts",
       "default": "./src/contract.ts"
     },
+    "./mcp-stdio-runtime": {
+      "types": "./src/mcp/stdioRuntime.ts",
+      "default": "./src/mcp/stdioRuntime.ts"
+    },
     "./search-worker-runtime": {
       "types": "./src/search/worker/runtime.ts",
       "default": "./src/search/worker/runtime.ts"

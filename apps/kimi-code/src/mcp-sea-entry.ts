@@ -1,4 +1,4 @@
-import { kikiMcpConfigFromEnv, runKikiMcpStdio } from '@kiki/kap-server';
+import { kikiMcpConfigFromEnv, runKikiMcpStdio } from '@kiki/kap-server/mcp-stdio-runtime';
 
 process.title = 'kiki';
 

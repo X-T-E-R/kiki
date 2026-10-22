@@ -124,6 +124,34 @@ describe('SEA native package imports', () => {
     }
   });
 
+  it('loads the attached MCP runtime without evaluating the server bootstrap', async () => {
+    mkdirSync(resolve('.tmp'), { recursive: true });
+    const dir = mkdtempSync(resolve('.tmp', 'mcp-runtime-bundle-'));
+    try {
+      const runtime = join(dir, 'mcp-runtime.ts');
+      const bootstrap = join(dir, 'server-bootstrap.ts');
+      writeFileSync(runtime, "export function kikiMcpConfigFromEnv() { return {}; }\nexport async function runKikiMcpStdio() { console.log('narrow-mcp-runtime'); }\n");
+      writeFileSync(bootstrap, "throw new Error('Server bootstrap must not run for attached MCP');\n");
+      await build({
+        ...nativeConfig,
+        config: false,
+        entry: [resolve(import.meta.dirname, '../../../src/mcp-sea-entry.ts')],
+        outDir: join(dir, 'out'),
+        alias: {
+          ...nativeConfig.alias,
+          '@kiki/kap-server/mcp-stdio-runtime': runtime,
+          '@kiki/kap-server': bootstrap,
+        },
+      });
+      const result = spawnSync(process.execPath, [join(dir, 'out/main.cjs')], { encoding: 'utf8', timeout: 10_000 });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe('narrow-mcp-runtime\n');
+      expect(result.stderr).toBe('');
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
   it('loads validated disk ESM with top-level await through the bundled plugin entry', async () => {
     mkdirSync(resolve('.tmp'), { recursive: true });
     const dir = mkdtempSync(resolve('.tmp', 'plugin-node-bundle-'));
