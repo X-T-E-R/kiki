@@ -1,4 +1,4 @@
-import { Error2, type Error2Options } from '#/_base/errors/errors';
+import { Error2, attachErrorDetails, readAttachedErrorDetails, type Error2Options } from '#/_base/errors/errors';
 import type { FinishReason } from './provider';
 
 export const CONFIG_INVALID_ERROR_CODE = 'config.invalid';
@@ -283,25 +283,77 @@ export function isImageFormatError(error: unknown): boolean {
   return false;
 }
 
-export function isAmbiguousRequestDelivery(error: unknown): boolean {
+function explicitDeliveryMark(error: object): 'unknown' | 'executed' | undefined {
+  const attached = readAttachedErrorDetails(error)?.['request_delivery'];
+  const details = error instanceof Error2 ? error.details?.['request_delivery'] : undefined;
+  const mark = attached ?? details;
+  if (mark === 'ambiguous') return 'unknown';
+  if (mark === 'executed') return 'executed';
+  return undefined;
+}
+
+function hasProviderEvent(error: object): boolean {
+  const attached = readAttachedErrorDetails(error)?.['errorSource'];
+  const details = error instanceof Error2 ? error.details?.['errorSource'] : undefined;
+  return attached === 'provider_event' || details === 'provider_event';
+}
+
+function noteRequestDelivery(error: unknown, mark: 'ambiguous' | 'executed'): void {
   const visited = new Set<unknown>();
-  while (error instanceof Error && !visited.has(error)) {
-    if (error instanceof Error2 && error.details?.['request_delivery'] === 'ambiguous') return true;
-    visited.add(error);
-    error = error.cause;
+  let current: unknown = error;
+  while (typeof current === 'object' && current !== null && !visited.has(current)) {
+    visited.add(current);
+    if (!(mark === 'executed' && explicitDeliveryMark(current) === 'unknown')) {
+      attachErrorDetails(current, { request_delivery: mark });
+    }
+    current = current instanceof Error ? current.cause : undefined;
   }
-  return false;
+}
+
+/** Facts that forbid sending the same generation or its tool work again.
+ *
+ * `unknown` means the outcome was not observed. `executed` means a parsed provider
+ * event, response id, partial output, or tool was already observed. `undefined`
+ * means neither fact is present, so a pre-stream HTTP retry and the one explicit
+ * HTTP 401 refresh stay available. The walk includes causes, and the marks are
+ * stored on that chain, so `unwrapErrorCause` does not remove them. Call this on
+ * the original error before unwrapping.
+ */
+export function requestDeliveryProvenance(error: unknown): 'unknown' | 'executed' | undefined {
+  const visited = new Set<unknown>();
+  let current: unknown = error;
+  let executed = false;
+  while (typeof current === 'object' && current !== null && !visited.has(current)) {
+    visited.add(current);
+    const mark = explicitDeliveryMark(current);
+    if (mark === 'unknown') return 'unknown';
+    if (mark === 'executed' || hasProviderEvent(current)) executed = true;
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return executed ? 'executed' : undefined;
+}
+
+export function isAmbiguousRequestDelivery(error: unknown): boolean {
+  return requestDeliveryProvenance(error) === 'unknown';
 }
 
 export function ambiguousRequestDelivery(error: unknown): ChatProviderError {
-  return new ChatProviderError('Request delivery is uncertain; generation was not retried.', undefined, {
+  noteRequestDelivery(error, 'ambiguous');
+  const wrapped = new ChatProviderError('Request delivery is uncertain; generation was not retried.', undefined, {
     cause: error,
     details: { request_delivery: 'ambiguous' },
   });
+  noteRequestDelivery(wrapped, 'ambiguous');
+  return wrapped;
+}
+
+/** Records that this failure happened after a response, partial output, or tool was observed. */
+export function noteExecutedRequestDelivery(error: unknown): void {
+  noteRequestDelivery(error, 'executed');
 }
 
 export function isRetryableGenerateError(error: unknown): boolean {
-  if (isAmbiguousRequestDelivery(error)) return false;
+  if (requestDeliveryProvenance(error) !== undefined) return false;
   if (error instanceof APIConnectionError || error instanceof APITimeoutError) {
     return true;
   }

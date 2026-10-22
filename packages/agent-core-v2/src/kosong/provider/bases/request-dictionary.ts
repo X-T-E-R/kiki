@@ -48,7 +48,6 @@ interface BudgetResident {
   drop: () => void;
 }
 
-/** Byte ceiling shared by every encoder. Residents do not carry dictionary bytes. */
 class DictionaryProcessBudget {
   private _bytes = 0;
   private _order = 0;

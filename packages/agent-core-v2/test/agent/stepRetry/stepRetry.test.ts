@@ -1,11 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { attachErrorDetails, unwrapErrorCause } from '#/errors';
 import {
   APIConnectionError,
   APIProviderOverloadedError,
   APIProviderRateLimitError,
   APIStatusError,
+  requestDeliveryProvenance,
 } from '#/kosong/contract/errors';
+import { guardRequestDelivery } from '#/kosong/provider/bases/request-delivery';
+import type { StreamedMessage } from '#/kosong/contract/provider';
 import { emptyUsage } from '#/kosong/contract/usage';
 import { IEventBus } from '#/app/event/eventBus';
 import { MAX_RETRY_AFTER_MS, readRetryAfterMs, retryBackoffDelays } from '#/_base/utils/retry';
@@ -674,7 +678,83 @@ describe('stepRetry plugin', () => {
       expect.objectContaining({ args: expect.objectContaining({ maxAttempts: 2 }) }),
     ]);
   });
+
+  it('does not replay an unknown connection drop even when a policy would retry that cause', async () => {
+    vi.useFakeTimers();
+    const failure = await caughtDelivery(deliveryStream(new APIConnectionError('terminated')));
+    let calls = 0;
+    ctx = createRetryTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        throw failure;
+      }),
+      { initialConfig: { retry: { policies: [{ match: 'APIConnectionError', maxAttempts: 5 }] } } },
+    );
+
+    const result = await runTurn(1);
+
+    expect(result.type).toBe('failed');
+    if (result.type !== 'failed') throw new Error('Expected the turn to fail');
+    expect(calls).toBe(1);
+    expect(rpcEvents('turn.step.retrying')).toEqual([]);
+    expect(requestDeliveryProvenance(result.error)).toBe('unknown');
+    expect(requestDeliveryProvenance(unwrapErrorCause(result.error))).toBe('unknown');
+    expect(unwrapErrorCause(result.error)).toMatchObject({ name: 'APIConnectionError', message: 'terminated' });
+  });
+
+  it('does not replay a parsed 429 after output, and keeps the provider status', async () => {
+    vi.useFakeTimers();
+    const parsed = attachErrorDetails(new APIStatusError(429, 'slow down', 'req-429'), {
+      errorSource: 'provider_event',
+    });
+    const failure = await caughtDelivery(deliveryStream(parsed, { parts: [{ type: 'text', text: 'partial' }] }));
+    let calls = 0;
+    ctx = createRetryTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        throw failure;
+      }),
+    );
+
+    const result = await runTurn(1);
+
+    expect(result.type).toBe('failed');
+    if (result.type !== 'failed') throw new Error('Expected the turn to fail');
+    expect(calls).toBe(1);
+    expect(rpcEvents('turn.step.retrying')).toEqual([]);
+    expect(result.error).toBe(parsed);
+    expect(result.error).toMatchObject({ statusCode: 429, message: 'slow down', requestId: 'req-429' });
+    expect(requestDeliveryProvenance(result.error)).toBe('executed');
+  });
 });
+
+function deliveryStream(
+  error: unknown,
+  options?: { readonly id?: string | null; readonly parts?: ReadonlyArray<{ readonly type: 'text'; readonly text: string }> },
+): StreamedMessage {
+  const parts = options?.parts ?? [];
+  return {
+    id: options?.id ?? null,
+    usage: null,
+    finishReason: null,
+    rawFinishReason: null,
+    async *[Symbol.asyncIterator]() {
+      for (const part of parts) yield part;
+      throw error;
+    },
+  };
+}
+
+async function caughtDelivery(stream: StreamedMessage): Promise<unknown> {
+  const guarded = guardRequestDelivery(stream, true);
+  try {
+    for await (const _part of guarded) {
+    }
+  } catch (error) {
+    return error;
+  }
+  throw new Error('expected the guarded stream to fail');
+}
 
 describe('retryBackoffDelays', () => {
   it('starts at 500 milliseconds and doubles with up to 25 percent jitter', () => {
