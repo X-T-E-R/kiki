@@ -1,9 +1,11 @@
 import { createHash } from 'node:crypto';
-import { zstdDecompress } from 'node:zlib';
+import { gunzipSync, zstdDecompress } from 'node:zlib';
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { createRequestCompressionFetch } from '#/kosong/provider/bases/request-compression';
 import {
+  bodyInitBytes,
   dictionaryProcessBudgetAccounting,
   RequestDictionaryTransport,
   testingUseDictionaryBudget,
@@ -483,5 +485,53 @@ describe('RequestDictionaryTransport', () => {
       unref.mockRestore();
       budget.restore();
     }
+  });
+});
+
+describe('request body bytes', () => {
+  it('sends the exact pooled range and a shared-buffer copy', async () => {
+    const pool = Buffer.alloc(64, 0x11);
+    const slice = pool.subarray(8, 24);
+    slice.fill(0x5a);
+    const viewed = bodyInitBytes(slice);
+    expect(viewed.byteLength).toBe(slice.byteLength);
+    expect(Buffer.from(viewed)).toEqual(Buffer.from(slice));
+    expect(viewed.buffer).toBeInstanceOf(ArrayBuffer);
+
+    const shared = new SharedArrayBuffer(32);
+    const sharedView = new Uint8Array(shared);
+    sharedView.set([1, 2, 3, 4], 4);
+    const copied = bodyInitBytes(sharedView.subarray(4, 8));
+    expect(Buffer.from(copied)).toEqual(Buffer.from([1, 2, 3, 4]));
+    expect(copied.buffer).toBeInstanceOf(ArrayBuffer);
+    expect(copied.byteLength).toBe(4);
+
+    const transport = new RequestDictionaryTransport({ maxBodyBytes: 0 });
+    const server = fixtureFetch();
+    await transport.fetch(server.fetch, 'https://example.test/v1/responses', requestInit(), slice);
+    expect(server.calls[0]?.encoding).toBeNull();
+    expect(server.calls[0]?.body).toEqual(Buffer.from(slice));
+    expect(server.calls[0]?.body.length).toBe(16);
+    expect(server.calls[0]?.body.includes(0x11)).toBe(false);
+  });
+
+  it('sends gzip bytes that decode to the original body', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response('ok'));
+    const payload = 'x'.repeat(2048);
+    await createRequestCompressionFetch({
+      encoding: 'gzip',
+      targets: ['https://example.test/v1'],
+      minBytes: 1,
+    })(fetchImpl)('https://example.test/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: payload,
+    });
+    const sent = fetchImpl.mock.calls[0]?.[1]?.body;
+    expect(sent).toBeInstanceOf(Uint8Array);
+    if (!(sent instanceof Uint8Array)) throw new Error('expected request bytes');
+    const wire = Buffer.from(sent.buffer, sent.byteOffset, sent.byteLength);
+    expect(wire.length).toBe(sent.byteLength);
+    expect(gunzipSync(wire).toString()).toBe(payload);
   });
 });

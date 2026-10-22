@@ -233,7 +233,7 @@ export class RequestDictionaryTransport {
       signal.throwIfAborted();
       const headers = requestHeaders(baseHeaders, current.encoding, this._dictionaryEnabled, current.body);
       const storeRequested = headers.get('x-dict-store') === '1';
-      const response = await fetchImpl(input, { ...init, headers, body: current.body });
+      const response = await fetchImpl(input, { ...init, headers, body: bodyInitBytes(current.body) });
       const marked = isMarkedDecoderRejection(response);
       if (marked && current.encoding === 'dcz') {
         await releaseDecoderResponse(response);
@@ -475,6 +475,17 @@ function finiteLimit(value: number | undefined, fallback: number, minimum: numbe
 
 function sha256(value: Buffer): string {
   return createHash('sha256').update(value).digest('hex');
+}
+
+/** Exact request bytes as a DOM BodyInit. A pooled Buffer contributes only its own range. */
+export function bodyInitBytes(bytes: Uint8Array<ArrayBufferLike>): Uint8Array<ArrayBuffer> {
+  const buffer = bytes.buffer;
+  if (buffer instanceof ArrayBuffer) {
+    return new Uint8Array(buffer, bytes.byteOffset, bytes.byteLength);
+  }
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  return copy;
 }
 
 function requestHeaders(
