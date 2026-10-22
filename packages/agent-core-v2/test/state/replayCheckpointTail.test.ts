@@ -395,6 +395,28 @@ describe('replay checkpoint tail', () => {
     expect(part !== undefined && 'text' in part ? String(part.text).length : 0).toBe(REPLAY_CHECKPOINT_GROWTH_BYTES);
   }, 20_000);
 
+  it('keeps the previous checkpoint when a turn event arrives during the save', async () => {
+    const first = await checkpointed();
+    const before = await first.docs.get<{ wire: { size: number } }>(CHECKPOINT_SCOPE, CHECKPOINT_KEY);
+    const original = first.wire.journalSha256?.bind(first.wire);
+    let nested = false;
+    first.wire.journalSha256 = async (byteLength: number) => {
+      if (!nested) {
+        nested = true;
+        await first.dispatcher.dispatch(prompt('during-save', 1));
+      }
+      return original?.(byteLength);
+    };
+    await expect(first.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(false);
+    const during = await first.docs.get<{ wire: { size: number } }>(CHECKPOINT_SCOPE, CHECKPOINT_KEY);
+    expect(during?.wire.size).toBe(before?.wire.size);
+    first.wire.journalSha256 = original;
+    await expect(first.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(true);
+    const reopened = harness(first.storage);
+    await reopened.dispatcher.restore();
+    expect(queueText(reopened.state)).toBe('during-save');
+  });
+
   it('restores a batch of independent journals from exact checkpoints', async () => {
     const batch = 8;
     const storages: CountingStorage[] = [];
