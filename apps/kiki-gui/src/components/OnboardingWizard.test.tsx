@@ -371,6 +371,27 @@ describe('OnboardingWizard', () => {
     expect(dialog().textContent).toContain('How should Kiki work with you?');
   });
 
+  it('scrolls the step itself and leaves the header and footer outside that scroller', async () => {
+    await mount();
+    const scroller = dialog().querySelector<HTMLElement>('[data-onboarding-step-scroll]')!;
+    // height:100% never became the scrollport; the row clipped the step.
+    expect(scroller.className.split(/\s+/)).not.toContain('h-full');
+    expect(scroller.className).toContain('overflow-y-auto');
+    expect(scroller.className).toContain('min-h-0');
+    expect(scroller.className).toContain('flex-1');
+    const frame = scroller.parentElement;
+    expect(frame?.className).toContain('min-h-0');
+    expect(frame?.className).toContain('overflow-hidden');
+    expect(frame?.className).toContain('flex-col');
+    // The cap stays a cap. A fitting step must not be pinned to 85vh.
+    expect(dialog().className).toContain('max-h-[85vh]');
+    expect(dialog().className.split(/\s+/)).not.toContain('h-[85vh]');
+    expect(dialog().className.split(/\s+/)).not.toContain('h-full');
+    expect(scroller.contains(buttonByText('Next'))).toBe(false);
+    expect(scroller.contains(buttonByText('Set up later'))).toBe(false);
+    expect(dialog().querySelector('[aria-label="Close setup"]')?.closest('[data-onboarding-step-scroll]')).toBeNull();
+  });
+
   it('says there is more below from the first frame, and stops saying so at the end', async () => {
     installStepScroller();
     try {

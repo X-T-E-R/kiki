@@ -201,6 +201,9 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
   useLayoutEffect(() => {
     const node = stepScrollRef.current;
     if (node === null) return;
+    // A new step reuses this element. Leaving the previous offset would open
+    // the next step mid-scroll and hide its top.
+    node.scrollTop = 0;
     noteStepScroll();
     if (typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(() => { noteStepScroll(); });
@@ -406,12 +409,21 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
         </div>
       </div>
 
-      <div className="relative min-h-0 shrink grow overflow-hidden">
+      {/*
+        * The body row already has a used height (the panel caps at 85vh and
+        * this row shrinks). A child with height:100% does not resolve against
+        * that used height, so it grew with the step and the row clipped it —
+        * a short window showed the cut-off step and could not scroll. The
+        * scroller has to be the flex child: it keeps the header and footer
+        * where they are, scrolls when the step is taller, and stays content-
+        * sized when the step fits.
+        */}
+      <div className="relative flex min-h-0 shrink grow flex-col overflow-hidden">
         <div
           ref={stepScrollRef}
           data-onboarding-step-scroll
           onScroll={noteStepScroll}
-          className="h-full min-h-0 overflow-y-auto px-6 py-3"
+          className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-6 py-3"
         >
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
           <h3 className="font-display text-[15px] leading-5 font-semibold text-ink">{t(STEP_TITLE_KEYS[step])}</h3>

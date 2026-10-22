@@ -5,6 +5,11 @@
  *
  *   node scripts/visual-proof-onboarding.mjs [--matrix=all] [--only=onboarding-walk]
  *
+ * `onboarding-short-scroll` follows the steps the wizard has now — agreement,
+ * appearance, then depart — at 800×450, 390×360 and 1440×900. It wheels, moves
+ * scrollTop, and focuses a control below the fold. The walks below this note
+ * still describe an older welcome → approvals → routes order.
+ *
  * The run has three steps: the welcome page (language + appearance), the
  * permission default, and a closing page that lists the five discovery routes
  * themselves, one quiet row each. A row starts that route through the shared
@@ -37,9 +42,16 @@ import { runProof } from '../proof/runner.mjs';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 const TEXT = {
-  en: { next: 'Next', closeSetup: 'Close setup' },
-  zh: { next: '下一步', closeSetup: '关闭引导' },
+  en: { next: 'Next', back: 'Back', later: 'Set up later', closeSetup: 'Close setup' },
+  zh: { next: '下一步', back: '上一步', later: '稍后配置', closeSetup: '关闭引导' },
 };
+
+/** Short, narrow-and-short, and the original desktop window. */
+const SHORT_WINDOW_VIEWPORTS = [
+  { name: '800x450', width: 800, height: 450 },
+  { name: '390x360', width: 390, height: 360 },
+  { name: '1440x900', width: 1440, height: 900 },
+];
 
 const CONNECTIONS_CARD = '#st-card-providers-add, [data-add-connection-panel]';
 
@@ -300,7 +312,245 @@ async function discoverModelConnection({ page, view, shot, link }) {
   await shot('discover-resumed-narrow-expanded');
 }
 
+function footerOf(wizard) {
+  return wizard.locator(':scope > div').last();
+}
+
+async function settleFrame(page) {
+  await page.evaluate(() => new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
+}
+
+/**
+ * The step body is the only scrollport. Header and footer stay on screen, the
+ * page behind the dialog does not grow a second scroller, and a step that
+ * fits is not stretched up to the 85vh cap.
+ */
+async function readScrollLayout(page) {
+  return page.evaluate(() => {
+    const panel = document.querySelector('[role="dialog"]');
+    const scroller = document.querySelector('[role="dialog"] [data-onboarding-step-scroll]');
+    const footer = panel?.lastElementChild ?? null;
+    const header = panel?.firstElementChild ?? null;
+    const box = (element) => {
+      if (element === null) return null;
+      const rect = element.getBoundingClientRect();
+      return {
+        top: Math.round(rect.top),
+        bottom: Math.round(rect.bottom),
+        height: Math.round(rect.height),
+        width: Math.round(rect.width),
+      };
+    };
+    const buttons = (element) => [...(element?.querySelectorAll('button') ?? [])].map((button) => {
+      const rect = button.getBoundingClientRect();
+      const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      return {
+        name: button.getAttribute('aria-label') || button.textContent,
+        top: Math.round(rect.top),
+        bottom: Math.round(rect.bottom),
+        hit: hit === button || (hit !== null && button.contains(hit)),
+      };
+    });
+    return {
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      panel: box(panel),
+      scroller: box(scroller),
+      scrollHeight: scroller?.scrollHeight ?? -1,
+      clientHeight: scroller?.clientHeight ?? -1,
+      scrollTop: scroller?.scrollTop ?? -1,
+      scrollWidth: scroller?.scrollWidth ?? -1,
+      clientWidth: scroller?.clientWidth ?? -1,
+      panelScrollGap: panel === null ? -1 : panel.scrollHeight - panel.clientHeight,
+      pageOverflowY: document.documentElement.scrollHeight > window.innerHeight + 1
+        || document.body.scrollHeight > window.innerHeight + 1,
+      pageOverflowX: document.documentElement.scrollWidth > window.innerWidth + 1,
+      cap: Math.round(window.innerHeight * 0.85),
+      headerButtons: buttons(header),
+      footerButtons: buttons(footer),
+    };
+  });
+}
+
+async function assertChromeReachable(page, wizard, text, { last, back }) {
+  const footer = footerOf(wizard);
+  await footer.getByRole('button', { name: last ? text.closeSetup : text.later, exact: true }).click({ trial: true });
+  if (!last) await footer.getByRole('button', { name: text.next, exact: true }).click({ trial: true });
+  if (back) await footer.getByRole('button', { name: text.back, exact: true }).click({ trial: true });
+  await wizard.getByRole('button', { name: text.closeSetup, exact: true }).first().click({ trial: true });
+  const layout = await readScrollLayout(page);
+  expect(layout.panel !== null && layout.panel.top >= -1 && layout.panel.bottom <= layout.viewport.height + 1,
+    `panel outside the viewport ${JSON.stringify(layout.panel)} of ${layout.viewport.height}`);
+  expect(layout.panel.height <= layout.cap + 2,
+    `panel ${layout.panel.height}px is past the 85vh cap ${layout.cap}px`);
+  expect(layout.panelScrollGap <= 1, `the panel itself scrolls (${layout.panelScrollGap}px)`);
+  expect(!layout.pageOverflowY, 'the page behind the dialog also scrolls');
+  expect(!layout.pageOverflowX, 'the page overflows horizontally');
+  expect(layout.scrollWidth <= layout.clientWidth + 1,
+    `the step overflows horizontally (${layout.scrollWidth} > ${layout.clientWidth})`);
+  expect(layout.headerButtons.every((button) => button.hit),
+    `header control is not hittable ${JSON.stringify(layout.headerButtons)}`);
+  expect(layout.footerButtons.length > 0 && layout.footerButtons.every((button) => button.hit),
+    `footer control is not hittable ${JSON.stringify(layout.footerButtons)}`);
+  return layout;
+}
+
+/**
+ * Wheel, then keyboard focus, then scrollTop. Each one has to move the step
+ * scroller, and the end of the step has to come into that scroller.
+ */
+async function assertStepScrolls(page, label) {
+  const scroller = page.locator('[role="dialog"] [data-onboarding-step-scroll]');
+  const box = await scroller.boundingBox();
+  expect(box !== null && box.height >= 48, `${label}: scrollport is ${box?.height ?? 0}px`);
+  await scroller.evaluate((node) => { node.scrollTop = 0; });
+  const before = await scroller.evaluate((node) => node.scrollTop);
+  await page.mouse.move(box.x + box.width / 2, box.y + Math.min(36, box.height / 2));
+  await page.mouse.wheel(0, 240);
+  await settleFrame(page);
+  const afterWheel = await scroller.evaluate((node) => node.scrollTop);
+  expect(afterWheel > before, `${label}: wheel left scrollTop at ${afterWheel}`);
+
+  const focused = await scroller.evaluate((node) => {
+    node.scrollTop = 0;
+    const edge = node.getBoundingClientRect().bottom;
+    const controls = [...node.querySelectorAll('button:not([disabled]), textarea:not([disabled]), input:not([disabled])')];
+    // The last control that actually hangs out of the scrollport. A control
+    // whose top is near the edge can still be fully inside it.
+    const target = controls.findLast((element) => {
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0 && rect.bottom > edge + 4;
+    });
+    if (target === undefined) return { found: false, count: controls.length };
+    target.focus();
+    const next = target.getBoundingClientRect();
+    const visible = node.getBoundingClientRect();
+    const fits = next.height <= visible.height + 1;
+    return {
+      found: true,
+      scrollTop: node.scrollTop,
+      visible: fits
+        ? next.top >= visible.top - 1 && next.bottom <= visible.bottom + 1
+        : next.top >= visible.top - 1 && next.top < visible.bottom,
+    };
+  });
+  expect(focused.found === true, `${label}: nothing focusable sits below the fold (${JSON.stringify(focused)})`);
+  expect(focused.scrollTop > 0, `${label}: focusing a control below the fold left scrollTop at ${focused.scrollTop}`);
+  expect(focused.visible === true, `${label}: focused control is still outside the scrollport ${JSON.stringify(focused)}`);
+
+  const ended = await scroller.evaluate((node) => {
+    node.scrollTop = node.scrollHeight;
+    const visible = node.getBoundingClientRect();
+    const last = node.lastElementChild?.getBoundingClientRect() ?? null;
+    return {
+      scrollTop: node.scrollTop,
+      atEnd: node.scrollHeight - node.scrollTop - node.clientHeight <= 2,
+      lastBottom: last === null ? -1 : Math.round(last.bottom),
+      visibleBottom: Math.round(visible.bottom),
+      visibleTop: Math.round(visible.top),
+    };
+  });
+  expect(ended.scrollTop > 0 && ended.atEnd, `${label}: scrollTop did not reach the end ${JSON.stringify(ended)}`);
+  expect(ended.lastBottom <= ended.visibleBottom + 1 && ended.lastBottom > ended.visibleTop,
+    `${label}: the end of the step is outside the scrollport ${JSON.stringify(ended)}`);
+  return ended;
+}
+
+async function openAgreementDisclosures(wizard) {
+  const more = wizard.locator('[data-onboarding-permission-more]');
+  if (await more.getAttribute('aria-expanded') !== 'true') await more.click();
+  const paragraph = wizard.locator('[data-onboarding-paragraph-open]');
+  if (await paragraph.getAttribute('aria-expanded') !== 'true') await paragraph.click();
+  await wizard.locator('#onboarding-reply-paragraph').waitFor();
+}
+
+/**
+ * Agreement (with the folded rows open), appearance (with the picture row
+ * open), and depart. Short windows must scroll; the desktop window must not
+ * grow an empty 85vh panel when the step already fits.
+ */
+async function shortWindow({ page, view, shot }) {
+  const text = TEXT[view.locale];
+  const wizard = await openWizard(page);
+
+  for (const viewport of SHORT_WINDOW_VIEWPORTS) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await settleFrame(page);
+    const tag = `${view.locale} ${viewport.name}`;
+
+    await wizard.locator('[data-onboarding-agreement]').waitFor();
+    await openAgreementDisclosures(wizard);
+    await settleFrame(page);
+    let layout = await assertChromeReachable(page, wizard, text, { last: false, back: false });
+    const agreementOverflows = layout.scrollHeight > layout.clientHeight + 8;
+    if (viewport.height <= 450) {
+      expect(agreementOverflows, `${tag} agreement fits (${layout.scrollHeight} in ${layout.clientHeight}) and cannot prove scrolling`);
+    }
+    if (agreementOverflows) {
+      await shot(`onboarding-short-agreement-${viewport.name}-top`);
+      await assertStepScrolls(page, `${tag} agreement`);
+      await shot(`onboarding-short-agreement-${viewport.name}-end`);
+    } else {
+      expect(layout.panel.height < layout.viewport.height * 0.84,
+        `${tag} agreement reserved ${layout.panel.height}px of ${layout.viewport.height}px`);
+      await shot(`onboarding-short-agreement-${viewport.name}`);
+    }
+    console.log(`[scroll] ${tag} agreement ${JSON.stringify({ scrollHeight: layout.scrollHeight, clientHeight: layout.clientHeight, panel: layout.panel.height, cap: layout.cap })}`);
+    await page.locator('[data-onboarding-step-scroll]').evaluate((node) => { node.scrollTop = 0; });
+
+    await footerOf(wizard).getByRole('button', { name: text.next, exact: true }).click();
+    await wizard.locator('[data-onboarding-appearance]').first().waitFor();
+    const picture = wizard.locator('[data-onboarding-bg-open]');
+    if (await picture.count()) await picture.click();
+    await wizard.locator('[data-bg-settings="compact"]').waitFor();
+    await settleFrame(page);
+    layout = await assertChromeReachable(page, wizard, text, { last: false, back: true });
+    const appearanceOverflows = layout.scrollHeight > layout.clientHeight + 8;
+    if (viewport.height <= 360) {
+      expect(appearanceOverflows, `${tag} appearance fits (${layout.scrollHeight} in ${layout.clientHeight}) and cannot prove scrolling`);
+    }
+    if (appearanceOverflows) {
+      await shot(`onboarding-short-appearance-${viewport.name}-top`);
+      await assertStepScrolls(page, `${tag} appearance`);
+      await shot(`onboarding-short-appearance-${viewport.name}-end`);
+    } else {
+      expect(layout.panel.height < layout.viewport.height * 0.84,
+        `${tag} appearance reserved ${layout.panel.height}px of ${layout.viewport.height}px`);
+      await shot(`onboarding-short-appearance-${viewport.name}`);
+    }
+    console.log(`[scroll] ${tag} appearance ${JSON.stringify({ scrollHeight: layout.scrollHeight, clientHeight: layout.clientHeight, panel: layout.panel.height, cap: layout.cap })}`);
+    await page.locator('[data-onboarding-step-scroll]').evaluate((node) => { node.scrollTop = 0; });
+
+    await footerOf(wizard).getByRole('button', { name: text.next, exact: true }).click();
+    await wizard.locator('[data-onboarding-depart]').waitFor();
+    await wizard.locator('[data-onboarding-route="extend"]').waitFor();
+    await settleFrame(page);
+    layout = await assertChromeReachable(page, wizard, text, { last: true, back: true });
+    const departOverflows = layout.scrollHeight > layout.clientHeight + 8;
+    if (viewport.height <= 450) {
+      expect(departOverflows, `${tag} depart fits (${layout.scrollHeight} in ${layout.clientHeight}) and cannot prove scrolling`);
+    }
+    if (departOverflows) {
+      await shot(`onboarding-short-depart-${viewport.name}-top`);
+      await assertStepScrolls(page, `${tag} depart`);
+      await shot(`onboarding-short-depart-${viewport.name}-end`);
+    } else {
+      expect(layout.panel.height < layout.viewport.height * 0.84,
+        `${tag} depart reserved ${layout.panel.height}px of ${layout.viewport.height}px`);
+      await shot(`onboarding-short-depart-${viewport.name}`);
+    }
+    console.log(`[scroll] ${tag} depart ${JSON.stringify({ scrollHeight: layout.scrollHeight, clientHeight: layout.clientHeight, panel: layout.panel.height, cap: layout.cap })}`);
+
+    await footerOf(wizard).getByRole('button', { name: text.back, exact: true }).click();
+    await wizard.locator('[data-onboarding-appearance]').first().waitFor();
+    await footerOf(wizard).getByRole('button', { name: text.back, exact: true }).click();
+    await wizard.locator('[data-onboarding-agreement]').waitFor();
+  }
+}
+
 const scenarios = [
+  { name: 'onboarding-short-scroll', fixture: 'first-run', onboarding: false, run: shortWindow },
   { name: 'onboarding-walk', fixture: 'first-run', onboarding: false, matrix: ['theme', 'width'], run: walk },
   { name: 'onboarding-skip', fixture: 'first-run', onboarding: false, run: skip },
   { name: 'discover-model-connection', fixture: 'first-run', matrix: ['width'], run: discoverModelConnection },
