@@ -79,6 +79,7 @@ describe('SessionMetadata', () => {
 
   afterEach(async () => {
     await disposables.dispose();
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 

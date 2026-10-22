@@ -84,7 +84,11 @@ it.each([false, true])('owns the initial metadata write before the media fixture
   } finally {
     release.resolve();
     await observed;
-    await fresh.dispose();
+    try {
+      await fresh.dispose();
+    } catch (error) {
+      if (!fail || error !== failure) throw error;
+    }
   }
 });
 
