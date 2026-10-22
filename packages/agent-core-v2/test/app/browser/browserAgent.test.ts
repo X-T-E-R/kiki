@@ -22,7 +22,7 @@ import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { IBrowserControlService, type BrowserInvocation, type BrowserInvocationResult } from '#/app/browser/browser';
 import { IBrowserConnectionStore } from '#/app/browser/browserConnectionStore';
 import { IConfigService, type ConfigSectionChangedEvent } from '#/app/config/config';
-import { BROWSER_CONFIG_SECTION } from '#/app/browser/browserConfig';
+import { BROWSER_CONFIG_SECTION, type BrowserConfig } from '#/app/browser/browserConfig';
 import { EXPERIMENTAL_SECTION, IFlagService } from '#/app/flag/flag';
 import { Emitter } from '#/_base/event';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
@@ -38,6 +38,35 @@ const tools = ['snapshot', 'fill', 'download', 'upload'].map((name) => ({ name: 
 async function execute(work: ToolExecution | Promise<ToolExecution>): Promise<ExecutableToolResult> {
   const execution = await work;
   return 'execute' in execution ? execution.execute({ turnId: 1, toolCallId: 'test-call', signal: new AbortController().signal }) : execution;
+}
+
+function sameBrowserControl(connections: BrowserConfig['connections']): { sections: Emitter<ConfigSectionChangedEvent>; config: BrowserConfig; store: { list: () => Promise<{ connections: Array<BrowserConfig['connections'][string] & { id: string }>; allowedBrowsers?: readonly string[]; disabledSources?: BrowserConfig['disabledSources'] }>; resolve: (id: string) => Promise<BrowserConfig['connections'][string] & { id: string }> }; configService: { onDidSectionChange: Emitter<ConfigSectionChangedEvent>['event']; get: <T>(domain: string) => T } } {
+  const sections = new Emitter<ConfigSectionChangedEvent>();
+  const config: BrowserConfig = { connections };
+  return {
+    sections,
+    config,
+    store: {
+      list: async () => ({
+        connections: Object.entries(config.connections).map(([id, entry]) => ({ ...entry, id })),
+        ...(config.allowedBrowsers !== undefined ? { allowedBrowsers: config.allowedBrowsers } : {}),
+        ...(config.disabledSources !== undefined ? { disabledSources: config.disabledSources } : {}),
+      }),
+      resolve: async (id: string) => {
+        const entry = config.connections[id];
+        if (entry === undefined) throw new Error('Unknown id');
+        return { ...entry, id };
+      },
+    },
+    configService: {
+      onDidSectionChange: sections.event,
+      get: <T>(domain: string) => (domain === BROWSER_CONFIG_SECTION ? config : undefined) as T,
+    },
+  };
+}
+
+function publishBrowser(sections: Emitter<ConfigSectionChangedEvent>, config: BrowserConfig): void {
+  sections.fire({ domain: BROWSER_CONFIG_SECTION, source: 'set', value: config, previousValue: {} });
 }
 
 describe('native browser agent selection, schema and local file channel', () => {
@@ -65,9 +94,10 @@ describe('native browser agent selection, schema and local file channel', () => 
     const ix = new TestInstantiationService();
     const calls: BrowserInvocation[] = [];
     const materialize = vi.fn(async () => 'fixture-media');
-    const config = { id: 'a', type: 'agent-browser-profile' as const, name: 'A', enabled: true };
+    const profile: BrowserConfig['connections'][string] = { type: 'agent-browser-profile', name: 'A', enabled: true };
+    const browser = sameBrowserControl({ a: profile });
     const runtime = Object.assign(new FakeRuntime({ workspaceId: 'fixture', runtimeId: 'local', generation: '1' }, { pathClass: process.platform === 'win32' ? 'win32' : 'posix' }), { fs: new HostFileSystem() });
-    ix.stub(IBrowserConnectionStore, { list: async () => ({ connections: [config] }), resolve: async (id) => { if (id !== 'a') throw new Error('Unknown id'); return config; } });
+    ix.stub(IBrowserConnectionStore, browser.store);
     ix.stub(defaults, { ready: Promise.resolve(undefined) });
     ix.stub(IAgentScopeContext, { agentId: 'main' });
     ix.stub(ISessionContext, { sessionId: 'session', sessionDir: directory });
@@ -76,7 +106,7 @@ describe('native browser agent selection, schema and local file channel', () => 
     ix.stub(ISessionMediaStore, { materialize });
     ix.stub(ISessionInteractionService, { hasConsumer: () => false });
     ix.stub(IFlagService, { enabled: () => true });
-    ix.stub(IConfigService, { get: <T>() => undefined as T });
+    ix.stub(IConfigService, browser.configService);
     ix.stub(IAgentToolPolicyService, { isToolActiveForDisclosure: () => true });
     ix.set(IAgentToolRegistryService, new SyncDescriptor(AgentToolRegistryService));
     ix.set(IEventBus, new SyncDescriptor(EventBusService));
@@ -101,6 +131,12 @@ describe('native browser agent selection, schema and local file channel', () => 
       expect((await service.connections({ action: 'tools' })).isError).toBe(true);
       expect(registry.list()).toHaveLength(0);
       await service.connections({ action: 'tools', browser: 'a', tools: ['agent_browser_fill'] });
+      expect(registry.list().map((tool) => tool.name)).toEqual(['browser__agent_browser_fill']);
+      profile.enabled = false;
+      publishBrowser(browser.sections, browser.config);
+      expect(registry.list()).toEqual([]);
+      profile.enabled = true;
+      publishBrowser(browser.sections, browser.config);
       expect(registry.list().map((tool) => tool.name)).toEqual(['browser__agent_browser_fill']);
       expect(registry.list()[0]?.parameters?.['required']).toEqual(['selector', 'text']);
       await service.tabs({ action: 'select', browser: 'a', target: 'a-target' });
@@ -129,11 +165,12 @@ describe('native browser agent selection, schema and local file channel', () => 
 
   it('consumes the official js catalog with the real caller context and existing media output', async () => {
     const ix = new TestInstantiationService();
-    const config = { id: 'official', type: 'codex-extension' as const, name: 'Official', enabled: true, runtimeRoot: '/fixture/cua_node', browserId: 'extension-fixture' };
+    const official: BrowserConfig['connections'][string] = { type: 'codex-extension', name: 'Official', enabled: true, runtimeRoot: '/fixture/cua_node', browserId: 'extension-fixture' };
+    const browser = sameBrowserControl({ official });
     const js = { name: 'codex_browser_js', description: 'Official runtime JavaScript', inputSchema: { type: 'object', properties: { code: { type: 'string' }, title: { type: 'string' } }, required: ['code'] } };
     const invoke = vi.fn(async (input: BrowserInvocation): Promise<BrowserInvocationResult> => ({ browser: input.browser, executionHost: 'fixture-host', runtimeSession: 'official-runtime', generation: 1,
       tab: input.tab, result: { isError: false, content: [{ type: 'resource_link', uri: 'https://example.test/screenshot.png', mimeType: 'image/png' }], structuredContent: { official: true }, _meta: { donor: 'fixture' } } }));
-    ix.stub(IBrowserConnectionStore, { list: async () => ({ connections: [config] }), resolve: async () => config });
+    ix.stub(IBrowserConnectionStore, browser.store);
     ix.stub(defaults, { ready: Promise.resolve(undefined) });
     ix.stub(IAgentScopeContext, { agentId: 'main' });
     ix.stub(ISessionContext, { sessionId: 'fixture-session', sessionDir: '/fixture/session' });
@@ -142,7 +179,7 @@ describe('native browser agent selection, schema and local file channel', () => 
     ix.stub(ISessionMediaStore, {});
     ix.stub(ISessionInteractionService, { hasConsumer: () => false });
     ix.stub(IFlagService, { enabled: () => true });
-    ix.stub(IConfigService, { get: <T>() => undefined as T });
+    ix.stub(IConfigService, browser.configService);
     ix.stub(IAgentToolPolicyService, { isToolActiveForDisclosure: () => true });
     ix.set(IAgentToolRegistryService, new SyncDescriptor(AgentToolRegistryService));
     const endTurn = vi.fn(async () => undefined);
@@ -154,7 +191,14 @@ describe('native browser agent selection, schema and local file channel', () => 
       const service = ix.get(IAgentBrowserService);
       const loaded = await service.connections({ action: 'tools', browser: 'official', tools: ['codex_browser_js'] });
       expect(JSON.stringify(loaded.output)).toContain('official-cua-repl');
-      const tool = ix.get(IAgentToolRegistryService).resolve('browser__codex_browser_js')!;
+      const registry = ix.get(IAgentToolRegistryService);
+      expect(registry.resolve('browser__codex_browser_js')?.parameters?.['required']).toEqual(['code']);
+      browser.config.disabledSources = ['codex-browser'];
+      publishBrowser(browser.sections, browser.config);
+      expect(registry.resolve('browser__codex_browser_js')).toBeUndefined();
+      browser.config.disabledSources = undefined;
+      publishBrowser(browser.sections, browser.config);
+      const tool = registry.resolve('browser__codex_browser_js')!;
       expect(tool.parameters?.['required']).toEqual(['code']);
       expect(tool.description).toContain('not a JavaScript sandbox');
       const output = await execute(tool.resolveExecution({ code: 'await cua.listBrowsers()', title: 'Browser inventory' }));
@@ -168,7 +212,7 @@ describe('native browser agent selection, schema and local file channel', () => 
       expect(JSON.stringify(output.output)).toContain('structuredContent');
       expect(JSON.stringify(output.output)).toContain('donor');
       await service.connections({ action: 'tools', tools: ['codex_browser_js_reset'] });
-      await execute(ix.get(IAgentToolRegistryService).resolve('browser__codex_browser_js_reset')!.resolveExecution({}));
+      await execute(registry.resolve('browser__codex_browser_js_reset')!.resolveExecution({}));
       expect(invoke.mock.calls[1]![0].tool).toBe('codex_browser_js_reset');
       for (const [turnId, reason] of [[1, 'completed'], [2, 'cancelled'], [3, 'failed'], [4, 'blocked']] as const) {
         ix.get(IEventBus).publish(new TurnEnded({ turnId, reason }));
@@ -182,7 +226,8 @@ describe('native browser agent selection, schema and local file channel', () => 
   it('covers bridge discovery, connect, registration, DOM, fill, click, image, and unload through BrowserConnections', async () => {
     const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
     const ix = new TestInstantiationService();
-    const config = { id: 'bridge', type: 'codex-extension' as const, name: 'Bridge', enabled: true, runtimeRoot: 'C:/components/codex-browser-bridge.exe', browserId: 'codex-browser-use-selected' };
+    const bridge: BrowserConfig['connections'][string] = { type: 'codex-extension', name: 'Bridge', enabled: true, runtimeRoot: 'C:/components/codex-browser-bridge.exe', browserId: 'codex-browser-use-selected' };
+    const browser = sameBrowserControl({ bridge });
     const schema = (fields: string[], required: string[]) => ({ type: 'object', properties: Object.fromEntries(fields.map((field) => [field, { type: 'string' }])), required });
     const catalog = [
       { name: 'codex_dom_snapshot', description: 'DOM', inputSchema: schema(['tab_id'], ['tab_id']) },
@@ -201,7 +246,7 @@ describe('native browser agent selection, schema and local file channel', () => 
           ? { isError: false, content: [{ type: 'image', data: png, mimeType: 'image/png' }], structuredContent: { response: { success: true } } }
           : { isError: false, content: [{ type: 'text', text: input.tool === 'codex_dom_snapshot' ? '{"role":"textbox"}' : 'ok' }], structuredContent: { response: { success: true, data: {} } } },
     }));
-    ix.stub(IBrowserConnectionStore, { list: async () => ({ connections: [config] }), resolve: async () => config });
+    ix.stub(IBrowserConnectionStore, browser.store);
     ix.stub(defaults, { ready: Promise.resolve(undefined) });
     ix.stub(IAgentScopeContext, { agentId: 'main' });
     ix.stub(ISessionContext, { sessionId: 'fixture-session', sessionDir: '/fixture/session' });
@@ -210,7 +255,7 @@ describe('native browser agent selection, schema and local file channel', () => 
     ix.stub(ISessionMediaStore, {});
     ix.stub(ISessionInteractionService, { hasConsumer: () => false });
     ix.stub(IFlagService, { enabled: () => true });
-    ix.stub(IConfigService, { get: <T>() => undefined as T });
+    ix.stub(IConfigService, browser.configService);
     ix.stub(IAgentToolPolicyService, { isToolActiveForDisclosure: () => true });
     ix.set(IAgentToolRegistryService, new SyncDescriptor(AgentToolRegistryService));
     ix.set(IEventBus, new SyncDescriptor(EventBusService));
@@ -218,7 +263,7 @@ describe('native browser agent selection, schema and local file channel', () => 
     ix.stub(IBrowserControlService, {
       catalog: async () => catalog, status: async () => ({ browser: 'bridge', state: 'ready' as const, executionHost: 'fixture-host', generation: 1 }),
       tabs: async () => [{ tabId: '7', targetId: '7' }], invoke, endTurn: async () => undefined, connect,
-      list: async () => ({ connections: [{ ...config, status: { browser: 'bridge', state: 'idle' as const, executionHost: 'fixture-host', generation: 0 } }] }),
+      list: async () => ({ connections: [{ ...bridge, id: 'bridge', status: { browser: 'bridge', state: 'idle' as const, executionHost: 'fixture-host', generation: 0 } }] }),
     });
     ix.set(IAgentBrowserService, new SyncDescriptor(AgentBrowserService));
     try {
@@ -235,7 +280,14 @@ describe('native browser agent selection, schema and local file channel', () => 
       expect(loadedText).toContain('codex_claim_tab');
       expect(loadedText).toContain('codex_finalize');
       expect(registry.resolve('browser__codex_finalize')).toBeUndefined();
-      expect(registry.list().map((tool) => tool.name).sort()).toEqual(['browser__codex_claim_tab', 'browser__codex_click', 'browser__codex_dom_snapshot', 'browser__codex_fill', 'browser__codex_screenshot']);
+      const bridgeTools = ['browser__codex_claim_tab', 'browser__codex_click', 'browser__codex_dom_snapshot', 'browser__codex_fill', 'browser__codex_screenshot'];
+      expect(registry.list().map((tool) => tool.name).toSorted()).toEqual(bridgeTools);
+      bridge.enabled = false;
+      publishBrowser(browser.sections, browser.config);
+      expect(registry.list()).toEqual([]);
+      bridge.enabled = true;
+      publishBrowser(browser.sections, browser.config);
+      expect(registry.list().map((tool) => tool.name).toSorted()).toEqual(bridgeTools);
       await service.tabs({ action: 'select', browser: 'bridge', target: '7' });
       expect(JSON.stringify((await execute(registry.resolve('browser__codex_dom_snapshot')!.resolveExecution({}))).output)).toContain('textbox');
       expect((await execute(registry.resolve('browser__codex_fill')!.resolveExecution({ selector: '#q', value: 'local' }))).isError).not.toBe(true);

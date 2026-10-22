@@ -18,7 +18,8 @@ import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceCo
 import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { IBrowserControlService, type BrowserInvocation, type BrowserInvocationResult } from '#/app/browser/browser';
 import { IBrowserConnectionStore } from '#/app/browser/browserConnectionStore';
-import { IConfigService } from '#/app/config/config';
+import { IConfigService, type ConfigSectionChangedEvent } from '#/app/config/config';
+import { BROWSER_CONFIG_SECTION, type BrowserConfig } from '#/app/browser/browserConfig';
 import { IFlagService } from '#/app/flag/flag';
 import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
 import type { ExecutableToolResult, ToolExecution } from '#/tool/toolContract';
@@ -38,10 +39,24 @@ describe('browser dynamic tools follow optional capability policy', () => {
       result: { isError: false, content: [{ type: 'text', text: 'ran' }], structuredContent: { official: true } },
     }));
     const changes = new Emitter<{ readonly sessionId?: string }>();
+    const sections = new Emitter<ConfigSectionChangedEvent>();
     let disclosed = false;
-    const config = { id: 'official', type: 'codex-extension' as const, name: 'Official', enabled: true, runtimeRoot: '/fixture/cua_node', browserId: 'extension-fixture' };
+    const admissions: Array<{ id: string; admitted: boolean }> = [];
+    const official: BrowserConfig['connections'][string] = { type: 'codex-extension', name: 'Official', enabled: true, runtimeRoot: '/fixture/cua_node', browserId: 'extension-fixture' };
+    const browserConfig: BrowserConfig = { connections: { official } };
     const js = { name: 'codex_browser_js', description: 'Official runtime JavaScript', inputSchema: { type: 'object', properties: { code: { type: 'string' } }, required: ['code'] } };
-    ix.stub(IBrowserConnectionStore, { list: async () => ({ connections: [config] }), resolve: async () => config });
+    ix.stub(IBrowserConnectionStore, {
+      list: async () => ({
+        connections: Object.entries(browserConfig.connections).map(([id, entry]) => ({ ...entry, id })),
+        ...(browserConfig.allowedBrowsers !== undefined ? { allowedBrowsers: browserConfig.allowedBrowsers } : {}),
+        ...(browserConfig.disabledSources !== undefined ? { disabledSources: browserConfig.disabledSources } : {}),
+      }),
+      resolve: async (id: string) => {
+        const entry = browserConfig.connections[id];
+        if (entry === undefined) throw new Error('Unknown id');
+        return { ...entry, id };
+      },
+    });
     ix.stub(defaults, { ready: Promise.resolve(undefined) });
     ix.stub(IAgentScopeContext, { agentId: 'main' });
     ix.stub(ISessionContext, { sessionId: 'fixture-session', sessionDir: '/fixture/session' });
@@ -50,9 +65,19 @@ describe('browser dynamic tools follow optional capability policy', () => {
     ix.stub(ISessionMediaStore, {});
     ix.stub(ISessionInteractionService, { hasConsumer: () => false });
     ix.stub(IFlagService, { enabled: () => true });
-    ix.stub(IConfigService, { get: <T>() => undefined as T });
+    ix.stub(IConfigService, {
+      onDidSectionChange: sections.event,
+      get: <T>(domain: string) => (domain === BROWSER_CONFIG_SECTION ? browserConfig : undefined) as T,
+    });
     ix.stub(IAgentToolPolicyService, { isToolActiveForDisclosure: () => disclosed });
-    ix.stub(IOptionalCapabilityPolicy, { onDidChange: changes.event });
+    ix.stub(IOptionalCapabilityPolicy, {
+      onDidChange: changes.event,
+      admit: (id: string) => {
+        const admitted = false;
+        admissions.push({ id, admitted });
+        return { admitted, reason: 'default_off' as const };
+      },
+    });
     ix.set(IAgentToolRegistryService, new SyncDescriptor(AgentToolRegistryService));
     ix.set(IEventBus, new SyncDescriptor(EventBusService));
     ix.stub(IBrowserControlService, {
@@ -68,10 +93,23 @@ describe('browser dynamic tools follow optional capability policy', () => {
       await service.connections({ action: 'tools', browser: 'official', tools: ['codex_browser_js'] });
       expect(registry.resolve('browser__codex_browser_js')).toBeUndefined();
       expect(invoke).not.toHaveBeenCalled();
+      expect(admissions).toEqual([]);
       disclosed = true;
       changes.fire({});
+      expect(registry.resolve('browser__codex_browser_js')).toBeDefined();
+      official.enabled = false;
+      sections.fire({ domain: BROWSER_CONFIG_SECTION, source: 'set', value: browserConfig, previousValue: {} });
+      expect(registry.resolve('browser__codex_browser_js')).toBeUndefined();
+      official.enabled = true;
+      sections.fire({ domain: BROWSER_CONFIG_SECTION, source: 'set', value: browserConfig, previousValue: {} });
+      browserConfig.disabledSources = ['codex-browser'];
+      sections.fire({ domain: BROWSER_CONFIG_SECTION, source: 'set', value: browserConfig, previousValue: {} });
+      expect(registry.resolve('browser__codex_browser_js')).toBeUndefined();
+      browserConfig.disabledSources = undefined;
+      sections.fire({ domain: BROWSER_CONFIG_SECTION, source: 'set', value: browserConfig, previousValue: {} });
       const tool = registry.resolve('browser__codex_browser_js');
       expect(tool).toBeDefined();
+      expect(admissions).toEqual([]);
       await execute(tool!.resolveExecution({ code: 'inventory' }));
       expect(invoke).toHaveBeenCalledOnce();
       disclosed = false;
