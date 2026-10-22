@@ -13,6 +13,10 @@ import { createViewState, type UserBlock } from '@kiki/session-core/session';
 import { emptySessionUsage, type PromptItem, type SessionPendingInteraction } from '@kiki/protocol';
 import { ApiError } from '@kiki/session-core/transport';
 
+const contentRead = {
+  beginContentRead() { return { release() {}, retry() {} }; },
+  isContentRange() { return false; },
+};
 const fixture = vi.hoisted(() => ({ controller: undefined as object | undefined, autoCompact: true, dependencies: undefined as Promise<void> | undefined, queued: true, partialPrompts: false, structureUnread: false, durableIngress: undefined as readonly PromptItem[] | undefined, acquires: 0, releases: 0, persistenceHints: [] as unknown[], loadEntities: vi.fn(async () => true), loadContent: vi.fn(async () => true), readMedia: vi.fn(), readPreview: vi.fn(), pushToast: vi.fn() }));
 vi.mock('../lib/toasts', () => ({ pushToast: fixture.pushToast }));
 /** A snapshot field the header shows, cut in the window — the composer's remainder. */
@@ -208,6 +212,7 @@ it('clicking a held message retries the same durable prompt exactly once', async
     resumeDurableIngress,
     open: async () => {}, close() {}, setFocusedAgent() {}, refreshSession: async () => {}, retainHistoryRead: () => () => {},
     contentRefsFor: () => [],
+    ...contentRead,
   };
   fixture.controller = controller;
   root = createRoot(container);
@@ -274,6 +279,7 @@ it('keeps the admitted body pending until a canonical projection takes over', as
     sendPrompt,
     open: async () => {}, close() {}, setFocusedAgent() {}, refreshSession: async () => {}, retainHistoryRead: () => () => {},
     contentRefsFor: () => [],
+    ...contentRead,
   };
   fixture.controller = controller;
   root = createRoot(container);
@@ -635,7 +641,7 @@ it.each(['session_media', 'blobref'] as const)('restores serialized queued %s or
     subscribe: () => () => {}, subscribeInterruptedPrompt: () => () => {}, subscribeAgent: () => () => {},
     getState: () => controller.state, getAgentState: () => controller.state, getForest: () => ({ roots: [], byId: {} }),
     open: async () => {}, close() {}, setFocusedAgent() {}, refreshSession: async () => {}, retainHistoryRead: () => () => {},
-    contentRefsFor: () => [], holdQueued, replaceQueued,
+    contentRefsFor: () => [], ...contentRead, holdQueued, replaceQueued,
   };
   fixture.controller = controller;
   const png = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII='), c => c.charCodeAt(0));
@@ -693,7 +699,7 @@ it.each([
     subscribe: () => () => {}, subscribeInterruptedPrompt: () => () => {}, subscribeAgent: () => () => {},
     getState: () => controller.state, getAgentState: () => controller.state, getForest: () => ({ roots: [], byId: {} }),
     open: async () => {}, close() {}, setFocusedAgent() {}, refreshSession: async () => {}, retainHistoryRead: () => () => {},
-    sendPrompt: send, sendPromptNow: send,
+    sendPrompt: send, sendPromptNow: send, ...contentRead,
   };
   fixture.controller = controller;
   root = createRoot(container);
@@ -736,7 +742,7 @@ it.each(['failed', 'cancelled'] as const)('restores draft and selection after a 
     subscribe: () => () => {}, subscribeInterruptedPrompt: () => () => {}, subscribeAgent: () => () => {},
     getState: () => controller.state, getAgentState: () => controller.state, getForest: () => ({ roots: [], byId: {} }),
     open: async () => {}, close() {}, setFocusedAgent() {}, refreshSession: async () => {}, retainHistoryRead: () => () => {},
-    sendPrompt: send, sendPromptNow: send,
+    sendPrompt: send, sendPromptNow: send, ...contentRead,
   };
   fixture.controller = controller;
   root = createRoot(container);
@@ -775,7 +781,7 @@ it('migrates a legacy draft quote and restores all serialized queued quotes thro
     subscribe: () => () => {}, subscribeInterruptedPrompt: () => () => {}, subscribeAgent: () => () => {},
     getState: () => controller.state, getAgentState: () => controller.state, getForest: () => ({ roots: [], byId: {} }),
     open: async () => {}, close() {}, setFocusedAgent() {}, refreshSession: async () => {}, retainHistoryRead: () => () => {},
-    contentRefsFor: () => [], holdQueued: vi.fn(async () => {}), replaceQueued,
+    contentRefsFor: () => [], ...contentRead, holdQueued: vi.fn(async () => {}), replaceQueued,
   };
   fixture.controller = controller;
   root = createRoot(container);
@@ -785,15 +791,17 @@ it('migrates a legacy draft quote and restores all serialized queued quotes thro
   await act(async () => container.querySelector<HTMLButtonElement>('[data-header-toggle="queue"]')!.click());
   const edit = async () => { await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Edit queued prompt"]')!.click()); await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); }); };
   await edit();
-  expect([...container.querySelectorAll('[data-quote-chip]')].map(item => item.getAttribute('title'))).toEqual(['queued first', 'queued second']);
+  const quoteTitles = (selector: string) => [...container.querySelectorAll(selector)].map(item => item.getAttribute('title'));
+  expect(quoteTitles('[data-context-tray] [data-quote-chip]')).toEqual(['queued first', 'queued second']);
+  expect(quoteTitles('[data-queue-item="queued-example"] [data-quote-chip]')).toEqual(['queued first', 'queued second']);
   expect(container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')?.value).toBe('queued body');
   await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Cancel editing"]')!.click());
-  expect(container.querySelector('[data-quote-chip]')?.getAttribute('title')).toBe('legacy passage');
+  expect(container.querySelector('[data-context-tray] [data-quote-chip]')?.getAttribute('title')).toBe('legacy passage');
   expect(replaceQueued).not.toHaveBeenCalled();
   await edit();
   await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Confirm edit"]')!.click());
   expect(replaceQueued).toHaveBeenCalledWith('queued-example', content[0].text, [], carry.presentation);
-  expect(container.querySelector('[data-quote-chip]')?.getAttribute('title')).toBe('legacy passage');
+  expect(container.querySelector('[data-context-tray] [data-quote-chip]')?.getAttribute('title')).toBe('legacy passage');
 });
 
 
@@ -814,7 +822,7 @@ it('cancels pending queued previews, restores the parked draft and rejects late 
     subscribe: () => () => {}, subscribeInterruptedPrompt: () => () => {}, subscribeAgent: () => () => {},
     getState: () => controller.state, getAgentState: () => controller.state, getForest: () => ({ roots: [], byId: {} }),
     open: async () => {}, close() {}, setFocusedAgent() {}, refreshSession: async () => {}, retainHistoryRead: () => () => {},
-    contentRefsFor: () => [], holdQueued, replaceQueued,
+    contentRefsFor: () => [], ...contentRead, holdQueued, replaceQueued,
   };
   fixture.controller = controller;
   type Preview = { bytes: Uint8Array; mime: string; name: string };
@@ -908,6 +916,7 @@ describe('the session announcer', () => {
       getDurableIngress: () => [],
       open: async () => {}, close() {}, setFocusedAgent() {}, refreshSession: async () => {}, retainHistoryRead: () => () => {},
       contentRefsFor: () => [],
+      ...contentRead,
     };
     return { publish };
   }
