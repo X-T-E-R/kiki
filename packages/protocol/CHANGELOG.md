@@ -1,5 +1,13 @@
 # @moonshot-ai/protocol
 
+## 0.5.3
+
+### Patch Changes
+
+- [`1e3bd6b`](https://github.com/X-T-E-R/kiki/commit/1e3bd6b2328313efb836610d7f5c609cce92da55) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Guided browser open activates the selected headed profile, updates replace on-disk files without stopping a running daemon, and desktop shortcuts keep profile paths as data.
+
+- [`be54d91`](https://github.com/X-T-E-R/kiki/commit/be54d9159ae0d8d77564fac7e92367ee9c081be5) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add two-way messaging with session pairing and mobile interactions.
+
 ## 0.5.2
 
 ### Patch Changes

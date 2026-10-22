@@ -1,6 +1,6 @@
 {
   "name": "@kiki/transcript-live",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "private": true,
   "description": "Engine event bindings for the canonical transcript operation stream.",
   "homepage": "https://github.com/X-T-E-R/kiki/releases",

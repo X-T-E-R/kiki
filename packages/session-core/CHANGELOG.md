@@ -1,5 +1,17 @@
 # @kiki/session-core
 
+## 0.1.1
+
+### Patch Changes
+
+- [`be54d91`](https://github.com/X-T-E-R/kiki/commit/be54d9159ae0d8d77564fac7e92367ee9c081be5) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add two-way messaging with session pairing and mobile interactions.
+
+- [`4dd6c8a`](https://github.com/X-T-E-R/kiki/commit/4dd6c8affdaccba5b90b3676f9564b121051969e) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix official ZIP plugin installation from settings and the TUI by using the published checksum.
+
+- Updated dependencies [[`1e3bd6b`](https://github.com/X-T-E-R/kiki/commit/1e3bd6b2328313efb836610d7f5c609cce92da55), [`be54d91`](https://github.com/X-T-E-R/kiki/commit/be54d9159ae0d8d77564fac7e92367ee9c081be5), [`4dd6c8a`](https://github.com/X-T-E-R/kiki/commit/4dd6c8affdaccba5b90b3676f9564b121051969e)]:
+  - @kiki/protocol@0.5.3
+  - @kiki/klient@0.1.4
+
 ## 0.1.0
 
 ### Minor Changes
