@@ -138,7 +138,11 @@ void test('local and release Node gates accept patched lines and reject affected
   assert.match(flake, /configureFlags = lib\.filter/);
   assert.match(flake, /flag != "--shared-libuv"/);
   assert.match(flake, /lib\.strings\.hasPrefix "--shared-libuv-libpath="/);
-  assert.match(flake, /buildInputs = lib\.filter \(input: input != pkgs\.libuv\)/);
+  assert.match(flake, /flag != "--shared-sqlite"/);
+  assert.match(flake, /lib\.strings\.hasPrefix "--shared-sqlite-libpath="/);
+  assert.match(flake, /input != pkgs\.libuv/);
+  assert.match(flake, /input != pkgs\.sqlite/);
+  assert.match(flake, /lib\.getDev pkgs\.sqlite/);
   assert.match(flake, /postInstall = lib\.replaceStrings/);
 
   const nixWorkflow = await read('.github/workflows/nix-build.yml');

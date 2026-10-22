@@ -62,17 +62,27 @@
             # nixpkgs libuv is 1.51.0, before that field was added, so keep the
             # official bundled-libuv configure mode instead of patching Node or
             # changing the whole nixpkgs input.
+            # Node's node:sqlite tests also require percentile, which is enabled
+            # by the bundled SQLite but not by the pinned nixpkgs build. Keep
+            # that official bundled-SQLite mode instead of changing the input.
             configureFlags = lib.filter (
               flag:
               flag != "--shared-libuv"
               && !(lib.strings.hasPrefix "--shared-libuv-libpath=" flag)
+              && flag != "--shared-sqlite"
+              && !(lib.strings.hasPrefix "--shared-sqlite-libpath=" flag)
             ) old.configureFlags;
-            # Do not expose the older shared-libuv headers over Node's bundled
-            # headers; node-gyp must see the same uv_statfs_t as the binary.
-            buildInputs = lib.filter (input: input != pkgs.libuv) old.buildInputs;
+            # Do not expose shared dependency headers over Node's bundled
+            # headers; node-gyp must see the same ABI headers as the binary.
+            buildInputs = lib.filter (
+              input:
+              input != pkgs.libuv
+              && input != pkgs.sqlite
+            ) old.buildInputs;
             postInstall = lib.replaceStrings [
               "${lib.getDev pkgs.libuv}/include/*"
-            ] [ "" ] old.postInstall;
+              "${lib.getDev pkgs.sqlite}/include/*"
+            ] [ "" "" ] old.postInstall;
             patches =
               (lib.optional (!(host.emulatorAvailable pkgs.buildPackages)) (pkgs.fetchpatch2 {
                 url = "https://raw.githubusercontent.com/buildroot/buildroot/2f0c31bffdb59fb224387e35134a6d5e09a81d57/package/nodejs/nodejs-src/0003-include-obj-name-in-shared-intermediate.patch";

@@ -95,3 +95,16 @@ void test("auth-native Nix source uses the locked Cargo vendor hook and explicit
   }
   assert.doesNotMatch(flake, /cargoHash|allowBuiltinFetchGit|outputHashes/);
 });
+
+void test("Node 24 Nix override keeps SQLite bundled with its matching headers", () => {
+  const flake = readFileSync(new URL("../flake.nix", import.meta.url), "utf8");
+  const overrideStart = flake.indexOf("packaged.overrideAttrs");
+  const workspaceStart = flake.indexOf("workspacePaths = [");
+  assert.ok(overrideStart >= 0 && workspaceStart > overrideStart);
+  const override = flake.slice(overrideStart, workspaceStart);
+  assert.match(override, /flag != "--shared-sqlite"/);
+  assert.match(override, /hasPrefix "--shared-sqlite-libpath="/);
+  assert.match(override, /input != pkgs\.sqlite/);
+  assert.match(override, /getDev pkgs\.sqlite/);
+  assert.doesNotMatch(override, /--without-sqlite/);
+});
