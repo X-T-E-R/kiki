@@ -3,7 +3,11 @@ import { zstdDecompress } from 'node:zlib';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { RequestDictionaryTransport } from '#/kosong/provider/bases/request-dictionary';
+import {
+  dictionaryProcessBudgetAccounting,
+  RequestDictionaryTransport,
+  testingUseDictionaryBudget,
+} from '#/kosong/provider/bases/request-dictionary';
 
 const DCZ_MAGIC = Buffer.from([0x5e, 0x2a, 0x4d, 0x18, 0x20, 0x00, 0x00, 0x00]);
 
@@ -310,5 +314,174 @@ describe('RequestDictionaryTransport', () => {
     duringController.abort(reason);
     await expect(during).rejects.toBe(reason);
     expect(calls).toBe(0);
+  });
+
+  it('keeps one 64MiB process ceiling and does not reuse another encoder dictionary', async () => {
+    expect(dictionaryProcessBudgetAccounting().maxBytes).toBe(64 * 1024 * 1024);
+    const before = dictionaryProcessBudgetAccounting().retainedBytes;
+    const left = new RequestDictionaryTransport({ dictionary: true });
+    const right = new RequestDictionaryTransport({ dictionary: true });
+    const leftServer = fixtureFetch();
+    const rightServer = fixtureFetch();
+    const first = body('model-a', 'left encoder');
+    const second = body('model-a', 'right encoder');
+    const third = body('model-a', 'left follows');
+
+    await left.fetch(leftServer.fetch, 'https://example.test/v1/responses', requestInit({ authorization: 'Bearer one' }), first);
+    await right.fetch(rightServer.fetch, 'https://example.test/v1/responses', requestInit({ authorization: 'Bearer one' }), second);
+    await right.fetch(rightServer.fetch, 'https://example.test/v1/responses', requestInit({ authorization: 'Bearer two' }), second);
+    const follow = await left.fetch(leftServer.fetch, 'https://example.test/v1/responses', requestInit({ authorization: 'Bearer one' }), third);
+
+    expect(follow.status).toBe(200);
+    expect(rightServer.calls.map((call) => call.encoding)).toEqual(['zstd', 'zstd']);
+    expect(leftServer.calls.map((call) => call.encoding)).toEqual(['zstd', 'dcz']);
+    expect(leftServer.calls[1]?.body.subarray(8, 40).toString('hex')).toBe(digest(first));
+    expect(dictionaryProcessBudgetAccounting().retainedBytes - before).toBe(left.retainedBytes() + right.retainedBytes());
+    expect(left.retainedBytes()).toBeGreaterThan(0);
+    expect(right.retainedBytes()).toBeGreaterThan(0);
+  });
+
+  it('evicts the least recently used encoder when the shared ceiling cannot hold both', async () => {
+    const older = body('model-a', 'budget-a1');
+    const newer = body('model-a', 'budget-b1');
+    const touched = body('model-a', 'budget-a2');
+    const challenger = body('model-a', 'budget-b2');
+    const probeLeft = body('model-a', 'budget-a3');
+    const probeRight = body('model-a', 'budget-b3');
+    expect(new Set([older, newer, touched, challenger, probeLeft, probeRight].map((value) => value.length)).size).toBe(1);
+    const budget = testingUseDictionaryBudget(older.length * 2);
+    try {
+      const left = new RequestDictionaryTransport({ dictionary: true });
+      const right = new RequestDictionaryTransport({ dictionary: true });
+      const leftServer = fixtureFetch();
+      const rightServer = fixtureFetch();
+      const shared = requestInit({ authorization: 'Bearer shared' });
+      const other = requestInit({ authorization: 'Bearer other' });
+      await left.fetch(leftServer.fetch, 'https://example.test/v1/responses', shared, older);
+      await right.fetch(rightServer.fetch, 'https://example.test/v1/responses', shared, newer);
+      const probes: Array<{ encoding: string | null; hash: string | undefined }> = [];
+      const probeFetch: typeof fetch = async (input, requestInitValue) => {
+        const request = new Request(input, requestInitValue);
+        const wire = Buffer.from(await request.arrayBuffer());
+        const encoding = request.headers.get('content-encoding');
+        probes.push({
+          encoding,
+          hash: encoding === 'dcz' ? wire.subarray(8, 40).toString('hex') : undefined,
+        });
+        return new Response('ok', { status: 200 });
+      };
+      await left.fetch(probeFetch, 'https://example.test/v1/responses', shared, touched);
+      await right.fetch(rightServer.fetch, 'https://example.test/v1/responses', other, challenger);
+      await left.fetch(probeFetch, 'https://example.test/v1/responses', shared, probeLeft);
+      await right.fetch(probeFetch, 'https://example.test/v1/responses', shared, probeRight);
+      await right.fetch(probeFetch, 'https://example.test/v1/responses', other, probeRight);
+
+      expect(probes.map((probe) => probe.encoding)).toEqual(['dcz', 'dcz', 'zstd', 'dcz']);
+      expect(probes[0]?.hash).toBe(digest(older));
+      expect(probes[1]?.hash).toBe(digest(older));
+      expect(probes[3]?.hash).toBe(digest(challenger));
+      expect(leftServer.calls.map((call) => call.encoding)).toEqual(['zstd']);
+      expect(rightServer.calls.map((call) => call.encoding)).toEqual(['zstd', 'zstd']);
+      expect(budget.retainedBytes()).toBe(older.length * 2);
+      expect(left.retainedBytes()).toBe(older.length);
+      expect(right.retainedBytes()).toBe(challenger.length);
+    } finally {
+      budget.restore();
+    }
+  });
+
+  it('releases an acknowledged dictionary when its timer fires without another fetch', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const budget = testingUseDictionaryBudget(8 * 1024 * 1024);
+    try {
+      const transport = new RequestDictionaryTransport({ dictionary: true, ttlMs: 5_000 });
+      const server = fixtureFetch();
+      const first = body('model-a', 'idle expiry');
+      const second = body('model-a', 'after idle');
+      await transport.fetch(server.fetch, 'https://example.test/v1/responses', requestInit({ authorization: 'Bearer one' }), first);
+      expect(transport.retainedBytes()).toBe(first.length);
+      expect(budget.retainedBytes()).toBe(first.length);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(transport.retainedBytes()).toBe(0);
+      expect(budget.retainedBytes()).toBe(0);
+      await transport.fetch(server.fetch, 'https://example.test/v1/responses', requestInit({ authorization: 'Bearer one' }), second);
+      expect(server.calls.map((call) => call.encoding)).toEqual(['zstd', 'zstd']);
+    } finally {
+      budget.restore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('rearms expiry on a repeated acknowledgement and ignores the stale timer', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const budget = testingUseDictionaryBudget(8 * 1024 * 1024);
+    try {
+      const transport = new RequestDictionaryTransport({ dictionary: true, ttlMs: 10_000 });
+      const server = fixtureFetch();
+      const first = body('model-a', 'refresh-me');
+      const second = body('model-a', 'still-there');
+      const init = requestInit({ authorization: 'Bearer one' });
+      await transport.fetch(server.fetch, 'https://example.test/v1/responses', init, first);
+      await vi.advanceTimersByTimeAsync(4_000);
+      await transport.fetch(server.fetch, 'https://example.test/v1/responses', init, first);
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(transport.retainedBytes()).toBe(first.length);
+      expect(budget.retainedBytes()).toBe(first.length);
+      await transport.fetch(server.fetch, 'https://example.test/v1/responses', init, second);
+      expect(server.calls.at(-1)?.encoding).toBe('dcz');
+      expect(server.calls.at(-1)?.body.subarray(8, 40).toString('hex')).toBe(digest(first));
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(transport.retainedBytes()).toBe(second.length);
+      expect(budget.retainedBytes()).toBe(second.length);
+    } finally {
+      budget.restore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not let an evicted timer delete a dictionary stored again under the same hash', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const first = body('model-a', 'same-hash');
+    const second = body('model-a', 'other-row');
+    const budget = testingUseDictionaryBudget(first.length);
+    try {
+      const left = new RequestDictionaryTransport({ dictionary: true, ttlMs: 10_000 });
+      const right = new RequestDictionaryTransport({ dictionary: true, ttlMs: 10_000 });
+      const leftServer = fixtureFetch();
+      const rightServer = fixtureFetch();
+      const init = requestInit({ authorization: 'Bearer one' });
+      await left.fetch(leftServer.fetch, 'https://example.test/v1/responses', init, first);
+      await vi.advanceTimersByTimeAsync(4_000);
+      await right.fetch(rightServer.fetch, 'https://example.test/v1/responses', init, second);
+      expect(left.retainedBytes()).toBe(0);
+      await left.fetch(leftServer.fetch, 'https://example.test/v1/responses', init, first);
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(left.retainedBytes()).toBe(first.length);
+      expect(right.retainedBytes()).toBe(0);
+      expect(budget.retainedBytes()).toBe(first.length);
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(left.retainedBytes()).toBe(0);
+      expect(budget.retainedBytes()).toBe(0);
+    } finally {
+      budget.restore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('unrefs the expiry timer so an idle dictionary does not hold the process open', async () => {
+    const probe = setTimeout(() => {}, 60_000);
+    const unref = vi.spyOn(Object.getPrototypeOf(probe) as { unref: () => void }, 'unref');
+    clearTimeout(probe);
+    const budget = testingUseDictionaryBudget(8 * 1024 * 1024);
+    try {
+      const transport = new RequestDictionaryTransport({ dictionary: true, ttlMs: 60_000 });
+      const server = fixtureFetch();
+      await transport.fetch(server.fetch, 'https://example.test/v1/responses', requestInit({ authorization: 'Bearer one' }), body('model-a', 'unref'));
+      expect(unref).toHaveBeenCalled();
+      expect(transport.retainedBytes()).toBeGreaterThan(0);
+    } finally {
+      unref.mockRestore();
+      budget.restore();
+    }
   });
 });

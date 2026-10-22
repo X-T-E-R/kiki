@@ -42,13 +42,102 @@ const ZSTD_PARAMS = {
 
 type RequestDictionaryEncoding = 'identity' | 'zstd' | 'dcz';
 
+interface BudgetResident {
+  size: number;
+  touchedOrder: number;
+  drop: () => void;
+}
+
+/** Byte ceiling shared by every encoder. Residents do not carry dictionary bytes. */
+class DictionaryProcessBudget {
+  private _bytes = 0;
+  private _order = 0;
+  private readonly _residents = new Set<BudgetResident>();
+
+  constructor(readonly maxBytes: number) {}
+
+  retainedBytes(): number {
+    return this._bytes;
+  }
+
+  takeOrder(): number {
+    this._order += 1;
+    return this._order;
+  }
+
+  retain(resident: BudgetResident): boolean {
+    this._residents.add(resident);
+    this._bytes += resident.size;
+    this.evictOverflow(resident);
+    if (this._bytes <= this.maxBytes) return true;
+    this.release(resident);
+    return false;
+  }
+
+  release(resident: BudgetResident): void {
+    if (!this._residents.delete(resident)) return;
+    this._bytes -= resident.size;
+  }
+
+  private evictOverflow(protectedResident: BudgetResident): void {
+    while (this._bytes > this.maxBytes) {
+      const oldest = this.oldest(protectedResident);
+      if (oldest === undefined) return;
+      const before = this._bytes;
+      oldest.drop();
+      if (this._bytes >= before) return;
+    }
+  }
+
+  private oldest(except: BudgetResident): BudgetResident | undefined {
+    let selected: BudgetResident | undefined;
+    for (const resident of this._residents) {
+      if (resident === except) continue;
+      if (selected === undefined || resident.touchedOrder < selected.touchedOrder) selected = resident;
+    }
+    return selected;
+  }
+}
+
+let processDictionaryBudget = new DictionaryProcessBudget(DEFAULT_MAX_MEMORY_BYTES);
+
+/** Accounting for the live process ceiling. Does not return dictionary bytes. */
+export function dictionaryProcessBudgetAccounting(): { readonly maxBytes: number; readonly retainedBytes: number } {
+  return {
+    maxBytes: processDictionaryBudget.maxBytes,
+    retainedBytes: processDictionaryBudget.retainedBytes(),
+  };
+}
+
+/**
+ * Points transports constructed after this call at a fresh shared ceiling.
+ * Production construction keeps the 64MiB process budget.
+ */
+export function testingUseDictionaryBudget(maxBytes: number): {
+  restore: () => void;
+  retainedBytes: () => number;
+} {
+  const previous = processDictionaryBudget;
+  const budget = new DictionaryProcessBudget(finiteLimit(maxBytes, DEFAULT_MAX_MEMORY_BYTES, 0));
+  processDictionaryBudget = budget;
+  return {
+    restore: () => {
+      processDictionaryBudget = previous;
+    },
+    retainedBytes: () => budget.retainedBytes(),
+  };
+}
+
 interface DictionaryEntry {
   readonly bytes: Buffer;
   readonly hash: string;
+  readonly resident: BudgetResident;
   storedAt: number;
   storedOrder: number;
   touchedAt: number;
   touchedOrder: number;
+  generation: number;
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 interface EncodedRequest {
@@ -79,9 +168,9 @@ export class RequestDictionaryTransport {
   private readonly _maxBodyBytes: number;
   private readonly _maxEncodedBytes: number;
   private readonly _ttlMs: number;
+  private readonly _budget: DictionaryProcessBudget;
   private readonly _entries = new Map<string, Map<string, DictionaryEntry>>();
   private _memoryBytes = 0;
-  private _order = 0;
 
   constructor(options: RequestDictionaryTransportOptions = {}) {
     this._dictionaryEnabled = options.dictionary ?? false;
@@ -108,6 +197,12 @@ export class RequestDictionaryTransport {
       0,
     );
     this._ttlMs = finiteLimit(options.ttlMs, DEFAULT_TTL_MS, 0);
+    this._budget = processDictionaryBudget;
+  }
+
+  /** Bytes this transport still retains. The count is not dictionary content. */
+  retainedBytes(): number {
+    return this._memoryBytes;
   }
 
   async fetch(
@@ -217,22 +312,14 @@ export class RequestDictionaryTransport {
     const entries = this._entries.get(scopeKey);
     if (entries === undefined) return undefined;
     let selected: DictionaryEntry | undefined;
-    for (const [hash, entry] of entries) {
+    for (const entry of [...entries.values()]) {
       if (now - entry.storedAt >= this._ttlMs) {
-        entries.delete(hash);
-        this._memoryBytes -= entry.bytes.length;
+        this.drop(scopeKey, entry);
         continue;
       }
       if (selected === undefined || entry.storedOrder > selected.storedOrder) selected = entry;
     }
-    if (entries.size === 0) {
-      this._entries.delete(scopeKey);
-      return undefined;
-    }
-    if (selected !== undefined) {
-      selected.touchedAt = now;
-      selected.touchedOrder = ++this._order;
-    }
+    if (selected !== undefined) this.touch(selected, now);
     return selected;
   }
 
@@ -247,70 +334,137 @@ export class RequestDictionaryTransport {
     if (!storeRequested || this._maxDictionaryBytes === 0 || this._maxEntriesPerScope === 0) return;
     const acknowledged = response.headers.get('x-dict-stored');
     if (acknowledged !== bodyHash || !/^[0-9a-f]{64}$/u.test(acknowledged)) return;
-    if (body.length > this._maxDictionaryBytes || body.length > this._maxScopeMemoryBytes || body.length > this._maxMemoryBytes) return;
+    if (
+      body.length > this._maxDictionaryBytes ||
+      body.length > this._maxScopeMemoryBytes ||
+      body.length > this._maxMemoryBytes ||
+      body.length > this._budget.maxBytes
+    ) return;
     const entries = this._entries.get(scopeKey) ?? new Map<string, DictionaryEntry>();
     const existing = entries.get(bodyHash);
     if (existing !== undefined) {
+      const order = this._budget.takeOrder();
       existing.storedAt = now;
-      existing.storedOrder = ++this._order;
+      existing.storedOrder = order;
       existing.touchedAt = now;
-      existing.touchedOrder = existing.storedOrder;
-      if (!this._entries.has(scopeKey)) this._entries.set(scopeKey, entries);
+      existing.touchedOrder = order;
+      existing.resident.touchedOrder = order;
+      this.arm(scopeKey, existing);
       return;
     }
     while (entries.size >= this._maxEntriesPerScope || scopeMemory(entries) + body.length > this._maxScopeMemoryBytes) {
       const oldest = oldestEntry(entries);
       if (oldest === undefined) break;
-      entries.delete(oldest.hash);
-      this._memoryBytes -= oldest.bytes.length;
+      this.drop(scopeKey, oldest);
     }
     while (this._memoryBytes + body.length > this._maxMemoryBytes) {
-      const oldest = this.oldestGlobalEntry();
+      const oldest = this.oldestInstanceEntry();
       if (oldest === undefined) break;
-      const [oldestScope, oldestHash, oldestEntryValue] = oldest;
-      const oldestEntries = this._entries.get(oldestScope)!;
-      oldestEntries.delete(oldestHash);
-      this._memoryBytes -= oldestEntryValue.bytes.length;
-      if (oldestEntries.size === 0) this._entries.delete(oldestScope);
+      this.drop(oldest.scopeKey, oldest.entry);
     }
-    if (entries.size >= this._maxEntriesPerScope || scopeMemory(entries) + body.length > this._maxScopeMemoryBytes || this._memoryBytes + body.length > this._maxMemoryBytes) {
+    if (
+      entries.size >= this._maxEntriesPerScope ||
+      scopeMemory(entries) + body.length > this._maxScopeMemoryBytes ||
+      this._memoryBytes + body.length > this._maxMemoryBytes
+    ) {
       if (entries.size === 0) this._entries.delete(scopeKey);
       return;
     }
-    const order = ++this._order;
+    const order = this._budget.takeOrder();
+    const entry = this.createEntry(body, bodyHash, scopeKey, now, order);
+    entries.set(bodyHash, entry);
+    this._entries.set(scopeKey, entries);
+    this._memoryBytes += entry.bytes.length;
+    if (!this._budget.retain(entry.resident)) {
+      this.unlink(scopeKey, entry);
+      return;
+    }
+    this.arm(scopeKey, entry);
+  }
+
+  private createEntry(body: Buffer, bodyHash: string, scopeKey: string, now: number, order: number): DictionaryEntry {
+    const bytes = Buffer.from(body);
+    const linked: { entry?: DictionaryEntry } = {};
+    const resident: BudgetResident = {
+      size: bytes.length,
+      touchedOrder: order,
+      drop: () => {
+        const entry = linked.entry;
+        if (entry !== undefined) this.drop(scopeKey, entry);
+      },
+    };
     const entry: DictionaryEntry = {
-      bytes: Buffer.from(body),
+      bytes,
       hash: bodyHash,
+      resident,
       storedAt: now,
       storedOrder: order,
       touchedAt: now,
       touchedOrder: order,
+      generation: 0,
     };
-    entries.set(bodyHash, entry);
-    this._entries.set(scopeKey, entries);
-    this._memoryBytes += entry.bytes.length;
+    linked.entry = entry;
+    return entry;
+  }
+
+  private touch(entry: DictionaryEntry, now: number): void {
+    const order = this._budget.takeOrder();
+    entry.touchedAt = now;
+    entry.touchedOrder = order;
+    entry.resident.touchedOrder = order;
+  }
+
+  private arm(scopeKey: string, entry: DictionaryEntry): void {
+    if (entry.timer !== undefined) clearTimeout(entry.timer);
+    const generation = entry.generation + 1;
+    entry.generation = generation;
+    const timer = setTimeout(() => {
+      if (entry.generation !== generation) return;
+      this.drop(scopeKey, entry);
+    }, this._ttlMs);
+    const nodeTimer = timer as { unref?: () => void };
+    nodeTimer.unref?.();
+    entry.timer = timer;
+  }
+
+  private unlink(scopeKey: string, entry: DictionaryEntry): void {
+    const entries = this._entries.get(scopeKey);
+    if (entries?.get(entry.hash) !== entry) return;
+    entries.delete(entry.hash);
+    if (entries.size === 0) this._entries.delete(scopeKey);
+    this._memoryBytes -= entry.bytes.length;
+    entry.generation += 1;
+    if (entry.timer !== undefined) {
+      clearTimeout(entry.timer);
+      entry.timer = undefined;
+    }
+  }
+
+  private drop(scopeKey: string, entry: DictionaryEntry): void {
+    const entries = this._entries.get(scopeKey);
+    if (entries?.get(entry.hash) !== entry) return;
+    this.unlink(scopeKey, entry);
+    this._budget.release(entry.resident);
   }
 
   private prune(now: number): void {
     for (const [scopeKey, entries] of this._entries) {
-      for (const [hash, entry] of entries) {
-        if (now - entry.storedAt >= this._ttlMs) {
-          entries.delete(hash);
-          this._memoryBytes -= entry.bytes.length;
-        }
+      for (const entry of [...entries.values()]) {
+        if (now - entry.storedAt >= this._ttlMs) this.drop(scopeKey, entry);
       }
-      if (entries.size === 0) this._entries.delete(scopeKey);
     }
   }
 
-  private oldestGlobalEntry(): [string, string, DictionaryEntry] | undefined {
-    let oldest: [string, string, DictionaryEntry] | undefined;
+  private oldestInstanceEntry(): { scopeKey: string; entry: DictionaryEntry } | undefined {
+    let selected: { scopeKey: string; entry: DictionaryEntry } | undefined;
     for (const [scopeKey, entries] of this._entries) {
-      for (const [hash, entry] of entries) {
-        if (oldest === undefined || entry.touchedOrder < oldest[2].touchedOrder) oldest = [scopeKey, hash, entry];
+      for (const entry of entries.values()) {
+        if (selected === undefined || entry.touchedOrder < selected.entry.touchedOrder) {
+          selected = { scopeKey, entry };
+        }
       }
     }
-    return oldest;
+    return selected;
   }
 }
 
