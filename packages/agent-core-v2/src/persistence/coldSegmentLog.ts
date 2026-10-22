@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
 
+import { resolve } from 'pathe';
+
 import { BugIndicatingError } from '#/_base/errors/errors';
 import type { ColdSealOptions, ColdSealResult } from '#/persistence/interface/appendLogStore';
 import {
@@ -51,13 +53,30 @@ interface SealPin {
 }
 
 const sealPins = new Map<string, SealPin>();
+const memoryIds = new WeakMap<object, string>();
+let memorySerial = 0;
 
-function pinId(scope: string, key: string, sealId: string): string {
-  return `${scope}\0${key}\0${sealId}`;
+function resourceId(storage: IFileSystemStorageService, scope: string, key: string): string {
+  const located = storage.pathFor(scope, key);
+  if (located !== undefined && located.length > 0) {
+    const absolute = resolve(located);
+    return process.platform === 'win32' ? absolute.toLowerCase() : absolute;
+  }
+  let token = memoryIds.get(storage);
+  if (token === undefined) {
+    memorySerial += 1;
+    token = `memory:${memorySerial.toString(10)}`;
+    memoryIds.set(storage, token);
+  }
+  return `${token}\0${scope}\0${key}`;
 }
 
-function pinSeal(scope: string, key: string, sealId: string): () => void {
-  const id = pinId(scope, key, sealId);
+function pinId(storage: IFileSystemStorageService, scope: string, key: string, sealId: string): string {
+  return `${resourceId(storage, scope, key)}\0${sealId}`;
+}
+
+function pinSeal(storage: IFileSystemStorageService, scope: string, key: string, sealId: string): () => void {
+  const id = pinId(storage, scope, key, sealId);
   const entry = sealPins.get(id) ?? { count: 0, waiters: [] };
   entry.count += 1;
   sealPins.set(id, entry);
@@ -70,19 +89,19 @@ function pinSeal(scope: string, key: string, sealId: string): () => void {
   };
 }
 
-function waitUnpinned(scope: string, key: string, sealId: string): Promise<void> {
-  const entry = sealPins.get(pinId(scope, key, sealId));
+function waitUnpinned(storage: IFileSystemStorageService, scope: string, key: string, sealId: string): Promise<void> {
+  const entry = sealPins.get(pinId(storage, scope, key, sealId));
   if (entry === undefined || entry.count === 0) return Promise.resolve();
-  return new Promise((resolve) => {
-    entry.waiters.push(resolve);
+  return new Promise((resolvePromise) => {
+    entry.waiters.push(resolvePromise);
   });
 }
 
-function takeTurn(scope: string, key: string): ColdTurn {
-  const id = `${scope}\0${key}`;
+function takeTurn(storage: IFileSystemStorageService, scope: string, key: string): ColdTurn {
+  const id = resourceId(storage, scope, key);
   let finish!: () => void;
-  const current = new Promise<void>((resolve) => {
-    finish = resolve;
+  const current = new Promise<void>((resolvePromise) => {
+    finish = resolvePromise;
   });
   const ready = (coldChains.get(id) ?? Promise.resolve()).then(() => undefined, () => undefined);
   coldChains.set(id, current);
@@ -92,8 +111,13 @@ function takeTurn(scope: string, key: string): ColdTurn {
   return { ready, finish };
 }
 
-export async function withColdExclusive<T>(scope: string, key: string, body: () => Promise<T>): Promise<T> {
-  const turn = takeTurn(scope, key);
+export async function withColdExclusive<T>(
+  storage: IFileSystemStorageService,
+  scope: string,
+  key: string,
+  body: () => Promise<T>,
+): Promise<T> {
+  const turn = takeTurn(storage, scope, key);
   await turn.ready;
   try {
     return await body();
@@ -304,7 +328,7 @@ export async function discardColdUnlocked(
   await storage.delete(scope, coldManifestKey(key));
   if (bytes === undefined) return;
   const sealId = sealIdOf(bytes);
-  if (sealId !== undefined) await waitUnpinned(scope, key, sealId);
+  if (sealId !== undefined) await waitUnpinned(storage, scope, key, sealId);
   await removeSegments(storage, scope, listedSegmentKeys(bytes, key));
 }
 
@@ -313,7 +337,7 @@ export async function discardColdSegments(
   scope: string,
   key: string,
 ): Promise<void> {
-  await withColdExclusive(scope, key, () => discardColdUnlocked(storage, scope, key));
+  await withColdExclusive(storage, scope, key, () => discardColdUnlocked(storage, scope, key));
 }
 
 async function sealUnlocked(
@@ -390,7 +414,7 @@ async function sealUnlocked(
     const fresh = new Set(written.map((segment) => segment.key));
     if (previous !== undefined) {
       const previousId = sealIdOf(previous);
-      if (previousId !== undefined && previousId !== sealId) await waitUnpinned(scope, key, previousId);
+      if (previousId !== undefined && previousId !== sealId) await waitUnpinned(storage, scope, key, previousId);
       await removeSegments(storage, scope, listedSegmentKeys(previous, key).filter((segmentKey) => !fresh.has(segmentKey))).catch(() => undefined);
     }
     return {
@@ -417,7 +441,7 @@ export function sealColdSegments(
   sealedCut: number,
   options: ColdSealOptions = {},
 ): Promise<ColdSealResult> {
-  return withColdExclusive(scope, key, () => sealUnlocked(storage, scope, key, sealedCut, options));
+  return withColdExclusive(storage, scope, key, () => sealUnlocked(storage, scope, key, sealedCut, options));
 }
 
 export async function logicalByteSize(
@@ -425,7 +449,7 @@ export async function logicalByteSize(
   scope: string,
   key: string,
 ): Promise<number | undefined> {
-  return withColdExclusive(scope, key, async () => {
+  return withColdExclusive(storage, scope, key, async () => {
     const manifest = await loadMatchedManifest(storage, scope, key);
     const size = await storage.size(scope, key);
     if (manifest === undefined) return size;
@@ -512,12 +536,12 @@ export async function openPinnedLogicalRead(
   let manifest: ColdManifest | undefined;
   let size: number | undefined;
   let release = (): void => {};
-  await withColdExclusive(scope, key, async () => {
+  await withColdExclusive(storage, scope, key, async () => {
     manifest = await loadMatchedManifest(storage, scope, key);
     size = await storage.size(scope, key);
     if (manifest !== undefined) {
       if (size === undefined || size < manifest.sealedCut) throw corrupted(scope, key, 'original-shrunk');
-      release = pinSeal(scope, key, manifest.sealId);
+      release = pinSeal(storage, scope, key, manifest.sealId);
     }
   });
   let closed = false;

@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { deflateRawSync } from 'node:zlib';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { join } from 'pathe';
+import { join, resolve } from 'pathe';
 import { open as openZip } from 'yauzl';
 
 import { DisposableStore } from '#/_base/di/lifecycle';
@@ -16,7 +16,8 @@ import { AppendLogStore, coldManifestKey } from '#/persistence/backends/node-fs/
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import { COLD_SEGMENT_BYTES, readLogicalBytes } from '#/persistence/coldSegmentLog';
-import { StorageErrors, type StorageReadRange } from '#/persistence/interface/storage';
+import { sealRetainedJournal } from '#/persistence/retainedJournal';
+import { StorageErrors, type StorageReadOptions, type StorageReadRange, type StorageWriteOptions } from '#/persistence/interface/storage';
 import { AGENT_WIRE_RECORD_KEY, type WireRecord } from '#/wire/record';
 
 import { noopLogger, registerTestAgentWire } from '../../../wire/stubs';
@@ -592,5 +593,188 @@ describe('cold segment journal', () => {
       details: { reason: 'generation' },
     });
     expect(Buffer.from((await published.read(SCOPE, KEY))!)).toEqual(next);
+  });
+
+  it('shares the seal lock for one wire opened through two storage roots', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cold-identity-'));
+    const wideScope = 'ws/ses/agents/main';
+    let releaseHold!: () => void;
+    const hold = new Promise<void>((done) => { releaseHold = done; });
+    let markHeld!: () => void;
+    const held = new Promise<void>((done) => { markHeld = done; });
+    let arm = false;
+    const wide = new (class extends FileStorageService {
+      override async write(
+        scope: string,
+        key: string,
+        data: Uint8Array,
+        options: StorageWriteOptions = {},
+      ): Promise<void> {
+        if (arm && key.endsWith('.segments.json')) {
+          arm = false;
+          markHeld();
+          await hold;
+        }
+        await super.write(scope, key, data, options);
+      }
+    })(root);
+    const narrow = new FileStorageService(join(root, 'ws', 'ses'));
+    const wideLog = new AppendLogStore(wide);
+    const narrowLog = new AppendLogStore(narrow);
+    const journal = buildJournal();
+    try {
+      expect(resolve(wide.pathFor(wideScope, KEY)).toLowerCase()).toBe(resolve(narrow.pathFor(SCOPE, KEY)).toLowerCase());
+      await wide.write(wideScope, KEY, journal.bytes);
+      await wideLog.sealCold(wideScope, KEY, journal.sealedCut, { segmentBytes: SEGMENT_BYTES });
+      arm = true;
+      const reseal = wideLog.sealCold(wideScope, KEY, journal.sealedCut, { segmentBytes: SEGMENT_BYTES });
+      await held;
+      let narrowSettled = false;
+      const otherSeal = narrowLog.sealCold(SCOPE, KEY, journal.sealedCut, { segmentBytes: SEGMENT_BYTES }).then(() => {
+        narrowSettled = true;
+      });
+      await new Promise<void>((done) => { setTimeout(done, 1_500); });
+      expect(narrowSettled).toBe(false);
+      releaseHold();
+      await reseal;
+      await otherSeal;
+      expect(await concatBytes(readLogicalBytes(narrow, SCOPE, KEY))).toEqual(journal.bytes);
+      expect(await readFile(wide.pathFor(wideScope, KEY))).toEqual(journal.bytes);
+    } finally {
+      releaseHold();
+      await wideLog.dispose();
+      await narrowLog.dispose();
+      await wide.close();
+      await narrow.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it('keeps a reader pin when the same wire is discarded through the other storage root', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cold-pin-'));
+    const wideScope = 'ws/ses/agents/main';
+    let releaseRead!: () => void;
+    const gate = new Promise<void>((done) => { releaseRead = done; });
+    let markRead!: () => void;
+    const readingSegment = new Promise<void>((done) => { markRead = done; });
+    let blocked = false;
+    const narrow = new (class extends FileStorageService {
+      override async read(scope: string, key: string, options: StorageReadOptions = {}): Promise<Uint8Array | undefined> {
+        if (!blocked && key.endsWith('.deflate')) {
+          blocked = true;
+          markRead();
+          await gate;
+        }
+        return super.read(scope, key, options);
+      }
+    })(join(root, 'ws', 'ses'));
+    const wide = new FileStorageService(root);
+    const wideLog = new AppendLogStore(wide);
+    const journal = buildJournal();
+    try {
+      await wide.write(wideScope, KEY, journal.bytes);
+      await wideLog.sealCold(wideScope, KEY, journal.sealedCut, { segmentBytes: SEGMENT_BYTES });
+      const published = JSON.parse(Buffer.from((await wide.read(wideScope, coldManifestKey(KEY)))!).toString('utf8')) as {
+        segments: Array<{ key: string }>;
+      };
+      const pinnedKey = published.segments[0]!.key;
+      const pending = concatBytes(readLogicalBytes(narrow, SCOPE, KEY));
+      await readingSegment;
+      const discarding = wideLog.discardCold(wideScope, KEY);
+      await new Promise<void>((done) => { setTimeout(done, 800); });
+      expect(await wide.read(wideScope, pinnedKey)).toBeDefined();
+      releaseRead();
+      expect(await pending).toEqual(journal.bytes);
+      await discarding;
+      expect(await wide.read(wideScope, coldManifestKey(KEY))).toBeUndefined();
+      expect(await readFile(wide.pathFor(wideScope, KEY))).toEqual(journal.bytes);
+    } finally {
+      releaseRead();
+      await wideLog.dispose();
+      await wide.close();
+      await narrow.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it('does not block a different home that uses the same scope and key', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cold-homes-'));
+    const homeA = join(root, 'home-a');
+    const homeB = join(root, 'home-b');
+    let releaseHold!: () => void;
+    const hold = new Promise<void>((done) => { releaseHold = done; });
+    let markHeld!: () => void;
+    const held = new Promise<void>((done) => { markHeld = done; });
+    let arm = false;
+    const storageA = new (class extends FileStorageService {
+      override async write(
+        scope: string,
+        key: string,
+        data: Uint8Array,
+        options: StorageWriteOptions = {},
+      ): Promise<void> {
+        if (arm && key.endsWith('.segments.json')) {
+          arm = false;
+          markHeld();
+          await hold;
+        }
+        await super.write(scope, key, data, options);
+      }
+    })(homeA);
+    const storageB = new FileStorageService(homeB);
+    const logA = new AppendLogStore(storageA);
+    const logB = new AppendLogStore(storageB);
+    const journal = buildJournal();
+    try {
+      expect(resolve(storageA.pathFor(SCOPE, KEY)).toLowerCase()).not.toBe(resolve(storageB.pathFor(SCOPE, KEY)).toLowerCase());
+      await storageA.write(SCOPE, KEY, journal.bytes);
+      await storageB.write(SCOPE, KEY, journal.bytes);
+      await logA.sealCold(SCOPE, KEY, journal.sealedCut, { segmentBytes: SEGMENT_BYTES });
+      arm = true;
+      const reseal = logA.sealCold(SCOPE, KEY, journal.sealedCut, { segmentBytes: SEGMENT_BYTES });
+      await held;
+      const other = await Promise.race([
+        logB.sealCold(SCOPE, KEY, journal.sealedCut, { segmentBytes: SEGMENT_BYTES }).then(() => 'finished' as const),
+        new Promise<'waiting'>((done) => { setTimeout(() => done('waiting'), 4_000); }),
+      ]);
+      expect(other).toBe('finished');
+      expect(await storageB.read(SCOPE, coldManifestKey(KEY))).toBeDefined();
+      releaseHold();
+      await reseal;
+      expect(await readFile(storageA.pathFor(SCOPE, KEY))).toEqual(journal.bytes);
+      expect(await readFile(storageB.pathFor(SCOPE, KEY))).toEqual(journal.bytes);
+    } finally {
+      releaseHold();
+      await logA.dispose();
+      await logB.dispose();
+      await storageA.close();
+      await storageB.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it('seals a retained journal only through the last complete record', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cold-retained-'));
+    const sessionDir = join(root, 'session');
+    const wirePath = join(sessionDir, 'agents', 'main', KEY);
+    const complete = Buffer.from('{"type":"note","id":"kept"}\n');
+    const partial = Buffer.from('{"type":"note","id":"tail"}');
+    const bytes = Buffer.concat([complete, partial]);
+    try {
+      await mkdir(join(sessionDir, 'agents', 'main'), { recursive: true });
+      await writeFile(wirePath, bytes);
+      const sealed = await sealRetainedJournal(wirePath, { segmentBytes: SEGMENT_BYTES });
+      expect(sealed.sealedCut).toBe(complete.byteLength);
+      expect(sealed.originalRetained).toBe(true);
+      const storage = new FileStorageService(sessionDir);
+      try {
+        expect(await concatBytes(readLogicalBytes(storage, SCOPE, KEY))).toEqual(bytes);
+      } finally {
+        await storage.close();
+      }
+      expect(await readFile(wirePath)).toEqual(bytes);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
