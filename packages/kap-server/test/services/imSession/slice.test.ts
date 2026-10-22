@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { IBotService, IConfigService, ISessionInteractionService, ISessionManager, ISessionQuestionService, type Scope } from '@kiki/agent-core-v2';
@@ -319,6 +319,7 @@ describe('im session restart and durable files', () => {
     const home = await tempHome();
     const file = join(home, 'im-session-reply.json');
     await writeFile(file, '{', 'utf8');
+    await chmod(file, 0o600);
     const raw = openSession('personal_wechat', 'inst');
     const hub = new HubSessionAdapter(raw, home);
     await expect(hub.sendText({ identity, text: 'yo', code: 'reply' })).rejects.toThrow('im_session_reply_unreadable');
