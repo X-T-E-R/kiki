@@ -6,6 +6,7 @@ import type { RequestIdentityPolicy } from '#/kosong/requestIdentity/requestIden
 import type { ImagePolicyConfig } from '#/kosong/provider/providerImagePolicy';
 import type { GenerationParameters } from '#/kosong/contract/generationParameters';
 import type { RequestCompression } from '#/kosong/contract/requestCompression';
+import type { ResponsesWebSocketConfig } from '#/kosong/contract/responsesTransport';
 
 export type ProviderType = string;
 
@@ -29,6 +30,7 @@ export interface ProviderConfig {
   defaults?: GenerationParameters;
   requestIdentity?: RequestIdentityPolicy;
   requestCompression?: RequestCompression;
+  responsesWebSocket?: ResponsesWebSocketConfig;
   images?: ImagePolicyConfig;
 
   type?: ProviderType;

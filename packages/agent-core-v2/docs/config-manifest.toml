@@ -778,6 +778,8 @@ enter_approval_timeout_ms = 60000
         # messages: "metadata_user_id" | "none"
       # responses_metadata: "codex" | "none"
   # request_compression: object | object | object
+  # responses_web_socket: object
+    # targets: string[]
   # images: object
     # accepted_types: "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/bmp" | "image/heic" | "image/heif" | "image/avif" | "image/tiff" | "image/x-icon"[]
     # convert_unsupported: "off" | "auto" | "png" | "jpeg"

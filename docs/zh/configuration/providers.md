@@ -70,6 +70,25 @@ dictionary = true
 
 只有带明确标记的推理前解码拒绝才允许切换编码重试，最多三次。响应丢失或送达不确定时，不会自动重新生成。目标不支持压缩时，先关闭压缩再发起新请求，不依赖自动尝试未知格式。
 
+## 通过 WebSocket 增量传输 Responses
+
+网关在握手中通过 `X-Responses-WebSocket-Capabilities` 声明支持版本 1 时，可明确启用连接内的 Responses 历史复用：
+
+```toml
+[providers.gateway]
+type = "openai_responses"
+base_url = "https://example.com/v1"
+
+[providers.gateway.responses_web_socket]
+targets = ["https://example.com/v1"]
+```
+
+目标必须匹配 Responses 端点的来源和路径边界。Kiki 使用官方 OpenAI SDK，每个 Agent 各持一个连接；上次已完成响应仍匹配本地历史时，只发送新增输入。辅助请求、其他 Agent 和 fork 不共享这条历史。取消请求会关闭连接；模型、凭据、策略或上下文变化时，会重建连接或发送完整请求。删除 `responses_web_socket` 即可保持普通 HTTP 请求。
+
+网关会在连接上临时保存原生请求和响应项。与 HTTP 请求字典不同，这些状态随生成完成提交，不由字典确认推进。未知输出字段保留在内存中的附属状态里，后续发送完整请求，不用于增量请求。
+
+网关明确报告推理前历史缺失时，Kiki 会发送一次当前完整历史。推理前拒绝上游格式或提示词策略时，可转为完整 HTTP 请求。访问拒绝、送达不确定或已收到部分响应时，不会自动重放。此路径只支持 `response.create` 生成，不启用后台生成、steering 或 `generate:false` 预热。
+
 ## `/provider` — 交互式供应商管理
 
 不想手动编辑 TOML？在 TUI 里输入 `/provider` 打开**供应商管理器**，可以以交互方式添加或删除供应商。

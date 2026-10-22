@@ -5,6 +5,7 @@ import type { ModelCapability } from '#/kosong/contract/capability';
 import type { InspectionSource } from '#/kosong/contract/inspection';
 import type { ChatProvider } from '#/kosong/contract/provider';
 import type { RequestCompression } from '#/kosong/contract/requestCompression';
+import type { ResponsesWebSocketConfig } from '#/kosong/contract/responsesTransport';
 
 import type { ProtocolBaseId, ResolvedAdapterIdentity } from './protocolBase';
 
@@ -34,6 +35,7 @@ export interface ProtocolAdapterConfig {
   readonly apiKey?: string;
   readonly defaultHeaders?: Readonly<Record<string, string>>;
   readonly requestCompression?: RequestCompression;
+  readonly responsesWebSocket?: ResponsesWebSocketConfig;
   readonly providerOptions?: ProtocolProviderOptions;
 }
 

@@ -184,6 +184,9 @@ export async function generate(
       }
     }
 
+    await throwIfAborted(options?.signal, stream);
+    stream.commitMessage?.(message);
+
     let result: GenerateResult = {
       id: stream.id,
       message,

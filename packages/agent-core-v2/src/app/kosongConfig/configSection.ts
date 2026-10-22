@@ -32,7 +32,7 @@ import { ENV_MODEL_PROVIDER_KEY, type OAuthRef, type ProviderConfig, type Provid
 import type { ImagePolicyConfig } from '#/kosong/provider/providerImagePolicy';
 import { ProtocolSchema } from '#/kosong/protocol/protocol';
 import { RequestIdentityPolicySchema } from '#/kosong/requestIdentity/requestIdentityPolicy';
-import { RequestCompressionSchema } from '#/kosong/provider/requestCompression';
+import { ProviderTargetsSchema, RequestCompressionSchema } from '#/kosong/provider/requestCompression';
 
 export { ENV_MODEL_PROVIDER_KEY } from '#/kosong/provider/provider';
 
@@ -103,6 +103,7 @@ const ProviderConfigObjectSchema = z.object({
   defaults: GenerationParametersSchema.optional(),
   requestIdentity: RequestIdentityPolicySchema.optional(),
   requestCompression: RequestCompressionSchema.optional(),
+  responsesWebSocket: z.object({ targets: ProviderTargetsSchema }).strict().optional(),
   images: ImagePolicyConfigSchema.optional(),
 
   type: ProviderTypeSchema.optional(),

@@ -325,6 +325,7 @@ describe('ModelRequesterImpl request execution', () => {
     const signal = AbortSignal.timeout(1000);
     const responsesTransport: ResponsesRequestTransport = {
       request: async () => ({ async *[Symbol.asyncIterator]() {} }),
+      commitResponse: vi.fn(),
       close: vi.fn(),
     };
 
@@ -744,4 +745,27 @@ it('queues a session-owned auxiliary model request behind that session main slot
     expect(provider.calls).toHaveLength(2);
     expect(governor.snapshot()).toMatchObject({ active: 0, queued: 0 });
   } finally { release(); await ix.dispose(); }
+});
+
+it('does not force-refresh or replay a production Responses 401 received after partial output', async () => {
+  const getAuth = vi.fn(async (_options?: { force?: boolean }) => ({ apiKey: 'YOUR_API_KEY' }));
+  let calls = 0;
+  const provider = new OpenAIResponsesChatProvider({
+    model: 'synthetic', baseUrl: 'https://example.test/v1', apiKey: 'YOUR_API_KEY',
+    requestCompression: { encoding: 'gzip', targets: ['https://example.test/v1'] },
+    convertError: () => new APIStatusError(401, 'synthetic revoked after partial output'),
+    clientFactory: () => ({ responses: { create: async () => {
+      calls += 1;
+      return { async *[Symbol.asyncIterator]() {
+        yield { type: 'response.created', response: { id: 'resp_partial', status: 'in_progress', output: [] } };
+        yield { type: 'response.output_text.delta', item_id: 'msg_partial', output_index: 0, content_index: 0, delta: 'partial' };
+        yield { type: 'error', code: 'authentication_error', message: 'synthetic revoked after partial output' };
+      } };
+    } } }) as unknown as OpenAI,
+  });
+  const requester = new ModelRequesterImpl(modelWith({ canRefresh: true, getAuth }), registryReturning(provider));
+  await expect(collect(requester.request(INPUT))).rejects.toMatchObject({ statusCode: 401, message: 'synthetic revoked after partial output' });
+  expect(calls).toBe(1);
+  expect(getAuth).toHaveBeenCalledTimes(1);
+  expect(getAuth).not.toHaveBeenCalledWith({ force: true });
 });
