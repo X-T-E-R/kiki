@@ -163,6 +163,39 @@ describe('resolveModelAlias', () => {
 });
 
 describe('SDK config TOML', () => {
+  it('round-trips scoped retry policies with selector and attempt keys intact', async () => {
+    const path = join(await makeTempDir(), 'config.toml');
+    const config = parseConfigString(`
+[retry]
+max_attempts = 5
+
+[[retry.policies]]
+match = '^provider\\.rate_limit$'
+models = ['gemini-4-argon']
+providers = ['google-native']
+max_attempts = 20
+backoff = 15000
+`);
+
+    expect(config.retry).toEqual({
+      maxAttempts: 5,
+      policies: [{
+        match: '^provider\\.rate_limit$',
+        models: ['gemini-4-argon'],
+        providers: ['google-native'],
+        maxAttempts: 20,
+        backoff: 15_000,
+        retry: true,
+      }],
+    });
+    await writeConfigFile(path, config);
+    expect(readConfigFile(path).retry).toEqual(config.retry);
+    const saved = await readFile(path, 'utf8');
+    expect(saved).toContain('max_attempts = 20');
+    expect(saved).toContain('models = [ "gemini-4-argon" ]');
+    expect(saved).not.toContain('maxAttempts');
+  });
+
   it('round-trips native multiline cognition and clears a former file slot without resurrecting raw references', async () => {
     const path = join(await makeTempDir(), 'config.toml');
     const config = parseConfigString('[models.example]\nprovider="example"\nmodel="remote-example"\nmax_context_size=8192\n[models.example.cognition]\noverlay="cognition/author.md"\nsteering="cognition/old.md"\nindependent="off"\n');

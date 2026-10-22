@@ -590,7 +590,7 @@ New sessions keep changing date, directory listings, workspace instructions and 
 
 ## `retry`
 
-`retry` customizes the total attempt budget and fixed backoff for selected step errors. By default, a retryable step gets five total attempts, with waits of 2, 4, 8, and 16 seconds plus up to 25% jitter (30–37.5 seconds in total). A provider `Retry-After` value or a matching policy's fixed `backoff` replaces the corresponding default wait. The section and each policy are strict: an unknown field is rejected rather than silently ignored.
+`retry` customizes the total attempt budget and fixed backoff for selected step errors. By default, a retryable step gets five total attempts, with waits of 2, 4, 8, and 16 seconds plus up to 25% jitter (30–37.5 seconds in total). A provider `Retry-After` value or a matching policy's fixed `backoff` replaces the corresponding default wait. Policies can also target exact model and provider configuration keys, so one provider's temporary failures do not change retry behavior elsewhere. The section and each policy are strict: an unknown field is rejected rather than silently ignored.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -601,26 +601,27 @@ Each `[[retry.policies]]` entry has these fields:
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `match` | `string` | Yes | Regular expression matched against the error code and error name |
+| `match` | `string` | Yes | JavaScript regular expression matched against the error code and error name; inline modifiers such as `(?i)` are invalid and cause the policy to be ignored with a configuration warning |
+| `models` | `array<string>` | No | Exact canonical `[models]` keys; the policy applies only when the bound model is listed |
+| `providers` | `array<string>` | No | Exact `[providers]` keys; the policy applies only when the bound provider is listed |
 | `max_attempts` | `integer` | No | Total attempts for matching errors, including the initial attempt; overrides the section-level budget |
 | `backoff` | `integer` | No | Fixed delay in milliseconds before each retry; a provider retry-after hint still takes precedence |
 | `retry` | `boolean` | No | Defaults to `true`. `false` can suppress an error that Kiki normally considers retryable; `true` cannot force retries for an error classified as non-retryable |
 
-Policies are checked from top to bottom, so put specific regular expressions before broader ones:
+Policies are checked from top to bottom. A policy whose `models` or `providers` selector does not contain the current binding is skipped; the first remaining policy whose `match` expression matches the error applies. If both selectors are present, both must match. Omitting both selectors preserves the earlier global per-error behavior.
+
+This example keeps the ordinary five-attempt default for every other model and provider, but gives one native Google GenAI Argon binding up to 20 total attempts for HTTP 429 rate limits:
 
 ```toml
-[retry]
-max_attempts = 4
-
 [[retry.policies]]
 match = '^provider\.rate_limit$'
-max_attempts = 6
-backoff = 1000
-
-[[retry.policies]]
-match = '^provider\.'
-retry = false
+models = ['gemini-4-argon']
+providers = ['google-native']
+max_attempts = 20
+backoff = 15000
 ```
+
+Replace `gemini-4-argon` and `google-native` with the exact keys used in your `[models]` and `[providers]` tables. The `backoff` applies only when the provider does not send `Retry-After`. The policy does not make HTTP 400, exhausted quota, partial output, unknown-delivery, or already-executed failures retryable; `retry = true` never overrides Kiki's non-retryable classification.
 
 ## `transcript_memory`
 

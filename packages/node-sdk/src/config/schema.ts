@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { parsePattern } from '@kiki/agent-core-v2';
 import { OAuthRefSchema } from '@kiki/agent-core-v2/kosong/provider/oauthRef';
 import { CognitionConfigSchema } from '@kiki/agent-core-v2/app/kosongConfig/configSection';
+import { RetryConfigSchema } from '@kiki/agent-core-v2/agent/stepRetry/configSection';
 import { interactionConfigSchema, interactionConfigCamelPatchSchema, modelBehaviorConfigSchema, modelProtocolSchema } from '@kiki/protocol';
 import { HOOK_EVENT_TYPES } from '@kiki/agent-core-v2/features/externalHooks/internal/types';
 import {
@@ -394,6 +395,7 @@ export const KimiConfigSchema = z.object({
   extraSkillDirs: z.array(z.string()).optional(),
   extraAgentDirs: z.array(z.string()).optional(),
   loopControl: LoopControlSchema.optional(),
+  retry: RetryConfigSchema.optional(),
   background: BackgroundConfigSchema.optional(),
   subagent: SubagentConfigSchema.optional(),
   agents: AgentsConfigSchema.optional(),
@@ -410,6 +412,7 @@ const ModelAliasPatchSchema = ModelAliasSchema.partial();
 const ThinkingConfigPatchSchema = ThinkingConfigSchema.partial();
 const PermissionConfigPatchSchema = PermissionConfigSchema.partial();
 const LoopControlPatchSchema = LoopControlSchema.partial();
+const RetryConfigPatchSchema = RetryConfigSchema.partial();
 const BackgroundConfigPatchSchema = BackgroundConfigSchema.partial();
 const SubagentConfigPatchSchema = SubagentConfigSchema.partial();
 const AgentsConfigPatchSchema = AgentsConfigSchema.partial();
@@ -437,6 +440,7 @@ export const KimiConfigPatchSchema = z
     extraSkillDirs: z.array(z.string()).optional(),
     extraAgentDirs: z.array(z.string()).optional(),
     loopControl: LoopControlPatchSchema.optional(),
+    retry: RetryConfigPatchSchema.optional(),
     background: BackgroundConfigPatchSchema.optional(),
     subagent: SubagentConfigPatchSchema.optional(),
     agents: AgentsConfigPatchSchema.optional(),

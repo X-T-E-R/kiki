@@ -1184,6 +1184,39 @@ timeout = 600
     expect(await readFile(configPath, 'utf-8')).toBe(before);
   });
 
+  it('round-trips model and provider retry selectors through REST and TOML', async () => {
+    await boot('[retry]\nmax_attempts = 5\n');
+
+    const patched = await patchConfig({
+      retry: {
+        max_attempts: 5,
+        policies: [{
+          match: '^provider\\.rate_limit$',
+          models: ['gemini-4-argon'],
+          providers: ['google-native'],
+          max_attempts: 20,
+          backoff: 15_000,
+        }],
+      },
+    });
+
+    expect(patched.retry).toEqual({
+      maxAttempts: 5,
+      policies: [{
+        match: '^provider\\.rate_limit$',
+        models: ['gemini-4-argon'],
+        providers: ['google-native'],
+        maxAttempts: 20,
+        backoff: 15_000,
+        retry: true,
+      }],
+    });
+    const saved = await readFile(join(home as string, 'config.toml'), 'utf-8');
+    expect(saved).toContain('models = [ "gemini-4-argon" ]');
+    expect(saved).toContain('providers = [ "google-native" ]');
+    expect((await getConfig()).retry).toEqual(patched.retry);
+  });
+
   it('rejects unknown retry keys without persisting them', async () => {
     await boot('[retry]\nmax_attempts = 2\n');
     const configPath = join(home as string, 'config.toml');
