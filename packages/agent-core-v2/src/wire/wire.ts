@@ -48,6 +48,10 @@ export interface IWireService {
   journalIdentity?(): Promise<WireJournalIdentity>;
   /** SHA-256 of the first `byteLength` bytes, or undefined if the journal is shorter. */
   journalSha256?(byteLength: number): Promise<string | undefined>;
+  /** Bytes queued through this process, reset when the journal is replaced. */
+  appendedByteCount?(): number;
+  /** Fires after those bytes are queued. The count is cumulative for this process. */
+  onDidAppendBytes?(listener: (appendedBytes: number) => void): { dispose(): void };
   /**
    * Trusted sealed digest observed when this epoch opened, even if the journal
    * has since grown. Undefined when no trusted seal was observed.

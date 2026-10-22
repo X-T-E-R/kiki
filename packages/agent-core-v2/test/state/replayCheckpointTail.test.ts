@@ -18,13 +18,14 @@ import { IEventBus } from '#/app/event/eventBus';
 import { EventBusService } from '#/app/event/eventBusService';
 import { ITelemetryService, noopTelemetryService } from '#/app/telemetry/telemetry';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
+import type { StorageReadRange } from '#/persistence/interface/storage';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { IEventDispatcher } from '#/state/eventDispatcher';
-import { EventDispatcherService } from '#/state/eventDispatcherService';
+import { EventDispatcherService, REPLAY_CHECKPOINT_GROWTH_BYTES } from '#/state/eventDispatcherService';
 import { IWireService, type WireJournalReadOptions } from '#/wire/wire';
 import { WireService } from '#/wire/wireService';
 import { AGENT_WIRE_RECORD_KEY } from '#/wire/record';
@@ -32,6 +33,21 @@ import { AGENT_WIRE_RECORD_KEY } from '#/wire/record';
 const SCOPE = 'sessions/s/agents/main';
 const CHECKPOINT_SCOPE = `${SCOPE}/replay-checkpoints`;
 const CHECKPOINT_KEY = 'engine-v1';
+
+class CountingStorage extends InMemoryStorageService {
+  streamBytes = 0;
+
+  override async *readStream(
+    scope: string,
+    key: string,
+    range?: StorageReadRange,
+  ): AsyncIterable<Uint8Array> {
+    for await (const chunk of super.readStream(scope, key, range)) {
+      this.streamBytes += chunk.byteLength;
+      yield chunk;
+    }
+  }
+}
 
 let disposables = new DisposableStore();
 beforeEach(() => {
@@ -321,4 +337,61 @@ describe('replay checkpoint tail', () => {
     const repaired = Buffer.from(await bytesOf(corrupt.storage)).toString('utf8');
     expect(repaired).not.toContain('not-json');
   });
+
+  it('hashes only the bytes appended since the previous prefix digest', async () => {
+    const storage = new CountingStorage();
+    const first = harness(storage);
+    await seed(first.wire);
+    const size = (await bytesOf(storage)).byteLength;
+    storage.streamBytes = 0;
+    await expect(first.wire.journalSha256?.(size)).resolves.toMatch(/^[a-f0-9]{64}$/);
+    expect(storage.streamBytes).toBe(size);
+
+    first.wire.appendRecord({ type: 'context.append_message', message: message('user', 'delta'), time: 9 });
+    await first.wire.flush();
+    const grown = (await bytesOf(storage)).byteLength;
+    storage.streamBytes = 0;
+    const digest = await first.wire.journalSha256?.(grown);
+    expect(digest).toMatch(/^[a-f0-9]{64}$/);
+    expect(storage.streamBytes).toBe(grown - size);
+  });
+
+  it('checkpoints a long run once the journal grows, then reopens on that snapshot', async () => {
+    const first = await checkpointed();
+    const bulky = 'x'.repeat(REPLAY_CHECKPOINT_GROWTH_BYTES);
+    await first.dispatcher.dispatch(new PromptEnqueued({
+      schemaVersion: 1,
+      promptId: 'prompt-growth',
+      userMessageId: 'prompt-growth',
+      createdAt: '2026-10-22T00:00:00.000Z',
+      message: message('user', bulky),
+      alreadyMaterialized: false,
+      appendTiming: 'agent_idle',
+      revision: 1,
+      queueIndex: 1,
+    }));
+    await first.wire.flush();
+    const started = Date.now();
+    let saved = false;
+    while (Date.now() - started < 5_000) {
+      const envelope = await first.docs.get<{ wire: { size: number } }>(CHECKPOINT_SCOPE, CHECKPOINT_KEY);
+      const size = (await bytesOf(first.storage)).byteLength;
+      if (envelope?.wire.size === size) {
+        saved = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(saved).toBe(true);
+
+    const reopened = harness(first.storage);
+    const reads = watchReads(reopened.wire);
+    await reopened.dispatcher.restore();
+    expect(reads.full).toBe(0);
+    expect(reads.tails).toEqual([]);
+    expect(queueText(reopened.state)).toBe('queued-first');
+    const grown = reopened.state.get(promptQueueKey).entries.get('prompt-growth') as { message?: ContextMessage } | undefined;
+    const part = grown?.message?.content[0];
+    expect(part !== undefined && 'text' in part ? String(part.text).length : 0).toBe(REPLAY_CHECKPOINT_GROWTH_BYTES);
+  }, 20_000);
 });

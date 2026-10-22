@@ -132,6 +132,7 @@ type MaterializeSessionOptions = Omit<CreateSessionOptions, 'sessionId'> & {
 const NO_ABORT = new AbortController().signal;
 const SESSION_LOCK_SCOPE = 'session-locks';
 const CHECKPOINT_IDLE_DELAY_MS = 1_000;
+const CHECKPOINT_RETRY_DELAY_MS = 5_000;
 
 const SESSION_CREATE_RELOAD_SKILL_SOURCES: readonly string[] = [
   'user',
@@ -635,8 +636,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         sessionId,
         activity.onDidChange((event) => {
           if (event.cause !== 'turn_ended' && event.cause !== 'background') return;
-          if (event.state.busy || event.state.pendingInteraction !== 'none') return;
-          this.scheduleCheckpoint(sessionId, handle);
+          this.scheduleCheckpoint(sessionId, handle, CHECKPOINT_IDLE_DELAY_MS);
         }),
       );
     } catch {
@@ -644,13 +644,17 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     }
   }
 
-  private scheduleCheckpoint(sessionId: string, handle: ISessionScopeHandle): void {
-    const previous = this.checkpointTimers.get(sessionId);
-    if (previous !== undefined) clearTimeout(previous);
+  private scheduleCheckpoint(sessionId: string, handle: ISessionScopeHandle, delay: number): void {
+    if (this.checkpointTimers.has(sessionId)) return;
     const timer = setTimeout(() => {
       this.checkpointTimers.delete(sessionId);
-      void this.saveReplayCheckpoints(sessionId, handle).catch(() => undefined);
-    }, CHECKPOINT_IDLE_DELAY_MS);
+      void this.saveReplayCheckpoints(sessionId, handle).then((saved) => {
+        if (saved || this.sessions.get(sessionId) !== handle) return;
+        this.scheduleCheckpoint(sessionId, handle, CHECKPOINT_RETRY_DELAY_MS);
+      }, () => {
+        if (this.sessions.get(sessionId) === handle) this.scheduleCheckpoint(sessionId, handle, CHECKPOINT_RETRY_DELAY_MS);
+      });
+    }, delay);
     timer.unref?.();
     this.checkpointTimers.set(sessionId, timer);
   }
@@ -663,8 +667,6 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     if (current !== handle) return false;
     const ongoing = this.checkpointSaves.get(sessionId);
     if (ongoing !== undefined) return ongoing;
-    const activity = handle.accessor.get(ISessionActivityView).state();
-    if (activity.busy || activity.pendingInteraction !== 'none') return false;
     const save = this.writeReplayCheckpoints(handle);
     this.checkpointSaves.set(sessionId, save);
     try {

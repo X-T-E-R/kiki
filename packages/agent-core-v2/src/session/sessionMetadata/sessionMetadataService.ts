@@ -23,13 +23,16 @@ import {
 } from './sessionMetadata';
 
 const META_KEY = 'state.json';
+const USAGE_FLUSH_DELAY_MS = 1_000;
 
 const pendingWrites = new Set<Promise<void>>();
 const pendingActivityPropagation = new Set<Promise<void>>();
+const pendingUsageFlushes = new Set<() => void>();
 
 /** Pass false while holding a session lifecycle lock; propagation may be queued behind that lock. */
 export async function drainSessionMetadataWrites(includeActivityPropagation = true): Promise<void> {
-  await Promise.all(includeActivityPropagation ? [...pendingWrites, ...pendingActivityPropagation] : pendingWrites);
+  for (const flush of [...pendingUsageFlushes]) flush();
+  await Promise.all(includeActivityPropagation ? [...pendingWrites, ...pendingActivityPropagation] : [...pendingWrites]);
 }
 
 export function trackSessionMetadataWork(work: Promise<void>): void {
@@ -56,6 +59,33 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   private readonly scope: string;
   private updateQueue: Promise<void> = Promise.resolve();
   private createdDocument = false;
+  private usageDirty = false;
+  private usageTimer: ReturnType<typeof setTimeout> | undefined;
+  private readonly flushUsage = (): void => {
+    if (this.usageTimer !== undefined) {
+      clearTimeout(this.usageTimer);
+      this.usageTimer = undefined;
+    }
+    if (!this.usageDirty || this.disposed) return;
+    void this.enqueueUpdate(async () => {
+      if (this.disposed || !this.usageDirty) return;
+      this.usageDirty = false;
+      await this.store.set(this.scope, META_KEY, encodeSessionMeta(this.data));
+      if (this.usageDirty || this.disposed) return;
+      this.mirrorToReadModel();
+      this._onDidChangeMetadata.fire({ changed: ['usage'] });
+    }).catch((error: unknown) => {
+      this.usageDirty = true;
+      if (!this.disposed && this.usageTimer === undefined) {
+        this.usageTimer = setTimeout(this.flushUsage, USAGE_FLUSH_DELAY_MS);
+        this.usageTimer.unref?.();
+      }
+      this.log.warn('session usage metadata write failed', {
+        sessionId: this.ctx.sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
 
   constructor(
     @ISessionStateService private readonly states: ISessionStateService,
@@ -68,8 +98,12 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     this._register({
       dispose: () => {
         this.disposed = true;
+        pendingUsageFlushes.delete(this.flushUsage);
+        if (this.usageTimer !== undefined) clearTimeout(this.usageTimer);
+        this.usageTimer = undefined;
       },
     });
+    pendingUsageFlushes.add(this.flushUsage);
     this.states.contributeState(sessionMetadataDataKey);
     this.scope = ctx.metaScope;
     this.onDidChangeMetadata = this._onDidChangeMetadata.event;
@@ -105,18 +139,10 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   recordUsage(model: string, usage: TokenUsage): void {
     if (this.disposed) return;
     this.data = { ...this.data, usage: addSessionUsage(this.data.usage, model, usage) };
-    void this.enqueueUpdate(async () => {
-      if (this.disposed) return;
-      await this.store.set(this.scope, META_KEY, encodeSessionMeta(this.data));
-      if (this.disposed) return;
-      this.mirrorToReadModel();
-      this._onDidChangeMetadata.fire({ changed: ['usage'] });
-    }).catch((error: unknown) => {
-      this.log.warn('session usage metadata write failed', {
-        sessionId: this.ctx.sessionId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
+    this.usageDirty = true;
+    if (this.usageTimer !== undefined) return;
+    this.usageTimer = setTimeout(this.flushUsage, USAGE_FLUSH_DELAY_MS);
+    this.usageTimer.unref?.();
   }
 
   async update(

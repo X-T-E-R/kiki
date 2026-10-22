@@ -209,6 +209,53 @@ describe('SessionMetadata', () => {
     expect(mirror.recorded.at(-1)?.usage).toEqual((await meta.read()).usage);
   });
 
+  it('writes one session document for several usage records', async () => {
+    const storage = ix.get(IFileSystemStorageService);
+    let stateWrites = 0;
+    const original = storage.write.bind(storage);
+    storage.write = async (scope, key, data, options) => {
+      if (key === 'state.json') stateWrites += 1;
+      return original(scope, key, data, options);
+    };
+    const meta = ix.get(ISessionMetadata);
+    await meta.ready;
+    const afterCreate = stateWrites;
+    const usage = { inputOther: 1, output: 2, inputCacheRead: 0, inputCacheCreation: 0 };
+    meta.recordUsage('example-model', usage);
+    meta.recordUsage('example-model', usage);
+    expect(stateWrites).toBe(afterCreate);
+    expect((await meta.read()).usage?.total.output).toBe(4);
+    await drainSessionMetadataWrites();
+    expect(stateWrites).toBe(afterCreate + 1);
+    const persisted = await ix.get(IAtomicDocumentStore).get<{ usage?: { total?: { output?: number } } }>(META_SCOPE, 'state.json');
+    expect(persisted?.usage?.total?.output).toBe(4);
+  });
+
+  it('keeps an agent contextTokens snapshot apart from session usage totals', async () => {
+    const meta = ix.get(ISessionMetadata);
+    await meta.ready;
+    await meta.registerAgent('main', { executor: 'native' });
+    await meta.updateAgent('main', (current) => ({ ...current, contextTokens: 424_458 }));
+    meta.recordUsage('example-model', {
+      inputOther: 3,
+      output: 2,
+      inputCacheRead: 1,
+      inputCacheCreation: 0,
+    });
+    await drainSessionMetadataWrites();
+    const persisted = await ix.get(IAtomicDocumentStore).get<{
+      agents?: { main?: { contextTokens?: number } };
+      usage?: { total?: { inputOther: number; output: number; inputCacheRead: number; inputCacheCreation: number } };
+    }>(META_SCOPE, 'state.json');
+    expect(persisted?.agents?.main?.contextTokens).toBe(424_458);
+    expect(persisted?.usage?.total).toEqual({
+      inputOther: 3,
+      output: 2,
+      inputCacheRead: 1,
+      inputCacheCreation: 0,
+    });
+  });
+
   it('update merges fields and bumps updatedAt', async () => {
     const meta = ix.get(ISessionMetadata);
     const before = (await meta.read()).updatedAt;

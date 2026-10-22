@@ -43,6 +43,8 @@ const MAX_DRAIN = 100;
 const HISTORY_TAIL = 500;
 const REPLAY_CHECKPOINT_SCOPE = 'replay-checkpoints';
 const REPLAY_CHECKPOINT_KEY = 'engine-v1';
+export const REPLAY_CHECKPOINT_GROWTH_BYTES = 8 * 1024 * 1024;
+const REPLAY_CHECKPOINT_GROWTH_DELAY_MS = 1_000;
 export const REPLAY_ABI_VERSION = 2;
 
 interface ReplayCheckpointEnvelope {
@@ -143,6 +145,8 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
 
   private restorePhase: RestorePhase = 'new';
   private checkpointSave: Promise<boolean> | undefined;
+  private growthCheckpointTimer: ReturnType<typeof setTimeout> | undefined;
+  private growthCheckpointBaseline = 0;
   private dispatching = false;
   private queue: QueuedEvent[] = [];
   private drainDepth = 0;
@@ -183,6 +187,15 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         this.folded = this.foldContributions(view);
       }),
     );
+    this._register(this.wire.onDidAppendBytes?.((appendedBytes) => {
+      this.noteJournalGrowth(appendedBytes);
+    }) ?? { dispose: () => {} });
+    this._register({
+      dispose: () => {
+        if (this.growthCheckpointTimer !== undefined) clearTimeout(this.growthCheckpointTimer);
+        this.growthCheckpointTimer = undefined;
+      },
+    });
   }
 
   private foldContributions(
@@ -421,6 +434,20 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     return meta;
   }
 
+  private noteJournalGrowth(appendedBytes: number): void {
+    if (appendedBytes < this.growthCheckpointBaseline) this.growthCheckpointBaseline = appendedBytes;
+    if (this.restorePhase !== 'ready' || this.growthCheckpointTimer !== undefined) return;
+    if (appendedBytes - this.growthCheckpointBaseline < REPLAY_CHECKPOINT_GROWTH_BYTES) return;
+    const timer = setTimeout(() => {
+      if (this.growthCheckpointTimer === timer) this.growthCheckpointTimer = undefined;
+      void this.saveReplayCheckpoint().then((saved) => {
+        if (!saved) this.noteJournalGrowth(this.wire.appendedByteCount?.() ?? appendedBytes);
+      });
+    }, REPLAY_CHECKPOINT_GROWTH_DELAY_MS);
+    timer.unref?.();
+    this.growthCheckpointTimer = timer;
+  }
+
   private checkpointScope(): string | undefined {
     return this.scope.current?.scope(REPLAY_CHECKPOINT_SCOPE);
   }
@@ -450,6 +477,13 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       await this.wire.flush();
       if (this.deferredObservable.size > 0) return false;
       const revision = this.liveRevision;
+      const wire = await this.wire.journalIdentity();
+      if (revision !== this.liveRevision || this.deferredObservable.size > 0) return false;
+      const prefixSha256 = this.wire.journalSha256 === undefined
+        ? undefined
+        : await this.wire.journalSha256(wire.size);
+      if (this.wire.journalSha256 !== undefined && prefixSha256 === undefined) return false;
+      if (revision !== this.liveRevision || this.deferredObservable.size > 0) return false;
       const payload: ReplayCheckpointPayload = {
         states: keys.map((key) => ({
           name: key.name,
@@ -458,12 +492,6 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         })),
       };
       const graph = encodeReplayCheckpointGraph(payload);
-      const wire = await this.wire.journalIdentity();
-      if (revision !== this.liveRevision || this.deferredObservable.size > 0) return false;
-      const prefixSha256 = this.wire.journalSha256 === undefined
-        ? undefined
-        : await this.wire.journalSha256(wire.size);
-      if (this.wire.journalSha256 !== undefined && prefixSha256 === undefined) return false;
       if (revision !== this.liveRevision || this.deferredObservable.size > 0) return false;
       const envelope: ReplayCheckpointEnvelope = {
         format: 1,
@@ -473,6 +501,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         graph,
       };
       await docs.set(checkpointScope, REPLAY_CHECKPOINT_KEY, envelope);
+      this.growthCheckpointBaseline = this.wire.appendedByteCount?.() ?? this.growthCheckpointBaseline;
       return true;
     } catch {
       return false;
@@ -574,6 +603,9 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       }
       await this.rehydrateStates();
       this.restorePhase = 'ready';
+      if (checkpointRestored === undefined || checkpointRestored.tailByte !== undefined) {
+        await this.saveReplayCheckpoint();
+      }
       await this.hooks.onDidRestore.run({});
     } catch (error) {
       this.restorePhase = 'failed';
