@@ -6,6 +6,7 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Emitter, type Event } from '#/_base/event';
 
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { discardColdSegments, logicalByteSize, readLogicalBytes, sealColdSegments } from '#/persistence/coldSegmentLog';
 import {
   AppendLogCorruptedError,
   IAppendLogStore,
@@ -14,7 +15,12 @@ import {
   type AppendLogWrite,
   type AppendLogCommit,
   type AppendLogProjection,
+  type ColdSealOptions,
+  type ColdSealResult,
 } from '#/persistence/interface/appendLogStore';
+
+export { COLD_SEGMENT_BYTES, coldManifestKey } from '#/persistence/coldSegmentLog';
+export { logicalByteSize, readLogicalBytes };
 
 const textEncoder = new TextEncoder();
 const TRANSIENT_APPEND_ERRNOS = new Set(['EBUSY', 'EPERM', 'EACCES']);
@@ -147,7 +153,7 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
     const textDecoder = new TextDecoder();
     let pending = '';
     let lineNumber = 0;
-    for await (const chunk of this.storage.readStream(scope, key, undefined, {
+    for await (const chunk of readLogicalBytes(this.storage, scope, key, undefined, {
       signal: options?.signal,
       chunkBytes: options?.chunkBytes,
     })) {
@@ -217,6 +223,7 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
     const prepared = this.prepareProjections(scope, key, records);
     const rewrite = priorSettled.then(async () => {
       try {
+        await discardColdSegments(this.storage, scope, key);
         const generation = randomUUID();
         await this.storage.write(scope, `${key}.generation`, textEncoder.encode(generation), { atomic: true });
         state.position = undefined;
@@ -233,6 +240,16 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
       }
     });
     await this.ownFlush(scope, key, state, rewrite, { value: false });
+  }
+
+  async sealCold(scope: string, key: string, sealedCut: number, options?: ColdSealOptions): Promise<ColdSealResult> {
+    await this.flush(scope, key);
+    return sealColdSegments(this.storage, scope, key, sealedCut, options);
+  }
+
+  async discardCold(scope: string, key: string): Promise<void> {
+    await this.flush(scope, key);
+    await discardColdSegments(this.storage, scope, key);
   }
 
   async flush(...target: [] | [scope: string, key: string]): Promise<void> {
@@ -417,7 +434,7 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
           const [generation, size] = await Promise.all([this.readGeneration(scope, key), this.storage.size(scope, key)]);
           const offset = size ?? 0;
           const chunks: Uint8Array[] = [];
-          if (offset > 0) for await (const chunk of this.storage.readStream(scope, key, { start: Math.max(0, offset - 4096), end: offset - 1 })) chunks.push(chunk);
+          if (offset > 0) for await (const chunk of readLogicalBytes(this.storage, scope, key, { start: Math.max(0, offset - 4096), end: offset - 1 })) chunks.push(chunk);
           state.position = { generation, offset, boundary: Buffer.concat(chunks) };
         } catch {
           prepared.length = 0;

@@ -57,6 +57,23 @@ export interface AppendLogProjection<T> {
   onError(error: unknown): void;
 }
 
+export interface ColdSealOptions {
+  readonly segmentBytes?: number;
+  readonly signal?: AbortSignal;
+}
+
+export interface ColdSealResult {
+  readonly format: 1;
+  readonly codec: 'deflate-raw';
+  readonly level: 6;
+  readonly segmentBytes: number;
+  readonly sealedCut: number;
+  readonly logicalSize: number;
+  readonly segmentCount: number;
+  readonly generation: string;
+  readonly originalRetained: true;
+}
+
 export interface IAppendLogStore {
   readonly _serviceBrand: undefined;
 
@@ -67,6 +84,8 @@ export interface IAppendLogStore {
   append<R>(scope: string, key: string, record: R, options?: AppendLogOptions): void;
   read<R>(scope: string, key: string, options?: AppendLogReadOptions): AsyncIterable<R>;
   rewrite<R>(scope: string, key: string, records: readonly R[]): Promise<void>;
+  sealCold(scope: string, key: string, sealedCut: number, options?: ColdSealOptions): Promise<ColdSealResult>;
+  discardCold(scope: string, key: string): Promise<void>;
   flush(): Promise<void>;
   flush(scope: string, key: string): Promise<void>;
   close(): Promise<void>;

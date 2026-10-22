@@ -11,6 +11,7 @@ import {
   IQueryStore,
   IAppendLogStore,
   IFileSystemStorageService,
+  readLogicalBytes,
   IRetainedUsageService,
   ISessionIndex,
   agentScopeOf,
@@ -1698,7 +1699,8 @@ async function readRange(
 ): Promise<Buffer> {
   if (end < start) return Buffer.alloc(0);
   const chunks: Buffer[] = [];
-  for await (const chunk of storage.readStream(
+  for await (const chunk of readLogicalBytes(
+    storage,
     scope,
     AGENT_WIRE_RECORD_KEY,
     { start, end },

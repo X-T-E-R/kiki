@@ -1,5 +1,6 @@
 import type { ServicesAccessor } from '#/_base/di/instantiation';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import { readLogicalBytes } from '#/persistence/coldSegmentLog';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import type { AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { agentScopeOf, sessionScopeOf, workspacePersistenceScope } from '#/workspace/sessionLifecycle/internal/addressing';
@@ -279,7 +280,7 @@ async function* filteredProfileRecords(
     const record = parseProfileLine(line);
     if (record !== undefined) yield record;
   };
-  for await (const chunk of storage.readStream(scope, AGENT_WIRE_RECORD_KEY)) {
+  for await (const chunk of readLogicalBytes(storage, scope, AGENT_WIRE_RECORD_KEY)) {
     pending += decoder.decode(chunk, { stream: true });
     let newline = pending.indexOf('\n');
     while (newline !== -1) {

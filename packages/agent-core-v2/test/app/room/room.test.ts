@@ -80,6 +80,12 @@ class MemoryAppendLog implements IAppendLogStore {
     this.values.set(`${scope}\0${key}`, [...records] as RoomLogEntry[]);
   }
 
+  async sealCold(): Promise<never> {
+    throw new Error('cold seal is not available');
+  }
+
+  async discardCold(): Promise<void> {}
+
   async flush(): Promise<void> {}
   async close(): Promise<void> {}
   acquire(): { dispose(): void } { return { dispose: () => {} }; }

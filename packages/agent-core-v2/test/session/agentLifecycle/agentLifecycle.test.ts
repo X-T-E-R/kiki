@@ -204,6 +204,8 @@ function recordingAppendLog(initial: readonly WireRecord[] = []): {
       records.splice(0, records.length, ...persisted);
       return Promise.resolve();
     },
+    sealCold: () => Promise.reject(new Error('cold seal is not available')),
+    discardCold: () => Promise.resolve(),
     flush: () => Promise.resolve(),
     close: () => Promise.resolve(),
     acquire: () => ({ dispose: () => {} }),

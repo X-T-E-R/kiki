@@ -9,6 +9,7 @@ import { modelSwitchQueueKey, type QueuedModelSwitch } from './modelSwitchQueueO
 import { expandedStateFolds } from '#/state/state';
 import { decodeReplayCheckpointGraph, type ReplayCheckpointGraph } from '#/state/replayCheckpointCodec';
 import { REPLAY_ABI_VERSION } from '#/state/eventDispatcherService';
+import { logicalByteSize, readLogicalBytes } from '#/persistence/coldSegmentLog';
 import { isWireRecord, AGENT_WIRE_RECORD_KEY } from '#/wire/record';
 
 const PREFIX = '\u0000model-switch:';
@@ -90,7 +91,7 @@ export class PersistedModelSwitchReader {
     if (checkpoint?.format !== 1 || checkpoint.replayAbi !== REPLAY_ABI_VERSION ||
       size !== checkpoint.wire.size || mtimeMs !== checkpoint.wire.mtimeMs) return undefined;
     const hash = createHash('sha256');
-    for await (const chunk of this.host.storage.readStream(scope, AGENT_WIRE_RECORD_KEY, { start: 0, end: 64 * 1024 - 1 })) hash.update(chunk);
+    for await (const chunk of readLogicalBytes(this.host.storage, scope, AGENT_WIRE_RECORD_KEY, { start: 0, end: 64 * 1024 - 1 })) hash.update(chunk);
     if (hash.digest('hex').slice(0, 32) !== checkpoint.wire.headHash) return undefined;
     try {
       const payload = decodeReplayCheckpointGraph(checkpoint.graph) as { states?: readonly { name: string; value: unknown }[] };
@@ -121,7 +122,7 @@ export class PersistedModelSwitchReader {
   }
 
   private async source(scope: string): Promise<Source> {
-    const size = await this.host.storage.size(scope, AGENT_WIRE_RECORD_KEY);
+    const size = await logicalByteSize(this.host.storage, scope, AGENT_WIRE_RECORD_KEY);
     const path = this.host.storage.pathFor?.(scope, AGENT_WIRE_RECORD_KEY);
     if (size !== undefined && path !== undefined && this.host.files !== undefined) {
       const stat = await this.host.files.stat(path);
@@ -146,7 +147,7 @@ export class PersistedModelSwitchReader {
     for (const start of [0, Math.max(0, through - PROOF_BYTES)]) {
       let read = 0;
       if (bytes > 0) {
-        for await (const chunk of this.host.storage.readStream(scope, AGENT_WIRE_RECORD_KEY,
+        for await (const chunk of readLogicalBytes(this.host.storage, scope, AGENT_WIRE_RECORD_KEY,
           { start, end: start + bytes - 1 }, { chunkBytes: PROOF_BYTES })) {
           hash.update(chunk); read += chunk.length;
         }
@@ -177,7 +178,7 @@ export class PersistedModelSwitchReader {
     while (this.states.size > 16) this.states.delete(this.states.keys().next().value!);
     if (!state.complete && state.offset < state.watermark) {
       const end = Math.min(state.watermark, state.offset + READ_BYTES) - 1;
-      for await (const raw of this.host.storage.readStream(scope, AGENT_WIRE_RECORD_KEY, { start: state.offset, end })) {
+      for await (const raw of readLogicalBytes(this.host.storage, scope, AGENT_WIRE_RECORD_KEY, { start: state.offset, end })) {
         const chunk = Buffer.from(raw);
         state.offset += chunk.length;
         let start = 0;

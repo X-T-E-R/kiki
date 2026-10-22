@@ -38,6 +38,8 @@ const noopLog: IAppendLogStore = {
   append: () => {},
   read: async function* () {},
   rewrite: async () => {},
+  sealCold: async () => { throw new Error('cold seal is not available'); },
+  discardCold: async () => {},
   flush: async () => {},
   close: async () => {},
   acquire: () => toDisposable(() => {}),
@@ -182,6 +184,8 @@ export function recordingWireLog(
     rewrite: async (_scope, _key, next) => {
       records.splice(0, records.length, ...(next as readonly WireRecord[]));
     },
+    sealCold: async () => { throw new Error('cold seal is not available'); },
+    discardCold: async () => {},
     flush: async () => {},
     close: async () => {},
     acquire: () => toDisposable(() => {}),
