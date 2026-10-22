@@ -4,6 +4,7 @@ import { deflateRawSync, inflateRawSync } from 'node:zlib';
 import { resolve } from 'pathe';
 
 import { BugIndicatingError } from '#/_base/errors/errors';
+import { acquireSharedReadLease, waitSharedReadIdle, withColdReaderGate } from '#/persistence/backends/node-fs/fileLock';
 import type { ColdSealOptions, ColdSealResult } from '#/persistence/interface/appendLogStore';
 import {
   StorageError,
@@ -75,26 +76,46 @@ function pinId(storage: IFileSystemStorageService, scope: string, key: string, s
   return `${resourceId(storage, scope, key)}\0${sealId}`;
 }
 
-function pinSeal(storage: IFileSystemStorageService, scope: string, key: string, sealId: string): () => void {
-  const id = pinId(storage, scope, key, sealId);
-  const entry = sealPins.get(id) ?? { count: 0, waiters: [] };
-  entry.count += 1;
-  sealPins.set(id, entry);
-  return () => {
-    entry.count -= 1;
-    if (entry.count > 0) return;
-    sealPins.delete(id);
-    const waiters = entry.waiters.splice(0);
-    for (const wake of waiters) wake();
-  };
+function locatedJournal(storage: IFileSystemStorageService, scope: string, key: string): string | undefined {
+  const located = storage.pathFor(scope, key);
+  if (located === undefined || located.length === 0) return undefined;
+  return located;
 }
 
-function waitUnpinned(storage: IFileSystemStorageService, scope: string, key: string, sealId: string): Promise<void> {
+async function pinSeal(storage: IFileSystemStorageService, scope: string, key: string, sealId: string): Promise<() => void> {
+  const located = locatedJournal(storage, scope, key);
+  const lease = located === undefined ? undefined : await acquireSharedReadLease(located);
+  try {
+    const id = pinId(storage, scope, key, sealId);
+    const entry = sealPins.get(id) ?? { count: 0, waiters: [] };
+    entry.count += 1;
+    sealPins.set(id, entry);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      void lease?.release();
+      entry.count -= 1;
+      if (entry.count > 0) return;
+      sealPins.delete(id);
+      const waiters = entry.waiters.splice(0);
+      for (const wake of waiters) wake();
+    };
+  } catch (error) {
+    void lease?.release();
+    throw error;
+  }
+}
+
+async function waitUnpinned(storage: IFileSystemStorageService, scope: string, key: string, sealId: string): Promise<void> {
   const entry = sealPins.get(pinId(storage, scope, key, sealId));
-  if (entry === undefined || entry.count === 0) return Promise.resolve();
-  return new Promise((resolvePromise) => {
-    entry.waiters.push(resolvePromise);
-  });
+  if (entry !== undefined && entry.count > 0) {
+    await new Promise<void>((resolvePromise) => {
+      entry.waiters.push(resolvePromise);
+    });
+  }
+  const located = locatedJournal(storage, scope, key);
+  if (located !== undefined) await waitSharedReadIdle(located);
 }
 
 function takeTurn(storage: IFileSystemStorageService, scope: string, key: string): ColdTurn {
@@ -324,12 +345,17 @@ export async function discardColdUnlocked(
   scope: string,
   key: string,
 ): Promise<void> {
-  const bytes = await storage.read(scope, coldManifestKey(key));
-  await storage.delete(scope, coldManifestKey(key));
-  if (bytes === undefined) return;
-  const sealId = sealIdOf(bytes);
-  if (sealId !== undefined) await waitUnpinned(storage, scope, key, sealId);
-  await removeSegments(storage, scope, listedSegmentKeys(bytes, key));
+  const drop = async (): Promise<void> => {
+    const bytes = await storage.read(scope, coldManifestKey(key));
+    await storage.delete(scope, coldManifestKey(key));
+    if (bytes === undefined) return;
+    const sealId = sealIdOf(bytes);
+    if (sealId !== undefined) await waitUnpinned(storage, scope, key, sealId);
+    await removeSegments(storage, scope, listedSegmentKeys(bytes, key));
+  };
+  const located = locatedJournal(storage, scope, key);
+  if (located === undefined) await drop();
+  else await withColdReaderGate(located, drop);
 }
 
 export async function discardColdSegments(
@@ -413,9 +439,14 @@ async function sealUnlocked(
     committed = true;
     const fresh = new Set(written.map((segment) => segment.key));
     if (previous !== undefined) {
-      const previousId = sealIdOf(previous);
-      if (previousId !== undefined && previousId !== sealId) await waitUnpinned(storage, scope, key, previousId);
-      await removeSegments(storage, scope, listedSegmentKeys(previous, key).filter((segmentKey) => !fresh.has(segmentKey))).catch(() => undefined);
+      const dropPrevious = async (): Promise<void> => {
+        const previousId = sealIdOf(previous);
+        if (previousId !== undefined && previousId !== sealId) await waitUnpinned(storage, scope, key, previousId);
+        await removeSegments(storage, scope, listedSegmentKeys(previous, key).filter((segmentKey) => !fresh.has(segmentKey))).catch(() => undefined);
+      };
+      const located = locatedJournal(storage, scope, key);
+      if (located === undefined) await dropPrevious();
+      else await withColdReaderGate(located, dropPrevious);
     }
     return {
       format: COLD_FORMAT,
@@ -537,12 +568,17 @@ export async function openPinnedLogicalRead(
   let size: number | undefined;
   let release = (): void => {};
   await withColdExclusive(storage, scope, key, async () => {
-    manifest = await loadMatchedManifest(storage, scope, key);
-    size = await storage.size(scope, key);
-    if (manifest !== undefined) {
-      if (size === undefined || size < manifest.sealedCut) throw corrupted(scope, key, 'original-shrunk');
-      release = pinSeal(storage, scope, key, manifest.sealId);
-    }
+    const open = async (): Promise<void> => {
+      manifest = await loadMatchedManifest(storage, scope, key);
+      size = await storage.size(scope, key);
+      if (manifest !== undefined) {
+        if (size === undefined || size < manifest.sealedCut) throw corrupted(scope, key, 'original-shrunk');
+        release = await pinSeal(storage, scope, key, manifest.sealId);
+      }
+    };
+    const located = locatedJournal(storage, scope, key);
+    if (located === undefined) await open();
+    else await withColdReaderGate(located, open);
   });
   let closed = false;
   return {

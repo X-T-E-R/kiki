@@ -7,6 +7,7 @@ import { Emitter, type Event } from '#/_base/event';
 
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { discardColdSegments, discardColdUnlocked, readLogicalBytes, sealColdSegments, withColdExclusive } from '#/persistence/coldSegmentLog';
+import { withColdReaderGate } from '#/persistence/backends/node-fs/fileLock';
 import {
   AppendLogCorruptedError,
   IAppendLogStore,
@@ -226,13 +227,18 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
       try {
         let committed: { generation: string; offset: number; boundary: Uint8Array } | undefined;
         await withColdExclusive(this.storage, scope, key, async () => {
-          await discardColdUnlocked(this.storage, scope, key);
-          const generation = randomUUID();
-          await this.storage.write(scope, `${key}.generation`, textEncoder.encode(generation), { atomic: true });
-          state.position = undefined;
-          await this.storage.write(scope, key, encoded, { atomic: true });
-          const boundary = encoded.slice(-4096);
-          committed = { generation, offset: encoded.byteLength, boundary };
+          const replace = async (): Promise<void> => {
+            await discardColdUnlocked(this.storage, scope, key);
+            const generation = randomUUID();
+            await this.storage.write(scope, `${key}.generation`, textEncoder.encode(generation), { atomic: true });
+            state.position = undefined;
+            await this.storage.write(scope, key, encoded, { atomic: true });
+            const boundary = encoded.slice(-4096);
+            committed = { generation, offset: encoded.byteLength, boundary };
+          };
+          const located = this.storage.pathFor(scope, key);
+          if (located === undefined || located.length === 0) await replace();
+          else await withColdReaderGate(located, replace);
         });
         if (committed === undefined) return false;
         state.position = committed;
