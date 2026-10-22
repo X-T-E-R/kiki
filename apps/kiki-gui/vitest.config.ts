@@ -40,6 +40,7 @@ export default defineConfig({
     },
   },
   test: {
+    name: 'gui',
     include: ['src/**/*.{test,integration,e2e}.ts', 'src/**/*.{test,integration,e2e}.tsx'],
   },
 });
