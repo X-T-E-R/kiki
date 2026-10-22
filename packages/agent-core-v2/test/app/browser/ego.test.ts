@@ -257,7 +257,6 @@ describe('Ego Lite control', () => {
     const exe = versioned;
     const { fs } = memoryFs([exe]);
     let native = true;
-    let allowed: readonly string[] | undefined;
     const configs = new Map<string, BrowserResolvedConnection>([[
       'ego-lite', { id: 'ego-lite', type: 'ego-lite', name: 'Ego Lite', enabled: true, cliPath: exe },
     ]]);
@@ -274,7 +273,7 @@ describe('Ego Lite control', () => {
     ix.stub(IHostFileSystem, fs);
     ix.stub(IBrowserBackendFactory, factory);
     ix.stub(IBrowserConnectionStore, {
-      list: async () => ({ connections: [...configs.values()].map(({ id, name, type, enabled }) => ({ id, name, type, enabled })), ...(allowed !== undefined ? { allowedBrowsers: allowed } : {}) }),
+      list: async () => ({ connections: [...configs.values()].map(({ id, name, type, enabled }) => ({ id, name, type, enabled })) }),
       resolve: async (id: string) => {
         const found = configs.get(id);
         if (found === undefined) throw new Error('missing');

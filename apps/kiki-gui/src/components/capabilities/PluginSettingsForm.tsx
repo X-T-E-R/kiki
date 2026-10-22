@@ -195,7 +195,7 @@ export function PluginSettingsForm({
     ? ordinary.filter(([, property]) => property.group === undefined)
     : ordinary;
   const groupedOrdinary = groups.length >= 2
-    ? [...ordinary.filter(([, property]) => property.group !== undefined)].sort(([keyA, propA], [keyB, propB]) => {
+    ? ordinary.filter(([, property]) => property.group !== undefined).sort(([keyA, propA], [keyB, propB]) => {
       const aEnabled = keyA.endsWith('__enabled') && propA.type === 'boolean' ? 0 : 1;
       const bEnabled = keyB.endsWith('__enabled') && propB.type === 'boolean' ? 0 : 1;
       return aEnabled - bEnabled;

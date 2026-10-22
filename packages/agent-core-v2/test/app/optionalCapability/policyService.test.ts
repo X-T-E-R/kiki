@@ -106,8 +106,8 @@ describe('OptionalCapabilityPolicyService', () => {
     });
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
     resetUnexpectedErrorHandler();
   });
 

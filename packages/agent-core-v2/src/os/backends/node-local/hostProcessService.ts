@@ -92,7 +92,8 @@ class HostProcess implements IHostProcess {
       : new BufferedReadable(child.stderr as Readable);
     this.pid = child.pid ?? -1;
 
-    const alreadyExited = typeof child.exitCode === 'number' || child.signalCode != null;
+    const signalCode: string | null | undefined = child.signalCode;
+    const alreadyExited = typeof child.exitCode === 'number' || (signalCode !== undefined && signalCode !== null);
     if (alreadyExited) {
       this._exitCode = child.exitCode ?? -1;
       this._exitPromise = Promise.resolve(this._exitCode);

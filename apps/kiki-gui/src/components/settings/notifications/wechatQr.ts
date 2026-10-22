@@ -1,4 +1,4 @@
-import QRCode from '../../../vendor/qrcode-svg.js';
+import QRCode from '../../../vendor/qrcode-svg';
 
 export function wechatQrImage(value: string): string | undefined {
   try {

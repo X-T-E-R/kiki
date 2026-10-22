@@ -63,8 +63,8 @@ describe('optional capability review follow-up', () => {
     } as never);
     await expect(failing.readSession('broken')).rejects.toThrow('unreadable document');
     expect(failing.admit('web', { sessionId: 'broken', workspaceId: 'open', agentId: 'main' })).toEqual({ admitted: false, reason: 'origin_unreadable' });
-    restoring.dispose();
-    failing.dispose();
+    await restoring.dispose();
+    await failing.dispose();
   });
 
   it('drops memory projection when the session capability is closed and restores it on the next step', async () => {
@@ -129,9 +129,9 @@ describe('optional capability review follow-up', () => {
     expect(projections.at(-1)).toContain('status=disabled');
     expect(sent).toContain(BODY);
     expect(policy.admit('memory', { sessionId: 'memory-session', workspaceId: 'open', agentId: 'main' }).admitted).toBe(false);
-    rebuild.dispose();
-    snapshot.dispose();
-    policy.dispose();
+    await rebuild.dispose();
+    await snapshot.dispose();
+    await policy.dispose();
   });
 
   it('registers a static tool that was never admitted when the session turns on', async () => {
@@ -186,9 +186,9 @@ describe('optional capability review follow-up', () => {
     expect(changed).toContain('thread communication');
     expect(activationCalls).toBe(1);
     expect(registered.resolve('ThreadRead')).toBeUndefined();
-    rebuild.dispose();
-    activation.dispose();
-    policy.dispose();
+    await rebuild.dispose();
+    await activation.dispose();
+    await policy.dispose();
   });
 
   it('keeps the executing agent on a peer send without accepting a forged public caller', async () => {
@@ -246,10 +246,10 @@ describe('optional capability review follow-up', () => {
       executingAgentId: 'main',
     } as never)).rejects.toMatchObject({ code: 'thread.disabled' });
     expect(accepted).toHaveLength(1);
-    policy.dispose();
+    await policy.dispose();
   });
 
-  it('admits a cua-driver server by its qualified tool name', () => {
+  it('admits a cua-driver server by its qualified tool name', async () => {
     const { policy } = harness();
     const desktop = { name: 'desktop', transport: 'stdio' as const, command: 'cua-driver', args: ['mcp'] };
     expect(isComputerMcpConfig(desktop)).toBe(true);
@@ -263,6 +263,6 @@ describe('optional capability review follow-up', () => {
     policy.release('desktop-session', 'child');
     policy.retain('desktop-session', 'main', { workspaceId: 'open', agentKind: 'main', toolsSource: 'declared', declaredTools: ['mcp__notes__*', '*'] });
     expect(policy.admit('computer', { sessionId: 'desktop-session', workspaceId: 'open', agentId: 'main' }).reason).toBe('default_off');
-    policy.dispose();
+    await policy.dispose();
   });
 });

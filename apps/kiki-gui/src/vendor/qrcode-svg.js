@@ -130,7 +130,7 @@ var require_error_correction_level = __commonJS({
       }
       try {
         return fromString(value);
-      } catch (e) {
+      } catch {
         return defaultValue;
       }
     };
@@ -275,7 +275,7 @@ var require_mask_pattern = __commonJS({
       N4: 10
     };
     exports.isValid = function isValid(mask) {
-      return mask != null && mask !== "" && !isNaN(mask) && mask >= 0 && mask <= 7;
+      return mask !== undefined && mask !== null && mask !== "" && !isNaN(mask) && mask >= 0 && mask <= 7;
     };
     exports.from = function from(value) {
       return exports.isValid(value) ? parseInt(value, 10) : void 0;
@@ -970,7 +970,7 @@ var require_mode = __commonJS({
       }
       try {
         return fromString(value);
-      } catch (e) {
+      } catch {
         return defaultValue;
       }
     };
@@ -1313,10 +1313,8 @@ var require_dijkstra = __commonJS({
       extract_shortest_path_from_predecessor_list: function(predecessors, d) {
         var nodes = [];
         var u = d;
-        var predecessor;
         while (u) {
           nodes.push(u);
-          predecessor = predecessors[u];
           u = predecessors[u];
         }
         nodes.reverse();
@@ -1342,7 +1340,9 @@ var require_dijkstra = __commonJS({
             }
           }
           t.queue = [];
-          t.sorter = opts.sorter || T.default_sorter;
+          t.sorter = opts.sorter || function(a, b) {
+            return T.default_sorter(a, b);
+          };
           return t;
         },
         default_sorter: function(a, b) {
@@ -1721,8 +1721,8 @@ var require_qrcode = __commonJS({
       const ecCount = totalCodewordsInGroup1 - dataCodewordsInGroup1;
       const rs = new ReedSolomonEncoder(ecCount);
       let offset = 0;
-      const dcData = new Array(ecTotalBlocks);
-      const ecData = new Array(ecTotalBlocks);
+      const dcData = Array.from({ length: ecTotalBlocks });
+      const ecData = Array.from({ length: ecTotalBlocks });
       let maxDataSize = 0;
       const buffer = new Uint8Array(bitBuffer.buffer);
       for (let b = 0; b < ecTotalBlocks; b++) {
@@ -1916,7 +1916,7 @@ var require_canvas = __commonJS({
     function getCanvasElement() {
       try {
         return document.createElement("canvas");
-      } catch (e) {
+      } catch {
         throw new Error("You need to specify a canvas element");
       }
     }

@@ -37,6 +37,11 @@ async function tempHome(): Promise<string> {
   return home;
 }
 
+function requestText(body: RequestInit['body']): string {
+  if (typeof body !== 'string') throw new Error('expected a string request body');
+  return body;
+}
+
 function jsonResponse(body: unknown, status = 200): WechatLoginResponse {
   return { status, text: async () => JSON.stringify(body) };
 }
@@ -191,7 +196,7 @@ describe('wechat qr login', () => {
     expect(calls[0]?.url).toBe('https://ilinkai.weixin.qq.com/ilink/bot/get_bot_qrcode?bot_type=3');
     expect(calls[0]?.init.method).toBe('POST');
     expect(headerRecord(calls[0]!.init)).toEqual({ 'Content-Type': 'application/json', AuthorizationType: 'ilink_bot_token', 'X-WECHAT-UIN': Buffer.from('kiki-im-wechat', 'utf8').toString('base64') });
-    expect(JSON.parse(String(calls[0]?.init.body))).toEqual({ local_token_list: [] });
+    expect(JSON.parse(requestText(calls[0]?.init.body))).toEqual({ local_token_list: [] });
     expect(JSON.stringify(calls[0]?.init.headers)).not.toContain(TOKEN);
     polls.push({ status: 'wait' });
     await expect(bridge.pollWechatQr(first.login_id, '1234')).resolves.toEqual({ status: 'wait' });
@@ -232,7 +237,7 @@ describe('wechat qr login', () => {
     const again = await bridge.startWechatQr();
     expect(again.login_id).not.toBe(confirmed.login_id);
     const posted = calls.filter((call) => call.url.includes('get_bot_qrcode')).at(-1)!;
-    expect(JSON.parse(String(posted.init.body)).local_token_list).toEqual([TOKEN]);
+    expect(JSON.parse(requestText(posted.init.body)).local_token_list).toEqual([TOKEN]);
     hang = true;
     const pendingPoll = bridge.pollWechatQr(again.login_id);
     await bridge.cancelWechatQr(again.login_id);
@@ -245,7 +250,7 @@ describe('wechat qr login', () => {
     const tokens = Array.from({ length: 12 }, (_item, index) => `tok-${index}`);
     let body = '';
     const limited = new WechatQrLogin(async (_url, init) => {
-      body = String(init.body);
+      body = requestText(init.body);
       return jsonResponse({ qrcode: 'q', qrcode_img_content: 'img' });
     }, () => tokens, async () => ({ instanceId: 'x' }));
     await limited.start();

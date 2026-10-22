@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { isAbsolute, join } from 'pathe';
 
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
-import type { IHostProcess, IHostProcessService } from '#/os/interface/hostProcess';
+import type { IHostProcessService } from '#/os/interface/hostProcess';
 import type { BrowserTab } from '#/app/browser/browser';
 import type { BrowserResolvedConnection } from '#/app/browser/browserConfig';
 import { BrowserError } from '#/app/browser/errors';

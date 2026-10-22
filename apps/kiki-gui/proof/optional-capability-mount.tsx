@@ -58,7 +58,7 @@ function capabilityView(sessionId: string) {
 }
 
 function writeChoice(sessionId: string, id: CapabilityId, choice: Choice) {
-  const current = { ...(sessions.get(sessionId) ?? {}) };
+  const current = { ...sessions.get(sessionId) };
   if (choice === 'inherit') delete current[id];
   else current[id] = choice;
   sessions.set(sessionId, current);
