@@ -646,6 +646,25 @@ Klient 提供 `rest.rooms.listItems()` 和 `global.rooms.listItems()`。`klient.
 | `GET /api/files/{file_id}` | 下载（二进制，错误用真实 HTTP 状态码） |
 | `DELETE /api/files/{file_id}` | 删除 |
 
+### IM 账号与信道绑定
+
+[双向消息](../features/phone.md)分开管理账号、发现的信道和绑定；每条绑定有独立目标与启用状态。
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `GET /api/im/sessions` | 读取 policy、instances、discoveries、bindings、strangers 与 voice_fallbacks 快照 |
+| `GET /api/im/sessions/catalog` | 可作为绑定目标的角色与会话 |
+| `POST /api/im/sessions/instances/{id}/listen` | 设置 `{ listening: true \| false }`；传 `true` 明确重试已停止的监听 |
+| `POST /api/im/sessions/discoveries/{id}/confirm` | 将这条发现绑定到 `target`；可选 `busy`、`reply`、`mobile_interactions`、`also_home` |
+| `PATCH /api/im/sessions/bindings/{id}` | 只修改这条绑定的目标、启用状态或选项 |
+| `DELETE /api/im/sessions/bindings/{id}` | 移除这条绑定 |
+
+`target` 为 `{ kind: "persona", persona_id }` 或 `{ kind: "session", session_id }`。PATCH 也接受旧的 `session_id`，但它与 `target` 互斥；`also_home` 仅用于确认绑定。重新确认已有绑定保留 `enabled` 和 `session_enabled`；恢复时通过 PATCH 明确启用。`session_enabled: null` 删除局部覆盖，跟随 `policy.default_enabled`。
+
+实例的 `listening` 记录用户要求的监听状态。`adapter` 为 `missing`、`running`、`shared` 或 `stopped`；可选 `connection` 为 `starting`、`reconnecting`、`auth_expired` 或 `stopped`，正常运行时不填。`auth_expired` 需通过配置流程重新授权；连接停止后可明确重试监听。可选 `connection_detail` 含有限的 `code`（`transport_error`、`http_error`、`api_error`、`invalid_response`、`auth_expired`、`loop_failed`），以及可选数字 `http_status`、`ret`、`errcode`、`failure_count`、`retry_in_ms`。重连成功会清除该详情；缺少详情时不推断失败原因。
+
+信道身份使用 `chat_id`、`sender_id` 与 `topic_id`（无话题时为 `"0"`）。可选 `chat_kind` 为 `private` 或 `group`；没有该字段时不从标题推断。当前微信连接只支持私聊联系人；确认群聊目标返回业务 `code: 40001`、`msg: "unsupported_wechat_group"`，保留发现记录，不创建角色日常会话或改动绑定。
+
 ### 全局搜索与其他
 
 | 方法与路径 | 说明 |

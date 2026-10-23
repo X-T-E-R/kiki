@@ -650,6 +650,25 @@ Pages are sorted by score descending, then path; an empty query lists the root d
 | `GET /api/files/{file_id}` | Download (binary; errors use real HTTP statuses) |
 | `DELETE /api/files/{file_id}` | Delete |
 
+### IM account and channel bindings
+
+[Two-way messaging](../features/phone.md) keeps accounts, discovered channels and bindings separate. Each binding has its own target and enabled state.
+
+| Method and path | Description |
+| --- | --- |
+| `GET /api/im/sessions` | Snapshot of policy, instances, discoveries, bindings, strangers and voice fallbacks |
+| `GET /api/im/sessions/catalog` | Personas and sessions available as binding targets |
+| `POST /api/im/sessions/instances/{id}/listen` | Set `{ listening: true \| false }`; retry a stopped listener with `true` |
+| `POST /api/im/sessions/discoveries/{id}/confirm` | Bind that discovery to a `target`; optional `busy`, `reply`, `mobile_interactions`, `also_home` |
+| `PATCH /api/im/sessions/bindings/{id}` | Update only that binding's target, enabled state or options |
+| `DELETE /api/im/sessions/bindings/{id}` | Remove that binding |
+
+A `target` is `{ kind: "persona", persona_id }` or `{ kind: "session", session_id }`. PATCH also accepts the legacy `session_id`, but not together with `target`; `also_home` belongs only to confirmation. Reconfirming an existing binding preserves `enabled` and `session_enabled`. Explicitly enable it with PATCH; `session_enabled: null` removes the local override and follows `policy.default_enabled`.
+
+An instance's `listening` records the requested state. Its `adapter` is `missing`, `running`, `shared` or `stopped`; optional `connection` is `starting`, `reconnecting`, `auth_expired` or `stopped`. Normal running omits `connection`. For `auth_expired`, renew authorization through setup; for a stopped connection, retry listening explicitly. Optional `connection_detail` contains a finite `code` (`transport_error`, `http_error`, `api_error`, `invalid_response`, `auth_expired`, `loop_failed`) and optional numeric `http_status`, `ret`, `errcode`, `failure_count`, `retry_in_ms`. A successful reconnect clears that detail; an absent detail does not identify a failure cause.
+
+Channel identity uses `chat_id`, `sender_id`, and `topic_id` (`"0"` for no topic). Optional `chat_kind` is `private` or `group`; do not infer it from a title when absent. The current WeChat connection supports private contacts only. Confirming a group returns business `code: 40001`, `msg: "unsupported_wechat_group"`, preserving the discovery without creating a persona home or changing a binding.
+
 ### Global search and misc
 
 | Method and path | Description |
