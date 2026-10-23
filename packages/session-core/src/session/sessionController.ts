@@ -3184,10 +3184,11 @@ export class SessionController {
       ]);
     }
     const coreAdmitted = result.admission === undefined || result.admission === 'admitted';
-    if (coreAdmitted && result.status === 'queued' && !this.agentTranscripts.get(MAIN_AGENT_ID)?.snapshot().prompts.some(prompt => prompt.promptId === result.prompt_id)) {
+    const canonical = this.agentTranscripts.get(MAIN_AGENT_ID)?.getPrompt(result.prompt_id);
+    if (coreAdmitted && result.status === 'queued' && canonical === undefined) {
       this.unprojectedQueueReceipts.set(result.prompt_id, result);
     }
-    if (!coreAdmitted || admissionRejected) return result;
+    if (!coreAdmitted || admissionRejected || canonical !== undefined) return result;
     const projection = projectMessageContent(result.content);
     this.setState(
       appendLocalUserMessage(this.state, {

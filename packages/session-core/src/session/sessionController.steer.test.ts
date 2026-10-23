@@ -91,19 +91,19 @@ function queuedOp(promptId: string): TranscriptOperation {
   };
 }
 
-function steeredOp(promptId: string): TranscriptOperation {
+function steeredOp(promptId: string, text = STEER_TEXT): TranscriptOperation {
   return {
     op: 'prompt.upsert',
     prompt: {
       promptId, status: 'completed', userMessageId: promptId,
-      content: [{ type: 'text', text: STEER_TEXT }], createdAt: '2026-01-01T00:00:03.000Z',
+      content: [{ type: 'text', text }], createdAt: '2026-01-01T00:00:03.000Z',
       finishedAt: '2026-01-01T00:00:04.000Z', steeredAt: '2026-01-01T00:00:04.000Z',
     },
   };
 }
 
 /** The next step boundary delivers the steer as a turn-owned user frame (same id). */
-function deliveredOps(promptId: string): TranscriptOperation[] {
+function deliveredOps(promptId: string, text = STEER_TEXT): TranscriptOperation[] {
   return [
     {
       op: 'step.upsert', turnId: 't1',
@@ -112,12 +112,95 @@ function deliveredOps(promptId: string): TranscriptOperation[] {
     {
       op: 'frame.upsert', turnId: 't1', stepId: 't1.2',
       frame: {
-        kind: 'text', frameId: promptId, role: 'user', text: STEER_TEXT, origin: { kind: 'user' },
+        kind: 'text', frameId: promptId, role: 'user', text, origin: { kind: 'user' },
         part: { partId: promptId, messageId: promptId, revision: 0, provenance: { source: 'engine' } },
       },
     },
   ];
 }
+
+describe('queued submission receipt ordering', () => {
+  it.each(['running', 'completed', 'aborted', 'failed', 'blocked'] as const)('does not restore a queued strip after canonical %s outruns its receipt', async (status) => {
+    const { controller, client } = await open();
+    try {
+      await deliver(controller, resetEvent('main', emptySnapshot(), 1));
+      const receipt = deferred<ReturnType<typeof queuedReceipt>>();
+      client.submitPrompt.mockReturnValue(receipt.promise);
+      const sent = controller.sendPrompt({ text: STEER_TEXT, promptId: 'queued-original' });
+      await deliver(controller, opsEvent('main', [queuedOp('queued-original')], 2));
+      expect(controller.getState().queuedPromptIds).toEqual(['queued-original']);
+      await deliver(controller, opsEvent('main', [{
+        op: 'prompt.upsert', prompt: {
+          promptId: 'queued-original', userMessageId: 'queued-original', status,
+          content: [{ type: 'text', text: STEER_TEXT }], createdAt: '2026-01-01T00:00:03.000Z',
+        },
+      }], 3));
+      expect(controller.getState().queuedPromptIds).toEqual([]);
+      receipt.resolve(queuedReceipt('queued-original'));
+      await sent;
+      expect(controller.getState().queuedPromptIds).toEqual([]);
+      expect(client.submitPrompt).toHaveBeenCalledTimes(1);
+      expect(client.steerPrompt).not.toHaveBeenCalled();
+    } finally { controller.close(); }
+  });
+
+  it('keeps older queue items through immediate send, drains once, and reopens without the consumed row', async () => {
+    const { controller, client } = await open();
+    const reopened = await open();
+    try {
+      const original = queuedOp('original');
+      const later = queuedOp('later');
+      await deliver(controller, resetEvent('main', userTurnSnapshot({ streaming: true }), 1));
+      await deliver(controller, opsEvent('main', [original, later], 2));
+      const submit = deferred<ReturnType<typeof queuedReceipt>>();
+      client.submitPrompt.mockReturnValue(submit.promise);
+      const sending = controller.sendPromptNow({ text: 'new immediate input', promptId: 'new-now' });
+      expect(controller.getState().queuedPromptIds).toEqual(['original', 'later']);
+      await deliver(controller, opsEvent('main', [steeredOp('original'), ...deliveredOps('original')], 3));
+      expect(controller.getState().queuedPromptIds).toEqual(['later']);
+      submit.resolve(queuedReceipt('new-now', 'new immediate input'));
+      await sending;
+      expect(client.steerPrompt).toHaveBeenCalledExactlyOnceWith('session_test', 'new-now', 'main');
+      await deliver(controller, opsEvent('main', [steeredOp('new-now', 'new immediate input'), ...deliveredOps('new-now', 'new immediate input')], 4));
+      expect(controller.getState().queuedPromptIds).toEqual(['later']);
+      expect(controller.getState().blocks.filter(block => block.kind === 'user' && block.userMessageId === 'original')).toHaveLength(1);
+      expect(controller.getState().blocks.find(block => block.kind === 'user' && block.userMessageId === 'new-now')).toMatchObject({ text: 'new immediate input' });
+      const reload = { ...userTurnSnapshot({ streaming: true }), prompts: [
+        ...(later.op === 'prompt.upsert' ? [later.prompt] : []),
+        ...[steeredOp('original'), steeredOp('new-now', 'new immediate input')].flatMap(op => op.op === 'prompt.upsert' ? [op.prompt] : []),
+      ] };
+      await deliver(reopened.controller, resetEvent('main', reload, 1));
+      expect(reopened.controller.getState().queuedPromptIds).toEqual(['later']);
+      expect(reopened.client.submitPrompt).not.toHaveBeenCalled();
+      expect(client.submitPrompt).toHaveBeenCalledTimes(1);
+      expect(client.abortPrompt).not.toHaveBeenCalled();
+    } finally { controller.close(); reopened.controller.close(); }
+  });
+
+  it('keeps a canonical queued edit, attachment, timing and position when the original receipt arrives late', async () => {
+    const { controller, client } = await open();
+    try {
+      await deliver(controller, resetEvent('main', emptySnapshot(), 1));
+      const receipt = deferred<ReturnType<typeof queuedReceipt>>();
+      client.submitPrompt.mockReturnValue(receipt.promise);
+      const sent = controller.sendPrompt({ text: STEER_TEXT, promptId: 'queued-edited' });
+      const content = [{ type: 'text' as const, text: 'edited while the reply was in flight' },
+        { type: 'image' as const, source: { kind: 'url' as const, url: 'https://example.test/retained.png' } }];
+      await deliver(controller, opsEvent('main', [{
+        op: 'prompt.upsert', prompt: {
+          promptId: 'queued-edited', userMessageId: 'logical-edited', status: 'queued', content,
+          createdAt: '2026-01-01T00:00:03.000Z', appendTiming: 'tasks_done', revision: 2, queuePosition: 3,
+        },
+      }], 2));
+      const before = controller.getState();
+      receipt.resolve(queuedReceipt('queued-edited'));
+      await sent;
+      expect(controller.getState().queuedPromptIds).toEqual(['queued-edited']);
+      expect(controller.getState().queuedPromptMeta).toEqual(before.queuedPromptMeta);
+      expect(controller.getState().blocks).toEqual(before.blocks);
+    } finally { controller.close(); }
+  });
+});
 
 describe('submission preservation degradation', () => {
   it.each(['QuotaExceededError', 'SecurityError'])('still submits complete media when backup fails with %s and accepts an ack despite failed cleanup', async (name) => {

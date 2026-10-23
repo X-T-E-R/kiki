@@ -1786,6 +1786,74 @@ describe('AgentPromptService', () => {
     expect(prompt.list()).toEqual({ active: undefined, pending: [] });
   });
 
+  it.each([false, true])('keeps the original FIFO queue when immediate send overlaps turn-end drain: %s', async (concurrentDrain) => {
+    const { prompt, loop, context, states, eventBus } = harness({ manualTurnResult: true });
+    const started: string[] = [];
+    const steered: string[] = [];
+    eventBus.subscribe(PromptStarted, event => started.push(event.promptId));
+    eventBus.subscribe(PromptSteered, event => steered.push(...event.promptIds));
+    const active = await prompt.enqueue({ id: 'active', message: message('active') });
+    await active.launched;
+    loop.drainNextBatch(context);
+    const content: ContentPart[] = [{ type: 'text', text: 'original with attachment' },
+      { type: 'image_url', imageUrl: { url: 'https://example.test/original.png' } }];
+    const original = await prompt.enqueue({ id: 'original-request', userMessageId: 'original-message', message: { ...message(''), content } });
+    const second = await prompt.enqueue({ id: 'second-request', message: message('second') });
+    const immediate = await prompt.enqueue({ id: 'immediate-request', userMessageId: 'immediate-message', message: message('now') });
+    const gate = deferred<void>();
+    const entered = deferred<void>();
+    prompt.hooks.onBeforeSubmitPrompt.register('steer-boundary', async (ctx, next) => {
+      if (ctx.isSteer) { entered.resolve(); await gate.promise; }
+      await next();
+    });
+    const sending = prompt.steer([immediate.id]);
+    const settledSend = sending.then(() => undefined, error => error);
+    await entered.promise;
+    if (concurrentDrain) {
+      loop.settleActive();
+      await original.launched;
+      loop.drainNextBatch(context);
+    }
+    gate.resolve();
+    const error = await settledSend;
+    if (concurrentDrain) {
+      expect(error).toMatchObject({ code: ErrorCodes.PROMPT_NOT_FOUND });
+      expect(prompt.list().pending.map(item => item.id)).toEqual([second.id, immediate.id]);
+      expect(steered).toEqual([]);
+    } else {
+      expect(error).toBeUndefined();
+      expect(prompt.list().pending.map(item => item.id)).toEqual([original.id, second.id]);
+      expect(states.get(promptQueueKey).order).toEqual([original.id, second.id]);
+      expect(steered).toEqual([immediate.id]);
+      loop.drainNextBatch(context);
+      loop.settleActive();
+      await original.launched;
+      loop.drainNextBatch(context);
+    }
+    expect(original.message).toMatchObject({ id: 'original-message', content });
+    loop.settleActive();
+    await second.launched;
+    loop.drainNextBatch(context);
+    loop.settleActive();
+    if (concurrentDrain) {
+      await immediate.launched;
+      loop.drainNextBatch(context);
+      loop.settleActive();
+    }
+    await immediate.completion;
+    await second.completion;
+    expect(context.get().map(item => item.id)).toEqual(concurrentDrain
+      ? ['active', 'original-message', 'second-request', 'immediate-message']
+      : ['active', 'immediate-message', 'original-message', 'second-request']);
+    expect(started).toEqual(concurrentDrain
+      ? ['active', 'original-request', 'second-request', 'immediate-request']
+      : ['active', 'original-request', 'second-request']);
+    expect(prompt.list().pending).toEqual([]);
+    expect(states.get(promptQueueKey).order).toEqual([]);
+    await expect(prompt.steer([immediate.id])).rejects.toMatchObject({ code: ErrorCodes.PROMPT_NOT_FOUND });
+    expect(context.get()).toHaveLength(4);
+  });
+
   it('delivers a steered prompt as a context message that keeps the prompt id', async () => {
     const { prompt, loop } = harness({ manualTurnResult: true });
     const steers: SteerStepRequest[] = [];

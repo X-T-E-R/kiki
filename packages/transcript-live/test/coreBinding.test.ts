@@ -2061,6 +2061,42 @@ describe('bindSessionTranscript', () => {
     await binding.dispose();
   });
 
+  it.each(['steer', 'turn-end'] as const)('removes a consumed queue item from the canonical live and cold projections on %s', async (delivery) => {
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('queue-consumption');
+    const binding = bindSessionTranscript(store, fakeSession(new SessionInteractionService(new TestSessionStateService()), agents));
+    onTestFinished(() => binding.dispose());
+    const content = [{ type: 'text', text: 'queued original' },
+      { type: 'image', source: { kind: 'url', url: 'https://example.test/queued.png' } }];
+    const records: TranscriptWireRecord[] = ['original', 'later'].map((id, index) => ({
+      type: 'prompt.enqueued', promptId: id, userMessageId: `logical-${id}`,
+      message: { id: `logical-${id}`, role: 'user', origin: { kind: 'user' }, content },
+      queueIndex: index, appendTiming: 'agent_idle', revision: 0, time: 1000 + index,
+    }));
+    for (const record of records) main.bus.emit(ev(record));
+    const project = (snapshot: AgentTranscriptSnapshot) => projectAgentTranscriptView(createViewState('queue-consumption'), 'main', snapshot);
+    expect(project(store.getAgent('main')!.snapshot()).queuedPromptIds).toEqual(['original', 'later']);
+    if (delivery === 'steer') {
+      const consumed = { type: 'prompt.steered', activePromptId: 'active', promptIds: ['original'], content, steeredAt: '2026-01-01T00:00:02.000Z', time: 2000 };
+      records.push(consumed);
+      main.bus.emit(ev(consumed));
+    } else {
+      records.push({ type: 'prompt.launch_committed', promptId: 'original', revision: 0, time: 2000 });
+      main.bus.emit(ev({ type: 'prompt.started', promptId: 'original', time: 2001 }));
+    }
+    const live = store.getAgent('main')!;
+    expect(project(live.snapshot()).queuedPromptIds).toEqual(['later']);
+    expect(live.getPrompt('later')).toMatchObject({ content, userMessageId: 'logical-later', queuePosition: 1 });
+    const cold = new AgentTranscript('main');
+    const adapter = new TranscriptWireAdapter('main');
+    const reducer = new TranscriptFactReducer(cold);
+    for (const record of records) reducer.apply(adapter.add(record));
+    reducer.apply(adapter.finish());
+    expect(project(cold.snapshot()).queuedPromptIds).toEqual(['later']);
+    expect(cold.getPrompt('later')).toMatchObject({ content, userMessageId: 'logical-later', queuePosition: 1 });
+  });
+
   it('keeps live prompt-bound controls through submitted and queued events on one message', async () => {
     const agents = new FakeAgents();
     const main = agents.add('main');
