@@ -2969,6 +2969,7 @@ const TRANSCRIPT_OVERSCAN = 6;
 const EMPTY_HELD: ReadonlySet<string> = new Set();
 /** No turn reply is delivered speech: the default when the process view has nothing to excuse. */
 const EMPTY_PROMOTED: ReadonlySet<string> = new Set();
+const EMPTY_TURN_IDS: readonly string[] = [];
 const TRANSCRIPT_OLDER_INTENT_MS = 1000;
 const EMPTY_TRANSCRIPT_ITEM_KEY = 'transcript-live-status';
 /** Row-offset tolerance for "the reader is still at that locate target". */
@@ -3925,14 +3926,17 @@ export function Transcript({
   // The session names its running turn; a turn whose text already settled is
   // still running until that turn ends.
   const runningTurnId = state.abortableTurnId === undefined ? undefined : `t${state.abortableTurnId}`;
+  // Every loaded turn the transcript reports as failed: its partial text is not
+  // a reply the reader received, and it says on its own bubble why it stopped.
+  const failedTurnIds = state.failedTurnIds ?? EMPTY_TURN_IDS;
   const messageNodes = useMemo<readonly MessageViewNode[]>(
     () => (view === 'message'
       // A silent stretch draws nothing; as a virtual row it would still
       // take a gap, so it is not a row at all.
-      ? buildMessageNodes(timelineBlocks, { busy: state.busy, liveTurnId: runningTurnId, personaName: messageContext.persona?.name })
+      ? buildMessageNodes(timelineBlocks, { busy: state.busy, liveTurnId: runningTurnId, failedTurnIds, personaName: messageContext.persona?.name })
         .filter((node) => node.kind !== 'activity-summary' || !isSilentActivity(node))
       : []),
-    [view, timelineBlocks, state.busy, runningTurnId, messageContext.persona?.name],
+    [view, timelineBlocks, state.busy, runningTurnId, failedTurnIds, messageContext.persona?.name],
   );
   const groupedNodes: readonly TimelineNode[] = view === 'message' ? messageNodes : processNodes;
   // The reply the message view promotes is what the reader was told, so the
@@ -3943,8 +3947,9 @@ export function Transcript({
     if (view !== 'process' || !messageContext.internalProse) return EMPTY_PROMOTED;
     return new Set(projectMessageView(timelineBlocks, {
       completedTurnIds: completedTurnIds(timelineBlocks, { busy: state.busy, liveTurnId: runningTurnId }),
+      failedTurnIds,
     }).flatMap((node) => (node.kind === 'message' && node.sourceBlock !== undefined ? [node.sourceBlock.id] : [])));
-  }, [view, messageContext.internalProse, timelineBlocks, state.busy, runningTurnId]);
+  }, [view, messageContext.internalProse, timelineBlocks, state.busy, runningTurnId, failedTurnIds]);
   const blockById = useMemo(() => new Map(timelineBlocks.map((block) => [block.id, block] as const)), [timelineBlocks]);
   // "查看过程" / "在过程中查看": flip this session to the process view, then
   // let the process timeline (same locator key) scroll to the turn.

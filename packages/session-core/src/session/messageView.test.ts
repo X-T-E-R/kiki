@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { personaGreeting, projectMessageView, projectSendMessage } from './messageView';
-import type { AssistantBlock, Block, ToolBlock } from './transcript';
+import type { AssistantBlock, Block, ToolBlock, UserBlock } from './transcript';
 
 function tool(overrides: Partial<ToolBlock> = {}): ToolBlock {
   return { kind: 'tool', id: 'tool-call', toolCallId: 'call', name: 'SendMessage',
@@ -109,6 +109,31 @@ describe('message view', () => {
   it('leaves a turn with no assistant text silent', () => {
     const read = tool({ id: 'read', toolCallId: 'read', name: 'Read' });
     expect(projectMessageView([read], { completedTurnIds: ['t1'] }).map((node) => node.kind)).toEqual(['activity-summary']);
+  });
+
+  it('leaves a failed turn’s partial text in the process, and speaks nothing for it', () => {
+    // A turn that failed after writing text is not a reply the reader received:
+    // the projection keeps the text in the process and says nothing for the
+    // turn, while its own bubble carries why it failed.
+    const failedUser: UserBlock = {
+      kind: 'user', id: 'u1', text: 'check the build', turnId: 't1',
+      createdAt: '2026-01-01T00:00:00Z',
+      promptOutcome: { status: 'failed', delivered: true, error: 'provider filtered the response' },
+    };
+    const partial = reply('a1', 'The build looked green, but', 't1');
+    const view = projectMessageView([failedUser, partial], { completedTurnIds: ['t1'], personaName: 'Coordinator' });
+    expect(view.map((node) => node.kind)).toEqual(['user', 'activity-summary']);
+    expect(view[1]?.kind === 'activity-summary' && view[1].members.map((member) => member.id)).toEqual(['a1']);
+
+    // The same blocks with a turn that completed normally do speak the text.
+    const completed = projectMessageView([{ ...failedUser, promptOutcome: undefined }, partial], { completedTurnIds: ['t1'] });
+    expect(completed.map((node) => node.kind)).toEqual(['user', 'message']);
+
+    // A caller that knows the failed turn from the transcript says so too.
+    const reported = projectMessageView([{ ...failedUser, promptOutcome: undefined }, partial], {
+      completedTurnIds: ['t1'], failedTurnIds: ['t1'],
+    });
+    expect(reported.map((node) => node.kind)).toEqual(['user', 'activity-summary']);
   });
 
   it('keeps the promoted reply out of the work summary that led to it', () => {

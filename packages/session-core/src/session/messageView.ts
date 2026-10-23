@@ -64,7 +64,19 @@ export type MessageViewNode = Block | ActivitySummary;
 export interface MessageViewOptions {
   /** Complete turn ids from the transcript, not inferred from a settled text frame. */
   readonly completedTurnIds?: readonly string[];
+  /**
+   * Turns the transcript reports as failed, for the cases its own blocks do
+   * not carry: a failed turn never speaks its partial text as the reply.
+   */
+  readonly failedTurnIds?: readonly string[];
   readonly personaName?: string;
+}
+
+/** A turn that did not complete: its partial text stays in the process. */
+function failedTurn(block: Block): string | undefined {
+  if (block.kind === 'user') return block.promptOutcome?.status === 'failed' ? block.turnId : undefined;
+  if (block.kind === 'notice' && block.i18n?.key === 'notice.turnFailedDetail') return block.turnId;
+  return undefined;
 }
 
 /** The promoted reply as speech: the turn's own text, its frame, and no call identity. */
@@ -138,9 +150,12 @@ export function projectMessageView(blocks: readonly Block[], options: MessageVie
   const turns: string[] = [];
   const seen = new Set<string>();
   const sent = new Set<string>();
+  const failed = new Set<string>(options.failedTurnIds ?? []);
   const replies = new Map<string, AssistantBlock>();
   for (const block of blocks) {
     const turn = turnId(block);
+    const failedHere = failedTurn(block);
+    if (failedHere !== undefined) failed.add(failedHere);
     if (turn !== undefined && !seen.has(turn)) {
       seen.add(turn);
       turns.push(turn);
@@ -151,14 +166,15 @@ export function projectMessageView(blocks: readonly Block[], options: MessageVie
     }
     if (block.kind === 'assistant' && block.text.trim() !== '' && block.turnId !== undefined) replies.set(block.turnId, block);
   }
-  // A reply that keeps streaming, or one the reader stopped, is not speech yet.
-  // Only this turn's own delivery decides: two turns may legitimately say the
-  // same words, so nothing is inferred across turns.
+  // A reply that keeps streaming, one the reader stopped, and one from a turn
+  // that failed are not speech yet. Only this turn's own delivery decides: two
+  // turns may legitimately say the same words, so nothing is inferred across
+  // turns.
   const promoted = new Map<string, MessageBlock>();
   const speechIds = new Set<string>();
   for (const turn of turns) {
     const reply = replies.get(turn);
-    if (reply === undefined || !completed.has(turn) || sent.has(turn)) continue;
+    if (reply === undefined || !completed.has(turn) || sent.has(turn) || failed.has(turn)) continue;
     if (reply.streaming || reply.stopped === true) continue;
     promoted.set(turn, replySpeech(reply, turn));
     speechIds.add(reply.id);
@@ -171,7 +187,9 @@ export function projectMessageView(blocks: readonly Block[], options: MessageVie
       nodes.push(reply);
       return;
     }
-    if (sent.has(turn) || replies.get(turn) === undefined) return;
+    // A failed turn already says so on its own bubble: neither speech nor a
+    // "did not reply" line belongs here.
+    if (sent.has(turn) || failed.has(turn) || replies.get(turn) === undefined) return;
     nodes.push({ kind: 'notice', id: `message-no-reply-${turn}`, turnId: turn,
       text: `${options.personaName ?? ''} 没有回复 · 查看过程`.trim(), tone: 'neutral',
       i18n: { key: 'message.noReply', params: { name: options.personaName ?? '' } },

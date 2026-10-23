@@ -186,6 +186,31 @@ describe('message view (Bot mode)', () => {
     expect(container.textContent?.match(/好的。/gu)).toHaveLength(2);
   });
 
+  it('leaves a failed turn’s partial text in the process and keeps its failure line', async () => {
+    // A turn that failed after writing text did not reply: the bubble says why,
+    // the text stays process-only, and no promoted message appears.
+    const blocks: Block[] = [
+      user('u1', '看看构建', 't1', { promptOutcome: { status: 'failed', delivered: true, error: 'provider filtered the response' } }),
+      assistant('a1', '构建看起来是绿的，但', 't1'),
+    ];
+    const message = await render(timeline(blocks, 'message'));
+    expect(message.container.querySelector('[data-message-origin="ordinary_final"]')).toBeNull();
+    expect(message.container.querySelector('[data-prompt-outcome="failed"]')).not.toBeNull();
+    expect(message.container.querySelector('[data-message-outcome="no-reply"]')).toBeNull();
+    const process = await render(timeline(blocks, 'process'));
+    expect(process.container.textContent).toContain('构建看起来是绿的，但');
+    expect(process.container.querySelector('[data-assistant-internal]')).not.toBeNull();
+  });
+
+  it('leaves a turn the transcript reports as failed unsaid, whatever its bubble says', async () => {
+    // The fact comes from the loaded turn state, so it holds for an older turn
+    // whose prompt record is not on the page.
+    const blocks: Block[] = [user('u1', '再试一次', 't1'), assistant('a1', '这次也差一点', 't1')];
+    const { container } = await render(timeline(blocks, 'message', { failedTurnIds: ['t1'] }));
+    expect(container.querySelector('[data-message-origin="ordinary_final"]')).toBeNull();
+    expect(container.querySelector('[data-message-outcome="no-reply"]')).toBeNull();
+  });
+
   it('keeps the running turn’s text out of the message view until that turn ends', async () => {
     // The session says turn t2 is the running one; its settled text may still
     // grow or be superseded, so it is not speech yet. The turn before it is.

@@ -657,6 +657,14 @@ export interface SessionViewState {
   readonly turnStartedAt: number | undefined;
   readonly turnFirstTokenAt: number | undefined;
   readonly turnTail: TurnTailInfo | undefined;
+  /**
+   * Turn ids the loaded transcript reports as failed. A failed turn wrote
+   * whatever it wrote before stopping, so a view that speaks "the reply" must
+   * exclude these turns by their own state — not by the latest tail, which
+   * covers one turn, and not by a prompt record, which can sit outside the
+   * loaded window.
+   */
+  readonly failedTurnIds?: readonly string[];
   readonly turnRetry: TurnRetryInfo | undefined;
   readonly pendingInteraction: SessionPendingInteraction;
   readonly activePromptId: string | undefined;

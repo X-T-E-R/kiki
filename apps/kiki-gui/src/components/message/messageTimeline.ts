@@ -54,10 +54,16 @@ export function isInboundHandoff(block: UserBlock): boolean {
 
 export function buildMessageNodes(
   blocks: readonly Block[],
-  options: { readonly busy: boolean; readonly liveTurnId?: string; readonly personaName?: string },
+  options: {
+    readonly busy: boolean;
+    readonly liveTurnId?: string;
+    readonly failedTurnIds?: readonly string[];
+    readonly personaName?: string;
+  },
 ): MessageViewNode[] {
   return projectMessageView(blocks, {
     completedTurnIds: completedTurnIds(blocks, { busy: options.busy, liveTurnId: options.liveTurnId }),
+    failedTurnIds: options.failedTurnIds,
     personaName: options.personaName,
   });
 }

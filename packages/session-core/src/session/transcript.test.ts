@@ -49,6 +49,7 @@ import {
   prependOlderTranscriptSnapshot,
   projectAgentTranscriptView,
   projectMessageContent,
+  projectMessageView,
   reminderCategory,
   queuedPromptPreviews,
   resolveActiveFloorId,
@@ -4894,6 +4895,100 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       promptId: 'p-failed',
       promptOutcome: { status: 'failed', at: FIXED_AT_1, delivered: true },
     });
+  });
+
+  it('does not speak a failed turn’s partial text as the message-view reply', () => {
+    // The provider filtered a turn that had already written ordinary text. The
+    // turn's own bubble carries the failure; the text stays process-only, and
+    // the message view must not present it as the reply the reader received.
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({
+      items: [{
+        kind: 'turn',
+        turnId: 't9',
+        ordinal: 9,
+        state: 'failed',
+        error: 'provider filtered the response',
+        origin: { kind: 'user', payload: { promptId: 'p-failed', userMessageId: 'um-failed' } },
+        prompt: 'check the build',
+        startedAt: FIXED_AT,
+        endedAt: FIXED_AT_1,
+        steps: [{
+          kind: 'step', stepId: 't9.1', turnId: 't9', ordinal: 1, state: 'failed',
+          startedAt: FIXED_AT, endedAt: FIXED_AT_1,
+          frames: [{ kind: 'text', frameId: 'f9', role: 'assistant', text: 'The build looked green, but' }],
+        }],
+      }],
+      prompts: [{ promptId: 'p-failed', status: 'failed', userMessageId: 'um-failed', createdAt: FIXED_AT, finishedAt: FIXED_AT_1 }],
+    }));
+    const user = projected.blocks.find((block) => block.kind === 'user');
+    expect(user).toMatchObject({ promptOutcome: { status: 'failed', delivered: true, error: 'provider filtered the response' } });
+    const assistant = projected.blocks.find((block) => block.kind === 'assistant');
+    expect(assistant).toMatchObject({ text: 'The build looked green, but', streaming: false });
+
+    const view = projectMessageView(projected.blocks, { completedTurnIds: ['t9'] });
+    expect(view.some((node) => node.kind === 'message')).toBe(false);
+    const summary = view.find((node) => node.kind === 'activity-summary');
+    expect(summary?.kind === 'activity-summary' && summary.members.some((member) => member.kind === 'assistant')).toBe(true);
+
+    // The same blocks without the failure do speak it, so the exclusion rests
+    // on the turn's own outcome rather than on the text.
+    const completed = projected.blocks.map((block) => (block.kind === 'user' ? { ...block, promptOutcome: undefined } : block));
+    const spoken = projectMessageView(completed, { completedTurnIds: ['t9'] });
+    expect(spoken.some((node) => node.kind === 'message' && node.origin === 'ordinary_final')).toBe(true);
+  });
+
+  it('keeps an older failed turn out of the message view while a later turn speaks', () => {
+    const turn = (n: number, state: 'failed' | 'completed', text: string): TranscriptTurn => ({
+      kind: 'turn',
+      turnId: `t${n}`,
+      ordinal: n,
+      state,
+      error: state === 'failed' ? 'provider filtered the response' : undefined,
+      origin: { kind: 'user', payload: { promptId: `p${n}`, userMessageId: `p${n}` } },
+      prompt: `message ${n}`,
+      startedAt: FIXED_AT,
+      endedAt: FIXED_AT_1,
+      steps: [{
+        kind: 'step', stepId: `t${n}.1`, turnId: `t${n}`, ordinal: 1, state,
+        startedAt: FIXED_AT, endedAt: FIXED_AT_1,
+        frames: [{ kind: 'text', frameId: `f${n}`, role: 'assistant', text }],
+      }],
+    });
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({
+      items: [turn(7, 'failed', 'The first attempt got cut off'), turn(8, 'completed', 'Here is the answer')],
+      prompts: [
+        { promptId: 'p7', status: 'failed', userMessageId: 'p7', createdAt: FIXED_AT, finishedAt: FIXED_AT_1 },
+        { promptId: 'p8', status: 'completed', userMessageId: 'p8', createdAt: FIXED_AT, finishedAt: FIXED_AT_1 },
+      ],
+    }));
+    expect(projected.failedTurnIds).toEqual(['t7']);
+    const view = projectMessageView(projected.blocks, {
+      completedTurnIds: ['t7', 't8'], failedTurnIds: projected.failedTurnIds,
+    });
+    expect(view.flatMap((node) => (node.kind === 'message' ? [node.text] : []))).toEqual(['Here is the answer']);
+  });
+
+  it('excludes a failed turn whose prompt sits outside the loaded window', () => {
+    // No prompt record, so the bubble carries no outcome: only the turn’s own
+    // loaded state says the text is not a reply.
+    const failed: TranscriptTurn = {
+      kind: 'turn', turnId: 't4', ordinal: 4, state: 'failed', error: 'provider filtered the response',
+      origin: { kind: 'user', payload: { promptId: 'p4', userMessageId: 'p4' } },
+      prompt: 'message 4', startedAt: FIXED_AT, endedAt: FIXED_AT_1,
+      steps: [{
+        kind: 'step', stepId: 't4.1', turnId: 't4', ordinal: 1, state: 'failed',
+        startedAt: FIXED_AT, endedAt: FIXED_AT_1,
+        frames: [{ kind: 'text', frameId: 'f4', role: 'assistant', text: 'Cut off mid-sentence' }],
+      }],
+    };
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({ items: [failed] }));
+    const user = projected.blocks.find((block) => block.kind === 'user');
+    expect(user?.kind === 'user' ? user.promptOutcome : 'missing').toBeUndefined();
+    expect(projected.failedTurnIds).toEqual(['t4']);
+    const view = projectMessageView(projected.blocks, { completedTurnIds: ['t4'], failedTurnIds: projected.failedTurnIds });
+    expect(view.some((node) => node.kind === 'message')).toBe(false);
+    // The text itself is still on the page for the process reading.
+    expect(projected.blocks.some((block) => block.kind === 'assistant' && block.text === 'Cut off mid-sentence')).toBe(true);
   });
 
   // Shapes from a real long session: the reset window carries the last turns

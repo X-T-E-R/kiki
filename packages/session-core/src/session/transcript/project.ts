@@ -3481,6 +3481,9 @@ export function projectAgentTranscriptView(
     turnTail: lastTurn !== undefined && 'state' in lastTurn && lastTurn.state === 'running'
       ? undefined
       : turnTail ?? previous.turnTail,
+    // Every loaded turn that failed, not just the tail: its partial text is not
+    // a reply the reader received, whatever the prompt window still holds.
+    failedTurnIds: snapshot.items.flatMap((item) => (item.kind === 'turn' && item.state === 'failed' ? [item.turnId] : [])),
     turnRetry: turnRetryFromItem(lastTurn),
   };
 }
