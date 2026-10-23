@@ -199,6 +199,8 @@ describe('message view (Bot mode)', () => {
     expect(message.container.querySelector('[data-message-origin="ordinary_final"]')).toBeNull();
     expect(message.container.querySelector('[data-prompt-outcome="failed"]')).not.toBeNull();
     expect(message.container.querySelector('[data-message-outcome="no-reply"]')).toBeNull();
+    // The bubble already carries the failure, so the view adds no second line.
+    expect(message.container.querySelector('[data-message-outcome="danger"]')).toBeNull();
     const process = await render(timeline(blocks, 'process'));
     expect(process.container.textContent).toContain('构建看起来是绿的，但');
     expect(process.container.querySelector('[data-assistant-internal]')).not.toBeNull();

@@ -163,6 +163,14 @@ describe('message view', () => {
     const once = projectMessageView([user('t1', false), reply('a1', 'partial', 't1'), reported],
       { completedTurnIds: ['t1'], failedTurnIds: ['t1'] });
     expect(once.filter((node) => node.kind === 'notice').map((node) => node.id)).toEqual(['agent-turn-outcome-t1']);
+
+    // A turn that failed after it did deliver: the delivered words stay speech,
+    // and the turn still says once that it failed.
+    const delivered = projectMessageView([user('t1', false), tool(), reply('a1', 'partial after the send', 't1')],
+      { completedTurnIds: ['t1'], failedTurnIds: ['t1'] });
+    expect(delivered.map((node) => node.kind)).toEqual(['user', 'message', 'activity-summary', 'notice']);
+    expect(delivered.some((node) => node.kind === 'message' && node.origin === 'send_message')).toBe(true);
+    expect(delivered.some((node) => node.kind === 'message' && node.text === 'partial after the send')).toBe(false);
   });
 
   it('keeps the promoted reply out of the work summary that led to it', () => {
