@@ -13,8 +13,9 @@ import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom'
 
 import type { DeferredAppendTiming, MessageContent, PermissionMode, PromptPlanGate, PromptSubmission, Session, SessionPendingInteraction } from '@kiki/protocol';
 import { mediaFromContentParts } from '@kiki/session-core/composer/media';
+import type { I18nKey } from '@kiki/session-core/i18n';
 
-import { AgentWorkspace, HEADER_ICON_BUTTON, PanelIcon, ResyncStatusBanner, WorkspaceHeader, type AgentWorkspaceNavigation } from './agent-workspace';
+import { AgentWorkspace, HEADER_ICON_BUTTON, nowReceiptDecision, PanelIcon, ResyncStatusBanner, sendNowNotice, sendNowQueuedNotice, trackOpenNowReceipt, WorkspaceHeader, type AgentWorkspaceNavigation } from './agent-workspace';
 import { ConfirmDialog } from './ConfirmDialog';
 import { NavBackButton } from './NavBackButton';
 import { useGuardedNavigate } from './dirtyGuard';
@@ -1437,12 +1438,15 @@ export function shouldClearPendingProfileOnSendError(error: unknown): boolean {
   return error instanceof ApiError && !isUnconfirmedTransportError(error) && error.code !== API_CODES.TIMEOUT;
 }
 
-export type SessionSendNowOutcome = Awaited<ReturnType<SessionController['sendPromptNow']>>['outcome'];
+/**
+ * A "Send now" that has to open its own turn: a profile/engine switch or an
+ * explicit model-switch mode cannot land inside the running turn, so the
+ * message takes the ordinary queue and the notice names why.
+ */
+export type SendNowOwnTurnReason = 'binding' | 'model';
 
-export function sendNowOutcomeNotice(outcome: SessionSendNowOutcome): 'server' | 'turn-ended' | undefined {
-  if (outcome === 'held') return 'server';
-  if (outcome === 'queued') return 'turn-ended';
-  return undefined;
+export function sendNowOwnTurnNotice(reason: SendNowOwnTurnReason): I18nKey {
+  return reason === 'model' ? 'sv.sendNowOwnTurnModel' : 'sv.sendNowOwnTurnBinding';
 }
 
 /**
@@ -2016,6 +2020,12 @@ export function SessionView({
   const pendingRetryRef = useRef<{ readonly id: string; readonly run: () => void } | undefined>(undefined);
   const pendingRecoveryRef = useRef<{ readonly id: string; readonly restore: () => void } | undefined>(undefined);
   const pendingSendRef = useRef(false);
+  // "Send now" receipts still open to a late durable read: prompt id → the
+  // reason already reported (null = only the generic queued notice went out).
+  const nowReceiptsRef = useRef(new Map<string, string | null>());
+  // Re-read the ingress snapshot after a receipt registers, even when the
+  // controller had already published it before this promise settled.
+  const [nowReceiptTick, setNowReceiptTick] = useState(0);
   useEffect(() => {
     if (pendingSubmission === undefined || pendingSubmission.slow) return;
     const timer = setTimeout(() => {
@@ -2357,6 +2367,29 @@ export function SessionView({
       setPendingSubmission({ ...pending, ...serverState, slow: false });
     }
   }, [pendingSubmission?.id, pendingSubmission?.status, pendingSubmission?.retryable, state.blocks, state.durableIngress, state.queuedPromptIds, t]);
+
+  // The first acknowledgement of a durable steer is not the last word: keep
+  // reading the receipt and explain the final reason when it lands. A prompt
+  // that started, steered or reached the transcript is owned by it, so the
+  // pending explanation goes away instead of re-attaching.
+  useEffect(() => {
+    const tracked = nowReceiptsRef.current;
+    if (tracked.size === 0) return;
+    const ingress = state.durableIngress ?? [];
+    for (const [promptId, reported] of tracked) {
+      const decision = nowReceiptDecision({
+        promptId, reported, ingress,
+        settled: state.blocks.some((block) => block.kind === 'user' && block.promptId === promptId && block.promptStatus !== 'queued'),
+      });
+      if (decision.kind === 'wait') continue;
+      if (decision.kind === 'drop') {
+        tracked.delete(promptId);
+        continue;
+      }
+      tracked.set(promptId, decision.reason);
+      pushToast({ tone: 'info', text: t(sendNowQueuedNotice(decision.reason)) });
+    }
+  }, [state.blocks, state.durableIngress, nowReceiptTick, t]);
 
   // Which projection of the timeline this session shows (remembered per
   // session; a `message` delivery opens in the message view) and the delivery
@@ -3090,7 +3123,12 @@ export function SessionView({
         // path: a steered message runs inside the ACTIVE turn, which cannot
         // change the binding.
         const rebindsAgent = profileSwitch.profile !== undefined || profileSwitch.execution !== undefined;
-        const requiresOwnTurn = rebindsAgent || (modelControlTouched && modelSwitchMode !== undefined);
+        // A profile/engine switch or an explicit model-switch mode needs a turn
+        // of its own; the local cause lets the queue notice name it.
+        const ownTurnReason: SendNowOwnTurnReason | undefined = rebindsAgent
+          ? 'binding'
+          : modelControlTouched && modelSwitchMode !== undefined ? 'model' : undefined;
+        const requiresOwnTurn = ownTurnReason !== undefined;
         const completeControls = () => completeSkillControlSelection({
           controlled: { content, profile: profileSwitch.profile, execution: profileSwitch.execution,
             model: profileSwitch.model, thinking: profileSwitch.thinking },
@@ -3176,14 +3214,18 @@ export function SessionView({
               }
               releaseComposition();
               completeControls();
-              const outcomeNotice = sendNowOutcomeNotice(result.outcome);
-              if (outcomeNotice === 'server') {
-                pushToast({ tone: 'info', text: t('sv.submissionRecovery.server') });
+              // The receipt says why a "Send now" did not join the turn. A
+              // queued acknowledgement already carries its final reason; only
+              // restoring/held receipts are open to a later durable read.
+              const notice = sendNowNotice(result.outcome, result.reason);
+              if (notice !== undefined) {
+                pushToast({ tone: notice.tone, text: t(notice.key) });
               }
-              if (outcomeNotice === 'turn-ended') {
-                // The turn ended while it was on the way: it runs next, from
-                // the queue — say so instead of letting it look lost.
-                pushToast({ tone: 'info', text: t('sv.steerTurnEnded') });
+              if (result.outcome === 'restoring' || result.outcome === 'held') {
+                // Restoring/held acknowledgements carry no reason yet: leave
+                // the receipt open so the durable read can supply the final one.
+                trackOpenNowReceipt(nowReceiptsRef.current, result.promptId, null);
+                setNowReceiptTick((tick) => tick + 1);
               }
             })
             .catch((error: unknown) => {
@@ -3340,21 +3382,13 @@ export function SessionView({
             accepted = true;
             releaseComposition();
             setGoalMode(false);
-            // "Send now" (⌘/Ctrl+Enter while busy): the prompt parked behind the
-            // running turn joins it right away through the queue's steer route.
-            // A profile switch is the exception — a steered message runs inside
-            // the ACTIVE turn, so it cannot change the binding, and the engine
-            // refuses the steer outright. It stays queued and runs next, which
-            // is exactly the confirmed contract, so there is nothing to report.
-            if (options?.now === true && result.status === 'queued' && !requiresOwnTurn) {
-              void controller.steerQueued(result.prompt_id).catch((error: unknown) => {
-                pushToast({
-                  tone: 'error',
-                  text: t('sv.steerQueuedFailed', {
-                    detail: error instanceof Error ? error.message : String(error),
-                  }),
-                });
-              });
+            // "Send now" (⌘/Ctrl+Enter while busy) reaches this path exactly
+            // when the message cannot join the running turn: a profile/engine
+            // switch or an explicit model-switch mode has to open its own
+            // turn. It stays queued; name that local cause instead of letting
+            // the press look ignored.
+            if (options?.now === true && result.status === 'queued' && ownTurnReason !== undefined) {
+              pushToast({ tone: 'info', text: t(sendNowOwnTurnNotice(ownTurnReason)) });
             }
             completeControls();
           })

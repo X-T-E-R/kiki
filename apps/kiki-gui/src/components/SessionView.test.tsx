@@ -7,7 +7,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import type { Session } from '@kiki/protocol';
+import type { PromptItem, Session } from '@kiki/protocol';
 import { resolveComposerModelOverrides, type ComposerModelBindingChange, type PersistedComposerScalars } from '@kiki/session-core/composer';
 
 import {
@@ -106,12 +106,13 @@ import {
   SessionRouteView,
   shouldClearModeOverride,
   shouldClearPendingProfileOnSendError,
-  sendNowOutcomeNotice,
+  sendNowOwnTurnNotice,
   shouldCloseSessionChromeOnEscape,
   shouldHandleGlobalAbortOnEscape,
   shouldHandleApprovalShortcut,
   isTerminalShortcut,
 } from './SessionView';
+import { nowReceiptDecision, sendNowNotice, sendNowQueuedNotice } from './agent-workspace';
 import { API_CODES, ApiError, KikiClient } from '../lib/client';
 
 vi.mock('./TerminalPanel', () => ({ TerminalPanel: () => null }));
@@ -1576,16 +1577,79 @@ describe('shouldClearPendingProfileOnSendError', () => {
   });
 });
 
-describe('sendNowOutcomeNotice', () => {
+describe('sendNowNotice', () => {
   it('does not toast for a healthy durable restoring acknowledgement', () => {
-    expect(sendNowOutcomeNotice('restoring')).toBeUndefined();
-    expect(sendNowOutcomeNotice('started')).toBeUndefined();
-    expect(sendNowOutcomeNotice('steered')).toBeUndefined();
+    expect(sendNowNotice('restoring', undefined)).toBeUndefined();
+    expect(sendNowNotice('started', undefined)).toBeUndefined();
+    expect(sendNowNotice('steered', undefined)).toBeUndefined();
   });
 
-  it('keeps user-actionable held recovery and turn-ended queue notices', () => {
-    expect(sendNowOutcomeNotice('held')).toBe('server');
-    expect(sendNowOutcomeNotice('queued')).toBe('turn-ended');
+  it('keeps the held recovery notice', () => {
+    expect(sendNowNotice('held', undefined)).toEqual({ tone: 'info', key: 'sv.submissionRecovery.server' });
+  });
+
+  it('names the reason the server kept the message queued', () => {
+    expect(sendNowNotice('queued', 'target_changed')?.key).toBe('sv.steerQueuedTargetChanged');
+    expect(sendNowNotice('queued', 'prompt_no_longer_pending')?.key).toBe('sv.steerQueuedNotPending');
+    expect(sendNowNotice('queued', 'steer_rejected')?.key).toBe('sv.steerQueuedRejected');
+    expect(sendNowNotice('queued', 'external_retry')?.key).toBe('sv.steerQueuedExternal');
+    expect(sendNowNotice('queued', 'executor_deferred')?.key).toBe('sv.steerQueuedExternal');
+    expect(sendNowNotice('queued', 'model_switch_boundary')?.key).toBe('sv.steerQueuedModelBoundary');
+    expect(sendNowNotice('queued', 'no_active_turn')?.key).toBe('sv.steerQueuedNoActiveTurn');
+  });
+
+  it('does not claim the turn ended when the receipt carries no reason', () => {
+    expect(sendNowNotice('queued', undefined)?.key).toBe('sv.steerQueued');
+    expect(sendNowQueuedNotice(undefined)).toBe('sv.steerQueued');
+    expect(sendNowNotice('queued', 'no_active_turn')?.key).not.toBe('sv.steerTurnEnded');
+  });
+
+  it('explains a Send now that has to open its own turn', () => {
+    expect(sendNowOwnTurnNotice('binding')).toBe('sv.sendNowOwnTurnBinding');
+    expect(sendNowOwnTurnNotice('model')).toBe('sv.sendNowOwnTurnModel');
+  });
+});
+
+describe('nowReceiptDecision', () => {
+  const entry = (overrides: Partial<PromptItem> = {}): PromptItem => ({
+    prompt_id: 'p', user_message_id: 'u', status: 'queued',
+    content: [{ type: 'text', text: 'body' }], created_at: '2026-10-20T00:00:00.000Z',
+    ...overrides,
+  });
+  const decide = (input: { ingress?: readonly PromptItem[]; reported?: string | null; settled?: boolean }) =>
+    nowReceiptDecision({ promptId: 'p', reported: input.reported ?? null, ingress: input.ingress ?? [], settled: input.settled ?? false });
+
+  it('waits while the durable read has not landed yet', () => {
+    expect(decide({})).toEqual({ kind: 'wait' });
+    expect(decide({ ingress: [entry({ admission: 'restoring' })] })).toEqual({ kind: 'wait' });
+  });
+
+  it('never treats an unadmitted receipt or a stale delivery field as final', () => {
+    expect(decide({ ingress: [entry({ admission: 'restoring', delivery_state: 'queued', delivery_reason: 'target_changed' })] }))
+      .toEqual({ kind: 'wait' });
+    expect(decide({ ingress: [entry({ admission: 'held', delivery_state: 'queued', delivery_reason: 'steer_rejected' })] }))
+      .toEqual({ kind: 'wait' });
+  });
+
+  it('lets a started prompt win over a stale queued record still in the ingress', () => {
+    expect(decide({
+      settled: true,
+      ingress: [entry({ admission: 'admitted', delivery_state: 'queued', delivery_reason: 'target_changed' })],
+    })).toEqual({ kind: 'drop' });
+  });
+
+  it('reports the final reason once', () => {
+    expect(decide({ ingress: [entry({ admission: 'admitted', delivery_state: 'queued', delivery_reason: 'target_changed' })] }))
+      .toEqual({ kind: 'report', reason: 'target_changed' });
+    expect(decide({ reported: 'target_changed', ingress: [entry({ admission: 'admitted', delivery_state: 'queued', delivery_reason: 'target_changed' })] }))
+      .toEqual({ kind: 'drop' });
+  });
+
+  it('hands the prompt to the transcript once it runs, steers or reaches a row', () => {
+    expect(decide({ ingress: [entry({ admission: 'admitted', status: 'running' })] })).toEqual({ kind: 'drop' });
+    expect(decide({ ingress: [entry({ admission: 'admitted', delivery_state: 'steered' })] })).toEqual({ kind: 'drop' });
+    expect(decide({ ingress: [entry({ admission: 'failed' })] })).toEqual({ kind: 'drop' });
+    expect(decide({ settled: true })).toEqual({ kind: 'drop' });
   });
 });
 

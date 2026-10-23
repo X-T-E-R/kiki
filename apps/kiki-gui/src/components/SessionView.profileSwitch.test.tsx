@@ -433,6 +433,30 @@ describe('switching profile while a turn is running', () => {
     expect(getToasts().some((toast) => toast.tone === 'error')).toBe(false);
   });
 
+  it('explains a Send now that has to open its own turn instead of queueing silently', async () => {
+    promptResult.current = { status: 'queued', prompt_id: 'prompt-queued' };
+    const { container } = await mount();
+    await click(profileTrigger(container));
+    await settle();
+    await click(profileRow(container, 'reviewer'));
+    await click(dialogButton(container, 'Switch engine'));
+    await type('continue with the chosen profile', container);
+    await act(async () => {
+      composerInput(container)?.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter', ctrlKey: true, shiftKey: settingsSnapshot().sendShortcut !== 'enter', bubbles: true,
+      }));
+    });
+    await settle();
+    await settle();
+    expect(sendPrompt).toHaveBeenCalledTimes(1);
+    expect(sendPromptNow).not.toHaveBeenCalled();
+    expect(steerQueued).not.toHaveBeenCalled();
+    const texts = getToasts().map((toast) => toast.text);
+    expect(texts.some((text) => text.includes('needs its own turn'))).toBe(true);
+    // The binding change — not a turn that happened to end — is the reason.
+    expect(texts.some((text) => text.includes('The turn ended first'))).toBe(false);
+  });
+
   it('keeps the pick for a retry when the send fails on the network', async () => {
     sendPrompt.mockRejectedValueOnce(new Error('offline'));
     const { container } = await mount();

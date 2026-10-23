@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import { translate } from '@kiki/session-core/i18n';
+import type { PromptItem } from '@kiki/protocol';
 import { buildAnnotationsPrefix, clearStoredDrafts, resetDraftMemoryForTests, resetComposerMemoryForTests } from '@kiki/session-core/composer';
 import {
   createViewState,
@@ -414,6 +415,104 @@ it('keeps an external-executor child on its mailbox when sending into a busy tur
   expect(harness.sendAgentMessage).toHaveBeenCalledWith('session', 'child', 'look at the tests too', [
     { type: 'text', text: 'look at the tests too' },
   ], expect.any(String), undefined);
+});
+
+it('explains a queued child Send now with the reason the server reported', async () => {
+  const sendPromptNow = vi.fn().mockResolvedValue({ promptId: 'p', outcome: 'queued', reason: 'steer_rejected' });
+  await sendNowToBusyChild(sendPromptNow);
+  expect(harness.pushToast).toHaveBeenCalledWith({ tone: 'info', text: translate('en', 'sv.steerQueuedRejected') });
+});
+
+it('does not guess delivery for a child Send now whose response was lost', async () => {
+  const sendPromptNow = vi.fn().mockRejectedValue(new SendNowError('unknown', new Error('response lost')));
+  const textarea = await sendNowToBusyChild(sendPromptNow);
+  // The message may already be in the turn: it is neither re-sent nor claimed
+  // as queued, and the composer stays empty for an explicit follow-up.
+  expect(sendPromptNow).toHaveBeenCalledTimes(1);
+  expect(textarea.value).toBe('');
+  expect(harness.pushToast).toHaveBeenCalledWith(expect.objectContaining({
+    tone: 'error',
+    text: translate('en', 'sv.steerUnknown', { detail: 'response lost' }),
+  }));
+  expect(harness.pushToast).not.toHaveBeenCalledWith(expect.objectContaining({ text: translate('en', 'sv.steerQueued') }));
+});
+
+it('consumes the final durable reason after the first acknowledgement, once', async () => {
+  const sendPromptNow = vi.fn().mockResolvedValue({ promptId: 'p', outcome: 'restoring' });
+  const forest = testForest('running', true);
+  const controller = Object.assign(controllerStub({ forest, agentStates: {} }), { sendPromptNow });
+  await renderWorkspace({ controller, forest });
+  await settle();
+  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  await typeText(textarea, 'late receipt');
+  await settle();
+  await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Send into this turn"]')?.click(); });
+  await settle();
+  expect(sendPromptNow).toHaveBeenCalled();
+  expect(harness.pushToast).not.toHaveBeenCalled();
+
+  const queued: PromptItem = {
+    prompt_id: 'p', user_message_id: 'u', status: 'queued', admission: 'admitted',
+    delivery_state: 'queued', delivery_reason: 'target_changed',
+    content: [{ type: 'text', text: 'late receipt' }], created_at: '2026-10-20T00:00:00.000Z',
+  };
+  await renderWorkspace({
+    controller, forest,
+    sessionState: { ...createViewState('session'), loaded: true, durableIngress: [queued] },
+  });
+  await settle();
+  expect(harness.pushToast).toHaveBeenCalledWith({ tone: 'info', text: translate('en', 'sv.steerQueuedTargetChanged') });
+
+  // The same final receipt read again is not a second explanation.
+  await renderWorkspace({
+    controller, forest,
+    sessionState: { ...createViewState('session'), loaded: true, durableIngress: [{ ...queued }] },
+  });
+  await settle();
+  expect(harness.pushToast).toHaveBeenCalledTimes(1);
+
+  // Once the prompt runs, the transcript owns it: no late queued notice.
+  await renderWorkspace({
+    controller, forest,
+    sessionState: {
+      ...createViewState('session'), loaded: true,
+      durableIngress: [{ ...queued, status: 'running', delivery_state: undefined, delivery_reason: undefined }],
+    },
+  });
+  await settle();
+  expect(harness.pushToast).toHaveBeenCalledTimes(1);
+});
+
+it('lets a started child prompt win over a stale queued durable receipt', async () => {
+  const sendPromptNow = vi.fn().mockResolvedValue({ promptId: 'p', outcome: 'restoring' });
+  const forest = testForest('running', true);
+  await renderWorkspace({ controller: Object.assign(controllerStub({ forest, agentStates: {} }), { sendPromptNow }), forest });
+  await settle();
+  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  await typeText(textarea, 'already running');
+  await settle();
+  await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Send into this turn"]')?.click(); });
+  await settle();
+  expect(harness.pushToast).not.toHaveBeenCalled();
+
+  // The transcript already shows the prompt running; the ingress still keeps
+  // its earlier admitted/queued receipt with a reason. Canonical wins.
+  const started = {
+    ...createViewState('session'), loaded: true,
+    blocks: [{ kind: 'user', id: 'row', promptId: 'p', promptStatus: 'running', text: 'already running', createdAt: '2026-10-20T00:00:00.000Z' }],
+  } as ReturnType<typeof createViewState>;
+  const stale: PromptItem = {
+    prompt_id: 'p', user_message_id: 'u', status: 'queued', admission: 'admitted',
+    delivery_state: 'queued', delivery_reason: 'target_changed',
+    content: [{ type: 'text', text: 'already running' }], created_at: '2026-10-20T00:00:00.000Z',
+  };
+  await renderWorkspace({
+    controller: Object.assign(controllerStub({ forest, agentStates: { child: started } }), { sendPromptNow }),
+    forest,
+    sessionState: { ...createViewState('session'), loaded: true, durableIngress: [stale] },
+  });
+  await settle();
+  expect(harness.pushToast).not.toHaveBeenCalled();
 });
 
 /** Minimal durable-mailbox acceptance returned by `client.sendAgentMessage`. */

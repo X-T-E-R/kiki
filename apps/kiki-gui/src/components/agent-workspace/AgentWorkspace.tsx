@@ -18,7 +18,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { PermissionMode } from '@kiki/protocol';
+import type { PermissionMode, PromptDeliveryReason, PromptItem } from '@kiki/protocol';
 import { buildPromptContent, buildSkillActivation, flushDrafts, isNativeExecutor, readComposerState, readDraft, recoverSubmittedDraft, subscribeDraftAppends, writeComposerState, writeDraft, type ComposerAttachment, type ExecutionChoice } from '@kiki/session-core/composer';
 import {
   agentPath,
@@ -43,6 +43,7 @@ import {
 } from '@kiki/session-core/settings';
 
 import { useI18n } from '../../i18n';
+import type { I18nKey } from '@kiki/session-core/i18n';
 import type { ContentRef } from '@kiki/transcript';
 import { ExternalAgentAttachmentUnsupportedError, NativeChildPromptSendError, isDefinitivePromptRejection, type ModelSwitchMode } from '../../lib/client';
 import { ModelSwitchDialog } from '../model-switch/ModelSwitchDialog';
@@ -103,6 +104,82 @@ export interface AgentWorkspaceNavigation {
     readonly toggle: () => void;
     readonly available?: boolean;
   };
+}
+
+/**
+ * "Send now" delivery feedback, shared by the session composer and this
+ * workspace's child composer: the receipt names why a message did not join
+ * the running turn, and a late durable read can still supply the reason when
+ * the first acknowledgement has none. The copy follows that reason — it is
+ * never inferred from a streaming or tool phase, which do not reject a steer.
+ */
+type SendNowOutcome = Awaited<ReturnType<SessionController['sendPromptNow']>>['outcome'];
+
+const SEND_NOW_QUEUED_KEYS: Readonly<Record<PromptDeliveryReason, I18nKey>> = {
+  no_active_turn: 'sv.steerQueuedNoActiveTurn',
+  target_changed: 'sv.steerQueuedTargetChanged',
+  prompt_no_longer_pending: 'sv.steerQueuedNotPending',
+  steer_rejected: 'sv.steerQueuedRejected',
+  external_retry: 'sv.steerQueuedExternal',
+  executor_deferred: 'sv.steerQueuedExternal',
+  model_switch_boundary: 'sv.steerQueuedModelBoundary',
+};
+
+export function sendNowQueuedNotice(reason: PromptDeliveryReason | undefined): I18nKey {
+  return reason === undefined ? 'sv.steerQueued' : SEND_NOW_QUEUED_KEYS[reason];
+}
+
+export function sendNowNotice(
+  outcome: SendNowOutcome,
+  reason: PromptDeliveryReason | undefined,
+): { readonly tone: 'info'; readonly key: I18nKey } | undefined {
+  if (outcome === 'held') return { tone: 'info', key: 'sv.submissionRecovery.server' };
+  if (outcome === 'queued') return { tone: 'info', key: sendNowQueuedNotice(reason) };
+  return undefined;
+}
+
+/** Receipts a late durable read can still explain; bounded per mounted view. */
+const MAX_OPEN_NOW_RECEIPTS = 20;
+
+/** What a still-open "Send now" receipt should do on this snapshot. */
+type NowReceiptDecision =
+  | { readonly kind: 'drop' }
+  | { readonly kind: 'wait' }
+  | { readonly kind: 'report'; readonly reason: PromptDeliveryReason };
+
+/**
+ * One rule for both composers: a canonical row owns the message first, then
+ * the durable record decides while the prompt is still queued. Only an
+ * admitted, queued record with a reason is final — a restoring/held record
+ * that still carries an older delivery field is not. A missing record is not
+ * proof of delivery either: the durable read may still be in flight.
+ */
+export function nowReceiptDecision(input: {
+  readonly promptId: string;
+  readonly reported: string | null;
+  readonly ingress: readonly PromptItem[];
+  readonly settled: boolean;
+}): NowReceiptDecision {
+  if (input.settled) return { kind: 'drop' };
+  const record = input.ingress.find((item) => item.prompt_id === input.promptId);
+  if (record === undefined) return { kind: 'wait' };
+  if (record.admission === 'failed' || record.admission === 'cancelled'
+    || record.status === 'running' || record.delivery_state === 'steered') return { kind: 'drop' };
+  if (record.admission !== 'admitted' || record.delivery_state !== 'queued' || record.delivery_reason === undefined) {
+    return { kind: 'wait' };
+  }
+  if (input.reported !== null) return { kind: 'drop' };
+  return { kind: 'report', reason: record.delivery_reason };
+}
+
+/** A queued Send now that still carries an open receipt for a later reason. */
+export function trackOpenNowReceipt(receipts: Map<string, string | null>, promptId: string, reason: string | null): void {
+  receipts.set(promptId, reason);
+  while (receipts.size > MAX_OPEN_NOW_RECEIPTS) {
+    const oldest = receipts.keys().next().value;
+    if (oldest === undefined) break;
+    receipts.delete(oldest);
+  }
 }
 
 export interface AgentWorkspaceProps {
@@ -583,6 +660,12 @@ function ChildAgentWorkspace({
   const pendingSendRef = useRef<{
     scope: string; payload: string; key: string; afterModelSwitch: string | undefined;
   } | null>(null);
+  // "Send now" receipts still open to a late durable read: prompt id → the
+  // reason already reported (null = only the generic queued notice went out).
+  const nowReceiptsRef = useRef(new Map<string, string | null>());
+  // Re-read the ingress snapshot after a receipt registers, even when the
+  // controller had already published it before this promise settled.
+  const [nowReceiptTick, setNowReceiptTick] = useState(0);
   const composerOwnerActive = useRef(true);
   useEffect(() => {
     composerOwnerActive.current = true;
@@ -900,7 +983,15 @@ function ChildAgentWorkspace({
     setAttachments([]);
     try {
       const result = await controller.sendPromptNow({ agentId, text, content });
-      if (result.outcome === 'queued') pushToast({ tone: 'info', text: t('sv.steerTurnEnded') });
+      const notice = sendNowNotice(result.outcome, result.reason);
+      if (notice !== undefined) pushToast({ tone: notice.tone, text: t(notice.key) });
+      // A queued acknowledgement already carries its final reason; only
+      // restoring/held receipts are open to a later durable read.
+      if (result.outcome === 'restoring' || result.outcome === 'held') {
+        // Neither carries a reason yet: leave the receipt open for the final one.
+        trackOpenNowReceipt(nowReceiptsRef.current, result.promptId, null);
+        setNowReceiptTick((tick) => tick + 1);
+      }
     } catch (error) {
       const reason = error instanceof SendNowError ? error.reason : 'submit';
       if (reason !== 'unknown') recoverSubmittedDraft(draftKey, text, composerAttachments);
@@ -913,6 +1004,28 @@ function ChildAgentWorkspace({
       });
     }
   };
+  // The first acknowledgement of a durable steer is not the last word: keep
+  // reading the receipt and explain the final reason when it lands. A prompt
+  // that started, steered or reached this agent's transcript is owned by it,
+  // so the pending explanation goes away instead of re-attaching.
+  useEffect(() => {
+    const tracked = nowReceiptsRef.current;
+    if (tracked.size === 0) return;
+    const ingress = sessionState.durableIngress ?? [];
+    for (const [promptId, reported] of tracked) {
+      const decision = nowReceiptDecision({
+        promptId, reported, ingress,
+        settled: agentLiveState.blocks.some((block) => block.kind === 'user' && block.promptId === promptId && block.promptStatus !== 'queued'),
+      });
+      if (decision.kind === 'wait') continue;
+      if (decision.kind === 'drop') {
+        tracked.delete(promptId);
+        continue;
+      }
+      tracked.set(promptId, decision.reason);
+      pushToast({ tone: 'info', text: t(sendNowQueuedNotice(decision.reason)) });
+    }
+  }, [agentLiveState.blocks, sessionState.durableIngress, nowReceiptTick, t]);
   const handleComposerSendBusy = async (
     text: string,
     composerAttachments: readonly ComposerAttachment[],
