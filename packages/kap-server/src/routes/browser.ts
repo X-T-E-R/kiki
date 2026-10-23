@@ -1,5 +1,5 @@
 import { IBrowserConnectionStore, IBrowserControlService, IBrowserSetupService, IConfigService, IFlagService, BrowserError, isError2, isBrowserOperation, browserToolGroup, type Scope } from '@kiki/agent-core-v2';
-import { BROWSER_CONFIG_SECTION, readBrowserControlSettings } from '@kiki/agent-core-v2/app/browser/browserConfig';
+import { BROWSER_CONFIG_SECTION, readBrowserControlSettings, webbridgePresetRouted } from '@kiki/agent-core-v2/app/browser/browserConfig';
 import { EXPERIMENTAL_SECTION } from '@kiki/agent-core-v2/app/flag/flag';
 import { ErrorCode, browserIdSchema, browserConnectionInputSchema, browserConnectionResponseSchema,
   browserDefaultInputSchema, browserControlListSchema, browserStatusSchema, browserFailureSchema,
@@ -129,8 +129,11 @@ export function registerBrowserRoutes(app: BrowserRouteHost, core: Scope): void 
       reply.send(okEnvelope({ browser: parsed.id, status: await control().status(parsed.id), tabs }, req.id));
     } else if (parsed.action === 'catalog') {
       const tools = await control().catalog(parsed.id);
+      const connection = await store().resolve(parsed.id);
+      const routeEnabled = (await store().list()).webbridgePresetRoute !== false;
+      const contextIsolation = connection.type === 'codex-extension' ? 'official-extension-tab-ids' : webbridgePresetRouted(connection, routeEnabled) ? 'main-frame-only' : 'opaque-context-through-window';
       reply.send(okEnvelope({ browser: parsed.id, status: await control().status(parsed.id), backendToolCount: tools.length,
-        contextIsolation: (await store().resolve(parsed.id)).type === 'codex-extension' ? 'official-extension-tab-ids' : 'opaque-context-through-window', capabilities: tools.map((tool) => ({ name: tool.name, description: tool.description,
+        contextIsolation, capabilities: tools.map((tool) => ({ name: tool.name, description: tool.description,
           group: browserToolGroup(tool.name), surface: isBrowserOperation(tool.name) ? 'operation' : /^agent_browser_(?:connect|close|tab_|frame_|window_)/.test(tool.name) ? 'lifecycle' : 'administrative',
           inputSchema: req.query.includeSchema === 'true' ? tool.inputSchema : undefined })) }, req.id));
     } else reply.send(okEnvelope(await control().status(parsed.id), req.id));

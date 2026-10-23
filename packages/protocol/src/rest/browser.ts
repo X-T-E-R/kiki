@@ -91,7 +91,7 @@ export type BrowserTabsResponse = z.infer<typeof browserTabsResponseSchema>;
 export const browserCatalogQuerySchema = z.object({ includeSchema: z.enum(['true', 'false']).optional() }).strict();
 export const browserCatalogResponseSchema = z.object({
   browser: browserIdSchema, status: browserStatusSchema, backendToolCount: z.number().int(),
-  contextIsolation: z.enum(['opaque-context-through-window', 'official-extension-tab-ids']),
+  contextIsolation: z.enum(['opaque-context-through-window', 'official-extension-tab-ids', 'main-frame-only']),
   capabilities: z.array(z.object({ name: z.string(), description: z.string(), group: z.string(), surface: z.enum(['operation', 'lifecycle', 'administrative']), inputSchema: z.unknown().optional() })),
 });
 export type BrowserCatalogResponse = z.infer<typeof browserCatalogResponseSchema>;

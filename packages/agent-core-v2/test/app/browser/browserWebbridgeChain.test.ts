@@ -75,7 +75,9 @@ describe('native Kimi WebBridge chain', () => {
       const selected = await bridge.service.tabs({ action: 'select', browser: 'kimi-webbridge', target: first! });
       expect(selected.isError).not.toBe(true);
       expect(seen.filter((call) => call.action === 'find_tab')).toEqual([{ action: 'find_tab', session: 'kiki-kimi-webbridge', args: { url: 'https://example.test/a' } }]);
-      await bridge.service.connections({ action: 'tools', browser: 'kimi-webbridge', tools: ['agent_browser_snapshot', 'agent_browser_click', 'agent_browser_fill'] });
+      const tools = JSON.parse(textOf(await bridge.service.connections({ action: 'tools', browser: 'kimi-webbridge', tools: ['agent_browser_snapshot', 'agent_browser_click', 'agent_browser_fill'] })));
+      expect(tools).toMatchObject({ backend: 'kimi-webbridge', namespace: 'kimi-webbridge', contextIsolation: 'Kimi WebBridge operates on the main frame of the selected tab. BrowserTabs window and non-main frames are unsupported.',
+        operations: [{ name: 'agent_browser_snapshot' }, { name: 'agent_browser_click' }, { name: 'agent_browser_fill' }] });
       const registry = bridge.ix.get(IAgentToolRegistryService);
       const shot = await execute(registry.resolve('browser__agent_browser_snapshot')!.resolveExecution({}));
       expect(shot.isError).not.toBe(true);

@@ -14,7 +14,7 @@ import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceCo
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { IBrowserControlService, type BrowserInvocationResult } from '#/app/browser/browser';
 import { IBrowserConnectionStore } from '#/app/browser/browserConnectionStore';
-import { BROWSER_CONFIG_SECTION, BrowserIdSchema, browserOperationAllowed, browserSourceOfConnection, type BrowserConfig } from '#/app/browser/browserConfig';
+import { BROWSER_CONFIG_SECTION, BrowserIdSchema, browserOperationAllowed, browserSourceOfConnection, webbridgePresetRouted, type BrowserConfig } from '#/app/browser/browserConfig';
 import { BROWSER_OWNED_FIELDS, browserManagedLifecycle, browserResponse, browserToolGroup, isBrowserOperation } from '#/app/browser/browserControlService';
 import { BrowserError } from '#/app/browser/errors';
 import { LifecycleScope } from '#/app/scopes';
@@ -214,7 +214,8 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
         if (this._store.isDisposed) throw new BrowserError('browser.disconnected', 'This agent browser scope has closed');
         const conn = listed.connections.find((entry) => entry.id === browser);
         const toolBackend = catalogBackend(tools);
-        const backend = conn?.type === 'ego-lite' ? 'ego-lite' : toolBackend;
+        const webbridge = conn !== undefined && webbridgePresetRouted(conn, listed.webbridgePresetRoute !== false);
+        const backend = conn?.type === 'ego-lite' ? 'ego-lite' : webbridge ? 'kimi-webbridge' : toolBackend;
         const retained = new Map((this.loadedCatalog.get(browser)?.tools ?? []).map((tool) => [tool.name, tool]));
         for (const name of input.unload ?? []) retained.delete(name);
         const operations = tools.filter((tool) => isBrowserOperation(tool.name));
@@ -234,7 +235,9 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
             ? 'Official extension browser/tab ids are preserved. Use codex_browser_js and its runtime documentation; window/frame emulation is unsupported.'
             : backend === 'codex-browser-bridge'
               ? 'Tools that declare tab_id use this agent\'s selected tab. codex_claim_tab keeps the user-tab id returned by codex_user_tabs. The bridge writes its own session id on the pipe frame; Kiki caller metadata stays on the MCP request and is not copied onto that frame. Approval remains the existing elicitation.'
-              : 'BrowserTabs window creates an opaque donor browser context and a targetId-bound tab. Named context list/switch/dispose APIs are unavailable; no synthetic context ids are exposed.',
+              : backend === 'kimi-webbridge'
+                ? 'Kimi WebBridge operates on the main frame of the selected tab. BrowserTabs window and non-main frames are unsupported.'
+                : 'BrowserTabs window creates an opaque donor browser context and a targetId-bound tab. Named context list/switch/dispose APIs are unavailable; no synthetic context ids are exposed.',
           operations: operations.map((tool) => ({ name: tool.name, modelTool: this.modelName(tool.name), group: browserToolGroup(tool.name) })),
           managedLifecycle: tools.filter((tool) => browserManagedLifecycle(tool.name)).map((tool) => ({ name: tool.name, surface: /connect|close$|finalize$/.test(tool.name) && !/tab_close/.test(tool.name) ? 'BrowserConnections' : 'BrowserTabs' })),
           administrativeCapabilities: tools.filter((tool) => !isBrowserOperation(tool.name) && !browserManagedLifecycle(tool.name)).map((tool) => ({ name: tool.name, availableAsPageTool: false,
@@ -245,7 +248,9 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
             ? 'This connection is visible but not in the allowed set, so its operation tools were not registered. List and discover stay available.'
             : backend === 'ego-lite'
               ? 'backendToolCount is the typed donor catalog count. Ego Lite exposes zero typed donor operations because its existing native control surface is browser__ego_run in native-script mode.'
-              : 'Use groups or tools to load only the typed operations needed for this task. Tab/frame lifecycle uses BrowserTabs. Browser installation and cross-session management are not page operations.' });
+              : backend === 'kimi-webbridge'
+                ? 'Load snapshot, click, and fill for the selected tab. Window and non-main frame operations are not available.'
+                : 'Use groups or tools to load only the typed operations needed for this task. Tab/frame lifecycle uses BrowserTabs. Browser installation and cross-session management are not page operations.' });
       }
       if (input.action === 'connect') return this.json(await this.control.connect(browser, signal, this.requestContext(ctx)));
       if (input.action === 'disconnect') { const status = await this.control.disconnect(browser, signal); this.selections.delete(browser); return this.json(status); }
