@@ -169,8 +169,9 @@ function cdpRow(patch: Partial<BrowserConnection> & { id?: string } = {}): Brows
 }
 
 /**
- * The Kimi bridge: the connection the server's own Kimi route creates. It has no
- * endpoint, no profile and no CLI — the local daemon is the whole address.
+ * The Kimi bridge: a saved record with no endpoint, no profile and no CLI, so the
+ * local daemon on the server is the whole address. A person creates one by
+ * picking this style, and the Kimi route only ever probes an existing record.
  */
 function bridgeRow(patch: Partial<BrowserConnection> & { id?: string } = {}): BrowserConnection & { status: BrowserStatus } {
   const id = patch.id ?? 'kimi-webbridge';
@@ -1431,6 +1432,40 @@ describe('BrowserControlSection', () => {
     await settleUntil('[data-browser-connection="demo"]');
   });
 
+  it('creates a bridge connection from the style picker, with no endpoint', async () => {
+    const created = { id: 'daily-edge', name: 'Daily Edge', enabled: true, type: 'kimi-webbridge' as const };
+    list.mockResolvedValueOnce({ connections: [] })
+      .mockResolvedValue({ connections: [{ ...created, status: browserStatus({ browser: 'daily-edge', ownership: 'external-browser' }) }] });
+    upsert.mockImplementation(async (_id, input) => {
+      const body = input as { endpoint?: unknown; type: string };
+      if (body.type !== 'kimi-webbridge' || body.endpoint !== undefined) throw new Error('the new bridge was written as CDP');
+      return { connection: created };
+    });
+
+    await render();
+    await settleUntil('[data-browser-empty]');
+    await click('[data-browser-add]');
+    setInput('[data-browser-id-input]', 'daily-edge');
+    setInput('[data-browser-name-input]', 'Daily Edge');
+    await settle();
+    // Adding a connection still starts on the managed profile; the bridge is a pick.
+    expect(query('[data-browser-type]')?.dataset['browserType']).toBe('agent-browser-profile');
+
+    await selectOption('#browser-type', 'kimi-webbridge');
+    // The branch that needs no address has no address to fill.
+    expect(query('[data-secret-field]')).toBeNull();
+    expect(query('[data-browser-bridge]')?.textContent).toContain('local HTTP bridge');
+    await save();
+
+    expect(upsert.mock.calls[0]?.[0]).toBe('daily-edge');
+    expect(upsert.mock.calls[0]?.[1]).toEqual({
+      name: 'Daily Edge', enabled: true, driverPath: undefined, type: 'kimi-webbridge',
+    });
+    // Read back as the server returns it: the new record is the bridge, not CDP.
+    await settleUntil('[data-browser-connection="daily-edge"]');
+    expect(query('[data-browser-connection="daily-edge"]')?.textContent).toContain('Local bridge');
+  });
+
   it('writes the visible-window choice only for a profile connection', async () => {
     list.mockResolvedValueOnce({ connections: [profileRow()] })
       .mockResolvedValue({ connections: [profileRow({ headed: true })] });
@@ -1466,6 +1501,8 @@ describe('BrowserControlSection', () => {
     await render();
     await settleUntil('[data-browser-connection="kimi-webbridge"]');
     await click('[data-browser-connection="kimi-webbridge"]');
+    // The stored style stays selected: becoming a bridge is a choice, not a default.
+    expect(query('[data-browser-type]')?.dataset['browserType']).toBe('agent-browser-cdp');
     setInput('[data-browser-name-input]', 'External browser');
     await settle();
     await save();

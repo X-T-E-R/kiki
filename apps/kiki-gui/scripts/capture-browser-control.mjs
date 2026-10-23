@@ -324,7 +324,11 @@ const scenarios = [
       await page.waitForSelector('[data-browser-detail="new"]', { timeout: 10_000 });
       await page.fill('[data-browser-id-input]', 'staging');
       await page.fill('[data-browser-name-input]', '预发布检查');
+      // The bridge is one of the styles a new record can be saved as: the Kimi
+      // route only probes the local bridge and never saves a connection.
       await page.locator('#browser-type').click();
+      await page.waitForSelector('[role="option"][data-option-value="kimi-webbridge"]', { timeout: 10_000 });
+      await shot('create-style-options');
       await page.locator('[role="option"][data-option-value="agent-browser-cdp"]').click();
       await page.waitForSelector('[data-secret-field]', { timeout: 10_000 });
       await resetScroll(page);

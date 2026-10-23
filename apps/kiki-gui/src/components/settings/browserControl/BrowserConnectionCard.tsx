@@ -74,10 +74,15 @@ function typeLabel(t: ReturnType<typeof useI18n>['t'], type: BrowserConnectionTy
 }
 
 /**
- * The styles this connection may be saved as. A connection the server created
- * for a named route keeps that route's style as its only choice: Kimi's bridge
- * is reached through its own local HTTP daemon, so offering CDP here would
- * invite a write that points the same id at a browser it does not control.
+ * The styles this connection may be saved as.
+ *
+ * A record whose stored shape has no second reading keeps its own style as the
+ * only choice: the extension's runtime root and pipe, Ego Lite's CLI fields, and
+ * the bridge, which has no address at all. Those three are locks, not routes —
+ * the Kimi route only probes the local bridge and never saves a connection, so
+ * this picker is the one place a person creates a bridge record. A profile or a
+ * CDP record may be switched to any of the three, including to the bridge; that
+ * is an explicit choice on a saved id, never an automatic rewrite.
  */
 function typeChoices(
   t: ReturnType<typeof useI18n>['t'],
@@ -95,6 +100,7 @@ function typeChoices(
   return [
     { value: 'agent-browser-profile', label: t('st.browser.type.profileLong'), hint: t('st.browser.type.profileHint') },
     { value: 'agent-browser-cdp', label: t('st.browser.type.cdpLong'), hint: t('st.browser.type.cdpHint') },
+    { value: 'kimi-webbridge', label: t('st.browser.type.kimi-webbridge'), hint: t('st.browser.type.webbridgeHint') },
   ];
 }
 
