@@ -111,10 +111,10 @@ describe('message view', () => {
     expect(projectMessageView([read], { completedTurnIds: ['t1'] }).map((node) => node.kind)).toEqual(['activity-summary']);
   });
 
-  it('leaves a failed turn’s partial text in the process, and speaks nothing for it', () => {
+  it('leaves a failed turn’s partial text in the process, says it failed once, and never speaks it', () => {
     // A turn that failed after writing text is not a reply the reader received:
-    // the projection keeps the text in the process and says nothing for the
-    // turn, while its own bubble carries why it failed.
+    // the projection keeps the text in the process, and the message view says
+    // the turn failed — one line per turn, never the partial text as speech.
     const failedUser: UserBlock = {
       kind: 'user', id: 'u1', text: 'check the build', turnId: 't1',
       createdAt: '2026-01-01T00:00:00Z',
@@ -129,11 +129,40 @@ describe('message view', () => {
     const completed = projectMessageView([{ ...failedUser, promptOutcome: undefined }, partial], { completedTurnIds: ['t1'] });
     expect(completed.map((node) => node.kind)).toEqual(['user', 'message']);
 
-    // A caller that knows the failed turn from the transcript says so too.
+    // Without its own bubble (a prompt outside the loaded window) the failure
+    // is still readable here, and it opens the process that holds the text.
     const reported = projectMessageView([{ ...failedUser, promptOutcome: undefined }, partial], {
       completedTurnIds: ['t1'], failedTurnIds: ['t1'],
     });
-    expect(reported.map((node) => node.kind)).toEqual(['user', 'activity-summary']);
+    expect(reported.map((node) => node.kind)).toEqual(['user', 'activity-summary', 'notice']);
+    expect(reported[2]).toMatchObject({
+      kind: 'notice', turnId: 't1', tone: 'danger',
+      i18n: { key: 'notice.turnFailedDetail' }, reasonCodes: ['message.turn_failed'],
+    });
+    expect(reported.some((node) => node.kind === 'message')).toBe(false);
+  });
+
+  it('says a turn failed once, and never as a cancel or a silent turn', () => {
+    const user = (turnId: string, failed: boolean): UserBlock => ({
+      kind: 'user', id: `u-${turnId}`, text: 'check the build', turnId,
+      createdAt: '2026-01-01T00:00:00Z',
+      promptOutcome: failed ? { status: 'failed', delivered: true } : undefined,
+    });
+    // Two failed turns whose bubbles say nothing (prompts outside the window):
+    // one line each, in turn order.
+    const both = projectMessageView([user('t1', false), reply('a1', 'partial one', 't1'),
+      user('t2', false), reply('a2', 'partial two', 't2')],
+    { completedTurnIds: ['t1', 't2'], failedTurnIds: ['t1', 't2'] });
+    expect(both.map((node) => node.kind)).toEqual(['user', 'activity-summary', 'notice', 'user', 'activity-summary', 'notice']);
+    expect(both.flatMap((node) => (node.kind === 'notice' ? [node.id] : []))).toEqual(['message-turn-failed-t1', 'message-turn-failed-t2']);
+
+    // A failure line the transcript already wrote is the one the reader keeps.
+    const reported: Block = { kind: 'notice', id: 'agent-turn-outcome-t1', turnId: 't1',
+      text: 'provider filtered the response', tone: 'danger',
+      i18n: { key: 'notice.turnFailedDetail', params: { detail: ': provider filtered the response' } } };
+    const once = projectMessageView([user('t1', false), reply('a1', 'partial', 't1'), reported],
+      { completedTurnIds: ['t1'], failedTurnIds: ['t1'] });
+    expect(once.filter((node) => node.kind === 'notice').map((node) => node.id)).toEqual(['agent-turn-outcome-t1']);
   });
 
   it('keeps the promoted reply out of the work summary that led to it', () => {

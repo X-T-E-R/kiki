@@ -151,11 +151,19 @@ export function projectMessageView(blocks: readonly Block[], options: MessageVie
   const seen = new Set<string>();
   const sent = new Set<string>();
   const failed = new Set<string>(options.failedTurnIds ?? []);
+  const failureShown = new Set<string>();
   const replies = new Map<string, AssistantBlock>();
   for (const block of blocks) {
     const turn = turnId(block);
     const failedHere = failedTurn(block);
     if (failedHere !== undefined) failed.add(failedHere);
+    if (block.kind === 'user' && block.promptOutcome?.status === 'failed' && block.turnId !== undefined) {
+      failureShown.add(block.turnId);
+    }
+    // A turn that already wrote its own failure line keeps that one line.
+    if (block.kind === 'notice' && block.i18n?.key === 'notice.turnFailedDetail' && block.turnId !== undefined) {
+      failureShown.add(block.turnId);
+    }
     if (turn !== undefined && !seen.has(turn)) {
       seen.add(turn);
       turns.push(turn);
@@ -187,9 +195,20 @@ export function projectMessageView(blocks: readonly Block[], options: MessageVie
       nodes.push(reply);
       return;
     }
-    // A failed turn already says so on its own bubble: neither speech nor a
-    // "did not reply" line belongs here.
-    if (sent.has(turn) || failed.has(turn) || replies.get(turn) === undefined) return;
+    // A failed turn says so once. Its own bubble carries the reason and the
+    // retry when the prompt is on the page; otherwise this line is the only
+    // place the reader learns the turn failed — never as speech, a cancel or
+    // "did not reply".
+    if (failed.has(turn)) {
+      if (!failureShown.has(turn)) {
+        nodes.push({ kind: 'notice', id: `message-turn-failed-${turn}`, turnId: turn,
+          text: '轮次失败', tone: 'danger',
+          i18n: { key: 'notice.turnFailedDetail', params: { detail: '' } },
+          reasonCodes: ['message.turn_failed'] } satisfies NoticeBlock);
+      }
+      return;
+    }
+    if (sent.has(turn) || replies.get(turn) === undefined) return;
     nodes.push({ kind: 'notice', id: `message-no-reply-${turn}`, turnId: turn,
       text: `${options.personaName ?? ''} 没有回复 · 查看过程`.trim(), tone: 'neutral',
       i18n: { key: 'message.noReply', params: { name: options.personaName ?? '' } },

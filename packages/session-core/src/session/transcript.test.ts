@@ -4925,10 +4925,12 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     const assistant = projected.blocks.find((block) => block.kind === 'assistant');
     expect(assistant).toMatchObject({ text: 'The build looked green, but', streaming: false });
 
-    const view = projectMessageView(projected.blocks, { completedTurnIds: ['t9'] });
+    const view = projectMessageView(projected.blocks, { completedTurnIds: ['t9'], failedTurnIds: projected.failedTurnIds });
     expect(view.some((node) => node.kind === 'message')).toBe(false);
     const summary = view.find((node) => node.kind === 'activity-summary');
     expect(summary?.kind === 'activity-summary' && summary.members.some((member) => member.kind === 'assistant')).toBe(true);
+    // The bubble already carries the failure, so the view adds no second line.
+    expect(view.some((node) => node.kind === 'notice')).toBe(false);
 
     // The same blocks without the failure do speak it, so the exclusion rests
     // on the turn's own outcome rather than on the text.
@@ -4966,6 +4968,25 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       completedTurnIds: ['t7', 't8'], failedTurnIds: projected.failedTurnIds,
     });
     expect(view.flatMap((node) => (node.kind === 'message' ? [node.text] : []))).toEqual(['Here is the answer']);
+    // Both bubbles carry their own outcome, so the view repeats neither.
+    expect(view.some((node) => node.kind === 'notice')).toBe(false);
+
+    // The same page with no prompt records: the bubbles cannot say what
+    // happened, and the older failed turn must still be readable as failed —
+    // one line, its own turn, with the later turn's answer untouched.
+    const windowless = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({
+      items: [turn(7, 'failed', 'The first attempt got cut off'), turn(8, 'completed', 'Here is the answer')],
+    }));
+    expect(windowless.failedTurnIds).toEqual(['t7']);
+    const quiet = projectMessageView(windowless.blocks, {
+      completedTurnIds: ['t7', 't8'], failedTurnIds: windowless.failedTurnIds,
+    });
+    expect(quiet.flatMap((node) => (node.kind === 'message' ? [node.text] : []))).toEqual(['Here is the answer']);
+    const lines = quiet.flatMap((node) => (node.kind === 'notice' ? [node] : []));
+    expect(lines.map((node) => ({ id: node.id, turnId: node.turnId, tone: node.tone, key: node.i18n?.key })))
+      .toEqual([{ id: 'message-turn-failed-t7', turnId: 't7', tone: 'danger', key: 'notice.turnFailedDetail' }]);
+    // The cut-off text is still readable where it belongs: the process.
+    expect(windowless.blocks.some((block) => block.kind === 'assistant' && block.text === 'The first attempt got cut off')).toBe(true);
   });
 
   it('excludes a failed turn whose prompt sits outside the loaded window', () => {
@@ -4987,6 +5008,8 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(projected.failedTurnIds).toEqual(['t4']);
     const view = projectMessageView(projected.blocks, { completedTurnIds: ['t4'], failedTurnIds: projected.failedTurnIds });
     expect(view.some((node) => node.kind === 'message')).toBe(false);
+    // Nothing else on the page says the turn failed, so the message view does.
+    expect(view.flatMap((node) => (node.kind === 'notice' ? [node.turnId] : []))).toEqual(['t4']);
     // The text itself is still on the page for the process reading.
     expect(projected.blocks.some((block) => block.kind === 'assistant' && block.text === 'Cut off mid-sentence')).toBe(true);
   });

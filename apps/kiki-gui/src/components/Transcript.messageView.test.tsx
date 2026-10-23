@@ -15,7 +15,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { createViewState, type AssistantBlock, type Block, type SessionViewState, type ToolBlock, type UserBlock } from '@kiki/session-core/session';
+import { createViewState, projectAgentTranscriptView, type AssistantBlock, type Block, type SessionViewState, type ToolBlock, type UserBlock } from '@kiki/session-core/session';
+
+type TranscriptTurn = Parameters<typeof projectAgentTranscriptView>[2]['items'][number];
 
 import { I18nProvider } from '../i18n';
 import { TranscriptDetailProvider } from './transcriptDetail';
@@ -202,13 +204,60 @@ describe('message view (Bot mode)', () => {
     expect(process.container.querySelector('[data-assistant-internal]')).not.toBeNull();
   });
 
-  it('leaves a turn the transcript reports as failed unsaid, whatever its bubble says', async () => {
+  it('leaves a turn the transcript reports as failed unsaid, and says once that it failed', async () => {
     // The fact comes from the loaded turn state, so it holds for an older turn
-    // whose prompt record is not on the page.
+    // whose prompt record is not on the page: no speech, one readable failure
+    // line that opens the process holding the text.
     const blocks: Block[] = [user('u1', '再试一次', 't1'), assistant('a1', '这次也差一点', 't1')];
     const { container } = await render(timeline(blocks, 'message', { failedTurnIds: ['t1'] }));
     expect(container.querySelector('[data-message-origin="ordinary_final"]')).toBeNull();
     expect(container.querySelector('[data-message-outcome="no-reply"]')).toBeNull();
+    const outcome = [...container.querySelectorAll('[data-message-outcome="danger"]')];
+    expect(outcome.map((row) => row.textContent)).toEqual(['轮次失败 · 查看过程']);
+  });
+
+  it('keeps an older failed turn readable as failed after a later turn answers, from the production projection', async () => {
+    // Two loaded turns and no prompt records at all: the shape of a cold window
+    // of an old session. The turn states are the only failure evidence, so this
+    // walks the real projection the way the GUI receives it.
+    const turn = (ordinal: number, state: 'failed' | 'completed', text: string): TranscriptTurn => ({
+      kind: 'turn',
+      turnId: `t${ordinal}`,
+      ordinal,
+      state,
+      error: state === 'failed' ? 'provider filtered the response' : undefined,
+      origin: { kind: 'user', payload: { promptId: `p${ordinal}`, userMessageId: `p${ordinal}` } },
+      prompt: `第 ${ordinal} 问`,
+      startedAt: '2026-10-01T09:00:00.000Z',
+      endedAt: '2026-10-01T09:00:01.000Z',
+      steps: [{
+        kind: 'step', stepId: `t${ordinal}.1`, turnId: `t${ordinal}`, ordinal: 1, state,
+        startedAt: '2026-10-01T09:00:00.000Z', endedAt: '2026-10-01T09:00:01.000Z',
+        frames: [{ kind: 'text', frameId: `f${ordinal}`, role: 'assistant', text }],
+      }],
+    });
+    const projected = projectAgentTranscriptView(createViewState('session_bot'), 'main', {
+      items: [turn(7, 'failed', '这次也只写了一半'), turn(8, 'completed', '发布清单在这里。')],
+      tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {}, hasMoreOlder: false,
+    });
+    expect(projected.failedTurnIds).toEqual(['t7']);
+    const blocks = [...projected.blocks];
+
+    const message = await render(timeline(blocks, 'message', { failedTurnIds: projected.failedTurnIds }));
+    const spoken = [...message.container.querySelectorAll('[data-message-origin="ordinary_final"]')];
+    expect(spoken.map((row) => row.textContent)).toEqual([expect.stringContaining('发布清单在这里。')]);
+    expect(message.container.querySelector('[data-message-outcome="no-reply"]')).toBeNull();
+    expect(message.container.querySelector('[data-prompt-outcome]')).toBeNull();
+    // Exactly one line for the failed turn, and it is a failure, not a cancel.
+    expect([...message.container.querySelectorAll('[data-message-outcome="danger"]')].map((row) => row.textContent))
+      .toEqual(['轮次失败 · 查看过程']);
+
+    // The cut-off text is readable where it belongs, still marked as not the reply.
+    const process = await render(timeline(blocks, 'process', { failedTurnIds: projected.failedTurnIds }));
+    expect(process.container.textContent).toContain('这次也只写了一半');
+    expect(process.container.textContent).toContain('发布清单在这里。');
+    expect(process.container.querySelector('[data-assistant-internal]')?.textContent).toContain('内部');
+    expect(process.container.querySelector('[data-assistant-prose]')?.textContent).toContain('这次也只写了一半');
   });
 
   it('keeps the running turn’s text out of the message view until that turn ends', async () => {
