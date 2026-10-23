@@ -77,8 +77,6 @@ function step(turnId, ordinal, frames, minutesAgo) {
   };
 }
 
-const ask = (frameId, text) => ({ kind: 'text', frameId, role: 'user', text });
-
 export default {
   agentProfiles: [
     { name: 'agent', source: 'builtin', description: 'General-purpose built-in agent.', main: true, routes: [] },
@@ -113,13 +111,11 @@ export default {
           items: [
             turnItem('1', '把 0.31 的发布清单完整给我。', [
               step('1', 1, [
-                ask('t1-ask', '把 0.31 的发布清单完整给我。'),
                 { kind: 'text', frameId: 't1-reply', role: 'assistant', text: BODIES.reply },
               ], 40),
             ], 40),
             turnItem('2', '再发一条消息版本的清单。', [
               step('2', 1, [
-                ask('t2-ask', '再发一条消息版本的清单。'),
                 {
                   kind: 'tool', frameId: 't2-send', toolCallId: 't2-send', name: 'SendMessage', state: 'done',
                   input: { text: BODIES.message },
@@ -132,7 +128,6 @@ export default {
             ], 30),
             turnItem('3', '那就按周五发，别再改清单了。', [
               step('3', 1, [
-                ask('t3-ask', '那就按周五发，别再改清单了。'),
                 { kind: 'text', frameId: 't3-reply', role: 'assistant', text: SHORT_REPLY },
               ], 20),
             ], 20),
