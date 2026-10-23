@@ -55,6 +55,7 @@ export interface ReconcileResult {
   readonly sessions: number;
   readonly upserted: number;
   readonly removed: number;
+  readonly inventoryRequired?: boolean;
 }
 
 export interface AuthoritativeScan {
@@ -197,34 +198,40 @@ export class SessionIndexProjector {
 
   async planReconcile(
     generation: number,
-    options?: { reuseFingerprints?: boolean },
+    options?: { reuseFingerprints?: boolean; changedSessions?: readonly { workspaceId: string; id: string }[] },
   ): Promise<() => Promise<ReconcileResult>> {
     const { storage, docs, queryStore, log, sessionsScope } = this.deps;
     if (this.fingerprintGeneration !== generation) {
       this.fingerprintCache.clear();
       this.fingerprintGeneration = generation;
     }
-    const nextFingerprintCache = new Map<string, { fingerprint: SessionSourceFingerprint; checkedAt: number }>();
+    const changed = options?.changedSessions;
+    const nextFingerprintCache = changed === undefined ? new Map<string, { fingerprint: SessionSourceFingerprint; checkedAt: number }>() : new Map(this.fingerprintCache);
     const invalidationEpoch = this.fingerprintInvalidationEpoch;
     const checkedAt = Date.now();
     const collection = sessionCollection(generation);
     const counters = sessionCountersCollection(generation);
     const sources = sessionSourcesCollection(generation);
     const workspaces = sessionWorkspaceSourcesCollection(generation);
-    const currentWorkspaceIds = [...await listWorkspaceIds(storage, sessionsScope, log)].toSorted();
+    const previousRoot = await queryStore.get<SessionSourceRoot>(workspaces, SESSION_SOURCE_ROOT_KEY);
+    const previousWorkspaceIds = previousRoot?.workspaceIds ?? [];
+    const currentWorkspaceIds = changed === undefined
+      ? [...await listWorkspaceIds(storage, sessionsScope, log)].toSorted()
+      : [...new Set(changed.map((entry) => entry.workspaceId))].toSorted();
     const currentWorkspaceSessions = new Map<string, readonly string[]>();
     const currentSessionOwners = new Map<string, number>();
     for (const workspaceId of currentWorkspaceIds) {
-      const sessionIds = [
-        ...await listSessionIds(storage, sessionsScope, workspaceId, log),
-      ].toSorted();
+      const sessionIds = changed === undefined
+        ? [...await listSessionIds(storage, sessionsScope, workspaceId, log)].toSorted()
+        : [...new Set([
+          ...((await queryStore.get<SessionWorkspaceSource>(workspaces, workspaceId))?.sessionIds ?? []),
+          ...changed.filter((entry) => entry.workspaceId === workspaceId).map((entry) => entry.id),
+        ])].toSorted();
       currentWorkspaceSessions.set(workspaceId, sessionIds);
       for (const sessionId of sessionIds) {
         currentSessionOwners.set(sessionId, (currentSessionOwners.get(sessionId) ?? 0) + 1);
       }
     }
-    const previousRoot = await queryStore.get<SessionSourceRoot>(workspaces, SESSION_SOURCE_ROOT_KEY);
-    const previousWorkspaceIds = previousRoot?.workspaceIds ?? [];
     const ops: WriteOp[] = [];
     let upserted = 0;
     let removed = 0;
@@ -236,8 +243,9 @@ export class SessionIndexProjector {
       const previousWorkspace = await queryStore.get<SessionWorkspaceSource>(workspaces, workspaceId);
       const previousSessionIds = previousWorkspace?.sessionIds ?? [];
       const previousSessionSet = new Set(previousSessionIds);
-      const previousFingerprints = await queryStore.getMany<SessionSourceFingerprint>(sources, sessionIds);
-      const fingerprintEntries = await mapBounded(sessionIds, SCAN_CONCURRENCY, async (sessionId) => {
+      const candidates = changed === undefined ? sessionIds : changed.filter((entry) => entry.workspaceId === workspaceId).map((entry) => entry.id);
+      const previousFingerprints = await queryStore.getMany<SessionSourceFingerprint>(sources, candidates);
+      const fingerprintEntries = await mapBounded(candidates, SCAN_CONCURRENCY, async (sessionId) => {
         const key = `${workspaceId}/${sessionId}`;
         const cached = this.fingerprintCache.get(key);
         const reusable = options?.reuseFingerprints === true &&
@@ -276,6 +284,7 @@ export class SessionIndexProjector {
       const nextSummaries = new Map<string, SessionSummary>();
       for (const entry of changedResults) {
         if (entry.result.kind === 'error') {
+          if (changed !== undefined) throw entry.result.error;
           nextFingerprintCache.delete(`${workspaceId}/${entry.sessionId}`);
           continue;
         }
@@ -312,6 +321,9 @@ export class SessionIndexProjector {
       for (const sessionId of affectedIds) {
         const oldSummary = oldSummaries.get(sessionId);
         const nextSummary = nextSummaries.get(sessionId);
+        if (changed !== undefined && oldSummary !== undefined && oldSummary.workspaceId !== workspaceId) {
+          return async () => ({ sessions: 0, upserted: 0, removed: 0, inventoryRequired: true });
+        }
         if (nextSummary === undefined) {
           const owners = currentSessionOwners.get(sessionId) ?? 0;
           if (oldSummary !== undefined && (removedSet.has(sessionId) || owners <= 1 && changedSet.has(sessionId))) {
@@ -345,11 +357,19 @@ export class SessionIndexProjector {
       if (!workspaceSourceEquals(previousWorkspace, nextWorkspace)) {
         ops.push({ kind: 'put', collection: workspaces, key: workspaceId, value: nextWorkspace });
       }
-      const count = {
+      const currentCount = await queryStore.get<SessionWorkspaceCounts>(counters, workspaceId);
+      const count = changed === undefined ? {
         active: nextWorkspace.activeSessionIds.length,
         archived: nextWorkspace.archivedSessionIds.length,
-      };
-      const currentCount = await queryStore.get<SessionWorkspaceCounts>(counters, workspaceId);
+      } : { active: currentCount?.active ?? 0, archived: currentCount?.archived ?? 0 };
+      if (changed !== undefined) {
+        for (const sessionId of changedIds) {
+          const old = oldSummaries.get(sessionId);
+          const next = nextSummaries.get(sessionId);
+          if (old?.workspaceId === workspaceId) count[old.archived ? 'archived' : 'active'] -= 1;
+          if (next !== undefined) count[next.archived ? 'archived' : 'active'] += 1;
+        }
+      }
       if (
         currentCount === undefined ||
         currentCount.active !== count.active ||
@@ -361,7 +381,7 @@ export class SessionIndexProjector {
     }
 
     const currentWorkspaceSet = new Set(currentWorkspaceIds);
-    for (const workspaceId of previousWorkspaceIds) {
+    for (const workspaceId of changed === undefined ? previousWorkspaceIds : []) {
       if (currentWorkspaceSet.has(workspaceId)) continue;
       const previousWorkspace = await queryStore.get<SessionWorkspaceSource>(workspaces, workspaceId);
       const removedIds = (previousWorkspace?.sessionIds ?? []).filter(
@@ -381,12 +401,13 @@ export class SessionIndexProjector {
       ops.push({ kind: 'delete', collection: counters, key: workspaceId });
       ops.push({ kind: 'delete', collection: workspaces, key: workspaceId });
     }
-    if (!sameStrings(previousWorkspaceIds, currentWorkspaceIds)) {
+    const nextWorkspaceIds = changed === undefined ? currentWorkspaceIds : [...new Set([...previousWorkspaceIds, ...currentWorkspaceIds])].toSorted();
+    if (!sameStrings(previousWorkspaceIds, nextWorkspaceIds)) {
       ops.push({
         kind: 'put',
         collection: workspaces,
         key: SESSION_SOURCE_ROOT_KEY,
-        value: { workspaceIds: currentWorkspaceIds } satisfies SessionSourceRoot,
+        value: { workspaceIds: nextWorkspaceIds } satisfies SessionSourceRoot,
       });
     }
 
@@ -403,9 +424,12 @@ export class SessionIndexProjector {
           sourceMaxMtimeMs,
         });
       }
-      this.fingerprintCache = invalidationEpoch === this.fingerprintInvalidationEpoch
-        ? nextFingerprintCache
-        : new Map();
+      if (invalidationEpoch !== this.fingerprintInvalidationEpoch) {
+        for (const key of nextFingerprintCache.keys()) {
+          if (!this.fingerprintCache.has(key)) nextFingerprintCache.delete(key);
+        }
+      }
+      this.fingerprintCache = nextFingerprintCache;
       const result = { sessions, upserted, removed };
       if (upserted > 0 || removed > 0) {
         log.info('session index reconciliation repaired drift', { generation, ...result });

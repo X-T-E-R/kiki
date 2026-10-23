@@ -2659,6 +2659,7 @@ describe('FileSessionIndex (read model)', () => {
     let continuous = true;
     let scans = 0;
     const waiters: Promise<unknown>[] = [];
+    const batchWrites = vi.spyOn(queryStore, 'batch');
     const scan = vi.spyOn(SessionIndexProjector.prototype, 'planReconcile').mockImplementation(async function (this: SessionIndexProjector, ...args) {
       if (++scans > 2 && continuous) throw new Error('reconciliation exceeded the scan budget');
       const commit = await original.apply(this, args);
@@ -2687,6 +2688,7 @@ describe('FileSessionIndex (read model)', () => {
       const outcome = await store.reconcileNow().catch((error: unknown) => error);
       expect(outcome).toMatchObject({ code: 'session.index_building', details: { operation: 'reconcile', reason: 'concurrent_changes', attempts: 2 } });
       expect(scans).toBe(2);
+      if (activity === 'requests') expect(batchWrites).not.toHaveBeenCalled();
       expect(scheduled).toBeTypeOf('function');
       expect(delay).toBeGreaterThanOrEqual(5_000);
       await expect(store.reconcileNow()).rejects.toMatchObject({ code: 'session.index_building' });
@@ -2709,6 +2711,7 @@ describe('FileSessionIndex (read model)', () => {
       await Promise.all(waiters);
       clock?.mockRestore();
       scan.mockRestore();
+      batchWrites.mockRestore();
       schedule.mockRestore();
     }
   }, 30_000);
@@ -2980,6 +2983,147 @@ describe('FileSessionIndex (read model)', () => {
     }
   });
 
+  it('drains more than one watched-session batch without re-enumerating the inventory', async () => {
+    await Promise.all(Array.from({ length: 36 }, (_, index) => seedSession(`s${index}`, { createdAt: 1, updatedAt: 1, title: 'initial' })));
+    const storage = new CountingStorage(homeDir);
+    const store = build(storage);
+    await store.prepare();
+    storage.listCalls = 0;
+    const plans = vi.spyOn(SessionIndexProjector.prototype, 'planReconcile');
+    try {
+      for (let index = 0; index < 37; index++) {
+        await seedSession(`s${index}`, { createdAt: 1, updatedAt: 2, title: 'changed' });
+        sourceChanges.fire({ path: join(sessionsDir, workspaceId, `s${index}`, 'session-meta', 'state.json'), action: 'modified', kind: 'file' });
+      }
+      await vi.waitFor(async () => { expect((await queryStore.get<SessionSummary>(sessionCollection(1), 's36'))?.title).toBe('changed'); }, { timeout: 6000 });
+      expect(plans.mock.calls.map(([, options]) => options?.changedSessions?.length)).toEqual([16, 16, 5]);
+      expect(storage.listCalls).toBe(0);
+      expect(await store.count({ workspaceIds: [workspaceId] })).toBe(37);
+    } finally {
+      plans.mockRestore();
+    }
+  }, 15_000);
+
+  it.each([1, 463])('bounds watched metadata for %s agents, survives unrelated mirror writes and suspends reads while disabled', async (agentCount) => {
+    const agents = Object.fromEntries(Array.from({ length: agentCount }, (_, index) => [`agent-${index}`, { status: 'completed', resultSummary: 'x'.repeat(2048) }]));
+    await seedSession('active', { createdAt: 1, updatedAt: 1, agents });
+    await seedSession('other', { createdAt: 1, updatedAt: 1 });
+    let enabled = true;
+    const storage = new CountingStorage(homeDir);
+    const docs = new JsonAtomicDocumentStore(storage);
+    const store = build(storage, () => enabled, new AppendLogStore(storage), docs);
+    await store.prepare();
+    await store.reconcileNow();
+    storage.listCalls = 0;
+    const reads = vi.spyOn(docs, 'get');
+    const writes = vi.spyOn(queryStore, 'batch');
+    const original = SessionIndexProjector.prototype.planReconcile;
+    const plans = vi.spyOn(SessionIndexProjector.prototype, 'planReconcile').mockImplementation(async function (this: SessionIndexProjector, ...args) {
+      const commit = await original.apply(this, args);
+      if (args[1]?.changedSessions !== undefined) mirror.record(summary('other', { title: 'managed update', updatedAt: 9 }));
+      return commit;
+    });
+    const emit = () => { sourceChanges.fire({ path: join(sessionsDir, workspaceId, 'active', 'session-meta', 'state.json'), action: 'modified', kind: 'file' }); };
+    const cpu = process.cpuUsage();
+    const heaps: number[] = [];
+    try {
+      for (let round = 0; round < 3; round++) {
+        await seedSession('active', { createdAt: 1, updatedAt: round + 2, title: `updated-${round}`, agents });
+        for (let event = 0; event < 100; event++) emit();
+        await vi.waitFor(async () => { expect((await store.get('active'))?.title).toBe(`updated-${round}`); }, { timeout: 5000 });
+        heaps.push(process.memoryUsage().heapUsed);
+      }
+      await mirror.drain();
+      expect(await queryStore.listKeys(sessionCollection(1))).toHaveLength(2);
+      const row = await queryStore.get<SessionSummary>(sessionCollection(1), 'active');
+      expect(row).not.toHaveProperty('agents');
+      expect(storage.listCalls).toBe(0);
+      const serializedWrites = writes.mock.calls.reduce((bytes, [ops]) => bytes + Buffer.byteLength(JSON.stringify(ops)), 0);
+      console.log(JSON.stringify({ scenario: 'agent-metadata-scale', agentCount, metadataBytes: Buffer.byteLength(JSON.stringify(agents)), metadataReads: reads.mock.calls.length, plans: plans.mock.calls.length, writeBytes: serializedWrites, rowBytes: Buffer.byteLength(JSON.stringify(row)), cpu: process.cpuUsage(cpu), heapUsed: heaps }));
+      enabled = false;
+      reads.mockClear();
+      plans.mockClear();
+      writes.mockClear();
+      await seedSession('active', { createdAt: 1, updatedAt: 10, title: 'disabled update', agents });
+      for (let event = 0; event < 100; event++) emit();
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      expect(reads).not.toHaveBeenCalled();
+      expect(plans).not.toHaveBeenCalled();
+      expect(writes).not.toHaveBeenCalled();
+      enabled = true;
+      await store.listRecent({ limit: 2 });
+      await vi.waitFor(async () => { expect((await store.get('active'))?.title).toBe('disabled update'); }, { timeout: 5000 });
+    } finally {
+      enabled = true;
+      reads.mockRestore();
+      writes.mockRestore();
+      plans.mockRestore();
+    }
+  }, 30_000);
+
+  it('coalesces sustained metadata watches into bounded changed-session work without inventory scans', async () => {
+    await Promise.all(Array.from({ length: 100 }, (_, index) => seedSession(`s${index}`, { createdAt: 1, updatedAt: 1, title: 'initial' })));
+    const storage = new CountingStorage(homeDir);
+    const docs = new JsonAtomicDocumentStore(storage);
+    const store = build(storage, true, new AppendLogStore(storage), docs);
+    await store.prepare();
+    await store.reconcileNow({ reuseFingerprints: true });
+    storage.listCalls = 0;
+    const reads = vi.spyOn(docs, 'get');
+    const plans = vi.spyOn(SessionIndexProjector.prototype, 'planReconcile');
+    const heaps: number[] = [];
+    try {
+      for (let round = 0; round < 4; round++) {
+        for (let index = 0; index < 3; index++) {
+          await seedSession(`s${index}`, { createdAt: 1, updatedAt: round + 2, title: `round-${round}` });
+          sourceChanges.fire({ path: join(sessionsDir, workspaceId, `s${index}`, 'session-meta', 'state.json'), action: 'modified', kind: 'file' });
+        }
+        await vi.waitFor(async () => {
+          expect((await store.get('s0'))?.title).toBe(`round-${round}`);
+        }, { timeout: 5000 });
+        heaps.push(process.memoryUsage().heapUsed);
+      }
+      expect(storage.listCalls).toBe(0);
+      expect(plans.mock.calls.filter(([, options]) => options?.changedSessions === undefined)).toHaveLength(0);
+      expect(plans.mock.calls.length).toBeLessThanOrEqual(4);
+      expect(reads.mock.calls.length).toBeLessThanOrEqual(24);
+      expect((await store.get('s2'))?.title).toBe('round-3');
+      console.log(JSON.stringify({ scenario: 'metadata-watch-storm', plans: plans.mock.calls.length, inventoryReads: storage.listCalls, metadataReads: reads.mock.calls.length, heapUsed: heaps }));
+      reads.mockClear();
+      const writes = vi.spyOn(queryStore, 'batch');
+      try {
+        for (let index = 0; index < 100; index++) sourceChanges.fire({ path: join(sessionsDir, workspaceId, 's0', 'session-meta', 'state.json'), action: 'modified', kind: 'file' });
+        await vi.waitFor(() => { expect(plans).toHaveBeenCalledTimes(5); }, { timeout: 5000 });
+        await store.count({ workspaceIds: [workspaceId] });
+        expect(reads).not.toHaveBeenCalled();
+        expect(writes).not.toHaveBeenCalled();
+      } finally {
+        writes.mockRestore();
+      }
+    } finally {
+      reads.mockRestore();
+      plans.mockRestore();
+    }
+  }, 30_000);
+
+  it('does not starve watched metadata under events arriving faster than the debounce', async () => {
+    await seedSession('active', { createdAt: 1, updatedAt: 1, title: 'before' });
+    const store = build();
+    await store.prepare();
+    await seedSession('active', { createdAt: 1, updatedAt: 2, title: 'during-storm' });
+    const emit = () => { sourceChanges.fire({ path: join(sessionsDir, workspaceId, 'active', 'session-meta', 'state.json'), action: 'modified', kind: 'file' }); };
+    sourceChanges.fire({ path: sessionsDir, action: 'modified', kind: 'directory' });
+    const events = setInterval(emit, 25);
+    emit();
+    try {
+      await vi.waitFor(async () => {
+        expect((await store.get('active'))?.title).toBe('during-storm');
+      }, { timeout: 2500 });
+    } finally {
+      clearInterval(events);
+    }
+  });
+
   it('reconciles a watched metadata edit and session deletion without statting unchanged sessions', async () => {
     class CountingStorage extends FileStorageService {
       stats = 0;
@@ -3008,7 +3152,7 @@ describe('FileSessionIndex (read model)', () => {
     });
     await vi.waitFor(async () => {
       expect((await store.get('a'))?.title).toBe('after');
-    });
+    }, { timeout: 5000 });
     expect(storage.stats).toBe(5);
 
     await fsp.rm(join(sessionsDir, workspaceId, 'b'), { recursive: true, force: true });
@@ -3017,7 +3161,7 @@ describe('FileSessionIndex (read model)', () => {
     });
     await vi.waitFor(async () => {
       expect(await store.count({ workspaceIds: [workspaceId] })).toBe(1);
-    });
+    }, { timeout: 5000 });
   });
 
   it('returns building before a gated first projection without request-path source reads', async () => {

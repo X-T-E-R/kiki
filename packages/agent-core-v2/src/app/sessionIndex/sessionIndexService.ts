@@ -54,6 +54,9 @@ import {
 
 const READ_MODEL_FLAG = 'persistence_minidb_readmodel';
 const RECONCILE_INTERVAL_MS = 10 * 60_000;
+const WATCH_BATCH_MS = 1_000;
+const WATCH_BATCH_SIZE = 16;
+const WATCH_PENDING_LIMIT = 1024;
 const RECONCILE_MAX_ATTEMPTS = 2;
 const RECONCILE_RETRY_BASE_MS = 5_000;
 const RECONCILE_RETRY_MAX_MS = 60_000;
@@ -125,6 +128,11 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   };
   private readonly reconcileTimer = this._register(new IntervalTimer({ unref: true }));
   private readonly watchDebounce = this._register(new TimeoutTimer());
+  private readonly watchedSessions = new Map<string, { workspaceId: string; id: string }>();
+  private watchInventory = false;
+  private watchScheduled = false;
+  private watchFlight: Promise<void> | undefined;
+  private watchRetryDelayMs = WATCH_BATCH_MS;
   private watchStarted = false;
   private readonly projector: SessionIndexProjector;
 
@@ -162,6 +170,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
         this.projectFlight,
         this.catchUpFlight,
         this.reconcileFlight,
+        this.watchFlight,
       ]);
     }
   }
@@ -191,20 +200,20 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
         const path = relative(root, change.path);
         if (path.startsWith('..')) return;
         const parts = path === '' ? [] : path.split(sep);
-        if (parts.length >= 2 && (
-          change.kind === 'directory' || parts.at(-1) === 'state.json'
-        )) {
+        if (parts.length >= 2 && (change.kind === 'directory' || parts.at(-1) === 'state.json')) {
           this.projector.invalidateFingerprint(parts[0], parts[1]);
-        } else if (change.kind === 'directory' && parts.length < 2) {
+          this.watchedSessions.set(`${parts[0]}/${parts[1]}`, { workspaceId: parts[0]!, id: parts[1]! });
+        } else if (change.kind === 'directory') {
           this.projector.invalidateFingerprint();
         } else {
           return;
         }
-        this.watchDebounce.cancelAndSet(() => {
-          void this.reconcileNow({ reuseFingerprints: true }).catch((error: unknown) => {
-            this.log.warn('session index watched reconciliation failed', { error: String(error) });
-          });
-        }, 200);
+        if (change.kind === 'directory') this.watchInventory = true;
+        if (this.watchedSessions.size > WATCH_PENDING_LIMIT) {
+          this.watchInventory = true;
+          this.watchedSessions.clear();
+        }
+        this.scheduleWatchedReconcile();
       }));
       void watch.ready.catch((error: unknown) => {
         this.log.warn('session index watch failed; relying on periodic reconciliation', { error: String(error) });
@@ -212,6 +221,67 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     } catch (error) {
       this.log.warn('session index watch failed; relying on periodic reconciliation', { error: String(error) });
     }
+  }
+
+  private scheduleWatchedReconcile(): void {
+    if (this._store.isDisposed || this.watchScheduled || this.watchFlight !== undefined || !this.readModelEnabled()) return;
+    if (!this.watchInventory && this.watchedSessions.size === 0) return;
+    this.watchScheduled = true;
+    this.watchDebounce.cancelAndSet(() => {
+      this.watchScheduled = false;
+      this.watchFlight = this.reconcileWatched().catch((error: unknown) => {
+        if (this.watchRetryDelayMs === WATCH_BATCH_MS && !(error instanceof SessionIndexReconcilePendingError)) {
+          this.log.warn('session index watched reconciliation failed', { error: String(error) });
+        }
+        this.watchRetryDelayMs = error instanceof SessionIndexReconcilePendingError && error.details?.['reason'] === 'concurrent_changes'
+          ? WATCH_BATCH_MS
+          : Math.min(Math.max(RECONCILE_RETRY_BASE_MS, this.watchRetryDelayMs * 2), RECONCILE_RETRY_MAX_MS);
+      }).finally(() => {
+        this.watchFlight = undefined;
+        this.scheduleWatchedReconcile();
+      });
+    }, this.watchedSessions.size > 0 ? this.watchRetryDelayMs : Math.max(this.watchRetryDelayMs, this.nextReconcileRetryAt - Date.now()));
+  }
+
+  private async reconcileWatched(): Promise<void> {
+    if (this._store.isDisposed || !this.readModelEnabled()) return;
+    if (this.reconcileFlight !== undefined) {
+      await this.reconcileFlight;
+      return;
+    }
+    if (this.watchInventory && this.watchedSessions.size === 0) {
+      this.watchInventory = false;
+      try {
+        await this.reconcileNow({ reuseFingerprints: true });
+      } catch (error) {
+        this.watchInventory = true;
+        throw error;
+      }
+    } else {
+      const entries = [...this.watchedSessions.entries()].slice(0, WATCH_BATCH_SIZE);
+      for (const [key] of entries) this.watchedSessions.delete(key);
+      try {
+        await this.mirror.runExclusive(async () => {
+          this.checkReconcileActive(0);
+          const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
+          if (manifest === undefined || this.recoveryRequired || this.mirror.dirtyEpoch() !== undefined) {
+            throw new SessionIndexReconcilePendingError('uninitialized', 0);
+          }
+          const commit = await this.projector.planReconcile(manifest.seq, { reuseFingerprints: true, changedSessions: entries.map(([, value]) => value) });
+          this.checkReconcileActive(0);
+          const result = await commit();
+          if (result.inventoryRequired === true) this.watchInventory = true;
+        });
+      } catch (error) {
+        for (const [key, value] of entries) this.watchedSessions.set(key, value);
+        if (this.watchedSessions.size > WATCH_PENDING_LIMIT) {
+          this.watchInventory = true;
+          this.watchedSessions.clear();
+        }
+        throw error;
+      }
+    }
+    this.watchRetryDelayMs = WATCH_BATCH_MS;
   }
 
   async prepare(options?: { deadlineMs?: number }): Promise<SessionIndexStatus> {
@@ -287,7 +357,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
         this.generation = manifest.seq;
         await this.ensureSchema(manifest.seq);
         if (!this._store.isDisposed) {
-          this.watchDebounce.cancelAndSet(() => {
+          this.reconcileRetryTimer.cancelAndSet(() => {
             void this.reconcileNow().catch((error: unknown) => {
               this.log.warn('session index startup reconciliation failed', { error: String(error) });
             });
@@ -389,11 +459,12 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   reconcileNow(options?: { reuseFingerprints?: boolean }): Promise<void> {
     if (this._store.isDisposed) return Promise.reject(new SessionIndexReconcilePendingError('disposed', 0));
     if (!this.readModelEnabled()) return Promise.resolve();
+    const retryAfterMs = this.nextReconcileRetryAt - Date.now();
+    if (this.reconcileFlight === undefined && retryAfterMs > 0) return Promise.reject(new SessionIndexReconcilePendingError('concurrent_changes', 0, retryAfterMs));
     this.reconcileRequest += 1;
     this.reuseReconcileFingerprints &&= options?.reuseFingerprints === true;
     if (this.reconcileFlight !== undefined) return this.reconcileFlight;
-    const retryAfterMs = this.nextReconcileRetryAt - Date.now();
-    if (retryAfterMs > 0) return Promise.reject(new SessionIndexReconcilePendingError('concurrent_changes', 0, retryAfterMs));
+    this.reconcileRetryTimer.cancel();
     this.reconcileFlight = this.runReconcile().finally(() => {
       this.reconcileFlight = undefined;
     });
@@ -424,7 +495,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
         this.checkReconcileActive(attempt + 1);
         const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
         const revision = await this.queryStore.getCheckpoint(SESSION_INDEX_REVISION);
-        if (this.mirror.epoch() !== baseline.epoch || manifest?.seq !== baseline.generation || revision?.seq !== baseline.revision) return false;
+        if (request !== this.reconcileRequest || this.mirror.epoch() !== baseline.epoch || manifest?.seq !== baseline.generation || revision?.seq !== baseline.revision) return false;
         await commit();
         this.generation = baseline.generation;
         return true;
@@ -492,6 +563,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     this.state = 'ready';
     this.statusReason = undefined;
     this.ensureReconcileTimer();
+    this.scheduleWatchedReconcile();
     this.emitStatusIfChanged();
   }
 
