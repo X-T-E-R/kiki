@@ -12,7 +12,7 @@ import {
 
 export interface IBrowserConnectionStore {
   readonly _serviceBrand: undefined;
-  list(): Promise<{ readonly connections: readonly BrowserConnectionRecord[]; readonly defaultBrowser?: string; readonly allowedBrowsers?: readonly string[]; readonly disabledSources?: readonly BrowserSourceId[] }>;
+  list(): Promise<{ readonly connections: readonly BrowserConnectionRecord[]; readonly defaultBrowser?: string; readonly allowedBrowsers?: readonly string[]; readonly disabledSources?: readonly BrowserSourceId[]; readonly webbridgePresetRoute?: boolean }>;
   resolve(id: string): Promise<BrowserResolvedConnection>;
   upsert(id: string, input: BrowserConnectionInput): Promise<BrowserConnectionRecord>;
   remove(id: string): Promise<void>;
@@ -30,12 +30,13 @@ export class BrowserConnectionStore implements IBrowserConnectionStore {
 
   constructor(@IConfigService private readonly config: IConfigService) {}
 
-  async list(): Promise<{ readonly connections: readonly BrowserConnectionRecord[]; readonly defaultBrowser?: string; readonly allowedBrowsers?: readonly string[]; readonly disabledSources?: readonly BrowserSourceId[] }> {
+  async list(): Promise<{ readonly connections: readonly BrowserConnectionRecord[]; readonly defaultBrowser?: string; readonly allowedBrowsers?: readonly string[]; readonly disabledSources?: readonly BrowserSourceId[]; readonly webbridgePresetRoute?: boolean }> {
     const current = await this.read();
     return { connections: Object.entries(current.connections).map(([id, entry]) => browserConnectionRecord({ ...entry, id }))
       .sort((a, b) => a.id.localeCompare(b.id)), defaultBrowser: current.defaultBrowser,
       ...(current.allowedBrowsers !== undefined ? { allowedBrowsers: current.allowedBrowsers } : {}),
-      ...(current.disabledSources !== undefined ? { disabledSources: current.disabledSources } : {}) };
+      ...(current.disabledSources !== undefined ? { disabledSources: current.disabledSources } : {}),
+      ...(current.webbridgePresetRoute !== undefined ? { webbridgePresetRoute: current.webbridgePresetRoute } : {}) };
   }
 
   async resolve(id: string): Promise<BrowserResolvedConnection> {
@@ -69,11 +70,11 @@ export class BrowserConnectionStore implements IBrowserConnectionStore {
   async remove(id: string): Promise<void> {
     await this.resolve(id);
     await this.change((current) => {
-      const connections = { ...current.connections };
+      const { connections: previousConnections, defaultBrowser, allowedBrowsers, ...rest } = current;
+      const connections = { ...previousConnections };
       delete connections[id];
-      const allowedBrowsers = current.allowedBrowsers?.filter((browser) => browser !== id);
-      return { connections, defaultBrowser: current.defaultBrowser === id ? undefined : current.defaultBrowser,
-        ...(allowedBrowsers !== undefined ? { allowedBrowsers } : {}) };
+      return { ...rest, connections, defaultBrowser: defaultBrowser === id ? undefined : defaultBrowser,
+        ...(allowedBrowsers !== undefined ? { allowedBrowsers: allowedBrowsers.filter((browser) => browser !== id) } : {}) };
     });
   }
 

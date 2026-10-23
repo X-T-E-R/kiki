@@ -34,6 +34,70 @@ export async function readWebbridgeStatus(fetchImpl: typeof fetch = fetch): Prom
   } catch { return undefined; }
 }
 
+export function webbridgeExecutionSession(connectionId: string): string {
+  return `kiki-${connectionId}`;
+}
+
+export interface WebbridgeTab {
+  readonly tabId: string;
+  readonly url?: string;
+  readonly title?: string;
+  readonly active?: boolean;
+  readonly groupTitle?: string;
+}
+
+function commandData(payload: unknown, action: string): Record<string, unknown> {
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) throw new Error(`WebBridge ${action} returned an invalid response`);
+  const envelope = payload as { ok?: boolean; data?: unknown; error?: unknown };
+  const data = envelope.data;
+  if (envelope.ok !== true || typeof data !== 'object' || data === null || Array.isArray(data)) {
+    const detail = typeof envelope.error === 'string' ? envelope.error.replace(/https?:\/\/\S+/gi, '').trim().slice(0, 180) : '';
+    throw new Error(detail === '' ? `WebBridge ${action} was not confirmed` : `WebBridge ${action} was not confirmed: ${detail}`);
+  }
+  const record = data as Record<string, unknown>;
+  if (record['success'] === false) {
+    const detail = typeof record['error'] === 'string' ? record['error'].replace(/https?:\/\/\S+/gi, '').trim().slice(0, 180) : '';
+    throw new Error(detail === '' ? `WebBridge ${action} was not confirmed` : `WebBridge ${action} was not confirmed: ${detail}`);
+  }
+  return record;
+}
+
+export async function postWebbridgeCommand(action: string, args: Readonly<Record<string, unknown>>, session: string, fetchImpl: typeof fetch = fetch, signal?: AbortSignal): Promise<Record<string, unknown>> {
+  const data = await boundedJson(await fetchImpl(`${BASE}/command`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, redirect: 'error',
+    signal: signal === undefined ? AbortSignal.timeout(30_000) : AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+    body: JSON.stringify({ action, args, session }),
+  }));
+  return commandData(data, action);
+}
+
+export function webbridgeRefs(tree: unknown): readonly string[] {
+  if (typeof tree === 'string') return [...tree.matchAll(/@(e\d+)/g)].map((match) => match[1]).filter((ref): ref is string => ref !== undefined);
+  if (Array.isArray(tree)) return tree.flatMap((node) => webbridgeRefs(node));
+  if (typeof tree !== 'object' || tree === null) return [];
+  const row = tree as Record<string, unknown>;
+  const own = typeof row['ref'] === 'string' && row['ref'] !== '' ? [row['ref'].replace(/^@/, '')] : [];
+  return [...own, ...webbridgeRefs(row['children'])];
+}
+
+export function webbridgeTabs(data: Record<string, unknown>): readonly WebbridgeTab[] {
+  const tabs = data['tabs'];
+  if (!Array.isArray(tabs)) throw new Error('WebBridge list_tabs returned no tab list');
+  return tabs.map((tab) => {
+    if (typeof tab !== 'object' || tab === null || Array.isArray(tab)) throw new Error('WebBridge list_tabs returned an invalid tab');
+    const row = tab as Record<string, unknown>;
+    const tabId = row['tabId'];
+    if (typeof tabId !== 'number' && typeof tabId !== 'string') throw new Error('WebBridge list_tabs returned a tab without tabId');
+    return {
+      tabId: String(tabId),
+      url: typeof row['url'] === 'string' ? row['url'] : undefined,
+      title: typeof row['title'] === 'string' ? row['title'] : undefined,
+      active: row['active'] === true,
+      groupTitle: typeof row['groupTitle'] === 'string' ? row['groupTitle'] : undefined,
+    };
+  });
+}
+
 export async function probeWebbridgeConnection(fetchImpl: typeof fetch = fetch): Promise<void> {
   const data = await boundedJson(await fetchImpl(`${BASE}/command`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(10_000),

@@ -979,6 +979,8 @@ it('does not probe or install a source that is switched off', async () => {
 
 it('keeps a CDP connection on the independent browser source', () => {
   expect(browserSourceOfConnection({ type: 'agent-browser-cdp' })).toBe('independent-browser');
+  expect(browserSourceOfConnection({ id: 'kimi-webbridge', type: 'agent-browser-cdp' })).toBe('kimi-webbridge');
+  expect(browserSourceOfConnection({ id: 'edge-kimi', type: 'agent-browser-cdp' })).toBe('independent-browser');
   expect(browserSourceOfConnection({ type: 'agent-browser-profile' })).toBe('independent-browser');
   expect(browserSourceOfConnection({ type: 'ego-lite' })).toBe('ego-lite');
 });

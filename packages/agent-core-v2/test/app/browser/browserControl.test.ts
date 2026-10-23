@@ -13,6 +13,7 @@ import { FakeRuntime } from '#/runtime/fakeRuntime';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { isBrowserOperation } from '#/app/browser/browserControlService';
 import { BrowserError } from '#/app/browser/errors';
+import { BrowserConfigSchema, migrateKnownWebbridgePreset } from '#/app/browser/browserConfig';
 import { browserElicitation } from '#/agent/tools/browser/browserElicitation';
 import type { ISessionInteractionService } from '#/session/interaction/interaction';
 import { projectBrowserToolSchema, validateBrowserValues } from '#/agent/tools/browser/browserTools';
@@ -53,17 +54,18 @@ function fixture() {
   const ix = new TestInstantiationService();
   const flags = { enabled: () => true };
   const allowed: { browsers?: readonly string[] } = {};
+  const route = { enabled: true };
   ix.stub(IFlagService, flags);
   ix.stub(IBrowserConnectionStore, {
     _serviceBrand: undefined,
-    list: async () => ({ connections: [...configs.values()].map(({ id, name, type, enabled }) => ({ id, name, type, enabled })), allowedBrowsers: allowed.browsers }),
+    list: async () => ({ connections: [...configs.values()].map(({ id, name, type, enabled }) => ({ id, name, type, enabled })), allowedBrowsers: allowed.browsers, ...(route.enabled ? {} : { webbridgePresetRoute: false }) }),
     resolve: async (id) => { const config = configs.get(id); if (config === undefined) throw new Error('Unknown browser'); return config; },
     upsert: async () => { throw new Error('not used'); }, remove: async (id) => { configs.delete(id); },
     setDefault: async () => undefined, revealEndpoint: async () => undefined,
   });
   ix.stub(IBrowserBackendFactory, factory);
   ix.set(IBrowserControlService, new SyncDescriptor(BrowserControlService));
-  return { ix, control: ix.get(IBrowserControlService), factory, calls, handlers, tabs, flags, configs, allowed };
+  return { ix, control: ix.get(IBrowserControlService), factory, calls, handlers, tabs, flags, configs, allowed, route };
 }
 const caller = { sessionId: 'fixture-session', agentId: 'main' };
 
@@ -411,6 +413,52 @@ describe('browser connection execution ownership', () => {
     } finally { await f.ix.dispose(); }
   });
 
+  it('routes only the saved Kimi preset over the HTTP bridge and leaves every other CDP connection on the driver', async () => {
+    const f = fixture();
+    f.configs.set('kimi-webbridge', { id: 'kimi-webbridge', type: 'agent-browser-cdp', name: 'edge-kimi', enabled: true, endpointSecret: 'http://127.0.0.1' });
+    f.configs.set('edge-kimi', { id: 'edge-kimi', type: 'agent-browser-cdp', name: 'edge-kimi', enabled: true, endpointSecret: 'http://127.0.0.1:9222' });
+    f.tabs.set('edge-kimi', [{ tabId: 't1', targetId: 'edge-tab' }]);
+    const seen: { url: string; body?: string }[] = [];
+    vi.stubGlobal('fetch', async (url: string | URL, init?: RequestInit) => {
+      const body = typeof init?.body === 'string' ? init.body : undefined;
+      seen.push({ url: String(url), body });
+      if (String(url).endsWith('/status')) return new Response(JSON.stringify({ running: true, extension_connected: true, version: 'v2.0.23' }), { status: 200 });
+      const action = body === undefined ? '' : (JSON.parse(body) as { action?: string }).action;
+      if (action === 'list_tabs') return new Response(JSON.stringify({ ok: true, data: { success: true, tabs: [{ tabId: 7, url: 'https://example.test/page', title: 'Example', active: true }] } }), { status: 200 });
+      if (action === 'snapshot') return new Response(JSON.stringify({ ok: true, data: { success: true, url: 'https://example.test/page', title: 'Example', tree: '@e1 button Example' } }), { status: 200 });
+      if (action === 'click') return new Response(JSON.stringify({ ok: true, data: { success: true, tag: 'button', text: 'Example' } }), { status: 200 });
+      return new Response(JSON.stringify({ ok: false, error: 'unexpected' }), { status: 200 });
+    });
+    try {
+      const status = await f.control.connect('kimi-webbridge');
+      expect(f.factory.open).not.toHaveBeenCalled();
+      expect(status).toMatchObject({ state: 'ready', runtimeSession: 'kiki-kimi-webbridge', driverVersion: 'v2.0.23' });
+      expect(status.failure?.reason).toBeUndefined();
+      expect(seen.some((call) => call.body?.includes('komodo-bootstrap-20261024'))).toBe(false);
+      expect((await f.control.tabs('kimi-webbridge')).map((tab) => tab.targetId)).toEqual(['7']);
+      const shot = await f.control.invoke({ browser: 'kimi-webbridge', caller, tool: 'agent_browser_snapshot', args: {}, tab: '7', generation: status.generation });
+      expect(shot.result.isError).toBe(false);
+      const clicked = await f.control.invoke({ browser: 'kimi-webbridge', caller, tool: 'agent_browser_click', args: { selector: '@e1' }, tab: '7', generation: status.generation });
+      expect(clicked.result.isError).toBe(false);
+      expect((await f.control.connect('edge-kimi')).state).toBe('ready');
+      expect((await f.control.connect('b')).state).toBe('ready');
+      expect(f.factory.open).toHaveBeenCalledTimes(2);
+      expect(f.calls.some((call) => call.browser === 'kimi-webbridge')).toBe(false);
+    } finally { vi.unstubAllGlobals(); await f.ix.dispose(); }
+  });
+
+  it('keeps the saved Kimi preset on the CDP driver when the preset route is explicitly off', async () => {
+    const f = fixture();
+    f.route.enabled = false;
+    f.configs.set('kimi-webbridge', { id: 'kimi-webbridge', type: 'agent-browser-cdp', name: 'edge-kimi', enabled: true, endpointSecret: 'http://browser.example.test' });
+    f.tabs.set('kimi-webbridge', [{ tabId: 't1', targetId: 'kimi-tab' }]);
+    try {
+      expect((await f.control.connect('kimi-webbridge')).state).toBe('ready');
+      expect(f.factory.open).toHaveBeenCalledTimes(1);
+      expect(f.calls.some((call) => call.name === 'agent_browser_connect')).toBe(true);
+    } finally { await f.ix.dispose(); }
+  });
+
   it('keeps a lost CDP connect response unconfirmed without replaying it', async () => {
     const f = fixture();
     try {
@@ -442,6 +490,20 @@ describe('browser connection execution ownership', () => {
       await Promise.all([first, next]);
       expect(f.calls.filter((call) => ['agent_browser_click', 'agent_browser_snapshot'].includes(call.name)).map((call) => call.name)).toEqual(['agent_browser_click', 'agent_browser_snapshot']);
     } finally { await f.ix.dispose(); }
+  });
+});
+
+describe('known Kimi preset migration', () => {
+  it('rewrites only the saved preset record and keeps an explicit route switch', () => {
+    const saved = BrowserConfigSchema.parse({ webbridgePresetRoute: false, connections: {
+      'kimi-webbridge': { type: 'agent-browser-cdp', name: 'edge-kimi', enabled: true, endpointSecret: 'http://127.0.0.1' },
+      'edge-kimi': { type: 'agent-browser-cdp', name: 'edge-kimi', enabled: true, endpointSecret: 'http://127.0.0.1:9222' },
+    } });
+    const migrated = migrateKnownWebbridgePreset(saved);
+    expect(migrated.webbridgePresetRoute).toBe(false);
+    expect(migrated.connections['kimi-webbridge']).toEqual({ type: 'kimi-webbridge', name: 'edge-kimi', enabled: true });
+    expect(migrated.connections['edge-kimi']).toMatchObject({ type: 'agent-browser-cdp', endpointSecret: 'http://127.0.0.1:9222' });
+    expect(migrateKnownWebbridgePreset(migrated)).toBe(migrated);
   });
 });
 

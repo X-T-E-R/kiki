@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -104,6 +104,20 @@ describe('browser connection configuration', () => {
     expect(JSON.stringify(await store.list())).not.toContain('YOUR_API_KEY');
     await store.remove('cdp');
     await expect(open(home).resolve('cdp')).rejects.toMatchObject({ code: 'browser.not_found' });
+  });
+
+  it('keeps an explicit WebBridge route switch when a connection is removed', async () => {
+    const { home, store } = await fixture();
+    await store.upsert('a', { type: 'agent-browser-profile', name: 'A', enabled: true, profilePath: join(home, 'a') });
+    await store.upsert('b', { type: 'agent-browser-profile', name: 'B', enabled: true, profilePath: join(home, 'b') });
+    const path = join(home, 'config.toml');
+    const before = await readFile(path, 'utf8');
+    await writeFile(path, `[browser_control]\nwebbridge_preset_route = false\n\n${before}`);
+    const reopened = open(home);
+    expect((await reopened.list()).webbridgePresetRoute).toBe(false);
+    await reopened.remove('b');
+    expect((await open(home).list()).webbridgePresetRoute).toBe(false);
+    expect((await open(home).list()).connections.map((connection) => connection.id)).toEqual(['a']);
   });
 
   it('rejects invalid ids, endpoint and relative host paths without writing a connection', async () => {
