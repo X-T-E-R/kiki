@@ -52,11 +52,15 @@ An approval appears in the timeline before a protected operation runs, with the 
 
 ## Right rail
 
-The rail describes one agent at a time — whichever you last clicked into or focused. The main agent and every subagent get the same page, and the rail follows you into a subagent's transcript. It shows what that agent is doing now, the items waiting on you as rows you can decide from, the activity feed, and a folded capabilities block.
+The rail describes one agent at a time — whichever you last clicked into or focused. The main agent and every subagent get the same page, and the rail follows you into a subagent's transcript. It shows what that agent is doing now, items waiting on you, the activity feed, and two independently folded capability sections.
 
 The agent tree labels external executors beside each agent's name. An **off** thinking effort is shown only when it was explicitly selected.
 
-The folded **Capabilities** block includes **Subagents**. Each row names the profile and route, and whether that child can be launched now. Who this agent may start is set on the profile under **Child agents** — see [Dispatch capabilities](./settings.md#dispatch-capabilities).
+**Capability inventory** has **Tools**, **Skills**, and **Subagents** tabs. The tools list includes plugin and MCP tools. Each subagent row names the profile and route, and whether that child can be launched now. Who this agent may start is set on the profile under **Child agents** — see [Dispatch capabilities](./settings.md#dispatch-capabilities).
+
+**Capability controls** holds plugin usage, system-capability switches, and MCP server choices for this conversation. These controls stay separate from the inventory. Enabling **Browser** allows browser tools within the current tool policy; browser settings show the available connections and any connection failures. Ego Lite uses the native `browser__ego_run` tool rather than a separate list of typed page tools.
+
+**IM conversation** lists the channels bound to this conversation, with a separate switch for each binding. Channels from one account, including Telegram topics, can belong to different conversations. An unrelated account's reconnecting state does not appear here. When an incoming channel is awaiting confirmation, **Bind here** explicitly links it to this conversation.
 
 On desktop-width screens the rail is open by default. **Standard / Cockpit** in its header widens it over the preview space while the conversation and composer stay in the main column; **Standard** or **Exit cockpit** puts the previous preview content, tabs, draft and width back.
 
