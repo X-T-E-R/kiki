@@ -663,8 +663,8 @@ importers:
         specifier: 1.32.0
         version: 1.32.0(zod@4.3.6)
       '@nb-im/core':
-        specifier: file:../../vendor/nb-im-core-0.2.0.tgz
-        version: file:vendor/nb-im-core-0.2.0.tgz
+        specifier: file:../../vendor/nb-im-core-0.2.1.tgz
+        version: file:vendor/nb-im-core-0.2.1.tgz
       bcryptjs:
         specifier: ^2.4.3
         version: 2.4.3
@@ -2515,9 +2515,9 @@ packages:
       playwright:
         optional: true
 
-  '@nb-im/core@file:vendor/nb-im-core-0.2.0.tgz':
-    resolution: {integrity: sha512-h0JjqRWDw3b4yROKbmw9Om5enuid30EfQ2dsNhtUbX1SWRc+DjYKm3FIus7ZLUGyg07v+l6gcxwbLlFGtUS56g==, tarball: file:vendor/nb-im-core-0.2.0.tgz}
-    version: 0.2.0
+  '@nb-im/core@file:vendor/nb-im-core-0.2.1.tgz':
+    resolution: {integrity: sha512-jtXTzKVBtvzxwlUoN7A11g1aqBnWL0ulF1h+RfV+qPa3FgZ2Oglwb4guCCMq8vB4iL1mq23jjuc2QWPtZ8YCnQ==, tarball: file:vendor/nb-im-core-0.2.1.tgz}
+    version: 0.2.1
     engines: {node: '>=24.15.0'}
 
   '@node-rs/crc32-android-arm-eabi@1.10.6':
@@ -10479,7 +10479,7 @@ snapshots:
       - canvas
       - supports-color
 
-  '@nb-im/core@file:vendor/nb-im-core-0.2.0.tgz':
+  '@nb-im/core@file:vendor/nb-im-core-0.2.1.tgz':
     dependencies:
       '@larksuiteoapi/node-sdk': 1.76.0
       ws: 8.22.0
