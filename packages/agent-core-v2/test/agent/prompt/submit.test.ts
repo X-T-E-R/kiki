@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { PromptCompleted } from '#/agent/prompt/promptService';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentGoalService } from '#/agent/goal/goal';
 import { IAgentLoopService } from '#/agent/loop/loop';
@@ -167,6 +168,25 @@ describe('prompt submit', () => {
       content: [{ type: 'text', text: 'Filtered ordinary text.' }],
     });
     expect(last?.partial).not.toBe(true);
+  });
+
+  it('does not tell an external executor to call SendMessage when the native tool stays registered', async () => {
+    ctx = createTestAgent();
+    const delivery = ctx.get(ISessionDeliveryService);
+    await delivery.ready;
+    await delivery.set('message');
+    const profile = ctx.get(IAgentProfileService);
+    const loop = ctx.get(IAgentLoopService);
+    const hook = loop.hooks.onDidFinishStep.register('external-executor', async (_event, next) => {
+      await next();
+      await hook.dispose();
+      profile.applyBindingSnapshot({ ...profile.data(), executorId: 'external-example' });
+    });
+    ctx.mockNextResponse({ type: 'text', text: 'Ordinary external reply.' });
+    const result = await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Please reply.' }] });
+    expect(result.state).toBe('completed');
+    expect(ctx.get(IAgentToolRegistryService).resolve('SendMessage')).toBeDefined();
+    expect(deliveryReminders(ctx)).toHaveLength(0);
   });
 
   it('does not guide a cancelled message turn from the previous turn assistant text', async () => {

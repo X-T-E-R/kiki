@@ -4,7 +4,9 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IEventBus } from '#/app/event/eventBus';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { PromptOrigin } from '#/agent/contextMemory/types';
+import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
+import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
 import { ISessionDeliveryService } from '#/session/delivery/delivery';
@@ -32,6 +34,8 @@ export class DeliveryReminderService extends Service implements IAgentDeliveryRe
     @IEventBus events: IEventBus,
     @IAgentContextMemoryService context: IAgentContextMemoryService,
     @IAgentToolExecutorService tools: IAgentToolExecutorService,
+    @IAgentProfileService profile: IAgentProfileService,
+    @IAgentToolRegistryService registry: IAgentToolRegistryService,
     @ISessionDeliveryService delivery: ISessionDeliveryService,
     @IEventService eventService: IEventService,
     @IAgentScopeContext scope: IAgentScopeContext,
@@ -56,7 +60,8 @@ export class DeliveryReminderService extends Service implements IAgentDeliveryRe
       if (
         state !== undefined && state.messageMode && state.triggered && !state.sent &&
         event.reason === 'completed' &&
-        hasCompletedTurnAssistantText(context.get(), event.turnId)
+        hasCompletedTurnAssistantText(context.get(), event.turnId) &&
+        nativeRegisteredSendMessage(profile.data().executorId, registry)
       ) {
         reminders.appendSystemReminder(MESSAGE_DELIVERY_NEXT_TURN_GUIDANCE, {
           kind: 'injection',
@@ -73,6 +78,10 @@ export class DeliveryReminderService extends Service implements IAgentDeliveryRe
       }
     }));
   }
+}
+
+function nativeRegisteredSendMessage(executorId: string | undefined, registry: IAgentToolRegistryService): boolean {
+  return (executorId ?? 'native') === 'native' && registry.resolve('SendMessage') !== undefined;
 }
 
 function shouldRemind(origin: PromptOrigin): boolean {
