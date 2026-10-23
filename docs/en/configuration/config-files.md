@@ -844,9 +844,12 @@ Any registered flag can be overridden here by id, with a boolean value. Every bu
 | `default_browser` | `string` | Connection id used for sessions created afterwards; unset means a call has to name a connection |
 | `allowed_browsers` | `string[]` | Connection ids an agent may use. Omit it to keep the previous default. An empty list still allows listing and discovery |
 | `disabled_sources` | `string[]` | Sources that are off: `kimi-webbridge`, `independent-browser`, `codex-browser`, `ego-lite`. Turning a source off does not clear `allowed_browsers` |
+| `webbridge_preset_route` | `boolean` | Defaults to `true`: route the legacy `kimi-webbridge` id stored as `agent-browser-cdp` through the Kimi HTTP bridge. Set `false` to keep that entry on the CDP driver |
 | `connections` | `table` | One entry per connection, keyed by the connection's fixed id |
 
-Each entry describes one connection through its `type` (`agent-browser-profile` or `agent-browser-cdp`), `name`, `enabled`, and the fields that style needs; the settings page shows the fields for each style. An entry whose fields do not match its style is rejected and the saved file is left unchanged. A stored CDP address counts as a credential: the page masks it and reveals it only when asked.
+Each entry has `name`, `enabled`, and a `type`: `agent-browser-profile`, `agent-browser-cdp`, `codex-extension`, `ego-lite`, or `kimi-webbridge`. The [browser connection API](../server/rest-api.md#browser-connections) describes each type's fields. Fields that do not match the type are rejected without changing the saved file. A stored CDP address counts as a credential: the page masks it and reveals it only when asked.
+
+The `kimi-webbridge` type uses the server's local HTTP daemon at `http://127.0.0.1:10086` and takes no endpoint. This is not a CDP address. The legacy-id routing above does not rewrite the saved entry and does not affect other CDP ids; an explicit `kimi-webbridge` type always uses HTTP, even when `webbridge_preset_route` is `false`.
 
 ## `computer_control`
 

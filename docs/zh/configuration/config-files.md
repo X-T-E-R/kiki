@@ -830,9 +830,12 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 | `default_browser` | `string` | 之后创建的会话使用的连接 id；未设置时调用必须自己指定连接 |
 | `allowed_browsers` | `string[]` | Agent 可以使用的连接 id。不写这一项时沿用原先的默认。空列表仍允许列出和发现 |
 | `disabled_sources` | `string[]` | 已关闭的来源：`kimi-webbridge`、`independent-browser`、`codex-browser`、`ego-lite`。关闭来源不会清空 `allowed_browsers` |
+| `webbridge_preset_route` | `boolean` | 默认 `true`：将旧版保存为 `agent-browser-cdp`、id 恰为 `kimi-webbridge` 的条目接到 Kimi HTTP 桥；设为 `false` 则让该条目继续走 CDP 驱动 |
 | `connections` | `table` | 每条连接一个条目，以连接的固定 id 为 key |
 
-每个条目通过 `type`（`agent-browser-profile` 或 `agent-browser-cdp`）、`name`、`enabled` 以及该接法所需字段描述一条连接；每种接法的字段见设置页。字段与接法不符的条目会被拒绝，已保存的文件保持不变。存入的 CDP 地址按凭据对待：页面显示掩码，只有显式请求时才读取明文。
+每个条目包含 `name`、`enabled` 与 `type`。类型为 `agent-browser-profile`、`agent-browser-cdp`、`codex-extension`、`ego-lite` 或 `kimi-webbridge`；各类型字段见[浏览器连接 API](../server/rest-api.md#浏览器连接)。字段与类型不符时会被拒绝，已保存的文件保持不变。存入的 CDP 地址按凭据对待：页面显示掩码，只有显式请求时才读取明文。
+
+`kimi-webbridge` 类型使用服务器本机 `http://127.0.0.1:10086` 的 HTTP 桥接程序，不接受 endpoint；这不是 CDP 地址。上述旧 id 兼容路由不改写保存条目，也不影响其他 CDP id。显式 `kimi-webbridge` 类型始终使用 HTTP，不受 `webbridge_preset_route = false` 影响。
 
 ## `computer_control`
 
