@@ -38,7 +38,11 @@ Scheduled prompts in the same queue have a **Scheduled job** label and a text pr
 
 Waiting prompts set to **Insert when idle** share one group at the front of the queue, with each job's text and **Remove** action inside it. A prompt set to **Insert immediately** shows its timing on its own row. Both modes stay outside the ordinary send order, so they are not counted among messages waiting to send and have no reorder or send-now controls. **Remove** cancels only that pending occurrence; a recurring job stays scheduled and can fire again at its next scheduled time.
 
-To pick the timing for a message you submit, hover the send button or focus it and press `↓`. Besides the default, you can send the message into the current turn so the agent reads it at its next safe step (the same as `Ctrl-Enter`), start it after the running subagents finish, or start it after all background tasks finish. When the main agent is blocked waiting on a foreground `AgentRun`, **Send now** moves that wait to the background without stopping the child, which still reports back when it completes; plain queueing does not. The timing you choose applies to that one message. The menu only appears while the agent is busy.
+To pick the timing for a message you submit, hover the send button or focus it and press `↓`. Besides the default, you can send the message into the current turn so the agent reads it at its next safe step (`Ctrl-Enter` with the default send shortcut), start it after the running subagents finish, or start it after all background tasks finish. The timing you choose applies to that one message. The menu only appears while the agent is busy.
+
+A profile or engine change needs a separate turn even with **Send now**. If the message stays queued, Kiki explains the reported reason.
+
+When the main agent is blocked waiting on a foreground `AgentRun`, **Send now** moves that wait to the background without stopping the child, which still reports back when it completes; plain queueing does not.
 
 Stop the main agent before it has replied or called a tool and the interrupted prompt goes back into the session draft with its attachments, next to any edits you had not sent. A prompt the agent already answered or was steered by is not restored, and recovered attachments need the full prompt in the loaded transcript and stay in memory until you restart the app.
 
