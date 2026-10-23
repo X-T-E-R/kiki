@@ -165,6 +165,35 @@ describe('browser REST persisted configuration and explicit secret access', () =
     expect(remaining.connections.map((connection) => connection.id)).toEqual(['a']);
     expect((await request('POST', '/secrets:reveal', { ref: { kind: 'browser_endpoint', browser_id: 'b' } })).code).toBe(ErrorCode.VALIDATION_FAILED);
   }, 30_000);
+  it('persists a Kimi HTTP connection and exposes its main-frame catalog without connecting', async () => {
+    const { browserCatalogResponseSchema, browserConnectionResponseSchema } = await import('@kiki/protocol');
+    home = await mkdtemp(join(tmpdir(), 'kiki-webbridge-public-rest-'));
+    const start = () => startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home!,
+      env: { ...process.env, KIKI_EXPERIMENTAL_NATIVE_BROWSER: 'false', KIKI_EXPERIMENTAL_SEARCH_WORKER: 'false' }, logLevel: 'silent' });
+    server = await start();
+    const saved = await request('PUT', '/browser/connections/http-bridge', { type: 'kimi-webbridge', name: 'Local bridge', enabled: true });
+    expect(saved.code).toBe(0);
+    expect(browserConnectionResponseSchema.parse(saved.data).connection).toMatchObject({ id: 'http-bridge', type: 'kimi-webbridge', name: 'Local bridge' });
+    expect((await request('PUT', '/browser/connections/http-bridge', {
+      type: 'kimi-webbridge', name: 'Invalid endpoint', endpoint: { action: 'set', value: 'http://127.0.0.1:10086' },
+    })).code).toBe(ErrorCode.VALIDATION_FAILED);
+    const listed = browserControlListSchema.parse((await request('GET', '/browser/connections')).data);
+    expect(listed.connections).toEqual([expect.objectContaining({ id: 'http-bridge', type: 'kimi-webbridge', name: 'Local bridge', status: expect.objectContaining({ state: 'idle' }) })]);
+    expect(listed.connections[0]?.endpointConfigured).toBeUndefined();
+    const catalogResponse = await request('GET', '/browser/connections/http-bridge:catalog?includeSchema=true');
+    expect(catalogResponse.code).toBe(0);
+    const catalog = browserCatalogResponseSchema.parse(catalogResponse.data);
+    expect(catalog).toMatchObject({ contextIsolation: 'main-frame-only', backendToolCount: 3, status: { state: 'idle' } });
+    expect(catalog.capabilities.map((tool) => tool.name)).toEqual(['agent_browser_snapshot', 'agent_browser_click', 'agent_browser_fill']);
+    expect(catalog.capabilities.every((tool) => tool.inputSchema !== undefined)).toBe(true);
+    expect(await request('POST', '/browser/connections/http-bridge:connect', {})).toMatchObject({
+      code: ErrorCode.VALIDATION_FAILED, details: { code: 'browser.disabled', reason: 'feature_disabled' },
+    });
+    await server.close();
+    server = await start();
+    const reopened = browserControlListSchema.parse((await request('GET', '/browser/connections')).data);
+    expect(reopened.connections).toEqual([expect.objectContaining({ id: 'http-bridge', type: 'kimi-webbridge', name: 'Local bridge' })]);
+  }, 30_000);
   it('dispatches open, update, and shortcut setup actions to browser setup service', async () => {
     const { vi } = await import('vitest');
     const { IBrowserSetupService } = await import('@kiki/agent-core-v2');

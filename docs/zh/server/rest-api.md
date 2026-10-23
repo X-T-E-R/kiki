@@ -469,7 +469,7 @@ Kiki 根据 OpenSSH 配置和路径展开结果确定 `UserKnownHostsFile` 的�
 
 `kimi-webbridge` 请求体必须给出 `name`，可带 `enabled` 和可选的 `driverPath`，不接受 `endpoint`。它使用服务器本机 `http://127.0.0.1:10086` 的 Kimi HTTP 桥，不启动 CDP 驱动。旧版保存为 CDP、且 id 恰为 `kimi-webbridge` 的条目默认也走这条 HTTP 路由，但不改写保存的类型；见 [`webbridge_preset_route`](../configuration/config-files.md#browser-control)。其他 CDP id 保持原路由。
 
-HTTP 桥只操作主 frame。选择标签时使用列表返回的准确 id，并核对实际选中的 id；重复 URL 导致目标不唯一时，会拒绝切换到另一标签。命令已发出、但应答丢失或无法读取时，状态为 `unconfirmed`，`failure.reason` 为 `"outcome_unknown"`，不会重放命令。`:check` 只检查桥的健康状态；返回 `idle` 后，先重新连接、选择标签并观察，再决定下一步动作。明确的否定应答则记为已结束的 `failed` 结果。
+HTTP 桥的工具目录返回 `contextIsolation: "main-frame-only"`：不支持新建窗口或操作非主 frame。选择标签时使用列表返回的准确 id，并核对实际选中的 id；重复 URL 导致目标不唯一时，会拒绝切换到另一标签。命令已发出、但应答丢失或无法读取时，状态为 `unconfirmed`，`failure.reason` 为 `"outcome_unknown"`，不会重放命令。`:check` 只检查桥的健康状态；返回 `idle` 后，先重新连接、选择标签并观察，再决定下一步动作。明确的否定应答则记为已结束的 `failed` 结果。
 
 执行类动作失败即关闭：未开启 `native_browser` 实验开关时，`:connect` 返回信封码 `40001`，`details.code` 为 `"browser.disabled"`、`details.reason` 为 `"feature_disabled"`；连接自身被停用时返回的 `details.reason` 为 `"connection_disabled"`。Klient 对应方法为 `rest.browser.list()`、`upsert(id, input)`、`remove(id)`、`setDefault(browser?)`、`status(id)`、`tabs(id)`、`catalog(id, { includeSchema })`、`check(id)`、`connect(id)` 和 `disconnect(id)`。
 
