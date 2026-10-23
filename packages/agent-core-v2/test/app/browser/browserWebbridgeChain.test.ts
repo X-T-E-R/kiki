@@ -23,20 +23,18 @@ import { IBrowserConnectionStore } from '#/app/browser/browserConnectionStore';
 import { IBrowserBackendFactory } from '#/app/browser/browserBackend';
 import { BROWSER_CONFIG_SECTION, type BrowserConfig } from '#/app/browser/browserConfig';
 import { webbridgeTransportUnconfirmed } from '#/app/browser/browserWebbridge';
-import type { ExecutableToolResult, ToolExecution } from '#/tool/toolContract';
+import type { ExecutableTool, ExecutableToolResult, ToolExecution } from '#/tool/toolContract';
 
 const defaults = createDecorator<{ readonly _serviceBrand: undefined; ready: Promise<string | undefined> }>('sessionBrowserDefault');
 
-async function execute(work: ToolExecution | Promise<ToolExecution>): Promise<ExecutableToolResult> {
+async function execute(work: ToolExecution | Promise<ToolExecution>, signal?: AbortSignal): Promise<ExecutableToolResult> {
   const execution = await work;
-  return run(execution, undefined, new AbortController().signal);
+  if (!('execute' in execution)) return execution;
+  return execution.execute({ turnId: 1, toolCallId: 'webbridge-chain', signal: signal ?? new AbortController().signal });
 }
 
-async function run(work: ToolExecution | Promise<ToolExecution>, args: Record<string, unknown> | undefined, signal: AbortSignal): Promise<ExecutableToolResult> {
-  const execution = await work;
-  if ('resolveExecution' in execution && args !== undefined) return run(execution.resolveExecution(args), undefined, signal);
-  if (!('execute' in execution)) return execution;
-  return execution.execute({ turnId: 1, toolCallId: 'webbridge-chain', signal });
+async function run(tool: ExecutableTool, args: Record<string, unknown>, signal: AbortSignal): Promise<ExecutableToolResult> {
+  return execute(tool.resolveExecution(args), signal);
 }
 
 function textOf(result: ExecutableToolResult): string {
@@ -192,28 +190,31 @@ describe('native Kimi WebBridge chain', () => {
   });
 });
 
-async function harness(seen: { action?: string; args?: Record<string, unknown>; session?: string }[], fault?: { failAction?: string; rejectAction?: string; abortAction?: string; truncateAction?: string; abort?: () => void }) {
+interface ChainFault { failAction?: string; rejectAction?: string; abortAction?: string; truncateAction?: string; abort?: () => void }
+
+async function harness(seen: { action?: string; args?: Record<string, unknown>; session?: string }[], fault?: ChainFault) {
+  const planned: ChainFault = fault ?? {};
   const tabs: { tabId: number; url: string; title: string; active: boolean; groupTitle?: string }[] = [];
   let next = 0;
   let current: number | undefined;
   vi.stubGlobal('fetch', async (url: string | URL, init?: RequestInit) => {
     if (String(url).endsWith('/status')) return new Response(JSON.stringify({ running: true, extension_connected: true, version: 'v2.0.23' }), { status: 200 });
     const body = JSON.parse(String(init?.body)) as { action?: string; args?: Record<string, unknown>; session?: string };
-    if (body.action === fault?.failAction) {
+    if (body.action === planned.failAction) {
       seen.push(body);
       throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
     }
-    if (body.action === fault?.abortAction) {
+    if (body.action === planned.abortAction) {
       seen.push(body);
-      fault.abort?.();
+      planned.abort?.();
       throw new DOMException('The operation was aborted', 'AbortError');
     }
-    if (body.action === fault?.truncateAction) {
+    if (body.action === planned.truncateAction) {
       seen.push(body);
       return new Response('{"ok":true,"data":', { status: 200 });
     }
     seen.push(body);
-    if (body.action === fault?.rejectAction) return new Response(JSON.stringify({ ok: true, data: { success: false, error: 'no such element' } }), { status: 200 });
+    if (body.action === planned.rejectAction) return new Response(JSON.stringify({ ok: true, data: { success: false, error: 'no such element' } }), { status: 200 });
     if (body.action === 'navigate' && body.args?.['newTab'] === true && typeof body.args['url'] === 'string') {
       next += 1;
       for (const tab of tabs) tab.active = false;

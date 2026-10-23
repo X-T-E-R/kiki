@@ -45,7 +45,7 @@ describe.skipIf(process.env['KIKI_WEBBRIDGE_SMOKE'] !== '1')('live Kimi WebBridg
     const realFetch = globalThis.fetch;
     let bridge: Awaited<ReturnType<typeof harness>> | undefined;
     try {
-      vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      vi.stubGlobal('fetch', async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
         const url = String(input);
         if (!url.startsWith('http://127.0.0.1:10086/')) throw new Error('fixture fetch left the WebBridge daemon');
         if (init?.body !== undefined) {
