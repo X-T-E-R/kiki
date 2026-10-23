@@ -15,6 +15,7 @@ export const browserConnectionInputSchema = z.discriminatedUnion('type', [
   z.object({ name: common.name, enabled: common.enabled, type: z.literal('codex-extension'), runtimeRoot: path, browserId: z.string().min(1).max(512) }).strict(),
   z.object({ ...common, type: z.literal('agent-browser-profile'), profilePath: path.optional(), executablePath: path.optional(), headed: z.boolean().optional() }).strict(),
   z.object({ ...common, type: z.literal('agent-browser-cdp'), endpoint: browserEndpointEditSchema }).strict(),
+  z.object({ ...common, type: z.literal('kimi-webbridge') }).strict(),
   z.object({
     name: common.name, enabled: common.enabled, type: z.literal('ego-lite'),
     cliPath: path.optional(), profileId: z.string().trim().min(1).max(256).optional(), serverName: z.string().trim().min(1).max(256).optional(),
@@ -22,7 +23,7 @@ export const browserConnectionInputSchema = z.discriminatedUnion('type', [
 ]);
 export type BrowserConnectionInput = z.infer<typeof browserConnectionInputSchema>;
 export const browserConnectionSchema = z.object({
-  id: browserIdSchema, ...common, type: z.enum(['agent-browser-profile', 'agent-browser-cdp', 'codex-extension', 'ego-lite']),
+  id: browserIdSchema, ...common, type: z.enum(['agent-browser-profile', 'agent-browser-cdp', 'kimi-webbridge', 'codex-extension', 'ego-lite']),
   runtimeRoot: path.optional(), browserId: z.string().optional(),
   profilePath: path.optional(), executablePath: path.optional(), headed: z.boolean().optional(),
   endpointDisplay: z.string().optional(), endpointConfigured: z.boolean().optional(),

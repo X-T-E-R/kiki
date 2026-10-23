@@ -80,6 +80,20 @@ export function webbridgeRefs(tree: unknown): readonly string[] {
   return [...own, ...webbridgeRefs(row['children'])];
 }
 
+export function webbridgeTransportUnconfirmed(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (error.name === 'TimeoutError' || error.name === 'AbortError') return true;
+  const carrier = error as { code?: unknown; cause?: { code?: unknown } };
+  const code = typeof carrier.code === 'string' ? carrier.code : typeof carrier.cause?.code === 'string' ? carrier.cause.code : '';
+  return code === 'ECONNRESET' || code === 'EPIPE' || code === 'UND_ERR_SOCKET' || code === 'UND_ERR_HEADERS_TIMEOUT' || code === 'UND_ERR_BODY_TIMEOUT';
+}
+
+export function webbridgeCommandTabId(data: Record<string, unknown>): string {
+  const tabId = data['tabId'];
+  if (typeof tabId !== 'number' && typeof tabId !== 'string') throw new Error('WebBridge navigate returned no tabId');
+  return String(tabId);
+}
+
 export function webbridgeTabs(data: Record<string, unknown>): readonly WebbridgeTab[] {
   const tabs = data['tabs'];
   if (!Array.isArray(tabs)) throw new Error('WebBridge list_tabs returned no tab list');

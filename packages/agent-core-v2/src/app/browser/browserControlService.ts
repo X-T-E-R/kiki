@@ -7,8 +7,8 @@ import type { MCPToolDefinition, MCPToolResult } from '#/mcpCore/types';
 import { IBrowserControlService, type BrowserCaller, type BrowserInvocation, type BrowserInvocationResult, type BrowserStatus, type BrowserTab } from './browser';
 import { IBrowserBackendFactory, type BrowserBackend } from './browserBackend';
 import { IBrowserConnectionStore } from './browserConnectionStore';
-import { browserOperationAllowed, browserSourceOfConnection, webbridgePresetRouted, type BrowserConnectionInput, type BrowserResolvedConnection } from './browserConfig';
-import { postWebbridgeCommand, readWebbridgeStatus, webbridgeExecutionSession, webbridgeRefs, webbridgeTabs } from './browserWebbridge';
+import { browserOperationAllowed, browserSourceOfConnection, KIMI_WEBBRIDGE_PRESET_ID, webbridgePresetRouted, type BrowserConnectionInput, type BrowserResolvedConnection } from './browserConfig';
+import { postWebbridgeCommand, readWebbridgeStatus, webbridgeCommandTabId, webbridgeExecutionSession, webbridgeRefs, webbridgeTabs, webbridgeTransportUnconfirmed } from './browserWebbridge';
 import { BrowserError } from './errors';
 import { IFlagService } from '#/app/flag/flag';
 import { NATIVE_BROWSER_FLAG_ID } from './flag';
@@ -29,7 +29,7 @@ interface LiveBrowser {
   observation?: { binding: string; refs: Set<string> };
   target?: { tab: string; frame: string };
   captures?: Map<string, string>;
-  webbridge?: { session: string; version: string; tabs: readonly BrowserTab[] };
+  webbridge?: { session: string; version: string; tabs: readonly BrowserTab[]; currentTabId?: string };
 }
 
 function textArg(args: Readonly<Record<string, unknown>>, key: string): string | undefined {
@@ -52,11 +52,11 @@ function elementRefs(value: unknown): string[] {
 
 const CDP_HANDSHAKE_REJECTED = 'The CDP handshake was rejected. Endpoint details are withheld. Reveal or edit the endpoint in settings, then connect again.';
 const WEBBRIDGE_TOOLS: readonly MCPToolDefinition[] = [
-  { name: 'agent_browser_snapshot', description: 'Read the current Kimi WebBridge tab as an accessibility tree', inputSchema: { type: 'object', properties: {} } },
-  { name: 'agent_browser_open', description: 'Open a URL in the Kimi WebBridge session', inputSchema: { type: 'object', properties: { url: { type: 'string' } } } },
-  { name: 'agent_browser_click', description: 'Click a Kimi WebBridge element', inputSchema: { type: 'object', properties: { selector: { type: 'string' } } } },
-  { name: 'agent_browser_fill', description: 'Fill a Kimi WebBridge element', inputSchema: { type: 'object', properties: { selector: { type: 'string' }, value: { type: 'string' } } } },
+  { name: 'agent_browser_snapshot', description: 'Read the selected Kimi WebBridge tab as an accessibility tree', inputSchema: { type: 'object', properties: {} } },
+  { name: 'agent_browser_click', description: 'Click an element in the selected Kimi WebBridge tab', inputSchema: { type: 'object', properties: { selector: { type: 'string' } } } },
+  { name: 'agent_browser_fill', description: 'Fill an element in the selected Kimi WebBridge tab', inputSchema: { type: 'object', properties: { selector: { type: 'string' }, value: { type: 'string' } } } },
 ];
+const WEBBRIDGE_UNCONFIRMED = 'The WebBridge command was sent but its result was not confirmed. It was not replayed.';
 
 function webbridgeResult(data: Record<string, unknown>): MCPToolResult {
   return { isError: false, content: [{ type: 'text', text: JSON.stringify(data) }], structuredContent: { response: { success: true, data } } };
@@ -232,8 +232,12 @@ export class BrowserControlService implements IBrowserControlService {
     if ((await this.store.resolve(id)).type === 'ego-lite') return this.egoProbe(id, signal, false);
     const live = await this.live(id);
     return this.enqueue(live, async () => {
-      if (live.status.state === 'unconfirmed') return this.recheckUnconfirmed(live, signal);
-      if (await this.usesWebbridge(live.connection)) return this.checkWebbridge(live, signal);
+      const webbridgeCandidate = live.connection.type === 'kimi-webbridge' || live.connection.id === KIMI_WEBBRIDGE_PRESET_ID;
+      if (live.status.state === 'unconfirmed') {
+        if (webbridgeCandidate && await this.usesWebbridge(live.connection)) return this.recheckWebbridge(live, signal);
+        return this.recheckUnconfirmed(live, signal);
+      }
+      if (webbridgeCandidate && await this.usesWebbridge(live.connection)) return this.checkWebbridge(live, signal);
       await this.assertAdmission(live);
       try {
         const backend = await this.backend(live);
@@ -535,11 +539,16 @@ export class BrowserControlService implements IBrowserControlService {
     return webbridgePresetRouted(connection, listed.webbridgePresetRoute !== false);
   }
 
-  private failWebbridge(live: LiveBrowser, error: unknown): BrowserStatus {
+  private failWebbridge(live: LiveBrowser, error: unknown, unconfirmed = false): BrowserStatus {
     live.admitting = false;
-    live.webbridge = undefined;
-    live.status = { ...live.status, state: 'failed', currentCall: undefined, checkedAt: new Date().toISOString(),
-      failure: { code: 'browser.execution_failed' }, error: webbridgeFailureText(error) };
+    live.observation = undefined;
+    if (live.webbridge !== undefined) {
+      const { currentTabId: _omit, ...bridge } = live.webbridge;
+      live.webbridge = unconfirmed ? bridge : undefined;
+    }
+    live.status = { ...live.status, state: unconfirmed ? 'unconfirmed' : 'failed', currentCall: undefined, checkedAt: new Date().toISOString(),
+      failure: { code: 'browser.execution_failed', ...(unconfirmed ? { reason: 'outcome_unknown' as const } : {}) },
+      error: unconfirmed ? WEBBRIDGE_UNCONFIRMED : webbridgeFailureText(error) };
     return { ...live.status };
   }
 
@@ -562,7 +571,8 @@ export class BrowserControlService implements IBrowserControlService {
       const status = await readWebbridgeStatus();
       if (status?.running !== true || status.extensionConnected !== true) throw new Error('The Kimi WebBridge extension is not connected');
       const session = webbridgeExecutionSession(live.connection.id);
-      live.webbridge = { session, version: status.version, tabs: live.webbridge?.tabs ?? [] };
+      const currentTabId = live.webbridge?.currentTabId;
+      live.webbridge = { session, version: status.version, tabs: live.webbridge?.tabs ?? [], ...(currentTabId !== undefined ? { currentTabId } : {}) };
       const state = live.admitting && live.status.state === 'ready' ? 'ready' : live.status.state === 'failed' ? 'idle' : 'idle';
       live.status = { ...live.status, state, checkedAt: new Date().toISOString(), driverVersion: status.version, runtimeSession: session, error: undefined, failure: undefined };
     } catch (error) {
@@ -572,17 +582,74 @@ export class BrowserControlService implements IBrowserControlService {
     return { ...live.status };
   }
 
+  private async recheckWebbridge(live: LiveBrowser, signal?: AbortSignal): Promise<BrowserStatus> {
+    signal?.throwIfAborted();
+    const status = await readWebbridgeStatus();
+    if (status?.running !== true || status.extensionConnected !== true) {
+      live.status = { ...live.status, state: 'unconfirmed', currentCall: undefined, checkedAt: new Date().toISOString(),
+        failure: { code: 'browser.execution_failed', reason: 'outcome_unknown' },
+        error: 'The WebBridge check did not confirm the execution state. The previous command was not replayed.' };
+      return { ...live.status };
+    }
+    const session = webbridgeExecutionSession(live.connection.id);
+    live.admitting = false;
+    live.observation = undefined;
+    if (live.webbridge !== undefined) {
+      const { currentTabId: _omit, ...bridge } = live.webbridge;
+      live.webbridge = { ...bridge, version: status.version };
+    }
+    live.status = { ...live.status, state: 'idle', generation: live.status.generation + 1, runtimeSession: session, driverVersion: status.version,
+      currentCall: undefined, checkedAt: new Date().toISOString(), failure: { code: 'browser.execution_failed', reason: 'outcome_unknown' },
+      error: 'The WebBridge daemon is still running. The unconfirmed command was not replayed. Connect again and select the tab before the next action.' };
+    return { ...live.status };
+  }
+
+  private rememberWebbridgeTabs(live: LiveBrowser, session: string, tabs: readonly BrowserTab[]): void {
+    const active = tabs.filter((tab) => tab.active === true);
+    const currentTabId = active.length === 1 ? active[0]!.targetId : live.webbridge?.currentTabId;
+    live.webbridge = { session, version: live.webbridge?.version ?? live.status.driverVersion ?? '', tabs, ...(currentTabId !== undefined ? { currentTabId } : {}) };
+  }
+
   private async tabsWebbridge(live: LiveBrowser, signal?: AbortSignal): Promise<readonly BrowserTab[]> {
     await this.assertAdmission(live);
     this.assertReady(live);
     const session = live.webbridge?.session ?? webbridgeExecutionSession(live.connection.id);
-    const data = await postWebbridgeCommand('list_tabs', {}, session, fetch, signal);
-    const tabs = webbridgeTabs(data).map((tab) => ({ tabId: tab.tabId, targetId: tab.tabId, title: tab.title, url: tab.url, active: tab.active, label: tab.groupTitle }));
-    live.webbridge = { session, version: live.webbridge?.version ?? live.status.driverVersion ?? '', tabs };
-    return tabs;
+    try {
+      const data = await postWebbridgeCommand('list_tabs', {}, session, fetch, signal);
+      const tabs = webbridgeTabs(data).map((tab) => ({ tabId: tab.tabId, targetId: tab.tabId, title: tab.title, url: tab.url, active: tab.active, label: tab.groupTitle }));
+      this.rememberWebbridgeTabs(live, session, tabs);
+      return tabs;
+    } catch (error) {
+      if (signal?.aborted && (error === signal.reason || (error instanceof Error && error.name === 'AbortError' && signal.aborted))) throw error;
+      const unconfirmed = webbridgeTransportUnconfirmed(error) && signal?.aborted !== true;
+      this.failWebbridge(live, error, unconfirmed);
+      throw error instanceof BrowserError ? error : new BrowserError('browser.execution_failed', unconfirmed ? WEBBRIDGE_UNCONFIRMED : webbridgeFailureText(error));
+    }
+  }
+
+  private async focusWebbridgeTab(live: LiveBrowser, target: string, signal?: AbortSignal): Promise<void> {
+    const session = live.webbridge?.session ?? webbridgeExecutionSession(live.connection.id);
+    const listed = await postWebbridgeCommand('list_tabs', {}, session, fetch, signal);
+    const tabs = webbridgeTabs(listed).map((tab) => ({ tabId: tab.tabId, targetId: tab.tabId, title: tab.title, url: tab.url, active: tab.active, label: tab.groupTitle }));
+    this.rememberWebbridgeTabs(live, session, tabs);
+    const active = tabs.filter((tab) => tab.active === true);
+    if (active.length === 1 && active[0]!.targetId === target) return;
+    const known = tabs.find((tab) => tab.targetId === target);
+    if (known === undefined) throw new BrowserError('browser.target', 'Use a current WebBridge tab id');
+    if (known.url === undefined) throw new BrowserError('browser.target', 'WebBridge can only select a tab by its exact URL, and this tab has no URL');
+    if (tabs.filter((tab) => tab.url === known.url).length !== 1) throw new BrowserError('browser.target', 'WebBridge can only select a tab by URL, and this URL is open more than once');
+    const selected = await postWebbridgeCommand('find_tab', { url: known.url }, session, fetch, signal);
+    const tabId = selected['tabId'];
+    const selectedId = typeof tabId === 'number' || typeof tabId === 'string' ? String(tabId) : undefined;
+    if (selectedId !== target) {
+      if (selectedId !== undefined && live.webbridge !== undefined) live.webbridge = { ...live.webbridge, currentTabId: selectedId };
+      throw new BrowserError('browser.target', 'WebBridge selected a different tab than the requested id');
+    }
+    live.webbridge = { ...(live.webbridge ?? { session, version: live.status.driverVersion ?? '', tabs }), currentTabId: target };
   }
 
   private async invokeWebbridge(live: LiveBrowser, input: BrowserInvocation, signal?: AbortSignal): Promise<BrowserInvocationResult> {
+    if (input.frame !== undefined && input.frame !== 'main') throw new BrowserError('browser.unsupported', 'Kimi WebBridge operates on the main frame only');
     const session = live.webbridge?.session ?? webbridgeExecutionSession(live.connection.id);
     const binding = JSON.stringify([input.caller.sessionId, input.caller.agentId, input.tab, input.frame ?? 'main', live.status.generation]);
     const refs = elementRefs(input.args);
@@ -593,41 +660,68 @@ export class BrowserControlService implements IBrowserControlService {
     live.status = { ...live.status, state: 'running', currentCall: { ...input.caller, tool: input.tool, tab: input.tab } };
     try {
       let data: Record<string, unknown>;
-      if (input.tool === 'agent_browser_snapshot') {
-        data = await postWebbridgeCommand('snapshot', {}, session, fetch, signal);
-        live.observation = { binding, refs: new Set(webbridgeRefs(data['tree'])) };
-      } else if (input.tool === 'agent_browser_open') {
+      let tab = input.tab;
+      if (input.tool === 'agent_browser_tab_new' || input.tool === 'agent_browser_open') {
         const url = textArg(input.args, 'url');
         if (url === undefined) throw new BrowserError('browser.invalid', 'A URL is required');
-        data = await postWebbridgeCommand('navigate', { url, newTab: true }, session, fetch, signal);
+        const label = textArg(input.args, 'label');
+        data = await postWebbridgeCommand('navigate', { url, newTab: true, ...(label !== undefined ? { group_title: label } : {}) }, session, fetch, signal);
+        tab = webbridgeCommandTabId(data);
         live.observation = undefined;
-      } else if (input.tool === 'agent_browser_click') {
-        const selector = textArg(input.args, 'selector') ?? textArg(input.args, 'ref');
-        if (selector === undefined) throw new BrowserError('browser.invalid', 'A selector is required');
-        data = await postWebbridgeCommand('click', { selector }, session, fetch, signal);
-      } else if (input.tool === 'agent_browser_fill') {
-        const selector = textArg(input.args, 'selector');
-        const value = textArg(input.args, 'value') ?? textArg(input.args, 'text');
-        if (selector === undefined || value === undefined) throw new BrowserError('browser.invalid', 'A selector and value are required');
-        data = await postWebbridgeCommand('fill', { selector, value }, session, fetch, signal);
+        live.webbridge = { session, version: live.webbridge?.version ?? live.status.driverVersion ?? '', tabs: live.webbridge?.tabs ?? [], currentTabId: tab };
+      } else if (input.tool === 'agent_browser_snapshot' || input.tool === 'agent_browser_click' || input.tool === 'agent_browser_fill' || input.tool === 'agent_browser_frame_main') {
+        if (input.tab === undefined) throw new BrowserError('browser.target', 'Select or open a WebBridge tab before reading or operating');
+        await this.focusWebbridgeTab(live, input.tab, signal);
+        if (input.tool === 'agent_browser_snapshot') {
+          data = await postWebbridgeCommand('snapshot', {}, session, fetch, signal);
+          live.observation = { binding, refs: new Set(webbridgeRefs(data['tree'])) };
+        } else if (input.tool === 'agent_browser_click') {
+          const selector = textArg(input.args, 'selector') ?? textArg(input.args, 'ref');
+          if (selector === undefined) throw new BrowserError('browser.invalid', 'A selector is required');
+          data = await postWebbridgeCommand('click', { selector }, session, fetch, signal);
+        } else if (input.tool === 'agent_browser_fill') {
+          const selector = textArg(input.args, 'selector');
+          const value = textArg(input.args, 'value') ?? textArg(input.args, 'text');
+          if (selector === undefined || value === undefined) throw new BrowserError('browser.invalid', 'A selector and value are required');
+          data = await postWebbridgeCommand('fill', { selector, value }, session, fetch, signal);
+        } else data = { success: true };
       } else if (input.tool === 'agent_browser_tab_switch') {
         const target = textArg(input.args, 'tab') ?? input.tab;
-        const known = live.webbridge?.tabs.find((tab) => tab.targetId === target);
-        if (known?.url === undefined) throw new BrowserError('browser.target', 'Select a current WebBridge tab id');
-        data = await postWebbridgeCommand('find_tab', { url: known.url }, session, fetch, signal);
+        if (target === undefined) throw new BrowserError('browser.target', 'Select a current WebBridge tab id');
+        await this.focusWebbridgeTab(live, target, signal);
+        data = { success: true };
+        tab = target;
         live.observation = undefined;
+      } else if (input.tool === 'agent_browser_tab_close') {
+        const target = textArg(input.args, 'tab') ?? input.tab;
+        if (target === undefined) throw new BrowserError('browser.target', 'Close a current WebBridge tab id');
+        await this.focusWebbridgeTab(live, target, signal);
+        data = await postWebbridgeCommand('close_tab', {}, session, fetch, signal);
+        if (data['closed'] !== true) throw new Error('WebBridge close_tab did not close the current tab');
+        if (live.webbridge?.currentTabId === target) {
+          const { currentTabId: _omit, ...bridge } = live.webbridge;
+          live.webbridge = bridge;
+        }
+        live.observation = undefined;
+        tab = target;
+      } else if (input.tool === 'agent_browser_window_new' || input.tool === 'agent_browser_frame_switch') {
+        throw new BrowserError('browser.unsupported', 'Kimi WebBridge operates on the main frame only');
       } else throw new BrowserError('browser.unsupported', `Kimi WebBridge has no mapping for ${input.tool}`);
       live.status = { ...live.status, state: live.admitting ? 'ready' : 'stopping', currentCall: undefined, checkedAt: new Date().toISOString() };
       return { browser: input.browser, generation: live.status.generation, executionHost: live.status.executionHost,
-        runtimeSession: session, tab: input.tab, frame: input.frame, result: webbridgeResult(data) };
+        runtimeSession: session, tab, frame: input.frame ?? 'main', result: webbridgeResult(data) };
     } catch (error) {
-      if (signal?.aborted && error === signal.reason) { live.status = { ...live.status, state: live.admitting ? 'ready' : 'failed', currentCall: undefined }; throw error; }
+      if (signal?.aborted && (error === signal.reason || (error instanceof Error && error.name === 'AbortError' && signal.aborted))) {
+        live.status = { ...live.status, state: live.admitting ? 'ready' : 'failed', currentCall: undefined };
+        throw error;
+      }
       if (error instanceof BrowserError && (error.code === 'browser.invalid' || error.code === 'browser.target' || error.code === 'browser.unsupported')) {
         live.status = { ...live.status, state: live.admitting ? 'ready' : 'failed', currentCall: undefined };
         throw error;
       }
-      this.failWebbridge(live, error);
-      throw error instanceof BrowserError ? error : new BrowserError('browser.execution_failed', webbridgeFailureText(error));
+      const unconfirmed = webbridgeTransportUnconfirmed(error) && signal?.aborted !== true;
+      this.failWebbridge(live, error, unconfirmed);
+      throw error instanceof BrowserError ? error : new BrowserError('browser.execution_failed', unconfirmed ? WEBBRIDGE_UNCONFIRMED : webbridgeFailureText(error));
     }
   }
 

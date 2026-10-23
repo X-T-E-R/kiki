@@ -12,6 +12,10 @@ describe('ego-lite browser connection', () => {
     expect(ego).toEqual({ type: 'ego-lite', name: 'Ego Lite', enabled: true, cliPath: 'C:/Ego/ego-browser.exe', profileId: 'p', serverName: 'desk' });
     expect(browserConnectionInputSchema.safeParse({ type: 'ego-lite', name: 'Ego Lite', endpoint: 'http://127.0.0.1:1' }).success).toBe(false);
     expect(browserConnectionSchema.parse({ id: 'ego-lite', name: 'Ego Lite', enabled: true, type: 'ego-lite', cliPath: 'C:/Ego/ego-browser.exe' }).type).toBe('ego-lite');
+    expect(browserConnectionInputSchema.parse({ type: 'kimi-webbridge', name: 'edge-kimi', enabled: true })).toEqual({ type: 'kimi-webbridge', name: 'edge-kimi', enabled: true });
+    expect(browserConnectionInputSchema.safeParse({ type: 'kimi-webbridge', name: 'edge-kimi', endpoint: { action: 'keep' } }).success).toBe(false);
+    expect(browserConnectionSchema.parse({ id: 'kimi-webbridge', name: 'edge-kimi', enabled: true, type: 'kimi-webbridge' }).type).toBe('kimi-webbridge');
+    expect(browserConnectionSchema.parse({ id: 'kimi-webbridge', name: 'edge-kimi', enabled: true, type: 'agent-browser-cdp', endpointDisplay: 'http://127.0.0.1', endpointConfigured: true }).type).toBe('agent-browser-cdp');
     expect(browserPresetIdSchema.parse('ego-lite')).toBe('ego-lite');
     expect(browserPresetIdSchema.options).toEqual(['kimi-webbridge', 'independent-browser', 'codex-browser', 'ego-lite']);
   });
