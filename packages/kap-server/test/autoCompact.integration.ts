@@ -4,7 +4,9 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AutoCompactStatus, AutoCompactWriteResult } from '@kiki/protocol';
-import { getLiveSessionById, IAgentLifecycleService } from '@kiki/agent-core-v2';
+import { getLiveSessionById, IAgentLifecycleService, IAgentProfileService } from '@kiki/agent-core-v2';
+import { autoCompactOverrideKey } from '@kiki/agent-core-v2/agent/fullCompaction/autoCompactOps';
+import { IAgentStateService } from '@kiki/agent-core-v2/agent/state/agentState';
 
 import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
@@ -156,6 +158,38 @@ describe('automatic compaction REST contract', () => {
     expect((await request<AutoCompactStatus>(childPath)).data).toMatchObject({ source: 'legacy', tokens: 467_500 });
     expect((await request<AutoCompactWriteResult>(childPath, 'PATCH', { tokens: 300_000 })).data.effective).toMatchObject({ source: 'session', tokens: 300_000 });
     expect((await request<AutoCompactStatus>(parentPath)).data).toMatchObject({ source: 'session', tokens: 330_000 });
+  });
+
+  it('rejects automatic compaction when the session has no model and leaves config unchanged', async () => {
+    const created = await request<{ id: string }>('/api/sessions', 'POST', { metadata: { cwd: home } });
+    expect(created.code, created.msg).toBe(0);
+    const path = `/api/sessions/${created.data.id}/agents/main/auto-compact`;
+    const configBefore = await readFile(join(home, 'config.toml'), 'utf8');
+    const profileBefore = await readFile(join(home, 'agents', 'custom.md'), 'utf8');
+    const read = await request<AutoCompactStatus>(path);
+    expect(read.code).toBe(40001);
+    expect(read.msg).toContain('Model not set');
+    expect(read.data).toBeNull();
+    const live = getLiveSessionById(server!.core.accessor, created.data.id);
+    const agent = live?.accessor.get(IAgentLifecycleService).get('main');
+    expect(agent?.accessor.get(IAgentProfileService).hasModel()).toBe(false);
+    for (const body of [
+      { tokens: 400_000 },
+      { tokens: null },
+      { tokens: 400_000, save: 'model' as const },
+      { tokens: 400_000, save: 'profile' as const },
+      { tokens: 400_000, save: 'global' as const },
+    ]) {
+      const written = await request<unknown>(path, 'PATCH', body);
+      expect(written.code, `${JSON.stringify(body)} ${written.msg}`).toBe(40001);
+      expect(written.msg).toContain('Model not set');
+      expect(written.data).toBeNull();
+    }
+    expect(await readFile(join(home, 'config.toml'), 'utf8')).toBe(configBefore);
+    expect(await readFile(join(home, 'agents', 'custom.md'), 'utf8')).toBe(profileBefore);
+    expect(agent?.accessor.get(IAgentStateService).get(autoCompactOverrideKey)).toEqual({});
+    const models = await request<{ items: Array<{ id: string; auto_compact?: number }> }>('/api/models');
+    expect(models.data.items.find((item) => item.id === 'test')?.auto_compact).toBeUndefined();
   });
 
   it('reloads a file-backed profile without overwriting its prompt or model config', async () => {

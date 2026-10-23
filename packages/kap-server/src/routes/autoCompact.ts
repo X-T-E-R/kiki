@@ -1,10 +1,12 @@
 import {
+  ErrorCodes,
   IAgentFullCompactionService,
   IAgentLifecycleService,
   IAgentProfileService,
   IConfigService,
   ISessionAgentProfileCatalog,
   MAIN_AGENT_ID,
+  isError2,
   programForSession,
   type Scope,
 } from '@kiki/agent-core-v2';
@@ -38,6 +40,11 @@ const errors = {
   [ErrorCode.AGENT_PROFILE_READ_ONLY]: {},
 };
 
+function missingModelEnvelope(error: unknown, requestId: string): ReturnType<typeof errEnvelope> | undefined {
+  if (!isError2(error) || error.code !== ErrorCodes.MODEL_NOT_CONFIGURED) return undefined;
+  return errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, requestId);
+}
+
 export function registerAutoCompactRoutes(app: RouteHost, core: Scope): void {
   const read = defineRoute({
     method: 'GET', path, params, success: { data: autoCompactStatusSchema }, errors,
@@ -56,7 +63,14 @@ export function registerAutoCompactRoutes(app: RouteHost, core: Scope): void {
         reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Agent is not active in this session', req.id));
         return;
       }
-      reply.send(okEnvelope(agent.accessor.get(IAgentFullCompactionService).getAutoCompact(), req.id));
+      const compact = agent.accessor.get(IAgentFullCompactionService);
+      try {
+        reply.send(okEnvelope(compact.getAutoCompact(), req.id));
+      } catch (error) {
+        const missing = missingModelEnvelope(error, req.id);
+        if (missing === undefined) throw error;
+        reply.send(missing);
+      }
     });
   });
   app.get(read.path, read.options, read.handler as Parameters<RouteHost['get']>[2]);
@@ -81,6 +95,17 @@ export function registerAutoCompactRoutes(app: RouteHost, core: Scope): void {
       }
       const compact = agent.accessor.get(IAgentFullCompactionService);
       const profile = agent.accessor.get(IAgentProfileService);
+      if (!profile.hasModel() && (profile.data().executorId ?? 'native') === 'native') {
+        try {
+          compact.getAutoCompact();
+          reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Model not set', req.id));
+        } catch (error) {
+          const missing = missingModelEnvelope(error, req.id);
+          if (missing === undefined) throw error;
+          reply.send(missing);
+        }
+        return;
+      }
       const tokens = req.body.tokens;
       let savedAs: string | number | undefined;
       if (req.body.save === 'model' && tokens !== null) {
