@@ -29,7 +29,14 @@ const defaults = createDecorator<{ readonly _serviceBrand: undefined; ready: Pro
 
 async function execute(work: ToolExecution | Promise<ToolExecution>): Promise<ExecutableToolResult> {
   const execution = await work;
-  return 'execute' in execution ? execution.execute({ turnId: 1, toolCallId: 'webbridge-chain', signal: new AbortController().signal }) : execution;
+  return run(execution, undefined, new AbortController().signal);
+}
+
+async function run(work: ToolExecution | Promise<ToolExecution>, args: Record<string, unknown> | undefined, signal: AbortSignal): Promise<ExecutableToolResult> {
+  const execution = await work;
+  if ('resolveExecution' in execution && args !== undefined) return run(execution.resolveExecution(args), undefined, signal);
+  if (!('execute' in execution)) return execution;
+  return execution.execute({ turnId: 1, toolCallId: 'webbridge-chain', signal });
 }
 
 function textOf(result: ExecutableToolResult): string {
@@ -40,6 +47,7 @@ function textOf(result: ExecutableToolResult): string {
 describe('native Kimi WebBridge chain', () => {
   it('classifies a lost write separately from a refused connection', () => {
     expect(webbridgeTransportUnconfirmed(new DOMException('The operation was aborted due to timeout', 'TimeoutError'))).toBe(true);
+    expect(webbridgeTransportUnconfirmed(new DOMException('The operation was aborted', 'AbortError'))).toBe(false);
     expect(webbridgeTransportUnconfirmed(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNRESET' } }))).toBe(true);
     expect(webbridgeTransportUnconfirmed(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } }))).toBe(false);
     expect(webbridgeTransportUnconfirmed(new Error('WebBridge click was not confirmed'))).toBe(false);
@@ -134,9 +142,55 @@ describe('native Kimi WebBridge chain', () => {
       expect(bridge.factory.open).not.toHaveBeenCalled();
     } finally { vi.unstubAllGlobals(); await bridge.ix.dispose(); }
   });
+
+  it('keeps a write aborted after it was sent unconfirmed and does not replay it', async () => {
+    const seen: { action?: string; args?: Record<string, unknown>; session?: string }[] = [];
+    const sent = new AbortController();
+    const bridge = await harness(seen, { abortAction: 'click', abort: () => sent.abort() });
+    try {
+      await bridge.service.connections({ action: 'connect', browser: 'kimi-webbridge' });
+      await bridge.service.tabs({ action: 'open', browser: 'kimi-webbridge', url: 'https://example.test/a' });
+      await bridge.service.connections({ action: 'tools', browser: 'kimi-webbridge', tools: ['agent_browser_snapshot', 'agent_browser_click'] });
+      const registry = bridge.ix.get(IAgentToolRegistryService);
+      expect((await execute(registry.resolve('browser__agent_browser_snapshot')!.resolveExecution({}))).isError).not.toBe(true);
+      const early = new AbortController();
+      early.abort();
+      const before = seen.length;
+      const skipped = await run(registry.resolve('browser__agent_browser_click')!, { selector: '@e1' }, early.signal);
+      expect(skipped.isError).toBe(true);
+      expect(seen.slice(before).map((call) => call.action)).toEqual([]);
+      expect(JSON.parse(textOf(await bridge.service.connections({ action: 'status', browser: 'kimi-webbridge' }))).state).toBe('ready');
+      const clicked = await run(registry.resolve('browser__agent_browser_click')!, { selector: '@e1' }, sent.signal);
+      expect(clicked.isError).toBe(true);
+      const status = JSON.parse(textOf(await bridge.service.connections({ action: 'status', browser: 'kimi-webbridge' })));
+      expect(status).toMatchObject({ state: 'unconfirmed', failure: { reason: 'outcome_unknown' } });
+      expect((await execute(registry.resolve('browser__agent_browser_click')!.resolveExecution({ selector: '@e1' }))).isError).toBe(true);
+      expect(seen.slice(before).map((call) => call.action)).toEqual(['list_tabs', 'click']);
+      expect(bridge.factory.open).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); await bridge.ix.dispose(); }
+  });
+
+  it('keeps a write with a truncated acknowledgement unconfirmed', async () => {
+    const seen: { action?: string; args?: Record<string, unknown>; session?: string }[] = [];
+    const bridge = await harness(seen, { truncateAction: 'fill' });
+    try {
+      await bridge.service.connections({ action: 'connect', browser: 'kimi-webbridge' });
+      await bridge.service.tabs({ action: 'open', browser: 'kimi-webbridge', url: 'https://example.test/a' });
+      await bridge.service.connections({ action: 'tools', browser: 'kimi-webbridge', tools: ['agent_browser_fill'] });
+      const registry = bridge.ix.get(IAgentToolRegistryService);
+      const before = seen.length;
+      const filled = await execute(registry.resolve('browser__agent_browser_fill')!.resolveExecution({ selector: '#field', value: 'local' }));
+      expect(filled.isError).toBe(true);
+      const status = JSON.parse(textOf(await bridge.service.connections({ action: 'status', browser: 'kimi-webbridge' })));
+      expect(status).toMatchObject({ state: 'unconfirmed', failure: { reason: 'outcome_unknown' } });
+      expect((await execute(registry.resolve('browser__agent_browser_fill')!.resolveExecution({ selector: '#field', value: 'local' }))).isError).toBe(true);
+      expect(seen.slice(before).map((call) => call.action)).toEqual(['list_tabs', 'fill']);
+      expect(bridge.factory.open).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); await bridge.ix.dispose(); }
+  });
 });
 
-async function harness(seen: { action?: string; args?: Record<string, unknown>; session?: string }[], fault?: { failAction?: string; rejectAction?: string }) {
+async function harness(seen: { action?: string; args?: Record<string, unknown>; session?: string }[], fault?: { failAction?: string; rejectAction?: string; abortAction?: string; truncateAction?: string; abort?: () => void }) {
   const tabs: { tabId: number; url: string; title: string; active: boolean; groupTitle?: string }[] = [];
   let next = 0;
   let current: number | undefined;
@@ -146,6 +200,15 @@ async function harness(seen: { action?: string; args?: Record<string, unknown>; 
     if (body.action === fault?.failAction) {
       seen.push(body);
       throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+    }
+    if (body.action === fault?.abortAction) {
+      seen.push(body);
+      fault.abort?.();
+      throw new DOMException('The operation was aborted', 'AbortError');
+    }
+    if (body.action === fault?.truncateAction) {
+      seen.push(body);
+      return new Response('{"ok":true,"data":', { status: 200 });
     }
     seen.push(body);
     if (body.action === fault?.rejectAction) return new Response(JSON.stringify({ ok: true, data: { success: false, error: 'no such element' } }), { status: 200 });

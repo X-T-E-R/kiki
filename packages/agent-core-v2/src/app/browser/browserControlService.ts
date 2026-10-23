@@ -539,6 +539,23 @@ export class BrowserControlService implements IBrowserControlService {
     return webbridgePresetRouted(connection, listed.webbridgePresetRoute !== false);
   }
 
+  private raiseWebbridge(live: LiveBrowser, error: unknown, signal?: AbortSignal): never {
+    if (error instanceof BrowserError && (error.code === 'browser.invalid' || error.code === 'browser.target' || error.code === 'browser.unsupported')) {
+      live.status = { ...live.status, state: live.admitting ? 'ready' : 'failed', currentCall: undefined };
+      throw error;
+    }
+    if (webbridgeTransportUnconfirmed(error)) {
+      this.failWebbridge(live, error, true);
+      throw error instanceof BrowserError ? error : new BrowserError('browser.execution_failed', WEBBRIDGE_UNCONFIRMED);
+    }
+    if (signal?.aborted === true && (error === signal.reason || (error instanceof Error && error.name === 'AbortError'))) {
+      live.status = { ...live.status, state: live.admitting ? 'ready' : 'failed', currentCall: undefined };
+      throw error;
+    }
+    this.failWebbridge(live, error);
+    throw error instanceof BrowserError ? error : new BrowserError('browser.execution_failed', webbridgeFailureText(error));
+  }
+
   private failWebbridge(live: LiveBrowser, error: unknown, unconfirmed = false): BrowserStatus {
     live.admitting = false;
     live.observation = undefined;
@@ -619,12 +636,7 @@ export class BrowserControlService implements IBrowserControlService {
       const tabs = webbridgeTabs(data).map((tab) => ({ tabId: tab.tabId, targetId: tab.tabId, title: tab.title, url: tab.url, active: tab.active, label: tab.groupTitle }));
       this.rememberWebbridgeTabs(live, session, tabs);
       return tabs;
-    } catch (error) {
-      if (signal?.aborted && (error === signal.reason || (error instanceof Error && error.name === 'AbortError' && signal.aborted))) throw error;
-      const unconfirmed = webbridgeTransportUnconfirmed(error) && signal?.aborted !== true;
-      this.failWebbridge(live, error, unconfirmed);
-      throw error instanceof BrowserError ? error : new BrowserError('browser.execution_failed', unconfirmed ? WEBBRIDGE_UNCONFIRMED : webbridgeFailureText(error));
-    }
+    } catch (error) { this.raiseWebbridge(live, error, signal); }
   }
 
   private async focusWebbridgeTab(live: LiveBrowser, target: string, signal?: AbortSignal): Promise<void> {
@@ -710,19 +722,7 @@ export class BrowserControlService implements IBrowserControlService {
       live.status = { ...live.status, state: live.admitting ? 'ready' : 'stopping', currentCall: undefined, checkedAt: new Date().toISOString() };
       return { browser: input.browser, generation: live.status.generation, executionHost: live.status.executionHost,
         runtimeSession: session, tab, frame: input.frame ?? 'main', result: webbridgeResult(data) };
-    } catch (error) {
-      if (signal?.aborted && (error === signal.reason || (error instanceof Error && error.name === 'AbortError' && signal.aborted))) {
-        live.status = { ...live.status, state: live.admitting ? 'ready' : 'failed', currentCall: undefined };
-        throw error;
-      }
-      if (error instanceof BrowserError && (error.code === 'browser.invalid' || error.code === 'browser.target' || error.code === 'browser.unsupported')) {
-        live.status = { ...live.status, state: live.admitting ? 'ready' : 'failed', currentCall: undefined };
-        throw error;
-      }
-      const unconfirmed = webbridgeTransportUnconfirmed(error) && signal?.aborted !== true;
-      this.failWebbridge(live, error, unconfirmed);
-      throw error instanceof BrowserError ? error : new BrowserError('browser.execution_failed', unconfirmed ? WEBBRIDGE_UNCONFIRMED : webbridgeFailureText(error));
-    }
+    } catch (error) { this.raiseWebbridge(live, error, signal); }
   }
 
   private async backend(live: LiveBrowser): Promise<BrowserBackend> {

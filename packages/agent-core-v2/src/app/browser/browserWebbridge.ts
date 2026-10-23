@@ -46,29 +46,59 @@ export interface WebbridgeTab {
   readonly groupTitle?: string;
 }
 
+class WebbridgeUnconfirmedError extends Error {
+  constructor(action: string) {
+    super(`WebBridge ${action} was sent but its result was not confirmed`);
+    this.name = 'WebbridgeUnconfirmedError';
+  }
+}
+
+class WebbridgeRejectedError extends Error {
+  constructor(action: string, detailSource: unknown) {
+    const detail = typeof detailSource === 'string' ? detailSource.replace(/https?:\/\/\S+/gi, '').trim().slice(0, 180) : '';
+    super(detail === '' ? `WebBridge ${action} was not confirmed` : `WebBridge ${action} was not confirmed: ${detail}`);
+    this.name = 'WebbridgeRejectedError';
+  }
+}
+
+function errorCode(error: unknown): string {
+  if (!(error instanceof Error)) return '';
+  const carrier = error as { code?: unknown; cause?: { code?: unknown } };
+  return typeof carrier.code === 'string' ? carrier.code : typeof carrier.cause?.code === 'string' ? carrier.cause.code : '';
+}
+
 function commandData(payload: unknown, action: string): Record<string, unknown> {
-  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) throw new Error(`WebBridge ${action} returned an invalid response`);
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) throw new WebbridgeUnconfirmedError(action);
   const envelope = payload as { ok?: boolean; data?: unknown; error?: unknown };
+  if (envelope.ok === false) throw new WebbridgeRejectedError(action, envelope.error);
   const data = envelope.data;
-  if (envelope.ok !== true || typeof data !== 'object' || data === null || Array.isArray(data)) {
-    const detail = typeof envelope.error === 'string' ? envelope.error.replace(/https?:\/\/\S+/gi, '').trim().slice(0, 180) : '';
-    throw new Error(detail === '' ? `WebBridge ${action} was not confirmed` : `WebBridge ${action} was not confirmed: ${detail}`);
-  }
+  if (envelope.ok !== true || typeof data !== 'object' || data === null || Array.isArray(data)) throw new WebbridgeUnconfirmedError(action);
   const record = data as Record<string, unknown>;
-  if (record['success'] === false) {
-    const detail = typeof record['error'] === 'string' ? record['error'].replace(/https?:\/\/\S+/gi, '').trim().slice(0, 180) : '';
-    throw new Error(detail === '' ? `WebBridge ${action} was not confirmed` : `WebBridge ${action} was not confirmed: ${detail}`);
-  }
+  if (record['success'] === false) throw new WebbridgeRejectedError(action, record['error']);
   return record;
 }
 
+const WEBBRIDGE_UNSENT = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN']);
+
 export async function postWebbridgeCommand(action: string, args: Readonly<Record<string, unknown>>, session: string, fetchImpl: typeof fetch = fetch, signal?: AbortSignal): Promise<Record<string, unknown>> {
-  const data = await boundedJson(await fetchImpl(`${BASE}/command`, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, redirect: 'error',
-    signal: signal === undefined ? AbortSignal.timeout(30_000) : AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
-    body: JSON.stringify({ action, args, session }),
-  }));
-  return commandData(data, action);
+  if (signal?.aborted) throw signal.reason ?? new DOMException('The operation was aborted', 'AbortError');
+  let response: Response;
+  try {
+    response = await fetchImpl(`${BASE}/command`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, redirect: 'error',
+      signal: signal === undefined ? AbortSignal.timeout(30_000) : AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+      body: JSON.stringify({ action, args, session }),
+    });
+  } catch (error) {
+    if (WEBBRIDGE_UNSENT.has(errorCode(error))) throw error;
+    throw new WebbridgeUnconfirmedError(action);
+  }
+  try {
+    return commandData(await boundedJson(response), action);
+  } catch (error) {
+    if (error instanceof WebbridgeRejectedError || error instanceof WebbridgeUnconfirmedError) throw error;
+    throw new WebbridgeUnconfirmedError(action);
+  }
 }
 
 export function webbridgeRefs(tree: unknown): readonly string[] {
@@ -81,10 +111,10 @@ export function webbridgeRefs(tree: unknown): readonly string[] {
 }
 
 export function webbridgeTransportUnconfirmed(error: unknown): boolean {
+  if (error instanceof WebbridgeUnconfirmedError) return true;
   if (!(error instanceof Error)) return false;
-  if (error.name === 'TimeoutError' || error.name === 'AbortError') return true;
-  const carrier = error as { code?: unknown; cause?: { code?: unknown } };
-  const code = typeof carrier.code === 'string' ? carrier.code : typeof carrier.cause?.code === 'string' ? carrier.cause.code : '';
+  if (error.name === 'TimeoutError') return true;
+  const code = errorCode(error);
   return code === 'ECONNRESET' || code === 'EPIPE' || code === 'UND_ERR_SOCKET' || code === 'UND_ERR_HEADERS_TIMEOUT' || code === 'UND_ERR_BODY_TIMEOUT';
 }
 
