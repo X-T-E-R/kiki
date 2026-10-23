@@ -57,7 +57,7 @@ room_budget = 12
 
 A session's `delivery` is either `reply` or `message`. New persona sessions use message mode when the persona omits `delivery`; an explicit session choice takes priority, and an existing session keeps its saved choice. Sessions without a persona, and personas with explicit `reply`, answer directly. The persona editor saves the delivery mode it shows, including an explicit `reply`.
 
-In the message view, a completed turn's last complete ordinary reply also appears when that turn has no successful `SendMessage`. Kiki shows the whole reply, not just its last sentence. Long replies and sent messages load the rest of their text automatically. This display fallback does not send to a room, another persona, or an IM channel; those destinations still need an actual delivery.
+In the message view, a completed turn's last complete ordinary reply also appears when that turn has no successful `SendMessage`. Long replies and sent messages load the rest of their text automatically. Failed turns keep a failure indicator; switch to the process view to read any unfinished prose. This display fallback does not send to a room, another persona, or an IM channel; those destinations still need an actual delivery.
 
 When a native-executor message turn ends in ordinary text and `SendMessage` is available, the next model request reminds the model to use that tool for later replies. It does not add another request to the completed turn or resend its answer. The shipped `agent` profile exposes `SendMessage` in message mode and omits it in reply mode. A custom profile with an explicit `tools` allowlist must include it; delivery mode does not bypass profile permissions. The tool table is frozen for a turn, so a delivery change applies to the next one.
 
