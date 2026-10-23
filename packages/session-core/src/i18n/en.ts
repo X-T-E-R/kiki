@@ -2364,7 +2364,6 @@ export const en = {
   'sv.steerFailed': 'Couldn’t send now: {detail}. The message is back in the composer.',
   'sv.steerRefused': 'This message changes a mode, so it needs a turn of its own. It’s back in the composer; send it again to queue it.',
   'sv.steerUnknown': 'Couldn’t confirm the message arrived: {detail}. Check the timeline before sending it again.',
-  'sv.steerTurnEnded': 'The turn ended first — this message runs next as its own turn.',
   'sv.steerQueued': 'This message is queued — it didn’t join the running turn and starts on its own.',
   'sv.steerQueuedNoActiveTurn': 'No turn is running right now — this message starts on its own.',
   'sv.steerQueuedTargetChanged': 'The running turn changed before this message arrived. It stays queued and starts on its own turn.',

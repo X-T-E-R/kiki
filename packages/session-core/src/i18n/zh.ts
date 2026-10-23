@@ -2339,7 +2339,6 @@ export const zh = {
   'sv.steerFailed': '没能立即发送：{detail}。消息已放回输入框。',
   'sv.steerRefused': '这条消息会切换模式，需要单独一轮。已放回输入框，再次发送即可排队。',
   'sv.steerUnknown': '无法确认消息是否已送达：{detail}。请先查看时间线，再决定是否重发。',
-  'sv.steerTurnEnded': '当前轮次已先结束，这条消息会作为下一轮发送。',
   'sv.steerQueued': '消息仍在队列中：没有进入当前轮次，将作为独立一轮发送。',
   'sv.steerQueuedNoActiveTurn': '当前没有进行中的轮次，这条消息会单独开始。',
   'sv.steerQueuedTargetChanged': '当前轮次在消息到达前已发生变化。消息仍在队列中，将作为独立一轮发送。',

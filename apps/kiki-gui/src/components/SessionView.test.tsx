@@ -1601,7 +1601,6 @@ describe('sendNowNotice', () => {
   it('does not claim the turn ended when the receipt carries no reason', () => {
     expect(sendNowNotice('queued', undefined)?.key).toBe('sv.steerQueued');
     expect(sendNowQueuedNotice(undefined)).toBe('sv.steerQueued');
-    expect(sendNowNotice('queued', 'no_active_turn')?.key).not.toBe('sv.steerTurnEnded');
   });
 
   it('explains a Send now that has to open its own turn', () => {
