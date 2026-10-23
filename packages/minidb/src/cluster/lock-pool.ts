@@ -111,6 +111,7 @@ function readerFingerprint(parts: string[], mark: ReaderEntry['walMark']): strin
 
 export class ShardLockPool {
   private readonly writers = new Map<number, WriterEntry>();
+  private readonly compactionRetries = new Map<number, MiniDb<unknown>['autoCompactionRetry']>();
   private readonly readers = new Map<number, ReaderEntry>();
   private readonly openingWriters = new Map<number, Promise<WriterEntry>>();
   private readonly openingReaders = new Map<number, Promise<ReaderEntry>>();
@@ -266,7 +267,9 @@ export class ShardLockPool {
     let delay = 10;
     for (;;) {
       try {
-        const handle = await ShardHandle.openWriter(shardId, dir, this.opts.writerOpts, this.opts.lockRenewMs);
+        const retry = this.compactionRetries.get(shardId) ?? { nextAt: 0, delayMs: 5_000 };
+        this.compactionRetries.set(shardId, retry);
+        const handle = await ShardHandle.openWriter(shardId, dir, this.opts.writerOpts, this.opts.lockRenewMs, retry);
         this.stats.writerOpens++;
         try {
           await this.opts.applyDefs(handle.db);

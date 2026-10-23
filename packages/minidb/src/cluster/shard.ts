@@ -28,8 +28,9 @@ export class ShardHandle {
     dir: string,
     opts: ShardOpenOptions,
     renewMs: number,
+    autoCompactionRetry?: MiniDb<unknown>['autoCompactionRetry'],
   ): Promise<ShardHandle> {
-    const db = await MiniDb.open({ ...opts, dir });
+    const db = await MiniDb.open({ ...opts, dir }, autoCompactionRetry);
     const handle = new ShardHandle(shardId, dir, db as MiniDb<unknown>, true);
     if (renewMs > 0) {
       handle.leaseTimer = setInterval(() => {

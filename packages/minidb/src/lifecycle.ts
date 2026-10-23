@@ -80,6 +80,7 @@ export interface LifecycleHost<V> {
   compactWalRatio: number;
   compactMinWalBytes: number;
   autoCompact: boolean;
+  autoCompactionRetry: { nextAt: number; delayMs: number };
   maxMemoryBytes: number | null;
   maxMemoryPolicy: 'reject' | 'evict-lru';
   indexGenerationsEnabled: boolean;
@@ -352,7 +353,7 @@ export async function openMiniDb<V>(db: LifecycleHost<V>, opts: OpenOptions, hoo
     // complete and consistent the moment open() returns. Awaiting the
     // compaction here blocked open() on the whole snapshot rewrite + text
     // postings rebuild — tens of seconds of stalled startup on a large db.
-    if (!db.readOnly && db.autoCompact && shouldCompact(db)) hooks.submitCompaction().catch(() => {});
+    if (!db.readOnly && db.autoCompact && Date.now() >= db.autoCompactionRetry.nextAt && shouldCompact(db)) hooks.submitCompaction().catch(() => {});
     // Background generation build (fire-and-forget, like the compaction
     // kick). Two triggers: (a) the legacy path served the open and there is
     // data worth checkpointing — no (usable) generation exists; (b) a
