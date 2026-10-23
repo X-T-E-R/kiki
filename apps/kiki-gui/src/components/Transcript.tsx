@@ -99,6 +99,7 @@ import {
   type ActivitySummary,
   type MessageBlock,
   type MessageViewNode,
+  projectMessageView,
 } from '@kiki/session-core/session';
 import { firstSentence, formatTokensPerSecond, plainInline } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
@@ -195,7 +196,7 @@ import { BridgedOriginRow } from './message/BridgedOriginLine';
 import { MessageRow, SpeakerHead, speakerOf } from './message/MessageRow';
 import { ActivitySummaryRow, HandoffRow, isSilentActivity, OutcomeLine, PresenceLine } from './message/MessageTimelineRows';
 import { displayUserMessageText, editableUserMessageText } from './message/messageSource';
-import { buildMessageNodes, isInboundHandoff, presenceOf, speakerKey } from './message/messageTimeline';
+import { buildMessageNodes, completedTurnIds, isInboundHandoff, presenceOf, speakerKey } from './message/messageTimeline';
 import { writeTimelineView, type TimelineView } from './message/messageViewMode';
 import { useMessageViewContext } from './message/messageViewContext';
 
@@ -900,6 +901,7 @@ const AssistantMessage = memo(function AssistantMessage({
   isLatestFinal = false,
   annotations,
   stopShownByTail = false,
+  deliveredReply = false,
 }: {
   block: AssistantBlock;
   rowActions?: TranscriptRowActions;
@@ -907,6 +909,8 @@ const AssistantMessage = memo(function AssistantMessage({
   isLatestFinal?: boolean;
   /** The visible turn tail already carries this turn's stop. */
   stopShownByTail?: boolean;
+  /** This assistant text is the reply the message view speaks. */
+  deliveredReply?: boolean;
   /** Timeline annotations anchored to this message's text (identity-stable). */
   annotations?: readonly TimelineAnnotation[];
 }) {
@@ -923,7 +927,7 @@ const AssistantMessage = memo(function AssistantMessage({
       setReadingText(block.text);
     }
   }, [isOutputLayerActive, block.text]);
-  const internalProse = useMessageViewContext().internalProse && block.text !== '';
+  const internalProse = useMessageViewContext().internalProse && block.text !== '' && !deliveredReply;
   const streaming = block.streaming && block.text !== '';
   const { prefix, tail } = useMemo(
     () => (streaming ? splitStreamingText(block.text) : { prefix: '', tail: '' }),
@@ -2355,10 +2359,13 @@ const BlockView = memo(function BlockView({
   latestFinalAssistantId,
   annotations,
   stoppedTailTurnId,
+  deliveredReply = false,
 }: {
   block: Exclude<Block, ToolBlock>;
   /** Turn whose stop the visible tail divider already states. */
   stoppedTailTurnId?: string;
+  /** This assistant text is the reply the message view speaks. */
+  deliveredReply?: boolean;
   readOnly: boolean;
   onResolveApproval: (
     approvalId: string,
@@ -2431,6 +2438,7 @@ const BlockView = memo(function BlockView({
           isLatestFinal={block.id === latestFinalAssistantId}
           annotations={annotations}
           stopShownByTail={stoppedTailTurnId !== undefined && sameTurn(block.turnId, stoppedTailTurnId)}
+          deliveredReply={deliveredReply}
         />
       );
     case 'thinking':
@@ -2959,6 +2967,8 @@ const AGENT_LANE = 'w-full max-w-[var(--kiki-agent-column,640px)]';
 
 const TRANSCRIPT_OVERSCAN = 6;
 const EMPTY_HELD: ReadonlySet<string> = new Set();
+/** No turn reply is delivered speech: the default when the process view has nothing to excuse. */
+const EMPTY_PROMOTED: ReadonlySet<string> = new Set();
 const TRANSCRIPT_OLDER_INTENT_MS = 1000;
 const EMPTY_TRANSCRIPT_ITEM_KEY = 'transcript-live-status';
 /** Row-offset tolerance for "the reader is still at that locate target". */
@@ -3106,6 +3116,12 @@ type TranscriptRowProps = {
   onLocateDispatch?: (agentId: string) => void;
   /** blockId → index in `state.blocks`, the gallery's one ordering source. */
   blockOrder: ReadonlyMap<string, number>;
+  /**
+   * Assistant blocks whose text the message view already speaks. The process
+   * view keeps its "internal" label for ordinary prose but not for what the
+   * reader was told.
+   */
+  promotedReplyIds?: ReadonlySet<string>;
 };
 
 function nodeUsesAgentNames(node: DisplayNode): boolean {
@@ -3133,6 +3149,24 @@ function subagentBranchEqual(
   }
   if (node.kind !== 'subagent') return true;
   return previousForest?.byId[node.subagentId] === nextForest?.byId[node.subagentId];
+}
+
+/** Assistant block ids a row draws, including the ones inside its folds. */
+function assistantIdsOf(node: DisplayNode): string[] {
+  if (node.kind === 'assistant') return [node.id];
+  if (node.kind !== 'history-fold') return [];
+  return node.members.flatMap((member) => assistantIdsOf(member));
+}
+
+/**
+ * Whether the delivered-reply set changed for anything this row draws. The set
+ * is rebuilt whenever the blocks change, but a row only cares about its own
+ * assistant blocks, so a token elsewhere never repaints it.
+ */
+function promotionEqual(previous: TranscriptRowProps, next: TranscriptRowProps): boolean {
+  if (previous.promotedReplyIds === next.promotedReplyIds) return true;
+  const ids = [...assistantIdsOf(previous.node), ...assistantIdsOf(next.node)];
+  return ids.every((id) => previous.promotedReplyIds?.has(id) === next.promotedReplyIds?.has(id));
 }
 
 /**
@@ -3168,6 +3202,7 @@ const TranscriptRow = memo(
     onOpenAgent,
     onLocateDispatch,
     blockOrder,
+    promotedReplyIds,
   }: TranscriptRowProps) {
     // data-turn-id makes a turn addressable from outside the transcript (the
     // /usage drilldown's ?turn= locator scrolls to it); absent on turn-less
@@ -3223,6 +3258,7 @@ const TranscriptRow = memo(
             latestFinalAssistantId={latestFinalAssistantId}
             annotations={member.id === node.id ? annotations : undefined}
             stoppedTailTurnId={stoppedTailTurnId}
+            deliveredReply={promotedReplyIds?.has(member.id) === true}
           />
         ))
       );
@@ -3265,7 +3301,8 @@ const TranscriptRow = memo(
     prev.onDismissQuestion === next.onDismissQuestion &&
     prev.onCancelQueued === next.onCancelQueued &&
     prev.onOpenAgent === next.onOpenAgent &&
-    prev.onLocateDispatch === next.onLocateDispatch,
+    prev.onLocateDispatch === next.onLocateDispatch &&
+    promotionEqual(prev, next),
 );
 
 /** Jump-to-bottom pill driven by the virtualizer's end state. */
@@ -3898,6 +3935,16 @@ export function Transcript({
     [view, timelineBlocks, state.busy, runningTurnId, messageContext.persona?.name],
   );
   const groupedNodes: readonly TimelineNode[] = view === 'message' ? messageNodes : processNodes;
+  // The reply the message view promotes is what the reader was told, so the
+  // process view must not label that same block "internal prose". Only a
+  // message-delivering session's process view asks, and only completed turns
+  // qualify — a running turn's text is not speech yet.
+  const promotedReplyIds = useMemo<ReadonlySet<string>>(() => {
+    if (view !== 'process' || !messageContext.internalProse) return EMPTY_PROMOTED;
+    return new Set(projectMessageView(timelineBlocks, {
+      completedTurnIds: completedTurnIds(timelineBlocks, { busy: state.busy, liveTurnId: runningTurnId }),
+    }).flatMap((node) => (node.kind === 'message' && node.sourceBlock !== undefined ? [node.sourceBlock.id] : [])));
+  }, [view, messageContext.internalProse, timelineBlocks, state.busy, runningTurnId]);
   const blockById = useMemo(() => new Map(timelineBlocks.map((block) => [block.id, block] as const)), [timelineBlocks]);
   // "查看过程" / "在过程中查看": flip this session to the process view, then
   // let the process timeline (same locator key) scroll to the turn.
@@ -5114,6 +5161,7 @@ export function Transcript({
                         onOpenAgent={onOpenAgent}
                         onLocateDispatch={handleLocateDispatch}
                         blockOrder={blockOrder}
+                        promotedReplyIds={promotedReplyIds}
                       />
                     </div>
                   )}

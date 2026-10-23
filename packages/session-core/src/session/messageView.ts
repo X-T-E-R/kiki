@@ -78,10 +78,6 @@ function replySpeech(block: AssistantBlock, turn: string): MessageBlock {
   };
 }
 
-function words(text: string): string {
-  return text.replace(/\s+/g, ' ').trim();
-}
-
 function turnId(block: Block): string | undefined {
   if (block.kind === 'subagent') return block.parentTurnId;
   if (block.kind === 'question' || block.kind === 'approval') {
@@ -142,7 +138,6 @@ export function projectMessageView(blocks: readonly Block[], options: MessageVie
   const turns: string[] = [];
   const seen = new Set<string>();
   const sent = new Set<string>();
-  const delivered = new Map<string, string[]>();
   const replies = new Map<string, AssistantBlock>();
   for (const block of blocks) {
     const turn = turnId(block);
@@ -153,25 +148,17 @@ export function projectMessageView(blocks: readonly Block[], options: MessageVie
     const message = block.kind === 'message' ? block : block.kind === 'tool' ? projectSendMessage(block) : undefined;
     if (message?.status === 'sent' && message.origin === 'send_message' && message.turnId !== undefined) {
       sent.add(message.turnId);
-      delivered.set(message.turnId, [...(delivered.get(message.turnId) ?? []), words(message.text)]);
     }
     if (block.kind === 'assistant' && block.text.trim() !== '' && block.turnId !== undefined) replies.set(block.turnId, block);
   }
   // A reply that keeps streaming, or one the reader stopped, is not speech yet.
-  // A later turn that sends exactly the same words already speaks for it, so
-  // promoting it here would say the same thing twice.
+  // Only this turn's own delivery decides: two turns may legitimately say the
+  // same words, so nothing is inferred across turns.
   const promoted = new Map<string, MessageBlock>();
-  const spokenElsewhere = new Set<string>();
   const speechIds = new Set<string>();
-  for (const [index, turn] of turns.entries()) {
+  for (const turn of turns) {
     const reply = replies.get(turn);
     if (reply === undefined || !completed.has(turn) || sent.has(turn)) continue;
-    const next = turns[index + 1];
-    if (next !== undefined && (delivered.get(next) ?? []).includes(words(reply.text))) {
-      spokenElsewhere.add(turn);
-      speechIds.add(reply.id);
-      continue;
-    }
     if (reply.streaming || reply.stopped === true) continue;
     promoted.set(turn, replySpeech(reply, turn));
     speechIds.add(reply.id);
@@ -184,7 +171,7 @@ export function projectMessageView(blocks: readonly Block[], options: MessageVie
       nodes.push(reply);
       return;
     }
-    if (sent.has(turn) || spokenElsewhere.has(turn) || replies.get(turn) === undefined) return;
+    if (sent.has(turn) || replies.get(turn) === undefined) return;
     nodes.push({ kind: 'notice', id: `message-no-reply-${turn}`, turnId: turn,
       text: `${options.personaName ?? ''} 没有回复 · 查看过程`.trim(), tone: 'neutral',
       i18n: { key: 'message.noReply', params: { name: options.personaName ?? '' } },

@@ -172,6 +172,20 @@ describe('message view (Bot mode)', () => {
     expect(container.querySelector('[data-message-outcome="no-reply"]')).toBeNull();
   });
 
+  it('keeps both turns when two turns end on the same short line', async () => {
+    // Two turns may legitimately repeat a line; each keeps its own bubble.
+    const blocks: Block[] = [
+      user('u1', '第一问', 't1'), assistant('a1', '好的。', 't1'),
+      user('u2', '第二问', 't2'), assistant('a2', '好的。', 't2'),
+    ];
+    const { container } = await render(timeline(blocks, 'message'));
+    const rows = [...container.querySelectorAll('[data-message-view-row="message"]')]
+      .filter((row) => row.querySelector('[data-message-origin="ordinary_final"]') !== null)
+      .map((row) => row.getAttribute('data-block-id'));
+    expect(rows).toEqual(['ordinary-final-a1', 'ordinary-final-a2']);
+    expect(container.textContent?.match(/好的。/gu)).toHaveLength(2);
+  });
+
   it('keeps the running turn’s text out of the message view until that turn ends', async () => {
     // The session says turn t2 is the running one; its settled text may still
     // grow or be superseded, so it is not speech yet. The turn before it is.
@@ -186,11 +200,20 @@ describe('message view (Bot mode)', () => {
     expect(rows.map((row) => row.querySelector('[data-message-text]')?.textContent)).toEqual(['在，先说结论。']);
   });
 
-  it('marks the same prose "内部" in the process view', async () => {
-    const blocks: Block[] = [user('u1', '在吗', 't1'), assistant('a1', '内部笔记', 't1')];
+  it('marks mid-turn prose "内部" in the process view, but not the reply it speaks', async () => {
+    // The same text is speech in the message view and prose in the process;
+    // only the text the message view already says loses the internal label.
+    const blocks: Block[] = [
+      user('u1', '在吗', 't1'),
+      assistant('a1', '先看一眼再答。', 't1'),
+      tool('r1', 'Read', 't1'),
+      assistant('a2', '在，先说结论。', 't1'),
+    ];
     const { container } = await render(timeline(blocks, 'process'));
-    expect(container.textContent).toContain('内部笔记');
-    expect(container.querySelector('[data-assistant-internal]')?.textContent).toBe('内部');
+    expect(container.textContent).toContain('先看一眼再答。');
+    const marked = (id: string) => container.querySelector(`[data-block-id="${id}"] [data-assistant-internal]`) !== null;
+    expect(marked('a1')).toBe(true);
+    expect(marked('a2')).toBe(false);
   });
 
   it('hangs one-line status rows off the message above and draws no row for a silent stretch', async () => {

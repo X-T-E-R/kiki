@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { personaGreeting, projectMessageView, projectSendMessage } from './messageView';
-import type { Block, ToolBlock } from './transcript';
+import type { AssistantBlock, Block, ToolBlock } from './transcript';
 
 function tool(overrides: Partial<ToolBlock> = {}): ToolBlock {
   return { kind: 'tool', id: 'tool-call', toolCallId: 'call', name: 'SendMessage',
@@ -10,6 +10,10 @@ function tool(overrides: Partial<ToolBlock> = {}): ToolBlock {
 }
 const thought: Block = { kind: 'assistant', id: 'internal', text: 'Private deliberation', streaming: false,
   createdAt: '2026-01-01T00:00:00Z', turnId: 't1' };
+
+function reply(id: string, text: string, turnId: string, overrides: Partial<AssistantBlock> = {}): AssistantBlock {
+  return { kind: 'assistant', id, text, streaming: false, createdAt: '2026-01-01T00:00:01Z', turnId, ...overrides };
+}
 
 describe('SendMessage projection', () => {
   it('retains the call identity through streaming, success, and reconnect replay', () => {
@@ -80,11 +84,26 @@ describe('message view', () => {
     expect(stopped[1]?.kind === 'notice' && stopped[1].reasonCodes).toEqual(['message.no_reply']);
   });
 
-  it('does not repeat a reply the next turn already sent as the same words', () => {
-    const sentLater = tool({ turnId: 't2', args: { text: 'Private deliberation' }, output: JSON.stringify({ message_id: 'msg_2', delivered_to: ['user'] }) });
-    const view = projectMessageView([thought, sentLater], { completedTurnIds: ['t1', 't2'], personaName: 'Coordinator' });
-    expect(view.map((node) => node.kind)).toEqual(['message']);
-    expect(view[0]?.kind === 'message' && view[0].turnId).toBe('t2');
+  it('keeps each turn’s own reply when two turns say the same words', () => {
+    // Two adjacent turns may legitimately repeat a short line; the second is
+    // not evidence that the first was already delivered.
+    const view = projectMessageView([reply('a1', '好的。', 't1'), reply('a2', '好的。', 't2')], {
+      completedTurnIds: ['t1', 't2'],
+    });
+    expect(view.map((node) => node.kind)).toEqual(['message', 'message']);
+    expect(view.map((node) => node.kind === 'message' && `${node.turnId}:${node.sourceBlock?.id}`))
+      .toEqual(['t1:a1', 't2:a2']);
+  });
+
+  it('keeps both turns when two long replies start with the same preview text', () => {
+    // A bounded body reaches this projection as the same prefix; identical
+    // previews are not identical replies.
+    const prefix = '发布清单逐条核对：签名证书、changelog、回归结果。'.repeat(40);
+    const view = projectMessageView([reply('a1', `${prefix}A`, 't1'), reply('a2', `${prefix}B`, 't2')], {
+      completedTurnIds: ['t1', 't2'],
+    });
+    expect(view.map((node) => node.kind)).toEqual(['message', 'message']);
+    expect(view.map((node) => node.kind === 'message' && node.text.at(-1))).toEqual(['A', 'B']);
   });
 
   it('leaves a turn with no assistant text silent', () => {
