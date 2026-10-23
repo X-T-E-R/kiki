@@ -1,15 +1,13 @@
 /**
- * 插件 — the session's plugin list, as the plugins tab of the rail's
- * capabilities block.
+ * 插件 — the session's plugin list inside the rail's control fold.
  *
  * This is where the reader decides what this conversation may use. It is
  * deliberately *not* plugin management: installs, credentials and the home
  * master switch stay in the plugins page, and nothing here navigates away to
  * do a job this list can do in place.
  *
- * The panel is tab content, not a folded chapter of its own: the surrounding
- * capabilities block carries the fold and the tab strip, so what is left here
- * is the list itself — hairline rows, no cards, the rail's own voice.
+ * The surrounding control block carries the fold and group heading, so what is
+ * left here is the list itself — hairline rows, no cards, the rail's own voice.
  *
  * What it shows is the *session's* answer, not the workspace's, and the answer
  * is honest about the four levels that stack into it:
@@ -198,9 +196,8 @@ export function SessionPluginsPanel({ sessionId }: { readonly sessionId: string 
 
   return (
     <>
-      {/* Tab content, not a chapter: the capabilities block owns the fold and
-          the tab strip; the hook keeps its name for the surfaces that look
-          for this list. */}
+      {/* The control block owns the fold and heading; this component owns the
+          plugin rows and their read/write states. */}
       <div data-rail-plugins="" className="space-y-1.5 px-2 pt-0.5">
         <ScopeLine scope={scope} onBrowse={() => { setBrowse(true); }} onAddFromSource={() => { setAdding(true); }} />
         {/* One line, and the boundary it implies lives on the management

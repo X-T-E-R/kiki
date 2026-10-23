@@ -315,7 +315,7 @@ export function FoldHead({ title, count, summary, open, onToggle, id }: {
     <button type="button" id={id} aria-expanded={open} onClick={onToggle} className={SECTION_BUTTON}>
       <span className={`${INSPECTOR_HEAD} transition-colors group-hover:text-ink`}>{title}</span>
       {count !== undefined ? <span className="text-[12px] text-ink-faint tabular-nums">{count}</span> : null}
-      {!open && summary !== undefined ? <span className="min-w-0 flex-1 truncate text-right text-[12px] text-ink-faint">{summary}</span> : <span className="flex-1" />}
+      {!open && summary !== undefined ? <span data-fold-summary className="min-w-0 flex-1 truncate text-right text-[12px] text-ink-faint">{summary}</span> : <span className="flex-1" />}
       <InspectorChevron open={open} />
     </button>
   );
@@ -440,31 +440,17 @@ export const ActivityFeed = memo(function ActivityFeed({ blocks, forest, onOpenF
 });
 
 /**
- * 能力: the focused agent's tools, skills, subagent targets and the session's
- * plugins, as the rail's one folded capabilities block. Reads the same
- * agent-panel answer the profile card reads (same query key) and the same
- * plugin-usage answer the plugins tab reads, so opening it starts no extra
- * request.
- *
- * Folded, the head carries the per-kind counts and nothing else. The names
- * behind those counts are slugs — `agent-core-dev · agent-core-review ·
- * release-kit` — which read as a wall of ids rather than a summary of what
- * the role can do, so they live in the block's own detail where each one
- * carries its scope and state, and not in a permanent line above it.
- *
- * The two reads fail independently and the block says so in kind: a failed
- * capability read leaves the tools, skills and subagents tabs one quiet line
- * each with a text retry while the plugins tab keeps working, and a failed
- * plugin read is one quiet line inside the plugins tab while the other three
- * keep theirs. A partial capability answer keeps the tabs that arrived and
- * gives only the missing kind that quiet line. A server that answers either
- * scope unsupported simply has no such tab — and a server without either has
- * no block at all.
+ * Two independent folds keep observation separate from control. Tools, skills,
+ * and subagent targets describe what the focused agent can use. Plugins,
+ * system capabilities, and MCP servers change what this conversation may use.
+ * Plugin and MCP tools remain in the tools inventory because they are still
+ * part of the observed, complete tool list.
  */
 export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { sessionId: string; agentId: string; workspaceId?: string; cwd?: string }) {
   const { t } = useI18n();
   const { klient, client } = useConnection();
-  const [open, setOpen] = useState(false);
+  const [observationOpen, setObservationOpen] = useState(false);
+  const [controlOpen, setControlOpen] = useState(false);
   const query = { session_id: sessionId, agent_id: agentId };
   const read = useQuery({
     queryKey: ['agentCapabilities', query],
@@ -472,9 +458,6 @@ export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { se
     staleTime: 5_000,
     retry: false,
   });
-  // The badge and the feature detection come from the plugins tab's own query
-  // (same key), so the fold never starts a second request for what the tab
-  // would read anyway.
   const pluginRead = useQuery({
     queryKey: PLUGIN_QUERY_KEYS.usage(sessionId),
     queryFn: () => client.getPluginUsage({ session_id: sessionId }),
@@ -485,71 +468,72 @@ export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { se
   const skills = useMemo(() => mapPanelSkills(read.data?.skills), [read.data?.skills]);
   const targets = useMemo(() => mapPanelSubagentTargets(read.data?.targets), [read.data?.targets]);
   const data = read.data;
-  // Only the wire's own "not offered here" word closes the scope: an explicit
-  // unsupported error. `available: false` is a degraded answer, not that
-  // verdict — live responses ship it with the full inventory when dispatch is
-  // policy-off — and absent fields are a partial answer: the tabs that
-  // answered keep their content, the missing ones get the quiet retry.
   const capUnsupported = isCapabilityUnsupportedError(read.error);
-  const capFailed = data === undefined && read.isError && !isCapabilityUnsupportedError(read.error);
+  const capFailed = data === undefined && read.isError && !capUnsupported;
   const capPending = data === undefined && !read.isError;
   const gaps = data === undefined || capUnsupported ? undefined : capabilityFieldGaps(data);
   const pluginsUnsupported = isCapabilityUnsupportedError(pluginRead.error);
-  const pluginsPending = pluginRead.data === undefined && !pluginRead.isError;
 
-  // Neither scope exists on this server — or nothing has answered yet — and
-  // the rail shows nothing rather than a fold with nothing behind it.
-  if (capUnsupported && pluginsUnsupported) return null;
-  if (capPending && (pluginsPending || pluginsUnsupported)) return null;
-
-  const segments: string[] = [];
+  const observationSegments: string[] = [];
   if (data !== undefined && !capUnsupported) {
     const counts = capabilityCounts(tools, skills, targets);
-    // Each segment stands on its own field: a partial answer still reports
-    // the kinds it knows instead of claiming zeros for the missing ones.
-    if (data.tools !== undefined) segments.push(`${t('inspector.cap.tools')} ${counts.toolsOn}`);
-    if (data.skills !== undefined) segments.push(`${t('inspector.cap.skills')} ${counts.skills}`);
-    if (data.targets !== undefined) segments.push(`${t('inspector.cap.subagents')} ${counts.subagents}`);
+    if (data.tools !== undefined) observationSegments.push(`${t('inspector.cap.tools')} ${counts.toolsOn}`);
+    if (data.skills !== undefined) observationSegments.push(`${t('inspector.cap.skills')} ${counts.skills}`);
+    if (data.targets !== undefined) observationSegments.push(`${t('inspector.cap.subagents')} ${counts.subagents}`);
   }
-  if (pluginRead.data !== undefined) {
-    segments.push(`${t('inspector.cap.plugins')} ${availableCount(pluginRead.data.plugins)}`);
-  }
-  const summary = segments.length === 0 ? undefined : segments.join(' · ');
+  const observationSummary = observationSegments.length === 0 ? undefined : observationSegments.join(' · ');
 
-  // A server without the capability scope keeps exactly the plugins chapter it
-  // had before the merge: the same list under the same fold, with no tab strip
-  // that would only ever hold one tab. The `-mx-2` inset is the one the tab
-  // panel would carry, so the rows land where the tabbed layout puts them.
-  const body = capUnsupported ? (
-    <div className="-mx-2"><SessionPluginsPanel sessionId={sessionId} /></div>
-  ) : (
-    <AgentCapabilitiesSection
-      tools={tools}
-      skills={skills}
-      subagentTargets={targets}
-      draftScope={{ workspace_id: workspaceId, cwd }}
-      callerProfile={data?.profile?.name}
-      capabilitiesStatus={capFailed ? 'failed' : capPending ? 'loading' : 'ready'}
-      onRetryCapabilities={() => { void read.refetch(); }}
-      capabilityGaps={gaps}
-      plugins={pluginsUnsupported ? undefined : {
-        available: pluginRead.data === undefined ? undefined : availableCount(pluginRead.data.plugins),
-        content: <SessionPluginsPanel sessionId={sessionId} />,
-      }}
-    />
-  );
   return (
-    <section data-rail-capabilities="">
-      <FoldHead title={t('rail.capabilities.title')} summary={summary} open={open} onToggle={() => { setOpen((v) => !v); }} />
-      {open ? (
-        <div className="pt-1">
-          <div className="mb-2">
-            <OptionalCapabilityRows sessionId={sessionId} />
+    <>
+      {!capUnsupported && !capPending ? (
+        <section data-rail-capabilities="observation">
+          <FoldHead
+            title={t('rail.capabilities.observeTitle')}
+            summary={observationSummary}
+            open={observationOpen}
+            onToggle={() => { setObservationOpen((value) => !value); }}
+          />
+          {observationOpen ? (
+            <div className="pt-1">
+              <AgentCapabilitiesSection
+                tools={tools}
+                skills={skills}
+                subagentTargets={targets}
+                draftScope={{ workspace_id: workspaceId, cwd }}
+                callerProfile={data?.profile?.name}
+                capabilitiesStatus={capFailed ? 'failed' : capPending ? 'loading' : 'ready'}
+                onRetryCapabilities={() => { void read.refetch(); }}
+                capabilityGaps={gaps}
+              />
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+      <section data-rail-capabilities="control" data-rail-controls="">
+        <FoldHead
+          title={t('rail.capabilities.controlTitle')}
+          open={controlOpen}
+          onToggle={() => { setControlOpen((value) => !value); }}
+        />
+        {controlOpen ? (
+          <div className="pt-1">
+            {!pluginsUnsupported ? (
+              <div className="-mx-2 mb-2" data-rail-control-group="plugins">
+                <h4 className="flex items-baseline gap-1.5 px-2 pb-0.5 text-[11px] font-medium text-ink-faint">
+                  {t('inspector.cap.plugins')}
+                  {pluginRead.data !== undefined ? <span data-rail-plugin-count className="font-normal tabular-nums">{availableCount(pluginRead.data.plugins)}</span> : null}
+                </h4>
+                <SessionPluginsPanel sessionId={sessionId} />
+              </div>
+            ) : null}
+            <div data-rail-control-group="system">
+              <h4 className="pb-0.5 text-[11px] font-medium text-ink-faint">{t('rail.capabilities.systemTitle')}</h4>
+              <OptionalCapabilityRows sessionId={sessionId} />
+            </div>
             <SessionMcpRail sessionId={sessionId} />
           </div>
-          {body}
-        </div>
-      ) : null}
-    </section>
+        ) : null}
+      </section>
+    </>
   );
 }

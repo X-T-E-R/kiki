@@ -1,6 +1,6 @@
 /**
- * What the agent can use, as four tabs under the profile card: Tools, Skills,
- * Subagents, Plugins. Tools are one chip per group — a built-in category, one
+ * What the agent can use, as three observation tabs under the profile card:
+ * Tools, Skills, and Subagents. Tools are one chip per group — a built-in category, one
  * MCP server, one plugin, or the user's own tools, all in one cluster ordered
  * by the reported list — each carrying `on/total` and the five reported
  * states, so a full agent never grows the rail by one row per tool. Skills
@@ -8,10 +8,9 @@
  * group; the group's complete member list (and the one tool inside it) is
  * where a tool is read.
  *
- * The plugins tab is not read here: the host injects it as a slot (`plugins`),
- * so the session's plugin answer and its failures stay with the surface that
- * owns the session — the rail — and a host without one (the wide panel)
- * simply has no fourth tab.
+ * Session controls such as plugins, system capabilities, and MCP servers stay
+ * with the rail's separate control fold. Plugin tools remain in the complete
+ * tools inventory here because this section observes everything the agent can use.
  *
  * The two ways into a group are deliberately different. Hover or keyboard
  * focus shows one short preview in a floating layer anchored to the chip, so
@@ -50,20 +49,9 @@ import type {
 
 export { extensionOwner };
 
-export type CapabilityTab = 'tools' | 'skills' | 'subagents' | 'plugins';
+export type CapabilityTab = 'tools' | 'skills' | 'subagents';
 
-/**
- * The plugins tab, injected by the host. `available` is the session's own
- * count — how many plugins this conversation can actually use — and stays
- * undefined until the host's read answers, so the tab shows no number rather
- * than a guess. `content` is the whole tab panel, states included.
- */
-export interface CapabilityPluginsSlot {
-  readonly available?: number;
-  readonly content: ReactNode;
-}
-
-/** How the read behind the three capability tabs went; the plugins slot answers for itself. */
+/** How the read behind the three observation tabs went. */
 export type CapabilitiesStatus = 'ready' | 'loading' | 'failed';
 
 export interface AgentCapabilitiesSectionProps {
@@ -74,12 +62,9 @@ export interface AgentCapabilitiesSectionProps {
   /** The profile these capabilities belong to; drill-ins resolve targets through it. */
   readonly callerProfile?: string;
   readonly initialTab?: CapabilityTab;
-  /** The session's plugins, as a tab. Absent: the tab strip keeps three kinds. */
-  readonly plugins?: CapabilityPluginsSlot;
   /**
    * When the read behind tools/skills/subagents failed or is still in flight,
-   * those tabs say so in one quiet line each instead of claiming emptiness;
-   * the plugins tab is unaffected either way.
+   * those tabs say so in one quiet line each instead of claiming emptiness.
    */
   readonly capabilitiesStatus?: CapabilitiesStatus;
   readonly onRetryCapabilities?: () => void;
@@ -171,8 +156,7 @@ function Empty({ children }: { children: ReactNode }) {
 
 /**
  * The capability read's own state line, inside whichever tab it belongs to:
- * one grey sentence and a text retry, never an alert and never a fake empty
- * list. The plugins tab answers for itself through its own slot.
+ * one grey sentence and a text retry, never an alert and never a fake empty list.
  */
 function CapabilitiesGap({ status, onRetry }: { status: 'loading' | 'failed'; onRetry?: () => void }) {
   const { t } = useI18n();
@@ -354,7 +338,6 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
   draftScope,
   callerProfile,
   initialTab = 'tools',
-  plugins,
   capabilitiesStatus = 'ready',
   onRetryCapabilities,
   capabilityGaps,
@@ -541,20 +524,11 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
     { id: 'tools', label: t('inspector.cap.tools'), count: toolsStatus === 'ready' ? toolTotal : undefined },
     { id: 'skills', label: t('inspector.cap.skills'), count: skillsStatus === 'ready' ? skills.length : undefined },
     { id: 'subagents', label: t('inspector.cap.subagents'), count: subagentsStatus === 'ready' ? subagentTargets.length : undefined },
-    ...(plugins === undefined ? [] : [{ id: 'plugins' as const, label: t('inspector.cap.plugins'), count: plugins.available }]),
   ];
   const current = tabs.find((entry) => entry.id === tab) ?? tabs[0]!;
-  // The host's plugin slot can leave while its tab is on screen (a refetch that
-  // answers unsupported): land back on the first tab rather than on nothing.
-  useEffect(() => {
-    if (tab === 'plugins' && plugins === undefined) setTab('tools');
-  }, [tab, plugins]);
   // The threshold follows every reported tool, not just the ones that are on:
-  // a group with fifty tools must still be searchable. The plugins tab carries
-  // its own panel and no filter here.
-  const searchable = capReady && (tab === 'tools'
-    ? tools.length > CAP_SHOWN
-    : tab !== 'plugins' && (current.count ?? 0) > CAP_SHOWN);
+  // a group with fifty tools must still be searchable.
+  const searchable = capReady && (tab === 'tools' ? tools.length > CAP_SHOWN : (current.count ?? 0) > CAP_SHOWN);
   const onTabKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
     event.preventDefault();
@@ -683,7 +657,7 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
               type="button"
               role="tab"
               aria-selected={selected}
-              aria-controls={entry.id === 'plugins' ? `${baseId}-panel-plugins` : `${baseId}-panel`}
+              aria-controls={`${baseId}-panel`}
               tabIndex={selected ? 0 : -1}
               data-capability-tab-button={entry.id}
               onClick={() => { chooseTab(entry.id); }}
@@ -703,7 +677,7 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
         })}
       </div>
 
-      <div id={`${baseId}-panel`} role="tabpanel" aria-labelledby={`${baseId}-tab-${tab}`} hidden={tab === 'plugins'} className="-mx-2 mt-1.5">
+      <div id={`${baseId}-panel`} role="tabpanel" aria-labelledby={`${baseId}-tab-${tab}`} className="-mx-2 mt-1.5">
         {/* Past a handful of tools a tab offers a filter, by groups; skills and
             subagents keep their row lists. */}
         {searchable ? (
@@ -795,16 +769,6 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
           )
         ) : null}
       </div>
-
-      {/* The host owns the session's plugin answer; this section only gives it
-          a tab. The panel stays mounted across tab switches — hidden, not
-          unmounted — so arrowing across the strip never re-fires its read and
-          a choice still being applied keeps its row state. */}
-      {plugins !== undefined ? (
-        <div id={`${baseId}-panel-plugins`} role="tabpanel" aria-labelledby={`${baseId}-tab-plugins`} hidden={tab !== 'plugins'} className="-mx-2 mt-1.5">
-          {plugins.content}
-        </div>
-      ) : null}
 
       {/* The one preview is a floating layer: portaled out of the column so
           hovering a chip cannot move the cluster or anything after it. */}
