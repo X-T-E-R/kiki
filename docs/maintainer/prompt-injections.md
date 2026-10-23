@@ -321,7 +321,7 @@ After a turn ends with reason `cancelled` and `interruptReason: 'user_cancelled'
 
 When the main agent's frozen delivery for a turn is `message`, the turn was triggered by the user, a peer thread, or a targeted room message, no `SendMessage` call succeeded, and the turn's last context message is ordinary assistant text, the reminder below is appended at `TurnEnded` (`packages/agent-core-v2/src/agent/delivery/deliveryReminder.ts`, `deliveryReminderService.ts`). It is part of the next model request's history. The turn does not enqueue a continuation step.
 
-`The previous turn ran in message delivery and finished with ordinary text and no successful SendMessage. When message delivery is active, call SendMessage with the complete user-visible message for the turn. Do not split that message into sentences, and do not repeat it as ordinary text.`
+`Message delivery applies to later replies. The previous ordinary reply already stands as the complete final answer for that turn; do not call SendMessage to send it again or rewrite it. When message delivery is active, call SendMessage with the complete new user-visible message. Do not split that message into sentences, and do not repeat it as ordinary text.`
 
 - The decision uses the mode copied at turn start. A `set` during the turn changes the persisted mode immediately and the tool table on the next turn.
 - The ordinary reply stays one assistant message. The message projection, not this reminder, decides whether that whole message is also shown as a bubble. Show it only when the turn had no successful `SendMessage`; do not split it on punctuation.

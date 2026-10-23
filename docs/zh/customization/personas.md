@@ -54,7 +54,7 @@ max_handoffs_per_hour = 30
 room_budget = 12
 ```
 
-会话的 `delivery` 为 `reply` 或 `message`。在消息模式中，只有成功的 `SendMessage` 调用才算已发送消息，普通模型文本留在过程视图。角色没有写 `delivery` 时，新建会话使用消息模式；已经保存的会话保持原选择。没有角色的会话，以及用户或角色明确选择的 `reply`，仍直接回复。消息模式的一轮如果以普通文本结束且没有成功发送，下一轮的模型上下文会提醒用 `SendMessage` 发送完整的一条消息，这一轮不会因此再请求一次模型。内置 `agent` profile 在消息模式中会暴露 `SendMessage`，reply 模式的轮次则不暴露。自定义 profile 如果显式设置了 `tools` 白名单，必须自行加入 `SendMessage`；delivery 模式不会绕过 profile 权限。工具表会在每个轮次内冻结，因此切换 delivery 会在下一轮生效。
+会话的 `delivery` 为 `reply` 或 `message`。在消息模式中，只有成功的 `SendMessage` 调用才算已发送消息，普通模型文本留在过程视图。角色没有写 `delivery` 时，新建会话使用消息模式；已经保存的会话保持原选择。没有角色的会话，以及用户或角色明确选择的 `reply`，仍直接回复。消息模式的一轮如果以普通文本结束且没有成功发送，这一轮不再请求模型，也不改写该回复。下一轮的模型上下文只提醒之后的新回复用 `SendMessage` 发送完整的一条消息。内置 `agent` profile 在消息模式中会暴露 `SendMessage`，reply 模式的轮次则不暴露。自定义 profile 如果显式设置了 `tools` 白名单，必须自行加入 `SendMessage`；delivery 模式不会绕过 profile 权限。工具表会在每个轮次内冻结，因此切换 delivery 会在下一轮生效。
 
 `SendMessage` 可以发给用户，也可以用 `to: "@名字"` 发给另一个角色。同名时使用角色 ID。交接可以唤醒已关闭的常驻对话，并计入每小时上限；相同投递键的重试不会再占一个名额。附件是从会话工作区、附加目录或角色自己的区域复制的不可变副本，不能任意读取文件系统路径。
 

@@ -56,6 +56,9 @@ describe('prompt submit', () => {
     expect(ctx.llmCalls).toHaveLength(1);
     expect(ctx.llmCalls[0]!.tools.map((tool) => tool.name)).toContain('SendMessage');
     expect(historyText(ctx.llmCalls[0]!.history)).not.toContain(MESSAGE_DELIVERY_NEXT_TURN_GUIDANCE);
+    expect(MESSAGE_DELIVERY_NEXT_TURN_GUIDANCE).not.toContain('not visible');
+    expect(MESSAGE_DELIVERY_NEXT_TURN_GUIDANCE).not.toContain('You have not sent');
+    expect(MESSAGE_DELIVERY_NEXT_TURN_GUIDANCE).toContain('do not call SendMessage to send it again or rewrite it');
     expect(deliveryReminders(ctx)).toHaveLength(1);
     ctx.mockNextResponse({ type: 'text', text: 'Second turn.' });
     const next = await prompts.submitAndWait({ input: [{ type: 'text', text: 'Continue.' }] });
