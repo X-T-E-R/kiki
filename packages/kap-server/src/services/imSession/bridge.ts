@@ -20,6 +20,7 @@ interface BindingRecord {
   busy: 'queue' | 'steer';
   reply: 'final' | 'edit';
   mobileInteractions: boolean;
+  interactionFailure?: 'feishu_thread_context_missing' | 'wechat_group_unsupported';
 }
 
 interface DiscoveryRecord {
@@ -205,6 +206,8 @@ export class ImSessionBridge {
   private state: Stored = emptyState();
   private readonly pollers = new Map<string, Poller>();
   private readonly pending = new Map<string, { poller: Poller; originId: string }>();
+  private readonly failures = new Map<string, { phase: 'auth_expired' | 'stopped'; detail?: ImInstanceView['connection_detail'] }>();
+  private closed = false;
   private readonly jobs = new Set<Promise<void>>();
   private readonly wechatLogin: ImSessionBridgeOptions['wechatLogin'];
   private readonly liveReplies = new Set<string>();
@@ -296,6 +299,10 @@ export class ImSessionBridge {
     await this.ready;
     const result = await this.ports.credentials.check(instanceId);
     const meta = this.requireMeta(instanceId);
+    await this.enqueueLifecycle(async () => {
+      const tokenHash = this.credentialHash(instanceId);
+      if ([...this.pollers.values(), ...[...this.pending.values()].map((attempt) => attempt.poller)].some((poller) => (poller.instances.has(instanceId) || poller.ownerId === instanceId) && poller.tokenHash !== tokenHash)) await this.releaseOne(instanceId);
+    });
     if (result.conflict === 'webhook') {
       meta.conflict = 'webhook';
       await this.release(instanceId);
@@ -315,6 +322,7 @@ export class ImSessionBridge {
     await this.ready;
     const discovery = this.only(this.state.discoveries, discoveryId);
     if (discovery === undefined) throw new Error('unknown_discovery');
+    if (discovery.providerKind === 'wechat_bridge' && (discovery.identity.chatKind === 'group' || discovery.identity.topicId !== '0')) throw new Error('unsupported_wechat_group');
     const meta = this.requireMeta(discovery.providerInstanceId);
     let sessionId: string;
     let personaId: string | undefined;
@@ -336,8 +344,6 @@ export class ImSessionBridge {
       existing.sessionId = sessionId;
       if (personaId === undefined) delete existing.personaId;
       else existing.personaId = personaId;
-      existing.enabled = true;
-      delete existing.sessionEnabled;
       existing.busy = request.busy ?? meta.busy ?? existing.busy;
       existing.reply = request.reply ?? meta.reply ?? existing.reply;
       existing.mobileInteractions = request.mobile_interactions ?? existing.mobileInteractions;
@@ -414,11 +420,17 @@ export class ImSessionBridge {
 
   async syncInteractions(): Promise<void> {
     await this.ready;
+    const errors: unknown[] = [];
     for (const binding of this.state.bindings) {
       if (!this.admitted(binding) || !binding.mobileInteractions) continue;
-      const pending = await this.ports.sessions.listInteractions(binding.sessionId);
-      await this.projectInteractions(binding, pending.approvals, pending.questions);
+      try {
+        const pending = await this.ports.sessions.listInteractions(binding.sessionId);
+        await this.projectInteractions(binding, pending.approvals, pending.questions);
+      } catch (error) {
+        errors.push(error);
+      }
     }
+    if (errors.length > 0) throw errors[0];
   }
 
   async startWechatQr(): Promise<{ login_id: string; image: string }> {
@@ -440,6 +452,8 @@ export class ImSessionBridge {
   }
 
   async close(): Promise<void> {
+    this.closed = true;
+    await this.ready;
     await this.stopAll();
     await Promise.all(this.jobs);
   }
@@ -516,7 +530,8 @@ export class ImSessionBridge {
       if (remote?.label !== undefined) meta.label = remote.label;
       const poller = [...this.pollers.values()].find((item) => item.instances.has(id));
       const attempt = [...this.pending.values()].find((item) => item.poller.instances.has(id));
-      const phase = this.linkPhase(poller?.adapter ?? attempt?.poller.adapter) ?? (attempt === undefined ? undefined : 'starting');
+      const phase = this.linkPhase(poller?.adapter ?? attempt?.poller.adapter) ?? this.failures.get(id)?.phase ?? (attempt === undefined ? undefined : 'starting');
+      const active = poller !== undefined && phase !== 'stopped' && phase !== 'auth_expired' && this.adapterPhase(poller.adapter) !== 'conflict';
       const view: ImInstanceView = {
         id,
         provider_kind: kind,
@@ -525,8 +540,9 @@ export class ImSessionBridge {
         configured: remote?.configured === true || this.ports.credentials.read(id) !== undefined,
         ...(meta.accountId === undefined ? {} : { account_id: meta.accountId }),
         ...(meta.conflict === undefined ? {} : { conflict: meta.conflict }),
-        adapter: poller === undefined ? (this.factories.some((factory) => factory.providerKind === kind) ? 'stopped' : 'missing') : poller.ownerId === id ? 'running' : 'shared',
-        ...(phase === undefined ? {} : { connection: phase }),
+        adapter: !active ? (this.factories.some((factory) => factory.providerKind === kind) ? 'stopped' : 'missing') : poller.ownerId === id ? 'running' : 'shared',
+        connection: phase,
+        connection_detail: (poller?.adapter ?? attempt?.poller.adapter)?.connectionDetail?.() ?? this.failures.get(id)?.detail,
       };
       views.push(view);
     }
@@ -538,26 +554,62 @@ export class ImSessionBridge {
   }
 
   private join(poller: Poller, instanceId: string): void {
-    const canonical = poller.adapter.canonicalInstanceId ?? poller.ownerId;
+    this.failures.delete(instanceId);
     poller.instances.add(instanceId);
-    if (poller.ownerId !== canonical) {
-      this.retarget(poller.ownerId, canonical);
-      poller.ownerId = canonical;
-    }
-    this.retarget(instanceId, canonical);
+    this.retarget(instanceId, poller.ownerId);
+    this.requireMeta(instanceId).accountId = this.requireMeta(poller.ownerId).accountId;
   }
 
-  private async ensureOne(instanceId: string): Promise<void> {
-    if (!this.state.policy.allowed) return;
+  private credentialHash(instanceId: string): string | undefined {
+    const credential = this.ports.credentials.read(instanceId);
+    if (credential === undefined || credential.length === 0) return undefined;
+    const kind = this.state.instances.find((item) => item.id === instanceId)?.providerKind ?? kindOf(this.ports.credentials.list().find((item) => item.id === instanceId)?.providerId ?? '');
+    if (kind === undefined) return undefined;
+    return createHash('sha256').update(`${kind}\u0000${credential}`).digest('hex');
+  }
+
+  private reanchor(poller: Poller): void {
+    if (this.credentialHash(poller.ownerId) === poller.tokenHash) return;
+    const owner = [...poller.instances].find((id) => this.credentialHash(id) === poller.tokenHash);
+    if (owner === undefined || owner === poller.ownerId) return;
+    this.retarget(poller.ownerId, owner);
+    poller.ownerId = owner;
+  }
+
+  private lifecycle: Promise<void> = Promise.resolve();
+
+  private enqueueLifecycle(work: () => Promise<void>): Promise<void> {
+    const run = this.lifecycle.then(work, work);
+    this.lifecycle = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  private ensureOne(instanceId: string): Promise<void> {
+    return this.enqueueLifecycle(() => this.startOne(instanceId));
+  }
+
+  private async startOne(instanceId: string): Promise<void> {
+    if (this.closed || !this.state.policy.allowed) return;
     const meta = this.requireMeta(instanceId);
     if (!meta.listening || meta.conflict === 'webhook') return;
     const credential = this.ports.credentials.read(instanceId);
-    if (credential === undefined || credential.length === 0) return;
-    const tokenHash = createHash('sha256').update(credential).digest('hex');
+    const tokenHash = this.credentialHash(instanceId);
+    const attached = [...this.pollers.values(), ...[...this.pending.values()].map((attempt) => attempt.poller)].some((poller) => (poller.instances.has(instanceId) || poller.ownerId === instanceId) && poller.tokenHash !== tokenHash);
+    if (attached) await this.releaseOne(instanceId);
+    if (credential === undefined || tokenHash === undefined) return;
+    let previous: Poller | undefined;
     const existing = this.pollers.get(tokenHash);
     if (existing !== undefined) {
-      this.join(existing, instanceId);
-      return;
+      const phase = this.adapterPhase(existing.adapter);
+      if (phase !== 'stopped' && phase !== 'auth_expired' && phase !== 'conflict') {
+        this.join(existing, instanceId);
+        return;
+      }
+      previous = existing;
+      this.reanchor(previous);
+      for (const [key, value] of this.pollers) if (value === previous) this.pollers.delete(key);
+      for (const id of previous.instances) this.failures.set(id, { phase: phase === 'auth_expired' ? 'auth_expired' : 'stopped', detail: previous.adapter.connectionDetail?.() });
+      await previous.adapter.stop();
     }
     const queued = this.pending.get(tokenHash);
     if (queued !== undefined) {
@@ -566,21 +618,24 @@ export class ImSessionBridge {
     }
     const factory = this.factories.find((item) => item.providerKind === meta.providerKind);
     if (factory === undefined) return;
+    const savedOwner = this.state.bindings.find((binding) => binding.providerKind === meta.providerKind && this.ports.credentials.read(binding.providerInstanceId) === credential)?.providerInstanceId;
+    const ownerId = previous?.ownerId ?? savedOwner ?? instanceId;
     let adapter: ImSessionAdapter;
     try {
-      adapter = factory.create({ instanceId, credential });
+      adapter = factory.create({ instanceId: ownerId, credential });
     } catch {
-      meta.listening = false;
+      this.failures.set(instanceId, { phase: 'stopped' });
       return;
     }
-    const canonical = adapter.canonicalInstanceId ?? instanceId;
-    const shared = [...this.pollers.values()].find((item) => item.adapter === adapter || item.ownerId === canonical || item.adapter.canonicalInstanceId === canonical);
+    const acquired = adapter.canonicalInstanceId ?? ownerId;
+    const canonical = this.credentialHash(acquired) === tokenHash ? acquired : ownerId;
+    const shared = [...this.pollers.values()].find((item) => item.tokenHash === tokenHash && (item.adapter === adapter || item.ownerId === canonical));
     if (shared !== undefined) {
       this.join(shared, instanceId);
       this.pollers.set(tokenHash, shared);
       return;
     }
-    const sharedPending = [...this.pending.values()].find((item) => item.poller.adapter === adapter || item.poller.ownerId === canonical || item.poller.adapter.canonicalInstanceId === canonical);
+    const sharedPending = [...this.pending.values()].find((item) => item.poller.tokenHash === tokenHash && (item.poller.adapter === adapter || item.poller.ownerId === canonical));
     if (sharedPending !== undefined) {
       this.join(sharedPending.poller, instanceId);
       this.pending.set(tokenHash, sharedPending);
@@ -590,7 +645,13 @@ export class ImSessionBridge {
       meta.conflict = 'webhook';
       return;
     }
-    const poller: Poller = { tokenHash, ownerId: canonical, instances: new Set([instanceId]), adapter };
+    if (this.closed || !this.state.policy.allowed || !meta.listening) {
+      await adapter.stop();
+      return;
+    }
+    const instances = new Set([instanceId, ...[...(previous?.instances ?? [])].filter((id) => this.credentialHash(id) === tokenHash && this.state.instances.some((item) => item.id === id && item.listening))]);
+    for (const id of instances) this.failures.delete(id);
+    const poller: Poller = { tokenHash, ownerId: canonical, instances, adapter };
     this.pending.set(tokenHash, { poller, originId: instanceId });
     this.retarget(instanceId, canonical);
     let started: Promise<{ accountId: string; conflict?: 'webhook'; failed?: 'auth' }>;
@@ -601,7 +662,8 @@ export class ImSessionBridge {
       }, { offset: this.state.cursors[poller.ownerId] }));
     } catch {
       this.forgetPending(poller);
-      meta.listening = false;
+      this.failures.set(instanceId, { phase: 'stopped', detail: adapter.connectionDetail?.() });
+      await adapter.stop();
       return;
     }
     const apply = this.finishStart(poller, started);
@@ -617,6 +679,7 @@ export class ImSessionBridge {
   }
 
   private published(poller: Poller): boolean {
+    if (this.closed || !this.state.policy.allowed || ![...poller.instances].some((id) => this.state.instances.some((meta) => meta.id === id && meta.listening))) return false;
     for (const item of this.pollers.values()) if (item === poller) return true;
     return false;
   }
@@ -625,9 +688,9 @@ export class ImSessionBridge {
     for (const [key, attempt] of this.pending) if (attempt.poller === poller) this.pending.delete(key);
   }
 
-  private linkPhase(adapter: ImSessionAdapter | undefined): 'starting' | 'reconnecting' | undefined {
+  private linkPhase(adapter: ImSessionAdapter | undefined): ImInstanceView['connection'] {
     const phase = this.adapterPhase(adapter);
-    return phase === 'starting' || phase === 'reconnecting' ? phase : undefined;
+    return phase === 'starting' || phase === 'reconnecting' || phase === 'auth_expired' || phase === 'stopped' ? phase : undefined;
   }
 
   private adapterPhase(adapter: ImSessionAdapter | undefined): ReturnType<NonNullable<ImSessionAdapter['connectionPhase']>> | undefined {
@@ -642,21 +705,19 @@ export class ImSessionBridge {
       const current = [...this.pending.values()].find((item) => item.poller === poller);
       if (current === undefined) return;
       this.forgetPending(poller);
-      this.markOrigin(current.originId, { listening: false });
+      for (const id of poller.instances) this.failures.set(id, { phase: 'stopped', detail: poller.adapter.connectionDetail?.() });
       await this.persist();
       await poller.adapter.stop().catch(() => undefined);
       return;
     }
     const current = [...this.pending.values()].find((item) => item.poller === poller);
-    if (current === undefined || this.adapterPhase(poller.adapter) === 'stopped') {
-      this.forgetPending(poller);
-      return;
-    }
-    if (result.conflict === 'webhook' || result.failed === 'auth') {
-      this.markOrigin(current.originId, {
-        listening: result.conflict === 'webhook' ? undefined : false,
-        conflict: result.conflict === 'webhook' ? 'webhook' : undefined,
-      });
+    if (current === undefined) return;
+    const phase = this.adapterPhase(poller.adapter);
+    if (result.conflict === 'webhook' || result.failed === 'auth' || phase === 'stopped' || phase === 'auth_expired') {
+      for (const id of poller.instances) {
+        if (result.conflict === 'webhook') this.markOrigin(id, { conflict: 'webhook' });
+        else this.failures.set(id, { phase: result.failed === 'auth' || phase === 'auth_expired' ? 'auth_expired' : 'stopped', detail: poller.adapter.connectionDetail?.() });
+      }
       this.forgetPending(poller);
       await this.persist();
       await poller.adapter.stop().catch(() => undefined);
@@ -671,6 +732,7 @@ export class ImSessionBridge {
       meta.accountId = result.accountId;
       meta.conflict = undefined;
     }
+    for (const binding of this.state.bindings) if (binding.providerInstanceId === poller.ownerId && binding.accountId !== result.accountId) binding.enabled = false;
     await this.persist();
     this.ports.logger.info({ instance_id: current.originId, provider_kind: poller.adapter.providerKind, connection: 'running' }, 'im session connected');
     for (const id of poller.instances) {
@@ -691,44 +753,71 @@ export class ImSessionBridge {
     for (const binding of this.state.bindings) if (binding.providerInstanceId === from) binding.providerInstanceId = to;
     for (const discovery of this.state.discoveries) if (discovery.providerInstanceId === from) discovery.providerInstanceId = to;
     for (const stranger of this.state.strangers) if (stranger.providerInstanceId === from) stranger.providerInstanceId = to;
+    const key = (value: string): string => value.startsWith(`${from}:`) ? `${to}:${value.slice(from.length + 1)}` : value;
+    for (const ticket of this.state.tickets) ticket.senderKey = key(ticket.senderKey);
+    for (const job of this.state.outbox) job.senderKey = key(job.senderKey);
+    this.state.seen = this.state.seen.map(key);
+    for (const [who, answered] of Object.entries(this.state.answeredQuestions)) {
+      const next = key(who);
+      if (next === who) continue;
+      this.state.answeredQuestions[next] = [...new Set([...(this.state.answeredQuestions[next] ?? []), ...answered])];
+      delete this.state.answeredQuestions[who];
+    }
+    for (const [who, waiting] of Object.entries(this.state.awaiting)) {
+      const next = key(who);
+      if (next === who) continue;
+      this.state.awaiting[next] = waiting;
+      delete this.state.awaiting[who];
+    }
+    const cursor = this.state.cursors[from];
+    if (cursor !== undefined) {
+      this.state.cursors[to] = Math.max(cursor, this.state.cursors[to] ?? 0);
+      delete this.state.cursors[from];
+    }
   }
 
-  private async release(instanceId: string): Promise<void> {
+  private release(instanceId: string): Promise<void> {
+    return this.enqueueLifecycle(() => this.releaseOne(instanceId));
+  }
+
+  private async releaseOne(instanceId: string): Promise<void> {
+    this.failures.delete(instanceId);
     const waiting = new Set<Poller>();
     for (const attempt of this.pending.values()) {
-      if (waiting.has(attempt.poller) || !attempt.poller.instances.has(instanceId)) continue;
+      if (waiting.has(attempt.poller) || (!attempt.poller.instances.has(instanceId) && attempt.poller.ownerId !== instanceId)) continue;
       waiting.add(attempt.poller);
       attempt.poller.instances.delete(instanceId);
+      this.reanchor(attempt.poller);
       if (attempt.poller.instances.size > 0) continue;
       this.forgetPending(attempt.poller);
       await attempt.poller.adapter.stop();
     }
     const seen = new Set<Poller>();
     for (const poller of this.pollers.values()) {
-      if (seen.has(poller) || !poller.instances.has(instanceId)) continue;
+      if (seen.has(poller) || (!poller.instances.has(instanceId) && poller.ownerId !== instanceId)) continue;
       seen.add(poller);
       poller.instances.delete(instanceId);
+      this.reanchor(poller);
       if (poller.instances.size > 0) continue;
-      await poller.adapter.stop();
       for (const [key, item] of this.pollers) if (item === poller) this.pollers.delete(key);
+      await poller.adapter.stop();
     }
   }
 
-  private async stopAll(): Promise<void> {
-    const waiting = new Set(this.pending.values());
-    this.pending.clear();
-    for (const attempt of waiting) await attempt.poller.adapter.stop();
-    const seen = new Set<ImSessionAdapter>();
-    for (const poller of this.pollers.values()) {
-      if (seen.has(poller.adapter)) continue;
-      seen.add(poller.adapter);
-      await poller.adapter.stop();
-    }
-    this.pollers.clear();
+  private stopAll(): Promise<void> {
+    return this.enqueueLifecycle(async () => {
+      const pollers = new Set([...this.pollers.values(), ...[...this.pending.values()].map((attempt) => attempt.poller)]);
+      this.pending.clear();
+      this.pollers.clear();
+      this.failures.clear();
+      for (const poller of pollers) await poller.adapter.stop();
+    });
   }
 
   private adapterFor(instanceId: string): ImSessionAdapter | undefined {
-    return [...this.pollers.values()].find((item) => item.ownerId === instanceId || item.instances.has(instanceId))?.adapter;
+    const adapter = [...this.pollers.values()].find((item) => (item.ownerId === instanceId || item.instances.has(instanceId)) && this.published(item))?.adapter;
+    const phase = this.adapterPhase(adapter);
+    return phase === 'auth_expired' || phase === 'conflict' || phase === 'stopped' ? undefined : adapter;
   }
 
   private async ingest(instanceId: string, event: ImInboundEvent): Promise<void> {
@@ -753,7 +842,11 @@ export class ImSessionBridge {
 
   private async onMessage(instanceId: string, accountId: string, event: ImInboundEvent): Promise<void> {
     const meta = this.requireMeta(instanceId);
-    const matches = this.state.bindings.filter((item) => item.providerInstanceId === instanceId && sameIdentity(item.identity, event.identity));
+    if (meta.providerKind === 'wechat_bridge' && (event.identity.chatKind === 'group' || event.identity.topicId !== '0')) {
+      this.noteDiscovery(meta, accountId, event);
+      return;
+    }
+    const matches = this.state.bindings.filter((item) => item.providerInstanceId === instanceId && item.accountId === accountId && sameIdentity(item.identity, event.identity));
     const binding = matches.find((item) => this.admitted(item)) ?? matches[0];
     const adapter = this.adapterFor(instanceId);
     if (binding !== undefined && !this.admitted(binding)) {
@@ -1304,11 +1397,25 @@ export class ImSessionBridge {
     if (adapter === undefined || !this.admitted(binding) || !binding.mobileInteractions) return;
     const jobs: OutboxRecord[] = [];
     let changed = this.retireOutbox(binding, approvals, questions);
+    if (binding.interactionFailure !== undefined) {
+      if (changed) await this.persist();
+      return;
+    }
     for (const approval of approvals) changed = this.stageApproval(binding, approval, jobs) || changed;
     for (const question of questions) changed = this.stageQuestion(binding, question, jobs) || changed;
     if (changed) await this.persist();
     for (const job of jobs) {
-      await this.send(adapter, binding.identity, job.text, job.code, job.buttons.length > 0 ? job.buttons : undefined);
+      try {
+        await this.send(adapter, binding.identity, job.text, job.code, job.buttons.length > 0 ? job.buttons : undefined);
+      } catch (error) {
+        if (!(error instanceof ImSendError)) throw error;
+        const code = error.message;
+        if (!((binding.providerKind === 'feishu_app' && code === 'feishu_thread_context_missing') || (binding.providerKind === 'wechat_bridge' && code === 'wechat_group_unsupported'))) throw error;
+        binding.interactionFailure = code;
+        this.ports.logger.info({ binding_id: binding.id, instance_id: binding.providerInstanceId, diagnostic_code: code }, 'im interaction delivery blocked');
+        await this.persist();
+        return;
+      }
       job.delivery = 'sent';
       if (job.kind === 'desktop_ssh' && !this.state.notices.includes(job.interactionId)) this.state.notices.push(job.interactionId);
       await this.persist();
@@ -1383,8 +1490,9 @@ export class ImSessionBridge {
   }
 
   private rememberChatKind(instanceId: string, event: ImInboundEvent): void {
-    if (event.identity.chatKind === undefined) return;
     const binding = this.state.bindings.find((item) => item.providerInstanceId === instanceId && sameIdentity(item.identity, event.identity));
+    if (binding?.interactionFailure === 'feishu_thread_context_missing') delete binding.interactionFailure;
+    if (event.identity.chatKind === undefined) return;
     if (binding !== undefined) binding.identity = { ...binding.identity, chatKind: event.identity.chatKind };
     const discovery = this.state.discoveries.find((item) => item.providerInstanceId === instanceId && sameIdentity(item.identity, event.identity));
     if (discovery !== undefined) discovery.identity = { ...discovery.identity, chatKind: event.identity.chatKind };
@@ -1515,6 +1623,7 @@ function wireIdentity(identity: ImInboundIdentity): ImDiscovery['identity'] {
     chat_id: identity.chatId,
     sender_id: identity.senderId,
     topic_id: identity.topicId,
+    chat_kind: identity.chatKind,
     ...(identity.chatTitle === undefined ? {} : { chat_title: identity.chatTitle }),
     ...(identity.senderName === undefined ? {} : { sender_name: identity.senderName }),
     ...(identity.topicTitle === undefined ? {} : { topic_title: identity.topicTitle }),

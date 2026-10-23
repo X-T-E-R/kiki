@@ -289,13 +289,14 @@ describe('im session restart and durable files', () => {
     const first = new ImSessionBridge({ ports: harness.ports, factories: [factory], editIntervalMs: 0, now: () => NOW, wait: () => Promise.resolve() });
     await first.paste({ text: paste });
     await first.setListening('inst', true);
-    await admit(raw, platform, 'hi', { reply_context: SECRET, identity: { platform, account_id: 'acct', chat_id: 'c1', sender_id: 'u1', topic_id: '0', chat_kind: 'group' } });
+    const chatKind = platform === 'personal_wechat' ? 'private' : 'group';
+    await admit(raw, platform, 'hi', { reply_context: SECRET, identity: { platform, account_id: 'acct', chat_id: 'c1', sender_id: 'u1', topic_id: '0', chat_kind: chatKind } });
     const snap = await first.snapshot();
     expect(JSON.stringify(snap)).not.toContain(SECRET);
     expect(JSON.stringify(snap)).not.toContain('chatKind');
-    expect(JSON.stringify(snap)).not.toContain('chat_kind');
+    expect(snap.discoveries[0]?.identity.chat_kind).toBe(chatKind);
     await first.confirm(snap.discoveries[0]!.id, { target: { kind: 'persona', persona_id: 'ada' } });
-    expect(harness.stored()).toContain('"chatKind":"group"');
+    expect(harness.stored()).toContain(`"chatKind":"${chatKind}"`);
     expect(harness.stored()).not.toContain(SECRET);
     expect(harness.logs.join('\n')).not.toContain(SECRET);
     expect(JSON.stringify(harness.submitted)).not.toContain(SECRET);
@@ -309,7 +310,7 @@ describe('im session restart and durable files', () => {
     await second.syncInteractions();
     expect(harness.submitted).toEqual([]);
     expect(raw.sent).toHaveLength(1);
-    expect(raw.sent[0]).toMatchObject({ type: 'text', target: { chat_id: 'c1', chat_kind: 'group', reply_context: SECRET } });
+    expect(raw.sent[0]).toMatchObject({ type: 'text', target: { chat_id: 'c1', chat_kind: chatKind, reply_context: SECRET } });
     expect(harness.logs.join('\n')).not.toContain(SECRET);
     expect(JSON.stringify(await second.snapshot())).not.toContain(SECRET);
     await second.close();

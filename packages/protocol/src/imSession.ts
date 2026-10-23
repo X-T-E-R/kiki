@@ -29,6 +29,7 @@ export const imIdentitySchema = z.object({
   chat_id: z.string().min(1),
   sender_id: z.string().min(1),
   topic_id: z.string().min(1),
+  chat_kind: z.enum(['private', 'group']).optional(),
   chat_title: z.string().optional(),
   sender_name: z.string().optional(),
   topic_title: z.string().optional(),
@@ -62,6 +63,16 @@ export const imBindingSchema = z.object({
 }).strict();
 export type ImBinding = z.infer<typeof imBindingSchema>;
 
+export const imConnectionDetailSchema = z.object({
+  code: z.enum(['transport_error', 'http_error', 'api_error', 'invalid_response', 'auth_expired', 'loop_failed']),
+  http_status: z.number().int().nonnegative().optional(),
+  ret: z.number().int().optional(),
+  errcode: z.number().int().optional(),
+  failure_count: z.number().int().nonnegative().optional(),
+  retry_in_ms: z.number().int().nonnegative().optional(),
+}).strict();
+export type ImConnectionDetail = z.infer<typeof imConnectionDetailSchema>;
+
 export const imInstanceViewSchema = z.object({
   id: z.string().min(1),
   provider_kind: imProviderKindSchema,
@@ -71,7 +82,8 @@ export const imInstanceViewSchema = z.object({
   account_id: z.string().optional(),
   conflict: z.literal('webhook').optional(),
   adapter: z.enum(['missing', 'running', 'shared', 'stopped']),
-  connection: z.enum(['starting', 'reconnecting']).optional(),
+  connection: z.enum(['starting', 'reconnecting', 'auth_expired', 'stopped']).optional(),
+  connection_detail: imConnectionDetailSchema.optional(),
 }).strict();
 export type ImInstanceView = z.infer<typeof imInstanceViewSchema>;
 

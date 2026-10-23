@@ -50,3 +50,13 @@ it('accepts persona or session targets while preserving the legacy binding patch
     await app.close();
   }
 });
+
+it('returns unsupported WeChat group confirmation as a validation outcome', async () => {
+  const bridge = { confirm: async () => { throw new Error('unsupported_wechat_group'); } } as unknown as ImSessionBridge;
+  const app = Fastify();
+  registerImSessionRoutes(app, bridge);
+  try {
+    const response = await app.inject({ method: 'POST', url: '/im/sessions/discoveries/d1/confirm', payload: { target: { kind: 'persona', persona_id: 'ada' } } });
+    expect(response.json()).toMatchObject({ code: 40001, msg: 'unsupported_wechat_group' });
+  } finally { await app.close(); }
+});

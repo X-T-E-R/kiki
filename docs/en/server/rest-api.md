@@ -669,6 +669,8 @@ An instance's `listening` records the requested state. Its `adapter` is `missing
 
 Channel identity uses `chat_id`, `sender_id`, and `topic_id` (`"0"` for no topic). Optional `chat_kind` is `private` or `group`; do not infer it from a title when absent. The current WeChat connection supports private contacts only. Confirming a group returns business `code: 40001`, `msg: "unsupported_wechat_group"`, preserving the discovery without creating a persona home or changing a binding.
 
+If an older Feishu thread binding has no reply context, send a new message from the same sender in that thread to restore delivery of still-pending approvals and questions. Unsupported WeChat group bindings remain unsent; disable or remove them rather than retrying them as private chats. A blocked binding does not prevent delivery to other channels.
+
 ### Global search and misc
 
 | Method and path | Description |

@@ -1,9 +1,15 @@
+import { createFeishuSessionAdapter, createWechatSessionAdapter, type SessionSpec } from '@nb-im/core';
 import { describe, expect, it } from 'vitest';
 
+import { HubSessionAdapter } from '../../../src/services/imSession/hubAdapter';
 import { ImSessionBridge } from '../../../src/services/imSession/bridge';
 import { FakeImAdapter, fakeAdapterFactory } from '../../../src/services/imSession/fakeAdapter';
 import type { ImInboundIdentity } from '../../../src/services/imSession/adapter';
 import type { ImPendingApproval, ImPendingQuestion, ImSessionPorts } from '../../../src/services/imSession/ports';
+
+type FeishuConnection = NonNullable<Extract<SessionSpec, { platform: 'feishu_app' }>['connection']>;
+type FeishuHandlers = Parameters<FeishuConnection['open']>[0];
+type FeishuRequest = Parameters<FeishuConnection['send']>[0];
 
 const NOW = 1_700_000_000_000;
 const identity: ImInboundIdentity = { chatId: 'c1', senderId: 'u1', topicId: '0' };
@@ -245,4 +251,106 @@ describe('phone interaction outbox', () => {
     expect(adapter.sent.filter((item) => item.code === 'approval')).toHaveLength(1);
     await harness.bridge.close();
   });
+});
+
+
+describe('upgraded bindings with unavailable delivery targets', () => {
+  it.each(['feishu_app', 'wechat_bridge'] as const)('isolates a legacy %s target, retains pending outbox without hot retries, and serves later channels', async (providerKind) => {
+    const harness = memoryPorts({ approvals: [], questions: [] });
+    const requests: FeishuRequest[] = [];
+    const wechatSends: Record<string, unknown>[] = [];
+    let handlers: FeishuHandlers | undefined;
+    let polls = 0;
+    const store = { load: async () => undefined, save: async () => undefined };
+    const raw = providerKind === 'feishu_app' ? createFeishuSessionAdapter({
+      platform: 'feishu_app', instance_id: 'legacy-fs', app_id: 'cli_legacy', app_secret: 'offline-secret', retry_ms: 0,
+      connection: {
+        async open(next) { handlers = next; return { ok: true }; },
+        async send(request) { requests.push(request); return { ok: true, message_id: 'om_sent' }; },
+      },
+    }, store) : createWechatSessionAdapter({
+      platform: 'personal_wechat', instance_id: 'legacy-wx', account_id: 'bot', token: 'offline-legacy-test', retry_ms: 0,
+      transport: {
+        async post(url, _headers, body, signal) {
+          if (url.endsWith('getupdates')) {
+            if (polls++ === 0) return { status: 200, body: '{"msgs":[],"get_updates_buf":"legacy"}' };
+            await new Promise<void>((resolve) => { if (signal.aborted) resolve(); else signal.addEventListener('abort', () => resolve(), { once: true }); });
+            throw new DOMException('Aborted', 'AbortError');
+          }
+          if (url.endsWith('sendmessage')) wechatSends.push(JSON.parse(body) as Record<string, unknown>);
+          return { status: 200, body: '{"ret":0}' };
+        },
+        async postBytes() { throw new Error('unexpected upload'); },
+        async getBytes() { throw new Error('unexpected download'); },
+      } satisfies NonNullable<Extract<SessionSpec, { platform: 'personal_wechat' }>['transport']>,
+    }, store);
+    const adapter = new HubSessionAdapter(raw);
+    const unavailable = providerKind === 'feishu_app' ? { chatId: 'oc', senderId: 'sender', topicId: 'omt_old', chatKind: 'group' as const } : { chatId: 'group', senderId: 'sender', topicId: '0', chatKind: 'group' as const };
+    const good = providerKind === 'feishu_app' ? { chatId: 'oc', senderId: 'sender', topicId: '0', chatKind: 'group' as const } : { chatId: 'private', senderId: 'private', topicId: '0', chatKind: 'private' as const };
+    let persisted = JSON.stringify({
+      policy: { allowed: true, defaultEnabled: true },
+      instances: [{ id: 'inst', providerKind, listening: true, virtual: false }],
+      bindings: [unavailable, good].map((identity, index) => ({ id: `binding-${index}`, providerInstanceId: 'inst', providerKind, accountId: providerKind === 'feishu_app' ? 'cli_legacy' : 'bot', identity, sessionId: `session-${index}`, enabled: true, busy: 'queue', reply: 'final', mobileInteractions: true })),
+    });
+    let saves = 0;
+    const diagnostics: Record<string, string | number | boolean>[] = [];
+    harness.ports.load = async () => persisted;
+    harness.ports.save = async (value) => { saves += 1; persisted = value; };
+    harness.ports.credentials.list = () => [{ id: 'inst', providerId: providerKind, configured: true }];
+    harness.ports.credentials.read = () => 'offline-credential';
+    harness.ports.logger.info = (fields, message) => { if (message === 'im interaction delivery blocked') diagnostics.push(fields); };
+    harness.ports.sessions.listInteractions = async (sessionId) => ({
+      approvals: [{ id: `approval-${sessionId}`, expiresAt: NOW + 100_000, toolName: 'Bash', action: 'run' }],
+      questions: [{ id: `question-${sessionId}`, questionIndex: 0, expiresAt: NOW + 100_000, questionKey: 'Pick', options: [{ id: 'red', label: 'Red' }], multi: false, allowOther: false }],
+    });
+    const bridge = new ImSessionBridge({ ports: harness.ports, factories: [{ providerKind, create: () => adapter }], now: () => NOW, wait: async () => undefined });
+    try {
+      await bridge.setListening('inst', true);
+      await expect(bridge.syncInteractions()).resolves.toBeUndefined();
+      const failure = providerKind === 'feishu_app' ? 'feishu_thread_context_missing' : 'wechat_group_unsupported';
+      const first = JSON.parse(persisted) as { bindings: { interactionFailure?: string }[]; outbox: { bindingId: string; delivery: string }[]; tickets: { id: string }[] };
+      expect(first.bindings[0]?.interactionFailure).toBe(failure);
+      expect(first.outbox.filter((job) => job.bindingId === 'binding-0').map((job) => job.delivery)).toEqual(['pending', 'pending']);
+      expect(first.outbox.filter((job) => job.bindingId === 'binding-1').map((job) => job.delivery)).toEqual(['sent', 'sent']);
+      expect(diagnostics).toEqual([expect.objectContaining({ binding_id: 'binding-0', diagnostic_code: failure })]);
+      const stable = saves;
+      await bridge.syncInteractions();
+      await bridge.syncInteractions();
+      expect(saves).toBe(stable);
+      expect(JSON.parse(persisted).tickets).toEqual(first.tickets);
+      if (providerKind === 'feishu_app') {
+        expect(requests.map((request) => request.op)).toEqual(['create_message', 'create_message']);
+        await handlers!.onMessage({ event_id: 'fresh-context', app_id: 'cli_legacy', sender: { sender_id: { open_id: 'sender' } }, message: { message_id: 'om_fresh', chat_id: 'oc', chat_type: 'group', thread_id: 'omt_old', message_type: 'text', content: '{"text":" "}' } });
+        await bridge.syncInteractions();
+        expect(requests.filter((request) => request.op === 'reply_message').map((request) => request.message_id)).toEqual(['om_fresh', 'om_fresh']);
+        expect(JSON.parse(persisted).bindings[0].interactionFailure).toBeUndefined();
+        expect(JSON.parse(persisted).tickets).toEqual(first.tickets);
+      } else {
+        expect(wechatSends.map((request) => (request['msg'] as Record<string, unknown>)['to_user_id'])).toEqual(['private', 'private']);
+      }
+    } finally { await bridge.close(); }
+  });
+});
+
+
+it('attempts a later binding before reporting a transient delivery failure and retries the original outbox', async () => {
+  const adapter = new FakeImAdapter('telegram', '42');
+  const held = bridgeFor(adapter, { approvals: [], questions: [] });
+  held.ports.sessions.owns = async () => true;
+  held.ports.sessions.listInteractions = async (sessionId) => ({ approvals: [{ id: `approval-${sessionId}`, expiresAt: NOW + 10_000, toolName: 'Bash', action: 'run' }], questions: [] });
+  try {
+    await held.bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
+    await held.bridge.setListening('inst', true);
+    await pair(held.bridge, adapter, identity, 'first');
+    await pair(held.bridge, adapter, other, 'second');
+    const second = (await held.bridge.snapshot()).bindings.find((binding) => binding.identity.sender_id === other.senderId)!;
+    await held.bridge.updateBinding(second.id, { sessionId: 'home' });
+    failOnce(adapter, ['approval']);
+    await expect(held.bridge.syncInteractions()).rejects.toThrow('send_failed');
+    expect(adapter.sent.filter((message) => message.code === 'approval').map((message) => message.identity.chatId)).toEqual([other.chatId]);
+    const before = saved(held.stored());
+    await held.bridge.syncInteractions();
+    expect(adapter.sent.filter((message) => message.code === 'approval').map((message) => message.identity.chatId)).toEqual([other.chatId, identity.chatId]);
+    expect(saved(held.stored()).tickets).toEqual(before.tickets);
+  } finally { await held.bridge.close(); }
 });

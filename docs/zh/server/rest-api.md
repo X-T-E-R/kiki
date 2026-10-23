@@ -665,6 +665,8 @@ Klient 提供 `rest.rooms.listItems()` 和 `global.rooms.listItems()`。`klient.
 
 信道身份使用 `chat_id`、`sender_id` 与 `topic_id`（无话题时为 `"0"`）。可选 `chat_kind` 为 `private` 或 `group`；没有该字段时不从标题推断。当前微信连接只支持私聊联系人；确认群聊目标返回业务 `code: 40001`、`msg: "unsupported_wechat_group"`，保留发现记录，不创建角色日常会话或改动绑定。
 
+若旧飞书话题绑定缺少回复上下文，由同一发送者在该话题发一条新消息，即可恢复仍待处理的审批与提问投递。不受支持的微信群绑定保持零发送；应停用或移除，而不是按私聊重试。单个绑定受阻不影响其他信道投递。
+
 ### 全局搜索与其他
 
 | 方法与路径 | 说明 |

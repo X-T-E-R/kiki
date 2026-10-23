@@ -23,7 +23,7 @@ export function registerImSessionRoutes(app: FastifyInstance, bridge: ImSessionB
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
-      const validation = /^(?:paste_unrecognized|unknown_|home_session_missing|instance_required)/u.test(message);
+      const validation = /^(?:paste_unrecognized|unknown_|unsupported_|home_session_missing|instance_required)/u.test(message);
       reply.send(errEnvelope(validation ? ErrorCode.VALIDATION_FAILED : ErrorCode.INTERNAL_ERROR, message, req.id));
     }
   };

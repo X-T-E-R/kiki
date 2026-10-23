@@ -323,24 +323,24 @@ describe('phone bridge restart', () => {
 
   it('isolates chat kind across two chats of one adapter and reloads it from the binding', async () => {
     const home = await tempHome();
-    const harness = memoryPorts('wechat_bridge', { approvals: [], questions: [] });
-    let raw = openSession('personal_wechat', 'inst');
-    const factory: ImAdapterFactory = { providerKind: 'wechat_bridge', create: () => new HubSessionAdapter(raw, home) };
+    const harness = memoryPorts('onebot_v11', { approvals: [], questions: [] });
+    let raw = openSession('qq_onebot_v11', 'inst');
+    const factory: ImAdapterFactory = { providerKind: 'onebot_v11', create: () => new HubSessionAdapter(raw, home) };
     const first = new ImSessionBridge({ ports: harness.ports, factories: [factory], editIntervalMs: 0, now: () => NOW, wait: () => Promise.resolve() });
-    await first.paste({ text: 'wechat_token=wxtok\nwechat_account=bot' });
+    await first.paste({ text: 'onebot=ws://127.0.0.1:6700' });
     await first.setListening('inst', true);
-    await admit(raw, 'personal_wechat', 'one', { event_key: 'e1', reply_context: 'ctx-1', identity: { platform: 'personal_wechat', account_id: 'acct', chat_id: 'c1', sender_id: 'u1', topic_id: '0', chat_kind: 'group' } });
-    await admit(raw, 'personal_wechat', 'two', { event_key: 'e2', reply_context: 'ctx-2', identity: { platform: 'personal_wechat', account_id: 'acct', chat_id: 'c2', sender_id: 'u2', topic_id: '0', chat_kind: 'private' } });
+    await admit(raw, 'qq_onebot_v11', 'one', { event_key: 'e1', reply_context: 'ctx-1', identity: { platform: 'qq_onebot_v11', account_id: 'acct', chat_id: 'c1', sender_id: 'u1', topic_id: '0', chat_kind: 'group' } });
+    await admit(raw, 'qq_onebot_v11', 'two', { event_key: 'e2', reply_context: 'ctx-2', identity: { platform: 'qq_onebot_v11', account_id: 'acct', chat_id: 'c2', sender_id: 'u2', topic_id: '0', chat_kind: 'private' } });
     const snap = await first.snapshot();
     await first.confirm(snap.discoveries.find((item) => item.identity.chat_id === 'c1')!.id, { target: { kind: 'persona', persona_id: 'ada' } });
     await first.confirm(snap.discoveries.find((item) => item.identity.chat_id === 'c2')!.id, { target: { kind: 'session', session_id: 'sess' } });
     await first.close();
-    raw = openSession('personal_wechat', 'inst');
+    raw = openSession('qq_onebot_v11', 'inst');
     const questions: ImPendingQuestion[] = [{ id: 'q', questionIndex: 0, expiresAt: NOW + 1000, questionKey: 'Status', options: [{ id: 'opt_0_0', label: 'Yes' }], multi: false, allowOther: false }];
     const pending = { approvals: [] as ImPendingApproval[], questions };
     const ports = harness.ports;
     ports.sessions.listInteractions = async (sessionId) => sessionId === 'home' ? pending : { approvals: [], questions: [] };
-    const second = new ImSessionBridge({ ports, factories: [{ providerKind: 'wechat_bridge', create: () => new HubSessionAdapter(raw, home) }], editIntervalMs: 0, now: () => NOW, wait: () => Promise.resolve() });
+    const second = new ImSessionBridge({ ports, factories: [{ providerKind: 'onebot_v11', create: () => new HubSessionAdapter(raw, home) }], editIntervalMs: 0, now: () => NOW, wait: () => Promise.resolve() });
     await second.setListening('inst', true);
     await second.syncInteractions();
     expect(raw.sent[0]).toMatchObject({ target: { chat_id: 'c1', chat_kind: 'group', reply_context: 'ctx-1' } });

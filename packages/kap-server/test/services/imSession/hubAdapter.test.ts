@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { SessionAdapter, SessionOutbound, SessionSink } from '@nb-im/core';
+import { createWechatSessionAdapter, type SessionAdapter, type SessionOutbound, type SessionSink, type SessionSpec } from '@nb-im/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { fileCursorStore, HubSessionAdapter, sessionSpec } from '../../../src/services/imSession/hubAdapter';
@@ -128,4 +128,54 @@ describe('im session cursor file', () => {
     const missing = fileCursorStore(join(home, 'absent'));
     await expect(missing.load('none')).resolves.toBeUndefined();
   });
+});
+
+it('uses the packaged WeChat poller to recover optional-ret updates and keeps two contacts reply contexts separate', async () => {
+  let entered: () => void = () => undefined;
+  let release: (body: string) => void = () => undefined;
+  const reconnecting = new Promise<void>((resolve) => { entered = resolve; });
+  const recovered = new Promise<string>((resolve) => { release = resolve; });
+  const requests: Record<string, unknown>[] = [];
+  const identities: { chatId: string; senderId: string; topicId: string }[] = [];
+  let polls = 0;
+  let admitted: () => void = () => undefined;
+  const received = new Promise<void>((resolve) => { admitted = resolve; });
+  const transport: NonNullable<Extract<SessionSpec, { platform: 'personal_wechat' }>['transport']> = {
+    async post(url, _headers, body, signal) {
+      if (url.endsWith('getupdates')) {
+        polls += 1;
+        if (polls === 1) return { status: 200, body: '{"ret":-2,"errmsg":"private-error"}' };
+        if (polls === 2) { entered(); return { status: 200, body: await recovered }; }
+        await new Promise<void>((resolve) => { if (signal.aborted) resolve(); else signal.addEventListener('abort', () => resolve(), { once: true }); });
+        throw new DOMException('Aborted', 'AbortError');
+      }
+      if (url.endsWith('sendmessage')) requests.push(JSON.parse(body) as Record<string, unknown>);
+      return { status: 200, body: '{"ret":0}' };
+    },
+    async postBytes() { throw new Error('unexpected upload'); },
+    async getBytes() { throw new Error('unexpected download'); },
+  };
+  const raw = createWechatSessionAdapter({ platform: 'personal_wechat', instance_id: 'packaged-wx', token: 'offline-test-only', account_id: 'bot', retry_ms: 0, transport }, {
+    async load() { return undefined; }, async save() {},
+  });
+  const hub = new HubSessionAdapter(raw);
+  const start = hub.start(async (event) => { identities.push(event.identity); if (identities.length === 2) admitted(); });
+  try {
+    await reconnecting;
+    expect(hub.connectionPhase()).toBe('reconnecting');
+    expect(hub.connectionDetail()).toMatchObject({ code: 'api_error', http_status: 200, ret: -2, failure_count: 1 });
+    expect(JSON.stringify(hub.connectionDetail())).not.toContain('private-error');
+    release(JSON.stringify({ get_updates_buf: 'next', msgs: ['a', 'b'].map((id) => ({ message_id: id, from_user_id: id, to_user_id: 'bot', message_type: 1, message_state: 2, context_token: `context-${id}`, item_list: [{ type: 1, text_item: { text: 'pair' } }] })) }));
+    await start;
+    await received;
+    expect(hub.connectionPhase()).toBe('running');
+    expect(hub.connectionDetail()).toBeUndefined();
+    for (const identity of identities) await hub.sendText({ identity, text: 'reply', code: 'reply' });
+    expect(requests.map((request) => request['msg'])).toEqual([
+      expect.objectContaining({ to_user_id: 'a', context_token: 'context-a' }),
+      expect.objectContaining({ to_user_id: 'b', context_token: 'context-b' }),
+    ]);
+  } finally { await hub.stop(); }
+  expect(hub.connectionPhase()).toBe('stopped');
+  expect(polls).toBeLessThanOrEqual(3);
 });

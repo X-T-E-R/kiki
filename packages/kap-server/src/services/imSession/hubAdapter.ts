@@ -2,7 +2,7 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { atomicWrite } from '@kiki/agent-core-v2/_base/utils/fs';
-import type { ImProviderKind } from '@kiki/protocol';
+import type { ImConnectionDetail, ImProviderKind } from '@kiki/protocol';
 import {
   createSessionHub,
   splitFeishuText,
@@ -170,6 +170,10 @@ export class HubSessionAdapter implements ImSessionAdapter {
 
   connectionPhase(): 'idle' | 'starting' | 'running' | 'reconnecting' | 'conflict' | 'auth_expired' | 'stopped' {
     return this.session.state;
+  }
+
+  connectionDetail(): ImConnectionDetail | undefined {
+    return this.session.connection_detail;
   }
 
   splitText(text: string): string[] {

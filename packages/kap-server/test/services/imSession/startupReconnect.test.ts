@@ -14,7 +14,7 @@ import { HubSessionAdapter, loadHubFactories } from '../../../src/services/imSes
 import type { ImSessionPorts } from '../../../src/services/imSession/ports';
 
 class PendingAdapter extends FakeImAdapter {
-  phase: 'starting' | 'reconnecting' | 'running' | 'stopped' = 'starting';
+  phase: ReturnType<NonNullable<ImSessionAdapter['connectionPhase']>> = 'starting';
   private resolveStart: ((value: { accountId: string }) => void) | undefined;
 
   override start(listener: Parameters<ImSessionAdapter['start']>[0]): Promise<{ accountId: string }> {
@@ -37,8 +37,12 @@ class PendingAdapter extends FakeImAdapter {
     this.resolveStart = undefined;
   }
 
-  connectionPhase(): 'starting' | 'reconnecting' | 'running' | 'stopped' {
+  connectionPhase(): ReturnType<NonNullable<ImSessionAdapter['connectionPhase']>> {
     return this.phase;
+  }
+
+  connectionDetail(): ReturnType<NonNullable<ImSessionAdapter['connectionDetail']>> {
+    return this.phase === 'auth_expired' ? { code: 'auth_expired', http_status: 200, errcode: -14 } : undefined;
   }
 }
 
@@ -117,6 +121,91 @@ describe('im session startup reconnect', () => {
   afterEach(async () => {
     const closing = open.splice(0);
     for (const item of closing) await item.close();
+  });
+
+  it('retains startup authentication failure metadata after cleanup without clearing listening intent', async () => {
+    class AuthAdapter extends PendingAdapter {
+      override start(_listener: Parameters<ImSessionAdapter['start']>[0]) {
+        this.started += 1;
+        this.phase = 'auth_expired';
+        return Promise.resolve({ accountId: this.accountId, failed: 'auth' as const });
+      }
+    }
+    const adapter = new AuthAdapter('telegram', '42');
+    const held = harness(adapter, false);
+    open.push(held.bridge);
+    await held.bridge.setListening('inst', true);
+    const snapshot = imSessionSnapshotSchema.parse(await held.bridge.snapshot());
+    expect(snapshot.instances[0]).toMatchObject({ listening: true, adapter: 'stopped', connection: 'auth_expired', connection_detail: { code: 'auth_expired', http_status: 200, errcode: -14 } });
+    expect(snapshot.bindings[0]?.id).toBe('b-kept');
+    expect(adapter.stopped).toBe(1);
+    await held.bridge.setListening('inst', false);
+    expect((await held.bridge.snapshot()).instances[0]?.connection).toBeUndefined();
+  });
+
+  it('coalesces concurrent start requests before asynchronous conflict inspection finishes', async () => {
+    const adapter = new PendingAdapter('telegram', '42');
+    let resolve: () => void = () => undefined;
+    const inspected = new Promise<void>((done) => { resolve = done; });
+    adapter.describeConflict = async () => { await inspected; return 'none'; };
+    const held = harness(adapter, false);
+    open.push(held.bridge);
+    await held.bridge.whenReady();
+    const starts = Promise.all([
+      held.bridge.setListening('inst', true),
+      held.bridge.setListening('inst', true),
+      held.bridge.setPolicy({ allowed: true, default_enabled: true }),
+    ]);
+    resolve();
+    await starts;
+    expect(adapter.started).toBe(1);
+    adapter.release();
+    await until(async () => (await held.bridge.snapshot()).instances[0]?.adapter === 'running', 'concurrent start did not publish');
+    expect(adapter.started).toBe(1);
+  });
+
+  it('does not start after stop or close interrupts conflict inspection', async () => {
+    for (const close of [false, true]) {
+      const adapter = new PendingAdapter('telegram', '42');
+      let resolve: () => void = () => undefined;
+      let inspecting: () => void = () => undefined;
+      const began = new Promise<void>((done) => { inspecting = done; });
+      const inspected = new Promise<void>((done) => { resolve = done; });
+      adapter.describeConflict = async () => { inspecting(); await inspected; return 'none'; };
+      const held = harness(adapter, false);
+      await held.bridge.whenReady();
+      const start = held.bridge.setListening('inst', true);
+      await began;
+      const stop = close ? held.bridge.close() : held.bridge.setListening('inst', false);
+      resolve();
+      await Promise.all([start, stop]);
+      expect(adapter.started).toBe(0);
+      expect((await held.bridge.snapshot()).instances[0]?.adapter).toBe('stopped');
+      await held.bridge.close();
+    }
+  });
+
+  it.each(['auth_expired', 'stopped'] as const)('projects a terminal %s poller without losing intent or bindings and allows explicit retry', async (phase) => {
+    const adapter = new PendingAdapter('telegram', '42');
+    const held = harness(adapter, false);
+    open.push(held.bridge);
+    await held.bridge.setListening('inst', true);
+    adapter.release();
+    await until(async () => (await held.bridge.snapshot()).instances[0]?.adapter === 'running', 'initial listener did not publish');
+    adapter.phase = phase;
+    const terminal = imSessionSnapshotSchema.parse(await held.bridge.snapshot());
+    expect(terminal.instances[0]).toMatchObject({ listening: true, adapter: 'stopped', connection: phase });
+    if (phase === 'auth_expired') expect(terminal.instances[0]?.connection_detail).toEqual({ code: 'auth_expired', http_status: 200, errcode: -14 });
+    expect(terminal.bindings[0]?.id).toBe('b-kept');
+    expect(adapter.sent).toEqual([]);
+    await held.bridge.setListening('inst', true);
+    expect(adapter.started).toBe(2);
+    adapter.release();
+    await until(async () => (await held.bridge.snapshot()).instances[0]?.adapter === 'running', 'retry listener did not publish');
+    const recovered = await held.bridge.snapshot();
+    expect(recovered.instances[0]?.connection).toBeUndefined();
+    expect(recovered.instances[0]?.connection_detail).toBeUndefined();
+    expect(recovered.bindings).toEqual(terminal.bindings);
   });
 
   it('lists and retargets a saved binding while a pending adapter is still reconnecting', async () => {

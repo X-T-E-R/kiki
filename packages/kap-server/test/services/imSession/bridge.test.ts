@@ -186,9 +186,12 @@ describe('im session bridge', () => {
     const restored = await harness.bridge.snapshot();
     expect(restored.bindings).toHaveLength(1);
     expect(restored.bindings[0]).toMatchObject({ id: bound.id, session_id: 'home', busy: 'steer', enabled: true });
-    expect(restored.bindings[0]?.session_enabled).toBeUndefined();
-    await adapter.emit({ eventId: '3', cursor: 3, identity, kind: 'text', text: 'next' });
-    expect(harness.submitted.map((item) => item.promptId)).toEqual(['im:inst:3']);
+    expect(restored.bindings[0]?.session_enabled).toBe(false);
+    await adapter.emit({ eventId: '3', cursor: 3, identity, kind: 'text', text: 'still paused' });
+    expect(harness.submitted).toEqual([]);
+    await harness.bridge.updateBinding(bound.id, { sessionEnabled: true });
+    await adapter.emit({ eventId: '4', cursor: 4, identity, kind: 'text', text: 'explicitly resumed' });
+    expect(harness.submitted.map((item) => item.promptId)).toEqual(['im:inst:4']);
   });
 
   it('validates a replacement session before changing any binding settings', async () => {
@@ -490,5 +493,291 @@ describe('im session bridge', () => {
     expect(adapter.sent.filter((item) => item.code === 'reply').map((item) => item.text)).toEqual(['Hi', 'Hello']);
     expect(adapter.sent.some((item) => item.code === 'file_unsupported')).toBe(true);
     expect((await harness.bridge.snapshot()).voice_fallbacks).toBe(1);
+  });
+});
+
+describe('same-account channels on every platform', () => {
+  it.each(['telegram', 'feishu_app', 'onebot_v11'] as const)('%s keeps contacts, groups and topics independent across target changes and removal', async (kind) => {
+    const adapter = new FakeImAdapter(kind, 'account');
+    const routed: { sessionId: string; promptId: string }[] = [];
+    const harness = ports({ submit: async ({ sessionId, promptId }) => {
+      routed.push({ sessionId, promptId });
+      return { duplicate: false, promptId, deliveryState: 'pending' };
+    } });
+    harness.ports.credentials.list = () => [{ id: 'inst', providerId: kind, configured: true }];
+    harness.ports.credentials.read = () => 'test-credential';
+    const bridge = new ImSessionBridge({ ports: harness.ports, factories: [fakeAdapterFactory(adapter)], wait: async () => undefined });
+    const channels = [
+      { chatId: 'contact-a', senderId: 'sender', topicId: '0' },
+      { chatId: 'contact-b', senderId: 'sender', topicId: '0' },
+      { chatId: 'group-a', senderId: 'sender', topicId: '0', chatKind: 'group' as const },
+      { chatId: 'group-a', senderId: 'sender', topicId: 'topic-a', chatKind: 'group' as const },
+      { chatId: 'channel-b', senderId: 'sender', topicId: 'topic-a', chatKind: 'group' as const },
+    ];
+    try {
+      await bridge.setListening('inst', true);
+      for (const [index, identity] of channels.entries()) await adapter.emit({ eventId: `discover-${index}`, identity, kind: 'text', text: 'pair' });
+      const discovered = await bridge.snapshot();
+      expect(discovered.discoveries).toHaveLength(channels.length);
+      for (const [index, item] of discovered.discoveries.entries()) await bridge.confirm(item.id, { target: index % 2 === 0 ? { kind: 'persona', persona_id: 'ada' } : { kind: 'session', session_id: 'sess' } });
+      const bound = (await bridge.snapshot()).bindings;
+      expect(new Set(bound.map((item) => item.id)).size).toBe(channels.length);
+      for (const [index, identity] of channels.entries()) await adapter.emit({ eventId: `route-${index}`, identity, kind: 'text', text: 'route' });
+      expect(routed.map((item) => item.sessionId)).toEqual(['home', 'sess', 'home', 'sess', 'home']);
+      await bridge.updateBinding(bound[0]!.id, { enabled: false });
+      await bridge.updateBinding(bound[0]!.id, { target: { kind: 'session', session_id: 'sess' } });
+      await bridge.removeBinding(bound[1]!.id);
+      await adapter.emit({ eventId: 'paused', identity: channels[0]!, kind: 'text', text: 'paused' });
+      await adapter.emit({ eventId: 'removed', identity: channels[1]!, kind: 'text', text: 'removed' });
+      await adapter.emit({ eventId: 'untrusted', identity: { ...channels[2]!, senderId: 'stranger' }, kind: 'text', text: 'untrusted' });
+      await adapter.emit({ eventId: 'active', identity: channels[3]!, kind: 'text', text: 'active' });
+      expect(routed).toHaveLength(6);
+      expect(routed.at(-1)).toEqual({ sessionId: 'sess', promptId: 'im:inst:active' });
+      const after = await bridge.snapshot();
+      expect(after.bindings.find((item) => item.id === bound[0]!.id)).toMatchObject({ enabled: false, session_id: 'sess' });
+      expect(after.bindings.find((item) => item.id === bound[3]!.id)).toEqual(bound[3]);
+      expect(after.strangers).toHaveLength(1);
+      expect(adapter.started).toBe(1);
+      expect(adapter.stopped).toBe(0);
+      expect(after.instances[0]?.listening).toBe(true);
+    } finally { await bridge.close(); }
+  });
+});
+
+it('keeps WeChat contacts separate and refuses unsupported group confirmation before resolving a target', async () => {
+  const adapter = new FakeImAdapter('wechat_bridge', 'account');
+  const routed: string[] = [];
+  let homes = 0;
+  const harness = ports({
+    ensureHome: async () => { homes += 1; return { homeSessionId: 'home' }; },
+    submit: async ({ sessionId, promptId }) => { routed.push(sessionId); return { duplicate: false, promptId, deliveryState: 'pending' }; },
+  });
+  harness.ports.credentials.list = () => [{ id: 'inst', providerId: 'wechat_bridge', configured: true }];
+  harness.ports.credentials.read = () => 'test-credential';
+  const bridge = new ImSessionBridge({ ports: harness.ports, factories: [fakeAdapterFactory(adapter)], wait: async () => undefined });
+  const contacts = [{ chatId: 'contact-a', senderId: 'contact-a', topicId: '0' }, { chatId: 'contact-b', senderId: 'contact-b', topicId: '0' }];
+  try {
+    await bridge.setListening('inst', true);
+    for (const [index, identity] of contacts.entries()) await adapter.emit({ eventId: `discover-${index}`, identity, kind: 'text', text: 'pair' });
+    for (const [index, discovery] of (await bridge.snapshot()).discoveries.entries()) await bridge.confirm(discovery.id, { target: index === 0 ? { kind: 'persona', persona_id: 'ada' } : { kind: 'session', session_id: 'sess' } });
+    for (const [index, identity] of contacts.entries()) await adapter.emit({ eventId: `route-${index}`, identity, kind: 'text', text: 'route' });
+    expect(routed).toEqual(['home', 'sess']);
+    const before = await bridge.snapshot();
+    const resolved = homes;
+    for (const [index, identity] of [{ chatId: 'sender', senderId: 'sender', topicId: 'group', chatKind: 'group' as const }, { chatId: 'group-zero', senderId: 'sender', topicId: '0', chatKind: 'group' as const }].entries()) {
+      await adapter.emit({ eventId: `group-${index}`, identity, kind: 'text', text: 'group' });
+      const discovery = (await bridge.snapshot()).discoveries.find((item) => item.identity.chat_id === identity.chatId)!;
+      expect(discovery.identity.chat_kind).toBe('group');
+      await expect(bridge.confirm(discovery.id, { target: { kind: 'persona', persona_id: 'ada' } })).rejects.toThrow('unsupported_wechat_group');
+      expect((await bridge.snapshot()).discoveries.map((item) => item.id)).toContain(discovery.id);
+    }
+    const after = await bridge.snapshot();
+    expect(homes).toBe(resolved);
+    expect(after.bindings).toEqual(before.bindings);
+    expect(routed).toEqual(['home', 'sess']);
+    expect(adapter.started).toBe(1);
+  } finally { await bridge.close(); }
+});
+
+it('retains the canonical binding and shared membership when an alias retries a stopped poller', async () => {
+  class TerminalAdapter extends FakeImAdapter {
+    phase: 'running' | 'stopped' = 'running';
+    constructor(readonly canonicalInstanceId: string) { super('telegram', '42'); }
+    connectionPhase() { return this.phase; }
+    override async stop() { this.phase = 'stopped'; await super.stop(); }
+  }
+  const base = ports();
+  base.ports.credentials.list = () => ['a', 'b'].map((id) => ({ id, providerId: 'telegram', configured: true }));
+  base.ports.credentials.read = () => 'same-token';
+  const adapters: TerminalAdapter[] = [];
+  const bridge = new ImSessionBridge({ ports: base.ports, factories: [{ providerKind: 'telegram', create: ({ instanceId }) => {
+    const adapter = new TerminalAdapter(instanceId); adapters.push(adapter); return adapter;
+  } }], wait: async () => undefined });
+  try {
+    await bridge.setListening('a', true);
+    await bridge.setListening('b', true);
+    await adapters[0]!.emit({ eventId: 'pair', identity, kind: 'text', text: 'pair' });
+    await bridge.confirm((await bridge.snapshot()).discoveries[0]!.id, { target: { kind: 'session', session_id: 'sess' } });
+    const before = (await bridge.snapshot()).bindings;
+    adapters[0]!.phase = 'stopped';
+    await bridge.setListening('b', true);
+    expect(adapters).toHaveLength(2);
+    expect(adapters[1]!.canonicalInstanceId).toBe('a');
+    expect((await bridge.snapshot()).bindings).toEqual(before);
+    await adapters[1]!.emit({ eventId: 'route', identity, kind: 'text', text: 'route' });
+    expect(base.submitted.map((item) => item.promptId)).toEqual(['im:a:route']);
+    await bridge.setListening('b', false);
+    expect(adapters[1]!.stopped).toBe(0);
+    await bridge.setListening('a', false);
+    expect(adapters[1]!.stopped).toBe(1);
+  } finally { await bridge.close(); }
+});
+
+
+describe('credential changes in a shared listener group', () => {
+  class CredentialAdapter extends FakeImAdapter {
+    phase: 'starting' | 'running' | 'auth_expired' | 'stopped' = 'running';
+    late: Parameters<FakeImAdapter['start']>[0] | undefined;
+    hold = false;
+    complete: (() => void) | undefined;
+    constructor(readonly canonicalInstanceId: string, readonly credential: string) { super('telegram', credential); }
+    override start(listener: Parameters<FakeImAdapter['start']>[0]) {
+      this.phase = 'running';
+      this.late = listener;
+      const started = super.start(listener);
+      if (!this.hold) return started;
+      this.phase = 'starting';
+      return new Promise<{ accountId: string }>((resolve) => { this.complete = () => { this.phase = 'running'; resolve({ accountId: this.accountId }); }; });
+    }
+    override async stop() { this.complete?.(); this.phase = 'stopped'; await super.stop(); }
+    connectionPhase() { return this.phase; }
+  }
+
+  function shared(holdFirst = false) {
+    const credentials = new Map([['a', 'T1'], ['b', 'T1']]);
+    const base = ports();
+    base.ports.credentials.list = () => [...credentials.keys()].map((id) => ({ id, providerId: 'telegram', configured: true }));
+    base.ports.credentials.read = (id) => credentials.get(id);
+    const adapters: CredentialAdapter[] = [];
+    const bridge = new ImSessionBridge({ ports: base.ports, factories: [{ providerKind: 'telegram', create: ({ instanceId, credential }) => {
+      const adapter = new CredentialAdapter(instanceId, credential);
+      adapter.hold = holdFirst && adapters.length === 0;
+      adapters.push(adapter);
+      return adapter;
+    } }], wait: async () => undefined });
+    return { bridge, credentials, adapters, ...base };
+  }
+
+  it.each([['a', false], ['a', true], ['b', false]] as const)('starts the new credential for %s (check=%s) and keeps the other member on the old account until its last stop', async (changed, check) => {
+    const held = shared();
+    const remaining = changed === 'a' ? 'b' : 'a';
+    try {
+      await held.bridge.setListening('a', true);
+      await held.bridge.setListening('b', true);
+      const old = held.adapters[0]!;
+      await old.emit({ eventId: 'pair', identity, kind: 'text', text: 'pair' });
+      await held.bridge.confirm((await held.bridge.snapshot()).discoveries[0]!.id, { target: { kind: 'session', session_id: 'sess' } });
+      held.ports.sessions.listInteractions = async () => ({ approvals: [{ id: 'rotation-approval', expiresAt: Date.now() + 100_000, toolName: 'Bash', action: 'run' }], questions: [] });
+      await held.bridge.syncInteractions();
+      const allow = old.sent.find((message) => message.code === 'approval')!.buttons![0]!.id;
+      held.credentials.set(changed, 'T2');
+      if (check) {
+        held.ports.credentials.check = async () => ({ ok: true, accountId: 'T2' });
+        await held.bridge.check(changed);
+      }
+      await held.bridge.setListening(changed, true);
+      expect(held.adapters.map((adapter) => [adapter.credential, adapter.started])).toEqual([['T1', 1], ['T2', 1]]);
+      expect(old.stopped).toBe(0);
+      const snapshot = await held.bridge.snapshot();
+      expect(snapshot.instances.find((item) => item.id === changed)).toMatchObject({ account_id: 'T2', adapter: 'running' });
+      expect(snapshot.instances.find((item) => item.id === remaining)).toMatchObject({ account_id: 'T1', adapter: 'running' });
+      expect(snapshot.bindings[0]).toMatchObject({ provider_instance_id: remaining, account_id: 'T1', enabled: true });
+      await old.emit({ eventId: 'approve-after-reanchor', identity, kind: 'callback', callbackData: allow, callbackQueryId: 'rotation-callback' });
+      expect(held.decisions).toEqual(['approved']);
+      await old.emit({ eventId: 'old-account', identity, kind: 'text', text: 'route old' });
+      const next = held.adapters[1]!;
+      await next.emit({ eventId: 'new-discovery', identity, kind: 'text', text: 'pair new account' });
+      expect(held.submitted.map((item) => item.promptId)).toEqual([`im:${remaining}:old-account`]);
+      const discovery = (await held.bridge.snapshot()).discoveries.find((item) => item.provider_instance_id === changed)!;
+      expect(discovery.account_id).toBe('T2');
+      await held.bridge.confirm(discovery.id, { target: { kind: 'session', session_id: 'home' } });
+      await next.emit({ eventId: 'new-account', identity, kind: 'text', text: 'route new' });
+      expect(held.submitted.map((item) => item.promptId)).toEqual([`im:${remaining}:old-account`, `im:${changed}:new-account`]);
+      await held.bridge.setListening(changed, false);
+      expect(next.stopped).toBe(1);
+      expect(old.stopped).toBe(0);
+      await expect(next.late!({ eventId: 'late-new', identity, kind: 'text', text: 'late' })).rejects.toThrow('im_not_ready');
+      await old.emit({ eventId: 'still-old', identity, kind: 'text', text: 'still live' });
+      await held.bridge.setListening(remaining, false);
+      expect(old.stopped).toBe(1);
+      await expect(old.late!({ eventId: 'late-old', identity, kind: 'text', text: 'late' })).rejects.toThrow('im_not_ready');
+    } finally { await held.bridge.close(); }
+  });
+
+  it.each([false, true])('keeps the old group independent when its canonical member changes while held=%s', async (pending) => {
+    const held = shared(pending);
+    try {
+      await held.bridge.setListening('a', true);
+      await held.bridge.setListening('b', true);
+      const old = held.adapters[0]!;
+      if (!pending) await held.bridge.setListening('a', false);
+      held.credentials.set('a', 'T2');
+      await held.bridge.setListening('a', true);
+      expect(old.stopped).toBe(0);
+      expect(held.adapters[1]).toMatchObject({ credential: 'T2', started: 1 });
+      if (pending) {
+        await expect(old.late!({ eventId: 'too-early', identity, kind: 'text', text: 'defer' })).rejects.toThrow('im_not_ready');
+        old.complete!();
+        for (let attempt = 0; attempt < 20 && (await held.bridge.snapshot()).instances.find((item) => item.id === 'b')?.adapter !== 'running'; attempt += 1) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
+      await old.emit({ eventId: 'old-discovery', identity, kind: 'text', text: 'pair old' });
+      const discovery = (await held.bridge.snapshot()).discoveries[0]!;
+      expect(discovery).toMatchObject({ provider_instance_id: 'b', account_id: 'T1' });
+      expect((await held.bridge.snapshot()).instances.find((item) => item.id === 'a')).toMatchObject({ account_id: 'T2', adapter: 'running' });
+      await held.bridge.setListening('b', false);
+      expect(old.stopped).toBe(1);
+      expect(held.adapters[1]!.stopped).toBe(0);
+    } finally { await held.bridge.close(); }
+  });
+
+  it.each(['1', 'custom answer'])('retains answered-question dedup after joining and reanchoring an old group (first answer=%s)', async (firstAnswer) => {
+    const credentials = new Map([['a', 'T1'], ['b', 'T1']]);
+    const answers: { questionIndex?: number; kind: string }[] = [];
+    const questions: ImPendingQuestion[] = [0, 1].map((questionIndex) => ({ id: 'q', questionIndex, expiresAt: Date.now() + 100_000, questionKey: `Question ${questionIndex}`, options: [{ id: 'red', label: 'Red' }, { id: 'blue', label: 'Blue' }], multi: false, allowOther: true }));
+    const base = ports({
+      listInteractions: async () => ({ approvals: [], questions }),
+      answerQuestion: async ({ response }) => { answers.push(response); return 'answered'; },
+    });
+    const aKey = `a:${identity.chatId}:${identity.senderId}:${identity.topicId}`;
+    const bKey = `b:${identity.chatId}:${identity.senderId}:${identity.topicId}`;
+    let persisted = JSON.stringify({ answeredQuestions: { [aKey]: ['target:0', 'shared:0'], [bKey]: ['source:0', 'shared:0'] } });
+    base.ports.load = async () => persisted;
+    base.ports.save = async (value) => { persisted = value; };
+    base.ports.credentials.list = () => [...credentials.keys()].map((id) => ({ id, providerId: 'telegram', configured: true }));
+    base.ports.credentials.read = (id) => credentials.get(id);
+    const adapters: CredentialAdapter[] = [];
+    const bridge = new ImSessionBridge({ ports: base.ports, factories: [{ providerKind: 'telegram', create: ({ instanceId, credential }) => {
+      const adapter = new CredentialAdapter(instanceId, credential);
+      adapters.push(adapter);
+      return adapter;
+    } }], wait: async () => undefined });
+    try {
+      await bridge.setListening('a', true);
+      const old = adapters[0]!;
+      await old.emit({ eventId: 'pair', identity, kind: 'text', text: 'pair' });
+      await bridge.confirm((await bridge.snapshot()).discoveries[0]!.id, { target: { kind: 'session', session_id: 'sess' } });
+      await bridge.syncInteractions();
+      await old.emit({ eventId: 'answer-0', identity, kind: 'text', text: firstAnswer });
+      expect(answers).toEqual([expect.objectContaining({ questionIndex: 0, kind: firstAnswer === '1' ? 'single' : 'other' })]);
+      await bridge.setListening('b', true);
+      credentials.set('a', 'T2');
+      await bridge.setListening('a', true);
+      expect(old.stopped).toBe(0);
+      expect((await bridge.snapshot()).bindings[0]?.provider_instance_id).toBe('b');
+      await old.emit({ eventId: 'answer-1', identity, kind: 'text', text: '2' });
+      expect(answers.map((answer) => answer.questionIndex)).toEqual([0, 1]);
+      const saved = (JSON.parse(persisted) as { answeredQuestions: Record<string, string[]> }).answeredQuestions;
+      expect(saved[aKey]).toBeUndefined();
+      expect(saved[bKey]).toEqual(['target:0', 'shared:0', 'q:0', 'source:0', 'q:1']);
+      expect(base.submitted).toEqual([]);
+    } finally { await bridge.close(); }
+  });
+
+  it('does not merge changed credentials when retrying a terminal shared group', async () => {
+    const held = shared();
+    try {
+      await held.bridge.setListening('a', true);
+      await held.bridge.setListening('b', true);
+      held.adapters[0]!.phase = 'auth_expired';
+      held.credentials.set('a', 'T2');
+      await held.bridge.setListening('b', true);
+      expect(held.adapters.map((adapter) => [adapter.credential, adapter.started])).toEqual([['T1', 1], ['T1', 1]]);
+      const afterRetry = await held.bridge.snapshot();
+      expect(afterRetry.instances.find((item) => item.id === 'a')?.adapter).toBe('stopped');
+      expect(afterRetry.instances.find((item) => item.id === 'b')).toMatchObject({ account_id: 'T1', adapter: 'running' });
+      await held.bridge.setListening('a', true);
+      expect(held.adapters[2]).toMatchObject({ credential: 'T2', started: 1 });
+      expect((await held.bridge.snapshot()).instances.find((item) => item.id === 'a')).toMatchObject({ account_id: 'T2', adapter: 'running' });
+    } finally { await held.bridge.close(); }
   });
 });

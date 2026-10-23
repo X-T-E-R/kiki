@@ -1,4 +1,4 @@
-import type { ImProviderKind } from '@kiki/protocol';
+import type { ImConnectionDetail, ImProviderKind } from '@kiki/protocol';
 
 export interface ImInboundIdentity {
   readonly chatId: string;
@@ -68,6 +68,7 @@ export interface ImSessionAdapter {
   readonly supportsFile: boolean;
   describeConflict(): Promise<'webhook' | 'none'>;
   connectionPhase?(): 'idle' | 'starting' | 'running' | 'reconnecting' | 'conflict' | 'auth_expired' | 'stopped';
+  connectionDetail?(): ImConnectionDetail | undefined;
   splitText(text: string): readonly string[];
   acceptsVoice(mediaType: string): boolean;
   start(listener: (event: ImInboundEvent) => Promise<void>, options?: { readonly offset?: number }): Promise<{ readonly accountId: string; readonly conflict?: 'webhook'; readonly failed?: 'auth' }>;
