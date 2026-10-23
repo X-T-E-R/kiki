@@ -1501,7 +1501,7 @@ describe('BrowserControlSection', () => {
     // Nothing on this branch asks for a CDP address, the style cannot be pointed
     // at one, and the form says which bridge it is talking to.
     expect(query('[data-secret-field]')).toBeNull();
-    expect(query<HTMLElement>('[data-browser-type]')?.dataset['browserType']).toBe('kimi-webbridge');
+    expect(query('[data-browser-type]')?.dataset['browserType']).toBe('kimi-webbridge');
     expect(query('[data-browser-bridge]')?.textContent).toContain('local HTTP bridge');
     expect(query('[data-browser-check]')?.textContent).toBe('Check bridge');
     expect(query('[data-browser-connect]')?.textContent).toBe('Connect bridge');
@@ -1515,7 +1515,7 @@ describe('BrowserControlSection', () => {
     });
     // Read back from what the server returned: still the bridge, still no
     // endpoint field, and the switch the server now holds.
-    expect(query<HTMLElement>('[data-browser-type]')?.dataset['browserType']).toBe('kimi-webbridge');
+    expect(query('[data-browser-type]')?.dataset['browserType']).toBe('kimi-webbridge');
     expect(query<HTMLInputElement>('[data-browser-name-input]')?.value).toBe('Daily Edge (work)');
     expect(query<HTMLInputElement>('[data-browser-enabled] input')?.checked).toBe(false);
     expect(query('[data-settings-draft]')?.hasAttribute('hidden')).toBe(true);
@@ -1543,7 +1543,7 @@ describe('BrowserControlSection', () => {
     // The main frame of the selected tab is the bridge's whole surface, and the
     // managed driver's window context is a different browser model rather than a
     // fallback for a token this page does not recognise.
-    const isolation = query<HTMLElement>('[data-browser-catalog-isolation]');
+    const isolation = query('[data-browser-catalog-isolation]');
     expect(isolation?.textContent).toBe('main frame only');
     expect(isolation?.title).toBe('main-frame-only');
     expect(container.textContent).not.toContain('opaque window context');
