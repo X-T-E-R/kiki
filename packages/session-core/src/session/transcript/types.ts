@@ -235,13 +235,19 @@ export interface ToolBlock {
   readonly turnId?: string;
 }
 
-/** A SendMessage invocation projected as speech, never ordinary assistant prose. */
+/**
+ * Speech in the message view: a delivered `SendMessage`, the persona's local
+ * greeting, or the ordinary final reply a finished turn ended on. The last one
+ * is a reading projection, not a delivery fact: it claims no SendMessage call,
+ * no room or IM send, and carries no call identity — only the frame whose
+ * bounded text continues.
+ */
 export interface MessageBlock {
   readonly kind: 'message';
   readonly id: string;
   readonly toolCallId?: string;
   readonly messageId?: string;
-  readonly origin: 'send_message' | 'persona_greeting';
+  readonly origin: 'send_message' | 'persona_greeting' | 'ordinary_final';
   readonly status: 'sending' | 'sent' | 'failed' | 'cancelled';
   readonly text: string;
   readonly to?: string;
@@ -261,6 +267,8 @@ export interface MessageBlock {
   readonly turnId?: string;
   /** The original call remains available for process inspection and streaming argsText. */
   readonly sourceTool?: ToolBlock;
+  /** The assistant body a promoted final reply speaks for, so its text keeps continuing. */
+  readonly sourceBlock?: AssistantBlock;
 }
 
 export interface MessageAttachment {

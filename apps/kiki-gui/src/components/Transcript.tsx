@@ -2669,11 +2669,11 @@ const MessageViewRow = memo(function MessageViewRow({
   }
   // A delivered message, a handoff it received and a stored record are each
   // exactly one original block, so the row body wears that block's place in
-  // the gallery — a delivered message wears its source call's, the block that
-  // really lives in `state.blocks`; an activity summary is a projection of
-  // many, so its members carry their own above and the summary itself has no
-  // index to hand over.
-  const galleryId = node.kind === 'message' ? node.sourceTool?.id ?? node.id : node.id;
+  // the gallery — a delivered message wears its source call's, a promoted
+  // reply its assistant block's, the block that really lives in `state.blocks`;
+  // an activity summary is a projection of many, so its members carry their own
+  // above and the summary itself has no index to hand over.
+  const galleryId = node.kind === 'message' ? node.sourceTool?.id ?? node.sourceBlock?.id ?? node.id : node.id;
   return (
     <div data-block-id={node.id} data-turn-id={turnId} data-message-view-row={node.kind}>
       {withGalleryOrder(galleryId, agentId, blockOrder, body)}
@@ -3882,16 +3882,20 @@ export function Transcript({
   );
   // Message view: the same blocks through the delivery projection — speech,
   // your cards, one activity line per stretch, outcomes. Nothing is dropped:
-  // every block stays inside a summary's members.
+  // every block stays inside a summary's members, except the turn's own reply
+  // which becomes speech itself.
   const messageContext = useMessageViewContext();
+  // The session names its running turn; a turn whose text already settled is
+  // still running until that turn ends.
+  const runningTurnId = state.abortableTurnId === undefined ? undefined : `t${state.abortableTurnId}`;
   const messageNodes = useMemo<readonly MessageViewNode[]>(
     () => (view === 'message'
       // A silent stretch draws nothing; as a virtual row it would still
       // take a gap, so it is not a row at all.
-      ? buildMessageNodes(timelineBlocks, { busy: state.busy, personaName: messageContext.persona?.name })
+      ? buildMessageNodes(timelineBlocks, { busy: state.busy, liveTurnId: runningTurnId, personaName: messageContext.persona?.name })
         .filter((node) => node.kind !== 'activity-summary' || !isSilentActivity(node))
       : []),
-    [view, timelineBlocks, state.busy, messageContext.persona?.name],
+    [view, timelineBlocks, state.busy, runningTurnId, messageContext.persona?.name],
   );
   const groupedNodes: readonly TimelineNode[] = view === 'message' ? messageNodes : processNodes;
   const blockById = useMemo(() => new Map(timelineBlocks.map((block) => [block.id, block] as const)), [timelineBlocks]);

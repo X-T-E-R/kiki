@@ -202,9 +202,16 @@ const walkers = {
     await page.goto(url(`/s/${LIN}`), { waitUntil: 'domcontentloaded', timeout: 120_000 });
     await page.waitForSelector('[data-message-view-row="message"]', { timeout: 30_000 });
     if ((await page.locator('[data-timeline-view-switch="message"]').count()) === 0 && width >= 640) errors.push(`${tag}: header view switch missing`);
+    // A turn that ended on ordinary text speaks that text now: the message
+    // view shows what the model answered instead of "没有回复".
     const noReply = await page.locator('[data-message-outcome="no-reply"]').count();
-    if (noReply !== 1) errors.push(`${tag}: expected one no-reply line, saw ${noReply}`);
-    if ((await page.getByText('小蓝还没回，我先不打扰用户').count()) > 0) errors.push(`${tag}: internal prose leaked into the message view`);
+    if (noReply !== 0) errors.push(`${tag}: expected no no-reply line, saw ${noReply}`);
+    const promoted = page.locator('[data-message-origin="ordinary_final"]');
+    const promotedCount = await promoted.count();
+    if (promotedCount !== 1) errors.push(`${tag}: expected one ordinary-final row, saw ${promotedCount}`);
+    if (!((await promoted.first().textContent()) ?? '').includes('小蓝还没回，我先不打扰用户')) {
+      errors.push(`${tag}: the ordinary-final row does not read the turn's reply`);
+    }
     await shot(page, `message-${tag}`);
     // Sidebar Bots / Rooms groups.
     await openSidebar(page, width);

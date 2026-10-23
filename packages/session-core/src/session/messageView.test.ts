@@ -49,15 +49,56 @@ describe('SendMessage projection', () => {
 });
 
 describe('message view', () => {
-  it('hides ordinary assistant output, keeps process inspectable, and shows no reply only at an actual terminal turn', () => {
+  it('keeps a running turn as activity, then speaks its own final reply once the turn ends', () => {
     const live = projectMessageView([thought]);
     expect(live.map((node) => node.kind)).toEqual(['activity-summary']);
+    // The same blocks, now that the turn has ended: the reply itself is the
+    // speech, and it is no longer an internal step of the work.
     const done = projectMessageView([thought], { completedTurnIds: ['t1'], personaName: 'Coordinator' });
-    expect(done.map((node) => node.kind)).toEqual(['activity-summary', 'notice']);
-    expect(done[0]?.kind === 'activity-summary' && done[0].members).toEqual([thought]);
-    expect(done[1]?.kind === 'notice' && done[1].reasonCodes).toEqual(['message.no_reply']);
-    expect(projectMessageView([thought, tool()], { completedTurnIds: ['t1'] }).map((node) => node.kind))
-      .toEqual(['activity-summary', 'message']);
+    expect(done.map((node) => node.kind)).toEqual(['message']);
+    const reply = done[0]!;
+    expect(reply.kind).toBe('message');
+    if (reply.kind !== 'message') throw new Error('Expected the promoted reply');
+    expect(reply.origin).toBe('ordinary_final');
+    expect(reply.status).toBe('sent');
+    expect(reply.text).toBe('Private deliberation');
+    expect(reply.sourceBlock?.id).toBe('internal');
+    expect(reply.sourceTool).toBeUndefined();
+    expect(reply.startedAt).toBe(Date.parse('2026-01-01T00:00:00Z'));
+    expect(reply.turnId).toBe('t1');
+  });
+
+  it('speaks the reply alone when the turn also sent a message, and never twice', () => {
+    const view = projectMessageView([thought, tool()], { completedTurnIds: ['t1'] });
+    expect(view.map((node) => node.kind)).toEqual(['activity-summary', 'message']);
+    expect(view[1]?.kind === 'message' && view[1].origin).toBe('send_message');
+  });
+
+  it('leaves the reply in the process when the reader stopped it, and says so', () => {
+    const stopped = projectMessageView([{ ...thought, stopped: true }], { completedTurnIds: ['t1'], personaName: 'Coordinator' });
+    expect(stopped.map((node) => node.kind)).toEqual(['activity-summary', 'notice']);
+    expect(stopped[1]?.kind === 'notice' && stopped[1].reasonCodes).toEqual(['message.no_reply']);
+  });
+
+  it('does not repeat a reply the next turn already sent as the same words', () => {
+    const sentLater = tool({ turnId: 't2', args: { text: 'Private deliberation' }, output: JSON.stringify({ message_id: 'msg_2', delivered_to: ['user'] }) });
+    const view = projectMessageView([thought, sentLater], { completedTurnIds: ['t1', 't2'], personaName: 'Coordinator' });
+    expect(view.map((node) => node.kind)).toEqual(['message']);
+    expect(view[0]?.kind === 'message' && view[0].turnId).toBe('t2');
+  });
+
+  it('leaves a turn with no assistant text silent', () => {
+    const read = tool({ id: 'read', toolCallId: 'read', name: 'Read' });
+    expect(projectMessageView([read], { completedTurnIds: ['t1'] }).map((node) => node.kind)).toEqual(['activity-summary']);
+  });
+
+  it('keeps the promoted reply out of the work summary that led to it', () => {
+    const read = tool({ id: 'read', toolCallId: 'read', name: 'Read' });
+    const view = projectMessageView([read, thought], { completedTurnIds: ['t1'] });
+    expect(view.map((node) => node.kind)).toEqual(['activity-summary', 'message']);
+    const summary = view[0];
+    expect(summary?.kind === 'activity-summary' && summary.members.map((member) => member.id)).toEqual(['read']);
+    expect(view[1]?.kind === 'message' && view[1].text).toBe('Private deliberation');
   });
 
   it('groups only contiguous process within a turn and keeps measured counts in agreement', () => {

@@ -8,6 +8,7 @@
 import { act, useSyncExternalStore, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -120,8 +121,11 @@ async function mount(node: ReactNode): Promise<{ root: Root; container: HTMLDivE
   document.body.append(container);
   const root = createRoot(container);
   roots.push(root);
+  // Message rows carry a speaker face, which reads its avatar through the
+  // query cache the app provides above every timeline.
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await act(async () => {
-    flushSync(() => { root.render(<MemoryRouter><I18nProvider>{node}</I18nProvider></MemoryRouter>); });
+    flushSync(() => { root.render(<QueryClientProvider client={queryClient}><MemoryRouter><I18nProvider>{node}</I18nProvider></MemoryRouter></QueryClientProvider>); });
   });
   await settle();
   return { root, container };

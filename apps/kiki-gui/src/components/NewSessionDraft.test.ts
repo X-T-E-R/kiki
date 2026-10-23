@@ -575,6 +575,9 @@ describe('buildNewSessionCreate', () => {
     });
     expect(body).toMatchObject({ persona: 'lin-lan', metadata: { cwd: 'C:/repo' } });
     expect(body.agent_config).not.toHaveProperty('profile');
+    // The persona's own delivery decides: the composer never pins one, so a
+    // persona saved as "reply" is not turned into a message session here.
+    expect(body).not.toHaveProperty('delivery');
     const plain = buildNewSessionCreate({ cwd: 'C:/repo', profile: 'agent', permissionMode: 'manual', planMode: false });
     expect(plain).not.toHaveProperty('persona');
   });

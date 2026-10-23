@@ -1,5 +1,5 @@
 import type {
-  ActivitySummary, Block, MessageAttachment, MessageBlock, NoticeBlock, ToolBlock,
+  ActivitySummary, AssistantBlock, Block, MessageAttachment, MessageBlock, NoticeBlock, ToolBlock,
 } from './transcript/types';
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -67,6 +67,21 @@ export interface MessageViewOptions {
   readonly personaName?: string;
 }
 
+/** The promoted reply as speech: the turn's own text, its frame, and no call identity. */
+function replySpeech(block: AssistantBlock, turn: string): MessageBlock {
+  const at = block.createdAt === undefined ? Number.NaN : Date.parse(block.createdAt);
+  return {
+    kind: 'message', id: `ordinary-final-${block.id}`, origin: 'ordinary_final', status: 'sent',
+    text: block.text, attachments: [], deliveredTo: [],
+    startedAt: Number.isNaN(at) ? undefined : at,
+    turnId: turn, sourceBlock: block,
+  };
+}
+
+function words(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
 function turnId(block: Block): string | undefined {
   if (block.kind === 'subagent') return block.parentTurnId;
   if (block.kind === 'question' || block.kind === 'approval') {
@@ -114,23 +129,62 @@ function activity(members: readonly Block[], turn: string | undefined): Activity
     members, counts, running, failed, durationMs };
 }
 
-/** Hide ordinary assistant output without turning it into speech; preserve inspectable activity. */
+/**
+ * Message mode as speech: what the Bot said to you. A finished turn's final
+ * ordinary reply is speech even when the model never called `SendMessage`;
+ * everything else stays inspectable activity behind its summary.
+ */
 export function projectMessageView(blocks: readonly Block[], options: MessageViewOptions = {}): MessageViewNode[] {
   const nodes: MessageViewNode[] = [];
   let pending: Block[] = [];
   let pendingTurn: string | undefined;
   const completed = new Set(options.completedTurnIds ?? []);
+  const turns: string[] = [];
+  const seen = new Set<string>();
   const sent = new Set<string>();
-  const speech = new Set<string>();
+  const delivered = new Map<string, string[]>();
+  const replies = new Map<string, AssistantBlock>();
   for (const block of blocks) {
+    const turn = turnId(block);
+    if (turn !== undefined && !seen.has(turn)) {
+      seen.add(turn);
+      turns.push(turn);
+    }
     const message = block.kind === 'message' ? block : block.kind === 'tool' ? projectSendMessage(block) : undefined;
-    if (message?.status === 'sent' && message.turnId !== undefined) sent.add(message.turnId);
-    if (block.kind === 'assistant' && block.text.trim() !== '' && block.turnId !== undefined) speech.add(block.turnId);
+    if (message?.status === 'sent' && message.origin === 'send_message' && message.turnId !== undefined) {
+      sent.add(message.turnId);
+      delivered.set(message.turnId, [...(delivered.get(message.turnId) ?? []), words(message.text)]);
+    }
+    if (block.kind === 'assistant' && block.text.trim() !== '' && block.turnId !== undefined) replies.set(block.turnId, block);
   }
-  const announced = new Set<string>();
-  const noReply = (turn: string | undefined) => {
-    if (turn === undefined || !completed.has(turn) || sent.has(turn) || !speech.has(turn) || announced.has(turn)) return;
-    announced.add(turn);
+  // A reply that keeps streaming, or one the reader stopped, is not speech yet.
+  // A later turn that sends exactly the same words already speaks for it, so
+  // promoting it here would say the same thing twice.
+  const promoted = new Map<string, MessageBlock>();
+  const spokenElsewhere = new Set<string>();
+  const speechIds = new Set<string>();
+  for (const [index, turn] of turns.entries()) {
+    const reply = replies.get(turn);
+    if (reply === undefined || !completed.has(turn) || sent.has(turn)) continue;
+    const next = turns[index + 1];
+    if (next !== undefined && (delivered.get(next) ?? []).includes(words(reply.text))) {
+      spokenElsewhere.add(turn);
+      speechIds.add(reply.id);
+      continue;
+    }
+    if (reply.streaming || reply.stopped === true) continue;
+    promoted.set(turn, replySpeech(reply, turn));
+    speechIds.add(reply.id);
+  }
+  /** What a finished turn leaves on the page: its speech, or the reason there is none. */
+  const endTurn = (turn: string | undefined) => {
+    if (turn === undefined || !completed.has(turn)) return;
+    const reply = promoted.get(turn);
+    if (reply !== undefined) {
+      nodes.push(reply);
+      return;
+    }
+    if (sent.has(turn) || spokenElsewhere.has(turn) || replies.get(turn) === undefined) return;
     nodes.push({ kind: 'notice', id: `message-no-reply-${turn}`, turnId: turn,
       text: `${options.personaName ?? ''} 没有回复 · 查看过程`.trim(), tone: 'neutral',
       i18n: { key: 'message.noReply', params: { name: options.personaName ?? '' } },
@@ -147,9 +201,11 @@ export function projectMessageView(blocks: readonly Block[], options: MessageVie
     const turn = turnId(block);
     if (turn !== undefined && lastTurn !== undefined && turn !== lastTurn) {
       flush();
-      noReply(lastTurn);
+      endTurn(lastTurn);
     }
     if (turn !== undefined) lastTurn = turn;
+    // The reply is speech now, not a step of the work that produced it.
+    if (speechIds.has(block.id)) continue;
     const visible = block.kind === 'user' || block.kind === 'message' || block.kind === 'question'
       || block.kind === 'approval' || (block.kind === 'notice' && (block.tone === 'danger'
         || block.reasonCodes?.some((reason) => /cancel|stop|fail|delivery/.test(reason)) === true));
@@ -163,7 +219,7 @@ export function projectMessageView(blocks: readonly Block[], options: MessageVie
     }
   }
   flush();
-  noReply(lastTurn);
+  endTurn(lastTurn);
   return nodes;
 }
 

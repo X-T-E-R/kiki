@@ -186,6 +186,27 @@ describe('what each field says about itself', () => {
     const body = putPersona.mock.calls[0]![0] as { definition: PersonaDefinition };
     expect(body.definition).toMatchObject({ description: '负责发布节奏。', greeting: '早上好。今天发 0.9。' });
   });
+
+  it('saves the delivery the switch shows, and shows it again after the save', async () => {
+    getPersona.mockResolvedValue(snapshot({ id: 'lin-lan', name: '林岚', description: '负责发布节奏。', delivery: 'message' }));
+    putPersona.mockResolvedValue(snapshot({ id: 'lin-lan', name: '林岚', description: '负责发布节奏。', delivery: 'reply' }));
+    const container = await render('lin-lan');
+
+    const pressed = () => [...container.querySelectorAll('[data-persona-delivery]')]
+      .filter((button) => button.getAttribute('aria-pressed') === 'true')
+      .map((button) => button.getAttribute('data-persona-delivery'));
+    expect(pressed()).toEqual(['message']);
+
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-persona-delivery="reply"]')!.click(); });
+    await submit(container);
+
+    // The saved definition carries the choice: leaving it off would now mean
+    // "message", so the session would run a mode the editor never showed.
+    const body = putPersona.mock.calls[0]![0] as { definition: PersonaDefinition };
+    expect(body.definition.delivery).toBe('reply');
+    // The server's echo is adopted, so the reopened form shows the same mode.
+    expect(pressed()).toEqual(['reply']);
+  });
 });
 
 describe('new persona', () => {
@@ -209,6 +230,15 @@ describe('new persona', () => {
     const container = await render(undefined);
     expect(container.querySelector('[data-persona-editor="new"]')).not.toBeNull();
     expect(container.querySelector('[data-persona-field="name"]')).not.toBeNull();
+  });
+
+  it('opens on the delivery a persona session actually runs in', async () => {
+    listWorkspaceCatalog.mockResolvedValue({ items: WORKSPACES });
+    const container = await render(undefined);
+    const pressed = [...container.querySelectorAll('[data-persona-delivery]')]
+      .filter((button) => button.getAttribute('aria-pressed') === 'true')
+      .map((button) => button.getAttribute('data-persona-delivery'));
+    expect(pressed).toEqual(['message']);
   });
 });
 

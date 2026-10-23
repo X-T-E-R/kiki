@@ -1,13 +1,17 @@
 /**
- * MessageRow — one piece of speech a Bot actually delivered (SendMessage),
- * set like a colleague's chat line: face and name once per run of the same
- * speaker, then prose with no bubble fill. The user's own lines keep the
- * existing right-aligned bubble (Transcript's UserMessage), so only one
- * voice sits on a surface.
+ * MessageRow — one piece of speech a Bot actually delivered (SendMessage) or
+ * ended a turn on, set like a colleague's chat line: face and name once per
+ * run of the same speaker, then prose with no bubble fill. The user's own
+ * lines keep the existing right-aligned bubble (Transcript's UserMessage), so
+ * only one voice sits on a surface.
  *
  * Streaming: while the call runs, the draft reads the completed prefix of
  * `text` out of the argument JSON and grows with a caret. A cancelled or
  * failed call leaves one quiet line instead of the bubble.
+ *
+ * A long body arrives from the wire as a preview with a continuation ref (the
+ * same bounded-content contract every other reading area uses); the row reads
+ * the rest of its own field, so what the Bot said is never silently cut.
  */
 
 import { memo, useMemo, type ReactNode } from 'react';
@@ -18,6 +22,7 @@ import { formatBytes } from '@kiki/session-core/composer/media';
 import { useI18n } from '../../i18n';
 import { streamingMessageText } from '../../lib/partialJson';
 import { Markdown } from '../Markdown';
+import { ContentContinuation, frameContentSource, INPUT_ROOTS, INPUT_TEXT_ROOTS, MESSAGE_TEXT_ROOTS } from '../ContentContinuation';
 import { useMediaPreview } from '../mediaPreviewContext';
 import { PersonaAvatar, type PersonaAvatarData } from '../persona/PersonaAvatar';
 import { RelativeTime } from '../RelativeTime';
@@ -133,6 +138,15 @@ export const MessageRow = memo(function MessageRow({
   // sender session is shown but not opened from here.
   const readable = block.sourceSessionId === undefined || block.sourceSessionId === currentSessionId;
   const quote = useMemo(() => replyToText?.replace(/\s+/g, ' ').trim(), [replyToText]);
+  // Where this body came from decides which bounded field continues: a
+  // promoted reply is assistant prose, a delivered message is the call's own
+  // argument text.
+  const source = block.sourceBlock !== undefined
+    ? frameContentSource(block.sourceBlock)
+    : block.sourceTool === undefined ? undefined : frameContentSource(block.sourceTool);
+  const roots = block.sourceBlock !== undefined
+    ? MESSAGE_TEXT_ROOTS
+    : block.sourceTool?.args === undefined ? INPUT_TEXT_ROOTS : INPUT_ROOTS;
 
   if (block.status === 'failed' || block.status === 'cancelled') {
     return (
@@ -178,6 +192,9 @@ export const MessageRow = memo(function MessageRow({
               <Markdown text={text} />
             )}
           </div>
+          {sending || source === undefined ? null : (
+            <ContentContinuation source={source} roots={roots} label={t('message.body')} className="mt-1" />
+          )}
           {block.attachments.length > 0 ? (
             <div className="mt-2 flex flex-col gap-1.5">
               {block.attachments.map((attachment) => (

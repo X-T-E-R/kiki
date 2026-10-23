@@ -22,16 +22,24 @@ function turnOf(block: Block): string | undefined {
 }
 
 /**
- * Every turn on the page is complete except the one still running. The live
- * turn is the last turn id seen while the session is busy.
+ * Every turn on the page is complete except the one still running. The running
+ * turn is the session's own running turn when it says which one that is; a
+ * turn is never ended merely because its last text arrived, and a finished
+ * turn is never held open because another one started.
  */
-export function completedTurnIds(blocks: readonly Block[], busy: boolean): string[] {
+export function completedTurnIds(
+  blocks: readonly Block[],
+  options: { readonly busy: boolean; readonly liveTurnId?: string },
+): string[] {
   const turns: string[] = [];
   for (const block of blocks) {
     const turn = turnOf(block);
     if (turn !== undefined && !turns.includes(turn)) turns.push(turn);
   }
-  return busy ? turns.slice(0, -1) : turns;
+  if (!options.busy) return turns;
+  return options.liveTurnId === undefined
+    ? turns.slice(0, -1)
+    : turns.filter((turn) => turn !== options.liveTurnId);
 }
 
 /** A Bot message addressed to another Bot reads as a handoff line, not as speech to the user. */
@@ -46,10 +54,10 @@ export function isInboundHandoff(block: UserBlock): boolean {
 
 export function buildMessageNodes(
   blocks: readonly Block[],
-  options: { readonly busy: boolean; readonly personaName?: string },
+  options: { readonly busy: boolean; readonly liveTurnId?: string; readonly personaName?: string },
 ): MessageViewNode[] {
   return projectMessageView(blocks, {
-    completedTurnIds: completedTurnIds(blocks, options.busy),
+    completedTurnIds: completedTurnIds(blocks, { busy: options.busy, liveTurnId: options.liveTurnId }),
     personaName: options.personaName,
   });
 }

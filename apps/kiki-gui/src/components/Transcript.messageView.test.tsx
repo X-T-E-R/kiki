@@ -15,9 +15,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { createViewState, type Block, type SessionViewState, type ToolBlock, type UserBlock } from '@kiki/session-core/session';
+import { createViewState, type AssistantBlock, type Block, type SessionViewState, type ToolBlock, type UserBlock } from '@kiki/session-core/session';
 
 import { I18nProvider } from '../i18n';
+import { TranscriptDetailProvider } from './transcriptDetail';
 import { MessageViewContext, type MessageViewContextValue } from './message/messageViewContext';
 import { readTimelineView, type TimelineView } from './message/messageViewMode';
 import { Transcript } from './Transcript';
@@ -126,8 +127,8 @@ function user(id: string, text: string, turnId: string, extra: Partial<UserBlock
   return { kind: 'user', id, text, turnId, createdAt: '2026-10-01T09:00:00.000Z', ...extra };
 }
 
-function assistant(id: string, text: string, turnId: string): Block {
-  return { kind: 'assistant', id, text, streaming: false, turnId, createdAt: '2026-10-01T09:00:01.000Z' } as Block;
+function assistant(id: string, text: string, turnId: string, extra: Partial<AssistantBlock> = {}): AssistantBlock {
+  return { kind: 'assistant', id, text, streaming: false, turnId, createdAt: '2026-10-01T09:00:01.000Z', ...extra };
 }
 
 function tool(id: string, name: string, turnId: string, extra: Partial<ToolBlock> = {}): ToolBlock {
@@ -155,7 +156,7 @@ function sendMessage(id: string, turnId: string, text: string, extra: Partial<To
 }
 
 describe('message view (Bot mode)', () => {
-  it('hides internal prose and says "没有回复" when a finished turn sent nothing (acceptance 1)', async () => {
+  it('speaks the reply a finished turn ended on when it sent nothing (acceptance 1)', async () => {
     const blocks: Block[] = [
       user('u1', '这周能发 0.31 吗？', 't1'),
       assistant('a1', '我先想一想，内部笔记', 't1'),
@@ -163,9 +164,26 @@ describe('message view (Bot mode)', () => {
     ];
     const { container } = await render(timeline(blocks, 'message'));
     expect(container.textContent).toContain('这周能发 0.31 吗？');
-    expect(container.textContent).not.toContain('内部笔记');
-    const outcome = container.querySelector('[data-message-outcome="no-reply"]');
-    expect(outcome?.textContent).toContain('林岚 没有回复');
+    const row = container.querySelector('[data-message-origin="ordinary_final"]');
+    expect(row?.querySelector('[data-message-text]')?.textContent).toContain('我先想一想，内部笔记');
+    // The reply is the speech now: the work summary above it counts the read
+    // and does not repeat the reply line as internal prose.
+    expect(container.querySelector('[data-activity-summary]')?.textContent).not.toContain('内部笔记');
+    expect(container.querySelector('[data-message-outcome="no-reply"]')).toBeNull();
+  });
+
+  it('keeps the running turn’s text out of the message view until that turn ends', async () => {
+    // The session says turn t2 is the running one; its settled text may still
+    // grow or be superseded, so it is not speech yet. The turn before it is.
+    const blocks: Block[] = [
+      user('u1', '在吗', 't1'),
+      assistant('a1', '在，先说结论。', 't1'),
+      user('u2', '那再查一下', 't2'),
+      assistant('a2', '正在查的中途结论', 't2'),
+    ];
+    const { container } = await render(timeline(blocks, 'message', { busy: true, abortableTurnId: 2 }));
+    const rows = [...container.querySelectorAll('[data-message-origin="ordinary_final"]')];
+    expect(rows.map((row) => row.querySelector('[data-message-text]')?.textContent)).toEqual(['在，先说结论。']);
   });
 
   it('marks the same prose "内部" in the process view', async () => {
@@ -182,6 +200,9 @@ describe('message view (Bot mode)', () => {
       sendMessage('s1', 't1', '能。'),
       user('u2', '在吗', 't2'),
       assistant('a2', '只是内部笔记', 't2'),
+      // Stopped mid-answer: the turn leaves the reader a reason, not speech.
+      assistant('a3', '说到一半', 't3', { stopped: true }),
+      user('u3', '还在吗', 't4'),
     ];
     const { container } = await render(timeline(blocks, 'message'));
     const wrapperOf = (selector: string) => container.querySelector(selector)?.closest('[data-transcript-virtual-item]')?.firstElementChild;
@@ -190,6 +211,29 @@ describe('message view (Bot mode)', () => {
     // t2 has only internal prose: its summary counts nothing and is not a row.
     expect(container.querySelectorAll('[data-message-view-row="activity-summary"]')).toHaveLength(1);
     expect([...container.querySelectorAll('[data-transcript-virtual-item]')].every((item) => item.textContent?.trim() !== '')).toBe(true);
+  });
+
+  it('offers the rest of a long body the window could only preview', async () => {
+    // A 20 000-character message reaches the page as a ~433-character preview
+    // plus a ref (the wire's own bounded-content contract). The row must read
+    // the rest of its own field instead of stopping at the preview.
+    const ref = { source: { kind: 'frame' as const, id: 'frame_s1', turnId: 't1', stepId: 't1.1' }, path: ['input', 'text'], kind: 'text' as const, offset: 433, total: 20_000, revision: 'rev-1' };
+    const loadContent = vi.fn(() => Promise.resolve(true));
+    const blocks: Block[] = [
+      user('u1', '把清单发我', 't1'),
+      sendMessage('s1', 't1', '清单开头', { frameId: 'frame_s1', stepId: 't1.1' }),
+    ];
+    const { container } = await render(
+      <TranscriptDetailProvider load={() => Promise.resolve(false)} loads={{}} contentRefs={[ref]} sessionId="session_bot" agentId="main" loadContent={loadContent}>
+        {timeline(blocks, 'message')}
+      </TranscriptDetailProvider>,
+    );
+    const row = container.querySelector('[data-message-status="sent"]')!;
+    const progress = row.querySelector('[data-content-continuation-progress]');
+    expect(progress?.textContent).toContain('消息正文');
+    expect(progress?.textContent).toContain('2%');
+    await act(async () => (row.querySelector('[data-content-continuation-action]') as HTMLElement).click());
+    expect(loadContent).toHaveBeenCalledWith(ref);
   });
 
   it('grows the draft from the argument stream, then settles (acceptance 2)', async () => {
