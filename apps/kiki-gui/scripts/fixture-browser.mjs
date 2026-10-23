@@ -28,9 +28,11 @@
  *       id, name, enabled, type,
  *       profilePath?, executablePath?, driverPath?, headed?,   // agent-browser-profile
  *       endpoint?,                                    // agent-browser-cdp (never returned)
+ *       driverPath?,                                  // kimi-webbridge (the only optional field)
  *       status: { state, generation, ... },           // what the service reports
  *       tabs?: [{ tabId, targetId, title?, url?, active?, label? }],  // the daemon's own list
  *       catalog?: [{ name, description, group?, surface?, inputSchema? }],  // backend tools
+ *       contextIsolation?,                            // 'main-frame-only' for the bridge
  *       check?: { state, error },                     // what check answers instead
  *       connect?: { state, error },                   // what connect answers instead
  *       disconnect?: { state, error },                // what disconnect answers instead
@@ -94,6 +96,10 @@ function record(entry, host) {
   }
   if (entry.type === 'ego-lite') {
     return { ...common, cliPath: entry.cliPath, profileId: entry.profileId, serverName: entry.serverName, status };
+  }
+  if (entry.type === 'kimi-webbridge') {
+    // Nothing addresses the bridge: no endpoint, no profile, no CLI.
+    return { ...common, driverPath: entry.driverPath, status };
   }
   return {
     ...common, driverPath: entry.driverPath, profilePath: entry.profilePath, executablePath: entry.executablePath,
@@ -497,7 +503,9 @@ export function handleBrowser(server, res, path, query, method, body) {
       const withSchemas = query?.get?.('includeSchema') === 'true';
       server.envelope(res, {
         browser: id, status: record(entry, browser.host).status, backendToolCount: capabilities.length,
-        contextIsolation: 'opaque-context-through-window',
+        // The managed driver runs each call in an opaque window context; the
+        // Kimi bridge answers for the selected tab's main frame only.
+        contextIsolation: entry.contextIsolation ?? 'opaque-context-through-window',
         capabilities: capabilities.map((capability) => ({
           name: capability.name, description: capability.description,
           group: capability.group ?? 'page', surface: capability.surface ?? 'operation',
@@ -544,6 +552,17 @@ export function handleBrowser(server, res, path, query, method, body) {
       next.executablePath = undefined;
       next.headed = undefined;
       next.endpoint = undefined;
+    } else if (body.type === 'kimi-webbridge') {
+      // The real store's schema accepts no endpoint on this branch at all, so a
+      // form that still sent one would be refused here instead of looking saved.
+      if (body.endpoint !== undefined) { server.envelope(res, null, 40001, 'browser.invalid'); return true; }
+      next.profilePath = undefined;
+      next.executablePath = undefined;
+      next.headed = undefined;
+      next.endpoint = undefined;
+      next.cliPath = undefined;
+      next.profileId = undefined;
+      next.serverName = undefined;
     } else if (body.type === 'agent-browser-cdp') {
       const endpoint = body.endpoint?.action === 'set' ? body.endpoint.value : entry?.endpoint;
       // The store refuses a CDP connection with no endpoint at all.

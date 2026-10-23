@@ -168,6 +168,18 @@ function cdpRow(patch: Partial<BrowserConnection> & { id?: string } = {}): Brows
   };
 }
 
+/**
+ * The Kimi bridge: the connection the server's own Kimi route creates. It has no
+ * endpoint, no profile and no CLI — the local daemon is the whole address.
+ */
+function bridgeRow(patch: Partial<BrowserConnection> & { id?: string } = {}): BrowserConnection & { status: BrowserStatus } {
+  const id = patch.id ?? 'kimi-webbridge';
+  return {
+    name: 'Daily Edge', enabled: true, type: 'kimi-webbridge',
+    ...patch, id, status: browserStatus({ browser: id, ownership: 'external-browser' }),
+  };
+}
+
 let root: Root;
 let container: HTMLDivElement;
 let queries: QueryClient;
@@ -961,6 +973,37 @@ describe('BrowserControlSection', () => {
     expect(query('[data-browser-state="disabled"]')).not.toBeNull();
   });
 
+  it('names the bridge connection as the local bridge, not as an address to open', async () => {
+    list.mockResolvedValue({ connections: [bridgeRow(), cdpRow(), profileRow()] });
+
+    await render();
+    await settleUntil('[data-browser-connection="kimi-webbridge"]');
+
+    // The type and the place are both facts the record carries: the bridge is
+    // reached over its own local daemon, so there is no host to show — and the
+    // row must not borrow the CDP branch's "address not set" wording for it.
+    const bridge = query('[data-browser-connection="kimi-webbridge"]')?.textContent ?? '';
+    expect(bridge).toContain('Kimi WebBridge');
+    expect(bridge).toContain('Local bridge');
+    expect(bridge).not.toContain('address not set');
+    // The CDP row still names the machine its endpoint points at.
+    expect(query('[data-browser-connection="preview"]')?.textContent).toContain('127.0.0.1:9222');
+  });
+
+  it('keeps the bridge readable in Chinese, on the row and in the form', async () => {
+    localStorage.setItem('kiki.locale', 'zh');
+    list.mockResolvedValue({ connections: [bridgeRow()] });
+
+    await render();
+    await settleUntil('[data-browser-connection="kimi-webbridge"]');
+    expect(query('[data-browser-connection="kimi-webbridge"]')?.textContent).toContain('本地桥接');
+
+    await click('[data-browser-connection="kimi-webbridge"]');
+    // No CDP address is offered anywhere on this branch, in either language.
+    expect(query('[data-secret-field]')).toBeNull();
+    expect(query('[data-browser-bridge]')?.textContent).toContain('本地 HTTP 桥接');
+  });
+
   it('draws a connection that is not running as normal, never as a failure', async () => {
     list.mockResolvedValue({ connections: [profileRow()] });
 
@@ -1436,6 +1479,93 @@ describe('BrowserControlSection', () => {
     expect(query('[data-browser-allowed-total]')?.textContent).toContain('1 browsers currently allowed');
     expect(setDefault).not.toHaveBeenCalled();
     expect(patchConfig).not.toHaveBeenCalled();
+  });
+
+  it('saves the bridge as the bridge type with no endpoint, and reads the saved row back', async () => {
+    const row = bridgeRow();
+    list.mockResolvedValue({ connections: [row] });
+    upsert.mockImplementation(async (_id, input) => {
+      const body = input as { name: string; enabled: boolean; type: string; endpoint?: unknown };
+      // The published schema is strict on this branch: a write that carried an
+      // endpoint would be refused by the server, so the mock refuses it too.
+      if (body.type !== 'kimi-webbridge' || body.endpoint !== undefined) throw new Error('the bridge was written as CDP');
+      row.name = body.name;
+      row.enabled = body.enabled;
+      return { connection: { ...row } };
+    });
+
+    await render();
+    await settleUntil('[data-browser-connection="kimi-webbridge"]');
+    await click('[data-browser-connection="kimi-webbridge"]');
+
+    // Nothing on this branch asks for a CDP address, the style cannot be pointed
+    // at one, and the form says which bridge it is talking to.
+    expect(query('[data-secret-field]')).toBeNull();
+    expect(query<HTMLElement>('[data-browser-type]')?.dataset['browserType']).toBe('kimi-webbridge');
+    expect(query('[data-browser-bridge]')?.textContent).toContain('local HTTP bridge');
+    expect(query('[data-browser-check]')?.textContent).toBe('Check bridge');
+    expect(query('[data-browser-connect]')?.textContent).toBe('Connect bridge');
+
+    setInput('[data-browser-name-input]', 'Daily Edge (work)');
+    await click('[data-browser-enabled] input');
+    await save();
+
+    expect(upsert).toHaveBeenCalledWith('kimi-webbridge', {
+      name: 'Daily Edge (work)', enabled: false, driverPath: undefined, type: 'kimi-webbridge',
+    });
+    // Read back from what the server returned: still the bridge, still no
+    // endpoint field, and the switch the server now holds.
+    expect(query<HTMLElement>('[data-browser-type]')?.dataset['browserType']).toBe('kimi-webbridge');
+    expect(query<HTMLInputElement>('[data-browser-name-input]')?.value).toBe('Daily Edge (work)');
+    expect(query<HTMLInputElement>('[data-browser-enabled] input')?.checked).toBe(false);
+    expect(query('[data-settings-draft]')?.hasAttribute('hidden')).toBe(true);
+  });
+
+  it('names the bridge catalogue’s own isolation model, not the managed driver’s', async () => {
+    const row = bridgeRow();
+    list.mockResolvedValue({ connections: [row] });
+    catalog.mockResolvedValue({
+      browser: 'kimi-webbridge', status: row.status, backendToolCount: 3, contextIsolation: 'main-frame-only',
+      capabilities: [
+        { name: 'agent_browser_snapshot', description: 'Read the selected tab as an accessibility tree.', group: 'page', surface: 'operation' },
+        { name: 'agent_browser_click', description: 'Click an element in the selected tab.', group: 'page', surface: 'operation' },
+        { name: 'agent_browser_fill', description: 'Fill an element in the selected tab.', group: 'page', surface: 'operation' },
+      ],
+    });
+
+    await render();
+    await settleUntil('[data-browser-connection="kimi-webbridge"]');
+    await click('[data-browser-connection="kimi-webbridge"]');
+    await toggleDetails('[data-browser-runtime-tree]');
+    await click('[data-browser-catalog-read]');
+    await settleUntil('[data-browser-catalog]');
+
+    // The main frame of the selected tab is the bridge's whole surface, and the
+    // managed driver's window context is a different browser model rather than a
+    // fallback for a token this page does not recognise.
+    const isolation = query<HTMLElement>('[data-browser-catalog-isolation]');
+    expect(isolation?.textContent).toBe('main frame only');
+    expect(isolation?.title).toBe('main-frame-only');
+    expect(container.textContent).not.toContain('opaque window context');
+  });
+
+  it('writes the bridge route’s own switch when its allow box is ticked', async () => {
+    const bridge = bridgeRow({ enabled: false });
+    list.mockResolvedValue({ connections: [bridge] });
+    setupPresets.mockResolvedValue({ presets: [{ ...KIMI_NEEDS_EXTENSION, connectionId: 'kimi-webbridge' }] });
+    upsert.mockImplementation(async (_id, input) => ({ connection: { ...bridge, enabled: (input as { enabled: boolean }).enabled } }));
+
+    await render();
+    await settleUntil('[data-browser-source-items="kimi-webbridge"]');
+    // A switched-off connection cannot be allowed, so ticking the box is also the
+    // request to switch it on — through the bridge's own branch, not a CDP write.
+    expect(query<HTMLInputElement>('[data-browser-allow-checkbox="kimi-webbridge"]')?.checked).toBe(false);
+    await click('[data-browser-allow-checkbox="kimi-webbridge"]');
+
+    expect(patchConfig).toHaveBeenCalledWith({ browser_control: { allowed_browsers: ['kimi-webbridge'] } });
+    expect(upsert).toHaveBeenCalledWith('kimi-webbridge', {
+      type: 'kimi-webbridge', name: 'Daily Edge', enabled: true, driverPath: undefined,
+    });
   });
 
   it('keeps official extension bindings when editing a saved connection instead of serializing them as CDP', async () => {

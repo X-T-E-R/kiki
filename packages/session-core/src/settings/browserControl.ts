@@ -59,11 +59,23 @@ export function isBrowserToolPolicyPartiallyDenied(config: unknown): boolean {
 
 export type BrowserSourceId = 'kimi-webbridge' | 'independent-browser' | 'codex-browser' | 'ego-lite';
 
+/**
+ * The source whose switch governs a saved connection, in the server's own order
+ * (`agent-core-v2/src/app/browser/browserConfig.ts` `browserSourceOfConnection`):
+ * Ego Lite and Codex are routes of their own, the Kimi bridge owns the public
+ * `kimi-webbridge` type and the legacy preset id, and every other profile or CDP
+ * connection belongs to the independent browser.
+ *
+ * The order is the point. A record still stored as `agent-browser-cdp` under
+ * that exact id runs over the bridge, so classifying it by type first would let
+ * this page count it allowed while the server refuses it. A type this page
+ * cannot name stays unattributed instead of being folded into another source.
+ */
 export function browserSourceOfConnectionType(type?: string, id?: string): BrowserSourceId | undefined {
   if (type === 'ego-lite') return 'ego-lite';
   if (type === 'codex-extension') return 'codex-browser';
+  if (type === 'kimi-webbridge' || id === 'kimi-webbridge') return 'kimi-webbridge';
   if (type === 'agent-browser-profile' || type === 'agent-browser-cdp') return 'independent-browser';
-  if (id === 'kimi-webbridge') return 'kimi-webbridge';
   return undefined;
 }
 

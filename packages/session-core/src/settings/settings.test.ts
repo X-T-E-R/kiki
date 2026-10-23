@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { computerControlPreference, computerControlPreferencePatch, isComputerControlEnabled, computerControlEnabledPatch, isComputerToolPolicyDenied, isComputerToolPolicyPartiallyDenied } from './computerControl';
-import { isBrowserControlEnabled, browserControlEnabledPatch, isBrowserToolPolicyDenied, isBrowserToolPolicyPartiallyDenied, isBrowserConnectionEffectiveAllowed, effectiveAllowedBrowserCount } from './browserControl';
+import { isBrowserControlEnabled, browserControlEnabledPatch, isBrowserToolPolicyDenied, isBrowserToolPolicyPartiallyDenied, isBrowserConnectionEffectiveAllowed, effectiveAllowedBrowserCount, browserSourceOfConnectionType } from './browserControl';
 import { patchConfigRequestSchema } from '@kiki/protocol';
 
 import {
@@ -2291,5 +2291,40 @@ describe('browser-control settings helpers', () => {
     expect(effectiveAllowedBrowserCount([cdp], true, ['cdp'], ['independent-browser'])).toBe(0);
     expect(effectiveAllowedBrowserCount([cdp], true, ['cdp'], ['kimi-webbridge'])).toBe(1);
     expect(isBrowserConnectionEffectiveAllowed({ id: 'kimi-webbridge', enabled: true }, true, ['kimi-webbridge'], ['kimi-webbridge'])).toBe(false);
+  });
+
+  it('attributes the bridge source the way the server does, and keeps the other switches apart', () => {
+    // The public type belongs to the bridge whatever its id is.
+    expect(browserSourceOfConnectionType('kimi-webbridge', 'daily-edge')).toBe('kimi-webbridge');
+    // A record still stored as CDP under the preset id runs over the bridge, so
+    // classifying it by type first would report it allowed while the server refuses it.
+    expect(browserSourceOfConnectionType('agent-browser-cdp', 'kimi-webbridge')).toBe('kimi-webbridge');
+    expect(browserSourceOfConnectionType('agent-browser-cdp', 'edge-kimi')).toBe('independent-browser');
+    expect(browserSourceOfConnectionType('agent-browser-profile', 'research')).toBe('independent-browser');
+    expect(browserSourceOfConnectionType('codex-extension', 'codex-browser')).toBe('codex-browser');
+    expect(browserSourceOfConnectionType('ego-lite', 'ego-lite')).toBe('ego-lite');
+    expect(browserSourceOfConnectionType(undefined, 'unsaved')).toBeUndefined();
+
+    const bridge = { id: 'daily-edge', enabled: true, type: 'kimi-webbridge' };
+    const legacyBridge = { id: 'kimi-webbridge', enabled: true, type: 'agent-browser-cdp' };
+    const cdp = { id: 'preview', enabled: true, type: 'agent-browser-cdp' };
+    const profile = { id: 'research', enabled: true, type: 'agent-browser-profile' };
+    // Switching the bridge source off reaches both stored forms and nothing else.
+    expect(isBrowserConnectionEffectiveAllowed(bridge, false, undefined, ['kimi-webbridge'])).toBe(false);
+    expect(isBrowserConnectionEffectiveAllowed(legacyBridge, false, undefined, ['kimi-webbridge'])).toBe(false);
+    expect(isBrowserConnectionEffectiveAllowed(cdp, false, undefined, ['kimi-webbridge'])).toBe(true);
+    expect(isBrowserConnectionEffectiveAllowed(profile, false, undefined, ['kimi-webbridge'])).toBe(true);
+    // The independent switch is the one that covers those two, and only them.
+    expect(isBrowserConnectionEffectiveAllowed(cdp, false, undefined, ['independent-browser'])).toBe(false);
+    expect(isBrowserConnectionEffectiveAllowed(profile, false, undefined, ['independent-browser'])).toBe(false);
+    expect(isBrowserConnectionEffectiveAllowed(bridge, false, undefined, ['independent-browser'])).toBe(true);
+    // An explicit off switch wins over an allowlist that still names the connection.
+    expect(isBrowserConnectionEffectiveAllowed(bridge, true, ['daily-edge'], ['kimi-webbridge'])).toBe(false);
+    expect(isBrowserConnectionEffectiveAllowed(bridge, true, ['daily-edge'])).toBe(true);
+    expect(isBrowserConnectionEffectiveAllowed(bridge, true, ['other'])).toBe(false);
+    // Explicitly disabled stays disabled with no source switch and no saved set.
+    expect(isBrowserConnectionEffectiveAllowed({ ...bridge, enabled: false }, false, undefined)).toBe(false);
+    // An allowlist that names only the legacy row still reaches it through the bridge source.
+    expect(effectiveAllowedBrowserCount([legacyBridge, cdp], true, ['kimi-webbridge'], undefined)).toBe(1);
   });
 });

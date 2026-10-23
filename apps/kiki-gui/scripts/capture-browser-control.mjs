@@ -143,6 +143,17 @@ const scenarios = [
       await resetScroll(page);
       await shot('advanced-connections');
 
+      // The rows at the width they get with nothing open: the bridge has to read
+      // as a type and a place without being opened first, so its own words are
+      // measured rather than assumed.
+      await page.locator('[data-browser-connections]').scrollIntoViewIfNeeded();
+      const bridgeTypeAndPlace = page.locator('[data-browser-connection="kimi-webbridge"] span[title="Kimi WebBridge · Local bridge"]');
+      await bridgeTypeAndPlace.waitFor({ state: 'visible', timeout: 10_000 });
+      if (await bridgeTypeAndPlace.evaluate((node) => node.scrollWidth > node.clientWidth)) {
+        throw new Error('the bridge row clips its own type and location at list width');
+      }
+      await shot('connections-list');
+
       // The default is its own control, and "choose each time" is a real value.
       await page.locator('#browser-default').click();
       await page.waitForSelector('[role="option"][data-option-value="research"]', { timeout: 10_000 });
@@ -249,6 +260,63 @@ const scenarios = [
       await shot('delete-confirm');
       await page.keyboard.press('Escape');
 
+      // The Kimi bridge: a real local HTTP bridge, not an address to open. No
+      // endpoint may be offered, the save has to come back as the bridge, and a
+      // full reload has to read the saved name and type back from the server.
+      await openConnection(page, 'kimi-webbridge');
+      await page.locator('[data-browser-detail="kimi-webbridge"]').scrollIntoViewIfNeeded();
+      await shot('detail-bridge');
+      await page.locator('[data-browser-bridge]').scrollIntoViewIfNeeded();
+      await shot('bridge-hint');
+      await phoneShot('detail-bridge-390');
+      if (await page.locator('[data-browser-detail="kimi-webbridge"] [data-secret-field]').count() !== 0) {
+        throw new Error('the bridge form offered a CDP endpoint');
+      }
+      if (!await page.locator('[data-browser-bridge]').isVisible()) throw new Error('the bridge form never said which bridge it talks to');
+      const bridgeRowText = await page.locator('[data-browser-connection="kimi-webbridge"]').innerText();
+      if (!bridgeRowText.includes('Kimi WebBridge') || !bridgeRowText.includes('Local bridge')) {
+        throw new Error(`the bridge row reads ${JSON.stringify(bridgeRowText)}`);
+      }
+      const bridgeType = await page.locator('#browser-type').innerText();
+      if (!bridgeType.includes('Kimi WebBridge')) throw new Error(`the bridge style reads ${JSON.stringify(bridgeType)}`);
+      const bridgeCheck = await page.locator('[data-browser-check]').innerText();
+      if (bridgeCheck.trim() !== 'Check bridge') throw new Error(`the bridge check reads ${JSON.stringify(bridgeCheck)}`);
+      await page.locator('[data-browser-check]').click();
+      await page.waitForSelector('[data-browser-outcome="check:idle"]', { timeout: 30_000 });
+      await page.locator('[data-browser-runtime]').scrollIntoViewIfNeeded();
+      await shot('bridge-checked');
+
+      // The bridge answers for its own tool list: three page tools, no backend
+      // started. The fold may already be open from an earlier connection.
+      if (await page.locator('[data-browser-catalog]').count() === 0) await page.locator('[data-browser-catalog-read]').click();
+      await page.waitForSelector('[data-browser-catalog-count]', { timeout: 30_000 });
+      const bridgeToolCount = await page.locator('[data-browser-catalog-count]').innerText();
+      if (bridgeToolCount.trim() !== '3') throw new Error(`the bridge catalogue reports ${JSON.stringify(bridgeToolCount)} tools`);
+      // The bridge's own isolation model, in words: the main frame of the
+      // selected tab, never the managed driver's opaque window context.
+      const bridgeIsolation = await page.locator('[data-browser-catalog-isolation]');
+      if (await bridgeIsolation.innerText() !== 'main frame only') throw new Error(`the bridge isolation reads ${JSON.stringify(await bridgeIsolation.innerText())}`);
+      if (await bridgeIsolation.getAttribute('title') !== 'main-frame-only') throw new Error('the bridge isolation lost its server token');
+      await page.locator('[data-browser-catalog]').scrollIntoViewIfNeeded();
+      await shot('bridge-catalog');
+      await page.fill('[data-browser-name-input]', '日常 Edge（桥接）');
+      await page.waitForSelector('[data-settings-draft]:not([hidden])', { timeout: 10_000 });
+      await page.locator('[data-settings-draft] button').first().click();
+      await page.waitForSelector('[data-saved-tick]', { timeout: 30_000 });
+      await page.locator('[data-browser-detail="kimi-webbridge"]').scrollIntoViewIfNeeded();
+      await shot('bridge-saved');
+      await page.goto(link('/settings/browser-control'), { waitUntil: 'domcontentloaded', timeout: 60_000 });
+      await page.waitForSelector('[data-browser-route="independent-browser"]', { timeout: 30_000 });
+      await page.locator('[data-browser-advanced-region] summary').click();
+      await page.waitForSelector('[data-browser-connection="kimi-webbridge"]', { timeout: 30_000 });
+      await openConnection(page, 'kimi-webbridge');
+      if (await page.locator('[data-browser-name-input]').inputValue() !== '日常 Edge（桥接）') {
+        throw new Error('the bridge name did not persist');
+      }
+      if (await page.locator('[data-browser-detail="kimi-webbridge"] [data-secret-field]').count() !== 0) {
+        throw new Error('the reloaded bridge form offered an endpoint');
+      }
+
       // A new connection: the id and the style decide everything. The
       // hand-written routes the wizard does not cover are named here rather
       // than as a wall of inert conditions.
@@ -337,6 +405,26 @@ const scenarios = [
       await resetScroll(page);
       await shot('wizard-codex-zh');
       await phoneShot('wizard-codex-zh-390');
+
+      // The bridge in Chinese, read back from what the earlier save wrote: the
+      // type, the place and the form all have to say local bridge.
+      await page.locator('[data-browser-advanced-region] summary').click();
+      await page.waitForSelector('[data-browser-connection="kimi-webbridge"]', { timeout: 30_000 });
+      const zhBridgeRow = await page.locator('[data-browser-connection="kimi-webbridge"]').innerText();
+      if (!zhBridgeRow.includes('本地桥接') || !zhBridgeRow.includes('Kimi WebBridge')) {
+        throw new Error(`the Chinese bridge row reads ${JSON.stringify(zhBridgeRow)}`);
+      }
+      await openConnection(page, 'kimi-webbridge');
+      const zhBridgeHint = await page.locator('[data-browser-bridge]').innerText();
+      if (!zhBridgeHint.includes('本地 HTTP 桥接')) throw new Error(`the Chinese bridge form reads ${JSON.stringify(zhBridgeHint)}`);
+      if (await page.locator('[data-browser-detail="kimi-webbridge"] [data-secret-field]').count() !== 0) {
+        throw new Error('the Chinese bridge form offered an endpoint');
+      }
+      await page.locator('[data-browser-detail="kimi-webbridge"]').scrollIntoViewIfNeeded();
+      await shot('detail-bridge-zh');
+      await page.locator('[data-browser-bridge]').scrollIntoViewIfNeeded();
+      await shot('bridge-hint-zh');
+      await phoneShot('detail-bridge-zh-390');
     },
   },
   {

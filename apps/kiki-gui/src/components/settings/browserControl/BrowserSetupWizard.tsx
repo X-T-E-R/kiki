@@ -278,6 +278,15 @@ function BrowserRoute({ preset, active, onSelect }: {
         endpoint: { action: 'keep' },
         driverPath: existingConn.driverPath,
       });
+    } else if (existingConn.type === 'kimi-webbridge') {
+      // Allowing or disallowing the route's own connection also sets its switch;
+      // the bridge is addressed by nothing, so the write is the common fields only.
+      await browserApi(client).upsert(existingConn.id, {
+        type: 'kimi-webbridge',
+        name: existingConn.name,
+        enabled: nextEnabled,
+        driverPath: existingConn.driverPath,
+      });
     } else if (existingConn.type === 'codex-extension') {
       await browserApi(client).upsert(existingConn.id, {
         type: 'codex-extension',

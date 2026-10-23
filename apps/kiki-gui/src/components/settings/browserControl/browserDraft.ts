@@ -8,7 +8,9 @@
  * behind it (`agent-core-v2/src/app/browser/browserConfig.ts`): a display name,
  * a stable id, an optional managed-driver path, and a type branch — profile
  * paths for a browser Kiki starts, a CDP endpoint for a browser that already
- * exists, and CLI fields for an installed Ego Lite app. Ego Lite has no endpoint.
+ * exists, and CLI fields for an installed Ego Lite app. Ego Lite and the Kimi
+ * bridge carry no endpoint: the bridge reaches the person's own browser through
+ * its local HTTP daemon, so there is no DevTools address to enter.
  */
 
 import { browserConnectionInputSchema, browserIdSchema } from '@kiki/protocol';
@@ -159,6 +161,11 @@ export function browserConnectionInput(draft: BrowserDraft): BrowserConnectionIn
       ...(profileId === '' ? {} : { profileId }),
       ...(serverName === '' ? {} : { serverName }),
     };
+  }
+  if (draft.type === 'kimi-webbridge') {
+    // Nothing addresses the bridge: the server talks to its own local daemon, so
+    // the write shape is the type plus the common fields and no endpoint at all.
+    return { name, enabled: draft.enabled, driverPath: driver, type: 'kimi-webbridge' };
   }
   return { name, enabled: draft.enabled, driverPath: driver, type: 'agent-browser-cdp', endpoint: endpointEdit(draft.endpoint) };
 }

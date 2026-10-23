@@ -5,8 +5,8 @@
  * and the conditions that make the walk worth taking — a route whose extension
  * still needs a person, a route already connected, a connection that has never
  * been connected and whose connect the gated server refuses, a CDP connection
- * borrowed from another machine, a disabled one, and a connection whose managed
- * driver is the wrong build.
+ * borrowed from another machine, the Kimi bridge with nothing to address, a
+ * disabled one, and a connection whose managed driver is the wrong build.
  *
  * The walk in scripts/capture-browser-control.mjs creates, checks, connects,
  * disconnects and deletes through the real controls; nothing is patched into
@@ -140,6 +140,24 @@ export default {
         tabs: [
           { tabId: 'cdp-1', targetId: '9F8E7D6C5B4A', title: '远端预览 · 首页', url: 'http://127.0.0.1:9222/', active: true },
           { tabId: 'cdp-2', targetId: '001122334455', title: '远端预览 · 报表', url: 'http://127.0.0.1:9222/report' },
+        ],
+      },
+      {
+        id: 'kimi-webbridge',
+        name: '日常 Edge',
+        enabled: true,
+        type: 'kimi-webbridge',
+        // The bridge: no endpoint to hide, no profile and no driver path. The
+        // local daemon on the server is the whole address.
+        status: { state: 'idle', generation: 0, ownership: 'external-browser' },
+        // The three page tools the bridge exposes (`WEBBRIDGE_TOOLS`), read
+        // without starting any backend, and the main frame of the selected tab
+        // as the whole surface.
+        contextIsolation: 'main-frame-only',
+        catalog: [
+          { name: 'agent_browser_snapshot', description: 'Read the selected Kimi WebBridge tab as an accessibility tree', inputSchema: { type: 'object', properties: {} } },
+          { name: 'agent_browser_click', description: 'Click an element in the selected Kimi WebBridge tab', inputSchema: { type: 'object', properties: { selector: { type: 'string' } } } },
+          { name: 'agent_browser_fill', description: 'Fill an element in the selected Kimi WebBridge tab', inputSchema: { type: 'object', properties: { selector: { type: 'string' }, value: { type: 'string' } } } },
         ],
       },
       {

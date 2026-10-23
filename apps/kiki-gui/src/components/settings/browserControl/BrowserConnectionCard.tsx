@@ -23,6 +23,7 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { errorText } from '@kiki/session-core/i18n';
+import type { I18nKey } from '@kiki/session-core/i18n';
 import { experimentalCardId, experimentalSectionForFlag } from '@kiki/session-core/settings';
 import type { BrowserStatus } from '@kiki/protocol';
 
@@ -32,7 +33,7 @@ import {
   AGENT_BROWSER_MARKERS, AGENT_BROWSER_VERSION, LIVE_BLOCKING_CONNECT, LIVE_STATES, browserApi, browserFailureOf, browserKeys, endpointHost,
   isFlagDisabled, whenText,
 } from '../../../lib/browserRest';
-import type { BrowserConnectionRow, BrowserConnectionType, BrowserOwnership } from '../../../lib/browserRest';
+import type { BrowserConnection, BrowserConnectionRow, BrowserConnectionType, BrowserOwnership } from '../../../lib/browserRest';
 import { ConfirmDialog } from '../../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../../controls';
 import { useDirtyGuard } from '../../dirtyGuard';
@@ -68,19 +69,75 @@ const NATIVE_BROWSER_FLAG_TRIP = `/settings/${NATIVE_BROWSER_FLAG_HOME}#${experi
 
 function typeLabel(t: ReturnType<typeof useI18n>['t'], type: BrowserConnectionType): string {
   if (type === 'ego-lite') return t('st.browser.type.ego-lite');
+  if (type === 'kimi-webbridge') return t('st.browser.type.kimi-webbridge');
   return t(type === 'codex-extension' ? 'st.browser.type.codex-extension' : type === 'agent-browser-cdp' ? 'st.browser.type.cdp' : 'st.browser.type.profile');
+}
+
+/**
+ * The styles this connection may be saved as. A connection the server created
+ * for a named route keeps that route's style as its only choice: Kimi's bridge
+ * is reached through its own local HTTP daemon, so offering CDP here would
+ * invite a write that points the same id at a browser it does not control.
+ */
+function typeChoices(
+  t: ReturnType<typeof useI18n>['t'],
+  original: BrowserConnection | undefined,
+): readonly { value: BrowserConnectionType; label: string; hint: string }[] {
+  if (original?.type === 'codex-extension') {
+    return [{ value: 'codex-extension', label: t('st.browser.type.codexExtensionLong'), hint: t('st.browser.type.codexExtensionHint') }];
+  }
+  if (original?.type === 'ego-lite') {
+    return [{ value: 'ego-lite', label: t('st.browser.type.egoLiteLong'), hint: t('st.browser.type.egoLiteHint') }];
+  }
+  if (original?.type === 'kimi-webbridge') {
+    return [{ value: 'kimi-webbridge', label: t('st.browser.type.kimi-webbridge'), hint: t('st.browser.type.webbridgeHint') }];
+  }
+  return [
+    { value: 'agent-browser-profile', label: t('st.browser.type.profileLong'), hint: t('st.browser.type.profileHint') },
+    { value: 'agent-browser-cdp', label: t('st.browser.type.cdpLong'), hint: t('st.browser.type.cdpHint') },
+  ];
+}
+
+/**
+ * What the two run actions are called on this branch, and what the check really
+ * does. The words differ per type because the work does: a profile starts the
+ * managed driver, a CDP connection tests a driver before attaching to an
+ * address, Ego Lite runs its own check, and the bridge only asks its local
+ * daemon whether the extension is there.
+ */
+function runtimeLabels(t: ReturnType<typeof useI18n>['t'], type: BrowserConnectionType): { check: string; checkHint: string; connect: string } {
+  if (type === 'ego-lite') {
+    return { check: t('st.browser.checkEgo'), checkHint: t('st.browser.checkHintEgo'), connect: t('st.browser.connectEgo') };
+  }
+  if (type === 'kimi-webbridge') {
+    return { check: t('st.browser.checkWebbridge'), checkHint: t('st.browser.checkHintWebbridge'), connect: t('st.browser.connectWebbridge') };
+  }
+  if (type === 'agent-browser-cdp') {
+    return { check: t('st.browser.checkCdp'), checkHint: t('st.browser.checkHintCdp'), connect: t('st.browser.connectCdp') };
+  }
+  return { check: t('st.browser.checkProfile'), checkHint: t('st.browser.checkHintProfile'), connect: t('st.browser.connectProfile') };
+}
+
+/** What survives deleting this connection, in the branch's own terms. */
+function deleteConsequenceKey(type: BrowserConnectionType): I18nKey {
+  if (type === 'agent-browser-cdp') return 'st.browser.deleteConsequenceCdp';
+  if (type === 'ego-lite') return 'st.browser.deleteConsequenceEgo';
+  if (type === 'kimi-webbridge') return 'st.browser.deleteConsequenceWebbridge';
+  return 'st.browser.deleteConsequenceProfile';
 }
 
 /**
  * Where the browser actually is: a role word for a connection Kiki drives on
  * its own server (the literal hostname belongs in the detail, not on every
- * row), and the endpoint's own host for a borrowed browser, which is the fact
- * that tells two CDP connections apart.
+ * row), the bridge that carries a Kimi connection, and the endpoint's own host
+ * for a borrowed browser, which is the fact that tells two CDP connections
+ * apart.
  */
 function locationLabel(t: ReturnType<typeof useI18n>['t'], row: BrowserConnectionRow): string {
   if (row.type === 'codex-extension') return row.browserId ?? t('st.browser.location.unknown');
   if (row.type === 'ego-lite') return row.cliPath ?? t('st.browser.type.ego-lite');
   if (row.type === 'agent-browser-profile') return t('st.browser.location.server');
+  if (row.type === 'kimi-webbridge') return t('st.browser.location.webbridge');
   return endpointHost(row.endpointDisplay) ?? t('st.browser.location.unknown');
 }
 
@@ -261,10 +318,15 @@ export function BrowserConnectionCard() {
 
   const currentCall = selectedStatus?.currentCall;
 
-  const ownershipText = (ownership: BrowserOwnership | undefined): string =>
-    ownership === 'external-browser' ? t('st.browser.disconnectMeaningExternal')
-      : ownership === 'managed-profile' ? t('st.browser.disconnectMeaningManaged')
-        : t('st.browser.disconnectMeaningUnknown');
+  /** Only an open draft has a branch; a closed card reads none of these words. */
+  const runLabels = runtimeLabels(t, draft?.type ?? 'agent-browser-profile');
+
+  /** What releasing this connection does to the browser itself. */
+  const ownershipText = (ownership: BrowserOwnership | undefined, type: BrowserConnectionType): string =>
+    type === 'kimi-webbridge' ? t('st.browser.disconnectMeaningWebbridge')
+      : ownership === 'external-browser' ? t('st.browser.disconnectMeaningExternal')
+        : ownership === 'managed-profile' ? t('st.browser.disconnectMeaningManaged')
+          : t('st.browser.disconnectMeaningUnknown');
 
   const list = (
     <nav aria-label={t('st.browser.connectionsTitle')} className="min-w-0 space-y-2">
@@ -327,7 +389,8 @@ export function BrowserConnectionCard() {
             <span className="font-mono">{isNewDraft(draft) ? t('st.browser.idPending') : draft.id}</span>
             <span>{typeLabel(t, draft.type)}</span>
             {/* The location that differs: for a profile it is the server Kiki
-                drives; for CDP the machine the endpoint names. */}
+                drives; for CDP the machine the endpoint names. The bridge has no
+                address at all, so it shows the server whose daemon runs it. */}
             {selectedStatus === undefined ? null : (
               <span className="min-w-0 break-all font-mono" data-browser-execution-host>
                 {draft.type === 'agent-browser-cdp'
@@ -363,16 +426,14 @@ export function BrowserConnectionCard() {
             <span className="ml-auto flex flex-wrap items-center gap-2">
               <button type="button" className={SECONDARY_BUTTON} data-browser-check
                 disabled={busy !== null || saving || dirty || !draft.enabled}
-                title={t(draft.type === 'ego-lite' ? 'st.browser.checkHintEgo' : draft.type === 'agent-browser-cdp' ? 'st.browser.checkHintCdp' : 'st.browser.checkHintProfile')}
+                title={runLabels.checkHint}
                 onClick={() => { void run('check', () => browserApi(client).check(draft.id)); }}>
-                {busy === 'check' ? t('st.browser.checking')
-                  : t(draft.type === 'ego-lite' ? 'st.browser.checkEgo' : draft.type === 'agent-browser-cdp' ? 'st.browser.checkCdp' : 'st.browser.checkProfile')}
+                {busy === 'check' ? t('st.browser.checking') : runLabels.check}
               </button>
               <button type="button" className={SECONDARY_BUTTON} data-browser-connect
                 disabled={busy !== null || saving || dirty || !draft.enabled || LIVE_BLOCKING_CONNECT.has(selectedStatus.state)}
                 onClick={() => { void run('connect', () => browserApi(client).connect(draft.id)); }}>
-                {busy === 'connect' ? t('st.browser.connecting')
-                  : t(draft.type === 'ego-lite' ? 'st.browser.connectEgo' : draft.type === 'agent-browser-cdp' ? 'st.browser.connectCdp' : 'st.browser.connectProfile')}
+                {busy === 'connect' ? t('st.browser.connecting') : runLabels.connect}
               </button>
               {LIVE_STATES.has(selectedStatus.state) ? (
                 // Releasing uses the connection as it is saved, not the form:
@@ -393,11 +454,11 @@ export function BrowserConnectionCard() {
           {outcome === null ? null : (
             <div className="space-y-1.5" data-browser-outcome={`${outcome.action}:${outcome.status.state}`}>
               <p role="status" className={`text-[12px] ${outcome.status.state === 'failed' || outcome.status.state === 'unconfirmed' ? 'text-danger' : 'text-ink-soft'}`}>
-                {outcomeText(t, outcome.action, outcome.status)}
+                {outcomeText(t, outcome.action, outcome.status, draft.type)}
                 {whenText(locale, outcome.status.checkedAt) === undefined ? '' : ` · ${whenText(locale, outcome.status.checkedAt)}`}
               </p>
               {outcome.action !== 'disconnect' || outcome.status.error !== undefined ? null : (
-                <p className="max-w-[62ch] text-[12px] text-ink-faint">{ownershipText(outcome.status.ownership)}</p>
+                <p className="max-w-[62ch] text-[12px] text-ink-faint">{ownershipText(outcome.status.ownership, draft.type)}</p>
               )}
               {outcome.status.error === undefined || outcome.status.error === selectedStatus.error ? null : (
                 <p className="max-w-[72ch] break-words text-[12px] text-danger">{outcome.status.error}</p>
@@ -424,14 +485,12 @@ export function BrowserConnectionCard() {
               whenever there is something live to release — including under an
               edited draft, because that is when the enabled Disconnect button
               next to two disabled ones needs its own explanation. */}
-          {LIVE_STATES.has(selectedStatus.state) ? <Hint>{ownershipText(selectedStatus.ownership)}</Hint> : null}
+          {LIVE_STATES.has(selectedStatus.state) ? <Hint>{ownershipText(selectedStatus.ownership, draft.type)}</Hint> : null}
           {/* What checking really does, while pressing it is still a decision. */}
-          {dirty || LIVE_STATES.has(selectedStatus.state) ? null : (
-            <Hint>{t(draft.type === 'agent-browser-cdp' ? 'st.browser.checkHintCdp' : 'st.browser.checkHintProfile')}</Hint>
-          )}
+          {dirty || LIVE_STATES.has(selectedStatus.state) ? null : <Hint>{runLabels.checkHint}</Hint>}
           {dirty && LIVE_STATES.has(selectedStatus.state) ? <Hint>{t('st.browser.saveEndsSession')}</Hint> : null}
 
-          <BrowserRuntimeDetails id={draft.id} status={selectedStatus} />
+          <BrowserRuntimeDetails id={draft.id} type={draft.type} status={selectedStatus} />
           <FeedbackLine feedback={feedback} />
           {/* The refusal names the flag; this is the same trip the SSH page
               offers, to the rows that hold it. */}
@@ -458,17 +517,10 @@ export function BrowserConnectionCard() {
             <span className={FORM_LABEL} id="browser-type-label">{t('st.browser.fieldType')}</span>
             <SettingsSelect<BrowserConnectionType> id="browser-type" variant="form"
               ariaLabel={t('st.browser.fieldType')} value={draft.type} dataAttr="data-browser-type"
-              choices={draft.original?.type === 'codex-extension' ? [
-                { value: 'codex-extension', label: t('st.browser.type.codexExtensionLong'), hint: t('st.browser.type.codexExtensionHint') },
-              ] : draft.original?.type === 'ego-lite' ? [
-                { value: 'ego-lite', label: t('st.browser.type.egoLiteLong'), hint: t('st.browser.type.egoLiteHint') },
-              ] : [
-                { value: 'agent-browser-profile', label: t('st.browser.type.profileLong'), hint: t('st.browser.type.profileHint') },
-                { value: 'agent-browser-cdp', label: t('st.browser.type.cdpLong'), hint: t('st.browser.type.cdpHint') },
-              ]}
+              choices={typeChoices(t, draft.original)}
               onChange={(type) => { setDraft({ ...draft, type }); }} />
           </div>
-          <div className="flex items-end pb-1">
+          <div className="flex items-end pb-1" data-browser-enabled>
             <Toggle label={t('st.browser.fieldEnabled')} checked={draft.enabled}
               onChange={(enabled) => { setDraft({ ...draft, enabled }); }} />
           </div>
@@ -522,6 +574,10 @@ export function BrowserConnectionCard() {
               </div>
             </AdvancedDetails>
           </div>
+        ) : draft.type === 'kimi-webbridge' ? (
+          <div data-browser-bridge>
+            <Hint>{t('st.browser.bridgeHint')}</Hint>
+          </div>
         ) : (
           <div className="space-y-4">
             <div className="space-y-1.5">
@@ -571,7 +627,7 @@ export function BrowserConnectionCard() {
         title={t('st.browser.deleteTitle', { name: draft.original?.name ?? '' })}
         body={t('st.browser.deleteBody')}
         consequences={[
-          ...(draft.type === 'agent-browser-cdp' ? [t('st.browser.deleteConsequenceCdp')] : draft.type === 'ego-lite' ? [t('st.browser.deleteConsequenceEgo')] : [t('st.browser.deleteConsequenceProfile')]),
+          t(deleteConsequenceKey(draft.type)),
           ...(selectedStatus !== undefined && LIVE_STATES.has(selectedStatus.state) ? [t('st.browser.deleteEndsSession')] : []),
           ...(query.data?.defaultBrowser === draft.original?.id ? [t('st.browser.deleteDefault')] : []),
         ]}
@@ -603,10 +659,14 @@ export function BrowserConnectionCard() {
 }
 
 /** What the last runtime action actually did, in the status it answered with. */
-function outcomeText(t: ReturnType<typeof useI18n>['t'], action: RuntimeAction, status: BrowserStatus): string {
+function outcomeText(t: ReturnType<typeof useI18n>['t'], action: RuntimeAction, status: BrowserStatus, type: BrowserConnectionType): string {
   if (status.state === 'failed') return t('st.browser.outcome.failed');
   if (status.state === 'unconfirmed') return t('st.browser.outcome.unconfirmed');
-  if (action === 'check') return t('st.browser.outcome.checkOk', { version: status.driverVersion ?? t('st.browser.detail.driverUnknown') });
+  // The bridge reports its own version; calling it a driver would name a component it does not use.
+  if (action === 'check') {
+    const version = status.driverVersion ?? t('st.browser.detail.driverUnknown');
+    return t(type === 'kimi-webbridge' ? 'st.browser.outcome.checkOkWebbridge' : 'st.browser.outcome.checkOk', { version });
+  }
   if (action === 'connect') return status.state === 'ready' ? t('st.browser.outcome.connected') : t('st.browser.outcome.connectIncomplete');
   return status.state === 'disconnected' ? t('st.browser.outcome.disconnected') : t('st.browser.outcome.disconnectIncomplete');
 }
