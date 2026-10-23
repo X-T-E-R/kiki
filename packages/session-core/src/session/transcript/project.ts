@@ -1748,7 +1748,15 @@ function insertInteractionBlocks(
       }
     }
     // A previous slot is not a history anchor for a settled interaction.
+    // An open question can sit at the tail while its tool is off the page;
+    // once it is answered, that slot would keep the line under every later
+    // message. Recorded request time is the anchor when no frame, tool or
+    // turn is on the page.
     if (isSettledInteraction(interaction.block) && blockTimelineMs(interaction.block) === undefined) continue;
+    if (interaction.block.kind === 'question' && interaction.block.outcome !== undefined) {
+      insertByTimeline(blocks, interaction.block);
+      continue;
+    }
     if (insertAtPreviousPosition(blocks, interaction.block, previous)) continue;
     insertByTimeline(blocks, interaction.block);
   }

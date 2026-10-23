@@ -1076,6 +1076,17 @@ describe('useNewSessionDraft agent profile scope', () => {
     },
   );
 
+  it('does not leave a new draft pending when the profile catalog has no default profile', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [] });
+    await renderDraft();
+    const state = await settleDraft((value) => !value.agentProfileCatalogPending && !value.workspacesLoading);
+    expect(state.agentProfileCatalogPending).toBe(false);
+    expect(state.busy).toBe(false);
+    expect(state.selectionReady).toBe(false);
+    await act(async () => { await state.send('No default profile', []); });
+    expect(client.createSession).not.toHaveBeenCalled();
+  });
+
   it('keeps the initial selection sendable through a catalog error and background retry', async () => {
     const catalog = deferred<{ items: NamedAgentProfile[] }>();
     client.listWorkspaceCatalog.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });

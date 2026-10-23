@@ -1682,6 +1682,29 @@ describe('Sidebar session menu location & link group', () => {
     expect(writeText).toHaveBeenCalledWith('C:/tmp');
   });
 
+  it('labels the same copy actions in Chinese and still copies the route and directory', async () => {
+    localStorage.setItem('kiki.locale', 'zh');
+    try {
+      const { container } = await mount(listed());
+      const menu = await openSessionMenu(container);
+      expect(menu.querySelector('[data-menu-item="copy-link"]')?.textContent).toBe('复制线程链接');
+      expect(menu.querySelector('[data-menu-item="copy-path"]')?.textContent).toBe('复制工作目录');
+      expect(menu.textContent).not.toContain('menu.copyThreadLink');
+      expect(menu.textContent).not.toContain('menu.copyWorkingDirectory');
+      await act(async () => {
+        menu.querySelector<HTMLButtonElement>('[data-menu-item="copy-link"]')?.click();
+      });
+      expect(writeText).toHaveBeenCalledWith('/s/one');
+      const again = await openSessionMenu(container);
+      await act(async () => {
+        again.querySelector<HTMLButtonElement>('[data-menu-item="copy-path"]')?.click();
+      });
+      expect(writeText).toHaveBeenCalledWith('C:/tmp');
+    } finally {
+      localStorage.setItem('kiki.locale', 'en');
+    }
+  });
+
   it('hides the desktop opener entries in the browser runtime', async () => {
     const { container } = await mount(listed());
     const menu = await openSessionMenu(container);

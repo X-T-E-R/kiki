@@ -6082,6 +6082,43 @@ describe('honest unknown timing', () => {
   });
 });
 
+function snapshotWithLaterTurn(snapshot: AgentTranscriptSnapshot): AgentTranscriptSnapshot {
+  const source = snapshot.items[0];
+  if (source === undefined || source.kind !== 'turn') throw new Error('expected a turn');
+  const step = source.steps[0];
+  if (step === undefined) throw new Error('expected a step');
+  const frame = step.frames[0];
+  if (frame === undefined || frame.kind !== 'text') throw new Error('expected a text frame');
+  const turn = {
+    ...source,
+    turnId: 't2',
+    ordinal: 2,
+    prompt: 'later user message',
+    startedAt: '2026-01-01T00:02:00.000Z',
+    endedAt: '2026-01-01T00:03:00.000Z',
+    steps: [{
+      ...step,
+      turnId: 't2',
+      stepId: 't2.1',
+      startedAt: '2026-01-01T00:02:00.000Z',
+      endedAt: '2026-01-01T00:03:00.000Z',
+      frames: [{ ...frame, frameId: 'asst-later', text: 'later assistant reply' }],
+    }],
+  };
+  return {
+    ...snapshot,
+    items: [...snapshot.items, turn],
+    prompts: [...snapshot.prompts, {
+      promptId: 'p-later',
+      userMessageId: 'um-later',
+      status: 'completed',
+      content: [{ type: 'text', text: 'later user message' }],
+      createdAt: '2026-01-01T00:02:00.000Z',
+      finishedAt: '2026-01-01T00:03:00.000Z',
+    }],
+  };
+}
+
 function applyOpsToSnapshot(
   snapshot: AgentTranscriptSnapshot,
   ops: readonly TranscriptOperation[],
@@ -6654,6 +6691,56 @@ describe('question history answers', () => {
     const cold = projectAgentTranscriptView(createViewState('session_test'), 'main', answeredSnapshot);
     expect(answered.blocks).toEqual(cold.blocks);
     expect(answeredSnapshot.interactions[0]?.response.answers.q1.text).toBe('Read the complete appendix.');
+  });
+
+  it('anchors an answered question to its recorded request time ahead of later messages, including after it sat at the tail', () => {
+    const history = snapshotWithLaterTurn(userTurnSnapshot());
+    const pendingSnapshot = {
+      ...history,
+      interactions: [{
+        interactionId: 'restored-question', interactionKind: 'question' as const, state: 'pending' as const,
+        toolCallId: 'off-page-tool', request: { questions },
+      }],
+    };
+    const pending = projectAgentTranscriptView(createViewState('session_test'), 'main', pendingSnapshot);
+    expect(pending.blocks.at(-1)?.id).toBe('question-restored-question');
+    const answeredSnapshot = {
+      ...history,
+      interactions: [{
+        ...pendingSnapshot.interactions[0]!, state: 'answered' as const,
+        request: { questions, created_at: FIXED_AT },
+        response: { answers: { q1: { kind: 'other', text: 'Read the complete appendix.' } }, resolved_at: '2026-01-01T00:05:00.000Z' },
+      }],
+    };
+    const restored = projectAgentTranscriptView(pending, 'main', answeredSnapshot);
+    const cold = projectAgentTranscriptView(createViewState('session_test'), 'main', answeredSnapshot);
+    for (const view of [restored, cold]) {
+      const questionAt = view.blocks.findIndex((block) => block.id === 'question-restored-question');
+      const laterAt = view.blocks.findIndex((block) => block.kind === 'user' && block.text === 'later user message');
+      expect(questionAt).toBeGreaterThanOrEqual(0);
+      expect(laterAt).toBeGreaterThan(questionAt);
+      expect(view.blocks[questionAt]).toMatchObject({
+        request: { created_at: FIXED_AT },
+        outcome: { kind: 'answered', at: '2026-01-01T00:05:00.000Z' },
+      });
+    }
+    expect(restored.blocks.map((block) => block.id)).toEqual(cold.blocks.map((block) => block.id));
+  });
+
+  it('keeps a turn-anchored answered question with that turn when a later message follows', () => {
+    const history = snapshotWithLaterTurn(userTurnSnapshot());
+    const interaction = {
+      interactionId: 'turn-question', interactionKind: 'question' as const, state: 'answered' as const,
+      origin: { agentId: 'main', turnId: 1 }, request: { questions },
+      response: { answers: { q1: { kind: 'other', text: 'Read the complete appendix.' } }, resolved_at: '2026-01-01T00:05:00.000Z' },
+    };
+    const cold = projectAgentTranscriptView(createViewState('session_test'), 'main', { ...history, interactions: [interaction] });
+    const questionAt = cold.blocks.findIndex((block) => block.id === 'question-turn-question');
+    const laterAt = cold.blocks.findIndex((block) => block.kind === 'user' && block.text === 'later user message');
+    const earlyUser = cold.blocks.findIndex((block) => block.kind === 'user' && block.text === 'canonical user prompt');
+    expect(questionAt).toBeGreaterThan(earlyUser);
+    expect(laterAt).toBeGreaterThan(questionAt);
+    expect(questionAt).toBeLessThan(cold.blocks.length - 1);
   });
 
   it('keeps answered questions with a loaded tool, turn or recorded request time and their full answers', () => {

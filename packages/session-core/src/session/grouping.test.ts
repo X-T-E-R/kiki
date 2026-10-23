@@ -17,7 +17,7 @@ import {
   type SubagentGroup,
   type ToolGroup,
 } from './grouping';
-import type { AssistantBlock, ShellBlock, SubagentBlock, SystemBlock, ThinkingBlock, ToolBlock, UserBlock } from './transcript';
+import type { AssistantBlock, QuestionBlock, ShellBlock, SubagentBlock, SystemBlock, ThinkingBlock, ToolBlock, UserBlock } from './transcript';
 
 let counter = 0;
 function tool(
@@ -264,6 +264,38 @@ describe('folding the live turn, subagents, images and ends (FOLDING.md)', () =>
     expect(nodes.map((node) => node.kind)).toEqual(['user', 'history-fold', 'tool']);
     expect((nodes[1] as HistoryFold).members).toEqual(blocks.slice(1, 4));
     expect(nodes[2]).toBe(blocks[4]);
+  });
+
+  it('folds memory reads, searches and writes with ordinary process, counts failures, and keeps live and user rows out', () => {
+    const memoryRead = inTurn(tool('MemoryRead'), 't1');
+    const memorySearch = inTurn(tool('MemorySearch', 'error', { args: { query: 'notes' } }), 't1');
+    const openQuestion: QuestionBlock = {
+      kind: 'question',
+      id: 'q-live',
+      request: {
+        question_id: 'q-live',
+        session_id: 'session_test',
+        turn_id: 1,
+        questions: [{
+          id: 'q1',
+          question: 'Continue?',
+          options: [{ id: 'a', label: 'Yes' }, { id: 'b', label: 'No' }],
+        }],
+        created_at: '2026-01-01T00:00:00.000Z',
+      },
+      outcome: undefined,
+    };
+    const memoryWrite = inTurn(tool('MemoryWrite'), 't1');
+    const ordinary = inTurn(read('/w/a'), 't1');
+    const user = inTurn(text('user'), 't1');
+    const running = inTurn(tool('MemoryRead', 'running'), 't1');
+    const nodes = foldHistory([memoryRead, memorySearch, openQuestion, memoryWrite, ordinary, user, running], 't9');
+    expect(nodes.map((node) => node.kind)).toEqual(['history-fold', 'question', 'history-fold', 'user', 'tool']);
+    expect(nodes[0]).toMatchObject({ steps: 2, failed: 1, members: [memoryRead, memorySearch] });
+    expect(nodes[1]).toBe(openQuestion);
+    expect(nodes[2]).toMatchObject({ steps: 2, failed: 0, members: [memoryWrite, ordinary] });
+    expect(nodes[3]).toBe(user);
+    expect(nodes[4]).toBe(running);
   });
 
   it('folds ordinary memory into the same process run and leaves a running memory row out', () => {
