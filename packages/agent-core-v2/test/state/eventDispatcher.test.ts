@@ -557,7 +557,7 @@ describe('EventDispatcherService', () => {
     persisted.graph = encodeReplayCheckpointGraph(payload);
     documents.set('sessions/ws/s1/agents/main/replay-checkpoints/engine-v1', persisted);
     failSet = true;
-    await expect(first.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(false);
+    await expect(first.dispatcher.saveReplayCheckpoint?.()).rejects.toThrow('replay checkpoint write failed: checkpoint write interrupted');
     expect(documents.get('sessions/ws/s1/agents/main/replay-checkpoints/engine-v1')).toEqual(persisted);
     failSet = false;
 
@@ -591,7 +591,10 @@ describe('EventDispatcherService', () => {
       return stableIdentity();
     };
     await expect(first.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(false);
+    expect(first.dispatcher.replayCheckpointSkipReason?.()).toBe('state_changed');
     wire.journalIdentity = stableIdentity;
+    await expect(first.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(true);
+    expect(first.dispatcher.replayCheckpointSkipReason?.()).toBeUndefined();
   });
 
   it('binds checkpoints to the journal head hash across same-size rewrites and legacy envelopes', async () => {

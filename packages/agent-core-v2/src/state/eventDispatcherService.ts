@@ -490,27 +490,50 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     }
   }
 
+  private checkpointSkipReason: string | undefined;
+
+  replayCheckpointSkipReason(): string | undefined {
+    return this.checkpointSkipReason;
+  }
+
+  private skipReplayCheckpoint(reason: string): false {
+    this.checkpointSkipReason = reason;
+    return false;
+  }
+
+  private checkpointStable(generation: number, revision = this.liveRevision): boolean {
+    if (!this.isCheckpointGenerationCurrent(generation)) return this.skipReplayCheckpoint('disposed');
+    if (this.deferredObservable.size > 0) return this.skipReplayCheckpoint('pending_events');
+    if (revision !== this.liveRevision) return this.skipReplayCheckpoint('state_changed');
+    return true;
+  }
+
   private async writeReplayCheckpoint(generation: number): Promise<boolean> {
+    this.checkpointSkipReason = undefined;
     const checkpointScope = this.checkpointScope();
     const docs = this.docs.current;
-    if (!this.isCheckpointGenerationCurrent(generation) || docs === undefined ||
-      checkpointScope === undefined || this.wire.journalIdentity === undefined) {
-      return false;
+    if (!this.checkpointStable(generation)) return false;
+    if (docs === undefined || checkpointScope === undefined || this.wire.journalIdentity === undefined) {
+      return this.skipReplayCheckpoint('unavailable');
     }
+    let phase = 'flush';
     try {
       const keys = this.agentState.replayableKeys()
         .filter((key) => key.replayable.durable)
         .toSorted((left, right) => left.name.localeCompare(right.name));
       await this.wire.flush();
-      if (!this.isCheckpointGenerationCurrent(generation) || this.deferredObservable.size > 0) return false;
+      if (!this.checkpointStable(generation)) return false;
       const revision = this.liveRevision;
+      phase = 'journal_identity';
       const wire = await this.wire.journalIdentity();
-      if (!this.isCheckpointGenerationCurrent(generation) || revision !== this.liveRevision || this.deferredObservable.size > 0) return false;
+      if (!this.checkpointStable(generation, revision)) return false;
+      phase = 'journal_digest';
       const prefixSha256 = this.wire.journalSha256 === undefined
         ? undefined
         : await this.wire.journalSha256(wire.size);
-      if (this.wire.journalSha256 !== undefined && prefixSha256 === undefined) return false;
-      if (!this.isCheckpointGenerationCurrent(generation) || revision !== this.liveRevision || this.deferredObservable.size > 0) return false;
+      if (this.wire.journalSha256 !== undefined && prefixSha256 === undefined) return this.skipReplayCheckpoint('journal_changed');
+      if (!this.checkpointStable(generation, revision)) return false;
+      phase = 'encode';
       const payload: ReplayCheckpointPayload = {
         states: keys.map((key) => ({
           name: key.name,
@@ -519,7 +542,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         })),
       };
       const graph = encodeReplayCheckpointGraph(payload);
-      if (!this.isCheckpointGenerationCurrent(generation) || revision !== this.liveRevision || this.deferredObservable.size > 0) return false;
+      if (!this.checkpointStable(generation, revision)) return false;
       const coveredAppendedBytes = this.wire.appendedByteCount?.() ?? this.growthCheckpointBaseline;
       const envelope: ReplayCheckpointEnvelope = {
         format: 1,
@@ -528,12 +551,13 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         stateNames: keys.map((key) => key.name),
         graph,
       };
+      phase = 'write';
       await docs.set(checkpointScope, REPLAY_CHECKPOINT_KEY, envelope);
-      if (!this.isCheckpointGenerationCurrent(generation)) return false;
+      if (!this.isCheckpointGenerationCurrent(generation)) return this.skipReplayCheckpoint('disposed');
       this.growthCheckpointBaseline = coveredAppendedBytes;
       return true;
-    } catch {
-      return false;
+    } catch (error) {
+      throw new Error(`replay checkpoint ${phase} failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
     }
   }
 

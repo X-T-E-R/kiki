@@ -25,6 +25,17 @@ export class ValueReader {
   readonly walPath: string;
   private snapshotFd: number | null = null;
   private walFd: number | null = null;
+  private activeReads = 0;
+  private idleWaiters: (() => void)[] = [];
+
+  get idle(): boolean {
+    return this.activeReads === 0;
+  }
+
+  whenIdle(): Promise<void> {
+    if (this.idle) return Promise.resolve();
+    return new Promise((resolve) => this.idleWaiters.push(resolve));
+  }
 
   constructor(dir: string) {
     this.snapshotPath = path.join(dir, 'db.snapshot');
@@ -82,14 +93,22 @@ export class ValueReader {
   async readAsync(loc: ValueLoc): Promise<Buffer> {
     if (loc.len === 0) return Buffer.alloc(0);
     const fd = this.fdFor(loc);
-    const buf = Buffer.allocUnsafe(loc.len);
-    let got = 0;
-    while (got < loc.len) {
-      const r = await readAtAsync(fd, buf, got, loc.len - got, loc.off + got);
-      if (r === 0) throw new Error(`value reader: short read from ${loc.file} at ${loc.off + got}`);
-      got += r;
+    this.activeReads++;
+    try {
+      const buf = Buffer.allocUnsafe(loc.len);
+      let got = 0;
+      while (got < loc.len) {
+        const r = await readAtAsync(fd, buf, got, loc.len - got, loc.off + got);
+        if (r === 0) throw new Error(`value reader: short read from ${loc.file} at ${loc.off + got}`);
+        got += r;
+      }
+      return buf;
+    } finally {
+      this.activeReads--;
+      if (this.idle) {
+        for (const resolve of this.idleWaiters.splice(0)) resolve();
+      }
     }
-    return buf;
   }
 
   reopenSnapshot(): void {

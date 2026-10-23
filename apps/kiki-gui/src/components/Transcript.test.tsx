@@ -1613,6 +1613,22 @@ describe('live and event chrome', () => {
     expect(retry).toHaveBeenCalledOnce();
   });
 
+  it('keeps loaded historical rows visible beside a retryable refresh error', async () => {
+    const retry = vi.fn();
+    const { root, container } = makeRoot();
+    const block = userBlock({ id: 'retained-history', text: 'Saved conversation' });
+    await renderSettled(root, <Transcript
+      state={transcriptState([block], { loadError: 'temporary snapshot read failure' })}
+      onLoadOlder={() => Promise.resolve(false)} onResolveApproval={noopActions}
+      onAnswerQuestion={noopActions} onDismissQuestion={noopActions} onRetryLoad={retry}
+    />);
+    await settleVirtualizer();
+    expect(container.querySelector('[data-block-id="retained-history"]')?.textContent).toContain('Saved conversation');
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('temporary snapshot read failure');
+    await act(async () => { click(container.querySelector<HTMLButtonElement>('[role="alert"] button')!); });
+    expect(retry).toHaveBeenCalledOnce();
+  });
+
   it('offers retry for a failed transcript before a baseline arrives', async () => {
     const retry = vi.fn();
     const { root, container } = makeRoot();

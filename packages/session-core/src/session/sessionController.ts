@@ -42,7 +42,6 @@ import {
   API_CODES,
   ApiError,
   DEFAULT_TRANSCRIPT_GRADES,
-  isDefiniteSessionAbsenceMessage,
   isUnconfirmedTransportError,
   transcriptGradesForFocus,
   type AgentTranscriptResponse,
@@ -552,7 +551,7 @@ export class SessionController {
     } catch (error) {
       if (this.closed || this.isSuspended || generation !== this.openGeneration || attachment !== this.viewAttachment) return;
       if (isAbortError(error)) return;
-      this.setState(setLoadError(this.state, errorMessage(error, 'Could not load session')));
+      this.setState({ ...setLoadError(this.state, errorMessage(error, 'Could not load session')), loaded: this.state.loaded });
     }
   }
 
@@ -647,14 +646,9 @@ export class SessionController {
       this.notifyMain();
     } catch (error) {
       if (this.closed || this.isSuspended || attachment !== this.viewAttachment) return;
-      const code = error instanceof ApiError || error instanceof RPCError ? error.code : undefined;
+      if (isAbortError(error)) return;
       const message = errorMessage(error, 'Could not load session');
-      // A session deleted while its view was parked surfaces the same way a
-      // fresh open does. Other 40401 failures are missing history or content
-      // and leave the live subscription in charge.
-      if (code === API_CODES.SESSION_NOT_FOUND && isDefiniteSessionAbsenceMessage(message)) {
-        this.setState(setLoadError(this.state, message));
-      }
+      this.setState({ ...setLoadError(this.state, message), loaded: this.state.loaded });
     }
   }
 
@@ -672,7 +666,8 @@ export class SessionController {
   async retryOpen(): Promise<void> {
     if (this.closed) return;
     this.setState(setLoadError(this.state, undefined));
-    await this.open();
+    if (this.state.loaded && this.viewHandle !== undefined) await this.refreshShell();
+    else await this.open();
   }
 
   close(): void {

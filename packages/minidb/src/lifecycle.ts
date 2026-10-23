@@ -478,6 +478,7 @@ async function closeResources<V>(db: LifecycleHost<V>, hooks: LifecycleHooks): P
       errors.push(e);
     }
   }
+  await db.valueReader?.whenIdle();
   try {
     db.store.close();
   } catch (e) {

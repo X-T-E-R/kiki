@@ -859,17 +859,41 @@ describe('SessionController pipeline', () => {
     controller.suspend();
     await controller.resume();
     expect(controller.getState().loaded).toBe(true);
-    expect(controller.getState().loadError).toBeUndefined();
+    expect(controller.getState().loadError).toContain('session session_test not found');
     expect(isDefiniteSessionAbsenceMessage('session session_test not found (code 40401)')).toBe(false);
     controller.suspend();
     await controller.resume();
     expect(controller.getState().loaded).toBe(true);
-    expect(controller.getState().loadError).toBeUndefined();
+    expect(controller.getState().loadError).toContain('session not found: session_test');
     controller.suspend();
     await controller.resume();
     expect(controller.getState().loadError).toContain('does not exist');
     expect(isDefiniteSessionAbsenceMessage(controller.getState().loadError ?? '')).toBe(true);
     controller.close();
+  });
+
+  it('retains the loaded session across three failed returns and recovers with retry', async () => {
+    const reads = vi.fn().mockResolvedValue(snapshot());
+    const controller = new SessionController({} as KikiClient, fakeView({ snapshot: reads }, {}), 'session_test');
+    try {
+      await controller.open();
+      const before = controller.getState();
+      for (let visit = 0; visit < 3; visit++) {
+        reads.mockRejectedValueOnce(new Error('temporary snapshot reader failure'));
+        controller.suspend();
+        await controller.resume();
+        expect(controller.getState().sessionId).toBe('session_test');
+        expect(controller.getState().loaded).toBe(true);
+        expect(controller.getState().blocks).toBe(before.blocks);
+        expect(controller.getState().session).toBe(before.session);
+        expect(controller.getState().loadError).toContain('temporary snapshot reader failure');
+        await controller.retryOpen();
+        expect(controller.getState().loaded).toBe(true);
+        expect(controller.getState().loadError).toBeUndefined();
+      }
+    } finally {
+      controller.close();
+    }
   });
 
   it('refreshes a waking child on creation, drops it on disposal, and reads a new agent row', async () => {

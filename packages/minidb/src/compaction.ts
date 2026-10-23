@@ -53,10 +53,11 @@
 // stats.dirFsyncUnsupported = true.
 
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { WAL } from './wal.js';
-import { renameReplace, withWindowsEpermRetry } from './rename-replace.js';
+import { withWindowsEpermRetry } from './rename-replace.js';
 import { writeSnapshot } from './snapshot.js';
 import type { Store, ValueLoc } from './store.js';
 import type { FsyncPolicy, WalStats } from './wal.js';
@@ -104,6 +105,8 @@ export interface CompactionTarget {
     reopenWal(): void;
     reopenBoth(): void;
     readAsync?(loc: ValueLoc): Promise<Buffer>;
+    readonly idle?: boolean;
+    whenIdle?(): Promise<void>;
   };
   /** Optional hook invoked (and awaited) after the snapshot + WAL rotation
    *  succeeds, so the owner can publish derived on-disk state (stage 5's
@@ -129,9 +132,6 @@ const COPY_CHUNK = 1 << 20; // 1 MiB read/write coalescing
 // the rotation critical section, so the pre-copy loop stops draining.
 const SMALL_DELTA = 64 * 1024; // 64 KiB
 
-// Windows cannot rename over an open destination; rotation uses the shared
-// retrying replace helper (see rename-replace.ts).
-const rotateReplace = (src: string, dst: string): Promise<void> => renameReplace(src, dst);
 // Pre-copy convergence bounds: each pass costs roughly `gap / copyRate` and
 // appends `gap * (appendRate / copyRate)` new bytes during the copy. Give up
 // when a pass fails to shrink the gap meaningfully (appendRate ≳ copyRate),
@@ -356,50 +356,31 @@ async function runCompaction(db: CompactionTarget): Promise<void> {
 
     await db.wal.close();
 
-    // Snapshot first, then WAL — see the crash-safety note in the file header.
-    // On Windows release ONLY the destination reader for each rename attempt;
-    // an EPERM retry reopens it before sleeping. The WAL reader stays attached
-    // across the snapshot rename and strict directory fsync, including failures.
-    if (windowsReader) {
+    const rotate = async (src: string, dst: string, side: 'snapshot' | 'wal', publish: () => void): Promise<void> => {
       await withWindowsEpermRetry(async () => {
-        windowsReader.closeSnapshot();
+        while (db.valueReader?.idle === false) await db.valueReader.whenIdle?.();
+        const reopen = () => side === 'snapshot' ? db.valueReader?.reopenSnapshot() : db.valueReader?.reopenWal();
+        if (windowsReader) {
+          if (side === 'snapshot') windowsReader.closeSnapshot();
+          else windowsReader.closeWal();
+        }
         try {
-          await fs.rename(tmp, snap);
-        } catch (err) {
-          windowsReader.reopenSnapshot();
-          throw err;
+          fsSync.renameSync(src, dst);
+          publish();
+        } finally {
+          reopen();
         }
       });
-    } else {
-      await rotateReplace(tmp, snap);
-    }
-    snapshotRotated = true;
-    if (windowsReader) {
+    };
+    await rotate(tmp, snap, 'snapshot', () => {
+      snapshotRotated = true;
       remapSnapshot();
-      windowsReader.reopenSnapshot();
-    }
-    // Directory fsyncs are strict: a real failure aborts this rotation.
+    });
     await fsyncDir(db.dir, { strict: true, stats: db.stats });
-
-    if (windowsReader) {
-      await withWindowsEpermRetry(async () => {
-        windowsReader.closeWal();
-        try {
-          await fs.rename(walTmp, db.walPath);
-        } catch (err) {
-          windowsReader.reopenWal();
-          throw err;
-        }
-      });
-    } else {
-      await rotateReplace(walTmp, db.walPath);
-    }
-    rotated = true;
-    // Pair the new offsets and reader fds in the same synchronous segment,
-    // before the next await (fsync / fresh WAL open). No long-lived closed WAL
-    // handle remains in the rotation's asynchronous windows.
-    remap();
-    db.valueReader?.reopenBoth();
+    await rotate(walTmp, db.walPath, 'wal', () => {
+      rotated = true;
+      remap();
+    });
     await fsyncDir(db.dir, { strict: true, stats: db.stats });
 
     const fresh = new WAL(db.walPath, { fsyncPolicy: db.fsyncPolicy, syncIntervalMs: db.syncIntervalMs, stats: db.stats });
@@ -409,6 +390,7 @@ async function runCompaction(db: CompactionTarget): Promise<void> {
     // Repair the reader before any asynchronous WAL recovery. A failure before
     // the WAL rename keeps old WAL offsets but may already have replaced the
     // snapshot. Reopen each side independently, even if the other side fails.
+    while (db.valueReader?.idle === false) await db.valueReader.whenIdle?.();
     try {
       if (rotated) remap();
       else if (snapshotRotated) remapSnapshot();

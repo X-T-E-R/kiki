@@ -124,6 +124,28 @@ describe('space view route validation', () => {
     expect(container.querySelector('output')?.textContent).toBe('/s/existing');
     expect(readSpaceViewRoute()).toBe('/s/existing');
     expect(mounted).toHaveBeenCalledOnce();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('network unavailable');
+    getSession.mockResolvedValue({ id: 'existing' });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[role="alert"] button')!.click(); });
+    await flush();
+    expect(container.querySelector('output')?.textContent).toBe('/s/existing');
+    expect(mounted).toHaveBeenCalledOnce();
+  });
+
+  it('does not turn a cached negative into deletion when revalidation fails', async () => {
+    retainedControllers.mockReturnValue([{ sessionId: 'existing' }]);
+    queryClient.setQueryData(['space-view-target', 'local', 'session', 'existing'], false);
+    getSession.mockRejectedValue(new Error('temporary metadata failure'));
+    await render('/s/existing');
+    expect(container.querySelector('output')?.textContent).toBe('/s/existing');
+    expect(container.querySelector('[data-target]')).not.toBeNull();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('temporary metadata failure');
+    expect(mounted).toHaveBeenCalledOnce();
+    getSession.mockResolvedValue({ id: 'existing' });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[role="alert"] button')!.click(); });
+    await flush();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(mounted).toHaveBeenCalledOnce();
   });
 
   it('validates a stale cached success again before mounting', async () => {

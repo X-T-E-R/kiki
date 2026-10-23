@@ -367,6 +367,35 @@ describe('session return admission', () => {
     };
   });
 
+  it('keeps history, draft and identity through three transient return failures and retry', async () => {
+    await render('/s/sess-a');
+    expect(shown()?.getAttribute('data-transcript')).toBe('alpha body');
+    for (let visit = 0; visit < 3; visit++) {
+      await go('/settings');
+      gate = 'hold';
+      await go('/s/sess-a');
+      const retained = shown();
+      await act(async () => { finishHeld('sess-a', new Error('temporary session index read failure')); });
+      await flush();
+      expect(container.querySelector('[data-path]')?.textContent).toBe('/s/sess-a');
+      expect(container.querySelector('[data-home]')).toBeNull();
+      expect(shown()).toBe(retained);
+      expect(shown()?.getAttribute('data-transcript')).toBe('alpha body');
+      expect(shown()?.getAttribute('data-draft')).toBe('draft-a');
+      expect(shown()?.getAttribute('data-model')).toBe('model-a');
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain('temporary session index read failure');
+      gate = 'open';
+      await act(async () => { container.querySelector<HTMLButtonElement>('[role="alert"] button')!.click(); });
+      await flush();
+      expect(shown()).toBe(retained);
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    }
+    expect(counts.factory).toBe(1);
+    expect(counts.open).toBe(1);
+    expect(counts.resume).toBe(3);
+    expect(counts.close).toBe(0);
+  });
+
   it('switches A and B from the parked store without mixing scroll or drafts', async () => {
     await render('/s/sess-a');
     expect(shown()?.getAttribute('data-transcript')).toBe('alpha body');

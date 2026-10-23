@@ -592,7 +592,8 @@ describe('FileSessionIndex (legacy)', () => {
     expect((await store.listRecent({ workspaceIds: [workspaceId] })).items.map((s) => s.id))
       .toEqual(['readable']);
     expect(await store.count({ workspaceIds: [workspaceId] })).toBe(1);
-    expect(await store.get('bad', workspaceId)).toBeUndefined();
+    await expect(store.get('bad', workspaceId)).rejects.toMatchObject({ code: StorageErrors.codes.STORAGE_DECODE_FAILED });
+    await expect(store.get('absent', workspaceId)).resolves.toBeUndefined();
   });
 
   it('pages with the before/after keyset cursors', async () => {
@@ -969,6 +970,82 @@ describe('FileSessionIndex (read model)', () => {
     expect((await store.listRecent({ workspaceIds: [workspaceId] })).items.map((s) => s.id))
       .toEqual(['healthy']);
     expect(await store.count({ workspaceIds: [workspaceId] })).toBe(1);
+    await expect(store.get('denied', workspaceId)).rejects.toThrow('read denied');
+    await expect(store.get('absent', workspaceId)).resolves.toBeUndefined();
+  });
+
+  it('automatically retires failed readers and publishes a fresh generation without user cleanup', async () => {
+    await seedSession('existing', { createdAt: 1, updatedAt: 2 });
+    const store = build();
+    await store.prepare();
+    const states: string[] = [];
+    const subscription = store.onDidChangeStatus((status) => states.push(status.state));
+    const recover = vi.spyOn(queryStore, 'recover');
+    const originalGet = queryStore.get.bind(queryStore);
+    let failed = false;
+    vi.spyOn(queryStore, 'get').mockImplementation(async (collection, key) => {
+      if (!failed && collection === sessionCollection(1)) {
+        failed = true;
+        throw new Error('value reader: snapshot file is not open');
+      }
+      return originalGet(collection, key);
+    });
+    try {
+      expect(await store.get('existing', workspaceId)).toMatchObject({ id: 'existing' });
+      await vi.waitFor(() => {
+        expect(store.status()).toMatchObject({ state: 'ready', generation: 2, degradedCount: 1 });
+      });
+      expect(recover).toHaveBeenCalledTimes(1);
+      expect(states).toContain('degraded');
+      expect(states).toContain('preparing');
+      for (let visit = 0; visit < 4; visit++) {
+        expect(await store.get('existing', workspaceId)).toMatchObject({ id: 'existing' });
+        expect((await store.listRecent({ workspaceIds: [workspaceId] })).items.map((item) => item.id)).toEqual(['existing']);
+      }
+    } finally {
+      subscription.dispose();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('stops automatic reader recovery after three failures and permits an explicit retry', async () => {
+    await seedSession('existing', { createdAt: 1, updatedAt: 2 });
+    const store = build();
+    await store.prepare();
+    const originalGet = queryStore.get.bind(queryStore);
+    const get = vi.spyOn(queryStore, 'get').mockImplementation(async (collection, key) => {
+      if (collection === sessionCollection(1)) throw new Error('value reader: snapshot file is not open');
+      return originalGet(collection, key);
+    });
+    const recover = vi.spyOn(queryStore, 'recover').mockRejectedValue(new Error('injected recovery failure'));
+    vi.useFakeTimers();
+    try {
+      expect(await store.get('existing', workspaceId)).toMatchObject({ id: 'existing' });
+      await vi.waitFor(() => expect(store.status()).toMatchObject({ state: 'degraded', degradedCount: 2 }));
+      expect(recover).toHaveBeenCalledTimes(1);
+      const pending = store as unknown as { prepareFlight?: Promise<unknown> };
+      await pending.prepareFlight;
+      for (let attempt = 2; attempt <= 3; attempt++) {
+        await vi.advanceTimersByTimeAsync(5_000);
+        await pending.prepareFlight;
+        expect(recover).toHaveBeenCalledTimes(attempt);
+      }
+      expect(recover).toHaveBeenCalledTimes(3);
+      expect(store.status()).toMatchObject({ state: 'degraded', degradedCount: 4 });
+      await expect(store.listRecent({ workspaceIds: [workspaceId] })).rejects.toBeInstanceOf(SessionIndexBuildingError);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(recover).toHaveBeenCalledTimes(3);
+      vi.useRealTimers();
+      get.mockRestore();
+      recover.mockRestore();
+      expect(await store.prepare()).toMatchObject({ state: 'degraded', reason: expect.stringContaining('automatic recovery exhausted') });
+      await store.reprojectNow();
+      expect(store.status()).toMatchObject({ state: 'ready', generation: 2 });
+      expect(await store.get('existing', workspaceId)).toMatchObject({ id: 'existing' });
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
   });
 
   it('fails closed when the sessions root cannot be enumerated', async () => {

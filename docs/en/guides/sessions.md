@@ -118,7 +118,7 @@ Open **Settings → Sessions → Manage archived conversations** to browse saved
 **Delete** permanently removes that conversation and its still-attached archived descendants; explicitly top-level threads remain independent, and unarchived conversations are kept. **Delete all archived conversations** covers every archive in the current connection's home, across all pages and regardless of the search. Both actions ask for confirmation; cancelling leaves the data unchanged. Deletion cannot be undone. The page stays pending until the operation finishes, then refreshes the list. If some items fail, it lists those items rather than reporting complete success; check the refreshed list before retrying.
 
 
-If session recovery fails, the GUI keeps whatever history it had already loaded and shows the error, with a request ID when there is one. **Retry now** next to it reruns the recovery.
+If opening or refreshing an existing conversation fails, the GUI stays on that conversation and keeps its loaded history and draft. The error appears above the history, with a request ID when available. Choose **Retry** to read the conversation again; a temporary read failure does not create a new session.
 
 Editing a queued prompt's text or delivery timing through Kiki keeps its identity on recovery; you do not need to restore the original text or send a duplicate. Messages not yet launched stay pending when Kiki's backend shuts down normally. After recovery, review and resume the saved queue. Already launched messages are not automatically resent if their result is unknown; check the saved result before resending. Explicitly cancelled requests stay cancelled, including those cancelled by archiving or deleting the session.
 

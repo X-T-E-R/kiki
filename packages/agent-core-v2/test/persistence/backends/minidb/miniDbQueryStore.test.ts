@@ -74,6 +74,22 @@ describe('MiniDbQueryStore', () => {
     expect(await store.get(COLLECTION, 'a')).toBeUndefined();
   });
 
+  it('serializes reader recovery with new operations and preserves persisted data', async () => {
+    const store = build();
+    await store.put(COLLECTION, 'saved', { id: 'saved' });
+    const first = store.recover!();
+    expect(store.recover!()).toBe(first);
+    const read = store.get(COLLECTION, 'saved');
+    const write = store.put(COLLECTION, 'new', { id: 'new' });
+    await first;
+    expect(await read).toEqual({ id: 'saved' });
+    await write;
+    expect(await store.get(COLLECTION, 'new')).toEqual({ id: 'new' });
+    await store.withExclusive!(async () => {
+      expect(await store.get(COLLECTION, 'saved')).toEqual({ id: 'saved' });
+    });
+  });
+
   it('batch applies put and delete atomically', async () => {
     const store = build();
     await store.batch([

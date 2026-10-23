@@ -58,6 +58,7 @@ const RECONCILE_MAX_ATTEMPTS = 2;
 const RECONCILE_RETRY_BASE_MS = 5_000;
 const RECONCILE_RETRY_MAX_MS = 60_000;
 const DEGRADED_RETRY_MS = 5_000;
+const RECOVERY_MAX_ATTEMPTS = 3;
 const UNBOUNDED = Number.MAX_SAFE_INTEGER;
 
 function canonicalOrder(a: Pick<SessionSummary, 'updatedAt' | 'id'>, b: Pick<SessionSummary, 'updatedAt' | 'id'>): number {
@@ -95,6 +96,9 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   private statusReason: string | undefined;
   private degradedCount = 0;
   private nextPrepareRetryAt = 0;
+  private recoveryRequired = false;
+  private recoveryAttempts = 0;
+  private readonly recoveryTimer = this._register(new TimeoutTimer());
   private prepareFlight: Promise<SessionIndexStatus> | undefined;
   private projectFlight: Promise<boolean> | undefined;
   private catchUpFlight: Promise<boolean> | undefined;
@@ -207,7 +211,8 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
 
   async prepare(options?: { deadlineMs?: number }): Promise<SessionIndexStatus> {
     if (this._store.isDisposed || !this.readModelEnabled()) return this.status();
-    if (this.mirror.dirtyEpoch() !== undefined) {
+    if (this.recoveryRequired && this.recoveryAttempts >= RECOVERY_MAX_ATTEMPTS) return this.status();
+    if (!this.recoveryRequired && this.mirror.dirtyEpoch() !== undefined) {
       await this.ensureDirtyCatchUp();
       return this.status();
     }
@@ -244,6 +249,20 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     this.state = 'preparing';
     this.emitStatusIfChanged();
     try {
+      if (this.recoveryRequired) {
+        this.recoveryAttempts++;
+        this.recoveryTimer.cancel();
+        this.log.info('session index recovery started', { attempt: this.recoveryAttempts });
+        await this.mirror.runExclusive(async () => { await this.queryStore.recover?.(); });
+        const rebuilt = await this.ensureProjection(true);
+        if (!rebuilt) throw new Error('session index recovery projection failed');
+        this.recoveryRequired = false;
+        this.recoveryAttempts = 0;
+        this.nextPrepareRetryAt = 0;
+        this.markReady();
+        this.log.info('session index recovery completed', { generation: this.generation });
+        return this.status();
+      }
       const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
       if (manifest === undefined) {
         const projection = this.ensureProjection();
@@ -291,6 +310,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     let projected = false;
     try {
       let scanFresh = fresh;
+      let conflicts = 0;
       while (!projected) {
         const baseline = await this.mirror.runExclusive(async () => ({
           epoch: this.mirror.epoch(),
@@ -306,6 +326,9 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
           return this.projector.project(next, scan);
         });
         if (result === undefined) {
+          if (this.recoveryRequired && ++conflicts >= RECONCILE_MAX_ATTEMPTS) {
+            throw new SessionIndexReconcilePendingError('concurrent_changes', conflicts, DEGRADED_RETRY_MS);
+          }
           scanFresh = true;
           continue;
         }
@@ -314,6 +337,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
         projected = true;
       }
     } catch (error) {
+      if (this.recoveryRequired) throw error;
       const published = await this.queryStore
         .getCheckpoint(SESSION_INDEX_MANIFEST)
         .catch(() => undefined);
@@ -418,9 +442,15 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     throw new SessionIndexReconcilePendingError('concurrent_changes', RECONCILE_MAX_ATTEMPTS, delay);
   }
 
-  /** Test/ops hook: project a fresh generation now (single-flight). */
+  /** Explicitly retry an exhausted recovery or project a fresh generation (single-flight). */
   async reprojectNow(): Promise<void> {
     if (this._store.isDisposed || !this.readModelEnabled()) return;
+    if (this.recoveryRequired) {
+      this.recoveryAttempts = 0;
+      this.nextPrepareRetryAt = 0;
+      await this.prepare();
+      return;
+    }
     await this.ensureProjection();
   }
 
@@ -433,7 +463,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   private async tick(): Promise<void> {
     if (!this.readModelEnabled()) return;
     if (this.state === 'degraded') {
-      void this.prepare();
+      this.kickPrepare();
       return;
     }
     if (this.state !== 'ready') return;
@@ -461,7 +491,15 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     this.state = 'degraded';
     this.statusReason = reason;
     this.degradedCount += 1;
-    this.nextPrepareRetryAt = Date.now() + DEGRADED_RETRY_MS;
+    this.recoveryRequired = true;
+    const exhausted = this.recoveryAttempts >= RECOVERY_MAX_ATTEMPTS;
+    if (exhausted) this.statusReason = `${reason}; automatic recovery exhausted; call reprojectNow() to retry`;
+    this.nextPrepareRetryAt = exhausted ? Number.POSITIVE_INFINITY : Date.now() + DEGRADED_RETRY_MS;
+    if (!exhausted) this.recoveryTimer.cancelAndSet(() => this.kickPrepare(), DEGRADED_RETRY_MS);
+    else this.log.error('session index automatic recovery exhausted; call reprojectNow to retry', {
+      attempts: this.recoveryAttempts,
+      error: String(error),
+    });
     this.ensureReconcileTimer();
     this.emitStatusIfChanged();
     const detail =
@@ -557,6 +595,10 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     exclusive = false,
   ): Promise<T> {
     if (!this.readModelEnabled()) return legacy();
+    if (this.recoveryRequired) {
+      if (Date.now() >= this.nextPrepareRetryAt || this.recoveryAttempts === 0) this.kickPrepare();
+      throw new SessionIndexBuildingError();
+    }
     if (this.mirror.dirtyEpoch() !== undefined) {
       void this.ensureDirtyCatchUp().catch(() => false);
       throw new SessionIndexBuildingError();
@@ -603,7 +645,10 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   }
 
   private kickPrepare(): void {
-    void this.prepare().catch(() => undefined);
+    if (this.recoveryRequired && this.recoveryAttempts >= RECOVERY_MAX_ATTEMPTS) return;
+    void this.prepare().catch((error: unknown) => {
+      this.log.error('session index recovery failed', { error: String(error) });
+    });
   }
 
   private async getFromReadModel(
@@ -954,6 +999,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
           id,
           this.log,
         );
+        if (result.kind === 'error') throw result.error;
         if (result.kind === 'found') {
           authoritative = result.summary;
           break;

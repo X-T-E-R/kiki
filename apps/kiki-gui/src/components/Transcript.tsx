@@ -4948,9 +4948,9 @@ export function Transcript({
     if (resetFrame !== null && resetFrame !== undefined) cancelAnimationFrame(resetFrame);
   }, []);
 
-  if (loadError !== undefined) {
+  if (loadError !== undefined && (!loaded || timelineBlocks.length === 0)) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6">
+      <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-4 px-6">
         <div className="max-w-[360px] rounded-xl border border-danger/30 bg-danger/5 p-4 text-center">
           <p className="text-[13px] font-medium text-danger">{t('transcript.couldNotOpen')}</p>
           <p className="mt-1 font-mono text-[11px] text-danger/80">{loadError}</p>
@@ -5008,7 +5008,12 @@ export function Transcript({
     <PromptOutcomeActionsContext.Provider value={promptOutcomeActions}>
     <MessageLinkContext.Provider value={messageLink}>
     <FindRevealContext.Provider value={findReveal}>
-    <div className="relative min-h-0 flex-1" onKeyDown={handleFindKeyDown}>
+    <div className="flex min-h-0 flex-1 flex-col" onKeyDown={handleFindKeyDown}>
+      {loadError !== undefined ? <div role="alert" className="mx-4 mt-2 flex shrink-0 items-center gap-3 rounded-lg border border-danger/30 bg-paper p-3 text-[12px] text-danger shadow-sm">
+        <div className="min-w-0 flex-1"><p className="font-medium">{t('transcript.couldNotOpen')}</p><p className="break-words font-mono text-[11px]">{loadError}</p></div>
+        {onRetryLoad !== undefined ? <button type="button" className="shrink-0 rounded-lg border border-danger/30 px-3 py-1.5 font-semibold" onClick={onRetryLoad}>{t('common.retry')}</button> : null}
+      </div> : null}
+      <div className="relative min-h-0 flex-1">
       {readingRestoreFailed ? (
         <button type="button" data-reading-restore-retry onClick={reading.retryRestore}
           className="absolute left-1/2 top-2 z-10 -translate-x-1/2 rounded-full border border-hairline bg-paper px-3 py-1 text-[12px] text-ink-soft">
@@ -5200,6 +5205,7 @@ export function Transcript({
           stepRef={findStepRef}
         />
       ) : null}
+      </div>
     </div>
     </FindRevealContext.Provider>
     </MessageLinkContext.Provider>

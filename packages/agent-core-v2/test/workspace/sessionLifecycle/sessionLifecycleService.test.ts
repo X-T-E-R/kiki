@@ -520,6 +520,40 @@ describe('SessionLifecycleService unload', () => {
     }
   });
 
+  it('retries a changed checkpoint while idle and bounds persistent failures with diagnostics', async () => {
+    vi.useFakeTimers();
+    const save = vi.fn<() => Promise<boolean>>().mockResolvedValueOnce(false).mockResolvedValue(true);
+    const warn = vi.fn();
+    const debug = vi.fn();
+    const fx = fixture(undefined, accessor([[IEventDispatcher, {
+      saveReplayCheckpoint: save,
+      replayCheckpointSkipReason: () => 'state_changed',
+    }]]));
+    Object.assign(fx.service, { log: { warn, debug } });
+    const scheduling = fx.service as unknown as {
+      scheduleCheckpoint(id: string, handle: ISessionScopeHandle, delay: number): void;
+      disposeCheckpointScheduling(id: string): void;
+    };
+    try {
+      scheduling.scheduleCheckpoint('session-1', fx.handle, 1_000);
+      await vi.advanceTimersByTimeAsync(1_100);
+      expect(save).toHaveBeenCalledTimes(2);
+      expect(warn).not.toHaveBeenCalled();
+      expect(debug).toHaveBeenCalledWith('session replay checkpoint deferred', expect.objectContaining({ reasons: [{ agentId: 'main', reason: 'state_changed' }] }));
+      save.mockRejectedValue(new Error('replay checkpoint write failed: injected disk failure'));
+      scheduling.scheduleCheckpoint('session-1', fx.handle, 1_000);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(save).toHaveBeenCalledTimes(6);
+      expect(warn).toHaveBeenCalledTimes(4);
+      expect(warn).toHaveBeenLastCalledWith('session replay checkpoint failed', expect.objectContaining({ attempt: 4, retrying: false, error: 'replay checkpoint write failed: injected disk failure' }));
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(save).toHaveBeenCalledTimes(6);
+    } finally {
+      scheduling.disposeCheckpointScheduling('session-1');
+      vi.useRealTimers();
+    }
+  });
+
   it('closes all resources when an optional replay checkpoint fails', async () => {
     const durableFailure = new Error2(ErrorCodes.STORAGE_DISK_FULL, 'Example checkpoint storage is full');
     const remove = vi.fn(async () => {});

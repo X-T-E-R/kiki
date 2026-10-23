@@ -17,6 +17,7 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { PathLike } from 'node:fs';
@@ -38,6 +39,7 @@ function mockFsPromises(open: (path: string, flags?: string) => Promise<MockHand
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.doUnmock('node:fs/promises');
   vi.doUnmock('../src/snapshot.js');
   vi.resetModules();
@@ -162,6 +164,12 @@ function mockFsWithFaults(faults: {
   rename?: (src: string, dst: string) => Error | null;
   open?: (path: string, flags: string | number | undefined) => Error | null;
 }): void {
+  const renameSync = fsSync.renameSync.bind(fsSync);
+  vi.spyOn(fsSync, 'renameSync').mockImplementation((src, dst) => {
+    const err = faults.rename?.(String(src), String(dst));
+    if (err) throw err;
+    renameSync(src, dst);
+  });
   const rename = async (src: PathLike, dst: PathLike): Promise<void> => {
     const err = faults.rename?.(String(src), String(dst));
     if (err) throw err;
@@ -312,6 +320,79 @@ test('rotation: a WAL close() failure leaves the db writable and compact() retri
     assert.equal(db.get('post'), 'still-writable');
     await db.close();
   } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('Windows rotation never exposes closed readers to queued reads across repeated compactions', async () => {
+  const { MiniDb } = await import('../src/index.js');
+  const dir = await tmpDir();
+  try {
+    await asWindows(async () => {
+      const db = await MiniDb.open<string>({ dir, valueCodec: 'string', valueMode: 'disk', fsyncPolicy: 'no', compactThresholdBytes: 1 << 30, indexGenerations: false });
+      try {
+        await db.set('saved', 'history');
+        await db.compact();
+        const errors: unknown[] = [];
+        const reads: Promise<unknown>[] = [];
+        for (const method of ['closeSnapshot', 'closeWal'] as const) {
+          const close = db.valueReader![method].bind(db.valueReader);
+          vi.spyOn(db.valueReader!, method).mockImplementation(() => {
+            assert.equal(db.valueReader!.idle, true);
+            close();
+            reads.push(new Promise<void>((resolve) => {
+              queueMicrotask(() => {
+                try { assert.equal(db.get('saved'), 'history'); } catch (error) { errors.push(error); }
+                resolve();
+              });
+            }));
+          });
+        }
+        for (let visit = 0; visit < 4; visit++) {
+          await db.set(`visit-${visit}`, String(visit));
+          const pending = db.getAsync('saved');
+          await db.compact();
+          assert.equal(await pending, 'history');
+          assert.equal(db.get('saved'), 'history');
+        }
+        await Promise.all(reads);
+        assert.deepEqual(errors, []);
+      } finally {
+        await db.close();
+      }
+    });
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('close drains positioned value reads before releasing readers and the lock', async () => {
+  const { MiniDb } = await import('../src/index.js');
+  const dir = await tmpDir();
+  const db = await MiniDb.open<string>({ dir, valueCodec: 'string', valueMode: 'disk', fsyncPolicy: 'no', indexGenerations: false });
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const draining = new Promise<void>((resolve) => { entered = resolve; });
+  const reader = db.valueReader!;
+  const whenIdle = reader.whenIdle.bind(reader);
+  vi.spyOn(reader, 'whenIdle').mockImplementation(async () => { entered(); await gate; await whenIdle(); });
+  const closeReader = vi.spyOn(reader, 'close');
+  let closing: Promise<void> | undefined;
+  try {
+    await db.set('saved', 'history');
+    closing = db.close();
+    await draining;
+    expect(closeReader).not.toHaveBeenCalled();
+    expect(db.lock).not.toBeNull();
+    release();
+    await closing;
+    expect(closeReader).toHaveBeenCalledOnce();
+    expect(db.lock).toBeNull();
+  } finally {
+    release();
+    await closing;
+    await db.close();
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });

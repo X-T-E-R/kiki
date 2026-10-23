@@ -81,7 +81,7 @@ export function SpaceViewState({ children }: { readonly children: ReactNode }) {
   const confirmed = (target.data === true && (createdHere ||
     (admittedTarget.current?.queryClient === queryClient && admittedTarget.current.key === targetKey))) || hasRetainedController;
   const checking = targetId !== undefined && !hasRetainedController && (target.isPending || (target.isFetching && !confirmed));
-  const missing = !checking && targetId !== undefined && target.data === false;
+  const missing = !checking && !target.isError && !target.isFetching && targetId !== undefined && target.data === false;
   const navigate = useNavigate();
   useLayoutEffect(() => {
     admittedTarget.current = !checking && target.data === true ? { queryClient, key: targetKey } : null;
@@ -102,5 +102,14 @@ export function SpaceViewState({ children }: { readonly children: ReactNode }) {
 
   if (missing) return <Navigate to="/new" replace />;
   if (checking) return <div className="p-8 text-[12.5px] text-ink-faint">{t('sidebar.loadingSessions')}</div>;
-  return children;
+  return <>
+    {target.isError ? <div role="alert" className="m-4 flex items-center gap-3 rounded-lg border border-danger/30 bg-danger/5 p-4 text-[13px] text-danger">
+      <div className="min-w-0 flex-1">
+        <p className="font-medium">{t('transcript.couldNotOpen')}</p>
+        <p className="mt-1 break-words font-mono text-[11px]">{target.error instanceof Error ? target.error.message : String(target.error)}</p>
+      </div>
+      <button type="button" className="shrink-0 rounded-lg border border-danger/30 px-3 py-1.5 font-semibold" onClick={() => { void target.refetch(); }}>{t('common.retry')}</button>
+    </div> : null}
+    {children}
+  </>;
 }

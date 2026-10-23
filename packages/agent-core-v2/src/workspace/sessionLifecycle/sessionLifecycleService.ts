@@ -643,19 +643,37 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     }
   }
 
-  private scheduleCheckpoint(sessionId: string, handle: ISessionScopeHandle, delay: number): void {
+  private scheduleCheckpoint(sessionId: string, handle: ISessionScopeHandle, delay: number, attempt = 0): void {
     if (this.checkpointTimers.has(sessionId)) return;
     const timer = setTimeout(() => {
       this.checkpointTimers.delete(sessionId);
+      if (this.sessions.get(sessionId) !== handle) return;
+      const activity = handle.accessor.get(ISessionActivityView).state();
+      if (activity.busy || activity.pendingInteraction !== 'none') return;
+      const retry = () => {
+        if (attempt < 3) this.scheduleCheckpoint(sessionId, handle, [100, 500, 2_000][attempt]!, attempt + 1);
+      };
       void this.saveReplayCheckpoints(sessionId, handle).then((saved) => {
         if (saved || this.sessions.get(sessionId) !== handle) return;
-        this.log.warn('session replay checkpoint was not saved', { sessionId });
+        const reasons = handle.accessor.get(IAgentLifecycleService).list().map((agent) => ({
+          agentId: agent.id,
+          reason: agent.accessor.get(IEventDispatcher).replayCheckpointSkipReason?.(),
+        }));
+        if (attempt < 3) {
+          this.log.debug('session replay checkpoint deferred', { sessionId, attempt, reasons });
+          retry();
+        } else {
+          this.log.warn('session replay checkpoint recovery exhausted', { sessionId, attempts: attempt + 1, reasons });
+        }
       }, (error: unknown) => {
         if (this.sessions.get(sessionId) !== handle) return;
         this.log.warn('session replay checkpoint failed', {
           sessionId,
+          attempt: attempt + 1,
+          retrying: attempt < 3,
           error: error instanceof Error ? error.message : String(error),
         });
+        retry();
       });
     }, delay);
     timer.unref?.();
@@ -683,7 +701,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     let saved = true;
     for (const agent of handle.accessor.get(IAgentLifecycleService).list()) {
       const dispatcher = agent.accessor.get(IEventDispatcher);
-      if (dispatcher.saveReplayCheckpoint === undefined || !(await dispatcher.saveReplayCheckpoint())) {
+      if (dispatcher.saveReplayCheckpoint !== undefined && !(await dispatcher.saveReplayCheckpoint())) {
         saved = false;
       }
     }

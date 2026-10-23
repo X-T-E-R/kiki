@@ -19,7 +19,10 @@ export interface IEventDispatcher {
   checkpointDepth(key: ReplayableStateKey<any>): number;
   undo<S>(key: ReplayableStateKey<S>, patchId: number): void;
   restore(): Promise<void>;
+  /** Save an optional derived checkpoint. False means skipped; persistence/encoding failures reject with their phase and cause. */
   saveReplayCheckpoint?(): Promise<boolean>;
+  /** Reason for the last skipped save, cleared when a new save starts. */
+  replayCheckpointSkipReason?(): string | undefined;
   flush(): Promise<void>;
 }
 
