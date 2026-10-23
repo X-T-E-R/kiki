@@ -104,6 +104,52 @@ describe('im session bridge', () => {
     expect(adapter.sent.some((item) => item.text.includes('go look'))).toBe(false);
   });
 
+  it('routes Telegram topics to separate sessions and pauses only the selected binding', async () => {
+    const adapter = new FakeImAdapter('telegram', '42');
+    const routed: { sessionId: string; promptId: string }[] = [];
+    const harness = bridgeFor(adapter, ports({
+      submit: async ({ sessionId, promptId }) => {
+        routed.push({ sessionId, promptId });
+        return { duplicate: false, promptId, turnId: 3, deliveryState: 'pending' };
+      },
+    }));
+    const first = { ...identity, topicId: '101' };
+    const second = { ...identity, topicId: '202' };
+    try {
+      await harness.bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
+      await harness.bridge.setListening('inst', true);
+      await adapter.emit({ eventId: '1', cursor: 1, identity: first, kind: 'text', text: 'first topic' });
+      await adapter.emit({ eventId: '2', cursor: 2, identity: second, kind: 'text', text: 'second topic' });
+      const discovered = await harness.bridge.snapshot();
+      expect(discovered.discoveries).toHaveLength(2);
+      await harness.bridge.confirm(discovered.discoveries.find((item) => item.identity.topic_id === '101')!.id, { target: { kind: 'session', session_id: 'sess' } });
+      await harness.bridge.confirm(discovered.discoveries.find((item) => item.identity.topic_id === '202')!.id, { target: { kind: 'session', session_id: 'home' } });
+      const bound = await harness.bridge.snapshot();
+      expect(bound.bindings).toHaveLength(2);
+      expect(bound.bindings).toEqual(expect.arrayContaining([
+        expect.objectContaining({ session_id: 'sess', identity: expect.objectContaining({ chat_id: 'c1', sender_id: 'u1', topic_id: '101' }) }),
+        expect.objectContaining({ session_id: 'home', identity: expect.objectContaining({ chat_id: 'c1', sender_id: 'u1', topic_id: '202' }) }),
+      ]));
+      await adapter.emit({ eventId: '3', cursor: 3, identity: first, kind: 'text', text: 'route first' });
+      await adapter.emit({ eventId: '4', cursor: 4, identity: second, kind: 'text', text: 'route second' });
+      expect(routed).toEqual([{ sessionId: 'sess', promptId: 'im:inst:3' }, { sessionId: 'home', promptId: 'im:inst:4' }]);
+      const paused = bound.bindings.find((item) => item.identity.topic_id === '101')!;
+      await harness.bridge.updateBinding(paused.id, { sessionEnabled: false });
+      await adapter.emit({ eventId: '5', cursor: 5, identity: first, kind: 'text', text: 'paused topic' });
+      await adapter.emit({ eventId: '6', cursor: 6, identity: second, kind: 'text', text: 'still active' });
+      expect(routed).toEqual([
+        { sessionId: 'sess', promptId: 'im:inst:3' },
+        { sessionId: 'home', promptId: 'im:inst:4' },
+        { sessionId: 'home', promptId: 'im:inst:6' },
+      ]);
+      const after = await harness.bridge.snapshot();
+      expect(after.instances[0]?.listening).toBe(true);
+      expect(after.bindings.find((item) => item.identity.topic_id === '202')).toEqual(bound.bindings.find((item) => item.identity.topic_id === '202'));
+    } finally {
+      await harness.bridge.close();
+    }
+  });
+
   it('keeps a stranger and a disabled binding off the model', async () => {
     const adapter = new FakeImAdapter('telegram', '42');
     const harness = bridgeFor(adapter);
