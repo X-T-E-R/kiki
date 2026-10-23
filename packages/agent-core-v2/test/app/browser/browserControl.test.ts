@@ -425,6 +425,7 @@ describe('browser connection execution ownership', () => {
       if (String(url).endsWith('/status')) return new Response(JSON.stringify({ running: true, extension_connected: true, version: 'v2.0.23' }), { status: 200 });
       const action = body === undefined ? '' : (JSON.parse(body) as { action?: string }).action;
       if (action === 'list_tabs') return new Response(JSON.stringify({ ok: true, data: { success: true, tabs: [{ tabId: 7, url: 'https://example.test/page', title: 'Example', active: true }] } }), { status: 200 });
+      if (action === 'find_tab') return new Response(JSON.stringify({ ok: true, data: { success: true, url: 'https://example.test/page', tabId: 7 } }), { status: 200 });
       if (action === 'snapshot') return new Response(JSON.stringify({ ok: true, data: { success: true, url: 'https://example.test/page', title: 'Example', tree: '@e1 button Example' } }), { status: 200 });
       if (action === 'click') return new Response(JSON.stringify({ ok: true, data: { success: true, tag: 'button', text: 'Example' } }), { status: 200 });
       return new Response(JSON.stringify({ ok: false, error: 'unexpected' }), { status: 200 });

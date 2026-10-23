@@ -92,11 +92,12 @@ describe('native Kimi WebBridge chain', () => {
       const rejected = await bridge.service.tabs({ action: 'select', browser: 'kimi-webbridge', target: first! });
       expect(rejected.isError).toBe(true);
       expect(textOf(rejected)).toContain('more than once');
-      expect(seen.filter((call) => call.action === 'find_tab')).toHaveLength(1);
+      expect(seen.filter((call) => call.action === 'find_tab')).toHaveLength(4);
       expect(third).toBeDefined();
       const closed = await bridge.service.tabs({ action: 'close', browser: 'kimi-webbridge', target: third! });
-      expect(closed.isError).not.toBe(true);
-      expect(seen.at(-1)?.action).toBe('close_tab');
+      expect(closed.isError).toBe(true);
+      expect(textOf(closed)).toContain('more than once');
+      expect(seen.some((call) => call.action === 'close_tab')).toBe(false);
       expect(bridge.factory.open).not.toHaveBeenCalled();
     } finally { vi.unstubAllGlobals(); await bridge.ix.dispose(); }
   });
@@ -116,11 +117,11 @@ describe('native Kimi WebBridge chain', () => {
       const status = JSON.parse(textOf(await bridge.service.connections({ action: 'status', browser: 'kimi-webbridge' })));
       expect(status).toMatchObject({ state: 'unconfirmed', failure: { reason: 'outcome_unknown' } });
       expect((await execute(registry.resolve('browser__agent_browser_snapshot')!.resolveExecution({}))).isError).toBe(true);
-      expect(seen.slice(before).map((call) => call.action)).toEqual(['list_tabs', 'click']);
+      expect(seen.slice(before).map((call) => call.action)).toEqual(['list_tabs', 'find_tab', 'click']);
       const checked = JSON.parse(textOf(await bridge.service.connections({ action: 'check', browser: 'kimi-webbridge' })));
       expect(checked).toMatchObject({ state: 'idle', failure: { reason: 'outcome_unknown' } });
       expect(String(checked.error)).toContain('not replayed');
-      expect(seen.slice(before).map((call) => call.action)).toEqual(['list_tabs', 'click']);
+      expect(seen.slice(before).map((call) => call.action)).toEqual(['list_tabs', 'find_tab', 'click']);
       expect(bridge.factory.open).not.toHaveBeenCalled();
     } finally { vi.unstubAllGlobals(); await bridge.ix.dispose(); }
   });
@@ -165,7 +166,47 @@ describe('native Kimi WebBridge chain', () => {
       const status = JSON.parse(textOf(await bridge.service.connections({ action: 'status', browser: 'kimi-webbridge' })));
       expect(status).toMatchObject({ state: 'unconfirmed', failure: { reason: 'outcome_unknown' } });
       expect((await execute(registry.resolve('browser__agent_browser_click')!.resolveExecution({ selector: '@e1' }))).isError).toBe(true);
-      expect(seen.slice(before).map((call) => call.action)).toEqual(['list_tabs', 'click']);
+      expect(seen.slice(before).map((call) => call.action)).toEqual(['list_tabs', 'find_tab', 'click']);
+      expect(bridge.factory.open).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); await bridge.ix.dispose(); }
+  });
+
+  it('does not operate or close the tab marked active when command current is another tab', async () => {
+    const seen: { action?: string; args?: Record<string, unknown>; session?: string }[] = [];
+    const fault: ChainFault = {};
+    const bridge = await harness(seen, fault);
+    try {
+      await bridge.service.connections({ action: 'connect', browser: 'kimi-webbridge' });
+      const opened = await bridge.service.tabs({ action: 'open', browser: 'kimi-webbridge', url: 'https://example.test/a' });
+      const first = /"targetId":"(\d+)"/.exec(textOf(opened))?.[1];
+      await bridge.service.tabs({ action: 'open', browser: 'kimi-webbridge', url: 'https://example.test/b' });
+      fault.reportActiveTabId = Number(first);
+      await bridge.service.connections({ action: 'tools', browser: 'kimi-webbridge', tools: ['agent_browser_snapshot', 'agent_browser_click', 'agent_browser_fill'] });
+      const registry = bridge.ix.get(IAgentToolRegistryService);
+      const selected = await bridge.service.tabs({ action: 'select', browser: 'kimi-webbridge', target: first! });
+      expect(selected.isError).not.toBe(true);
+      const shot = await execute(registry.resolve('browser__agent_browser_snapshot')!.resolveExecution({}));
+      const clicked = await execute(registry.resolve('browser__agent_browser_click')!.resolveExecution({ selector: '@e1' }));
+      const filled = await execute(registry.resolve('browser__agent_browser_fill')!.resolveExecution({ selector: '#field', value: 'local' }));
+      expect(shot.isError).not.toBe(true);
+      expect(clicked.isError).not.toBe(true);
+      expect(filled.isError).not.toBe(true);
+      expect(bridge.effects.filter((effect) => effect.action === 'snapshot' || effect.action === 'click' || effect.action === 'fill').map((effect) => effect.tabId)).toEqual([1, 1, 1]);
+      const closed = await bridge.service.tabs({ action: 'close', browser: 'kimi-webbridge', target: first! });
+      expect(closed.isError).not.toBe(true);
+      expect(bridge.effects.filter((effect) => effect.action === 'close_tab').map((effect) => effect.tabId)).toEqual([1]);
+      const remaining = JSON.parse(textOf(await bridge.service.tabs({ action: 'list', browser: 'kimi-webbridge' }))).tabs as { targetId: string }[];
+      expect(remaining.map((tab) => tab.targetId)).toEqual(['2']);
+      const duplicated = await bridge.service.tabs({ action: 'open', browser: 'kimi-webbridge', url: 'https://example.test/dup' });
+      const again = await bridge.service.tabs({ action: 'open', browser: 'kimi-webbridge', url: 'https://example.test/dup' });
+      const dup = /"targetId":"(\d+)"/.exec(textOf(duplicated))?.[1];
+      fault.reportActiveTabId = Number(dup);
+      const before = seen.length;
+      const rejected = await bridge.service.tabs({ action: 'close', browser: 'kimi-webbridge', target: dup! });
+      expect(rejected.isError).toBe(true);
+      expect(textOf(rejected)).toContain('more than once');
+      expect(seen.slice(before).some((call) => call.action === 'close_tab' || call.action === 'find_tab')).toBe(false);
+      expect(/"targetId":"(\d+)"/.exec(textOf(again))?.[1]).toBeDefined();
       expect(bridge.factory.open).not.toHaveBeenCalled();
     } finally { vi.unstubAllGlobals(); await bridge.ix.dispose(); }
   });
@@ -184,16 +225,17 @@ describe('native Kimi WebBridge chain', () => {
       const status = JSON.parse(textOf(await bridge.service.connections({ action: 'status', browser: 'kimi-webbridge' })));
       expect(status).toMatchObject({ state: 'unconfirmed', failure: { reason: 'outcome_unknown' } });
       expect((await execute(registry.resolve('browser__agent_browser_fill')!.resolveExecution({ selector: '#field', value: 'local' }))).isError).toBe(true);
-      expect(seen.slice(before).map((call) => call.action)).toEqual(['list_tabs', 'fill']);
+      expect(seen.slice(before).map((call) => call.action)).toEqual(['list_tabs', 'find_tab', 'fill']);
       expect(bridge.factory.open).not.toHaveBeenCalled();
     } finally { vi.unstubAllGlobals(); await bridge.ix.dispose(); }
   });
 });
 
-interface ChainFault { failAction?: string; rejectAction?: string; abortAction?: string; truncateAction?: string; abort?: () => void }
+interface ChainFault { failAction?: string; rejectAction?: string; abortAction?: string; truncateAction?: string; abort?: () => void; reportActiveTabId?: number }
 
 async function harness(seen: { action?: string; args?: Record<string, unknown>; session?: string }[], fault?: ChainFault) {
   const planned: ChainFault = fault ?? {};
+  const effects: { action: string; tabId?: number }[] = [];
   const tabs: { tabId: number; url: string; title: string; active: boolean; groupTitle?: string }[] = [];
   let next = 0;
   let current: number | undefined;
@@ -222,7 +264,10 @@ async function harness(seen: { action?: string; args?: Record<string, unknown>; 
       current = next;
       return new Response(JSON.stringify({ ok: true, data: { success: true, url: body.args['url'], tabId: next } }), { status: 200 });
     }
-    if (body.action === 'list_tabs') return new Response(JSON.stringify({ ok: true, data: { success: true, tabs } }), { status: 200 });
+    if (body.action === 'list_tabs') {
+      const rows = planned.reportActiveTabId === undefined ? tabs : tabs.map((tab) => ({ ...tab, active: tab.tabId === planned.reportActiveTabId }));
+      return new Response(JSON.stringify({ ok: true, data: { success: true, tabs: rows } }), { status: 200 });
+    }
     if (body.action === 'find_tab' && typeof body.args?.['url'] === 'string') {
       const matches = tabs.filter((tab) => tab.url === body.args?.['url']);
       const match = matches.length === 1 ? matches[0] : undefined;
@@ -231,6 +276,7 @@ async function harness(seen: { action?: string; args?: Record<string, unknown>; 
       current = match.tabId;
       return new Response(JSON.stringify({ ok: true, data: { success: true, url: match.url, tabId: match.tabId } }), { status: 200 });
     }
+    if (body.action === 'snapshot' || body.action === 'click' || body.action === 'fill' || body.action === 'close_tab') effects.push({ action: body.action, tabId: current });
     if (body.action === 'snapshot') return new Response(JSON.stringify({ ok: true, data: { success: true, tree: '@e1 button Example' } }), { status: 200 });
     if (body.action === 'click' || body.action === 'fill') return new Response(JSON.stringify({ ok: true, data: { success: true } }), { status: 200 });
     if (body.action === 'close_tab') {
@@ -267,5 +313,5 @@ async function harness(seen: { action?: string; args?: Record<string, unknown>; 
   ix.set(IAgentToolRegistryService, new SyncDescriptor(AgentToolRegistryService));
   ix.set(IEventBus, new SyncDescriptor(EventBusService));
   ix.set(IAgentBrowserService, new SyncDescriptor(AgentBrowserService));
-  return { ix, service: ix.get(IAgentBrowserService), factory };
+  return { ix, service: ix.get(IAgentBrowserService), factory, effects };
 }

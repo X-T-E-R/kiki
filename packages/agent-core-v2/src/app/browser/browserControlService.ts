@@ -644,8 +644,6 @@ export class BrowserControlService implements IBrowserControlService {
     const listed = await postWebbridgeCommand('list_tabs', {}, session, fetch, signal);
     const tabs = webbridgeTabs(listed).map((tab) => ({ tabId: tab.tabId, targetId: tab.tabId, title: tab.title, url: tab.url, active: tab.active, label: tab.groupTitle }));
     this.rememberWebbridgeTabs(live, session, tabs);
-    const active = tabs.filter((tab) => tab.active === true);
-    if (active.length === 1 && active[0]!.targetId === target) return;
     const known = tabs.find((tab) => tab.targetId === target);
     if (known === undefined) throw new BrowserError('browser.target', 'Use a current WebBridge tab id');
     if (known.url === undefined) throw new BrowserError('browser.target', 'WebBridge can only select a tab by its exact URL, and this tab has no URL');
