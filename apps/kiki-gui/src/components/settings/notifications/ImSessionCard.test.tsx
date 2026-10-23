@@ -3,643 +3,429 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-
-import type { ImBindingPatch, ImCatalog, ImSessionSnapshot } from '@kiki/protocol';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ImProviderKind, ImSessionSnapshot } from '@kiki/protocol';
 
 import { I18nProvider } from '../../../i18n';
+import { createImSettingsFixture, imChannelSnapshot, imSettingsSnapshot } from '../../../../fixtures/im-channels.fixture';
 import { ImSessionCard } from './ImSessionCard';
 
-const empty: ImSessionSnapshot = { policy: { allowed: true, default_enabled: true }, instances: [], discoveries: [], bindings: [], strangers: [], voice_fallbacks: 0 };
-const found: ImSessionSnapshot = {
-  ...empty,
-  instances: [{ id: 'inst', provider_kind: 'telegram' as const, listening: true, configured: true, account_id: '7', adapter: 'running' as const }],
-  discoveries: [{ id: 'd1', provider_instance_id: 'inst', provider_kind: 'telegram' as const, account_id: '7', identity: { chat_id: 'c', sender_id: 'u', topic_id: '0', sender_name: 'Ada' }, preview: 'hello', at: '2026-10-21T00:00:00.000Z' }],
-};
-const bound: ImSessionSnapshot = {
-  ...found,
-  discoveries: [],
-  bindings: [{ id: 'b1', provider_instance_id: 'inst', provider_kind: 'telegram' as const, account_id: '7', identity: found.discoveries[0]!.identity, session_id: 'home', persona_id: 'ada', enabled: true, busy: 'queue' as const, reply: 'final' as const, mobile_interactions: true }],
-};
+let fixture = createImSettingsFixture();
+vi.mock('../../../state/connection', () => ({ useConnection: () => ({ scopeId: 'fixture', client: fixture.client }) }));
 
-const imSessions = {
-  snapshot: vi.fn(async () => empty),
-  catalog: vi.fn(async (): Promise<ImCatalog> => ({ personas: [{ id: 'ada', name: 'Ada' }], sessions: [{ id: 'sess', title: 'Notes' }] })),
-  setPolicy: vi.fn(async (policy: typeof empty.policy) => ({ ...empty, policy })),
-  paste: vi.fn(async (): Promise<import('@kiki/protocol').ImPasteResult> => ({ provider_instance_id: 'inst', provider_kind: 'telegram', ignored_keys: ['extra'], chat_hint_ignored: true })),
-  check: vi.fn(async (): Promise<import('@kiki/protocol').ImCheckResult> => ({ ok: true, account_id: '7' })),
-  listen: vi.fn(async () => found),
-  confirm: vi.fn(async () => bound),
-  dismiss: vi.fn(),
-  updateBinding: vi.fn(async (_id: string, _patch: ImBindingPatch): Promise<ImSessionSnapshot> => bound),
-  removeBinding: vi.fn(async () => empty),
-  startWechatQr: vi.fn(async () => ({ login_id: 'login1', image: 'https://cdn.example/qr.png' })),
-  pollWechatQr: vi.fn(async (): Promise<{ status: string; provider_instance_id?: string }> => ({ status: 'wait' })),
-  cancelWechatQr: vi.fn(async () => ({})),
-};
-
-vi.mock('../../../state/connection', () => ({
-  useConnection: () => ({ scopeId: 'fixture', client: { imSessions } }),
-}));
-
+const empty: ImSessionSnapshot = { policy: { allowed: true, default_enabled: true }, instances: [], bindings: [], discoveries: [], strangers: [], voice_fallbacks: 0 };
 const roots: Root[] = [];
 const containers: HTMLDivElement[] = [];
+const clients: QueryClient[] = [];
 
-beforeAll(() => {
-  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+beforeAll(() => { (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true; });
+beforeEach(() => {
+  fixture = createImSettingsFixture(imChannelSnapshot());
+  localStorage.setItem('kiki.locale', 'en');
+  window.history.replaceState({}, '', '/');
 });
 afterEach(async () => {
   await act(async () => { for (const root of roots.splice(0)) root.unmount(); });
   for (const container of containers.splice(0)) container.remove();
-  imSessions.snapshot.mockResolvedValue(empty);
+  for (const client of clients.splice(0)) client.clear();
+  vi.restoreAllMocks();
 });
 
-async function render(width: string): Promise<HTMLDivElement> {
+async function settle() { await new Promise((resolve) => setTimeout(resolve, 20)); }
+async function render(width = '1100px') {
   const container = document.createElement('div');
-  container.dataset['imFixture'] = 'client';
   container.style.width = width;
   document.body.append(container);
   containers.push(container);
   const root = createRoot(container);
   roots.push(root);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  await act(async () => {
-    root.render(<QueryClientProvider client={client}><I18nProvider><ImSessionCard /></I18nProvider></QueryClientProvider>);
-  });
-  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  clients.push(client);
+  await act(async () => { root.render(<QueryClientProvider client={client}><I18nProvider><ImSessionCard /></I18nProvider></QueryClientProvider>); });
+  await act(settle);
+  await act(settle);
   return container;
 }
-
-async function click(container: HTMLDivElement, selector: string): Promise<void> {
+async function click(container: ParentNode, selector: string) {
+  const button = container.querySelector<HTMLButtonElement>(selector);
+  expect(button, selector).not.toBeNull();
+  await act(async () => { button!.click(); await settle(); });
+}
+async function input(container: ParentNode, selector: string, value: string) {
+  const field = container.querySelector<HTMLInputElement | HTMLTextAreaElement>(selector)!;
   await act(async () => {
-    container.querySelector<HTMLButtonElement>(selector)!.click();
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    Object.getOwnPropertyDescriptor(field instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value')!.set!.call(field, value);
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
   });
 }
+async function choose(container: ParentNode, selector: string, value: string) {
+  await click(container, selector);
+  await click(document.body, `[data-option-value="${value}"]`);
+}
+function binding(container: ParentNode, id: string) { return container.querySelector<HTMLElement>(`[data-im-binding="${id}"]`)!; }
 
-describe('ImSessionCard', () => {
-  it('mounts the phone session controls at a narrow and a wide width', async () => {
-    imSessions.snapshot.mockResolvedValue(found);
-    for (const width of ['360px', '1100px']) {
-      const container = await render(width);
-      expect(container.style.width).toBe(width);
-      expect(container.dataset['imFixture']).toBe('client');
-      expect(container.querySelector('[data-im-session]')).not.toBeNull();
-      expect(container.textContent).toContain('Phone session');
-      expect(container.textContent).toContain('Paste a setup and check it, then bind the phone message to a session.');
-      expect(container.textContent).toContain('Enable new bindings');
-      expect(container.textContent).toContain('Phone actions');
-      expect(container.textContent).toContain('Full text');
-      expect(container.textContent).toContain('Live text');
-      expect(container.textContent).not.toContain('QQ cannot take a file.');
-      expect(container.textContent).not.toContain('WeChat sends the full text');
-      expect(container.textContent).toContain('Queue');
-      expect(container.querySelector('[data-im-actions]')).not.toBeNull();
-      expect(container.textContent).not.toMatch(/reply|Receive/i);
-      await act(async () => { roots[0]?.unmount(); });
-      roots.splice(0);
-      container.remove();
-      containers.splice(0);
+const platforms: ImProviderKind[] = ['wechat_bridge', 'feishu_app', 'onebot_v11', 'telegram'];
+
+describe('ImSessionCard channel management', () => {
+  it.each(platforms)('groups two %s channels under one account and edits only the chosen target, options and off override', async (kind) => {
+    fixture = createImSettingsFixture(imChannelSnapshot(kind));
+    const container = await render();
+    const before = fixture.read().bindings[0]!;
+    const contact = binding(container, 'binding-contact');
+    const group = binding(container, 'binding-group');
+    expect(container.querySelectorAll('[data-im-account]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-im-binding]')).toHaveLength(2);
+    expect(contact.textContent).toContain('Lin');
+    expect(group.textContent).toContain(kind === 'wechat_bridge' ? 'Mei' : 'Release team · Mei');
+    expect(group.textContent).toContain(kind === 'wechat_bridge' ? 'contact-mei' : 'release-group');
+    expect(group.querySelector('[data-im-session-switch]')?.getAttribute('aria-checked')).toBe('false');
+    expect(group.querySelector('[data-im-binding-target="session:release-notes"]')).not.toBeNull();
+    await choose(group, '#im-binding-target-binding-group', 'persona:mei');
+    expect(fixture.calls.at(-1)).toEqual({ operation: 'updateBinding', id: 'binding-group', body: { target: { kind: 'persona', persona_id: 'mei' } } });
+    expect(fixture.read().bindings[1]?.session_enabled).toBe(false);
+    await click(group, '[data-im-binding-options-toggle]');
+    await click(group, '[data-im-binding-busy="queue"]');
+    await click(group, '[data-im-binding-actions="on"]');
+    expect(fixture.read().bindings[1]).toMatchObject({ persona_id: 'mei', busy: 'queue', mobile_interactions: true, session_enabled: false });
+    expect(fixture.read().bindings[0]).toEqual(before);
+    await click(group, '[data-im-session-switch]');
+    expect(fixture.read().bindings[1]?.session_enabled).toBe(true);
+    await click(group, '[data-im-binding-policy="default"]');
+    expect(fixture.read().bindings[1]?.session_enabled).toBeUndefined();
+    expect(fixture.read().bindings[0]).toEqual(before);
+  });
+
+  it('opens add-channel discovery without an account-wide target and confirms independent drafts across accounts', async () => {
+    fixture = createImSettingsFixture(imSettingsSnapshot());
+    const container = await render('360px');
+    const original = fixture.read().bindings;
+    await click(container, '[data-im-start-bind="account-a"]');
+    expect(container.querySelector('[data-im-bind-flow="account-a"]')?.textContent).toContain('direct message from each contact');
+    expect(container.querySelector('[data-im-bind-flow="account-a"] [data-im-target]')).toBeNull();
+    fixture.discover('account-a', 'wx-new');
+    fixture.discover('account-tg', 'tg-new');
+    await click(container, '[data-im-bind-flow="account-a"] [data-im-refresh-discovery]');
+    const wx = container.querySelector<HTMLElement>('[data-im-discovery="wx-new"]')!;
+    const tg = container.querySelector<HTMLElement>('[data-im-discovery="tg-new"]')!;
+    await click(wx, '[data-im-target-kind="session"]');
+    await choose(wx, '#im-target-wx-new', 'session:reading-list');
+    await click(tg, '[data-im-also-home]');
+    expect(wx.querySelector('[data-im-target="session:reading-list"]')).not.toBeNull();
+    expect(tg.querySelector('[data-im-target="persona:lin"]')).not.toBeNull();
+    await click(wx, '[data-im-confirm]');
+    await click(tg, '[data-im-confirm]');
+    expect(fixture.calls.filter((item) => item.operation === 'confirm')).toEqual([
+      { operation: 'confirm', id: 'wx-new', body: { target: { kind: 'session', session_id: 'reading-list' }, busy: 'queue', reply: 'final', mobile_interactions: true, also_home: false } },
+      { operation: 'confirm', id: 'tg-new', body: { target: { kind: 'persona', persona_id: 'lin' }, busy: 'queue', reply: 'final', mobile_interactions: true, also_home: true } },
+    ]);
+    expect(fixture.read().bindings.slice(0, original.length)).toEqual(original);
+    expect(container.querySelectorAll('[data-im-account="account-a"] [data-im-binding]')).toHaveLength(3);
+    expect(container.querySelectorAll('[data-im-account="account-tg"] [data-im-binding]')).toHaveLength(2);
+  });
+
+  it('keeps an explicit off when re-confirming a paused channel; only explicit enable and on restore it', async () => {
+    const state = imChannelSnapshot();
+    state.bindings[1] = { ...state.bindings[1]!, enabled: false, session_enabled: false };
+    state.discoveries = [{ ...state.bindings[1]!, id: 'rediscovered', preview: 'hello again', at: '2026-10-23T00:00:00.000Z' }];
+    fixture = createImSettingsFixture(state);
+    const container = await render();
+    const untouched = fixture.read().bindings[0];
+    await click(container, '[data-im-confirm="rediscovered"]');
+    const group = binding(container, 'binding-group');
+    expect(fixture.read().bindings[1]).toMatchObject({ enabled: false, session_enabled: false });
+    expect(group.querySelector('[data-im-session-switch]')?.getAttribute('aria-checked')).toBe('false');
+    await click(group, '[data-im-binding-options-toggle]');
+    await click(group, '[data-im-enabled]');
+    expect(fixture.read().bindings[1]).toMatchObject({ enabled: true, session_enabled: false });
+    await click(group, '[data-im-session-switch]');
+    expect(fixture.read().bindings[1]).toMatchObject({ enabled: true, session_enabled: true });
+    expect(fixture.read().bindings[0]).toEqual(untouched);
+  });
+
+  it('keeps the global master authoritative and preserves explicit off through default changes', async () => {
+    const container = await render();
+    await click(container, '#im-default');
+    expect(fixture.read().policy.default_enabled).toBe(false);
+    expect(fixture.read().bindings[1]?.session_enabled).toBe(false);
+    await click(container, '#im-allowed');
+    const contact = binding(container, 'binding-contact');
+    expect(contact.querySelector<HTMLButtonElement>('[data-im-session-switch]')?.disabled).toBe(true);
+    expect(contact.querySelector('[data-im-session-switch]')?.getAttribute('aria-checked')).toBe('false');
+    expect(contact.textContent).toContain('Two-way messaging is off.');
+    expect(fixture.read().bindings[0]?.session_enabled).toBe(true);
+  });
+
+  it('distinguishes topic identity, session identity and persona identity without guessing from a daily session', async () => {
+    const state = imSettingsSnapshot();
+    state.bindings[0] = { ...state.bindings[0]!, persona_id: undefined };
+    fixture = createImSettingsFixture(state);
+    const container = await render();
+    expect(binding(container, 'binding-topic').textContent).toContain('Research group · Lin · Paper reviews');
+    expect(binding(container, 'binding-topic').textContent).toContain('42');
+    expect(binding(container, 'binding-contact').querySelector('[data-im-binding-target="session:lin-daily"]')).not.toBeNull();
+    await choose(binding(container, 'binding-contact'), '#im-binding-target-binding-contact', 'persona:lin');
+    expect(fixture.read().bindings[0]?.persona_id).toBe('lin');
+  });
+
+  it('preserves deep-linked target IDs including colons and offers discovered-channel search', async () => {
+    window.history.replaceState({}, '', '/?target=session:session:with:colons');
+    fixture.discover();
+    const container = await render();
+    const row = container.querySelector<HTMLElement>('[data-im-discovery]')!;
+    await click(row, '[data-im-confirm]');
+    expect(fixture.calls.find((item) => item.operation === 'confirm')?.body).toMatchObject({ target: { kind: 'session', session_id: 'session:with:colons' } });
+  });
+
+  it.each([
+    ['en', 'group', '0'], ['zh', 'group', '0'], ['en', 'private', '42'], ['zh', 'private', '42'],
+  ] as const)('blocks unsupported WeChat discovery in %s for %s chat with topic %s without losing it', async (locale, chat_kind, topic_id) => {
+    localStorage.setItem('kiki.locale', locale);
+    fixture.discover();
+    const state = fixture.read();
+    state.discoveries[0]!.identity = { ...state.discoveries[0]!.identity, chat_kind, topic_id };
+    fixture.replace(state);
+    const container = await render();
+    const row = container.querySelector<HTMLElement>('[data-im-discovery]')!;
+    expect(row.querySelector('[data-im-unsupported]')?.textContent).toBe(locale === 'en'
+      ? 'This WeChat connection supports direct messages only. Group chats are not supported.'
+      : '此微信连接只支持私聊，群聊暂不支持。');
+    expect(row.querySelector<HTMLButtonElement>('[data-im-confirm]')?.disabled).toBe(true);
+    expect(row.querySelector('[data-im-target]')).toBeNull();
+    await click(row, '[data-im-confirm]');
+    expect(fixture.calls.some((item) => item.operation === 'confirm')).toBe(false);
+    expect(fixture.read().discoveries).toHaveLength(1);
+    expect(fixture.read().bindings).toEqual(state.bindings);
+  });
+
+  it.each(['telegram', 'feishu_app', 'onebot_v11'] as const)('keeps %s group topics confirmable without a reply-context prerequisite', async (kind) => {
+    fixture = createImSettingsFixture(imChannelSnapshot(kind));
+    fixture.discover();
+    const state = fixture.read();
+    state.discoveries[0]!.identity.topic_id = '42';
+    fixture.replace(state);
+    const container = await render();
+    const row = container.querySelector<HTMLElement>('[data-im-discovery]')!;
+    expect(row.querySelector('[data-im-unsupported]')).toBeNull();
+    await click(row, '[data-im-confirm]');
+    expect(fixture.read().bindings.at(-1)?.identity.topic_id).toBe('42');
+  });
+
+  it('keeps legacy identities readable without guessing from titles and translates a backend group rejection locally', async () => {
+    fixture.discover();
+    const state = fixture.read();
+    state.discoveries[0]!.identity = { ...state.discoveries[0]!.identity, chat_kind: undefined, chat_title: 'Design group' };
+    fixture.replace(state);
+    vi.spyOn(fixture.client.imSessions, 'confirm').mockRejectedValueOnce(new Error('unsupported_wechat_group'));
+    const container = await render();
+    const row = container.querySelector<HTMLElement>('[data-im-discovery]')!;
+    expect(row.querySelector('[data-im-unsupported]')).toBeNull();
+    await click(row, '[data-im-confirm]');
+    expect(row.textContent).toContain('This WeChat connection supports direct messages only. Group chats are not supported.');
+    expect(row.textContent).not.toContain('unsupported_wechat_group');
+    expect(fixture.read().discoveries).toHaveLength(1);
+    expect(fixture.read().bindings).toEqual(state.bindings);
+  });
+
+  it('removes only the named channel after confirmation', async () => {
+    const container = await render();
+    const group = binding(container, 'binding-group');
+    await click(group, '[data-im-binding-options-toggle]');
+    await click(group, '[data-im-remove]');
+    expect(fixture.calls.some((item) => item.operation === 'removeBinding')).toBe(false);
+    expect(group.textContent).toContain('Remove Mei?');
+    await click(group, '[data-im-remove-confirm]');
+    expect(container.querySelector('[data-im-binding="binding-group"]')).toBeNull();
+    expect(container.querySelector('[data-im-binding="binding-contact"]')).not.toBeNull();
+  });
+
+  it('shows mutation failure beside the affected channel and permits recovery', async () => {
+    const update = vi.spyOn(fixture.client.imSessions, 'updateBinding').mockRejectedValueOnce(new Error('Could not save. Try again.'));
+    const container = await render();
+    const group = binding(container, 'binding-group');
+    await click(group, '[data-im-session-switch]');
+    expect(group.textContent).toContain('Could not save. Try again.');
+    expect(binding(container, 'binding-contact').textContent).not.toContain('Could not save.');
+    await click(group, '[data-im-session-switch]');
+    expect(update).toHaveBeenCalledTimes(2);
+    expect(group.querySelector('[data-im-session-switch]')?.getAttribute('aria-checked')).toBe('true');
+    expect(group.textContent).not.toContain('Could not save.');
+  });
+
+  it('retries a failed snapshot and catalog without offering a false binding action', async () => {
+    fixture.discover();
+    vi.spyOn(fixture.client.imSessions, 'snapshot').mockRejectedValueOnce(new Error('Unavailable'));
+    vi.spyOn(fixture.client.imSessions, 'catalog').mockRejectedValueOnce(new Error('Unavailable'));
+    const container = await render();
+    expect(container.textContent).toContain('Could not load IM accounts.');
+    await click(container, '[data-im-retry]');
+    await act(settle);
+    expect(container.querySelector('[data-im-account]')).not.toBeNull();
+    expect(container.querySelector('[data-im-catalog-error]')).not.toBeNull();
+    expect(container.querySelector<HTMLButtonElement>('[data-im-confirm]')?.disabled).toBe(true);
+    await click(container, '[data-im-catalog-error] button');
+    expect(container.querySelector('[data-im-catalog-error]')).toBeNull();
+    expect(container.querySelector<HTMLButtonElement>('[data-im-confirm]')?.disabled).toBe(false);
+  });
+
+  it('starts discovery for a new account only after its check succeeds, and stops without rechecking', async () => {
+    const state = { ...empty, instances: [{ ...imChannelSnapshot().instances[0]!, listening: false, adapter: 'stopped' as const }] };
+    fixture = createImSettingsFixture(state);
+    const check = vi.spyOn(fixture.client.imSessions, 'check').mockResolvedValueOnce({ ok: false, account_id: 'account-a' });
+    const container = await render('360px');
+    expect(container.querySelector('[data-im-bind-flow]')?.textContent).toContain('Start listening');
+    expect(container.querySelector('[data-im-target]')).toBeNull();
+    await click(container, '[data-im-bind-listen]');
+    expect(fixture.calls.some((item) => item.operation === 'listen')).toBe(false);
+    await click(container, '[data-im-bind-listen]');
+    expect(fixture.calls).toContainEqual({ operation: 'listen', id: 'account-a', body: true });
+    check.mockClear();
+    await click(container, '[data-im-listen="account-a"]');
+    expect(check).not.toHaveBeenCalled();
+    expect(fixture.calls.at(-1)).toEqual({ operation: 'listen', id: 'account-a', body: false });
+  });
+
+  it.each(['starting', 'reconnecting', 'auth_expired', 'stopped'] as const)('shows the real %s connection and the relevant recovery control', async (connection) => {
+    const state = imChannelSnapshot();
+    state.instances[0] = { ...state.instances[0]!, connection };
+    fixture = createImSettingsFixture(state);
+    const container = await render();
+    expect(container.querySelector('[data-im-instance-state]')?.getAttribute('data-im-instance-state')).toBe(connection);
+    expect(container.querySelector('[data-im-instance-state]')?.textContent).not.toBe('Listening');
+    if (connection === 'auth_expired') {
+      await click(container, '[data-im-reauthorize="account-a"]');
+      expect(container.querySelector('[data-im-connect-drawer]')?.classList.contains('hidden')).toBe(false);
+      expect(container.querySelector('[data-im-instance="account-a"]')).not.toBeNull();
+    }
+    if (connection === 'stopped') {
+      await click(container, '[data-im-retry-connection="account-a"]');
+      expect(fixture.calls).toContainEqual({ operation: 'listen', id: 'account-a', body: true });
     }
   });
 
-  it('checks a pasted setup, shows the discovered sender, and binds a persona', async () => {
-    const container = await render('1100px');
-    const paste = container.querySelector<HTMLTextAreaElement>('[data-im-paste]')!;
-    const value = '123456:abcdefghijklmnopqrstuvwxyz\nchat_id=9\nextra=1';
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(paste, value);
-      paste.dispatchEvent(new Event('input', { bubbles: true }));
-    });
+  it('shows only server-provided diagnosis, clears it on recovery, and keeps advanced numeric detail available', async () => {
+    fixture = createImSettingsFixture(imSettingsSnapshot());
+    const container = await render();
+    const detail = container.querySelector<HTMLElement>('[data-im-connection-detail]')!;
+    expect(detail.textContent).toContain('Network request failed.');
+    expect(detail.textContent).toContain('Failures: 3');
+    expect(detail.textContent).toContain('Retry delay: 2s');
+    expect(container.querySelectorAll('[data-im-connection-detail]')).toHaveLength(1);
+    const next = fixture.read();
+    next.instances[0] = { ...next.instances[0]!, connection: undefined, connection_detail: undefined };
+    fixture.replace(next);
+    await act(async () => { clients[0]!.setQueryData(['im-sessions'], next); await settle(); });
+    expect(container.querySelector('[data-im-connection-detail]')).toBeNull();
+    expect(container.querySelector('[data-im-account="account-a"] [data-im-instance-state]')?.textContent).toBe('Listening');
+  });
+
+  it('searches a thread beyond the initial catalog for only the edited binding', async () => {
+    vi.spyOn(fixture.client, 'listSessions').mockResolvedValue({ items: [{ id: 'older-thread', title: 'Older research' }] });
+    const container = await render();
+    const group = binding(container, 'binding-group');
+    await click(group, '[data-im-binding-options-toggle]');
+    await input(group, '[data-im-binding-target-search]', 'Older');
+    await act(settle);
+    await choose(group, '#im-binding-target-binding-group', 'session:older-thread');
+    expect(fixture.read().bindings[1]).toMatchObject({ session_id: 'older-thread', session_enabled: false });
+    expect(fixture.read().bindings[0]?.session_id).toBe('lin-daily');
+  });
+
+  it('keeps adapter-stopped intent from appearing connected on an older server', async () => {
+    const state = imChannelSnapshot();
+    state.instances[0] = { ...state.instances[0]!, adapter: 'stopped' };
+    fixture = createImSettingsFixture(state);
+    const container = await render();
+    expect(container.querySelector('[data-im-instance-state]')?.textContent).toBe('Connection stopped');
+  });
+
+  it.each(platforms)('keeps platform %s text restrictions accurate', async (kind) => {
+    fixture = createImSettingsFixture(imChannelSnapshot(kind));
+    fixture.discover();
+    const container = await render();
+    await click(binding(container, 'binding-contact'), '[data-im-binding-options-toggle]');
+    await click(container, '[data-im-discovery] [data-im-advanced-toggle]');
+    const live = kind === 'telegram' || kind === 'feishu_app';
+    expect(container.querySelector('[data-im-text="edit"]') !== null).toBe(live);
+    expect(container.querySelector('[data-im-binding-text="edit"]') !== null).toBe(live);
+    if (!live) expect(container.querySelector(`[data-im-text-fixed="${kind}"]`)?.textContent).toBe('Full text');
+    expect(container.textContent?.includes('QQ cannot take a file.')).toBe(kind === 'onebot_v11');
+  });
+
+  it.each(['en', 'zh'])('uses %s channel terminology and readable per-channel controls at wide and narrow widths', async (locale) => {
+    localStorage.setItem('kiki.locale', locale);
+    for (const width of ['360px', '1100px']) {
+      const container = await render(width);
+      expect(container.textContent).toContain(locale === 'en' ? 'IM accounts & channels' : 'IM 账号与渠道');
+      expect(container.textContent).toContain(locale === 'en' ? 'Add channel' : '新增渠道');
+      expect(container.textContent).not.toMatch(/Phone|手机/);
+      expect(container.querySelectorAll('[data-im-binding-target]')).toHaveLength(2);
+    }
+  });
+
+  it('pastes new accounts without implicitly selecting an existing account', async () => {
+    fixture = createImSettingsFixture(imSettingsSnapshot());
+    const container = await render();
+    await click(container, '[data-im-connect-toggle]');
+    expect(container.querySelector('[data-im-instance=""]')).not.toBeNull();
+    await input(container, '[data-im-paste]', 'fixture-bot-token');
     await click(container, '[data-im-check]');
-    expect(imSessions.paste).toHaveBeenCalledWith('123456:abcdefghijklmnopqrstuvwxyz\nchat_id=9\nextra=1', undefined);
-    expect(imSessions.check).toHaveBeenCalledWith('inst');
-    expect(imSessions.listen).toHaveBeenCalledWith('inst', true);
-    expect(container.querySelector('[data-im-discovery="d1"]')?.textContent).toContain('Ada');
-    expect(container.querySelector('[data-im-chat-hint]')).not.toBeNull();
-    expect(container.textContent).toContain('Full text');
-    expect(container.querySelector<HTMLButtonElement>('[data-im-confirm="d1"]')!.disabled).toBe(false);
-    await click(container, '[data-im-confirm="d1"]');
-    expect(imSessions.confirm).toHaveBeenCalledWith('d1', expect.objectContaining({
-      target: { kind: 'persona', persona_id: 'ada' }, busy: 'queue', reply: 'final', mobile_interactions: true,
-    }));
-    expect(container.querySelector('[data-im-binding="b1"]')).not.toBeNull();
+    expect(fixture.calls).toContainEqual({ operation: 'paste', id: undefined });
   });
 
-  it('shows a discovery that arrives while a connection is listening', async () => {
-    const listening: ImSessionSnapshot = { ...empty, instances: [{ id: 'inst', provider_kind: 'telegram', listening: true, configured: true, adapter: 'running' }] };
-    imSessions.snapshot.mockResolvedValueOnce(listening).mockResolvedValue(found);
+  it('draws a QR payload, cancels and retries an expired code without authorizing a real account', async () => {
+    fixture = createImSettingsFixture(empty);
+    vi.spyOn(fixture.client.imSessions, 'pollWechatQr').mockResolvedValue({ status: 'expired' });
     const container = await render('360px');
-    expect(container.querySelector('[data-im-discovery="d1"]')).toBeNull();
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2_500)); });
-    expect(container.querySelector('[data-im-discovery="d1"]')?.textContent).toContain('Ada');
-  }, 8_000);
-
-  it('checks the only saved connection without pasting the token again', async () => {
-    const saved: ImSessionSnapshot = { ...empty, instances: [{ id: 'inst', provider_kind: 'telegram', listening: false, configured: true, adapter: 'stopped' }] };
-    imSessions.snapshot.mockResolvedValue(saved);
-    imSessions.paste.mockClear();
-    imSessions.check.mockClear();
-    const container = await render('1100px');
-    const check = container.querySelector<HTMLButtonElement>('[data-im-check]')!;
-    expect(check.disabled).toBe(false);
-    await click(container, '[data-im-check]');
-    expect(imSessions.paste).not.toHaveBeenCalled();
-    expect(imSessions.check).toHaveBeenCalledWith('inst');
+    await click(container, '[data-im-wechat-scan]');
+    expect(container.querySelector('[data-im-wechat-image]')?.getAttribute('src')).toMatch(/^data:image\/svg\+xml/);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1_550)); });
+    expect(container.textContent).toContain('This code expired.');
+    await click(container, '[data-im-wechat-retry]');
+    await click(container, '[data-im-wechat-cancel]');
+    expect(container.querySelector('[data-im-wechat-image]')).toBeNull();
+    expect(fixture.calls.at(-1)).toEqual({ operation: 'cancelWechatQr', id: 'fixture-login' });
   });
 
-  it('shows the effective session switch and can change the target and phone actions', async () => {
-    const quiet: ImSessionSnapshot = {
-      ...bound,
-      policy: { allowed: true, default_enabled: false },
-      bindings: [{ ...bound.bindings[0]!, session_enabled: undefined }],
-    };
-    imSessions.snapshot.mockResolvedValue(quiet);
-    const container = await render('1100px');
-    expect(container.querySelector('[data-im-session-switch="b1"]')?.textContent).toContain('Off');
-    expect(container.querySelector('[data-im-follow-default="b1"]')).toBeNull();
-    await click(container, '[data-im-binding-actions="off"]');
-    expect(imSessions.updateBinding).toHaveBeenCalledWith('b1', { mobile_interactions: false });
-    expect(container.querySelector('[data-im-binding-target="home"]')).not.toBeNull();
-  });
-
-  it('draws a WeChat code from the returned link and keeps an image payload as an image', async () => {
-    const container = await render('360px');
-    imSessions.startWechatQr.mockResolvedValueOnce({ login_id: 'login1', image: 'https://cdn.example/qr.png' });
-    await click(container, '[data-im-wechat-scan]');
-    const drawn = container.querySelector('[data-im-wechat-image]')?.getAttribute('src') ?? '';
-    expect(drawn.startsWith('data:image/svg+xml')).toBe(true);
-    expect(decodeURIComponent(drawn)).toContain('<rect');
-    expect(container.querySelector<HTMLInputElement>('[data-im-wechat-code]')?.value).toBe('https://cdn.example/qr.png');
-    imSessions.startWechatQr.mockResolvedValueOnce({ login_id: 'login2', image: 'data:image/png;base64,aaaa' });
-    await click(container, '[data-im-wechat-scan]');
-    expect(container.querySelector('[data-im-wechat-image]')?.getAttribute('src')).toBe('data:image/png;base64,aaaa');
-    imSessions.startWechatQr.mockResolvedValueOnce({ login_id: 'login3', image: 'qr-payload' });
-    await click(container, '[data-im-wechat-scan]');
-    const payload = container.querySelector('[data-im-wechat-image]')?.getAttribute('src') ?? '';
-    expect(payload.startsWith('data:image/svg+xml')).toBe(true);
-    expect(container.querySelector('[data-im-wechat-code]')).toBeNull();
-    expect(container.textContent).not.toMatch(/reply|Receive/i);
-  });
-
-  it.each(['poll', 'verification'] as const)('starts only the account identified by the confirmed WeChat %s result', async (route) => {
-    const accounts: ImSessionSnapshot = {
-      ...empty,
-      instances: ['wx-old', 'wx-new'].map((id) => ({ id, provider_kind: 'wechat_bridge', listening: false, configured: true, account_id: id, adapter: 'stopped' })),
-    };
-    imSessions.snapshot.mockResolvedValue(accounts);
-    imSessions.check.mockResolvedValue({ ok: true });
-    imSessions.check.mockClear();
-    imSessions.listen.mockClear();
-    imSessions.listen.mockResolvedValue(accounts);
-    const confirmed = { status: 'confirmed', provider_instance_id: 'wx-new' };
-    imSessions.pollWechatQr.mockResolvedValueOnce(route === 'poll' ? confirmed : { status: 'need_verifycode' });
-    const container = await render('1100px');
+  it.each(['poll', 'verification'] as const)('starts only the WeChat account identified by confirmed %s', async (route) => {
+    const state = imChannelSnapshot();
+    state.instances = ['wx-old', 'wx-new'].map((id) => ({ id, provider_kind: 'wechat_bridge', listening: false, configured: true, account_id: id, adapter: 'stopped' }));
+    fixture = createImSettingsFixture(state);
+    const poll = vi.spyOn(fixture.client.imSessions, 'pollWechatQr').mockResolvedValueOnce(route === 'poll' ? { status: 'confirmed', provider_instance_id: 'wx-new' } : { status: 'need_verifycode' });
+    const container = await render();
     await click(container, '[data-im-connect-toggle]');
     await click(container, '[data-im-wechat-scan]');
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1_550)); });
     if (route === 'verification') {
-      const field = container.querySelector<HTMLInputElement>('[data-im-wechat-verify]')!;
-      await act(async () => {
-        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(field, '1234');
-        field.dispatchEvent(new Event('input', { bubbles: true }));
-      });
-      imSessions.pollWechatQr.mockResolvedValueOnce(confirmed);
+      await input(container, '[data-im-wechat-verify]', 'fixture-code');
+      poll.mockResolvedValueOnce({ status: 'confirmed', provider_instance_id: 'wx-new' });
       await click(container, '[data-im-wechat-verify-submit]');
     }
-    expect(imSessions.check.mock.calls).toEqual([['wx-new']]);
-    expect(imSessions.listen.mock.calls).toEqual([['wx-new', true]]);
+    expect(fixture.calls.filter((item) => item.operation === 'listen')).toEqual([{ operation: 'listen', id: 'wx-new', body: true }]);
   });
 
-  it('does not guess a WeChat account when confirmation has no instance id', async () => {
-    const accounts: ImSessionSnapshot = {
-      ...empty,
-      instances: [{ id: 'wx-old', provider_kind: 'wechat_bridge', listening: false, configured: true, adapter: 'stopped' }],
-    };
-    imSessions.snapshot.mockResolvedValue(accounts);
-    imSessions.check.mockClear();
-    imSessions.listen.mockClear();
-    imSessions.pollWechatQr.mockResolvedValueOnce({ status: 'confirmed' });
-    const container = await render('1100px');
+  it('restarts an authorized account whose listening intent remained on after authorization expired', async () => {
+    const state = imChannelSnapshot();
+    state.instances[0] = { ...state.instances[0]!, listening: true, adapter: 'stopped', connection: 'auth_expired', connection_detail: { code: 'auth_expired' } };
+    fixture = createImSettingsFixture(state);
+    vi.spyOn(fixture.client.imSessions, 'pollWechatQr').mockResolvedValueOnce({ status: 'confirmed', provider_instance_id: 'account-a' });
+    const container = await render();
+    expect(container.querySelector('[data-im-connection-detail]')?.tagName).toBe('P');
+    await click(container, '[data-im-reauthorize]');
+    await click(container, '[data-im-wechat-scan]');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1_550)); });
+    expect(fixture.calls.filter((item) => item.operation === 'listen')).toEqual([{ operation: 'listen', id: 'account-a', body: true }]);
+    expect(container.querySelector('[data-im-instance-state]')?.textContent).toBe('Listening');
+    expect(container.querySelector('[data-im-connection-detail]')).toBeNull();
+  });
+
+  it('does not guess an account when QR confirmation lacks an instance ID', async () => {
+    fixture = createImSettingsFixture(imChannelSnapshot());
+    vi.spyOn(fixture.client.imSessions, 'pollWechatQr').mockResolvedValueOnce({ status: 'confirmed' });
+    const container = await render();
     await click(container, '[data-im-connect-toggle]');
     await click(container, '[data-im-wechat-scan]');
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1_550)); });
-    expect(imSessions.check).not.toHaveBeenCalled();
-    expect(imSessions.listen).not.toHaveBeenCalled();
-  });
-
-  it('shows a confirmed WeChat account check failure instead of starting another account', async () => {
-    const accounts: ImSessionSnapshot = {
-      ...empty,
-      instances: ['wx-old', 'wx-new'].map((id) => ({ id, provider_kind: 'wechat_bridge', listening: false, configured: true, adapter: 'stopped' })),
-    };
-    imSessions.snapshot.mockResolvedValue(accounts);
-    imSessions.check.mockResolvedValueOnce({ ok: false, detail: 'New account is unavailable' });
-    imSessions.check.mockClear();
-    imSessions.listen.mockClear();
-    imSessions.pollWechatQr.mockResolvedValueOnce({ status: 'confirmed', provider_instance_id: 'wx-new' });
-    const container = await render('1100px');
-    await click(container, '[data-im-connect-toggle]');
-    await click(container, '[data-im-wechat-scan]');
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1_550)); });
-    expect(imSessions.check.mock.calls).toEqual([['wx-new']]);
-    expect(imSessions.listen).not.toHaveBeenCalled();
-    expect(container.textContent).toContain('New account is unavailable');
-  });
-
-  it('shows full text for QQ and WeChat and keeps live text on Telegram', async () => {
-    const qq = {
-      ...found,
-      discoveries: [{ ...found.discoveries[0]!, provider_kind: 'onebot_v11' as const }],
-      bindings: [{ ...bound.bindings[0]!, provider_kind: 'wechat_bridge' as const, reply: 'edit' as const }],
-    };
-    imSessions.snapshot.mockResolvedValue(qq);
-    const container = await render('1100px');
-    const discovery = container.querySelector('[data-im-discovery="d1"]')!;
-    expect(discovery.querySelector('[data-im-text="edit"]')).toBeNull();
-    expect(discovery.textContent).toContain('QQ sends the full text and cannot change a sent message.');
-    expect(discovery.textContent).toContain('QQ cannot take a file.');
-    expect(discovery.textContent).not.toContain('Live text');
-    const row = container.querySelector('[data-im-binding="b1"]')!;
-    expect(row.querySelector('[data-im-binding-text="edit"]')).toBeNull();
-    expect(row.querySelector('[data-im-text-fixed="wechat_bridge"]')?.textContent).toBe('Full text');
-    expect(row.textContent).toContain('WeChat sends the full text and cannot change a sent message.');
-    expect(row.textContent).not.toContain('QQ cannot take a file.');
-    await click(container, '[data-im-confirm="d1"]');
-    expect(imSessions.confirm).toHaveBeenCalledWith('d1', expect.objectContaining({ reply: 'final' }));
-    expect(container.textContent).not.toMatch(/reply|Receive/i);
-  });
-
-  it('stops a listener without checking and does not start after a failed check', async () => {
-    const listening: ImSessionSnapshot = { ...empty, instances: [{ id: 'inst', provider_kind: 'telegram', listening: true, configured: true, adapter: 'running' }] };
-    const stopped: ImSessionSnapshot = { ...empty, instances: [{ id: 'inst', provider_kind: 'telegram', listening: false, configured: true, adapter: 'stopped' }] };
-    imSessions.snapshot.mockResolvedValue(listening);
-    imSessions.listen.mockResolvedValueOnce(stopped);
-    const container = await render('1100px');
-    imSessions.check.mockClear();
-    await click(container, '[data-im-listen="inst"]');
-    expect(imSessions.check).not.toHaveBeenCalled();
-    expect(imSessions.listen).toHaveBeenCalledWith('inst', false);
-    imSessions.snapshot.mockResolvedValue(stopped);
-    imSessions.check.mockResolvedValue({ ok: false, detail: 'Credential expired' });
-    imSessions.listen.mockClear();
-    await click(container, '[data-im-listen="inst"]');
-    expect(imSessions.check).toHaveBeenCalledWith('inst');
-    expect(imSessions.listen).not.toHaveBeenCalled();
-    expect(container.textContent).toContain('Credential expired');
-    expect(container.querySelector('[data-im-listen="inst"]')?.textContent).toContain('Listen');
-  });
-
-  it('offers an explicit bind flow for a configured WeChat account with no discoveries yet, switches between persona and thread, starts listening, and binds', async () => {
-    const wechatStopped: ImSessionSnapshot = {
-      ...empty,
-      instances: [{ id: 'wx-1', provider_kind: 'wechat_bridge', listening: false, configured: true, account_id: 'wxid_user1', adapter: 'stopped' }],
-    };
-    const wechatListening: ImSessionSnapshot = {
-      ...empty,
-      instances: [{ id: 'wx-1', provider_kind: 'wechat_bridge', listening: true, configured: true, account_id: 'wxid_user1', adapter: 'running' }],
-    };
-    const wechatDiscovered: ImSessionSnapshot = {
-      ...wechatListening,
-      discoveries: [{
-        id: 'd-wx',
-        provider_instance_id: 'wx-1',
-        provider_kind: 'wechat_bridge',
-        account_id: 'wxid_user1',
-        identity: { chat_id: 'wx_chat', sender_id: 'wx_sender', topic_id: '0', sender_name: 'Lin' },
-        preview: 'Hi Kiki',
-        at: '2026-10-22T00:00:00.000Z',
-      }],
-    };
-    const wechatBound: ImSessionSnapshot = {
-      ...wechatListening,
-      discoveries: [],
-      bindings: [{
-        id: 'b-wx',
-        provider_instance_id: 'wx-1',
-        provider_kind: 'wechat_bridge',
-        account_id: 'wxid_user1',
-        identity: wechatDiscovered.discoveries[0]!.identity,
-        session_id: 'sess',
-        enabled: true,
-        busy: 'queue',
-        reply: 'final',
-        mobile_interactions: true,
-      }],
-    };
-
-    imSessions.snapshot.mockResolvedValue(wechatStopped);
-    imSessions.check.mockResolvedValue({ ok: true, account_id: 'wxid_user1' });
-    imSessions.listen.mockResolvedValueOnce(wechatListening);
-    imSessions.confirm.mockResolvedValueOnce(wechatBound);
-
-    const container = await render('1100px');
-    expect(container.querySelector('[data-im-connect-drawer]')?.classList.contains('hidden')).toBe(true);
-    expect(container.querySelector('[data-im-bind-flow]')).not.toBeNull();
-    expect(container.querySelector('[data-im-instance-row="wx-1"]')?.textContent).toContain('WeChat');
-
-    await click(container, '[data-im-target-kind="session"]');
-    expect(container.querySelector('[data-im-target="session:sess"]')).not.toBeNull();
-
-    await click(container, '[data-im-bind-listen]');
-    expect(imSessions.check).toHaveBeenCalledWith('wx-1');
-    expect(imSessions.listen).toHaveBeenCalledWith('wx-1', true);
-    expect(container.querySelector('[data-im-waiting-discovery]')).not.toBeNull();
-
-    imSessions.snapshot.mockResolvedValue(wechatDiscovered);
-    await click(container, '[data-im-refresh-discovery]');
-    expect(container.querySelector('[data-im-discovery="d-wx"]')?.textContent).toContain('Lin');
-
-    await click(container, '[data-im-confirm="d-wx"]');
-    expect(imSessions.confirm).toHaveBeenCalledWith('d-wx', expect.objectContaining({
-      target: { kind: 'session', session_id: 'sess' },
-      reply: 'final',
-    }));
-    expect(container.querySelector('[data-im-binding="b-wx"]')).not.toBeNull();
-    expect(container.textContent).not.toMatch(/reply|Receive/i);
-  });
-
-  it('switches an existing binding target between a thread and a persona', async () => {
-    imSessions.catalog.mockResolvedValueOnce({
-      personas: [
-        { id: 'ada', name: 'Ada', home_session_id: 'home' },
-        { id: 'bob', name: 'Bob', home_session_id: 'bob-home' },
-      ],
-      sessions: [{ id: 'sess', title: 'Notes' }],
-    });
-    imSessions.snapshot.mockResolvedValue(bound);
-    imSessions.updateBinding.mockImplementation(async (_id: string, patch: ImBindingPatch) => {
-      const nextTarget = patch.target;
-      const nextSessionId = nextTarget?.kind === 'persona'
-        ? (nextTarget.persona_id === 'bob' ? 'bob-home' : 'home')
-        : nextTarget?.kind === 'session'
-          ? nextTarget.session_id
-          : (patch.session_id ?? bound.bindings[0]!.session_id);
-      const nextPersonaId = nextTarget?.kind === 'persona' ? nextTarget.persona_id : undefined;
-      return {
-        ...bound,
-        bindings: [{
-          ...bound.bindings[0]!,
-          session_id: nextSessionId,
-          persona_id: nextPersonaId,
-        }],
-      };
-    });
-
-    const container = await render('1100px');
-    await click(container, '#im-binding-target-b1');
-    await act(async () => {
-      document.body.querySelector<HTMLButtonElement>('[data-option-value="sess"]')!.click();
-      await new Promise((resolve) => setTimeout(resolve, 30));
-    });
-    expect(imSessions.updateBinding).toHaveBeenCalledWith('b1', { target: { kind: 'session', session_id: 'sess' } });
-    expect(container.querySelector('[data-im-binding-target="sess"]')).not.toBeNull();
-
-    await click(container, '#im-binding-target-b1');
-    await act(async () => {
-      document.body.querySelector<HTMLButtonElement>('[data-option-value="persona:bob"]')!.click();
-      await new Promise((resolve) => setTimeout(resolve, 30));
-    });
-    expect(imSessions.updateBinding).toHaveBeenCalledWith('b1', { target: { kind: 'persona', persona_id: 'bob' } });
-    expect(container.querySelector('[data-im-binding-target="bob-home"]')).not.toBeNull();
-  });
-
-  it('updates an existing binding row in place when re-confirming the same chat identity', async () => {
-    const pausedExistingWithDiscovery: ImSessionSnapshot = {
-      ...found,
-      bindings: [{
-        ...bound.bindings[0]!,
-        id: 'b1',
-        session_id: 'home',
-        persona_id: 'ada',
-        enabled: false,
-      }],
-    };
-    const reconfirmedInPlace: ImSessionSnapshot = {
-      ...found,
-      discoveries: [],
-      bindings: [{
-        ...bound.bindings[0]!,
-        id: 'b1',
-        session_id: 'sess',
-        persona_id: undefined,
-        enabled: true,
-      }],
-    };
-    imSessions.snapshot.mockResolvedValue(pausedExistingWithDiscovery);
-    imSessions.confirm.mockResolvedValueOnce(reconfirmedInPlace);
-
-    const container = await render('1100px');
-    expect(container.querySelectorAll('[data-im-binding]').length).toBe(1);
-    expect(container.querySelector('[data-im-enabled="b1"]')?.textContent).toBe('Enable');
-
-    await click(container, '[data-im-target-kind="session"]');
-    await click(container, '[data-im-confirm="d1"]');
-
-    expect(imSessions.confirm).toHaveBeenCalledWith('d1', expect.objectContaining({
-      target: { kind: 'session', session_id: 'sess' },
-    }));
-    expect(container.querySelectorAll('[data-im-binding]').length).toBe(1);
-    expect(container.querySelector('[data-im-binding-target="sess"]')).not.toBeNull();
-    expect(container.querySelector('[data-im-enabled="b1"]')?.textContent).toBe('Disable');
-  });
-
-  it('pastes a third account without overwriting either of two existing accounts, and only updates an account when explicitly selected', async () => {
-    const twoAccounts: ImSessionSnapshot = {
-      ...empty,
-      instances: [
-        { id: 'inst-1', provider_kind: 'wechat_bridge', listening: true, configured: true, account_id: 'wxid_1', adapter: 'running' },
-        { id: 'inst-2', provider_kind: 'telegram', listening: true, configured: true, account_id: '7', adapter: 'running' },
-      ],
-    };
-    imSessions.snapshot.mockResolvedValue(twoAccounts);
-    imSessions.listen.mockResolvedValueOnce(twoAccounts).mockResolvedValueOnce(twoAccounts);
-    imSessions.paste.mockClear();
-    imSessions.paste.mockResolvedValueOnce({
-      provider_instance_id: 'inst-3',
-      provider_kind: 'feishu_app',
-      ignored_keys: [],
-      chat_hint_ignored: false,
-    });
-    imSessions.check.mockResolvedValue({ ok: true, account_id: 'cli_3' });
-
-    const container = await render('1100px');
-    await click(container, '[data-im-connect-toggle]');
-    expect(container.querySelector('[data-im-instance=""]')).not.toBeNull();
-
-    const paste = container.querySelector<HTMLTextAreaElement>('[data-im-paste]')!;
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(paste, 'app_id=cli_3\napp_secret=sec');
-      paste.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    await click(container, '[data-im-check]');
-    expect(imSessions.paste).toHaveBeenCalledWith('app_id=cli_3\napp_secret=sec', undefined);
-
-    await click(container, '[data-im-connect-toggle]');
-    await click(container, '#im-instance');
-    await act(async () => {
-      document.body.querySelector<HTMLButtonElement>('[data-option-value="inst-2"]')!.click();
-      await new Promise((resolve) => setTimeout(resolve, 30));
-    });
-    expect(container.querySelector('[data-im-instance="inst-2"]')).not.toBeNull();
-
-    await click(container, '#im-instance');
-    await act(async () => {
-      document.body.querySelector<HTMLButtonElement>('[data-option-value=""]')!.click();
-      await new Promise((resolve) => setTimeout(resolve, 30));
-    });
-    expect(container.querySelector('[data-im-instance=""]')).not.toBeNull();
-
-    imSessions.paste.mockClear();
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(paste, '999:new_bot_token');
-      paste.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    await click(container, '[data-im-check]');
-    expect(imSessions.paste).toHaveBeenCalledWith('999:new_bot_token', undefined);
-  });
-
-  it('scopes routeExisting to the clicked account and requires explicit chat selection when multiple bindings exist', async () => {
-    const multiAccountAndBindings: ImSessionSnapshot = {
-      ...empty,
-      instances: [
-        { id: 'wx-1', provider_kind: 'wechat_bridge', listening: true, configured: true, account_id: 'wxid_1', adapter: 'running' },
-        { id: 'tg-1', provider_kind: 'telegram', listening: true, configured: true, account_id: '7', adapter: 'running' },
-      ],
-      bindings: [
-        {
-          id: 'b-wx-1',
-          provider_instance_id: 'wx-1',
-          provider_kind: 'wechat_bridge',
-          account_id: 'wxid_1',
-          identity: { chat_id: 'c-wx-1', sender_id: 'u-wx-1', topic_id: '0', sender_name: 'Lin' },
-          session_id: 'home',
-          persona_id: 'ada',
-          enabled: true,
-          busy: 'queue',
-          reply: 'final',
-          mobile_interactions: true,
-        },
-        {
-          id: 'b-wx-2',
-          provider_instance_id: 'wx-1',
-          provider_kind: 'wechat_bridge',
-          account_id: 'wxid_1',
-          identity: { chat_id: 'c-wx-2', sender_id: 'u-wx-2', topic_id: '0', chat_title: 'Ops Group', sender_name: 'Chen' },
-          session_id: 'home',
-          persona_id: 'ada',
-          enabled: true,
-          busy: 'queue',
-          reply: 'final',
-          mobile_interactions: true,
-        },
-        {
-          id: 'b-tg-1',
-          provider_instance_id: 'tg-1',
-          provider_kind: 'telegram',
-          account_id: '7',
-          identity: { chat_id: 'c-tg-1', sender_id: 'u-tg-1', topic_id: '0', sender_name: 'Ada' },
-          session_id: 'home',
-          persona_id: 'ada',
-          enabled: true,
-          busy: 'queue',
-          reply: 'final',
-          mobile_interactions: true,
-        },
-      ],
-    };
-    imSessions.snapshot.mockResolvedValue(multiAccountAndBindings);
-    imSessions.updateBinding.mockClear();
-    imSessions.updateBinding.mockResolvedValue(multiAccountAndBindings);
-
-    const container = await render('1100px');
-
-    await click(container, '[data-im-start-bind="tg-1"]');
-    await click(container, '[data-im-target-kind="session"]');
-    const tgRouteBtn = container.querySelector<HTMLButtonElement>('[data-im-route-existing="b-tg-1"]')!;
-    expect(tgRouteBtn).not.toBeNull();
-    expect(tgRouteBtn.disabled).toBe(false);
-    expect(tgRouteBtn.textContent).toContain('Telegram · Ada');
-    await click(container, '[data-im-route-existing="b-tg-1"]');
-    expect(imSessions.updateBinding).toHaveBeenCalledWith('b-tg-1', {
-      target: { kind: 'session', session_id: 'sess' },
-    });
-
-    imSessions.updateBinding.mockClear();
-    await click(container, '[data-im-start-bind="wx-1"]');
-    const ambiguousRouteBtn = container.querySelector<HTMLButtonElement>('[data-im-route-existing]')!;
-    expect(ambiguousRouteBtn.disabled).toBe(true);
-    expect(container.querySelector('[data-im-route-binding]')).not.toBeNull();
-
-    await click(container, '#im-route-binding');
-    await act(async () => {
-      document.body.querySelector<HTMLButtonElement>('[data-option-value="b-wx-2"]')!.click();
-      await new Promise((resolve) => setTimeout(resolve, 30));
-    });
-    const chosenWxBtn = container.querySelector<HTMLButtonElement>('[data-im-route-existing="b-wx-2"]')!;
-    expect(chosenWxBtn.disabled).toBe(false);
-    await click(container, '[data-im-route-existing="b-wx-2"]');
-    expect(imSessions.updateBinding).toHaveBeenCalledWith('b-wx-2', {
-      target: { kind: 'session', session_id: 'sess' },
-    });
-  });
-
-  it('shows Starting and Reconnecting states instead of Listening while keeping target switching and stop controls active without re-scanning', async () => {
-    const offlineRecovering: ImSessionSnapshot = {
-      ...bound,
-      instances: [
-        {
-          id: 'wx-1',
-          provider_kind: 'wechat_bridge',
-          listening: true,
-          configured: true,
-          account_id: 'wxid_1',
-          adapter: 'stopped',
-          connection: 'reconnecting',
-        },
-        {
-          id: 'tg-1',
-          provider_kind: 'telegram',
-          listening: true,
-          configured: true,
-          account_id: '7',
-          adapter: 'running',
-          connection: 'starting',
-        },
-      ],
-      bindings: [{
-        ...bound.bindings[0]!,
-        id: 'b1',
-        provider_instance_id: 'wx-1',
-        provider_kind: 'wechat_bridge',
-      }],
-    };
-    imSessions.snapshot.mockResolvedValue(offlineRecovering);
-    imSessions.updateBinding.mockClear();
-    imSessions.listen.mockClear();
-
-    const container = await render('1100px');
-    expect(container.querySelector('[data-im-connect-drawer]')?.classList.contains('hidden')).toBe(true);
-    const wxState = container.querySelector('[data-im-instance-row="wx-1"] [data-im-instance-state]')!;
-    expect(wxState.getAttribute('data-im-instance-state')).toBe('reconnecting');
-    expect(wxState.textContent).toBe('Reconnecting');
-    expect(wxState.textContent).not.toBe('Listening');
-
-    const tgState = container.querySelector('[data-im-instance-row="tg-1"] [data-im-instance-state]')!;
-    expect(tgState.getAttribute('data-im-instance-state')).toBe('starting');
-    expect(tgState.textContent).toBe('Connecting');
-
-    await click(container, '#im-binding-target-b1');
-    await act(async () => {
-      document.body.querySelector<HTMLButtonElement>('[data-option-value="sess"]')!.click();
-      await new Promise((resolve) => setTimeout(resolve, 30));
-    });
-    expect(imSessions.updateBinding).toHaveBeenCalledWith('b1', {
-      target: { kind: 'session', session_id: 'sess' },
-    });
-
-    await click(container, '[data-im-listen="wx-1"]');
-    expect(imSessions.listen).toHaveBeenCalledWith('wx-1', false);
+    expect(fixture.calls.filter((item) => item.operation === 'listen' || item.operation === 'check')).toEqual([]);
   });
 });
