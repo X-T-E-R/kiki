@@ -48,6 +48,23 @@ function elementRefs(value: unknown): string[] {
   return [];
 }
 
+const CDP_HANDSHAKE_REJECTED = 'The CDP handshake was rejected. Endpoint details are withheld. Reveal or edit the endpoint in settings, then connect again.';
+
+function browserOutcomeUnconfirmed(error: unknown): boolean {
+  if (!(error instanceof BrowserError) || error.code !== 'browser.execution_failed') return !(error instanceof BrowserError);
+  return /timed out|outcome_unknown|outcome is unknown|not replayed/i.test(error.message);
+}
+
+function rejectedCdpError(message: string, endpoint: string): string {
+  let host = '';
+  try { host = new URL(endpoint).host; } catch { host = ''; }
+  let detail = endpoint === '' ? message : message.split(endpoint).join('');
+  if (host !== '') detail = detail.split(host).join('');
+  detail = detail.replace(/[a-z][a-z0-9+.-]*:\/\/\S+/gi, '').replace(/\s+/g, ' ').trim();
+  if (detail.length < 12 || detail.length > 180) return CDP_HANDSHAKE_REJECTED;
+  return `${CDP_HANDSHAKE_REJECTED} ${detail}`;
+}
+
 export function browserResponse(result: MCPToolResult): { success?: boolean; data?: Record<string, unknown>; code?: string; error?: string } {
   const structured = result.structuredContent;
   if (typeof structured !== 'object' || structured === null) return {};
@@ -283,7 +300,7 @@ export class BrowserControlService implements IBrowserControlService {
           else live.status = { ...live.status, state: previous.state };
           throw error;
         }
-        this.fail(live, error, true);
+        this.fail(live, error, browserOutcomeUnconfirmed(error));
       }
       return { ...live.status };
     }, signal);
@@ -536,9 +553,10 @@ export class BrowserControlService implements IBrowserControlService {
     live.target = undefined;
     const recovery = error instanceof BrowserError && error.code === 'browser.requires_action' ? 'requires_action'
       : error instanceof BrowserError && error.code === 'browser.unsupported' ? 'unsupported' : undefined;
+    const concealEndpoint = endpoint !== undefined && !(error instanceof BrowserError && error.code === 'browser.version');
     live.status = { ...live.status, state: recovery ?? (unconfirmed && live.backend !== undefined ? 'unconfirmed' : 'failed'), currentCall: undefined,
       failure: { code: error instanceof BrowserError ? error.code : 'browser.execution_failed', reason: recovery === undefined && unconfirmed && live.backend !== undefined ? 'outcome_unknown' : undefined },
-      error: endpoint === undefined || (error instanceof BrowserError && error.code === 'browser.version') ? message : 'The CDP operation failed; endpoint details are withheld. Check the driver and explicitly reveal/edit the endpoint in settings.', checkedAt: new Date().toISOString() };
+      error: !concealEndpoint || endpoint === undefined ? message : unconfirmed ? 'The CDP operation failed; endpoint details are withheld. Check the driver and explicitly reveal/edit the endpoint in settings.' : rejectedCdpError(message, endpoint), checkedAt: new Date().toISOString() };
   }
 
   private async closeOfficial(live: LiveBrowser): Promise<BrowserStatus> {

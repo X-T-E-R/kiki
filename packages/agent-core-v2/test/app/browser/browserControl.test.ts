@@ -388,6 +388,45 @@ describe('browser connection execution ownership', () => {
     finally { await f.ix.dispose(); }
   });
 
+  it('classifies a finished CDP rejection as a failed handshake and allows another connect', async () => {
+    const f = fixture();
+    const endpoint = 'http://browser.example.test';
+    try {
+      f.handlers.set('b:agent_browser_connect', async () => ({ isError: true, content: [], structuredContent: { exitCode: 1, response: { success: false, error: `CDP connection failed for ${endpoint}/devtools` } } }));
+      const rejected = await f.control.connect('b');
+      expect(f.calls.find((call) => call.name === 'agent_browser_connect')?.args).toMatchObject({ target: endpoint, pinTab: true, extraArgs: ['--pin-tab', '--cdp', endpoint] });
+      expect(rejected.state).toBe('failed');
+      expect(rejected.failure?.code).toBe('browser.execution_failed');
+      expect(rejected.failure?.reason).toBeUndefined();
+      expect(rejected.error).toContain('handshake was rejected');
+      expect(rejected.error).not.toContain('browser.example.test');
+      expect(rejected.error ?? '').not.toMatch(/outcome_unknown|timed out|timed-out/i);
+      f.handlers.set('b:agent_browser_session_info', async () => response({ active: true, pid: null, runtime: null }));
+      const checked = await f.control.check('b');
+      expect(checked.state).toBe('idle');
+      expect(checked.failure?.reason).toBeUndefined();
+      expect(checked.error ?? '').not.toMatch(/timed out|timed-out|not replayed/i);
+      f.handlers.delete('b:agent_browser_connect');
+      expect((await f.control.connect('b')).state).toBe('ready');
+    } finally { await f.ix.dispose(); }
+  });
+
+  it('keeps a lost CDP connect response unconfirmed without replaying it', async () => {
+    const f = fixture();
+    try {
+      f.handlers.set('b:agent_browser_connect', async () => { throw new Error('response lost after dispatch'); });
+      const lost = await f.control.connect('b');
+      expect(lost).toMatchObject({ state: 'unconfirmed', failure: { reason: 'outcome_unknown' } });
+      expect(f.calls.filter((call) => call.name === 'agent_browser_connect')).toHaveLength(1);
+      await expect(f.control.connect('b')).rejects.toMatchObject({ code: 'browser.busy' });
+      expect(f.calls.filter((call) => call.name === 'agent_browser_connect')).toHaveLength(1);
+      f.handlers.set('b:agent_browser_session_info', async () => response({ active: true, pid: null, runtime: null }));
+      const checked = await f.control.check('b');
+      expect(checked).toMatchObject({ state: 'idle', failure: { reason: 'outcome_unknown' } });
+      expect(checked.error).toContain('not replayed');
+    } finally { await f.ix.dispose(); }
+  });
+
   it('serializes tab+frame selection and the operation together on each connection', async () => {
     const f = fixture();
     try {
