@@ -977,9 +977,9 @@ export function sessionRouteOwnsSession(pathname: string, sessionId: string): bo
   return pathname === prefix || pathname.startsWith(`${prefix}/`);
 }
 
-/** Leave for /new only when this session is definitely gone and the route is still its own. */
-export function sessionAbsenceShouldLeaveRoute(message: string, sessionId: string, pathname: string): boolean {
-  return isSessionNotFoundMessage(message) && sessionRouteOwnsSession(pathname, sessionId);
+/** Leave for /new only when this session is definitely gone, the route is still its own, and no loaded roster row carries it. */
+export function sessionAbsenceShouldLeaveRoute(message: string, sessionId: string, pathname: string, stillListed = false): boolean {
+  return !stillListed && isSessionNotFoundMessage(message) && sessionRouteOwnsSession(pathname, sessionId);
 }
 
 /**
@@ -2426,17 +2426,21 @@ export function SessionView({
   // card visible for a beat, then fall back home (clearing the remembered id
   // so `/` doesn't redirect straight back into the 404). History and content
   // failures stay here, and the timer does not leave a route it no longer owns.
+  // A loaded roster row still carrying the id is not a deletion event: the
+  // session surface keeps the route, its error and its Retry until that row is
+  // gone from the roster.
   const loadError = state.loadError;
+  const sessionStillListed = sessions.some((item) => item.id === sessionId);
   useEffect(() => {
-    if (loadError === undefined || !sessionAbsenceShouldLeaveRoute(loadError, sessionId, sessionPathRef.current)) return;
+    if (loadError === undefined || !sessionAbsenceShouldLeaveRoute(loadError, sessionId, sessionPathRef.current, sessionStillListed)) return;
     pushToast({ tone: 'info', text: t('sv.sessionGone') });
     const timer = setTimeout(() => {
-      if (!sessionAbsenceShouldLeaveRoute(loadError, sessionId, sessionPathRef.current)) return;
+      if (!sessionAbsenceShouldLeaveRoute(loadError, sessionId, sessionPathRef.current, sessionStillListed)) return;
       if (readLastSessionId() === sessionId) writeLastSessionId(undefined);
       void navigate('/new', { replace: true });
     }, NOT_FOUND_FALLBACK_MS);
     return () => { clearTimeout(timer); };
-  }, [loadError, sessionId, navigate, t]);
+  }, [loadError, sessionId, navigate, t, sessionStillListed]);
 
   useEffect(() => {
     controller?.setFocusedAgent(selectedAgentId);

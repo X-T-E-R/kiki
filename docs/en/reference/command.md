@@ -149,7 +149,30 @@ Thread communication is allowed and off by default. A user setting of `[thread_c
 
 ## Subcommands
 
-`kiki` provides the following subcommands: `serve` (start, reuse, or stop the shared daemon), `seat` (manage external-caller seats), `mcp` (run the stdio MCP edge), `doctor` (diagnose the daemon connection), `prompt-fields` (discover and validate prompt fields), `login` (non-interactive OAuth login), `acp` (ACP IDE mode), `web` (the compatible foreground REST/WebSocket/web service), `export` (export a session), and `provider` (manage providers).
+`kiki` provides the following subcommands: `session` (inspect saved timelines), `serve` (start, reuse, or stop the shared daemon), `seat` (manage external-caller seats), `mcp` (run the stdio MCP edge), `doctor` (diagnose the daemon connection), `prompt-fields` (discover and validate prompt fields), `login` (non-interactive OAuth login), `acp` (ACP IDE mode), `web` (the compatible foreground REST/WebSocket/web service), `export` (export a session), and `provider` (manage providers).
+
+### `kiki session`
+
+Read saved session timelines without resuming the session, acquiring its writer lock, or sending model requests:
+
+```sh
+kiki session list
+kiki session show <session_id> --agent main
+kiki session show <session_id> --agent main --json
+kiki session show <session_id> --agent main --before <cursor>
+```
+
+`show` accepts a `session_<uuid>` ID, a bare UUID, or an `/s/session_<uuid>` link. Use `--workspace <workspace-id>` to select a copy when the same session exists in more than one workspace. For a different home, set the `KIKI_HOME` environment variable before running the command.
+
+Large timelines open in bounded windows rather than failing at a whole-file size limit. The default target is the newest 8 MiB of wire records. `--max-bytes <bytes>` sets a target from 1 to 8,388,608 bytes. The reader searches back up to another 64 MiB for a turn opening; actual reads can therefore exceed the target. A page spans at most 72 MiB, with at most 136 MiB plus one 64 KiB alignment block of total read I/O. If a long turn has no opening within that search, the page starts at a complete record instead and remains pageable. A single record exceeding the 64 MiB limit is reported as a resource limit, with JSON error code `inspection_limit`, without changing or declaring the session damaged.
+
+JSON identifies page edges with `wire.startBoundary` (`turn` or `record`) and `wire.endBoundary` (`turn`, `record` or `watermark`). When either edge is `record`, the page is a turn continuation: `timeline` contains `type: "wire-record"` entries with absolute `byteOffset`, stable `id` (`<agent>:wire:<byteOffset>`) and the original `record`, rather than reconstructed complete-turn messages. JSON consumers must handle these entries as raw records. Text output labels them `turn continuation`. This preserves records such as a tool result whose call is on another page; continue with `Older` to read that earlier context.
+
+Text output includes an `Older` command. JSON returns `wire.nextCursor`, byte boundaries and the original `watermark` (the file size fixed when this pagination began). Pass the cursor with the same session, workspace and agent to read the preceding window. The cursor is bound to that wire file's identity and first size. Normal appends do not shift the page boundaries; replacement, shortening or a same-size edit that changes the modification time rejects the cursor. Same-size edits preserving that time, and same-file prefix edits followed by growth, are not detected by this check. Cursor mismatches and invalid window arguments return `invalid_option` in JSON.
+
+`selectedAgent.wireComplete=false` means the selected timeline is partial; each agent summary has its own `wireComplete`. Complete-turn pages contain timeline projections, while continuation pages contain raw records. Neither represents a complete session-state snapshot: messages and state changes outside the window have not been replayed. The session header and summaries of other agents describe the currently saved files, not their state at the selected page's watermark. Continue paging to inspect earlier records; the canonical journal remains intact.
+
+`--follow` observes saved changes without attaching to the running agent. With `--json`, it writes one snapshot per NDJSON line. `--before` and `--follow` are mutually exclusive.
 
 ### `kiki serve`
 

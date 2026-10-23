@@ -149,7 +149,30 @@ Thread communication 允许使用，并且默认关闭。用户把 `[thread_comm
 
 ## 子命令
 
-`kiki` 提供以下子命令：`serve`（启动、复用或停止共享 daemon）、`seat`（管理外部调用方席位）、`mcp`（运行 stdio MCP 边）、`doctor`（诊断 daemon 连接）、`prompt-fields`（发现与校验提示词字段）、`login`（非交互式 OAuth 登录）、`acp`（ACP IDE 模式）、`web`（兼容的前台 REST/WebSocket/web 服务）、`export`（导出会话）和 `provider`（管理供应商）。
+`kiki` 提供以下子命令：`session`（查看已保存的时间线）、`serve`（启动、复用或停止共享 daemon）、`seat`（管理外部调用方席位）、`mcp`（运行 stdio MCP 边）、`doctor`（诊断 daemon 连接）、`prompt-fields`（发现与校验提示词字段）、`login`（非交互式 OAuth 登录）、`acp`（ACP IDE 模式）、`web`（兼容的前台 REST/WebSocket/web 服务）、`export`（导出会话）和 `provider`（管理供应商）。
+
+### `kiki session`
+
+只读查看已保存的会话时间线，不恢复会话、不占用写锁，也不发送模型请求：
+
+```sh
+kiki session list
+kiki session show <session_id> --agent main
+kiki session show <session_id> --agent main --json
+kiki session show <session_id> --agent main --before <cursor>
+```
+
+`show` 接受 `session_<uuid>` ID、裸 UUID 或 `/s/session_<uuid>` 链接。同一会话存在于多个工作区时，用 `--workspace <workspace-id>` 选择副本。要读取其他 home，在运行命令前设置 `KIKI_HOME` 环境变量。
+
+较大的时间线按有界窗口打开，不再因整个文件超过大小上限而拒绝。默认以最新 8 MiB 的 wire 记录为目标；`--max-bytes <bytes>` 可将目标设为 1 到 8,388,608 字节。读取器会额外向前查找最多 64 MiB，寻找轮次起点，因此实际读取量可能超过目标。单页最多覆盖 72 MiB，边界查找与正文读取的总 I/O 最多为 136 MiB 加一个 64 KiB 对齐块。超长轮次的起点不在这段范围内时，页面改为从一条完整记录开始，仍可继续翻页。单条记录超过 64 MiB 上限时，会报告资源限制，JSON 错误码为 `inspection_limit`；不修改会话，也不将其判为损坏。
+
+JSON 用 `wire.startBoundary`（`turn` 或 `record`）和 `wire.endBoundary`（`turn`、`record` 或 `watermark`）标明页边界。任一边界为 `record` 时，该页是轮次续段：`timeline` 返回带绝对 `byteOffset`、稳定 `id`（`<agent>:wire:<byteOffset>`）和原始 `record` 的 `type: "wire-record"` 项，而不重建成完整轮次消息。读取 JSON 的程序应按原始记录处理这些项；文本输出会标注 `turn continuation`。这样，即使工具调用位于另一页，本页的工具结果也仍可见；继续使用 `Older` 可读取更早的上下文。
+
+文本输出包含一条 `Older` 命令；JSON 返回 `wire.nextCursor`、字节边界和首次分页时固定的 `watermark`（文件大小）。对同一会话、工作区和 Agent 传入该游标，即可读取紧邻的更旧窗口。游标绑定 wire 文件身份与首次大小。正常追加不会改变分页边界；文件被替换、缩短，或大小不变但修改时间发生变化时，旧游标会被拒绝。保留修改时间的同大小改写，以及同一文件的前缀改写后又增长，不在此检查的检测范围内。游标不匹配和非法窗口参数在 JSON 中返回 `invalid_option`。
+
+`selectedAgent.wireComplete=false` 表示所选时间线不完整；每个 Agent 摘要也有自己的 `wireComplete`。完整轮次页返回时间线投影，续段页返回原始记录；两者都不是完整会话状态快照，窗口之外的消息和状态变化尚未重放。会话头与其他 Agent 的摘要反映当前已保存的文件，不是所选页面 watermark 时刻的状态。继续翻页可查看更早的记录，原始 journal 保持完整。
+
+`--follow` 只观察已保存内容的变化，不连接正在运行的 Agent。与 `--json` 合用时，每行输出一个 NDJSON 快照。`--before` 与 `--follow` 互斥。
 
 ### `kiki serve`
 

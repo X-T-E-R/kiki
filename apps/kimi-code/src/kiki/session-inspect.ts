@@ -16,15 +16,14 @@ import {
   type TranscriptTurn,
   type TranscriptWireRecord,
 } from '@kiki/transcript';
+import { readSessionWireWindow, SessionWireCursorError, SessionWireLimitError, type SessionWireCoverage, type SessionWireRecordSource } from './session-inspect-wire';
 
 const SESSION_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SESSION_ID_PATTERN = /^session_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 const SESSION_LINK_PATTERN = /^\/s\/(session_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i;
 const SESSION_SCHEMA_VERSION = 1 as const;
 const MAX_STATE_BYTES = 16 << 20;
-const MAX_WIRE_BYTES = 1 << 30;
-const MAX_WIRE_RECORDS = 2_000_000;
-const MAX_WIRE_LINE_BYTES = 64 << 20;
+
 export const DEFAULT_SESSION_FOLLOW_INTERVAL_MS = 750;
 
 export type InspectionStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'idle' | 'unknown';
@@ -46,6 +45,7 @@ export type SessionInspectionErrorCode =
   | 'ambiguous_session'
   | 'workspace_not_found'
   | 'damaged_session'
+  | 'inspection_limit'
   | 'agent_not_found'
   | 'ambiguous_agent';
 
@@ -142,7 +142,14 @@ export interface InteractionTimelineEntry extends TimelineBase {
   readonly response: unknown;
 }
 
+export interface WireRecordTimelineEntry extends TimelineBase {
+  readonly type: 'wire-record';
+  readonly byteOffset: number;
+  readonly record: TranscriptWireRecord;
+}
+
 export type SessionTimelineEntry =
+  | WireRecordTimelineEntry
   | MessageTimelineEntry
   | ThinkingTimelineEntry
   | ToolTimelineEntry
@@ -179,6 +186,7 @@ export interface SessionInspection {
   readonly agents: readonly SessionInspectionAgent[];
   readonly timeline: readonly SessionTimelineEntry[];
   readonly warnings: readonly string[];
+  readonly wire?: SessionWireCoverage;
 }
 
 export interface InspectSessionOptions {
@@ -186,6 +194,8 @@ export interface InspectSessionOptions {
   readonly reference: string;
   readonly agent?: string;
   readonly workspace?: string;
+  readonly before?: string;
+  readonly maxBytes?: number;
 }
 
 export interface FollowSessionOptions extends InspectSessionOptions {
@@ -240,11 +250,8 @@ interface AgentDefinition {
 interface ProjectedAgent {
   readonly snapshot: AgentTranscriptSnapshot;
   readonly complete: boolean;
-}
-
-interface WireReadResult {
-  readonly complete: boolean;
-  readonly recordCount: number;
+  readonly wire?: SessionWireCoverage;
+  readonly continuation?: readonly WireRecordTimelineEntry[];
 }
 
 interface FileIdentity {
@@ -267,7 +274,8 @@ export function normalizeSessionReference(reference: string): string {
 
 export async function inspectOfflineSession(options: InspectSessionOptions): Promise<SessionInspection> {
   const sessionId = normalizeSessionReference(options.reference);
-  const allLocations = await scanSessionLocations(options.homeDir);
+  const exact = options.workspace === undefined ? undefined : await exactSessionLocation(options.homeDir, options.workspace.trim(), sessionId);
+  const allLocations = exact === undefined ? await scanSessionLocations(options.homeDir) : [exact];
   const locations = allLocations.filter((candidate) => candidate.sessionId === sessionId);
   if (locations.length === 0) {
     const suggestions = await nearbySessions(allLocations, sessionId);
@@ -314,7 +322,7 @@ export async function inspectOfflineSession(options: InspectSessionOptions): Pro
   for (const definition of projectedDefinitions) {
     let projected: ProjectedAgent | undefined;
     try {
-      projected = await projectAgentWire(definition);
+      projected = await projectAgentWire(definition, definition.id === selected.id ? options : {});
     } catch (error) {
       if (definition.id === selected.id) throw error;
       warnings.push(`Agent ${definition.id} wire could not be read: ${errorMessage(error)}`);
@@ -332,9 +340,16 @@ export async function inspectOfflineSession(options: InspectSessionOptions): Pro
         complete: true,
       };
     }
-    agentResults.set(definition.id, projected);
-    if (!projected.complete) {
+    if (definition.id === selected.id) agentResults.set(definition.id, projected);
+    if (projected.wire?.partialTail) {
       warnings.push(`Agent ${definition.id} wire ended with a partial record; the incomplete tail was ignored.`);
+    }
+    if (definition.id === selected.id && projected.wire !== undefined &&
+      (projected.wire.startByteOffset > 0 || projected.wire.endByteOffset < projected.wire.watermark)) {
+      warnings.push(`Agent ${definition.id}: showing a bounded wire window, not the complete history. The canonical journal is unchanged.`);
+      if (projected.continuation !== undefined) {
+        warnings.push('This page splits a turn at a record boundary. Timeline entries are actual wire records, not a complete-turn projection; adjacent pages contain the rest of the turn.');
+      }
     }
     summaries.push(toAgentSummary(definition, projected.snapshot, projected.complete));
   }
@@ -384,8 +399,9 @@ export async function inspectOfflineSession(options: InspectSessionOptions): Pro
       wireComplete: selectedSummary.wireComplete,
     },
     agents: summaries,
-    timeline: timelineFromSnapshot(selectedProjection.snapshot),
+    timeline: selectedProjection.continuation ?? timelineFromSnapshot(selectedProjection.snapshot),
     warnings,
+    wire: selectedProjection.wire,
   };
 }
 
@@ -419,6 +435,22 @@ export async function listOfflineSessions(
     const byId = compareStrings(left.sessionId, right.sessionId);
     return byId !== 0 ? byId : compareStrings(left.workspaceId, right.workspaceId);
   });
+}
+
+async function exactSessionLocation(homeDir: string, workspaceId: string, sessionId: string): Promise<SessionLocation | undefined> {
+  if (!/^wd_[^/\\]+$/.test(workspaceId)) return undefined;
+  const root = join(resolve(homeDir), 'sessions');
+  const sessionDir = join(root, workspaceId, sessionId);
+  try {
+    const info = await lstat(sessionDir);
+    if (!info.isDirectory() || info.isSymbolicLink()) return undefined;
+    const canonicalSessionDir = await realpath(sessionDir);
+    if (!pathIsWithin(await realpath(root), canonicalSessionDir)) return undefined;
+    return { sessionId, workspaceId, sessionDir, canonicalSessionDir };
+  } catch (error) {
+    if (isNodeError(error, 'ENOENT')) return undefined;
+    throw error;
+  }
 }
 
 async function scanSessionLocations(homeDir: string): Promise<SessionLocation[]> {
@@ -659,6 +691,7 @@ function selectAgent(
 
 async function projectAgentWire(
   definition: AgentDefinition,
+  options: Pick<InspectSessionOptions, 'before' | 'maxBytes'>,
 ): Promise<ProjectedAgent | undefined> {
   const transcript = new AgentTranscript(definition.id);
   const reducer = new TranscriptFactReducer(transcript);
@@ -667,17 +700,30 @@ async function projectAgentWire(
     tool: (toolCallId) => transcript.getToolCall(toolCallId),
     task: (taskId) => transcript.getTask(taskId),
   });
+  const continuation: WireRecordTimelineEntry[] = [];
   try {
-    const result = await readWireRecords(definition.wirePath, definition.canonicalSessionDir, (record, lineNumber) => {
+    const result = await readWireRecords(definition.wirePath, definition.canonicalSessionDir, options, (record, lineNumber, source) => {
+      if (source.continuation) {
+        continuation.push({
+          type: 'wire-record', id: `${definition.id}:wire:${source.byteOffset}`, byteOffset: source.byteOffset,
+          turnId: null, timestamp: timeValue(record.time), record,
+        });
+      }
       try {
         reducer.apply(adapter.add(record));
       } catch (error) {
         throw new Error(`could not project line ${lineNumber}: ${errorMessage(error)}`, { cause: error });
       }
     });
-    return { snapshot: transcript.snapshot(), complete: result.complete };
+    return {
+      snapshot: transcript.snapshot(), complete: result.startByteOffset === 0 && result.endByteOffset === result.watermark && !result.partialTail,
+      wire: result, continuation: result.startBoundary === 'record' || result.endBoundary === 'record' ? continuation : undefined,
+    };
   } catch (error) {
     if (isNodeError(error, 'ENOENT')) return undefined;
+    if (error instanceof SessionWireCursorError || error instanceof SessionWireLimitError) {
+      throw new SessionInspectionError(error instanceof SessionWireLimitError ? 'inspection_limit' : 'invalid_option', error.message);
+    }
     throw new SessionInspectionError(
       'damaged_session',
       `Session data is damaged: ${definition.wirePath} could not be read. ${errorMessage(error)}\nInspect the file or restore the session from backup.`,
@@ -688,78 +734,17 @@ async function projectAgentWire(
 async function readWireRecords(
   wirePath: string,
   canonicalSessionDir: string,
-  onRecord: (record: TranscriptWireRecord, lineNumber: number) => void,
-): Promise<WireReadResult> {
+  options: Pick<InspectSessionOptions, 'before' | 'maxBytes'>,
+  onRecord: (record: TranscriptWireRecord, lineNumber: number, source: SessionWireRecordSource) => void,
+): Promise<SessionWireCoverage> {
   const expectedIdentity = await assertRegularFile(wirePath, canonicalSessionDir);
   const handle = await openReadOnlyNoFollow(wirePath);
-  let lineChunks: Buffer[] = [];
-  let lineBytes = 0;
-  let lineNumber = 0;
-  let recordCount = 0;
-  let complete = true;
-
-  const consume = (line: Buffer, terminated: boolean): void => {
-    const normalized = line.length > 0 && line.at(-1) === 0x0d ? line.subarray(0, -1) : line;
-    if (normalized.length === 0) return;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(normalized.toString('utf8'));
-    } catch (error) {
-      if (!terminated) {
-        complete = false;
-        return;
-      }
-      throw new Error(`corrupted JSON at line ${lineNumber}: ${errorMessage(error)}`, { cause: error });
-    }
-    if (!isRecord(parsed) || typeof parsed['type'] !== 'string') {
-      throw new Error(`line ${lineNumber} is not a wire record with a string type`);
-    }
-    recordCount += 1;
-    if (recordCount > MAX_WIRE_RECORDS) {
-      throw new Error(`wire exceeds the ${MAX_WIRE_RECORDS}-record safety limit`);
-    }
-    onRecord(parsed as TranscriptWireRecord, lineNumber);
-  };
-
-  const flushLine = (terminated: boolean): void => {
-    lineNumber += 1;
-    const line = lineChunks.length === 1 ? lineChunks[0]! : Buffer.concat(lineChunks, lineBytes);
-    lineChunks = [];
-    lineBytes = 0;
-    consume(line, terminated);
-  };
-
   try {
     const info = await handle.stat();
     assertSameFile(expectedIdentity, info, wirePath);
     if (!info.isFile()) throw new Error(`${wirePath} is not a regular file`);
     if (!Number.isSafeInteger(info.size) || info.size < 0) throw new Error(`invalid file size ${info.size}`);
-    if (info.size > MAX_WIRE_BYTES) throw new Error(`wire exceeds the ${MAX_WIRE_BYTES}-byte safety limit`);
-    const chunk = Buffer.allocUnsafe(1 << 20);
-    let position = 0;
-    while (position < info.size) {
-      const length = Math.min(chunk.length, info.size - position);
-      const { bytesRead } = await handle.read(chunk, 0, length, position);
-      if (bytesRead === 0) throw new Error('wire changed during the read');
-      position += bytesRead;
-      let rest = chunk.subarray(0, bytesRead);
-      for (;;) {
-        const newline = rest.indexOf(0x0a);
-        const part = newline < 0 ? rest : rest.subarray(0, newline);
-        if (part.length > 0) {
-          if (lineBytes + part.length > MAX_WIRE_LINE_BYTES) {
-            throw new Error(`line ${lineNumber + 1} exceeds the ${MAX_WIRE_LINE_BYTES}-byte safety limit`);
-          }
-          lineChunks.push(Buffer.from(part));
-          lineBytes += part.length;
-        }
-        if (newline < 0) break;
-        flushLine(true);
-        rest = rest.subarray(newline + 1);
-      }
-    }
-    if (lineBytes > 0) flushLine(false);
-    return { complete, recordCount };
+    return await readSessionWireWindow(handle, info, await realpath(wirePath), options, onRecord);
   } finally {
     await handle.close();
   }

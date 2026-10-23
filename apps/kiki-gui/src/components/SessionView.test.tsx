@@ -2166,6 +2166,8 @@ describe('session-not-found fallback', () => {
     expect(sessionAbsenceShouldLeaveRoute('session sess-a has no recoverable cwd (code 40401)', 'sess-a', '/s/sess-a')).toBe(false);
     expect(sessionAbsenceShouldLeaveRoute(gone, 'sess-a', '/s/sess-b')).toBe(false);
     expect(sessionAbsenceShouldLeaveRoute(gone, 'sess-a', '/new')).toBe(false);
+    expect(sessionAbsenceShouldLeaveRoute(gone, 'sess-a', '/s/sess-a', true)).toBe(false);
+    expect(sessionAbsenceShouldLeaveRoute(gone, 'sess-a', '/s/sess-a', false)).toBe(true);
   });
 });
 

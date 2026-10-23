@@ -1119,6 +1119,39 @@ describe('server-v2 /api/sessions', () => {
     expect(typeof body.data.has_more).toBe('boolean');
   });
 
+  it('keeps every canonical sidebar ID reachable under preview pressure and does not resolve missing prefixes', async () => {
+    const metadata = { cwd: home, coverUrl: 'u'.repeat(70000), ...Object.fromEntries(Array.from({ length: 36 }, (_, index) => [`p${index}`, 'body'.repeat(1000)])) };
+    const ids: string[] = [];
+    for (let index = 0; index < 3; index++) {
+      const created = await postJson<SessionWire>('/api/sessions', { title: `Session ${index}`, metadata });
+      expect(created.body.code).toBe(0);
+      expect(created.body.data.id).toHaveLength(44);
+      ids.push(created.body.data.id);
+    }
+    const source = server!.core.accessor.get(ISessionIndex);
+    for (let visit = 0; visit < 2; visit++) {
+      const page = await getJson<PageWire>('/api/sessions?page_size=2');
+      expect(page.body.code).toBe(0);
+      expect(Buffer.byteLength(JSON.stringify(page.body))).toBeLessThan(64 * 1024);
+      expect(page.body.data.items).toHaveLength(2);
+      expect(page.body.data.has_more).toBe(true);
+      const older = await getJson<PageWire>(`/api/sessions?page_size=2&before_id=${encodeURIComponent(page.body.data.next_cursor!)}`);
+      expect(older.body.code).toBe(0);
+      const rows = [...page.body.data.items, ...older.body.data.items];
+      expect(rows.map((row) => row.id).toSorted()).toEqual(ids.toSorted());
+      for (const row of rows) {
+        expect((await source.get(row.id))?.id).toBe(row.id);
+        const opened = await getJson<SessionWire>(`/api/sessions/${row.id}`);
+        expect(opened.body.code).toBe(0);
+        expect(opened.body.data.id).toBe(row.id);
+      }
+    }
+    for (const id of [ids[0]!.slice(0, 30), 'session_', 'session_00000000-0000-4000-8000-000000000000']) {
+      const missing = await getJson<null>(`/api/sessions/${id}`);
+      expect(missing.body.code).toBe(40401);
+    }
+  });
+
   it('serves and drains the sidebar without global workspace discovery', async () => {
     const created = (await postJson<SessionWire>('/api/sessions', { metadata: { cwd: home } })).body.data;
     const discovery = vi.spyOn(server!.core.accessor.get(IWorkspaceService), 'list').mockRejectedValue(new Error('Global discovery is unavailable'));

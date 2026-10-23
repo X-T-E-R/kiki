@@ -15,7 +15,7 @@ export const ENTITY_BYTES = 64 * 1024;
 export const TIMELINE_ENTITY_BYTES = 128 * 1024;
 const ARRAY_WINDOW = 4;
 const OBJECT_WINDOW = 64;
-const ID_KEYS = /^(?:kind|state|status|role|op|.*Id|.*_id|mediaType|marker|interactionKind|type)$/u;
+const ID_KEYS = /^(?:id|kind|state|status|role|op|.*Id|.*_id|mediaType|marker|interactionKind|type)$/u;
 const OPAQUE_FIELDS = new Set(['input', 'output', 'display', 'request', 'response', 'payload', 'content', 'customData', 'detail']);
 
 type Path = ContentRef['path'];

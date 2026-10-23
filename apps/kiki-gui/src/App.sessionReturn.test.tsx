@@ -343,6 +343,7 @@ describe('session return admission', () => {
     await act(async () => {
       finishHeld('sess-a', new ApiError({ code: API_CODES.SESSION_NOT_FOUND, msg: 'session.not_found', data: null }));
     });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1150)); });
     await flush();
     expect(container.querySelector('[data-home]')).not.toBeNull();
     expect(shown()).toBeNull();

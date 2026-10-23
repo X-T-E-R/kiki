@@ -36,6 +36,8 @@ export interface SessionShowOptions {
   readonly json: boolean;
   readonly agent?: string;
   readonly workspace?: string;
+  readonly before?: string;
+  readonly maxBytes?: number;
   readonly follow?: boolean;
   readonly signal?: AbortSignal;
 }
@@ -50,11 +52,16 @@ export async function handleSessionShow(
   options: SessionShowOptions,
 ): Promise<void> {
   try {
+    if (options.before !== undefined && options.follow === true) {
+      throw new SessionInspectionError('invalid_option', '--before cannot be combined with --follow.');
+    }
     const input: InspectSessionOptions = {
       homeDir: deps.homeDir(),
       reference,
       agent: options.agent,
       workspace: options.workspace,
+      before: options.before,
+      maxBytes: options.maxBytes,
     };
     if (options.follow !== true) {
       const inspection = await deps.inspectSession(input);
@@ -122,12 +129,14 @@ export function registerSessionCommand(parent: Command, overrides: Partial<Sessi
     .argument('<session>', 'Session link, session_<uuid>, or bare UUID.')
     .option('--json', 'Print stable machine-readable JSON. With --follow, emit one snapshot per NDJSON line.')
     .option('--agent <id|name>', 'Show only one agent timeline, status, and last activity.')
+    .option('--before <cursor>', 'Read the preceding wire window at the original fixed watermark.')
+    .option('--max-bytes <bytes>', 'Target wire window size (1–8388608 bytes; prefers turn boundaries, with record continuation for long turns).')
     .option('--follow', 'Follow on-disk changes observationally without attaching to or modifying the session.')
     .option('--workspace <workspace-id>', 'Select one copy when the session exists in multiple workspaces.')
     .action(
       async (
         reference: string,
-        options: { json?: boolean; agent?: string; follow?: boolean; workspace?: string },
+        options: { json?: boolean; agent?: string; follow?: boolean; workspace?: string; before?: string; maxBytes?: string },
       ) => {
         const rawArgs = commandRawArgs(parent);
         const trailingAgent = trailingOptionValue(rawArgs, 'show', '--agent');
@@ -150,6 +159,8 @@ export function registerSessionCommand(parent: Command, overrides: Partial<Sessi
             json: options.json === true,
             agent: trailingAgent,
             workspace: options.workspace,
+            before: options.before,
+            maxBytes: options.maxBytes === undefined ? undefined : Number(options.maxBytes),
             follow: options.follow === true,
             signal: controller?.signal,
           });

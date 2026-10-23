@@ -1,11 +1,51 @@
 import { describe, expect, it } from 'vitest';
 import { AgentTranscript, applyContentSegment, jsonBytes, rebindTurnContentRefs, transcriptTurnSchema, type ContentRef, type ContentWindow, type TranscriptTurn } from '@kiki/transcript';
 import { patchAgentTranscriptContent } from '../../session-core/src/session/transcript/content';
-import { boundedEntity, readContentSegment } from '../src/transport/klient/boundedContent';
+import { boundedEntity, boundedListPreview, readContentSegment } from '../src/transport/klient/boundedContent';
 import { boundedAttachment, boundedTranscriptOps, boundedTranscriptPageSource, boundedTranscriptSnapshot } from '../src/transport/klient/boundedTranscript';
 import { inlineMediaFile } from '../src/services/inlineMedia';
 
 describe('bounded canonical content', () => {
+  it('keeps full bare IDs when sidebar preview pressure reaches its smallest text window', () => {
+    const original = {
+      id: 'session_11111111-2222-4333-8444-555555555555', workspace_id: 'workspace_11111111-2222-4333-8444-555555555555',
+      title: 'title'.repeat(1000), last_prompt: 'prompt'.repeat(1000),
+      metadata: Object.fromEntries(Array.from({ length: 36 }, (_, index) => [`p${index}`, 'body'.repeat(1000)])),
+    };
+    const preview = boundedListPreview(original);
+    expect(preview.id).toBe(original.id);
+    expect(preview.workspace_id).toBe(original.workspace_id);
+    expect(preview.title.length).toBeLessThan(original.title.length);
+    expect(jsonBytes(preview)).toBeLessThanOrEqual(2048);
+    expect(original.id).toHaveLength(44);
+  });
+
+  it('keeps nested bare IDs and existing source URL contracts while segmenting prose', () => {
+    const original = {
+      id: 'entity-' + 'i'.repeat(100),
+      source: { id: 'source-' + 's'.repeat(100), referenceId: 'reference-' + 'r'.repeat(100), connection_id: 'connection-' + 'c'.repeat(100), url: 'https://example.test/' + 'u'.repeat(200) },
+      text: 'body'.repeat(5000),
+    };
+    const preview = boundedEntity(original, { kind: 'roster', id: original.id }, 1600);
+    expect(preview).toMatchObject({ id: original.id, source: original.source });
+    expect(preview.text.length).toBeLessThan(original.text.length);
+    expect(preview.contentRefs?.every((ref) => ref.path[0] === 'text')).toBe(true);
+    expect(jsonBytes(preview)).toBeLessThanOrEqual(1600);
+  });
+
+  it('bounds oversized custom locators without losing the sidebar ID', () => {
+    const original = {
+      id: 'session_11111111-2222-4333-8444-555555555555',
+      coverUrl: 'u'.repeat(70000), sourcePath: 'p'.repeat(70000), sourceRoot: 'r'.repeat(70000), sessionRef: 's'.repeat(70000),
+    };
+    const preview = boundedListPreview(original);
+    expect(preview.id).toBe(original.id);
+    expect(jsonBytes(preview)).toBeLessThanOrEqual(2048);
+    for (const key of ['coverUrl', 'sourcePath', 'sourceRoot', 'sessionRef'] as const) {
+      expect(preview[key].length).toBeLessThan(original[key].length);
+    }
+  });
+
   it('bounds raw turn content even when its canonical reference list is empty', () => {
     const turn = transcriptTurnSchema.parse({ kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, prompt: 'raw'.repeat(10_000), steps: [], contentRefs: [] });
     const transcript = new AgentTranscript('main');

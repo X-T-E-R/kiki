@@ -32,6 +32,13 @@ export function renderSessionInspection(inspection: SessionInspection): string {
   else {
     for (const entry of inspection.timeline) lines.push(...renderTimelineEntry(entry));
   }
+  if (inspection.wire !== undefined) {
+    const wire = inspection.wire;
+    lines.push('', `Wire bytes: ${wire.startByteOffset}–${wire.endByteOffset} / ${wire.watermark} (fixed watermark)`);
+    if (wire.nextCursor !== null) {
+      lines.push(`Older: kiki session show ${session.id} --workspace ${session.workspaceId} --agent ${inspection.selectedAgent.id} --before ${wire.nextCursor}`);
+    }
+  }
   if (inspection.warnings.length > 0) {
     lines.push('', 'Warnings:');
     for (const warning of inspection.warnings) lines.push(`- ${sanitizeTerminalText(warning)}`);
@@ -147,6 +154,8 @@ function timelineEntryKey(entry: SessionTimelineEntry): string {
 function renderTimelineEntry(entry: SessionTimelineEntry): string[] {
   const at = entry.timestamp === null ? '' : `[${entry.timestamp}] `;
   switch (entry.type) {
+    case 'wire-record':
+      return renderTextBlock(`${at}WIRE ${entry.record.type} @ byte ${entry.byteOffset} (turn continuation)`, compactValue(entry.record));
     case 'message': {
       const origin = entry.role === 'user' && entry.origin !== 'user' ? ` (${entry.origin})` : '';
       return renderTextBlock(`${at}${entry.role.toUpperCase()}${origin}`, entry.text);

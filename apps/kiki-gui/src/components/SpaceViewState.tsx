@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { Navigate, useLocation, useMatch, useNavigate } from 'react-router-dom';
+import type { SessionListData } from '@kiki/session-core/sessions';
 import { readLastSessionId, writeLastSessionId } from '@kiki/session-core/settings';
 
 import { useHost } from '../host';
@@ -9,6 +10,17 @@ import { createBotRoomApi } from '../lib/botRooms';
 import { isSessionNotFoundMessage } from '../lib/client';
 import { markSpaceViewRoute, writeSpaceViewRoute } from '../lib/spaceViewState';
 import { useConnection, useOptionalControllerRegistry } from '../state/connection';
+
+/** Re-read an absence before trusting it: one index miss during a resume is not a deletion. */
+export const SESSION_ABSENCE_RECHECK_DELAYS_MS = [250, 750] as const;
+
+/** A loaded roster row is independent evidence that the id is not a deletion event. */
+export function sessionListedInCache(queryClient: QueryClient, sessionId: string): boolean {
+  for (const [, data] of queryClient.getQueriesData<SessionListData>({ queryKey: ['sessions'] })) {
+    if (data?.pages?.some((page) => page.items.some((item) => item.id === sessionId)) === true) return true;
+  }
+  return false;
+}
 
 export function SpaceViewMemory() {
   const { scopeId } = useConnection();
@@ -41,6 +53,9 @@ export function SpaceViewState({ children }: { readonly children: ReactNode }) {
   const queryKey = ['space-view-target', scopeId, sessionId === undefined ? 'room' : 'session', targetId];
   const targetKey = JSON.stringify(queryKey);
   const admittedTarget = useRef<{ queryClient: QueryClient; key: string } | null>(null);
+  // Freshness is per target: switching /s/a -> /s/b must not trust a's settled read for b.
+  const mountedAt = useRef({ key: targetKey, at: Date.now() });
+  if (mountedAt.current.key !== targetKey) mountedAt.current = { key: targetKey, at: Date.now() };
   const createdSession = (location.state as { createdSession?: { id?: string; scopeId?: string } } | null)?.createdSession;
   const createdHere = sessionId !== undefined && createdSession?.id === sessionId && createdSession.scopeId === scopeId;
   const target = useQuery({
@@ -49,12 +64,23 @@ export function SpaceViewState({ children }: { readonly children: ReactNode }) {
     retry: false,
     queryFn: async () => {
       if (sessionId !== undefined) {
-        try {
-          await client.getSession(sessionId);
-          return true;
-        } catch (error) {
-          if (error instanceof Error && isSessionNotFoundMessage(error.message)) return false;
-          throw error;
+        for (let attempt = 0; ; attempt += 1) {
+          try {
+            await client.getSession(sessionId);
+            return true;
+          } catch (error) {
+            if (!(error instanceof Error) || !isSessionNotFoundMessage(error.message)) throw error;
+            const delay = SESSION_ABSENCE_RECHECK_DELAYS_MS[attempt];
+            if (delay !== undefined) {
+              await new Promise<void>((resolve) => { setTimeout(resolve, delay); });
+              continue;
+            }
+            // A roster row still carrying this id contradicts an absence. Admit the
+            // view and let the session surface own its error and Retry; the roster
+            // dropping the row turns the next absence back into a deletion.
+            if (sessionListedInCache(queryClient, sessionId)) return true;
+            return false;
+          }
         }
       }
       return (await createBotRoomApi(client).getRoom(roomId ?? '')) !== undefined;
@@ -80,8 +106,13 @@ export function SpaceViewState({ children }: { readonly children: ReactNode }) {
   // its controller mounted during revalidation; an old cache entry cannot.
   const confirmed = (target.data === true && (createdHere ||
     (admittedTarget.current?.queryClient === queryClient && admittedTarget.current.key === targetKey))) || hasRetainedController;
-  const checking = targetId !== undefined && !hasRetainedController && (target.isPending || (target.isFetching && !confirmed));
-  const missing = !checking && !target.isError && !target.isFetching && targetId !== undefined && target.data === false;
+  // A cached result is not a read: an old negative must be re-read before the route can leave,
+  // and an old positive must be re-read before the controller may mount.
+  const readThisVisit = Math.max(target.dataUpdatedAt, target.errorUpdatedAt) >= mountedAt.current.at;
+  const checking = targetId !== undefined && !hasRetainedController && !confirmed &&
+    (target.isPending || target.isFetching || !readThisVisit);
+  const missing = !checking && !target.isError && !target.isFetching && targetId !== undefined &&
+    target.data === false && readThisVisit;
   const navigate = useNavigate();
   useLayoutEffect(() => {
     admittedTarget.current = !checking && target.data === true ? { queryClient, key: targetKey } : null;
