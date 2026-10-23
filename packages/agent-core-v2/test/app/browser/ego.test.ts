@@ -160,6 +160,36 @@ describe('Ego Lite runtime', () => {
     expect(files.get(join('C:/session', 'browser-ego-spaces.json'))).toContain('space-1');
   });
 
+  it('resumes the same space when successful native help mentions an ownership error', async () => {
+    const { files, fs } = memoryFs([versioned]);
+    const help = 'Reuse or create an Agent-owned task space; a name held by a user-owned space fails with EGO_TASK_SPACE_NAME_IN_USE.';
+    let round = 0;
+    const proc = scripted(() => ({ stdout: marked('32', false, ++round === 1 ? '' : `${help}\nEGO_TASK_SPACE_USER_IN_CONTROL\n`) }));
+    const runtime = new EgoBrowserRuntime(proc.service, fs, { PATH: '' }, 'linux');
+    const input = { connection, sessionDir: 'C:/session', sessionId: 's', agentId: 'a' };
+    const first = await runtime.runAgent({ ...input, body: 'console.log({ spaceId: task.spaceId }); help("profiles");' });
+    const second = await runtime.runAgent({ ...input, body: 'console.log(await profiles()); help("taskSpace");' });
+    expect(first.binding.spaceId).toBe('32');
+    expect(second.binding).toEqual(first.binding);
+    expect(second.result.code).toBe(0);
+    expect(second.result.stdout).toContain(help);
+    expect(proc.calls).toHaveLength(2);
+    const scripts = [...files.values()].filter((value) => value.startsWith('const __kikiBound'));
+    expect(scripts[1]).toContain(JSON.stringify(JSON.stringify({ spaceId: '32', name: egoSpaceName('s', 'a'), connectionId: connection.id })));
+    expect(scripts[1]).not.toContain('claimTaskSpace');
+  });
+
+  it('does not replay an entered script when its failure mentions a rejected sdk option', async () => {
+    const sdk = join(root, 'sdk.js');
+    const { fs } = memoryFs([versioned, sdk]);
+    const proc = scripted(() => ({ code: 1, stdout: 'KIKI_EGO_PRELUDE {"spaceId":32}\n', stderr: 'Error: unknown option --sdk-path from script' }));
+    const runtime = new EgoBrowserRuntime(proc.service, fs, { PATH: '', KIKI_EGO_SDK_PATH: sdk }, 'linux');
+    const ran = await runtime.runAgent({ connection, sessionDir: 'C:/session', sessionId: 's', agentId: 'a', body: 'throw new Error("unknown option --sdk-path from script");' });
+    expect(ran.result.code).toBe(1);
+    expect(ran.binding.spaceId).toBe('32');
+    expect(proc.calls).toHaveLength(1);
+  });
+
   it('does not claim a name in use or a user-controlled space, and keeps a newer binding', async () => {
     const sdk = join(root, 'sdk.js');
     const { files, fs } = memoryFs([versioned, sdk]);
@@ -221,6 +251,34 @@ describe('Ego Lite runtime', () => {
     } finally {
       proc.kills.forEach((kill) => release(kill));
       await Promise.allSettled([first, second, third]);
+    }
+  });
+
+  it('reads the completed binding inside a stable queue before resuming a configured profile', async () => {
+    const { files, fs } = memoryFs([versioned]);
+    const proc = scripted(() => ({ hang: true, stdout: marked('32') }));
+    const runtime = new EgoBrowserRuntime(proc.service, fs, { PATH: '' }, 'linux');
+    const input = { connection: { ...connection, profileId: 'fixture-profile' }, sessionDir: 'C:/session', sessionId: 's', agentId: 'a', body: 'console.log(task.spaceId);' };
+    const pending = [runtime.runAgent(input)];
+    try {
+      await vi.waitFor(() => expect(proc.calls).toHaveLength(1));
+      pending.push(runtime.runAgent(input));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      release(proc.kills[0]);
+      await pending[0];
+      await vi.waitFor(() => expect(proc.calls).toHaveLength(2));
+      const scripts = [...files.values()].filter((value) => value.startsWith('const __kikiBound'));
+      expect(scripts[1]).toContain('\\"spaceId\\":\\"32\\"');
+      expect(scripts[1]).not.toContain('{ profileId: __kikiBound.profileId }');
+      pending.push(runtime.runAgent(input));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(proc.calls).toHaveLength(2);
+      release(proc.kills[1]);
+      await vi.waitFor(() => expect(proc.calls).toHaveLength(3));
+      expect(proc.max()).toBe(1);
+    } finally {
+      proc.kills.forEach((kill) => release(kill));
+      await Promise.allSettled(pending);
     }
   });
 
@@ -327,6 +385,73 @@ describe('Ego Lite control', () => {
       expect(browserConnectionRecord(configs.get('ego-lite')!)).toEqual({ id: 'ego-lite', name: 'Ego Lite', enabled: true, type: 'ego-lite', cliPath: exe, profileId: undefined, serverName: undefined });
       expect(browserConnectionRecord(configs.get('ego-lite')!)).not.toHaveProperty('endpointDisplay');
     } finally { await ix.dispose(); }
+  });
+});
+
+describe('Ego Lite successful status recovery', () => {
+  it.each(['script', 'tabs'] as const)('clears only the starting failure on %s success and preserves newer failures', async (action) => {
+    const { fs } = memoryFs([versioned]);
+    let healthy = true;
+    const proc = scripted(() => ({ stdout: healthy ? 'kiki-ego-ready\n' : '' }));
+    const ix = new TestInstantiationService();
+    ix.stub(IFlagService, { enabled: () => true });
+    ix.stub(IHostProcessService, proc.service);
+    ix.stub(IHostFileSystem, fs);
+    ix.stub(IBrowserBackendFactory, { open: vi.fn(async () => { throw new Error('unused'); }) });
+    ix.stub(IBrowserConnectionStore, {
+      list: async () => ({ connections: [browserConnectionRecord(connection)] }),
+      resolve: async () => connection,
+    });
+    ix.set(IBrowserControlService, new SyncDescriptor(BrowserControlService));
+    const control = ix.get(IBrowserControlService);
+    const caller = { sessionId: 's', agentId: 'a' };
+    const context = { caller, sessionDir: 'C:/session', turnId: 0, toolCallId: 't', elicit: async () => { throw new Error('unused'); } } satisfies BrowserRequestContext;
+    const invoke = () => control.invoke({ browser: connection.id, tool: 'browser__ego_run', args: { script: 'console.log(task.spaceId);' }, caller, requestContext: context });
+    const succeed = () => action === 'script' ? invoke() : control.tabs(connection.id, undefined, context);
+    const success = {
+      result: { code: 0, stdout: '32', stderr: '', aborted: false, scriptPath: 'C:/fixture.mjs', argv: [] },
+      binding: { connectionId: connection.id, name: egoSpaceName('s', 'a'), spaceId: '32' },
+      tabs: [{ tabId: 'p1', targetId: 'p1' }], refused: false, shots: [],
+    };
+    const run = vi.spyOn(EgoBrowserRuntime.prototype, 'runAgent');
+    try {
+      await control.connect(connection.id);
+      run.mockRejectedValueOnce(new BrowserError('browser.execution_failed', 'EGO_TASK_SPACE_NAME_IN_USE'));
+      await expect(invoke()).rejects.toMatchObject({ message: 'EGO_TASK_SPACE_NAME_IN_USE' });
+      run.mockResolvedValueOnce(success);
+      await succeed();
+      expect(await control.status(connection.id)).toMatchObject({ state: 'ready', generation: 1, error: undefined, failure: undefined });
+      for (const reconnect of [false, true]) {
+        await control.connect(connection.id);
+        run.mockRejectedValueOnce(new BrowserError('browser.execution_failed', 'starting failure'));
+        await expect(invoke()).rejects.toMatchObject({ message: 'starting failure' });
+        let resolve: (value: typeof success) => void = () => undefined;
+        run.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+        const before = run.mock.calls.length;
+        const pending = succeed();
+        const settled = pending.then(() => undefined, (error: unknown) => error);
+        await vi.waitFor(() => expect(run.mock.calls.length).toBe(before + 1));
+        if (reconnect) {
+          await control.disconnect(connection.id);
+          await control.connect(connection.id);
+          run.mockRejectedValueOnce(new BrowserError('browser.execution_failed', 'newer failure'));
+          await expect(invoke()).rejects.toMatchObject({ message: 'newer failure' });
+        } else {
+          healthy = false;
+          await control.check(connection.id);
+          healthy = true;
+        }
+        const newer = await control.status(connection.id);
+        expect(newer.failure).toMatchObject({ code: 'browser.execution_failed' });
+        resolve(success);
+        if (reconnect) expect(await settled).toMatchObject({ code: 'browser.disconnected' });
+        else expect(await settled).toBeUndefined();
+        expect(await control.status(connection.id)).toEqual(newer);
+      }
+    } finally {
+      run.mockRestore();
+      await ix.dispose();
+    }
   });
 });
 

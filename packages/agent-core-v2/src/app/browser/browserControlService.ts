@@ -692,8 +692,11 @@ export class BrowserControlService implements IBrowserControlService {
     await this.assertAdmission(live);
     this.assertReady(live);
     if (context?.sessionDir === undefined) throw new BrowserError('browser.invalid', 'Ego Lite tabs need the agent session directory');
+    const started = live.status;
     const ran = await this.ego.runAgent({ connection: live.connection, sessionDir: context.sessionDir, sessionId: context.caller.sessionId, agentId: context.caller.agentId, body: egoTabBody('list'), signal });
-    if (ran.tabs === undefined) throw new BrowserError('browser.execution_failed', 'Ego Lite did not return tabs');
+    if (live.status.generation !== started.generation) throw new BrowserError('browser.disconnected', 'Ego Lite connection was disconnected');
+    if (ran.result.code !== 0 || ran.tabs === undefined) throw new BrowserError('browser.execution_failed', 'Ego Lite did not return tabs');
+    if (live.status.error === started.error && live.status.failure === started.failure) live.status = { ...live.status, error: undefined, failure: undefined };
     return ran.tabs;
   }
 
@@ -713,7 +716,8 @@ export class BrowserControlService implements IBrowserControlService {
     const label = action === 'open' || action === 'script' ? input.tab : textArg(input.args, 'tab') ?? input.tab;
     const body = action === 'script' ? textArg(input.args, 'script') : egoTabBody(action);
     if (body === undefined || body === '') throw new BrowserError('browser.invalid', 'Ego Lite script is required');
-    const startedGeneration = live.status.generation;
+    const started = live.status;
+    const startedGeneration = started.generation;
     live.status = { ...live.status, state: 'running', currentCall: { ...input.caller, tool: input.tool, tab: label } };
     try {
       const ran = await this.ego.runAgent({
@@ -725,7 +729,9 @@ export class BrowserControlService implements IBrowserControlService {
       if (live.status.generation !== startedGeneration) throw new BrowserError('browser.disconnected', 'Ego Lite connection was disconnected');
       if (ran.refused) throw new BrowserError('browser.target', 'Only an agent-opened labeled Ego Lite tab can be closed');
       if (ran.result.code !== 0) throw new BrowserError('browser.execution_failed', ran.result.stderr.trim() || ran.result.stdout.trim() || 'Ego Lite script failed');
-      live.status = { ...live.status, state: live.admitting ? 'ready' : 'stopping', currentCall: undefined, checkedAt: new Date().toISOString() };
+      if (live.status.error === started.error && live.status.failure === started.failure) {
+        live.status = { ...live.status, state: live.admitting ? 'ready' : 'stopping', currentCall: undefined, checkedAt: new Date().toISOString(), error: undefined, failure: undefined };
+      }
       return { browser: input.browser, generation: live.status.generation, executionHost: live.status.executionHost, runtimeSession: ran.binding.spaceId ?? ran.binding.name,
         tab: ran.pageLabel ?? label, result: { isError: false, content: [{ type: 'text', text: egoUserOutput(ran.result) }], structuredContent: { response: { success: true, data: { label: ran.pageLabel, spaceId: ran.binding.spaceId, shots: ran.shots } } } } };
     } catch (error) {

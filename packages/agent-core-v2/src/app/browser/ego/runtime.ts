@@ -324,7 +324,7 @@ export class EgoBrowserRuntime {
     let outcome = await this.spawn(cli, argv, signal);
     const first = `${outcome.stdout}\n${outcome.stderr}`;
     const flags = egoOutputFlags(first);
-    if (!outcome.aborted && sdk !== undefined && outcome.code !== 0 && flags.sdkRejected && !flags.nameInUse && !flags.userInControl) {
+    if (!outcome.aborted && sdk !== undefined && outcome.code !== 0 && flags.sdkRejected && !flags.nameInUse && !flags.userInControl && parseMarker(first, PRELUDE) === undefined) {
       argv = egoArgv(serverName, scriptPath);
       outcome = await this.spawn(cli, argv, signal);
     }
@@ -355,39 +355,41 @@ export class EgoBrowserRuntime {
     if (resolution.kind === 'missing') throw new BrowserError('browser.disconnected', 'Ego Lite is not installed');
     if (resolution.kind === 'choose') throw new BrowserError('browser.requires_action', 'Choose one Ego Lite CLI path');
     const name = egoSpaceName(input.sessionId, input.agentId);
-    const started = (await this.readBinding(input.sessionDir, input.agentId)) ?? { connectionId: input.connection.id, name };
     const stop = this.agentStop(input.connection.id);
-    const key = `${input.connection.id}\0${started.spaceId ?? started.name}`;
+    const key = `${input.connection.id}\0${input.sessionDir}\0${input.agentId}`;
     return this.lock(key, async () => {
-      const bound: EgoBound = {
-        ...(started.spaceId !== undefined ? { spaceId: started.spaceId } : {}),
-        name: started.name,
-        ...(input.label !== undefined && input.label !== '' ? { label: input.label } : {}),
-        ...(input.connection.type === 'ego-lite' && input.connection.profileId !== undefined ? { profileId: input.connection.profileId } : {}),
-        connectionId: input.connection.id,
-        ...(input.url !== undefined ? { url: input.url } : {}),
-      };
-      const shotDir = join(input.sessionDir, 'ego-shots', randomUUID());
-      await this.files.mkdir(shotDir, { recursive: true });
-      const result = await this.run(resolution.path, input.connection, input.sessionDir, egoProgram(bound, input.body, shotDir), linkAbort(input.signal, stop));
-      const output = `${result.stdout}\n${result.stderr}`;
-      const flags = egoOutputFlags(output);
-      if (result.aborted || flags.nameInUse || flags.userInControl) {
-        if (flags.nameInUse) throw new BrowserError('browser.execution_failed', EGO_NAME_IN_USE);
-        if (flags.userInControl) throw new BrowserError('browser.execution_failed', EGO_USER_IN_CONTROL);
-        throw (input.signal?.aborted === true ? input.signal.reason : undefined) ?? new BrowserError('browser.execution_failed', 'Ego Lite script was cancelled');
-      }
-      const prelude = parseMarker(output, PRELUDE);
-      const finish = parseMarker(output, FINISH);
-      let written: string | undefined;
-      if (prelude?.spaceId !== undefined && prelude.spaceId !== '') {
-        await this.updateSpace(input.sessionDir, input.agentId, started, prelude.spaceId, input.connection.id);
-        written = prelude.spaceId;
-      }
-      if (result.code === 0 && finish?.closed === true) await this.deleteIfStarted(input.sessionDir, input.agentId, started, written);
-      const binding = (await this.readBinding(input.sessionDir, input.agentId)) ?? { ...started, ...(written !== undefined ? { spaceId: written } : {}) };
-      const shots = await listShots(this.files, shotDir);
-      return { result, binding, tabs: parseTabs(output), pageLabel: parseMarker(output, PAGE)?.label, refused: output.includes(REFUSED), shots };
+      const started = (await this.readBinding(input.sessionDir, input.agentId)) ?? { connectionId: input.connection.id, name };
+      return this.lock(`${input.connection.id}\0space\0${started.spaceId ?? started.name}`, async () => {
+        const bound: EgoBound = {
+          ...(started.spaceId !== undefined ? { spaceId: started.spaceId } : {}),
+          name: started.name,
+          ...(input.label !== undefined && input.label !== '' ? { label: input.label } : {}),
+          ...(input.connection.type === 'ego-lite' && input.connection.profileId !== undefined ? { profileId: input.connection.profileId } : {}),
+          connectionId: input.connection.id,
+          ...(input.url !== undefined ? { url: input.url } : {}),
+        };
+        const shotDir = join(input.sessionDir, 'ego-shots', randomUUID());
+        await this.files.mkdir(shotDir, { recursive: true });
+        const result = await this.run(resolution.path, input.connection, input.sessionDir, egoProgram(bound, input.body, shotDir), linkAbort(input.signal, stop));
+        const output = `${result.stdout}\n${result.stderr}`;
+        const flags = egoOutputFlags(output);
+        if (result.aborted) throw (input.signal?.aborted === true ? input.signal.reason : undefined) ?? new BrowserError('browser.execution_failed', 'Ego Lite script was cancelled');
+        if (result.code !== 0) {
+          if (flags.nameInUse) throw new BrowserError('browser.execution_failed', EGO_NAME_IN_USE);
+          if (flags.userInControl) throw new BrowserError('browser.execution_failed', EGO_USER_IN_CONTROL);
+        }
+        const prelude = parseMarker(output, PRELUDE);
+        const finish = parseMarker(output, FINISH);
+        let written: string | undefined;
+        if (prelude?.spaceId !== undefined && prelude.spaceId !== '') {
+          await this.updateSpace(input.sessionDir, input.agentId, started, prelude.spaceId, input.connection.id);
+          written = prelude.spaceId;
+        }
+        if (result.code === 0 && finish?.closed === true) await this.deleteIfStarted(input.sessionDir, input.agentId, started, written);
+        const binding = (await this.readBinding(input.sessionDir, input.agentId)) ?? { ...started, ...(written !== undefined ? { spaceId: written } : {}) };
+        const shots = await listShots(this.files, shotDir);
+        return { result, binding, tabs: parseTabs(output), pageLabel: parseMarker(output, PAGE)?.label, refused: output.includes(REFUSED), shots };
+      });
     });
   }
 }
