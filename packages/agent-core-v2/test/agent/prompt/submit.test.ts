@@ -148,6 +148,53 @@ describe('prompt submit', () => {
     expect(historyText(ctx.llmCalls.at(-1)!.history)).not.toContain(MESSAGE_DELIVERY_NEXT_TURN_GUIDANCE);
   });
 
+  it('does not guide when a message-mode turn fails after ordinary text', async () => {
+    ctx = createTestAgent();
+    const delivery = ctx.get(ISessionDeliveryService);
+    await delivery.ready;
+    await delivery.set('message');
+    ctx.mockNextProviderResponse({
+      parts: [{ type: 'text', text: 'Filtered ordinary text.' }],
+      finishReason: 'filtered',
+    });
+    const result = await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Please reply.' }] });
+    expect(result.state).toBe('failed');
+    expect(deliveryReminders(ctx)).toHaveLength(0);
+    const last = ctx.get(IAgentContextMemoryService).get().at(-1);
+    expect(last).toMatchObject({
+      role: 'assistant',
+      source: { turnId: 0 },
+      content: [{ type: 'text', text: 'Filtered ordinary text.' }],
+    });
+    expect(last?.partial).not.toBe(true);
+  });
+
+  it('does not guide a cancelled message turn from the previous turn assistant text', async () => {
+    ctx = createTestAgent();
+    const delivery = ctx.get(ISessionDeliveryService);
+    await delivery.ready;
+    const ordinary = 'Older direct reply.';
+    ctx.mockNextResponse({ type: 'text', text: ordinary });
+    const prompts = ctx.get(IAgentPromptService);
+    expect((await prompts.submitAndWait({ input: [{ type: 'text', text: 'First.' }] })).state).toBe('completed');
+    expect(deliveryReminders(ctx)).toHaveLength(0);
+    await delivery.set('message');
+    const loop = ctx.get(IAgentLoopService);
+    const stop = ctx.get(IEventBus).subscribe(TurnStarted, () => {
+      loop.cancel(undefined, new Error('abort'));
+    });
+    const result = await prompts.submitAndWait({ input: [{ type: 'text', text: 'Second.' }] });
+    stop.dispose();
+    expect(result.state).toBe('cancelled');
+    expect(deliveryReminders(ctx)).toHaveLength(0);
+    const last = ctx.get(IAgentContextMemoryService).get().at(-1);
+    expect(last).toMatchObject({
+      role: 'assistant',
+      content: [{ type: 'text', text: ordinary }],
+      source: { turnId: 0 },
+    });
+  });
+
   it('materializes a frozen persona greeting only on explicit reply and only once', async () => {
     ctx = createTestAgent();
     const profile = ctx.get(IAgentProfileService);

@@ -11,8 +11,8 @@ export function isSessionDeliveryMode(value: unknown): value is SessionDeliveryM
 }
 
 export function resolveCreateDeliveryMode(input: {
-  readonly requested?: SessionDeliveryMode | undefined;
-  readonly personaDelivery?: SessionDeliveryMode | undefined;
+  readonly requested?: SessionDeliveryMode;
+  readonly personaDelivery?: SessionDeliveryMode;
   readonly hasPersona: boolean;
 }): SessionDeliveryMode {
   if (isSessionDeliveryMode(input.requested)) return input.requested;

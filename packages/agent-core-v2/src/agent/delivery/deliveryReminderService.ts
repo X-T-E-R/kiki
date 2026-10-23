@@ -55,7 +55,8 @@ export class DeliveryReminderService extends Service implements IAgentDeliveryRe
       this.turns.delete(event.turnId);
       if (
         state !== undefined && state.messageMode && state.triggered && !state.sent &&
-        hasAssistantText(context.get())
+        event.reason === 'completed' &&
+        hasCompletedTurnAssistantText(context.get(), event.turnId)
       ) {
         reminders.appendSystemReminder(MESSAGE_DELIVERY_NEXT_TURN_GUIDANCE, {
           kind: 'injection',
@@ -78,9 +79,20 @@ function shouldRemind(origin: PromptOrigin): boolean {
   return origin.kind === 'user' || origin.kind === 'peer_thread' || origin.kind === 'bridged_peer' || (origin.kind === 'room_message' && origin.targeted);
 }
 
-function hasAssistantText(messages: readonly { readonly role: string; readonly content: readonly { readonly type: string; readonly text?: string }[] }[]): boolean {
+function hasCompletedTurnAssistantText(
+  messages: readonly {
+    readonly role: string;
+    readonly partial?: boolean;
+    readonly source?: { readonly turnId?: number };
+    readonly content: readonly { readonly type: string; readonly text?: string }[];
+  }[],
+  turnId: number,
+): boolean {
   const message = messages.at(-1);
-  return message?.role === 'assistant' && message.content.some((part) => part.type === 'text' && (part.text?.length ?? 0) > 0);
+  return message?.role === 'assistant'
+    && message.partial !== true
+    && message.source?.turnId === turnId
+    && message.content.some((part) => part.type === 'text' && (part.text?.length ?? 0) > 0);
 }
 
 registerScopedService(LifecycleScope.Agent, IAgentDeliveryReminderService, DeliveryReminderService, ScopeActivation.OnScopeCreated, 'deliveryReminder');

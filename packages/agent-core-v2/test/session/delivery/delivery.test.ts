@@ -89,7 +89,6 @@ describe('SessionDeliveryService', () => {
     await first.set('message');
     expect(await ix.get(IAtomicDocumentStore).get(META_SCOPE, 'delivery.json')).toEqual({ mode: 'message' });
     expect((await ix.get(ISessionMetadata).read()).delivery).toBe('message');
-    // Second instance: the container singleton cannot reload the same service.
     const reopened = ix.createInstance(SessionDeliveryService);
     await reopened.ready;
     expect(reopened.mode()).toBe('message');
