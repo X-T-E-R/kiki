@@ -212,20 +212,25 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
         const listed = await this.store.list();
         signal?.throwIfAborted();
         if (this._store.isDisposed) throw new BrowserError('browser.disconnected', 'This agent browser scope has closed');
-        const backend = catalogBackend(tools);
+        const conn = listed.connections.find((entry) => entry.id === browser);
+        const toolBackend = catalogBackend(tools);
+        const backend = conn?.type === 'ego-lite' ? 'ego-lite' : toolBackend;
         const retained = new Map((this.loadedCatalog.get(browser)?.tools ?? []).map((tool) => [tool.name, tool]));
         for (const name of input.unload ?? []) retained.delete(name);
         const operations = tools.filter((tool) => isBrowserOperation(tool.name));
         const requested = operations.filter((tool) => input.groups?.includes(browserToolGroup(tool.name) as 'page') || input.tools?.includes(tool.name));
-        const conn = listed.connections.find((entry) => entry.id === browser);
         const sourceEnabled = conn !== undefined && listed.disabledSources?.includes(browserSourceOfConnection(conn)) !== true;
         const allowed = sourceEnabled && browserOperationAllowed(listed.allowedBrowsers, browser);
         if (allowed) for (const tool of requested) retained.set(tool.name, tool);
         if (retained.size === 0) this.loadedCatalog.delete(browser);
-        else this.loadedCatalog.set(browser, { backend, tools: [...retained.values()] });
+        else this.loadedCatalog.set(browser, { backend: toolBackend, tools: [...retained.values()] });
         this.refreshLoaded();
         return this.json({ browser, backend, namespace: backend, backendToolCount: tools.length,
-          contextIsolation: backend === 'official-cua-repl'
+          nativeTool: backend === 'ego-lite' ? 'browser__ego_run' : undefined,
+          executionMode: backend === 'ego-lite' ? 'native-script' : undefined,
+          contextIsolation: backend === 'ego-lite'
+            ? 'Ego Lite native control runs through browser__ego_run in this agent session\'s bound task space. The script receives task and shotDir; after BrowserTabs selects a page, it also receives page. Use that tool\'s schema and description for snapshot, interaction, navigation, and screenshot guidance. Window and frame tools are not available.'
+            : backend === 'official-cua-repl'
             ? 'Official extension browser/tab ids are preserved. Use codex_browser_js and its runtime documentation; window/frame emulation is unsupported.'
             : backend === 'codex-browser-bridge'
               ? 'Tools that declare tab_id use this agent\'s selected tab. codex_claim_tab keeps the user-tab id returned by codex_user_tabs. The bridge writes its own session id on the pipe frame; Kiki caller metadata stays on the MCP request and is not copied onto that frame. Approval remains the existing elicitation.'
@@ -236,9 +241,11 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
             reason: 'Donor-wide installation, plugins, credential or cross-session administration is outside a selected page execution lease.' })),
           loaded: allowed && listed.connections.some((entry) => entry.id === browser && entry.enabled)
             ? [...retained.keys()].map((name) => this.modelName(name)).filter((name) => this.registrations.has(name)) : [], allowed, status: await this.control.status(browser),
-          note: allowed
-            ? 'Use groups or tools to load only the typed operations needed for this task. Tab/frame lifecycle uses BrowserTabs. Browser installation and cross-session management are not page operations.'
-            : 'This connection is visible but not in the allowed set, so its operation tools were not registered. List and discover stay available.' });
+          note: !allowed
+            ? 'This connection is visible but not in the allowed set, so its operation tools were not registered. List and discover stay available.'
+            : backend === 'ego-lite'
+              ? 'backendToolCount is the typed donor catalog count. Ego Lite exposes zero typed donor operations because its existing native control surface is browser__ego_run in native-script mode.'
+              : 'Use groups or tools to load only the typed operations needed for this task. Tab/frame lifecycle uses BrowserTabs. Browser installation and cross-session management are not page operations.' });
       }
       if (input.action === 'connect') return this.json(await this.control.connect(browser, signal, this.requestContext(ctx)));
       if (input.action === 'disconnect') { const status = await this.control.disconnect(browser, signal); this.selections.delete(browser); return this.json(status); }

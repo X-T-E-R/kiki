@@ -474,6 +474,41 @@ describe('native browser agent selection, schema and local file channel', () => 
     } finally { await ix.dispose(); }
   });
 
+  it('describes Ego native-script control without inventing typed donor tools', async () => {
+    const ix = new TestInstantiationService();
+    const ego: BrowserConfig['connections'][string] = { type: 'ego-lite', name: 'Ego Lite', enabled: true, cliPath: 'C:/EgoLite/ego-browser.exe' };
+    const browser = sameBrowserControl({ ego });
+    ix.stub(IBrowserConnectionStore, browser.store);
+    ix.stub(defaults, { ready: Promise.resolve('ego') });
+    ix.stub(IAgentScopeContext, { agentId: 'main' });
+    ix.stub(ISessionContext, { sessionId: 'fixture-session', sessionDir: '/fixture/session' });
+    ix.stub(ISessionWorkspaceContext, { workDir: '/fixture', additionalDirs: [] });
+    ix.stub(IAgentRuntimeService, {});
+    ix.stub(ISessionMediaStore, {});
+    ix.stub(ISessionInteractionService, { hasConsumer: () => false });
+    ix.stub(IFlagService, { enabled: () => true });
+    ix.stub(IConfigService, browser.configService);
+    ix.stub(IAgentToolPolicyService, { isToolActiveForDisclosure: () => true });
+    ix.set(IAgentToolRegistryService, new SyncDescriptor(AgentToolRegistryService));
+    ix.set(IEventBus, new SyncDescriptor(EventBusService));
+    ix.stub(IBrowserControlService, {
+      catalog: async () => [],
+      status: async () => ({ browser: 'ego', state: 'ready' as const, executionHost: 'fixture-host', generation: 2 }),
+      endTurn: async () => undefined,
+    });
+    ix.set(IAgentBrowserService, new SyncDescriptor(AgentBrowserService));
+    try {
+      const service = ix.get(IAgentBrowserService);
+      const registry = ix.get(IAgentToolRegistryService);
+      const described = JSON.parse((await service.connections({ action: 'tools', browser: 'ego', groups: ['page'] })).output as string) as Record<string, unknown>;
+      expect(described).toMatchObject({ backend: 'ego-lite', namespace: 'ego-lite', backendToolCount: 0, nativeTool: 'browser__ego_run', executionMode: 'native-script', operations: [], loaded: [], allowed: true });
+      expect(described['contextIsolation']).toEqual(expect.stringContaining('task'));
+      expect(described['contextIsolation']).toEqual(expect.stringContaining('shotDir'));
+      expect(described['note']).toEqual(expect.stringContaining('zero typed donor operations'));
+      expect(registry.list()).toEqual([]);
+    } finally { await ix.dispose(); }
+  });
+
   it('keeps an explicitly selected discovered Ego connection for a later omitted-browser call', async () => {
     const ix = new TestInstantiationService();
     const sections = new Emitter<ConfigSectionChangedEvent>();
@@ -532,9 +567,10 @@ describe('native browser agent selection, schema and local file channel', () => 
     } finally { await ix.dispose(); }
   });
 
-  it('activates browser__ego_run for a custom enabled Ego id and withdraws it when the source is off', async () => {
+  it('activates browser__ego_run for a custom enabled Ego id and withdraws it for source off or tool deny', async () => {
     const browser = sameBrowserControl({ customEgo: { type: 'ego-lite', name: 'Custom Ego', enabled: true, cliPath: 'C:/EgoLite/ego-browser.exe' } });
     browser.config.allowedBrowsers = ['customEgo'];
+    const denied: string[] = [];
     const disposables = new DisposableStore();
     const ix = createServices(disposables, {
       strict: true,
@@ -542,7 +578,7 @@ describe('native browser agent selection, schema and local file channel', () => 
         reg.definePartialInstance(IAgentProfileService, { data: () => ({ modelCapabilities: UNKNOWN_CAPABILITY, thinkingLevel: '', systemPrompt: '' }) });
         reg.definePartialInstance(IConfigService, browser.configService);
         reg.definePartialInstance(IFlagService, { enabled: () => true });
-        reg.definePartialInstance(IAgentToolPolicyService, { isToolActiveForDisclosure: () => true });
+        reg.definePartialInstance(IAgentToolPolicyService, { isToolActiveForDisclosure: (name) => isToolActive({ tools: ['browser__ego_run'], disallowedTools: denied }, name) });
         reg.definePartialInstance(IAgentRuntimeService, { onDidChange: Event.None as Event<void>, isAvailable: () => true });
         reg.definePartialInstance(ISessionDeliveryService, { effectiveMode: () => 'reply', onDidChangeEffective: Event.None as Event<'reply'> });
         reg.definePartialInstance(IShippedAgentProfileManager, { ready: Promise.resolve(), onDidChange: Event.None as Event<void>, isCleanActivePath: () => false });
@@ -566,6 +602,12 @@ describe('native browser agent selection, schema and local file channel', () => 
       expect(registry.resolve('browser__ego_run')).toBeUndefined();
       browser.config.disabledSources = undefined;
       publishBrowser(browser.sections, browser.config);
+      expect(registry.resolve('browser__ego_run')).toBeInstanceOf(BrowserEgoRunTool);
+      denied.push('browser__ego_run');
+      browser.sections.fire({ domain: 'tools', source: 'set', value: {}, previousValue: {} });
+      expect(registry.resolve('browser__ego_run')).toBeUndefined();
+      denied.length = 0;
+      browser.sections.fire({ domain: 'tools', source: 'set', value: {}, previousValue: {} });
       expect(registry.resolve('browser__ego_run')).toBeInstanceOf(BrowserEgoRunTool);
     } finally { await disposables.dispose(); }
   });
