@@ -94,7 +94,7 @@ Position legend: **system** = inside the system-prompt string; **tools** = the r
 | 22 | `todo_list_reminder` E2 (history cue) | reminder | Input matches the history cue word list, epoch > 0 | Once per user turn | `[loop_control].directive_cues.history` | same |
 | 23 | `agents_md` reminder | reminder | A tool touched a directory with an unloaded `AGENTS.md` | Once per path until compaction/clear/undo | Files on disk | `packages/agent-core-v2/test/agent/agentsMdReminder/agentsMdReminder.test.ts` |
 | 24 | `interruption` reminder | reminder | Turn cancelled with reason `user_cancelled` | Suppressed when the last message is already this reminder | — | `packages/agent-core-v2/test/agent/loop/loop.test.ts` |
-| 25 | `message_delivery` reminder | reminder | Turn in `message` delivery mode ended without `SendMessage` | Once per turn | Delivery mode | `packages/agent-core-v2/test/agent/prompt/submit.test.ts` |
+| 25 | `message_delivery` reminder | reminder | Message-mode turn ended on ordinary assistant text without successful `SendMessage` | Once, into the next model request; no same-turn continuation | Frozen delivery mode | `packages/agent-core-v2/test/agent/prompt/submit.test.ts` |
 | 26 | `date_change` reminder | reminder | Local date differs from the disclosed/seed date | Once per date change | — | `packages/agent-core-v2/test/features/dateChange/dateChangeInjection.test.ts` |
 | 27 | `plan_mode` reminder (full/sparse/reentry/exit) | reminder | Plan mode active, entering, or exited | ≤1 per step; sparse after 2 assistant turns, full refresh at 5 | Plan mode state | `packages/agent-core-v2/test/features/plan/plan.test.ts` |
 | 28 | `permission_mode` reminder (auto/review enter/exit) | reminder | Permission mode changed, or first injection in a non-manual mode | Only on change (plus one enter reminder) | Permission mode | `packages/agent-core-v2/test/agent/permissionMode/permissionMode.test.ts` |
@@ -319,12 +319,14 @@ After a turn ends with reason `cancelled` and `interruptReason: 'user_cancelled'
 
 ### 3.4 `message_delivery` reminder
 
-When the session runs in `message` delivery mode and a turn triggered by the user, a peer thread, or a targeted room message finishes without a `SendMessage` call, the reminder below is injected and a continuation step is enqueued (`packages/agent-core-v2/src/agent/delivery/deliveryReminderService.ts:18`, `:67-77`):
+When the main agent's frozen delivery for a turn is `message`, the turn was triggered by the user, a peer thread, or a targeted room message, no `SendMessage` call succeeded, and the turn's last context message is ordinary assistant text, the reminder below is appended at `TurnEnded` (`packages/agent-core-v2/src/agent/delivery/deliveryReminder.ts`, `deliveryReminderService.ts`). It is part of the next model request's history. The turn does not enqueue a continuation step.
 
-`You have not sent a message this turn. Ordinary output is not visible to the user. If a reply is needed, call SendMessage; otherwise finish without sending.`
+`The previous turn ran in message delivery and finished with ordinary text and no successful SendMessage. When message delivery is active, call SendMessage with the complete user-visible message for the turn. Do not split that message into sentences, and do not repeat it as ordinary text.`
 
-- Rate limit: once per turn (`state.reminded`); only for the main agent (`:43`).
-- Cache: append-only.
+- The decision uses the mode copied at turn start. A `set` during the turn changes the persisted mode immediately and the tool table on the next turn.
+- The ordinary reply stays one assistant message. The message projection, not this reminder, decides whether that whole message is also shown as a bubble. Show it only when the turn had no successful `SendMessage`; do not split it on punctuation.
+- Rate limit: once, at the end of that turn; only for the main agent.
+- Cache: append-only, so a later request and a reopened session still carry it.
 
 ### 3.5 `date_change` reminder
 

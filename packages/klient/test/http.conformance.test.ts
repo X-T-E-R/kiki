@@ -194,8 +194,8 @@ it('persona REST supports action suffixes and character-card import/export', asy
     expect((await klient.rest.bots.ensureHomeSession(created.definition.id)).homeSessionId).toBe(bot.homeSessionId);
     const botHome = getLiveSessionById(server.core.accessor, bot.homeSessionId!)!;
     await botHome.accessor.get(ISessionDeliveryService).ready;
-    expect(botHome.accessor.get(ISessionDeliveryService).effectiveMode()).toBe('reply');
-    expect(botHome.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentToolRegistryService).list().map((tool) => tool.name)).not.toContain('SendMessage');
+    expect(botHome.accessor.get(ISessionDeliveryService).effectiveMode()).toBe('message');
+    expect(botHome.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentToolRegistryService).list().map((tool) => tool.name)).toContain('SendMessage');
     expect((await klient.rest.bots.update(created.definition.id, { hidden: true })).hidden).toBe(true);
     expect((await klient.rest.bots.list()).some((item) => item.personaId === created.definition.id)).toBe(true);
     await klient.session(bot.homeSessionId!).close();

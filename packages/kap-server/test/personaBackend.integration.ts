@@ -234,7 +234,7 @@ describe('persona backend contracts', () => {
     await server.core.accessor.get(ISessionManager).close(next.id);
     expect((await request<{ homeSessionId: string }>('/personas/example/home', 'POST')).data.homeSessionId).toBe(next.id);
   });
-  it('single-flights ensure-home without enabling old global gates and preserves explicit reply modes', async () => {
+  it('defaults an omitted persona delivery to message and keeps an explicit reply home', async () => {
     await persona();
     const config = server.core.accessor.get(IConfigService);
     expect(config.get<{ enabled: boolean }>('bot').enabled).toBe(false);
@@ -243,12 +243,39 @@ describe('persona backend contracts', () => {
     expect(homes[0]?.data.homeSessionId).toBe(homes[1]?.data.homeSessionId);
     const homeId = homes[0]!.data.homeSessionId;
     const session = await request<Session>(`/sessions/${homeId}`);
-    expect(session.data.delivery).toBe('reply');
+    expect(session.data.delivery).toBe('message');
+    await server.core.accessor.get(IPersonaStore).put({ id: 'reply-role', name: 'Reply', description: 'You are reply.', delivery: 'reply' });
+    const replyHome = await request<{ homeSessionId: string }>('/personas/reply-role/home', 'POST');
+    expect(replyHome.code, replyHome.msg).toBe(0);
+    expect((await request<Session>(`/sessions/${replyHome.data.homeSessionId}`)).data.delivery).toBe('reply');
     expect(session.data.metadata).toMatchObject({ persona_home_managed: true, bot_persona_id: 'example' });
     expect(config.get<{ enabled: boolean }>('bot').enabled).toBe(false);
     const visible = await request('/personas/example/state', 'PATCH', { pinned: true, hidden: true });
     expect(visible.code).toBe(0);
     expect((await request<PersonaSummary[]>('/personas')).data[0]).toMatchObject({ pinned: true, hidden: true });
+  });
+  it('persists persona message, explicit reply, and ordinary reply across reopen', async () => {
+    await persona();
+    const implicit = await create({ metadata: { cwd: home } });
+    expect(implicit.delivery).toBe('message');
+    const manager = server.core.accessor.get(ISessionManager);
+    await manager.close(implicit.id);
+    expect((await request<Session>(`/sessions/${implicit.id}`)).data.delivery).toBe('message');
+    const explicit = await create({ metadata: { cwd: home }, delivery: 'reply' });
+    expect(explicit.delivery).toBe('reply');
+    await manager.close(explicit.id);
+    expect((await request<Session>(`/sessions/${explicit.id}`)).data.delivery).toBe('reply');
+    const role = await request<Session>('/sessions', 'POST', {
+      persona: 'example', metadata: { cwd: home }, delivery: 'reply',
+    });
+    expect(role.data.delivery).toBe('reply');
+    await server.core.accessor.get(IPersonaStore).put({ id: 'reply-role', name: 'Reply', description: 'You are reply.', delivery: 'reply' });
+    const chosen = await request<Session>('/sessions', 'POST', { persona: 'reply-role', metadata: { cwd: home } });
+    expect(chosen.code, chosen.msg).toBe(0);
+    expect(chosen.data.delivery).toBe('reply');
+    const ordinary = await request<Session>('/sessions', 'POST', { metadata: { cwd: home } });
+    expect(ordinary.code, ordinary.msg).toBe(0);
+    expect(ordinary.data.delivery).toBe('reply');
   });
   it('pauses only associated cron tasks on archive and does not restart them on restore or move their workspace', async () => {
     await persona();

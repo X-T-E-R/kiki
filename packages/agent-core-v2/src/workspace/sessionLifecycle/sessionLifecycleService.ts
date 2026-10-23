@@ -48,7 +48,7 @@ import {
 import { IAgentLifecycleService, MAIN_AGENT_ID, type AgentRemovalMode } from '#/session/agentLifecycle/agentLifecycle';
 import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
 import { IAgentProfileService } from '#/agent/profile/profile';
-import { ISessionDeliveryService } from '#/session/delivery/delivery';
+import { ISessionDeliveryService, resolveCreateDeliveryMode } from '#/session/delivery/delivery';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import { labelsFromAgentMeta } from '#/session/agentLifecycle/subagentMetadata';
 import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity';
@@ -366,8 +366,12 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
             });
       if (main !== undefined || opts.delivery !== undefined) {
         const delivery = handle.accessor.get(ISessionDeliveryService);
-        const profileDelivery = main?.accessor.get(IAgentProfileService).data().persona?.definition.delivery;
-        await delivery.set(opts.delivery ?? profileDelivery ?? delivery.mode());
+        const persona = main?.accessor.get(IAgentProfileService).data().persona?.definition;
+        await delivery.set(resolveCreateDeliveryMode({
+          requested: opts.delivery,
+          personaDelivery: persona?.delivery,
+          hasPersona: persona !== undefined || opts.mainAgentBinding?.persona !== undefined,
+        }));
       }
       if (this.config.get<boolean>(DEFAULT_PLAN_MODE_SECTION) === true) {
         const planAgent = main ?? (await ensureMainAgent(handle));

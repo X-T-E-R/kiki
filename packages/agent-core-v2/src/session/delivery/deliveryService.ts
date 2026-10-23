@@ -7,11 +7,12 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import {
   ISessionDeliveryService,
+  NON_PERSONA_DELIVERY_DEFAULT,
   type SessionDeliveryMode,
 } from './delivery';
 
 const DELIVERY_KEY = 'delivery.json';
-const DEFAULT_MODE: SessionDeliveryMode = 'reply';
+const DEFAULT_MODE: SessionDeliveryMode = NON_PERSONA_DELIVERY_DEFAULT;
 
 interface DeliveryDocument {
   readonly mode: SessionDeliveryMode;
