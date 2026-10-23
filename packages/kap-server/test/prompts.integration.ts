@@ -61,6 +61,7 @@ import { applyCompactionProgress, type CompactionProgress } from '../../../apps/
 import { compactSessionContext } from '../../session-core/src/commands/sessionActions';
 import { IAgentLLMRequesterService, type AgentLLMRequestFinish } from '@kiki/agent-core-v2/agent/llmRequester/llmRequester';
 import { IAgentFullCompactionService } from '@kiki/agent-core-v2/agent/fullCompaction/fullCompaction';
+import { IAgentToolExecutorService } from '@kiki/agent-core-v2/agent/toolExecutor/toolExecutor';
 import { agentTranscriptToBlocks, createViewState, isOrdinaryQueueItem, projectAgentTranscriptView, queuedPromptPreviews } from '../../session-core/src/session/transcript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -1476,6 +1477,106 @@ describe('server-v2 /api prompts', () => {
     }
   });
 
+  it.each(['model-stream', 'tool-flight'] as const)('durable send-now preserves the in-flight %s and nonempty queue, then consumes once across reopen and retry', async (phase) => {
+    const entered = promiseGate<void>();
+    const release = promiseGate<void>();
+    const requests: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
+    let firstResponseClosed = false;
+    let toolSignal: AbortSignal | undefined;
+    const provider = createHttpServer((request, response) => {
+      let body = '';
+      request.setEncoding('utf8');
+      request.on('data', chunk => { body += String(chunk); });
+      request.on('end', () => {
+        requests.push(JSON.parse(body));
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        const finish = () => response.end(`data: ${JSON.stringify({ id: 'matrix-response',
+          choices: [{ index: 0, delta: { content: 'Received.' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        })}\n\ndata: [DONE]\n\n`);
+        if (requests.length !== 1) { finish(); return; }
+        if (phase === 'tool-flight') {
+          response.end(`data: ${JSON.stringify({ id: 'matrix-tool', choices: [{ index: 0,
+            delta: { tool_calls: [{ index: 0, id: 'example-call', type: 'function', function: { name: 'example_tool', arguments: '{}' } }] },
+            finish_reason: 'tool_calls' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          })}\n\ndata: [DONE]\n\n`);
+        } else {
+          response.on('close', () => { firstResponseClosed = true; });
+          response.write(`data: ${JSON.stringify({ id: 'matrix-stream', choices: [{ index: 0, delta: { content: 'Starting.' }, finish_reason: null }] })}\n\n`);
+          entered.resolve();
+          void release.promise.then(finish);
+        }
+      });
+    });
+    await new Promise<void>(resolve => provider.listen(0, '127.0.0.1', resolve));
+    const address = provider.address();
+    if (address === null || typeof address === 'string') throw new Error('provider did not bind');
+    const client = new KikiClient({ baseUrl: base, token: bearerToken(server!) });
+    let tool: ReturnType<typeof vi.spyOn> | undefined;
+    let controller: SessionController | undefined;
+    try {
+      await server!.core.accessor.get(IModelCatalogMutationService).updateProvider('stub', { base_url: `http://127.0.0.1:${address.port}/v1` });
+      await server!.core.accessor.get(IModelCatalogMutationService).updateModel('stub', { max_context_size: 100000 });
+      const id = await createSession(home!);
+      await createMainAgent(id);
+      const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+      const prompt = main.accessor.get(IAgentPromptService);
+      const loop = main.accessor.get(IAgentLoopService);
+      if (phase === 'tool-flight') {
+        tool = vi.spyOn(main.accessor.get(IAgentToolExecutorService), 'execute').mockImplementation(async function* (_calls, options) {
+          toolSignal = options.signal;
+          entered.resolve();
+          await release.promise;
+          options.signal.throwIfAborted();
+          yield { toolCallId: 'example-call', toolName: 'example_tool', result: { output: 'Tool finished.', isError: false } };
+        });
+      }
+      await client.submitPrompt(id, { prompt_id: 'matrix-active', profile: 'agent', model: 'stub', content: [{ type: 'text', text: 'Start the turn.' }] });
+      await entered.promise;
+      const target = loop.status().activeTurnId;
+      await client.submitPrompt(id, { prompt_id: 'matrix-older', content: [{ type: 'text', text: 'Keep the older queued message.' }] });
+      const body = { admission: 'durable' as const, delivery_mode: 'steer' as const, prompt_id: 'matrix-now', content: [{ type: 'text' as const, text: 'Read the new note once.' }] };
+      await client.submitPrompt(id, body);
+      await vi.waitFor(async () => {
+        const receipt = await call!<{ delivery_state?: string }>('GET', `/api/sessions/${id}/prompts/matrix-now?admission=durable`);
+        expect(receipt.body.data.delivery_state).toBe('steered');
+      });
+      expect(prompt.list().pending.map(item => item.id)).toEqual(['matrix-older']);
+      expect(loop.status().activeTurnId).toBe(target);
+      expect(firstResponseClosed).toBe(false);
+      expect(toolSignal?.aborted).not.toBe(true);
+      expect(main.accessor.get(IAgentContextMemoryService).get().some(message => message.id === 'matrix-now')).toBe(false);
+      expect((await client.submitPrompt(id, body)).delivery_state).toBe('steered');
+      await client.abortPrompt(id, 'matrix-older');
+      release.resolve();
+      await loop.settled();
+      expect(requests).toHaveLength(2);
+      expect(JSON.stringify(requests[0]!.messages)).not.toContain('Read the new note once.');
+      expect(requests[1]!.messages.filter(message => message.role === 'user' && JSON.stringify(message.content).includes('Read the new note once.'))).toHaveLength(1);
+      expect(main.accessor.get(IAgentContextMemoryService).get().filter(message => message.id === 'matrix-now')).toHaveLength(1);
+      controller = new SessionController(client.sessions, client.klient.session(id).view, id);
+      await controller.open();
+      controller.setEphemeralHint(false);
+      await expect(controller.sendPromptNow({ promptId: 'matrix-now', text: 'Read the new note once.' })).resolves.toMatchObject({ outcome: 'steered' });
+      expect(controller.getState().queuedPromptIds).not.toContain('matrix-now');
+      expect(requests).toHaveLength(2);
+      controller.close();
+      await closeSessionById(server!.core.accessor, id);
+      const cold = await client.klient.session(id).view.transcript.page({ agentId: 'main' });
+      expect(cold.prompts).toContainEqual(expect.objectContaining({ promptId: 'matrix-now', status: 'completed' }));
+      expect(agentTranscriptToBlocks(cold).filter(block => block.kind === 'user' && block.userMessageId === 'matrix-now')).toHaveLength(1);
+    } finally {
+      release.resolve(); controller?.close(); tool?.mockRestore();
+      await client.klient.close();
+      await new Promise<void>((resolve, reject) => {
+        provider.close(error => {
+          if (error) { reject(error); return; }
+          resolve();
+        });
+      });
+    }
+  }, 30_000);
+
   it.each([false, true])('durable send-now survives the restoring ack and client close, consuming once after a boundary, uncertain=%s', async (uncertain) => {
     const requests: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
     const provider = createHttpServer((request, response) => {
@@ -1601,6 +1702,9 @@ describe('server-v2 /api prompts', () => {
       }
       gate.resolve();
       await vi.waitFor(async () => expect((await call('GET', `${root}/boundary-now?admission=durable`)).body).toMatchObject({ data: { admission: 'admitted', status: 'queued' } }));
+      const disposition = await call<{ delivery_state?: string; delivery_reason?: string }>('GET', `${root}/boundary-now?admission=durable`);
+      expect(disposition.body.data.delivery_reason).toBe(scenario === 'ordinary' ? undefined : scenario === 'ended-target' ? 'target_changed' : 'steer_rejected');
+      expect(disposition.body.data.delivery_state).toBe(scenario === 'ordinary' ? undefined : 'queued');
       expect(prompt.list().pending.map(item => item.id)).toContain('boundary-now');
       expect(main.accessor.get(IAgentPermissionModeService).mode).not.toBe('yolo');
       expect(main.accessor.get(IAgentProfileService).data().profileName).toBe('agent');
@@ -1653,7 +1757,7 @@ describe('server-v2 /api prompts', () => {
     } finally { gate.resolve(); resume.mockRestore(); prompt.abort('boundary-now'); }
   });
 
-  it.each(['same-target', 'changed-target', 'unknown-result'] as const)('durable send-now anchors external delivery and never replays an unknown executor action, scenario=%s', async (scenario) => {
+  it.each(['same-target', 'changed-target', 'unsupported', 'unknown-result'] as const)('durable send-now anchors external delivery and never replays an unknown executor action, scenario=%s', async (scenario) => {
     server!.core.accessor.get(IAgentProfileRegistry).register({ sourceId: 'external-immediate-fixture', priority: 50,
       contribution: { profiles: [normalizeAgentProfile({ name: 'external-immediate', definitionId: 'fixture:external-immediate',
         executor: 'grok-acp', modelAlias: 'grok-raw', systemPrompt: () => 'EXTERNAL_IMMEDIATE' })] } });
@@ -1663,7 +1767,7 @@ describe('server-v2 /api prompts', () => {
     const run = vi.fn(held.session.run);
     const steer = vi.fn(async () => {
       if (scenario === 'unknown-result') throw new Error('Executor accepted the note but its response was lost.');
-      return true;
+      return scenario !== 'unsupported';
     });
     const executor = vi.spyOn(registry, 'resolveExecutable').mockImplementation(async (executorId, options): Promise<ResolvedAgentExecutor> => executorId === 'grok-acp' ? {
       descriptor: { ...registry.get(executorId)!, command: process.execPath, revision: 'fixture' },
@@ -1712,8 +1816,18 @@ describe('server-v2 /api prompts', () => {
         expect(prompt.list().hold).toMatchObject({ reason: 'recovery' });
         return;
       }
-      await vi.waitFor(async () => expect((await call('GET', `${root}/external-now?admission=durable`)).body).toMatchObject({ data: { admission: 'admitted' } }));
-      expect(steer).toHaveBeenCalledTimes(scenario === 'changed-target' ? 0 : 1);
+      await vi.waitFor(async () => expect((await call('GET', `${root}/external-now?admission=durable`)).body).toMatchObject({ data: {
+        admission: 'admitted', delivery_state: scenario === 'same-target' ? 'steered' : 'queued',
+      } }));
+      const disposition = await call<{ delivery_reason?: string }>('GET', `${root}/external-now?admission=durable`);
+      expect(disposition.body.data.delivery_reason).toBe(scenario === 'changed-target' ? 'target_changed' : scenario === 'unsupported' ? 'executor_deferred' : undefined);
+      if (scenario === 'unsupported') {
+        const retried = await call<{ delivery_reason?: string }>('POST', root, { admission: 'durable', delivery_mode: 'steer', prompt_id: 'external-now', content: [{ type: 'text', text: 'Immediate external note.' }] });
+        expect(retried.body.data.delivery_reason).toBe('executor_deferred');
+        const explicit = await call<{ delivery_state?: string; delivery_reason?: string }>('POST', `${root}/external-now:steer`);
+        expect(explicit.body.data).toMatchObject({ delivery_state: 'queued', delivery_reason: 'executor_deferred' });
+      }
+      expect(steer).toHaveBeenCalledTimes(scenario === 'changed-target' ? 0 : scenario === 'unsupported' ? 2 : 1);
       expect(prompt.list().pending.some(item => item.id === 'external-now')).toBe(scenario !== 'same-target');
     } finally { gate.resolve(); resume?.mockRestore(); held.finish(); executor.mockRestore(); }
   });

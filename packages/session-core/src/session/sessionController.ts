@@ -1284,14 +1284,14 @@ export class SessionController {
     for (const record of records) {
       if (record.admission === 'failed' || record.admission === 'cancelled' ||
           (record.admission === 'admitted' && record.delivery_state === 'queued')) {
-        this.clearPendingSteer(agentId, record.prompt_id);
+        this.reconcileSteerOutcome(agentId, record.prompt_id, this.settledSteerOutcome(agentId, record.prompt_id));
       }
     }
     const previous = this.state.durableIngress ?? [];
     if (previous.length === records.length && previous.every((item, index) => {
       const next = records[index];
       return next !== undefined && item.prompt_id === next.prompt_id && item.status === next.status &&
-        item.admission === next.admission && item.delivery_state === next.delivery_state && item.revision === next.revision &&
+        item.admission === next.admission && item.delivery_state === next.delivery_state && item.delivery_reason === next.delivery_reason && item.revision === next.revision &&
         item.admission_content_truncated === next.admission_content_truncated &&
         item.admission_error?.code === next.admission_error?.code &&
         item.admission_error?.message === next.admission_error?.message;
@@ -3597,7 +3597,7 @@ export class SessionController {
     readonly planGate?: PromptPlanGate;
     readonly onPreservation?: (persisted: boolean) => void;
     readonly onAcknowledged?: () => void;
-  }): Promise<{ readonly promptId: string; readonly outcome: 'steered' | 'started' | 'queued' | 'restoring' | 'held' | 'failed' | 'cancelled' }> {
+  }): Promise<{ readonly promptId: string; readonly outcome: 'steered' | 'started' | 'queued' | 'restoring' | 'held' | 'failed' | 'cancelled'; readonly reason?: PromptItem['delivery_reason'] }> {
     assertSessionWritable(this.state);
     const agentId = input.agentId ?? MAIN_AGENT_ID;
     const promptId = input.promptId ?? newSteerPromptId();
@@ -3652,6 +3652,11 @@ export class SessionController {
         result,
       ], agentId);
     }
+    const settled = this.settledSteerOutcome(agentId, result.prompt_id);
+    if (settled !== undefined) {
+      this.reconcileSteerOutcome(agentId, promptId, settled);
+      return { promptId: result.prompt_id, outcome: settled };
+    }
     if (admissionRejected) {
       this.clearPendingSteer(agentId, promptId);
       return { promptId: result.prompt_id, outcome: admission };
@@ -3666,7 +3671,7 @@ export class SessionController {
       const retained = this.findPendingSteer(agentId, promptId);
       if (retained !== undefined) this.setPendingSteer(agentId, { ...retained, phase: 'waiting' });
       return { promptId: result.prompt_id, outcome: result.delivery_state === 'steered' ? 'steered'
-        : result.status === 'queued' ? 'queued' : 'started' };
+        : result.status === 'queued' ? 'queued' : 'started', reason: result.delivery_reason };
     }
     if (result.status !== 'queued') {
       // Idle by the time it landed: the prompt opened its own turn, which is
@@ -3675,13 +3680,18 @@ export class SessionController {
       return { promptId: result.prompt_id, outcome: 'started' };
     }
     try {
-      await this.client.steerPrompt(this.sessionId, result.prompt_id, agentId);
+      const delivery = await this.client.steerPrompt(this.sessionId, result.prompt_id, agentId);
+      const outcome = this.settledSteerOutcome(agentId, result.prompt_id);
+      if (outcome !== undefined || delivery.delivery_state === 'queued') {
+        this.reconcileSteerOutcome(agentId, promptId, outcome);
+        return { promptId: result.prompt_id, outcome: outcome ?? 'queued', reason: outcome === undefined ? delivery.delivery_reason : undefined };
+      }
     } catch (error) {
-      this.clearPendingSteer(agentId, promptId);
+      const outcome = this.settledSteerOutcome(agentId, result.prompt_id);
+      this.reconcileSteerOutcome(agentId, promptId, outcome);
+      if (outcome !== undefined) return { promptId: result.prompt_id, outcome };
       if (error instanceof ApiError && error.code === API_CODES.PROMPT_NOT_FOUND) {
-        // The turn ended while the steer was in flight; the engine put the
-        // prompt back in line, so it runs as its own next turn.
-        return { promptId: result.prompt_id, outcome: 'queued' };
+        return { promptId: result.prompt_id, outcome: 'queued', reason: 'prompt_no_longer_pending' };
       }
       if (error instanceof ApiError && error.code === API_CODES.REQUEST_INVALID) {
         // Refused before it left the queue (it changes a mode, which needs a
@@ -3703,6 +3713,24 @@ export class SessionController {
     const accepted = this.findPendingSteer(agentId, promptId);
     if (accepted !== undefined) this.setPendingSteer(agentId, { ...accepted, phase: 'waiting' });
     return { promptId: result.prompt_id, outcome: 'steered' };
+  }
+
+  private settledSteerOutcome(agentId: string, promptId: string): 'steered' | 'started' | 'failed' | 'cancelled' | undefined {
+    const canonical = this.agentTranscripts.get(agentId)?.getPrompt(promptId);
+    if (canonical === undefined || canonical.status === 'queued' || canonical.status === 'blocked') return undefined;
+    if (canonical.status === 'aborted') return 'cancelled';
+    if (canonical.status === 'failed') return 'failed';
+    if (canonical.steeredAt !== undefined) return 'steered';
+    return 'started';
+  }
+
+  private reconcileSteerOutcome(agentId: string, promptId: string, outcome: ReturnType<SessionController['settledSteerOutcome']>): void {
+    if (outcome !== 'steered') {
+      this.clearPendingSteer(agentId, promptId);
+      return;
+    }
+    const retained = this.findPendingSteer(agentId, promptId);
+    if (retained !== undefined) this.setPendingSteer(agentId, { ...retained, phase: 'waiting' });
   }
 
   private findPendingSteer(agentId: string, promptId: string): PendingSteer | undefined {

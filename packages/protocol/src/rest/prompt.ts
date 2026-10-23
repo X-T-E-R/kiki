@@ -122,9 +122,16 @@ export type PromptStatus = z.infer<typeof promptStatusSchema>;
 export const promptAdmissionStateSchema = z.enum(['restoring', 'admitted', 'failed', 'cancelled', 'held']);
 export type PromptAdmissionState = z.infer<typeof promptAdmissionStateSchema>;
 
+export const promptDeliveryReasonSchema = z.enum([
+  'target_changed', 'prompt_no_longer_pending', 'steer_rejected', 'external_retry',
+  'model_switch_boundary', 'no_active_turn', 'executor_deferred',
+]);
+export type PromptDeliveryReason = z.infer<typeof promptDeliveryReasonSchema>;
+
 export const promptItemSchema = z.object({
   admission: promptAdmissionStateSchema.optional(),
   delivery_state: z.enum(['queued', 'steered']).optional(),
+  delivery_reason: promptDeliveryReasonSchema.optional(),
   admission_error: z.object({ code: z.number().int(), message: z.string() }).optional(),
   admission_content_truncated: z.boolean().optional(),
   runtime_controls: transcriptPromptRuntimeControlsSchema.optional(),
@@ -218,6 +225,8 @@ export type PromptSteerRequest = z.infer<typeof promptSteerRequestSchema>;
 export const promptSteerResultSchema = z.object({
   steered: z.literal(true),
   prompt_ids: z.array(z.string().min(1)).min(1),
+  delivery_state: z.enum(['queued', 'steered']).optional(),
+  delivery_reason: promptDeliveryReasonSchema.optional(),
 });
 export type PromptSteerResult = z.infer<typeof promptSteerResultSchema>;
 

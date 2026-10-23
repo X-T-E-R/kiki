@@ -231,6 +231,48 @@ describe('submission preservation degradation', () => {
 });
 
 describe('send now (steer) — main agent', () => {
+  it.each(['running', 'completed', 'steered'] as const)('prefers canonical %s over a late durable queued disposition without a second steer', async (status) => {
+    const { controller, client } = await open();
+    controller.setEphemeralHint(false);
+    const receipt = deferred<ReturnType<typeof queuedReceipt> & { admission: 'admitted'; delivery_state: 'queued'; delivery_reason: 'target_changed' }>();
+    client.submitPrompt.mockReturnValue(receipt.promise);
+    try {
+      await deliver(controller, resetEvent('main', userTurnSnapshot({ streaming: true }), 1));
+      const sending = controller.sendPromptNow({ promptId: 'late-disposition', text: STEER_TEXT });
+      await deliver(controller, opsEvent('main', [status === 'steered' ? steeredOp('late-disposition') : {
+        op: 'prompt.upsert', prompt: { promptId: 'late-disposition', userMessageId: 'late-disposition', status,
+          content: [{ type: 'text', text: STEER_TEXT }], createdAt: '2026-01-01T00:00:03.000Z' },
+      }, ...(status === 'steered' ? [] : deliveredOps('late-disposition'))], 2));
+      receipt.resolve({ ...queuedReceipt('late-disposition'), admission: 'admitted', delivery_state: 'queued', delivery_reason: 'target_changed' });
+      await expect(sending).resolves.toEqual({ promptId: 'late-disposition', outcome: status === 'steered' ? 'steered' : 'started' });
+      expect(controller.getState().queuedPromptIds).toEqual([]);
+      if (status === 'steered') {
+        expect(steerRows(controller.getState())).toHaveLength(1);
+        expect(controller.getPendingSteers()).toEqual([expect.objectContaining({ promptId: 'late-disposition', phase: 'waiting' })]);
+        await deliver(controller, opsEvent('main', deliveredOps('late-disposition'), 3));
+      }
+      expect(controller.getPendingSteers()).toEqual([]);
+      expect(controller.getState().blocks.filter(block => block.kind === 'user' && block.userMessageId === 'late-disposition')).toHaveLength(1);
+      expect(client.steerPrompt).not.toHaveBeenCalled();
+      expect(client.submitPrompt).toHaveBeenCalledTimes(1);
+    } finally { controller.close(); }
+  });
+
+  it('returns the actual legacy executor deferral rather than claiming a steer', async () => {
+    const { controller, client } = await open();
+    client.submitPrompt.mockResolvedValue(queuedReceipt('external-deferred'));
+    client.steerPrompt.mockImplementation(async () => ({ steered: true as const, prompt_ids: ['external-deferred'],
+      delivery_state: 'queued' as const, delivery_reason: 'executor_deferred' as const }));
+    try {
+      await expect(controller.sendPromptNow({ promptId: 'external-deferred', text: STEER_TEXT })).resolves.toEqual({
+        promptId: 'external-deferred', outcome: 'queued', reason: 'executor_deferred',
+      });
+      expect(controller.getPendingSteers()).toEqual([]);
+      expect(client.submitPrompt).toHaveBeenCalledTimes(1);
+      expect(client.abortPrompt).not.toHaveBeenCalled();
+    } finally { controller.close(); }
+  });
+
   it.each(['restoring', 'held', 'admitted'] as const)('persists the steer intent for a saved session and never duplicates server delivery after %s', async (admission) => {
     const { controller, client } = await open();
     controller.setEphemeralHint(false);
@@ -250,12 +292,14 @@ describe('send now (steer) — main agent', () => {
     controller.setEphemeralHint(false);
     await deliver(controller, resetEvent('main', userTurnSnapshot({ streaming: true }), 1));
     client.submitPrompt.mockResolvedValue({ ...queuedReceipt('late-now'), admission: 'restoring' });
-    const read = vi.fn(async () => ({ ...queuedReceipt('late-now'), admission: 'admitted', delivery_state: delivery }));
+    const read = vi.fn(async () => ({ ...queuedReceipt('late-now'), admission: 'admitted', delivery_state: delivery,
+      delivery_reason: delivery === 'queued' ? 'target_changed' : undefined }));
     Object.assign(client, { getDurableIngress: read });
     await controller.sendPromptNow({ promptId: 'late-now', text: STEER_TEXT });
     await deliver(controller, opsEvent('main', [queuedOp('late-now')], 2));
     expect(controller.getState().queuedPromptIds).not.toContain('late-now');
     await vi.waitFor(() => { expect(controller.getDurableIngress()[0]?.admission).toBe('admitted'); });
+    expect(controller.getDurableIngress()[0]?.delivery_reason).toBe(delivery === 'queued' ? 'target_changed' : undefined);
     if (delivery === 'queued') {
       expect(controller.getPendingSteers()).toEqual([]);
       expect(controller.getState().queuedPromptIds).toContain('late-now');

@@ -347,7 +347,19 @@ Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的�
 
 通过 `GET /api/sessions/{session_id}/prompts?admission=durable` 读取 `ingress`。将 `ingress_next_cursor` 作为下一页的 `cursor`，直到不再返回游标；即使某一页没有所选 Agent 的条目，也应继续翻页。每页最多扫描 64 个已保存请求，文本预览最长 1024 个字符，并带 `admission_content_truncated: true`。没有文本的已保存请求预览为 `[Attachment]`。原文使用单项读取接口。这两种读取都不加载冷 Agent。目标为子 Agent 时，提交正文及每次查询、操作都须带同一 `agent_id`。
 
-`admission: "admitted"` 表示 Agent 已受理请求，`status` 是保存的回执状态，不代表当前队列位置或模型已经消费。立即发送时，可选的 `delivery_state: "steered"` 表示核心已将消息分配给目标轮次，`"queued"` 表示仍在等待投递，也包括等待模型切换边界的情况。分配或受理都不证明消息已进入模型请求；应以转录中的实际投递帧及后续请求为准。
+`admission: "admitted"` 表示 Agent 已受理请求，`status` 是保存的回执状态，不代表当前队列位置或模型已经消费。立即发送时，可选的 `delivery_state: "steered"` 表示核心已将消息分配给目标轮次，`"queued"` 表示记录该回执时仍在等待投递，也包括等待模型切换边界的情况。分配或受理都不证明消息已进入模型请求；应以转录中的实际投递帧及后续请求为准。较新的 canonical 启动、追加或终态事实优先于旧 queued 回执。
+
+可选的 `delivery_reason` 在提交回执和持久请求读取中说明立即投递的实际决定。单 ID 的 `:steer` 响应也携带 `delivery_state` 和 `delivery_reason`；原有的 `steered: true` 确认命令已受理，不代表模型已经消费。多 ID 的 steer 回执不返回这些单提示词字段。
+
+| `delivery_reason` | 含义 |
+| --- | --- |
+| `target_changed` | 投递前活跃轮次或提示词已改变，消息保留在队列中。 |
+| `steer_rejected` | 核心拒绝插入当前轮次，例如执行控制不兼容。 |
+| `executor_deferred` | 外部执行器未将该消息投递到当前运行，消息仍排队等待后续轮次；这不区分操作不受支持或执行器拒绝投递。 |
+| `model_switch_boundary` | 投递正在等待所选模型切换边界。 |
+| `no_active_turn` | 没有可加入的活跃轮次，选中消息沿新轮次路径启动。 |
+| `external_retry` | 已知的外部提交回执被重放，没有重复执行立即投递动作。 |
+| `prompt_no_longer_pending` | 该提示词已不在可选的待发送队列中；仅凭这一原因既不能确认已投递，也不能认定仍在排队，应读取 canonical 状态。 |
 
 `failed` 带有 `admission_error`，原文与附件仍保留。重启后或投递结果不确定的请求转为 `held`，等待显式 `:resume`；服务端会先核对原回执，回执查询失败不会触发再次启动。使用 `:abort` 取消；`aborted: false` 且 admission 为 `held` 表示取消仍待核对，`cancelled` 才确认取消。要修改已保存请求，应先取消，再使用新 ID 提交。
 

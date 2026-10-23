@@ -383,7 +383,9 @@ describe('promptSteerResultSchema', () => {
     const parsed = promptSteerResultSchema.parse({
       steered: true,
       prompt_ids: ['prompt_a', 'prompt_b'],
+      delivery_state: 'queued', delivery_reason: 'executor_deferred',
     });
+    expect(parsed.delivery_reason).toBe('executor_deferred');
     expect(parsed.steered).toBe(true);
     expect(parsed.prompt_ids).toEqual(['prompt_a', 'prompt_b']);
   });

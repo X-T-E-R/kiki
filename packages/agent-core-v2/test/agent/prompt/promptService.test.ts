@@ -369,6 +369,7 @@ describe('AgentPromptService', () => {
     const queued = await prompt.enqueue({ id: 'queued', message: message('follow up') });
     await prompt.steer([queued.id]);
     expect(queued.state).toBe('pending');
+    expect(queued.deliveryReason).toBe('executor_deferred');
     expect(deliveries).toEqual([expect.objectContaining({ method: 'next_turn_preamble', status: 'queued' })]);
     externalTurns[0]!.finish();
     await active.completion;

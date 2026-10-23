@@ -745,27 +745,33 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         };
         const submitAndDeliver = async () => {
           const result = await submit();
-          if (req.body.delivery_mode !== 'steer' || !resolved.prompt.list().pending.some(item => item.id === result.prompt_id)) return result;
+          if (req.body.delivery_mode !== 'steer') return result;
+          if (!resolved.prompt.list().pending.some(item => item.id === result.prompt_id)) {
+            return { ...result, delivery_reason: 'prompt_no_longer_pending' as const };
+          }
           if (replayedSubmission && (resolved.profile.data().executorId ?? 'native') !== 'native') {
             if (resolved.prompt.list().hold?.reason === 'recovery') {
               throw new Error2(ErrorCodes.REQUEST_INVALID, 'The external delivery result is unknown. Check the executor result before explicitly releasing the held prompt queue.');
             }
-            return { ...result, delivery_state: 'queued' as const };
+            return { ...result, delivery_state: 'queued' as const, delivery_reason: 'external_retry' as const };
           }
           signal?.throwIfAborted();
           const activeTurnId = resolved.accessor.get(IAgentLoopService).status().activeTurnId;
           const activePromptId = resolved.prompt.list().active?.id;
           if ((activeTurnId !== undefined && activeTurnId !== steerTarget?.turnId) ||
               (activePromptId !== undefined && activePromptId !== steerTarget?.promptId)) {
-            return { ...result, delivery_state: 'queued' as const };
+            return { ...result, delivery_state: 'queued' as const, delivery_reason: 'target_changed' as const };
           }
           try {
             const [handle] = await resolved.prompt.steer([result.prompt_id]);
-            return { ...result, status: handle?.state === 'blocked' ? 'blocked' as const : result.status,
-              delivery_state: handle?.state === 'steered' ? 'steered' as const : 'queued' as const };
+            return { ...result,
+              status: handle?.state === 'blocked' ? 'blocked' as const : handle?.state === 'running' ? 'running' as const : result.status,
+              delivery_state: handle?.state === 'steered' ? 'steered' as const : handle?.state === 'pending' ? 'queued' as const : undefined,
+              delivery_reason: handle?.deliveryReason };
           } catch (error) {
             if (!isError2(error) || (error.code !== ErrorCodes.PROMPT_NOT_FOUND && error.code !== ErrorCodes.REQUEST_INVALID)) throw error;
-            return { ...result, delivery_state: 'queued' as const };
+            return { ...result, delivery_state: resolved.prompt.list().pending.some(item => item.id === result.prompt_id) ? 'queued' as const : undefined,
+              delivery_reason: error.code === ErrorCodes.REQUEST_INVALID ? 'steer_rejected' as const : 'prompt_no_longer_pending' as const };
           }
         };
         const result = retryPromptId === undefined || retryFingerprint === undefined ? await submitAndDeliver()
@@ -807,8 +813,8 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         const { session_id } = req.params;
         await withSessionOperation(core, session_id, async (handle) => {
           const resolved = await resolvePromptFromSession(core, requireSession(handle, session_id));
-          await resolved.prompt.steer(req.body.prompt_ids);
-          reply.send(okEnvelope({ steered: true, prompt_ids: [...req.body.prompt_ids] }, req.id));
+          const handles = await resolved.prompt.steer(req.body.prompt_ids);
+          reply.send(okEnvelope(projectSteerResult(handles, req.body.prompt_ids), req.id));
         });
       } catch (error) {
         sendMappedError(reply, req, error);
@@ -962,8 +968,8 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
           requestLog(req)?.info({ session_id, prompt_id: parsed.id }, 'prompt aborted');
           reply.send(okEnvelope({ aborted: true }, req.id));
         } else {
-          await resolved.prompt.steer([parsed.id]);
-          reply.send(okEnvelope({ steered: true, prompt_ids: [parsed.id] }, req.id));
+          const handles = await resolved.prompt.steer([parsed.id]);
+          reply.send(okEnvelope(projectSteerResult(handles, [parsed.id]), req.id));
         }
       } catch (error) {
         if (!replaced) await preparedMedia?.discard();
@@ -1021,6 +1027,16 @@ function projectPromptList(snapshot: PromptQueueSnapshot) {
     active: snapshot.active === undefined ? null : projectPromptSnapshot(snapshot.active),
     queued: snapshot.pending.map(projectPromptSnapshot),
     recovery_hold: snapshot.hold,
+  };
+}
+
+function projectSteerResult(handles: readonly PromptHandle[], promptIds: readonly string[]): z.infer<typeof promptSteerResultSchema> {
+  const single = handles.length === 1 ? handles[0] : undefined;
+  return {
+    steered: true,
+    prompt_ids: [...promptIds],
+    delivery_state: single?.state === 'steered' ? 'steered' : single?.state === 'pending' ? 'queued' : undefined,
+    delivery_reason: single?.deliveryReason,
   };
 }
 

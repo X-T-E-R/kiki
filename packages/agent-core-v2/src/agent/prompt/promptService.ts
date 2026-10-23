@@ -547,6 +547,7 @@ export const promptIdentityKey = defineState('prompt.identity', (): Map<string, 
 interface Deferred<T> { readonly promise: Promise<T>; resolve(value: T): void; reject(reason: unknown): void }
 interface Record extends PromptSnapshot {
   state: PromptState;
+  deliveryReason?: PromptHandle['deliveryReason'];
   error?: ErrorPayload;
   message: ContextMessage;
   originalMessage: ContextMessage;
@@ -1595,6 +1596,7 @@ export class AgentPromptService implements IAgentPromptService {
       get userMessageId() { return record.userMessageId; },
       get createdAt() { return record.createdAt; },
       get state() { return record.state; },
+      get deliveryReason() { return record.deliveryReason; },
       get message() { return record.message; },
       get execution() { return record.execution; },
       get appendTiming() { return record.appendTiming; },
@@ -1902,16 +1904,23 @@ export class AgentPromptService implements IAgentPromptService {
       throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'one or more prompts are not pending');
     }
     const selected = this.pending.filter((item) => ids.has(item.id));
+    for (const item of selected) item.deliveryReason = undefined;
     const directBindingBoundary = targetTurnId !== undefined && selected.some(item =>
       !this.boundarySteeringIds.has(item.id) && this.hasExecutionBindingChange(item.execution, item.id)) &&
       selected.every(item => item.execution === undefined || !this.hasExecutionBindingChange({ ...item.execution, model: undefined, thinking: undefined, modelSwitchMode: undefined }));
     if (directBindingBoundary || selected.some(item => item.execution?.afterModelSwitch !== undefined && !this.boundarySteeringIds.has(item.id))) {
-      for (const item of selected) this.acceptedBoundaryPromptIds.add(item.id);
+      for (const item of selected) {
+        item.deliveryReason = 'model_switch_boundary';
+        this.acceptedBoundaryPromptIds.add(item.id);
+      }
       void this.scheduleSwitchBoundary(selected);
       return selected.map(item => item.handle);
     }
     if (targetTurnId === undefined) {
-      for (const item of selected) this.immediatePromptIds.add(item.id);
+      for (const item of selected) {
+        item.deliveryReason = 'no_active_turn';
+        this.immediatePromptIds.add(item.id);
+      }
       void this.startNext();
       return selected.map((item) => item.handle);
     }
@@ -2059,7 +2068,10 @@ export class AgentPromptService implements IAgentPromptService {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'Prompts with a model-switch dependency or different execution binding must run as their own turn');
     }
     const active = this.active;
-    for (const item of selected) this.steeringPromptIds.add(item.id);
+    for (const item of selected) {
+      item.deliveryReason = undefined;
+      this.steeringPromptIds.add(item.id);
+    }
     try {
       const message = mergeSteerMessages(selected);
       const execution = this.instantiation.invokeFunction((accessor) => accessor.get(IAgentExecutionService));
@@ -2086,6 +2098,7 @@ export class AgentPromptService implements IAgentPromptService {
         this.syncRecoveryHold();
       } else {
         for (const item of selected) {
+          item.deliveryReason = active === undefined ? 'no_active_turn' : 'executor_deferred';
           this.queuedExternalSteerIds.add(item.id);
           await this.dispatcher.dispatch(new ExecutorHintDelivery({
             executorId: this.profile.data().executorId, promptId: item.id, origin: item.message.origin?.kind ?? 'user',

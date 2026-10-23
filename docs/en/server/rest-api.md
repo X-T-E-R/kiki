@@ -347,7 +347,19 @@ Invalid request shapes, empty messages, missing targets and unavailable uploads 
 
 Read `GET /api/sessions/{session_id}/prompts?admission=durable` to receive `ingress` items. Follow `ingress_next_cursor` as `cursor` until absent, even if a page has no items for the selected agent. Pages scan at most 64 saved requests and return a text preview of at most 1024 characters with `admission_content_truncated: true`. A saved request with no text previews as `[Attachment]`. Use the point-read route for the original. Both reads leave cold agents unloaded. For a child agent, include the same `agent_id` in the submission body and every query or action.
 
-`admission: "admitted"` means the agent accepted the request; `status` reports its saved receipt state, not its current queue position or model consumption. For immediate delivery, optional `delivery_state: "steered"` means the core assigned the message to the target turn; `"queued"` means it is still awaiting delivery, including a pending model-switch boundary. Neither assignment nor admission confirms insertion into a model request; use the delivered transcript frame and subsequent request for that.
+`admission: "admitted"` means the agent accepted the request; `status` reports its saved receipt state, not its current queue position or model consumption. For immediate delivery, optional `delivery_state: "steered"` means the core assigned the message to the target turn; `"queued"` means it was awaiting delivery when that receipt was recorded, including a pending model-switch boundary. Neither assignment nor admission confirms insertion into a model request; use the delivered transcript frame and subsequent request for that. A newer canonical started, steered or terminal prompt takes precedence over an older queued receipt.
+
+Optional `delivery_reason` explains the immediate-delivery decision on submit receipts and durable reads. A single-ID `:steer` response also carries `delivery_state` and `delivery_reason`; its existing `steered: true` acknowledges the command, not model consumption. Multi-ID steer acknowledgements omit these single-prompt fields.
+
+| `delivery_reason` | Meaning |
+| --- | --- |
+| `target_changed` | The active turn or prompt changed before delivery; the message was left queued. |
+| `steer_rejected` | The core refused insertion into the active turn, such as for incompatible execution controls. |
+| `executor_deferred` | The external executor did not deliver this message into its active run; it remains queued for a later turn. This does not distinguish an unsupported operation from a declined one. |
+| `model_switch_boundary` | Delivery is waiting for the selected model-switch boundary. |
+| `no_active_turn` | No active turn was available; the selected message follows the new-turn path. |
+| `external_retry` | A known external submission was replayed without repeating its immediate-delivery action. |
+| `prompt_no_longer_pending` | The prompt was no longer selectable in the pending queue. This alone proves neither delivery nor that it is still queued; read its canonical state. |
 
 `failed` includes `admission_error` and keeps the original content and attachments. Restarted or uncertain submissions become `held` until an explicit `:resume`; the server checks the original receipt before retrying, and a failed receipt lookup does not authorize another launch. Use `:abort` to cancel. `aborted: false` with admission `held` means cancellation still needs reconciliation; `cancelled` confirms it. To edit a saved request, cancel it and submit a new ID.
 
