@@ -953,11 +953,12 @@ describe('FileSessionIndex (read model)', () => {
     expect(await store.count({ workspaceIds: [workspaceId] })).toBe(3);
   });
 
-  it('publishes healthy sessions when one metadata read is denied', async () => {
+  it.each([StorageErrors.codes.STORAGE_PERMISSION_DENIED, StorageErrors.codes.STORAGE_DECODE_FAILED])('keeps a healthy read model through repeated authoritative metadata errors: %s', async (code) => {
+    const failure = new StorageError(code, 'read denied');
     class DeniedDocumentStore extends JsonAtomicDocumentStore {
       override async get<T>(scope: string, key: string): Promise<T | undefined> {
         if (scope === `sessions/${workspaceId}/denied/session-meta` && key === 'state.json') {
-          throw new StorageError(StorageErrors.codes.STORAGE_PERMISSION_DENIED, 'read denied');
+          throw failure;
         }
         return super.get<T>(scope, key);
       }
@@ -970,8 +971,159 @@ describe('FileSessionIndex (read model)', () => {
     expect((await store.listRecent({ workspaceIds: [workspaceId] })).items.map((s) => s.id))
       .toEqual(['healthy']);
     expect(await store.count({ workspaceIds: [workspaceId] })).toBe(1);
-    await expect(store.get('denied', workspaceId)).rejects.toThrow('read denied');
-    await expect(store.get('absent', workspaceId)).resolves.toBeUndefined();
+    const recover = vi.spyOn(queryStore, 'recover');
+    const project = vi.spyOn(SessionIndexProjector.prototype, 'project');
+    try {
+      for (let retry = 0; retry < 4; retry++) {
+        await expect(store.get('denied', workspaceId)).rejects.toBe(failure);
+        await expect(store.listRecent({ sessionId: 'denied', workspaceIds: [workspaceId] })).rejects.toBe(failure);
+        expect(store.status()).toMatchObject({ state: 'ready', generation: 1, degradedCount: 0 });
+        expect((await store.listRecent({ workspaceIds: [workspaceId] })).items.map((s) => s.id)).toEqual(['healthy']);
+        expect(await store.count({ workspaceIds: [workspaceId] })).toBe(1);
+      }
+      await expect(store.get('absent', workspaceId)).resolves.toBeUndefined();
+      expect(recover).not.toHaveBeenCalled();
+      expect(project).not.toHaveBeenCalled();
+    } finally {
+      recover.mockRestore();
+      project.mockRestore();
+    }
+  });
+
+  it.each([
+    ['initial', 'listRecent'],
+    ['initial', 'count'],
+    ['background', 'listRecent'],
+    ['background', 'count'],
+  ] as const)('recovers a manifest read failure during %s prepare projection through %s', async (window, method) => {
+    await seedSession('existing', { createdAt: 1, updatedAt: 2 });
+    const consumer: ISessionIndex = build();
+    const entered = deferred<void>();
+    const gate = deferred<void>();
+    const originalScan = SessionIndexProjector.prototype.scan;
+    const scan = vi.spyOn(SessionIndexProjector.prototype, 'scan').mockImplementationOnce(async function (this: SessionIndexProjector, options) {
+      entered.resolve();
+      await gate.promise;
+      return originalScan.call(this, options);
+    });
+    const originalCheckpoint = queryStore.getCheckpoint.bind(queryStore);
+    let failManifest = false;
+    const checkpoint = vi.spyOn(queryStore, 'getCheckpoint').mockImplementation(async (source) => {
+      if (failManifest && source === SESSION_INDEX_MANIFEST) {
+        failManifest = false;
+        throw new Error('injected transient manifest read failure');
+      }
+      return originalCheckpoint(source);
+    });
+    const recover = vi.spyOn(queryStore, 'recover');
+    const pending = consumer as unknown as { prepareFlight?: Promise<unknown>; projectFlight?: Promise<unknown> };
+    const readyGenerations: (number | undefined)[] = [];
+    const subscription = consumer.onDidChangeStatus((status) => {
+      if (status.state === 'ready') readyGenerations.push(status.generation);
+    });
+    const preparing = consumer.prepare(window === 'background' ? { deadlineMs: 0 } : undefined);
+    const read = () => method === 'count' ? consumer.count({ workspaceIds: [workspaceId] })
+      : consumer.listRecent({ workspaceIds: [workspaceId] });
+    try {
+      await entered.promise;
+      if (window === 'background') {
+        expect(await preparing).toMatchObject({ state: 'preparing' });
+      }
+      failManifest = true;
+      await expect(read()).rejects.toBeInstanceOf(SessionIndexBuildingError);
+      expect(consumer.status().state).not.toBe('ready');
+      expect(consumer.status().degradedCount).toBe(1);
+      expect(recover).not.toHaveBeenCalled();
+      const projected = pending.projectFlight;
+      gate.resolve();
+      await projected;
+      await preparing;
+      if (window === 'initial') {
+        expect(consumer.status()).toMatchObject({ state: 'degraded', generation: 1, degradedCount: 1 });
+        expect(readyGenerations).toEqual([]);
+        await expect(read()).rejects.toBeInstanceOf(SessionIndexBuildingError);
+      }
+      await pending.prepareFlight;
+      expect(recover).toHaveBeenCalledTimes(1);
+      expect(consumer.status()).toMatchObject({ state: 'ready', generation: 2, degradedCount: 1 });
+      expect(readyGenerations).toEqual([2]);
+      expect((await consumer.listRecent({ workspaceIds: [workspaceId] })).items.map((item) => item.id)).toEqual(['existing']);
+      expect(await consumer.count({ workspaceIds: [workspaceId] })).toBe(1);
+      expect(await consumer.get('existing', workspaceId)).toMatchObject({ id: 'existing' });
+    } finally {
+      gate.resolve();
+      await preparing;
+      await pending.projectFlight;
+      await pending.prepareFlight;
+      subscription.dispose();
+      scan.mockRestore();
+      checkpoint.mockRestore();
+      recover.mockRestore();
+    }
+  });
+
+  it.each(['initial', 'background'] as const)('bounds failed recovery after a manifest read error during %s prepare projection', async (window) => {
+    await seedSession('existing', { createdAt: 1, updatedAt: 2 });
+    const consumer: ISessionIndex = build();
+    const entered = deferred<void>();
+    const gate = deferred<void>();
+    const originalScan = SessionIndexProjector.prototype.scan;
+    const scan = vi.spyOn(SessionIndexProjector.prototype, 'scan').mockImplementationOnce(async function (this: SessionIndexProjector, options) {
+      entered.resolve();
+      await gate.promise;
+      return originalScan.call(this, options);
+    });
+    const checkpoint = vi.spyOn(queryStore, 'getCheckpoint');
+    const recoverEntered = deferred<void>();
+    const failRecovery = deferred<void>();
+    const recover = vi.spyOn(queryStore, 'recover').mockImplementation(async () => {
+      recoverEntered.resolve();
+      await failRecovery.promise;
+      throw new Error('injected recovery failure');
+    });
+    const pending = consumer as unknown as { prepareFlight?: Promise<unknown>; projectFlight?: Promise<unknown> };
+    const preparing = consumer.prepare(window === 'background' ? { deadlineMs: 0 } : undefined);
+    try {
+      await entered.promise;
+      if (window === 'background') await preparing;
+      checkpoint.mockRejectedValueOnce(new Error('injected transient manifest read failure'));
+      await expect(consumer.count({ workspaceIds: [workspaceId] })).rejects.toBeInstanceOf(SessionIndexBuildingError);
+      expect(recover).not.toHaveBeenCalled();
+      const projected = pending.projectFlight;
+      gate.resolve();
+      await projected;
+      await preparing;
+      if (window === 'initial') {
+        expect(consumer.status().state).toBe('degraded');
+        await expect(consumer.count({ workspaceIds: [workspaceId] })).rejects.toBeInstanceOf(SessionIndexBuildingError);
+      }
+      await recoverEntered.promise;
+      vi.useFakeTimers();
+      failRecovery.resolve();
+      await pending.prepareFlight;
+      expect(recover).toHaveBeenCalledTimes(1);
+      for (let attempt = 2; attempt <= 3; attempt++) {
+        await vi.advanceTimersByTimeAsync(5_000);
+        await pending.prepareFlight;
+        expect(recover).toHaveBeenCalledTimes(attempt);
+      }
+      expect(consumer.status()).toMatchObject({ state: 'degraded', reason: expect.stringContaining('automatic recovery exhausted') });
+      await vi.advanceTimersByTimeAsync(55_000);
+      await expect(consumer.listRecent({ workspaceIds: [workspaceId] })).rejects.toBeInstanceOf(SessionIndexBuildingError);
+      await expect(consumer.count({ workspaceIds: [workspaceId] })).rejects.toBeInstanceOf(SessionIndexBuildingError);
+      expect(recover).toHaveBeenCalledTimes(3);
+      expect(await consumer.get('existing', workspaceId)).toMatchObject({ id: 'existing' });
+    } finally {
+      gate.resolve();
+      failRecovery.resolve();
+      vi.useRealTimers();
+      await preparing;
+      await pending.projectFlight;
+      await pending.prepareFlight;
+      scan.mockRestore();
+      checkpoint.mockRestore();
+      recover.mockRestore();
+    }
   });
 
   it('automatically retires failed readers and publishes a fresh generation without user cleanup', async () => {
@@ -1044,6 +1196,134 @@ describe('FileSessionIndex (read model)', () => {
       expect(await store.get('existing', workspaceId)).toMatchObject({ id: 'existing' });
     } finally {
       vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it.each(['get', 'listRecent', 'count'] as const)('resumes exhausted recovery through the production %s consumer after cooldown', async (method) => {
+    await seedSession('existing', { createdAt: 1, updatedAt: 2 });
+    const store = build();
+    const consumer: ISessionIndex = store;
+    await consumer.prepare();
+    const originalGet = queryStore.get.bind(queryStore);
+    const originalRecover = queryStore.recover!.bind(queryStore);
+    let failing = true;
+    const get = vi.spyOn(queryStore, 'get').mockImplementation(async (collection, key) => {
+      if (failing && collection === sessionCollection(1)) throw new Error('value reader: snapshot file is not open');
+      return originalGet(collection, key);
+    });
+    const recover = vi.spyOn(queryStore, 'recover').mockImplementation(async () => {
+      if (failing) throw new Error('injected recovery failure');
+      await originalRecover();
+    });
+    const pending = store as unknown as { prepareFlight?: Promise<unknown> };
+    vi.useFakeTimers();
+    try {
+      expect(await consumer.get('existing', workspaceId)).toMatchObject({ id: 'existing' });
+      await pending.prepareFlight;
+      for (let attempt = 2; attempt <= 3; attempt++) {
+        await vi.advanceTimersByTimeAsync(5_000);
+        await pending.prepareFlight;
+      }
+      expect(recover).toHaveBeenCalledTimes(3);
+      for (let retry = 0; retry < 11; retry++) {
+        await vi.advanceTimersByTimeAsync(5_000);
+        await expect(consumer.listRecent({ workspaceIds: [workspaceId] })).rejects.toBeInstanceOf(SessionIndexBuildingError);
+        await expect(consumer.count({ workspaceIds: [workspaceId] })).rejects.toBeInstanceOf(SessionIndexBuildingError);
+        expect(recover).toHaveBeenCalledTimes(3);
+      }
+      failing = false;
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(recover).toHaveBeenCalledTimes(3);
+      const cooledAt = Date.now();
+      vi.useRealTimers();
+      vi.spyOn(Date, 'now').mockReturnValue(cooledAt);
+      const read = () => method === 'get' ? consumer.get('existing', workspaceId)
+        : method === 'count' ? consumer.count({ workspaceIds: [workspaceId] })
+          : consumer.listRecent({ workspaceIds: [workspaceId] });
+      const requests = Array.from({ length: 10 }, () => read().catch((error: unknown) => error));
+      await Promise.all(requests);
+      await pending.prepareFlight;
+      expect(recover).toHaveBeenCalledTimes(4);
+      expect(consumer.status()).toMatchObject({ state: 'ready', generation: 2 });
+      expect(await consumer.count({ workspaceIds: [workspaceId] })).toBe(1);
+      expect(await consumer.get('existing', workspaceId)).toMatchObject({ id: 'existing' });
+    } finally {
+      vi.useRealTimers();
+      get.mockRestore();
+      recover.mockRestore();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it.each(['listRecent', 'count'] as const)('does not reset exhausted recovery while the third attempt is in flight for %s', async (method) => {
+    await seedSession('existing', { createdAt: 1, updatedAt: 2 });
+    const store = build();
+    const consumer: ISessionIndex = store;
+    await consumer.prepare();
+    const originalGet = queryStore.get.bind(queryStore);
+    const originalRecover = queryStore.recover!.bind(queryStore);
+    const third = deferred<void>();
+    const entered = deferred<void>();
+    let failing = true;
+    const get = vi.spyOn(queryStore, 'get').mockImplementation(async (collection, key) => {
+      if (failing && collection === sessionCollection(1)) throw new Error('value reader: snapshot file is not open');
+      return originalGet(collection, key);
+    });
+    let attempts = 0;
+    const recover = vi.spyOn(queryStore, 'recover').mockImplementation(async () => {
+      if (!failing) return originalRecover();
+      if (++attempts === 3) { entered.resolve(); await third.promise; }
+      throw new Error('injected recovery failure');
+    });
+    const pending = store as unknown as { prepareFlight?: Promise<unknown>; log: ILogService };
+    const info = vi.spyOn(pending.log, 'info');
+    const read = () => method === 'count' ? consumer.count({ workspaceIds: [workspaceId] })
+      : consumer.listRecent({ workspaceIds: [workspaceId] });
+    vi.useFakeTimers();
+    try {
+      expect(await consumer.get('existing', workspaceId)).toMatchObject({ id: 'existing' });
+      await pending.prepareFlight;
+      await vi.advanceTimersByTimeAsync(5_000);
+      await pending.prepareFlight;
+      await vi.advanceTimersByTimeAsync(5_000);
+      await entered.promise;
+      const thirdFlight = pending.prepareFlight;
+      expect(recover).toHaveBeenCalledTimes(3);
+      expect(consumer.status().state).toBe('preparing');
+      for (let request = 0; request < 10; request++) {
+        await expect(read()).rejects.toBeInstanceOf(SessionIndexBuildingError);
+      }
+      expect(info).not.toHaveBeenCalledWith('session index recovery resumed by read after cooldown');
+      third.reject(new Error('held third attempt failed'));
+      await thirdFlight;
+      const afterThird = consumer.status();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(recover).toHaveBeenCalledTimes(3);
+      expect(afterThird).toMatchObject({ state: 'degraded', reason: expect.stringContaining('automatic recovery exhausted') });
+      for (let retry = 0; retry < 10; retry++) {
+        await vi.advanceTimersByTimeAsync(5_000);
+        await expect(read()).rejects.toBeInstanceOf(SessionIndexBuildingError);
+        expect(recover).toHaveBeenCalledTimes(3);
+      }
+      expect(info).not.toHaveBeenCalledWith('session index recovery resumed by read after cooldown');
+      failing = false;
+      await vi.advanceTimersByTimeAsync(5_000);
+      const cooledAt = Date.now();
+      vi.useRealTimers();
+      vi.spyOn(Date, 'now').mockReturnValue(cooledAt);
+      await Promise.all(Array.from({ length: 10 }, () => read().catch((error: unknown) => error)));
+      await pending.prepareFlight;
+      expect(recover).toHaveBeenCalledTimes(4);
+      expect(info.mock.calls.filter(([message]) => message === 'session index recovery resumed by read after cooldown')).toHaveLength(1);
+      expect(consumer.status()).toMatchObject({ state: 'ready', generation: 2 });
+      expect(await consumer.count({ workspaceIds: [workspaceId] })).toBe(1);
+    } finally {
+      third.resolve();
+      await pending.prepareFlight;
+      vi.useRealTimers();
+      get.mockRestore();
+      recover.mockRestore();
       vi.restoreAllMocks();
     }
   });

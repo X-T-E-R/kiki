@@ -688,7 +688,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     if (current !== handle) return false;
     const ongoing = this.checkpointSaves.get(sessionId);
     if (ongoing !== undefined) return ongoing;
-    const save = this.writeReplayCheckpoints(handle);
+    const save = this.writeReplayCheckpoints(sessionId, handle);
     this.checkpointSaves.set(sessionId, save);
     try {
       return await save;
@@ -697,12 +697,21 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     }
   }
 
-  private async writeReplayCheckpoints(handle: ISessionScopeHandle): Promise<boolean> {
+  private async writeReplayCheckpoints(sessionId: string, handle: ISessionScopeHandle): Promise<boolean> {
     let saved = true;
     for (const agent of handle.accessor.get(IAgentLifecycleService).list()) {
-      const dispatcher = agent.accessor.get(IEventDispatcher);
-      if (dispatcher.saveReplayCheckpoint !== undefined && !(await dispatcher.saveReplayCheckpoint())) {
+      try {
+        const dispatcher = agent.accessor.get(IEventDispatcher);
+        if (dispatcher.saveReplayCheckpoint !== undefined && !(await dispatcher.saveReplayCheckpoint())) {
+          saved = false;
+        }
+      } catch (error) {
         saved = false;
+        this.log.warn('agent replay checkpoint failed; keeping canonical journal', {
+          sessionId,
+          agentId: agent.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
     return saved;

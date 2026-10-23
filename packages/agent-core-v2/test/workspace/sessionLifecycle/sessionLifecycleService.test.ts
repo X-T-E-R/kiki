@@ -5,6 +5,11 @@ import { noopTelemetryService } from '#/app/telemetry/telemetry';
 import { AGENT_WIRE_RECORD_KEY } from '#/wire/record';
 import { WIRE_TRANSCRIPT_RECEIPT_KEY, parseWireTranscriptReceipt } from '#/wire/transcriptReceipt';
 import { IWireService } from '#/wire/wire';
+import { SessionManager } from '#/app/sessionManager/sessionManagerService';
+import { ISessionManager } from '#/app/sessionManager/sessionManager';
+import { IConfigService } from '#/app/config/config';
+import { IFlagService } from '#/app/flag/flag';
+import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { noopLogger, registerTestAgentWire, testWireScope } from '../../wire/stubs';
 
 import { createDecorator, type IInstantiationService, type ServiceIdentifier, type ServicesAccessor } from '#/_base/di/instantiation';
@@ -15,7 +20,7 @@ import { SyncDescriptor } from '#/_base/di/descriptors';
 import { InstantiationService } from '#/_base/di/instantiationService';
 import { ScopeUnits } from '#/_base/di/fiber';
 import { Service } from '#/_base/di/service';
-import { Event } from '#/_base/event';
+import { Emitter, Event } from '#/_base/event';
 import { createServices, TestInstantiationService } from '#/_base/di/test';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
@@ -32,8 +37,8 @@ import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { drainSessionMetadataWrites, trackSessionMetadataWork } from '#/session/sessionMetadata/sessionMetadataService';
 import { ISessionTerminalService, SessionTerminalService } from '#/session/terminal/terminalService';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
-import type { SessionClosedEvent } from '#/workspace/sessionLifecycle/sessionLifecycle';
-import { IRuntimeResolver } from '#/workspace/workspaceInstance/workspaceInstanceManager';
+import type { SessionClosedEvent, SessionCreatedEvent } from '#/workspace/sessionLifecycle/sessionLifecycle';
+import { IRuntimeResolver, IWorkspaceInstanceManager } from '#/workspace/workspaceInstance/workspaceInstanceManager';
 import { SessionLifecycleService } from '#/workspace/sessionLifecycle/sessionLifecycleService';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentLoopService } from '#/agent/loop/loop';
@@ -544,13 +549,85 @@ describe('SessionLifecycleService unload', () => {
       scheduling.scheduleCheckpoint('session-1', fx.handle, 1_000);
       await vi.advanceTimersByTimeAsync(10_000);
       expect(save).toHaveBeenCalledTimes(6);
-      expect(warn).toHaveBeenCalledTimes(4);
-      expect(warn).toHaveBeenLastCalledWith('session replay checkpoint failed', expect.objectContaining({ attempt: 4, retrying: false, error: 'replay checkpoint write failed: injected disk failure' }));
+      expect(warn.mock.calls.filter(([message]) => message === 'agent replay checkpoint failed; keeping canonical journal')).toHaveLength(4);
+      expect(warn).toHaveBeenCalledWith('agent replay checkpoint failed; keeping canonical journal', expect.objectContaining({ sessionId: 'session-1', agentId: 'main', error: 'replay checkpoint write failed: injected disk failure' }));
+      expect(warn).toHaveBeenLastCalledWith('session replay checkpoint recovery exhausted', expect.objectContaining({ attempts: 4 }));
       await vi.advanceTimersByTimeAsync(10_000);
       expect(save).toHaveBeenCalledTimes(6);
     } finally {
       scheduling.disposeCheckpointScheduling('session-1');
       vi.useRealTimers();
+    }
+  });
+
+  it('isolates derived checkpoint failures from other agents, the ninth resume and archive', async () => {
+    const failed = vi.fn(async () => { throw new Error('replay checkpoint write failed: injected disk failure'); });
+    const saved = vi.fn(async () => true);
+    const remove = vi.fn(async () => {});
+    const agentAccessor = Object.assign(accessor([
+      [IEventDispatcher, { saveReplayCheckpoint: failed }],
+      [IAgentPromptService, { list: () => ({ pending: [] }) }],
+      [IAgentLoopService, { status: () => ({ state: 'idle', pendingTurnIds: [], hasPendingRequests: false }) }],
+      [IAgentExecutionService, { status: () => ({ state: 'idle' }) }],
+    ]), { remove });
+    const fx = fixture(undefined, agentAccessor);
+    const agents = fx.handle.accessor.get(IAgentLifecycleService);
+    const main = agents.list()[0]!;
+    vi.spyOn(agents, 'list').mockReturnValue([main, {
+      ...main, id: 'child', accessor: accessor([[IEventDispatcher, { saveReplayCheckpoint: saved }],
+        [IAgentPromptService, { list: () => ({ pending: [] }) }],
+        [IAgentLoopService, { status: () => ({ state: 'idle', pendingTurnIds: [], hasPendingRequests: false }) }],
+        [IAgentExecutionService, { status: () => ({ state: 'idle' }) }]]),
+    }]);
+    const warn = vi.fn();
+    Object.assign(fx.service, { log: { warn, info: () => {}, debug: () => {} } });
+    const release = vi.fn(async () => {});
+    (fx.service as unknown as { sessionLocks: Map<string, { release(): Promise<void> }> }).sessionLocks.set('session-1', { release });
+    await expect(fx.service.unload('session-1')).resolves.toBe(false);
+    expect(saved).toHaveBeenCalledOnce();
+    expect(release).not.toHaveBeenCalled();
+    expect(fx.dispose).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith('agent replay checkpoint failed; keeping canonical journal', {
+      sessionId: 'session-1', agentId: 'main', error: 'replay checkpoint write failed: injected disk failure',
+    });
+    const created = new Emitter<SessionCreatedEvent>();
+    const controller = {
+      onWillCreateSession: Event.None, onDidCreateSession: created.event,
+      onWillCloseSession: Event.None, onDidCloseSession: Event.None,
+      onDidArchiveSession: Event.None, onDidForkSession: Event.None,
+      resume: async (id: string) => {
+        const handle = { id } as ISessionScopeHandle;
+        created.fire({ sessionId: id, handle, source: 'resume' });
+        return handle;
+      },
+      unload: () => fx.service.unload('session-1'),
+      close: async () => {}, dispose: () => {},
+    };
+    const workspace = { id: 'workspace-1', program: { sessionControllerGeneration: 'generation-1', createSessionController: () => controller } };
+    const disposables = new DisposableStore();
+    const services = createServices(disposables, { additionalServices: (reg) => {
+      reg.defineInstance(IWorkspaceInstanceManager, { get: () => workspace, acquire: async () => ({ instance: workspace, dispose: () => {} }) } as unknown as IWorkspaceInstanceManager);
+      reg.defineInstance(ISessionIndex, { get: async () => ({ workspaceId: 'workspace-1', cwd: '/workspace' }) } as unknown as ISessionIndex);
+      reg.defineInstance(IConfigService, { get: () => ({ minIdleMs: 0, maxLiveSessions: 8, maxResidentHeapBytes: 0 }) } as unknown as IConfigService);
+      reg.definePartialInstance(IFlagService, { enabled: () => true });
+      reg.define(ISessionManager, SessionManager);
+    } });
+    const manager = services.get(ISessionManager);
+    try {
+      for (let id = 1; id <= 8; id++) await manager.resume(`resident-${id}`);
+      await expect(manager.resume('ninth-session')).resolves.toMatchObject({ id: 'ninth-session' });
+      expect(manager.residencyReport?.()).toMatchObject({ liveSessions: 9, evictionAttempts: 8, evictionFailures: 0 });
+      expect(saved).toHaveBeenCalledTimes(9);
+      expect(fx.service.get('session-1')).toBe(fx.handle);
+      await expect(fx.service.archive('session-1')).resolves.toBeUndefined();
+      expect(saved).toHaveBeenCalledTimes(10);
+      expect(remove).toHaveBeenCalledTimes(2);
+      expect(fx.dispose).toHaveBeenCalledOnce();
+      expect(release).toHaveBeenCalledOnce();
+    } finally {
+      await disposables.dispose();
+      created.dispose();
+      await fx.service.dispose();
     }
   });
 

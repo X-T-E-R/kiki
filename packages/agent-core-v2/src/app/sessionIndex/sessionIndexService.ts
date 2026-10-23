@@ -59,7 +59,12 @@ const RECONCILE_RETRY_BASE_MS = 5_000;
 const RECONCILE_RETRY_MAX_MS = 60_000;
 const DEGRADED_RETRY_MS = 5_000;
 const RECOVERY_MAX_ATTEMPTS = 3;
+const RECOVERY_COOLDOWN_MS = 60_000;
 const UNBOUNDED = Number.MAX_SAFE_INTEGER;
+
+class AuthoritativeReadFailure extends Error {
+  constructor(cause: unknown) { super('authoritative metadata read failed', { cause }); }
+}
 
 function canonicalOrder(a: Pick<SessionSummary, 'updatedAt' | 'id'>, b: Pick<SessionSummary, 'updatedAt' | 'id'>): number {
   if (a.updatedAt !== b.updatedAt) return b.updatedAt - a.updatedAt;
@@ -253,9 +258,11 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
         this.recoveryAttempts++;
         this.recoveryTimer.cancel();
         this.log.info('session index recovery started', { attempt: this.recoveryAttempts });
+        await this.projectFlight?.catch(() => false);
         await this.mirror.runExclusive(async () => { await this.queryStore.recover?.(); });
         const rebuilt = await this.ensureProjection(true);
         if (!rebuilt) throw new Error('session index recovery projection failed');
+        await this.mirror.drain();
         this.recoveryRequired = false;
         this.recoveryAttempts = 0;
         this.nextPrepareRetryAt = 0;
@@ -481,6 +488,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   }
 
   private markReady(): void {
+    if (this.recoveryRequired) return;
     this.state = 'ready';
     this.statusReason = undefined;
     this.ensureReconcileTimer();
@@ -493,11 +501,12 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     this.degradedCount += 1;
     this.recoveryRequired = true;
     const exhausted = this.recoveryAttempts >= RECOVERY_MAX_ATTEMPTS;
-    if (exhausted) this.statusReason = `${reason}; automatic recovery exhausted; call reprojectNow() to retry`;
-    this.nextPrepareRetryAt = exhausted ? Number.POSITIVE_INFINITY : Date.now() + DEGRADED_RETRY_MS;
+    if (exhausted) this.statusReason = `${reason}; automatic recovery exhausted; next read can retry after ${RECOVERY_COOLDOWN_MS}ms cooldown`;
+    this.nextPrepareRetryAt = Date.now() + (exhausted ? RECOVERY_COOLDOWN_MS : DEGRADED_RETRY_MS);
     if (!exhausted) this.recoveryTimer.cancelAndSet(() => this.kickPrepare(), DEGRADED_RETRY_MS);
-    else this.log.error('session index automatic recovery exhausted; call reprojectNow to retry', {
+    else this.log.error('session index automatic recovery exhausted; waiting for read after cooldown', {
       attempts: this.recoveryAttempts,
+      retryAfterMs: RECOVERY_COOLDOWN_MS,
       error: String(error),
     });
     this.ensureReconcileTimer();
@@ -570,19 +579,27 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       return legacy();
     }
     if (this.state !== 'ready') {
-      if (this.state !== 'preparing' && Date.now() >= this.nextPrepareRetryAt) this.kickPrepare();
+      if (this.state !== 'preparing' && Date.now() >= this.nextPrepareRetryAt) this.kickPrepare(true);
       return legacy();
     }
+    let manifest: Checkpoint | undefined;
     try {
-      const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
-      if (manifest === undefined) {
-        this.markDegraded('published generation lost');
-        this.kickPrepare();
-        return await legacy();
-      }
-      this.generation = manifest.seq;
+      manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
+    } catch (error) {
+      this.markDegraded('read model read failed', error);
+      this.kickPrepare();
+      return legacy();
+    }
+    if (manifest === undefined) {
+      this.markDegraded('published generation lost');
+      this.kickPrepare();
+      return legacy();
+    }
+    this.generation = manifest.seq;
+    try {
       return await op(manifest.seq);
     } catch (error) {
+      if (error instanceof AuthoritativeReadFailure) throw error.cause;
       this.markDegraded('read model read failed', error);
       this.kickPrepare();
       return legacy();
@@ -596,7 +613,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   ): Promise<T> {
     if (!this.readModelEnabled()) return legacy();
     if (this.recoveryRequired) {
-      if (Date.now() >= this.nextPrepareRetryAt || this.recoveryAttempts === 0) this.kickPrepare();
+      if (Date.now() >= this.nextPrepareRetryAt || this.recoveryAttempts === 0) this.kickPrepare(true);
       throw new SessionIndexBuildingError();
     }
     if (this.mirror.dirtyEpoch() !== undefined) {
@@ -636,6 +653,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       try {
         return await op(generation);
       } catch (error) {
+        if (error instanceof AuthoritativeReadFailure) throw error.cause;
         this.markDegraded('read model read failed', error);
         this.kickPrepare();
         throw new SessionIndexBuildingError();
@@ -644,8 +662,13 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     return exclusive ? this.mirror.runExclusive(read) : read();
   }
 
-  private kickPrepare(): void {
-    if (this.recoveryRequired && this.recoveryAttempts >= RECOVERY_MAX_ATTEMPTS) return;
+  private kickPrepare(requested = false): void {
+    if (this.prepareFlight !== undefined || this.state === 'preparing') return;
+    if (this.recoveryRequired && this.recoveryAttempts >= RECOVERY_MAX_ATTEMPTS) {
+      if (!requested || this.state !== 'degraded' || Date.now() < this.nextPrepareRetryAt) return;
+      this.recoveryAttempts = 0;
+      this.log.info('session index recovery resumed by read after cooldown');
+    }
     void this.prepare().catch((error: unknown) => {
       this.log.error('session index recovery failed', { error: String(error) });
     });
@@ -667,7 +690,8 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
         if (workspaceId === undefined || summary.workspaceId === workspaceId) return this.withOwnUpdatedAt(summary);
       }
     }
-    const summary = await this.getLegacy(id, workspaceId === undefined ? undefined : [workspaceId]);
+    const summary = await this.getLegacy(id, workspaceId === undefined ? undefined : [workspaceId])
+      .catch((error: unknown) => { throw new AuthoritativeReadFailure(error); });
     if (summary !== undefined) this.mirror.record(summary);
     return summary;
   }
