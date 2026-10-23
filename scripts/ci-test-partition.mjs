@@ -70,13 +70,6 @@ export function partitionCollectedFiles(entries, root = repositoryRoot) {
   return { ordinary, gui, media };
 }
 
-export function resolveRequestedMode(value) {
-  if (value === 'partitioned' || value === undefined || value === '') {
-    return 'partitioned';
-  }
-  return 'full';
-}
-
 export function vitestArguments(lane, shard) {
   if (lane === 'ordinary') {
     return ['run', '--project=!gui'];

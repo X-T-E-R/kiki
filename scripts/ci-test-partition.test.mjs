@@ -8,7 +8,6 @@ import {
   assertPartitionCollections,
   parseShard,
   partitionCollectedFiles,
-  resolveRequestedMode,
   vitestArguments,
 } from './ci-test-partition.mjs';
 
@@ -77,11 +76,7 @@ await test('rejects omissions, lane overlap, and shard overlap', () => {
   }, root), /ordinary shard 2 overlaps/);
 });
 
-await test('unknown workflow and runner modes recover to full', () => {
-  assert.equal(resolveRequestedMode(undefined), 'partitioned');
-  assert.equal(resolveRequestedMode('partitioned'), 'partitioned');
-  assert.equal(resolveRequestedMode('full'), 'full');
-  assert.equal(resolveRequestedMode('unexpected'), 'full');
+await test('unknown runner lanes recover to full', () => {
   assert.deepEqual(vitestArguments('unexpected'), ['run']);
 });
 
