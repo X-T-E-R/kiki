@@ -837,7 +837,7 @@ Any registered flag can be overridden here by id, with a boolean value. Every bu
 
 ## `browser_control`
 
-`browser_control` holds the browser connections managed by [Browser control](../guides/settings.md#browser-control) and the default used for new sessions. The settings page is the supported editor: it saves one entry per connection, reads it back before showing the result, and saving never starts a browser.
+`browser_control` holds the browser connections managed by [Browser control](../guides/settings.md#browser-control) and the default used for new sessions. The settings page is the supported editor: it saves one entry per connection, reads it back before showing the result, and saving never starts a browser. To add an HTTP bridge connection, choose **Add browser** and set **Connection style** to **Kimi WebBridge**.
 
 | Field | Type | Description |
 | --- | --- | --- |

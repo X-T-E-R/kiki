@@ -823,7 +823,7 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 
 ## `browser_control`
 
-`browser_control` 存放由[浏览器控制](../guides/settings.md#浏览器控制)管理的浏览器连接，以及新会话默认项。设置页是受支持的编辑入口：它按连接保存条目、保存后读回结果再显示，且保存从不启动浏览器。
+`browser_control` 存放由[浏览器控制](../guides/settings.md#浏览器控制)管理的浏览器连接，以及新会话默认项。设置页是受支持的编辑入口：它按连接保存条目、保存后读回结果再显示，且保存从不启动浏览器。要新增 HTTP 桥连接，点击「添加浏览器」，将「接法」选为「Kimi WebBridge」。
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
