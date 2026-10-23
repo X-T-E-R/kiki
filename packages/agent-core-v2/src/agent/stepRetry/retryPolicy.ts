@@ -18,6 +18,8 @@ export interface RetryPolicyDecision {
   readonly backoffMs?: number;
 }
 
+type RetryBindingSource = RetryBindingIdentity | (() => RetryBindingIdentity | undefined) | undefined;
+
 export function isValidRetryPattern(pattern: string): boolean {
   return compileRetryPattern(pattern) !== undefined;
 }
@@ -32,17 +34,23 @@ export function retryErrorIdentity(error: unknown): RetryErrorIdentity {
 export function findRetryPolicy(
   policies: readonly RetryPolicy[] | undefined,
   error: unknown,
-  binding: RetryBindingIdentity = {},
+  binding: RetryBindingSource = {},
 ): RetryPolicy | undefined {
   if (policies === undefined || policies.length === 0) return undefined;
   const identity = retryErrorIdentity(error);
   for (const policy of policies) {
-    if (!matchesSelector(policy.models, binding.model)) continue;
-    if (!matchesSelector(policy.providers, binding.provider)) continue;
     const pattern = compileRetryPattern(policy.match);
     if (pattern === undefined) continue;
-    if (pattern.test(identity.name)) return policy;
-    if (identity.code !== undefined && pattern.test(identity.code)) return policy;
+    if (
+      !pattern.test(identity.name) &&
+      (identity.code === undefined || !pattern.test(identity.code))
+    ) continue;
+    if (policy.models !== undefined || policy.providers !== undefined) {
+      if (typeof binding === 'function') binding = binding();
+      if (!matchesSelector(policy.models, binding?.model)) continue;
+      if (!matchesSelector(policy.providers, binding?.provider)) continue;
+    }
+    return policy;
   }
   return undefined;
 }
@@ -50,7 +58,7 @@ export function findRetryPolicy(
 export function resolveRetryPolicy(
   config: RetryConfig | undefined,
   error: unknown,
-  binding: RetryBindingIdentity = {},
+  binding: RetryBindingSource = {},
 ): RetryPolicyDecision {
   const policy = findRetryPolicy(config?.policies, error, binding);
   if (policy?.retry === false) return { retry: false };

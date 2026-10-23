@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { attachErrorDetails, unwrapErrorCause } from '#/errors';
 import {
@@ -16,7 +16,23 @@ import { MAX_RETRY_AFTER_MS, readRetryAfterMs, retryBackoffDelays } from '#/_bas
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { ContinuationStepRequest } from '#/agent/loop/stepRequest';
 import { TurnStarted } from '#/agent/loop/turnEvents';
-import { TurnStepRetrying } from '#/agent/stepRetry/stepRetryService';
+import { AgentStepRetryService, TurnStepRetrying } from '#/agent/stepRetry/stepRetryService';
+import { IAgentStepRetryService } from '#/agent/stepRetry/stepRetry';
+import { RETRY_SECTION, type RetryConfig } from '#/agent/stepRetry/configSection';
+import { resolveRetryPolicy } from '#/agent/stepRetry/retryPolicy';
+import { IModelCatalog, type Model } from '#/kosong/model/catalog';
+import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
+import { ILogService } from '#/_base/log/log';
+import { DisposableStore, toDisposable } from '#/_base/di/lifecycle';
+import { createServices } from '#/_base/di/test';
+import { IConfigService } from '#/app/config/config';
+import { IAgentProfileService } from '#/agent/profile/profile';
+import type { LoopErrorContext, LoopErrorHandler } from '#/agent/loop/loop';
+import { IEventDispatcher } from '#/state/eventDispatcher';
+import { registerLogServices } from '../../_base/log/stubs';
+import { registerStateServices } from '../../state/stubs';
+import { StubConfigService } from '../../kosong/stubs';
+import { stubLoopWithHooks } from '../loop/stubs';
 
 import {
   createTestAgent,
@@ -923,5 +939,184 @@ describe('readRetryAfterMs', () => {
     expect(readRetryAfterMs({ retryAfterMs: 600_000, statusCode: 429 })).toBe(600_000);
     expect(readRetryAfterMs({ retryAfterMs: 120_000, statusCode: 502 })).toBe(MAX_RETRY_AFTER_MS);
     expect(readRetryAfterMs({ retryAfterMs: 120_000, details: { statusCode: 429 } })).toBe(120_000);
+  });
+});
+
+describe('stepRetry binding lookup', () => {
+  let disposables: DisposableStore;
+  let config: StubConfigService;
+  let handler: LoopErrorHandler;
+  let context: LoopErrorContext;
+  let getModel: ReturnType<typeof vi.fn<IModelCatalog['get']>>;
+  let logError: ReturnType<typeof vi.fn<ILogService['error']>>;
+  let dispatch: ReturnType<typeof vi.fn<IEventDispatcher['dispatch']>>;
+  const lookupFailure = new Error('catalog unavailable');
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    disposables = new DisposableStore();
+    config = new StubConfigService();
+    const loop = stubLoopWithHooks();
+    const register = vi.spyOn(loop, 'registerLoopErrorHandler');
+    getModel = vi.fn<IModelCatalog['get']>(() => {
+      throw lookupFailure;
+    });
+    logError = vi.fn<ILogService['error']>();
+    dispatch = vi.fn(async () => {});
+    const ix = createServices(disposables, {
+      base: [registerLogServices, registerStateServices],
+      additionalServices: (reg) => {
+        reg.defineInstance(IConfigService, config);
+        reg.defineInstance(IAgentLoopService, loop);
+        reg.definePartialInstance(IEventBus, { subscribe: () => toDisposable(() => {}) });
+        reg.definePartialInstance(IEventDispatcher, { dispatch });
+        reg.definePartialInstance(IAgentProfileService, {
+          data: () => ({
+            modelAlias: 'model-alias', modelCapabilities: UNKNOWN_CAPABILITY,
+            thinkingLevel: 'off', systemPrompt: '',
+          }),
+          getRecipeModelSettings: () => undefined,
+        });
+        reg.definePartialInstance(IModelCatalog, { get: getModel });
+        reg.define(IAgentStepRetryService, AgentStepRetryService);
+      },
+    });
+    ix.get(ILogService).error = logError;
+    ix.get(IAgentStepRetryService);
+    const registered = register.mock.calls[0]?.[0];
+    if (registered === undefined) throw new Error('Expected the step-retry handler to register');
+    handler = registered;
+    context = {
+      error: new APIProviderRateLimitError('slow down'),
+      turnId: 1,
+      step: 1,
+      signal: new AbortController().signal,
+      failedDriver: new ContinuationStepRequest(),
+      retry: vi.fn<LoopErrorContext['retry']>(),
+    };
+  });
+
+  afterEach(async () => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    await disposables.dispose();
+  });
+
+  async function exhaustAttempts(): Promise<number> {
+    let attempts = 1;
+    while (handler.match(context)) {
+      const recovery = handler.handle(context);
+      await vi.runAllTimersAsync();
+      if (!(await recovery)) break;
+      attempts += 1;
+      if (attempts > 10) throw new Error('Retry budget did not stop recovery');
+    }
+    return attempts;
+  }
+
+  it.each<{ label: string; retry?: RetryConfig; attempts: number }>([
+    { label: 'no retry section', attempts: 5 },
+    { label: 'empty policies', retry: { policies: [] }, attempts: 5 },
+    { label: 'section budget only', retry: { maxAttempts: 3 }, attempts: 3 },
+    {
+      label: 'selector-free policy', attempts: 2,
+      retry: { policies: [{ match: 'provider.rate_limit', maxAttempts: 2, backoff: 0, retry: true }] },
+    },
+    {
+      label: 'selector-free off policy', attempts: 1,
+      retry: { policies: [{ match: 'provider.rate_limit', retry: false }] },
+    },
+    {
+      label: 'unmatched selector policy', attempts: 5,
+      retry: { policies: [{ match: 'SomeOtherError', models: ['model-alias'], retry: false }] },
+    },
+    {
+      label: 'earlier selector-free policy', attempts: 1,
+      retry: { policies: [
+        { match: 'provider.rate_limit', retry: false },
+        { match: 'provider.rate_limit', models: ['model-alias'], retry: true },
+      ] },
+    },
+  ])('avoids retry binding lookup for $label', async ({ retry, attempts }) => {
+    config.setSilent(RETRY_SECTION, retry);
+
+    expect(await exhaustAttempts()).toBe(attempts);
+    expect(dispatch).toHaveBeenCalledTimes(attempts - 1);
+    expect(getModel).not.toHaveBeenCalled();
+    expect(logError).not.toHaveBeenCalled();
+  });
+
+  it.each(['model', 'provider', 'both'] as const)(
+    'reports retry binding resolution failure for %s selectors without replacing the provider failure',
+    async (selector) => {
+      const failure = context.error;
+      config.setSilent(RETRY_SECTION, { policies: [{
+        match: '^provider\\.rate_limit$',
+        models: selector === 'provider' ? undefined : ['model-alias'],
+        providers: selector === 'model' ? undefined : ['test-provider'],
+        retry: false,
+      }] });
+
+      expect(await exhaustAttempts()).toBe(5);
+      expect(context.error).toBe(failure);
+      expect(dispatch).toHaveBeenCalledTimes(4);
+      expect(getModel).toHaveBeenCalled();
+      expect(logError).toHaveBeenCalledWith(
+        'failed to resolve model identity for retry policy selectors; selector policies are skipped',
+        { modelAlias: 'model-alias', error: lookupFailure },
+      );
+    },
+  );
+
+  it('keeps selector-free rules and section budget after retry binding resolution fails', async () => {
+    config.setSilent(RETRY_SECTION, { maxAttempts: 3, policies: [
+      { match: '^provider\\.rate_limit$', models: ['model-alias'], retry: false },
+      { match: '^provider\\.rate_limit$', providers: ['test-provider'], retry: false },
+      { match: '^provider\\.rate_limit$', backoff: 17, retry: true },
+    ] });
+
+    expect(await exhaustAttempts()).toBe(3);
+    expect(getModel).toHaveBeenCalledTimes(6);
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ maxAttempts: 3, delayMs: 17 }));
+  });
+
+  it('resolves the canonical model and provider for a matching 429 policy', async () => {
+    const model: Model = {
+      id: 'canonical-model', name: 'remote-model', aliases: ['model-alias'],
+      protocol: 'openai', headers: {}, capabilities: UNKNOWN_CAPABILITY,
+      maxContextSize: 10_000, alwaysThinking: false, providerName: 'test-provider',
+      authProvider: { getAuth: async () => undefined },
+      imagePolicy: { acceptedTypes: new Set(), convertUnsupported: 'off' },
+    };
+    getModel.mockReturnValue(model);
+    config.setSilent(RETRY_SECTION, { policies: [{
+      match: '^provider\\.rate_limit$', models: ['canonical-model'], providers: ['test-provider'],
+      maxAttempts: 2, backoff: 23, retry: true,
+    }] });
+
+    expect(await exhaustAttempts()).toBe(2);
+    expect(getModel).toHaveBeenCalledWith('model-alias', undefined);
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ maxAttempts: 2, delayMs: 23 }));
+    expect(logError).not.toHaveBeenCalled();
+  });
+
+  it('does not resolve selectors or retry when delivery is unknown', async () => {
+    const failure = await caughtDelivery(deliveryStream(new APIConnectionError('terminated')));
+    context = { ...context, error: failure };
+    config.setSilent(RETRY_SECTION, { policies: [{
+      match: 'APIConnectionError', models: ['model-alias'], providers: ['test-provider'], retry: true,
+    }] });
+
+    expect(handler.match(context)).toBe(false);
+    expect(await handler.handle(context)).toBe(false);
+    expect(requestDeliveryProvenance(context.error)).toBe('unknown');
+    expect(getModel).not.toHaveBeenCalled();
+    expect(context.retry).not.toHaveBeenCalled();
+  });
+
+  it('preserves selector-free policy calls without a binding argument', () => {
+    expect(resolveRetryPolicy({ policies: [{ match: 'provider.rate_limit', maxAttempts: 7, retry: true }] }, context.error))
+      .toEqual({ retry: true, maxAttempts: 7, backoffMs: undefined });
   });
 });
