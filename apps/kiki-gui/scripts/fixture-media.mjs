@@ -25,6 +25,14 @@
  * carry a `file_id` and never a path.
  */
 
+import { createHash } from 'node:crypto';
+
+import { tsImport } from 'tsx/esm/api';
+
+// The production range reader, so a fixture that answers `Range:` reads it
+// exactly the way kap-server's playback route does.
+const { parseRangeHeader, pickHeader } = await tsImport('../../../packages/kap-server/src/lib/httpRange.ts', import.meta.url);
+
 /** Same shape the klient dispatcher throws, so one catch site handles both. */
 function invalid(message, code = 40001) {
   return Object.assign(new Error(message), { code });
@@ -68,6 +76,132 @@ export function sessionMediaBytes(server, sessionId, fileId, variant) {
     return { bytes, mime: `${file.mime}; preview`, name: file.name };
   }
   return { bytes, mime: file.mime, name: file.name };
+}
+
+// ---------------------------------------------------------------------------
+// Session media playback grants
+// ---------------------------------------------------------------------------
+
+const PLAYBACK_TTL_MS = 30 * 60 * 1000;
+const PLAYBACK_MAX_GRANTS = 64;
+const PLAYBACK_ID = /^[a-f0-9]{64}$/u;
+
+/**
+ * Playback grants, mirroring kap-server's route trio
+ * (`packages/kap-server/src/routes/hostMediaPreview.ts`):
+ *
+ *   POST   /api/sessions/:sessionId/media-playback   { file_id } → grant
+ *   GET    /media-preview/:previewId                  bearer-free bytes, Range
+ *   DELETE /api/sessions/media-playback/:previewId   release
+ *
+ * The minted URL is a capability of its own, so the byte route deliberately
+ * sits outside the fixture token check — an `<video src>` cannot send an
+ * Authorization header. The grant expires on its own too, and the fixture
+ * keeps the mint / request / revocation log so a proof can show the element's
+ * Range reads and the release that follows closing the preview.
+ */
+function playbackState(server) {
+  server.mediaPlayback ??= { grants: new Map(), minted: [], requests: [], revocations: [] };
+  return server.mediaPlayback;
+}
+
+function sweepPlayback(state) {
+  const now = Date.now();
+  for (const [id, grant] of state.grants) if (grant.expiresAt <= now) state.grants.delete(id);
+}
+
+/** Audio and video play; anything else is not a playback source (the real 400). */
+function playbackMime(file) {
+  const typed = String(file.mime ?? '').toLowerCase();
+  return typed.startsWith('video/') || typed.startsWith('audio/') ? file.mime : undefined;
+}
+
+function unsatisfiableRange(raw, size) {
+  if (raw === undefined || !raw.startsWith('bytes=')) return false;
+  const spec = raw.slice('bytes='.length);
+  if (spec.includes(',')) return false;
+  const dash = spec.indexOf('-');
+  if (dash <= 0) return false;
+  const start = Number.parseInt(spec.slice(0, dash), 10);
+  if (!Number.isFinite(start) || start < 0) return false;
+  return start >= size;
+}
+
+export function mintSessionPlayback(server, { sessionId, fileId, host }) {
+  const file = server.scenario?.data.mediaFiles?.[fileId];
+  if (file === undefined) return { failure: { status: 404, code: 40409, message: 'media_preview_not_found' } };
+  const mime = playbackMime(file);
+  if (mime === undefined) return { failure: { status: 400, code: 40001, message: 'media_preview_type_unsupported' } };
+  const state = playbackState(server);
+  sweepPlayback(state);
+  if (state.grants.size >= PLAYBACK_MAX_GRANTS) return { failure: { status: 429, code: 42901, message: 'too_many_media_previews' } };
+  const previewId = createHash('sha256').update(JSON.stringify({ sessionId, fileId, minted: state.minted.length })).digest('hex');
+  const size = Buffer.from(file.base64, 'base64').byteLength;
+  const expiresAt = Date.now() + PLAYBACK_TTL_MS;
+  state.grants.set(previewId, { sessionId, fileId, mime, size, expiresAt });
+  state.minted.push({ previewId, sessionId, fileId, mime, size });
+  const path = `/media-preview/${previewId}`;
+  return {
+    settled: {
+      preview_id: previewId,
+      url: typeof host === 'string' && host.length > 0 ? `http://${host}${path}` : path,
+      mime,
+      size,
+      expires_at: expiresAt,
+    },
+  };
+}
+
+export function releaseSessionPlayback(server, previewId) {
+  const state = playbackState(server);
+  const revoked = state.grants.delete(previewId);
+  state.revocations.push({ previewId, revoked });
+  return revoked;
+}
+
+/** Answers one grant read with the same headers, range semantics and 416. */
+export function serveSessionPlayback(server, req, res, previewId) {
+  const state = playbackState(server);
+  sweepPlayback(state);
+  const rawRange = pickHeader(req.headers, 'range');
+  const grant = PLAYBACK_ID.test(previewId) ? state.grants.get(previewId) : undefined;
+  if (grant === undefined) {
+    state.requests.push({ previewId, range: rawRange ?? null, status: 404 });
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ code: 40409, msg: 'media_preview_not_found', data: null }));
+    return false;
+  }
+  const file = server.scenario?.data.mediaFiles?.[grant.fileId];
+  if (file === undefined) {
+    state.requests.push({ previewId, range: rawRange ?? null, status: 404 });
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ code: 40409, msg: 'media_preview_not_found', data: null }));
+    return false;
+  }
+  const bytes = Buffer.from(file.base64, 'base64');
+  const headers = {
+    'accept-ranges': 'bytes',
+    'cache-control': 'private, no-store',
+    'x-content-type-options': 'nosniff',
+    'content-type': grant.mime,
+  };
+  if (unsatisfiableRange(rawRange, bytes.length)) {
+    state.requests.push({ previewId, range: rawRange ?? null, status: 416 });
+    res.writeHead(416, { ...headers, 'content-range': `bytes */${bytes.length}`, 'content-length': 0 });
+    res.end();
+    return true;
+  }
+  const range = parseRangeHeader(rawRange, bytes.length);
+  if (range === null) {
+    state.requests.push({ previewId, range: rawRange ?? null, status: 200 });
+    res.writeHead(200, { ...headers, 'content-length': bytes.length });
+    res.end(bytes);
+    return true;
+  }
+  state.requests.push({ previewId, range: rawRange ?? null, status: 206 });
+  res.writeHead(206, { ...headers, 'content-range': `bytes ${range.start}-${range.end}/${bytes.length}`, 'content-length': range.length });
+  res.end(bytes.subarray(range.start, range.end + 1));
+  return true;
 }
 
 function seed(server) {

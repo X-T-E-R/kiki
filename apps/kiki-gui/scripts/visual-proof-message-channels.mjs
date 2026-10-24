@@ -162,6 +162,58 @@ try {
   await page.keyboard.press('Escape');
   await page.waitForSelector('[role="dialog"]', { state: 'detached', timeout: STEP_TIMEOUT }).catch(() => undefined);
 
+  // 2b. A clip plays through a playback grant, and closing the preview gives
+  //     that grant back. The chat and the reader's draft stay where they were.
+  const draft = '草稿保留检查：还没发出去';
+  await page.locator('[data-composer-input]').fill(draft);
+  const sessionBefore = page.url();
+  await page.locator(`${delivered} [data-message-media="video"] button`).first().click();
+  await page.waitForSelector('[role="dialog"] video', { timeout: STEP_TIMEOUT });
+  const playback = await page.locator('[role="dialog"] video').evaluate(async (element) => {
+    await new Promise((accept) => {
+      if (element.readyState >= 2) { accept(undefined); return; }
+      element.addEventListener('canplay', () => accept(undefined), { once: true });
+      element.addEventListener('error', () => accept(undefined), { once: true });
+      setTimeout(() => accept(undefined), 10_000);
+    });
+    const before = element.currentTime;
+    let failure;
+    try { await element.play(); } catch (error) { failure = String(error); }
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    const advanced = element.currentTime;
+    element.pause();
+    return { failure, before, advanced, paused: element.paused, readyState: element.readyState, duration: element.duration };
+  });
+  await shot(page, '02b-video-preview-1440');
+  const playbackLog = fixture.mediaPlayback;
+  report.media.video = {
+    ...playback,
+    minted: playbackLog?.minted.length ?? 0,
+    responses: (playbackLog?.requests ?? []).map((request) => ({ status: request.status, range: request.range })),
+  };
+  // The GUI runs under StrictMode, so the grant effect mounts twice in this
+  // development build: the invariant is that every mint is released, never
+  // that exactly one was minted.
+  check((playbackLog?.minted.length ?? 0) >= 1, 'the clip never minted a playback grant');
+  check((playbackLog?.requests ?? []).some((request) => request.status === 206), 'the clip was served without a byte-range response');
+  check(playback.failure === undefined, `the clip did not play: ${playback.failure}`);
+  check(playback.advanced > 0, `the clip's playhead did not advance: ${playback.advanced}`);
+  check(playback.paused === true, 'the clip did not pause');
+  await page.keyboard.press('Escape');
+  await page.waitForSelector('[role="dialog"]', { state: 'detached', timeout: STEP_TIMEOUT });
+  await page.waitForTimeout(400);
+  const revocations = playbackLog?.revocations ?? [];
+  report.media.revoke = revocations;
+  const released = revocations.filter((entry) => entry.revoked === true).length;
+  report.media.revokeSummary = { minted: playbackLog?.minted.length ?? 0, released };
+  check(released > 0, `closing the preview did not release the grant: ${JSON.stringify(revocations)}`);
+  check(released === (playbackLog?.minted.length ?? 0), `a minted grant leaked: ${released} of ${playbackLog?.minted.length ?? 0} released`);
+  const keptDraft = await page.locator('[data-composer-input]').inputValue();
+  report.dom.draft = { kept: keptDraft === draft, sameSession: page.url() === sessionBefore };
+  check(keptDraft === draft, `the draft was lost while the preview opened: ${keptDraft}`);
+  check(page.url() === sessionBefore, 'opening the clip moved the session');
+  await page.locator('[data-composer-input]').fill('');
+
   // 3. Delivered elsewhere: a destination line, the words still readable, and
   //    no promoted reply claiming this page was the audience.
   const elsewhere = '[data-block-id="tool-t3-send"]';

@@ -174,7 +174,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { WebSocketServer } from 'ws';
 import { boundScenarioEntities, FixtureKlient } from './fixture-klient.mjs';
-import { sessionMediaBytes } from './fixture-media.mjs';
+import { mintSessionPlayback, releaseSessionPlayback, serveSessionPlayback, sessionMediaBytes } from './fixture-media.mjs';
 import { handleAppearance } from './fixture-appearance.mjs';
 import { handlePersonas, resetPersonas } from './fixture-personas.mjs';
 import { handleRequestIdentity, resetRequestIdentity } from './fixture-request-identity.mjs';
@@ -837,6 +837,9 @@ class FixtureServer {
     const module = await import(pathToFileURL(file).href);
     const data = module.default;
     this.scenario = { name, data: cloneScenarioData(data) };
+    // Grants belong to one scenario's seeded bytes; a switch drops them so a
+    // stale URL can never answer with another scenario's file.
+    this.mediaPlayback = undefined;
     this.hostSkillStaleOnce = undefined;
     this.config = structuredClone(data.config ?? {
       default_model: 'fixture/kiki-pro',
@@ -2016,6 +2019,16 @@ class FixtureServer {
 
     if (url.pathname === '/api/healthz') {
       this.envelope(res, { ok: true });
+      return;
+    }
+
+    // A minted playback grant's own URL: bearer-free on purpose, because an
+    // `<audio>`/`<video>` element cannot send an Authorization header. Sits
+    // outside `/api` and outside the token check exactly like kap-server's
+    // `/media-preview/:previewId`, and answers Range reads from the seed.
+    const playbackGrantPath = /^\/media-preview\/([^/]+)$/u.exec(url.pathname);
+    if (playbackGrantPath !== null && req.method === 'GET') {
+      serveSessionPlayback(this, req, res, playbackGrantPath[1]);
       return;
     }
 
@@ -3664,6 +3677,26 @@ class FixtureServer {
         return this.envelope(res, null, 40409, failure instanceof Error ? failure.message : 'media.not_found');
       }
       return;
+    }
+    // Playback grants: mint for a seeded audio/video file, release on close.
+    // The grant's own URL is the bearer-free `/media-preview/:id` route above;
+    // both procedures mirror kap-server's `sessions/media-playback` pair, and
+    // fixture-media.mjs owns the grant table and its range responses.
+    const playbackMint = /^\/sessions\/([^/]+)\/media-playback$/.exec(path);
+    if (playbackMint !== null && method === 'POST') {
+      const fileId = typeof body?.file_id === 'string' ? body.file_id : '';
+      const minted = mintSessionPlayback(this, {
+        sessionId: decodeURIComponent(playbackMint[1]),
+        fileId,
+        host: typeof req.headers.host === 'string' ? req.headers.host : undefined,
+      });
+      if (minted.failure !== undefined) return this.failureEnvelope(res, minted.failure.status, minted.failure.code, minted.failure.message);
+      return this.envelope(res, minted.settled);
+    }
+    const playbackRelease = /^\/sessions\/media-playback\/([^/]+)$/.exec(path);
+    if (playbackRelease !== null && method === 'DELETE') {
+      releaseSessionPlayback(this, decodeURIComponent(playbackRelease[1]));
+      return this.envelope(res, null);
     }
     // Host-file write mock for the preview workspace editor. The REAL
     // kap-server deliberately has no unconfined write endpoint (fs:content is
