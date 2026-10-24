@@ -6917,6 +6917,137 @@ describe('question history answers', () => {
     expect(block?.kind === 'question' && block.outcome?.kind === 'answered' ? block.outcome.answers : 'wrong state').toBeUndefined();
   });
 });
+
+/** A long background question: asked mid-turn, answered while the turn ran on. */
+const BACKGROUND_ASKED_AT = '2026-01-01T00:00:02.500Z';
+const backgroundQuestions = [{ id: 'q1', question: 'Choose the next step', options: [
+  { id: 'a', label: 'Keep going' }, { id: 'b', label: 'Stop' },
+] }];
+
+function backgroundQuestionSnapshot(options: { readonly steps: 'full' | 'page-tail'; readonly extraStep?: boolean }): AgentTranscriptSnapshot {
+  const steps: TranscriptTurn['steps'] = [
+    {
+      kind: 'step', stepId: 't1.1', turnId: 't1', ordinal: 1, state: 'completed',
+      startedAt: FIXED_AT, endedAt: '2026-01-01T00:00:01.000Z',
+      frames: [{ kind: 'text', frameId: 'asst-plan', role: 'assistant', text: 'Planning the long task.' }],
+    },
+    {
+      kind: 'step', stepId: 't1.2', turnId: 't1', ordinal: 2, state: 'completed',
+      startedAt: '2026-01-01T00:00:02.000Z', endedAt: '2026-01-01T00:00:03.000Z',
+      frames: [{ kind: 'tool', frameId: 'tool-ask-bg', toolCallId: 'tc-ask-bg', name: 'AskUserQuestion', state: 'done',
+        input: { questions: backgroundQuestions }, output: 'task_id: question-bg-background',
+        startedAt: '2026-01-01T00:00:02.000Z', endedAt: '2026-01-01T00:00:02.400Z' }],
+    },
+    {
+      kind: 'step', stepId: 't1.3', turnId: 't1', ordinal: 3, state: 'completed',
+      startedAt: '2026-01-01T00:00:20.000Z', endedAt: '2026-01-01T00:00:26.000Z',
+      frames: [{ kind: 'tool', frameId: 'tool-bash-tail', toolCallId: 'tc-bash-tail', name: 'Bash', state: 'done',
+        input: { command: 'pnpm test' }, output: 'ok',
+        startedAt: '2026-01-01T00:00:20.000Z', endedAt: '2026-01-01T00:00:26.000Z' }],
+    },
+    {
+      kind: 'step', stepId: 't1.4', turnId: 't1', ordinal: 4, state: 'running',
+      startedAt: '2026-01-01T00:00:30.000Z',
+      frames: [{ kind: 'text', frameId: 'asst-live', role: 'assistant', text: 'Still working through the queue.' }],
+    },
+    ...(options.extraStep === true ? [{
+      kind: 'step' as const, stepId: 't1.5', turnId: 't1', ordinal: 5, state: 'running' as const,
+      startedAt: '2026-01-01T00:00:40.000Z',
+      frames: [{ kind: 'tool' as const, frameId: 'tool-bash-new', toolCallId: 'tc-bash-new', name: 'Bash',
+        state: 'running' as const, input: { command: 'pnpm lint' }, startedAt: '2026-01-01T00:00:40.000Z' }],
+    }] : []),
+  ];
+  const keep = options.steps === 'full' ? steps : steps.filter((step) => step.stepId !== 't1.1' && step.stepId !== 't1.2');
+  return emptySnapshot({
+    items: [{
+      kind: 'turn', turnId: 't1', ordinal: 1, state: 'running',
+      origin: { kind: 'user', payload: { promptId: 'p-bg', userMessageId: 'um-bg' } },
+      prompt: 'Work the long task.',
+      startedAt: FIXED_AT,
+      steps: keep,
+    }],
+    prompts: [{
+      promptId: 'p-bg', userMessageId: 'um-bg', status: 'running',
+      content: [{ type: 'text', text: 'Work the long task.' }], createdAt: FIXED_AT,
+    }],
+  });
+}
+
+function backgroundQuestion(
+  overrides: Partial<AgentTranscriptSnapshot['interactions'][number]>,
+): AgentTranscriptSnapshot['interactions'][number] {
+  return {
+    interactionId: 'question-bg', interactionKind: 'question', toolCallId: 'tc-ask-bg',
+    origin: { agentId: 'main', turnId: 1 },
+    anchor: { kind: 'tool_call', toolCallId: 'tc-ask-bg' },
+    state: 'answered',
+    request: { questions: backgroundQuestions, question_id: 'question-bg', created_at: BACKGROUND_ASKED_AT, turn_id: 1, turnId: 1, tool_call_id: 'tc-ask-bg' },
+    response: { answers: { q1: { kind: 'other', text: 'Keep going.' } }, resolved_at: '2026-01-01T00:05:00.000Z' },
+    ...overrides,
+  };
+}
+
+function backgroundOrder(snapshot: AgentTranscriptSnapshot): readonly string[] {
+  const view = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
+  return view.blocks.map((block) => block.kind === 'question' ? `question:${block.outcome?.kind ?? 'pending'}` : block.kind === 'tool' ? `tool:${block.toolCallId}` : block.kind === 'shell' ? `shell:${block.commandId}` : block.kind);
+}
+
+describe('background question placement', () => {
+  it('keeps an answered question at its own moment when the page arrives without its asking step', () => {
+    const page = backgroundQuestionSnapshot({ steps: 'page-tail' });
+    const view = projectAgentTranscriptView(createViewState('session_test'), 'main', { ...page, interactions: [backgroundQuestion({})] });
+    const order = backgroundOrder({ ...page, interactions: [backgroundQuestion({})] });
+    // The asking tool is not on this page; the recorded request time still
+    // puts the record before the turn's later work instead of behind it.
+    expect(order).toEqual(['user', 'question:answered', 'shell:tc-bash-tail', 'assistant']);
+    const at = view.blocks.findIndex((block) => block.kind === 'question');
+    const live = view.blocks.findIndex((block) => block.kind === 'assistant' && block.text === 'Still working through the queue.');
+    expect(at).toBeLessThan(live);
+    // A turn that keeps producing work does not drag the record down with it.
+    const longer = { ...backgroundQuestionSnapshot({ steps: 'page-tail', extraStep: true }), interactions: [backgroundQuestion({})] };
+    const after = projectAgentTranscriptView(view, 'main', longer);
+    expect(after.blocks.findIndex((block) => block.kind === 'question')).toBe(at);
+  });
+
+  it('sits the answered question on its asking tool when that step is on the page', () => {
+    const snapshot = backgroundQuestionSnapshot({ steps: 'full', extraStep: true });
+    const order = backgroundOrder({ ...snapshot, interactions: [backgroundQuestion({})] });
+    expect(order.slice(0, 4)).toEqual(['user', 'assistant', 'tool:tc-ask-bg', 'question:answered']);
+    expect(order.indexOf('question:answered')).toBeLessThan(order.indexOf('shell:tc-bash-tail'));
+  });
+
+  it('holds a dismissed question at its own moment too', () => {
+    const snapshot = { ...backgroundQuestionSnapshot({ steps: 'page-tail' }), interactions: [backgroundQuestion({
+      state: 'dismissed',
+      response: { dismissed_at: '2026-01-01T00:06:00.000Z' },
+    })] };
+    expect(backgroundOrder(snapshot)).toEqual(['user', 'question:dismissed', 'shell:tc-bash-tail', 'assistant']);
+  });
+
+  it('places an answered question after the step its anchor names, not after the turn tail', () => {
+    const snapshot = backgroundQuestionSnapshot({ steps: 'full', extraStep: true });
+    const stepAnchored = backgroundQuestion({
+      toolCallId: undefined,
+      anchor: { kind: 'step', turnId: '1', stepId: 't1.2' },
+      request: { questions: backgroundQuestions, question_id: 'question-bg', turn_id: 1 },
+    });
+    const order = backgroundOrder({ ...snapshot, interactions: [stepAnchored] });
+    expect(order.slice(0, 4)).toEqual(['user', 'assistant', 'tool:tc-ask-bg', 'question:answered']);
+    expect(order.indexOf('question:answered')).toBeLessThan(order.indexOf('shell:tc-bash-new'));
+  });
+
+  it('keeps a pending question without a recorded moment at the running turn edge so it stays answerable', () => {
+    const snapshot = { ...backgroundQuestionSnapshot({ steps: 'page-tail' }), interactions: [backgroundQuestion({
+      toolCallId: undefined,
+      anchor: undefined,
+      state: 'pending',
+      request: { questions: backgroundQuestions, question_id: 'question-bg', turn_id: 1 },
+      response: undefined,
+    })] };
+    expect(backgroundOrder(snapshot)).toEqual(['user', 'shell:tc-bash-tail', 'question:pending', 'assistant']);
+  });
+});
+
 describe('external tool identity in timeline projection', () => {
   it.each(['Bash', 'TodoList', 'WebSearch', 'FetchURL', 'SendMessage', 'AgentRun', 'AgentSend'])('preserves external %s as a tool and its raw package', (name) => {
     const output = { kind: 'external_tool_output', protocol: 'acp-v1', text: 'partial', rawOutput: { message_id: 'message-1', delivered_to: ['peer'] }, content: [{ type: 'terminal', terminalId: 'terminal-1' }] };

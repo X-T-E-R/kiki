@@ -1120,6 +1120,49 @@ function insertByTimeline(blocks: Block[], block: Block): void {
   blocks.push(block);
 }
 
+/** The step a timeline block came from, when the projection kept one. */
+function blockStepId(block: Block): string | undefined {
+  switch (block.kind) {
+    case 'assistant':
+    case 'thinking':
+    case 'tool':
+    case 'shell':
+      return block.stepId;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Sits a settled record at its own recorded moment inside its turn. The turn's
+ * newest work is not a history anchor: it moves every time the turn produces
+ * another step — or reports one — which dragged an answered question to the
+ * tail of a running turn and kept it there (any rebuild that no longer carries
+ * the asking step, such as a page whose long turn arrives with its newest
+ * steps only, falls through to the turn anchor). False when the turn is not on
+ * this page: nothing loaded can then say where the moment falls.
+ */
+function insertWithinTurnByTime(blocks: Block[], block: Block, turnId: string): boolean {
+  const at = blockTimelineMs(block);
+  if (at === undefined) return false;
+  const inTurn = (candidate: Block) => sameTurnId(blockTurnId(candidate), turnId);
+  const first = blocks.findIndex(inTurn);
+  if (first < 0) return false;
+  const last = blocks.findLastIndex(inTurn);
+  // The last row of the turn that is provably no later than the record: a row
+  // whose moment is unknown (the newest text, which has no end to date it by)
+  // cannot be scanned past, so it stays behind the record.
+  let anchor = -1;
+  for (let index = first; index <= last; index += 1) {
+    const candidateAt = blockTimelineMs(blocks[index]!);
+    if (candidateAt === undefined) continue;
+    if (candidateAt > at || (candidateAt === at && compareTimelineIds(blocks[index]!.id, block.id) > 0)) break;
+    anchor = index;
+  }
+  blocks.splice(anchor < 0 ? first : anchor + 1, 0, block);
+  return true;
+}
+
 type RawSubagentEvent = {
   readonly id: string;
   readonly subagentId: string;
@@ -1620,6 +1663,7 @@ type ProjectedInteraction = {
   readonly block: ApprovalBlock | QuestionBlock;
   readonly toolCallId?: string;
   readonly turnId?: string;
+  readonly stepId?: string;
   readonly frameId?: string;
 };
 
@@ -1662,7 +1706,11 @@ function interactionPlacement(
     anchorKind === 'frame' && anchor !== undefined
       ? recordString(anchor, 'frameId', 'frame_id')
       : undefined;
-  return { block, toolCallId, turnId, frameId };
+  const stepId =
+    (anchorKind === 'step' || anchorKind === 'frame') && anchor !== undefined
+      ? recordString(anchor, 'stepId', 'step_id')
+      : undefined;
+  return { block, toolCallId, turnId, stepId, frameId };
 }
 
 function compareProjectedInteraction(left: ProjectedInteraction, right: ProjectedInteraction): number {
@@ -1734,10 +1782,27 @@ function insertInteractionBlocks(
         continue;
       }
     }
+    if (interaction.stepId !== undefined) {
+      const anchor = blocks.findLastIndex(
+        (candidate) =>
+          blockStepId(candidate) === interaction.stepId &&
+          (interaction.turnId === undefined || sameTurnId(blockTurnId(candidate), interaction.turnId)),
+      );
+      if (anchor >= 0) {
+        insertAfterAnchor(blocks, anchor, interaction.block);
+        continue;
+      }
+    }
     if (interaction.turnId !== undefined) {
       // Sit with the turn's work, not after its final answer: a settled
       // record anchored behind the reply reads as stale chrome at the tail.
+      // A settled record also sits at its own moment: the turn's newest row
+      // keeps arriving while the turn runs, so the tail of the turn is where
+      // the record would follow it down.
       const inTurn = (candidate: Block) => sameTurnId(blockTurnId(candidate), interaction.turnId);
+      if (isSettledInteraction(interaction.block) && insertWithinTurnByTime(blocks, interaction.block, interaction.turnId)) {
+        continue;
+      }
       const workAnchor = blocks.findLastIndex(
         (candidate) => inTurn(candidate) && candidate.kind !== 'assistant' && candidate.kind !== 'user',
       );
