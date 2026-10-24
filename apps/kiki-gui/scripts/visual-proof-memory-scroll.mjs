@@ -382,6 +382,38 @@ const scenarios = [
     },
   },
   {
+    name: 'memory-scroll-inbox',
+    fixture: 'memory-review',
+    run: async ({ page, link, shot }) => {
+      await page.goto(link('/memory?tab=inbox'), { waitUntil: 'domcontentloaded', timeout: 60_000 });
+      await page.waitForSelector('[data-memory-inbox-row]', { timeout: 30_000 });
+      await settle(page);
+      const inbox = await page.evaluate(() => {
+        const consolePane = document.querySelector('[data-memory-console]');
+        const style = getComputedStyle(consolePane);
+        const rows = document.querySelectorAll('[data-memory-inbox-row]');
+        const last = rows[rows.length - 1];
+        const box = last.getBoundingClientRect();
+        return {
+          overflowY: style.overflowY,
+          ledger: document.querySelector('[data-memory-rows]') !== null,
+          rows: rows.length,
+          lastBottom: Math.round(box.bottom),
+          viewport: window.innerHeight,
+          pageScrolls: document.documentElement.scrollHeight - document.documentElement.clientHeight,
+        };
+      });
+      // The inbox is one reading column, not the ledger: it keeps the console
+      // as its scroller instead of being clipped by the two-pane frame.
+      expect(inbox.rows >= 1, `the review fixture lost its proposals: ${inbox.rows}`);
+      expect(inbox.ledger === false, 'the inbox rendered the ledger frame');
+      expect(inbox.overflowY === 'auto', `the inbox console no longer scrolls: ${inbox.overflowY}`);
+      expect(inbox.lastBottom <= inbox.viewport + 1, `the last proposal is out of reach: ${inbox.lastBottom}`);
+      expect(inbox.pageScrolls <= 1, `the inbox page scrolls by ${inbox.pageScrolls}px`);
+      await shot('inbox');
+    },
+  },
+  {
     name: 'memory-scroll-phone',
     fixture: 'memory',
     matrix: ['width'],
