@@ -18,6 +18,7 @@ import {
   type NewSessionDraftState,
 } from './NewSessionDraft';
 import { clearPendingNewSessionCapabilities, pendingNewSessionCapabilities, setPendingOptionalChoice, setPendingPluginChoice, type PendingCapabilityScope } from './capabilities/newSessionCapabilities';
+import { readDraft, readComposerState } from '@kiki/session-core/composer';
 
 const { client, navigate, scope } = vi.hoisted(() => ({
   scope: { id: 'local', spaceKey: 'local-space', connectionId: null as string | null, label: null as string | null },
@@ -907,6 +908,8 @@ describe('useNewSessionDraft agent profile scope', () => {
     await act(async () => { await state.send('Start work', []); });
     expect(queryClient.getQueryData(['space-view-target', scope.id, 'session', 'session-new'])).toBe(true);
     expect(queryClient.getQueryData(['space-view-target', 'local', 'session', 'session-new'])).toBeUndefined();
+    expect(readDraft('session-new')).toBe('Start work');
+    expect(readComposerState('session-new').attachments).toEqual([]);
     expect(navigate).toHaveBeenCalledWith('/s/session-new', expect.objectContaining({
       state: expect.objectContaining({ createdSession: { id: 'session-new', scopeId: scope.id }, initialPrompt: 'Start work' }),
     }));

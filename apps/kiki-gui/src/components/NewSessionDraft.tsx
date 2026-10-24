@@ -28,6 +28,7 @@ import {
   flushDrafts,
   readDraft,
   readNewSessionDraft,
+  writeComposerState,
   writeDraft,
   writeNewSessionDraft,
   type ComposerAttachment,
@@ -873,6 +874,29 @@ export function useNewSessionDraft({
         await applyPendingNewSessionCapabilities(client, session.id, { scopeId, spaceKey, connectionId, draftKey });
         if (intent.cancelled) return;
         createdForRetry.current = undefined;
+
+        // Persist the first prompt or skill into the new session's own draft before clearing /new,
+        // so that if activation, navigation, or target mounting stalls and the user refreshes,
+        // SessionView can safely recover the initial prompt and attachments from Draft(session.id).
+        const recoveryText = handoff.initialSkill !== undefined
+          ? (handoff.initialSkill.userInput ?? `/${handoff.initialSkill.name}${handoff.initialSkill.args === '' ? '' : ` ${handoff.initialSkill.args}`}`)
+          : handoff.initialPrompt;
+        if (recoveryText !== undefined && recoveryText !== '') {
+          writeDraft(session.id, recoveryText);
+          flushDrafts();
+        }
+        const effectiveAttachments = handoff.initialSkill?.attachments ?? handoff.initialAttachments;
+        writeComposerState(session.id, {
+          attachments: effectiveAttachments ?? [],
+          modelOverride: sendsLegacyControl(context.execution, 'model', modelTouched.current) ? context.modelOverride : undefined,
+          effortOverride: sendsLegacyControl(context.execution, 'thinking', effortTouched.current) && context.effectiveEffort !== ''
+            ? context.effectiveEffort : undefined,
+          permissionMode: sendsLegacyControl(context.execution, 'permission_mode', permissionTouched.current) ? context.permissionMode : undefined,
+          planMode: context.planMode,
+          goalObjective: handoff.goalObjectiveOverride ?? context.goalObjective,
+          execution: context.execution,
+        });
+
         if (readDraft(draftKey) === submittedDraft) writeDraft(draftKey, '');
         clearScopedNewSessionDraft(draftScopeId);
         // Creation already confirmed this target in this connection scope.
