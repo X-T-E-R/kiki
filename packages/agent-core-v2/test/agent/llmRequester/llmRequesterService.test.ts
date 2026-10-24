@@ -2587,19 +2587,37 @@ describe('AgentLLMRequesterService production delivery provenance', () => {
   });
 });
 
-it('recovers an actual no-output WebSocket 1012 close through the existing requester budget', async () => {
+it.each(['1012', 'connection-limit', 'partial-limit', 'tool-limit'] as const)('recovers WebSocket %s only before output and replaces the failed connection', async mode => {
   const handshake = readFileSync(new URL('../../kosong/provider/fixtures/responses-ws-capabilities.json', import.meta.url), 'utf8').trim();
   const server = createServer();
   const webSockets = new WebSocketServer({ server });
   const sockets = new Set<WebSocket>();
+  const closedSockets = new Set<WebSocket>();
+  const requestSockets: WebSocket[] = [];
+  const frames: Record<string, unknown>[] = [];
+  const code = 'websocket_connection_limit_reached';
   let calls = 0;
   webSockets.on('headers', headers => { headers.push(`X-Responses-WebSocket-Capabilities: ${handshake}`); });
   webSockets.on('connection', socket => {
     sockets.add(socket);
-    socket.on('close', () => sockets.delete(socket));
-    socket.on('message', () => {
+    socket.on('close', () => { sockets.delete(socket); closedSockets.add(socket); });
+    socket.on('message', bytes => {
       calls++;
-      if (calls === 1) { socket.close(1012, 'fixture service restart'); return; }
+      requestSockets.push(socket);
+      const frameBytes = Array.isArray(bytes) ? Buffer.concat(bytes) : bytes instanceof ArrayBuffer ? Buffer.from(bytes) : bytes;
+      frames.push(JSON.parse(frameBytes.toString()) as Record<string, unknown>);
+      if (calls === 1) {
+        if (mode === '1012') socket.close(1012, 'fixture service restart');
+        else {
+          if (mode === 'partial-limit') socket.send(JSON.stringify({ type: 'response.output_text.delta', delta: 'partial answer' }));
+          if (mode === 'tool-limit') socket.send(JSON.stringify({ type: 'response.output_item.added', output_index: 0,
+            item: { type: 'function_call', id: 'fc_fixture', call_id: 'call_fixture', name: 'Lookup', arguments: '{}' } }));
+          socket.send(JSON.stringify({ type: 'response.failed', response: { id: 'resp_failed', status: 'failed', output: [], error: {
+            code, message: 'Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue.',
+          } } }));
+        }
+        return;
+      }
       socket.send(JSON.stringify({ type: 'response.completed', sequence_number: 0, response: {
         id: 'resp_recovered', status: 'completed', output: [{ type: 'message', id: 'msg_recovered', role: 'assistant',
           status: 'completed', content: [{ type: 'output_text', text: 'recovered', annotations: [] }] }],
@@ -2614,11 +2632,24 @@ it('recovers an actual no-output WebSocket 1012 close through the existing reque
   const requester = new ModelRequesterImpl(model, { createChatProvider: () => provider } as unknown as IProtocolAdapterRegistry);
   const { service } = createService(requester, undefined, { env: { [KIKI_INFINITE_RETRY_ENV]: '1' } });
   const onAttemptRetry = vi.fn();
+  const parts: StreamedMessagePart[] = [];
   try {
-    const result = await service.request({ source: { type: 'turn', turnId: 1, step: 1 }, onAttemptRetry }, undefined, AbortSignal.timeout(2000));
-    expect(result.message.content).toEqual([{ type: 'text', text: 'recovered' }]);
-    expect(calls).toBe(2);
-    expect(onAttemptRetry).toHaveBeenCalledTimes(1);
+    const pending = service.request({ source: { type: 'turn', turnId: 1, step: 1 }, onAttemptRetry }, part => { parts.push(part); }, AbortSignal.timeout(2000));
+    if (mode === 'partial-limit' || mode === 'tool-limit') {
+      const error = await pending.catch((error: unknown) => error);
+      expect(toErrorPayload(error).details).toMatchObject({ errorSource: 'provider_event', upstreamErrorCode: code, request_delivery: 'executed' });
+      expect(parts).toContainEqual(expect.objectContaining(mode === 'partial-limit' ? { type: 'text', text: 'partial answer' } : { type: 'function', name: 'Lookup' }));
+      expect(calls).toBe(1);
+      expect(onAttemptRetry).not.toHaveBeenCalled();
+    } else {
+      expect((await pending).message.content).toEqual([{ type: 'text', text: 'recovered' }]);
+      expect(calls).toBe(2);
+      expect(requestSockets[1]).not.toBe(requestSockets[0]);
+      expect(frames[1]?.['input']).toEqual(frames[0]?.['input']);
+      expect(frames[1]).not.toHaveProperty('previous_response_id');
+      expect(onAttemptRetry).toHaveBeenCalledTimes(1);
+    }
+    await vi.waitFor(() => { expect(closedSockets.has(requestSockets[0]!)).toBe(true); });
   } finally {
     await (service as AgentLLMRequesterService).dispose();
     for (const socket of sockets) socket.terminate();
