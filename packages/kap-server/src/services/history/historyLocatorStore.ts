@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { open, stat } from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
 
 import { decodeHistoryDirectoryCursor, encodeHistoryDirectoryCursor,
   type HistoryDirectoryRequest, type HistoryDirectoryPage, type HistoryDirectoryTurn,
@@ -7,12 +7,13 @@ import { decodeHistoryDirectoryCursor, encodeHistoryDirectoryCursor,
 import type { HistoryHit, HistoryPreparation, HistoryDirectoryLookup } from '@kiki/agent-core-v2/agent/tools/history/historyTools';
 import type { IQueryStore, WriteOp } from '@kiki/agent-core-v2/persistence/interface/queryStore';
 import { NavigationWireAdapter, openingText, type NavigationEffect } from '@kiki/transcript/navigationWireAdapter';
-import { streamWireRecordsAwaited, type AwaitedWireRecordsStreamOptions, type WireRecordSpan } from '@kiki/transcript-live/wireRecords';
+import { type AwaitedWireRecordsStreamOptions, type WireRecordSpan } from '@kiki/transcript-live/wireRecords';
 
 import { decodeHistoryRef, encodeHistoryRef, hashHistoryRecord, historySourceIncarnation, verifyHistorySource,
   type HistorySourceAnchor, type HistoryRefKind } from './historySource';
 import type { HistoryNavManifest, LazyHistoryNavigationDb } from './historyNavigationDb';
 import { historyNavigationProof, matchesNavigationProof } from './historyNavigationProof';
+import { readLogicalWireRange, streamLogicalWireRecordsAwaited } from './logicalWireRead';
 import { matchHistoryText, planHistoryQuery, type HistoryMode } from './historyQuery';
 import { makeSnippet } from '../../search/snippet';
 import { searchSortedHistory, type HistorySortedCursor } from './historySortedSearch';
@@ -389,7 +390,7 @@ export class HistoryLocatorStore {
     const hits: HistoryHit[] = [];
     const emitted = new Set<string>();
     let matchedRecords = 0;
-    const read = await streamWireRecordsAwaited(input.wirePath, {
+    const read = await streamLogicalWireRecordsAwaited(input.wirePath, {
       startByteOffset: start, maxBytes: available - start, maxRecords: HISTORY_NAV_SCAN_RECORDS,
       maxLineBytes: HISTORY_NAV_MAX_LINE_BYTES, chunkBytes: HISTORY_NAV_CHUNK_BYTES,
       signal: input.signal, includeRawRecord: true,
@@ -584,11 +585,11 @@ export class HistoryLocatorStore {
         return !pageFull && (input.stopAt === undefined || span.endByteOffset < input.stopAt);
       },
     };
-    let read = await streamWireRecordsAwaited(input.wirePath, readOptions);
+    let read = await streamLogicalWireRecordsAwaited(input.wirePath, readOptions);
     if (input.search === undefined && input.stopAt === undefined && read.recordCount === 0 &&
         (read.incompleteReason === 'byte_budget' || read.incompleteReason === 'line_budget') && read.nextByteOffset === scanner.offset) {
       const attemptedBytes = read.bytesRead;
-      read = await streamWireRecordsAwaited(input.wirePath, {
+      read = await streamLogicalWireRecordsAwaited(input.wirePath, {
         ...readOptions, maxBytes: undefined, maxLineBytes: undefined, maxRecords: 1,
         onRecord: async (record, span, raw) => {
           await readOptions.onRecord(record, span, raw);
@@ -978,16 +979,13 @@ export class HistoryLocatorStore {
         row.anchor.start !== anchor.start || row.anchor.digest !== anchor.digest ||
         row.selector !== anchor.selector) return { status: 'stale_ref' };
     if (row.part === undefined) return { status: 'ok', row };
-    const handle = await open(location.wirePath, 'r');
-    try {
-      const bytes = Buffer.allocUnsafe(anchor.end - anchor.start);
-      const read = await handle.read(bytes, 0, bytes.length, anchor.start);
-      if (read.bytesRead !== bytes.length) return { status: 'stale_ref' };
-      const record = JSON.parse(bytes.toString('utf8')) as Record<string, unknown>;
-      const text = originalText(record, row.part, row.selector);
-      if (text === undefined || digest(text) !== row.contentHash) return { status: 'stale_ref' };
-      return { status: 'ok', row, text };
-    } finally { await handle.close(); }
+    const length = anchor.end - anchor.start;
+    const bytes = await readLogicalWireRange(location.wirePath, anchor.start, length);
+    if (bytes === undefined || bytes.byteLength !== length) return { status: 'stale_ref' };
+    const record = JSON.parse(Buffer.from(bytes).toString('utf8')) as Record<string, unknown>;
+    const text = originalText(record, row.part, row.selector);
+    if (text === undefined || digest(text) !== row.contentHash) return { status: 'stale_ref' };
+    return { status: 'ok', row, text };
   }
 
   ref(row: HistoryNavRow, focus?: number): string {

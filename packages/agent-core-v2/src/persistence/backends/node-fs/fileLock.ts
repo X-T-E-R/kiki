@@ -14,9 +14,10 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { promisify } from 'node:util';
-import { basename, dirname, join } from 'pathe';
+import { basename, dirname, join, resolve } from 'pathe';
 
 import {
+  isStorageError,
   StorageError,
   StorageErrors,
   type IStorageLock,
@@ -41,6 +42,12 @@ interface InspectedLock {
   readonly mine: boolean;
 }
 
+export const SESSION_LOCK_SCOPE = 'session-locks';
+
+export function sessionLockKey(scope: string): string {
+  return `${createHash('sha256').update(scope).digest('hex')}.lock`;
+}
+
 const DEFAULT_LEASE_MS = 120_000;
 const DEFAULT_RENEW_INTERVAL_MS = 15_000;
 const TAKEOVER_SETTLE_BASE_MS = 60;
@@ -54,7 +61,14 @@ const LOCK_WAIT_MAX_MS = 250;
 const TRANSIENT_DENIAL_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
 const execFileAsync = promisify(execFile);
 const HELD = new Set<FileLock>();
+const READER_HELD = new Set<ReaderLeaseHandle>();
+const readerGateDepth = new Map<string, number>();
+const READER_GATE_WAIT_MS = 60_000;
 let exitHooked = false;
+
+interface ReaderLeaseHandle {
+  releaseSync(): void;
+}
 let sidecarSequence = 0;
 
 function nextSidecarSequence(): number {
@@ -125,6 +139,7 @@ function hookExit(): void {
   exitHooked = true;
   const releaseHeld = (): void => {
     for (const lock of HELD) lock.releaseSync();
+    for (const lease of READER_HELD) lease.releaseSync();
   };
   process.on('beforeExit', releaseHeld);
   process.on('exit', releaseHeld);
@@ -132,7 +147,7 @@ function hookExit(): void {
 
 /** Removes dead or corrupted session locks only when no live watch protects them. */
 export async function cleanupExpiredSessionLocks(homeDir: string): Promise<number> {
-  const directory = join(homeDir, 'session-locks');
+  const directory = join(homeDir, SESSION_LOCK_SCOPE);
   let entries: string[];
   try {
     entries = await readdir(directory);
@@ -154,9 +169,149 @@ export async function cleanupExpiredSessionLocks(homeDir: string): Promise<numbe
   return removed;
 }
 
+export function sharedReadDirectory(journalPath: string): string {
+  return `${resolve(journalPath)}.readers`;
+}
+
+export async function acquireSharedReadLease(journalPath: string): Promise<{ release(): Promise<void> }> {
+  hookExit();
+  const directory = sharedReadDirectory(journalPath);
+  await mkdir(directory, { recursive: true });
+  const token = `${process.pid}:${randomUUID()}`;
+  const leasePath = join(directory, `${createHash('sha256').update(token).digest('hex')}.reader`);
+  const payload: FileLockPayload = {
+    version: 1,
+    pid: process.pid,
+    processStartedAt: PROCESS_STARTED_AT,
+    token,
+    acquiredAt: Date.now(),
+    leaseMs: DEFAULT_LEASE_MS,
+  };
+  const tempPath = `${leasePath}.${process.pid}.${nextSidecarSequence()}.tmp`;
+  await writeFile(tempPath, JSON.stringify(payload));
+  try {
+    await rename(tempPath, leasePath);
+  } catch (error) {
+    await unlink(tempPath).catch(() => undefined);
+    throw error;
+  }
+  let released = false;
+  const handle: ReaderLeaseHandle = {
+    releaseSync: () => {
+      if (released) return;
+      released = true;
+      try { fsSync.unlinkSync(leasePath); } catch { }
+      READER_HELD.delete(handle);
+    },
+  };
+  READER_HELD.add(handle);
+  return { release: async () => handle.releaseSync() };
+}
+
+export async function waitSharedReadIdle(journalPath: string): Promise<void> {
+  const directory = sharedReadDirectory(journalPath);
+  const provedAt = new Map<string, number>();
+  let delayMs = LOCK_WAIT_BASE_MS;
+  for (;;) {
+    let names: string[];
+    try {
+      names = await readdir(directory);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+    let live = false;
+    let pending = false;
+    for (const name of names) {
+      if (!name.endsWith('.reader')) continue;
+      const leasePath = join(directory, name);
+      const alive = await sharedReaderAlive(leasePath, provedAt);
+      if (alive === undefined) {
+        pending = true;
+        continue;
+      }
+      if (alive) {
+        live = true;
+        continue;
+      }
+      await unlink(leasePath).catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      });
+    }
+    if (!live && !pending) return;
+    await new Promise((resolveIdle) => setTimeout(resolveIdle, delayMs));
+    delayMs = Math.min(LOCK_WAIT_MAX_MS, delayMs * 2);
+  }
+}
+
+async function sharedReaderAlive(leasePath: string, provedAt: Map<string, number>): Promise<boolean | undefined> {
+  let raw: string;
+  try {
+    raw = await readFile(leasePath, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+  let payload: FileLockPayload | undefined;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (isPayload(parsed)) payload = parsed;
+  } catch {
+    payload = undefined;
+  }
+  if (payload === undefined) {
+    const info = await stat(leasePath).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      throw error;
+    });
+    if (info === undefined) return false;
+    return Date.now() - info.mtimeMs < 2_000 ? undefined : false;
+  }
+  if (!pidAlive(payload.pid)) return false;
+  if (payload.pid === process.pid) return Math.abs(payload.processStartedAt - PROCESS_STARTED_AT) <= 2_000;
+  if (process.platform !== 'win32') return true;
+  const proved = provedAt.get(payload.token);
+  if (proved !== undefined && Date.now() - proved < 5_000) return true;
+  const alive = await ownerProcessAlive(payload);
+  if (alive) provedAt.set(payload.token, Date.now());
+  return alive;
+}
+
+export async function withColdReaderGate<T>(journalPath: string, body: () => Promise<T>): Promise<T> {
+  const id = resolve(journalPath);
+  const depth = readerGateDepth.get(id) ?? 0;
+  if (depth > 0) {
+    readerGateDepth.set(id, depth + 1);
+    try {
+      return await body();
+    } finally {
+      const next = (readerGateDepth.get(id) ?? 1) - 1;
+      if (next <= 0) readerGateDepth.delete(id);
+      else readerGateDepth.set(id, next);
+    }
+  }
+  const lock = await acquireReaderGate(`${id}.cold.lock`);
+  readerGateDepth.set(id, 1);
+  try {
+    return await body();
+  } finally {
+    readerGateDepth.delete(id);
+    await lock.release();
+  }
+}
+
+async function acquireReaderGate(lockPath: string): Promise<IStorageLock> {
+  for (;;) {
+    try {
+      return await acquireFileLock(lockPath, { waitForMs: READER_GATE_WAIT_MS });
+    } catch (error) {
+      if (!isStorageError(error, StorageErrors.codes.STORAGE_LOCKED)) throw error;
+    }
+  }
+}
+
 export async function isSessionLockActive(homeDir: string, scope: string): Promise<boolean> {
-  const key = `${createHash('sha256').update(scope).digest('hex')}.lock`;
-  const path = join(homeDir, 'session-locks', key);
+  const path = join(homeDir, SESSION_LOCK_SCOPE, sessionLockKey(scope));
   try {
     return await new FileLock(path, {}, {}).isActive();
   } catch (error) {

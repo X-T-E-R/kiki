@@ -980,6 +980,14 @@ class PersistenceAppendLogStore implements IAppendLogStore {
     this.readSeeded = true;
   }
 
+  sealCold(): Promise<never> {
+    return Promise.reject(new Error('cold seal is not available'));
+  }
+
+  discardCold(): Promise<void> {
+    return Promise.resolve();
+  }
+
   rewrite<R>(_scope: string, _key: string, records: readonly R[]): Promise<void> {
     this.persistence.rewrite(records as readonly WireRecord[]);
     this.history.splice(0, this.history.length, ...(records as readonly WireRecord[]).map(cloneRecord));

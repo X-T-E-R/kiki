@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { open, readFile, stat } from 'node:fs/promises';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { abortable } from '@kiki/agent-core-v2/_base/utils/abort';
@@ -25,6 +25,7 @@ import {
   type Scope,
   type SessionMeta,
 } from '@kiki/agent-core-v2';
+import { StorageErrors } from '@kiki/agent-core-v2/persistence/interface/storage';
 import {
   WIRE_TRANSCRIPT_RECEIPT_KEY,
   digestWireBytes,
@@ -56,7 +57,6 @@ import {
 import {
   bindSessionTranscript,
   descriptorFromMeta,
-  streamWireRecords,
   type ContextRecord,
   WIRE_COLD_READ_MAX_BYTES,
   WIRE_COLD_READ_MAX_LINE_BYTES,
@@ -71,6 +71,7 @@ import {
 } from '@kiki/transcript-live';
 
 import type { HistoryLocatorStore } from '../history/historyLocatorStore';
+import { openLogicalWire, streamLogicalWireRecords, type LogicalWire } from '../history/logicalWireRead';
 import { CanonicalEntityPreparingError, type CanonicalToolLookup } from '../history/historyCanonicalReader';
 
 import {
@@ -485,7 +486,7 @@ export class TranscriptService {
       maxCacheBytes: nonNegativeLimit(limits?.maxCacheBytes, DEFAULT_TOOL_CALL_COUNT_CACHE_BYTES),
       readChunkBytes: positiveLimit(limits?.readChunkBytes, DEFAULT_TOOL_CALL_COUNT_READ_CHUNK_BYTES),
     };
-    this.wireRecordReader = deps.wireRecordReader ?? streamWireRecords;
+    this.wireRecordReader = deps.wireRecordReader ?? streamLogicalWireRecords;
     const coldReadLimits = deps.coldReadLimits;
     this.coldReadLimits = {
       maxBytes: nonNegativeLimit(coldReadLimits?.maxBytes, WIRE_COLD_READ_MAX_BYTES),
@@ -2136,62 +2137,69 @@ export class TranscriptService {
 
   private async alignRecordStart(wirePath: string, offset: number, signal: AbortSignal): Promise<number> {
     if (offset <= 0) return 0;
-    const lower = 0;
-    const handle = await open(wirePath, 'r');
+    const opened = await openLogicalWire(wirePath);
+    if (opened === undefined) {
+      await (await open(wirePath, 'r')).close();
+      return 0;
+    }
     try {
       let cursor = offset;
-      while (cursor > lower) {
+      while (cursor > 0) {
         signal.throwIfAborted();
-        const length = Math.min(64 * 1024, cursor - lower);
+        const length = Math.min(64 * 1024, cursor);
         const position = cursor - length;
-        const chunk = Buffer.allocUnsafe(length);
-        const { bytesRead } = await handle.read(chunk, 0, length, position);
-        if (bytesRead === 0) break;
-        this.coldReadBytes += bytesRead;
-        const newline = chunk.subarray(0, bytesRead).lastIndexOf(0x0a);
+        const bytes = await opened.readAt(position, length);
+        if (bytes.byteLength === 0) break;
+        this.coldReadBytes += bytes.byteLength;
+        const newline = Buffer.from(bytes).lastIndexOf(0x0a);
         if (newline >= 0) return position + newline + 1;
         cursor = position;
       }
     } finally {
-      await handle.close().catch(() => undefined);
+      opened.close();
     }
-    return lower;
+    return 0;
   }
 
   private async turnPrefixId(wirePath: string, offset: number, signal: AbortSignal): Promise<string | undefined> {
-    const handle = await open(wirePath, 'r');
+    const opened = await openLogicalWire(wirePath);
+    if (opened === undefined) {
+      await (await open(wirePath, 'r')).close();
+      return undefined;
+    }
     try {
       signal.throwIfAborted();
-      const chunk = Buffer.allocUnsafe(512);
-      const { bytesRead } = await handle.read(chunk, 0, chunk.length, offset);
-      this.coldReadBytes += bytesRead;
-      return bytesRead === 0 ? undefined : turnIdInPrefix(chunk.subarray(0, bytesRead).toString('utf8'));
+      const bytes = await opened.readAt(offset, 512);
+      this.coldReadBytes += bytes.byteLength;
+      return bytes.byteLength === 0 ? undefined : turnIdInPrefix(Buffer.from(bytes).toString('utf8'));
     } finally {
-      await handle.close().catch(() => undefined);
+      opened.close();
     }
   }
 
   private async nextRecordBoundary(wirePath: string, offset: number, fileSize: number, signal: AbortSignal): Promise<number> {
     if (offset >= fileSize) return fileSize;
-    const limit = fileSize;
-    const handle = await open(wirePath, 'r');
+    const opened = await openLogicalWire(wirePath);
+    if (opened === undefined) {
+      await (await open(wirePath, 'r')).close();
+      return fileSize;
+    }
     try {
       let cursor = offset;
-      while (cursor < limit) {
+      while (cursor < fileSize) {
         signal.throwIfAborted();
-        const length = Math.min(64 * 1024, limit - cursor);
-        const chunk = Buffer.allocUnsafe(length);
-        const { bytesRead } = await handle.read(chunk, 0, length, cursor);
-        if (bytesRead === 0) break;
-        this.coldReadBytes += bytesRead;
-        const newline = chunk.subarray(0, bytesRead).indexOf(0x0a);
+        const length = Math.min(64 * 1024, fileSize - cursor);
+        const bytes = await opened.readAt(cursor, length);
+        if (bytes.byteLength === 0) break;
+        this.coldReadBytes += bytes.byteLength;
+        const newline = Buffer.from(bytes).indexOf(0x0a);
         if (newline >= 0) return cursor + newline + 1;
-        cursor += bytesRead;
+        cursor += bytes.byteLength;
       }
     } finally {
-      await handle.close().catch(() => undefined);
+      opened.close();
     }
-    return Math.min(fileSize, limit);
+    return fileSize;
   }
 
   private readWireRange(wirePath: string, start: number, end: number, signal: AbortSignal): ReturnType<TranscriptService['readWireRangeInLane']> {
@@ -2425,7 +2433,7 @@ export class TranscriptService {
     wireInfo: WireFileInfo,
     signal?: AbortSignal,
   ): Promise<boolean> {
-    const key = `${wirePath}\0${fileFingerprint(wireInfo)}`;
+    const key = `${wirePath}\0${fileFingerprint(wireInfo)}\0${await sealStamp(wirePath)}`;
     let flight = this.verifiedWireReceiptFlights.get(key);
     if (flight !== undefined && !flight.controller.signal.aborted) {
       return this.awaitWireReceiptVerification(flight, signal);
@@ -2499,13 +2507,36 @@ export class TranscriptService {
       this.deleteVerifiedWireReceipt(wirePath);
       return false;
     }
-    const fingerprint = fileFingerprint(wireInfo);
+    const fingerprint = `${fileFingerprint(wireInfo)}\0${await sealStamp(wirePath)}`;
     const cached = this.verifiedWireReceipts.get(wirePath);
     if (cached?.fingerprint === fingerprint && cached.receipt.equals(bytes)) {
       this.touchVerifiedWireReceipt(wirePath);
       return true;
     }
-    const digest = await digestWireBytes(createReadStream(wirePath, { signal }));
+    let logical: LogicalWire | undefined;
+    try {
+      logical = await openLogicalWire(wirePath);
+    } catch (error) {
+      if (isStorageCorrupted(error)) {
+        this.deleteVerifiedWireReceipt(wirePath);
+        return false;
+      }
+      throw error;
+    }
+    let digest: Awaited<ReturnType<typeof digestWireBytes>>;
+    try {
+      digest = logical === undefined
+        ? await digestWireBytes(createReadStream(wirePath, { signal }))
+        : await digestWireBytes(logicalWireChunks(logical, signal));
+    } catch (error) {
+      if (isStorageCorrupted(error)) {
+        this.deleteVerifiedWireReceipt(wirePath);
+        return false;
+      }
+      throw error;
+    } finally {
+      logical?.close();
+    }
     signal.throwIfAborted();
     if (digest.size === 0 || !digest.endsWithNewline ||
         digest.size !== receipt.wire.size || digest.sha256 !== receipt.wire.sha256) {
@@ -2518,8 +2549,9 @@ export class TranscriptService {
     });
     signal.throwIfAborted();
     const after = await stat(wirePath).catch(() => undefined);
+    const afterStamp = after === undefined ? undefined : await sealStamp(wirePath);
     if (currentReceipt === undefined || !bytes.equals(currentReceipt) ||
-        after === undefined || fileFingerprint(after) !== fingerprint) {
+        after === undefined || `${fileFingerprint(after)}\0${afterStamp}` !== fingerprint) {
       this.deleteVerifiedWireReceipt(wirePath);
       return false;
     }
@@ -3335,6 +3367,32 @@ function unknownSnapshot(): AgentTranscriptSnapshot {
     meta: {},
     hasMoreOlder: true,
   };
+}
+
+function isStorageCorrupted(error: unknown): boolean {
+  return error instanceof Error && (error as { code?: unknown }).code === StorageErrors.codes.STORAGE_CORRUPTED;
+}
+
+async function sealStamp(wirePath: string): Promise<string> {
+  try {
+    const info = await stat(join(dirname(wirePath), `${basename(wirePath)}.segments.json`));
+    return `${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'plain';
+    throw error;
+  }
+}
+
+async function* logicalWireChunks(source: LogicalWire, signal: AbortSignal): AsyncGenerator<Uint8Array> {
+  let position = 0;
+  while (position < source.size) {
+    signal.throwIfAborted();
+    const length = Math.min(64 * 1024, source.size - position);
+    const chunk = await source.readAt(position, length);
+    if (chunk.byteLength === 0) break;
+    position += chunk.byteLength;
+    yield chunk;
+  }
 }
 
 function fileFingerprint(info: {

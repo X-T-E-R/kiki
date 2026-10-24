@@ -24,6 +24,8 @@ Kiki 把每次对话持久化为一个「会话」，保留消息历史和元数
 - `state.json`：会话标题、创建时间等元数据。
 - `agents/*/wire.jsonl`：Agent 的事件流记录，用于会话恢复和回放；同时记录发给模型的请求轨迹（工具定义、请求参数、MCP 工具清单），方便排查问题。
 
+[`kiki session seal`](../reference/command.md#kiki-session) 会保留每个 `wire.jsonl`，不会缩小它。活动会话会被拒绝。已经开始的读取会等待。封存损坏时读取失败，而不是悄悄改用原始文件；[`kiki session unseal`](../reference/command.md#kiki-session) 去掉封存后，之后的读取重新使用原文件。
+
 ::: warning 注意
 请勿手动编辑 `sessions/` 目录下的文件，否则可能导致会话无法正常恢复。
 :::

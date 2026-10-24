@@ -11,6 +11,7 @@ import {
   IQueryStore,
   IAppendLogStore,
   IFileSystemStorageService,
+  readLogicalBytes,
   IRetainedUsageService,
   ISessionIndex,
   agentScopeOf,
@@ -1997,10 +1998,8 @@ export class UsageAggregationService {
     let latestAt: number | undefined;
     const includesDeletedSessions = sessions.some((session) => session.deleted);
     const pricing = this.core.accessor.get(IModelPricingService);
-    const scanIncomplete = budget.incompleteReason !== null;
     let processedRecords = 0;
     const foldedBuckets = new Map<string, FoldBucketView>();
-    const now = this.now;
     async function* inputs(): AsyncGenerator<SessionRecords> {
       yield* sessions;
       if (fold === undefined) return;
@@ -2328,7 +2327,8 @@ async function readRange(
 ): Promise<Buffer> {
   if (end < start) return Buffer.alloc(0);
   const chunks: Buffer[] = [];
-  for await (const chunk of storage.readStream(
+  for await (const chunk of readLogicalBytes(
+    storage,
     scope,
     AGENT_WIRE_RECORD_KEY,
     { start, end },

@@ -174,6 +174,19 @@ Text output includes an `Older` command. JSON returns `wire.nextCursor`, byte bo
 
 `--follow` observes saved changes without attaching to the running agent. With `--json`, it writes one snapshot per NDJSON line. `--before` and `--follow` are mutually exclusive.
 
+`seal` stores a compressed, sealed copy of each agent journal in one persisted session. Later journal reads use that copy. The original `wire.jsonl` stays on disk at its current size, so sealing does not reduce its disk use and the extra sealed data can increase the home directory's size. `unseal` removes the seal without modifying the original file; later reads use that file again.
+
+```sh
+kiki session seal <session_id>
+kiki session unseal <session_id> --json
+```
+
+Both commands accept the same session reference forms and `--workspace <workspace-id>` selection as `show`. They do not resume the session or send model requests. If another Kiki process holds the session writer lock, the command refuses to run and leaves the journal unchanged; the JSON error code is `session_active`.
+
+If a sealed journal is already being read, `seal` and `unseal` wait until that read finishes or the reading process exits before removing its sealed segments. A damaged seal fails the read with `Cold journal cannot be read` (`storage.corrupted`), rather than silently reading the original file. Run `unseal` to remove that seal and return to the retained file.
+
+On success, text output reports how many journals were sealed or unsealed. `--json` returns `schemaVersion`, `action` (`seal` or `unseal`), `sessionId`, `workspaceId`, `wires`, and `originalRetained: true`.
+
 ### `kiki serve`
 
 Control the shared daemon explicitly. With no mode, `serve` runs the daemon in the foreground; `--query --json` reports the current instance without starting one; `--ensure` attaches to an existing healthy instance or starts one and returns its connection; `--stop` shuts down the reachable instance for the selected home. If a live instance is found but its identity cannot be verified, Kiki refuses to start a second instance: stop or upgrade the existing one before retrying.

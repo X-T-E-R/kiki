@@ -2,6 +2,7 @@ import { constants, type Dirent } from 'node:fs';
 import { lstat, open, readdir, realpath, type FileHandle } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { openPersistedJournal, type PersistedJournalRead } from '@kiki/node-sdk';
 
 import {
   AgentTranscript,
@@ -47,7 +48,8 @@ export type SessionInspectionErrorCode =
   | 'damaged_session'
   | 'inspection_limit'
   | 'agent_not_found'
-  | 'ambiguous_agent';
+  | 'ambiguous_agent'
+  | 'session_active';
 
 export class SessionInspectionError extends Error {
   constructor(
@@ -739,13 +741,25 @@ async function readWireRecords(
 ): Promise<SessionWireCoverage> {
   const expectedIdentity = await assertRegularFile(wirePath, canonicalSessionDir);
   const handle = await openReadOnlyNoFollow(wirePath);
+  let logical: PersistedJournalRead | undefined;
   try {
     const info = await handle.stat();
     assertSameFile(expectedIdentity, info, wirePath);
     if (!info.isFile()) throw new Error(`${wirePath} is not a regular file`);
     if (!Number.isSafeInteger(info.size) || info.size < 0) throw new Error(`invalid file size ${info.size}`);
-    return await readSessionWireWindow(handle, info, await realpath(wirePath), options, onRecord);
+    logical = await openPersistedJournal(wirePath);
+    if (logical === undefined || logical.size !== info.size) throw new SessionWireCursorError('Wire changed during inspection. Open the latest window again.');
+    const pinned = logical;
+    return await readSessionWireWindow(pinned.sealed ? {
+      stat: () => handle.stat(),
+      read: async (buffer, offset, length, position) => {
+        const bytes = await pinned.readAt(position, length);
+        buffer.set(bytes, offset);
+        return { bytesRead: bytes.byteLength };
+      },
+    } : handle, info, await realpath(wirePath), options, onRecord);
   } finally {
+    await logical?.close();
     await handle.close();
   }
 }

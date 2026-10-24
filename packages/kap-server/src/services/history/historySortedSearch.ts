@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { open, stat } from 'node:fs/promises';
 import type { HistoryHit } from '@kiki/agent-core-v2/agent/tools/history/historyTools';
+import { openLogicalWire, readLogicalInto } from './logicalWireRead';
 import type { HistoryNavigationDb } from './historyNavigationDb';
 import type { HistoryNavRow, HistoryNavScan, HistoryNavSearch } from './historyLocatorStore';
 import { historyNavigationProof, matchesNavigationProof } from './historyNavigationProof';
@@ -116,7 +117,8 @@ export async function searchSortedHistory(input: SortedSearchInput): Promise<His
   const gaps = new Set<string>(cursor?.skippedOversize ? ['record_exceeds_page_budget'] : []);
   let after = cursor?.after;
   let complete = false;
-  const file = await open(input.wirePath, 'r');
+  const logical = await openLogicalWire(input.wirePath);
+  const file = logical === undefined ? await open(input.wirePath, 'r') : undefined;
   try {
     outer: while (bytesRead < input.maxBytes && recordsRead < input.maxRecords) {
       input.signal?.throwIfAborted();
@@ -140,10 +142,12 @@ export async function searchSortedHistory(input: SortedSearchInput): Promise<His
           let received = 0;
           while (received < size) {
             input.signal?.throwIfAborted();
-            const read = await file.read(raw, received, Math.min(64 << 10, size - received), row.anchor.start + received);
-            if (read.bytesRead === 0) throw new Error('stale_scan_cursor');
-            received += read.bytesRead;
-            bytesRead += read.bytesRead;
+            const count = logical !== undefined
+              ? await readLogicalInto(logical, raw, received, Math.min(64 << 10, size - received), row.anchor.start + received)
+              : (await file!.read(raw, received, Math.min(64 << 10, size - received), row.anchor.start + received)).bytesRead;
+            if (count === 0) throw new Error('stale_scan_cursor');
+            received += count;
+            bytesRead += count;
           }
           if (hashHistoryRecord(raw) !== row.anchor.digest) throw new Error('stale_scan_cursor');
           const record = JSON.parse(raw.toString('utf8')) as Record<string, unknown>;
@@ -162,7 +166,10 @@ export async function searchSortedHistory(input: SortedSearchInput): Promise<His
       }
       if (complete) break;
     }
-  } finally { await file.close(); }
+  } finally {
+    logical?.close();
+    await file?.close();
+  }
   await unchanged();
   if (order === 'relevance') {
     matches.sort((left, right) => right.score - left.score || right.time - left.time || right.key.localeCompare(left.key));

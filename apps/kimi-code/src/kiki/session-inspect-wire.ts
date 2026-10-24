@@ -1,6 +1,10 @@
 import type { Stats } from 'node:fs';
-import type { FileHandle } from 'node:fs/promises';
 import type { TranscriptWireRecord } from '@kiki/transcript';
+
+export interface SessionWireReader {
+  read(buffer: Buffer, offset: number, length: number, position: number): Promise<{ bytesRead: number }>;
+  stat(): Promise<Stats>;
+}
 
 export const SESSION_WIRE_WINDOW_BYTES = 8 << 20;
 const MAX_LINE_BYTES = 64 << 20;
@@ -39,7 +43,7 @@ export class SessionWireLimitError extends Error {}
 export class SessionWireCursorError extends Error {}
 
 export async function readSessionWireWindow(
-  handle: FileHandle,
+  handle: SessionWireReader,
   info: Stats,
   identity: string,
   options: { readonly before?: string; readonly maxBytes?: number },
@@ -139,7 +143,7 @@ function decodeCursor(value: string, identity: string, info: Stats): WireCursor 
 }
 
 async function precedingBoundary(
-  handle: FileHandle,
+  handle: SessionWireReader,
   target: number,
   counter: { bytes: number },
 ): Promise<{ offset: number; kind: 'turn' | 'record' }> {

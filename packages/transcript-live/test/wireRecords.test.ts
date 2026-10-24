@@ -796,6 +796,36 @@ describe('streamWireRecordsAwaited', () => {
   });
 });
 
+describe('wire byte source', () => {
+  it('reads the supplied bytes instead of the file', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'transcript-live-byte-source-'));
+    try {
+      const wirePath = join(home, 'wire.jsonl');
+      await writeFile(wirePath, '{"type":"note","id":"file"}\n');
+      const logical = Buffer.from('{"type":"note","id":"logical"}\n');
+      const source = {
+        size: logical.byteLength,
+        readAt: async (position: number, length: number) => logical.subarray(position, position + length),
+      };
+      const direct: ContextRecord[] = [];
+      await streamWireRecords(wirePath, {
+        byteSource: source,
+        onRecord: (record) => { direct.push(record); },
+      });
+      const awaited: ContextRecord[] = [];
+      await streamWireRecordsAwaited(wirePath, {
+        byteSource: source,
+        onRecord: (record) => { awaited.push(record); },
+      });
+      expect(direct).toEqual([{ type: 'note', id: 'logical' }]);
+      expect(awaited).toEqual([{ type: 'note', id: 'logical' }]);
+      expect(await readFile(wirePath, 'utf8')).toBe('{"type":"note","id":"file"}\n');
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+});
+
 function toMiB(bytes: number): string {
   return (bytes / 1024 / 1024).toFixed(1);
 }

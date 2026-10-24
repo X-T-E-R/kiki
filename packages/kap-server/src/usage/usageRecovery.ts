@@ -2,6 +2,7 @@ import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import { UsageReadAllowance, UsageWireFramer, type UsageWireState } from '@kiki/agent-core-v2/agent/usage/usageWireFramer';
 import type { UsageFact } from '@kiki/agent-core-v2/agent/usage/usageFact';
 import type { IFileSystemStorageService } from '@kiki/agent-core-v2/persistence/interface/storage';
+import { readLogicalBytes } from '@kiki/agent-core-v2/persistence/coldSegmentLog';
 import type { Ledger } from '@kiki/agent-core-v2/_base/lifecycle/ledger';
 import { UsageParserWorker, type UsageWorkerObservation } from './worker/host';
 import { USAGE_CHUNK_BYTES } from './worker/protocol';
@@ -137,7 +138,7 @@ export async function readUsageWireTail(
     readSignal.throwIfAborted();
     if (worker !== undefined) await worker.begin(startOffset, sourceAgentId, state, allowance.buffer, wallDeadline);
     if (state.cursor < end) {
-      sourceRead: for await (const input of storage.readStream(scope, 'wire.jsonl', { start: state.cursor, end: end - 1 }, { signal: readSignal, chunkBytes: USAGE_CHUNK_BYTES })) {
+      sourceRead: for await (const input of readLogicalBytes(storage, scope, 'wire.jsonl', { start: state.cursor, end: end - 1 }, { signal: readSignal, chunkBytes: USAGE_CHUNK_BYTES })) {
         signal?.throwIfAborted();
         readBytes += input.byteLength;
         for (let part = 0; part < input.byteLength; part += USAGE_CHUNK_BYTES) {

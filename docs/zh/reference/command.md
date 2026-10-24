@@ -174,6 +174,19 @@ JSON 用 `wire.startBoundary`（`turn` 或 `record`）和 `wire.endBoundary`（`
 
 `--follow` 只观察已保存内容的变化，不连接正在运行的 Agent。与 `--json` 合用时，每行输出一个 NDJSON 快照。`--before` 与 `--follow` 互斥。
 
+`seal` 为已保存会话中每个 Agent 的 journal 保存一份压缩封存副本，之后的 journal 读取使用这份副本。原来的 `wire.jsonl` 仍留在磁盘上，大小不变；封存不会减少原文件占用，额外的封存数据可能让 home 占用变大。`unseal` 去掉封存，不修改原文件，之后的读取重新使用该文件。
+
+```sh
+kiki session seal <session_id>
+kiki session unseal <session_id> --json
+```
+
+这两条命令与 `show` 接受相同的会话引用形式，也支持用 `--workspace <workspace-id>` 选择副本。它们不恢复会话、不发送模型请求。另一个 Kiki 进程正持有该会话的写锁时，命令拒绝执行，journal 保持原样；JSON 错误码为 `session_active`。
+
+如果封存后的 journal 已经在被读取，`seal` 和 `unseal` 会等到这次读取结束，或读取它的进程退出，再移除对应的封存分段。封存损坏时，读取失败并报告 `Cold journal cannot be read`（`storage.corrupted`），不会悄悄改读原文件。运行 `unseal` 可去掉该封存，重新读取保留的原文件。
+
+成功时，文本输出报告封存或解除了几个 journal。`--json` 返回 `schemaVersion`、`action`（`seal` 或 `unseal`）、`sessionId`、`workspaceId`、`wires`，以及 `originalRetained: true`。
+
 ### `kiki serve`
 
 显式控制共享 daemon。不带模式时，`serve` 在前台运行 daemon；`--query --json` 只报告当前实例，不启动服务；`--ensure` 连接已有健康实例，或启动一个新实例并返回连接信息；`--stop` 停止所选 home 下当前可达的实例。发现活跃实例却无法验证其身份时，Kiki 拒绝启动第二个实例：先停止或升级已有实例，再重试。

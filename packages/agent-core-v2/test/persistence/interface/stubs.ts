@@ -1,3 +1,9 @@
+import { SyncDescriptor } from '#/_base/di/descriptors';
+import { TestInstantiationService } from '#/_base/di/test';
+import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
+import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
+
 import {
   IQueryStore,
   type Checkpoint,
@@ -5,6 +11,13 @@ import {
   type IQuery,
   type Page,
 } from '#/persistence/interface/queryStore';
+
+export function createTestAppendLogStore(storage: IFileSystemStorageService): AppendLogStore {
+  const ix = new TestInstantiationService();
+  ix.set(IFileSystemStorageService, storage);
+  ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+  return ix.get(IAppendLogStore) as AppendLogStore;
+}
 
 export function stubQueryStore(): IQueryStore {
   return {

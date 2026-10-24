@@ -1,9 +1,13 @@
-import { open, readdir, type FileHandle } from 'node:fs/promises';
+import { readdir } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { Readable } from 'node:stream';
 import { finished } from 'node:stream/promises';
 
 import { join } from 'pathe';
+
+import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
+import { openPinnedLogicalRead, type PinnedLogicalRead } from '#/persistence/coldSegmentLog';
+import { wireFileAddress } from '#/persistence/logicalWireFile';
 
 const WIRE_FILENAME = 'wire.jsonl';
 
@@ -62,11 +66,13 @@ async function collectWireFiles(
 }
 
 async function scanWireFile(path: string, signal?: AbortSignal): Promise<SessionWireScan> {
-  let file: FileHandle;
-  try {
-    file = await open(path, 'r');
-  } catch (error) {
-    if (!isMissingPath(error)) throw error;
+  signal?.throwIfAborted();
+  const address = wireFileAddress(path);
+  const storage = new FileStorageService(address.baseDir);
+  const pinned = await openPinnedLogicalRead(storage, address.scope, address.key);
+  const size = pinned.size;
+  if (size === undefined) {
+    pinned.close();
     return {};
   }
 
@@ -79,17 +85,10 @@ async function scanWireFile(path: string, signal?: AbortSignal): Promise<Session
 
   try {
     signal?.throwIfAborted();
-    const size = (await file.stat()).size;
-    signal?.throwIfAborted();
     input =
       size === 0
         ? Readable.from([])
-        : file.createReadStream({
-            encoding: 'utf8',
-            autoClose: false,
-            end: size - 1,
-            signal,
-          });
+        : Readable.from(logicalChunks(pinned, size, signal), { objectMode: false });
     const lines = createInterface({ input, crlfDelay: Infinity });
     for await (const line of lines) {
       const trimmed = line.trim();
@@ -128,7 +127,7 @@ async function scanWireFile(path: string, signal?: AbortSignal): Promise<Session
   } finally {
     input?.destroy();
     if (input !== undefined) await finished(input, { cleanup: true }).catch(() => {});
-    await file.close();
+    pinned.close();
   }
 
   return {
@@ -137,6 +136,17 @@ async function scanWireFile(path: string, signal?: AbortSignal): Promise<Session
     lastUserMessageMs,
     firstUserInput,
   };
+}
+
+async function* logicalChunks(
+  pinned: PinnedLogicalRead,
+  size: number,
+  signal?: AbortSignal,
+): AsyncGenerator<Buffer> {
+  for await (const chunk of pinned.read({ start: 0, end: size - 1 }, { signal })) {
+    signal?.throwIfAborted();
+    yield Buffer.from(chunk);
+  }
 }
 
 export function normalizeTimestampMs(value: number): number | undefined {

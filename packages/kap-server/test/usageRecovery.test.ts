@@ -1,16 +1,34 @@
 import { describe, expect, it } from 'vitest';
 import { UsageReadAllowance } from '@kiki/agent-core-v2/agent/usage/usageWireFramer';
-import type { IFileSystemStorageService } from '@kiki/agent-core-v2/persistence/interface/storage';
+import { InMemoryStorageService } from '@kiki/agent-core-v2/persistence/backends/memory/inMemoryStorageService';
+import { sealColdSegments } from '@kiki/agent-core-v2/persistence/coldSegmentLog';
+import type { IFileSystemStorageService, StorageReadRange } from '@kiki/agent-core-v2/persistence/interface/storage';
 import { Scope, setScopeTopology } from '@kiki/agent-core-v2/_base/di/scope';
 import { readUsageWireTail, UsageRecoveryPool, usageRecoveryPool, type WireLineContinuation } from '../src/usage/usageRecovery';
 
 const fact = (time: number) => ({ type: 'usage.record', time, model: 'example', usageKnown: true, usage: { inputOther: 1, output: 2, inputCacheRead: 3, inputCacheCreation: 0 } });
 
 function sourceStorage(bytes: Uint8Array): IFileSystemStorageService {
-  return { async *readStream(_scope: string, _key: string, range: { start: number; end: number }) { yield bytes.subarray(range.start, range.end + 1); } } as unknown as IFileSystemStorageService;
+  return new class extends InMemoryStorageService {
+    override async *readStream(_scope: string, _key: string, range?: StorageReadRange) {
+      yield range === undefined ? bytes : bytes.subarray(range.start, range.end + 1);
+    }
+    override async size() { return bytes.byteLength; }
+  }();
 }
 
 describe('bounded usage recovery lanes', () => {
+  it('recovers usage from the sealed prefix rather than a changed retained file', async () => {
+    const storage = new InMemoryStorageService();
+    const bytes = Buffer.from(`${JSON.stringify(fact(1))}\n`);
+    await storage.write('main', 'wire.jsonl', bytes);
+    await sealColdSegments(storage, 'main', 'wire.jsonl', bytes.length, { segmentBytes: 128 });
+    await storage.write('main', 'wire.jsonl', Buffer.from(bytes.toString().replace('"output":2', '"output":9')));
+    const result = await readUsageWireTail(storage, 'main', 0, bytes.length, new UsageReadAllowance(Infinity), Infinity, Date.now, 'main', undefined, undefined, new Map(), 'sealed');
+    expect(result.complete).toBe(true);
+    expect(result.records.map((record) => record.usage.output)).toEqual([2]);
+  });
+
   it('cold-starts the real pure source worker and uses identical framing with bounded transfers', async () => {
     const bytes = Buffer.from(JSON.stringify({ type: 'message', text: '示例🙂\\\n'.repeat(150_000) }) + '\n' + JSON.stringify(fact(1)) + '\n');
     const pool = new UsageRecoveryPool();
