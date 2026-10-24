@@ -127,9 +127,13 @@ function draftRows(config: KikiConfigResponse | undefined, pending: readonly { i
   });
 }
 
+function isOptionalCapabilityId(id: string): id is OptionalCapabilityId {
+  return (OPTIONAL_CAPABILITY_IDS as readonly string[]).includes(id);
+}
+
 function serverRows(view: OptionalCapabilitySessionResponse): RowModel[] {
-  return view.rows.map((row) => ({
-    id: row.id,
+  return view.rows.filter((row) => isOptionalCapabilityId(row.id)).map((row) => ({
+    id: row.id as OptionalCapabilityId,
     choice: row.choice,
     allowed: row.allowed,
     hostLocked: row.host_locked,

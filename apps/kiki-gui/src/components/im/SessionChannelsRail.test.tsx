@@ -28,10 +28,17 @@ const mockImSessions = {
   updateBinding: vi.fn(),
   removeBinding: vi.fn(),
   confirm: vi.fn(),
+  channelViews: vi.fn(async () => ({
+    internal_enabled: true,
+    channels: [{ id: 'feishu-duty', kind: 'notify' as const, bound: true, enabled: true, capabilities: [] }],
+  })),
+  setNotificationChannel: vi.fn(),
+  removeNotificationChannel: vi.fn(),
 };
 
 const mockClient = {
   scopeId: 'fixture',
+  spaceKey: 'main',
   imSessions: mockImSessions,
   getSessionOptionalCapabilities: vi.fn(),
   setSessionOptionalCapability: vi.fn(),
@@ -42,7 +49,7 @@ const mockClient = {
 };
 
 vi.mock('../../state/connection', () => ({
-  useOptionalConnection: () => ({ scopeId: 'fixture', client: mockClient }),
+  useOptionalConnection: () => ({ scopeId: 'fixture', spaceKey: 'main', client: mockClient }),
 }));
 
 const roots: Root[] = [];
@@ -101,10 +108,11 @@ describe('SessionChannelsRail', () => {
     ];
     mockImSessions.snapshot.mockResolvedValue(createSnapshot(bindings));
     mockClient.getSessionOptionalCapabilities.mockResolvedValue({
+      host_id: 'host-1',
       sessionId: 'sess-1',
       revision: 1,
       rows: [{ id: 'send_message', choice: 'inherit', allowed: true, host_locked: false, default_on: false, unresolved: false, effective: false, reason: 'default_off', source: 'default', applies: 'next-step' }],
-    } as OptionalCapabilitySessionResponse);
+    } as unknown as OptionalCapabilitySessionResponse);
     mockClient.getConfig.mockResolvedValue({
       optional_capabilities: { send_message: { allowed: true, default_on: false } },
     });
@@ -121,7 +129,7 @@ describe('SessionChannelsRail', () => {
     expect(summaryEl?.textContent).toContain('3'); // 3 out (internal + 1 IM + 1 notify)
 
     // SendMessage tool is initially off for pure thread
-    const smSwitch = container.querySelector('[data-rail-sm-switch]') as HTMLButtonElement;
+    const smSwitch = container.querySelector('[data-rail-sendmessage-switch]') as HTMLButtonElement;
     expect(smSwitch.getAttribute('aria-checked')).toBe('false');
 
     // Click to toggle on
@@ -301,5 +309,37 @@ describe('SessionChannelsRail', () => {
         output_enabled: true,
       })
     );
+  });
+
+  it('keeps bound notify channel visible when disabled and toggles back on', async () => {
+    mockImSessions.snapshot.mockResolvedValue(createSnapshot([]));
+    mockImSessions.channelViews.mockResolvedValue({
+      internal_enabled: true,
+      channels: [{ id: 'feishu-duty', kind: 'notify' as const, bound: true, enabled: false, capabilities: [] }],
+    });
+    mockClient.getSessionOptionalCapabilities.mockResolvedValue({
+      host_id: 'host-1',
+      sessionId: 'sess-1',
+      revision: 1,
+      rows: [],
+    } as unknown as OptionalCapabilitySessionResponse);
+    mockClient.getConfig.mockResolvedValue({});
+
+    const container = await renderRail({ sessionId: 'sess-1' });
+
+    // The notify channel is visible in outbound list even when enabled=false
+    const notifyItem = container.querySelector('[data-rail-out-list]');
+    expect(notifyItem?.textContent).toContain('feishu-duty');
+
+    // Click toggle to enable
+    const toggleBtn = notifyItem?.querySelector('button') as HTMLButtonElement;
+    expect(toggleBtn).toBeDefined();
+
+    await act(async () => {
+      toggleBtn.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(mockImSessions.setNotificationChannel).toHaveBeenCalledWith('sess-1', 'feishu-duty', true);
   });
 });

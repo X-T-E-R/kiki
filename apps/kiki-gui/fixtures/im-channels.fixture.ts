@@ -234,10 +234,14 @@ export function createImSettingsFixture(initial: ImSessionSnapshot = imSettingsS
       calls.push({ operation: 'updateBinding', id, body: structuredClone(patch) });
       state.bindings = state.bindings.map((item) => {
         if (item.id !== id) return item;
-        const { target, session_enabled, ...rest } = patch;
+        const { target, session_enabled, input_enabled, output_enabled, ...rest } = patch;
         const next = { ...item, ...rest, ...(target === undefined ? {} : resolve(target)) };
         if (session_enabled === null) delete next.session_enabled;
         else if (session_enabled !== undefined) next.session_enabled = session_enabled;
+        if (input_enabled === null) delete next.input_enabled;
+        else if (input_enabled !== undefined) next.input_enabled = input_enabled;
+        if (output_enabled === null) delete next.output_enabled;
+        else if (output_enabled !== undefined) next.output_enabled = output_enabled;
         return next;
       });
       return clone();

@@ -1889,6 +1889,8 @@ export class KikiClient {
       testBinding: wrap(api.testBinding.bind(api)),
       channelViews: wrap(api.channelViews.bind(api)),
       setInternalChannel: wrap(api.setInternalChannel.bind(api)),
+      setNotificationChannel: wrap(api.setNotificationChannel.bind(api)),
+      removeNotificationChannel: wrap(api.removeNotificationChannel.bind(api)),
       startWechatQr: wrap(api.startWechatQr.bind(api)),
       pollWechatQr: wrap(api.pollWechatQr.bind(api)),
       cancelWechatQr: wrap(api.cancelWechatQr.bind(api)),

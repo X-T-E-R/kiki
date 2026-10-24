@@ -1,4 +1,13 @@
-import type { ImBinding, ImDiscovery, ImIdentity, ImProviderKind, ImSessionSnapshot } from '@kiki/protocol';
+import type {
+  ImBinding,
+  ImChannelView,
+  ImIdentity,
+  ImPolicy,
+  ImProviderKind,
+  ImSessionSnapshot,
+  ImTargetChannels,
+  OptionalCapabilitySessionResponse,
+} from '@kiki/protocol';
 
 export const IM_IDENTITY_ALREADY_BOUND_CODE = 40949;
 
@@ -55,11 +64,31 @@ export function formatIdentityChannel(chatId: string, topicId?: string): string 
 }
 
 export function formatIdentityVariant(identity: ImIdentity): string {
-  const parts: string[] = [];
-  if (identity.chat_title) parts.push(identity.chat_title);
-  if (identity.sender_name) parts.push(identity.sender_name);
-  if (parts.length === 0) {
-    parts.push(identity.sender_id || identity.chat_id);
-  }
-  return parts.join(' · ');
+  const channel = formatIdentityChannel(identity.chat_id, identity.topic_id);
+  const sender = identity.sender_name ?? identity.sender_id;
+  return `${channel} · ${sender}`;
+}
+
+export function isBindingAdmittedInbound(
+  binding: ImBinding,
+  policy: ImPolicy,
+): boolean {
+  if (!policy.allowed || !binding.enabled) return false;
+  if (binding.session_enabled === false) return false;
+  return binding.input_enabled ?? true;
+}
+
+export function isBindingAdmittedOutbound(
+  binding: ImBinding,
+  policy: ImPolicy,
+): boolean {
+  if (!policy.allowed || !binding.enabled) return false;
+  if (binding.session_enabled === false) return false;
+  return binding.output_enabled ?? true;
+}
+
+export function findSendMessageRow(
+  response?: OptionalCapabilitySessionResponse,
+) {
+  return response?.rows.find((row) => row.id === 'send_message');
 }

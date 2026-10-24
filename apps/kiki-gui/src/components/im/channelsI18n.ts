@@ -1,6 +1,6 @@
 import { useI18n as useBaseI18n } from '../../i18n';
 
-export const channelsI18nDict = {
+export const channelsI18nDict: Record<'en' | 'zh', Record<string, string>> = {
   en: {
     'st.im.channels': 'Channels',
     'st.im.addBinding': '+ Bind',
@@ -8,8 +8,14 @@ export const channelsI18nDict = {
     'st.im.toolBadge': 'Tool',
     'st.im.personaDefault': 'Default Persona',
     'st.im.sm.personaActive': 'Persona message mode active · default fanout {count} out',
+    'st.im.sm.personaOff': 'Persona message mode disabled (session off)',
     'st.im.sm.sessionActive': 'Session override active (hot-loaded) · fanout {count} out',
     'st.im.sm.defaultOff': 'Standard thread default off · enable to hot-load tool',
+    'st.im.sm.globalActive': 'Global default active · fanout {count} out',
+    'st.im.sm.hostLocked': 'Tool disabled by host policy (locked)',
+    'st.im.sm.hardOff': 'Tool disallowed by profile / workspace rules',
+    'st.im.sm.loading': 'Loading tool capabilities…',
+    'st.im.sm.unresolved': 'Tool capability status unreadable',
     'st.im.group.im': 'External IM channels (independent I/O switches)',
     'st.im.group.notify': 'Unidirectional notification channels (outbound only)',
     'st.im.dir.in': 'in',
@@ -44,6 +50,13 @@ export const channelsI18nDict = {
     'st.im.rebind.targetOwner': 'Target thread',
     'st.im.allowBorrowing': 'Allow borrowing unbound channels',
     'st.im.allowBorrowingHint': 'Allow SendMessage to explicitly target channels that are not bound to this session.',
+    'st.im.defaultSendMessage': 'Standard threads default enable SendMessage',
+    'st.im.channelDisabledHint': 'Channel disabled by policy or connection settings',
+    'st.im.notifyBound': 'Bound to thread',
+    'st.im.notifyCandidate': 'Candidate (unbound)',
+    'st.im.bindNotify': 'Bind to thread',
+    'st.im.removeNotify': 'Remove',
+    'st.im.testBinding.partial': 'Partially delivered: {delivered} sent, {pending} unconfirmed',
   },
   zh: {
     'st.im.channels': '通信信道',
@@ -52,8 +65,14 @@ export const channelsI18nDict = {
     'st.im.toolBadge': '工具',
     'st.im.personaDefault': '默认角色',
     'st.im.sm.personaActive': '角色消息模式已开启 · 默认扇出 {count} 出',
+    'st.im.sm.personaOff': '角色消息模式已停用（本会话关闭）',
     'st.im.sm.sessionActive': '本会话已开启 (热加载) · 扇出 {count} 出',
     'st.im.sm.defaultOff': '普通线程默认关 · 开启后热加载工具',
+    'st.im.sm.globalActive': '全局默认已开启 · 扇出 {count} 出',
+    'st.im.sm.hostLocked': '已被宿主策略锁定禁用',
+    'st.im.sm.hardOff': '已被执行配置或工作区规则显式禁用',
+    'st.im.sm.loading': '正在获取工具准入状态…',
+    'st.im.sm.unresolved': '工具准入状态不可读',
     'st.im.group.im': '外部 IM 信道（输入 / 输出可独立开关）',
     'st.im.group.notify': '单向推送信道（仅出站）',
     'st.im.dir.in': '入',
@@ -88,15 +107,22 @@ export const channelsI18nDict = {
     'st.im.rebind.targetOwner': '转入目标',
     'st.im.allowBorrowing': '允许借用未绑定信道发送',
     'st.im.allowBorrowingHint': '允许 SendMessage 显式指定投递未绑定到当前会话的全局可用信道。',
+    'st.im.defaultSendMessage': '普通线程默认启用主动消息工具',
+    'st.im.channelDisabledHint': '信道已被全局策略或连接设置禁用',
+    'st.im.notifyBound': '已绑定到本线程',
+    'st.im.notifyCandidate': '候选推送渠道（未绑定）',
+    'st.im.bindNotify': '绑定到本线程',
+    'st.im.removeNotify': '移除',
+    'st.im.testBinding.partial': '部分成功：已投递 {delivered} 条，{pending} 条未确认',
   },
-} as const;
+};
 
 export function useChannelsI18n() {
   const { locale, t: baseT, tp, time, setLocale } = useBaseI18n();
 
   const t = (key: string, params?: Record<string, string | number>) => {
-    const dict = (channelsI18nDict as Record<string, Record<string, string>>)[locale] || channelsI18nDict.en;
-    const template = dict[key] || channelsI18nDict.en[key as keyof typeof channelsI18nDict.en] || baseT(key as any, params);
+    const dict = channelsI18nDict[locale] || channelsI18nDict.en;
+    const template = dict[key] || channelsI18nDict.en[key] || baseT(key as any, params);
     if (!params) return template;
     return template.replaceAll(/\{(\w+)\}/g, (raw: string, name: string) => {
       const value = params[name];

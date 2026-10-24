@@ -618,7 +618,8 @@ export function Rail({
       <SessionChannelsRail
         sessionId={state.sessionId}
         sessionTitle={session?.title}
-        personaId={session?.persona_id}
+        personaId={session?.agent_config?.persona?.name ? session.agent_config.profile : undefined}
+        personaName={session?.agent_config?.persona?.name}
         onOpenSettings={() => { void navigate('/settings/notifications'); }}
       />
     </div>
