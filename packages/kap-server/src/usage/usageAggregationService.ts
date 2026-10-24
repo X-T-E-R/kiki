@@ -1829,6 +1829,28 @@ export class UsageAggregationService {
       const stored = keys.size === 0 ? new Map<string, FoldBucketView>() : await fold.buckets([...keys]);
       const proved = [...stored.values()].filter((bucket): bucket is FoldBucketView => bucket !== undefined && typeof bucket.key === 'string');
       if (proved.length !== keys.size || proved.some((bucket) => bucket.turnAgents !== true || bucket.sessions.some((session) => !Array.isArray(session.agents)))) return;
+      for (const bucket of proved) {
+        let changed = false;
+        let uniqueTurns = 0;
+        for (const session of bucket.sessions) {
+          for (const entry of session.agents ?? []) {
+            const seen = new Set<number>();
+            const unique: number[] = [];
+            for (const id of entry.turnIds) if (!seen.has(id)) { seen.add(id); unique.push(id); }
+            if (unique.length !== entry.turnIds.length) {
+              entry.turnIds.length = 0;
+              for (const id of unique) entry.turnIds.push(id);
+              changed = true;
+            }
+            uniqueTurns += unique.length;
+          }
+        }
+        if (bucket.sessionsTruncated !== true && uniqueTurns !== bucket.turnCount) {
+          bucket.turnCount = uniqueTurns;
+          changed = true;
+        }
+        if (changed) await fold.putBucket(bucket);
+      }
       const rowsByScope = new Map<string, FoldedUsageRecord[]>();
       const agentsBySession = new Map<string, UsageProjectionAgent[]>();
       for (const agent of agents) {

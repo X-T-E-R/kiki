@@ -127,7 +127,8 @@ export class UsageRangeFold {
           session.turnIds.splice(index < 0 ? session.turnIds.length : index, 0, record.turnId!);
           if (session.turnIds.length > this.turnLimit) session.turnIds.pop();
         }
-        if (turnIsNew) agent.turnIds.push(record.turnId!);
+        if (turnIsNew && agent.turnIds.includes(record.turnId!)) bucket!.turnCount -= 1;
+        else if (turnIsNew) agent.turnIds.push(record.turnId!);
       }
     }
     const ops: WriteOp[] = [...changed].map(([key, value]) => ({ kind: 'put', collection: this.collection, key, value, columns: value === true ? undefined : { view: value.kind === 'group' ? 1 : 2 } }));
@@ -142,6 +143,10 @@ export class UsageRangeFold {
 
   buckets(keys: readonly string[]): Promise<Map<string, FoldBucketView>> {
     return this.query.getMany<BucketRow>(this.collection, keys.map((key) => foldKey(`bucket:${key}`)));
+  }
+
+  putBucket(bucket: FoldBucketView): Promise<void> {
+    return this.query.put(this.collection, foldKey(`bucket:${bucket.key}`), { kind: 'bucket', ...bucket }, { columns: { view: 2 } });
   }
 }
 
