@@ -801,8 +801,9 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
     expect(shaped.map((entry) => entry.name)).not.toContain(SELECT_TOOLS_TOOL_NAME);
   });
 
-  it('shapeHistory returns the identical array', () => {
+  it('shapeHistory returns the identical array for a registered tool', () => {
     const h = createHarness();
+    registerMcp(h, new StubMcpTool(MCP_ALPHA));
     h.contextMemory.history.push(userMessage('a'), schemaMessage(MCP_ALPHA));
     const messages = h.contextMemory.get();
     expect(h.sut.shapeHistory(messages)).toBe(messages);
@@ -810,6 +811,8 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
 
   it('shapeHistory removes loaded schemas when the profile disables them', () => {
     const h = createHarness();
+    registerMcp(h, new StubMcpTool(MCP_ALPHA));
+    registerMcp(h, new StubMcpTool(MCP_BETA));
     h.contextMemory.history.push(schemaMessage(MCP_ALPHA, MCP_BETA), userMessage('keep'));
     activeToolNames = new Set([MCP_BETA]);
 
@@ -1287,8 +1290,15 @@ describe('AgentToolSelectService executor interception', () => {
       tools: [{ name: tool.name, description: tool.description, parameters: tool.parameters }] });
     const initial = JSON.stringify(h.sut.shapeTools(h.registry.list()));
     await first.dispose();
-    expect(h.sut.shapeHistory(h.contextMemory.get())).toBe(h.contextMemory.get());
+    expect(h.sut.shapeHistory(h.contextMemory.get()).flatMap((message) => message.tools ?? [])).toEqual([]);
+    expect(h.contextMemory.get().flatMap((message) => message.tools ?? []).map((tool) => tool.name)).toEqual([MCP_ALPHA]);
+    expect(h.sut.load([MCP_ALPHA])).toEqual({ toLoad: [], alreadyAvailable: [], unknown: [MCP_ALPHA] });
+    expect(h.sut.isLoadable(MCP_ALPHA)).toBe(false);
+    expect(h.sut.shapeTools(h.registry.list()).map((tool) => tool.name)).not.toContain(MCP_ALPHA);
+    expect(h.sut.loadableToolsAnnouncement()).toContain(`<tools_removed>\n${MCP_ALPHA}\n</tools_removed>`);
     disposables.add(h.registry.register(new StubMcpTool(MCP_ALPHA), { source: 'mcp' }));
+    expect(h.sut.shapeHistory(h.contextMemory.get())).toBe(h.contextMemory.get());
+    expect(h.sut.load([MCP_ALPHA]).alreadyAvailable).toEqual([MCP_ALPHA]);
     expect(JSON.stringify(h.sut.shapeTools(h.registry.list()))).toBe(initial);
     expect(h.sut.loadableToolsAnnouncement()).toBeUndefined();
     expect(h.sut.drainPendingToolSchemas()).toBeUndefined();
