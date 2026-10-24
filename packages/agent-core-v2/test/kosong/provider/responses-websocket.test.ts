@@ -35,6 +35,17 @@ const capabilities = readFileSync(
   new URL('./fixtures/responses-ws-capabilities.json', import.meta.url),
   'utf8',
 ).trim();
+const capabilitiesV2File = readFileSync(
+  new URL('./fixtures/capabilities-v2.default.json', import.meta.url),
+  'utf8',
+);
+const capabilitiesV2Object = JSON.parse(capabilitiesV2File) as RawObject;
+const capabilitiesV2 = JSON.stringify(capabilitiesV2Object);
+const connectionRetiringFile = readFileSync(
+  new URL('./fixtures/connection-retiring.json', import.meta.url),
+  'utf8',
+);
+const connectionRetiringObject = JSON.parse(connectionRetiringFile) as RawObject;
 
 type RawObject = Record<string, unknown>;
 type Frame = { connection: number; body: RawObject; wire: string };
@@ -54,7 +65,7 @@ const gateways: Gateway[] = [];
 
 async function createGateway(
   onMessage: MessageHandler,
-  capabilityHeader: string | null = capabilities,
+  capabilityHeader: string | null | (() => string) = capabilities,
 ): Promise<Gateway> {
   const httpRequests: RawObject[] = [];
   const http = createServer((request, response) => {
@@ -75,7 +86,7 @@ async function createGateway(
 
   server.on('headers', (headers) => {
     if (capabilityHeader !== null) {
-      headers.push(`X-Responses-WebSocket-Capabilities: ${capabilityHeader}`);
+      headers.push(`X-Responses-WebSocket-Capabilities: ${typeof capabilityHeader === 'function' ? capabilityHeader() : capabilityHeader}`);
     }
   });
 
@@ -201,6 +212,24 @@ function sendUnsupportedUpstream(socket: WebSocket): void {
     status: 502,
     type: 'error',
   }));
+}
+
+const TERMINAL_WRITE_MARGIN_SECONDS = 15;
+
+function v2Capabilities(overrides: RawObject = {}): string {
+  return JSON.stringify({ ...capabilitiesV2Object, ...overrides });
+}
+
+function retiringFrame(mutate?: (frame: RawObject) => void): string {
+  const frame = JSON.parse(connectionRetiringFile) as RawObject;
+  mutate?.(frame);
+  return JSON.stringify(frame);
+}
+
+function defaultLaneRetiring(): string {
+  return retiringFrame((frame) => {
+    delete frame['stream_id'];
+  });
 }
 
 async function* asAsyncIterable(values: readonly unknown[]): AsyncGenerator<unknown> {
@@ -882,4 +911,418 @@ it('does not rewrite or commit a request whose supplied canonical input disagree
     await collect(await transport.create(openai, { model: 'synthetic', input: [...alleged, ...responseOutput('answer')] }));
     expect(gateway.frames[2]?.body['previous_response_id']).toBeUndefined();
   } finally { transport.dispose(); }
+});
+
+describe('Responses WebSocket v2 retirement', () => {
+  it('falls back to one full HTTP request when the capability version is unknown and sends no response.create', async () => {
+    const unknown = JSON.stringify({ ...JSON.parse(capabilities) as RawObject, version: 3 });
+    const gateway = await createGateway(() => undefined, unknown);
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      const result = await generate(productionProvider(gateway.baseUrl), 'fresh instructions', [], [user('full question')], undefined, { responsesTransport: transport });
+      expect(result.message.content).toEqual([{ type: 'text', text: 'HTTP fallback' }]);
+      expect(gateway.frames).toHaveLength(0);
+      expect(gateway.httpRequests).toHaveLength(1);
+      expect(gateway.httpRequests[0]?.['previous_response_id']).toBeUndefined();
+      expect(gateway.httpRequests[0]?.['instructions']).toBe('fresh instructions');
+    } finally { transport.dispose(); }
+  });
+
+  it('retains the verified v2 native prefix for full HTTP when the new socket advertises an unknown version before create', async () => {
+    let handshakes = 0;
+    const gateway = await createGateway((_body, socket) => {
+      sendCompleted(socket, 'resp_kept', 'kept');
+      socket.close(1000, 'retired');
+    }, () => ++handshakes === 1 ? capabilitiesV2 : v2Capabilities({ version: 3 }));
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      const provider = productionProvider(gateway.baseUrl);
+      const history = [user('question')];
+      const first = await generate(provider, '', [], history, undefined, { responsesTransport: transport });
+      history.push(first.message, user('next'));
+      const second = await generate(provider, '', [], history, undefined, { responsesTransport: transport });
+      expect(second.message.content).toEqual([{ type: 'text', text: 'HTTP fallback' }]);
+      expect(gateway.connections).toHaveLength(2);
+      expect(gateway.frames).toHaveLength(1);
+      expect(gateway.httpRequests).toHaveLength(1);
+      expect(gateway.httpRequests[0]?.['previous_response_id']).toBeUndefined();
+      expect(gateway.httpRequests[0]?.['input']).toEqual([
+        ...(gateway.frames[0]!.body['input'] as unknown[]), ...responseOutput('kept'),
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'next' }] },
+      ]);
+    } finally { transport.dispose(); }
+  });
+
+  it('rejects a v2 socket I/O connection_lifetime_seconds that is not admission plus active plus 15 before response.create', async () => {
+    const gateway = await createGateway(() => undefined, v2Capabilities({
+      connection_lifetime_seconds: (capabilitiesV2Object['connection_lifetime_seconds'] as number) + 1,
+    }));
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      await expect(transport.create(client(gateway.baseUrl), {
+        input: [{ role: 'user', type: 'message' }],
+        model: 'gpt-test',
+        stream: true,
+      })).rejects.toThrow(/connection_lifetime_seconds must equal admission_lifetime_seconds \+ active_turn_timeout_seconds \+ 15/);
+      expect(gateway.frames).toHaveLength(0);
+    } finally { transport.dispose(); }
+  });
+
+  it('accepts version 2 drain_active, sends a delta, and full-rebases native items after its terminal and peer close', async () => {
+    const gateway = await createGateway((_body, socket, connection) => {
+      sendCompleted(socket, `resp_${connection}_${gateway.frames.length}`, 'answer');
+      if (gateway.frames.length === 2) socket.close(1000, 'retired');
+    }, capabilitiesV2);
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      const provider = productionProvider(gateway.baseUrl);
+      const history = [user('question')];
+      const first = await generate(provider, 'synthetic instructions', [], history, undefined, { responsesTransport: transport });
+      expect(first.message.content).toEqual([{ type: 'text', text: 'answer' }]);
+      expect(transport.capabilities).toMatchObject(capabilitiesV2Object);
+      history.push(first.message, user('next'));
+      const second = await generate(provider, 'synthetic instructions', [], history, undefined, { responsesTransport: transport });
+      expect(gateway.connections).toHaveLength(1);
+      expect(gateway.frames[1]?.body['previous_response_id']).toBe('resp_0_1');
+      expect(gateway.frames[1]?.body['input']).toEqual([{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'next' }] }]);
+      history.push(second.message, user('after close'));
+      const third = await generate(provider, 'synthetic instructions', [], history, undefined, { responsesTransport: transport });
+      expect(third.message.content).toEqual([{ type: 'text', text: 'answer' }]);
+      expect(gateway.connections).toHaveLength(2);
+      expect(gateway.frames[2]?.body['previous_response_id']).toBeUndefined();
+      expect(gateway.frames[2]?.body['input']).toEqual([
+        ...(gateway.frames[0]!.body['input'] as unknown[]), ...responseOutput('answer'),
+        ...(gateway.frames[1]!.body['input'] as unknown[]), ...responseOutput('answer'),
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'after close' }] },
+      ]);
+      expect(gateway.httpRequests).toHaveLength(0);
+    } finally { transport.dispose(); }
+  });
+
+  it.each([
+    { lane: 'queued', frame: connectionRetiringFile },
+    { lane: 'default', frame: defaultLaneRetiring() },
+  ])('sends one full HTTP request after a trusted not-executed connection_retiring frame on the $lane lane without a second response.create', async ({ frame }) => {
+    expect(connectionRetiringObject).toMatchObject({
+      type: 'error',
+      status: 400,
+      execution: 'not_executed',
+      stream_id: 'synthetic-queued-lane',
+      error: {
+        type: 'invalid_request_error',
+        code: 'connection_retiring',
+        param: '',
+      },
+    });
+    expect(JSON.parse(defaultLaneRetiring())).not.toHaveProperty('stream_id');
+    let requests = 0;
+    const gateway = await createGateway((_body, socket) => {
+      requests += 1;
+      if (requests === 1) sendCompleted(socket, 'resp_kept', 'first');
+      else socket.send(frame);
+    }, capabilitiesV2);
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      const provider = productionProvider(gateway.baseUrl);
+      const history = [user('question')];
+      const first = await generate(provider, 'synthetic instructions', [], history, undefined, { responsesTransport: transport });
+      history.push(first.message, user('next'));
+      const second = await generate(provider, 'synthetic instructions', [], history, undefined, { responsesTransport: transport });
+      expect(second.message.content).toEqual([{ type: 'text', text: 'HTTP fallback' }]);
+      expect(gateway.frames).toHaveLength(2);
+      expect(gateway.frames[1]?.connection).toBe(0);
+      expect(gateway.frames[1]?.body['previous_response_id']).toBe('resp_kept');
+      expect(gateway.connections).toHaveLength(1);
+      expect(gateway.httpRequests).toHaveLength(1);
+      expect(gateway.httpRequests[0]?.['previous_response_id']).toBeUndefined();
+      const httpInput = gateway.httpRequests[0]?.['input'] as RawObject[];
+      expect(httpInput.length).toBeGreaterThan((gateway.frames[1]?.body['input'] as unknown[]).length);
+      expect(httpInput.some((item) => item['type'] === 'message' && item['role'] === 'assistant')).toBe(true);
+      await new Promise<void>((resolve) => setTimeout(resolve, 30));
+      expect(gateway.closedConnections).toContain(0);
+    } finally { transport.dispose(); }
+  });
+
+  it('does not replay connection_retiring after partial output, a nested mark, or a missing execution', async () => {
+    const partial = await createGateway((_body, socket) => {
+      sendCreated(socket, 'resp_partial');
+      socket.send(JSON.stringify({ type: 'response.output_text.delta', delta: 'partial', item_id: 'm', content_index: 0, output_index: 0 }));
+      socket.send(connectionRetiringFile);
+    }, capabilitiesV2);
+    const partialTransport = new ResponsesWebSocketTransport();
+    let observed = '';
+    try {
+      await expect(generate(productionProvider(partial.baseUrl), '', [], [user('question')], {
+        onMessagePart: (part) => { if (part.type === 'text') observed += part.text; },
+      }, { responsesTransport: partialTransport })).rejects.toThrow();
+      expect(observed).toBe('partial');
+      expect(partial.frames).toHaveLength(1);
+      expect(partial.httpRequests).toHaveLength(0);
+    } finally { partialTransport.dispose(); }
+
+    const untrusted = [
+      retiringFrame((frame) => {
+        (frame['error'] as RawObject)['execution'] = frame['execution'];
+        delete frame['execution'];
+      }),
+      retiringFrame((frame) => {
+        delete frame['execution'];
+      }),
+      retiringFrame((frame) => {
+        delete (frame['error'] as RawObject)['code'];
+        frame['code'] = 'connection_retiring';
+      }),
+    ];
+    for (const frame of untrusted) {
+      const gateway = await createGateway((_body, socket) => socket.send(frame), capabilitiesV2);
+      const transport = new ResponsesWebSocketTransport();
+      try {
+        await expect(generate(productionProvider(gateway.baseUrl), '', [], [user('question')], undefined, { responsesTransport: transport })).rejects.toThrow();
+        expect(gateway.frames).toHaveLength(1);
+        expect(gateway.httpRequests).toHaveLength(0);
+      } finally { transport.dispose(); }
+    }
+  });
+
+  it('keeps a turn only because its terminal was consumed when the peer socket closes immediately afterwards', async () => {
+    const gateway = await createGateway((_body, socket) => {
+      if (gateway.frames.length === 1) {
+        sendCompleted(socket, 'resp_kept', 'kept');
+        socket.close();
+      } else sendCompleted(socket, 'resp_next', 'next');
+    }, capabilitiesV2);
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      const provider = productionProvider(gateway.baseUrl);
+      const history = [user('question')];
+      const first = await generate(provider, 'synthetic instructions', [], history, undefined, { responsesTransport: transport });
+      expect(first.message.content).toEqual([{ type: 'text', text: 'kept' }]);
+      expect(first.message.role).toBe('assistant');
+      history.push(first.message, user('next'));
+      const second = await generate(provider, 'synthetic instructions', [], history, undefined, { responsesTransport: transport });
+      expect(second.message.content).toEqual([{ type: 'text', text: 'next' }]);
+      expect(gateway.frames).toHaveLength(2);
+      expect(gateway.frames[1]?.connection).toBe(1);
+      expect(gateway.frames[1]?.body['previous_response_id']).toBeUndefined();
+      expect(gateway.frames[1]?.body['input']).toEqual([
+        ...(gateway.frames[0]!.body['input'] as unknown[]), ...responseOutput('kept'),
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'next' }] },
+      ]);
+      expect(gateway.httpRequests).toHaveLength(0);
+    } finally { transport.dispose(); }
+  });
+
+  it.each(['trusted retirement', 'top-level code only', 'unknown execution'] as const)('keeps native full input across a new socket and permits HTTP only for %s', async (mode) => {
+    const gateway = await createGateway((_body, socket) => {
+      if (gateway.frames.length === 1) {
+        sendCompleted(socket, 'resp_kept', 'kept');
+        socket.close(1000, 'retired');
+      } else socket.send(retiringFrame((frame) => {
+        if (mode === 'top-level code only') {
+          delete (frame['error'] as RawObject)['code'];
+          frame['code'] = 'connection_retiring';
+        } else if (mode === 'unknown execution') frame['execution'] = 'unknown';
+      }));
+    }, capabilitiesV2);
+    const transport = new ResponsesWebSocketTransport();
+    try {
+      const provider = productionProvider(gateway.baseUrl);
+      const history = [user('question')];
+      const first = await generate(provider, '', [], history, undefined, { responsesTransport: transport });
+      history.push(first.message, user('next'));
+      const pending = generate(provider, '', [], history, undefined, { responsesTransport: transport });
+      if (mode === 'trusted retirement') {
+        const result = await pending;
+        expect(result.message.content).toEqual([{ type: 'text', text: 'HTTP fallback' }]);
+      } else await expect(pending).rejects.toThrow();
+      const fullInput = [
+        ...(gateway.frames[0]!.body['input'] as unknown[]), ...responseOutput('kept'),
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'next' }] },
+      ];
+      expect(gateway.frames).toHaveLength(2);
+      expect(gateway.frames[1]?.connection).toBe(1);
+      expect(gateway.frames[1]?.body['input']).toEqual(fullInput);
+      expect(gateway.frames[1]?.body['previous_response_id']).toBeUndefined();
+      expect(gateway.httpRequests).toHaveLength(mode === 'trusted retirement' ? 1 : 0);
+      if (mode === 'trusted retirement') {
+        expect(gateway.httpRequests[0]?.['input']).toEqual(fullInput);
+        expect(gateway.httpRequests[0]?.['previous_response_id']).toBeUndefined();
+      }
+    } finally { transport.dispose(); }
+  });
+
+  it('R1: commits an adapter terminal consumed asynchronously across the default hard deadline and full-rebases next', async () => {
+    let notifySent!: () => void;
+    const sent = new Promise<void>((resolve) => { notifySent = resolve; });
+    let held: WebSocket | undefined;
+    const gateway = await createGateway((_body, socket) => {
+      if (gateway.frames.length === 2) {
+        held = socket;
+        sendCreated(socket, 'resp_second');
+        notifySent();
+      } else sendCompleted(socket, `resp_${gateway.frames.length}`, 'kept');
+    }, capabilitiesV2);
+    const transport = new ResponsesWebSocketTransport();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const provider = productionProvider(gateway.baseUrl);
+      const history = [user('question')];
+      const first = await generate(provider, '', [], history, undefined, { responsesTransport: transport });
+      history.push(first.message, user('second'));
+      await vi.advanceTimersByTimeAsync(1_799_999);
+      const second = generate(provider, '', [], history, {
+        onMessagePart: async () => {
+          held!.close(1000, 'retired');
+          await vi.advanceTimersByTimeAsync(15_002);
+          expect(transport.capabilities).toBeUndefined();
+        },
+      }, { responsesTransport: transport });
+      await sent;
+      await vi.advanceTimersByTimeAsync(599_999);
+      held!.send(JSON.stringify({ type: 'response.completed', response: {
+        id: 'resp_second', status: 'completed', output: responseOutput('kept'),
+      } }));
+      const result = await second;
+      expect(result.message.content).toEqual([{ type: 'text', text: 'kept' }]);
+      history.push(result.message, user('third'));
+      await generate(provider, '', [], history, undefined, { responsesTransport: transport });
+      expect(gateway.frames[1]?.body['previous_response_id']).toBeUndefined();
+      expect(gateway.frames[1]?.body['input']).toHaveLength(3);
+      expect(gateway.frames[2]?.connection).toBe(1);
+      expect(gateway.frames[2]?.body['previous_response_id']).toBeUndefined();
+      expect(gateway.frames[2]?.body['input']).toEqual([
+        ...(gateway.frames[0]!.body['input'] as unknown[]), ...responseOutput('kept'),
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'second' }] },
+        ...responseOutput('kept'),
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'third' }] },
+      ]);
+      expect(gateway.httpRequests).toHaveLength(0);
+    } finally { transport.dispose(); vi.useRealTimers(); }
+  });
+
+  it.each(['cancel', 'dispose', 'close'] as const)('R1: explicit %s still fails after the socket hard deadline during terminal consumption', async (action) => {
+    const gateway = await createGateway((_body, socket) => {
+      socket.send(JSON.stringify({ type: 'response.completed', response: {
+        id: 'resp_done', status: 'completed', output: responseOutput('kept'),
+      } }));
+    }, capabilitiesV2);
+    const transport = new ResponsesWebSocketTransport();
+    const controller = new AbortController();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      await expect(generate(productionProvider(gateway.baseUrl), '', [], [user('question')], {
+        onMessagePart: async () => {
+          await vi.advanceTimersByTimeAsync(2_415_000);
+          if (action === 'cancel') controller.abort();
+          else transport[action]();
+        },
+      }, { responsesTransport: transport, signal: controller.signal })).rejects.toThrow();
+      expect(gateway.frames).toHaveLength(1);
+      expect(gateway.httpRequests).toHaveLength(0);
+    } finally { transport.dispose(); vi.useRealTimers(); }
+  });
+
+  it('R3: segments a valid long v2 lifetime without early close or native timer overflow', async () => {
+    const hardMs = 2_147_500_000;
+    const gateway = await createGateway((_body, socket) => sendCreated(socket, 'resp_hold'), v2Capabilities({
+      admission_lifetime_seconds: 2_147_484,
+      active_turn_timeout_seconds: 1,
+      connection_lifetime_seconds: hardMs / 1000,
+    }));
+    const transport = new ResponsesWebSocketTransport();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'hrtime', 'Date'] });
+    try {
+      const stream = await transport.create(client(gateway.baseUrl), { model: 'synthetic', input: [] });
+      await vi.advanceTimersByTimeAsync(2_147_483_647);
+      expect(transport.capabilities?.connection_lifetime_seconds).toBe(hardMs / 1000);
+      await vi.advanceTimersByTimeAsync(hardMs - 2_147_483_647 - 1);
+      expect(transport.capabilities).toBeDefined();
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(collect(stream)).rejects.toMatchObject({ code: 'responses_websocket_closed_before_terminal' });
+      expect(transport.capabilities).toBeUndefined();
+      expect(gateway.frames).toHaveLength(1);
+      expect(gateway.httpRequests).toHaveLength(0);
+    } finally { transport.dispose(); vi.useRealTimers(); }
+  });
+
+  it('does not close an in-flight v1 socket at connection_lifetime_seconds', async () => {
+    const short = JSON.stringify({ ...JSON.parse(capabilities) as RawObject, connection_lifetime_seconds: 3 });
+    let held: WebSocket | undefined;
+    const gateway = await createGateway((_body, socket) => {
+      held = socket;
+      if (gateway.frames.length === 1) sendCreated(socket, 'resp_hold');
+    }, short);
+    const transport = new ResponsesWebSocketTransport();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const stream = await transport.create(client(gateway.baseUrl), {
+        input: [{ role: 'user', type: 'message' }],
+        model: 'gpt-test',
+        stream: true,
+      });
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(gateway.closedConnections).toEqual([]);
+      sendCompleted(held!, 'resp_hold', 'kept');
+      const events = await collect(stream);
+      expect(events.map((value) => object(value)['type'])).toContain('response.completed');
+    } finally { transport.dispose(); vi.useRealTimers(); }
+  });
+
+  it('keeps an in-flight v2 socket open at admission and does not reuse it after the socket I/O lifetime once the terminal was consumed', async () => {
+    const admission = capabilitiesV2Object['admission_lifetime_seconds'] as number;
+    const active = capabilitiesV2Object['active_turn_timeout_seconds'] as number;
+    let held: WebSocket | undefined;
+    const gateway = await createGateway((_body, socket) => {
+      held = socket;
+      if (gateway.frames.length === 1) sendCreated(socket, 'resp_hold');
+      else sendCompleted(socket, 'resp_next', 'next');
+    }, capabilitiesV2);
+    const transport = new ResponsesWebSocketTransport();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const openai = client(gateway.baseUrl);
+      const input = [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'question' }] }];
+      const stream = await transport.create(openai, { model: 'synthetic', input });
+      await vi.advanceTimersByTimeAsync(admission * 1000);
+      expect(gateway.closedConnections).toEqual([]);
+      held!.send(JSON.stringify({
+        content_index: 0,
+        delta: 'kept',
+        item_id: 'msg_1',
+        output_index: 0,
+        type: 'response.output_text.delta',
+      }));
+      held!.send(JSON.stringify({
+        response: { id: 'resp_hold', output: responseOutput('kept'), status: 'completed' },
+        type: 'response.completed',
+      }));
+      const events = await collect(stream);
+      expect(events.map((value) => object(value)['type'])).toContain('response.completed');
+      await vi.advanceTimersByTimeAsync(active * 1000 + TERMINAL_WRITE_MARGIN_SECONDS * 1000);
+      await collect(await transport.create(openai, { model: 'synthetic', input }));
+      expect(gateway.frames[1]?.connection).toBe(1);
+      expect(gateway.frames[1]?.body['previous_response_id']).toBeUndefined();
+    } finally { transport.dispose(); vi.useRealTimers(); }
+  });
+
+  it('closes the client socket at connection_lifetime_seconds when no terminal arrived', async () => {
+    const hard = capabilitiesV2Object['connection_lifetime_seconds'] as number;
+    const gateway = await createGateway((_body, socket) => {
+      sendCreated(socket, 'resp_hold');
+    }, capabilitiesV2);
+    const transport = new ResponsesWebSocketTransport();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const stream = await transport.create(client(gateway.baseUrl), {
+        input: [{ role: 'user', type: 'message' }],
+        model: 'gpt-test',
+        stream: true,
+      });
+      await vi.advanceTimersByTimeAsync(hard * 1000);
+      await expect(collect(stream)).rejects.toMatchObject({ code: 'responses_websocket_closed_before_terminal' });
+      vi.useRealTimers();
+      await new Promise<void>((resolve) => setTimeout(resolve, 30));
+      expect(gateway.closedConnections).toContain(0);
+    } finally { transport.dispose(); vi.useRealTimers(); }
+  });
 });

@@ -20,6 +20,7 @@ type GatewayError = {
   param: string | null | undefined;
   status: number | undefined;
   execution: string | undefined;
+  retirementNotExecuted: boolean;
 };
 
 type Baseline = {
@@ -48,6 +49,7 @@ type PreparedCanonical = {
 type ActiveConnection = {
   socket: ResponsesWS;
   stream: AsyncIterableIterator<unknown>;
+  interruptionGeneration: number;
 };
 
 type PrimedResponse = {
@@ -59,6 +61,7 @@ type PrimedResponse = {
 const CAPABILITIES_HEADER = 'x-responses-websocket-capabilities';
 const READY_STATE_OPEN = 1;
 const RESPONSE_CREATE = 'response.create';
+const TERMINAL_WRITE_MARGIN_SECONDS = 15;
 const UNSUPPORTED_CONTROLS = [
   'background',
   'conversation',
@@ -180,7 +183,8 @@ function validateCapabilities(value: unknown): ResponsesWebSocketCapabilities {
     );
   }
 
-  if (object['version'] !== 1) {
+  const version = object['version'];
+  if (version !== 1 && version !== 2) {
     throw new ResponsesWebSocketError(
       'Responses WebSocket capability version is unsupported.',
       'responses_ws_capabilities_unsupported',
@@ -251,16 +255,15 @@ function validateCapabilities(value: unknown): ResponsesWebSocketCapabilities {
     }
   }
 
-  return Object.freeze({
+  const shared = {
     ...object,
-    version: 1,
     events: Object.freeze([...events]),
-    generate: true,
-    generate_false: false,
-    background: false,
-    steering: false,
-    cancel: false,
-    scheduling: 'connection_fifo',
+    generate: true as const,
+    generate_false: false as const,
+    background: false as const,
+    steering: false as const,
+    cancel: false as const,
+    scheduling: 'connection_fifo' as const,
     max_in_flight: object['max_in_flight'] as number,
     max_named_streams: object['max_named_streams'] as number,
     max_queued: object['max_queued'] as number,
@@ -269,11 +272,46 @@ function validateCapabilities(value: unknown): ResponsesWebSocketCapabilities {
     max_state_bytes: object['max_state_bytes'] as number,
     state_ttl_seconds: object['state_ttl_seconds'] as number,
     connection_lifetime_seconds: object['connection_lifetime_seconds'] as number,
-    state_scope: 'connection',
-    previous_response_id: true,
-    native_responses_upstream_required: true,
-    state_miss: 'previous_response_not_found',
-    state_miss_execution: 'not_executed',
+    state_scope: 'connection' as const,
+    previous_response_id: true as const,
+    native_responses_upstream_required: true as const,
+    state_miss: 'previous_response_not_found' as const,
+    state_miss_execution: 'not_executed' as const,
+  };
+
+  if (version === 1) return Object.freeze({ ...shared, version: 1 as const });
+
+  if (object['lifetime_mode'] !== 'drain_active') {
+    throw new ResponsesWebSocketError(
+      'Responses WebSocket capability lifetime_mode is unsupported.',
+      'responses_ws_capabilities_unsupported',
+      { safeHttpFallback: true },
+    );
+  }
+  if (!positiveInteger(object['admission_lifetime_seconds']) || !positiveInteger(object['active_turn_timeout_seconds'])) {
+    throw new ResponsesWebSocketError(
+      'Responses WebSocket capability admission_lifetime_seconds and active_turn_timeout_seconds must be positive integers.',
+      'responses_ws_capabilities_unsupported',
+      { safeHttpFallback: true },
+    );
+  }
+  const admission = object['admission_lifetime_seconds'];
+  const active = object['active_turn_timeout_seconds'];
+  const bound = admission + active + TERMINAL_WRITE_MARGIN_SECONDS;
+  if (!Number.isSafeInteger(bound) || shared.connection_lifetime_seconds !== bound) {
+    throw new ResponsesWebSocketError(
+      'Responses WebSocket connection_lifetime_seconds must equal admission_lifetime_seconds + active_turn_timeout_seconds + 15.',
+      'responses_ws_capabilities_unsupported',
+      { safeHttpFallback: true },
+    );
+  }
+
+  return Object.freeze({
+    ...shared,
+    version: 2 as const,
+    lifetime_mode: 'drain_active' as const,
+    admission_lifetime_seconds: admission,
+    active_turn_timeout_seconds: active,
   });
 }
 
@@ -314,7 +352,8 @@ function readGatewayError(error: unknown): GatewayError {
     typeof nested['type'] === 'string' && typeof nested['message'] === 'string' &&
     Number.isInteger(event['status'])
     ? readString(event['execution']) : undefined;
-  return { code, message, param, status, execution };
+  const retirementNotExecuted = execution === 'not_executed' && nested?.['code'] === 'connection_retiring';
+  return { code, message, param, status, execution, retirementNotExecuted };
 }
 
 function completedResponse(event: RawObject): { responseId: string; output: readonly unknown[] } | undefined {
@@ -481,7 +520,10 @@ function socketReady(socket: ResponsesWS): boolean {
 }
 
 export interface ResponsesWebSocketCapabilities {
-  readonly version: 1;
+  readonly version: 1 | 2;
+  readonly lifetime_mode?: 'drain_active';
+  readonly admission_lifetime_seconds?: number;
+  readonly active_turn_timeout_seconds?: number;
   readonly events: readonly string[];
   readonly generate: true;
   readonly generate_false: false;
@@ -496,6 +538,13 @@ export interface ResponsesWebSocketCapabilities {
   readonly max_queued_bytes: number;
   readonly max_state_bytes: number;
   readonly state_ttl_seconds: number;
+  /**
+   * Hard lifetime of this socket's I/O, in seconds. Version 2 sets it to
+   * admission_lifetime_seconds + active_turn_timeout_seconds + 15.
+   * Reaching it closes the socket only. It is not persistence cleanup,
+   * producer join, or slot release, and it does not by itself prove that a
+   * generation succeeded or was not executed.
+   */
   readonly connection_lifetime_seconds: number;
   readonly state_scope: 'connection';
   readonly previous_response_id: true;
@@ -552,11 +601,24 @@ export class ResponsesWebSocketError extends Error {
   }
 }
 
+/**
+ * Runs one Responses turn at a time through the official SDK. Version 2 uses
+ * drain_active admission and a socket-only hard lifetime; a terminal already
+ * delivered to the adapter remains valid after normal consumption, even if
+ * the peer or lifetime timer closes the socket while the consumer is awaiting.
+ * Explicit cancellation, close, and disposal still interrupt that consumption.
+ * A closed socket loses its previous-response baseline. A verified, bounded
+ * native prefix remains available for full input on the next version 2 socket,
+ * with the same request identity and an exactly matching canonical prefix.
+ * Retirement permits HTTP recovery only before any response event, with integer
+ * status, nested error.type/code/message, and top-level execution:not_executed.
+ */
 export class ResponsesWebSocketTransport {
   private _socket: ResponsesWS | null = null;
   private _socketKey: string | undefined;
   private _capabilities: ResponsesWebSocketCapabilities | undefined;
   private _baseline: Baseline | null = null;
+  private _fullRebase: Baseline | null = null;
   private _baselineTimer: ReturnType<typeof setTimeout> | undefined;
   private _lifetimeTimer: ReturnType<typeof setTimeout> | undefined;
   private _lifetimeExpired = false;
@@ -566,6 +628,8 @@ export class ResponsesWebSocketTransport {
   private _retirePromise: Promise<void> | undefined;
   private _resolveRetire: (() => void) | undefined;
   private readonly _nativeOutput = new WeakMap<object, readonly unknown[]>();
+  private readonly _expiredSockets = new WeakSet<ResponsesWS>();
+  private _interruptionGeneration = 0;
 
   get capabilities(): ResponsesWebSocketCapabilities | undefined {
     return this._capabilities;
@@ -573,6 +637,7 @@ export class ResponsesWebSocketTransport {
 
   close(): void {
     if (this._disposed) return;
+    this._interruptionGeneration += 1;
     this._closeCurrent();
   }
 
@@ -593,6 +658,7 @@ export class ResponsesWebSocketTransport {
     if (this._disposed) return;
     this._disposed = true;
     this._retired = true;
+    this._fullRebase = null;
     this._closeCurrent();
     this._resolveRetire?.();
     this._resolveRetire = undefined;
@@ -624,9 +690,10 @@ export class ResponsesWebSocketTransport {
   }
 
   commitResponse(responseId: string, canonicalOutput: readonly unknown[]): void {
-    const baseline = this._baseline;
+    const baseline = this._baseline ?? this._fullRebase;
     if (this._disposed || this._inFlight || baseline?.responseId !== responseId ||
-      baseline.projectedOutput === undefined || this._socket === null || !socketReady(this._socket)) return;
+      baseline.projectedOutput === undefined ||
+      (baseline !== this._fullRebase && (this._socket === null || !socketReady(this._socket)))) return;
     const projected = fingerprintInput(baseline.projectedOutput);
     const actual = fingerprintInput(canonicalOutput);
     if (projected === undefined || actual === undefined || !sameFingerprint(projected, actual)) return;
@@ -662,12 +729,21 @@ export class ResponsesWebSocketTransport {
     let abortHandler: (() => void) | undefined;
     let sendAttempted = false;
     try {
+      const rebase = this._fullRebase;
+      const fullRebaseInput = rebase?.canonicalFingerprint !== undefined && canonical.inputFingerprint !== undefined &&
+        rebase.connectionKey === connectionKey && rebase.identityKey === canonical.identityKey &&
+        rebase.wireIdentityKey === canonical.wireIdentityKey && !canonical.forceFull &&
+        canonical.input !== undefined && isPrefix(rebase.canonicalFingerprint, canonical.inputFingerprint)
+        ? [...rebase.prefix, ...canonical.input.slice(rebase.canonicalPrefix!.length)] : undefined;
+      if (fullRebaseInput !== undefined) options.onFullInput?.(fullRebaseInput);
       const connection = await this._ensureConnection(client, headers, connectionKey, options.signal);
       const useDelta = this._canUseDelta(canonical, connectionKey, params);
       const baseline = this._baseline;
       if (baseline?.canonicalFingerprint !== undefined && canonical.inputFingerprint !== undefined &&
         canonical.input !== undefined && isPrefix(baseline.canonicalFingerprint, canonical.inputFingerprint)) {
         params['input'] = [...baseline.prefix, ...canonical.input.slice(baseline.canonicalPrefix!.length)];
+      } else if (this._capabilities?.version === 2 && fullRebaseInput !== undefined) {
+        params['input'] = fullRebaseInput;
       }
       if (Array.isArray(params['input'])) options.onFullInput?.(params['input']);
       const body = useDelta
@@ -760,7 +836,7 @@ export class ResponsesWebSocketTransport {
     signal: AbortSignal | undefined,
   ): Promise<ActiveConnection> {
     if (this._socket !== null && this._socketKey === connectionKey && socketReady(this._socket)) {
-      return { socket: this._socket, stream: this._socket.stream() };
+      return { socket: this._socket, stream: this._socket.stream(), interruptionGeneration: this._interruptionGeneration };
     }
 
     if (this._socket !== null) this._closeCurrent();
@@ -829,8 +905,8 @@ export class ResponsesWebSocketTransport {
         );
         this._capabilities = capabilities;
         this._socketKey = connectionKey;
-        this._armConnectionLifetime(socket, capabilities.connection_lifetime_seconds);
-        return { socket, stream };
+        this._armConnectionLifetime(socket, capabilities);
+        return { socket, stream, interruptionGeneration: this._interruptionGeneration };
       }
     } catch (error) {
       this._closeCurrent(socket);
@@ -850,8 +926,9 @@ export class ResponsesWebSocketTransport {
     const code = details.code ?? 'responses_websocket_error';
     const safeHttpFallback =
       allowSafeHttpFallback &&
-      (code === 'unsupported_upstream_format' || code === 'unsupported_prompt_policy') &&
-      details.execution === 'not_executed';
+      details.execution === 'not_executed' &&
+      (code === 'unsupported_upstream_format' || code === 'unsupported_prompt_policy' ||
+        (code === 'connection_retiring' && details.retirementNotExecuted));
     const suffix = details.param === undefined || details.param === null ? '' : ` (param: ${details.param})`;
     return new ResponsesWebSocketError(`${code}: ${details.message}${suffix}`, code, {
       cause: error,
@@ -947,6 +1024,7 @@ export class ResponsesWebSocketTransport {
     initialRetriedStateMiss: boolean,
   ): AsyncGenerator<unknown> {
     const iterator = connection.stream;
+    const capabilities = this._capabilities;
     let pendingRecord: SDKStreamRecord | undefined = initialRecord;
     let delta = initialDelta;
     let retriedStateMiss = initialRetriedStateMiss;
@@ -972,7 +1050,7 @@ export class ResponsesWebSocketTransport {
         }
 
         if (record.type === 'message') {
-          if (this._socket !== connection.socket || !socketReady(connection.socket)) {
+          if (this._socket !== connection.socket) {
             throw new ResponsesWebSocketError(
               'Responses WebSocket closed before the response was committed.',
               'responses_websocket_closed_before_terminal',
@@ -987,13 +1065,17 @@ export class ResponsesWebSocketTransport {
           completion = completedResponse(event);
           if (completion !== undefined) completion.output = this._nativeOutput.get(event) ?? completion.output;
           yield record.message;
-          if (this._socket !== connection.socket || !socketReady(connection.socket)) {
+          if (signal?.aborted) throw createAbortError();
+          const lifetimeClosedAfterTerminal = terminal !== undefined && this._expiredSockets.has(connection.socket) &&
+            !this._disposed && this._interruptionGeneration === connection.interruptionGeneration;
+          if (this._socket !== connection.socket && !lifetimeClosedAfterTerminal) {
             throw new ResponsesWebSocketError(
               'Responses WebSocket closed before the response was committed.',
               'responses_websocket_closed_before_terminal',
             );
           }
           if (terminal !== undefined) {
+            const peerClosed = !socketReady(connection.socket);
             const nativeInput: unknown[] | undefined = Array.isArray(fullParams['input']) ? fullParams['input'] : undefined;
             const prefix = completion === undefined || nativeInput === undefined
               ? undefined : [...nativeInput, ...completion.output];
@@ -1002,14 +1084,14 @@ export class ResponsesWebSocketTransport {
             const canonicalPrefix = outputProjection === undefined && canonical.input !== undefined && completion !== undefined
               ? [...canonical.input, ...completion.output] : undefined;
             const stateBytes = prefix === undefined ? undefined : jsonBytes(prefix);
-            const capabilities = this._capabilities;
             if (
+              (!peerClosed || capabilities?.version === 2) &&
               terminal === 'completed' && completion !== undefined && canonical.input !== undefined &&
               canonical.inputFingerprint !== undefined && prefix !== undefined &&
               projectedOutput !== undefined && stateBytes !== undefined && capabilities !== undefined &&
               stateBytes <= capabilities.max_state_bytes
             ) {
-              this._storeBaseline({
+              const baseline: Baseline = {
                 responseId: completion.responseId,
                 prefix,
                 canonicalInput: canonical.input.slice(),
@@ -1020,9 +1102,15 @@ export class ResponsesWebSocketTransport {
                 identityKey: canonical.identityKey,
                 wireIdentityKey: canonical.wireIdentityKey,
                 connectionKey,
-              });
-              keepConnection = true;
-            } else if (terminal === 'completed' && completion !== undefined) {
+              };
+              if (capabilities.version === 2) this._fullRebase = baseline;
+              if (!peerClosed) {
+                this._storeBaseline(baseline);
+                keepConnection = true;
+              } else {
+                this._clearBaseline();
+              }
+            } else if (!peerClosed && terminal === 'completed' && completion !== undefined) {
               this._clearBaseline();
               keepConnection = true;
             } else {
@@ -1092,18 +1180,37 @@ export class ResponsesWebSocketTransport {
     }
   }
 
-  private _armConnectionLifetime(socket: ResponsesWS, lifetimeSeconds: number): void {
+  private _armConnectionLifetime(socket: ResponsesWS, capabilities: ResponsesWebSocketCapabilities): void {
     if (this._lifetimeTimer !== undefined) clearTimeout(this._lifetimeTimer);
     this._lifetimeExpired = false;
-    this._lifetimeTimer = setTimeout(() => {
+    const forceOnExpiry = capabilities.version === 2;
+    const expire = (): void => {
       if (this._socket !== socket) return;
-      if (this._inFlight) {
-        this._lifetimeExpired = true;
+      this._lifetimeExpired = true;
+      if (this._inFlight && !forceOnExpiry) return;
+      if (forceOnExpiry) this._expiredSockets.add(socket);
+      this._closeCurrent(socket);
+    };
+    const maxDelay = 2_147_483_647;
+    const delay = capabilities.connection_lifetime_seconds * 1000;
+    if (!forceOnExpiry || delay <= maxDelay) {
+      this._lifetimeTimer = setTimeout(expire, delay);
+      unrefTimer(this._lifetimeTimer);
+      return;
+    }
+    const deadline = process.hrtime.bigint() + BigInt(capabilities.connection_lifetime_seconds) * 1_000_000_000n;
+    const schedule = (): void => {
+      if (this._socket !== socket) return;
+      const remaining = deadline - process.hrtime.bigint();
+      if (remaining <= 0n) {
+        expire();
         return;
       }
-      this._closeCurrent(socket);
-    }, lifetimeSeconds * 1000);
-    unrefTimer(this._lifetimeTimer);
+      const milliseconds = (remaining + 999_999n) / 1_000_000n;
+      this._lifetimeTimer = setTimeout(schedule, Number(milliseconds > BigInt(maxDelay) ? BigInt(maxDelay) : milliseconds));
+      unrefTimer(this._lifetimeTimer);
+    };
+    schedule();
   }
 
   private _storeBaseline(baseline: Baseline): void {
