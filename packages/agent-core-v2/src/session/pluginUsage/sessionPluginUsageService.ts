@@ -44,16 +44,14 @@ export class SessionPluginUsageService extends Service implements ISessionPlugin
       const next: PluginUsageSnapshot = { ...previous, revision: previous.revision + 1, overrides, applyState: 'pending', errors: [] };
       await this.persist(next);
       this.application = next;
-      const applied = await this.usage.applySession(next, info?.id ?? id);
-      if (applied.applyState === 'failed') {
-        const restored: PluginUsageSnapshot = { ...previous, revision: next.revision + 1, applyState: 'pending', errors: applied.errors };
-        await this.persist(restored);
-        this.application = await this.usage.applySession(restored, info?.id ?? id);
-      } else this.application = applied;
-      return this.application;
+      return { snapshot: next, id: info?.id ?? id };
     });
     this.writes = write;
-    return write;
+    return write.then(async ({ snapshot, id }) => {
+      const applied = await this.usage.applySession(snapshot, id);
+      if (this.application?.revision === applied.revision) this.application = applied;
+      return applied;
+    });
   }
   private persist(snapshot: PluginUsageSnapshot): Promise<void> {
     return this.store.set('session-plugin-usage', this.session.sessionId, { revision: snapshot.revision, overrides: snapshot.overrides });

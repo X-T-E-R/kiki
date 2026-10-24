@@ -28,6 +28,7 @@ const SEND_MESSAGE_TOOL_NAME = 'SendMessage';
 
 export class AgentToolActivationService extends Service implements IAgentToolActivationService {
   declare readonly _serviceBrand: undefined;
+  private closing = false;
 
   private readonly registrations = new Map<AgentToolContribution, IDisposable>();
 
@@ -69,12 +70,22 @@ export class AgentToolActivationService extends Service implements IAgentToolAct
     );
     const capability = this.optionalCapabilityPolicy();
     if (capability !== undefined) this._register(capability.onDidChange(() => { this.refreshConditionalRecords(); }));
+    this._register(this.toolPolicyGate.onDidChange(() => { this.refreshConditionalRecords(); }));
+    this._register(this.toolRegistry.registerPreparation(() => this.activate()));
   }
 
   async activate(): Promise<void> {
+    if (this.closing) return;
     await this.shippedProfiles.ready;
+    if (this.closing) return;
     await this.awaitCapabilityDocument();
-    this.activateRecords(this.contributions.items);
+    if (this.closing) return;
+    this.refreshConditionalRecords();
+  }
+
+  override dispose(): void | Promise<void> {
+    this.closing = true;
+    return super.dispose();
   }
 
   private optionalCapabilityPolicy(): IOptionalCapabilityPolicy | undefined {
@@ -167,16 +178,16 @@ export class AgentToolActivationService extends Service implements IAgentToolAct
   }
 
   private refreshRuntimeRecords(): void {
-    for (const record of this.contributions.items) {
-      if (!this.runtimeAllows(record)) this.deactivateRecord(record);
-    }
-    this.activateRecords(this.contributions.items);
+    this.refreshConditionalRecords();
   }
 
   private refreshConditionalRecords(): void {
+    if (this.closing) return;
     this.instantiationService.invokeFunction((accessor) => {
       for (const record of this.contributions.items) {
-        if (record.options.when?.(accessor) === false || !this.policyService.isToolActiveForDisclosure(record.options.name, record.options.source ?? 'builtin')) {
+        if (!this.runtimeAllows(record) || record.options.when?.(accessor) === false ||
+          !isToolActive({ disallowedTools: this.toolPolicyGate.disabledTools }, record.options.name, record.options.source ?? 'builtin') ||
+          !this.policyService.isToolActiveForDisclosure(record.options.name, record.options.source ?? 'builtin')) {
           this.deactivateRecord(record);
         }
       }

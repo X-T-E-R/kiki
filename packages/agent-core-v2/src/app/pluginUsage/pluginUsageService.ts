@@ -81,7 +81,8 @@ export class PluginUsageService extends Service implements IPluginUsageService {
       const overrides = { ...stored.overrides };
       if (input.override === 'inherit') delete overrides[pluginId];
       else overrides[pluginId] = input.override === 'on';
-      if (JSON.stringify(overrides) === JSON.stringify(stored.overrides)) return this.read(input.workspaceId);
+      if (JSON.stringify(overrides) === JSON.stringify(stored.overrides) &&
+        this.application.get(input.workspaceId)?.applyState !== 'failed') return this.read(input.workspaceId);
       const next = { revision: stored.revision + 1, overrides };
       await this.store.set('plugin-usage', input.workspaceId, next);
       this.documents.set(input.workspaceId, Promise.resolve(next));
@@ -94,21 +95,7 @@ export class PluginUsageService extends Service implements IPluginUsageService {
         application.errors = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected').map((result) => String(result.reason));
         if (this.application.get(input.workspaceId) !== application) return;
         application.applyState = application.errors.length === 0 ? 'applied' : 'failed';
-        if (application.errors.length > 0) {
-          const recovery = this.writes.catch(() => undefined).then(async () => {
-            if (this.application.get(input.workspaceId) !== application) return;
-            const restored = { revision: next.revision + 1, overrides: stored.overrides };
-            await this.store.set('plugin-usage', input.workspaceId, restored);
-            this.documents.set(input.workspaceId, Promise.resolve(restored));
-            application.revision = restored.revision;
-            const recoveryWork: Promise<unknown>[] = [];
-            this.changed.fire({ workspaceId: input.workspaceId, pluginId, revision: restored.revision, waitUntil: promise => { recoveryWork.push(promise); } });
-            await Promise.allSettled(recoveryWork);
-            if (this.application.get(input.workspaceId) === application) this.applied.fire(await this.read(input.workspaceId));
-          });
-          this.writes = recovery;
-          await recovery;
-        } else this.applied.fire(await this.read(input.workspaceId));
+        this.applied.fire(await this.read(input.workspaceId));
       });
       return this.read(input.workspaceId);
     });

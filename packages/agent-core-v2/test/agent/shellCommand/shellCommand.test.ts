@@ -193,6 +193,8 @@ describe('AgentShellCommandService', () => {
     const emptyRegistry: IAgentToolRegistryService = {
       _serviceBrand: undefined,
       register: () => ({ dispose: () => {} }),
+      registerPreparation: () => ({ dispose: () => {} }),
+      prepare: async () => {},
       list: () => [],
       listReferences: () => [],
       resolve: () => undefined,

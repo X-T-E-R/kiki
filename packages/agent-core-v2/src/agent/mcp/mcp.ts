@@ -37,6 +37,7 @@ export interface McpSessionCapability {
   readonly connection: 'enabled' | 'disabled' | 'connecting' | 'connected' | 'failed' | 'unavailable';
   readonly override: McpSessionOverrideValue;
   readonly error?: string;
+  readonly errorCode?: 'tool_catalog_refresh_failed';
 }
 
 export interface IAgentMcpService {

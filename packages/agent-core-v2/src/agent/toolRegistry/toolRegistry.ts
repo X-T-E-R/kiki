@@ -21,6 +21,8 @@ export interface IAgentToolRegistryService {
   readonly _serviceBrand: undefined;
 
   register(tool: ExecutableTool, options?: ToolRegistrationOptions): IDisposable;
+  registerPreparation(prepare: () => Promise<void>): IDisposable;
+  prepare(signal?: AbortSignal): Promise<void>;
   list(): readonly ToolInfo[];
   listReferences(): readonly ToolReference[];
   resolve(name: string): ExecutableTool | undefined;

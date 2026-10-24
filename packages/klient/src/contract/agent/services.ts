@@ -258,6 +258,7 @@ export const mcpSessionCapabilitySchema = z.object({
   connection: z.enum(['enabled', 'disabled', 'connecting', 'connected', 'failed', 'unavailable']),
   override: z.enum(['on', 'off', 'inherit']),
   error: z.string().optional(),
+  errorCode: z.literal('tool_catalog_refresh_failed').optional(),
 });
 
 export const agentMcpContract = {

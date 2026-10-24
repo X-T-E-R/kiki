@@ -34,8 +34,12 @@ function setup(workspace: string, usage?: IPluginUsageService, workspaceId = 'wo
     disclosure: 'deferred' as const,
   } }]), execute: vi.fn(async () => ({ output: 'created' })) } as unknown as IPluginHostService;
   const tools = new Map<string, ExecutableTool>();
-  const registry = { register: (tool: ExecutableTool) => { tools.set(tool.name, tool); return { dispose: () => { tools.delete(tool.name); } }; },
-    resolve: (name: string) => tools.get(name) } as unknown as IAgentToolRegistryService;
+  const registry = {
+    register: (tool: ExecutableTool) => { tools.set(tool.name, tool); return { dispose: () => { tools.delete(tool.name); } }; },
+    registerPreparation: () => ({ dispose: () => {} }),
+    prepare: async () => {},
+    resolve: (name: string) => tools.get(name),
+  } as unknown as IAgentToolRegistryService;
   const runtime = new FakeRuntime({ workspaceId: 'w', runtimeId: 'local', generation: '1' },
     { pathClass: process.platform === 'win32' ? 'win32' : 'posix' });
   const fs = new HostFileSystem();

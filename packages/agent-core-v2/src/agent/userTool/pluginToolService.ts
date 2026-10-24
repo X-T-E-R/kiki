@@ -2,6 +2,7 @@ import { mediaGenerateInputSchema, mediaRequestSchema, type MediaRequest } from 
 import { createDecorator } from '#/_base/di/instantiation';
 import { IAgentPluginMediaService, mediaInputRefs } from '#/agent/pluginMedia/pluginMedia';
 import { dispose, type IDisposable } from '#/_base/di/lifecycle';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Service } from '#/_base/di/service';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
@@ -28,8 +29,11 @@ export const IAgentPluginToolService = createDecorator<IAgentPluginToolService>(
 
 export class AgentPluginToolService extends Service implements IAgentPluginToolService {
   declare readonly _serviceBrand: undefined;
-  private readonly registrations = new Map<string, IDisposable>();
+  private readonly registrations = new Map<string, { readonly disposable: IDisposable; readonly definition: PluginTool; readonly pluginId: string }>();
   private refreshQueue: Promise<void> = Promise.resolve();
+  private readonly refreshes = new Set<Promise<void>>();
+  private revision = 0;
+  private closing = false;
 
   constructor(
     @IPluginService private readonly plugins: IPluginService,
@@ -52,23 +56,56 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
         (event.sessionId !== undefined && event.sessionId !== this.session?.sessionId)) return;
       event.waitUntil(this.queueRefresh());
     }));
-    void this.queueRefresh();
+    this._register(this.registry.registerPreparation(async () => {
+      try { await this.ready(); }
+      catch (error) { onUnexpectedError(error); }
+    }));
+    void this.queueRefresh().catch(() => undefined);
   }
 
-  ready(): Promise<void> { return this.refreshQueue; }
+  async ready(): Promise<void> {
+    let pending: Promise<void>;
+    do {
+      pending = this.refreshQueue;
+      await pending;
+    } while (pending !== this.refreshQueue);
+  }
 
   private queueRefresh(): Promise<void> {
-    this.refreshQueue = this.refreshQueue.catch(() => undefined).then(() => this.refresh());
-    return this.refreshQueue;
+    const revision = ++this.revision;
+    const work = this.refresh(revision);
+    this.refreshQueue = work;
+    this.refreshes.add(work);
+    void work.then(() => this.refreshes.delete(work), () => this.refreshes.delete(work));
+    return work;
   }
 
-  private async refresh(): Promise<void> {
+  private async refresh(revision: number): Promise<void> {
+    const admission = await Promise.all([...this.registrations].map(async ([name, entry]) => ({
+      name,
+      entry,
+      allowed: this.usage === undefined || await this.usage.allows(this.session?.workspaceId, entry.pluginId, this.session?.sessionId),
+    })));
+    if (this.closing || revision !== this.revision) return;
+    for (const { name, entry, allowed } of admission) {
+      if (allowed) continue;
+      void entry.disposable.dispose();
+      this.registrations.delete(name);
+    }
     const definitions = await this.hosts.list();
-    await dispose(this.registrations.values());
-    this.registrations.clear();
+    const wanted = new Map<string, { readonly pluginId: string; readonly definition: PluginTool }>();
     for (const { pluginId, definition } of definitions) {
       if (this.usage !== undefined && !await this.usage.allows(this.session?.workspaceId, pluginId, this.session?.sessionId)) continue;
-      const name = `plugin__${pluginId.replaceAll('-', '_')}__${definition.name}`;
+      wanted.set(`plugin__${pluginId.replaceAll('-', '_')}__${definition.name}`, { pluginId, definition });
+    }
+    if (this.closing || revision !== this.revision) return;
+    for (const [name, entry] of this.registrations) {
+      if (JSON.stringify(wanted.get(name)?.definition) === JSON.stringify(entry.definition)) continue;
+      void entry.disposable.dispose();
+      this.registrations.delete(name);
+    }
+    if (this.closing || revision !== this.revision) return;
+    for (const [name, { pluginId, definition }] of wanted) {
       if (this.registry.resolve(name) !== undefined) continue;
       const tool: ExecutableTool = {
         name,
@@ -76,7 +113,8 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
         parameters: definition.parameters ?? { type: 'object', properties: {} },
         resolveExecution: (args) => this.resolveExecution(name, pluginId, definition, args),
       };
-      this.registrations.set(name, this._register(this.registry.register(tool, { source: 'plugin', disclosure: definition.disclosure })));
+      const disposable = this._register(this.registry.register(tool, { source: 'plugin', disclosure: definition.disclosure }));
+      this.registrations.set(name, { disposable, definition, pluginId });
     }
   }
 
@@ -177,7 +215,10 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
   }
 
   override async dispose(): Promise<void> {
-    await dispose(this.registrations.values());
+    this.closing = true;
+    this.revision++;
+    await Promise.allSettled(this.refreshes);
+    await dispose([...this.registrations.values()].map((entry) => entry.disposable));
     this.registrations.clear();
     await super.dispose();
   }
