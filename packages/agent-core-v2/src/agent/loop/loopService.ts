@@ -1767,7 +1767,14 @@ function isZeroOutputCompletion(response: AgentLLMRequestFinish): boolean {
   if (response.message.partial === true) return false;
   if (response.providerFinishReason !== 'completed') return false;
   if (response.message.toolCalls.length > 0) return false;
-  return response.message.content.every((part) => isVacuousContentPart(part));
+  return response.message.content.every(isZeroOutputContentPart);
+}
+
+function isZeroOutputContentPart(part: ContentPart): boolean {
+  if (part.type === 'think') {
+    return part.think.trim().length === 0 && (part.reasoningDetails?.length ?? 0) === 0;
+  }
+  return isVacuousContentPart(part);
 }
 
 const THINKING_ONLY_PROVIDER_ERROR_CODE = 'antigravity_thinking_only';

@@ -636,21 +636,35 @@ describe('zero-output continuation', () => {
     }
   });
 
-  it('does not use the switch for a signature without thinking text', async () => {
+  it('continues a signature-only empty think as zero output when the switch is on', async () => {
+    const create = scriptedCreate([signatureOnlyStream(), textStream('Visible answer')]);
+    const local = anthropicAgent(create, { initialConfig: { loopControl: { zeroOutputContinuation: true } } });
+    try {
+      const terminal = await (await prompt(local)).completion;
+      expect(terminal).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 2 } });
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(tailRole(create.mock.calls[1]?.[0])).toBe('user');
+      expect(promptCount(create.mock.calls[1]?.[0], CONTINUE)).toBe(1);
+      expect(storedThinking(local)).toContainEqual({ type: 'think', think: '', encrypted: SIGNATURE });
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it('does not continue a signature-only stream that never reaches a normal stop', async () => {
     const stream = async function* () {
-      yield { type: 'message_start', message: { id: 'signature-only', usage: { input_tokens: 4, output_tokens: 0 } } };
+      yield { type: 'message_start', message: { id: 'signature-eof', usage: { input_tokens: 4, output_tokens: 0 } } };
       yield { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } };
       yield { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: SIGNATURE } };
       yield { type: 'content_block_stop', index: 0 };
-      yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 2 } };
-      yield { type: 'message_stop' };
     };
     const create = scriptedCreate([stream, textStream('should not run')]);
     const local = anthropicAgent(create, { initialConfig: { loopControl: { zeroOutputContinuation: true } } });
     try {
-      await (await prompt(local)).completion;
+      const terminal = await (await prompt(local)).completion;
+      expect(terminal.state).toBe('failed');
       expect(create).toHaveBeenCalledTimes(1);
-      expect(storedThinking(local)).toContainEqual({ type: 'think', think: '', encrypted: SIGNATURE });
       expect(continued(local)).toBe(false);
       await local.expectResumeMatches();
     } finally {
@@ -895,6 +909,17 @@ function gatewayNoUsableAnswerStream(code = 'antigravity_thinking_only'): () => 
     yield { type: 'content_block_stop', index: 0 };
     yield { type: 'message_delta', delta: { stop_reason: null }, usage: { output_tokens: 5 } };
     yield { type: 'error', error: { type: 'api_error', code, message: NO_USABLE_ANSWER } };
+  };
+}
+
+function signatureOnlyStream(): () => AsyncGenerator<Record<string, unknown>> {
+  return async function* signatureOnly() {
+    yield { type: 'message_start', message: { id: 'signature-only', usage: { input_tokens: 4, output_tokens: 0 } } };
+    yield { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } };
+    yield { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: SIGNATURE } };
+    yield { type: 'content_block_stop', index: 0 };
+    yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } };
+    yield { type: 'message_stop' };
   };
 }
 

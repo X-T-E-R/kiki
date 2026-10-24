@@ -538,7 +538,7 @@ A partial update changes only the fields you send. `POST /api/config` with `{ "m
 | `max_steps_per_turn` | `integer` | — | Maximum steps per turn; unset or `0` means unlimited |
 | `max_attempts_per_step` | `integer` | `5` | Maximum total attempts for a failing step, including the initial attempt |
 | `thinking_only_continuation` | `boolean` | `true` | Send one explicit `Continue.` user message when a model ends normally with only non-empty thinking |
-| `zero_output_continuation` | `boolean` | `false` | Send one explicit `Continue.` user message when a normal completion has no thinking, visible text, or tool call |
+| `zero_output_continuation` | `boolean` | `false` | Send one explicit `Continue.` user message when a normal completion has no thinking text, visible text, or tool call |
 | `reserved_context_size` | `integer` | `50000` | Tokens reserved above the automatic compaction point for model output |
 | `auto_compact` | `string` | — | Global default compaction point as a percentage of the model's usable context (e.g. `"85%"`). This layer does not accept token counts; model, profile, and session settings use positive integer tokens |
 | `compaction_trigger_ratio` | `number` | `0.85` | Legacy trigger ratio, used only when no `auto_compact` is set at any layer |
@@ -555,7 +555,7 @@ When a provider confirms a normal end with non-empty thinking but no answer, too
 
 Set `[loop_control] thinking_only_continuation = false` to disable this automatic message. Changes apply at the next step boundary. Google models that reject a trailing model turn keep their existing original-snapshot retry; it shares the same one-recovery-per-turn budget and is not disabled by this setting. Google `CONTINUATION` stops still require a continuation token that this SDK cannot send.
 
-`zero_output_continuation` stays off when omitted or set to `false`. Set `[loop_control] zero_output_continuation = true` to send one `Continue.` user message after a provider confirms a normal completion that contains no thinking, including a signature or other hidden reasoning with no visible text, no visible answer, and no tool call. The choice applies at the next step boundary. That follow-up is one model request in the same turn; a second empty response or a failure stops the turn and is not retried as a connection or rate-limit error. Responses that already contain thinking, visible text, or a tool call do not use this switch. `thinking_only_continuation` stays on by default and is not changed by it. Cancellation and ordinary request errors stay on their existing paths.
+`zero_output_continuation` stays off when omitted or set to `false`. Set `[loop_control] zero_output_continuation = true` to send one `Continue.` user message after a provider confirms a normal completion whose thinking text, visible answer, and tool calls are all empty. A signature attached to empty thinking is not thinking content, and token counts do not decide this. Non-empty thinking text still uses `thinking_only_continuation`. The choice applies at the next step boundary. That follow-up is one model request in the same turn; a second empty response or a failure stops the turn and is not retried as a connection or rate-limit error. Cancellation, provider errors, and a stream that ends without a normal stop stay on their existing paths.
 
 ### Continuity reminder settings
 

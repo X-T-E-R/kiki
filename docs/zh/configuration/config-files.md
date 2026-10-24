@@ -524,7 +524,7 @@ confirm = false
 | `max_steps_per_turn` | `integer` | — | 单轮最大步数；不设或设为 `0` 则无上限 |
 | `max_attempts_per_step` | `integer` | `5` | 单步失败后的最大总尝试次数（含首次尝试） |
 | `thinking_only_continuation` | `boolean` | `true` | 模型正常结束且只有非空思考时，显式发送一次 `Continue.` User 消息 |
-| `zero_output_continuation` | `boolean` | `false` | 正常结束且没有思考、可见正文和工具调用时，显式发送一次 `Continue.` User 消息 |
+| `zero_output_continuation` | `boolean` | `false` | 正常结束且没有思考文本、可见正文和工具调用时，显式发送一次 `Continue.` User 消息 |
 | `reserved_context_size` | `integer` | `50000` | 自动压缩点以上为模型输出预留的 token 数 |
 | `auto_compact` | `string` | — | 全局默认自动压缩点，按模型可用窗口写百分比，如 `"85%"`。全局不接受 token 数；模型、profile、会话用正整数 token |
 | `compaction_trigger_ratio` | `number` | `0.85` | 旧版触发比例，仅在各层都没有设置 `auto_compact` 时使用 |
@@ -541,7 +541,7 @@ confirm = false
 
 设置 `[loop_control] thinking_only_continuation = false` 可关闭这条自动消息，从下一个 step 边界起生效。拒绝尾部 Model 消息的 Google 模型仍保留原有的原始快照重试，它与显式续接共用每轮一次的恢复预算，不受该设置关闭。Google `CONTINUATION` 终态仍需此 SDK 无法发送的 continuation token。
 
-未配置或设为 `false` 时，`zero_output_continuation` 保持关闭。设为 `[loop_control] zero_output_continuation = true` 后，供应商确认正常结束，且没有思考（含只有签名或其它隐藏推理、没有可见正文的情况）、没有可见回答、也没有工具调用时，Kiki 会在同一轮发送一条 `Continue.` User 消息。该选择从下一个 step 边界起生效。这次续接是同一轮里的一次模型请求；第二次仍为空或请求失败时停止本轮，不按连接错误或限流重试。已经带有思考、可见正文或工具调用的响应不使用这个开关。`thinking_only_continuation` 默认仍为开启，不受这个开关影响。取消和普通请求错误仍走原有路径。
+未配置或设为 `false` 时，`zero_output_continuation` 保持关闭。设为 `[loop_control] zero_output_continuation = true` 后，供应商确认正常结束，且思考文本、可见回答和工具调用都为空时，Kiki 会在同一轮发送一条 `Continue.` User 消息。附在空思考上的签名不是思考内容，token 用量也不参与判断。非空思考文本仍走 `thinking_only_continuation`。该选择从下一个 step 边界起生效。这次续接是同一轮里的一次模型请求；第二次仍为空或请求失败时停止本轮，不按连接错误或限流重试。取消、供应商错误，以及没有正常停止终态的流，仍走原有路径。
 
 ### 连续性提醒设置
 
