@@ -218,31 +218,43 @@ describe('AgentExecutorRegistryService', () => {
     expect(registry.lastNegotiated('test')).toEqual({});
   });
 
-  it('projects typed capability catalog state without treating an unverified version as ready', () => {
+  it('projects typed capability catalog state without treating an unverified version as ready', async () => {
     const config = { ...configWith({}), get: <T>(domain: string) => domain === AGENT_EXECUTORS_SECTION ? ({ test: {
       protocol: 'acp-v1', command: 'test-acp', args: [],
     } }) as T : undefined as T };
-    const registry = new AgentExecutorRegistryService(config, processService, fs, bootstrap);
-    registry.recordNegotiated('test', '1.0', { models: ['one'], thinkingLevels: ['medium'] });
-    expect(registry.getExecutorCapabilityCatalog?.('test')).toMatchObject({
-      source: 'negotiated', version: '1.0',
-      models: { state: 'unknown' }, thinkingLevels: { state: 'unknown' },
-    });
-    expect(registry.getExecutorCapabilityCatalog?.('test', { version: '1.0' })).toMatchObject({
-      models: { state: 'ready', values: ['one'] }, thinkingLevels: { state: 'ready', values: ['medium'] },
-    });
-    expect(registry.getExecutorCapabilityCatalog?.('test', { version: '2.0' })).toBeUndefined();
-    registry.recordExecutorCapabilityCatalog?.({
-      executorId: 'test', descriptorRevision: registry.get('test')!.revision, version: '1.0',
-      source: 'cli_probe', provenance: 'read_only_cli_probe', observedAt: Date.now(),
-      models: { state: 'partial', values: ['one'], diagnostic: 'credential state is unknown' },
-      thinkingLevels: { state: 'unknown' },
-      context: { state: 'unknown' },
-      controls: { modelSwitch: { applicability: 'unknown', applyState: 'unknown' }, thinkingSwitch: { applicability: 'unknown', applyState: 'unknown' }, manualCompact: { applicability: 'unknown', applyState: 'unknown' } },
-    });
-    expect(registry.getExecutorCapabilityCatalog?.('test', { version: '1.0' })).toMatchObject({
-      models: { state: 'partial' }, thinkingLevels: { state: 'unknown' },
-    });
+    const ix = new TestInstantiationService();
+    ix.set(IConfigService, config);
+    ix.set(IHostProcessService, processService);
+    ix.set(IHostFileSystem, fs);
+    ix.set(IBootstrapService, bootstrap);
+    ix.stub(IAtomicTomlDocumentStore, {});
+    ix.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
+    try {
+      const registry = ix.get(IAgentExecutorRegistry);
+      if (registry.recordNegotiated === undefined) throw new Error('Expected executor capability recording.');
+      registry.recordNegotiated('test', '1.0', { models: ['one'], thinkingLevels: ['medium'], contextWindow: 200_000 });
+      expect(registry.getExecutorCapabilityCatalog?.('test')).toMatchObject({
+        source: 'negotiated', version: '1.0',
+        models: { state: 'unknown' }, thinkingLevels: { state: 'unknown' }, context: { state: 'unknown' },
+      });
+      expect(registry.getExecutorCapabilityCatalog?.('test')?.context.contextWindow).toBeUndefined();
+      expect(registry.getExecutorCapabilityCatalog?.('test', { version: '1.0' })).toMatchObject({
+        models: { state: 'ready', values: ['one'] }, thinkingLevels: { state: 'ready', values: ['medium'] },
+        context: { state: 'partial', contextWindow: 200_000 },
+      });
+      expect(registry.getExecutorCapabilityCatalog?.('test', { version: '2.0' })).toBeUndefined();
+      registry.recordExecutorCapabilityCatalog?.({
+        executorId: 'test', descriptorRevision: registry.get('test')!.revision, version: '1.0',
+        source: 'cli_probe', provenance: 'read_only_cli_probe', observedAt: Date.now(),
+        models: { state: 'partial', values: ['one'], diagnostic: 'credential state is unknown' },
+        thinkingLevels: { state: 'unknown' },
+        context: { state: 'unknown' },
+        controls: { modelSwitch: { applicability: 'unknown', applyState: 'unknown' }, thinkingSwitch: { applicability: 'unknown', applyState: 'unknown' }, manualCompact: { applicability: 'unknown', applyState: 'unknown' } },
+      });
+      expect(registry.getExecutorCapabilityCatalog?.('test', { version: '1.0' })).toMatchObject({
+        models: { state: 'partial' }, thinkingLevels: { state: 'unknown' },
+      });
+    } finally { await ix.dispose(); }
   });
 
   it('projects explicit AGY control contracts as fresh-binding or unsupported without inferring effort live support', () => {

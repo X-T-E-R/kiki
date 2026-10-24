@@ -258,6 +258,7 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
         ...cached.catalog,
         models: { state: 'unknown', diagnostic: 'Executor version has not been revalidated' },
         thinkingLevels: { state: 'unknown', diagnostic: 'Executor version has not been revalidated' },
+        context: { state: 'unknown', diagnostic: 'Executor version has not been revalidated' },
       };
     }
     if (stale) {
