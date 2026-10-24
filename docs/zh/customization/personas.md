@@ -62,7 +62,33 @@ room_budget = 12
 
 内置 `agent` profile 在消息模式中暴露 `SendMessage`，在 `reply` 轮次中不暴露。自定义 profile 如果显式设置了 `tools` 白名单，必须加入该工具；delivery 模式不会绕过 profile 权限。工具表在轮次内冻结，因此切换 delivery 会在下一轮生效。
 
-`SendMessage` 可以发给用户，也可以用 `to: "@名字"` 发给另一个角色。同名时使用角色 ID。交接可以唤醒已关闭的常驻对话，并计入每小时上限；相同投递键的重试不会再占一个名额。附件是从会话工作区、附加目录或角色自己的区域复制的不可变副本，不能任意读取文件系统路径。
+`SendMessage` 可以发给用户，也可以用 `to: "@名字"` 发给另一个角色。同名时使用角色 ID。交接可以唤醒已关闭的常驻对话，并计入每小时上限；相同投递键的重试不会再占一个名额。附件是从会话工作区、附加目录或角色自己的区域复制的不可变副本，不能任意读取文件系统路径。附件的 `kind` 可指定 `image`、`audio`、`voice` 或 `video` 投递意图；省略时仍按普通 `file` 投递。只发附件时可以不带正文：
+
+```json
+{
+  "attachments": [
+    { "path": "output/voice.ogg", "kind": "voice", "mime_type": "audio/ogg" }
+  ]
+}
+```
+
+## 连接会话信道
+
+发给用户的 `SendMessage` 会使用该会话启用的信道：名为 `internal` 的 Kiki 内部信道，以及已确认绑定的 IM 信道。内部信道默认开启，新增 IM 绑定不会把它关闭。HTTP 客户端可用 `rest.imSessions.channelViews(sessionId)` 查看信道，用 `setInternalChannel(sessionId, false)` 显式关闭内部信道，与 reply/message 模式分别控制。关闭不会删除历史消息或投递诊断。
+
+每个附件至少要有一个已启用信道支持，否则发送会报 `media_unsupported`；没有任何启用目标时会报 `no_destination`。只有部分信道支持某个附件时，Kiki 会向支持端发送，并在其它端提醒跳过了哪些媒体。收据的 `channels` 逐端返回 `delivered`、`unsupported`、`failed` 或 `unknown`；已投递的信道也可能在 `unsupported` 中列出跳过的类型。`unknown` 表示无法确认结果，平台可能已经接收，不要自动重发。
+
+`voice` 是明确的语音意图，不会静默降为文件。内部信道用音频播放器播放 `audio` 和 `voice`。Discord、Slack、Matrix 支持普通 `audio`，但不支持发送平台原生 `voice`：Discord 和 Slack 把音频作为附件上传，Matrix 使用 `m.audio`。Matrix 仅支持未加密房间，向加密房间发送明文会被拒绝。
+
+HTTP 客户端通过 `rest.imSessions.setupCatalog()` 和 `setup(...)` 配置这些连接。目录会返回各平台必填字段及实际能力：
+
+| 平台 | 必填字段 | 配置方式 |
+| --- | --- | --- |
+| Discord | `bot_token` | `discord_install` 根据 `application_id` 生成 Bot 邀请链接；还须在开发者后台启用 Message Content Intent。 |
+| Slack | `bot_token`、`app_token` | `slack_manifest` 创建 Socket Mode 应用；OAuth 可取得 Bot token，仍需单独提供应用级 `xapp` token。 |
+| Matrix | `homeserver`、`access_token` | `matrix_discover` 查询登录方式；可用 `matrix_sso_begin` / `matrix_sso_complete` 或 `matrix_password` 取得并保存 token。 |
+
+调用 `setup({ action: "save", provider_kind, fields })` 保存凭据时不会启动监听。接着用返回的 `provider_instance_id` 调用 `check` 和 `listen(id, true)`，在平台给 Bot 发一条消息，再把出现的发现项确认绑定到目标会话或角色。已有 Telegram、飞书、OneBot 和微信连接保留原配置与绑定流程。连接认证见 [REST API 指南](../server/rest-api.md)；上述操作的 HTTP 入口是 `GET` / `POST /api/im/sessions/setup`、`GET /api/im/sessions/targets/{sessionId}/channels` 和 `PUT /api/im/sessions/targets/{sessionId}/internal`。
 
 ## 在房间中讨论
 

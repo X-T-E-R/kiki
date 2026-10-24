@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const imProviderKindSchema = z.enum(['telegram', 'feishu_app', 'onebot_v11', 'wechat_bridge']);
+export const imProviderKindSchema = z.enum(['telegram', 'feishu_app', 'onebot_v11', 'wechat_bridge', 'discord', 'slack', 'matrix']);
 export type ImProviderKind = z.infer<typeof imProviderKindSchema>;
 
 /**
@@ -160,3 +160,67 @@ export const imBindingPatchSchema = z.object({
   message: 'Set either target or session_id, not both.',
 });
 export type ImBindingPatch = z.infer<typeof imBindingPatchSchema>;
+
+export const imChannelCapabilitySchema = z.object({
+  kind: z.string().min(1),
+  mime_types: z.array(z.string().min(1)).optional(),
+  max_bytes: z.number().int().positive().optional(),
+  rendering: z.string().min(1).optional(),
+}).strict();
+export type ImChannelCapability = z.infer<typeof imChannelCapabilitySchema>;
+
+/** One delivery channel bound to a conversation; `internal` is the in-app message view. */
+export const imChannelViewSchema = z.object({
+  id: z.string().min(1),
+  kind: z.enum(['internal', 'im']),
+  enabled: z.boolean(),
+  capabilities: z.array(imChannelCapabilitySchema),
+}).strict();
+export type ImChannelView = z.infer<typeof imChannelViewSchema>;
+
+export const imTargetChannelsSchema = z.object({
+  internal_enabled: z.boolean(),
+  channels: z.array(imChannelViewSchema),
+}).strict();
+export type ImTargetChannels = z.infer<typeof imTargetChannelsSchema>;
+
+export const imSetupProviderSchema = z.enum(['discord', 'slack', 'matrix']);
+export type ImSetupProvider = z.infer<typeof imSetupProviderSchema>;
+
+export const imSetupCatalogSchema = z.object({
+  platforms: z.array(z.object({
+    provider_kind: imSetupProviderSchema,
+    methods: z.array(z.string()),
+    fields: z.array(z.object({ key: z.string(), secret: z.boolean(), required: z.boolean(), label: z.string() }).strict()),
+    portal_url: z.string().url(),
+    instructions: z.array(z.string()),
+    capabilities: z.object({
+      inbound: z.array(z.string()), outbound: z.array(z.string()), threads: z.boolean(), edit_text: z.boolean(), callbacks: z.boolean(),
+      encrypted_rooms: z.boolean(), voice_rendering: z.string(), audio_rendering: z.string(), transport: z.string(),
+    }).strict(),
+  }).strict()),
+}).strict();
+export type ImSetupCatalog = z.infer<typeof imSetupCatalogSchema>;
+
+const setupInstance = z.string().regex(/^[a-zA-Z0-9_.:-]{1,120}$/u).optional();
+const setupValue = z.string().min(1).max(8192).refine((value) => !/[\r\n]/u.test(value), 'Use one line per field.');
+const setupUrl = z.string().url().max(2048);
+export const imSetupRequestSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('save'), provider_kind: imSetupProviderSchema, instance_id: setupInstance, fields: z.record(z.string(), setupValue) }).strict(),
+  z.object({ action: z.literal('discord_install'), application_id: z.string().regex(/^\d{1,22}$/u), guild_id: z.string().regex(/^\d{1,22}$/u).optional() }).strict(),
+  z.object({ action: z.literal('slack_manifest'), name: z.string().min(1).max(80).optional() }).strict(),
+  z.object({ action: z.literal('slack_oauth_begin'), client_id: setupValue, redirect_uri: setupUrl, instance_id: setupInstance }).strict(),
+  z.object({ action: z.literal('slack_oauth_complete'), attempt_id: setupValue, state: setupValue, code: setupValue, client_secret: setupValue, app_token: setupValue }).strict(),
+  z.object({ action: z.literal('matrix_discover'), server: setupValue }).strict(),
+  z.object({ action: z.literal('matrix_sso_begin'), homeserver: setupUrl, redirect_uri: setupUrl, idp_id: setupValue.optional(), instance_id: setupInstance }).strict(),
+  z.object({ action: z.literal('matrix_sso_complete'), attempt_id: setupValue, callback_uri: setupUrl, login_token: setupValue }).strict(),
+  z.object({ action: z.literal('matrix_password'), homeserver: setupUrl, user: setupValue, password: setupValue, instance_id: setupInstance }).strict(),
+]);
+export type ImSetupRequest = z.infer<typeof imSetupRequestSchema>;
+
+export const imSetupResultSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('saved'), result: imPasteResultSchema }).strict(),
+  z.object({ kind: z.literal('link'), url: z.string().url(), attempt_id: z.string().optional(), callback_uri: z.string().url().optional() }).strict(),
+  z.object({ kind: z.literal('discovery'), homeserver: z.string().url(), login_types: z.array(z.string()), sso: z.boolean() }).strict(),
+]);
+export type ImSetupResult = z.infer<typeof imSetupResultSchema>;

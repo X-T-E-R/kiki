@@ -63,7 +63,33 @@ When `SendMessage` confirms delivery to the user, its result tells the model to 
 
 The shipped `agent` profile exposes `SendMessage` in message mode and omits it in reply mode. A custom profile with an explicit `tools` allowlist must include it; delivery mode does not bypass profile permissions. The tool table is frozen for a turn, so a delivery change applies to the next one.
 
-`SendMessage` addresses the user or another persona with `to: "@Name"`; use the persona ID when names collide. A handoff can wake a closed conversation and counts toward the hourly limit, though retrying the same delivery key does not consume another slot. Attachments are immutable copies from the session workspace, its additional directories or the persona's own area, not arbitrary filesystem paths.
+`SendMessage` addresses the user or another persona with `to: "@Name"`; use the persona ID when names collide. A handoff can wake a closed conversation and counts toward the hourly limit, though retrying the same delivery key does not consume another slot. Attachments are immutable copies from the session workspace, its additional directories or the persona's own area, not arbitrary filesystem paths. Set an attachment's `kind` to request `image`, `audio`, `voice`, or `video` delivery; omitting it preserves ordinary `file` delivery. A message can contain attachments without text:
+
+```json
+{
+  "attachments": [
+    { "path": "output/voice.ogg", "kind": "voice", "mime_type": "audio/ogg" }
+  ]
+}
+```
+
+## Connect conversation channels
+
+A user-directed `SendMessage` uses the conversation's enabled channels: the Kiki in-app channel, named `internal`, and its confirmed IM bindings. The in-app channel is enabled by default; adding an IM binding does not turn it off. HTTP clients can inspect `rest.imSessions.channelViews(sessionId)` and explicitly change it with `setInternalChannel(sessionId, false)`, independently of reply/message mode. Turning it off does not erase historical messages or delivery diagnostics.
+
+Each attachment must be supported by at least one enabled channel. Otherwise the send fails with `media_unsupported`; with no enabled destination, it fails with `no_destination`. If only some channels support an attachment, Kiki sends it to those channels and tells the others which media were skipped. The receipt's `channels` list identifies each destination as `delivered`, `unsupported`, `failed`, or `unknown`; a delivered channel can also list skipped types in `unsupported`. Do not automatically resend an `unknown` outcome: the platform may already have accepted it.
+
+Voice is an explicit intent, not permission to fall back to a file. The in-app channel plays audio and voice in its audio player. Discord, Slack, and Matrix accept ordinary `audio` but do not support outgoing native `voice`; Discord and Slack upload audio as attachments, while Matrix uses `m.audio`. Matrix connections support only unencrypted rooms and refuse plaintext sends into encrypted rooms.
+
+HTTP clients configure these connections through `rest.imSessions.setupCatalog()` and `setup(...)`. The catalog supplies each platform's required fields and actual capabilities:
+
+| Platform | Required fields | Setup route |
+| --- | --- | --- |
+| Discord | `bot_token` | `discord_install` builds a bot invitation from `application_id`; enable Message Content Intent in the developer portal. |
+| Slack | `bot_token`, `app_token` | `slack_manifest` creates a Socket Mode app; OAuth can supply the bot token, but an app-level `xapp` token is still required. |
+| Matrix | `homeserver`, `access_token` | `matrix_discover` reads login methods; `matrix_sso_begin` / `matrix_sso_complete` or `matrix_password` can obtain and save a token. |
+
+Call `setup({ action: "save", provider_kind, fields })` to save credentials without starting a listener. Then use the returned `provider_instance_id` with `check` and `listen(id, true)`, send the bot a platform message, and confirm the resulting discovery against the intended session or persona. Existing Telegram, Feishu, OneBot, and WeChat connections keep their configuration and binding flow. The [REST API guide](../server/rest-api.md) covers connection authentication; the HTTP endpoints for these operations are `GET` / `POST /api/im/sessions/setup`, `GET /api/im/sessions/targets/{sessionId}/channels`, and `PUT /api/im/sessions/targets/{sessionId}/internal`.
 
 ## Discuss in a room
 

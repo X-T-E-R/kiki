@@ -13,6 +13,21 @@ export interface ImPaste {
 }
 
 export function parseImPaste(text: string): ImPaste {
+  const fields = new Map(text.split(/\r?\n/u).flatMap((line) => {
+    const pair = /^\s*([A-Za-z0-9_.-]+)\s*[:=]\s*(.*?)\s*$/u.exec(line);
+    return pair === null ? [] : [[pair[1]!.toLowerCase(), pair[2]!] as const];
+  }));
+  const platform = fields.get('platform') ?? fields.get('provider_kind');
+  const explicit = platform === 'discord' || platform === 'slack' || platform === 'matrix' ? platform : undefined;
+  const inferred = fields.has('homeserver') ? 'matrix' : fields.has('app_token') || fields.get('bot_token')?.startsWith('xoxb-') ? 'slack' : undefined;
+  const provider = explicit ?? inferred;
+  if (provider !== undefined) {
+    const keys = provider === 'discord' ? ['bot_token'] : provider === 'slack' ? ['bot_token', 'app_token'] : ['homeserver', 'access_token'];
+    const values = keys.map((key) => fields.get(key)?.trim());
+    const complete = values.every((value) => value !== undefined && value.length > 0);
+    const known = new Set(['platform', 'provider_kind', ...keys]);
+    return { providerKind: provider, credential: complete ? values.join('\n') : undefined, ignoredKeys: [...fields.keys()].filter((key) => !known.has(key)), chatHintIgnored: fields.has('chat_id') || fields.has('topic_id') };
+  }
   const ignored = new Set<string>();
   let providerKind: ImProviderKind | undefined;
   let credential: string | undefined;

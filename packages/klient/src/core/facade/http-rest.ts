@@ -615,6 +615,8 @@ export interface HttpRestFacade {
   readonly imSessions: {
     snapshot(): Promise<import('@kiki/protocol').ImSessionSnapshot>;
     catalog(): Promise<import('@kiki/protocol').ImCatalog>;
+    setupCatalog(): Promise<import('@kiki/protocol').ImSetupCatalog>;
+    setup(input: import('@kiki/protocol').ImSetupRequest): Promise<import('@kiki/protocol').ImSetupResult>;
     setPolicy(policy: import('@kiki/protocol').ImPolicy): Promise<import('@kiki/protocol').ImSessionSnapshot>;
     paste(text: string, instanceId?: string): Promise<import('@kiki/protocol').ImPasteResult>;
     check(instanceId: string): Promise<import('@kiki/protocol').ImCheckResult>;
@@ -623,6 +625,10 @@ export interface HttpRestFacade {
     dismiss(discoveryId: string): Promise<import('@kiki/protocol').ImSessionSnapshot>;
     updateBinding(id: string, patch: import('@kiki/protocol').ImBindingPatch): Promise<import('@kiki/protocol').ImSessionSnapshot>;
     removeBinding(id: string): Promise<import('@kiki/protocol').ImSessionSnapshot>;
+    /** Per-conversation delivery channels: the in-app `internal` channel plus enabled IM bindings, with real media capabilities. */
+    channelViews(sessionId: string): Promise<import('@kiki/protocol').ImTargetChannels>;
+    /** Explicitly turns the in-app channel on or off for one conversation; independent of reply/message delivery mode. */
+    setInternalChannel(sessionId: string, enabled: boolean): Promise<{ readonly enabled: boolean }>;
     startWechatQr(): Promise<{ readonly login_id: string; readonly image: string }>;
     pollWechatQr(id: string, verifyCode?: string): Promise<{ readonly status: string; readonly provider_instance_id?: string; readonly account_id?: string }>;
     cancelWechatQr(id: string): Promise<Record<string, never>>;

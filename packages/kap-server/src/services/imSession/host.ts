@@ -32,18 +32,22 @@ import {
 import type { ImProviderKind, MessageContent } from '@kiki/protocol';
 import { createSafeHttpTransport } from '@nb-im/core';
 
+import { IUserMessageRouter } from '@kiki/agent-core-v2/app/bot/messageRouting';
+import { parseMediaBlobRef } from '@kiki/transcript';
+import { agentScopeOf, sessionScopeOf, workspacePersistenceScope } from '@kiki/agent-core-v2/workspace/sessionLifecycle/internal/addressing';
+import { IBlobStore } from '@kiki/agent-core-v2/persistence/interface/blobStore';
 import { contentToCoreParts, resolvePromptMediaFiles } from '../../lib/promptMedia';
 import { withSessionOperation } from '../../lib/sessionOperationLease';
 import type { NotificationService } from '../notifications/notificationService';
 import type { ImAdapterFactory, ImHttpTransport } from './adapter';
 import { ImSessionBridge } from './bridge';
-import { loadHubFactories, sessionAccountHint } from './hubAdapter';
+import { checkRealtimeSessionAccount, loadHubFactories, sessionAccountHint } from './hubAdapter';
 import type { ImAnswerResult, ImQuestionAnswer, ImSessionPorts, ImSubmitResult, ImVisibleMedia, ImVisibleReply } from './ports';
 import { WechatQrLogin, type WechatLoginFetch } from './wechatLogin';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const TELEGRAM_TOKEN = /^[0-9]{1,20}:[A-Za-z0-9_-]{20,128}$/u;
-const SESSION_KINDS = new Set<ImProviderKind>(['feishu_app', 'onebot_v11', 'wechat_bridge']);
+const SESSION_KINDS = new Set<ImProviderKind>(['feishu_app', 'onebot_v11', 'wechat_bridge', 'discord', 'slack', 'matrix']);
 
 interface HostLogger {
   info(fields: Record<string, string | number | boolean>, message: string): void;
@@ -65,6 +69,10 @@ export async function createImSessionHost(input: {
   await bridge.whenReady();
   const snapshot = await bridge.snapshot();
   await bridge.setPolicy(snapshot.policy);
+  input.core.instantiation.provide(IUserMessageRouter, {
+    _serviceBrand: undefined,
+    sendMessage: (message) => bridge.sendUserMessage(message),
+  });
   return bridge;
 }
 
@@ -130,6 +138,7 @@ class NotificationSessionPorts implements ImSessionPorts {
       if (credential === undefined || credential.length === 0) return { ok: false, detail: 'missing' };
       const kind = instanceKind(this.notifications.getSettings().provider_instances[instanceId]);
       if (kind === 'telegram') return this.checkTelegram(credential);
+      if (kind === 'discord' || kind === 'slack' || kind === 'matrix') return checkRealtimeSessionAccount(kind, credential);
       if (kind === undefined) return { ok: false, detail: 'missing' };
       const hinted = sessionAccountHint(kind, credential);
       return hinted.ok ? { ok: true, ...(hinted.accountId === undefined ? {} : { accountId: hinted.accountId }) } : { ok: false, detail: 'missing' };
@@ -183,6 +192,18 @@ class NotificationSessionPorts implements ImSessionPorts {
       return aborted;
     }),
     saveMedia: (input) => this.saveMedia(input),
+    readAttachment: async ({ sessionId, blobId }) => {
+      const ref = parseMediaBlobRef(blobId);
+      if (ref?.kind !== 'agent') return undefined;
+      const summary = await this.core.accessor.get(ISessionIndex).get(sessionId);
+      if (summary === undefined) return undefined;
+      const sessionScope = sessionScopeOf(
+        workspacePersistenceScope(this.core.accessor.get(IBootstrapService).scope('sessions'), summary.workspaceId),
+        summary.id,
+      );
+      const bytes = await this.core.accessor.get(IBlobStore).get(`${agentScopeOf(sessionScope, ref.agentId)}/blobs`, ref.hash);
+      return bytes === undefined ? undefined : { bytes, name: ref.hash.slice(0, 12) };
+    },
     readVisible: (sessionId, promptId, turnId) => this.readVisible(sessionId, promptId, turnId),
     listInteractions: (sessionId) => this.listInteractions(sessionId),
     decideApproval: (input) => this.decide(input, false),
@@ -275,7 +296,7 @@ class NotificationSessionPorts implements ImSessionPorts {
     });
   }
 
-  private async saveMedia(input: { sessionId: string; kind: 'image' | 'file' | 'audio'; name: string; mediaType: string; bytes: Uint8Array; text?: string }): Promise<readonly MessageContent[]> {
+  private async saveMedia(input: { sessionId: string; kind: 'image' | 'file' | 'audio' | 'video'; name: string; mediaType: string; bytes: Uint8Array; text?: string }): Promise<readonly MessageContent[]> {
     return this.inSession(input.sessionId, async (session) => {
       const dir = join(session.accessor.get(ISessionContext).sessionDir, 'attachments');
       await mkdir(dir, { recursive: true });

@@ -2,9 +2,11 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { atomicWrite } from '@kiki/agent-core-v2/_base/utils/fs';
+import type { MessageMediaCapability } from '@kiki/agent-core-v2/app/bot/messageRouting';
 import type { ImConnectionDetail, ImProviderKind } from '@kiki/protocol';
 import {
   createSessionHub,
+  SESSION_CAPABILITIES,
   splitFeishuText,
   TELEGRAM_DOWNLOAD_BYTES,
   type SessionAdapter,
@@ -20,7 +22,7 @@ import {
 } from '@nb-im/core';
 
 import { readPrivateFile, writePrivateFile } from '../auth/privateFiles';
-import { ImSendError, type ImAdapterFactory, type ImInboundEvent, type ImInboundIdentity, type ImOutboundFile, type ImOutboundText, type ImSessionAdapter } from './adapter';
+import { ImSendError, type ImAdapterFactory, type ImInboundEvent, type ImInboundIdentity, type ImMediaReceipt, type ImOutboundFile, type ImOutboundMedia, type ImOutboundText, type ImSessionAdapter } from './adapter';
 import { segmentText } from './segment';
 import { wechatEndpointAllowed } from './wechatLogin';
 
@@ -105,6 +107,15 @@ export function sessionSpec(kind: ImProviderKind, instanceId: string, credential
       ...(baseUrl.length > 0 && wechatEndpointAllowed(baseUrl) ? { base_url: baseUrl } : {}),
     };
   }
+  if (kind === 'discord') return { platform: kind, instance_id: instanceId, bot_token: credential.trim() };
+  if (kind === 'slack') {
+    const [botToken, appToken] = credential.split('\n');
+    return { platform: kind, instance_id: instanceId, bot_token: botToken?.trim() ?? '', app_token: appToken?.trim() ?? '' };
+  }
+  if (kind === 'matrix') {
+    const [homeserver, accessToken] = credential.split('\n');
+    return { platform: kind, instance_id: instanceId, homeserver: homeserver?.trim() ?? '', access_token: accessToken?.trim() ?? '' };
+  }
   return oneBotSpec(instanceId, credential);
 }
 
@@ -124,10 +135,40 @@ export function sessionAccountHint(kind: ImProviderKind, credential: string): { 
   }
 }
 
+export async function checkRealtimeSessionAccount(kind: 'discord' | 'slack' | 'matrix', credential: string, fetcher: typeof fetch = fetch): Promise<{ ok: boolean; accountId?: string; detail?: string }> {
+  try {
+    const spec = sessionSpec(kind, 'im_check', credential);
+    let url: string;
+    let authorization: string;
+    if (spec.platform === 'discord') {
+      url = 'https://discord.com/api/v10/users/@me';
+      authorization = `Bot ${spec.bot_token}`;
+    } else if (spec.platform === 'slack') {
+      if (!spec.app_token.startsWith('xapp-')) return { ok: false, detail: 'slack_app_token_required' };
+      url = 'https://slack.com/api/auth.test';
+      authorization = `Bearer ${spec.bot_token}`;
+    } else if (spec.platform === 'matrix') {
+      const base = new URL(spec.homeserver);
+      if (base.protocol !== 'https:' || base.username || base.password || base.search || base.hash) return { ok: false, detail: 'matrix_homeserver_https_required' };
+      url = `${base.href.replace(/\/$/u, '')}/_matrix/client/v3/account/whoami`;
+      authorization = `Bearer ${spec.access_token}`;
+    } else return { ok: false, detail: 'unsupported_platform' };
+    const response = await fetcher(url, { method: kind === 'slack' ? 'POST' : 'GET', headers: { authorization }, redirect: 'error', signal: AbortSignal.timeout(15000) });
+    if (!response.ok) return { ok: false, detail: response.status === 401 || response.status === 403 ? 'unauthorized' : 'connection_failed' };
+    const body: unknown = await response.json();
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) return { ok: false, detail: 'invalid_response' };
+    const data = body as Record<string, unknown>;
+    if (kind === 'slack' && data['ok'] !== true) return { ok: false, detail: 'unauthorized' };
+    const accountId = kind === 'discord' ? data['id'] : data['user_id'];
+    return typeof accountId === 'string' && accountId.length > 0 ? { ok: true, accountId } : { ok: false, detail: 'invalid_response' };
+  } catch { return { ok: false, detail: 'connection_failed' }; }
+}
+
 export function hubSessionFactories(hub: SessionHub, homeDir: string): ImAdapterFactory[] {
-  const kinds: readonly ImProviderKind[] = ['telegram', 'feishu_app', 'onebot_v11', 'wechat_bridge'];
+  const kinds: readonly ImProviderKind[] = ['telegram', 'feishu_app', 'onebot_v11', 'wechat_bridge', 'discord', 'slack', 'matrix'];
   return kinds.map((providerKind) => ({
     providerKind,
+    mediaCapabilities: (input) => new HubSessionAdapter(hub.acquire(sessionSpec(providerKind, input.instanceId, input.credential))).mediaCapabilities,
     create: (input) => new HubSessionAdapter(hub.acquire(sessionSpec(providerKind, input.instanceId, input.credential)), homeDir),
   }));
 }
@@ -144,6 +185,7 @@ export class HubSessionAdapter implements ImSessionAdapter {
   readonly supportsEdit: boolean;
   readonly supportsButtons: boolean;
   readonly supportsFile: boolean;
+  readonly mediaCapabilities: readonly MessageMediaCapability[];
   private ack: string | undefined;
   private readonly contexts = new Map<string, { reply_context?: string; chat_kind?: SessionChatKind }>();
   private readonly replies = new Map<string, string>();
@@ -157,10 +199,12 @@ export class HubSessionAdapter implements ImSessionAdapter {
     this.providerKind = providerKindOf(session.platform);
     this.textLimit = session.limits.text_characters ?? undefined;
     this.maxInboundBytes = session.platform === 'telegram' ? TELEGRAM_DOWNLOAD_BYTES : session.limits.file_bytes ?? 50 * 1024 * 1024;
+    const capability = realtimeCapability(session.platform);
     const editable = session.platform === 'telegram' || session.platform === 'feishu_app';
-    this.supportsEdit = editable;
-    this.supportsButtons = editable;
+    this.supportsEdit = capability?.edit_text ?? editable;
+    this.supportsButtons = capability?.callbacks ?? editable;
     this.supportsFile = session.platform !== 'qq_onebot_v11';
+    this.mediaCapabilities = hubMediaCapabilities(session, this.supportsFile);
     this.replyReady = homeDir === undefined ? Promise.resolve() : this.readReplies().then(() => undefined, (error: unknown) => { this.replyError = error; });
   }
 
@@ -258,6 +302,29 @@ export class HubSessionAdapter implements ImSessionAdapter {
   answerCallback(_callbackQueryId: string): Promise<void> {
     this.ack = 'ok';
     return Promise.resolve();
+  }
+
+  async sendMedia(message: ImOutboundMedia): Promise<ImMediaReceipt> {
+    const capability = this.mediaCapabilities.find((item) => item.kind === message.kind);
+    if (capability === undefined || !mimeAllowed(capability, message.mediaType) || (capability.maxBytes !== undefined && message.bytes.byteLength > capability.maxBytes)) {
+      return { status: 'unsupported', unsupported: [message.kind] };
+    }
+    if (!isSessionMediaKind(message.kind)) return { status: 'unsupported', unsupported: [message.kind] };
+    await this.useReplies();
+    try {
+      const sent = await this.dispatch({
+        type: 'media', target: this.target(message.identity),
+        media: { kind: message.kind, filename: message.name, mime: message.mediaType, bytes: message.bytes },
+      }, message.identity);
+      return {
+        status: sent.status === 'accepted' ? 'delivered' : sent.error_kind === 'unsupported' ? 'unsupported' : sent.status === 'unknown' ? 'unknown' : 'failed',
+        messageIds: sent.message_ids,
+        unsupported: sent.error_kind === 'unsupported' ? [message.kind] : undefined,
+        detail: sent.diagnostic_code ?? sent.error_kind,
+      };
+    } catch {
+      return { status: 'unknown', detail: 'Send outcome is unknown; do not resend automatically.' };
+    }
   }
 
   private async capture(event: SessionInbound): Promise<void> {
@@ -415,8 +482,40 @@ function withoutReply(message: SessionOutbound): SessionOutbound {
 function acceptedDelivery(receipt: SessionReceipt): { messageId: string; messageIds: readonly string[] } {
   if (receipt.status !== 'accepted') {
     const tooLong = receipt.error_kind === 'too_long' || (receipt.diagnostic_code !== undefined && receipt.diagnostic_code.includes('too_long'));
-    throw new ImSendError(tooLong ? 'too_long' : receipt.diagnostic_code ?? receipt.error_kind ?? 'send_failed', receipt.message_ids, receipt.failed_part);
+    throw new ImSendError(tooLong ? 'too_long' : receipt.diagnostic_code ?? receipt.error_kind ?? 'send_failed', receipt.message_ids, receipt.failed_part, receipt.status === 'unknown' ? 'unknown' : 'failed');
   }
   const ids = receipt.message_ids.filter((id) => id.length > 0);
   return { messageId: ids[0] ?? '', messageIds: ids };
+}
+
+function hubMediaCapabilities(session: SessionAdapter, supportsFile: boolean): readonly MessageMediaCapability[] {
+  const declared = realtimeCapability(session.platform);
+  if (declared !== undefined) return declared.outbound.filter((kind) => kind !== 'text').map((kind) => ({
+    kind,
+    mimeTypes: kind === 'file' ? undefined : [`${kind}/*`],
+    maxBytes: (kind === 'image' ? session.limits.image_bytes : session.limits.file_bytes) ?? undefined,
+    rendering: kind === 'audio' ? declared.audio_rendering : undefined,
+  }));
+  const image: MessageMediaCapability = { kind: 'image', mimeTypes: ['image/*'], maxBytes: session.limits.image_bytes ?? undefined };
+  if (!supportsFile) return [image, { kind: 'voice', mimeTypes: ['audio/*'], rendering: 'native_voice' }];
+  const fileBytes = session.limits.file_bytes ?? undefined;
+  const voiceMime = session.limits.voice_mime;
+  return [
+    { kind: 'file', maxBytes: fileBytes }, image,
+    ...(voiceMime === null || voiceMime.length === 0 ? [] : [{ kind: 'voice', mimeTypes: voiceMime.map((mime) => mime.toLowerCase()), maxBytes: fileBytes, rendering: 'native_voice' }]),
+  ];
+}
+
+function realtimeCapability(platform: SessionPlatformId) {
+  return platform === 'discord' || platform === 'slack' || platform === 'matrix' ? SESSION_CAPABILITIES[platform] : undefined;
+}
+
+function isSessionMediaKind(kind: string): kind is 'file' | 'image' | 'audio' | 'voice' | 'video' {
+  return kind === 'file' || kind === 'image' || kind === 'audio' || kind === 'voice' || kind === 'video';
+}
+
+export function mimeAllowed(capability: MessageMediaCapability, mediaType: string): boolean {
+  if (capability.mimeTypes === undefined) return true;
+  const actual = mediaType.toLowerCase();
+  return capability.mimeTypes.some((mime) => mime === actual || (mime.endsWith('/*') && actual.startsWith(mime.slice(0, -1))));
 }

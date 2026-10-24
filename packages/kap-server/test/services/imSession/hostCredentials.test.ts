@@ -27,7 +27,7 @@ describe('im session credentials', () => {
       get: () => stored,
       replaceSections: async (sections: Record<string, unknown>) => { stored = sections['notifications']; },
     };
-    const core = { accessor: { get: (key: unknown) => {
+    const core = { instantiation: { provide() {} }, accessor: { get: (key: unknown) => {
       if (key === IConfigService) return config;
       if (key === ISessionManager) return { list: () => [] };
       throw new Error('unexpected_app_service');
@@ -46,6 +46,22 @@ describe('im session credentials', () => {
     expect(typeof slot).toBe('string');
     expect(service.revealCredential(String(slot))).toBe(secret);
     expect(JSON.stringify(settings)).not.toContain('s3cr3t-value');
+    for (const [provider, values] of [
+      ['discord', 'bot_token=discord-example'],
+      ['slack', 'bot_token=xoxb-example\napp_token=xapp-example'],
+      ['matrix', 'homeserver=https://matrix.example.test\naccess_token=matrix-example'],
+    ] as const) {
+      const pasted = await bridge.paste({ text: `platform=${provider}\n${values}` });
+      expect(pasted.provider_kind).toBe(provider);
+      const current = service.getSettings();
+      const created = current.provider_instances[pasted.provider_instance_id]!;
+      expect(created.provider_id).toBe(provider);
+      expect(created.options['session_kind']).toBe(provider);
+      expect(service.revealCredential(String(created.options['token_slot']))).toBe(values.split('\n').map((line) => line.slice(line.indexOf('=') + 1)).join('\n'));
+      expect((await bridge.snapshot()).instances.find((item) => item.id === pasted.provider_instance_id)).toMatchObject({ provider_kind: provider, configured: true, listening: false });
+      expect(JSON.stringify(current)).not.toContain('xoxb-example');
+      expect(JSON.stringify(current)).not.toContain('matrix-example');
+    }
     await bridge.close();
   });
 

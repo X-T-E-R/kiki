@@ -214,6 +214,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/computer/windows-mcp",
+    ],
+    [
+      "GET",
       "/api/config",
     ],
     [
@@ -387,6 +391,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/im/sessions/catalog",
+    ],
+    [
+      "GET",
+      "/api/im/sessions/setup",
+    ],
+    [
+      "GET",
+      "/api/im/sessions/targets/{id}/channels",
     ],
     [
       "GET",
@@ -1066,6 +1078,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/computer/windows-mcp/register",
+    ],
+    [
+      "POST",
       "/api/config",
     ],
     [
@@ -1275,6 +1291,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/im/sessions/paste",
+    ],
+    [
+      "POST",
+      "/api/im/sessions/setup",
     ],
     [
       "POST",
@@ -1979,6 +1999,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "PUT",
       "/api/im/sessions/policy",
+    ],
+    [
+      "PUT",
+      "/api/im/sessions/targets/{id}/internal",
     ],
     [
       "PUT",

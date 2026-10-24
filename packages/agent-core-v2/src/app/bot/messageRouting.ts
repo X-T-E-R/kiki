@@ -6,6 +6,7 @@ export interface MessageAttachmentReceipt {
   readonly title?: string;
   readonly mimeType?: string;
   readonly size?: number;
+  readonly kind?: string;
 }
 
 export interface MessageSenderIdentity {
@@ -29,7 +30,10 @@ export interface SendMessageReceipt {
   readonly handoff?: MessageHandoffReceipt;
   readonly deduplicated?: boolean;
   readonly delivery?: 'pending' | 'delivered' | 'undeliverable';
+  readonly channels?: readonly import('./userMessageRouting').MessageChannelReceipt[];
 }
+
+export * from './userMessageRouting';
 
 export interface RoomBotMessageInput {
   readonly roomId: string;

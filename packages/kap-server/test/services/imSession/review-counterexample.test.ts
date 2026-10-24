@@ -425,7 +425,7 @@ function stubCore(pending: { id: string; kind: 'question'; payload: { questions:
     if (key === ISessionQuestionService) return questionService;
     throw new Error('unexpected_session_service');
   };
-  return { accessor: { get: (key: unknown) => {
+  return { instantiation: { provide() {} }, accessor: { get: (key: unknown) => {
     if (key === IConfigService) return config;
     if (key === ISessionManager) return { list: () => [], acquire: async () => ({ handle: { accessor: { get: sessionGet } }, dispose: async () => undefined }) };
     if (key === IBotService) return { list: async () => [], ensureHomeSession: async () => ({ homeSessionId: 'home' }) };

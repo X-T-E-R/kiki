@@ -1,10 +1,10 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createWechatSessionAdapter, type SessionAdapter, type SessionOutbound, type SessionSink, type SessionSpec } from '@nb-im/core';
+import { SESSION_CAPABILITIES, createWechatSessionAdapter, type SessionAdapter, type SessionOutbound, type SessionPlatformId, type SessionSink, type SessionSpec } from '@nb-im/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { fileCursorStore, HubSessionAdapter, sessionSpec } from '../../../src/services/imSession/hubAdapter';
+import { checkRealtimeSessionAccount, fileCursorStore, HubSessionAdapter, sessionSpec } from '../../../src/services/imSession/hubAdapter';
 
 function session(): SessionAdapter & { sink?: SessionSink; sent: SessionOutbound[] } {
   const adapter = {
@@ -178,4 +178,59 @@ it('uses the packaged WeChat poller to recover optional-ret updates and keeps tw
   } finally { await hub.stop(); }
   expect(hub.connectionPhase()).toBe('stopped');
   expect(polls).toBeLessThanOrEqual(3);
+});
+
+describe('strict session media', () => {
+  it.each(['discord', 'slack', 'matrix'] as const)('keeps %s capabilities and media intents aligned with the package', async (platform) => {
+    const raw = session();
+    const adapter = { ...raw, platform, account: { platform, account_id: 'bot' } } satisfies SessionAdapter;
+    const hub = new HubSessionAdapter(adapter);
+    expect(hub.mediaCapabilities.map((item) => item.kind)).toEqual(SESSION_CAPABILITIES[platform].outbound.filter((item) => item !== 'text'));
+    expect(hub.mediaCapabilities.find((item) => item.kind === 'audio')?.rendering).toBe(SESSION_CAPABILITIES[platform].audio_rendering);
+    const identity = { chatId: 'chat', senderId: 'user', topicId: 'thread' };
+    expect(await hub.sendMedia({ identity, name: 'voice.ogg', mediaType: 'audio/ogg', bytes: new Uint8Array([1]), kind: 'voice' })).toMatchObject({ status: 'unsupported' });
+    expect(raw.sent).toHaveLength(0);
+    for (const kind of ['audio', 'video'] as const) {
+      expect(await hub.sendMedia({ identity, name: 'media', mediaType: `${kind}/test`, bytes: new Uint8Array([1]), kind })).toMatchObject({ status: 'delivered' });
+      expect(raw.sent.at(-1)).toMatchObject({ type: 'media', media: { kind }, target: { topic_id: 'thread' } });
+    }
+  });
+
+  it.each(['telegram', 'feishu_app', 'personal_wechat', 'qq_onebot_v11'] satisfies SessionPlatformId[])('does not overstate %s audio or video support', async (platform) => {
+    const raw = session();
+    const hub = new HubSessionAdapter({ ...raw, platform, account: { platform, account_id: 'bot' } });
+    expect(hub.mediaCapabilities.map((item) => item.kind)).not.toContain('audio');
+    expect(hub.mediaCapabilities.map((item) => item.kind)).not.toContain('video');
+  });
+
+  it('preserves unknown, failed and unsupported transport outcomes without resending', async () => {
+    const raw = session();
+    const hub = new HubSessionAdapter(raw);
+    const media = { identity: { chatId: 'c', senderId: 'u', topicId: '0' }, name: 'a', mediaType: 'application/octet-stream', bytes: new Uint8Array([1]), kind: 'file' };
+    raw.send = async (message) => { raw.sent.push(message); return { status: 'unknown', message_ids: [] }; };
+    expect(await hub.sendMedia(media)).toMatchObject({ status: 'unknown' });
+    expect(raw.sent).toHaveLength(1);
+    raw.send = async () => ({ status: 'failed', message_ids: [], error_kind: 'forbidden', diagnostic_code: 'matrix_encryption_unsupported' });
+    expect(await hub.sendMedia(media)).toMatchObject({ status: 'failed', detail: 'matrix_encryption_unsupported' });
+    raw.send = async () => ({ status: 'failed', message_ids: [], error_kind: 'unsupported', diagnostic_code: 'unsupported_media' });
+    expect(await hub.sendMedia(media)).toMatchObject({ status: 'unsupported', unsupported: ['file'] });
+  });
+
+  it('maps all new platform credentials without changing their identity or topic contract', () => {
+    expect(sessionSpec('discord', 'd', 'bot')).toMatchObject({ platform: 'discord', bot_token: 'bot' });
+    expect(sessionSpec('slack', 's', 'xoxb-test\nxapp-test')).toMatchObject({ platform: 'slack', bot_token: 'xoxb-test', app_token: 'xapp-test' });
+    expect(sessionSpec('matrix', 'm', 'https://matrix.example.test\nsecret')).toMatchObject({ platform: 'matrix', homeserver: 'https://matrix.example.test', access_token: 'secret' });
+  });
+
+  it('checks Matrix identity through whoami and keeps credentials out of diagnostics', async () => {
+    const requests: { url: string; authorization: string | null }[] = [];
+    const fetcher: typeof fetch = async (url, init) => {
+      requests.push({ url: String(url), authorization: new Headers(init?.headers).get('authorization') });
+      return Response.json({ user_id: '@bot:example.test' });
+    };
+    expect(await checkRealtimeSessionAccount('matrix', 'https://matrix.example.test\nsecret', fetcher)).toEqual({ ok: true, accountId: '@bot:example.test' });
+    expect(requests).toEqual([{ url: 'https://matrix.example.test/_matrix/client/v3/account/whoami', authorization: 'Bearer secret' }]);
+    const failing: typeof fetch = async () => { throw new Error('secret'); };
+    expect(await checkRealtimeSessionAccount('matrix', 'https://matrix.example.test\nsecret', failing)).toEqual({ ok: false, detail: 'connection_failed' });
+  });
 });

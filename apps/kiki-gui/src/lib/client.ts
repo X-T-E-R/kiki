@@ -1876,6 +1876,8 @@ export class KikiClient {
     return {
       snapshot: wrap(api.snapshot.bind(api)),
       catalog: wrap(api.catalog.bind(api)),
+      setupCatalog: wrap(api.setupCatalog.bind(api)),
+      setup: wrap(api.setup.bind(api)),
       setPolicy: wrap(api.setPolicy.bind(api)),
       paste: wrap(api.paste.bind(api)),
       check: wrap(api.check.bind(api)),
@@ -1884,6 +1886,8 @@ export class KikiClient {
       dismiss: wrap(api.dismiss.bind(api)),
       updateBinding: wrap(api.updateBinding.bind(api)),
       removeBinding: wrap(api.removeBinding.bind(api)),
+      channelViews: wrap(api.channelViews.bind(api)),
+      setInternalChannel: wrap(api.setInternalChannel.bind(api)),
       startWechatQr: wrap(api.startWechatQr.bind(api)),
       pollWechatQr: wrap(api.pollWechatQr.bind(api)),
       cancelWechatQr: wrap(api.cancelWechatQr.bind(api)),

@@ -1,4 +1,5 @@
 import type { ImProviderKind } from '@kiki/protocol';
+import type { MessageMediaCapability } from '@kiki/agent-core-v2/app/bot/messageRouting';
 
 import {
   acceptsTelegramVoice,
@@ -6,10 +7,13 @@ import {
   type ImAdapterFactory,
   type ImInboundEvent,
   type ImInboundIdentity,
+  type ImMediaReceipt,
   type ImOutboundFile,
+  type ImOutboundMedia,
   type ImOutboundText,
   type ImSessionAdapter,
 } from './adapter';
+import { mimeAllowed } from './hubAdapter';
 import { segmentText } from './segment';
 
 export class FakeImAdapter implements ImSessionAdapter {
@@ -36,6 +40,28 @@ export class FakeImAdapter implements ImSessionAdapter {
   private sequence = 0;
 
   constructor(readonly providerKind: ImProviderKind, readonly accountId: string) {}
+
+  get mediaCapabilities(): readonly MessageMediaCapability[] {
+    const file = this.supportsFile ? [{ kind: 'file' }, { kind: 'audio', mimeTypes: ['audio/*'] }, { kind: 'video', mimeTypes: ['video/*'] }] : [];
+    const voice = this.supportsFile && this.voice && !this.badVoiceFormat
+      ? [{ kind: 'voice', mimeTypes: ['audio/ogg', 'audio/opus', 'audio/mpeg', 'audio/mp4', 'audio/mp3'] }]
+      : [];
+    return [...file, { kind: 'image', mimeTypes: ['image/*'] }, ...voice];
+  }
+
+  async sendMedia(message: ImOutboundMedia): Promise<ImMediaReceipt> {
+    const capability = this.mediaCapabilities.find((item) => item.kind === message.kind);
+    if (capability === undefined || !mimeAllowed(capability, message.mediaType)) return { status: 'unsupported', unsupported: [message.kind] };
+    try {
+      const sent = await this.sendFile({
+        identity: message.identity, name: message.name, mediaType: message.mediaType, bytes: message.bytes,
+        asVoice: message.kind === 'voice', asImage: message.kind === 'image',
+      });
+      return { status: 'delivered', messageIds: [sent.messageId] };
+    } catch (error) {
+      return error instanceof ImSendError ? { status: error.outcome, messageIds: error.acceptedIds, detail: error.message } : { status: 'unknown', detail: 'send_failed' };
+    }
+  }
 
   acceptsVoice(mediaType: string): boolean {
     return (this.voice || this.badVoiceFormat) && acceptsTelegramVoice(mediaType);
@@ -109,5 +135,5 @@ export class FakeImAdapter implements ImSessionAdapter {
 }
 
 export function fakeAdapterFactory(adapter: FakeImAdapter): ImAdapterFactory {
-  return { providerKind: adapter.providerKind, create: () => adapter };
+  return { providerKind: adapter.providerKind, mediaCapabilities: () => adapter.mediaCapabilities, create: () => adapter };
 }

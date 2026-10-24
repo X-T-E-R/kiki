@@ -1506,3 +1506,24 @@ describe('guided browser setup HTTP facade', () => {
     } finally { await channel.close(); }
   });
 });
+
+it('carries IM setup and real channel preferences through authenticated REST', async () => {
+  const calls: { path: string; method: string; body: unknown }[] = [];
+  const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'fixture-token', fetch: (async (input, init) => {
+    expect(init?.headers).toMatchObject({ authorization: 'Bearer fixture-token' });
+    calls.push({ path: new URL(String(input)).pathname, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
+    return envelope({});
+  }) as typeof fetch });
+  try {
+    await channel.rest.imSessions.setupCatalog();
+    await channel.rest.imSessions.setup({ action: 'save', provider_kind: 'discord', fields: { bot_token: 'example-token' } });
+    await channel.rest.imSessions.channelViews('session/example');
+    await channel.rest.imSessions.setInternalChannel('session/example', false);
+    expect(calls).toEqual([
+      { path: '/api/im/sessions/setup', method: 'GET', body: undefined },
+      { path: '/api/im/sessions/setup', method: 'POST', body: { action: 'save', provider_kind: 'discord', fields: { bot_token: 'example-token' } } },
+      { path: '/api/im/sessions/targets/session%2Fexample/channels', method: 'GET', body: undefined },
+      { path: '/api/im/sessions/targets/session%2Fexample/internal', method: 'PUT', body: { enabled: false } },
+    ]);
+  } finally { await channel.close(); }
+});

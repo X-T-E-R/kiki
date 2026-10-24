@@ -1,4 +1,15 @@
 import type { ImConnectionDetail, ImProviderKind } from '@kiki/protocol';
+import type { MessageChannelReceipt, MessageMediaCapability } from '@kiki/agent-core-v2/app/bot/messageRouting';
+
+export interface ImOutboundMedia {
+  readonly identity: ImInboundIdentity;
+  readonly name: string;
+  readonly mediaType: string;
+  readonly bytes: Uint8Array;
+  readonly kind: string;
+}
+
+export type ImMediaReceipt = Omit<MessageChannelReceipt, 'channelId'>;
 
 export interface ImInboundIdentity {
   readonly chatId: string;
@@ -14,7 +25,7 @@ export class ImSendError extends Error {
   readonly acceptedIds: readonly string[];
   readonly failedPart: number | undefined;
 
-  constructor(message: string, acceptedIds: readonly string[] = [], failedPart?: number) {
+  constructor(message: string, acceptedIds: readonly string[] = [], failedPart?: number, readonly outcome: 'failed' | 'unknown' = 'failed') {
     super(message);
     this.name = 'ImSendError';
     this.acceptedIds = acceptedIds;
@@ -32,7 +43,7 @@ export interface ImInboundEvent {
   readonly eventId: string;
   readonly cursor?: number;
   readonly identity: ImInboundIdentity;
-  readonly kind: 'text' | 'image' | 'file' | 'audio' | 'callback';
+  readonly kind: 'text' | 'image' | 'file' | 'audio' | 'video' | 'callback';
   readonly text?: string;
   readonly callbackData?: string;
   readonly callbackQueryId?: string;
@@ -66,6 +77,8 @@ export interface ImSessionAdapter {
   readonly supportsEdit: boolean;
   readonly supportsButtons: boolean;
   readonly supportsFile: boolean;
+  readonly mediaCapabilities?: readonly MessageMediaCapability[];
+  sendMedia?(message: ImOutboundMedia): Promise<ImMediaReceipt>;
   describeConflict(): Promise<'webhook' | 'none'>;
   connectionPhase?(): 'idle' | 'starting' | 'running' | 'reconnecting' | 'conflict' | 'auth_expired' | 'stopped';
   connectionDetail?(): ImConnectionDetail | undefined;
@@ -82,6 +95,7 @@ export interface ImSessionAdapter {
 
 export interface ImAdapterFactory {
   readonly providerKind: ImProviderKind;
+  mediaCapabilities?(input: { readonly instanceId: string; readonly credential: string }): readonly MessageMediaCapability[];
   create(input: { readonly instanceId: string; readonly credential: string }): ImSessionAdapter;
 }
 

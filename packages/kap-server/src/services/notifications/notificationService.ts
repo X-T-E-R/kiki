@@ -67,7 +67,7 @@ export const notificationProviders: readonly NotificationProviderDescriptor[] = 
   })),
 ];
 
-const SESSION_KINDS = new Set(['feishu_app', 'onebot_v11', 'wechat_bridge']);
+const SESSION_KINDS = new Set(['feishu_app', 'onebot_v11', 'wechat_bridge', 'discord', 'slack', 'matrix']);
 
 function sessionInstanceIds(settings: Settings): Set<string> {
   const ids = new Set<string>();

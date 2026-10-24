@@ -87,7 +87,8 @@ export interface ImSessionPorts {
     submit(input: { sessionId: string; promptId: string; content: readonly MessageContent[]; delivery: 'queue' | 'steer' }): Promise<ImSubmitResult>;
     steer(sessionId: string, promptId: string): Promise<'steered' | 'queued'>;
     abort(sessionId: string, promptId?: string, turnId?: number): Promise<boolean>;
-    saveMedia(input: { sessionId: string; kind: 'image' | 'file' | 'audio'; name: string; mediaType: string; bytes: Uint8Array; text?: string }): Promise<readonly MessageContent[]>;
+    saveMedia(input: { sessionId: string; kind: 'image' | 'file' | 'audio' | 'video'; name: string; mediaType: string; bytes: Uint8Array; text?: string }): Promise<readonly MessageContent[]>;
+    readAttachment?(input: { sessionId: string; blobId: string }): Promise<{ bytes: Uint8Array; name: string; mediaType?: string } | undefined>;
     readVisible(sessionId: string, promptId: string, turnId?: number): Promise<ImVisibleReply>;
     listInteractions(sessionId: string): Promise<{ approvals: readonly ImPendingApproval[]; questions: readonly ImPendingQuestion[] }>;
     decideApproval(input: { sessionId: string; interactionId: string; decision: 'approved' | 'rejected' }): Promise<'decided' | 'expired' | 'resolved'>;

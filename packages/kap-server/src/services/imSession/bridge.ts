@@ -1,6 +1,17 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { basename } from 'node:path';
 
 import { imSessionAdmitted, type ImBinding, type ImCatalog, type ImCheckResult, type ImConfirmRequest, type ImDiscovery, type ImInstanceView, type ImPasteResult, type ImPolicy, type ImProviderKind, type ImSessionSnapshot, type ImStranger, type MessageContent } from '@kiki/protocol';
+import {
+  internalMessageChannel,
+  routeUserMessage,
+  type MessageChannelBinding,
+  type MessageChannelReceipt,
+  type MessageMediaCapability,
+  type SendMessageReceipt,
+  type UserMessageChannel,
+  type UserMessageInput,
+} from '@kiki/agent-core-v2/app/bot/messageRouting';
 
 import { ImSendError, type ImAdapterFactory, type ImInboundEvent, type ImInboundIdentity, type ImSessionAdapter } from './adapter';
 import { parseImPaste } from './paste';
@@ -129,6 +140,7 @@ interface Stored {
   answeredQuestions: Record<string, string[]>;
   replies: OpenReply[];
   outbox: OutboxRecord[];
+  internalOff?: string[];
 }
 
 interface Poller {
@@ -155,6 +167,7 @@ const COPY = {
     trust: 'Trust',
     numbers: 'Send the number of a choice.',
     fileUnsupported: 'This platform cannot take that file.',
+    mediaUnsupported: (kinds: string) => `This channel cannot take: ${kinds}. Those attachments were not sent here.`,
     tooLong: 'This platform rejected the message as too long and cannot take a file.',
     unknown: 'That action is not pending.',
     wechatAuth: 'This WeChat connection needs a new scan.',
@@ -176,6 +189,7 @@ const COPY = {
     trust: '信任',
     numbers: '发送选项的数字。',
     fileUnsupported: '这个平台收不了这个文件。',
+    mediaUnsupported: (kinds: string) => `这条信道收不了：${kinds}。这些附件没有在这里投递。`,
     tooLong: '这个平台认为消息过长，而且不能接收文件。',
     unknown: '没有这项待处理。',
     wechatAuth: '这个微信连接需要重新扫码。',
@@ -184,7 +198,7 @@ const COPY = {
 } as const;
 
 function kindOf(providerId: string): ImProviderKind | undefined {
-  if (providerId === 'telegram' || providerId === 'feishu_app' || providerId === 'onebot_v11' || providerId === 'wechat_bridge') return providerId;
+  if (providerId === 'telegram' || providerId === 'feishu_app' || providerId === 'onebot_v11' || providerId === 'wechat_bridge' || providerId === 'discord' || providerId === 'slack' || providerId === 'matrix') return providerId;
   return undefined;
 }
 
@@ -248,6 +262,126 @@ export class ImSessionBridge {
       personas: personas.map((persona) => ({ id: persona.id, name: persona.name, ...(persona.homeSessionId === undefined ? {} : { home_session_id: persona.homeSessionId }) })),
       sessions: sessions.map((session) => ({ id: session.id, title: session.title, ...(session.personaId === undefined ? {} : { persona_id: session.personaId }) })),
     };
+  }
+
+  async internalChannelEnabled(sessionId: string): Promise<boolean> {
+    await this.ready;
+    return !(this.state.internalOff ?? []).includes(sessionId);
+  }
+
+  async setInternalChannel(sessionId: string, enabled: boolean): Promise<boolean> {
+    await this.ready;
+    const off = new Set(this.state.internalOff ?? []);
+    if (enabled) off.delete(sessionId);
+    else off.add(sessionId);
+    this.state.internalOff = [...off];
+    await this.persist();
+    return enabled;
+  }
+
+  async channelViews(sessionId: string): Promise<readonly MessageChannelBinding[]> {
+    await this.ready;
+    const views: MessageChannelBinding[] = [{
+      id: 'internal',
+      kind: 'internal',
+      enabled: await this.internalChannelEnabled(sessionId),
+      capabilities: internalMessageChannel().capabilities,
+    }];
+    for (const binding of this.state.bindings) {
+      if (binding.sessionId !== sessionId) continue;
+      views.push({ id: `im:${binding.id}`, kind: 'im', enabled: this.admitted(binding), capabilities: this.bindingCapabilities(binding) });
+    }
+    return views;
+  }
+
+  async sendUserMessage(input: UserMessageInput): Promise<SendMessageReceipt> {
+    await this.ready;
+    const channels: UserMessageChannel[] = [internalMessageChannel(await this.internalChannelEnabled(input.sessionId))];
+    for (const binding of this.state.bindings) {
+      if (binding.sessionId !== input.sessionId || !this.admitted(binding)) continue;
+      const adapter = this.adapterFor(binding.providerInstanceId);
+      channels.push({
+        id: `im:${binding.id}`,
+        kind: 'im',
+        enabled: true,
+        capabilities: this.bindingCapabilities(binding),
+        send: (channelInput, skipped) => adapter === undefined
+          ? Promise.resolve({ status: 'failed', detail: 'channel_not_connected' })
+          : this.sendToIm(binding, adapter, channelInput, skipped),
+      });
+    }
+    return routeUserMessage(input, channels);
+  }
+
+  private bindingCapabilities(binding: BindingRecord): readonly MessageMediaCapability[] {
+    const adapter = this.adapterFor(binding.providerInstanceId);
+    if (adapter !== undefined) return mediaCapabilitiesOf(adapter);
+    const credential = this.ports.credentials.read(binding.providerInstanceId);
+    if (credential === undefined) return [];
+    try {
+      return this.factories.find((factory) => factory.providerKind === binding.providerKind)?.mediaCapabilities?.({ instanceId: binding.providerInstanceId, credential }) ?? [];
+    } catch { return []; }
+  }
+
+  private async sendToIm(binding: BindingRecord, adapter: ImSessionAdapter, input: UserMessageInput, skipped: readonly string[]): Promise<Omit<MessageChannelReceipt, 'channelId'>> {
+    const messageIds: string[] = [];
+    const unsupported = [...skipped];
+    let deliveredMedia = 0;
+    let failure: 'failed' | 'unknown' | undefined;
+    let detail: string | undefined;
+    const text = [input.text, skipped.length > 0 ? COPY[this.locale()].mediaUnsupported(skipped.join(', ')) : ''].filter((part) => part.length > 0).join('\n\n');
+    if (text.length > 0) {
+      try {
+        const sent = await adapter.sendTextParts({ identity: binding.identity, parts: adapter.splitText(text), code: 'send_message' });
+        messageIds.push(...sent.messageIds.filter((id) => id.length > 0));
+      } catch (error) {
+        failure = error instanceof ImSendError ? error.outcome : 'unknown';
+        if (error instanceof ImSendError) messageIds.push(...error.acceptedIds);
+        detail = error instanceof ImSendError ? error.message : 'Send outcome is unknown; do not resend automatically.';
+      }
+    }
+    for (const attachment of input.attachments) {
+      const kind = attachment.kind ?? 'file';
+      let read: Awaited<ReturnType<NonNullable<ImSessionPorts['sessions']['readAttachment']>>>;
+      try {
+        read = await this.ports.sessions.readAttachment?.({ sessionId: input.sessionId, blobId: attachment.blobId });
+      } catch {
+        failure ??= 'failed';
+        detail ??= 'attachment_unavailable';
+        continue;
+      }
+      if (read === undefined) {
+        failure ??= 'failed';
+        detail ??= 'attachment_unavailable';
+        continue;
+      }
+      try {
+        const receipt = adapter.sendMedia === undefined
+          ? { status: 'unsupported' as const, unsupported: [kind] }
+          : await adapter.sendMedia({ identity: binding.identity, name: attachment.title ?? (basename(attachment.path) || read.name), mediaType: attachment.mimeType ?? read.mediaType ?? 'application/octet-stream', bytes: read.bytes, kind });
+        if (receipt.messageIds !== undefined) messageIds.push(...receipt.messageIds.filter((id) => id.length > 0));
+        if (receipt.status === 'delivered') deliveredMedia += 1;
+        else if (receipt.status === 'unsupported') unsupported.push(...(receipt.unsupported ?? [kind]));
+        else {
+          if (failure !== 'unknown') failure = receipt.status;
+          detail = receipt.detail ?? detail;
+        }
+      } catch {
+        failure = 'unknown';
+        detail = 'Send outcome is unknown; do not resend automatically.';
+      }
+    }
+    const newlyUnsupported = [...new Set(unsupported.filter((kind) => !skipped.includes(kind)))];
+    if (newlyUnsupported.length > 0) {
+      try {
+        const sent = await adapter.sendText({ identity: binding.identity, text: COPY[this.locale()].mediaUnsupported(newlyUnsupported.join(', ')), code: 'media_unsupported' });
+        messageIds.push(...(sent.messageIds ?? [sent.messageId]).filter((id) => id.length > 0));
+      } catch (error) {
+        if (failure !== 'unknown') failure = error instanceof ImSendError ? error.outcome : 'unknown';
+        detail = 'Unsupported attachments were not sent; the channel notice could not be confirmed.';
+      }
+    }
+    return { status: failure ?? (unsupported.length > 0 && deliveredMedia === 0 ? 'unsupported' : 'delivered'), messageIds, unsupported: unsupported.length > 0 ? [...new Set(unsupported)] : undefined, detail };
   }
 
   async setPolicy(policy: ImPolicy): Promise<ImSessionSnapshot> {
@@ -888,11 +1022,11 @@ export class ImSessionBridge {
         return;
       }
       const audio = event.kind === 'audio';
-      const asAudio = audio && adapter.acceptsVoice(event.media.mediaType);
+      const asAudio = audio && (adapter.providerKind === 'discord' || adapter.providerKind === 'slack' || adapter.providerKind === 'matrix' || adapter.acceptsVoice(event.media.mediaType));
       if (audio && !asAudio) this.state.voiceFallbacks += 1;
       const saved = await this.ports.sessions.saveMedia({
         sessionId: binding.sessionId,
-        kind: asAudio ? 'audio' : event.kind === 'image' ? 'image' : 'file',
+        kind: asAudio ? 'audio' : event.kind === 'image' ? 'image' : event.kind === 'video' ? 'video' : 'file',
         name: event.media.name,
         mediaType: event.media.mediaType,
         bytes: event.media.bytes,
@@ -1566,6 +1700,9 @@ function emptyState(): Stored {
   return { policy: { allowed: true, defaultEnabled: true }, instances: [], discoveries: [], bindings: [], strangers: [], seen: [], tickets: [], selections: {}, awaiting: {}, voiceFallbacks: 0, cursors: {}, notices: [], questionAnswers: {}, answeredQuestions: {}, replies: [], outbox: [] };
 }
 
+function mediaCapabilitiesOf(adapter: ImSessionAdapter): readonly MessageMediaCapability[] {
+  return adapter.sendMedia === undefined ? [] : adapter.mediaCapabilities ?? [];
+}
 function toDiscovery(record: DiscoveryRecord): ImDiscovery {
   return { id: record.id, provider_instance_id: record.providerInstanceId, provider_kind: record.providerKind, account_id: record.accountId, identity: wireIdentity(record.identity), preview: record.preview, at: new Date(record.at).toISOString() };
 }

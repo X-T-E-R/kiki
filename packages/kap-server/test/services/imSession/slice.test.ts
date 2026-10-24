@@ -150,7 +150,7 @@ async function hostCore(home: string): Promise<{ core: Scope; service: Notificat
     isRecentlyResolved: () => false,
   };
   const questionService = { answer(id: string, result: unknown) { answered.push({ id, result }); } };
-  const core = { accessor: { get: (key: unknown) => {
+  const core = { instantiation: { provide() {} }, accessor: { get: (key: unknown) => {
     if (key === IConfigService) return config;
     if (key === ISessionManager) return { list: () => [], acquire: async () => ({ handle: { accessor: { get: sessionGet } }, dispose: async () => undefined }) };
     if (key === IBotService) return { list: async () => [], ensureHomeSession: async () => ({ homeSessionId: 'home' }) };

@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
@@ -8,7 +11,7 @@ import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { ISendMessageTool } from '#/agent/tools/message/sendMessageTool';
 import { IBotService } from '#/app/bot/bot';
-import { IRoomMessageRouter, type SendMessageReceipt } from '#/app/bot/messageRouting';
+import { IRoomMessageRouter, IUserMessageRouter, type SendMessageReceipt } from '#/app/bot/messageRouting';
 import { ISessionDeliveryService } from '#/session/delivery/delivery';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import type { ExecutableToolResult } from '#/tool/toolContract';
@@ -16,7 +19,11 @@ import type { ExecutableToolResult } from '#/tool/toolContract';
 import { appServices, createTestAgent, type TestAgentContext, type TestAgentServiceOverride } from '../../../harness';
 
 let ctx: TestAgentContext;
-afterEach(async () => { await ctx?.dispose(); });
+const dirs: string[] = [];
+afterEach(async () => {
+  await ctx?.dispose();
+  for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
+});
 
 async function messageAgent(...overrides: TestAgentServiceOverride[]): Promise<TestAgentContext> {
   ctx = createTestAgent(...overrides);
@@ -24,6 +31,17 @@ async function messageAgent(...overrides: TestAgentServiceOverride[]): Promise<T
   await delivery.ready;
   await delivery.set('message');
   return ctx;
+}
+
+async function mediaAgent(files: readonly string[]): Promise<string> {
+  const cwd = await mkdtemp(join(tmpdir(), 'send-message-media-'));
+  dirs.push(cwd);
+  for (const name of files) await writeFile(join(cwd, name), new Uint8Array([1, 2, 3, 4]));
+  ctx = createTestAgent({ cwd });
+  const delivery = ctx.get(ISessionDeliveryService);
+  await delivery.ready;
+  await delivery.set('message');
+  return cwd;
 }
 
 async function execute(input: Parameters<ISendMessageTool['resolveExecution']>[0]): Promise<ExecutableToolResult> {
@@ -44,6 +62,32 @@ function sendCalls(): string[] {
 }
 
 describe('SendMessage completion guidance', () => {
+  it('sends a media-only message with an explicit kind through the in-app channel', async () => {
+    await mediaAgent(['clip.mp4']);
+    const result = await execute({ attachments: [{ path: 'clip.mp4', kind: 'video', mime_type: 'video/mp4' }] });
+    const wire = JSON.parse(result.output as string);
+    expect(wire.delivered_to).toEqual(['user']);
+    expect(wire.channels).toEqual([{ channel_id: 'internal', status: 'delivered' }]);
+    expect(wire.attachments).toEqual([expect.objectContaining({ kind: 'video', mime_type: 'video/mp4' })]);
+    expect(result.note).toContain(MESSAGE_DELIVERY_SENT_GUIDANCE);
+  });
+
+  it('rejects a blank message that carries neither text nor attachments', async () => {
+    await messageAgent();
+    const execution = await ctx.get(ISendMessageTool).resolveExecution({ text: '   ' });
+    if (!('execute' in execution)) throw new Error('Expected an executable tool.');
+    await expect(execution.execute({ turnId: 0, toolCallId: 'blank', signal: new AbortController().signal }))
+      .rejects.toThrow('A message cannot be blank.');
+  });
+
+  it('refuses to treat an opaque media kind as a plain file', async () => {
+    await mediaAgent(['clip.mp4']);
+    const execution = await ctx.get(ISendMessageTool).resolveExecution({ attachments: [{ path: 'clip.mp4', kind: 'hologram' }] });
+    if (!('execute' in execution)) throw new Error('Expected an executable tool.');
+    await expect(execution.execute({ turnId: 0, toolCallId: 'hologram', signal: new AbortController().signal }))
+      .rejects.toThrow('media_unsupported');
+  });
+
   it('keeps the full ordinary fallback and conditional completion contract in the real tool description', async () => {
     await messageAgent();
     const tool = ctx.get(ISendMessageTool);
@@ -156,4 +200,18 @@ describe('SendMessage completion guidance', () => {
     expect(result.note).toBeUndefined();
     expect(result.stopTurn).toBeUndefined();
   });
+});
+
+it('uses the host router through its live DI binding and preserves uncertain wire receipts', async () => {
+  const send = vi.fn(async (): Promise<SendMessageReceipt> => ({
+    messageId: 'send:send-1', deliveredTo: [], delivery: 'pending',
+    channels: [{ channelId: 'im:binding', status: 'unknown', detail: 'transport_timeout' }],
+  }));
+  await messageAgent(appServices((reg) => reg.definePartialInstance(IUserMessageRouter, { sendMessage: send })));
+  const result = await execute({ text: 'Host routed text.' });
+  expect(send).toHaveBeenCalledWith(expect.objectContaining({ text: 'Host routed text.', toolCallId: 'send-1' }));
+  expect(JSON.parse(result.output as string)).toMatchObject({ delivered_to: [], delivery: 'pending', channels: [{ channel_id: 'im:binding', status: 'unknown' }] });
+  expect(result.note).toContain('Do not resend automatically');
+  expect(result.note).not.toContain(MESSAGE_DELIVERY_SENT_GUIDANCE);
+  expect(result.stopTurn).toBeUndefined();
 });

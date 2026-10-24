@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { extname, isAbsolute, relative, resolve } from 'node:path';
 import { z } from 'zod';
 
@@ -14,7 +14,7 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionDeliveryService } from '#/session/delivery/delivery';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionWorkspaceInfo } from '#/session/workspaceInfo/workspaceInfo';
-import { IRoomMessageRouter, type MessageAttachmentReceipt, type SendMessageReceipt } from '#/app/bot/messageRouting';
+import { IRoomMessageRouter, IUserMessageRouter, internalMessageChannel, routeUserMessage, type MessageAttachmentReceipt, type SendMessageReceipt } from '#/app/bot/messageRouting';
 import { IBotService } from '#/app/bot/bot';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import type { AgentTool, ToolExecution } from '#/tool/toolContract';
@@ -23,14 +23,18 @@ import { Error2, ErrorCodes } from '#/errors';
 const AttachmentSchema = z.object({
   path: z.string().min(1),
   title: z.string().min(1).optional(),
+  kind: z.string().min(1).optional().describe('Delivery intent, for example file, image, audio, voice, or video. Omitted means file; voice is never silently sent as a file.'),
+  mime_type: z.string().regex(/^[\w.+-]+\/[\w.+-]+$/u).optional(),
 }).strict();
 
 export const SendMessageToolInputSchema = z.object({
-  text: z.string().min(1).max(20_000),
+  text: z.string().max(20_000).optional(),
   to: z.string().min(1).optional(),
   reply_to: z.string().min(1).optional(),
   attachments: z.array(AttachmentSchema).max(32).optional(),
-}).strict();
+}).strict().refine((input) => (input.text?.trim().length ?? 0) > 0 || (input.attachments?.length ?? 0) > 0, {
+  message: 'A message cannot be blank.',
+});
 
 type SendMessageToolInput = z.infer<typeof SendMessageToolInputSchema>;
 
@@ -40,15 +44,12 @@ export interface ISendMessageTool extends AgentTool<SendMessageToolInput> {
 
 export const ISendMessageTool = createDecorator<ISendMessageTool>('sendMessageTool');
 
-interface AttachmentInput {
-  readonly path: string;
-  readonly title?: string;
-}
+type AttachmentInput = z.infer<typeof AttachmentSchema>;
 
 export class SendMessageTool implements ISendMessageTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'SendMessage';
-  readonly description = 'Send a complete message to the user, a room, or another Bot in message mode. Do not split one message into sentences or repeat it in ordinary text. A final ordinary reply is delivered in full as a fallback; do not resend it. After successful delivery to the user, if the request is complete and no work remains, end the turn without a closing SendMessage or confirmation. Progress messages do not end ongoing work; continue any required tools or pending work.';
+  readonly description = 'Send a complete message to the user, a room, or another Bot in message mode. Attachments may be sent without text; set each attachment kind explicitly for image, audio, voice, or video delivery. Channel receipts identify unsupported media and uncertain sends; never downgrade voice or automatically resend an unknown outcome. Do not split one message into sentences or repeat it in ordinary text. A final ordinary reply is delivered in full as a fallback; do not resend it. After successful delivery to the user, if the request is complete and no work remains, end the turn without a closing SendMessage or confirmation. Progress messages do not end ongoing work; continue any required tools or pending work.';
   readonly parameters = toInputJsonSchema(SendMessageToolInputSchema);
 
   constructor(
@@ -63,6 +64,7 @@ export class SendMessageTool implements ISendMessageTool {
     @IHostFileSystem private readonly fs: IHostFileSystem,
     @IBotService private readonly bots: IBotService,
     @ref(IRoomMessageRouter) private readonly roomRouter: LiveRef<IRoomMessageRouter>,
+    @ref(IUserMessageRouter) private readonly userRouter: LiveRef<IUserMessageRouter>,
   ) {}
 
   resolveExecution(input: SendMessageToolInput): ToolExecution {
@@ -73,51 +75,34 @@ export class SendMessageTool implements ISendMessageTool {
       approvalRule: this.name,
       description: 'Sending a message',
       execute: async (ctx) => {
+        const text = input.text ?? '';
+        if (text.trim().length === 0 && (input.attachments?.length ?? 0) === 0) throw new Error2(ErrorCodes.REQUEST_INVALID, 'A message cannot be blank.');
+        if (input.to !== undefined && input.to !== 'user' && !input.to.startsWith('@')) {
+          throw new Error2(ErrorCodes.REQUEST_INVALID, 'Recipient must be user or @Bot.');
+        }
         const attachments = await this.copyAttachments(input.attachments ?? []);
         const identity = this.senderIdentity();
         const roomId = await this.roomId();
         let receipt: SendMessageReceipt;
-        if (input.text.trim().length === 0) throw new Error2(ErrorCodes.REQUEST_INVALID, 'A message cannot be blank.');
-        if (input.to !== undefined && input.to !== 'user' && !input.to.startsWith('@')) {
-          throw new Error2(ErrorCodes.REQUEST_INVALID, 'Recipient must be user or @Bot.');
-        }
         if (roomId !== undefined) {
           const router = this.roomRouter.current;
           if (router === undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Room message delivery is unavailable.');
-          receipt = await router.postBotMessage({
-            roomId,
-            sessionId: this.session.sessionId,
-            toolCallId: ctx.toolCallId,
-            text: input.text,
-            to: input.to,
-            replyTo: input.reply_to,
-            attachments,
-          });
+          receipt = await router.postBotMessage({ roomId, sessionId: this.session.sessionId, toolCallId: ctx.toolCallId, text, to: input.to, replyTo: input.reply_to, attachments });
         } else if (input.to !== undefined && input.to.startsWith('@')) {
           receipt = await this.bots.sendHandoff({
-            sourceSessionId: this.session.sessionId,
-            sourcePersonaId: identity.personaId,
-            sourceName: identity.name,
-            target: input.to,
-            content: input.text,
-            attachments,
-            replyTo: input.reply_to,
-            idempotencyKey: ctx.toolCallId,
+            sourceSessionId: this.session.sessionId, sourcePersonaId: identity.personaId, sourceName: identity.name,
+            target: input.to, content: text, attachments, replyTo: input.reply_to, idempotencyKey: ctx.toolCallId,
           });
         } else {
-          receipt = {
-            messageId: `msg_${randomUUID()}`,
-            deliveredTo: ['user'],
-            attachments: attachments.length > 0 ? attachments : undefined,
-            sender: identity,
-          };
+          const message = { sessionId: this.session.sessionId, toolCallId: ctx.toolCallId, text, attachments, replyTo: input.reply_to, sender: identity };
+          receipt = this.userRouter.current === undefined
+            ? await routeUserMessage(message, [internalMessageChannel()])
+            : await this.userRouter.current.sendMessage(message);
         }
-        return {
-          output: JSON.stringify(toWireReceipt(receipt), null, 2),
-          note: receipt.deliveredTo.includes('user') && (receipt.delivery === undefined || receipt.delivery === 'delivered')
-            ? `<system>${MESSAGE_DELIVERY_SENT_GUIDANCE}</system>`
-            : undefined,
-        };
+        const notes: string[] = [];
+        if (receipt.channels?.some((channel) => channel.status === 'unknown')) notes.push('Some channel outcomes are unknown. Do not resend automatically; inspect the channel receipt before deciding what to do.');
+        if (receipt.deliveredTo.includes('user') && (receipt.delivery === undefined || receipt.delivery === 'delivered')) notes.push(MESSAGE_DELIVERY_SENT_GUIDANCE);
+        return { output: JSON.stringify(toWireReceipt(receipt), null, 2), note: notes.length > 0 ? `<system>${notes.join(' ')}</system>` : undefined };
       },
     };
   }
@@ -158,8 +143,9 @@ export class SendMessageTool implements ISendMessageTool {
         blobId: `blobref:${this.agent.agentId}:${hash}`,
         path,
         title: input.title,
-        mimeType: mimeTypeFor(path),
+        mimeType: input.mime_type ?? mimeTypeFor(path),
         size: data.byteLength,
+        kind: input.kind ?? 'file',
       });
     }
     return copied;
@@ -193,6 +179,16 @@ function mimeTypeFor(path: string): string | undefined {
     '.jpg': 'image/jpeg',
     '.jpeg': 'image/jpeg',
     '.webp': 'image/webp',
+    '.gif': 'image/gif',
+    '.ogg': 'audio/ogg',
+    '.opus': 'audio/opus',
+    '.mp3': 'audio/mpeg',
+    '.m4a': 'audio/mp4',
+    '.wav': 'audio/wav',
+    '.flac': 'audio/flac',
+    '.mp4': 'video/mp4',
+    '.webm': 'video/webm',
+    '.mov': 'video/quicktime',
   }[extension];
 }
 
@@ -200,10 +196,15 @@ function toWireReceipt(receipt: SendMessageReceipt): Record<string, unknown> {
   return {
     message_id: receipt.messageId,
     delivered_to: receipt.deliveredTo,
+    channels: receipt.channels?.map((channel) => ({
+      channel_id: channel.channelId, status: channel.status, message_ids: channel.messageIds,
+      unsupported: channel.unsupported, detail: channel.detail,
+    })),
     ...(receipt.attachments === undefined ? {} : {
       attachments: receipt.attachments.map((attachment) => ({
         blob_id: attachment.blobId,
         path: attachment.path,
+        kind: attachment.kind,
         ...(attachment.title === undefined ? {} : { title: attachment.title }),
         ...(attachment.mimeType === undefined ? {} : { mime_type: attachment.mimeType }),
         ...(attachment.size === undefined ? {} : { size: attachment.size }),
