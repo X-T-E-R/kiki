@@ -119,6 +119,7 @@ export const assistantStreamPartSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('think'), think: z.string(), encrypted: z.string().optional(),
+    redacted: z.string().optional(),
     reasoningKey: z.string().optional(), reasoningDetails: z.array(z.record(z.string(), z.unknown())).optional(),
     hidden: z.boolean().optional(),
   }),

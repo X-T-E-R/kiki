@@ -106,6 +106,17 @@ describe('events / display re-exports', () => {
     expect(agentEventSchema.parse(event)).toEqual(event);
   });
 
+  it('keeps redacted thinking data on an assistant stream part', () => {
+    const event = {
+      type: 'assistant.delta',
+      turnId: 1,
+      delta: '',
+      part: { type: 'think', think: '', encrypted: 'sig-kept', redacted: 'redacted-example' },
+    };
+    expect(assistantDeltaEventSchema.parse(event)).toEqual(event);
+    expect(agentEventSchema.parse(event)).toEqual(event);
+  });
+
   it('preserves legacy and step-owned assistant and thinking deltas', () => {
     expect(
       assistantDeltaEventSchema.parse({

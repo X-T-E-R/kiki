@@ -2098,6 +2098,33 @@ describe('reasoning-only assistant history projection', () => {
     });
   });
 
+  it('keeps redacted thinking data beside a signature on the Anthropic wire', async () => {
+    const provider = new AnthropicChatProvider({
+      model: 'example-model',
+      apiKey: 'sk-probe',
+      stream: false,
+    });
+    const history: Message[] = [
+      {
+        role: 'assistant',
+        content: [{ type: 'think', think: '', redacted: 'redacted-example', encrypted: 'sig-kept' }],
+        toolCalls: [],
+      },
+      { role: 'user', content: [{ type: 'text', text: 'Hi' }], toolCalls: [] },
+    ];
+
+    const { params } = await captureAnthropicBody(provider, undefined, history);
+    const messages = params['messages'] as Array<Record<string, unknown>>;
+
+    expect(messages[0]).toEqual({
+      role: 'assistant',
+      content: [
+        { type: 'redacted_thinking', data: 'redacted-example' },
+        { type: 'thinking', thinking: '', signature: 'sig-kept' },
+      ],
+    });
+  });
+
   it('keeps unsigned thinking on the Google GenAI wire', async () => {
     const provider = new GoogleGenAIChatProvider({
       model: 'gemini-2.5-flash',
