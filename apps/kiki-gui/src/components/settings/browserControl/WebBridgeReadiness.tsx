@@ -1,14 +1,14 @@
 /**
- * WebBridge readiness — whether the browser bridge is actually working, and
- * the one action that starts it.
+ * WebBridge readiness — whether the local bridge behind the Kimi route is
+ * actually working, and the one action that starts it.
  *
- * This card lives on the browser page rather than the Plugins leaf: it answers
- * "can Kiki control my browser", and every other part of that answer is on
- * `/settings/browser-control`. Its old bookmark follows the card here
- * (`st-card-webbridge` in `LEGACY_CARD_ALIASES`).
+ * It sits inside the Kimi route it serves, as that route's last block, so the
+ * page says "Kimi" once instead of in two cards. Its old bookmark still lands
+ * here (`st-card-webbridge` in `LEGACY_CARD_ALIASES`): the block announces the
+ * id the way a settings card does, and flashes when a search hit asks for it.
  */
 
-import { useState } from 'react';
+import { useContext, useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
@@ -19,8 +19,8 @@ import type { CapabilityStatus } from '../../../lib/client';
 import { useConnection } from '../../../state/connection';
 import { ConfirmDialog } from '../../ConfirmDialog';
 import { FeedbackLine, InlineError, type Feedback } from '../../controls';
-import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
-import { SectionCard } from '../SectionCard';
+import { SECONDARY_BUTTON } from '../../ui';
+import { SettingsCardMountContext, SettingsFlashContext } from '../SectionCard';
 
 function BusyHint({ children }: { children: React.ReactNode }) {
   return (
@@ -67,6 +67,9 @@ export function WebBridgeReadiness() {
   const [confirming, setConfirming] = useState<CapabilityStatus | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [requesting, setRequesting] = useState(false);
+  const flashId = useContext(SettingsFlashContext);
+  const onCardMount = useContext(SettingsCardMountContext);
+  useEffect(() => { onCardMount?.('st-card-webbridge'); }, [onCardMount]);
   const query = useQuery({
     queryKey: ['capability', 'kimi-webbridge'],
     queryFn: () => client.getCapability('kimi-webbridge'),
@@ -98,47 +101,55 @@ export function WebBridgeReadiness() {
   const stepFailed = steps.some((step) => step.state === 'failed');
   const needsSetup = capability !== undefined && capability.state !== 'unsupported' && (capability.state === 'not_installed' || runtimeMissing || stepFailed);
   return (
-    <SectionCard id="st-card-webbridge" title={t('st.plugins.runtimeTitle')}>
-      <div className="space-y-2" data-webbridge-readiness>
-        {query.isPending ? <BusyHint>{t('st.plugins.loading')}</BusyHint> : query.isError ? (
-          <QueryRetry error={query.error} onRetry={() => { void query.refetch(); }} />
-        ) : capability !== undefined ? (
-          <>
-            <p className="text-[13px] font-medium text-ink" data-webbridge-state={capability.state}>
-              {t(`st.plugins.runtimeState.${capability.state}`)}
+    <div
+      id="st-card-webbridge"
+      data-settings-card="st-card-webbridge"
+      data-webbridge-readiness
+      className={`mt-3 scroll-mt-4 space-y-2 border-t border-dashed border-hairline pt-3 ${flashId === 'st-card-webbridge' ? 'settings-card-flash' : ''}`}
+    >
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <h3 className="text-[12px] font-medium text-ink-soft">{t('st.plugins.runtimeTitle')}</h3>
+        {capability === undefined || query.isError ? null : (
+          <span className="text-[12px] text-ink" data-webbridge-state={capability.state}>
+            {t(`st.plugins.runtimeState.${capability.state}`)}
+          </span>
+        )}
+      </div>
+      {query.isPending ? <BusyHint>{t('st.plugins.loading')}</BusyHint> : query.isError ? (
+        <QueryRetry error={query.error} onRetry={() => { void query.refetch(); }} />
+      ) : capability !== undefined ? (
+        <>
+          {capability.state === 'partial' && blocking.length > 0 ? (
+            <p className="text-[12px] leading-4 text-ink-soft" data-webbridge-blocking>
+              {t('st.plugins.runtimeState.partialHint', {
+                items: blocking.map((step) => t(WEBBRIDGE_BLOCKER_LABEL_KEYS[step.id] ?? 'st.plugins.runtimeStep.detect')).join('、'),
+              })}
             </p>
-            {capability.state === 'partial' && blocking.length > 0 ? (
-              <p className="text-[12px] leading-4 text-ink-soft" data-webbridge-blocking>
-                {t('st.plugins.runtimeState.partialHint', {
-                  items: blocking.map((step) => t(WEBBRIDGE_BLOCKER_LABEL_KEYS[step.id] ?? 'st.plugins.runtimeStep.detect')).join('、'),
-                })}
-              </p>
+          ) : null}
+          {capability.install.running ? <BusyHint>{capability.install.step ?? t('st.plugins.runtimeStarted')}</BusyHint> : null}
+          {capability.install.error ? <FeedbackLine feedback={{ tone: 'error', text: capability.install.error }} /> : null}
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" className={SECONDARY_BUTTON} onClick={() => { void query.refetch(); }} data-webbridge-check>
+              {t('st.plugins.checkHealth')}
+            </button>
+            {capability.plan !== undefined && needsSetup ? (
+              <button type="button" className={SECONDARY_BUTTON} data-webbridge-prepare
+                disabled={requesting || capability.install.running}
+                onClick={() => { setConfirming(capability); }}>
+                {capability.install.error || steps.some((step) => step.state === 'failed') ? t('st.plugins.retryRuntime') : t('st.plugins.prepareRuntime')}
+              </button>
             ) : null}
-            {capability.install.running ? <BusyHint>{capability.install.step ?? t('st.plugins.runtimeStarted')}</BusyHint> : null}
-            {capability.install.error ? <FeedbackLine feedback={{ tone: 'error', text: capability.install.error }} /> : null}
             {isValidHttpUrl(capability.plan?.browserExtensionUrl) ? (
-              <ExternalLink className="inline-block text-[12px] font-medium text-selected-ink hover:underline"
+              <ExternalLink className="inline-block text-[12px] text-selected-ink hover:underline"
                 href={capability.plan!.browserExtensionUrl!}
                 data-webbridge-extension>
                 {t('st.plugins.browserExtension')}
               </ExternalLink>
             ) : null}
-            <div className="flex flex-wrap gap-2">
-              <button type="button" className={SECONDARY_BUTTON} onClick={() => { void query.refetch(); }} data-webbridge-check>
-                {t('st.plugins.checkHealth')}
-              </button>
-              {capability.plan !== undefined && needsSetup ? (
-                <button type="button" className={PRIMARY_BUTTON} data-webbridge-prepare
-                  disabled={requesting || capability.install.running}
-                  onClick={() => { setConfirming(capability); }}>
-                  {capability.install.error || steps.some((step) => step.state === 'failed') ? t('st.plugins.retryRuntime') : t('st.plugins.prepareRuntime')}
-                </button>
-              ) : null}
-            </div>
-          </>
-        ) : null}
-        <FeedbackLine feedback={feedback} />
-      </div>
+          </div>
+        </>
+      ) : null}
+      <FeedbackLine feedback={feedback} />
       {confirming?.plan !== undefined ? (
         <ConfirmDialog open overlayId="confirm-webbridge-runtime"
           title={t('st.plugins.runtimeConfirmTitle')}
@@ -152,6 +163,6 @@ export function WebBridgeReadiness() {
           onCancel={() => { setConfirming(null); }}
           onConfirm={() => { void prepare(confirming); }} />
       ) : null}
-    </SectionCard>
+    </div>
   );
 }

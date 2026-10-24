@@ -31,18 +31,18 @@
  * column would read as a gallery rather than as three answers to one question.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
-import { isBrowserToolPolicyDenied, isBrowserToolPolicyPartiallyDenied } from '@kiki/session-core/settings';
+import type { BrowserSourceId } from '@kiki/session-core/settings';
 
 import { useI18n } from '../../../i18n';
 import { ExternalLink } from '../../../host/ExternalLink';
 import { useConnection } from '../../../state/connection';
 import {
-  blockingStep, browserApi, browserKeys, browserPresetOwnsConnection, browserRealStatus, codexConnectionForPipe, codexConnectionIdForNewPipe,
+  blockingStep, browserApi, browserKeys, codexConnectionForPipe, codexConnectionIdForNewPipe,
   presetAction, presetReadiness, runningStep, warningStep, whenText,
-  type BrowserSetupStatus, type PresetReadiness, type SourceBrowserItem,
+  type BrowserSetupStatus, type PresetReadiness,
 } from '../../../lib/browserRest';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../../controls';
 import { Icon } from '../../icons';
@@ -50,6 +50,8 @@ import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
 import { ConfirmDialog } from '../../ConfirmDialog';
 import { AdvancedDetails } from '../fields';
 import { SettingsSelect } from '../SettingsPrimitives';
+import { useBrowserAllowance } from './browserAllowance';
+import { WebBridgeReadiness } from './WebBridgeReadiness';
 
 const READINESS_TONE: Readonly<Record<PresetReadiness, { text: I18nKey; dot: string }>> = {
   preparing: { text: 'st.browser.route.preparing', dot: 'status-dot-busy bg-ink-soft' },
@@ -126,17 +128,32 @@ function egoNextKey(preset: BrowserSetupStatus): I18nKey {
   return 'st.browser.reason.egoMissing';
 }
 
+/**
+ * Something this route found that is not a saved connection yet: a Codex pipe
+ * nobody registered, or a ready Ego Lite with no record. Ticking its box saves
+ * the connection first, then allows it; a saved connection is listed above,
+ * with the rest of the browsers, and is not repeated here.
+ */
+interface FoundItem {
+  readonly id: string;
+  readonly browserId: string;
+  readonly label: string;
+}
+
 /** One route. The name is the server's `displayName`; the rest is its own answer. */
-function BrowserRoute({ preset, active, onSelect }: {
+function BrowserRoute({ preset, active, onSelect, children }: {
   readonly preset: BrowserSetupStatus;
   readonly active: boolean;
   readonly onSelect: () => void;
+  /** Extra blocks this route owns, drawn after its actions (the local bridge check). */
+  readonly children?: ReactNode;
 }) {
   const { t, locale } = useI18n();
   const { client, scopeId } = useConnection();
   const queryClient = useQueryClient();
+  const allowance = useBrowserAllowance();
   const [feedback, setFeedback] = useState<Feedback>(null);
-  const [busy, setBusy] = useState<'prepare' | 'connect' | 'cancel' | 'open' | 'update' | 'shortcut' | 'allow' | 'default' | 'source' | null>(null);
+  const [busy, setBusy] = useState<'prepare' | 'connect' | 'cancel' | 'open' | 'update' | 'shortcut' | 'allow' | 'source' | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [selectedBrowserId, setSelectedBrowserId] = useState(preset.browserId ?? '');
   const [selectedCliPath, setSelectedCliPath] = useState('');
@@ -147,196 +164,31 @@ function BrowserRoute({ preset, active, onSelect }: {
     setSelectedCliPath((current) => (preset.cliPaths !== undefined && preset.cliPaths.includes(current) ? current : ''));
   }, [preset.cliPaths]);
 
-  const configQuery = useQuery({
-    queryKey: ['config', scopeId],
-    queryFn: () => client.getConfig(),
-    staleTime: 30_000,
-  });
+  const { connections } = allowance;
+  const sourceEnabled = allowance.sourceEnabled(preset.preset);
+  const owned = connections.filter((connection) => allowance.sourceOf(connection) === preset.preset);
+  const ownedAllowed = owned.filter((connection) => allowance.isEffective(connection)).length;
 
-  const connectionsQuery = useQuery({
-    queryKey: browserKeys.connections(scopeId),
-    queryFn: () => browserApi(client).list(),
-    staleTime: 10_000,
-  });
-
-  const toolPolicyDenied = isBrowserToolPolicyDenied(configQuery.data);
-  const toolPolicyPartial = isBrowserToolPolicyPartiallyDenied(configQuery.data);
-  const connections = connectionsQuery.data?.connections ?? [];
-  const allowedBrowsers = (connectionsQuery.data as { allowedBrowsers?: string[] } | undefined)?.allowedBrowsers
-    ?? (configQuery.data as { browser_control?: { allowedBrowsers?: string[] } } | undefined)?.browser_control?.allowedBrowsers;
-  const isAllowedConfigured = (connectionsQuery.data as { allowedBrowsersConfigured?: boolean } | undefined)?.allowedBrowsersConfigured === true
-    || (configQuery.data as { browser_control?: { allowedBrowsersConfigured?: boolean } } | undefined)?.browser_control?.allowedBrowsersConfigured === true;
-  const disabledSources = (connectionsQuery.data as { disabledSources?: string[] } | undefined)?.disabledSources
-    ?? (configQuery.data as { browser_control?: { disabledSources?: string[] } } | undefined)?.browser_control?.disabledSources
-    ?? [];
-  const sourceEnabled = !disabledSources.includes(preset.preset);
-
-  const items: SourceBrowserItem[] = useMemo(() => {
+  const found: FoundItem[] = useMemo(() => {
     if (!sourceEnabled) return [];
-    const list: SourceBrowserItem[] = [];
-    const seenConnectionIds = new Set<string>();
-    const allowedFor = (connection: { readonly id: string; readonly enabled?: boolean } | undefined): boolean => {
-      if (connection === undefined || connection.enabled === false) return false;
-      if (isAllowedConfigured && allowedBrowsers !== undefined) return allowedBrowsers.includes(connection.id);
-      return true;
-    };
-
-    if (preset.candidates !== undefined && preset.candidates.length > 0) {
-      for (const cand of preset.candidates) {
-        const conn = preset.preset === 'codex-browser'
-          ? codexConnectionForPipe(connections, cand.browserId)
-          : connections.find((connection) => connection.id === preset.connectionId && preset.browserId === cand.browserId);
-        if (conn !== undefined && seenConnectionIds.has(conn.id)) continue;
-        if (conn !== undefined) seenConnectionIds.add(conn.id);
-        const namedThisPipe = preset.browserId === cand.browserId;
-        const isAllowed = allowedFor(conn);
-        const isReady = conn?.status?.state === 'ready' || conn?.status?.state === 'running'
-          || (preset.state === 'connected' && namedThisPipe);
-        const isAuthUnknown = preset.reason === 'approval_unproven' && namedThisPipe;
-        const isLive = conn?.enabled;
-        list.push({
-          id: conn?.id ?? cand.browserId,
-          browserId: cand.browserId,
-          source: preset.preset,
-          name: conn?.name ?? cand.browserId,
-          allowed: isAllowed,
-          realStatus: browserRealStatus({
-            toolPolicyDenied,
-            toolPolicyPartial,
-            ready: isReady,
-            authUnknown: isAuthUnknown,
-            allowed: isAllowed,
-            live: isLive,
-          }),
-          connectionId: conn?.id,
-        });
-      }
+    const list: FoundItem[] = [];
+    for (const candidate of preset.candidates ?? []) {
+      const saved = preset.preset === 'codex-browser'
+        ? codexConnectionForPipe(connections, candidate.browserId)
+        : connections.find((connection) => connection.id === preset.connectionId && preset.browserId === candidate.browserId);
+      if (saved === undefined) list.push({ id: candidate.browserId, browserId: candidate.browserId, label: candidate.browserId });
     }
-
-    for (const conn of connections) {
-      if (seenConnectionIds.has(conn.id) || !browserPresetOwnsConnection(preset.preset, conn, preset.connectionId)) continue;
-      seenConnectionIds.add(conn.id);
-      const isAllowed = allowedFor(conn);
-      const isReady = conn.status?.state === 'ready' || conn.status?.state === 'running';
-      const isLive = conn.enabled;
-      list.push({
-        id: conn.id,
-        browserId: conn.type === 'codex-extension' ? (conn.browserId ?? conn.id) : conn.id,
-        source: preset.preset,
-        name: conn.name ?? conn.id,
-        allowed: isAllowed,
-        realStatus: browserRealStatus({
-          toolPolicyDenied,
-          toolPolicyPartial,
-          ready: isReady,
-          allowed: isAllowed,
-          live: isLive,
-        }),
-        connectionId: conn.id,
-      });
+    if (preset.preset === 'ego-lite' && (preset.state === 'ready' || preset.state === 'connected') && owned.length === 0) {
+      list.push({ id: 'ego-lite', browserId: 'ego-lite', label: preset.displayName || 'Ego Lite' });
     }
-
-    if (preset.preset === 'ego-lite' && (preset.state === 'ready' || preset.state === 'connected') && list.length === 0) {
-      list.push({
-        id: 'ego-lite',
-        browserId: 'ego-lite',
-        source: 'ego-lite',
-        name: preset.displayName || 'Ego Lite',
-        allowed: false,
-        realStatus: browserRealStatus({
-          toolPolicyDenied,
-          toolPolicyPartial,
-          ready: preset.state === 'connected',
-          allowed: false,
-          live: true,
-        }),
-        connectionId: undefined,
-      });
-    }
-
     return list;
-  }, [preset, connections, allowedBrowsers, isAllowedConfigured, sourceEnabled, toolPolicyDenied, toolPolicyPartial]);
-
-  const allowedCountForRoute = items.filter((item) => item.allowed).length;
-
-  const upsertConnectionEnabled = async (existingConn: (typeof connections)[number], nextEnabled: boolean, fallbackBrowserId?: string) => {
-    if (existingConn.type === 'agent-browser-profile') {
-      await browserApi(client).upsert(existingConn.id, {
-        type: 'agent-browser-profile',
-        name: existingConn.name,
-        enabled: nextEnabled,
-        profilePath: existingConn.profilePath,
-        executablePath: existingConn.executablePath,
-        headed: existingConn.headed,
-        driverPath: existingConn.driverPath,
-      });
-    } else if (existingConn.type === 'agent-browser-cdp') {
-      await browserApi(client).upsert(existingConn.id, {
-        type: 'agent-browser-cdp',
-        name: existingConn.name,
-        enabled: nextEnabled,
-        endpoint: { action: 'keep' },
-        driverPath: existingConn.driverPath,
-      });
-    } else if (existingConn.type === 'kimi-webbridge') {
-      // Allowing or disallowing the route's own connection also sets its switch;
-      // the bridge is addressed by nothing, so the write is the common fields only.
-      await browserApi(client).upsert(existingConn.id, {
-        type: 'kimi-webbridge',
-        name: existingConn.name,
-        enabled: nextEnabled,
-        driverPath: existingConn.driverPath,
-      });
-    } else if (existingConn.type === 'codex-extension') {
-      await browserApi(client).upsert(existingConn.id, {
-        type: 'codex-extension',
-        name: existingConn.name,
-        enabled: nextEnabled,
-        runtimeRoot: existingConn.runtimeRoot ?? '',
-        browserId: existingConn.browserId ?? fallbackBrowserId ?? existingConn.id,
-      });
-    } else if (existingConn.type === 'ego-lite') {
-      await browserApi(client).upsert(existingConn.id, {
-        type: 'ego-lite',
-        name: existingConn.name,
-        enabled: nextEnabled,
-        ...(existingConn.cliPath !== undefined ? { cliPath: existingConn.cliPath } : {}),
-        ...(existingConn.profileId !== undefined ? { profileId: existingConn.profileId } : {}),
-        ...(existingConn.serverName !== undefined ? { serverName: existingConn.serverName } : {}),
-      });
-    }
-  };
+  }, [preset, connections, owned.length, sourceEnabled]);
 
   const handleToggleSource = async (nextSourceEnabled: boolean) => {
     setBusy('source');
     setFeedback(null);
     try {
-      const rawAllowed = (connectionsQuery.data as { allowedBrowsers?: string[] } | undefined)?.allowedBrowsers
-        ?? (configQuery.data as { browser_control?: { allowedBrowsers?: string[] } } | undefined)?.browser_control?.allowedBrowsers;
-      const isConfigured = (connectionsQuery.data as { allowedBrowsersConfigured?: boolean } | undefined)?.allowedBrowsersConfigured === true
-        || (configQuery.data as { browser_control?: { allowedBrowsersConfigured?: boolean } } | undefined)?.browser_control?.allowedBrowsersConfigured === true;
-
-      if (!nextSourceEnabled) {
-        const preservedAllowed = isConfigured && rawAllowed !== undefined
-          ? [...rawAllowed]
-          : connections.filter((conn) => conn.enabled).map((conn) => conn.id);
-        const nextDisabled = [...new Set([...disabledSources, preset.preset])] as ('kimi-webbridge' | 'independent-browser' | 'codex-browser' | 'ego-lite')[];
-        await client.patchConfig({
-          browser_control: {
-            disabled_sources: nextDisabled,
-            ...(!isConfigured ? { allowed_browsers: preservedAllowed } : {}),
-          },
-        } as import('../../../lib/client').KikiConfigPatch);
-      } else {
-        const nextDisabled = disabledSources.filter((source) => source !== preset.preset) as ('kimi-webbridge' | 'independent-browser' | 'codex-browser' | 'ego-lite')[];
-        await client.patchConfig({
-          browser_control: { disabled_sources: nextDisabled },
-        } as import('../../../lib/client').KikiConfigPatch);
-      }
-
-      await queryClient.invalidateQueries({ queryKey: browserKeys.connections(scopeId) });
-      await queryClient.invalidateQueries({ queryKey: browserKeys.presets(scopeId) });
-      await queryClient.invalidateQueries({ queryKey: ['config', scopeId] });
+      await allowance.writeSourceEnabled(preset.preset as BrowserSourceId, nextSourceEnabled);
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
@@ -344,91 +196,52 @@ function BrowserRoute({ preset, active, onSelect }: {
     }
   };
 
-  const handleToggleAllow = async (item: SourceBrowserItem, nextChecked: boolean) => {
+  /**
+   * Saves what the route found, then allows it. A refused or unproven save is
+   * reported and leaves the box clear and pressable again; it is never retried
+   * on its own.
+   */
+  const allowFound = async (item: FoundItem) => {
     setBusy('allow');
     setFeedback(null);
     try {
-      let connectionId = item.connectionId;
+      let connectionId: string | undefined;
       let savedPending = false;
-      if (nextChecked && connectionId === undefined) {
-        if (preset.preset === 'ego-lite') {
-          const created = await browserApi(client).connectPreset('ego-lite', {});
-          if ((created.state !== 'ready' && created.state !== 'connected') || created.error !== undefined) {
-            setFeedback({ tone: 'error', text: created.error ?? t('st.browser.reason.egoFailed') });
-            return;
-          }
-          connectionId = created.connectionId ?? 'ego-lite';
-        } else if (preset.preset === 'codex-browser') {
-          const createId = codexConnectionIdForNewPipe(connections, item.browserId);
-          if (createId === undefined) {
-            setFeedback({ tone: 'error', text: t('st.browser.reason.connectionConflict') });
-            return;
-          }
-          const created = await browserApi(client).connectPreset(preset.preset, {
-            connectionId: createId,
-            browserId: item.browserId,
-          });
-          const blocked = created.reason === 'connection_conflict' || created.reason === 'connection_disabled' || created.reason === 'choose_connection';
-          savedPending = created.state === 'needs_user_action' && created.reason === 'approval_unproven';
-          const usable = (created.state === 'ready' || created.state === 'connected' || savedPending)
-            && !blocked && created.error === undefined && created.connectionId !== undefined;
-          if (!usable) {
-            setFeedback({
-              tone: 'error',
-              text: created.error ?? (created.reason === 'connection_conflict'
-                ? t('st.browser.reason.connectionConflict')
-                : t('st.browser.outcome.connectIncomplete')),
-            });
-            return;
-          }
-          connectionId = created.connectionId;
-        } else {
-          setFeedback({ tone: 'error', text: t('st.browser.reason.chooseConnection') });
+      if (preset.preset === 'ego-lite') {
+        const created = await browserApi(client).connectPreset('ego-lite', {});
+        if ((created.state !== 'ready' && created.state !== 'connected') || created.error !== undefined) {
+          setFeedback({ tone: 'error', text: created.error ?? t('st.browser.reason.egoFailed') });
           return;
         }
+        connectionId = created.connectionId ?? 'ego-lite';
+      } else if (preset.preset === 'codex-browser') {
+        const createId = codexConnectionIdForNewPipe(connections, item.browserId);
+        if (createId === undefined) {
+          setFeedback({ tone: 'error', text: t('st.browser.reason.connectionConflict') });
+          return;
+        }
+        const created = await browserApi(client).connectPreset(preset.preset, { connectionId: createId, browserId: item.browserId });
+        const blocked = created.reason === 'connection_conflict' || created.reason === 'connection_disabled' || created.reason === 'choose_connection';
+        savedPending = created.state === 'needs_user_action' && created.reason === 'approval_unproven';
+        const usable = (created.state === 'ready' || created.state === 'connected' || savedPending)
+          && !blocked && created.error === undefined && created.connectionId !== undefined;
+        if (!usable) {
+          setFeedback({
+            tone: 'error',
+            text: created.error ?? (created.reason === 'connection_conflict'
+              ? t('st.browser.reason.connectionConflict')
+              : t('st.browser.outcome.connectIncomplete')),
+          });
+          return;
+        }
+        connectionId = created.connectionId;
+      } else {
+        setFeedback({ tone: 'error', text: t('st.browser.reason.chooseConnection') });
+        return;
       }
       if (connectionId === undefined) return;
-
-      const rawAllowed = (connectionsQuery.data as { allowedBrowsers?: string[] } | undefined)?.allowedBrowsers
-        ?? (configQuery.data as { browser_control?: { allowedBrowsers?: string[] } } | undefined)?.browser_control?.allowedBrowsers;
-      const isConfigured = (connectionsQuery.data as { allowedBrowsersConfigured?: boolean } | undefined)?.allowedBrowsersConfigured === true
-        || (configQuery.data as { browser_control?: { allowedBrowsersConfigured?: boolean } } | undefined)?.browser_control?.allowedBrowsersConfigured === true;
-      const known = new Set(connections.map((connection) => connection.id));
-      known.add(connectionId);
-      const base = (isConfigured && rawAllowed !== undefined
-        ? [...rawAllowed]
-        : connections.filter((connection) => connection.enabled).map((connection) => connection.id))
-        .filter((id) => known.has(id));
-      const nextAllowed = nextChecked
-        ? [...new Set([...base, connectionId])]
-        : base.filter((id) => id !== connectionId);
-
-      await client.patchConfig({
-        browser_control: { allowed_browsers: nextAllowed },
-      } as import('../../../lib/client').KikiConfigPatch);
-
-      const existingConn = connections.find((connection) => connection.id === connectionId);
-      if (existingConn && existingConn.enabled !== nextChecked) {
-        await upsertConnectionEnabled(existingConn, nextChecked, item.browserId);
-      }
-
-      await queryClient.invalidateQueries({ queryKey: browserKeys.connections(scopeId) });
-      await queryClient.invalidateQueries({ queryKey: browserKeys.presets(scopeId) });
-      await queryClient.invalidateQueries({ queryKey: ['config', scopeId] });
+      await allowance.writeAllowed(connectionId, true, { fallbackBrowserId: item.browserId, justCreated: true });
       if (savedPending) setFeedback({ tone: 'info', text: t('st.browser.route.done.savedApprovalUnproven') });
-    } catch (error) {
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const handleDefault = async (connectionId: string, isDefault: boolean) => {
-    setBusy('default');
-    setFeedback(null);
-    try {
-      await browserApi(client).setDefault(isDefault ? undefined : connectionId);
-      await queryClient.invalidateQueries({ queryKey: browserKeys.connections(scopeId) });
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
@@ -603,6 +416,11 @@ function BrowserRoute({ preset, active, onSelect }: {
           className="mr-auto min-w-0 text-left text-[14px] font-medium text-ink hover:underline underline-offset-2">
           {preset.displayName}
         </button>
+        {owned.length === 0 ? null : (
+          <span className="shrink-0 text-[12px] tabular-nums text-ink-faint" data-browser-allowed-count={preset.preset}>
+            {t('st.browser.source.allowedOf', { allowed: sourceEnabled ? ownedAllowed : 0, total: owned.length })}
+          </span>
+        )}
         <span className="inline-flex shrink-0 items-center gap-1.5 text-[12px] text-ink-soft" data-browser-route-readiness={readiness}>
           <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${sourceEnabled ? tone.dot : 'bg-hairline-strong'}`} />
           {sourceEnabled ? t(tone.text) : t('st.browser.source.disabled')}
@@ -646,88 +464,30 @@ function BrowserRoute({ preset, active, onSelect }: {
             </p>
           )}
 
-          {items.length > 0 ? (
-            <div className="mt-2.5 space-y-1.5 rounded border border-hairline bg-surface/40 p-2.5" data-browser-source-items={preset.preset}>
-              <div className="flex items-center justify-between text-[12px]">
-                <span className="font-medium text-ink">{t('st.browser.allowCheckbox')}</span>
-                <span className="text-ink-soft" data-browser-allowed-count={preset.preset}>
-                  {t('st.browser.allowedCount', { count: allowedCountForRoute })}
-                </span>
-              </div>
-              <div className="space-y-1 pt-0.5">
-                {items.map((item) => {
-                  const currentDefault = connectionsQuery.data?.defaultBrowser ?? '';
-                  const targetConnId = item.connectionId;
-                  const isDefault = targetConnId !== undefined && currentDefault !== '' && currentDefault === targetConnId;
-                  return (
-                    <div
-                      key={item.id}
-                      className="flex flex-wrap items-center justify-between gap-2 rounded px-2 py-1 text-[12px] hover:bg-ink/[0.03]"
-                    >
-                      <label className="flex min-w-[8.5rem] flex-1 items-center gap-2 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          className="h-3.5 w-3.5 shrink-0 rounded border-hairline-strong text-selected-ink focus:ring-0 cursor-pointer"
-                          data-browser-allow-checkbox={item.id}
-                          checked={item.allowed}
-                          disabled={busy !== null}
-                          onChange={(e) => { void handleToggleAllow(item, e.target.checked); }}
-                        />
-                        <span className="min-w-0 font-mono text-ink truncate" data-browser-identity={item.browserId}>
-                          {item.name || item.browserId}
-                        </span>
-                        {item.name && item.name !== item.browserId ? (
-                          <span className="hidden min-w-0 font-mono text-[11px] text-ink-faint truncate sm:inline">
-                            {item.browserId}
-                          </span>
-                        ) : null}
-                        <span className="hidden shrink-0 rounded bg-ink/[0.05] px-1.5 py-0.5 text-[10px] text-ink-soft sm:inline" data-browser-source-tag={item.source}>
-                          {item.source}
-                        </span>
-                      </label>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        {targetConnId !== undefined && (item.allowed || isDefault) ? (
-                          <button
-                            type="button"
-                            data-browser-default-star={targetConnId}
-                            aria-pressed={isDefault}
-                            aria-label={t('st.browser.defaultLabel')}
-                            disabled={busy !== null}
-                            onClick={() => { void handleDefault(targetConnId, isDefault); }}
-                            className={`rounded px-1.5 py-0.5 text-[10px] transition-colors ${
-                              isDefault
-                                ? 'bg-selected text-selected-ink font-medium'
-                                : 'text-ink-faint hover:bg-ink/[0.05] hover:text-ink-soft'
-                            }`}
-                          >
-                            {isDefault ? t('st.browser.defaultActive') : t('st.browser.setDefaultAction')}
-                          </button>
-                        ) : null}
-                        <span
-                          className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                            item.realStatus === 'ready'
-                              ? 'bg-success/10 text-success'
-                              : item.realStatus === 'denied'
-                                ? 'bg-danger/10 text-danger'
-                                : item.realStatus === 'partial'
-                                  ? 'bg-amber-ink/10 text-amber-ink'
-                                  : item.realStatus === 'auth_unknown'
-                                    ? 'bg-amber-ink/10 text-amber-ink'
-                                    : item.realStatus === 'allowed'
-                                      ? 'bg-selected-ink/10 text-selected-ink'
-                                      : 'bg-ink/[0.05] text-ink-soft'
-                          }`}
-                          data-browser-status-tag={item.realStatus}
-                        >
-                          {t(`st.browser.status.${
-                            item.realStatus === 'auth_unknown' ? 'authUnknown' : item.realStatus
-                          }`)}
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+          {found.length > 0 ? (
+            <div className="mt-2.5 space-y-1" data-browser-source-items={preset.preset}>
+              <p className="text-[12px] text-ink-faint">{t('st.browser.found.title')}</p>
+              <ul className="space-y-0.5">
+                {found.map((item) => (
+                  <li key={item.id}>
+                    <label className="flex min-w-0 cursor-pointer items-center gap-2.5 rounded-md px-2 py-1 text-[12px] hover:bg-ink/[0.03]">
+                      <input
+                        type="checkbox"
+                        className="h-3.5 w-3.5 shrink-0 cursor-pointer rounded border-hairline-strong text-selected-ink focus:ring-0"
+                        data-browser-allow-checkbox={item.id}
+                        aria-label={t('st.browser.found.allow', { name: item.label })}
+                        checked={false}
+                        disabled={busy !== null || allowance.toolPolicyDenied}
+                        onChange={() => { void allowFound(item); }}
+                      />
+                      <span className="min-w-0 flex-1 truncate font-mono text-ink-soft" data-browser-identity={item.browserId} title={item.browserId}>
+                        {item.label}
+                      </span>
+                      <span className="shrink-0 text-[11px] text-ink-faint">{t('st.browser.found.notSaved')}</span>
+                    </label>
+                  </li>
+                ))}
+              </ul>
             </div>
           ) : null}
 
@@ -974,6 +734,8 @@ function BrowserRoute({ preset, active, onSelect }: {
         </>
       )}
 
+      {children}
+
       <ConfirmDialog open={confirming} overlayId={`confirm-browser-prepare-${preset.preset}`}
         title={t('st.browser.route.confirmTitle', { name: preset.displayName })}
         body={t('st.browser.route.confirmBody')}
@@ -1030,6 +792,10 @@ export function BrowserSetupWizard() {
     ?? managed[0]
     ?? presets[0];
 
+  // The local bridge check belongs to the Kimi route; with no such route on
+  // this server it still has a place, so its bookmark keeps working.
+  const bridgeRoute = managed.some((preset) => preset.preset === 'kimi-webbridge');
+
   return (
     <div className="space-y-3" data-browser-setup>
       <Hint>
@@ -1050,9 +816,11 @@ export function BrowserSetupWizard() {
       ) : (
         <>
           <ul className="divide-y divide-hairline" data-browser-routes>
-            {managed.map((preset) => (
-              <BrowserRoute key={preset.preset} preset={preset} active={chosen?.preset === preset.preset}
-                onSelect={() => { setPicked(preset.preset); }} />
+            {managed.map((preset, index) => (
+              <BrowserRoute key={`${preset.preset}-${index}`} preset={preset} active={chosen?.preset === preset.preset}
+                onSelect={() => { setPicked(preset.preset); }}>
+                {preset.preset === 'kimi-webbridge' ? <WebBridgeReadiness /> : null}
+              </BrowserRoute>
             ))}
           </ul>
           {external.length === 0 ? null : (
@@ -1061,14 +829,16 @@ export function BrowserSetupWizard() {
                 {t('st.browser.route.otherApps')}
               </p>
               <ul className="divide-y divide-hairline" data-browser-routes-external>
-                {external.map((preset) => (
-                  <BrowserRoute key={preset.preset} preset={preset} active={false} onSelect={() => {}} />
+                {external.map((preset, index) => (
+                  <BrowserRoute key={`${preset.preset}-${index}`} preset={preset} active={false} onSelect={() => {}} />
                 ))}
               </ul>
             </>
           )}
         </>
       )}
+
+      {bridgeRoute ? null : <WebBridgeReadiness />}
     </div>
   );
 }

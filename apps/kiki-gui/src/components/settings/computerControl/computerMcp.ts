@@ -11,6 +11,7 @@
  * have written.
  */
 
+import { WINDOWS_MCP_COMPUTER_CONNECTION } from '@kiki/protocol';
 import { mcpConfigFromDraft } from '@kiki/session-core/settings';
 import type { GlobalMcpServerConfig } from '@kiki/klient';
 import type { McpManagedServer, McpManagedServerConfig } from '@kiki/session-core/transport';
@@ -19,6 +20,15 @@ import { mcpSecretRows, type McpSecretRow } from '../McpSecretRows';
 
 /** The global entry name the managed install registers; also the name this page creates. */
 export const COMPUTER_MCP_NAME = 'kiki-computer';
+export { WINDOWS_MCP_COMPUTER_CONNECTION };
+
+const WINDOWS_MCP_TOOL_NAMES = [
+  'ControlStatus', 'DisplayInventory', 'Screenshot', 'Snapshot',
+  'Click', 'Type', 'Scroll', 'Move', 'Shortcut', 'Wait', 'WaitFor', 'App',
+] as const;
+const WINDOWS_MCP_TOOLS = new Set<string>(WINDOWS_MCP_TOOL_NAMES);
+
+export type ComputerExecutorKind = 'cua' | 'windows-mcp';
 
 /**
  * List key for this page's MCP management read. The connection already owns a
@@ -50,24 +60,69 @@ function commandBaseName(command: string): string {
   return command.split(/[\\/]/).at(-1) ?? '';
 }
 
-/**
- * The cua-driver stdio entry the service can actually start and stop: the same
- * test `mcpManagementService.stopServer` applies before it touches a process.
- */
+function flagValue(args: readonly string[], flag: string): string | undefined {
+  const index = args.indexOf(flag);
+  if (index < 0) return undefined;
+  return args[index + 1];
+}
+
 export function isCuaComputerConfig(config: McpManagedServerConfig | undefined): boolean {
   if (config === undefined || config.transport !== 'stdio') return false;
   if (!/^cua-driver(?:\.exe)?$/i.test(commandBaseName(config.command))) return false;
   return config.args?.includes('mcp') === true;
 }
 
-/**
- * Rows this page lists: a real cua entry, plus a stdio entry already carrying
- * the managed name so a half-configured or stale `kiki-computer` stays visible
- * and fixable instead of disappearing behind the MCP page.
- */
+export function windowsMcpInvocation(config: McpManagedServerConfig | undefined): boolean {
+  if (config === undefined || config.transport !== 'stdio') return false;
+  const args = config.args ?? [];
+  for (let index = 0; index < args.length - 1; index += 1) {
+    if (args[index] === '-m' && args[index + 1] === 'windows_mcp') return true;
+  }
+  const base = commandBaseName(config.command).toLowerCase();
+  return (base === 'windows-mcp' || base === 'windows-mcp.exe') && args[0] === 'serve';
+}
+
+export function computerExecutorKind(config: McpManagedServerConfig | undefined): ComputerExecutorKind | undefined {
+  if (config === undefined || config.transport !== 'stdio') return undefined;
+  if (isCuaComputerConfig(config)) return 'cua';
+  if (windowsMcpInvocation(config)) return 'windows-mcp';
+  return undefined;
+}
+
+export function isComputerMcpConfig(config: McpManagedServerConfig | undefined): boolean {
+  return computerExecutorKind(config) !== undefined;
+}
+
+export function isWindowsMcpServeReady(config: McpManagedServerConfig | undefined): boolean {
+  if (config === undefined || config.transport !== 'stdio' || !windowsMcpInvocation(config)) return false;
+  if (config.executor === 'kaos') return false;
+  const base = commandBaseName(config.command).toLowerCase();
+  if (base === 'uv' || base === 'uv.exe' || base === 'uvx' || base === 'uvx.exe') return false;
+  const args = config.args ?? [];
+  if (args.includes('install') || args.includes('auth')) return false;
+  const serveAt = args.indexOf('serve');
+  if (serveAt < 0) return false;
+  const script = base === 'windows-mcp' || base === 'windows-mcp.exe';
+  if (!script && args[serveAt - 1] !== 'windows_mcp') return false;
+  if (flagValue(args, '--transport') !== 'stdio') return false;
+  const configPath = flagValue(args, '--config');
+  if (configPath === undefined || configPath.startsWith('-')) return false;
+  const tools = flagValue(args, '--tools');
+  if (tools === undefined) return false;
+  const env = secretValues(config, 'env');
+  const envKeys = secretKeys(config, 'envKeys');
+  if (env !== undefined ? env['ANONYMIZED_TELEMETRY'] !== 'false' : envKeys !== undefined && !envKeys.includes('ANONYMIZED_TELEMETRY')) {
+    return false;
+  }
+  const names = tools.split(',').map((item) => item.trim()).filter((item) => item.length > 0);
+  if (names.length !== WINDOWS_MCP_TOOLS.size) return false;
+  const seen = new Set(names);
+  return seen.size === names.length && WINDOWS_MCP_TOOL_NAMES.every((name) => seen.has(name));
+}
+
 export function isComputerConnection(entry: Pick<McpManagedServer, 'name' | 'config'>): boolean {
-  return isCuaComputerConfig(entry.config) ||
-    (entry.config.transport === 'stdio' && entry.name === COMPUTER_MCP_NAME);
+  return isComputerMcpConfig(entry.config) ||
+    (entry.config.transport === 'stdio' && (entry.name === COMPUTER_MCP_NAME || entry.name === WINDOWS_MCP_COMPUTER_CONNECTION));
 }
 
 /** macOS needs `--direct`; Windows and Linux take the plain stdio mode. */

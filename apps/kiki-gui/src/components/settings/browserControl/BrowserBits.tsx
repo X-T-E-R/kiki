@@ -26,7 +26,8 @@ import {
   AGENT_BROWSER_MARKERS, AGENT_BROWSER_VERSION, LIVE_STATES, browserApi, browserKeys, whenText, type BrowserConnectionType, type BrowserStatus,
 } from '../../../lib/browserRest';
 
-const STATE_KEYS: Readonly<Record<string, I18nKey>> = {  idle: 'st.browser.state.idle',
+const STATE_KEYS: Readonly<Record<string, I18nKey>> = {
+  idle: 'st.browser.state.idle',
   connecting: 'st.browser.state.connecting',
   ready: 'st.browser.state.ready',
   running: 'st.browser.state.running',
@@ -34,6 +35,8 @@ const STATE_KEYS: Readonly<Record<string, I18nKey>> = {  idle: 'st.browser.state
   disconnected: 'st.browser.state.disconnected',
   failed: 'st.browser.state.failed',
   unconfirmed: 'st.browser.state.unconfirmed',
+  requires_action: 'st.browser.status.requires_action',
+  unsupported: 'st.browser.status.unsupported',
   /** Not a service state: the connection is switched off in its configuration. */
   disabled: 'st.browser.state.disabled',
 };

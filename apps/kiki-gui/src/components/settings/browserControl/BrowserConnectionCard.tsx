@@ -1,9 +1,16 @@
 /**
- * 浏览器控制 → the connections themselves. A short list on the left, the
- * selected connection as a flat form on the right (one column under `md`, with
- * a back row), the way the SSH hosts and identity pages work.
+ * 浏览器控制 → the browsers themselves. Every saved connection is one row: may
+ * the Agent use it (the box), is it the default (the tag on the right), what it
+ * is and where it runs, and the state the control service last reported.
+ * Pressing a row opens it as a flat form on the right (one column under `md`,
+ * with a back row), the way the SSH hosts and identity pages work.
  *
- * Three things stay apart on purpose:
+ * Allowed and default are written straight from the row; they are two
+ * separate facts, and the default tag never ticks the box. A connection whose
+ * source is switched off keeps its box as stored, greyed, so turning the source
+ * back on restores exactly what was there.
+ *
+ * Three things stay apart in the form on purpose:
  *
  *   config   name / id / type / enable / driver and profile paths or CDP
  *            endpoint — saved by the draft footer, never by a runtime action;
@@ -18,13 +25,13 @@
  * pressing check / connect does that.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { errorText } from '@kiki/session-core/i18n';
 import type { I18nKey } from '@kiki/session-core/i18n';
-import { experimentalCardId, experimentalSectionForFlag } from '@kiki/session-core/settings';
+import { experimentalCardId, experimentalSectionForFlag, type BrowserSourceId } from '@kiki/session-core/settings';
 import type { BrowserStatus } from '@kiki/protocol';
 
 import { useI18n } from '../../../i18n';
@@ -45,12 +52,21 @@ import { SecretField } from '../SecretField';
 import { FieldIssue, FORM_LABEL, SettingsDetailLayout, SettingsDraftFooter, SettingsSelect } from '../SettingsPrimitives';
 import { useSavedTick } from '../useSavedTick';
 import { BrowserRuntimeDetails, BrowserStateMark, OtherBrowserEcosystems } from './BrowserBits';
+import { useBrowserAllowance } from './browserAllowance';
 import {
   browserConnectionInput, draftIssues, draftOf, hasIssues, isDirtyDraft, isNewDraft, newBrowserDraft, parseBrowserInput,
   type BrowserDraft,
 } from './browserDraft';
 
 type RuntimeAction = 'check' | 'connect' | 'disconnect';
+
+/** What a source is called when the server has not listed its route. */
+const SOURCE_FALLBACK_KEYS: Readonly<Record<BrowserSourceId, I18nKey>> = {
+  'kimi-webbridge': 'st.browser.sourceName.kimi-webbridge',
+  'independent-browser': 'st.browser.sourceName.independent-browser',
+  'codex-browser': 'st.browser.sourceName.codex-browser',
+  'ego-lite': 'st.browser.sourceName.ego-lite',
+};
 
 /**
  * The development-candidate flag that gates a run
@@ -178,19 +194,51 @@ function DraftField({ id, label, value, onChange, issue, hint, placeholder, mono
   );
 }
 
-export function BrowserConnectionCard() {
+export function BrowserConnectionCard({ summary }: {
+  /** The page's own line about what is allowed and which is the default, drawn beside Add. */
+  readonly summary?: ReactNode;
+} = {}) {
   const { client, scopeId } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const guard = useDirtyGuard();
+  const allowance = useBrowserAllowance();
 
-  const query = useQuery({
-    queryKey: browserKeys.connections(scopeId),
-    queryFn: () => browserApi(client).list(),
-    staleTime: 10_000,
+  const query = allowance.connectionsQuery;
+  const rows = allowance.connections;
+  const defaultBrowser = allowance.defaultBrowser;
+
+  // The routes name the Codex pipe whose approval is still unproven, and what
+  // each source is called; both are read from the same cached setup read.
+  const presetsQuery = useQuery({
+    queryKey: browserKeys.presets(scopeId),
+    queryFn: () => browserApi(client).setupPresets(),
+    staleTime: 5_000,
   });
-  const rows = query.data?.connections ?? [];
+  const presets = presetsQuery.data?.presets ?? [];
+  const codexPending = new Set(presets
+    .filter((item) => item.preset === 'codex-browser' && item.reason === 'approval_unproven' && item.browserId !== undefined)
+    .map((item) => item.browserId!));
+  const sourceName = (source: BrowserSourceId): string =>
+    presets.find((item) => item.preset === source)?.displayName ?? t(SOURCE_FALLBACK_KEYS[source]);
+
+  const [rowBusy, setRowBusy] = useState(false);
+  const [rowFeedback, setRowFeedback] = useState<Feedback>(null);
+  const rowWrite = async (write: () => Promise<void>) => {
+    setRowBusy(true);
+    setRowFeedback(null);
+    try {
+      await write();
+    } catch (error) {
+      setRowFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setRowBusy(false);
+    }
+  };
+  const toggleAllowed = (row: BrowserConnectionRow, next: boolean) =>
+    rowWrite(() => allowance.writeAllowed(row.id, next, { fallbackBrowserId: row.browserId }));
+  const toggleDefault = (id: string, isDefault: boolean) => rowWrite(() => allowance.writeDefault(id, isDefault));
 
   const [draft, setDraft] = useState<BrowserDraft | null>(null);
   const [narrowPane, setNarrowPane] = useState<'list' | 'detail'>('list');
@@ -339,38 +387,87 @@ export function BrowserConnectionCard() {
       {query.isLoading ? <p className="text-[13px] text-ink-faint" role="status">{t('st.browser.loading')}</p> : null}
       {query.isError ? <InlineError error={query.error} /> : null}
       {query.isSuccess && rows.length === 0 ? (
-        <div data-browser-empty className="space-y-1.5">
+        <div data-browser-empty className="space-y-1.5 py-2">
           <p className="text-[13px] text-ink">{t('st.browser.emptyTitle')}</p>
           <Hint>{t('st.browser.emptyBody')}</Hint>
         </div>
       ) : null}
       {rows.length > 0 ? (
-        // A list with the editor closed is the whole card, so it keeps a
-        // readable measure instead of stretching the state word to the far edge.
-        <ul className="max-w-[30rem] space-y-0.5">
-          {rows.map((row) => (
-            <li key={row.id}>
-              <button type="button" data-browser-connection={row.id}
-                aria-current={selectedId === row.id ? 'true' : undefined}
-                onClick={() => { open(draftOf(row)); }}
-                className="row-interactive flex w-full min-w-0 flex-col items-start gap-0.5 py-1.5 pl-3 pr-2 text-left">
-                <span className="flex w-full min-w-0 items-center gap-2">
-                  <span className="min-w-0 flex-1 truncate text-[13px] text-ink" title={row.name}>{row.name}</span>
-                  {row.status.currentCall === undefined ? null : <Tag tone="accent">{t('st.browser.currentControl')}</Tag>}
-                </span>
-                <span className="max-w-full truncate font-mono text-[11px] text-ink-faint">{row.id}</span>
-                <span className="flex w-full min-w-0 items-center gap-2">
-                  <span className="min-w-0 flex-1 truncate text-[12px] text-ink-faint"
-                    title={`${typeLabel(t, row.type)} · ${locationLabel(t, row)}`}>
-                    {typeLabel(t, row.type)} · {locationLabel(t, row)}
+        <ul className="divide-y divide-hairline/70" data-browser-list>
+          {rows.map((row) => {
+            const source = allowance.sourceOf(row);
+            const sourceOn = allowance.sourceEnabled(source);
+            const chosen = allowance.isChosen(row);
+            const isDefault = defaultBrowser !== '' && defaultBrowser === row.id;
+            const authUnknown = row.type === 'codex-extension' && codexPending.has(row.browserId ?? row.id);
+            const selected = selectedId === row.id;
+            return (
+              <li key={row.id} data-browser-row={row.id} data-browser-row-allowed={allowance.isEffective(row) ? 'true' : 'false'}
+                className={`flex min-w-0 items-start gap-2.5 py-2 pl-1 pr-1 ${selected ? 'bg-ink/[0.03]' : ''}`}>
+                <input
+                  type="checkbox"
+                  className="mt-[3px] h-3.5 w-3.5 shrink-0 cursor-pointer rounded border-hairline-strong text-selected-ink focus:ring-0 disabled:cursor-not-allowed"
+                  data-browser-allow-checkbox={row.id}
+                  aria-label={t('st.browser.row.allow', { name: row.name })}
+                  checked={chosen}
+                  disabled={rowBusy || !sourceOn}
+                  onChange={(event) => { void toggleAllowed(row, event.target.checked); }}
+                />
+                <button type="button" data-browser-connection={row.id}
+                  aria-current={selected ? 'true' : undefined}
+                  onClick={() => { open(draftOf(row)); }}
+                  className="group min-w-0 flex-1 text-left outline-none focus-visible:underline">
+                  <span className="flex w-full min-w-0 items-baseline gap-2">
+                    <span className="min-w-0 truncate text-[13px] text-ink group-hover:underline group-hover:underline-offset-2" title={row.name}>{row.name}</span>
+                    {row.name === row.id ? null : <span className="min-w-0 shrink truncate font-mono text-[11px] text-ink-faint">{row.id}</span>}
+                    <span className="ml-auto flex shrink-0 items-center gap-1.5">
+                      {row.status.currentCall === undefined ? null : <Tag tone="accent">{t('st.browser.currentControl')}</Tag>}
+                      {authUnknown ? (
+                        <span data-browser-status-tag="auth_unknown"><Tag tone="warn">{t('st.browser.status.authUnknown')}</Tag></span>
+                      ) : null}
+                      <BrowserStateMark state={row.enabled ? row.status.state : 'disabled'} />
+                    </span>
                   </span>
-                  <BrowserStateMark state={row.enabled ? row.status.state : 'disabled'} />
-                </span>
-              </button>
-            </li>
-          ))}
+                  <span className="mt-0.5 flex w-full min-w-0 flex-wrap items-baseline gap-x-1.5 text-[12px] text-ink-faint">
+                    <span className="shrink-0" data-browser-row-type={row.type}>{typeLabel(t, row.type)}</span>
+                    <span aria-hidden>·</span>
+                    <span className="min-w-0 max-w-full truncate" title={locationLabel(t, row)}
+                      data-browser-identity={row.type === 'codex-extension' ? (row.browserId ?? row.id) : undefined}>
+                      {locationLabel(t, row)}
+                    </span>
+                    {source === undefined ? null : (
+                      <>
+                        <span aria-hidden>·</span>
+                        <span className={`shrink-0 ${sourceOn ? '' : 'text-amber-ink'}`} data-browser-source-tag={source}>
+                          {sourceOn ? sourceName(source) : t('st.browser.row.sourceOff', { source: sourceName(source) })}
+                        </span>
+                      </>
+                    )}
+                  </span>
+                </button>
+                {chosen || isDefault ? (
+                  <button
+                    type="button"
+                    data-browser-default-star={row.id}
+                    aria-pressed={isDefault}
+                    aria-label={isDefault ? t('st.browser.defaultActive') : t('st.browser.row.makeDefault', { name: row.name })}
+                    disabled={rowBusy}
+                    onClick={() => { void toggleDefault(row.id, isDefault); }}
+                    className={`mt-px shrink-0 rounded px-1.5 py-0.5 text-[11px] transition-colors ${
+                      isDefault
+                        ? 'bg-selected font-medium text-selected-ink'
+                        : 'text-ink-faint hover:bg-ink/[0.05] hover:text-ink-soft'
+                    }`}
+                  >
+                    {isDefault ? t('st.browser.defaultActive') : t('st.browser.setDefaultAction')}
+                  </button>
+                ) : <span className="w-[4.5rem] shrink-0" aria-hidden />}
+              </li>
+            );
+          })}
         </ul>
       ) : null}
+      <FeedbackLine feedback={rowFeedback} />
     </nav>
   );
 
@@ -646,7 +743,7 @@ export function BrowserConnectionCard() {
   return (
     <div className="min-w-0 space-y-3" data-browser-connections>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <p className="mr-auto max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t('st.browser.intro')}</p>
+        <div className="mr-auto min-w-0">{summary}</div>
         <button type="button" className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`} data-browser-add
           disabled={saving || deleting}
           onClick={() => { open(newBrowserDraft()); }}>
@@ -660,6 +757,7 @@ export function BrowserConnectionCard() {
         : <SettingsDetailLayout narrowPane={narrowPane} list={list} detail={detail} />}
 
       {draft === null ? <FeedbackLine feedback={feedback} /> : null}
+      {draft === null && rows.length > 0 ? <Hint>{t('st.browser.intro')}</Hint> : null}
     </div>
   );
 }

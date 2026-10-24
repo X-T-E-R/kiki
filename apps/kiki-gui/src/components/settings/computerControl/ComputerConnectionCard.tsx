@@ -7,10 +7,10 @@
  * plane and written through it — no local mirror, no default the installer
  * would not have written. Live actions (test, stop) report the service's own
  * output instead of a predicted state: `stop` says what happened to this
- * process's cua children and whether the write behind it persisted.
+ * process's computer MCP children and whether the write behind it persisted.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 
@@ -36,13 +36,15 @@ import {
 import { useSavedTick } from '../useSavedTick';
 import {
   commandSummary,
+  computerExecutorKind,
   computerMcpQueryKey,
   computerServerConfig,
   draftForEntry,
   isComputerConnection,
-  isCuaComputerConfig,
+  isComputerMcpConfig,
   isDirtyDraft,
   isNewDraft,
+  isWindowsMcpServeReady,
   newComputerDraft,
   pluginLink,
   type ComputerDraft,
@@ -59,11 +61,15 @@ function entryKey(entry: Pick<McpManagedServer, 'source' | 'name'>): string {
   return `${entry.source}:${entry.name}`;
 }
 
-export function ComputerConnectionCard({ platform, planBinary }: {
+export function ComputerConnectionCard({ platform, planBinary, summary, footer }: {
   /** Server platform, used for a new entry's default args. */
   platform: string | undefined;
   /** Pinned executor path from the install plan, when one is available. */
   planBinary: string | undefined;
+  /** Active connection selector rendered above the connection list. */
+  summary?: ReactNode;
+  /** Optional registration fold rendered below the connection list. */
+  footer?: ReactNode;
 }) {
   const { client, klient, scopeId } = useConnection();
   const { t, locale } = useI18n();
@@ -219,6 +225,8 @@ export function ComputerConnectionCard({ platform, planBinary }: {
   };
 
   const readOnly = draft?.original !== undefined && !draft.original.mutable;
+  const draftKind = draft?.original !== undefined ? computerExecutorKind(draft.original.config) : undefined;
+  const draftWindowsNotReady = draftKind === 'windows-mcp' && draft?.original !== undefined && !isWindowsMcpServeReady(draft.original.config);
 
   const list = (
     <nav aria-label={t('st.computer.connectionsTitle')} className="min-w-0 space-y-2">
@@ -235,27 +243,34 @@ export function ComputerConnectionCard({ platform, planBinary }: {
       ) : null}
       {entries.length > 0 ? (
         <ul className="space-y-0.5">
-          {entries.map((entry) => (
-            <li key={entryKey(entry)}>
-              <button
-                type="button"
-                data-computer-connection={entry.name}
-                aria-current={selectedKey === entryKey(entry) ? 'true' : undefined}
-                onClick={() => { open(draftForEntry(entry)); }}
-                className="row-interactive flex w-full min-w-0 flex-col items-start gap-0.5 py-1.5 pr-2 pl-3 text-left"
-              >
-                <span className="flex min-w-0 items-center gap-1.5">
-                  <span className="truncate text-[13px] text-ink">{entry.name}</span>
-                  {entry.mutable ? null : (
-                    <Tag>{entry.plugin !== undefined ? t('st.mcp.fromPlugin', { name: entry.plugin.name }) : t('st.mcp.readOnly')}</Tag>
-                  )}
-                </span>
-                <span className="max-w-full truncate font-mono text-[11px] text-ink-faint" title={commandSummary(entry.config)}>
-                  {commandSummary(entry.config)}
-                </span>
-              </button>
-            </li>
-          ))}
+          {entries.map((entry) => {
+            const kind = computerExecutorKind(entry.config);
+            return (
+              <li key={entryKey(entry)}>
+                <button
+                  type="button"
+                  data-computer-connection={entry.name}
+                  data-computer-connection-kind={kind}
+                  aria-current={selectedKey === entryKey(entry) ? 'true' : undefined}
+                  onClick={() => { open(draftForEntry(entry)); }}
+                  className="row-interactive flex w-full min-w-0 flex-col items-start gap-0.5 py-1.5 pr-2 pl-3 text-left"
+                >
+                  <span className="flex w-full min-w-0 items-center gap-1.5">
+                    <span className="truncate text-[13px] text-ink">{entry.name}</span>
+                    {kind === undefined ? null : (
+                      <Tag>{t(kind === 'windows-mcp' ? 'st.computer.kind.windowsMcp' : 'st.computer.kind.cua')}</Tag>
+                    )}
+                    {entry.mutable ? null : (
+                      <Tag>{entry.plugin !== undefined ? t('st.mcp.fromPlugin', { name: entry.plugin.name }) : t('st.mcp.readOnly')}</Tag>
+                    )}
+                  </span>
+                  <span className="max-w-full truncate font-mono text-[11px] text-ink-faint" title={commandSummary(entry.config)}>
+                    {commandSummary(entry.config)}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
         </ul>
       ) : null}
     </nav>
@@ -270,6 +285,12 @@ export function ComputerConnectionCard({ platform, planBinary }: {
           {t('st.computer.connectionsTitle')}
         </span>
       </button>
+
+      {draftWindowsNotReady ? (
+        <p className="text-[12px] text-amber-ink" data-computer-windows-mcp-not-ready>
+          {t('st.computer.windowsMcp.notServeReady')}
+        </p>
+      ) : null}
 
       <fieldset disabled={saving || stopping || readOnly} className="min-w-0 space-y-4">
         <div className="space-y-1.5">
@@ -405,7 +426,7 @@ export function ComputerConnectionCard({ platform, planBinary }: {
           onClick={() => { void test(); }}>
           {testing ? t('st.computer.testing') : t('st.computer.testButton')}
         </button>
-        {draft.original !== undefined && isCuaComputerConfig(draft.original.config) ? (
+        {draft.original !== undefined && isComputerMcpConfig(draft.original.config) ? (
           <button type="button" className={DANGER_GHOST_BUTTON} data-computer-stop-btn
             disabled={stopping || saving}
             onClick={() => { setConfirmingStop(true); }}>
@@ -459,12 +480,14 @@ export function ComputerConnectionCard({ platform, planBinary }: {
   ];
 
   return (
-    <div className="min-w-0" data-computer-connections>
+    <div className="min-w-0 space-y-3" data-computer-connections>
+      {summary}
       {/* Nothing selected: the list is the whole card, instead of a two-column
           grid holding an empty editor column. */}
       {detail === null
         ? list
         : <SettingsDetailLayout narrowPane={narrowPane} list={list} detail={detail} />}
+      {footer}
       <ConfirmDialog
         open={confirmingStop}
         overlayId="confirm-computer-stop"

@@ -1593,7 +1593,11 @@ describe('BrowserControlSection', () => {
     upsert.mockImplementation(async (_id, input) => ({ connection: { ...bridge, enabled: (input as { enabled: boolean }).enabled } }));
 
     await render();
-    await settleUntil('[data-browser-source-items="kimi-webbridge"]');
+    await settleUntil('[data-browser-row="kimi-webbridge"]');
+    // The bridge is listed once, with the other browsers, and attributed to the
+    // Kimi source rather than repeated under its route.
+    expect(query('[data-browser-route="kimi-webbridge"] [data-browser-allow-checkbox]')).toBeNull();
+    expect(query('[data-browser-row="kimi-webbridge"] [data-browser-source-tag]')?.getAttribute('data-browser-source-tag')).toBe('kimi-webbridge');
     // A switched-off connection cannot be allowed, so ticking the box is also the
     // request to switch it on — through the bridge's own branch, not a CDP write.
     expect(query<HTMLInputElement>('[data-browser-allow-checkbox="kimi-webbridge"]')?.checked).toBe(false);
@@ -1961,18 +1965,20 @@ describe('BrowserControlSection', () => {
 
       const countBadge = query('[data-browser-allowed-count="codex-browser"]');
       expect(countBadge).not.toBeNull();
-      expect(countBadge?.textContent).toContain('1 allowed');
-      expect(queryAll('[data-browser-route="codex-browser"] [data-browser-allow-checkbox]')).toHaveLength(3);
+      expect(countBadge?.textContent).toContain('1 of 1 allowed');
+      // The saved connection is a browser row; only what is not saved yet stays under the route.
+      expect(queryAll('[data-browser-route="codex-browser"] [data-browser-allow-checkbox]')).toHaveLength(2);
       expect(queryAll('[data-browser-allow-checkbox="work-browser"]')).toHaveLength(1);
+      expect(query('[data-browser-route="codex-browser"] [data-browser-allow-checkbox="work-browser"]')).toBeNull();
 
       const registered = query<HTMLInputElement>('[data-browser-allow-checkbox="work-browser"]');
       const unregistered = query<HTMLInputElement>('[data-browser-allow-checkbox="codex-browser-use-pipe-2"]');
       expect(registered?.checked).toBe(true);
       expect(unregistered?.checked).toBe(false);
       expect(query('[data-browser-allow-checkbox="codex-browser-use-pipe-1"]')).toBeNull();
-      expect(query('[data-browser-identity="codex-browser-use-pipe-1"]')).not.toBeNull();
-      expect(query('[data-browser-source-tag="codex-browser"]')).not.toBeNull();
-      expect(query('[data-browser-status-tag="ready"]')).not.toBeNull();
+      expect(query('[data-browser-row="work-browser"] [data-browser-identity="codex-browser-use-pipe-1"]')).not.toBeNull();
+      expect(query('[data-browser-row="work-browser"] [data-browser-source-tag="codex-browser"]')).not.toBeNull();
+      expect(query('[data-browser-row="work-browser"] [data-browser-state="ready"]')).not.toBeNull();
       expect(query('[data-browser-default-star="work-browser"]')?.getAttribute('aria-pressed')).toBe('true');
 
       connectPreset.mockImplementationOnce(async () => {
@@ -2046,14 +2052,14 @@ describe('BrowserControlSection', () => {
         await settleUntil('[data-browser-source-items="codex-browser"]');
 
         expect(() => { store.rejectUnknown(['codex-browser-use-pipe-1']); }).toThrow('Unknown browser connection "codex-browser-use-pipe-1"');
-        expect(queryAll('[data-browser-route="codex-browser"] [data-browser-allow-checkbox]')).toHaveLength(3);
+        expect(queryAll('[data-browser-route="codex-browser"] [data-browser-allow-checkbox]')).toHaveLength(2);
         expect(queryAll('[data-browser-allow-checkbox="work-browser"]')).toHaveLength(1);
         expect(query('[data-browser-route="codex-browser"] [data-browser-allow-checkbox="codex-browser-use-pipe-1"]')).toBeNull();
         expect(query('[data-browser-route="codex-browser"] [data-browser-allow-checkbox="research"]')).toBeNull();
         expect(query('[data-browser-identity="codex-browser-use-pipe-1"]')).not.toBeNull();
         expect(query<HTMLInputElement>('[data-browser-allow-checkbox="work-browser"]')?.checked).toBe(true);
         expect(query<HTMLInputElement>('[data-browser-allow-checkbox="codex-browser-use-pipe-2"]')?.checked).toBe(false);
-        expect(query('[data-browser-allowed-count="codex-browser"]')?.textContent).toContain('1 allowed');
+        expect(query('[data-browser-allowed-count="codex-browser"]')?.textContent).toContain('1 of 1 allowed');
         expect(query('[data-browser-allowed-total]')?.textContent).toContain('2 browsers currently allowed');
 
         await clickBox('work-browser');
@@ -2063,8 +2069,10 @@ describe('BrowserControlSection', () => {
         expect(setDefault).not.toHaveBeenCalled();
         expect(upsert.mock.calls.map(([id]) => id)).toEqual(['work-browser']);
         expect(upsert.mock.calls[0]?.[1]).toMatchObject({ type: 'codex-extension', browserId: 'codex-browser-use-pipe-1', enabled: false });
-        expect(query('[data-browser-allowed-count="codex-browser"]')?.textContent).toContain('0 allowed');
+        expect(query('[data-browser-allowed-count="codex-browser"]')?.textContent).toContain('0 of 1 allowed');
         expect(query('[data-browser-allowed-total]')?.textContent).toContain('1 browsers currently allowed');
+        // Still the default, now not allowed: the page says so instead of implying it works.
+        expect(query('[data-browser-default-not-allowed]')?.textContent).toContain('Work browser');
 
         await clickBox('work-browser');
         expect(store.state.allowed).toEqual(['research', 'work-browser']);
@@ -2111,10 +2119,11 @@ describe('BrowserControlSection', () => {
         expect(store.state.defaultBrowser).toBe('work-browser');
         expect(setDefault).not.toHaveBeenCalled();
         expect(query('[data-browser-route="codex-browser"] [data-feedback-tone="error"]')).toBeNull();
-        expect(queryAll('[data-browser-route="codex-browser"] [data-browser-allow-checkbox]')).toHaveLength(3);
+        // Saved now, so it moves from the route's found list to the browser rows.
+        expect(queryAll('[data-browser-route="codex-browser"] [data-browser-allow-checkbox]')).toHaveLength(1);
         expect(query('[data-browser-allow-checkbox="codex-browser-use-pipe-2"]')).toBeNull();
         expect(query<HTMLInputElement>('[data-browser-allow-checkbox="codex-browser"]')?.checked).toBe(true);
-        expect(query('[data-browser-identity="codex-browser-use-pipe-2"]')).not.toBeNull();
+        expect(query('[data-browser-row="codex-browser"] [data-browser-identity="codex-browser-use-pipe-2"]')).not.toBeNull();
 
         await clickBox('codex-browser-use-pipe-3');
         expect(connectPreset).toHaveBeenLastCalledWith('codex-browser', {
@@ -2168,7 +2177,7 @@ describe('BrowserControlSection', () => {
         await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 20); }); });
 
         expect(reasons).toEqual([]);
-        expect(query('[data-browser-route="codex-browser"] [data-feedback-tone="error"]')?.textContent).toContain('default refused');
+        expect(query('[data-browser-connections] [data-feedback-tone="error"]')?.textContent).toContain('default refused');
         expect(store.state.allowed).toEqual(['work-browser', 'research']);
         expect(store.state.defaultBrowser).toBe('work-browser');
         expect(patchConfig).not.toHaveBeenCalled();
@@ -2188,7 +2197,7 @@ describe('BrowserControlSection', () => {
         expect(setDefault).toHaveBeenLastCalledWith(undefined);
         expect(store.state.defaultBrowser).toBeUndefined();
         expect(store.state.allowed).toEqual(['work-browser', 'research']);
-        expect(query('[data-browser-route="codex-browser"] [data-feedback-tone="error"]')).toBeNull();
+        expect(query('[data-browser-connections] [data-feedback-tone="error"]')).toBeNull();
         expect(query('[data-browser-default-star="work-browser"]')?.getAttribute('aria-pressed')).toBe('false');
         expect(query('[data-browser-default-star="work-browser"]')?.textContent).toBe('Set as default');
         expect(reasons).toEqual([]);
@@ -2342,12 +2351,13 @@ describe('BrowserControlSection', () => {
       });
 
       await render();
-      await settleUntil('[data-browser-source-items="codex-browser"]');
+      await settleUntil('[data-browser-row="work-browser"]');
 
       expect(() => { store.rejectUnknown(['codex-browser-use-pipe-1']); }).toThrow('Unknown browser connection "codex-browser-use-pipe-1"');
       expect(query('[data-browser-allowed-total]')?.textContent).toContain('0 browsers currently allowed');
-      expect(query('[data-browser-allowed-count="codex-browser"]')?.textContent).toContain('0 allowed');
-      expect(queryAll('[data-browser-route="codex-browser"] [data-browser-allow-checkbox]')).toHaveLength(2);
+      expect(query('[data-browser-allowed-count="codex-browser"]')?.textContent).toContain('0 of 2 allowed');
+      expect(queryAll('[data-browser-list] [data-browser-allow-checkbox]')).toHaveLength(2);
+      expect(query('[data-browser-route="codex-browser"] [data-browser-allow-checkbox]')).toBeNull();
       expect(query('[data-browser-allow-checkbox="codex-browser-use-pipe-1"]')).toBeNull();
       expect(query('[data-browser-identity="codex-browser-use-pipe-1"]')).not.toBeNull();
       const cb1 = query<HTMLInputElement>('[data-browser-allow-checkbox="work-browser"]');
@@ -2364,7 +2374,7 @@ describe('BrowserControlSection', () => {
       expect(connectPreset).not.toHaveBeenCalled();
       expect(setDefault).not.toHaveBeenCalled();
       expect(query('[data-browser-allowed-total]')?.textContent).toContain('2 browsers currently allowed');
-      expect(query('[data-browser-allowed-count="codex-browser"]')?.textContent).toContain('2 allowed');
+      expect(query('[data-browser-allowed-count="codex-browser"]')?.textContent).toContain('2 of 2 allowed');
 
       await act(async () => { query<HTMLInputElement>('[data-browser-allow-checkbox="work-browser"]')?.click(); });
       await settle();
@@ -2372,10 +2382,10 @@ describe('BrowserControlSection', () => {
       expect(store.state.allowed).toEqual(['lab-browser']);
       expect(store.state.defaultBrowser).toBeUndefined();
       expect(query('[data-browser-allowed-total]')?.textContent).toContain('1 browsers currently allowed');
-      expect(query('[data-browser-allowed-count="codex-browser"]')?.textContent).toContain('1 allowed');
+      expect(query('[data-browser-allowed-count="codex-browser"]')?.textContent).toContain('1 of 2 allowed');
       expect(query<HTMLInputElement>('[data-browser-allow-checkbox="work-browser"]')?.checked).toBe(false);
       expect(query<HTMLInputElement>('[data-browser-allow-checkbox="lab-browser"]')?.checked).toBe(true);
-      expect(queryAll('[data-browser-route="codex-browser"] [data-browser-allow-checkbox]')).toHaveLength(2);
+      expect(queryAll('[data-browser-list] [data-browser-allow-checkbox]')).toHaveLength(2);
     });
 
     it('toggles a browser source off to hide its checklist and exclude it from active counts, while preserving checked connections on restore without stealth-selecting new items', async () => {
@@ -2411,6 +2421,7 @@ describe('BrowserControlSection', () => {
             candidates: [
               { browserId: 'codex-browser-use-pipe-1' },
               { browserId: 'codex-browser-use-pipe-2' },
+              { browserId: 'codex-browser-use-pipe-3' },
             ],
           }),
         ],
@@ -2432,6 +2443,8 @@ describe('BrowserControlSection', () => {
       expect(query('[data-browser-source-items="codex-browser"]')).toBeNull();
       expect(query('[data-browser-allowed-total]')?.textContent).toContain('0 browsers currently allowed');
       expect(query('[data-browser-route="codex-browser"]')?.getAttribute('data-browser-route-state')).toBe('disabled');
+      expect(query<HTMLInputElement>('[data-browser-allow-checkbox="work-browser"]')?.disabled).toBe(true);
+      expect(query('[data-browser-row="work-browser"] [data-browser-source-tag="codex-browser"]')?.textContent).toContain('source off');
 
       await click('[data-browser-source-switch="codex-browser"]');
       expect(store.state.disabledSources).toEqual([]);

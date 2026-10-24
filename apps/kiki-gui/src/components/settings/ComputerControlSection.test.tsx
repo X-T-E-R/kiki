@@ -37,10 +37,11 @@ const mcpUpdate = vi.fn(async (_input: { server: Record<string, unknown> }) => [
 const mcpRemove = vi.fn(async (_input: { name: string }) => [] as readonly McpManagedServer[]);
 const mcpTest = vi.fn(async (_target: unknown) => ({ success: true, output: '5 tools' }));
 const mcpStop = vi.fn(async (_target: { name: string }) => ({ state: 'unconfirmed' as const, output: 'still running' }));
+const memoryRequest = vi.fn<(_method: 'GET' | 'POST', _path: string, _options?: { body?: unknown }) => Promise<unknown>>();
 
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({
-    client: { getCapability, installCapability, revealSecret, getConfig, patchConfig, setComputerControlEnabled },
+    client: { getCapability, installCapability, revealSecret, getConfig, patchConfig, setComputerControlEnabled, memoryRequest },
     klient: { global: { env, mcp: { list: mcpList, add: mcpAdd, update: mcpUpdate, remove: mcpRemove, test: mcpTest, stop: mcpStop } } },
     scopeId: connection.scopeId,
     sshLabel: connection.sshLabel,
@@ -826,9 +827,6 @@ describe('ComputerControlSection', () => {
       expect(card).not.toBeNull();
       expect(card?.getAttribute('data-computer-control-enabled')).toBe('true');
 
-      // Preference note explaining preference does not gate tool availability
-      expect(query('[data-computer-preference-note]')).not.toBeNull();
-
       const toggleBtn = query<HTMLButtonElement>('[data-computer-enabled-switch]');
       expect(toggleBtn).not.toBeNull();
       expect(toggleBtn?.getAttribute('aria-checked')).toBe('true');
@@ -879,6 +877,134 @@ describe('ComputerControlSection', () => {
       const partial = query('[data-computer-toolpolicy-partial]');
       expect(partial).not.toBeNull();
       expect(partial?.textContent).toContain('Some computer control tools are denied by tool policy.');
+    });
+
+    it('switches active computer connection between CUA default and Windows-MCP 0.8.8 without auto-installing, and shows foreground lease notice', async () => {
+      const windowsConfig = {
+        transport: 'stdio' as const,
+        command: 'C:\\Env\\venv\\Scripts\\python.exe',
+        args: ['-m', 'windows_mcp', 'serve', '--transport', 'stdio', '--config', 'C:\\Env\\config.toml', '--tools', 'ControlStatus,DisplayInventory,Screenshot,Snapshot,Click,Type,Scroll,Move,Shortcut,Wait,WaitFor,App'],
+        executor: 'local' as const,
+        envKeys: ['ANONYMIZED_TELEMETRY', 'WINDOWS_MCP_WATCHDOG'],
+      };
+      mcpList.mockResolvedValue([
+        managedEntry({ name: 'kiki-computer' }),
+        managedEntry({ name: 'kiki-windows-mcp', config: windowsConfig as never }),
+      ]);
+      getConfig.mockResolvedValue({
+        providers: {},
+        computer_control: { enabled: true, enabledSource: 'default', usagePreference: 'avoid', usagePreferenceSource: 'default', appliesOn: 'next-model-request', toolsApplyOn: 'next-step' },
+      });
+      patchConfig.mockImplementation(async (patch) => ({
+        providers: {},
+        computer_control: {
+          enabled: true,
+          enabledSource: 'default',
+          usagePreference: 'avoid',
+          usagePreferenceSource: 'default',
+          appliesOn: 'next-model-request',
+          toolsApplyOn: 'next-step',
+          ...(patch.computer_control?.connection ? { connection: patch.computer_control.connection, connectionSource: 'home' as const } : {}),
+        },
+      }));
+
+      await render();
+      await settleUntil('[data-computer-active-connection]');
+
+      expect(query('[data-computer-connection="kiki-computer"]')?.getAttribute('data-computer-connection-kind')).toBe('cua');
+      expect(query('[data-computer-connection="kiki-windows-mcp"]')?.getAttribute('data-computer-connection-kind')).toBe('windows-mcp');
+      expect(query('[data-computer-active-windows-mcp-hint]')).toBeNull();
+
+      await click('[data-computer-active-connection] button');
+      await act(async () => {
+        [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+          .find((option) => option.textContent?.includes('kiki-windows-mcp'))?.click();
+      });
+      await settle();
+
+      expect(patchConfig).toHaveBeenCalledWith({ computer_control: { connection: 'kiki-windows-mcp' } });
+      expect(installCapability).not.toHaveBeenCalled();
+      expect(query('[data-computer-active-windows-mcp-hint]')?.textContent).toContain('interactive desktop');
+
+      await click('[data-computer-active-connection] button');
+      await act(async () => {
+        [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+          .find((option) => option.textContent?.includes('CUA default'))?.click();
+      });
+      await settle();
+
+      expect(patchConfig).toHaveBeenCalledWith({ computer_control: { connection: null } });
+    });
+
+    it('registers an external Windows-MCP 0.8.8 environment on Windows without auto-starting or auto-selecting', async () => {
+      memoryRequest.mockImplementation(async (method, path, options) => {
+        if (method === 'GET' && path === '/computer/windows-mcp') {
+          return {
+            id: 'windows-mcp',
+            version: '0.8.8',
+            commit: 'b74c507d9e709223a0904cf08019edf55f2a75bb',
+            python: '>=3.14',
+            wheelSha256: '597ef720e1902ba76510a4d2b946949f8a48f281dd210c183de5ded60ea3b873',
+            wheelBytes: 257859,
+            distribution: 'external-environment',
+            managedInstall: 'withheld-until-gpl-acceptance',
+            bundled: false,
+            autoStart: false,
+            connection: 'kiki-windows-mcp',
+            licenses: [
+              { name: 'windows-mcp', license: 'MIT' },
+              { name: 'fuzzywuzzy', license: 'GPL-2.0-only' },
+              { name: 'python-Levenshtein', license: 'GPL-2.0-or-later' },
+            ],
+            closureLock: 'windows-mcp-0.8.8.lock',
+            note: 'External Windows-MCP 0.8.8 environment',
+          };
+        }
+        if (method === 'POST' && path === '/computer/windows-mcp/register') {
+          expect(options?.body).toEqual({
+            python: 'C:\\Env\\venv\\Scripts\\python.exe',
+            configPath: 'C:\\Env\\config.toml',
+            version: '0.8.8',
+          });
+          return {
+            result: 'mcp-configured',
+            name: 'kiki-windows-mcp',
+            connection: 'kiki-windows-mcp',
+            started: false,
+            bundled: false,
+          };
+        }
+        throw new Error(`Unexpected request: ${method} ${path}`);
+      });
+
+      await render();
+      await settleUntil('[data-computer-windows-mcp-register]');
+
+      const details = query<HTMLDetailsElement>('[data-computer-windows-mcp-register]');
+      expect(details).not.toBeNull();
+      await act(async () => {
+        details!.open = true;
+        details!.dispatchEvent(new Event('toggle'));
+      });
+      await settleUntil('[data-computer-windows-mcp-plan]');
+      expect(query('[data-computer-windows-mcp-plan]')?.textContent).toContain('Windows-MCP v0.8.8');
+
+      await act(async () => {
+        setInput('[data-computer-windows-mcp-python]', 'C:\\Env\\venv\\Scripts\\python.exe');
+        setInput('[data-computer-windows-mcp-config]', 'C:\\Env\\config.toml');
+      });
+      await settle();
+
+      await click('[data-computer-windows-mcp-submit]');
+      expect(memoryRequest).toHaveBeenCalledWith('POST', '/computer/windows-mcp/register', {
+        body: {
+          python: 'C:\\Env\\venv\\Scripts\\python.exe',
+          configPath: 'C:\\Env\\config.toml',
+          version: '0.8.8',
+        },
+      });
+      expect(patchConfig).not.toHaveBeenCalled();
+      expect(container.textContent).toContain('Registered as kiki-windows-mcp');
     });
   });
 });
