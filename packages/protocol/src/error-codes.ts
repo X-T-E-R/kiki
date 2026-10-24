@@ -182,6 +182,8 @@ export const ErrorCode = {
   PERSONA_REVISION_CONFLICT: 40946,
   /** request identity is still referenced, or its checked update changed */
   REQUEST_IDENTITY_CONFLICT: 40947,
+  /** a session creation id was reused with a different request body */
+  SESSION_CREATE_IDEMPOTENCY_CONFLICT: 40948,
 
   /** approval 60s 超时 */
   APPROVAL_EXPIRED: 41001,
@@ -218,6 +220,8 @@ export const ErrorCode = {
   CATALOG_UNAVAILABLE: 50004,
   /** a durably accepted peer message could not be delivered */
   THREAD_DELIVERY_FAILED: 50005,
+  /** a pending session creation has no reliable completion evidence */
+  SESSION_CREATE_OUTCOME_UNKNOWN: 50006,
 
   /** tool 执行抛错 */
   TOOL_EXECUTION_FAILED: 60001,
@@ -328,6 +332,7 @@ export const ErrorCodeReason: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.PERSONA_ALREADY_EXISTS]: 'persona.already_exists',
   [ErrorCode.PERSONA_REVISION_CONFLICT]: 'persona.revision_conflict',
   [ErrorCode.REQUEST_IDENTITY_CONFLICT]: 'request_identity.conflict',
+  [ErrorCode.SESSION_CREATE_IDEMPOTENCY_CONFLICT]: 'session.create_idempotency_conflict',
 
   [ErrorCode.APPROVAL_EXPIRED]: 'approval.expired',
   [ErrorCode.QUESTION_EXPIRED]: 'question.expired',
@@ -348,6 +353,7 @@ export const ErrorCodeReason: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.PERSISTENCE_FAILURE]: 'persistence.failure',
   [ErrorCode.CATALOG_UNAVAILABLE]: 'catalog.unavailable',
   [ErrorCode.THREAD_DELIVERY_FAILED]: 'thread.delivery_failed',
+  [ErrorCode.SESSION_CREATE_OUTCOME_UNKNOWN]: 'session.create_outcome_unknown',
 
   [ErrorCode.TOOL_EXECUTION_FAILED]: 'tool.execution_failed',
   [ErrorCode.TOOL_NOT_AVAILABLE]: 'tool.not_available',
