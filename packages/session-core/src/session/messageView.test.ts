@@ -52,6 +52,141 @@ describe('SendMessage projection', () => {
   });
 });
 
+describe('SendMessage channel receipts', () => {
+  function received(value: Record<string, unknown>): ToolBlock {
+    return tool({ output: JSON.stringify(value) });
+  }
+  const picture = { blob_id: 'blob-1', path: '/media/a.png', title: 'a.png', mime_type: 'image/png', size: 12, kind: 'image' };
+  const voice = { blob_id: 'blob-2', path: '/media/note.wav', title: 'note.wav', mime_type: 'audio/wav', size: 40, kind: 'voice' };
+
+  it('keeps a receipt with no channels on its old reading and claims no destination', () => {
+    const legacy = projectSendMessage(tool())!;
+    expect(legacy.status).toBe('sent');
+    expect(legacy.channels).toBeUndefined();
+    expect(legacy.reached).toBeUndefined();
+    expect(legacy.deliveredTo).toEqual(['user']);
+  });
+
+  it('speaks here only when this conversation’s own channel delivered', () => {
+    const here = projectSendMessage(received({
+      message_id: 'send:call', delivered_to: ['user'], delivery: 'delivered',
+      channels: [{ channel_id: 'internal', status: 'delivered' }, { channel_id: 'im:tg-main', status: 'failed', detail: 'bot was blocked' }],
+      attachments: [picture, voice],
+    }))!;
+    expect(here.status).toBe('sent');
+    expect(here.reached).toBe('here');
+    expect(here.deliveredTo).toEqual(['user']);
+    expect(here.attachments.map((attachment) => [attachment.kind, attachment.mimeType]))
+      .toEqual([['image', 'image/png'], ['voice', 'audio/wav']]);
+    expect(here.channels?.map((channel) => [channel.channelId, channel.status, channel.detail]))
+      .toEqual([['internal', 'delivered', undefined], ['im:tg-main', 'failed', 'bot was blocked']]);
+  });
+
+  it('does not read an external-only delivery as speech here', () => {
+    // The user's overall receipt says "user", but this conversation was never
+    // one of the destinations: its own channel is absent because internal
+    // delivery is off.
+    const elsewhere = projectSendMessage(received({
+      message_id: 'send:call', delivered_to: ['user'], delivery: 'delivered',
+      channels: [{ channel_id: 'im:tg-main', status: 'delivered', message_ids: ['42'], unsupported: ['voice'] }],
+      attachments: [picture, voice],
+    }))!;
+    expect(elsewhere.status).toBe('sent');
+    expect(elsewhere.reached).toBe('elsewhere');
+    expect(elsewhere.channels?.[0]?.unsupported).toEqual(['voice']);
+    // The same turn must not also promote its final reply as this page's speech.
+    const view = projectMessageView([thought, received({
+      message_id: 'send:call', delivered_to: ['user'], delivery: 'delivered',
+      channels: [{ channel_id: 'im:tg-main', status: 'delivered' }],
+    })], { completedTurnIds: ['t1'] });
+    expect(view.map((node) => node.kind)).toEqual(['activity-summary', 'message']);
+    expect(view.some((node) => node.kind === 'message' && node.origin === 'ordinary_final')).toBe(false);
+  });
+
+  it('keeps a supported subset delivered and names the media a channel did not take', () => {
+    const partial = projectSendMessage(received({
+      message_id: 'send:call', delivered_to: ['user'], delivery: 'delivered',
+      channels: [
+        { channel_id: 'internal', status: 'delivered', unsupported: ['voice'] },
+        { channel_id: 'im:wx', status: 'unsupported', unsupported: ['image', 'voice'] },
+      ],
+      attachments: [picture, voice],
+    }))!;
+    expect(partial.status).toBe('sent');
+    expect(partial.reached).toBe('here');
+    expect(partial.channels?.map((channel) => [channel.channelId, channel.status, channel.unsupported]))
+      .toEqual([['internal', 'delivered', ['voice']], ['im:wx', 'unsupported', ['image', 'voice']]]);
+  });
+
+  it('never reads a channel that took none of the attachments as delivered', () => {
+    const refused = projectSendMessage(received({
+      message_id: 'send:call', delivered_to: [], delivery: 'undeliverable',
+      channels: [{ channel_id: 'internal', status: 'unsupported', unsupported: ['voice'] }],
+      attachments: [voice],
+    }))!;
+    expect(refused.status).toBe('failed');
+    expect(refused.reached).toBeUndefined();
+    expect(refused.text).toBe('');
+    expect(refused.attachments).toEqual([]);
+  });
+
+  it('keeps an unconfirmed outcome as pending, with no delivered claim', () => {
+    const unknown = projectSendMessage(received({
+      message_id: 'send:call', delivered_to: [], delivery: 'pending',
+      channels: [{ channel_id: 'internal', status: 'unknown', detail: 'timeout' }],
+      attachments: [picture],
+    }))!;
+    expect(unknown.status).toBe('pending');
+    expect(unknown.reached).toBe('unconfirmed');
+    expect(unknown.deliveredTo).toEqual([]);
+    expect(unknown.attachments).toEqual([]);
+    expect(unknown.text).toBe('Delivered words');
+    // A status this build does not know is unknown, never delivered.
+    const unrecognized = projectSendMessage(received({
+      message_id: 'send:call', channels: [{ channel_id: 'internal', status: 'queued_somewhere' }],
+    }))!;
+    expect(unrecognized.status).toBe('pending');
+  });
+
+  it('keeps an unconfirmed turn from speaking a second copy as its reply', () => {
+    const view = projectMessageView([thought, received({
+      message_id: 'send:call', delivered_to: [], delivery: 'pending',
+      channels: [{ channel_id: 'internal', status: 'unknown' }],
+    })], { completedTurnIds: ['t1'], personaName: 'Coordinator' });
+    expect(view.map((node) => node.kind)).toEqual(['activity-summary', 'message']);
+    expect(view.some((node) => node.kind === 'notice')).toBe(false);
+  });
+
+  it('reads the summary delivery field when no channels were reported', () => {
+    expect(projectSendMessage(received({ message_id: 'send:call', delivered_to: [], delivery: 'undeliverable' }))?.status).toBe('failed');
+    expect(projectSendMessage(received({ message_id: 'send:call', delivered_to: [], delivery: 'pending' }))?.status).toBe('pending');
+  });
+
+  it('keeps the call’s own error text when the send was refused outright', () => {
+    const refused = projectSendMessage(tool({ status: 'error', isError: true,
+      output: 'media_unsupported: No enabled channel supports video (video/mp4).' }))!;
+    expect(refused.status).toBe('failed');
+    expect(refused.failureDetail).toContain('media_unsupported');
+    // A receipt that reports failed channels carries its reasons per channel;
+    // it is not re-read as the call's own error text.
+    const receipted = projectSendMessage(received({
+      message_id: 'send:call', delivered_to: [], delivery: 'undeliverable',
+      channels: [{ channel_id: 'internal', status: 'failed' }],
+    }))!;
+    expect(receipted.failureDetail).toBeUndefined();
+  });
+
+  it('fails when every reported channel failed', () => {
+    const failed = projectSendMessage(received({
+      message_id: 'send:call', delivered_to: [], delivery: 'undeliverable',
+      channels: [{ channel_id: 'internal', status: 'failed' }, { channel_id: 'im:tg', status: 'failed', detail: 'blocked' }],
+    }))!;
+    expect(failed.status).toBe('failed');
+    expect(failed.text).toBe('');
+    expect(failed.reached).toBeUndefined();
+  });
+});
+
 describe('message view', () => {
   it('keeps a running turn as activity, then speaks its own final reply once the turn ends', () => {
     const live = projectMessageView([thought]);

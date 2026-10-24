@@ -1,5 +1,6 @@
 import type {
-  ActivitySummary, AssistantBlock, Block, MessageAttachment, MessageBlock, NoticeBlock, ToolBlock,
+  ActivitySummary, AssistantBlock, Block, MessageAttachment, MessageBlock, MessageChannelDelivery, MessageReach,
+  NoticeBlock, ToolBlock,
 } from './transcript/types';
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -26,19 +27,77 @@ function attachments(value: unknown): MessageAttachment[] {
     const path = string(entry?.['path']);
     if (blobId === undefined || path === undefined) return [];
     return [{ blobId, path, title: string(entry?.['title']), mimeType: string(entry?.['mime_type']),
-      size: typeof entry?.['size'] === 'number' ? entry['size'] : undefined }];
+      size: typeof entry?.['size'] === 'number' ? entry['size'] : undefined, kind: string(entry?.['kind']) }];
   });
 }
 
-/** Project only validated, successfully delivered speech as a sent message. */
+const CHANNEL_STATUS: Readonly<Record<string, MessageChannelDelivery['status']>> = {
+  delivered: 'delivered', unsupported: 'unsupported', failed: 'failed', unknown: 'unknown',
+};
+
+/**
+ * Receipts carry a status string; a value this build does not know is
+ * `unknown`, never a quiet promotion to delivered.
+ */
+function channelDeliveries(value: unknown): MessageChannelDelivery[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const entry = record(item);
+    const channelId = string(entry?.['channel_id']);
+    if (channelId === undefined) return [];
+    const raw = string(entry?.['status']);
+    const messageIds = strings(entry?.['message_ids']);
+    const unsupported = strings(entry?.['unsupported']);
+    return [{
+      channelId,
+      status: raw === undefined ? 'unknown' : CHANNEL_STATUS[raw] ?? 'unknown',
+      messageIds: messageIds.length === 0 ? undefined : messageIds,
+      unsupported: unsupported.length === 0 ? undefined : unsupported,
+      detail: string(entry?.['detail']),
+    }];
+  });
+}
+
+/**
+ * Which destinations actually took the message. Only `delivered` counts: a
+ * channel that reported `unsupported` took none of the attachments and
+ * received the notice alone, and an unknown or failed channel proves nothing —
+ * neither is read as reaching this conversation.
+ */
+function reachOf(channels: readonly MessageChannelDelivery[]): MessageReach | 'nowhere' {
+  if (channels.some((channel) => channel.channelId === 'internal' && channel.status === 'delivered')) return 'here';
+  if (channels.some((channel) => channel.status === 'delivered')) return 'elsewhere';
+  if (channels.some((channel) => channel.status === 'unknown')) return 'unconfirmed';
+  return 'nowhere';
+}
+
+/**
+ * Project a `SendMessage` call into speech — and only into speech when the
+ * receipt says this conversation received it. Channel receipts decide that
+ * per destination; a receipt that predates them keeps its old reading.
+ */
 export function projectSendMessage(tool: ToolBlock): MessageBlock | undefined {
   if (tool.toolCallId.startsWith('external:') || tool.name !== 'SendMessage') return undefined;
   const args = record(tool.args) ?? record(tool.argsText);
   const result = record(tool.output);
   const messageId = string(result?.['message_id']);
   const succeeded = tool.status === 'done' && tool.isError !== true && messageId !== undefined;
-  const status = tool.status === 'running' ? 'sending' : succeeded ? 'sent'
-    : tool.status === 'stopped' ? 'cancelled' : 'failed';
+  const channels = channelDeliveries(result?.['channels']);
+  const reach = channels.length === 0 ? undefined : reachOf(channels);
+  const delivery = string(result?.['delivery']);
+  const status: MessageBlock['status'] = tool.status === 'running' ? 'sending'
+    : tool.status === 'stopped' ? 'cancelled'
+      : !succeeded || reach === 'nowhere' || delivery === 'undeliverable' ? 'failed'
+        : reach === 'unconfirmed' || delivery === 'pending' ? 'pending'
+          : 'sent';
+  const spoken = status === 'sent' || status === 'sending' || status === 'pending';
+  // A refused send never produced a receipt: the call's own error text is the
+  // only reason there is, and it must stay readable instead of the row alone
+  // saying "not sent".
+  const plainOutput = typeof tool.output === 'string' && record(tool.output) === undefined ? tool.output.trim() : undefined;
+  const failureDetail = status === 'failed'
+    ? string(result?.['error']) ?? (plainOutput === undefined || plainOutput === '' ? undefined : plainOutput)
+    : undefined;
   const sender = record(result?.['sender']);
   const handoff = record(result?.['handoff']);
   const targetPersonaId = string(handoff?.['target_persona_id']);
@@ -47,15 +106,17 @@ export function projectSendMessage(tool: ToolBlock): MessageBlock | undefined {
   return {
     kind: 'message', id: tool.id, toolCallId: tool.toolCallId, messageId,
     origin: 'send_message', status,
-    text: status === 'sent' || status === 'sending' ? string(args?.['text']) ?? '' : '',
+    text: spoken ? string(args?.['text']) ?? '' : '',
     to: string(args?.['to']), replyTo: string(args?.['reply_to']),
-    attachments: succeeded ? attachments(result?.['attachments']) : [],
-    deliveredTo: succeeded ? strings(result?.['delivered_to']) : [],
+    attachments: status === 'sent' ? attachments(result?.['attachments']) : [],
+    deliveredTo: status === 'sent' ? strings(result?.['delivered_to']) : [],
+    channels: channels.length === 0 ? undefined : channels,
+    reached: reach === undefined || reach === 'nowhere' ? undefined : reach,
     personaId: string(sender?.['persona_id']), senderName: string(sender?.['name']),
     sourceSessionId: string(sender?.['session_id']),
-    handoff: succeeded && targetPersonaId !== undefined && targetSessionId !== undefined && targetName !== undefined
+    handoff: status === 'sent' && targetPersonaId !== undefined && targetSessionId !== undefined && targetName !== undefined
       ? { targetPersonaId, targetSessionId, targetName, messageId: string(handoff?.['message_id']) } : undefined,
-    startedAt: tool.startedAt, turnId: tool.turnId, sourceTool: tool,
+    startedAt: tool.startedAt, turnId: tool.turnId, failureDetail, sourceTool: tool,
   };
 }
 
@@ -169,7 +230,11 @@ export function projectMessageView(blocks: readonly Block[], options: MessageVie
       turns.push(turn);
     }
     const message = block.kind === 'message' ? block : block.kind === 'tool' ? projectSendMessage(block) : undefined;
-    if (message?.status === 'sent' && message.origin === 'send_message' && message.turnId !== undefined) {
+    // The turn spoke through its own call even when the words did not land
+    // here, and even when no channel has confirmed them yet: the promotion
+    // below must not speak a second copy as this conversation's reply.
+    if (message !== undefined && message.origin === 'send_message' && message.turnId !== undefined
+      && (message.status === 'sent' || message.status === 'pending')) {
       sent.add(message.turnId);
     }
     if (block.kind === 'assistant' && block.text.trim() !== '' && block.turnId !== undefined) replies.set(block.turnId, block);

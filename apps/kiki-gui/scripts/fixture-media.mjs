@@ -55,10 +55,16 @@ export function sessionMediaBytes(server, sessionId, fileId, variant) {
     throw invalid(`media file not found: ${fileId}`, 40409);
   }
   const bytes = Buffer.from(file.base64, 'base64');
-  // The preview is the same picture at a fraction of the size in the real
-  // server. Serving identical bytes would make a "Preview" label unfalsifiable,
-  // so the fixture downscales the declared size and says so in the MIME type.
+  // A video's preview is a poster frame in the real server, not the clip; a
+  // seed that carries `preview` bytes answers with them so the timeline's
+  // thumbnail is a real picture and the original stays the playable file.
   if (variant === 'preview') {
+    if (typeof file.preview === 'string') {
+      return { bytes: Buffer.from(file.preview, 'base64'), mime: file.previewMime ?? 'image/png', name: file.name };
+    }
+    // The preview is the same picture at a fraction of the size in the real
+    // server. Serving identical bytes would make a "Preview" label unfalsifiable,
+    // so the fixture downscales the declared size and says so in the MIME type.
     return { bytes, mime: `${file.mime}; preview`, name: file.name };
   }
   return { bytes, mime: file.mime, name: file.name };

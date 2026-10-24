@@ -10,6 +10,8 @@ export {
   type ActivitySummary,
   type MessageBlock,
   type MessageAttachment,
+  type MessageChannelDelivery,
+  type MessageReach,
   type Block,
   type EarlierPromptOutcome,
   type FloorEntry,

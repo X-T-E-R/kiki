@@ -214,6 +214,8 @@ function formatMessageBlock(block: MessageBlock): string {
       return text;
     case 'sending':
       return currentTheme.dim(`Sending${targetLabel}: ${block.text}`);
+    case 'pending':
+      return currentTheme.fg('warning', `Delivery not confirmed${targetLabel}: ${block.text}`);
     case 'failed':
       return currentTheme.fg('error', `Message not sent (failed)${targetLabel}: ${block.text}`);
     case 'cancelled':

@@ -236,6 +236,33 @@ export interface ToolBlock {
 }
 
 /**
+ * One destination's own outcome for a `SendMessage`, exactly as its receipt
+ * reports it. `unsupported` is the media this destination did not take: the
+ * message text still reached it, and those attachments did not.
+ */
+export interface MessageChannelDelivery {
+  /** `internal` for this conversation, `im:<bindingId>` for a bound IM chat. */
+  readonly channelId: string;
+  /**
+   * `unsupported` means this channel took none of the attachments and received
+   * only the notice — nothing of the message itself reached it.
+   */
+  readonly status: 'delivered' | 'unsupported' | 'failed' | 'unknown';
+  readonly messageIds?: readonly string[];
+  /** Media kinds (`image`, `voice`, …) this channel did not receive. */
+  readonly unsupported?: readonly string[];
+  readonly detail?: string;
+}
+
+/**
+ * Where a message reached, read off its channel receipts. `here` is this
+ * conversation; `elsewhere` another destination only; `unconfirmed` means no
+ * channel said it was delivered and at least one outcome is unknown. Absent on
+ * receipts that predate channel reporting — those keep their old reading.
+ */
+export type MessageReach = 'here' | 'elsewhere' | 'unconfirmed';
+
+/**
  * Speech in the message view: a delivered `SendMessage`, the persona's local
  * greeting, or the ordinary final reply a finished turn ended on. The last one
  * is a reading projection, not a delivery fact: it claims no SendMessage call,
@@ -248,12 +275,20 @@ export interface MessageBlock {
   readonly toolCallId?: string;
   readonly messageId?: string;
   readonly origin: 'send_message' | 'persona_greeting' | 'ordinary_final';
-  readonly status: 'sending' | 'sent' | 'failed' | 'cancelled';
+  /**
+   * `pending` is a settled call whose delivery no channel confirmed: the
+   * message may or may not have arrived, so it is never spoken as delivered.
+   */
+  readonly status: 'sending' | 'sent' | 'failed' | 'cancelled' | 'pending';
   readonly text: string;
   readonly to?: string;
   readonly replyTo?: string;
   readonly attachments: readonly MessageAttachment[];
   readonly deliveredTo: readonly string[];
+  /** Per-destination receipts when the send reported channels. */
+  readonly channels?: readonly MessageChannelDelivery[];
+  /** Where the message reached; absent when the receipt reported no channels. */
+  readonly reached?: MessageReach;
   readonly personaId?: string;
   readonly senderName?: string;
   readonly sourceSessionId?: string;
@@ -265,6 +300,12 @@ export interface MessageBlock {
   };
   readonly startedAt?: number;
   readonly turnId?: string;
+  /**
+   * The call's own error text when it settled without a receipt — the reason a
+   * refused send was refused. Kept verbatim for diagnosis; the row says in the
+   * reader's words that nothing was sent.
+   */
+  readonly failureDetail?: string;
   /** The original call remains available for process inspection and streaming argsText. */
   readonly sourceTool?: ToolBlock;
   /** The assistant body a promoted final reply speaks for, so its text keeps continuing. */
@@ -277,6 +318,12 @@ export interface MessageAttachment {
   readonly title?: string;
   readonly mimeType?: string;
   readonly size?: number;
+  /**
+   * The delivery intent the send declared (`image`, `audio`, `voice`, `video`,
+   * `file`; open set). It is what the sender asked a channel to carry, not a
+   * guess from the bytes: a `voice` intent is never read back as a plain file.
+   */
+  readonly kind?: string;
 }
 
 /** A contiguous, same-turn stretch of internal activity; members retain original order. */

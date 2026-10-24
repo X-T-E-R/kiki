@@ -72,7 +72,9 @@ export function buildMessageNodes(
 export function speakerKey(node: MessageViewNode | undefined): string | undefined {
   if (node === undefined) return undefined;
   if (node.kind === 'message') {
-    if (node.status === 'failed' || node.status === 'cancelled' || isHandoffMessage(node)) return undefined;
+    // A failure, a cancellation and an unconfirmed delivery are delivery lines
+    // rather than a run of speech, so whatever follows starts on its own face.
+    if (node.status === 'failed' || node.status === 'cancelled' || node.status === 'pending' || isHandoffMessage(node)) return undefined;
     return `bot:${node.personaId ?? 'self'}`;
   }
   if (node.kind === 'question') return 'bot:self';

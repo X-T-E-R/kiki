@@ -95,7 +95,8 @@ export function useSessionMedia(
   return load;
 }
 
-function useVisibleOnce(): [(node: HTMLElement | null) => void, boolean] {
+/** Loads bytes (or starts decoding) only once the slot is near the viewport. */
+export function useVisibleOnce(): [(node: HTMLElement | null) => void, boolean] {
   const [node, setNode] = useState<HTMLElement | null>(null);
   const [visible, setVisible] = useState(() => typeof IntersectionObserver === 'undefined');
   useEffect(() => {
