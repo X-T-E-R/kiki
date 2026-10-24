@@ -471,13 +471,16 @@ function convertMessage(
         imageUrlPartToAnthropic(part.imageUrl.url, acceptedImageMimes) as unknown as ContentBlockParam,
       );
     } else if (part.type === 'think') {
+      if ((part.redacted?.length ?? 0) > 0) {
+        blocks.push({ type: 'redacted_thinking', data: part.redacted } as ContentBlockParam);
+      }
       if (part.encrypted !== undefined) {
         blocks.push({
           type: 'thinking',
           thinking: part.think,
           signature: part.encrypted,
         } satisfies ThinkingBlockParam);
-      } else if (shouldPreserveUnsignedThinking(model)) {
+      } else if ((part.redacted?.length ?? 0) === 0 && shouldPreserveUnsignedThinking(model)) {
         blocks.push({ type: 'thinking', thinking: part.think } as unknown as ThinkingBlockParam);
       }
     } else if (part.type === 'video_url') {
@@ -728,8 +731,8 @@ class AnthropicStreamedMessage implements StreamedMessage {
             : { type: 'think' as const, think: block.thinking ?? '' };
           break;
         case 'redacted_thinking':
-          yield block.data !== undefined
-            ? { type: 'think' as const, think: '', encrypted: block.data }
+          yield typeof block.data === 'string' && block.data.length > 0
+            ? { type: 'think' as const, think: '', redacted: block.data }
             : { type: 'think' as const, think: '' };
           break;
         case 'tool_use':
@@ -798,8 +801,8 @@ class AnthropicStreamedMessage implements StreamedMessage {
             case 'redacted_thinking': {
               const data = (block as unknown as { data?: string }).data;
               if (typeof data === 'string' && data.length > 0) streamed.signed = true;
-              yield typeof data === 'string'
-                ? { type: 'think' as const, think: '', encrypted: data }
+              yield typeof data === 'string' && data.length > 0
+                ? { type: 'think' as const, think: '', redacted: data }
                 : { type: 'think' as const, think: '' };
               break;
             }

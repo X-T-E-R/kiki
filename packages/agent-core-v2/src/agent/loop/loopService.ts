@@ -1773,7 +1773,7 @@ function isZeroOutputCompletion(response: AgentLLMRequestFinish): boolean {
 
 function isZeroOutputContentPart(part: ContentPart): boolean {
   if (part.type === 'think') {
-    return part.think.trim().length === 0 && (part.reasoningDetails?.length ?? 0) === 0;
+    return part.think.trim().length === 0 && (part.redacted?.length ?? 0) === 0 && (part.reasoningDetails?.length ?? 0) === 0;
   }
   return isVacuousContentPart(part);
 }

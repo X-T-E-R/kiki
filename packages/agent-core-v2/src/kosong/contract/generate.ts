@@ -266,7 +266,7 @@ function recordThinkingOnlyFacts(
   if (readProviderEventErrorCode(error) !== THINKING_ONLY_STOP_CODE || stream.thinkingOnlyRecoveryBlocked) return;
   if (stream.finishReason !== null && stream.finishReason !== 'completed') return;
   const hasThinking = message.content.some((part) =>
-    part.type === 'think' && (part.think.trim().length > 0 || (part.encrypted?.length ?? 0) > 0));
+    part.type === 'think' && (part.think.trim().length > 0 || (part.encrypted?.length ?? 0) > 0 || (part.redacted?.length ?? 0) > 0));
   const hasOtherOutput = message.toolCalls.length > 0 ||
     message.content.some((part) => part.type !== 'think' && !isVacuousContentPart(part));
   if (!hasThinking || hasOtherOutput) return;

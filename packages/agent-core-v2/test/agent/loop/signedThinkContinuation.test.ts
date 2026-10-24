@@ -636,6 +636,21 @@ describe('zero-output continuation', () => {
     }
   });
 
+  it('does not continue non-empty redacted thinking when the switch is on', async () => {
+    const create = scriptedCreate([redactedThinkStream(), textStream('should not run')]);
+    const local = anthropicAgent(create, { initialConfig: { loopControl: { zeroOutputContinuation: true } } });
+    try {
+      const terminal = await (await prompt(local)).completion;
+      expect(terminal).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 1 } });
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(continued(local)).toBe(false);
+      expect(storedThinking(local)).toContainEqual({ type: 'think', think: '', redacted: 'redacted-example' });
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
   it('continues a signature-only empty think as zero output when the switch is on', async () => {
     const create = scriptedCreate([signatureOnlyStream(), textStream('Visible answer')]);
     const local = anthropicAgent(create, { initialConfig: { loopControl: { zeroOutputContinuation: true } } });
@@ -923,6 +938,16 @@ function gatewayNoUsableAnswerStream(code = 'antigravity_thinking_only'): () => 
     yield { type: 'content_block_stop', index: 0 };
     yield { type: 'message_delta', delta: { stop_reason: null }, usage: { output_tokens: 5 } };
     yield { type: 'error', error: { type: 'api_error', code, message: NO_USABLE_ANSWER } };
+  };
+}
+
+function redactedThinkStream(): () => AsyncGenerator<Record<string, unknown>> {
+  return async function* redactedThink() {
+    yield { type: 'message_start', message: { id: 'redacted-1', usage: { input_tokens: 4, output_tokens: 0 } } };
+    yield { type: 'content_block_start', index: 0, content_block: { type: 'redacted_thinking', data: 'redacted-example' } };
+    yield { type: 'content_block_stop', index: 0 };
+    yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } };
+    yield { type: 'message_stop' };
   };
 }
 
