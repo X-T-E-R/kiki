@@ -264,7 +264,7 @@ export function resolvePathAccessPath(
 function isMissingPath(error: unknown): boolean {
   const cause = unwrapErrorCause(error);
   if (typeof cause !== 'object' || cause === null || !('code' in cause)) return false;
-  return cause.code === 'ENOENT' || cause.code === 'ENOTDIR';
+  return cause.code === 'ENOENT';
 }
 
 export async function realPathOrMissingChild(fs: IHostFileSystem, path: string): Promise<string> {
@@ -299,7 +299,7 @@ export async function resolveRealPathAccess(
       throw error;
     }),
     fs.realpath(options.workspace.workspaceDir),
-    ...options.workspace.additionalDirs.map((dir) => fs.realpath(dir)),
+    ...options.workspace.additionalDirs.map((dir) => realPathOrMissingChild(fs, dir)),
   ]);
   const realWorkspace = { workspaceDir, additionalDirs };
   const realPath = canonicalizePath(target, workspaceDir, options.env.pathClass);

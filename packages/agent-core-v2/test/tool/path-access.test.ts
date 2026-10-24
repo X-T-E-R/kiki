@@ -2,10 +2,31 @@ import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { DisposableStore } from '#/_base/di/lifecycle';
+import { createServices } from '#/_base/di/test';
 import type { ShellPathBridge } from '#/_base/execEnv/shellPathBridge';
+import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IReadTool } from '#/agent/tools/os/read/read';
+import { ReadTool } from '#/agent/tools/os/read/readTool';
+import { IGlobTool } from '#/agent/tools/os/glob/glob';
+import { GlobTool } from '#/agent/tools/os/glob/globTool';
+import { IWriteTool } from '#/agent/tools/os/write/write';
+import { WriteTool } from '#/agent/tools/os/write/writeTool';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { InMemorySkillCatalog } from '#/app/skillCatalog/registry';
+import { ITelemetryService, noopTelemetryService } from '#/app/telemetry/telemetry';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
+import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
+import { toHostFsError } from '#/os/interface/hostFsErrors';
+import { FakeRuntime } from '#/runtime/fakeRuntime';
+import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
+import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
+import type { ToolExecution } from '#/tool/toolContract';
+import { registerToolResultTruncationServices } from '../agent/toolResultTruncation/stubs';
+import { stubBootstrap } from '../app/bootstrap/stubs';
+import { stubWorkspaceContext } from '../session/workspaceContext/stub-workspace-context';
 import {
   isSensitiveFile,
   resolveRealPathAccess,
@@ -166,6 +187,7 @@ describe('resolveRealPathAccessPath', () => {
   let outsideDir: string;
   let additionalDir: string;
   const fs = new HostFileSystem();
+  let disposables: DisposableStore;
   const env = {
     pathClass: process.platform === 'win32' ? 'win32' as const : 'posix' as const,
     homeDir: tmpdir(),
@@ -175,6 +197,7 @@ describe('resolveRealPathAccessPath', () => {
   };
 
   beforeEach(async () => {
+    disposables = new DisposableStore();
     root = await mkdtemp(join(tmpdir(), 'kiki-path-admission-'));
     workspaceDir = join(root, 'repo');
     outsideDir = join(root, 'outside');
@@ -183,10 +206,12 @@ describe('resolveRealPathAccessPath', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
+    await disposables.dispose();
     await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
-  function options(operation: 'read' | 'write' = 'read') {
+  function options(operation: 'read' | 'write' | 'search' = 'read') {
     return {
       env,
       workspace: { workspaceDir, additionalDirs: [additionalDir] },
@@ -194,15 +219,146 @@ describe('resolveRealPathAccessPath', () => {
     };
   }
 
+  function fileTools(additionalDirs: readonly string[]) {
+    const backend = disposables.add(new FakeRuntime(
+      { workspaceId: 'workspace', runtimeId: 'local', generation: 'test' },
+      { capabilities: ['fs', 'process'], pathClass: env.pathClass, environment: { ...env, homeDir: root } },
+    ));
+    Object.assign(backend, { fs, process: new HostProcessService() });
+    const acquire = () => ({ runtime: backend, track: <T>(resource: T) => resource, dispose() {} });
+    return createServices(disposables, {
+      strict: true,
+      base: [registerToolResultTruncationServices],
+      additionalServices: (reg) => {
+        reg.definePartialInstance(IAgentRuntimeService, {
+          inspect: () => backend,
+          workspaceRoots: () => ({ workDir: workspaceDir, additionalDirs }),
+          acquire,
+          prepareFor: async () => backend,
+          acquireFor: acquire,
+        });
+        reg.defineInstance(ISessionWorkspaceContext, stubWorkspaceContext(workspaceDir));
+        reg.definePartialInstance(ISessionSkillCatalog, {
+          catalog: new InMemorySkillCatalog(),
+        });
+        reg.defineInstance(IBootstrapService, stubBootstrap(root));
+        reg.defineInstance(ITelemetryService, noopTelemetryService);
+        reg.define(IReadTool, ReadTool);
+        reg.define(IGlobTool, GlobTool);
+        reg.define(IWriteTool, WriteTool);
+      },
+    });
+  }
+
+  async function execute(execution: ToolExecution | Promise<ToolExecution>) {
+    const resolved = await execution;
+    if (resolved.isError === true) throw new Error(JSON.stringify(resolved.output));
+    return resolved.execute({ turnId: 1, toolCallId: 'file-admission', signal: new AbortController().signal });
+  }
+
+  it('keeps native Read, Glob and Write usable with an uncreated additional root', async () => {
+    const missingRoot = join(root, 'future', 'nested');
+    const services = fileTools([additionalDir, missingRoot, join(root, 'another-future')]);
+    const read = services.get(IReadTool);
+    const glob = services.get(IGlobTool);
+    const write = services.get(IWriteTool);
+    const notes = join(workspaceDir, 'notes.txt');
+    await writeFile(notes, 'inside workspace');
+
+    for (const args of [{ path: 'notes.txt' }, { path: notes }, { path: notes, host: 'local' }]) {
+      await expect(execute(read.resolveExecution(args))).resolves.toMatchObject({ output: expect.stringContaining('inside workspace') });
+    }
+    await expect(execute(glob.resolveExecution({ pattern: '*.txt', path: '.' })))
+      .resolves.toMatchObject({ output: expect.stringContaining('notes.txt') });
+    const localWrite = await execute(write.resolveExecution({ path: 'new.txt', content: 'written' }));
+    expect(localWrite.isError).not.toBe(true);
+    expect(await readFile(join(workspaceDir, 'new.txt'), 'utf8')).toBe('written');
+    await expect(fs.stat(missingRoot)).rejects.toMatchObject({ code: 'os.fs.not_found' });
+
+    const futureFile = join(missingRoot, 'deeper', 'created.txt');
+    const futureWrite = await write.resolveExecution({ path: futureFile, content: 'future workspace' });
+    if (futureWrite.isError === true) throw new Error(JSON.stringify(futureWrite.output));
+    expect(futureWrite.accesses).toMatchObject([{ kind: 'file', operation: 'write', path: futureFile.replaceAll('\\', '/') }]);
+    expect((await execute(futureWrite)).isError).not.toBe(true);
+    expect(await readFile(futureFile, 'utf8')).toBe('future workspace');
+  });
+
+  it('rejects a future root replaced by an external link after Write admission', async () => {
+    const missingRoot = join(root, 'future');
+    const write = fileTools([missingRoot]).get(IWriteTool);
+    const admitted = await write.resolveExecution({ path: join(missingRoot, 'notes.txt'), content: 'must not escape' });
+    await symlink(outsideDir, missingRoot, process.platform === 'win32' ? 'junction' : 'dir');
+    await expect(execute(admitted)).resolves.toMatchObject({ isError: true, output: expect.stringContaining('changed after path admission') });
+    await expect(fs.stat(join(outsideDir, 'notes.txt'))).rejects.toMatchObject({ code: 'os.fs.not_found' });
+  });
+
+  it('resolves a missing additional root through its existing linked ancestor without admitting siblings', async () => {
+    const linkedParent = join(root, 'linked-parent');
+    await symlink(outsideDir, linkedParent, process.platform === 'win32' ? 'junction' : 'dir');
+    const missingRoot = join(linkedParent, 'future', 'nested');
+    const workspace = { workspaceDir, additionalDirs: [missingRoot] };
+    const expectedRoot = join(await realpath(outsideDir), 'future', 'nested');
+    await expect(resolveRealPathAccess(join(missingRoot, 'new.txt'), { env, workspace, operation: 'write' }, fs))
+      .resolves.toMatchObject({ path: join(expectedRoot, 'new.txt').replaceAll('\\', '/'), outsideWorkspace: false, implicitExternal: false });
+    await expect(resolveRealPathAccess(join(linkedParent, 'sibling.txt'), { env, workspace, operation: 'write' }, fs))
+      .resolves.toMatchObject({ outsideWorkspace: true });
+    await expect(resolveRealPathAccess('../linked-parent/sibling.txt', { env, workspace, operation: 'write' }, fs))
+      .rejects.toMatchObject({ code: 'PATH_OUTSIDE_WORKSPACE' });
+  });
+
+  it('still requires the main workspace directory to exist', async () => {
+    await writeFile(join(workspaceDir, 'notes.txt'), 'inside');
+    await expect(resolveRealPathAccess(join(workspaceDir, 'notes.txt'), {
+      ...options(), workspace: { workspaceDir: join(root, 'missing-main'), additionalDirs: [workspaceDir] },
+    }, fs)).rejects.toMatchObject({ code: 'os.fs.not_found' });
+  });
+
+  it.each(['', '/nested'])('rejects dangling additional-root links%s rather than treating them as missing directories', async (suffix) => {
+    const dangling = join(root, 'dangling');
+    await symlink(join(outsideDir, 'missing'), dangling, process.platform === 'win32' ? 'junction' : 'dir');
+    await writeFile(join(workspaceDir, 'notes.txt'), 'inside');
+    await expect(resolveRealPathAccess('notes.txt', {
+      ...options(), workspace: { workspaceDir, additionalDirs: [`${dangling}${suffix}`] },
+    }, fs)).rejects.toMatchObject({ code: 'PATH_INVALID', message: expect.stringContaining('unresolved link target') });
+  });
+
+  it.each(['EACCES', 'EPERM', 'EIO', 'ELOOP', 'ENOTDIR'])('preserves additional-root realpath errors (%s)', async (code) => {
+    const missingRoot = join(root, 'future');
+    const error = toHostFsError(Object.assign(new Error(code), { code }), { path: missingRoot, op: 'realpath' });
+    const original = fs.realpath.bind(fs);
+    vi.spyOn(fs, 'realpath').mockImplementation(async (path) => {
+      if (path === missingRoot) throw error;
+      return original(path);
+    });
+    await expect(resolveRealPathAccess('.', {
+      ...options(), workspace: { workspaceDir, additionalDirs: [missingRoot] },
+    }, fs)).rejects.toBe(error);
+  });
+
+  it('preserves lstat permission errors while resolving a missing additional root', async () => {
+    const missingRoot = join(root, 'future');
+    const error = toHostFsError(Object.assign(new Error('EACCES'), { code: 'EACCES' }), { path: missingRoot, op: 'lstat' });
+    const original = fs.lstat.bind(fs);
+    vi.spyOn(fs, 'lstat').mockImplementation(async (path) => {
+      if (path === missingRoot) throw error;
+      return original(path);
+    });
+    await expect(resolveRealPathAccess('.', {
+      ...options(), workspace: { workspaceDir, additionalDirs: [missingRoot] },
+    }, fs)).rejects.toBe(error);
+  });
+
   it('classifies workspace links by their actual external target for approval', async () => {
     const externalFile = join(outsideDir, 'notes.txt');
     await writeFile(externalFile, 'outside');
     const linkDir = join(workspaceDir, 'escape');
     await symlink(outsideDir, linkDir, process.platform === 'win32' ? 'junction' : 'dir');
-    for (const operation of ['read', 'write'] as const) {
+    for (const operation of ['read', 'write', 'search'] as const) {
+      const pathOptions = options(operation);
+      pathOptions.workspace.additionalDirs.push(join(root, 'future'));
       for (const candidate of ['escape/notes.txt', join(linkDir, 'notes.txt')]) {
-        await expect(resolveRealPathAccess(candidate, options(operation), fs))
-          .resolves.toMatchObject({ path: (await realpath(externalFile)).replaceAll('\\', '/'), implicitExternal: true });
+        await expect(resolveRealPathAccess(candidate, pathOptions, fs))
+          .resolves.toMatchObject({ path: (await realpath(externalFile)).replaceAll('\\', '/'), outsideWorkspace: true, implicitExternal: true });
       }
     }
     expect((await resolveRealPathAccess('escape/new/sub.txt', options('write'), fs)).implicitExternal).toBe(true);
