@@ -1,4 +1,5 @@
 import { createTelegramSessionAdapter } from '@nb-im/core';
+import type { UserMessageChannel } from '@kiki/agent-core-v2/app/bot/messageRouting';
 import { describe, expect, it } from 'vitest';
 
 import type { ImInboundIdentity } from '../../../src/services/imSession/adapter';
@@ -10,16 +11,17 @@ import type { ImPendingApproval, ImPendingQuestion, ImSessionPorts, ImSubmitResu
 const identity: ImInboundIdentity = { chatId: 'c1', senderId: 'u1', topicId: '0', chatTitle: 'Ada', senderName: 'Ada' };
 const other: ImInboundIdentity = { chatId: 'c1', senderId: 'u2', topicId: '0' };
 
-function ports(overrides: Partial<ImSessionPorts['sessions']> = {}): { ports: ImSessionPorts; submitted: ImSubmitResult[]; decisions: string[]; answers: string[]; saved: string[] } {
+function ports(overrides: Partial<ImSessionPorts['sessions']> = {}, initialState = ''): { ports: ImSessionPorts; submitted: ImSubmitResult[]; decisions: string[]; answers: string[]; saved: string[]; saveCount: { value: number } } {
   const secrets = new Map<string, string>();
   const submitted: ImSubmitResult[] = [];
   const decisions: string[] = [];
   const answers: string[] = [];
   const saved: string[] = [];
+  const saveCount = { value: 0 };
   let visible: ImVisibleReply = { text: 'Hello from the session', done: true, media: [] };
   let approvals: ImPendingApproval[] = [];
   let questions: ImPendingQuestion[] = [];
-  let stored = '';
+  let stored = initialState;
   const sessions: ImSessionPorts['sessions'] = {
     listPersonas: async () => [{ id: 'ada', name: 'Ada', homeSessionId: 'home' }],
     listSessions: async () => [{ id: 'sess', title: 'Notes', personaId: 'ada' }],
@@ -43,7 +45,7 @@ function ports(overrides: Partial<ImSessionPorts['sessions']> = {}): { ports: Im
     ...overrides,
   };
   return {
-    submitted, decisions, answers, saved,
+    submitted, decisions, answers, saved, saveCount,
     ports: {
       credentials: {
         list: () => [...secrets.keys()].map((id) => ({ id, providerId: 'telegram', configured: true })),
@@ -55,18 +57,18 @@ function ports(overrides: Partial<ImSessionPorts['sessions']> = {}): { ports: Im
       sessions,
       logger: { info() {} },
       load: async () => stored === '' ? undefined : stored,
-      save: async (value) => { stored = value; },
+      save: async (value) => { saveCount.value += 1; stored = value; },
     },
   };
 }
 
-function bridgeFor(adapter: FakeImAdapter, sessionPorts = ports()) {
+function bridgeFor(adapter: FakeImAdapter, sessionPorts = ports(), options: { wait?: (ms: number) => Promise<void> } = {}) {
   const bridge = new ImSessionBridge({
     ports: sessionPorts.ports,
     factories: [fakeAdapterFactory(adapter)],
     editIntervalMs: 0,
     now: () => 1_700_000_000_000,
-    wait: () => Promise.resolve(),
+    wait: options.wait ?? (() => Promise.resolve()),
   });
   return { bridge, ...sessionPorts };
 }
@@ -150,6 +152,61 @@ describe('im session bridge', () => {
     }
   });
 
+  it('binds a persona-less session and preserves explicit direction switches on reconfirmation', async () => {
+    const adapter = new FakeImAdapter('telegram', '42');
+    let homes = 0;
+    const harness = bridgeFor(adapter, ports({
+      listPersonas: async () => [],
+      listSessions: async () => [{ id: 'sess', title: 'No persona' }],
+      ensureHome: async () => { homes += 1; return { homeSessionId: 'home' }; },
+    }));
+    try {
+      await harness.bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
+      await harness.bridge.setListening('inst', true);
+      await adapter.emit({ eventId: '1', identity, kind: 'text', text: 'bind' });
+      const discovery = (await harness.bridge.snapshot()).discoveries[0]!;
+      await harness.bridge.confirm(discovery.id, { target: { kind: 'session', session_id: 'sess' }, input_enabled: false, output_enabled: false });
+      expect(homes).toBe(0);
+      expect((await harness.bridge.snapshot()).bindings[0]).toMatchObject({ session_id: 'sess', input_enabled: false, output_enabled: false });
+      await adapter.emit({ eventId: '2', identity, kind: 'text', text: 'input is off' });
+      expect(harness.submitted).toHaveLength(0);
+      const reboundDiscovery = (await harness.bridge.snapshot()).discoveries[0]!;
+      await harness.bridge.confirm(reboundDiscovery.id, { target: { kind: 'session', session_id: 'sess' } });
+      const restored = (await harness.bridge.snapshot()).bindings[0]!;
+      expect(restored).toMatchObject({ session_id: 'sess', input_enabled: false, output_enabled: false });
+      await harness.bridge.updateBinding(restored.id, { inputEnabled: true, outputEnabled: false });
+      await adapter.emit({ eventId: '3', identity, kind: 'text', text: 'input is on' });
+      expect(harness.submitted).toHaveLength(1);
+      expect((await harness.bridge.channelViews('sess')).find((channel) => channel.kind === 'im')).toMatchObject({ enabled: false });
+      const internalOnly = await harness.bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'direction-check', text: 'internal only', attachments: [] });
+      expect(internalOnly.channels?.map((channel) => channel.channelId)).toEqual(['internal']);
+    } finally { await harness.bridge.close(); }
+  });
+
+  it('retains orphan bindings without manufacturing a persona home', async () => {
+    let homes = 0;
+    const raw = JSON.stringify({
+      policy: { allowed: true, defaultEnabled: true },
+      instances: [{ id: 'inst', providerKind: 'telegram', listening: false, virtual: false, accountId: '42' }],
+      discoveries: [],
+      bindings: [
+        { id: 'dead', providerInstanceId: 'inst', providerKind: 'telegram', accountId: '42', identity, sessionId: 'gone', enabled: true, busy: 'queue', reply: 'final', mobileInteractions: true },
+        { id: 'missing', providerInstanceId: 'inst', providerKind: 'telegram', accountId: '42', identity: { ...identity, topicId: 'missing' }, enabled: true, busy: 'queue', reply: 'final', mobileInteractions: true },
+      ],
+      strangers: [], seen: [], tickets: [], selections: {}, awaiting: {}, voiceFallbacks: 0, cursors: {}, notices: [], questionAnswers: {}, answeredQuestions: {}, replies: [], outbox: [],
+    });
+    const sessionPorts = ports({ ensureHome: async () => { homes += 1; return { homeSessionId: 'home' }; } }, raw);
+    const bridge = new ImSessionBridge({ ports: sessionPorts.ports, factories: [], now: () => 1_700_000_000_000 });
+    try {
+      const snapshot = await bridge.snapshot();
+      expect(snapshot.bindings).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'dead', session_id: 'gone', pending_reanchor: true })]));
+      const missing = snapshot.bindings.find((item) => item.id === 'missing');
+      expect(missing).toMatchObject({ id: 'missing', pending_reanchor: true });
+      expect(missing?.session_id).toBeUndefined();
+      expect(homes).toBe(0);
+    } finally { await bridge.close(); }
+  });
+
   it('keeps a stranger and a disabled binding off the model', async () => {
     const adapter = new FakeImAdapter('telegram', '42');
     const harness = bridgeFor(adapter);
@@ -182,7 +239,10 @@ describe('im session bridge', () => {
     const paused = await harness.bridge.snapshot();
     const discovery = paused.discoveries.find((item) => item.preview === 'again');
     expect(discovery).toBeDefined();
-    await harness.bridge.confirm(discovery!.id, { target: { kind: 'session', session_id: 'home' }, busy: 'steer', reply: 'final' });
+    const beforeConflict = await harness.bridge.snapshot();
+    await expect(harness.bridge.confirm(discovery!.id, { target: { kind: 'session', session_id: 'home' }, busy: 'steer', reply: 'final' })).rejects.toMatchObject({ message: 'im_identity_already_bound', details: expect.objectContaining({ previous_session_id: 'sess', target_session_id: 'home' }) });
+    expect(await harness.bridge.snapshot()).toEqual(beforeConflict);
+    await harness.bridge.confirm(discovery!.id, { target: { kind: 'session', session_id: 'home' }, busy: 'steer', reply: 'final', rebind: true });
     const restored = await harness.bridge.snapshot();
     expect(restored.bindings).toHaveLength(1);
     expect(restored.bindings[0]).toMatchObject({ id: bound.id, session_id: 'home', busy: 'steer', enabled: true });
@@ -194,7 +254,7 @@ describe('im session bridge', () => {
     expect(harness.submitted.map((item) => item.promptId)).toEqual(['im:inst:4']);
   });
 
-  it('validates a replacement session before changing any binding settings', async () => {
+  it('requires explicit rebind before changing a binding session and preserves rejected state', async () => {
     const adapter = new FakeImAdapter('telegram', '42');
     const harness = bridgeFor(adapter);
     await harness.bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
@@ -202,11 +262,16 @@ describe('im session bridge', () => {
     await adapter.emit({ eventId: '1', cursor: 1, identity, kind: 'text', text: 'hello' });
     await harness.bridge.confirm((await harness.bridge.snapshot()).discoveries[0]!.id, { target: { kind: 'persona', persona_id: 'ada' } });
     const bound = (await harness.bridge.snapshot()).bindings[0]!;
+    const beforeRejectedMutations = harness.saveCount.value;
     await expect(harness.bridge.updateBinding(bound.id, { sessionId: 'unknown', enabled: false })).rejects.toThrow('unknown_session');
+    expect(harness.saveCount.value).toBe(beforeRejectedMutations);
     expect((await harness.bridge.snapshot()).bindings[0]).toEqual(bound);
-    await harness.bridge.updateBinding(bound.id, { sessionId: 'sess' });
+    await expect(harness.bridge.updateBinding(bound.id, { sessionId: 'sess', enabled: false })).rejects.toMatchObject({ message: 'im_identity_already_bound', details: expect.objectContaining({ previous_session_id: 'home', target_session_id: 'sess' }) });
+    expect(harness.saveCount.value).toBe(beforeRejectedMutations);
+    expect((await harness.bridge.snapshot()).bindings[0]).toEqual(bound);
+    await harness.bridge.updateBinding(bound.id, { sessionId: 'sess', enabled: false, rebind: true });
     const changed = (await harness.bridge.snapshot()).bindings[0]!;
-    expect(changed.session_id).toBe('sess');
+    expect(changed).toMatchObject({ session_id: 'sess', enabled: false });
     expect(changed.persona_id).toBeUndefined();
     await harness.bridge.close();
   });
@@ -219,7 +284,7 @@ describe('im session bridge', () => {
     await adapter.emit({ eventId: '1', cursor: 1, identity, kind: 'text', text: 'hello' });
     await harness.bridge.confirm((await harness.bridge.snapshot()).discoveries[0]!.id, { target: { kind: 'session', session_id: 'sess' } });
     const bound = (await harness.bridge.snapshot()).bindings[0]!;
-    await harness.bridge.updateBinding(bound.id, { target: { kind: 'persona', persona_id: 'ada' } });
+    await harness.bridge.updateBinding(bound.id, { target: { kind: 'persona', persona_id: 'ada' }, rebind: true });
     const changed = await harness.bridge.snapshot();
     expect(changed.bindings).toHaveLength(1);
     expect(changed.bindings[0]).toMatchObject({ id: bound.id, session_id: 'home', persona_id: 'ada' });
@@ -245,8 +310,9 @@ describe('im session bridge', () => {
     expect(adapter.sent.some((item) => item.code === 'status' && item.text.includes('Queue: 0'))).toBe(true);
     expect(adapter.sent.some((item) => item.code === 'no_turn')).toBe(true);
     expect(adapter.sent.some((item) => item.code === 'targets' && item.text.includes('home'))).toBe(true);
-    const switched = (await harness.bridge.snapshot()).bindings.find((item) => item.identity.chat_id === 'c1');
-    expect(switched?.session_id).toBe('sess');
+    const unchanged = (await harness.bridge.snapshot()).bindings.find((item) => item.identity.chat_id === 'c1');
+    expect(unchanged?.session_id).toBe('home');
+    expect(adapter.sent.some((item) => item.code === 'target_confirmation_required')).toBe(true);
   });
 
   it('edits the same message, then sends a new one when the edit is gone', async () => {
@@ -370,6 +436,59 @@ describe('im session bridge', () => {
     await otherAdapter.emit({ eventId: '3', cursor: 3, identity: { ...identity, chatId: 'c9' }, kind: 'callback', callbackData: button?.id ?? 'missing', callbackQueryId: 'cb', text: '' });
     expect(otherAdapter.sent.some((item) => item.code === 'cross_session')).toBe(true);
     expect(cross.decisions).toEqual([]);
+  });
+
+  it('keeps an old interaction ticket on its original session after an explicit rebind', async () => {
+    const adapter = new FakeImAdapter('telegram', '42');
+    const harness = bridgeFor(adapter, ports({
+      listInteractions: async () => ({ approvals: [{ id: 'old-session-approval', expiresAt: 1_700_000_000_000 + 1000, toolName: 'Bash', action: 'run' }], questions: [] }),
+      decideApproval: async () => { throw new Error('must_not_decide'); },
+    }));
+    try {
+      await harness.bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
+      await harness.bridge.setListening('inst', true);
+      await adapter.emit({ eventId: 'pair', identity, kind: 'text', text: 'pair' });
+      await harness.bridge.confirm((await harness.bridge.snapshot()).discoveries[0]!.id, { target: { kind: 'session', session_id: 'sess' } });
+      await harness.bridge.syncInteractions();
+      const ticket = adapter.sent.find((item) => item.code === 'approval')?.buttons?.[0]?.id;
+      const binding = (await harness.bridge.snapshot()).bindings[0]!;
+      await harness.bridge.updateBinding(binding.id, { sessionId: 'home', rebind: true });
+      await adapter.emit({ eventId: 'late-callback', identity, kind: 'callback', callbackData: ticket, callbackQueryId: 'late-callback-query' });
+      expect(harness.decisions).toEqual([]);
+      expect(adapter.sent.some((item) => item.code === 'cross_session')).toBe(true);
+    } finally { await harness.bridge.close(); }
+  });
+
+  it('does not publish a late reply through a newly rebound session', async () => {
+    const adapter = new FakeImAdapter('telegram', '42');
+    let markRead: () => void = () => undefined;
+    let releaseRead: () => void = () => undefined;
+    const readStarted = new Promise<void>((resolve) => { markRead = resolve; });
+    const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
+    const reads: string[] = [];
+    const harness = bridgeFor(adapter, ports({
+      readVisible: async (sessionId) => {
+        reads.push(sessionId);
+        markRead();
+        await readGate;
+        return { text: 'late old reply', done: true, media: [] };
+      },
+      submit: async ({ promptId }) => ({ duplicate: false, promptId, turnId: 3, deliveryState: 'pending' }),
+    }));
+    try {
+      await harness.bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
+      await harness.bridge.setListening('inst', true);
+      await adapter.emit({ eventId: 'pair', identity, kind: 'text', text: 'pair' });
+      await harness.bridge.confirm((await harness.bridge.snapshot()).discoveries[0]!.id, { target: { kind: 'session', session_id: 'sess' } });
+      await adapter.emit({ eventId: 'prompt', identity, kind: 'text', text: 'old session prompt' });
+      await readStarted;
+      const binding = (await harness.bridge.snapshot()).bindings[0]!;
+      await harness.bridge.updateBinding(binding.id, { sessionId: 'home', rebind: true });
+      releaseRead();
+      await harness.bridge.close();
+      expect(reads).toEqual(['sess']);
+      expect(adapter.sent.some((item) => item.text === 'late old reply')).toBe(false);
+    } finally { releaseRead(); await harness.bridge.close(); }
   });
 
   it('counts a voice file fallback and rejects an oversized file before save', async () => {
@@ -496,6 +615,132 @@ describe('im session bridge', () => {
   });
 });
 
+it('requires provider instance, account, chat, topic, and sender identity components to match', async () => {
+  const credentials = new Map([['first', 'credential-first'], ['second', 'credential-second']]);
+  const adapters = new Map<string, FakeImAdapter>();
+  const routed: string[] = [];
+  const base = ports({ submit: async ({ sessionId, promptId }) => { routed.push(`${sessionId}:${promptId}`); return { duplicate: false, promptId, deliveryState: 'pending' }; } });
+  base.ports.credentials.list = () => [...credentials.keys()].map((id) => ({ id, providerId: 'telegram', configured: true }));
+  base.ports.credentials.read = (id) => credentials.get(id);
+  base.ports.credentials.check = async () => ({ ok: true, accountId: 'changed-account' });
+  const bridge = new ImSessionBridge({ ports: base.ports, factories: [{ providerKind: 'telegram', create: ({ instanceId }) => {
+    const adapter = new FakeImAdapter('telegram', '42');
+    adapters.set(instanceId, adapter);
+    return adapter;
+  } }], wait: async () => undefined });
+  try {
+    await bridge.setListening('first', true);
+    await bridge.setListening('second', true);
+    const first = adapters.get('first')!;
+    const second = adapters.get('second')!;
+    await first.emit({ eventId: 'pair', identity, kind: 'text', text: 'pair' });
+    await bridge.confirm((await bridge.snapshot()).discoveries[0]!.id, { target: { kind: 'session', session_id: 'sess' } });
+    await first.emit({ eventId: 'exact', identity, kind: 'text', text: 'exact' });
+    await first.emit({ eventId: 'sender', identity: { ...identity, senderId: 'other-sender' }, kind: 'text', text: 'sender mismatch' });
+    await first.emit({ eventId: 'topic', identity: { ...identity, topicId: 'other-topic' }, kind: 'text', text: 'topic mismatch' });
+    await first.emit({ eventId: 'chat', identity: { ...identity, chatId: 'other-chat' }, kind: 'text', text: 'chat mismatch' });
+    await second.emit({ eventId: 'instance', identity, kind: 'text', text: 'instance mismatch' });
+    await bridge.check('first');
+    await first.emit({ eventId: 'account', identity, kind: 'text', text: 'account mismatch' });
+    expect(routed).toEqual(['sess:im:first:exact']);
+    const snapshot = await bridge.snapshot();
+    expect(snapshot.strangers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ provider_instance_id: 'first', identity: expect.objectContaining({ sender_id: 'other-sender' }) }),
+      expect.objectContaining({ provider_instance_id: 'first', identity: expect.objectContaining({ sender_id: 'u1', topic_id: '0' }) }),
+    ]));
+    expect(snapshot.discoveries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ provider_instance_id: 'first', identity: expect.objectContaining({ topic_id: 'other-topic' }) }),
+      expect.objectContaining({ provider_instance_id: 'first', identity: expect.objectContaining({ chat_id: 'other-chat' }) }),
+      expect.objectContaining({ provider_instance_id: 'second', account_id: '42', identity: expect.objectContaining({ chat_id: 'c1', sender_id: 'u1', topic_id: '0' }) }),
+    ]));
+  } finally { await bridge.close(); }
+});
+
+it('binds notification channels explicitly, borrows only by policy, and respects disabled candidates', async () => {
+  const adapter = new FakeImAdapter('telegram', '42');
+  const delivered: string[] = [];
+  const channel = (id: string, enabled = true): UserMessageChannel => ({
+    id, kind: 'notify', enabled, capabilities: [],
+    send: async (input) => { delivered.push(`${id}:${input.text}`); return { status: 'delivered' }; },
+  });
+  const notifications = [channel('notify:mail'), channel('notify:other'), channel('notify:off', false)];
+  const base = ports();
+  const wired = { ...base, ports: { ...base.ports, notifications: { channels: (sessionId: string) => sessionId === 'sess' ? notifications : [] } } };
+  const harness = bridgeFor(adapter, wired);
+  try {
+    await harness.bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
+    await harness.bridge.setListening('inst', true);
+    await adapter.emit({ eventId: 'pair', identity, kind: 'text', text: 'pair' });
+    await harness.bridge.confirm((await harness.bridge.snapshot()).discoveries[0]!.id, { target: { kind: 'session', session_id: 'sess' } });
+    expect((await harness.bridge.snapshot()).policy.allow_channel_borrowing).toBe(false);
+    const initial = await harness.bridge.channelViews('sess');
+    expect(initial).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'notify:mail', kind: 'notify', bound: false, enabled: true }),
+      expect.objectContaining({ id: 'notify:other', kind: 'notify', bound: false, enabled: true }),
+      expect.objectContaining({ id: 'notify:off', kind: 'notify', bound: false, enabled: false }),
+    ]));
+    const before = await harness.bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'notify-before', text: 'bound only', attachments: [] });
+    expect(before.channels?.map((item) => item.channelId)).not.toContain('notify:mail');
+    await harness.bridge.setNotificationChannel('sess', 'mail', true);
+    const bound = await harness.bridge.channelViews('sess');
+    expect(bound.find((item) => item.id === 'notify:mail')).toMatchObject({ bound: true, enabled: true });
+    const after = await harness.bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'notify-after', text: 'mail now', attachments: [] });
+    expect(after.channels?.map((item) => item.channelId)).toContain('notify:mail');
+    expect(delivered).toContain('notify:mail:mail now');
+    const borrowingError = await harness.bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'borrow-off', channel: 'notify:other', text: 'not yet', attachments: [] }).then(() => undefined, (error: unknown) => error);
+    expect(borrowingError).toMatchObject({ message: expect.stringContaining('channel_borrowing_disabled'), details: { reason: 'channel_borrowing_disabled', channelId: 'notify:other' } });
+    const disabledError = await harness.bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'disabled-candidate', channel: 'notify:off', text: 'disabled', attachments: [] }).then(() => undefined, (error: unknown) => error);
+    expect(disabledError).toMatchObject({ message: expect.stringContaining('channel_disabled'), details: { reason: 'channel_disabled', channelId: 'notify:off' } });
+    await harness.bridge.setPolicy({ allowed: true, default_enabled: true, allow_channel_borrowing: true });
+    await adapter.emit({ eventId: 'other-binding', identity: { ...identity, chatId: 'other-chat' }, kind: 'text', text: 'other' });
+    await harness.bridge.confirm((await harness.bridge.snapshot()).discoveries[0]!.id, { target: { kind: 'session', session_id: 'home' } });
+    const otherBinding = (await harness.bridge.snapshot()).bindings.find((item) => item.session_id === 'home')!;
+    const defaultAfterOther = await harness.bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'default-other', text: 'bound only', attachments: [] });
+    expect(defaultAfterOther.channels?.map((item) => item.channelId)).not.toContain(`im:${otherBinding.id}`);
+    await harness.bridge.updateBinding(otherBinding.id, { outputEnabled: false });
+    await expect(harness.bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'other-disabled', channel: `im:${otherBinding.id}`, text: 'other disabled', attachments: [] })).rejects.toThrow('channel_disabled');
+    const borrowed = await harness.bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'borrow-on', channel: 'notify:other', text: 'borrowed', attachments: [] });
+    expect(borrowed.channels).toEqual([expect.objectContaining({ channelId: 'notify:other', status: 'delivered', borrowed: true })]);
+  } finally { await harness.bridge.close(); }
+});
+
+it('persists one receipt per requested target and never retries an unknown result', async () => {
+  const adapter = new FakeImAdapter('telegram', '42');
+  let imAttempts = 0;
+  let notifyAttempts = 0;
+  const notify: UserMessageChannel = {
+    id: 'notify:mail', kind: 'notify', enabled: true, capabilities: [],
+    send: async () => { notifyAttempts += 1; return { status: 'delivered' }; },
+  };
+  const base = ports();
+  const wired = { ...base, ports: { ...base.ports, notifications: { channels: () => [notify] } } };
+  const harness = bridgeFor(adapter, wired);
+  try {
+    await harness.bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
+    await harness.bridge.setListening('inst', true);
+    await adapter.emit({ eventId: 'pair', identity, kind: 'text', text: 'pair' });
+    await harness.bridge.confirm((await harness.bridge.snapshot()).discoveries[0]!.id, { target: { kind: 'session', session_id: 'sess' } });
+    await harness.bridge.setNotificationChannel('sess', 'mail', true);
+    const im = (await harness.bridge.channelViews('sess')).find((item) => item.kind === 'im')!;
+    adapter.sendTextParts = async () => { imAttempts += 1; throw new Error('timeout'); };
+    const input = { sessionId: 'sess', toolCallId: 'per-target', channels: [im.id, 'notify:mail'], text: 'once', attachments: [] } as const;
+    const first = await harness.bridge.sendUserMessage(input);
+    const second = await harness.bridge.sendUserMessage(input);
+    expect(first.channels).toEqual([
+      expect.objectContaining({ channelId: im.id, status: 'unknown' }),
+      expect.objectContaining({ channelId: 'notify:mail', status: 'delivered' }),
+    ]);
+    expect(second.channels).toEqual(first.channels);
+    const restored = bridgeFor(new FakeImAdapter('telegram', '42'), wired).bridge;
+    try {
+      const afterRestore = await restored.sendUserMessage(input);
+      expect(afterRestore.channels).toEqual(first.channels);
+    } finally { await restored.close(); }
+    expect(imAttempts).toBe(1);
+    expect(notifyAttempts).toBe(1);
+  } finally { await harness.bridge.close(); }
+});
+
 describe('same-account channels on every platform', () => {
   it.each(['telegram', 'feishu_app', 'onebot_v11'] as const)('%s keeps contacts, groups and topics independent across target changes and removal', async (kind) => {
     const adapter = new FakeImAdapter(kind, 'account');
@@ -525,7 +770,7 @@ describe('same-account channels on every platform', () => {
       for (const [index, identity] of channels.entries()) await adapter.emit({ eventId: `route-${index}`, identity, kind: 'text', text: 'route' });
       expect(routed.map((item) => item.sessionId)).toEqual(['home', 'sess', 'home', 'sess', 'home']);
       await bridge.updateBinding(bound[0]!.id, { enabled: false });
-      await bridge.updateBinding(bound[0]!.id, { target: { kind: 'session', session_id: 'sess' } });
+      await bridge.updateBinding(bound[0]!.id, { target: { kind: 'session', session_id: 'sess' }, rebind: true });
       await bridge.removeBinding(bound[1]!.id);
       await adapter.emit({ eventId: 'paused', identity: channels[0]!, kind: 'text', text: 'paused' });
       await adapter.emit({ eventId: 'removed', identity: channels[1]!, kind: 'text', text: 'removed' });

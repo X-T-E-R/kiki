@@ -110,6 +110,38 @@ describe('phone interaction outbox', () => {
     await harness.bridge.close();
   });
 
+  it('rejects callbacks when input is off or the listening account changed without consuming the ticket', async () => {
+    const adapter = new FakeImAdapter('telegram', '42');
+    const pending = { approvals: [{ id: 'a1', expiresAt: NOW + 10_000, toolName: 'Bash', action: 'run' }] as ImPendingApproval[], questions: [] as ImPendingQuestion[] };
+    const harness = bridgeFor(adapter, pending);
+    try {
+      await harness.bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
+      await harness.bridge.setListening('inst', true);
+      await pair(harness.bridge, adapter, identity, 'pair');
+      await harness.bridge.syncInteractions();
+      const ticket = saved(harness.stored()).tickets.find((item) => item.action === 'approve')!;
+      const binding = (await harness.bridge.snapshot()).bindings[0]!;
+      await harness.bridge.updateBinding(binding.id, { inputEnabled: false });
+      await adapter.emit({ eventId: 'input-off', identity, kind: 'callback', callbackData: ticket.id, callbackQueryId: 'off' });
+      expect(harness.decisions).toEqual([]);
+      expect(saved(harness.stored()).tickets.find((item) => item.id === ticket.id)?.consumed).toBe(false);
+      await harness.bridge.updateBinding(binding.id, { inputEnabled: true });
+      harness.ports.credentials.check = async () => ({ ok: true, accountId: 'different-account' });
+      await harness.bridge.check('inst');
+      await harness.bridge.updateBinding(binding.id, { enabled: true });
+      expect((await harness.bridge.channelViews('sess')).find((channel) => channel.id === `im:${binding.id}`)?.enabled).toBe(false);
+      await expect(harness.bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'different-account-output', text: 'must not send', attachments: [], channel: `im:${binding.id}` })).rejects.toThrow('channel_disabled');
+      await adapter.emit({ eventId: 'different-account', identity, kind: 'callback', callbackData: ticket.id, callbackQueryId: 'different' });
+      expect(harness.decisions).toEqual([]);
+      expect(saved(harness.stored()).tickets.find((item) => item.id === ticket.id)?.consumed).toBe(false);
+      harness.ports.credentials.check = async () => ({ ok: true, accountId: '42' });
+      await harness.bridge.check('inst');
+      await harness.bridge.updateBinding(binding.id, { enabled: true });
+      await adapter.emit({ eventId: 'owner', identity, kind: 'callback', callbackData: ticket.id, callbackQueryId: 'owner' });
+      expect(harness.decisions).toEqual(['a1:approved']);
+    } finally { await harness.bridge.close(); }
+  });
+
   it('sends a pending approval after restart with the same ticket ids', async () => {
     const adapter = new FakeImAdapter('telegram', '42');
     const pending = { approvals: [{ id: 'a1', expiresAt: NOW + 10_000, toolName: 'Bash', action: 'run' }] as ImPendingApproval[], questions: [] as ImPendingQuestion[] };
@@ -299,6 +331,7 @@ describe('upgraded bindings with unavailable delivery targets', () => {
     harness.ports.credentials.list = () => [{ id: 'inst', providerId: providerKind, configured: true }];
     harness.ports.credentials.read = () => 'offline-credential';
     harness.ports.logger.info = (fields, message) => { if (message === 'im interaction delivery blocked') diagnostics.push(fields); };
+    harness.ports.sessions.owns = async (sessionId) => sessionId === 'session-0' || sessionId === 'session-1' || sessionId === 'sess';
     harness.ports.sessions.listInteractions = async (sessionId) => ({
       approvals: [{ id: `approval-${sessionId}`, expiresAt: NOW + 100_000, toolName: 'Bash', action: 'run' }],
       questions: [{ id: `question-${sessionId}`, questionIndex: 0, expiresAt: NOW + 100_000, questionKey: 'Pick', options: [{ id: 'red', label: 'Red' }], multi: false, allowOther: false }],
@@ -344,7 +377,7 @@ it('attempts a later binding before reporting a transient delivery failure and r
     await pair(held.bridge, adapter, identity, 'first');
     await pair(held.bridge, adapter, other, 'second');
     const second = (await held.bridge.snapshot()).bindings.find((binding) => binding.identity.sender_id === other.senderId)!;
-    await held.bridge.updateBinding(second.id, { sessionId: 'home' });
+    await held.bridge.updateBinding(second.id, { sessionId: 'home', rebind: true });
     failOnce(adapter, ['approval']);
     await expect(held.bridge.syncInteractions()).rejects.toThrow('send_failed');
     expect(adapter.sent.filter((message) => message.code === 'approval').map((message) => message.identity.chatId)).toEqual([other.chatId]);

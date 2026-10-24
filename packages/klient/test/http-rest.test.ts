@@ -1545,12 +1545,16 @@ it('carries IM setup and real channel preferences through authenticated REST', a
     await channel.rest.imSessions.channelViews('session/example');
     await channel.rest.imSessions.setInternalChannel('session/example', false);
     await channel.rest.imSessions.testBinding('binding/example');
+    await channel.rest.imSessions.setNotificationChannel('session/example', 'channel/example', true);
+    await channel.rest.imSessions.removeNotificationChannel('session/example', 'channel/example');
     expect(calls).toEqual([
       { path: '/api/im/sessions/setup', method: 'GET', body: undefined },
       { path: '/api/im/sessions/setup', method: 'POST', body: { action: 'save', provider_kind: 'discord', fields: { bot_token: 'example-token' } } },
       { path: '/api/im/sessions/targets/session%2Fexample/channels', method: 'GET', body: undefined },
       { path: '/api/im/sessions/targets/session%2Fexample/internal', method: 'PUT', body: { enabled: false } },
       { path: '/api/im/sessions/bindings/binding%2Fexample/test', method: 'POST', body: {} },
+      { path: '/api/im/sessions/targets/session%2Fexample/notify/channel%2Fexample', method: 'PUT', body: { enabled: true } },
+      { path: '/api/im/sessions/targets/session%2Fexample/notify/channel%2Fexample', method: 'DELETE', body: undefined },
     ]);
   } finally { await channel.close(); }
 });

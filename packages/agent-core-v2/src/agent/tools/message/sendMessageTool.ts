@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import { extname, isAbsolute, relative, resolve } from 'node:path';
 import { z } from 'zod';
 
-import { createDecorator, type LiveRef, type ServicesAccessor, ref } from '#/_base/di/instantiation';
+import { createDecorator, IInstantiationService, type LiveRef, type ServicesAccessor, ref } from '#/_base/di/instantiation';
+import { isSendMessageToolActive } from '#/agent/toolPolicy/sendMessageAdmission';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { MESSAGE_DELIVERY_SENT_GUIDANCE } from '#/agent/delivery/deliveryReminder';
 import { IAgentProfileService } from '#/agent/profile/profile';
@@ -11,7 +12,6 @@ import { IBlobStore } from '#/persistence/interface/blobStore';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
-import { ISessionDeliveryService } from '#/session/delivery/delivery';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionWorkspaceInfo } from '#/session/workspaceInfo/workspaceInfo';
 import { IRoomMessageRouter, IUserMessageRouter, internalMessageChannel, routeUserMessage, type MessageAttachmentReceipt, type SendMessageReceipt } from '#/app/bot/messageRouting';
@@ -30,6 +30,8 @@ const AttachmentSchema = z.object({
 export const SendMessageToolInputSchema = z.object({
   text: z.string().max(20_000).optional(),
   to: z.string().min(1).optional(),
+  channel: z.string().min(1).optional().describe('One output channel ID; independent of the legacy user or @Bot recipient.'),
+  channels: z.array(z.string().min(1)).min(1).max(32).optional().describe('Explicit output channel IDs. Omit to send to all enabled outputs bound to this thread.'),
   reply_to: z.string().min(1).optional(),
   attachments: z.array(AttachmentSchema).max(32).optional(),
 }).strict().refine((input) => (input.text?.trim().length ?? 0) > 0 || (input.attachments?.length ?? 0) > 0, {
@@ -49,14 +51,14 @@ type AttachmentInput = z.infer<typeof AttachmentSchema>;
 export class SendMessageTool implements ISendMessageTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'SendMessage';
-  readonly description = 'Send a complete message to the user, a room, or another Bot in message mode. Attachments may be sent without text; set each attachment kind explicitly for image, audio, voice, or video delivery. Channel receipts identify unsupported media and uncertain sends; never downgrade voice or automatically resend an unknown outcome. Do not split one message into sentences or repeat it in ordinary text. A final ordinary reply is delivered in full as a fallback; do not resend it. After successful delivery to the user, if the request is complete and no work remains, end the turn without a closing SendMessage or confirmation. Progress messages do not end ongoing work; continue any required tools or pending work.';
+  readonly description = 'Send a complete message to this thread’s enabled bound outputs, a room, or another Bot. Omit channel/channels for bound-output fan-out, or name explicit channel IDs; unbound channels require the borrowing policy. Attachments may be sent without text; set each attachment kind explicitly for image, audio, voice, or video delivery. Channel receipts identify unsupported media and uncertain sends; never downgrade voice or automatically resend an unknown outcome. Do not split one message into sentences or repeat it in ordinary text. A final ordinary reply is delivered in full as a fallback; do not resend it. After successful delivery to the user, if the request is complete and no work remains, end the turn without a closing SendMessage or confirmation. Progress messages do not end ongoing work; continue any required tools or pending work.';
   readonly parameters = toInputJsonSchema(SendMessageToolInputSchema);
 
   constructor(
     @ISessionContext private readonly session: ISessionContext,
     @ISessionMetadata private readonly metadata: ISessionMetadata,
     @ISessionWorkspaceInfo private readonly workspaceInfo: ISessionWorkspaceInfo,
-    @ISessionDeliveryService private readonly delivery: ISessionDeliveryService,
+    @IInstantiationService private readonly instantiation: IInstantiationService,
     @IAgentScopeContext private readonly agent: IAgentScopeContext,
     @IAgentProfileService private readonly profile: IAgentProfileService,
     @IBlobStore private readonly blobs: IBlobStore,
@@ -68,13 +70,14 @@ export class SendMessageTool implements ISendMessageTool {
   ) {}
 
   resolveExecution(input: SendMessageToolInput): ToolExecution {
-    if (this.delivery.effectiveMode() !== 'message') {
-      return { output: 'SendMessage is available only in message delivery mode.', isError: true };
+    if (this.agent.agentId !== 'main' || !this.instantiation.invokeFunction(isSendMessageToolActive)) {
+      return { output: 'SendMessage is disabled by the active capability or tool policy.', isError: true };
     }
     return {
       approvalRule: this.name,
       description: 'Sending a message',
       execute: async (ctx) => {
+        if (!this.instantiation.invokeFunction(isSendMessageToolActive)) throw new Error2(ErrorCodes.REQUEST_INVALID, 'SendMessage is disabled by the active capability or tool policy.');
         const text = input.text ?? '';
         if (text.trim().length === 0 && (input.attachments?.length ?? 0) === 0) throw new Error2(ErrorCodes.REQUEST_INVALID, 'A message cannot be blank.');
         if (input.to !== undefined && input.to !== 'user' && !input.to.startsWith('@')) {
@@ -83,6 +86,9 @@ export class SendMessageTool implements ISendMessageTool {
         const attachments = await this.copyAttachments(input.attachments ?? []);
         const identity = this.senderIdentity();
         const roomId = await this.roomId();
+        if ((input.channel !== undefined || input.channels !== undefined) && (roomId !== undefined || input.to?.startsWith('@'))) {
+          throw new Error2(ErrorCodes.REQUEST_INVALID, 'Output channels cannot be combined with Room or @Bot routing.');
+        }
         let receipt: SendMessageReceipt;
         if (roomId !== undefined) {
           const router = this.roomRouter.current;
@@ -94,7 +100,7 @@ export class SendMessageTool implements ISendMessageTool {
             target: input.to, content: text, attachments, replyTo: input.reply_to, idempotencyKey: ctx.toolCallId,
           });
         } else {
-          const message = { sessionId: this.session.sessionId, toolCallId: ctx.toolCallId, text, attachments, replyTo: input.reply_to, sender: identity };
+          const message = { sessionId: this.session.sessionId, toolCallId: ctx.toolCallId, text, attachments, replyTo: input.reply_to, sender: identity, channel: input.channel, channels: input.channels };
           receipt = this.userRouter.current === undefined
             ? await routeUserMessage(message, [internalMessageChannel()])
             : await this.userRouter.current.sendMessage(message);
@@ -198,7 +204,7 @@ function toWireReceipt(receipt: SendMessageReceipt): Record<string, unknown> {
     delivered_to: receipt.deliveredTo,
     channels: receipt.channels?.map((channel) => ({
       channel_id: channel.channelId, status: channel.status, message_ids: channel.messageIds,
-      unsupported: channel.unsupported, detail: channel.detail,
+      unsupported: channel.unsupported, detail: channel.detail, borrowed: channel.borrowed,
     })),
     ...(receipt.attachments === undefined ? {} : {
       attachments: receipt.attachments.map((attachment) => ({
@@ -232,7 +238,7 @@ function toWireReceipt(receipt: SendMessageReceipt): Record<string, unknown> {
 
 function mainMessageSession(accessor: ServicesAccessor): boolean {
   return accessor.get(IAgentScopeContext).agentId === 'main' &&
-    accessor.get(ISessionDeliveryService).effectiveMode() === 'message';
+    isSendMessageToolActive(accessor);
 }
 
 registerAgentToolService(ISendMessageTool, SendMessageTool, {

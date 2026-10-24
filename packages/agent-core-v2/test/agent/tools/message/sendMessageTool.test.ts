@@ -11,6 +11,8 @@ import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { ISendMessageTool } from '#/agent/tools/message/sendMessageTool';
 import { IBotService } from '#/app/bot/bot';
+import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IRoomMessageRouter, IUserMessageRouter, type SendMessageReceipt } from '#/app/bot/messageRouting';
 import { ISessionDeliveryService } from '#/session/delivery/delivery';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
@@ -214,4 +216,35 @@ it('uses the host router through its live DI binding and preserves uncertain wir
   expect(result.note).toContain('Do not resend automatically');
   expect(result.note).not.toContain(MESSAGE_DELIVERY_SENT_GUIDANCE);
   expect(result.stopTurn).toBeUndefined();
+});
+
+
+it('hot-enables a plain reply thread, executes named outputs, and withdraws the tool without changing reply mode', async () => {
+  const send = vi.fn(async (): Promise<SendMessageReceipt> => ({
+    messageId: 'send:send-1', deliveredTo: ['user'], delivery: 'delivered',
+    channels: [{ channelId: 'notify:updates', status: 'partial', borrowed: true, unsupported: ['voice'] }],
+  }));
+  ctx = createTestAgent(appServices((reg) => reg.definePartialInstance(IUserMessageRouter, { sendMessage: send })));
+  const delivery = ctx.get(ISessionDeliveryService);
+  await delivery.ready;
+  expect(delivery.effectiveMode()).toBe('reply');
+  const capability = ctx.get(IOptionalCapabilityPolicy);
+  const session = ctx.get(ISessionContext);
+  await capability.load(session.sessionId);
+  const registry = ctx.get(IAgentToolRegistryService);
+  await registry.prepare();
+  expect(registry.resolve('SendMessage')).toBeUndefined();
+  expect(await execute({ text: 'blocked' })).toMatchObject({ isError: true });
+  await capability.setChoice(session.sessionId, 'send_message', 'on');
+  await registry.prepare();
+  expect(registry.resolve('SendMessage')).toBeDefined();
+  const result = await execute({ text: 'Thread update', to: 'user', channels: ['notify:updates'] });
+  expect(send).toHaveBeenCalledWith(expect.objectContaining({ channels: ['notify:updates'], text: 'Thread update' }));
+  expect(JSON.parse(result.output as string).channels).toEqual([{ channel_id: 'notify:updates', status: 'partial', borrowed: true, unsupported: ['voice'] }]);
+  await capability.setChoice(session.sessionId, 'send_message', 'off');
+  await registry.prepare();
+  expect(registry.resolve('SendMessage')).toBeUndefined();
+  expect(await execute({ text: 'blocked again' })).toMatchObject({ isError: true });
+  expect(delivery.effectiveMode()).toBe('reply');
+  expect(send).toHaveBeenCalledOnce();
 });

@@ -73,29 +73,31 @@ describe('im session user message channels', () => {
     } finally { await bridge.close(); }
   });
 
-  it('persists an explicit in-app opt-out without touching IM channels', async () => {
+  it('keeps the in-app channel permanently enabled and rejects an explicit opt-out', async () => {
     const sessionPorts = ports();
     const { bridge, adapter } = await boundBridge(new FakeImAdapter('telegram', '42'), sessionPorts);
     try {
-      await bridge.setInternalChannel('sess', false);
+      await expect(bridge.setInternalChannel('sess', false)).rejects.toThrow('unsupported_internal_channel_disable');
       const reopened = new ImSessionBridge({ ports: sessionPorts.ports, factories: [fakeAdapterFactory(adapter)], editIntervalMs: 0 });
       await reopened.whenReady();
-      expect(await bridge.internalChannelEnabled('sess')).toBe(false);
-      expect(await reopened.internalChannelEnabled('sess')).toBe(false);
-      expect((await reopened.channelViews('sess'))[0]).toMatchObject({ id: 'internal', enabled: false });
+      expect(await bridge.internalChannelEnabled('sess')).toBe(true);
+      expect(await reopened.internalChannelEnabled('sess')).toBe(true);
+      expect((await reopened.channelViews('sess'))[0]).toMatchObject({ id: 'internal', enabled: true });
       await reopened.close();
-      const receipt = await bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'c1', text: 'only im', attachments: [] });
-      expect(receipt.channels?.map((channel) => channel.channelId)).toEqual([expect.stringMatching(/^im:/u)]);
+      await bridge.removeBinding((await bridge.snapshot()).bindings[0]!.id);
+      const receipt = await bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'c1', text: 'only internal', attachments: [] });
+      expect(receipt.channels?.map((channel) => channel.channelId)).toEqual(['internal']);
     } finally { await bridge.close(); }
   });
 
-  it('fails loudly when every destination is off', async () => {
+  it('keeps an internal destination after the last IM binding is removed', async () => {
     const { bridge } = await boundBridge();
     try {
       const binding = (await bridge.snapshot()).bindings[0]!;
-      await bridge.setInternalChannel('sess', false);
       await bridge.removeBinding(binding.id);
-      await expect(bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'c1', text: 'nobody', attachments: [] })).rejects.toThrow('no_destination');
+      const receipt = await bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'c1', text: 'internal fallback', attachments: [] });
+      expect(receipt.channels).toEqual([expect.objectContaining({ channelId: 'internal', status: 'delivered' })]);
+      expect(receipt.delivery).toBe('delivered');
     } finally { await bridge.close(); }
   });
 
@@ -131,10 +133,10 @@ describe('im session user message channels', () => {
   it('keeps an unavailable attachment a failure rather than a silent drop', async () => {
     const { bridge } = await boundBridge();
     try {
-      await bridge.setInternalChannel('sess', false);
-      const receipt = await bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'c1', text: 'x', attachments: [image] });
+      const im = (await bridge.channelViews('sess')).find((channel) => channel.kind === 'im')!;
+      const receipt = await bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'c1', channel: im.id, text: '', attachments: [image] });
       expect(receipt.delivery).toBe('undeliverable');
-      expect(receipt.channels).toEqual([expect.objectContaining({ status: 'failed', detail: 'attachment_unavailable' })]);
+      expect(receipt.channels).toEqual([expect.objectContaining({ channelId: im.id, status: 'failed', detail: 'attachment_unavailable' })]);
     } finally { await bridge.close(); }
   });
 });
@@ -142,13 +144,13 @@ describe('im session user message channels', () => {
 it('retains a disconnected enabled binding as a failed destination rather than claiming no destination', async () => {
   const { bridge } = await boundBridge();
   try {
-    await bridge.setInternalChannel('sess', false);
     await bridge.setListening('inst', false);
     const views = await bridge.channelViews('sess');
     expect(views).toHaveLength(2);
-    expect(views[1]).toMatchObject({ kind: 'im', enabled: true });
-    const receipt = await bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'offline', text: 'still bound', attachments: [] });
-    expect(receipt.channels).toEqual([expect.objectContaining({ status: 'failed', detail: 'channel_not_connected' })]);
+    const im = views.find((channel) => channel.kind === 'im')!;
+    expect(im).toMatchObject({ enabled: true });
+    const receipt = await bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'offline', channel: im.id, text: 'still bound', attachments: [] });
+    expect(receipt.channels).toEqual([expect.objectContaining({ channelId: im.id, status: 'failed', detail: 'channel_not_connected' })]);
     expect(receipt.deliveredTo).toEqual([]);
   } finally { await bridge.close(); }
 });
@@ -158,9 +160,9 @@ it('rejects voice before any send when the only enabled IM channel cannot take v
   adapter.voice = false;
   const { bridge } = await boundBridge(adapter);
   try {
-    await bridge.setInternalChannel('sess', false);
+    const im = (await bridge.channelViews('sess')).find((channel) => channel.kind === 'im')!;
     const before = adapter.sent.length;
-    await expect(bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'unsupported', text: 'voice', attachments: [voice] })).rejects.toThrow('media_unsupported');
+    await expect(bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'unsupported', channel: im.id, text: 'voice', attachments: [voice] })).rejects.toThrow('media_unsupported');
     expect(adapter.sent).toHaveLength(before);
     expect(adapter.files).toHaveLength(0);
   } finally { await bridge.close(); }
@@ -202,11 +204,28 @@ it('does not replace an uncertain send with a definite failure when its unsuppor
   adapter.sendMedia = async () => { attempts.push('image'); return { status: 'unsupported', unsupported: ['image'] }; };
   adapter.sendText = async () => { attempts.push('notice'); throw new ImSendError('notice_rejected'); };
   try {
-    await bridge.setInternalChannel('sess', false);
-    const receipt = await bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'uncertain-refusal', text: 'look', attachments: [image] });
+    const im = (await bridge.channelViews('sess')).find((channel) => channel.kind === 'im')!;
+    const receipt = await bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'uncertain-refusal', channel: im.id, text: 'look', attachments: [image] });
     expect(receipt.delivery).toBe('pending');
     expect(receipt.channels).toEqual([expect.objectContaining({ status: 'unknown', unsupported: ['image'] })]);
     expect(attempts).toEqual(['text', 'image', 'notice']);
+  } finally { await bridge.close(); }
+});
+
+it('returns a partial receipt when the IM target skips one attachment that internal can carry', async () => {
+  const sessionPorts = ports();
+  sessionPorts.saved.push(image.blobId, voice.blobId);
+  const adapter = new FakeImAdapter('telegram', '42');
+  adapter.voice = false;
+  const { bridge } = await boundBridge(adapter, sessionPorts);
+  try {
+    const receipt = await bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'partial', text: 'mixed media', attachments: [image, voice] });
+    expect(receipt.delivery).toBe('delivered');
+    expect(receipt.channels).toEqual([
+      expect.objectContaining({ channelId: 'internal', status: 'delivered' }),
+      expect.objectContaining({ status: 'partial', unsupported: ['voice'] }),
+    ]);
+    expect(adapter.files).toEqual([expect.objectContaining({ asImage: true, mediaType: 'image/png' })]);
   } finally { await bridge.close(); }
 });
 

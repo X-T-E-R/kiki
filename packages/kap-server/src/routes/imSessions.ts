@@ -5,7 +5,7 @@ import { imBindingPatchSchema, imBindingTestResultSchema, imConfirmRequestSchema
 
 import { okEnvelope, errEnvelope } from '../envelope';
 import { ErrorCode } from '../protocol/error-codes';
-import type { ImSessionBridge } from '../services/imSession/bridge';
+import { ImIdentityAlreadyBoundError, type ImSessionBridge } from '../services/imSession/bridge';
 import { ImSessionSetup, imSetupCatalog } from '../services/imSession/setup';
 
 const identifier = z.string().regex(/^[a-zA-Z0-9_.:-]{1,120}$/u);
@@ -26,6 +26,10 @@ export function registerImSessionRoutes(app: FastifyInstance, bridge: ImSessionB
     catch (error) {
       if (error instanceof z.ZodError) {
         reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.issues.map((issue) => `${issue.path.join('.') || 'request'}: ${issue.message}`).join('; '), req.id));
+        return;
+      }
+      if (error instanceof ImIdentityAlreadyBoundError) {
+        reply.send({ ...errEnvelope(ErrorCode.IM_IDENTITY_ALREADY_BOUND, error.message, req.id), details: error.details });
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
@@ -65,6 +69,9 @@ export function registerImSessionRoutes(app: FastifyInstance, bridge: ImSessionB
     return bridge.updateBinding(routeId(req), {
       enabled: patch.enabled,
       sessionEnabled: patch.session_enabled,
+      inputEnabled: patch.input_enabled,
+      outputEnabled: patch.output_enabled,
+      rebind: patch.rebind,
       busy: patch.busy,
       reply: patch.reply,
       mobileInteractions: patch.mobile_interactions,
@@ -73,23 +80,27 @@ export function registerImSessionRoutes(app: FastifyInstance, bridge: ImSessionB
     });
   }));
   app.delete('/im/sessions/bindings/:id', (req, reply) => respond(req, reply, () => bridge.removeBinding(routeId(req))));
-  app.get('/im/sessions/targets/:id/channels', (req, reply) => respond(req, reply, async () => {
-    const sessionId = routeId(req);
-    const channels = await bridge.channelViews(sessionId);
-    return imTargetChannelsSchema.parse({
-      internal_enabled: await bridge.internalChannelEnabled(sessionId),
-      channels: channels.map((channel) => ({
-        id: channel.id,
-        kind: channel.kind,
-        enabled: channel.enabled,
-        capabilities: channel.capabilities.map((capability) => ({
-          kind: capability.kind,
-          mime_types: capability.mimeTypes === undefined ? undefined : [...capability.mimeTypes],
-          max_bytes: capability.maxBytes,
-          rendering: capability.rendering,
-        })),
+  const targetChannels = async (sessionId: string) => imTargetChannelsSchema.parse({
+    internal_enabled: true,
+    channels: (await bridge.channelViews(sessionId)).map((channel) => ({
+      id: channel.id, kind: channel.kind, bound: channel.bound, enabled: channel.enabled,
+      capabilities: channel.capabilities.map((capability) => ({
+        kind: capability.kind, mime_types: capability.mimeTypes === undefined ? undefined : [...capability.mimeTypes],
+        max_bytes: capability.maxBytes, rendering: capability.rendering,
       })),
-    });
+    })),
+  });
+  app.get('/im/sessions/targets/:id/channels', (req, reply) => respond(req, reply, () => targetChannels(routeId(req))));
+  app.put('/im/sessions/targets/:id/notify/:channelId', (req, reply) => respond(req, reply, async () => {
+    const channelId = identifier.parse((req.params as { channelId: unknown }).channelId);
+    const body = z.object({ enabled: z.boolean() }).strict().parse(req.body);
+    await bridge.setNotificationChannel(routeId(req), channelId, body.enabled);
+    return targetChannels(routeId(req));
+  }));
+  app.delete('/im/sessions/targets/:id/notify/:channelId', (req, reply) => respond(req, reply, async () => {
+    const channelId = identifier.parse((req.params as { channelId: unknown }).channelId);
+    await bridge.removeNotificationChannel(routeId(req), channelId);
+    return targetChannels(routeId(req));
   }));
   app.put('/im/sessions/targets/:id/internal', (req, reply) => respond(req, reply, async () => {
     const sessionId = routeId(req);

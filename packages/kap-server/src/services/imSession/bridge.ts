@@ -28,6 +28,9 @@ interface BindingRecord {
   personaId?: string;
   enabled: boolean;
   sessionEnabled?: boolean;
+  inputEnabled?: boolean;
+  outputEnabled?: boolean;
+  pendingReanchor?: boolean;
   busy: 'queue' | 'steer';
   reply: 'final' | 'edit';
   mobileInteractions: boolean;
@@ -124,7 +127,9 @@ interface OutboxRecord {
 }
 
 interface Stored {
-  policy: { allowed: boolean; defaultEnabled: boolean };
+  policy: { allowed: boolean; defaultEnabled: boolean; allowChannelBorrowing?: boolean };
+  notificationBindings?: { sessionId: string; channelId: string; enabled: boolean }[];
+  messageReceipts?: Record<string, { channels: Record<string, MessageChannelReceipt> }>;
   instances: InstanceMeta[];
   discoveries: DiscoveryRecord[];
   bindings: BindingRecord[];
@@ -212,6 +217,12 @@ function senderKey(instanceId: string, identity: ImInboundIdentity): string {
   return `${instanceId}:${identity.chatId}:${identity.senderId}:${identity.topicId}`;
 }
 
+export class ImIdentityAlreadyBoundError extends Error {
+  constructor(readonly details: Readonly<Record<string, unknown>>) {
+    super('im_identity_already_bound');
+  }
+}
+
 export class ImSessionBridge {
   private readonly ports: ImSessionPorts;
   private readonly factories: readonly ImAdapterFactory[];
@@ -248,8 +259,9 @@ export class ImSessionBridge {
 
   async snapshot(): Promise<ImSessionSnapshot> {
     await this.ready;
+    await this.markOrphans();
     return {
-      policy: { allowed: this.state.policy.allowed, default_enabled: this.state.policy.defaultEnabled },
+      policy: { allowed: this.state.policy.allowed, default_enabled: this.state.policy.defaultEnabled, allow_channel_borrowing: this.state.policy.allowChannelBorrowing ?? false },
       instances: this.instanceViews(),
       discoveries: this.state.discoveries.map(toDiscovery),
       bindings: this.state.bindings.map(toBinding),
@@ -266,60 +278,100 @@ export class ImSessionBridge {
     };
   }
 
-  async internalChannelEnabled(sessionId: string): Promise<boolean> {
+  async internalChannelEnabled(_sessionId: string): Promise<boolean> {
     await this.ready;
-    return !(this.state.internalOff ?? []).includes(sessionId);
+    return true;
   }
 
-  async setInternalChannel(sessionId: string, enabled: boolean): Promise<boolean> {
+  async setInternalChannel(_sessionId: string, enabled: boolean): Promise<boolean> {
     await this.ready;
-    const off = new Set(this.state.internalOff ?? []);
-    if (enabled) off.delete(sessionId);
-    else off.add(sessionId);
-    this.state.internalOff = [...off];
+    if (!enabled) throw new Error('unsupported_internal_channel_disable');
+    return true;
+  }
+
+  async setNotificationChannel(sessionId: string, channelId: string, enabled: boolean): Promise<readonly MessageChannelBinding[]> {
+    await this.ready;
+    if (!await this.ports.sessions.owns(sessionId)) throw new Error('unknown_session');
+    if (!this.ports.notifications?.channels(sessionId).some((channel) => channel.id === `notify:${channelId}`)) throw new Error('unknown_notification_channel');
+    const bindings = this.state.notificationBindings ??= [];
+    const existing = bindings.find((binding) => binding.sessionId === sessionId && binding.channelId === channelId);
+    if (existing === undefined) bindings.push({ sessionId, channelId, enabled });
+    else existing.enabled = enabled;
     await this.persist();
-    return enabled;
+    return this.channelViews(sessionId);
+  }
+
+  async removeNotificationChannel(sessionId: string, channelId: string): Promise<readonly MessageChannelBinding[]> {
+    await this.ready;
+    this.state.notificationBindings = (this.state.notificationBindings ?? []).filter((binding) => binding.sessionId !== sessionId || binding.channelId !== channelId);
+    await this.persist();
+    return this.channelViews(sessionId);
   }
 
   async channelViews(sessionId: string): Promise<readonly MessageChannelBinding[]> {
     await this.ready;
-    const views: MessageChannelBinding[] = [{
-      id: 'internal',
-      kind: 'internal',
-      enabled: await this.internalChannelEnabled(sessionId),
-      capabilities: internalMessageChannel().capabilities,
-    }];
-    for (const binding of this.state.bindings) {
-      if (binding.sessionId !== sessionId) continue;
-      views.push({ id: `im:${binding.id}`, kind: 'im', enabled: this.admitted(binding), capabilities: this.bindingCapabilities(binding) });
-    }
-    return views;
+    return this.outputChannels(sessionId).map(({ send: _send, ...channel }) => channel);
   }
 
-  async sendUserMessage(input: UserMessageInput): Promise<SendMessageReceipt> {
-    await this.ready;
-    const channels: UserMessageChannel[] = [internalMessageChannel(await this.internalChannelEnabled(input.sessionId))];
+  private outputChannels(sessionId: string): UserMessageChannel[] {
+    const channels: UserMessageChannel[] = [internalMessageChannel()];
     for (const binding of this.state.bindings) {
-      if (binding.sessionId !== input.sessionId || !this.admitted(binding)) continue;
       const adapter = this.adapterFor(binding.providerInstanceId);
       channels.push({
-        id: `im:${binding.id}`,
-        kind: 'im',
-        enabled: true,
-        capabilities: this.bindingCapabilities(binding),
+        id: `im:${binding.id}`, kind: 'im', bound: binding.sessionId === sessionId,
+        enabled: this.admittedOutbound(binding), capabilities: this.bindingCapabilities(binding),
         send: (channelInput, skipped) => adapter === undefined
           ? Promise.resolve({ status: 'failed', detail: 'channel_not_connected' })
           : this.sendToIm(binding, adapter, channelInput, skipped),
       });
     }
-    return routeUserMessage(input, channels);
+    for (const channel of this.ports.notifications?.channels(sessionId) ?? []) {
+      const binding = this.state.notificationBindings?.find((item) => item.sessionId === sessionId && `notify:${item.channelId}` === channel.id);
+      channels.push({ ...channel, bound: binding !== undefined, enabled: channel.enabled && (binding?.enabled ?? true) });
+    }
+    for (const binding of this.state.notificationBindings ?? []) {
+      if (binding.sessionId !== sessionId || channels.some((channel) => channel.id === `notify:${binding.channelId}`)) continue;
+      channels.push({ id: `notify:${binding.channelId}`, kind: 'notify', bound: true, enabled: false, capabilities: [],
+        send: async () => ({ status: 'failed', detail: 'channel_not_available' }),
+      });
+    }
+    return channels;
+  }
+
+  private messageQueue: Promise<unknown> = Promise.resolve();
+
+  sendUserMessage(input: UserMessageInput): Promise<SendMessageReceipt> {
+    const operation = this.messageQueue.catch(() => undefined).then(async () => {
+      await this.ready;
+      const key = JSON.stringify([input.sessionId, input.toolCallId]);
+      const stored = this.state.messageReceipts ??= {};
+      const record = stored[key] ??= { channels: {} };
+      const channels = this.outputChannels(input.sessionId).map((channel): UserMessageChannel => ({
+        ...channel,
+        send: async (message, skipped) => {
+          const previous = record.channels[channel.id];
+          if (previous !== undefined) return previous;
+          record.channels[channel.id] = { channelId: channel.id, status: 'unknown', detail: 'send_in_progress_or_interrupted' };
+          await this.persist();
+          let receipt: Omit<MessageChannelReceipt, 'channelId'>;
+          try { receipt = await channel.send(message, skipped); }
+          catch { receipt = { status: 'unknown', detail: 'send_outcome_unknown' }; }
+          record.channels[channel.id] = { ...receipt, channelId: channel.id };
+          await this.persist();
+          return receipt;
+        },
+      }));
+      return routeUserMessage(input, channels, { allowChannelBorrowing: this.state.policy.allowChannelBorrowing === true });
+    });
+    this.messageQueue = operation;
+    return operation;
   }
 
   async testBinding(id: string): Promise<ImBindingTestResult> {
     await this.ready;
     const binding = this.only(this.state.bindings, id);
     if (binding === undefined) throw new Error('unknown_binding');
-    if (!this.admitted(binding)) return { binding_id: id, status: 'failed', message_ids: [], detail: 'binding_disabled' };
+    if (!this.admittedOutbound(binding)) return { binding_id: id, status: 'failed', message_ids: [], detail: 'binding_disabled' };
     const adapter = this.adapterFor(binding.providerInstanceId);
     if (adapter === undefined) return { binding_id: id, status: 'failed', message_ids: [], detail: 'channel_not_connected' };
     const sent = await this.sendToIm(binding, adapter, {
@@ -343,7 +395,7 @@ export class ImSessionBridge {
     const messageIds: string[] = [];
     const unsupported = [...skipped];
     let deliveredMedia = 0;
-    let failure: 'failed' | 'unknown' | undefined;
+    let failure: 'failed' | 'unknown' | 'partial' | undefined;
     let detail: string | undefined;
     const text = [input.text, skipped.length > 0 ? COPY[this.locale()].mediaUnsupported(skipped.join(', ')) : ''].filter((part) => part.length > 0).join('\n\n');
     if (text.length > 0) {
@@ -397,12 +449,14 @@ export class ImSessionBridge {
         detail = 'Unsupported attachments were not sent; the channel notice could not be confirmed.';
       }
     }
-    return { status: failure ?? (unsupported.length > 0 && deliveredMedia === 0 ? 'unsupported' : 'delivered'), messageIds, unsupported: unsupported.length > 0 ? [...new Set(unsupported)] : undefined, detail };
+    const status = failure === 'failed' && messageIds.length > 0 ? 'partial' : failure ??
+      (unsupported.length > 0 ? input.text.length > 0 || deliveredMedia > 0 ? 'partial' : 'unsupported' : 'delivered');
+    return { status, messageIds, unsupported: unsupported.length > 0 ? [...new Set(unsupported)] : undefined, detail };
   }
 
   async setPolicy(policy: ImPolicy): Promise<ImSessionSnapshot> {
     await this.ready;
-    this.state.policy = { allowed: policy.allowed, defaultEnabled: policy.default_enabled };
+    this.state.policy = { allowed: policy.allowed, defaultEnabled: policy.default_enabled, allowChannelBorrowing: policy.allow_channel_borrowing ?? false };
     if (!policy.allowed) await this.stopAll();
     else await this.ensureListening();
     await this.persist();
@@ -468,52 +522,71 @@ export class ImSessionBridge {
     return { ok: result.ok, ...(result.accountId === undefined ? {} : { account_id: result.accountId }), ...(result.detail === undefined ? {} : { detail: result.detail }) };
   }
 
-  async confirm(discoveryId: string, request: ImConfirmRequest): Promise<ImSessionSnapshot> {
-    await this.ready;
-    const discovery = this.only(this.state.discoveries, discoveryId);
-    if (discovery === undefined) throw new Error('unknown_discovery');
-    if (discovery.providerKind === 'wechat_bridge' && (discovery.identity.chatKind === 'group' || discovery.identity.topicId !== '0')) throw new Error('unsupported_wechat_group');
-    const meta = this.requireMeta(discovery.providerInstanceId);
-    let sessionId: string;
-    let personaId: string | undefined;
-    if (request.target.kind === 'persona') {
-      const home = await this.ports.sessions.ensureHome(request.target.persona_id);
+  confirm(discoveryId: string, request: ImConfirmRequest): Promise<ImSessionSnapshot> {
+    return this.mutateBindings(async () => {
+      const discovery = this.only(this.state.discoveries, discoveryId);
+      if (discovery === undefined) throw new Error('unknown_discovery');
+      if (discovery.providerKind === 'wechat_bridge' && (discovery.identity.chatKind === 'group' || discovery.identity.topicId !== '0')) throw new Error('unsupported_wechat_group');
+      const meta = this.requireMeta(discovery.providerInstanceId);
+      const resolved = await this.resolveTarget(request.target);
+      const existing = this.state.bindings.find((item) => item.providerInstanceId === discovery.providerInstanceId && item.accountId === discovery.accountId && sameIdentity(item.identity, discovery.identity));
+      if (existing !== undefined && existing.sessionId !== resolved.sessionId && !request.rebind) throw this.identityConflict(existing, resolved.sessionId);
+      const binding: BindingRecord = existing === undefined ? {
+        id: this.next('b'), providerInstanceId: discovery.providerInstanceId, providerKind: discovery.providerKind,
+        accountId: discovery.accountId, identity: discovery.identity, sessionId: resolved.sessionId, personaId: resolved.personaId,
+        enabled: true, busy: request.busy ?? meta.busy ?? 'queue', reply: request.reply ?? meta.reply ?? 'final', mobileInteractions: request.mobile_interactions ?? true,
+      } : { ...existing, identity: discovery.identity, sessionId: resolved.sessionId, personaId: resolved.personaId,
+        busy: request.busy ?? meta.busy ?? existing.busy, reply: request.reply ?? meta.reply ?? existing.reply,
+        mobileInteractions: request.mobile_interactions ?? existing.mobileInteractions,
+      };
+      binding.pendingReanchor = false;
+      binding.inputEnabled = request.input_enabled ?? binding.inputEnabled;
+      binding.outputEnabled = request.output_enabled ?? binding.outputEnabled;
+      this.claimInput(binding, request.rebind === true);
+      if (existing === undefined) this.state.bindings.push(binding);
+      else {
+        if (existing.sessionId !== binding.sessionId) this.expireReplies(existing.id);
+        this.state.bindings[this.state.bindings.indexOf(existing)] = binding;
+      }
+      this.state.discoveries = this.state.discoveries.filter((item) => item.id !== discoveryId);
+      await this.persist();
+      if (request.also_home && resolved.personaId !== undefined) await this.ports.sessions.setHome?.(resolved.personaId, resolved.sessionId);
+      return this.snapshot();
+    });
+  }
+
+  private bindingMutation: Promise<unknown> = Promise.resolve();
+
+  private mutateBindings<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.bindingMutation.catch(() => undefined).then(async () => {
+      await this.ready;
+      return operation();
+    });
+    this.bindingMutation = run;
+    return run;
+  }
+
+  private async resolveTarget(target: ImConfirmRequest['target']): Promise<{ sessionId: string; personaId?: string }> {
+    if (target.kind === 'persona') {
+      const home = await this.ports.sessions.ensureHome(target.persona_id);
       if (home.homeSessionId === undefined || home.homeSessionId.length === 0) throw new Error('home_session_missing');
-      sessionId = home.homeSessionId;
-      personaId = request.target.persona_id;
-      if (request.also_home === true) await this.ports.sessions.setHome?.(personaId, sessionId);
-    } else {
-      if (!await this.ports.sessions.owns(request.target.session_id)) throw new Error('unknown_session');
-      sessionId = request.target.session_id;
+      return { sessionId: home.homeSessionId, personaId: target.persona_id };
     }
-    this.state.discoveries = this.state.discoveries.filter((item) => item.id !== discoveryId);
-    const existing = this.state.bindings.find((item) => item.providerInstanceId === discovery.providerInstanceId && sameIdentity(item.identity, discovery.identity));
-    if (existing !== undefined) {
-      existing.accountId = discovery.accountId;
-      existing.identity = discovery.identity;
-      existing.sessionId = sessionId;
-      if (personaId === undefined) delete existing.personaId;
-      else existing.personaId = personaId;
-      existing.busy = request.busy ?? meta.busy ?? existing.busy;
-      existing.reply = request.reply ?? meta.reply ?? existing.reply;
-      existing.mobileInteractions = request.mobile_interactions ?? existing.mobileInteractions;
-    } else {
-      this.state.bindings.push({
-        id: this.next('b'),
-        providerInstanceId: discovery.providerInstanceId,
-        providerKind: discovery.providerKind,
-        accountId: discovery.accountId,
-        identity: discovery.identity,
-        sessionId,
-        ...(personaId === undefined ? {} : { personaId }),
-        enabled: true,
-        busy: request.busy ?? meta.busy ?? 'queue',
-        reply: request.reply ?? meta.reply ?? 'final',
-        mobileInteractions: request.mobile_interactions ?? true,
-      });
-    }
-    await this.persist();
-    return this.snapshot();
+    if (!await this.ports.sessions.owns(target.session_id)) throw new Error('unknown_session');
+    return { sessionId: target.session_id };
+  }
+
+  private identityConflict(binding: BindingRecord, sessionId: string): ImIdentityAlreadyBoundError {
+    return new ImIdentityAlreadyBoundError({ existing_binding_id: binding.id, previous_session_id: binding.sessionId,
+      target_session_id: sessionId, variant_key: { provider_instance_id: binding.providerInstanceId, account_id: binding.accountId,
+        chat_id: binding.identity.chatId, topic_id: binding.identity.topicId, sender_id: binding.identity.senderId }, overlapping_bindings: [] });
+  }
+
+  private claimInput(candidate: BindingRecord, rebind: boolean): void {
+    if (!this.admittedInbound(candidate)) return;
+    const conflicts = this.state.bindings.filter((item) => item.id !== candidate.id && item.providerInstanceId === candidate.providerInstanceId && item.accountId === candidate.accountId && sameIdentity(item.identity, candidate.identity) && this.admittedInbound(item));
+    if (!rebind && conflicts.length > 0) throw this.identityConflict(conflicts[0]!, candidate.sessionId);
+    for (const binding of conflicts) binding.inputEnabled = false;
   }
 
   async dismiss(discoveryId: string): Promise<ImSessionSnapshot> {
@@ -524,34 +597,37 @@ export class ImSessionBridge {
     return this.snapshot();
   }
 
-  async updateBinding(id: string, patch: { enabled?: boolean; sessionEnabled?: boolean | null; busy?: 'queue' | 'steer'; reply?: 'final' | 'edit'; mobileInteractions?: boolean; sessionId?: string; target?: ImConfirmRequest['target'] }): Promise<ImSessionSnapshot> {
-    await this.ready;
-    const binding = this.only(this.state.bindings, id);
-    if (binding === undefined) throw new Error('unknown_binding');
-    const target = patch.target ?? (patch.sessionId === undefined ? undefined : { kind: 'session' as const, session_id: patch.sessionId });
-    let resolved: { sessionId: string; personaId?: string } | undefined;
-    if (target?.kind === 'persona') {
-      const home = await this.ports.sessions.ensureHome(target.persona_id);
-      if (home.homeSessionId === undefined || home.homeSessionId.length === 0) throw new Error('home_session_missing');
-      resolved = { sessionId: home.homeSessionId, personaId: target.persona_id };
-    } else if (target?.kind === 'session') {
-      if (!await this.ports.sessions.owns(target.session_id)) throw new Error('unknown_session');
-      resolved = { sessionId: target.session_id };
-    }
-    if (patch.enabled !== undefined) binding.enabled = patch.enabled;
-    if (patch.sessionEnabled === null) delete binding.sessionEnabled;
-    else if (patch.sessionEnabled !== undefined) binding.sessionEnabled = patch.sessionEnabled;
-    if (patch.busy !== undefined) binding.busy = patch.busy;
-    if (patch.reply !== undefined) binding.reply = patch.reply;
-    if (patch.mobileInteractions !== undefined) binding.mobileInteractions = patch.mobileInteractions;
-    if (resolved !== undefined) {
-      binding.sessionId = resolved.sessionId;
-      if (resolved.personaId === undefined) delete binding.personaId;
-      else binding.personaId = resolved.personaId;
-    }
-    await this.persist();
-    await this.resumeReplies(binding.providerInstanceId);
-    return this.snapshot();
+  updateBinding(id: string, patch: { enabled?: boolean; sessionEnabled?: boolean | null; inputEnabled?: boolean | null; outputEnabled?: boolean | null; rebind?: boolean; busy?: 'queue' | 'steer'; reply?: 'final' | 'edit'; mobileInteractions?: boolean; sessionId?: string; target?: ImConfirmRequest['target'] }): Promise<ImSessionSnapshot> {
+    return this.mutateBindings(async () => {
+      const binding = this.only(this.state.bindings, id);
+      if (binding === undefined) throw new Error('unknown_binding');
+      const target = patch.target ?? (patch.sessionId === undefined ? undefined : { kind: 'session' as const, session_id: patch.sessionId });
+      const resolved = target === undefined ? undefined : await this.resolveTarget(target);
+      if (resolved !== undefined && binding.sessionId !== resolved.sessionId && !patch.rebind) throw this.identityConflict(binding, resolved.sessionId);
+      const next = { ...binding };
+      if (patch.enabled !== undefined) next.enabled = patch.enabled;
+      if (patch.sessionEnabled === null) delete next.sessionEnabled;
+      else if (patch.sessionEnabled !== undefined) next.sessionEnabled = patch.sessionEnabled;
+      if (patch.inputEnabled === null) delete next.inputEnabled;
+      else if (patch.inputEnabled !== undefined) next.inputEnabled = patch.inputEnabled;
+      if (patch.outputEnabled === null) delete next.outputEnabled;
+      else if (patch.outputEnabled !== undefined) next.outputEnabled = patch.outputEnabled;
+      if (patch.busy !== undefined) next.busy = patch.busy;
+      if (patch.reply !== undefined) next.reply = patch.reply;
+      if (patch.mobileInteractions !== undefined) next.mobileInteractions = patch.mobileInteractions;
+      if (resolved !== undefined) {
+        next.sessionId = resolved.sessionId;
+        next.personaId = resolved.personaId;
+        next.pendingReanchor = false;
+      }
+      this.claimInput(next, patch.rebind === true);
+      const index = this.state.bindings.indexOf(binding);
+      if (binding.sessionId !== next.sessionId) this.expireReplies(binding.id);
+      this.state.bindings[index] = next;
+      await this.persist();
+      await this.resumeReplies(next.providerInstanceId);
+      return this.snapshot();
+    });
   }
 
   async removeBinding(id: string): Promise<ImSessionSnapshot> {
@@ -565,14 +641,14 @@ export class ImSessionBridge {
   suppressChannel(input: { providerInstanceId: string; scene: 'work_complete' | 'question_pending'; target: Record<string, unknown> }): boolean {
     const chat = input.target['chat_id'];
     if (typeof chat !== 'string' && typeof chat !== 'number') return false;
-    return this.state.bindings.some((binding) => binding.providerInstanceId === input.providerInstanceId && binding.identity.chatId === String(chat) && this.admitted(binding) && (input.scene === 'work_complete' || binding.mobileInteractions));
+    return this.state.bindings.some((binding) => binding.providerInstanceId === input.providerInstanceId && binding.identity.chatId === String(chat) && this.admittedOutbound(binding) && (input.scene === 'work_complete' || binding.mobileInteractions));
   }
 
   async syncInteractions(): Promise<void> {
     await this.ready;
     const errors: unknown[] = [];
     for (const binding of this.state.bindings) {
-      if (!this.admitted(binding) || !binding.mobileInteractions) continue;
+      if (!this.admittedOutbound(binding) || !binding.mobileInteractions) continue;
       try {
         const pending = await this.ports.sessions.listInteractions(binding.sessionId);
         await this.projectInteractions(binding, pending.approvals, pending.questions);
@@ -617,6 +693,7 @@ export class ImSessionBridge {
     if (!Array.isArray(this.state.outbox)) this.state.outbox = [];
     if (typeof this.state.questionAnswers !== 'object' || this.state.questionAnswers === null) this.state.questionAnswers = {};
     if (typeof this.state.answeredQuestions !== 'object' || this.state.answeredQuestions === null) this.state.answeredQuestions = {};
+    await this.markOrphans();
   }
 
   private async persist(): Promise<void> {
@@ -627,8 +704,32 @@ export class ImSessionBridge {
     return COPY[this.locale()][key] as string;
   }
 
-  private admitted(binding: BindingRecord): boolean {
-    return binding.enabled && imSessionAdmitted({ allowed: this.state.policy.allowed, defaultEnabled: this.state.policy.defaultEnabled, sessionEnabled: binding.sessionEnabled });
+  private baseAdmitted(binding: BindingRecord): boolean {
+    const accountId = this.state.instances.find((instance) => instance.id === binding.providerInstanceId)?.accountId;
+    return (accountId === undefined || accountId === binding.accountId) && !binding.pendingReanchor && binding.enabled && imSessionAdmitted({ allowed: this.state.policy.allowed, defaultEnabled: this.state.policy.defaultEnabled, sessionEnabled: binding.sessionEnabled });
+  }
+
+  private admittedInbound(binding: BindingRecord): boolean {
+    return this.baseAdmitted(binding) && binding.inputEnabled !== false;
+  }
+
+  private admittedOutbound(binding: BindingRecord): boolean {
+    return this.baseAdmitted(binding) && binding.outputEnabled !== false;
+  }
+
+  private async markOrphans(): Promise<void> {
+    const ids = [...new Set(this.state.bindings.map((binding) => binding.sessionId).filter((id) => typeof id === 'string' && id.length > 0))];
+    const owned = new Set((await Promise.all(ids.map(async (id) => await this.ports.sessions.owns(id) ? id : undefined))).filter((id) => id !== undefined));
+    for (const binding of this.state.bindings) if (!owned.has(binding.sessionId)) binding.pendingReanchor = true;
+    const variants = new Map<string, BindingRecord[]>();
+    for (const binding of this.state.bindings) {
+      if (!this.admittedInbound(binding)) continue;
+      const key = JSON.stringify([binding.providerInstanceId, binding.accountId, binding.identity.chatId, binding.identity.topicId, binding.identity.senderId]);
+      const matches = variants.get(key) ?? [];
+      matches.push(binding);
+      variants.set(key, matches);
+    }
+    for (const matches of variants.values()) if (matches.length > 1) for (const binding of matches) binding.pendingReanchor = true;
   }
 
   private next(prefix: string): string {
@@ -997,9 +1098,9 @@ export class ImSessionBridge {
       return;
     }
     const matches = this.state.bindings.filter((item) => item.providerInstanceId === instanceId && item.accountId === accountId && sameIdentity(item.identity, event.identity));
-    const binding = matches.find((item) => this.admitted(item)) ?? matches[0];
+    const binding = matches.find((item) => this.admittedInbound(item)) ?? matches[0];
     const adapter = this.adapterFor(instanceId);
-    if (binding !== undefined && !this.admitted(binding)) {
+    if (binding !== undefined && !this.admittedInbound(binding)) {
       this.noteDiscovery(meta, accountId, event);
       return;
     }
@@ -1085,8 +1186,9 @@ export class ImSessionBridge {
       const index = Number(arg);
       const target = targets[index - 1];
       if (!Number.isInteger(index) || target === undefined) return;
-      binding.sessionId = target.sessionId;
-      await this.send(adapter, binding.identity, this.copy('switched'), 'switched');
+      if (target.sessionId !== binding.sessionId) {
+        await this.send(adapter, binding.identity, this.locale() === 'zh' ? '请在 Kiki 中确认信道转绑，当前归属没有改变。' : 'Confirm channel reassignment in Kiki. The current binding has not changed.', 'target_confirmation_required');
+      }
     }
   }
 
@@ -1169,6 +1271,7 @@ export class ImSessionBridge {
   }
 
   private watchReply(binding: BindingRecord, promptId: string, turnId: number | undefined, adapter: ImSessionAdapter): void {
+    const sessionId = binding.sessionId;
     const live = `${binding.id}:${promptId}`;
     if (this.liveReplies.has(live)) return;
     this.liveReplies.add(live);
@@ -1187,8 +1290,9 @@ export class ImSessionBridge {
         while (this.state.policy.allowed) {
           await this.wait(this.editIntervalMs);
           const current = this.only(this.state.bindings, binding.id);
-          if (current === undefined || !this.admitted(current)) return;
-          const visible = await this.ports.sessions.readVisible(current.sessionId, promptId, turnId);
+          if (current === undefined || current.sessionId !== sessionId || !this.admittedOutbound(current)) return;
+          const visible = await this.ports.sessions.readVisible(sessionId, promptId, turnId);
+          if (this.only(this.state.bindings, binding.id)?.sessionId !== sessionId) return;
           const before = `${ledger.lastText}\n${ledger.deliveredText ?? ''}\n${ledger.messageIds.join('\n')}`;
           if (current.reply === 'edit' && this.pendingReply(visible.text, ledger, visible.done)) await this.publishText(adapter, current.identity, visible.text, ledger, true, visible.done);
           if (`${ledger.lastText}\n${ledger.deliveredText ?? ''}\n${ledger.messageIds.join('\n')}` !== before) {
@@ -1233,11 +1337,15 @@ export class ImSessionBridge {
     else this.state.replies[index] = next;
   }
 
+  private expireReplies(bindingId: string): void {
+    for (const reply of this.state.replies) if (reply.bindingId === bindingId) reply.open = false;
+  }
+
   private async resumeReplies(instanceId?: string): Promise<void> {
     for (const reply of this.state.replies) {
       if (!reply.open) continue;
       const binding = this.only(this.state.bindings, reply.bindingId);
-      if (binding === undefined || !this.admitted(binding)) continue;
+      if (binding === undefined || !this.admittedOutbound(binding)) continue;
       if (instanceId !== undefined && binding.providerInstanceId !== instanceId) continue;
       const adapter = this.adapterFor(binding.providerInstanceId);
       if (adapter === undefined) continue;
@@ -1525,6 +1633,8 @@ export class ImSessionBridge {
   }
 
   private async send(adapter: ImSessionAdapter, identity: ImInboundIdentity, text: string, code: string, buttons?: readonly { id: string; label: string }[]): Promise<void> {
+    const bindings = this.state.bindings.filter((binding) => sameIdentity(binding.identity, identity) && this.adapterFor(binding.providerInstanceId) === adapter);
+    if (bindings.length > 0 && !bindings.some((binding) => this.admittedOutbound(binding))) return;
     if (buttons !== undefined && buttons.length > 0 && !adapter.supportsButtons) {
       await adapter.sendText({ identity, text: [text, ...buttons.map((button) => button.label), this.copy('numbers')].join('\n'), code });
       return;
@@ -1544,7 +1654,7 @@ export class ImSessionBridge {
 
   private async deliverInteractions(binding: BindingRecord, approvals: readonly { id: string; expiresAt: number; toolName: string; action: string; ssh?: 'login' | 'host_key' }[], questions: readonly ImPendingQuestion[]): Promise<void> {
     const adapter = this.adapterFor(binding.providerInstanceId);
-    if (adapter === undefined || !this.admitted(binding) || !binding.mobileInteractions) return;
+    if (adapter === undefined || !this.admittedOutbound(binding) || !binding.mobileInteractions) return;
     const jobs: OutboxRecord[] = [];
     let changed = this.retireOutbox(binding, approvals, questions);
     if (binding.interactionFailure !== undefined) {
@@ -1640,11 +1750,12 @@ export class ImSessionBridge {
   }
 
   private rememberChatKind(instanceId: string, event: ImInboundEvent): void {
-    const binding = this.state.bindings.find((item) => item.providerInstanceId === instanceId && sameIdentity(item.identity, event.identity));
+    const accountId = this.requireMeta(instanceId).accountId ?? instanceId;
+    const binding = this.state.bindings.find((item) => item.providerInstanceId === instanceId && item.accountId === accountId && sameIdentity(item.identity, event.identity));
     if (binding?.interactionFailure === 'feishu_thread_context_missing') delete binding.interactionFailure;
     if (event.identity.chatKind === undefined) return;
     if (binding !== undefined) binding.identity = { ...binding.identity, chatKind: event.identity.chatKind };
-    const discovery = this.state.discoveries.find((item) => item.providerInstanceId === instanceId && sameIdentity(item.identity, event.identity));
+    const discovery = this.state.discoveries.find((item) => item.providerInstanceId === instanceId && item.accountId === accountId && sameIdentity(item.identity, event.identity));
     if (discovery !== undefined) discovery.identity = { ...discovery.identity, chatKind: event.identity.chatKind };
   }
 
@@ -1652,8 +1763,10 @@ export class ImSessionBridge {
     const adapter = this.adapterFor(instanceId);
     const tickets = this.state.tickets.filter((item) => item.id === event.callbackData);
     const ticket = tickets.length === 1 ? tickets[0] : undefined;
-    const binding = this.state.bindings.find((item) => item.providerInstanceId === instanceId && sameIdentity(item.identity, event.identity));
+    const accountId = this.requireMeta(instanceId).accountId ?? instanceId;
+    const binding = this.state.bindings.find((item) => item.providerInstanceId === instanceId && item.accountId === accountId && sameIdentity(item.identity, event.identity));
     if (event.callbackQueryId !== undefined && adapter !== undefined) await adapter.answerCallback(event.callbackQueryId);
+    if (binding !== undefined && !this.admittedInbound(binding)) return;
     if (ticket === undefined || binding === undefined || adapter === undefined) {
       if (ticket === undefined && binding !== undefined && adapter !== undefined) await this.send(adapter, event.identity, this.copy('unknown'), 'unknown');
       return;
@@ -1731,9 +1844,12 @@ function toBinding(record: BindingRecord): ImBinding {
     account_id: record.accountId,
     identity: wireIdentity(record.identity),
     session_id: record.sessionId,
-    ...(record.personaId === undefined ? {} : { persona_id: record.personaId }),
+    persona_id: record.personaId,
+    pending_reanchor: record.pendingReanchor,
     enabled: record.enabled,
-    ...(record.sessionEnabled === undefined ? {} : { session_enabled: record.sessionEnabled }),
+    session_enabled: record.sessionEnabled,
+    input_enabled: record.inputEnabled,
+    output_enabled: record.outputEnabled,
     busy: record.busy,
     reply: record.reply,
     mobile_interactions: record.mobileInteractions,

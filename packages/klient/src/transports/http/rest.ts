@@ -608,6 +608,8 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       removeBinding: (id) => transport.json(`/im/sessions/bindings/${encodeURIComponent(id)}`, { method: 'DELETE' }),
       testBinding: (id) => transport.json(`/im/sessions/bindings/${encodeURIComponent(id)}/test`, { method: 'POST', body: {} }),
       channelViews: (sessionId) => transport.json(`/im/sessions/targets/${encodeURIComponent(sessionId)}/channels`),
+      setNotificationChannel: (sessionId, channelId, enabled) => transport.json(`/im/sessions/targets/${encodeURIComponent(sessionId)}/notify/${encodeURIComponent(channelId)}`, { method: 'PUT', body: { enabled } }),
+      removeNotificationChannel: (sessionId, channelId) => transport.json(`/im/sessions/targets/${encodeURIComponent(sessionId)}/notify/${encodeURIComponent(channelId)}`, { method: 'DELETE' }),
       setInternalChannel: (sessionId, enabled) => transport.json(`/im/sessions/targets/${encodeURIComponent(sessionId)}/internal`, { method: 'PUT', body: { enabled } }),
       startWechatQr: () => transport.json('/im/sessions/wechat/qrcode', { method: 'POST', body: {} }),
       pollWechatQr: (id, verifyCode) => transport.json(`/im/sessions/wechat/qrcode/${encodeURIComponent(id)}/poll`, { method: 'POST', body: verifyCode === undefined ? {} : { verify_code: verifyCode } }),

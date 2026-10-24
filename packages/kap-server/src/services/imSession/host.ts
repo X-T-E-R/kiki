@@ -106,13 +106,17 @@ class NotificationSessionPorts implements ImSessionPorts {
   constructor(
     private readonly core: Scope,
     private readonly homeDir: string,
-    private readonly notifications: NotificationService,
+    private readonly notificationService: NotificationService,
     readonly logger: HostLogger,
   ) {}
 
+  readonly notifications = {
+    channels: (sessionId: string) => this.notificationService.messageChannels(sessionId),
+  };
+
   readonly credentials = {
     list: (): ReturnType<ImSessionPorts['credentials']['list']> => {
-      const settings = this.notifications.getSettings();
+      const settings = this.notificationService.getSettings();
       return Object.entries(settings.provider_instances).flatMap(([id, instance]) => {
         const kind = instanceKind(instance);
         if (kind === undefined) return [];
@@ -122,21 +126,21 @@ class NotificationSessionPorts implements ImSessionPorts {
       });
     },
     read: (instanceId: string): string | undefined => {
-      const settings = this.notifications.getSettings();
+      const settings = this.notificationService.getSettings();
       const slot = settings.provider_instances[instanceId]?.options['token_slot'];
       if (typeof slot !== 'string') return undefined;
-      try { return this.notifications.revealCredential(slot); } catch { return undefined; }
+      try { return this.notificationService.revealCredential(slot); } catch { return undefined; }
     },
     write: async (instanceId: string, value: string): Promise<void> => {
-      const settings = this.notifications.getSettings();
+      const settings = this.notificationService.getSettings();
       const slot = settings.provider_instances[instanceId]?.options['token_slot'];
       if (typeof slot !== 'string') throw new Error('unknown_instance');
-      await this.notifications.setCredential(slot, value);
+      await this.notificationService.setCredential(slot, value);
     },
     check: async (instanceId: string): Promise<{ ok: boolean; accountId?: string; conflict?: 'webhook'; detail?: string }> => {
       const credential = this.credentials.read(instanceId);
       if (credential === undefined || credential.length === 0) return { ok: false, detail: 'missing' };
-      const kind = instanceKind(this.notifications.getSettings().provider_instances[instanceId]);
+      const kind = instanceKind(this.notificationService.getSettings().provider_instances[instanceId]);
       if (kind === 'telegram') return this.checkTelegram(credential);
       if (kind === 'discord' || kind === 'slack' || kind === 'matrix') return checkRealtimeSessionAccount(kind, credential);
       if (kind === undefined) return { ok: false, detail: 'missing' };
@@ -157,7 +161,7 @@ class NotificationSessionPorts implements ImSessionPorts {
     listSessions: async () => (await this.core.accessor.get(ISessionIndex).listRecent({ limit: 50 })).items.map((session) => ({
       id: session.id, title: session.title ?? session.id, ...(session.personaId === undefined ? {} : { personaId: session.personaId }),
     })),
-    owns: async (sessionId: string) => (await this.core.accessor.get(ISessionIndex).listRecent({ sessionId, limit: 1 })).items.some((session) => session.id === sessionId),
+    owns: async (sessionId: string) => (await this.core.accessor.get(ISessionIndex).get(sessionId)) !== undefined,
     ensureHome: async (personaId: string) => {
       const home = await this.core.accessor.get(IBotService).ensureHomeSession(personaId);
       return { homeSessionId: home.homeSessionId };
@@ -244,10 +248,10 @@ class NotificationSessionPorts implements ImSessionPorts {
     const slot = `${instanceId}.${purpose}`;
     const env = `KIKI_NOTIFY_${slot.toUpperCase().replace(/[^A-Z0-9]+/gu, '_')}`.slice(0, 128);
     const options = kind === 'telegram' ? { token_slot: slot } : { session_kind: kind, token_slot: slot };
-    await this.notifications.upsertInstance(instanceId, {
+    await this.notificationService.upsertInstance(instanceId, {
       provider_id: kind, enabled: true, revision: '1', options,
     }, { [slot]: { provider_id: kind, provider_instance_id: instanceId, purpose, env } });
-    await this.notifications.setCredential(slot, credential);
+    await this.notificationService.setCredential(slot, credential);
     return { instanceId };
   }
 

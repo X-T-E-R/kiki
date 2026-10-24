@@ -70,6 +70,9 @@ export interface WechatQrLoginPort {
 }
 
 export interface ImSessionPorts {
+  readonly notifications?: {
+    channels(sessionId: string): readonly import('@kiki/agent-core-v2/app/bot/messageRouting').UserMessageChannel[];
+  };
   readonly credentials: {
     list(): readonly ImCredentialInstance[];
     read(instanceId: string): string | undefined;

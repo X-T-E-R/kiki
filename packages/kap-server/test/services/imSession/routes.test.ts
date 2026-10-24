@@ -11,7 +11,7 @@ import { NotificationService } from '../../../src/services/notifications/notific
 import { ImSessionSetup } from '../../../src/services/imSession/setup';
 
 import { registerImSessionRoutes } from '../../../src/routes/imSessions';
-import type { ImSessionBridge } from '../../../src/services/imSession/bridge';
+import { ImIdentityAlreadyBoundError, type ImSessionBridge } from '../../../src/services/imSession/bridge';
 
 const snapshot = { policy: { allowed: true, default_enabled: true }, instances: [], discoveries: [], bindings: [], strangers: [], voice_fallbacks: 0 };
 
@@ -47,17 +47,42 @@ it('accepts persona or session targets while preserving the legacy binding patch
     for (const target of [{ kind: 'persona', persona_id: 'ada' }, { kind: 'session', session_id: 'sess' }]) {
       expect((await app.inject({ method: 'PATCH', url: '/im/sessions/bindings/b1', payload: { target } })).json().code).toBe(0);
     }
-    expect((await app.inject({ method: 'PATCH', url: '/im/sessions/bindings/b1', payload: { session_id: 'legacy' } })).json().code).toBe(0);
+    expect((await app.inject({ method: 'PATCH', url: '/im/sessions/bindings/b1', payload: { session_id: 'legacy', rebind: true, input_enabled: false, output_enabled: true } })).json().code).toBe(0);
     expect(patches).toEqual([
       expect.objectContaining({ target: { kind: 'persona', persona_id: 'ada' } }),
       expect.objectContaining({ target: { kind: 'session', session_id: 'sess' } }),
-      expect.objectContaining({ sessionId: 'legacy' }),
+      expect.objectContaining({ sessionId: 'legacy', rebind: true, inputEnabled: false, outputEnabled: true }),
     ]);
     expect((await app.inject({ method: 'PATCH', url: '/im/sessions/bindings/b1', payload: { target: { kind: 'session', session_id: 'a' }, session_id: 'b' } })).json().code).toBe(40001);
     expect(patches).toHaveLength(3);
   } finally {
     await app.close();
   }
+});
+
+it('maps confirm rebind and direction fields from snake case to the bridge contract', async () => {
+  const requests: unknown[] = [];
+  const bridge = { confirm: async (_id: string, request: unknown) => { requests.push(request); return snapshot; } } as unknown as ImSessionBridge;
+  const app = Fastify();
+  registerImSessionRoutes(app, bridge);
+  try {
+    expect((await app.inject({ method: 'POST', url: '/im/sessions/discoveries/d1/confirm', payload: { target: { kind: 'session', session_id: 'bare' }, rebind: true, input_enabled: false, output_enabled: true } })).json().code).toBe(0);
+    expect(requests).toEqual([expect.objectContaining({ target: { kind: 'session', session_id: 'bare' }, rebind: true, input_enabled: false, output_enabled: true })]);
+  } finally { await app.close(); }
+});
+
+it('returns structured identity rebind conflicts without hiding the target details', async () => {
+  const bridge = {
+    updateBinding: async () => {
+      throw new ImIdentityAlreadyBoundError({ existing_binding_id: 'b1', previous_session_id: 'old', target_session_id: 'new', variant_key: { provider_instance_id: 'inst', account_id: 'account', chat_id: 'chat', topic_id: 'topic', sender_id: 'sender' } });
+    },
+  } as unknown as ImSessionBridge;
+  const app = Fastify();
+  registerImSessionRoutes(app, bridge);
+  try {
+    const response = await app.inject({ method: 'PATCH', url: '/im/sessions/bindings/b1', payload: { session_id: 'new' } });
+    expect(response.json()).toMatchObject({ code: 40949, msg: 'im_identity_already_bound', details: { previous_session_id: 'old', target_session_id: 'new', variant_key: { provider_instance_id: 'inst', account_id: 'account', chat_id: 'chat', topic_id: 'topic', sender_id: 'sender' } } });
+  } finally { await app.close(); }
 });
 
 it('returns unsupported WeChat group confirmation as a validation outcome', async () => {
@@ -118,19 +143,34 @@ it('binds setup completion to a one-use attempt and validates the Matrix callbac
   } finally { await app.close(); }
 });
 
-it('returns real per-session channel capabilities and keeps the internal switch separate', async () => {
+it('returns channel candidates, keeps internal permanently enabled, and manages notification bindings', async () => {
   const switches: boolean[] = [];
+  const notifications: string[] = [];
+  const channels = [
+    { id: 'internal', kind: 'internal', enabled: true, capabilities: [{ kind: 'voice', mimeTypes: ['audio/*'], rendering: 'audio_player' }] },
+    { id: 'im:b1', kind: 'im', bound: false, enabled: true, capabilities: [{ kind: 'file' }] },
+    { id: 'notify:mail', kind: 'notify', bound: false, enabled: true, capabilities: [{ kind: 'text' }] },
+  ];
   const bridge = {
-    channelViews: async () => [{ id: 'internal', kind: 'internal', enabled: true, capabilities: [{ kind: 'voice', mimeTypes: ['audio/*'], rendering: 'audio_player' }] }, { id: 'im:b1', kind: 'im', enabled: true, capabilities: [{ kind: 'file' }] }],
+    channelViews: async () => channels,
     internalChannelEnabled: async () => true,
-    setInternalChannel: async (_id: string, enabled: boolean) => { switches.push(enabled); return enabled; },
+    setInternalChannel: async (_id: string, enabled: boolean) => { switches.push(enabled); if (!enabled) throw new Error('unsupported_internal_channel_disable'); return true; },
+    setNotificationChannel: async (_sessionId: string, channelId: string, enabled: boolean) => { notifications.push(`set:${channelId}:${String(enabled)}`); const channel = channels.find((item) => item.id === `notify:${channelId}`)!; channel.bound = true; channel.enabled = enabled; return channels; },
+    removeNotificationChannel: async (_sessionId: string, channelId: string) => { notifications.push(`remove:${channelId}`); channels.find((item) => item.id === `notify:${channelId}`)!.bound = false; return channels; },
   } as unknown as ImSessionBridge;
   const app = Fastify();
   registerImSessionRoutes(app, bridge);
   try {
-    expect((await app.inject({ method: 'GET', url: '/im/sessions/targets/sess/channels' })).json()).toMatchObject({ code: 0, data: { internal_enabled: true, channels: [{ id: 'internal', capabilities: [{ kind: 'voice', rendering: 'audio_player' }] }, { id: 'im:b1' }] } });
-    expect((await app.inject({ method: 'PUT', url: '/im/sessions/targets/sess/internal', payload: { enabled: false } })).json()).toMatchObject({ code: 0, data: { enabled: false } });
+    expect((await app.inject({ method: 'GET', url: '/im/sessions/targets/sess/channels' })).json()).toMatchObject({ code: 0, data: { internal_enabled: true, channels: [{ id: 'internal', capabilities: [{ kind: 'voice', rendering: 'audio_player' }] }, { id: 'im:b1', bound: false }, { id: 'notify:mail', kind: 'notify', bound: false }] } });
+    expect((await app.inject({ method: 'PUT', url: '/im/sessions/targets/sess/internal', payload: { enabled: false } })).json()).toMatchObject({ code: 40001, msg: 'unsupported_internal_channel_disable' });
+    const added = (await app.inject({ method: 'PUT', url: '/im/sessions/targets/sess/notify/mail', payload: { enabled: true } })).json();
+    expect(added.code).toBe(0);
+    expect(added.data.channels).toContainEqual(expect.objectContaining({ id: 'notify:mail', bound: true, enabled: true }));
+    const removed = (await app.inject({ method: 'DELETE', url: '/im/sessions/targets/sess/notify/mail' })).json();
+    expect(removed.code).toBe(0);
+    expect(removed.data.channels).toContainEqual(expect.objectContaining({ id: 'notify:mail', bound: false, enabled: true }));
     expect(switches).toEqual([false]);
+    expect(notifications).toEqual(['set:mail:true', 'remove:mail']);
   } finally { await app.close(); }
 });
 
@@ -199,7 +239,7 @@ it('binds an existing indexed session through native routes and reopens the save
     const confirmed = (await app!.inject({ method: 'POST', url: `/im/sessions/discoveries/${discoveryId}/confirm`, payload: { target: { kind: 'session', session_id: 'im-existing' } } })).json();
     expect(confirmed.code).toBe(0);
     const bindingId = confirmed.data.bindings[0].id as string;
-    const changed = (await app!.inject({ method: 'PATCH', url: `/im/sessions/bindings/${bindingId}`, payload: { target: { kind: 'session', session_id: 'im-replacement' } } })).json();
+    const changed = (await app!.inject({ method: 'PATCH', url: `/im/sessions/bindings/${bindingId}`, payload: { target: { kind: 'session', session_id: 'im-replacement' }, rebind: true } })).json();
     expect(changed).toMatchObject({ code: 0, data: { bindings: [{ id: bindingId, session_id: 'im-replacement' }] } });
     const rejected = (await app!.inject({ method: 'PATCH', url: `/im/sessions/bindings/${bindingId}`, payload: { target: { kind: 'session', session_id: 'missing' }, enabled: false } })).json();
     expect(rejected).toMatchObject({ code: 40001, msg: 'unknown_session' });

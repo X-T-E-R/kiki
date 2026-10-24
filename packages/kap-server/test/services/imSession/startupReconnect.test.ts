@@ -227,13 +227,16 @@ describe('im session startup reconnect', () => {
     expect(snap.instances[0]?.adapter).toBe('stopped');
     expect(connectionOf(snap.instances[0] ?? {})).toBe('reconnecting');
     expect(held.logs).toContain('im session connecting:reconnecting');
-    await held.bridge.updateBinding('b-kept', { target: { kind: 'session', session_id: 'sess-next' } });
+    await held.bridge.updateBinding('b-kept', { target: { kind: 'session', session_id: 'sess-next' }, rebind: true });
     expect(JSON.parse(held.saved()).bindings[0].sessionId).toBe('sess-next');
     expect(held.reads()).toBe(0);
     expect(held.submitted).toEqual([]);
     expect(adapter.sent).toEqual([]);
     adapter.release();
-    await until(() => adapter.sent.some((item) => item.text === 'model-reply'), 'reply did not resume after connect');
+    await until(async () => (await held.bridge.snapshot()).instances[0]?.adapter === 'running', 'listener did not connect');
+    expect(adapter.sent).toEqual([]);
+    expect(held.reads()).toBe(0);
+    expect(JSON.parse(held.saved()).replies[0].open).toBe(false);
     const restored = await held.bridge.snapshot();
     expect(restored.bindings.map((item) => [item.id, item.session_id])).toEqual([['b-kept', 'sess-next']]);
     expect(restored.instances.map((item) => item.adapter)).toEqual(['running']);
@@ -375,7 +378,7 @@ describe('im session startup reconnect', () => {
       expect(offline.instances[0]?.listening).toBe(true);
       expect(offline.instances[0]?.adapter).toBe('stopped');
       expect(offline.bindings.map((item) => [item.id, item.session_id])).toEqual([['b-kept', 'sess-original']]);
-      await bridge.updateBinding('b-kept', { target: { kind: 'session', session_id: 'sess-next' } });
+      await bridge.updateBinding('b-kept', { target: { kind: 'session', session_id: 'sess-next' }, rebind: true });
       server = await listen(port);
       let sockets = 0;
       server.on('connection', () => { sockets += 1; });
