@@ -3,21 +3,23 @@
  * and a list that runs to hundreds of entries must not carry the detail, the
  * filters or the reader's draft with it.
  *
- * One walk, measured rather than eyeballed: a long list (204 entries) is
- * scrolled while the open entry, the filter row and the document stay exactly
- * where they were; the entry's own pane scrolls to its actions and to the end
- * of its history; selecting another entry starts it at its own top and leaves
- * the list where the reader left it; an open draft survives all of it. A short
- * list is walked too, because the fix must not turn four entries into a page
- * with two scrollbars. At phone width the same list is covered by the detail
- * column and handed back — with its offset — on the way out.
+ * One walk, measured rather than eyeballed: the seeded long list (204 entries
+ * in `fixtures/memory-scroll.scenario.mjs`, served 20 at a time and continued
+ * by cursor) is scrolled while the open entry, the filter row and the document
+ * stay exactly where they were; the entry's own pane scrolls to its actions and
+ * to the end of its history; selecting another entry starts it at its own top
+ * and leaves the list where the reader left it; an open draft survives all of
+ * it. A short list is walked too, because the fix must not turn three entries
+ * into a page with two scrollbars, and the review inbox is walked because it is
+ * the one branch of this page that has to keep the console as its scroller. At
+ * phone width the same list is covered by the detail column and handed back —
+ * with its offset — on the way out.
  *
  *   node scripts/visual-proof-memory-scroll.mjs [--only=...] [--matrix=all]
  *
  * Output: `.tmp/memory-scroll-proof/<run>` (override with KIKI_PROOF_OUTPUT_DIR).
- * Mock-only: the list is answered by this script's own route, because the
- * fixture store pages by offset and the page continues by cursor; everything
- * else — settings, shell, journals for other entries — comes from the fixture.
+ * Nothing is mocked here: the list, its continuation pages, the long entry and
+ * its journal all come from the fixture server.
  */
 
 import { dirname, join } from 'node:path';
@@ -28,87 +30,9 @@ import { runProof } from '../proof/runner.mjs';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 process.env.KIKI_PROOF_OUTPUT_DIR ??= join(ROOT, '.tmp', 'memory-scroll-proof', String(Date.now()));
 
-/** More than the 200 the ask names, so "long list" is not one page of a list. */
-const TOTAL = 204;
 const LONG_ID = 'm_scroll_long';
-const LONG_TITLE = 'Release cut: what has to be reread before the tag';
-const LONG_BODY = [
-  'The release cut is read from docs/release.md, not from the last conversation about it. That file carries the ordered steps, the owner of each step, and the checks that have to be repeated before the tag rather than trusted from the previous cut.',
-  '',
-  'Three checks decide whether the cut may proceed: the workspace builds from a clean tree with the pinned Node and pnpm versions, the proof suite that covers the touched surfaces is green on the same commit, and every memory entry this cut relies on has been reread after its recheck date rather than carried forward. A check that has run out is a lead, not a premise.',
-  '',
-  'What this entry is not: it is not the changelog, it is not the release note, and it does not name a version. Those are written from the cut, and writing them here would make the two disagree. When a step changes, the change lands in docs/release.md first, and this entry follows it in the same session.',
-  '',
-  'Provenance matters more here than elsewhere: the steps were agreed in the release retro, and each of them has a named owner rather than "the team". If a step loses its owner, the cut stops at that step instead of continuing on the assumption that someone is watching it.',
-  '',
-  'The list beside this entry is long on purpose. Reading one entry should not move the others, and coming back to the list should land where the reader left it, still on the same entry, still with an unsaved draft if one was open.',
-].join('\n');
-
-const TYPE_CYCLE = ['project', 'feedback', 'reference', 'user'];
-const TOPICS = [
-  'Deploy window', 'Release checklist', 'Invoice export', 'Retry budget', 'Schema migration',
-  'Browser proof', 'Nightly smoke', 'Token rotation', 'Queue timeout', 'Fixture home',
-  'Log retention', 'Draft autosave', 'Locale default', 'Backup cadence', 'Rate limit',
-  'Changelog entry', 'Failure tone',
-];
-const NOTES = [
-  'what the team agreed', 'the value from the last review', 'where the rule came from',
-  'the current source of truth', 'the single exception', 'as confirmed in the retro',
-  'the older wording', 'the check that still holds', 'the fallback path', 'the numbers in use',
-  'the file that owns it', 'the hand-off step',
-];
-
-const stamp = (minutesAgo) => new Date(Date.UTC(2026, 9, 24, 9, 0, 0) - minutesAgo * 60_000).toISOString();
-
-/** A long list of ordinary memories, so scrolling them is the only subject. */
-function buildEntries() {
-  const entries = [];
-  for (let index = 0; index < TOTAL; index += 1) {
-    const topic = TOPICS[index % TOPICS.length];
-    const note = NOTES[Math.floor(index / TOPICS.length) % NOTES.length];
-    const id = index === 0 ? LONG_ID : `m_scroll_${String(index).padStart(3, '0')}`;
-    entries.push({
-      id,
-      type: TYPE_CYCLE[index % TYPE_CYCLE.length],
-      title: index === 0 ? LONG_TITLE : `${topic} — ${note}`,
-      body: index === 0 ? LONG_BODY : `${topic} follows ${note}; the file that owns it is the source, not this line.`,
-      status: 'active',
-      pinned: false,
-      created: stamp(4_000 + index),
-      updated: stamp(60 + index),
-      source: { writer: index % 3 === 0 ? 'agent' : 'user', session: 'session_fixture_memory', turn: index + 1 },
-      reason: '',
-      revision: `rev_scroll_${index}`,
-    });
-  }
-  return entries;
-}
-
-/** A store-written before-image, which is what the version panel reads. */
-const snapshot = (entry, body, revision) => `---\n${JSON.stringify({
-  id: entry.id, title: entry.title, type: entry.type, status: entry.status, pinned: false,
-  created: entry.created, updated: entry.updated, reason: entry.reason, source: entry.source,
-})}\n---\n${body}`;
-
-/** A journal long enough that its own list is past one screen. */
-function buildJournal(entry) {
-  return Array.from({ length: 36 }, (_, index) => ({
-    operationId: `op_scroll_${String(index).padStart(3, '0')}`,
-    id: entry.id,
-    action: index === 0 ? 'create' : 'update',
-    at: stamp(30 + index * 90),
-    writer: index % 2 === 0 ? 'agent' : 'user',
-    before: snapshot(entry, `${entry.body}\n\nRevision ${index}.`, `rev_scroll_history_${index}`),
-    beforeRevision: `rev_scroll_history_${index}`,
-    afterRevision: `rev_scroll_history_${index + 1}`,
-  }));
-}
-
-const json = (data) => ({
-  status: 200,
-  contentType: 'application/json',
-  body: JSON.stringify({ code: 0, msg: 'success', data }),
-});
+/** The seeded size of `fixtures/memory-scroll.scenario.mjs`. */
+const TOTAL = 204;
 
 function expect(condition, message) {
   if (!condition) throw new Error(message);
@@ -118,50 +42,6 @@ function expect(condition, message) {
 const settle = (page) => page.evaluate(() => new Promise((done) => {
   requestAnimationFrame(() => requestAnimationFrame(() => { done(undefined); }));
 }));
-
-/**
- * The list, its entries' detail, and one entry's journal. Only paths this walk
- * reads are answered; anything else (settings, the other scopes, writes) falls
- * through to the fixture server, which stays the source of the shell.
- */
-async function routeMemoryList(page, entries, journal) {
-  await page.route('**/api/memory/global**', async (route) => {
-    const request = route.request();
-    const url = new URL(request.url());
-    if (request.method() !== 'GET') return route.fallback();
-    if (url.pathname === '/api/memory/global') {
-      const pageSize = Number(url.searchParams.get('page_size') ?? 20);
-      const offset = Number((url.searchParams.get('cursor') ?? 'mock-offset-0').replace('mock-offset-', '')) || 0;
-      const query = (url.searchParams.get('query') ?? '').trim().toLowerCase();
-      const type = url.searchParams.get('type');
-      const matching = entries.filter((entry) => (type === null || entry.type === type)
-        && (query === '' || `${entry.title} ${entry.body}`.toLowerCase().includes(query)));
-      const next = offset + pageSize < matching.length ? `mock-offset-${offset + pageSize}` : null;
-      await route.fulfill(json({
-        items: matching.slice(offset, offset + pageSize),
-        mode: query === '' ? 'list' : 'search',
-        next_cursor: next,
-        coverage: {
-          scopes: [{ kind: 'global' }],
-          statuses: ['active'],
-          exhausted: next === null,
-          complete: true,
-          warnings: [],
-        },
-      }));
-      return;
-    }
-    if (url.pathname === '/api/memory/global/journal') {
-      const id = url.searchParams.get('id');
-      await route.fulfill(json(id === LONG_ID ? journal : []));
-      return;
-    }
-    const id = url.pathname.slice('/api/memory/global/'.length);
-    const entry = entries.find((candidate) => candidate.id === id);
-    if (entry === undefined) return route.fallback();
-    await route.fulfill(json(entry));
-  });
-}
 
 /** Everything the walk measures, in one read so two values cannot straddle a frame. */
 function readGeometry(page) {
@@ -229,10 +109,8 @@ function markRowInside(page, regionSelector) {
 const scenarios = [
   {
     name: 'memory-scroll-desktop',
-    fixture: 'memory',
+    fixture: 'memory-scroll',
     run: async ({ page, link, shot }) => {
-      const entries = buildEntries();
-      await routeMemoryList(page, entries, buildJournal(entries[0]));
       await page.goto(link('/memory'), { waitUntil: 'domcontentloaded', timeout: 60_000 });
       await page.waitForFunction((total) => document.querySelectorAll('[data-memory-row]').length >= total, TOTAL, { timeout: 30_000 });
       await settle(page);
@@ -415,12 +293,10 @@ const scenarios = [
   },
   {
     name: 'memory-scroll-phone',
-    fixture: 'memory',
+    fixture: 'memory-scroll',
     matrix: ['width'],
     run: async ({ page, view, link, shot }) => {
       if (view.width > 600) return;
-      const entries = buildEntries();
-      await routeMemoryList(page, entries, buildJournal(entries[0]));
       await page.goto(link('/memory'), { waitUntil: 'domcontentloaded', timeout: 60_000 });
       await page.waitForFunction((total) => document.querySelectorAll('[data-memory-row]').length >= total, TOTAL, { timeout: 30_000 });
       await settle(page);
