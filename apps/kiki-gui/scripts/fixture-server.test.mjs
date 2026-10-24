@@ -135,6 +135,56 @@ test('memory provenance REST loop reads automatic metadata, undoes its real jour
 });
 
 
+test('memory list follows its own cursor through every page, carries its query, and still honours offset', async () => {
+  const server = await startFixtureServer({ port: 0, scenario: 'memory-scroll' });
+  try {
+    const first = await memoryRequest(server, 'GET', 'global?page_size=20');
+    assert.equal(first.code, 0);
+    assert.equal(first.data.items.length, 20);
+    assert.ok(first.data.next_cursor, 'a 204-entry list came back with no cursor to continue');
+    assert.equal(first.data.coverage.exhausted, false);
+
+    // The client continues with the cursor alone: no query, type or status is
+    // resent, so the page it gets back has to be the one the cursor names.
+    const seen = new Set(first.data.items.map((entry) => entry.id));
+    let cursor = first.data.next_cursor;
+    let pages = 1;
+    while (cursor !== null && cursor !== undefined) {
+      assert.ok(pages < 50, 'the cursor walk did not end');
+      const page = await memoryRequest(server, 'GET', `global?cursor=${encodeURIComponent(cursor)}`);
+      assert.equal(page.code, 0);
+      assert.ok(page.data.items.length > 0, `page ${pages + 1} came back empty`);
+      for (const entry of page.data.items) {
+        assert.equal(seen.has(entry.id), false, `entry ${entry.id} was served on two pages`);
+        seen.add(entry.id);
+      }
+      cursor = page.data.next_cursor;
+      pages += 1;
+    }
+    assert.equal(seen.size, 204);
+    assert.equal(pages, 11);
+
+    const tail = await memoryRequest(server, 'GET', 'global?offset=200&page_size=20');
+    assert.equal(tail.data.items.length, 4);
+    assert.equal(tail.data.next_cursor, null);
+    assert.equal(tail.data.coverage.exhausted, true);
+
+    const search = await memoryRequest(server, 'GET', 'global?page_size=5&query=deploy');
+    assert.equal(search.code, 0);
+    assert.equal(search.data.mode, 'search');
+    assert.ok(search.data.items.every((entry) => `${entry.title} ${entry.body}`.toLowerCase().includes('deploy')));
+    const searchPage = await memoryRequest(server, 'GET', `global?cursor=${encodeURIComponent(search.data.next_cursor)}`);
+    assert.equal(searchPage.code, 0);
+    assert.ok(searchPage.data.items.length > 0, 'the search continuation came back empty');
+    assert.ok(searchPage.data.items.every((entry) => `${entry.title} ${entry.body}`.toLowerCase().includes('deploy')),
+      'the continuation page lost the query it was searching');
+
+    const broken = await memoryRequest(server, 'GET', 'global?cursor=not-a-cursor');
+    assert.equal(broken.code, 40010);
+  } finally { await server.stop(); }
+});
+
+
 test('usage export fixture exposes an empty ordinary capability without an experimental flag', async () => {
   const server = await startFixtureServer({ port: 0, scenario: 'settings-ia' });
   try {

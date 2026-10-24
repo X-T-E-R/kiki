@@ -208,6 +208,30 @@ export const FIXTURE_TOKEN = 'kiki-fixture-token';
 const DEFAULT_PORT = 58901;
 const fixtureHash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
+/**
+ * A memory list cursor names the page it continues. The client resends only
+ * the cursor — the query, type and status filters it sent the first time stay
+ * behind it — so the state a continuation needs travels inside the cursor
+ * instead of in the server. `offset`/`page_size` still work on their own.
+ */
+const memoryPageState = (state) => Buffer.from(JSON.stringify(state), 'utf8').toString('base64url');
+const readMemoryPageState = (raw) => {
+  try {
+    const state = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'));
+    const count = (value) => Number.isInteger(value) && value >= 0;
+    if (!count(state?.offset) || !count(state?.pageSize) || state.pageSize === 0) return null;
+    return {
+      offset: state.offset,
+      pageSize: state.pageSize,
+      search: typeof state.search === 'string' ? state.search : '',
+      type: typeof state.type === 'string' ? state.type : null,
+      includeInactive: state.includeInactive === true,
+    };
+  } catch {
+    return null;
+  }
+};
+
 /** Five cron fields, the same shape the engine's parser accepts. */
 const FIXTURE_CRON_PATTERN = /^\S+\s+\S+\s+\S+\s+\S+\s+\S+$/;
 const FIXTURE_CRON_PROMPT_PREVIEW = 120;
@@ -1110,9 +1134,17 @@ class FixtureServer {
     const withRevision = (entry) => ({ ...structuredClone(entry), revision: this.memoryRevision(entry) });
 
     if (tail === undefined && method === 'GET') {
-      const search = (query.get('query') ?? '').trim().toLowerCase();
-      const type = query.get('type');
-      const includeInactive = query.get('include_inactive') === 'true';
+      const rawCursor = query.get('cursor');
+      const continued = rawCursor === null ? null : readMemoryPageState(rawCursor);
+      if (rawCursor !== null && continued === null) {
+        // A cursor this server never minted cannot continue anything; say so
+        // rather than silently restarting from the first page.
+        this.envelope(res, null, 40010, 'memory.cursor_invalid');
+        return true;
+      }
+      const search = (continued === null ? query.get('query') ?? '' : continued.search).trim().toLowerCase();
+      const type = continued === null ? query.get('type') : continued.type;
+      const includeInactive = continued === null ? query.get('include_inactive') === 'true' : continued.includeInactive;
       const items = entries
         .filter((entry) => includeInactive || entry.status === 'active' || entry.status === 'pending')
         .filter((entry) => type === null || entry.type === type)
@@ -1122,8 +1154,8 @@ class FixtureServer {
       const owner = this.memoryOwnerScope(scopeMatch[1], query.get('workspace_id') ?? undefined, query.get('persona_id') ?? undefined);
       const statusFilter = (query.get('statuses') ?? '').split(',').filter((value) => value !== '');
       const statuses = statusFilter.length > 0 ? statusFilter : includeInactive ? ['active', 'pending', 'superseded', 'archived'] : ['active', 'pending'];
-      const pageSize = Number(query.get('page_size') ?? 20);
-      const offset = Number(query.get('offset') ?? 0);
+      const pageSize = continued === null ? Number(query.get('page_size') ?? 20) : continued.pageSize;
+      const offset = continued === null ? Number(query.get('offset') ?? 0) : continued.offset;
       const withOwner = items.map((entry) => ({
         ...entry,
         scope: owner,
@@ -1131,14 +1163,17 @@ class FixtureServer {
         target: this.memoryTarget(scopeMatch[1], owner.workspaceId, owner.personaId, entry),
       }));
       const page = withOwner.slice(offset, offset + pageSize);
+      const nextOffset = offset + pageSize;
       this.envelope(res, {
         items: page,
-        mode: query.get('query') === null ? 'list' : 'search',
-        next_cursor: offset + pageSize < withOwner.length ? fixtureHash({ offset: offset + pageSize, count: withOwner.length }) : null,
+        mode: search === '' ? 'list' : 'search',
+        next_cursor: nextOffset < withOwner.length
+          ? memoryPageState({ offset: nextOffset, pageSize, search, type, includeInactive })
+          : null,
         coverage: {
           scopes: [owner],
           statuses,
-          exhausted: offset + pageSize >= withOwner.length,
+          exhausted: nextOffset >= withOwner.length,
           // A record the store could not read is counted, not hidden: a short
           // list must never read as proof that nothing else is there.
           complete: true,
