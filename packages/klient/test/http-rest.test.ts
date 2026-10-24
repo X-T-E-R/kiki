@@ -23,6 +23,30 @@ function envelope(data: unknown, code = 0): Response {
 }
 
 describe('HTTP REST domains', () => {
+  it.each([undefined, 'child/example'])('resumes a durable prompt with the GUI recovery request shape (agent=%s)', async (agentId) => {
+    const body = {
+      admission: 'durable' as const,
+      prompt_id: 'prompt/example',
+      content: [{ type: 'text' as const, text: 'Restore the retained message.' }],
+    };
+    const receipt = { ...body, user_message_id: body.prompt_id, status: 'queued', admission: 'restoring', created_at: '2026-06-04T10:00:00.000Z' };
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      expect(url.pathname).toBe('/api/sessions/session%2Fexample/prompts/prompt%2Fexample:resume');
+      expect(url.searchParams.get('admission')).toBe('durable');
+      expect(url.searchParams.get('agent_id')).toBe(agentId ?? null);
+      expect(init?.method).toBe('POST');
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer fixture-token' });
+      expect(jsonRequestBody(init?.body)).toEqual(body);
+      return envelope(receipt);
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'fixture-token', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.sessions.resumePrompt('session/example', body.prompt_id, body, { agent_id: agentId })).resolves.toEqual(receipt);
+      expect(fetchMock).toHaveBeenCalledOnce();
+    } finally { await channel.close(); }
+  });
+
   it('lists and permanently deletes archives through the authenticated native home routes', async () => {
     const calls: { path: string; query: string; method: string; body: unknown }[] = [];
     const result = { deleted_ids: ['saved'], failed: [{ id: 'blocked', title: 'Retained', message: 'Deletion failed' }] };

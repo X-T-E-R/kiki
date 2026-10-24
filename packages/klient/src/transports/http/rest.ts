@@ -270,7 +270,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       ),
       resumePrompt: (sessionId: string, promptId: string, body: PromptSubmission, query = {}) => transport.json<PromptItem>(
         `/sessions/${encodeURIComponent(sessionId)}/prompts/${encodeURIComponent(promptId)}:resume`,
-        { method: 'POST', body, query: { agent_id: query.agent_id } },
+        { method: 'POST', body, query: { admission: 'durable', agent_id: query.agent_id } },
       ),
       listApprovals: async (sessionId: string) => {
         const result = await transport.json<{ readonly items: import('@kiki/protocol').ApprovalRequest[] }>(
