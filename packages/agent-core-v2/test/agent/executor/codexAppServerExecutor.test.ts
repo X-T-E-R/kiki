@@ -524,6 +524,20 @@ function createExecutionHarness(options: HarnessOptions = {}) {
 }
 
 describe('Codex app-server external executor', () => {
+  it('starts a selected script before the host-owned app-server subcommand', async () => {
+    const harness = createHarness();
+    const spawn = vi.fn(async () => { throw new Error('fixture launch captured'); });
+    harness.runtimeLease.runtime.process.spawn = spawn;
+    const session = new CodexAppServerExecutorSession({ ...harness.context, descriptor: {
+      ...harness.context.descriptor, command: 'node', launchArgs: ['C:/tools/codex.mjs'], args: ['--config', 'example=true'], extraArgs: ['--verbose'],
+    } });
+    try {
+      await expect(session.run({ kind: 'prompt', prompt: 'not sent' }, { signal: new AbortController().signal })).rejects.toThrow();
+      expect(spawn).toHaveBeenCalledWith('node', ['C:/tools/codex.mjs', 'app-server', '--listen', 'stdio://', '--config', 'example=true', '--verbose'], expect.any(Object));
+      expect(harness.prompts).toEqual([]);
+    } finally { await session.shutdown(); }
+  });
+
   it('projects Codex fileChange facts to every actual Write path before approval without private metadata', async () => {
     const permissionGate = vi.fn<IAgentPermissionGate['authorize']>(async (context) => {
       expect(context.toolCall.name).toBe('Write');

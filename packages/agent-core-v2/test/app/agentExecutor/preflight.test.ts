@@ -353,6 +353,20 @@ describe('AgentExecutorPreflightService', () => {
     expect(shutdown).toHaveBeenCalledTimes(4);
   });
 
+  it('keeps the selected script before Codex auth arguments without reporting a failed probe as signed out', async () => {
+    const script = 'C:/tools/codex.mjs';
+    const node = normalize(process.execPath);
+    services.set(IHostFileSystem, fsWith([script]));
+    services.set(IConfigService, { _serviceBrand: undefined, get: (domain: string) => domain === AGENT_EXECUTORS_SECTION ? {
+      scripted: { protocol: 'codex-app-server', sources: [{ id: 'script', kind: 'node-script', path: script }], args: [], auth: { kind: 'codex-account' } },
+    } : undefined } as IConfigService);
+    processService.outputs.set(`${node} ${script} --version`, { output: 'codex 1.0' });
+    const [result] = await services.get(IAgentExecutorPreflightService).run(['scripted']);
+    expect(result).toMatchObject({ selectedSource: 'script', command: node, resolvedArgs: [], loginStatus: 'unknown' });
+    expect(processService.calls).toContain(`${node} ${script} app-server --listen stdio://`);
+    expect(processService.calls).not.toContain(`${node} app-server --listen stdio://`);
+  });
+
   it('honors an explicit source id even when an earlier source is available', async () => {
     services.set(IHostFileSystem, fsWith([
       'C:/tools/codex.exe',

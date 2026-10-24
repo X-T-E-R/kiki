@@ -161,7 +161,8 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
       return resultOf(id, '', descriptor.args, undefined, [error('这是 Antigravity IDE，不是 ACP CLI。请通过 Antigravity 执行器的二进制缓存安装 Google Antigravity ACP CLI 1.x（默认 1.2.1），或设置 ANTIGRAVITY_ACP_PATH 指向 agy_acp_server（保留同目录 localharness_external）。', ANTIGRAVITY_IDE_NOT_ACP)], undefined, sources, undefined,
         [programRequirement(descriptor, 'missing', undefined, undefined, this.bootstrap)]);
     }
-    const rules = await this.#diagnostics(descriptor, selected?.version, selected !== undefined, selected?.command);
+    const executable = selected === undefined ? descriptor : { ...descriptor, command: selected.command, launchArgs: selected.launchArgs };
+    const rules = await this.#diagnostics(executable, selected?.version, selected !== undefined, selected?.command);
     diagnostics.push(...rules.diagnostics);
     const failed = selected === undefined
       ? sources.find((source) => !source.available && source.command !== undefined) : undefined;
@@ -175,7 +176,7 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
       diagnostics,
       selected?.id,
       sources,
-      selected === undefined ? { loginStatus: 'unknown' as const } : await this.#auth(descriptor, selected.command),
+      selected === undefined ? { loginStatus: 'unknown' as const } : await this.#auth(executable, selected.command),
       [...rules.requirements, program],
     );
   }
@@ -219,7 +220,7 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
         });
       }
       if (rule.kind === 'flag' && command !== undefined) {
-        const probe = await this.#probe(command, rule.args, executorProcessEnv(descriptor));
+        const probe = await this.#probe(command, [...descriptor.launchArgs ?? [], ...rule.args], executorProcessEnv(descriptor));
         const hasFlag = (flag: string): boolean => probe.output.split(/\s+/).includes(flag);
         if (probe.available && hasFlag(rule.stable)) diagnostics.push(info(rule.stableMessage));
         else if (probe.available && hasFlag(rule.fallback)) {
@@ -242,7 +243,8 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
     if (auth?.kind === 'codex-account') {
       if (command === undefined) return { loginStatus: 'unknown' };
       const client = new CodexAppServerClient(this.processService, {
-        id: descriptor.id, command, args: descriptor.args,
+        id: descriptor.id, command, commandArgsPrefix: descriptor.launchArgs,
+        args: executorLaunchArgs(descriptor, descriptor.args),
         env: executorProcessEnv(descriptor),
         startupTimeoutMs: 12_000, requestTimeoutMs: 12_000,
       });
