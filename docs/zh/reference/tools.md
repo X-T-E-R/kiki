@@ -163,19 +163,21 @@ URL 简写与 `source` 形式接受同样的选项。inline 与 file 内容不�
 
 ## 浏览器类
 
-浏览器工具只在 `native_browser` 实验开关打开时出现，它们通过 Kiki 服务机上随附的受管 agent-browser 后端驱动已保存的连接。设置页与各接法指向的目标见[浏览器控制](../guides/settings.md#浏览器控制)。
+浏览器工具只在 `native_browser` 实验开关打开时出现。已保存的连接决定使用 Kiki 服务机上的受管 agent-browser 后端、扩展桥或 Ego Lite。设置页与各接法指向的目标见[浏览器控制](../guides/settings.md#浏览器控制)。
 
 **`BrowserConnections`** 操作连接本身：`action: "list"`（默认）返回已保存的连接、新会话默认项，以及发现到但尚未保存的 Ego Lite 候选；`"select"` 绑定本 Agent 要用的连接，`"status"` 与 `"check"` 读取运行状态，`"connect"` 与 `"disconnect"` 启动或附着、以及释放连接，`"tools"` 按需加载后端的页面操作。选中发现到的 Ego 候选时才会明确保存并连接；之后连接按已保存的 id 指定，包括自定义 id，显示名称不会被解析成 id。省略 `browser` 时使用本 Agent 绑定的连接或新会话默认项，不会退回到猜测的或仅仅处于就绪状态的浏览器。
 
 `"tools"` 只注册你点名的分组或工具名。每个已加载操作会成为名为 `browser__agent_browser_<名称>` 的工具，保留后端自己的 schema，并额外接受 `browser` 与 `browserTab`。快照返回的元素引用只在产生它的浏览器、标签和 frame 内有效，页面变化后需重新读取快照。浏览器安装、插件与跨会话管理类操作不作为页面工具提供。
 
-**`BrowserTabs`** 管理一条连接内的目标：`list`、`open`、`window`、`select`、`close` 与 `frame`（`main` 回到顶层 frame）。目标使用后端的 CDP target ID，不是标签序号或标签名，这些工具也不会跟随用户的前台标签。切换标签或 frame、或重新连接后，元素引用需要重新读取快照。
+**`BrowserTabs`** 管理一条连接内的目标：`list`、`open`、`window`、`select`、`close` 与 `frame`（`main` 回到顶层 frame）。请使用该连接返回的准确目标身份，不要传标签序号；这些工具不会跟随用户的前台标签。切换标签或 frame、或重新连接后，元素引用需要重新读取快照。
+
+**WebBridge command 连接**使用 `wb:<十进制 id>` 目标。每个 Agent 拥有独立命令会话，只能操作、选择或关闭自己最近一次 navigate 打开的标签。先通过 `BrowserTabs` 打开标签，再执行快照、点击、填写、evaluate、截图、网络、上传、PDF 或扩展 CDP 操作。扩展 CDP 操作是一条命令，不是附着 DevTools 端点。不支持按 URL 选择另一标签，也不支持 window 和 frame。断开连接会保留标签；只有用户要求关闭该 Agent 命令会话的标签时，才使用 `agent_browser_end_session`。应答丢失或发出后取消会留下 `unconfirmed` 状态，不会重试：先检查连接，返回 `idle` 后重新连接，再打开并观察标签，然后执行下一个页面动作。
 
 **Ego Lite** 是另一种连接。请自行安装 Ego Lite，完成它自己的设置窗口，在浏览器设置里检查，再选中这条连接。Kiki 不会安装它，也不会导入 Chrome 的数据。Agent 选中 Ego 连接后，省略 `browser` 的后续调用会继续使用这条选择；需要在多条 Ego 连接间切换时，请传入已保存的 id。`browser__ego_run` 接受可选的 `browser` id 和必填的 `script`，并在该连接里运行这段脚本。脚本里的 `shotDir` 是这次调用的绝对目录。截图要写成绝对文件，例如 `page.screenshot({ path: shotDir + '/shot.png' })`。写到这个目录里的 png 和 jpeg，在 20 MiB 以内会附到时间线。省略 `path` 时文件落在系统临时目录，不会被附上。在 Ego Lite 连接上，`BrowserTabs` 可以列出、打开、选中和关闭页面；标签 id 是页面标签，例如 `p1`，关闭只作用于 Agent 打开的标签。这里没有 window 和 frame。禁止浏览器工具时，Ego 脚本一并被禁止。子 Agent 需要点名这个脚本工具。
 
 结果会带上解析后的连接、运行会话、标签与 frame。由 Kiki 为该次调用命名的产物——截图、HAR、trace、profiler 输出或录制——在 20 MiB 以内会自动附到时间线；更大的文件留在执行主机上，需要通过现有文件通道取回。超时不代表动作已确认：重发之前先对同一目标重新观察。
 
-取消工具调用时，如果取消在动作发出之前生效——仍处于队列中，或已找到目标但动作尚未发出——浏览器操作会停下。尚未发出的取消不会影响该连接，也不会关闭其它工作正在使用的浏览器。动作一旦发出，取消不会把它收回：调用仍会运行到结束，其结果依然生效，Kiki 也不会替你重放或重试。请读取实际结果，不要假设取消已经撤销了动作。
+取消工具调用时，如果取消在动作发出之前生效——仍处于队列中，或已找到目标但动作尚未发出——浏览器操作会停下。尚未发出的取消不会影响该连接，也不会关闭其它工作正在使用的浏览器。动作一旦发出，取消不会把它收回。受管 agent-browser 调用仍会运行到结束，其结果依然生效；WebBridge command 调用在应答丢失时则可能变成 `unconfirmed`。两条路径都不会替你重放或重试动作。请读取实际结果，不要假设取消已经撤销了动作。
 
 ## Plan 模式
 
@@ -256,7 +258,7 @@ Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`TaskStop`�
 
 ## 协作类
 
-主 Agent 默认提供 5 个线程工具：`ThreadCreate`、`ThreadList`、`ThreadRead`、`ThreadSend` 和 `ThreadWait`。`ThreadCreate` 创建独立的顶层会话；另外 4 个工具通过 `host_id`、`workspace_id` 与 `session_id` 访问现有会话。`ThreadSend` 仍仅限主 Agent，但 subagent profile 可以显式开放 `ThreadCreate`、`ThreadList`、`ThreadRead` 和 `ThreadWait`（见 [`subagent`](../configuration/config-files.md#subagent)）。
+默认主 Agent profile 提供 5 个线程工具（`ThreadCreate`、`ThreadList`、`ThreadRead`、`ThreadSend` 和 `ThreadWait`）及 2 个房间工具（`RoomRead` 和 `RoomAdd`）。`ThreadCreate` 创建独立的顶层会话；另外 4 个线程工具通过 `host_id`、`workspace_id` 与 `session_id` 访问现有会话。`ThreadSend`、`RoomRead` 和 `RoomAdd` 仅限主 Agent。Subagent profile 可以显式开放 `ThreadCreate`、`ThreadList`、`ThreadRead` 和 `ThreadWait`（见 [`subagent`](../configuration/config-files.md#subagent)），但不能获得房间访问权限。
 
 省略 `host_id`、留空或设为 `"local"` 都表示执行 Agent 所属 home，不是 GUI 当前打开的空间。同 home 可以跨工作区通信；另一个本机或远端空间需要 owner 批准的单向 [thread bridge](./command.md#kiki-bridges)，使用返回的完整主机引用及 `bridge_id` 或 `connection_id`。不同 home 中相同 Session ID 仍是不同线程，GUI 浏览权限也不等于 bridge 权限。
 
@@ -266,6 +268,10 @@ Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`TaskStop`�
 - `ThreadSend` 持久保存显式消息，执行中的主 Agent 会话作为已验证来源。传入目标、非空且最多 100,000 字符的 `content`，以及最多 256 字符的 `idempotency_key`。没有来源参数，同一个 key 只能用于同一条消息。Bridge 需要 `send`，投递到模型 prompt 或恢复冷线程还需 `wake`；没有 wake 时保持 pending。`delivered` 仅确认 prompt 投递，不代表已回复。消息持久受理后，投递较慢会返回 `pending`，不再让发送方一直等待；投递会在后台继续。取消这次等待不会撤回已受理消息。Bridge 的 pending 记录使用原 key 最多重试 15 分钟，拒绝原因可查看 bridge receipts。普通 Assistant 正文不会自动转发。
 - `ThreadSend({ room, content, mentions? })` 在当前线程已加入的房间发言。房间正文最多 20,000 字符，mentions 使用线程会话 ID 或角色 ID，省略重试键时使用工具调用 ID。ThreadSend 是这条线程在房间里说话的方式，线程里的正文留在线程里。用户消息没有 mention 时交给房间 host。成员发出的消息只唤醒被 mention 的成员。房间发送的 `delivered` 表示已记入房间日志，不表示所有成员已经回复；线程成员默认忙时排队。
 - `ThreadWait` 等待 1–8 条互不重复的本地或已批准 bridge 线程的 terminal、attention、lifecycle 或消息无法投递活动。跨 bridge 需要 `wait`，不会唤醒目标。`timeout_ms` 默认为 30,000，取值为 0–60,000，`0` 只检查一次；下次调用带上各自返回的 cursor，取消工具调用即可停止等待。
+- `RoomRead({ room: "room-id", limit: 50 })` 返回房间 host、成员名单、暂停与归档状态，以及已保存的日志。`limit` 取值为 1–100，默认为 50；将返回的 `nextCursor` 作为 `after_id` 传入可继续翻页。名单中的 `id` 就是房间 mentions 接受的线程或角色 ID。读取不会唤醒成员、把通知标为已读或更改成员关系；`entries` 为空表示没有新的已保存消息，不表示成员已经退出。
+- `RoomAdd({ room: "room-id", session_id: "thread-id" })` 仅在用户要求时，把已有且未归档的顶层线程加入房间。用 `ThreadList` 查找其 `session_id`。房间保留原 host、已有成员设置、最多 6 名成员的限制，以及各线程原有的权限。线程已在房间时原样返回，`added` 为 `false`。此工具不创建房间、角色或会话，也不能把调用方线程加入房间。
+
+两个房间工具都要求已开启线程通信，且调用方是当前房间成员线程的主 Agent。`room` 使用执行 home 中的房间 ID，不接受 bridge 选择器。请先在界面创建房间或把当前线程加入房间，再让 Agent 读取或添加另一条已有线程。
 
 `ThreadCreate` 默认仍可用，设置页「权限 → 工具」可单独关闭，不影响另外 4 个线程工具。Peer 通信允许使用且默认关闭。用户把 `[thread_communication] enabled` 写成 `false` 是完全关闭；写成 `true` 会保持原先的默认开启，直到写入 [`optional_capabilities.defaults.thread`](../configuration/config-files.md#optional-capabilities)。当前会话关闭后，即使该会话的 Profile 点了这些工具，本会话的 peer 工具仍然关闭。只有这次子任务点名这些工具，才会打开该子任务。持久化的 workspace 邮箱覆盖仍然生效。Bridge 入站另行默认关闭，由目标 owner 明确批准；关闭目标通信或入站会停止 bridge 投递，不删除会话。
 
