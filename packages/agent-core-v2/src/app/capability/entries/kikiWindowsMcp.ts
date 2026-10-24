@@ -1,4 +1,4 @@
-import { copyFile, mkdir, writeFile } from 'node:fs/promises';
+import { copyFile, lstat, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -99,14 +99,45 @@ export async function registerInstalledWindowsMcp(
   const servers = await mcp.listServers();
   const sameName = servers.find((item) => item.name === WINDOWS_MCP_COMPUTER_CONNECTION);
   if (sameName !== undefined) {
-    const args = sameName.config.args ?? [];
-    if (sameName.config.transport === 'stdio' && sameName.config.command === server.command && args.join('\0') === server.args?.join('\0')) {
+    const existing = windowsMcpConfiguredLaunch(sameName.config);
+    const next = windowsMcpConfiguredLaunch(server);
+    if (existing !== undefined && next !== undefined && existing.command === next.command && existing.args.join('\0') === next.args.join('\0')) {
       return 'existing-mcp-config-reused';
     }
     throw new Error('MCP name kiki-windows-mcp is already configured for another command; existing configuration was preserved');
   }
   await mcp.addServer(server);
   return 'mcp-configured';
+}
+
+export function windowsMcpConfiguredLaunch(config: { readonly transport?: string; readonly command?: string; readonly args?: readonly string[] }): { readonly command: string; readonly args: readonly string[] } | undefined {
+  if (config.transport !== 'stdio' || typeof config.command !== 'string' || config.command.length === 0) return undefined;
+  return { command: config.command, args: config.args ?? [] };
+}
+
+async function assertRegularFile(file: string, label: string): Promise<void> {
+  let stat: Awaited<ReturnType<typeof lstat>>;
+  try {
+    stat = await lstat(file);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error(`${label} does not exist`);
+    throw error;
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`${label} must be a regular file`);
+}
+
+export async function registerInstalledWindowsMcpEnvironment(
+  mcp: Parameters<typeof registerInstalledWindowsMcp>[0],
+  platform: NodeJS.Platform,
+  pythonExecutable: string,
+  configPath: string,
+  version: string,
+): Promise<'mcp-configured' | 'existing-mcp-config-reused'> {
+  assertWindowsMcpInterpreter(pythonExecutable);
+  if (!path.isAbsolute(configPath)) throw new Error('Windows-MCP requires an absolute --config path');
+  await assertRegularFile(pythonExecutable, 'Windows-MCP interpreter');
+  await assertRegularFile(configPath, 'Windows-MCP config');
+  return registerInstalledWindowsMcp(mcp, platform, pythonExecutable, configPath, version);
 }
 
 export function windowsMcpManagedInstallCommands(targetDir: string, pythonExecutable: string): readonly (readonly string[])[] {

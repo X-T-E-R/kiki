@@ -55,6 +55,7 @@ export * from './rest/html-preview';
 export * from './rest/file';
 export * from './rest/modelCatalog';
 export * from './rest/config';
+export * from './rest/computerExecutor';
 export * from './rest/hooksConfig';
 export * from './rest/modelGenerationMigration';
 export * from './rest/space';

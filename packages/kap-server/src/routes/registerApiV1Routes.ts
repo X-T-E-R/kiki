@@ -18,6 +18,7 @@ import { registerLeaseRoutes } from './leases';
 import { registerApprovalsRoutes } from './approvals';
 import { registerAuthRoute } from './auth';
 import { registerCapabilitiesRoutes } from './capabilities';
+import { registerComputerExecutorRoutes } from './computerExecutor';
 import { registerConfigRoutes } from './config';
 import { registerConnectionsRoutes } from './connections';
 import { registerCronRoutes } from './cron';
@@ -232,6 +233,10 @@ export async function registerApiV1Routes(
       registerAppearanceRoutes(apiV1 as unknown as Parameters<typeof registerAppearanceRoutes>[0], core, { themesDir: opts.themesDir });
       registerCapabilitiesRoutes(
         apiV1 as unknown as Parameters<typeof registerCapabilitiesRoutes>[0],
+        core,
+      );
+      registerComputerExecutorRoutes(
+        apiV1 as unknown as Parameters<typeof registerComputerExecutorRoutes>[0],
         core,
       );
       registerOutputLayerRoutes(apiV1 as unknown as Parameters<typeof registerOutputLayerRoutes>[0], core);
