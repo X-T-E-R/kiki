@@ -9,6 +9,7 @@ import { memo, useCallback, useMemo, useState, useSyncExternalStore } from 'reac
 import { useQuery } from '@tanstack/react-query';
 
 import { MAIN_AGENT_ID, type AgentForest, type Block, type NoticeBlock, type SessionViewState } from '@kiki/session-core/session';
+import type { I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
 import { useConnection, useOptionalControllerRegistry } from '../../state/connection';
 import { AgentCapabilitiesSection, capabilityCounts } from '../agent-panel/AgentCapabilitiesSection';
@@ -227,7 +228,7 @@ export function profileEffortDisplay(profile: {
   thinking_effort_explicit?: boolean;
   effort_source?: string;
   thinking_effort_source?: string;
-} | undefined, t: (key: string, params?: Record<string, string | number>) => string): string | undefined {
+} | undefined, t: (key: I18nKey, params?: Readonly<Record<string, string | number>>) => string): string | undefined {
   if (profile?.thinking_effort === undefined) return undefined;
   const isExternal = profile.executor !== undefined && profile.executor !== '' && profile.executor !== 'native';
   if (isExternal) {

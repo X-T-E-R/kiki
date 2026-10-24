@@ -897,6 +897,16 @@ describe('default model cross-tab selection ownership', () => {
   const modelA: ModelCatalogItem = { ...MODELS[0]!, id: 'gateway/model-a', provider_id: 'gateway', display_name: 'Model A' };
   const modelB = MODELS[0]!;
 
+  function deferred<T = void>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
   async function renderTabs() {
     const container = document.createElement('div');
     document.body.append(container);
@@ -935,8 +945,8 @@ describe('default model cross-tab selection ownership', () => {
   it('finishes the old server write chain before applying the last cross-tab pick, including the original default in DefaultModelBar', async () => {
     const initial = { default_model: modelB.id, default_provider: modelB.provider_id, session_title: { model: 'title-model' }, thinking: { effort: 'high' } };
     let server = { ...initial };
-    const modelGate = Promise.withResolvers<void>();
-    const providerGate = Promise.withResolvers<void>();
+    const modelGate = deferred<void>();
+    const providerGate = deferred<void>();
     const writes: string[] = [];
     getConfig.mockImplementation(async () => ({ ...server }));
     setDefaultModel.mockImplementation(async (id: string) => {
@@ -972,7 +982,7 @@ describe('default model cross-tab selection ownership', () => {
 
   it('lets the latest catalog pick run after an older DefaultModelBar request rejects, without stale error recovery', async () => {
     let server = { default_model: 'initial-model', default_provider: 'initial-provider', fast_model: 'fast-model' };
-    const modelGate = Promise.withResolvers<void>();
+    const modelGate = deferred<void>();
     getConfig.mockImplementation(async () => ({ ...server }));
     setDefaultModel.mockImplementation(async (id: string) => {
       if (id === modelA.id) await modelGate.promise;

@@ -656,7 +656,7 @@ describe('ImSessionCard channel management', () => {
     const state: ImSessionSnapshot = {
       policy: { allowed: true, default_enabled: true },
       instances: [
-        { id: 'wx-live', provider_kind: 'wechat_bridge', label: 'WeChat Live', account_id: 'wx-live', listening: true, configured: true, adapter: 'running', connection: 'listening' },
+        { id: 'wx-live', provider_kind: 'wechat_bridge', label: 'WeChat Live', account_id: 'wx-live', listening: true, configured: true, adapter: 'running' },
       ],
       bindings: [],
       discoveries: [],

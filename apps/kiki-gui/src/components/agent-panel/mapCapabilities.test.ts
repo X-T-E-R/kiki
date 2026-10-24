@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { AgentPanelTool } from '@kiki/protocol';
+import type { AgentCapabilitiesResponse } from '@kiki/protocol';
 import { CAPABILITY_REASON_LABEL_KEYS, mapPanelTools } from './mapCapabilities';
+
+type RawTool = NonNullable<AgentCapabilitiesResponse['tools']>[number];
 
 describe('mapCapabilities', () => {
   it('maps all 4 new capability reason codes in CAPABILITY_REASON_LABEL_KEYS', () => {
@@ -11,7 +13,7 @@ describe('mapCapabilities', () => {
   });
 
   it('maps tool policy_allowed and request_state without collapsing loadable or policyAllowed', () => {
-    const rawTools: AgentPanelTool[] = [
+    const rawTools: RawTool[] = [
       {
         name: 'mcp__weather__get',
         category: 'mcp',

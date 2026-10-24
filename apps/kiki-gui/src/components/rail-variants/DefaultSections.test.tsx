@@ -20,7 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentCapabilitiesResponse, OptionalCapabilitySessionResponse, PluginUsageItem, PluginUsageResponse } from '@kiki/protocol';
 import { I18nProvider } from '../../i18n';
 import { buildAgentForest, type NoticeBlock } from '@kiki/session-core/session';
-import { translate } from '@kiki/session-core/i18n';
+import { translate, type I18nKey } from '@kiki/session-core/i18n';
 import { OptionalCapabilityRows } from '../capabilities/optionalCapabilityUi';
 import { clearPendingNewSessionCapabilities } from '../capabilities/newSessionCapabilities';
 import { ActivityFeed, CapabilitiesBlock, profileEffortDisplay } from './DefaultSections';
@@ -724,8 +724,8 @@ describe('OptionalCapabilityRows', () => {
 });
 
 describe('profileEffortDisplay external vs native thinking effort', () => {
-  const t = (key: string, params?: Record<string, string | number>) =>
-    key === 'subagent.effort' ? `effort · ${params?.effort}` : key;
+  const t = (key: I18nKey, params?: Readonly<Record<string, string | number>>) =>
+    key === 'subagent.effort' ? `effort · ${params?.['effort']}` : key;
 
   it('hides inherited off for external executors (external inheritedoff)', () => {
     const result = profileEffortDisplay({

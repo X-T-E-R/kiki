@@ -1,5 +1,5 @@
 ---
-"@kiki/gui": patch
+"@kiki/cli": patch
 ---
 
-Fix settings sign-in status display, default model cross-tab selection, and external thinking effort indicators.
+Fix settings sign-in status, default model selection, and external effort display.
