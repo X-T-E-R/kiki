@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import type { SessionSummary } from '@kiki/agent-core-v2';
 import type { UsageFact } from '@kiki/agent-core-v2/agent/usage/usageFact';
 import type { IQueryStore, WriteOp } from '@kiki/agent-core-v2/persistence/interface/queryStore';
@@ -57,10 +59,10 @@ export class UsageRangeFold {
     const selected = records.filter((record) => !record.invalid && matches(record));
     const rows = selected.map((record) => {
       const bucket = bucketOf(record);
-      const group = `group:${JSON.stringify([summary.id, bucket, record.model, record.agentId, record.parentAgentId, record.provider, record.modelAlias, record.profileName])}`;
-      const turn = record.turnId === undefined ? undefined : `turn:${JSON.stringify([bucket, summary.id, record.agentId ?? record.sourceAgentId ?? '', record.turnId])}`;
-      const drilldown = record.turnId === undefined ? undefined : `drilldown:${JSON.stringify([bucket, summary.id, record.turnId])}`;
-      return { record, bucket: `bucket:${bucket}`, bucketKey: bucket, group, turn, drilldown };
+      const group = foldKey(`group:${JSON.stringify([summary.id, bucket, record.model, record.agentId, record.parentAgentId, record.provider, record.modelAlias, record.profileName])}`);
+      const turn = record.turnId === undefined ? undefined : foldKey(`turn:${JSON.stringify([bucket, summary.id, record.agentId ?? record.sourceAgentId ?? '', record.turnId])}`);
+      const drilldown = record.turnId === undefined ? undefined : foldKey(`drilldown:${JSON.stringify([bucket, summary.id, record.turnId])}`);
+      return { record, bucket: foldKey(`bucket:${bucket}`), bucketKey: bucket, group, turn, drilldown };
     });
     const keys = [...new Set(rows.flatMap((row) => [row.group, row.bucket, row.turn, row.drilldown].filter((key): key is string => key !== undefined)))];
     const existing = await this.query.getMany<GroupRow | BucketRow | true>(this.collection, keys);
@@ -78,7 +80,7 @@ export class UsageRangeFold {
         kind: 'group', sessionId: summary.id,
         record: {
           time: Math.min(previous?.record.time ?? record.time, record.time), model: record.model,
-          usage, usageKnown: true, agentId: record.agentId, parentAgentId: record.parentAgentId,
+          usage, usageKnown: true, sourceAgentId: record.sourceAgentId, agentId: record.agentId, parentAgentId: record.parentAgentId,
           provider: record.provider, modelAlias: record.modelAlias, profileName: record.profileName,
           folded: {
             records: (previous?.record.folded.records ?? 0) + 1,
@@ -121,6 +123,13 @@ export class UsageRangeFold {
   }
 
   buckets(keys: readonly string[]): Promise<Map<string, FoldBucketView>> {
-    return this.query.getMany<BucketRow>(this.collection, keys.map((key) => `bucket:${key}`));
+    return this.query.getMany<BucketRow>(this.collection, keys.map((key) => foldKey(`bucket:${key}`)));
   }
+}
+
+function foldKey(key: string): string {
+  if (key.length <= 90) return key;
+  const prefix = key.slice(0, Math.max(0, key.indexOf(':')));
+  const hashed = `${prefix}:${createHash('sha256').update(key).digest('hex')}`;
+  return hashed.length <= 90 ? hashed : createHash('sha256').update(key).digest('hex');
 }

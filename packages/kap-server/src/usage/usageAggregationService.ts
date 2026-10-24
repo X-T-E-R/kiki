@@ -29,6 +29,7 @@ import type { UsageSourceChanges } from './usageSourceTracker';
 import { UsageReadAllowance } from '@kiki/agent-core-v2/agent/usage/usageWireFramer';
 import { readUsageWireTail, usageRecoveryPool, type UsageRecoveryPool, type WireLineContinuation } from './usageRecovery';
 import { UsageRangeFold, type FoldBucketView, type FoldedUsageRecord } from './usageRangeFold';
+import { appendProjectionAgent, bucketsFromAgents, buildRangeProjection, parseUsageRangeProjection, projectionFileName, projectionRows, projectionSessionOf, UsageProjectionFold, type UsageProjectionAgent, type UsageRangeProjection } from './usageRangeProjection';
 
 const SOURCE_RECHECK_MS = 10 * 60_000;
 
@@ -36,11 +37,13 @@ const DEFAULT_PAGE_SIZE = 50;
 const INDEX_PAGE_SIZE = 100;
 const CHECKPOINT_READ_CONCURRENCY = 8;
 const AGENT_STAT_CONCURRENCY = 16;
+const PROJECTION_STAT_CONCURRENCY = 64;
 const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const PERSISTENCE_SCOPE = 'cache/usage-aggregation-v1';
 const PERSISTENCE_VERSION = 1;
 const BOUNDARY_BYTES = 4 * 1024;
+const FACT_JOURNAL_KEY = 'facts.jsonl';
 const DEFAULT_LIMITS: UsageAggregationLimits = {
   sessionScanLimit: 500,
   wireRecordBudget: Infinity,
@@ -121,6 +124,7 @@ interface PersistentSessionRecords {
   readonly records: readonly NormalizedUsageRecord[];
   readonly agents: Readonly<Record<string, WireCheckpoint>>;
   readonly readComplete?: boolean;
+  readonly incompleteReason?: 'deadline' | 'record_budget';
 }
 
 interface SessionLoadResult {
@@ -145,6 +149,7 @@ export interface AgentUsageReadOptions {
   readonly summaryOnly?: boolean;
   readonly maxBytes?: number;
   readonly deadlineAt?: number;
+  readonly rangeStart?: number;
 }
 
 interface ScanBudget {
@@ -182,6 +187,11 @@ interface NormalizedQuery {
 interface ListedSessions {
   readonly items: readonly SessionSummary[];
   readonly activeKeys: ReadonlySet<string>;
+}
+
+interface UsageFoldView {
+  recordPage(cursor?: string): Promise<{ items: readonly { readonly sessionId: string; readonly record: NormalizedUsageRecord }[]; nextCursor?: string }>;
+  buckets(keys: readonly string[]): Promise<{ values(): Iterable<FoldBucketView> }>;
 }
 
 interface RangeFoldSource {
@@ -253,7 +263,7 @@ interface SessionAccumulator extends AggregateAccumulator {
 
 export class UsagePageTokenMismatchError extends Error {}
 
-/** Incremental usage projection for managed append/rewrite stores. Tracked sources reuse complete verified checkpoints until an event or a ten-minute safety recheck; untracked sources, export and rescan validate inventories, sizes and mtimes. Bounded views never replace full checkpoints. External rewrites preserving size and mtime remain outside the consistency contract. */
+/** Incremental usage projection for managed append/rewrite stores. Tracked sources reuse complete verified checkpoints until an event or a ten-minute safety recheck; untracked sources, export and rescan validate inventories, sizes and mtimes. Bounded views never replace full checkpoints. External rewrites preserving size and mtime remain outside the consistency contract. A bounded range does not read a source whose filesystem mtime is an epoch millisecond older than the range start: usage record time is assigned before that write, and a later append moves mtime. A complete bounded query stores an unpriced folded projection; the next process reads it back when every in-range watermark still matches, and a pure append folds only its tail. A default-budget fold replays fact journals from a byte cursor and pages those facts before opening further sources. */
 export class UsageAggregationService {
   private readonly cache = new Map<string, SessionCacheEntry>();
   private readonly pendingWireLines = new Map<string, WireLineContinuation>();
@@ -353,6 +363,8 @@ export class UsageAggregationService {
   ) {
     this.limits = { ...DEFAULT_LIMITS, ...limits };
     this.sourceSubscription = sourceChanges?.onDidChange((key) => {
+      this.replayEpoch++;
+      if (this.loadedProjection !== undefined) this.loadedProjection = { ...this.loadedProjection, verifiedAt: 0 };
       if (key === undefined || this.sourceRevisions.size >= 4096) {
         this.sourceRevision++;
         this.sourceRevisions.clear();
@@ -366,6 +378,8 @@ export class UsageAggregationService {
   }
 
   private sourceRevision = 0;
+  private replayEpoch = 0;
+  private loadedProjection: { fingerprint: string; projection: UsageRangeProjection; epoch: number; verifiedAt: number } | undefined;
   private readonly sourceRevisions = new Map<string, number>();
   private readonly sourceSubscription?: { dispose(): void };
 
@@ -598,6 +612,8 @@ export class UsageAggregationService {
     const prior = this.rangeOperations.get(fingerprint) ?? Promise.resolve();
     const next = prior.catch(() => undefined).then(async () => {
       signal.throwIfAborted();
+      const replayed = await this.replayRangeProjection(raw, normalized, fingerprint, signal);
+      if (replayed !== undefined) return replayed;
       const resumable = await waitForSource(this.core.accessor.get(IQueryStore).get('usage-range-routing-v1', fingerprint), signal);
       return resumable === undefined ? this.querySourcesRecordLevel(raw, signal) : this.queryFoldedSources(raw, normalized, fingerprint, signal);
     });
@@ -607,6 +623,7 @@ export class UsageAggregationService {
   }
 
   private async queryFoldedSources(raw: UsageQuery, query: NormalizedQuery, fingerprint: string, signal: AbortSignal): Promise<UsageResponse> {
+    const persistProjection = this.factJournalReplayEnabled() && this.rescan.state !== 'running';
     await waitForSource(this.core.accessor.get(IModelPricingService).ready, signal);
     await waitForSource(this.prepareInventory(), signal);
     const now = this.now();
@@ -637,55 +654,119 @@ export class UsageAggregationService {
       listed = await waitForSource(this.listSessions(query, budget), budget.factSignal);
       head = await waitForSource(fold.head<RangeFoldHead>(), budget.factSignal);
       const inventory = new Set(listed.items.map(sessionKey));
-      const sameInventory = head !== undefined && (!head.complete || head.sessions.length === listed.items.length) && head.sessions.every((session) => inventory.has(sessionKey(session.summary)));
-      if (head === undefined || head.version !== 1 || head.fingerprint !== fingerprint || head.invalidated || !sameInventory || !await waitForSource(this.rangeSourcesCurrent(head, budget.factSignal), budget.factSignal)) {
-        await fold.reset();
-        head = { version: 1, fingerprint, sessions: listed.items.map((summary) => ({ summary, invalid: false, prepared: false })), complete: false, inventoryComplete: budget.incompleteReason === null, invalidated: false };
-        await fold.saveHead(head);
-      }
-      for (const session of head.sessions) {
-        if (session.prepared) continue;
-        if (this.now() >= budget.deadlineAt) { budget.incompleteReason = 'deadline'; break; }
-        if ((budget.remainingFacts ?? Infinity) <= 0 || budget.remainingRecords <= 0) { budget.incompleteReason = 'record_budget'; break; }
-        const recovered = await this.loadSessionIncremental(session.summary, budget.remainingRecords, budget.deadlineAt, undefined, false, undefined, undefined, { signal, factSignal: budget.factSignal, factBudget: budget.factBudget, maxFacts: budget.remainingFacts, projectionOnly: true });
-        budget.remainingRecords -= recovered.scannedRecordCount;
-        if (budget.remainingFacts !== undefined) budget.remainingFacts -= recovered.scannedFactCount ?? 0;
-        const agents = Object.entries(recovered.persisted.agents);
-        const covered = recovered.persisted.readComplete !== false && recovered.incompleteReason === null && agents.every(([, checkpoint]) => checkpoint.offset === checkpoint.size);
-        if (!covered) { budget.incompleteReason = recovered.incompleteReason ?? 'record_budget'; break; }
-        session.invalid = !recovered.session.complete;
-        const scope = sessionScopeOf(workspacePersistenceScope('sessions', session.summary.workspaceId), session.summary.id);
-        session.sources ??= agents.map(([agentId, checkpoint]) => ({ agentId, scope: agentScopeOf(scope, agentId), checkpoint, done: false }));
-        for (const source of session.sources) {
-          if (source.cursor !== undefined || source.done) continue;
-          const frozen = await this.core.accessor.get(IUsageFactStore).read(source.scope, query.range, budget.factSignal, { budget: budget.factBudget, pageSize: 0 });
-          if (frozen.checkpoint === undefined) { budget.incompleteReason = 'record_budget'; break; }
-          source.checkpoint = frozen.checkpoint;
-          source.cursor = frozen.nextCursor;
-          source.done = frozen.readComplete !== false;
+      const sameInventory = budget.incompleteReason === null && head !== undefined && (!head.complete || head.sessions.length === listed.items.length) && head.sessions.every((session) => inventory.has(sessionKey(session.summary)));
+      const current = head !== undefined && sameInventory ? await waitForSource(this.rangeSourcesCurrent(head, budget.factSignal), budget.factSignal) : false;
+      const aligned = head !== undefined && head.version === 1 && head.fingerprint === fingerprint && !head.invalidated && sameInventory && current;
+      if (!aligned) {
+        const advanced = head !== undefined && head.complete && head.version === 1 && head.fingerprint === fingerprint && !head.invalidated && sameInventory
+          ? await this.advanceCompleteFold(head, fold, query, budget)
+          : false;
+        if (!advanced) {
+          await fold.reset();
+          head = { version: 1, fingerprint, sessions: listed.items.map((summary) => ({ summary, invalid: false, prepared: false })), complete: false, inventoryComplete: budget.incompleteReason === null, invalidated: false };
+          await fold.saveHead(head);
         }
-        session.prepared = session.sources.every((source) => source.done || source.cursor !== undefined);
-        await fold.saveHead(head);
       }
-      if (head.sessions.every((session) => session.prepared)) {
-        const facts = this.core.accessor.get(IUsageFactStore);
-        rangeLoop: for (const session of head.sessions) {
+      if (head === undefined) throw new Error('usage range has no fold head');
+      const facts = this.core.accessor.get(IUsageFactStore);
+      const storage = this.core.accessor.get(IFileSystemStorageService);
+      const replayJournal = this.factJournalReplayEnabled();
+      const foldHead = head;
+      const pageOpened = async (): Promise<void> => {
+        for (const session of foldHead.sessions) {
           for (const source of session.sources ?? []) {
+            if (source.cursor === undefined) continue;
             while (!source.done) {
-              if (this.now() >= budget.deadlineAt) { budget.incompleteReason = 'deadline'; break rangeLoop; }
-              if ((budget.remainingFacts ?? Infinity) <= 0) { budget.incompleteReason = 'record_budget'; break rangeLoop; }
+              if (this.now() >= budget.deadlineAt) { budget.incompleteReason = 'deadline'; return; }
+              if ((budget.remainingFacts ?? Infinity) <= 0) { budget.incompleteReason = 'record_budget'; return; }
+              if (source.cursor?.startsWith('journal:') === true) {
+                const hold = { cursor: source.cursor };
+                const replayed = await this.replayFactJournal(source.scope, source.cursor, query.range, budget, hold, async (records) => {
+                  source.cursor = hold.cursor;
+                  session.invalid ||= records.some((record) => record.invalid);
+                  await fold.addPage(session.summary, records, (record) => resolveBucket(record.time, session.summary, query).key, (record) => inRange(record.time, query.range) && matchesFilters(record, query), foldHead, budget.factSignal);
+                });
+                if (replayed === undefined) source.cursor = undefined;
+                else {
+                  source.done = replayed.done;
+                  source.cursor = replayed.done ? undefined : replayed.cursor;
+                  if (!replayed.done) return;
+                  continue;
+                }
+              }
               const page = await facts.read(source.scope, query.range, budget.factSignal, { budget: budget.factBudget, cursor: source.cursor, pageSize: 256 });
-              if (page.readComplete === false && page.nextCursor === undefined) { budget.incompleteReason = 'record_budget'; break rangeLoop; }
-              if (page.checkpoint === undefined) { head.invalidated = true; budget.sourcesComplete = false; break rangeLoop; }
+              if (page.readComplete === false && page.nextCursor === undefined) { budget.incompleteReason = 'record_budget'; return; }
+              if (page.checkpoint === undefined) { foldHead.invalidated = true; budget.sourcesComplete = false; return; }
               source.checkpoint = page.checkpoint;
               source.cursor = page.nextCursor;
               source.done = page.readComplete !== false;
               session.invalid ||= !page.checkpoint.valid || page.records.some((record) => record.invalid);
-              await fold.addPage(session.summary, page.records, (record) => resolveBucket(record.time, session.summary, query).key, (record) => inRange(record.time, query.range) && matchesFilters(record, query), head, budget.factSignal);
+              await fold.addPage(session.summary, page.records, (record) => resolveBucket(record.time, session.summary, query).key, (record) => inRange(record.time, query.range) && matchesFilters(record, query), foldHead, budget.factSignal);
             }
           }
         }
+      };
+      await pageOpened();
+      for (const session of head.sessions) {
+        if (session.prepared) continue;
+        if (this.now() >= budget.deadlineAt) { budget.incompleteReason = 'deadline'; break; }
+        if ((budget.remainingFacts ?? Infinity) <= 0 || budget.remainingRecords <= 0) { budget.incompleteReason = 'record_budget'; break; }
+        const scope = sessionScopeOf(workspacePersistenceScope('sessions', session.summary.workspaceId), session.summary.id);
+        const listedAgents = await storage.list(`${scope}/agents`);
+        const known = new Set((session.sources ?? []).map((source) => source.agentId));
+        const pending = session.sources === undefined ? undefined : listedAgents.filter((agentId) => !known.has(agentId));
+        if (pending === undefined || pending.length > 0) {
+          const prepared = pending === undefined ? undefined : {
+            version: PERSISTENCE_VERSION,
+            sessionKey: sessionKey(session.summary),
+            records: [],
+            agents: Object.fromEntries((session.sources ?? []).map((source) => [source.agentId, source.checkpoint])),
+            readComplete: true,
+          };
+          const recovered = await this.loadSessionIncremental(session.summary, budget.remainingRecords, budget.deadlineAt, undefined, false, prepared, pending, { signal, factSignal: budget.factSignal, factBudget: budget.factBudget, maxFacts: budget.remainingFacts, projectionOnly: true, rangeStart: query.range.startAt });
+          budget.remainingRecords -= recovered.scannedRecordCount;
+          if (budget.remainingFacts !== undefined) budget.remainingFacts -= recovered.scannedFactCount ?? 0;
+          const sources = session.sources ?? [];
+          const present = new Set(sources.map((source) => source.agentId));
+          for (const [agentId, checkpoint] of Object.entries(recovered.persisted.agents)) {
+            if (present.has(agentId) || checkpoint.offset !== checkpoint.size) continue;
+            const excluded = mtimeExcludesRange(checkpoint.mtimeMs, query.range.startAt);
+            sources.push({ agentId, scope: agentScopeOf(scope, agentId), checkpoint, done: excluded, ...(replayJournal && !excluded ? { cursor: 'journal:0:0' } : {}) });
+            present.add(agentId);
+          }
+          session.sources = sources;
+          const covered = listedAgents.every((agentId) => present.has(agentId));
+          if (covered && recovered.incompleteReason === null && recovered.persisted.readComplete !== false) session.invalid = !recovered.session.complete;
+          if (!covered || recovered.incompleteReason !== null || recovered.persisted.readComplete === false) {
+            budget.incompleteReason = recovered.incompleteReason ?? 'record_budget';
+            await fold.saveHead(head);
+            break;
+          }
+        }
+        let opened = true;
+        for (const source of session.sources ?? []) {
+          if (source.cursor !== undefined || source.done) continue;
+          if (replayJournal) { source.cursor = 'journal:0:0'; continue; }
+          if (this.now() >= budget.deadlineAt || (budget.remainingFacts ?? Infinity) <= 0) {
+            opened = false;
+            budget.incompleteReason = this.now() >= budget.deadlineAt ? 'deadline' : 'record_budget';
+            break;
+          }
+          const frozen = await facts.read(source.scope, query.range, budget.factSignal, { budget: budget.factBudget, pageSize: 0 });
+          if (frozen.checkpoint === undefined) { opened = false; budget.incompleteReason = 'record_budget'; break; }
+          source.checkpoint = frozen.checkpoint;
+          source.cursor = frozen.nextCursor;
+          source.done = frozen.readComplete !== false;
+        }
+        const sourceIds = new Set((session.sources ?? []).map((source) => source.agentId));
+        session.prepared = opened && listedAgents.every((agentId) => sourceIds.has(agentId)) && (session.sources ?? []).every((source) => source.done || source.cursor !== undefined);
+        await fold.saveHead(head);
+        if (!session.prepared) {
+          budget.incompleteReason ??= 'record_budget';
+          break;
+        }
       }
+      await pageOpened();
       head.complete = head.sessions.every((session) => session.prepared && session.sources?.every((source) => source.done));
       await fold.saveHead(head);
       budget.sourcesComplete = head.complete && head.inventoryComplete && !head.invalidated;
@@ -708,12 +789,17 @@ export class UsageAggregationService {
       } else if (deadline.signal.aborted) {
         budget.incompleteReason = 'deadline';
         budget.sourcesComplete = false;
+        if (head !== undefined) await fold.saveHead(head);
+        budget.factSignal = signal;
       } else { clearTimeout(timer); throw error; }
     }
+    if (deadline.signal.aborted && !signal.aborted) budget.factSignal = signal;
     try {
       const summaries = new Map(listed?.items.map((summary) => [sessionKey(summary), summary]));
       const sessions: SessionRecords[] = (head?.sessions ?? []).map((session) => ({ summary: summaries.get(sessionKey(session.summary)) ?? session.summary, records: [], complete: session.prepared && session.sources?.every((source) => source.done) === true && !session.invalid, deleted: false }));
-      return await this.aggregate(query, [...sessions, ...retained], fingerprint, cursor, budget, ephemeral, fold);
+      const response = await this.aggregate(query, [...sessions, ...retained], fingerprint, cursor, budget, ephemeral, fold);
+      if (persistProjection && response.reliability.complete && head?.complete === true && listed !== undefined) await this.saveFoldProjection(query, fingerprint, listed.items, head, fold);
+      return response;
     } finally { clearTimeout(timer); }
   }
 
@@ -742,6 +828,7 @@ export class UsageAggregationService {
   }
 
   private async querySourcesRecordLevel(raw: UsageQuery, signal: AbortSignal): Promise<UsageResponse> {
+    const persistProjection = this.projectionWritable();
     await waitForSource(this.core.accessor.get(IModelPricingService).ready, signal);
     await waitForSource(this.prepareInventory(), signal);
     const now = this.now();
@@ -782,7 +869,7 @@ export class UsageAggregationService {
           const persisted = cached?.persisted ?? await this.readPersistentSession(
             this.core.accessor.get(IFileSystemStorageService), key, indexedRange, budget.factSignal, undefined, budget.factBudget,
           );
-          if (persisted.readComplete === false) await this.core.accessor.get(IQueryStore).put('usage-range-routing-v1', fingerprint, { version: 1, fingerprint, touchedAt: now }, { columns: { touchedAt: now } });
+          if (persisted.readComplete === false && persisted.incompleteReason !== 'deadline') await this.core.accessor.get(IQueryStore).put('usage-range-routing-v1', fingerprint, { version: 1, fingerprint, touchedAt: now }, { columns: { touchedAt: now } });
           const revision = this.revisionOf(key);
           const current = persisted.readComplete !== false && await waitForSource(this.cacheIsCurrent(summary, persisted, this.rescan.state !== 'running'), budget.factSignal);
           if (current && !cached?.view && this.rescan.state !== 'running') {
@@ -830,7 +917,9 @@ export class UsageAggregationService {
         if (!anonymous.complete) budget.sourcesComplete = false;
         if (anonymous.incompleteReason !== undefined) budget.incompleteReason = anonymous.incompleteReason;
       }
-      return await this.aggregate(query, sessions, fingerprint, cursor, budget, ephemeralUsage);
+      const response = await this.aggregate(query, sessions, fingerprint, cursor, budget, ephemeralUsage);
+      if (persistProjection && response.reliability.complete) await this.saveRecordProjection(query, fingerprint, listed.items, sessions);
+      return response;
     } catch (error) {
       signal.throwIfAborted();
       if (!deadline.signal.aborted) throw error;
@@ -892,7 +981,7 @@ export class UsageAggregationService {
     const cacheKey = sessionKey(summary);
     const cached = prepared === undefined ? this.readCachedSession(cacheKey, range) : undefined;
     if (prepared?.persisted.readComplete === false) {
-      budget.incompleteReason = 'record_budget';
+      budget.incompleteReason = prepared.persisted.incompleteReason ?? 'record_budget';
       budget.sourcesComplete = false;
       return { summary, records: prepared.persisted.records, complete: false, deleted: false };
     }
@@ -913,7 +1002,7 @@ export class UsageAggregationService {
     const revision = this.sessionFlights.has(cacheKey) ? undefined : this.revisionOf(cacheKey);
     let flight = this.sessionFlights.get(cacheKey);
     if (flight === undefined) {
-      flight = this.loadSessionIncremental(summary, budget.remainingRecords, budget.deadlineAt, undefined, preserveMissingSources, prepared?.view ? undefined : prepared?.persisted, undefined, { signal: budget.signal, maxFacts: budget.remainingFacts, factSignal: budget.factSignal, factBudget: budget.factBudget });
+      flight = this.loadSessionIncremental(summary, budget.remainingRecords, budget.deadlineAt, undefined, preserveMissingSources, prepared?.view ? undefined : prepared?.persisted, undefined, { signal: budget.signal, maxFacts: budget.remainingFacts, factSignal: budget.factSignal, factBudget: budget.factBudget, rangeStart: range?.startAt });
       this.sessionFlights.set(cacheKey, flight);
       const clearFlight = (): void => {
         if (this.sessionFlights.get(cacheKey) === flight) this.sessionFlights.delete(cacheKey);
@@ -993,7 +1082,7 @@ export class UsageAggregationService {
     const cacheKey = sessionKey(summary);
     const cached = options.projectionOnly ? undefined : this.readCachedSession(cacheKey)?.persisted;
     const persisted = cached ?? prepared ?? await this.readPersistentSession(storage, cacheKey, undefined, options.factSignal ?? options.signal, targetedAgentIds, options.factBudget, options.projectionOnly);
-    if (persisted.readComplete === false) return { session: { summary, records: persisted.records, complete: false, deleted: false }, persisted, scannedRecordCount: 0, incompleteReason: 'record_budget' };
+    if (persisted.readComplete === false) return { session: { summary, records: persisted.records, complete: false, deleted: false }, persisted, scannedRecordCount: 0, incompleteReason: persisted.incompleteReason ?? 'record_budget' };
     const sessionScope = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
     options.signal?.throwIfAborted();
     const agentIds = targetedAgentIds ?? await storage.list(`${sessionScope}/agents`);
@@ -1007,13 +1096,17 @@ export class UsageAggregationService {
       recordsByAgent.set(record.sourceAgentId, records);
     }
     const agents: Record<string, WireCheckpoint> = targetedAgentIds === undefined ? {} : { ...persisted.agents };
-    const sources = new Map<string, { size?: number; mtimeMs: number; generation: string; stable: boolean }>();
+    const sources = new Map<string, { size?: number; mtimeMs: number; generation: string; stable: boolean; excluded?: boolean }>();
     for (let offset = 0; offset < agentIds.length; offset += AGENT_STAT_CONCURRENCY) {
       options.signal?.throwIfAborted();
       await Promise.all(agentIds.slice(offset, offset + AGENT_STAT_CONCURRENCY).map(async (agentId) => {
         const scope = agentScopeOf(sessionScope, agentId);
-        const generation = await logs.generation(scope, AGENT_WIRE_RECORD_KEY);
         const [size, mtimeMs] = await Promise.all([storage.size(scope, AGENT_WIRE_RECORD_KEY), storage.mtime(scope, AGENT_WIRE_RECORD_KEY)]);
+        if (mtimeExcludesRange(mtimeMs ?? 0, options.rangeStart)) {
+          sources.set(agentId, { size, mtimeMs: mtimeMs ?? 0, generation: 'legacy', stable: true, excluded: true });
+          return;
+        }
+        const generation = await logs.generation(scope, AGENT_WIRE_RECORD_KEY);
         const stable = await logs.generation(scope, AGENT_WIRE_RECORD_KEY) === generation;
         sources.set(agentId, { size, mtimeMs: mtimeMs ?? 0, generation, stable });
       }));
@@ -1034,15 +1127,35 @@ export class UsageAggregationService {
       if (!source.stable) { recordsByAgent.delete(agentId); complete = false; continue; }
       const size = source.size ?? 0;
       const { mtimeMs, generation } = source;
-      const snapshot = options.factBudget !== undefined && persisted.agents[agentId] !== undefined
-        ? { checkpoint: persisted.agents[agentId], records: recordsByAgent.get(agentId) ?? [], readComplete: true }
-        : options.projectionOnly
-          ? { ...await facts.summary(wireScope, options.factSignal ?? options.signal, { budget: options.factBudget }), records: [] }
-          : await facts.read(wireScope, undefined, options.factSignal ?? options.signal, { budget: options.factBudget });
+      if (source.excluded) {
+        recordsByAgent.delete(agentId);
+        const existing = persisted.agents[agentId];
+        if (existing?.valid && existing.offset === existing.size && existing.size === size && existing.mtimeMs === mtimeMs) {
+          agents[agentId] = { ...existing, generation: existing.generation ?? generation };
+        } else {
+          const coveredGeneration = await logs.generation(wireScope, AGENT_WIRE_RECORD_KEY);
+          agents[agentId] = { generation: coveredGeneration, offset: size, size, mtimeMs, boundaryHash: '', valid: true };
+        }
+        continue;
+      }
+      let snapshot;
+      try {
+        snapshot = options.factBudget !== undefined && persisted.agents[agentId] !== undefined
+          ? { checkpoint: persisted.agents[agentId], records: recordsByAgent.get(agentId) ?? [], readComplete: true }
+          : options.projectionOnly
+            ? { ...await facts.summary(wireScope, options.factSignal ?? options.signal, { budget: options.factBudget }), records: [] }
+            : await facts.read(wireScope, undefined, options.factSignal ?? options.signal, { budget: options.factBudget });
+      } catch (error) {
+        options.signal?.throwIfAborted();
+        if (!options.factSignal?.aborted && this.now() < deadlineAt) throw error;
+        incompleteReason = 'deadline';
+        complete = false;
+        break;
+      }
       if (snapshot.readComplete === false) {
         recordsByAgent.set(agentId, [...snapshot.records]);
         const records = [...recordsByAgent.values()].flat();
-        return { session: { summary, records, complete: false, deleted: false }, persisted: { ...persisted, records, readComplete: false }, scannedRecordCount, scannedFactCount, incompleteReason: 'record_budget', targetedAgentIds };
+        return { session: { summary, records, complete: false, deleted: false }, persisted: { ...persisted, records, agents, readComplete: false }, scannedRecordCount, scannedFactCount, incompleteReason: 'record_budget', targetedAgentIds };
       }
       let checkpoint = persisted.agents[agentId];
       if (snapshot.checkpoint !== undefined && snapshot.checkpoint.generation === generation && snapshot.checkpoint.offset > size && (await storage.size(wireScope, AGENT_WIRE_RECORD_KEY) ?? 0) > size) {
@@ -1152,16 +1265,33 @@ export class UsageAggregationService {
     const records: NormalizedUsageRecord[] = [];
     let readComplete = true;
     for (let start = 0; start < agentIds.length; start += CHECKPOINT_READ_CONCURRENCY) {
-      signal?.throwIfAborted();
-      const snapshots = await waitForSource(Promise.all(agentIds.slice(start, start + CHECKPOINT_READ_CONCURRENCY).map(async (agentId) => ({ agentId, snapshot: projectionOnly
-        ? { ...await facts.summary(agentScopeOf(scope, agentId), signal, { budget }), records: [] }
-        : await facts.read(agentScopeOf(scope, agentId), range, signal, { budget }) }))), signal);
+      if (signal?.aborted) {
+        if ((signal.reason as { name?: string } | undefined)?.name !== 'TimeoutError') signal.throwIfAborted();
+        return { version: PERSISTENCE_VERSION, sessionKey: cacheKey, records, agents, readComplete: false, incompleteReason: 'deadline' };
+      }
+      let snapshots;
+      try {
+        snapshots = await waitForSource(Promise.all(agentIds.slice(start, start + CHECKPOINT_READ_CONCURRENCY).map(async (agentId) => {
+        const wireScope = agentScopeOf(scope, agentId);
+        if (range?.startAt !== undefined && mtimeExcludesRange(await storage.mtime(wireScope, AGENT_WIRE_RECORD_KEY) ?? 0, range.startAt)) {
+          return { agentId, snapshot: { records: [] as readonly NormalizedUsageRecord[], readComplete: true } };
+        }
+        return { agentId, snapshot: projectionOnly
+          ? this.factJournalReplayEnabled()
+            ? { checkpoint: await this.factJournalCheckpoint(wireScope), records: [] as readonly NormalizedUsageRecord[], readComplete: true }
+            : { ...await facts.summary(wireScope, signal, { budget }), records: [] as readonly NormalizedUsageRecord[] }
+          : await facts.read(wireScope, range, signal, { budget }) };
+      })), signal);
+      } catch (error) {
+        if (signal?.aborted && (signal.reason as { name?: string } | undefined)?.name !== 'TimeoutError') throw error;
+        return { version: PERSISTENCE_VERSION, sessionKey: cacheKey, records, agents, readComplete: false, incompleteReason: signal?.aborted ? 'deadline' : 'record_budget' };
+      }
       for (const { agentId, snapshot } of snapshots) {
         if (snapshot.readComplete === false) readComplete = false;
         if (snapshot.checkpoint !== undefined) agents[agentId] = snapshot.checkpoint;
         for (const record of snapshot.records) records.push(record);
       }
-      if (!readComplete) return { version: PERSISTENCE_VERSION, sessionKey: cacheKey, records, agents, readComplete: false };
+      if (!readComplete) return { version: PERSISTENCE_VERSION, sessionKey: cacheKey, records, agents, readComplete: false, incompleteReason: 'record_budget' };
     }
     if (Object.keys(agents).length !== agentIds.length) {
       let legacy: PersistentSessionRecords | undefined;
@@ -1194,6 +1324,91 @@ export class UsageAggregationService {
       }
     }
     return { version: PERSISTENCE_VERSION, sessionKey: cacheKey, records, agents };
+  }
+
+  private async factJournalCheckpoint(wireScope: string): Promise<WireCheckpoint | undefined> {
+    const storage = this.core.accessor.get(IFileSystemStorageService);
+    const directory = factJournalDirectory(wireScope);
+    const size = await storage.size(directory, FACT_JOURNAL_KEY) ?? 0;
+    if (size === 0) return undefined;
+    const bytes = await readKeyedRange(storage, directory, FACT_JOURNAL_KEY, Math.max(0, size - Math.min(size, 1024 * 1024)), size - 1);
+    const end = bytes.lastIndexOf(10);
+    const start = bytes.lastIndexOf(10, Math.max(0, end - 1));
+    if (end <= start) return undefined;
+    try {
+      const batch = JSON.parse(bytes.subarray(start + 1, end).toString('utf8')) as { checkpoint?: WireCheckpoint };
+      const checkpoint = batch.checkpoint;
+      if (checkpoint !== undefined && Number.isSafeInteger(checkpoint.offset) && checkpoint.offset >= 0 && Number.isSafeInteger(checkpoint.size) && checkpoint.size >= checkpoint.offset && typeof checkpoint.mtimeMs === 'number' && Number.isFinite(checkpoint.mtimeMs) && typeof checkpoint.boundaryHash === 'string' && typeof checkpoint.valid === 'boolean') return checkpoint;
+    } catch { return undefined; }
+    return undefined;
+  }
+
+  private async replayFactJournal(
+    wireScope: string,
+    cursor: string,
+    range: RangeBounds,
+    budget: ScanBudget,
+    hold: { cursor: string },
+    emit: (records: readonly UsageFact[]) => Promise<void>,
+  ): Promise<{ done: boolean; cursor: string } | undefined> {
+    const parts = cursor.split(':');
+    const startOffset = Number(parts[1]);
+    let skip = Number(parts[2]);
+    if (!Number.isSafeInteger(startOffset) || startOffset < 0 || !Number.isSafeInteger(skip) || skip < 0) return undefined;
+    const storage = this.core.accessor.get(IFileSystemStorageService);
+    const directory = factJournalDirectory(wireScope);
+    const size = await storage.size(directory, FACT_JOURNAL_KEY) ?? 0;
+    if (size === 0 || startOffset > size) return undefined;
+    hold.cursor = `journal:${startOffset}:${skip}`;
+    if (startOffset === size) return { done: true, cursor: hold.cursor };
+    let pending = Buffer.alloc(0);
+    let lineStart = startOffset;
+    let invalid = false;
+    const mark = (offset: number, index: number): void => { hold.cursor = `journal:${offset}:${index}`; };
+    const consume = async (line: Buffer): Promise<boolean> => {
+      let records: UsageFact[];
+      try { records = (JSON.parse(line.toString('utf8')) as { records?: UsageFact[] }).records ?? []; }
+      catch { invalid = true; return true; }
+      const selected: UsageFact[] = [];
+      for (let index = skip; index < records.length; index += 1) {
+        if (this.now() >= budget.deadlineAt || (budget.remainingFacts ?? Infinity) <= 0) {
+          mark(lineStart, index);
+          if (selected.length > 0) await emit(selected);
+          budget.incompleteReason = this.now() >= budget.deadlineAt ? 'deadline' : 'record_budget';
+          return true;
+        }
+        if (budget.remainingFacts !== undefined) budget.remainingFacts -= 1;
+        const record = records[index]!;
+        if (record.invalid || inRange(record.time, range)) selected.push(record);
+        if (selected.length === 256) { mark(lineStart, index + 1); await emit(selected); selected.length = 0; }
+      }
+      mark(lineStart + line.byteLength + 1, 0);
+      if (selected.length > 0) await emit(selected);
+      skip = 0;
+      return false;
+    };
+    try {
+      for await (const chunk of storage.readStream(directory, FACT_JOURNAL_KEY, { start: startOffset, end: size - 1 }, { signal: budget.factSignal })) {
+        pending = pending.length === 0 ? Buffer.from(chunk) : Buffer.concat([pending, Buffer.from(chunk)]);
+        let newline = pending.indexOf(10);
+        while (newline >= 0) {
+          const line = pending.subarray(0, newline);
+          pending = pending.subarray(newline + 1);
+          if (line.length > 0 && await consume(line)) return invalid ? undefined : { done: false, cursor: hold.cursor };
+          lineStart += line.byteLength + 1;
+          newline = pending.indexOf(10);
+        }
+      }
+    } catch (error) {
+      budget.signal?.throwIfAborted();
+      if (budget.factSignal?.aborted || this.now() >= budget.deadlineAt) {
+        budget.incompleteReason = 'deadline';
+        return { done: false, cursor: hold.cursor };
+      }
+      throw error;
+    }
+    if (pending.length > 0 && await consume(pending)) return invalid ? undefined : { done: false, cursor: hold.cursor };
+    return invalid ? undefined : { done: true, cursor: hold.cursor };
   }
 
   private async boundaryHash(
@@ -1364,6 +1579,326 @@ export class UsageAggregationService {
     }
   }
 
+  private factJournalReplayEnabled(): boolean {
+    return this.limits.usageFactBudget >= DEFAULT_LIMITS.usageFactBudget && this.limits.deadlineMs >= DEFAULT_LIMITS.deadlineMs;
+  }
+
+  private projectionWritable(): boolean {
+    return this.cache.size === 0 && this.limits.usageFactBudget >= DEFAULT_LIMITS.usageFactBudget && this.limits.deadlineMs >= DEFAULT_LIMITS.deadlineMs && this.rescan.state !== 'running';
+  }
+
+  private async replayRangeProjection(raw: UsageQuery, query: NormalizedQuery, fingerprint: string, signal: AbortSignal): Promise<UsageResponse | undefined> {
+    if (query.range.startAt === undefined || query.range.endAt === undefined || !this.projectionWritable() && this.loadedProjection === undefined) return undefined;
+    if (this.limits.usageFactBudget < DEFAULT_LIMITS.usageFactBudget || this.limits.deadlineMs < DEFAULT_LIMITS.deadlineMs || this.rescan.state === 'running') return undefined;
+    const tracked = this.sourceChanges?.ready === true;
+    const hot = this.loadedProjection;
+    if (hot?.fingerprint === fingerprint && hot.epoch === this.replayEpoch && tracked && this.now() - hot.verifiedAt < SOURCE_RECHECK_MS && raw.page_token === undefined) {
+      return this.aggregateProjection(hot.projection, raw, query, fingerprint, signal);
+    }
+    if (this.cache.size !== 0 && hot?.fingerprint !== fingerprint) return undefined;
+    let projection = hot?.fingerprint === fingerprint ? hot.projection : undefined;
+    if (projection === undefined) {
+      if (this.cache.size !== 0) return undefined;
+      const bytes = await this.core.accessor.get(IFileSystemStorageService).read(PERSISTENCE_SCOPE, projectionFileName(fingerprint));
+      const parsed = bytes === undefined ? undefined : parseUsageRangeProjection(bytes);
+      if (parsed === undefined || parsed.fingerprint !== fingerprint) return undefined;
+      projection = parsed;
+    }
+    await this.prepareInventory();
+    const budget: ScanBudget = { signal, remainingRecords: this.limits.wireRecordBudget, deadlineAt: this.now() + this.limits.deadlineMs, sourcesComplete: true, incompleteReason: null };
+    const listed = await this.listSessions(query, budget);
+    if (budget.incompleteReason !== null) return undefined;
+    const changes = await this.changedProjectionAgents(projection, query, listed.items, signal);
+    if (changes === undefined) return undefined;
+    if (changes.length > 0) {
+      const updated = await this.updateProjectionAgents(projection, changes, query, listed.items, signal);
+      if (updated === undefined) return undefined;
+      projection = updated;
+      try { await this.writeProjection(fingerprint, projection); } catch { /* the memory copy still answers this process */ }
+    }
+    const response = await this.aggregateProjection(projection, raw, query, fingerprint, signal);
+    if (response?.reliability.complete) this.loadedProjection = { fingerprint, projection, epoch: this.replayEpoch, verifiedAt: this.now() };
+    return response;
+  }
+
+  private async changedProjectionAgents(
+    projection: UsageRangeProjection,
+    query: NormalizedQuery,
+    listed: readonly SessionSummary[],
+    signal: AbortSignal,
+  ): Promise<{ scope: string; sessionId: string; size: number; mtimeMs: number; generation: string; previous?: UsageProjectionAgent; append: boolean }[] | undefined> {
+    const storage = this.core.accessor.get(IFileSystemStorageService);
+    const logs = this.core.accessor.get(IAppendLogStore);
+    const stored = new Map(projection.agents.map((agent) => [agent.scope, agent]));
+    const seen = new Set<string>();
+    const changes: { scope: string; sessionId: string; size: number; mtimeMs: number; generation: string; previous?: UsageProjectionAgent; append: boolean }[] = [];
+    const jobs: { summary: SessionSummary; scope: string }[] = [];
+    for (let offset = 0; offset < listed.length; offset += PROJECTION_STAT_CONCURRENCY) {
+      signal.throwIfAborted();
+      const pages = await Promise.all(listed.slice(offset, offset + PROJECTION_STAT_CONCURRENCY).map(async (summary) => {
+        const sessionScope = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
+        const agentIds = await storage.list(`${sessionScope}/agents`);
+        return agentIds.map((agentId) => ({ summary, scope: agentScopeOf(sessionScope, agentId) }));
+      }));
+      for (const page of pages) jobs.push(...page);
+    }
+    for (let offset = 0; offset < jobs.length; offset += PROJECTION_STAT_CONCURRENCY) {
+      signal.throwIfAborted();
+      const slice = jobs.slice(offset, offset + PROJECTION_STAT_CONCURRENCY);
+      const stats = await Promise.all(slice.map(async (job) => {
+        seen.add(job.scope);
+        const [size, mtimeMs] = await Promise.all([storage.size(job.scope, AGENT_WIRE_RECORD_KEY), storage.mtime(job.scope, AGENT_WIRE_RECORD_KEY)]);
+        const mtime = mtimeMs ?? 0;
+        const bytes = size ?? 0;
+        if (mtimeExcludesRange(mtime, query.range.startAt)) return { job, bytes, mtime, generation: undefined as string | undefined };
+        return { job, bytes, mtime, generation: await logs.generation(job.scope, AGENT_WIRE_RECORD_KEY) };
+      }));
+      for (const { job, bytes, mtime, generation } of stats) {
+        if (generation === undefined) {
+          if (stored.has(job.scope)) changes.push({ scope: job.scope, sessionId: job.summary.id, size: bytes, mtimeMs: mtime, generation: 'legacy', append: false });
+          continue;
+        }
+        const previous = stored.get(job.scope);
+        if (previous !== undefined && previous.watermark.size === bytes && previous.watermark.mtimeMs === mtime && previous.watermark.generation === generation) continue;
+        const append = previous !== undefined && previous.watermark.generation === generation && bytes > previous.watermark.size && await this.boundaryHash(storage, job.scope, previous.watermark.size) === previous.watermark.boundaryHash;
+        changes.push({ scope: job.scope, sessionId: job.summary.id, size: bytes, mtimeMs: mtime, generation, previous, append });
+      }
+    }
+    for (const agent of projection.agents) if (!seen.has(agent.scope)) changes.push({ scope: agent.scope, sessionId: agent.sessionId, size: 0, mtimeMs: 0, generation: agent.watermark.generation, previous: agent, append: false });
+    return changes;
+  }
+
+  private async updateProjectionAgents(
+    projection: UsageRangeProjection,
+    changes: readonly { scope: string; sessionId: string; size: number; mtimeMs: number; generation: string; previous?: UsageProjectionAgent; append: boolean }[],
+    query: NormalizedQuery,
+    listed: readonly SessionSummary[],
+    signal: AbortSignal,
+  ): Promise<UsageRangeProjection | undefined> {
+    if (changes.some((change) => !change.append || change.previous === undefined)) return undefined;
+    const storage = this.core.accessor.get(IFileSystemStorageService);
+    const facts = this.core.accessor.get(IUsageFactStore);
+    let next = projection;
+    for (const change of changes) {
+      const previous = change.previous;
+      if (previous === undefined) return undefined;
+      const summary = listed.find((item) => item.id === change.sessionId) ?? { id: change.sessionId, workspaceId: '', createdAt: 0, updatedAt: 0, archived: false };
+      const allowance = new UsageReadAllowance(Infinity, Infinity, Infinity);
+      const tail = await readUsageWireTail(storage, change.scope, previous.watermark.size, change.size, allowance, this.now() + this.limits.deadlineMs, this.now, change.scope.split('/').at(-1), signal, undefined, this.pendingWireLines, JSON.stringify([change.generation, change.size, change.mtimeMs]), undefined, undefined, signal);
+      if (!tail.complete || !tail.valid || tail.offset < change.size) return undefined;
+      const records = tail.records.filter((record) => !record.invalid && inRange(record.time, query.range) && matchesFilters(record, query));
+      const boundaryHash = await this.boundaryHash(storage, change.scope, change.size);
+      const updated = appendProjectionAgent(next, change.scope, { size: change.size, mtimeMs: change.mtimeMs, generation: change.generation, boundaryHash }, records, (record) => resolveBucket(record.time, summary, query).key);
+      if (updated === undefined) return undefined;
+      next = updated;
+      try {
+        await facts.commit(change.scope, previous.watermark.size, { generation: change.generation, offset: change.size, size: change.size, mtimeMs: change.mtimeMs, boundaryHash, valid: true }, tail.records);
+      } catch { /* the folded rows already include the tail */ }
+    }
+    return next.storedBuckets ? { ...next, buckets: bucketsFromAgents(next.agents, this.limits.drilldownSessionLimit, this.limits.drilldownTurnLimit) } : next;
+  }
+
+  private async aggregateProjection(projection: UsageRangeProjection, raw: UsageQuery, query: NormalizedQuery, fingerprint: string, signal: AbortSignal): Promise<UsageResponse> {
+    const now = this.now();
+    const budget: ScanBudget = { signal, remainingRecords: this.limits.wireRecordBudget, remainingFacts: this.limits.usageFactBudget, deadlineAt: now + this.limits.deadlineMs, sourcesComplete: true, incompleteReason: null };
+    const listed = await this.listSessions(query, budget);
+    const active = new Set(listed.items.map((summary) => sessionKey(summary)));
+    const agents = projection.agents.filter((agent) => {
+      const parts = agent.scope.split('/');
+      return active.has(`${parts[1] ?? ''}\0${parts[2] ?? ''}`);
+    });
+    const sessions: SessionRecords[] = listed.items.map((summary) => ({ summary, records: [], complete: true, deleted: false }));
+    const fold = new UsageProjectionFold(projectionRows({ ...projection, agents }), projection.storedBuckets ? projection.buckets : bucketsFromAgents(agents, this.limits.drilldownSessionLimit, this.limits.drilldownTurnLimit));
+    if (budget.incompleteReason === null) {
+      const uncached = listed.items.filter((summary) => !this.fullScanKeys?.has(sessionKey(summary))).length;
+      sessions.push(...await this.readRetainedSessions(query, budget, listed.activeKeys, uncached));
+    }
+    let ephemeral: readonly EphemeralUsageTotal[] = [];
+    const retainedUsage = this.core.accessor.get(IRetainedUsageService);
+    if (budget.incompleteReason === null && retainedUsage.listEphemeralUsage !== undefined) {
+      const anonymous = await retainedUsage.listEphemeralUsage({ workspaceIds: query.workspaceIds.length === 0 ? undefined : query.workspaceIds, deadlineAt: budget.deadlineAt, recordLimit: budget.remainingFacts ?? Infinity, signal });
+      ephemeral = anonymous.items;
+      if (!anonymous.complete) budget.sourcesComplete = false;
+      if (anonymous.incompleteReason !== undefined) budget.incompleteReason = anonymous.incompleteReason;
+    }
+    const cursor = raw.page_token === undefined ? undefined : decodePageToken(raw.page_token, fingerprint);
+    return this.aggregate(query, sessions, fingerprint, cursor, budget, ephemeral, fold);
+  }
+
+  private async saveRecordProjection(query: NormalizedQuery, fingerprint: string, listed: readonly SessionSummary[], sessions: readonly SessionRecords[]): Promise<void> {
+    try {
+      const sources = await this.recordProjectionSources(query, listed, sessions);
+      if (sources === undefined) return;
+      const projection = buildRangeProjection(fingerprint, listed.map(projectionSessionOf), sources, (sessionId, record) => {
+        const summary = listed.find((item) => item.id === sessionId) ?? { id: sessionId, workspaceId: '', createdAt: record.time, updatedAt: record.time, archived: false };
+        return resolveBucket(record.time, summary, query).key;
+      });
+      await this.writeProjection(fingerprint, projection);
+    } catch { /* the next process repeats the bounded read */ }
+  }
+
+  private async recordProjectionSources(query: NormalizedQuery, listed: readonly SessionSummary[], sessions: readonly SessionRecords[]): Promise<{ scope: string; sessionId: string; watermark: UsageProjectionAgent['watermark']; records: readonly UsageFact[] }[] | undefined> {
+    const storage = this.core.accessor.get(IFileSystemStorageService);
+    const logs = this.core.accessor.get(IAppendLogStore);
+    const recordsByScope = new Map<string, UsageFact[]>();
+    for (const session of sessions) {
+      if (session.deleted) continue;
+      if (!session.complete) return undefined;
+      const sessionScope = sessionScopeOf(workspacePersistenceScope('sessions', session.summary.workspaceId), session.summary.id);
+      const cachedAgents = Object.keys(this.cache.get(sessionKey(session.summary))?.persisted.agents ?? {});
+      for (const record of session.records) {
+        if (record.invalid) return undefined;
+        const agentId = record.sourceAgentId ?? record.agentId ?? (cachedAgents.length === 1 ? cachedAgents[0] : undefined);
+        if (agentId === undefined) return undefined;
+        const scope = agentScopeOf(sessionScope, agentId);
+        const bucket = recordsByScope.get(scope) ?? [];
+        bucket.push(record);
+        recordsByScope.set(scope, bucket);
+      }
+    }
+    const sources: { scope: string; sessionId: string; watermark: UsageProjectionAgent['watermark']; records: readonly UsageFact[] }[] = [];
+    for (const summary of listed) {
+      const cached = this.cache.get(sessionKey(summary));
+      if (cached === undefined || !cached.complete) return undefined;
+      const sessionScope = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
+      const agentIds = await storage.list(`${sessionScope}/agents`);
+      if (agentIds.length !== Object.keys(cached.persisted.agents).length) return undefined;
+      for (const agentId of agentIds) {
+        const scope = agentScopeOf(sessionScope, agentId);
+        const checkpoint = cached.persisted.agents[agentId];
+        if (checkpoint === undefined || !checkpoint.valid || checkpoint.offset !== checkpoint.size) return undefined;
+        const [size, mtimeMs, generation] = await Promise.all([storage.size(scope, AGENT_WIRE_RECORD_KEY), storage.mtime(scope, AGENT_WIRE_RECORD_KEY), logs.generation(scope, AGENT_WIRE_RECORD_KEY)]);
+        if ((size ?? 0) !== checkpoint.size || (mtimeMs ?? 0) !== checkpoint.mtimeMs || generation !== (checkpoint.generation ?? 'legacy')) return undefined;
+        if (mtimeExcludesRange(mtimeMs ?? 0, query.range.startAt)) {
+          if ((recordsByScope.get(scope)?.length ?? 0) > 0) return undefined;
+          continue;
+        }
+        sources.push({ scope, sessionId: summary.id, watermark: { size: size ?? 0, mtimeMs: mtimeMs ?? 0, generation, boundaryHash: checkpoint.boundaryHash }, records: recordsByScope.get(scope) ?? [] });
+      }
+    }
+    return sources;
+  }
+
+  private async saveFoldProjection(query: NormalizedQuery, fingerprint: string, listed: readonly SessionSummary[], head: RangeFoldHead, fold: UsageRangeFold): Promise<void> {
+    try {
+      const storage = this.core.accessor.get(IFileSystemStorageService);
+      const logs = this.core.accessor.get(IAppendLogStore);
+      const pending: { session: RangeFoldSession; source: RangeFoldSource }[] = [];
+      for (const session of head.sessions) {
+        for (const source of session.sources ?? []) {
+          if (!mtimeExcludesRange(source.checkpoint.mtimeMs, query.range.startAt)) pending.push({ session, source });
+        }
+      }
+      const agents: UsageProjectionAgent[] = [];
+      for (let offset = 0; offset < pending.length; offset += AGENT_STAT_CONCURRENCY) {
+        const slice = pending.slice(offset, offset + AGENT_STAT_CONCURRENCY);
+        const stats = await Promise.all(slice.map(async ({ source }) => {
+          const [size, mtimeMs, generation] = await Promise.all([storage.size(source.scope, AGENT_WIRE_RECORD_KEY), storage.mtime(source.scope, AGENT_WIRE_RECORD_KEY), logs.generation(source.scope, AGENT_WIRE_RECORD_KEY)]);
+          return { size: size ?? 0, mtimeMs: mtimeMs ?? 0, generation };
+        }));
+        for (let index = 0; index < slice.length; index += 1) {
+          const { session, source } = slice[index]!;
+          const stat = stats[index]!;
+          if (stat.size !== source.checkpoint.size || stat.mtimeMs !== source.checkpoint.mtimeMs || stat.generation !== (source.checkpoint.generation ?? 'legacy')) return;
+          agents.push({ scope: source.scope, sessionId: session.summary.id, watermark: { size: source.checkpoint.size, mtimeMs: source.checkpoint.mtimeMs, generation: source.checkpoint.generation ?? 'legacy', boundaryHash: source.checkpoint.boundaryHash }, rows: [], turns: [] });
+        }
+      }
+      const rows: { sessionId: string; record: FoldedUsageRecord }[] = [];
+      const keys = new Set<string>();
+      const listedById = new Map(listed.map((summary) => [summary.id, summary]));
+      let cursor: string | undefined;
+      do {
+        const page = await fold.recordPage(cursor);
+        for (const row of page.items) {
+          rows.push(row);
+          const summary = listedById.get(row.sessionId) ?? { id: row.sessionId, workspaceId: '', createdAt: row.record.time, updatedAt: row.record.time, archived: false };
+          keys.add(resolveBucket(row.record.time, summary, query).key);
+        }
+        cursor = page.nextCursor;
+      } while (cursor !== undefined);
+      const stored = keys.size === 0 ? new Map<string, FoldBucketView>() : await fold.buckets([...keys]);
+      const rowsByScope = new Map<string, FoldedUsageRecord[]>();
+      const agentsBySession = new Map<string, UsageProjectionAgent[]>();
+      for (const agent of agents) {
+        const group = agentsBySession.get(agent.sessionId) ?? [];
+        group.push(agent);
+        agentsBySession.set(agent.sessionId, group);
+      }
+      for (const row of rows) {
+        if (!listedById.has(row.sessionId)) return;
+        const identity = row.record.sourceAgentId ?? row.record.agentId;
+        const inSession = agentsBySession.get(row.sessionId) ?? [];
+        const matches = identity === undefined ? [] : inSession.filter((agent) => agent.scope.slice(agent.scope.lastIndexOf('/') + 1) === identity);
+        const agent = matches.length === 1 ? matches[0] : matches.length === 0 ? inSession[0] : undefined;
+        if (agent === undefined) return;
+        const bucket = rowsByScope.get(agent.scope) ?? [];
+        bucket.push(row.record);
+        rowsByScope.set(agent.scope, bucket);
+      }
+      const projection: UsageRangeProjection = {
+        version: 1,
+        fingerprint,
+        folded: true,
+        storedBuckets: true,
+        sessions: listed.map(projectionSessionOf),
+        buckets: [...stored.values()].filter((bucket): bucket is FoldBucketView => bucket !== undefined && typeof bucket.key === 'string'),
+        agents: agents.map((agent) => ({ ...agent, rows: rowsByScope.get(agent.scope) ?? [] })),
+      };
+      await this.writeProjection(fingerprint, projection);
+    } catch { /* the next process repeats the bounded read */ }
+  }
+
+  private async advanceCompleteFold(head: RangeFoldHead, fold: UsageRangeFold, query: NormalizedQuery, budget: ScanBudget): Promise<boolean> {
+    const storage = this.core.accessor.get(IFileSystemStorageService);
+    const logs = this.core.accessor.get(IAppendLogStore);
+    const facts = this.core.accessor.get(IUsageFactStore);
+    const changed: { session: RangeFoldSession; source: RangeFoldSource; size: number; mtimeMs: number; generation: string }[] = [];
+    for (const session of head.sessions) {
+      if (!session.prepared || session.sources === undefined) return false;
+      budget.signal?.throwIfAborted();
+      const scope = sessionScopeOf(workspacePersistenceScope('sessions', session.summary.workspaceId), session.summary.id);
+      const agentIds = await storage.list(`${scope}/agents`);
+      if (agentIds.length !== session.sources.length || session.sources.some((source) => !agentIds.includes(source.agentId))) return false;
+      for (const source of session.sources) {
+        const [size, mtimeMs, generation] = await Promise.all([storage.size(source.scope, AGENT_WIRE_RECORD_KEY), storage.mtime(source.scope, AGENT_WIRE_RECORD_KEY), logs.generation(source.scope, AGENT_WIRE_RECORD_KEY)]);
+        const bytes = size ?? 0;
+        const mtime = mtimeMs ?? 0;
+        const checkpoint = source.checkpoint;
+        if (generation !== (checkpoint.generation ?? 'legacy') || bytes < checkpoint.offset) return false;
+        if (bytes === checkpoint.size && mtime === checkpoint.mtimeMs) continue;
+        if (mtimeExcludesRange(mtime, query.range.startAt) && mtimeExcludesRange(checkpoint.mtimeMs, query.range.startAt)) {
+          source.checkpoint = { ...checkpoint, size: bytes, mtimeMs: mtime, generation };
+          continue;
+        }
+        if (bytes < checkpoint.size || await this.boundaryHash(storage, source.scope, checkpoint.offset) !== checkpoint.boundaryHash) return false;
+        if (bytes === checkpoint.size) return false;
+        changed.push({ session, source, size: bytes, mtimeMs: mtime, generation });
+      }
+    }
+    for (const job of changed) {
+      const checkpoint = job.source.checkpoint;
+      const allowance = new UsageReadAllowance(budget.remainingRecords, budget.remainingFacts ?? Infinity, Infinity);
+      const tail = await readUsageWireTail(storage, job.source.scope, checkpoint.offset, job.size, allowance, budget.deadlineAt, this.now, job.source.agentId, budget.factSignal, undefined, this.pendingWireLines, JSON.stringify([job.generation, job.size, job.mtimeMs]), undefined, undefined, budget.signal);
+      if (!tail.complete || !tail.valid || tail.offset < job.size) return false;
+      const records = tail.records.filter((record) => !record.invalid && inRange(record.time, query.range) && matchesFilters(record, query));
+      if (records.length > 0) await fold.addPage(job.session.summary, records, (record) => resolveBucket(record.time, job.session.summary, query).key, (record) => inRange(record.time, query.range) && matchesFilters(record, query), head, budget.factSignal);
+      const boundaryHash = await this.boundaryHash(storage, job.source.scope, job.size);
+      const prefix = { generation: job.generation, offset: job.size, size: job.size, mtimeMs: job.mtimeMs, boundaryHash, valid: checkpoint.valid && tail.valid };
+      try { await facts.commit(job.source.scope, checkpoint.offset, prefix, tail.records); } catch { return false; }
+      job.source.checkpoint = prefix;
+      job.source.done = true;
+      budget.remainingRecords -= tail.scannedRecordCount;
+      if (budget.remainingFacts !== undefined) budget.remainingFacts -= tail.scannedFactCount;
+    }
+    head.complete = head.sessions.every((session) => session.prepared && session.sources?.every((source) => source.done));
+    await fold.saveHead(head);
+    return head.complete;
+  }
+
+  private writeProjection(fingerprint: string, projection: UsageRangeProjection): Promise<void> {
+    return this.core.accessor.get(IFileSystemStorageService).write(PERSISTENCE_SCOPE, projectionFileName(fingerprint), Buffer.from(JSON.stringify(projection)), { atomic: true });
+  }
+
   private async aggregate(
     query: NormalizedQuery,
     sessions: readonly SessionRecords[],
@@ -1371,7 +1906,7 @@ export class UsageAggregationService {
     cursor: readonly [number, string] | undefined,
     budget: ScanBudget,
     ephemeralUsage: readonly EphemeralUsageTotal[] = [],
-    fold?: UsageRangeFold,
+    fold?: UsageFoldView,
   ): Promise<UsageResponse> {
     const total = emptyAggregate();
     const buckets = new Map<string, BucketAccumulator>();
@@ -1394,7 +1929,7 @@ export class UsageAggregationService {
       const byId = new Map(sessions.map((session) => [session.summary.id, session]));
       let pageCursor: string | undefined;
       do {
-        if (now() >= budget.deadlineAt || budget.factSignal?.aborted) { budget.incompleteReason = 'deadline'; budget.sourcesComplete = false; return; }
+        budget.signal?.throwIfAborted();
         try {
           const page = await waitForSource(fold.recordPage(pageCursor), budget.factSignal);
           for (const row of page.items) {
@@ -1413,7 +1948,7 @@ export class UsageAggregationService {
     sessionLoop: for await (const session of inputs()) {
       for (const record of session.records) {
         if (record.invalid) { incompleteSessionIds.add(session.summary.id); continue; }
-        if ((!scanIncomplete || fold !== undefined) && processedRecords > 0 && this.now() >= budget.deadlineAt) {
+        if (fold === undefined && processedRecords > 0 && this.now() >= budget.deadlineAt) {
           budget.incompleteReason = 'deadline';
           budget.sourcesComplete = false;
           incompleteSessionIds.add(session.summary.id);
@@ -1551,7 +2086,7 @@ export class UsageAggregationService {
         group.parentAgentIds.add(null);
       }
     }
-    if (budget.incompleteReason === null && this.now() >= budget.deadlineAt) {
+    if (budget.incompleteReason === null && fold === undefined && this.now() >= budget.deadlineAt) {
       budget.incompleteReason = 'deadline';
     }
 
@@ -1690,6 +2225,23 @@ async function waitForSource<T>(promise: Promise<T>, signal?: AbortSignal): Prom
   finally { signal.removeEventListener('abort', abort); }
 }
 
+function factJournalDirectory(wireScope: string): string {
+  return `cache/usage-facts-v1/${createHash('sha256').update(wireScope).digest('hex')}`;
+}
+
+async function readKeyedRange(
+  storage: IFileSystemStorageService,
+  scope: string,
+  key: string,
+  start: number,
+  end: number,
+): Promise<Buffer> {
+  if (end < start) return Buffer.alloc(0);
+  const chunks: Buffer[] = [];
+  for await (const chunk of storage.readStream(scope, key, { start, end })) chunks.push(Buffer.from(chunk));
+  return Buffer.concat(chunks);
+}
+
 async function readRange(
   storage: IFileSystemStorageService,
   scope: string,
@@ -1759,6 +2311,10 @@ function isWireCheckpoint(value: unknown): value is WireCheckpoint {
 
 function persistenceKey(cacheKey: string): string {
   return `${createHash('sha256').update(cacheKey).digest('hex')}.json`;
+}
+
+function mtimeExcludesRange(mtimeMs: number, startAt: number | undefined): boolean {
+  return startAt !== undefined && mtimeMs >= 1_000_000_000_000 && mtimeMs < startAt;
 }
 
 function normalizeQuery(raw: UsageQuery, now: number): NormalizedQuery {

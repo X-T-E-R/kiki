@@ -61,6 +61,7 @@ interface Fixture {
   readonly checkpointReads: Map<string, number>;
   readonly retainedQueries: readonly RetainedUsageListQuery[];
   setWire(scope: string, records: readonly WireRecord[]): void;
+  setMtime(scope: string, mtimeMs: number): void;
   restart(): UsageAggregationService;
   setAgentIds(ids: string[]): void;
   setPrice(price: number | undefined): void;
@@ -290,6 +291,7 @@ function fixture(
     checkpointReads,
     retainedQueries,
     setWire,
+    setMtime: (wireScope: string, mtimeMs: number) => { wireMtimes.set(wireScope, mtimeMs); },
     restart: () => new UsageAggregationService(core, now, limits, sourceChanges),
     setAgentIds: (ids) => { agentIds = ids; },
     setPrice: (value) => { price = value; },
@@ -483,6 +485,66 @@ describe('UsageAggregationService record-level sources', () => {
     expect(previous.summary.cost_usd_estimated).toBe(1);
     expect(previous.sessions.items[0]?.usage.cost_usd_estimated).toBe(1);
     expect(previous.trend[0]?.drilldown.sessions[0]?.turn_ids).toEqual([6]);
+  });
+});
+
+describe('UsageAggregationService bounded range sources', () => {
+  it('does not read a wire whose epoch mtime is already before the range', async () => {
+    const day = Date.UTC(2026, 9, 24);
+    const stale = scope('w', 's');
+    const recent = scope('w', 'recent');
+    const f = fixture([summary('s', 'w'), summary('recent', 'w')], {
+      [stale]: [usageRecord(day - 3 * 86_400_000, 1)],
+      [recent]: [usageRecord(day + 1_000, 2)],
+    }, () => day + 3_600_000);
+    f.setMtime(stale, day - 86_400_000);
+    f.setMtime(recent, day + 2_000);
+    const result = await query(f.service, { range: 'today', timezone_offset_minutes: 0 });
+    expect(result.reliability).toMatchObject({ complete: true, incomplete_reason: null });
+    expect(result.summary.tokens.output).toBe(1);
+    expect(f.reads.get(stale) ?? 0).toBe(0);
+    expect(f.readBytes.get(stale) ?? 0).toBe(0);
+    expect(f.reads.get(recent) ?? 0).toBeGreaterThan(0);
+  });
+
+  it('replays a complete bounded projection after restart and rereads when the watermark moves', async () => {
+    const day = Date.UTC(2026, 9, 24);
+    const wire = scope('w', 's');
+    const records = [usageRecord(day + 1_000, 1), usageRecord(day + 2_000, 2)];
+    const f = fixture([summary('s', 'w')], { [wire]: records }, () => day + 3_600_000);
+    f.setMtime(wire, day + 3_000);
+    const input: UsageQuery = { range: 'today', timezone_offset_minutes: 0, granularity: 'five_hour', dimension: 'model', include_archived: 'true' };
+    const cold = await query(f.service, input);
+    expect(cold.reliability).toMatchObject({ complete: true, incomplete_reason: null });
+    expect(cold.summary.tokens.output).toBe(2);
+    const counts = f.persistedRecordCounts();
+    const bytes = f.readBytes.get(wire) ?? 0;
+    const restarted = f.restart();
+    const replayed = await query(restarted, input);
+    expect(replayed).toEqual(cold);
+    expect(f.readBytes.get(wire) ?? 0).toBe(bytes);
+    expect(f.persistedRecordCounts()).toEqual(counts);
+    expect(await query(restarted, input)).toEqual(cold);
+    expect(f.readBytes.get(wire) ?? 0).toBe(bytes);
+    f.setWire(wire, [...records, usageRecord(day + 3_000, 3)]);
+    const appended = await query(restarted, input);
+    expect(appended.reliability.complete).toBe(true);
+    expect(appended.summary.tokens.output).toBe(3);
+    expect(f.readBytes.get(wire) ?? 0).toBeGreaterThan(bytes);
+  });
+
+  it('does not store a projection for an incomplete bounded read', async () => {
+    const day = Date.UTC(2026, 9, 24);
+    const wire = scope('w', 's');
+    const invalid = { ...usageRecord(day + 1_000), usage: { inputOther: -1, output: 0, inputCacheRead: 0, inputCacheCreation: 0 } };
+    const f = fixture([summary('s', 'w')], { [wire]: [invalid] }, () => day + 3_600_000);
+    f.setMtime(wire, day + 3_000);
+    const input: UsageQuery = { range: 'today', timezone_offset_minutes: 0 };
+    const cold = await query(f.service, input);
+    expect(cold.reliability.complete).toBe(false);
+    const restarted = f.restart();
+    expect((await query(restarted, input)).reliability.complete).toBe(false);
+    expect([...f.checkpointReads.keys()].some((key) => key.startsWith('range-projection-'))).toBe(false);
   });
 });
 
@@ -1866,5 +1928,196 @@ describe('shared agent and history usage projection', () => {
       spy.mockRestore();
       expect((await bounded.query(input)).summary).toEqual(rewritten.summary);
     } finally { release(); spy.mockRestore(); }
+  });
+
+  it('resumes a fact-limited fold at the unfinished agent', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'usage-range-fold-agent-'));
+    const ix = new TestInstantiationService();
+    const storage = new InMemoryStorageService();
+    ix.stub(IBootstrapService, stubBootstrap(home));
+    ix.stub(ILogService, stubLog());
+    ix.stub(IFileSystemStorageService, storage);
+    ix.set(IQueryStore, new SyncDescriptor(MiniDbQueryStore));
+    ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+    ix.set(IUsageFactStore, new SyncDescriptor(UsageFactStore));
+    queryFixtures.push({ home, ix, store: ix.get(IQueryStore) });
+    const logs = ix.get(IAppendLogStore);
+    const facts = ix.get(IUsageFactStore);
+    const child = scope('w', 's').replace(/main$/, 'child');
+    const main = scope('w', 's');
+    await storage.write('sessions/w/s/agents', 'child', new Uint8Array());
+    await storage.write('sessions/w/s/agents', 'main', new Uint8Array());
+    logs.append(child, 'wire.jsonl', { ...usageRecord(10, 1), model: 'child-model-with-extra-padding', agentId: 'child' });
+    logs.append(main, 'wire.jsonl', { ...usageRecord(11, 2), agentId: 'main' });
+    await logs.flush(child, 'wire.jsonl');
+    await logs.flush(main, 'wire.jsonl');
+    const item = summary('s', 'w');
+    const pricing = { ready: Promise.resolve(), calculate: () => 1 };
+    const core = { accessor: { get: (id: unknown) => {
+      if (id === ISessionIndex) return { listRecent: async () => ({ items: [item] }) };
+      if (id === IRetainedUsageService) return { listDeletedSessions: async () => ({ items: [], scannedRecords: 0, complete: true }) };
+      if (id === IModelPricingService) return pricing;
+      return ix.get(id as typeof IQueryStore);
+    } } } as unknown as Scope;
+    const input = { range: 'custom', start_at: 0, end_at: 100, dimension: 'model' } as const;
+    const service = new UsageAggregationService(core, () => 100, { usageFactBudget: 1 });
+    const first = await service.query(input);
+    expect(first.reliability.complete).toBe(false);
+    expect(first.reliability.incomplete_reason).toBe('record_budget');
+    const original = facts.summary.bind(facts);
+    let childSummaries = 0;
+    let tail = Promise.resolve();
+    const spy = vi.spyOn(facts, 'summary').mockImplementation((agentScope, signal, options) => {
+      const run = tail.then(async () => {
+        const snapshot = await original(agentScope, signal, options);
+        if (agentScope.endsWith('/child')) {
+          childSummaries += 1;
+          if (options?.budget !== undefined) options.budget.remainingRecords = 0;
+        }
+        return snapshot;
+      });
+      tail = run.then(() => undefined, () => undefined);
+      return run;
+    });
+    try {
+      let response = first;
+      for (let attempt = 0; attempt < 8 && !response.reliability.complete; attempt += 1) response = await service.query(input);
+      expect(response.reliability.complete).toBe(true);
+      expect(response.summary.tokens.output).toBe(2);
+      expect(childSummaries).toBe(1);
+    } finally { spy.mockRestore(); }
+  });
+
+  it('replays a default-budget fold from the fact journal without rebuilding the index', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'usage-range-journal-'));
+    const ix = new TestInstantiationService();
+    const storage = new InMemoryStorageService();
+    ix.stub(IBootstrapService, stubBootstrap(home));
+    ix.stub(ILogService, stubLog());
+    ix.stub(IFileSystemStorageService, storage);
+    ix.set(IQueryStore, new SyncDescriptor(MiniDbQueryStore));
+    ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+    ix.set(IUsageFactStore, new SyncDescriptor(UsageFactStore));
+    queryFixtures.push({ home, ix, store: ix.get(IQueryStore) });
+    const logs = ix.get(IAppendLogStore);
+    const facts = ix.get(IUsageFactStore);
+    const child = scope('w', 's').replace(/main$/, 'child');
+    const main = scope('w', 's');
+    await storage.write('sessions/w/s/agents', 'child', new Uint8Array());
+    await storage.write('sessions/w/s/agents', 'main', new Uint8Array());
+    logs.append(child, 'wire.jsonl', { ...usageRecord(10, 1), agentId: 'child' });
+    logs.append(main, 'wire.jsonl', { ...usageRecord(11, 2), agentId: 'main' });
+    await logs.flush(child, 'wire.jsonl');
+    await logs.flush(main, 'wire.jsonl');
+    const item = summary('s', 'w');
+    const pricing = { ready: Promise.resolve(), calculate: () => 1 };
+    const core = { accessor: { get: (id: unknown) => {
+      if (id === ISessionIndex) return { listRecent: async () => ({ items: [item] }) };
+      if (id === IRetainedUsageService) return { listDeletedSessions: async () => ({ items: [], scannedRecords: 0, complete: true }) };
+      if (id === IModelPricingService) return pricing;
+      return ix.get(id as typeof IQueryStore);
+    } } } as unknown as Scope;
+    const input = { range: 'custom', start_at: 0, end_at: 100, dimension: 'model' } as const;
+    const seeded = new UsageAggregationService(core, () => 100, { usageFactBudget: 1 });
+    const first = await seeded.query(input);
+    expect(first.reliability.complete).toBe(false);
+    const read = vi.spyOn(facts, 'read');
+    const summarized = vi.spyOn(facts, 'summary');
+    const folded = new UsageAggregationService(core, () => 100);
+    let response = await folded.query(input);
+    for (let attempt = 0; attempt < 4 && !response.reliability.complete; attempt += 1) response = await folded.query(input);
+    expect(response.reliability.complete).toBe(true);
+    expect(response.summary.tokens.output).toBe(2);
+    expect(response.reliability.usage_coverage).toMatchObject({ known_records: 2, missing_records: 0 });
+    expect(read).not.toHaveBeenCalled();
+    expect(summarized).not.toHaveBeenCalled();
+  });
+
+  it('folds a long model name that does not fit in a query-store key', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'usage-range-long-key-'));
+    const ix = new TestInstantiationService();
+    const storage = new InMemoryStorageService();
+    ix.stub(IBootstrapService, stubBootstrap(home));
+    ix.stub(ILogService, stubLog());
+    ix.stub(IFileSystemStorageService, storage);
+    ix.set(IQueryStore, new SyncDescriptor(MiniDbQueryStore));
+    ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+    ix.set(IUsageFactStore, new SyncDescriptor(UsageFactStore));
+    queryFixtures.push({ home, ix, store: ix.get(IQueryStore) });
+    const logs = ix.get(IAppendLogStore);
+    const wire = scope('w', 's');
+    await storage.write('sessions/w/s/agents', 'main', new Uint8Array());
+    const model = `priced-model-${'m'.repeat(180)}`;
+    logs.append(wire, 'wire.jsonl', { ...usageRecord(10, 1), model, modelAlias: model, agentId: 'main', provider: 'provider-with-a-long-name', profileName: 'profile-with-a-long-name' });
+    logs.append(wire, 'wire.jsonl', { ...usageRecord(11, 2), model, modelAlias: model, agentId: 'main', provider: 'provider-with-a-long-name', profileName: 'profile-with-a-long-name' });
+    await logs.flush(wire, 'wire.jsonl');
+    const item = summary('s', 'w');
+    const pricing = { ready: Promise.resolve(), calculate: () => 1 };
+    const core = { accessor: { get: (id: unknown) => {
+      if (id === ISessionIndex) return { listRecent: async () => ({ items: [item] }) };
+      if (id === IRetainedUsageService) return { listDeletedSessions: async () => ({ items: [], scannedRecords: 0, complete: true }) };
+      if (id === IModelPricingService) return pricing;
+      return ix.get(id as typeof IQueryStore);
+    } } } as unknown as Scope;
+    const input = { range: 'custom', start_at: 0, end_at: 100, dimension: 'model' } as const;
+    const seeded = new UsageAggregationService(core, () => 100, { usageFactBudget: 1 });
+    expect((await seeded.query(input)).reliability.complete).toBe(false);
+    const folded = new UsageAggregationService(core, () => 100);
+    let response = await folded.query(input);
+    for (let attempt = 0; attempt < 4 && !response.reliability.complete; attempt += 1) response = await folded.query(input);
+    expect(response.reliability.complete).toBe(true);
+    expect(response.summary.tokens.output).toBe(2);
+    expect(response.trend[0]?.groups[0]?.key).toContain(model);
+  });
+
+  it('keeps a folded row with no wire agent id in the durable projection', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'usage-range-anonymous-agent-'));
+    const ix = new TestInstantiationService();
+    const storage = new InMemoryStorageService();
+    ix.stub(IBootstrapService, stubBootstrap(home));
+    ix.stub(ILogService, stubLog());
+    ix.stub(IFileSystemStorageService, storage);
+    ix.set(IQueryStore, new SyncDescriptor(MiniDbQueryStore));
+    ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+    ix.set(IUsageFactStore, new SyncDescriptor(UsageFactStore));
+    const store = ix.get(IQueryStore);
+    queryFixtures.push({ home, ix, store });
+    const logs = ix.get(IAppendLogStore);
+    const main = scope('w', 's');
+    const child = main.replace(/main$/, 'child');
+    await storage.write('sessions/w/s/agents', 'main', new Uint8Array());
+    await storage.write('sessions/w/s/agents', 'child', new Uint8Array());
+    logs.append(main, 'wire.jsonl', usageRecord(10, 1));
+    logs.append(child, 'wire.jsonl', { ...usageRecord(11, 2), agentId: 'child' });
+    await logs.flush(main, 'wire.jsonl');
+    await logs.flush(child, 'wire.jsonl');
+    const item = summary('s', 'w');
+    const pricing = { ready: Promise.resolve(), calculate: () => 1 };
+    const core = { accessor: { get: (id: unknown) => {
+      if (id === ISessionIndex) return { listRecent: async () => ({ items: [item] }) };
+      if (id === IRetainedUsageService) return { listDeletedSessions: async () => ({ items: [], scannedRecords: 0, complete: true }) };
+      if (id === IModelPricingService) return pricing;
+      return ix.get(id as typeof IQueryStore);
+    } } } as unknown as Scope;
+    const input = { range: 'custom', start_at: 0, end_at: 100, dimension: 'model' } as const;
+    expect((await new UsageAggregationService(core, () => 100, { usageFactBudget: 1 }).query(input)).reliability.complete).toBe(false);
+    const folded = new UsageAggregationService(core, () => 100);
+    const response = await folded.query(input);
+    expect(response.reliability.complete).toBe(true);
+    expect(response.summary.tokens.output).toBe(2);
+    const get = vi.spyOn(store, 'get');
+    const restarted = new UsageAggregationService(core, () => 100);
+    const replayed = await restarted.query(input);
+    expect(replayed.reliability.complete).toBe(true);
+    expect(replayed.summary.tokens.output).toBe(2);
+    expect(replayed.reliability.usage_coverage).toEqual(response.reliability.usage_coverage);
+    expect(get).not.toHaveBeenCalled();
+    logs.append(main, 'wire.jsonl', usageRecord(12, 3));
+    await logs.flush(main, 'wire.jsonl');
+    const appended = await restarted.query(input);
+    expect(appended.reliability.complete).toBe(true);
+    expect(appended.summary.tokens.output).toBe(3);
+    expect(appended.reliability.usage_coverage?.known_records).toBe(3);
+    expect(get).not.toHaveBeenCalled();
   });
 });
