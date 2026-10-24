@@ -8,11 +8,13 @@
  *     drawn at all: an "SSH 0" line beside the input reads as a control the
  *     user must clear, and a zero count is not session state. The ＋ menu's SSH
  *     view stays the way in, so hiding the strip removes no route to adding.
- *   - When it is drawn it is a single row under the card's top edge: a quiet
- *     label, one chip per joined host (removable in place), and the list behind
- *     the label. It is not a send-time attachment and it never rides a prompt:
- *     a joined host is a session resource, the server owns the list, and
- *     `GET /sessions/{id}/ssh/hosts` is the truth.
+ *   - 1–3 hosts: shown directly in the strip without folding.
+ *   - >3 hosts: folded by default into the trigger pill with an explicit
+ *     manual expand/collapse toggle so the resident row never balloons over
+ *     the composer input.
+ *   - Panel: shows each host with a clear enabled/disabled status, an operable
+ *     Toggle switch, and an independent connection state mark. Joining a host
+ *     to the session does not initiate a TCP connection.
  *
  * "In use" is the session's host list, never whether a request is on the wire
  * right now: a joined host stays joined between turns, and keying the strip to
@@ -43,9 +45,10 @@ import {
 import { pushToast } from '../../lib/toasts';
 import { registerOverlay } from '../../lib/uiBusy';
 import { useConnection } from '../../state/connection';
+import { Toggle } from '../controls';
 import { Icon } from '../icons';
 import { POPOVER_SURFACE_CLASS } from '../SearchableSelect';
-import { SSH_HOST_CHIP_CLASS, stateDotClass } from './SshBits';
+import { SSH_HOST_CHIP_CLASS, SshStateMark, stateDotClass } from './SshBits';
 import { SshHostFormDialog } from './SshHostFormDialog';
 
 const NO_INFLIGHT_HOSTS: ReadonlySet<string> = new Set();
@@ -94,11 +97,17 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
   const [creating, setCreating] = useState(false);
   const [selected, setSelected] = useState<readonly SshHost[]>([]);
   const [listOpen, setListOpen] = useState(false);
+  const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
+
   useEffect(() => {
     aliveRef.current = true;
     return () => { aliveRef.current = false; };
   }, []);
-  useEffect(() => { setSelected([]); }, [sessionId]);
+  useEffect(() => {
+    setSelected([]);
+    setUserExpanded(null);
+  }, [sessionId]);
+
   const pending = sessionId === undefined ? NO_INFLIGHT_HOSTS : inflightBySession.get(sessionId) ?? NO_INFLIGHT_HOSTS;
 
   const joined = sessionId === undefined ? selected.map((host) => ({ host, status: undefined })) : sessionQuery.data ?? [];
@@ -163,35 +172,68 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
       ) : hosts.length === 0 ? (
         <p data-composer-ssh-empty className="px-3 py-1.5 text-[12px] leading-4 text-ink-faint">{t('composer.ssh.empty')}</p>
       ) : (
-        <div className="max-h-64 overflow-y-auto">
+        <div className="max-h-64 overflow-y-auto divide-y divide-hairline/40">
           {hosts.map((host) => {
             const on = joinedIds.has(host.id);
             const target = sshTargetLabel(host);
+            const joinedEntry = joined.find((entry) => entry.host.id === host.id);
+            const state = visibleState(joinedEntry?.status);
+            const isBusy = pending.has(host.id);
+            const statusText = t(on ? 'composer.ssh.enabled' : 'composer.ssh.disabled');
+            const switchLabel = t('composer.ssh.switchLabel', {
+              name: host.name,
+              status: statusText,
+            });
+
             return (
-              <button
+              <div
                 key={host.id}
-                type="button"
-                role="menuitemcheckbox"
-                aria-checked={on}
                 data-menu-row
                 data-composer-ssh-host={host.id}
-                // aria-disabled, not disabled: a disabled button drops focus to <body>, so Escape and arrows would stop working mid-toggle.
-                aria-disabled={pending.has(host.id) || undefined}
-                onClick={() => { if (!pending.has(host.id)) void toggle(host, !on); }}
-                className={`${PANEL_ROW} items-start aria-disabled:opacity-60`}
+                className={`flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-[13px] transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.03] ${
+                  isBusy ? 'opacity-60' : ''
+                }`}
               >
-                <span aria-hidden className={`flex h-[19px] w-3 shrink-0 items-center ${on ? 'text-ink' : 'text-transparent'}`}>
-                  <Icon name="check" size={12} />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className={`block truncate ${on ? 'font-medium text-ink' : 'text-ink'}`}>{host.name}</span>
-                  <span className={`block truncate text-[12px] leading-4 text-ink-faint ${target !== undefined ? 'font-mono' : ''}`}>
-                    {host.source === 'session'
-                      ? <span className="font-sans">{t('composer.ssh.temporary')}</span>
-                      : target ?? (host.source === 'ssh-config' ? t('composer.ssh.fromConfig') : host.id)}
+                <button
+                  type="button"
+                  disabled={isBusy}
+                  onClick={() => {
+                    if (!isBusy) void toggle(host, !on);
+                  }}
+                  className="min-w-0 flex-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 rounded"
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span className={`truncate ${on ? 'font-medium text-ink' : 'text-ink-soft'}`}>{host.name}</span>
+                    {on && state !== undefined ? (
+                      <SshStateMark state={state} compact />
+                    ) : null}
+                  </div>
+                  <div className="mt-0.5 truncate text-[11px] leading-4 text-ink-faint">
+                    <span className={target !== undefined ? 'font-mono' : ''}>
+                      {host.source === 'session'
+                        ? t('composer.ssh.temporary')
+                        : target ?? (host.source === 'ssh-config' ? t('composer.ssh.fromConfig') : host.id)}
+                    </span>
+                  </div>
+                </button>
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className={`text-[11px] font-medium transition-colors select-none ${on ? 'text-ink' : 'text-ink-faint'}`}>
+                    {statusText}
                   </span>
-                </span>
-              </button>
+                  <span data-composer-ssh-switch={host.id}>
+                    <Toggle
+                      id={`composer-ssh-toggle-${host.id}`}
+                      layout="bare"
+                      label={switchLabel}
+                      checked={on}
+                      disabled={isBusy}
+                      onChange={(checked) => {
+                        if (!isBusy) void toggle(host, checked);
+                      }}
+                    />
+                  </span>
+                </div>
+              </div>
             );
           })}
         </div>
@@ -249,6 +291,8 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
   // flashing a zero line and then growing one chip. On /new the picks are
   // local state, so an empty pick is genuinely empty.
   const contextKnown = sessionId === undefined || sessionQuery.data !== undefined;
+  const isExpanded = joined.length <= 3 ? true : (userExpanded ?? false);
+
   const resident = available && contextKnown && joined.length > 0 ? (
     <div
       data-composer-ssh-strip
@@ -271,7 +315,31 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
         <span className="shrink-0 tabular-nums">{joined.length}</span>
         <Icon name="chevron" size={12} className={`shrink-0 transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${listOpen ? 'rotate-90' : ''}`} />
       </button>
-      {joined.map(({ host, status }) => {
+
+      {joined.length > 3 ? (
+        <button
+          type="button"
+          data-composer-ssh-expand
+          aria-expanded={isExpanded}
+          onClick={() => { setUserExpanded(!isExpanded); }}
+          className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-[11px] font-medium text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink-soft focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-8"
+        >
+          <span>
+            {isExpanded
+              ? t('composer.ssh.collapse')
+              : t('composer.ssh.expand', { count: joined.length })}
+          </span>
+          <Icon
+            name="chevron"
+            size={12}
+            className={`shrink-0 transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${
+              isExpanded ? '-rotate-90' : 'rotate-90'
+            }`}
+          />
+        </button>
+      ) : null}
+
+      {isExpanded ? joined.map(({ host, status }) => {
         const state = visibleState(status);
         const target = sshTargetLabel(host);
         return (
@@ -300,7 +368,8 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
             </button>
           </span>
         );
-      })}
+      }) : null}
+
       {listOpen ? (
         <div
           id={listId}
