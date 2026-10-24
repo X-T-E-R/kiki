@@ -180,7 +180,7 @@ describe('attachment media kinds', () => {
     const audio = draw(message({ attachments: [voice] }));
     const audioSlot = audio.querySelector('[data-message-media="audio"]');
     expect(audioSlot).not.toBeNull();
-    expect(audioSlot?.hasAttribute('data-message-voice')).toBe(true);
+    expect(audioSlot?.dataset['messageVoice']).toBe('');
 
     const video = draw(message({ attachments: [clip] }));
     expect(video.querySelector('[data-message-media="video"]')).not.toBeNull();
@@ -200,7 +200,7 @@ describe('attachment media kinds', () => {
     const container = draw(message({ attachments: [plainAudio] }));
     const slot = container.querySelector('[data-message-media="audio"]');
     expect(slot).not.toBeNull();
-    expect(slot?.hasAttribute('data-message-voice')).toBe(false);
+    expect(slot?.dataset['messageVoice']).toBeUndefined();
   });
 
   it('does not offer to open a blob that belongs to another session', () => {
@@ -213,7 +213,7 @@ describe('attachment media kinds', () => {
 describe('delivery note contract', () => {
   function record(): { calls: [I18nKey, I18nParams | undefined][]; t: (key: I18nKey, params?: I18nParams) => string } {
     const calls: [I18nKey, I18nParams | undefined][] = [];
-    return { calls, t: (key, params) => { calls.push([key, params]); return String(key); } };
+    return { calls, t: (key, params) => { calls.push([key, params]); return key; } };
   }
 
   it('asks for the destination and the unconfirmed line by key and parameter', () => {
@@ -250,6 +250,30 @@ describe('delivery note contract', () => {
     expect(calls.calls).toContainEqual(['message.internalUnsupported', { kinds: 'message.media.image, message.media.voice' }]);
     expect(calls.calls).toContainEqual(['message.media.image', undefined]);
     expect(calls.calls).toContainEqual(['message.media.voice', undefined]);
+  });
+
+  it('names the media a channel skipped even when its message itself arrived', () => {
+    // 509's receipt reports a partial send as `delivered` plus the kinds it
+    // did not take; that list is the note, not a reason to stay silent.
+    const calls = record();
+    deliveryNotes(message({
+      channels: channels(
+        { channelId: 'internal', status: 'delivered' },
+        { channelId: 'im:tg-main', status: 'delivered', messageIds: ['42'], unsupported: ['voice'] },
+      ),
+    }), calls.t, 'zh');
+    expect(calls.calls).toContainEqual(['message.channelUnsupported', { channel: 'im:tg-main', kinds: 'message.media.voice' }]);
+    expect(calls.calls).not.toContainEqual(['message.channelFailed', { channel: 'im:tg-main' }]);
+  });
+
+  it('keeps an unknown outcome unknown instead of reading its media list', () => {
+    const calls = record();
+    deliveryNotes(message({
+      status: 'pending', reached: 'unconfirmed',
+      channels: channels({ channelId: 'im:matrix-room', status: 'unknown', unsupported: ['image'] }),
+    }), calls.t, 'zh');
+    expect(calls.calls).toContainEqual(['message.channelUnknown', { channel: 'im:matrix-room' }]);
+    expect(calls.calls.some(([key]) => key === 'message.channelUnsupported')).toBe(false);
   });
 
   it('says a channel took no attachment at all when its own reason names none', () => {

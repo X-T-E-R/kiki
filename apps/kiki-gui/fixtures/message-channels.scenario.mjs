@@ -128,6 +128,7 @@ const RECEIPTS = {
     delivery: 'delivered',
     channels: [
       { channel_id: 'internal', status: 'delivered', unsupported: ['voice'] },
+      { channel_id: 'im:tg-main', status: 'delivered', message_ids: ['4212'], unsupported: ['voice'] },
       { channel_id: 'im:slack-ops', status: 'unsupported', unsupported: ['image', 'voice'] },
     ],
     attachments: [attachment(MEDIA.image, 'image'), attachment(MEDIA.voice, 'voice')],

@@ -98,6 +98,8 @@ try {
   await page.waitForSelector('[data-message-view-row="message"]', { timeout: STEP_TIMEOUT });
 
   // 1. A receipt that predates channel reporting still speaks its long body whole.
+  //    The reader scrolls up to it; its continuation is read on the way in.
+  await page.locator('[data-block-id="tool-t1-send"]').scrollIntoViewIfNeeded();
   await page.waitForFunction(({ blockId, marker }) => {
     const node = document.querySelector(`[data-block-id="${blockId}"] [data-message-text]`);
     return node !== null && (node.textContent ?? '').includes(marker);
@@ -179,7 +181,11 @@ try {
   check(partialNotes.some((note) => note.id === 'internal-unsupported' && note.text.includes('本对话未收到：语音')),
     `this conversation's undelivered voice note is not named: ${JSON.stringify(partialNotes)}`);
   check(partialNotes.some((note) => note.id === 'channel-unsupported-im:slack-ops' && note.text.includes('im:slack-ops 未收到 图片、语音')),
-    `the other channel's undelivered media is not named: ${JSON.stringify(partialNotes)}`);
+    `the channel that took no attachment is not named: ${JSON.stringify(partialNotes)}`);
+  // A channel that delivered the message but skipped one kind reports
+  // `delivered` plus that kind; the note must name it rather than stay quiet.
+  check(partialNotes.some((note) => note.id === 'channel-unsupported-im:tg-main' && note.text.includes('im:tg-main 未收到 语音')),
+    `a partially delivered channel's skipped media is not named: ${JSON.stringify(partialNotes)}`);
   check(await page.locator(`${partial} [data-message-media="image"]`).count() === 1, 'the picture that did arrive is missing');
   check(await page.locator(`${partial} [data-message-media="audio"]`).count() === 0, 'the voice note this conversation never received is drawn as delivered media');
 

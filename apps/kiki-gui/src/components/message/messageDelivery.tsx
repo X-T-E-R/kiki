@@ -80,12 +80,17 @@ export function deliveryNotes(block: MessageBlock, t: Translate, locale: Locale)
   for (const channel of external) {
     const name = channelName(channel.channelId, t);
     const kinds = channel.unsupported ?? [];
-    if (channel.status === 'unsupported' && kinds.length > 0) {
+    // An unknown outcome outranks any media list: nothing about that endpoint
+    // is confirmed, so it cannot also claim which attachments it skipped.
+    if (channel.status === 'unknown') {
+      notes.push({ id: `channel-unknown-${channel.channelId}`, text: t('message.channelUnknown', { channel: name }), icon: 'warning', action: false });
+    } else if (kinds.length > 0) {
+      // `delivered` with a non-empty list is a partial send: the endpoint took
+      // the message and named the media it did not take. `unsupported` with no
+      // list falls through to "not delivered".
       notes.push({ id: `channel-unsupported-${channel.channelId}`, text: t('message.channelUnsupported', { channel: name, kinds: kindList(kinds, t, locale) }), icon: 'info', action: false });
     } else if (channel.status === 'unsupported' || channel.status === 'failed') {
       notes.push({ id: `channel-failed-${channel.channelId}`, text: t('message.channelFailed', { channel: name }), icon: 'warning', action: false });
-    } else if (channel.status === 'unknown') {
-      notes.push({ id: `channel-unknown-${channel.channelId}`, text: t('message.channelUnknown', { channel: name }), icon: 'warning', action: false });
     }
   }
   return notes;
