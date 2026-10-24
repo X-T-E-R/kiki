@@ -572,4 +572,76 @@ describe('ImSessionCard channel management', () => {
     await click(contact, '[data-im-binding-text="edit"]');
     expect(fixture.read().bindings[0]?.reply).toBe('edit');
   });
+
+  it('scopes saved target and drafts when switching accounts, creating new accounts, or reauthorizing', async () => {
+    const state = imSettingsSnapshot();
+    state.instances.push(
+      { id: 'discord-a', provider_kind: 'discord', label: 'Bot A', account_id: 'bot-a', listening: false, configured: true, adapter: 'stopped' },
+      { id: 'discord-b', provider_kind: 'discord', label: 'Bot B', account_id: 'bot-b', listening: true, configured: true, adapter: 'running', connection: 'auth_expired', connection_detail: { code: 'auth_expired' } },
+      { id: 'matrix-expired', provider_kind: 'matrix', label: 'Matrix Team', account_id: '@team:example.test', listening: true, configured: true, adapter: 'stopped', connection: 'auth_expired', connection_detail: { code: 'auth_expired' } },
+    );
+    fixture = createImSettingsFixture(state);
+    const container = await render();
+    await click(container, '[data-im-connect-toggle]');
+    await click(container, '[data-im-setup-mode="discord"]');
+
+    // Select discord-a and save a bot token
+    await choose(container, '#im-instance', 'discord-a');
+    await input(container, '[data-im-setup-field="bot_token"]', 'token-for-a');
+    await click(container, '[data-im-setup-save]');
+    expect(fixture.calls.at(-1)).toEqual({
+      operation: 'setup',
+      body: { action: 'save', provider_kind: 'discord', instance_id: 'discord-a', fields: { bot_token: 'token-for-a' } },
+    });
+    expect(container.querySelector('[data-im-setup-saved-notice]')?.textContent).toContain('Credential saved for discord-a');
+    expect(container.querySelector<HTMLInputElement>('[data-im-setup-field="bot_token"]')?.value).toBe('');
+
+    // Switch selector to discord-b -> saved notice for discord-a is cleared and check targets discord-b
+    await choose(container, '#im-instance', 'discord-b');
+    expect(container.querySelector('[data-im-setup-saved-notice]')).toBeNull();
+    await click(container, '[data-im-platform-setup="discord"] [data-im-check]');
+    expect(fixture.calls.filter((item) => item.operation === 'check').at(-1)).toEqual({ operation: 'check', id: 'discord-b' });
+    expect(fixture.calls.filter((item) => item.operation === 'listen').at(-1)).toEqual({ operation: 'listen', id: 'discord-b', body: true });
+
+    // Reopen drawer, save discord-a again, then switch to "New account" ('') -> check button disappears and no stale saved notice remains
+    await click(container, '[data-im-connect-toggle]');
+    await choose(container, '#im-instance', 'discord-a');
+    await input(container, '[data-im-setup-field="bot_token"]', 'token-for-a-2');
+    await click(container, '[data-im-setup-save]');
+    expect(container.querySelector('[data-im-setup-saved-notice]')?.textContent).toContain('Credential saved for discord-a');
+
+    await choose(container, '#im-instance', '');
+    expect(container.querySelector('[data-im-setup-saved-notice]')).toBeNull();
+    expect(container.querySelector('[data-im-platform-setup="discord"] [data-im-check]')).toBeNull();
+
+    // Clicking "Authorize again" on matrix-expired switches platform to matrix, selects matrix-expired, and checks matrix-expired
+    await click(container, '[data-im-reauthorize="matrix-expired"]');
+    expect(container.querySelector('[data-im-platform-setup="matrix"]')).not.toBeNull();
+    expect(container.querySelector('[data-im-setup-saved-notice]')).toBeNull();
+    await click(container, '[data-im-platform-setup="matrix"] [data-im-check]');
+    expect(fixture.calls.filter((item) => item.operation === 'check').at(-1)).toEqual({ operation: 'check', id: 'matrix-expired' });
+  });
+
+  it('shows setupCatalog error with retry recovery while keeping WeChat and paste setup available', async () => {
+    fixture = createImSettingsFixture(imSettingsSnapshot());
+    const setupCatalogSpy = vi.spyOn(fixture.client.imSessions, 'setupCatalog').mockRejectedValueOnce(new Error('setup_catalog_offline'));
+    const container = await render();
+    await click(container, '[data-im-connect-toggle]');
+    await act(settle);
+
+    expect(container.querySelector('[data-im-setup-catalog-error]')?.textContent).toContain(
+      'Could not load Discord, Slack and Matrix setup options. Try again.',
+    );
+    expect(container.querySelector('[data-im-wechat-scan]')).not.toBeNull();
+    expect(container.querySelector('[data-im-paste]')).not.toBeNull();
+
+    await click(container, '[data-im-setup-catalog-retry]');
+    await act(settle);
+
+    expect(setupCatalogSpy).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-im-setup-catalog-error]')).toBeNull();
+    expect(container.querySelector('[data-im-setup-mode="discord"]')).not.toBeNull();
+    expect(container.querySelector('[data-im-setup-mode="slack"]')).not.toBeNull();
+    expect(container.querySelector('[data-im-setup-mode="matrix"]')).not.toBeNull();
+  });
 });

@@ -128,6 +128,12 @@ export function ImSessionCard() {
     if (connectMode === 'paste') return data.instances;
     return data.instances.filter((item) => item.provider_kind === connectMode);
   }, [connectMode, data]);
+  const activeSetupInstanceId = matchingInstances.some((item) => item.id === selectedConnectInstance)
+    ? selectedConnectInstance
+    : undefined;
+  const effectiveSavedSetupInstanceId = savedSetupInstanceId !== undefined && savedSetupInstanceId === activeSetupInstanceId
+    ? savedSetupInstanceId
+    : undefined;
 
   return (
     <SectionCard id="st-card-im-session" title={t('st.im.title')}>
@@ -173,6 +179,15 @@ export function ImSessionCard() {
               });
             }} />
 
+            {setupCatalog.isError ? (
+              <div className="flex flex-wrap items-center gap-2" data-im-setup-catalog-error>
+                <FeedbackLine feedback={{ tone: 'error', text: t('st.im.setup.catalogError') }} />
+                <button type="button" className={SECONDARY_BUTTON} data-im-setup-catalog-retry onClick={() => { void setupCatalog.refetch(); }}>
+                  {t('st.im.retry')}
+                </button>
+              </div>
+            ) : null}
+
             {setupPlatforms.length > 0 ? (
               <div className="space-y-2" data-im-setup-platforms>
                 <span className={FORM_LABEL}>{t('st.im.setup.platform')}</span>
@@ -200,9 +215,12 @@ export function ImSessionCard() {
             ) : null}
 
             {matchingInstances.length > 0 ? <SettingField label={t('st.im.instance')} htmlFor="im-instance">
-              <SettingsSelect id="im-instance" variant="form" ariaLabel={t('st.im.instance')} value={matchingInstances.some((item) => item.id === selectedConnectInstance) ? selectedConnectInstance : ''} emptyText={t('st.im.newAccount')}
+              <SettingsSelect id="im-instance" variant="form" ariaLabel={t('st.im.instance')} value={activeSetupInstanceId ?? ''} emptyText={t('st.im.newAccount')}
                 choices={[{ value: '', label: t('st.im.newAccount') }, ...matchingInstances.map((item) => ({ value: item.id, label: `${instanceDisplayName(item, t)} · ${item.account_id ?? item.id}` }))]}
-                onChange={setConnectInstanceId} dataAttr="data-im-instance" />
+                onChange={(nextId) => {
+                  setConnectInstanceId(nextId);
+                  setSavedSetupInstanceId(undefined);
+                }} dataAttr="data-im-instance" />
             </SettingField> : null}
 
             {activeSetupPlatform === undefined ? (
@@ -235,8 +253,8 @@ export function ImSessionCard() {
               <PlatformSetupForm
                 key={activeSetupPlatform.provider_kind}
                 platform={activeSetupPlatform}
-                instanceId={matchingInstances.some((item) => item.id === selectedConnectInstance) ? selectedConnectInstance : undefined}
-                savedInstanceId={savedSetupInstanceId}
+                instanceId={activeSetupInstanceId}
+                savedInstanceId={effectiveSavedSetupInstanceId}
                 onSaved={async (result) => {
                   setPasteNote(result);
                   setConnectInstanceId(result.provider_instance_id);
@@ -269,6 +287,7 @@ export function ImSessionCard() {
                 refresh={() => { void snapshot.refetch(); }}
                 reauthorize={() => {
                   setConnectInstanceId(account.id);
+                  setSavedSetupInstanceId(undefined);
                   if (isSetupProvider(account.provider_kind) && setupPlatforms.some((item) => item.provider_kind === account.provider_kind)) {
                     setConnectMode(account.provider_kind);
                   } else {
@@ -328,12 +347,49 @@ function PlatformSetupForm({ platform, instanceId, savedInstanceId, onSaved, onC
   const [matrixCallbackUri, setMatrixCallbackUri] = useState('');
   const [matrixLoginToken, setMatrixLoginToken] = useState('');
 
+  useEffect(() => {
+    setFields((prev) => {
+      if (platform.provider_kind === 'matrix' && matrixDiscovery?.homeserver !== undefined) {
+        return { homeserver: matrixDiscovery.homeserver };
+      }
+      if (Object.keys(prev).length === 0) return prev;
+      return {};
+    });
+    setError(undefined);
+    setGeneratedLink(undefined);
+    setSlackClientSecret('');
+    setSlackAttemptId(undefined);
+    setSlackCode('');
+    setSlackState('');
+    setMatrixPassword('');
+    setMatrixAttemptId(undefined);
+    setMatrixCallbackUri('');
+    setMatrixLoginToken('');
+  }, [instanceId, matrixDiscovery?.homeserver, platform.provider_kind]);
+
   const runSetup = async (request: ImSetupRequest) => {
     setSubmitting(true);
     setError(undefined);
     try {
       const res = await client.imSessions.setup(request);
       if (res.kind === 'saved') {
+        setFields((prev) => {
+          const next: Record<string, string> = {};
+          for (const field of platform.fields) {
+            if (!field.secret && prev[field.key] !== undefined) {
+              next[field.key] = prev[field.key]!;
+            }
+          }
+          return next;
+        });
+        setSlackClientSecret('');
+        setSlackAttemptId(undefined);
+        setSlackCode('');
+        setSlackState('');
+        setMatrixPassword('');
+        setMatrixAttemptId(undefined);
+        setMatrixCallbackUri('');
+        setMatrixLoginToken('');
         await onSaved(res.result);
       } else if (res.kind === 'link') {
         setGeneratedLink(res.url);

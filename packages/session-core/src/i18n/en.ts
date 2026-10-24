@@ -8503,6 +8503,7 @@ export const en = {
   'st.im.railBind': 'Bind here',
   'st.im.railRoute': 'Route here',
   'st.im.setup.platform': 'Platform setup',
+  'st.im.setup.catalogError': 'Could not load Discord, Slack and Matrix setup options. Try again.',
   'st.im.setup.pasteMode': 'Paste / Other',
   'st.im.setup.portalLink': 'Developer portal',
   'st.im.setup.saveSlot': 'Save credential',

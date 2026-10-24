@@ -8419,6 +8419,7 @@ export const zh = {
   'st.im.railBind': '绑定到此会话',
   'st.im.railRoute': '切到此会话',
   'st.im.setup.platform': '平台配置方式',
+  'st.im.setup.catalogError': '无法加载 Discord、Slack 与 Matrix 配置项，请重试。',
   'st.im.setup.pasteMode': '粘贴 / 其它',
   'st.im.setup.portalLink': '开发者控制台',
   'st.im.setup.saveSlot': '保存凭据',
