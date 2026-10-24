@@ -3,7 +3,7 @@ import { DEFAULT_AGENT_PROFILE_NAME } from '@kiki/agent-profiles/agentProfile';
 import { isBrowserOperationToolName } from '@kiki/agent-profiles/toolPolicy';
 import { qualifyMcpToolName, sanitizeMcpNamePart } from '#/mcpCore/tool-naming';
 
-export const OPTIONAL_CAPABILITY_IDS = ['browser', 'computer', 'memory', 'thread', 'web'] as const;
+export const OPTIONAL_CAPABILITY_IDS = ['browser', 'computer', 'memory', 'thread', 'web', 'send_message'] as const;
 export type OptionalCapabilityId = typeof OPTIONAL_CAPABILITY_IDS[number];
 export type CapabilityChoice = 'on' | 'off' | 'inherit';
 export type ProfileToolsSource = 'declared' | 'inherited-default' | 'builtin-default';
@@ -17,6 +17,7 @@ export function optionalCapabilityDocumentKey(hostId: string, sessionId: string)
 const MEMORY_TOOLS = new Set(['MemoryRead', 'MemorySearch', 'MemoryWrite']);
 const THREAD_TOOLS = new Set(['ThreadList', 'ThreadRead', 'ThreadSend', 'ThreadWait', 'RoomRead', 'RoomAdd']);
 const WEB_TOOLS = new Set(['WebSearch', 'FetchURL']);
+const SEND_MESSAGE_TOOLS = new Set(['SendMessage', 'SendUserMessage']);
 const GLOB_MAGIC = /[*?[\]{}]/;
 
 export interface CapabilityAdmissionInput {
@@ -47,11 +48,42 @@ export interface CapabilityAdmission {
   readonly reason: CapabilityDenyReason | 'admitted';
 }
 
+export interface SendMessageCapabilityRequest {
+  readonly sessionId: string;
+  readonly workspaceId: string;
+  readonly agentId?: string;
+}
+
+export interface SendMessageCapabilityPolicy {
+  admit(id: OptionalCapabilityId, request: SendMessageCapabilityRequest): CapabilityAdmission;
+  choice(sessionId: string, id: OptionalCapabilityId): CapabilityChoice;
+  globalState(id: OptionalCapabilityId): { readonly allowed: boolean; readonly hostLocked: boolean; readonly unresolved: boolean };
+}
+
+export function admitSendMessageCapability(
+  policy: SendMessageCapabilityPolicy,
+  request: SendMessageCapabilityRequest,
+  deliveryMode: 'reply' | 'message',
+): CapabilityAdmission {
+  const admission = policy.admit('send_message', request);
+  if (admission.admitted || deliveryMode !== 'message') return admission;
+  if (policy.choice(request.sessionId, 'send_message') === 'off') {
+    return admission.reason === 'default_off' ? { admitted: false, reason: 'session_off' } : admission;
+  }
+  if (admission.reason !== 'default_off') return admission;
+  const state = policy.globalState('send_message');
+  if (state.unresolved) return { admitted: false, reason: 'origin_unreadable' };
+  if (state.hostLocked && !state.allowed) return { admitted: false, reason: 'host_locked' };
+  if (!state.allowed) return { admitted: false, reason: 'allowed_off' };
+  return { admitted: true, reason: 'admitted' };
+}
+
 export function isOptionalCapabilityId(value: string): value is OptionalCapabilityId {
   return (OPTIONAL_CAPABILITY_IDS as readonly string[]).includes(value);
 }
 
 export function optionalCapabilityForTool(name: string, computerServers: readonly string[] = []): OptionalCapabilityId | undefined {
+  if (SEND_MESSAGE_TOOLS.has(name)) return 'send_message';
   if (name === 'BrowserConnections' || name === 'BrowserTabs' || name === 'browser__*' || isBrowserOperationToolName(name) || name.startsWith('browser__')) return 'browser';
   if (namesComputer(name, computerServers)) return 'computer';
   if (MEMORY_TOOLS.has(name)) return 'memory';
@@ -116,7 +148,8 @@ function namesPattern(id: OptionalCapabilityId, pattern: string, computerServers
   if (id === 'computer') return namesComputer(pattern, computerServers);
   if (id === 'memory') return MEMORY_TOOLS.has(pattern);
   if (id === 'thread') return THREAD_TOOLS.has(pattern);
-  return WEB_TOOLS.has(pattern);
+  if (id === 'web') return WEB_TOOLS.has(pattern);
+  return SEND_MESSAGE_TOOLS.has(pattern);
 }
 
 function namesComputer(pattern: string, servers: readonly string[]): boolean {

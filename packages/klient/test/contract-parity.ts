@@ -95,6 +95,7 @@ import type {
   SessionMetaPatch,
 } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
 import type { ISessionTitleService } from '@kiki/agent-core-v2/session/sessionTitle/sessionTitle';
+import type { ISessionOptionalCapabilityService } from '@kiki/agent-core-v2/session/optionalCapability/sessionOptionalCapabilityService';
 import type { IAgentCollaborationMessagingService } from '@kiki/agent-core-v2/session/agentCollaboration/messageMailbox';
 import type { SessionActivityState } from '@kiki/agent-core-v2/session/sessionActivity/sessionActivity';
 import { sessionActivityStateSchema } from '../src/contract/session/activity.js';
@@ -300,6 +301,7 @@ import {
 } from '../src/contract/session/question.js';
 import { skillSummarySchema } from '../src/contract/session/skills.js';
 import { sessionTitleContract } from '../src/contract/session/title.js';
+import { optionalCapabilitySessionViewSchema } from '../src/contract/session/optionalCapabilities.js';
 import { agentCollaborationMessagingContract } from '../src/contract/session/agentMessage.js';
 
 import {
@@ -728,6 +730,12 @@ const _questionResult: AssertWire<typeof questionResultSchema, QuestionResult> =
 
 // session/skills.ts
 const _skillSummary: AssertWire<typeof skillSummarySchema, SkillSummary> = true;
+
+// session/optionalCapabilities.ts
+const _optionalCapabilitySessionView: AssertWire<
+  typeof optionalCapabilitySessionViewSchema,
+  Awaited<ReturnType<ISessionOptionalCapabilityService['read']>>
+> = true;
 
 // session/title.ts
 const _generateTitleOutput: AssertWire<

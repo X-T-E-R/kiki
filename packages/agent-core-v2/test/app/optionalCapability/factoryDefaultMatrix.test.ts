@@ -87,7 +87,7 @@ function cleanDefault() {
 
 describe('factory capability matrix', () => {
   it('publishes the factory defaults from the config schema', () => {
-    expect(OPTIONAL_CAPABILITY_FACTORY_DEFAULTS).toEqual({ browser: false, computer: false, memory: true, thread: true, web: true });
+    expect(OPTIONAL_CAPABILITY_FACTORY_DEFAULTS).toEqual({ browser: false, computer: false, memory: true, thread: true, web: true, send_message: false });
     expect(OptionalCapabilitiesConfigSchema.parse({}).defaults).toEqual({ ...OPTIONAL_CAPABILITY_FACTORY_DEFAULTS });
   });
 
@@ -98,20 +98,26 @@ describe('factory capability matrix', () => {
     expect(policy.isToolActive('ThreadSend')).toBe(true);
     expect(policy.isToolActive('BrowserConnections')).toBe(false);
     expect(policy.isToolActive('mcp__desktop__screenshot')).toBe(false);
+    expect(policy.isToolActive('SendMessage')).toBe(false);
     const view = await capabilities.readSession('session-factory', 'workspace-factory');
     expect(view.rows.find((row) => row.id === 'thread')).toMatchObject({ choice: 'inherit', effective: true, reason: 'admitted' });
     expect(view.rows.find((row) => row.id === 'browser')).toMatchObject({ choice: 'inherit', effective: false, reason: 'default_off' });
     expect(view.rows.find((row) => row.id === 'computer')).toMatchObject({ choice: 'inherit', effective: false, reason: 'default_off' });
+    expect(view.rows.find((row) => row.id === 'send_message')).toMatchObject({ choice: 'inherit', effective: false, reason: 'default_off', defaultOn: false });
   });
 
   it('keeps an explicit session off and an explicit session on ahead of the factory default', async () => {
     const { policy, capabilities } = setup(cleanDefault(), tools);
     await capabilities.setChoice('session-factory', 'memory', 'off');
     await capabilities.setChoice('session-factory', 'browser', 'on');
+    await capabilities.setChoice('session-factory', 'send_message', 'on');
     expect(policy.isToolActive('MemoryRead')).toBe(false);
     expect(policy.isToolActive('WebSearch')).toBe(true);
     expect(policy.isToolActive('BrowserConnections')).toBe(true);
     expect(policy.isToolActive('mcp__desktop__screenshot')).toBe(false);
+    expect(policy.isToolActive('SendMessage')).toBe(true);
+    await capabilities.setChoice('session-factory', 'send_message', 'off');
+    expect(policy.isToolActive('SendMessage')).toBe(false);
   });
 
   it('does not turn an explicit user false into the new factory on', () => {

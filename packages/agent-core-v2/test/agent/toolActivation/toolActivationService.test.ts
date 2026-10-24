@@ -16,9 +16,11 @@ import {
 import { createServices } from '#/_base/di/test';
 import { IEventBus } from '#/app/event/eventBus';
 import { IConfigService, type ConfigSectionChangedEvent } from '#/app/config/config';
+import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
 import { IShippedAgentProfileManager } from '#/app/shippedAgentProfiles/shippedAgentProfileManager';
 import { Emitter, Event } from '#/_base/event';
 import { ISessionDeliveryService } from '#/session/delivery/delivery';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IAgentProfileService, type ProfileData } from '#/agent/profile/profile';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
@@ -186,6 +188,7 @@ describe('AgentToolActivationService', () => {
   };
   let scopeContext = mainScopeContext;
   let notifyParent = true;
+  let sendMessageChoice: 'on' | 'off' | 'inherit' = 'inherit';
   let publishStatusUpdated = (): void => {};
 
   function createActivationHost() {
@@ -204,9 +207,11 @@ describe('AgentToolActivationService', () => {
           }) as IEventBus['subscribe'],
         });
         reg.defineInstance(IAgentScopeContext, scopeContext);
+        reg.definePartialInstance(ISessionContext, { sessionId: 'session', workspaceId: 'workspace' });
         reg.definePartialInstance(IAgentToolPolicyService, {
           isToolActive: () => true,
-          isToolActiveForDisclosure: (name, source) => isToolActive({
+          isToolActiveForProfile: (profile, name, source) => isToolActive(profile, name, source),
+          isToolActiveForDisclosure: (name, source) => name === 'SendMessage' && sendMessageChoice === 'on' || isToolActive({
             tools: name === SELECT_TOOLS_TOOL_NAME || name === 'CallTool' ? undefined : profileData.activeToolNames,
             disallowedTools: profileData.disallowedTools,
             disabledToolGroups: (profileData as ProfileData).disabledToolGroups,
@@ -215,6 +220,15 @@ describe('AgentToolActivationService', () => {
         reg.definePartialInstance(IConfigService, {
           get: (() => ({ notify_parent: notifyParent })) as IConfigService['get'],
           onDidSectionChange: configChangeEmitter.event,
+        });
+        reg.definePartialInstance(IOptionalCapabilityPolicy, {
+          onDidChange: Event.None as Event<{ readonly sessionId?: string }>,
+          admit: (id) => id === 'send_message'
+            ? { admitted: sendMessageChoice !== 'off', reason: sendMessageChoice === 'off' ? 'session_off' : 'admitted' }
+            : { admitted: true, reason: 'admitted' },
+          choice: () => sendMessageChoice,
+          globalState: () => ({ allowed: true, hostLocked: false, defaultOn: false, origin: 'default', unresolved: false }),
+          load: async () => {},
         });
         reg.definePartialInstance(IAgentRuntimeService, {
           onDidChange: runtimeChangeEmitter.event,
@@ -270,6 +284,7 @@ describe('AgentToolActivationService', () => {
     delete profileData.profileName;
     delete profileData.profileDefinitionId;
     deliveryMode = 'reply';
+    sendMessageChoice = 'inherit';
     gateData.disabledTools = [];
     scopeContext = mainScopeContext;
     notifyParent = true;
@@ -432,6 +447,25 @@ describe('AgentToolActivationService', () => {
     await ix.get(IAgentToolActivationService).activate();
 
     expect(ix.get(IAgentToolRegistryService).resolve('SendMessage')).toBeInstanceOf(SendMessageStubTool);
+  });
+
+  it('hot-opens and withdraws SendMessage from a default-off session choice', async () => {
+    profileData.activeToolNames = ['Read'];
+    sendMessageChoice = 'on';
+    registerAgentToolService(ISendMessageStubTool, SendMessageStubTool, {
+      name: 'SendMessage',
+      when: () => true,
+    });
+    const ix = createActivationHost();
+    const activation = ix.get(IAgentToolActivationService);
+    const registry = ix.get(IAgentToolRegistryService);
+
+    await activation.activate();
+    expect(registry.resolve('SendMessage')).toBeInstanceOf(SendMessageStubTool);
+
+    sendMessageChoice = 'off';
+    await activation.activate();
+    expect(registry.resolve('SendMessage')).toBeUndefined();
   });
 
   it('does not add SendMessage for a custom profile with the same delivery mode', async () => {

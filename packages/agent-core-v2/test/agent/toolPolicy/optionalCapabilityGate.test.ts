@@ -12,7 +12,8 @@ import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IConfigService } from '#/app/config/config';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
 import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
-import type { OptionalCapabilityId } from '#/app/optionalCapability/admit';
+import type { CapabilityChoice, OptionalCapabilityId } from '#/app/optionalCapability/admit';
+import { ISessionDeliveryService } from '#/session/delivery/delivery';
 import { ISessionToolPolicy } from '#/session/sessionToolPolicy/sessionToolPolicy';
 import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -24,15 +25,29 @@ function policy(options: {
   admit?: (id: OptionalCapabilityId) => boolean;
   approval?: 'auto' | 'off';
   disabledToolGroups?: ProfileData['disabledToolGroups'];
+  disallowedTools?: readonly string[];
+  workspaceDisabledTools?: readonly string[];
   snapshot?: boolean;
   withPolicy?: boolean;
+  deliveryMode?: 'reply' | 'message';
+  sendChoice?: CapabilityChoice;
 }) {
   const ix = disposables.add(new TestInstantiationService());
-  const admit = vi.fn((id: OptionalCapabilityId) => ({ admitted: options.admit?.(id) ?? true, reason: 'admitted' as const }));
+  const admit = vi.fn((id: OptionalCapabilityId) => {
+    const admitted = options.admit?.(id) ?? true;
+    return { admitted, reason: admitted ? 'admitted' as const : 'default_off' as const };
+  });
   if (options.withPolicy !== false) {
-    ix.stub(IOptionalCapabilityPolicy, { admit, retain() {}, release() {} });
+    ix.stub(IOptionalCapabilityPolicy, {
+      admit,
+      choice: () => options.sendChoice ?? 'inherit',
+      globalState: () => ({ allowed: true, hostLocked: false, defaultOn: false, origin: 'default', unresolved: false }),
+      retain() {},
+      release() {},
+    });
   }
   ix.stub(ISessionContext, { sessionId: 's1', workspaceId: 'w' });
+  ix.stub(ISessionDeliveryService, { effectiveMode: () => options.deliveryMode ?? 'reply' });
   ix.stub(ICapabilitySnapshotService, { toolAvailable: () => options.snapshot ?? true });
   ix.stub(IAgentScopeContext, { agentId: 'main' });
   ix.stub(IAgentProfileService, { data: (): ProfileData => ({
@@ -40,10 +55,11 @@ function policy(options: {
     thinkingLevel: 'off',
     systemPrompt: '',
     disabledToolGroups: options.disabledToolGroups,
+    disallowedTools: options.disallowedTools,
   }) });
   ix.stub(IConfigService, { get: <T>() => ({ approval: options.approval ?? 'auto' }) as T });
   ix.stub(ISessionToolPolicy, { disabledTools: () => [] });
-  ix.stub(ISessionToolPolicyGate, { disabledTools: [] });
+  ix.stub(ISessionToolPolicyGate, { disabledTools: options.workspaceDisabledTools ?? [] });
   ix.stub(IAgentToolExecutorService, { registerToolCallGuard: () => ({ dispose() {} }) });
   ix.set(IAgentToolRegistryService, new SyncDescriptor(AgentToolRegistryService));
   ix.set(IAgentToolPolicyService, new SyncDescriptor(AgentToolPolicyService));
@@ -74,6 +90,19 @@ describe('optional capability tool gate', () => {
     const closed = policy({ admit: () => true, approval: 'off' });
     expect(closed.sut.isToolActive('MemoryWrite')).toBe(false);
     expect(closed.sut.isToolActive('MemoryRead')).toBe(true);
+  });
+
+  it('opens SendMessage for a session choice or message delivery but lets explicit off and hard deny win', () => {
+    const opened = policy({ admit: () => true, deliveryMode: 'reply', sendChoice: 'on' });
+    expect(opened.sut.isToolActive('SendMessage')).toBe(true);
+    const persona = policy({ admit: () => false, deliveryMode: 'message' });
+    expect(persona.sut.isToolActive('SendMessage')).toBe(true);
+    const off = policy({ admit: () => false, deliveryMode: 'message', sendChoice: 'off' });
+    expect(off.sut.isToolActive('SendMessage')).toBe(false);
+    const denied = policy({ admit: () => false, deliveryMode: 'message', disallowedTools: ['SendMessage'] });
+    expect(denied.sut.isToolActive('SendMessage')).toBe(false);
+    const workspaceDenied = policy({ admit: () => false, deliveryMode: 'message', workspaceDisabledTools: ['SendMessage'] });
+    expect(workspaceDenied.sut.isToolActive('SendMessage')).toBe(false);
   });
 
   it('lets an admission replace the snapshot for web and leaves Bash on the snapshot', () => {

@@ -530,6 +530,25 @@ describe('agent skill routing', () => {
   });
 });
 
+describe('session optional capability routing', () => {
+  it('reads and writes optional capability choices with the session scope', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    const view = {
+      revision: 1,
+      hostId: 'local',
+      rows: [{ id: 'send_message', choice: 'on', effective: true, source: 'session', reason: 'admitted', allowed: true, hostLocked: false, defaultOn: false, unresolved: false, applies: 'next-step' }],
+    } as const;
+    channel.result = view;
+    await expect(klient.session('s1').optionalCapabilities.read()).resolves.toEqual(view);
+    await expect(klient.session('s1').optionalCapabilities.set('send_message', 'off')).resolves.toEqual(view);
+    expect(channel.calls).toEqual([
+      { scope: { sessionId: 's1' }, service: 'sessionOptionalCapabilityService', method: 'read', args: [] },
+      { scope: { sessionId: 's1' }, service: 'sessionOptionalCapabilityService', method: 'set', args: ['send_message', 'off'] },
+    ]);
+  });
+});
+
 describe('session skills routing', () => {
   it('skills.list routes to sessionSkillCatalog.list with the session scope', async () => {
     const channel = new FakeChannel();

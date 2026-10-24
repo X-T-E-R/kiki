@@ -13,6 +13,8 @@ import type { ISessionBtwService } from '@kiki/agent-core-v2/features/btw/btw';
 import type { ISessionInitService } from '@kiki/agent-core-v2/features/sessionInit/sessionInit';
 import type { ISessionCronService } from '@kiki/agent-core-v2/session/cron/sessionCronService';
 import type { ISessionTodoService } from '@kiki/agent-core-v2/session/todo/sessionTodo';
+import type { CapabilityChoice, OptionalCapabilityId } from '@kiki/agent-core-v2/app/optionalCapability/admit';
+import type { SessionCapabilityView } from '@kiki/agent-core-v2/app/optionalCapability/policy';
 import type {
   ApprovalRequest,
   ApprovalResponse,
@@ -102,6 +104,11 @@ export interface SessionCronFacade {
   nextFireAt(taskId: string): Promise<ReturnType<ISessionCronService['getNextFireForTask']>>;
 }
 
+export interface SessionOptionalCapabilitiesFacade {
+  read(): Promise<SessionCapabilityView>;
+  set(id: OptionalCapabilityId, choice: CapabilityChoice): Promise<SessionCapabilityView>;
+}
+
 /** Compatibility phase mapped from one authoritative session activity snapshot. */
 export type SessionStatus = 'running' | 'idle' | 'awaiting_approval' | 'awaiting_question';
 
@@ -137,6 +144,7 @@ export interface SessionFacade {
   readonly init: SessionInitFacade;
   readonly btw: SessionBtwFacade;
   readonly cron: SessionCronFacade;
+  readonly optionalCapabilities: SessionOptionalCapabilitiesFacade;
   /** Permanently delete the session and its persisted data; throws when missing. */
   delete(): Promise<void>;
   fork(input?: { newSessionId?: string; title?: string; metadata?: Record<string, unknown>; turnIndex?: number }): Promise<SessionMeta>;
@@ -222,6 +230,10 @@ export function createSessionFacade(call: ScopedCaller, sessionId: string): Sess
         call(scope, 'sessionCronService', 'list', []) as Promise<ReturnType<ISessionCronService['list']>>,
       nextFireAt: (taskId) =>
         call(scope, 'sessionCronService', 'getNextFireForTask', [taskId]) as Promise<ReturnType<ISessionCronService['getNextFireForTask']>>,
+    },
+    optionalCapabilities: {
+      read: () => call(scope, 'sessionOptionalCapabilityService', 'read', []) as Promise<SessionCapabilityView>,
+      set: (id, choice) => call(scope, 'sessionOptionalCapabilityService', 'set', [id, choice]) as Promise<SessionCapabilityView>,
     },
     delete: () => call({}, 'sessionManager', 'delete', [sessionId]) as Promise<void>,
     fork: (input) => spawn('fork', input),

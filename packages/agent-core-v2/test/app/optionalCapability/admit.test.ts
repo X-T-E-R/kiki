@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   admitOptionalCapability,
+  admitSendMessageCapability,
   capabilityToolsSource,
   namesOptionalCapability,
   optionalCapabilityDocumentKey,
@@ -50,7 +51,26 @@ describe('admitOptionalCapability', () => {
     expect(admitOptionalCapability('browser', input({ sessionChoice: 'on', allowed: true })).admitted).toBe(true);
   });
 
+  it('keeps SendMessage default-off non-hard-denied and lets message delivery imply it unless explicitly off', () => {
+    const policy = {
+      admit: (_id: 'send_message', request: { sessionId: string }) => request.sessionId === 'blocked'
+        ? { admitted: false, reason: 'allowed_off' as const }
+        : { admitted: false, reason: 'default_off' as const },
+      choice: () => 'inherit' as const,
+      globalState: () => ({ allowed: true, hostLocked: false, unresolved: false }),
+    };
+    expect(admitOptionalCapability('send_message', input({ defaultOn: false }))).toEqual({ admitted: false, reason: 'default_off' });
+    expect(admitSendMessageCapability(policy, { sessionId: 's1', workspaceId: 'w' }, 'reply')).toEqual({ admitted: false, reason: 'default_off' });
+    expect(admitSendMessageCapability(policy, { sessionId: 's1', workspaceId: 'w' }, 'message')).toEqual({ admitted: true, reason: 'admitted' });
+    const off = { ...policy, choice: () => 'off' as const };
+    expect(admitSendMessageCapability(off, { sessionId: 's1', workspaceId: 'w' }, 'message')).toEqual({ admitted: false, reason: 'session_off' });
+    expect(admitSendMessageCapability(policy, { sessionId: 'blocked', workspaceId: 'w' }, 'message')).toEqual({ admitted: false, reason: 'allowed_off' });
+  });
+
   it('maps concrete tool names and ignores a star', () => {
+    expect(optionalCapabilityForTool('SendMessage')).toBe('send_message');
+    expect(optionalCapabilityForTool('SendUserMessage')).toBe('send_message');
+    expect(namesOptionalCapability('send_message', ['SendMessage'])).toBe(true);
     expect(optionalCapabilityForTool('browser__click')).toBe('browser');
     expect(optionalCapabilityForTool('mcp__kiki-computer__screenshot')).toBeUndefined();
     expect(optionalCapabilityForTool('mcp__kiki-computer__screenshot', ['kiki-computer'])).toBe('computer');

@@ -10,6 +10,7 @@ export const OPTIONAL_CAPABILITY_FACTORY_DEFAULTS = {
   memory: true,
   thread: true,
   web: true,
+  send_message: false,
 } as const;
 
 export const OptionalCapabilityDefaultsSchema = z.object({
@@ -18,6 +19,7 @@ export const OptionalCapabilityDefaultsSchema = z.object({
   memory: z.boolean().default(OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.memory),
   thread: z.boolean().default(OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.thread),
   web: z.boolean().default(OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.web),
+  send_message: z.boolean().default(OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.send_message),
 }).strict();
 
 export const OptionalCapabilitiesConfigSchema = z.object({

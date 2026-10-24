@@ -656,7 +656,7 @@ credential_values = {  }
 # ##########################################################################
 
 [optional_capabilities]
-defaults = { browser = false, computer = false, memory = true, thread = true, web = true }
+defaults = { browser = false, computer = false, memory = true, thread = true, web = true, send_message = false }
 web = { allowed = true }
 
 # ##########################################################################

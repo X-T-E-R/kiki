@@ -162,6 +162,7 @@ describe('OptionalCapabilityPolicyService', () => {
     expect(policy().globalState('thread')).toMatchObject({ allowed: true, defaultOn: true, origin: 'default', unresolved: false });
     expect(policy().globalState('browser')).toMatchObject({ allowed: true, defaultOn: false, origin: 'default' });
     expect(policy().globalState('computer')).toMatchObject({ allowed: true, defaultOn: false, origin: 'default' });
+    expect(policy().globalState('send_message')).toMatchObject({ allowed: true, defaultOn: false, origin: 'default', unresolved: false });
     browser = { enabled: false, source: 'config' };
     expect(policy().globalState('browser')).toMatchObject({ allowed: false, defaultOn: false, origin: 'home' });
     browser = { enabled: true, source: 'config' };
@@ -183,6 +184,9 @@ describe('OptionalCapabilityPolicyService', () => {
     expect(policy().globalState('computer')).toMatchObject({ allowed: false, defaultOn: false, origin: 'home' });
     values[COMPUTER_CONFIG_SECTION] = { enabled: true };
     expect(policy().globalState('computer')).toMatchObject({ allowed: true, defaultOn: true, origin: 'home' });
+    origins[OPTIONAL_CAPABILITIES_SECTION] = { 'defaults.send_message': 'home' };
+    values[OPTIONAL_CAPABILITIES_SECTION] = { defaults: { send_message: true } };
+    expect(policy().globalState('send_message')).toMatchObject({ allowed: true, defaultOn: true });
   });
 
   it('reports an unreadable origin instead of opening, including an unreadable defaults map', () => {
@@ -200,6 +204,15 @@ describe('OptionalCapabilityPolicyService', () => {
     expect(policy().globalState('web')).toMatchObject({ allowed: false, defaultOn: false, origin: 'home' });
     values[OPTIONAL_CAPABILITIES_SECTION] = { web: { allowed: true }, defaults: { web: false } };
     expect(policy().globalState('web')).toMatchObject({ allowed: true, defaultOn: false });
+  });
+
+  it('allows send_message session on and withdraws it with session off while keeping global allowance true', async () => {
+    expect(policy().admit('send_message', { sessionId: 's1', workspaceId: 'w' })).toMatchObject({ admitted: false, reason: 'default_off' });
+    await policy().setChoice('s1', 'send_message', 'on');
+    expect(policy().globalState('send_message')).toMatchObject({ allowed: true, defaultOn: false });
+    expect(policy().admit('send_message', { sessionId: 's1', workspaceId: 'w' })).toMatchObject({ admitted: true, reason: 'admitted' });
+    await policy().setChoice('s1', 'send_message', 'off');
+    expect(policy().admit('send_message', { sessionId: 's1', workspaceId: 'w' })).toMatchObject({ admitted: false, reason: 'session_off' });
   });
 
   it('rejects session on when the capability is hard-off and does not write', async () => {

@@ -293,6 +293,7 @@ export const optionalCapabilitiesResponseSchema = z.object({
   memory: optionalCapabilityStateSchema,
   thread: optionalCapabilityStateSchema,
   web: optionalCapabilityStateSchema,
+  send_message: optionalCapabilityStateSchema,
 }).strict();
 export const optionalCapabilitiesPatchSchema = z.object({
   defaults: z.object({
@@ -301,12 +302,13 @@ export const optionalCapabilitiesPatchSchema = z.object({
     memory: z.boolean().nullable().optional(),
     thread: z.boolean().nullable().optional(),
     web: z.boolean().nullable().optional(),
+    send_message: z.boolean().nullable().optional(),
   }).strict().optional(),
   web_allowed: z.boolean().nullable().optional(),
 }).strict();
 export const optionalCapabilityChoiceSchema = z.enum(['on', 'off', 'inherit']);
 export const optionalCapabilitySessionRowSchema = z.object({
-  id: z.enum(['browser', 'computer', 'memory', 'thread', 'web']),
+  id: z.enum(['browser', 'computer', 'memory', 'thread', 'web', 'send_message']),
   choice: optionalCapabilityChoiceSchema,
   effective: z.boolean(),
   source: z.enum(['session', 'default', 'off']),
@@ -324,7 +326,7 @@ export const optionalCapabilitySessionResponseSchema = z.object({
 }).strict();
 export type OptionalCapabilitySessionResponse = z.infer<typeof optionalCapabilitySessionResponseSchema>;
 export const optionalCapabilitySessionRequestSchema = z.object({
-  id: z.enum(['browser', 'computer', 'memory', 'thread', 'web']),
+  id: z.enum(['browser', 'computer', 'memory', 'thread', 'web', 'send_message']),
   choice: optionalCapabilityChoiceSchema,
 }).strict();
 export type OptionalCapabilitySessionRequest = z.infer<typeof optionalCapabilitySessionRequestSchema>;

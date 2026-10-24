@@ -505,6 +505,7 @@ import '#/agent/toolPolicy/configSection';
 export * from '#/agent/toolPolicy/configSection';
 export * from '#/agent/toolPolicy/evaluate';
 export * from '#/agent/toolPolicy/toolPolicy';
+export * from '#/agent/toolPolicy/sendMessageAdmission';
 export * from '#/agent/toolPolicy/toolPolicyService';
 
 import '#/agent/task/configSection';

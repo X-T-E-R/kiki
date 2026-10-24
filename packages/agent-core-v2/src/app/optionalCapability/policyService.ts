@@ -49,6 +49,7 @@ const APPLIES: Record<OptionalCapabilityId, CapabilityApplies> = {
   memory: 'next-step',
   thread: 'next-step',
   web: 'next-model-request',
+  send_message: 'next-step',
 };
 
 export class OptionalCapabilityPolicyService extends Service implements IOptionalCapabilityPolicy {
@@ -276,8 +277,19 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
     if (id === 'browser') return this.browserState();
     if (id === 'web') return this.webState();
     if (id === 'thread') return this.threadState();
+    if (id === 'send_message') return this.sendMessageState();
     if (id === 'computer') return this.booleanState(COMPUTER_CONFIG_SECTION, 'enabled', OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.computer);
     return this.booleanState(MEMORY_SECTION, 'enabled', OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.memory);
+  }
+
+  private sendMessageState(): OptionalCapabilityGlobalState {
+    return {
+      allowed: true,
+      hostLocked: false,
+      defaultOn: OPTIONAL_CAPABILITY_FACTORY_DEFAULTS.send_message,
+      origin: 'default',
+      unresolved: false,
+    };
   }
 
   private browserState(): OptionalCapabilityGlobalState {

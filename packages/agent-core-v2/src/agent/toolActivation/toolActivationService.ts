@@ -12,6 +12,7 @@ import { IShippedAgentProfileManager } from '#/app/shippedAgentProfiles/shippedA
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
 import { isToolActive } from '#/agent/toolPolicy/evaluate';
+import { isSendMessageCapabilityAdmitted } from '#/agent/toolPolicy/sendMessageAdmission';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { AgentToolContribution } from '#/agent/toolRegistry/toolContribution';
@@ -139,6 +140,7 @@ export class AgentToolActivationService extends Service implements IAgentToolAct
         if (!isToolActive(workspaceVeto, options.name, source)) continue;
         const policyActive = this.policyService.isToolActiveForDisclosure(options.name, source);
         const compatibilityActive = options.name === SEND_MESSAGE_TOOL_NAME &&
+          isSendMessageCapabilityAdmitted(accessor) &&
           this.isLegacyShippedMessageBinding(policy, options.name, source);
         if (!policyActive && !compatibilityActive) continue;
         if (options.when !== undefined && !options.when(accessor)) continue;
@@ -174,7 +176,7 @@ export class AgentToolActivationService extends Service implements IAgentToolAct
     const shipped = definitionId.startsWith('shipped://agent-profiles/') ||
       this.shippedProfiles.isCleanActivePath(definitionId);
     if (!shipped) return false;
-    return isToolActive({ ...policy, tools: undefined }, name, source);
+    return this.policyService.isToolActiveForProfile({ ...policy, tools: undefined }, name, source);
   }
 
   private refreshRuntimeRecords(): void {
