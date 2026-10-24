@@ -34,7 +34,7 @@ import {
 import { CREATED_BY_AGENT_ID_KEY, CREATED_BY_SESSION_ID_KEY } from '#/app/sessionIndex/sessionIndex';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IThreadCommunicationService } from '#/app/threadCommunication/threadCommunication';
-import { IRoomService } from '#/app/room/room';
+import { IRoomService, type RoomDocument } from '#/app/room/room';
 import {
   SEND_PEER_THREAD_MESSAGE,
   type IThreadPeerSendCapability,
@@ -43,6 +43,15 @@ import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle'
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+
+function roomFixture(overrides: Partial<RoomDocument> = {}): RoomDocument {
+  return { version: 1, id: 'room-a', name: 'Room', host: 'thread-a', paused: false, mode: 'mention',
+    workspace: 'workspace-a', createdAt: '2026-01-01T00:00:00Z', generation: 1, budget: { botMessagesPerUserMessage: 12 },
+    budgetUsed: 0, userMessageCount: 0, cursors: {}, members: [
+      { kind: 'thread', sessionId: 'thread-a', muted: true, queueWhenBusy: false, joinedAt: '2026-01-01T00:00:00Z' },
+      { kind: 'thread', sessionId: 'thread-b', muted: false, queueWhenBusy: false, joinedAt: '2026-01-01T00:00:00Z' },
+    ], ...overrides };
+}
 
 describe('thread communication tools', () => {
   it('keeps sending and room access main-only and leaves the other four tools to shared opt-in policy', () => {
@@ -89,11 +98,13 @@ describe('thread communication tools', () => {
 
   it('reads a member roster and bounded saved log without waking or joining anyone', async () => {
     const ix = new TestInstantiationService();
-    const room = { id: 'room-a', name: 'Room', host: 'persona-host', paused: false, members: [
+    const room = roomFixture({ host: 'persona-host', members: [
       { kind: 'persona', personaId: 'persona-host', sessionId: 'thread-a', muted: true },
-      { kind: 'thread', sessionId: 'thread-b', muted: false, queueWhenBusy: false, joinedAt: '2026-01-01' },
-    ] };
-    const log = vi.fn(async () => ({ entries: [{ id: 'message-a', text: 'Saved body' }], nextCursor: 'message-a' }));
+      { kind: 'thread', sessionId: 'thread-b', muted: false, queueWhenBusy: false, joinedAt: '2026-01-01T00:00:00Z' },
+    ] });
+    const log = vi.fn<IRoomService['log']>(async () => ({ entries: [
+      { id: 'message-a', text: 'Saved body', at: '2026-01-01T00:00:00Z', kind: 'message', from: 'thread-b', mentions: [] },
+    ], nextCursor: 'message-a' }));
     const addMember = vi.fn();
     try {
       ix.stub(IThreadCommunicationService, { isWorkspaceEnabled: async () => true });
@@ -114,11 +125,10 @@ describe('thread communication tools', () => {
 
   it('adds only an existing thread and leaves a duplicate member and host unchanged', async () => {
     const ix = new TestInstantiationService();
-    const room = { id: 'room-a', name: 'Room', host: 'thread-b', paused: false, members: [
-      { kind: 'thread', sessionId: 'thread-a', muted: true, queueWhenBusy: false },
-      { kind: 'thread', sessionId: 'thread-b', muted: false, queueWhenBusy: false },
-    ] };
-    const addMember = vi.fn(async (_id, member) => ({ ...room, members: [...room.members, member] }));
+    const room = roomFixture({ host: 'thread-b' });
+    const addMember = vi.fn<IRoomService['addMember']>(async () => ({ ...room, members: [...room.members,
+      { kind: 'thread', sessionId: 'thread-c', muted: false, queueWhenBusy: true, joinedAt: '2026-01-01T00:00:00Z' },
+    ] }));
     try {
       ix.stub(IThreadCommunicationService, { isWorkspaceEnabled: async () => true });
       ix.stub(ISessionContext, { sessionId: 'thread-a', workspaceId: 'workspace-a' });
@@ -151,7 +161,10 @@ describe('thread communication tools', () => {
       ix.stub(IThreadCommunicationService, { isWorkspaceEnabled: async () => enabled });
       ix.stub(ISessionContext, { sessionId: 'thread-a', workspaceId: 'workspace-a' });
       ix.stub(IAgentScopeContext, { agentId });
-      ix.stub(IRoomService, { get: async () => ({ members: member ? [{ sessionId: 'thread-a' }] : [] }), log, addMember });
+      ix.stub(IRoomService, { get: async () => {
+        const room = roomFixture();
+        return member ? room : { ...room, members: room.members.filter((entry) => entry.sessionId !== 'thread-a') };
+      }, log, addMember });
       ix.set(IRoomReadTool, new SyncDescriptor(RoomReadTool));
       ix.set(IRoomAddTool, new SyncDescriptor(RoomAddTool));
       const executions = [ix.get(IRoomReadTool).resolveExecution({ room: 'room-a' }), ix.get(IRoomAddTool).resolveExecution({ room: 'room-a', session_id: 'thread-b' })];
