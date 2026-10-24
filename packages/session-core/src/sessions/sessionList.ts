@@ -1,7 +1,7 @@
 /** Session-list cache helpers: page-1 poll merge + overlap dedupe, plus
  * client-local pin state keyed off the wire `Session.metadata`. */
 
-import type { PageResponse, Session, Workspace } from '@kiki/protocol';
+import type { PageResponse, Session, SessionWorkChangedEvent, Workspace } from '@kiki/protocol';
 
 export type SessionListPage = PageResponse<Session> & { readonly next_cursor?: string };
 
@@ -18,7 +18,17 @@ export interface SessionListData {
  * to a local-only session-scoped highlight. */
 export const SESSION_PIN_META_KEY = 'kiki.pinned';
 
-export type SessionListEntry = Pick<Session, 'id' | 'title' | 'metadata' | 'updated_at' | 'created_at' | 'workspace_id' | 'archived' | 'busy' | 'pending_interaction'>;
+export type SessionListEntry = Pick<Session, 'id' | 'title' | 'metadata' | 'updated_at' | 'created_at' | 'workspace_id' | 'archived' | 'busy' | 'executing' | 'main_turn_active' | 'pending_interaction'>;
+
+export type SessionWorkChangedPatch = Pick<SessionWorkChangedEvent, 'busy' | 'executing' | 'main_turn_active'> & {
+  readonly sessionId: string;
+};
+
+export function sessionIsExecuting(
+  session: Pick<Session, 'executing' | 'main_turn_active'>,
+): boolean | undefined {
+  return session.executing ?? session.main_turn_active;
+}
 
 export function isPinnedSession(session: Pick<Session, 'metadata'>): boolean {
   return session.metadata[SESSION_PIN_META_KEY] === true;
@@ -113,6 +123,22 @@ export function mergeSessionActivity(old: SessionListData | undefined, fresh: Se
   })) };
 }
 
+export function mergeSessionWorkChanged(
+  old: SessionListData | undefined,
+  change: SessionWorkChangedPatch,
+): SessionListData | undefined {
+  if (old === undefined || !Array.isArray(old.pages)) return old;
+  return {
+    ...old,
+    pages: old.pages.map((page) => ({
+      ...page,
+      items: page.items.map((session) => session.id === change.sessionId
+        ? { ...session, busy: change.busy, executing: change.executing, main_turn_active: change.main_turn_active }
+        : session),
+    })),
+  };
+}
+
 /** A fresher page 1 can overlap an older loaded page as sessions shift. */
 export function dedupeSessions(data: SessionListData | undefined): Session[] {
   const seen = new Set<string>();
@@ -169,11 +195,11 @@ function byTitle(a: SessionListEntry, b: SessionListEntry): number {
 
 /** Cycle loaded running sessions in a stable creation order, independent of pin and activity updates. */
 export function adjacentRunningSession(
-  sessions: readonly Pick<Session, 'id' | 'busy' | 'created_at'>[],
+  sessions: readonly Pick<Session, 'id' | 'busy' | 'executing' | 'main_turn_active' | 'created_at'>[],
   currentId: string | undefined,
   direction: 1 | -1,
 ): string | undefined {
-  const running = sessions.filter((session) => session.busy).sort((a, b) =>
+  const running = sessions.filter((session) => sessionIsExecuting(session) === true).sort((a, b) =>
     b.created_at.localeCompare(a.created_at) || a.id.localeCompare(b.id));
   if (running.length === 0) return undefined;
   const index = running.findIndex((session) => session.id === currentId);
@@ -350,10 +376,12 @@ export function groupSessionsByWorkspace<T extends SessionListEntry, W extends P
 }
 
 /** Status buckets the filter chips read (mirrors the sidebar row dot). */
-export function sessionStatusOf(session: Pick<Session, 'busy' | 'pending_interaction'>): 'running' | 'needs-me' | 'idle' {
+export function sessionStatusOf(
+  session: Pick<Session, 'busy' | 'executing' | 'main_turn_active' | 'pending_interaction'>,
+): 'running' | 'needs-me' | 'idle' {
   const pending = session.pending_interaction;
   if (pending === 'approval' || pending === 'question') return 'needs-me';
-  return session.busy ? 'running' : 'idle';
+  return sessionIsExecuting(session) === true ? 'running' : 'idle';
 }
 
 export interface SessionFilterInput {

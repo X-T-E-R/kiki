@@ -27,8 +27,9 @@ import type { Session } from '@kiki/protocol';
 import type { SessionSeenMap } from '../settings/sessionReadState';
 
 import { pendingKindOf } from './activity';
+import { sessionIsExecuting } from './sessionList';
 
-export type InboxSource = Pick<Session, 'id' | 'title' | 'workspace_id' | 'updated_at' | 'busy' | 'last_seq' | 'archived' | 'pending_interaction' | 'last_turn_reason' | 'last_prompt'> & { readonly roomId?: string; readonly needsYouReason?: 'budget' };
+export type InboxSource = Pick<Session, 'id' | 'title' | 'workspace_id' | 'updated_at' | 'busy' | 'executing' | 'main_turn_active' | 'last_seq' | 'archived' | 'pending_interaction' | 'last_turn_reason' | 'last_prompt'> & { readonly roomId?: string; readonly needsYouReason?: 'budget' };
 
 /** Why a session is in the inbox. */
 export type InboxReason = 'approval' | 'question' | 'budget' | 'completed' | 'failed' | 'cancelled';
@@ -143,6 +144,6 @@ export type SessionRowState = 'needs-me' | 'running' | 'unread' | 'read';
  */
 export function sessionRowState(session: InboxSource, seen: SessionSeenMap): SessionRowState {
   if (pendingKindOf(session) !== 'none') return 'needs-me';
-  if (session.busy) return 'running';
+  if (sessionIsExecuting(session) === true) return 'running';
   return isSessionUnread(session, seen) ? 'unread' : 'read';
 }

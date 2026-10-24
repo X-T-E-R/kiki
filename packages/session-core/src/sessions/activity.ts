@@ -18,6 +18,7 @@
 import type { Message, PromptListResponse, Session, Task } from '@kiki/protocol';
 
 import { switcherSessionLabel } from './quickSwitcher';
+import { sessionIsExecuting } from './sessionList';
 
 export interface ActivityEntry {
   readonly sessionId: string;
@@ -118,7 +119,7 @@ export function buildActivityModel(input: {
 }): ActivityModel {
   const byRecency = (a: ActivityEntry, b: ActivityEntry) => b.updatedAt.localeCompare(a.updatedAt);
   const running = input.sessions
-    .filter((session) => session.busy)
+    .filter((session) => sessionIsExecuting(session) === true)
     .map((session) =>
       toEntry(
         session,

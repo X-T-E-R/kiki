@@ -15,6 +15,7 @@ import {
   isPinnedSession,
   mergeSessionFirstPage,
   mergeSessionActivity,
+  mergeSessionWorkChanged,
   pinMetadataPatch,
   SESSION_PIN_META_KEY,
   sortSessionItems,
@@ -88,6 +89,22 @@ describe('activity recency', () => {
     const canonical = { ...newer, updated_at: '2026-10-04T16:30:00.000Z' };
     expect(sortSessionItems([older, canonical], 'updated-desc').map((entry) => entry.id)).toEqual(['newer', 'older']);
     expect(sortSessionItems([older, newer], 'updated-desc').map((entry) => entry.id)).toEqual(['newer', 'older']);
+  });
+});
+
+describe('work_changed cache merge', () => {
+  it('updates busy and optional executing on every loaded page without changing other rows', () => {
+    const old = data(page(['newer'], true), page(['target', 'other'], false));
+    const merged = mergeSessionWorkChanged(old, { sessionId: 'target', busy: true, executing: false });
+    expect(merged?.pages[1]?.items[0]).toMatchObject({ id: 'target', busy: true, executing: false });
+    expect(merged?.pages[0]?.items[0]).toEqual(old.pages[0]?.items[0]);
+    expect(merged?.pages[1]?.items[1]).toEqual(old.pages[1]?.items[1]);
+  });
+
+  it('clears stale execution facts when an old-server change omits them', () => {
+    const old = data({ ...page(['target'], false), items: [session('target', '2026-01-01T00:00:00.000Z', { busy: true, executing: true, main_turn_active: true })] });
+    const merged = mergeSessionWorkChanged(old, { sessionId: 'target', busy: false });
+    expect(merged?.pages[0]?.items[0]).toMatchObject({ busy: false, executing: undefined, main_turn_active: undefined });
   });
 });
 
@@ -352,15 +369,21 @@ describe('groupSessionsByTime', () => {
 });
 
 describe('sessionStatusOf / filterSessions', () => {
-  const running = session('running', '2026-01-03T00:00:00.000Z', { busy: true, workspace_id: 'ws-a' });
-  const waiting = session('waiting', '2026-01-03T00:00:00.000Z', { busy: true, pending_interaction: 'approval', workspace_id: 'ws-b' } as Partial<Session>);
+  const running = session('running', '2026-01-03T00:00:00.000Z', { busy: true, executing: true, workspace_id: 'ws-a' });
+  const waiting = session('waiting', '2026-01-03T00:00:00.000Z', { busy: true, executing: true, pending_interaction: 'approval', workspace_id: 'ws-b' } as Partial<Session>);
   const idle = session('idle', '2026-01-02T00:00:00.000Z', { workspace_id: 'ws-a' });
+  const settledBusy = session('settled-busy', '2026-01-02T00:00:00.000Z', { busy: true, executing: false, workspace_id: 'ws-a' });
   const archived = session('archived', '2026-01-01T00:00:00.000Z', { archived: true, workspace_id: 'ws-b' } as Partial<Session>);
   const all = [running, waiting, idle, archived];
   const none = { status: [], workspaces: [], archived: 'hide' } as const;
 
   it('reads a pending interaction as needs-me ahead of busy', () => {
     expect([running, waiting, idle].map(sessionStatusOf)).toEqual(['running', 'needs-me', 'idle']);
+  });
+
+  it('does not color or filter queued work as currently running', () => {
+    expect(sessionStatusOf(settledBusy)).toBe('idle');
+    expect(filterSessions([settledBusy], { ...none, status: ['running'] })).toEqual([]);
   });
 
   it('hides archived rows by default, includes them, or shows only them', () => {
@@ -449,7 +472,7 @@ describe('poll boundary coverage', () => {
 describe('adjacentRunningSession', () => {
   const entries = [
     session('idle-pin', '2026-10-06', { metadata: { cwd: 'C:/example', 'kiki.pinned': true } }),
-    ...['c', 'a', 'b'].map((id) => session(id, '2026-10-06', { busy: true })),
+    ...['c', 'a', 'b'].map((id) => session(id, '2026-10-06', { busy: true, executing: true })),
     session('waiting', '2026-10-06', { pending_interaction: 'approval' }),
   ];
   it('cycles all three running threads in both directions, never idle/pinned/waiting-only rows', () => {
@@ -465,9 +488,9 @@ describe('adjacentRunningSession', () => {
   });
   it('reflects completed/newly-running threads and safely handles zero/one candidate', () => {
     expect(adjacentRunningSession([], 'a', 1)).toBeUndefined();
-    const changed = entries.map((entry) => ({ ...entry, busy: entry.id === 'waiting' }));
+    const changed = entries.map((entry) => ({ ...entry, busy: entry.id === 'waiting', executing: entry.id === 'waiting' }));
     expect(adjacentRunningSession(changed, 'a', 1)).toBe('waiting');
     expect(adjacentRunningSession(changed, 'waiting', -1)).toBe('waiting');
-    expect(adjacentRunningSession(entries.map((entry) => ({ ...entry, busy: false })), 'a', -1)).toBeUndefined();
+    expect(adjacentRunningSession(entries.map((entry) => ({ ...entry, busy: false, executing: false })), 'a', -1)).toBeUndefined();
   });
 });

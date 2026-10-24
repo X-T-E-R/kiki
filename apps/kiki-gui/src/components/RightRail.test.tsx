@@ -196,6 +196,56 @@ it('shows runtime activity instead of an idle child transcript and returns to id
   expect(settled.querySelector('[data-inspector-now]')?.textContent).toContain('Idle');
 });
 
+it('does not let stale parent activity resurrect a focused runtime-idle child', async () => {
+  const agentForest = buildAgentForest([], [
+    { agentId: 'main', name: 'Main', status: 'running' },
+    { agentId: 'agent-1', parentAgentId: 'main', name: 'Researcher', status: 'idle', statusSource: 'runtime' },
+  ]);
+  const subagent: SubagentRailContext = {
+    agentId: 'agent-1', pendingInteractionCount: 0, onJumpToSpawn: undefined,
+    block: {
+      id: 'child-card', kind: 'subagent', subagentId: 'agent-1', name: 'Researcher', status: 'running',
+      parentAgentId: 'main', parentToolCallId: undefined, description: undefined, model: undefined,
+      thinkingEffort: undefined, summary: undefined, error: undefined, endedAt: undefined,
+      toolCallCount: 0, transcript: [],
+    },
+  };
+  const rail = await renderRail({
+    subagent,
+    empty: true,
+    agentForest,
+    stateOverrides: { busy: true },
+  });
+  expect(rail.querySelector('[data-inspector-now]')?.getAttribute('data-inspector-now')).toBe('idle');
+  expect(rail.querySelector('[data-inspector-now]')?.textContent).not.toContain('Working');
+});
+
+it('treats a historical running card as unknown when the session says nothing is executing', async () => {
+  const agentForest = buildAgentForest([], [
+    { agentId: 'main', name: 'Main', status: 'unknown' },
+    { agentId: 'agent-1', parentAgentId: 'main', name: 'Researcher', status: 'unknown', statusSource: 'metadata' },
+  ]);
+  const rail = await renderRail({
+    subagent: {
+      agentId: 'agent-1', pendingInteractionCount: 0, onJumpToSpawn: undefined,
+      block: {
+        id: 'child-card', kind: 'subagent', subagentId: 'agent-1', name: 'Researcher', status: 'running',
+        parentAgentId: 'main', parentToolCallId: undefined, description: undefined, model: undefined,
+        thinkingEffort: undefined, summary: undefined, error: undefined, endedAt: undefined,
+        toolCallCount: 0, transcript: [],
+      },
+    },
+    empty: true,
+    agentForest,
+    stateOverrides: {
+      busy: true,
+      session: { executing: false, metadata: { cwd: 'C:/tmp' } } as NonNullable<SessionViewState['session']>,
+    },
+  });
+  expect(rail.querySelector('[data-inspector-now]')?.getAttribute('data-inspector-now')).toBe('idle');
+  expect(rail.querySelector('[data-inspector-now]')?.textContent).not.toContain('Working');
+});
+
 describe('RightRail fixed and switchable parts', () => {
   /** Every rail part outside the overview block, as data hooks, in page order. */
   function fixedParts(rail: Element) {

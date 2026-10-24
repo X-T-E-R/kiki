@@ -41,8 +41,14 @@ describe('lifeOf', () => {
     expect(lifeOf({ busy: false, pending_interaction: 'question' }, NOW)).toBe('waiting');
   });
 
-  it('reads busy sessions as working', () => {
-    expect(lifeOf({ busy: true, pending_interaction: 'none' }, NOW)).toBe('working');
+  it('reads explicit execution as working and leaves an unknown aggregate uncolored', () => {
+    expect(lifeOf({ busy: true, executing: true, pending_interaction: 'none' }, NOW)).toBe('working');
+    expect(lifeOf({ busy: true, pending_interaction: 'none' }, NOW)).toBe('idle');
+  });
+
+  it('uses explicit execution over the retained busy aggregate', () => {
+    expect(lifeOf({ busy: true, executing: false }, NOW)).toBe('idle');
+    expect(lifeOf({ busy: false, executing: true }, NOW)).toBe('working');
   });
 
   it('keeps a completed turn "done" only inside the window', () => {

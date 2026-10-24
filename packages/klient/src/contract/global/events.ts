@@ -7,7 +7,7 @@
  */
 
 import { z } from 'zod';
-import { roomChangeEventSchema, type RoomChangeEvent } from '@kiki/protocol';
+import { roomChangeEventSchema, type RoomChangeEvent, type SessionWorkChangedEvent } from '@kiki/protocol';
 
 import type { ConfigChangedEvent } from '@kiki/agent-core-v2/app/config/config';
 import type { ModelsChangedEvent } from '@kiki/agent-core-v2/kosong/model/model';
@@ -22,6 +22,11 @@ import type { EventRegistration } from '../types.js';
 export interface SessionArchivedPayload {
   readonly sessionId: string;
 }
+
+/** Payload of `event.session.work_changed` on the global bus. */
+export type SessionWorkChangedPayload = Omit<SessionWorkChangedEvent, 'type'> & {
+  readonly sessionId: string;
+};
 
 /** Payload of `session.meta.updated` on the global bus (`session/sessionMetadata/promptMetadata.ts`). */
 export interface SessionMetaUpdatedPayload {
@@ -51,6 +56,7 @@ export interface KlientEventPayloads {
   'plugins.changed': Record<string, never>;
   'session.archived': SessionArchivedPayload;
   'session.metaUpdated': SessionMetaUpdatedPayload;
+  'session.workChanged': SessionWorkChangedPayload;
   'usage.settled': { readonly sessionId?: string; readonly agentId?: string };
   'kosong.changed': CatalogChangedPayload;
   'search.indexStateChanged': z.infer<typeof searchIndexStateSchema>;
@@ -71,6 +77,15 @@ const reloadSummarySchema = z.object({
   removed: z.array(z.string()),
   errors: z.array(z.object({ id: z.string(), message: z.string() })),
 });
+
+const sessionWorkChangedSchema = z.object({
+  sessionId: z.string(),
+  busy: z.boolean(),
+  executing: z.boolean().optional(),
+  main_turn_active: z.boolean().optional(),
+  pending_interaction: z.enum(['none', 'approval', 'question']).optional(),
+  last_turn_reason: z.enum(['completed', 'cancelled', 'failed']).optional(),
+}) satisfies z.ZodType<SessionWorkChangedPayload>;
 
 const sessionMetaUpdatedSchema = z.object({
   agentId: z.string(),
@@ -177,6 +192,11 @@ export const globalEvents = {
     kind: 'bus',
     type: 'session.meta.updated',
     schema: sessionMetaUpdatedSchema,
+  },
+  'session.workChanged': {
+    kind: 'bus',
+    type: 'event.session.work_changed',
+    schema: sessionWorkChangedSchema,
   },
   'kosong.changed': {
     kind: 'bus',

@@ -35,6 +35,7 @@ import { ConnectScreen, type WebLinkProblem } from '../components/ConnectScreen'
 import { useHost } from '../host';
 import { translate, type I18nKey, type I18nParams } from '@kiki/session-core/i18n';
 import type { SessionController } from '@kiki/session-core/session';
+import { mergeSessionWorkChanged, type SessionListData } from '@kiki/session-core/sessions';
 import {
   settingsServerSnapshot,
   settingsSnapshot,
@@ -1036,6 +1037,11 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     // A plugin change moves capabilities, skills, MCP, panels and commands too,
     // and a reconnect can carry one this window never saw.
     let offPlugins = subscribePluginFreshness(klient, queryClient);
+    const workChanged = klient.events.on('session.workChanged', (change) => {
+      queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) =>
+        mergeSessionWorkChanged(old, change),
+      );
+    });
     const offStatus = socket.onStatus((status) => {
       if (!active) return;
       socketStatusRef.current = status;
@@ -1065,6 +1071,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       offStatus();
       catalog.dispose();
       searchIndex.dispose();
+      workChanged.dispose();
       offUsage();
       offPlugins();
     };

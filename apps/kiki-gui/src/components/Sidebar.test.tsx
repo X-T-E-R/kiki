@@ -753,7 +753,7 @@ describe('Sidebar session row states', () => {
   it('separates blocked, running, unread and caught-up rows', async () => {
     resetSessionSeen();
     const blocked = { ...session('s-blocked'), pending_interaction: 'question' as const, last_seq: 4 };
-    const running = { ...session('s-running'), busy: true, last_seq: 4 };
+    const running = { ...session('s-running'), busy: true, executing: true, last_seq: 4 };
     const unread = { ...session('s-unread'), last_seq: 4 };
     const caughtUp = { ...session('s-read'), last_seq: 4 };
     markSessionSeen('s-read', 4);
@@ -1078,7 +1078,7 @@ describe('Sidebar background tasks', () => {
       { id: 't2', session_id: 's-run', kind: 'bash', description: 'rerun the suite', status: 'running', created_at: '2026-01-01T00:01:00.000Z' },
     ] });
     listPrompts.mockResolvedValue({ active: null, queued: [] });
-    const running = { ...session('s-run'), busy: true, main_turn_active: false };
+    const running = { ...session('s-run'), busy: true, executing: true, main_turn_active: false };
     const { container } = await mount({ sessions: [running], sessionGroups: [{ key: 'today', label: 'Today', items: [running] }] });
     for (let index = 0; index < 4; index += 1) await settle();
     const mark = container.querySelector<HTMLElement>('[data-session-row="s-run"] [data-session-background-tasks]');
@@ -2268,7 +2268,7 @@ describe('Sidebar grouping', () => {
 
   it('keeps row dots still and draws nothing for a caught-up row', async () => {
     resetSessionSeen();
-    const running = { ...session('run'), busy: true, last_seq: 2 };
+    const running = { ...session('run'), busy: true, executing: true, last_seq: 2 };
     const read = { ...session('read'), last_seq: 2 };
     markSessionSeen('read', 2);
     const items = [running, read];

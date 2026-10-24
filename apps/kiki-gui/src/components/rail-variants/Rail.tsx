@@ -419,7 +419,13 @@ export function Rail({
   const showRoster = rosterCount > 0;
   const showTasks = backgroundTasks.length > 0;
   const showTerminateAll = show.stopAll && onStopAgentTask !== undefined && runningSubagentTasks.length > 0;
-  const busy = show.isMain ? state.busy : (focusedNode?.busy === true || state.busy);
+  const nodeStatus = focusedNode?.status;
+  const nodeStatusKnown = focusedNode !== undefined && nodeStatus !== 'unknown';
+  const sessionExecuting = state.session?.executing ?? state.session?.main_turn_active;
+  const sessionBusy = state.session === undefined ? state.busy : sessionExecuting === true;
+  const busy = show.isMain
+    ? sessionBusy
+    : nodeStatusKnown ? (focusedNode?.busy ?? false) : (focusedNode?.busy === true || sessionBusy);
   const taskOwner = taskOwnerAgentId ?? show.taskOwner;
   // Choosing cockpit lifts its overview into view when it sits outside the
   // rail's scroll viewport; the standard mode never scrolls.
@@ -445,13 +451,17 @@ export function Rail({
     else if (onInspectMain === undefined) onOpenSubagent(agentId);
   };
   const subBlock = subagent?.block;
-  // The timeline card carries the task-entity terminal status; the tree node
-  // can lag at 'unknown' on cold open — prefer a known card status.
+  // The timeline card can lag behind an authoritative runtime tree status;
+  // retain it only while the tree has no explicit status for this agent.
   const subStatus = subagent === undefined
     ? undefined
-    : subBlock !== undefined && subBlock.status !== 'unknown'
-      ? subBlock.status
-      : (focusedNode?.status ?? subBlock?.status ?? 'unknown');
+    : nodeStatusKnown
+      ? nodeStatus
+      : sessionExecuting === false
+        ? (nodeStatus ?? 'unknown')
+        : subBlock !== undefined && subBlock.status !== 'unknown'
+          ? subBlock.status
+          : (nodeStatus ?? subBlock?.status ?? 'unknown');
   const startedIso = subagent === undefined ? undefined : (subBlock?.startedAt ?? focusedNode?.startedAt);
   const runStartedAt = subagent === undefined
     ? state.turnStartedAt
