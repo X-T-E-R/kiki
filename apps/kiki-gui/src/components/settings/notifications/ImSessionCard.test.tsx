@@ -428,4 +428,148 @@ describe('ImSessionCard channel management', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1_550)); });
     expect(fixture.calls.filter((item) => item.operation === 'listen' || item.operation === 'check')).toEqual([]);
   });
+
+  it('supports Discord OAuth invite generation and saves bot token without auto-listening', async () => {
+    fixture = createImSettingsFixture(imSettingsSnapshot());
+    const container = await render();
+    await click(container, '[data-im-connect-toggle]');
+    await click(container, '[data-im-setup-mode="discord"]');
+
+    expect(container.querySelector('[data-im-cap-voice="discord"]')?.textContent).toContain('ordinary audio files are sent as attachment');
+    await input(container, '[data-im-discord-app-id]', '123456789012345678');
+    await input(container, '[data-im-discord-guild-id]', '987654321098765432');
+    await click(container, '[data-im-discord-install-btn]');
+
+    expect(fixture.calls.at(-1)).toEqual({
+      operation: 'setup',
+      body: { action: 'discord_install', application_id: '123456789012345678', guild_id: '987654321098765432' },
+    });
+    expect(container.querySelector<HTMLInputElement>('[data-im-setup-link-input]')?.value).toContain('client_id=123456789012345678');
+
+    await input(container, '[data-im-setup-field="bot_token"]', 'discord-bot-secret-token');
+    await click(container, '[data-im-setup-save]');
+
+    expect(fixture.calls.at(-1)).toEqual({
+      operation: 'setup',
+      body: { action: 'save', provider_kind: 'discord', fields: { bot_token: 'discord-bot-secret-token' } },
+    });
+    expect(fixture.calls.some((item) => item.operation === 'listen')).toBe(false);
+    expect(container.querySelector('[data-im-setup-saved-notice]')?.textContent).toContain('Credential saved for account-discord');
+
+    await click(container, '[data-im-platform-setup="discord"] [data-im-check]');
+    expect(fixture.calls).toContainEqual({ operation: 'check', id: 'account-discord' });
+    expect(fixture.calls).toContainEqual({ operation: 'listen', id: 'account-discord', body: true });
+  });
+
+  it('supports Slack manifest link and OAuth token exchange without auto-listening', async () => {
+    fixture = createImSettingsFixture(imSettingsSnapshot());
+    const container = await render();
+    await click(container, '[data-im-connect-toggle]');
+    await click(container, '[data-im-setup-mode="slack"]');
+
+    await input(container, '[data-im-slack-app-name]', 'Kiki Team');
+    await click(container, '[data-im-slack-manifest-btn]');
+    expect(fixture.calls.at(-1)).toEqual({
+      operation: 'setup',
+      body: { action: 'slack_manifest', name: 'Kiki Team' },
+    });
+    expect(container.querySelector<HTMLInputElement>('[data-im-setup-link-input]')?.value).toContain('new_app=1');
+
+    const oauthDetails = container.querySelector<HTMLDetailsElement>('[data-im-slack-oauth]')!;
+    await act(async () => {
+      oauthDetails.open = true;
+      oauthDetails.dispatchEvent(new Event('toggle'));
+      await settle();
+    });
+    await input(container, '[data-im-slack-client-id]', 'slack-client-1');
+    await click(container, '[data-im-slack-oauth-begin]');
+    expect(fixture.calls.at(-1)).toEqual({
+      operation: 'setup',
+      body: { action: 'slack_oauth_begin', client_id: 'slack-client-1', redirect_uri: 'http://127.0.0.1/slack-callback' },
+    });
+
+    await input(container, '[data-im-slack-client-secret]', 'slack-secret-1');
+    await input(container, '[data-im-slack-oauth-app-token]', 'xapp-1-token');
+    await input(container, '[data-im-slack-oauth-code]', 'oauth-code-1');
+    await input(container, '[data-im-slack-oauth-state]', 'oauth-state-1');
+    await click(container, '[data-im-slack-oauth-complete]');
+
+    expect(fixture.calls.at(-1)).toEqual({
+      operation: 'setup',
+      body: {
+        action: 'slack_oauth_complete',
+        attempt_id: 'attempt-slack-1',
+        state: 'oauth-state-1',
+        code: 'oauth-code-1',
+        client_secret: 'slack-secret-1',
+        app_token: 'xapp-1-token',
+      },
+    });
+    expect(fixture.calls.some((item) => item.operation === 'listen')).toBe(false);
+    expect(container.querySelector('[data-im-setup-saved-notice]')?.textContent).toContain('Credential saved for account-slack');
+  });
+
+  it('supports Matrix .well-known discovery, SSO exchange, password login, and surfaces unencrypted rooms notice', async () => {
+    fixture = createImSettingsFixture(imSettingsSnapshot());
+    const container = await render();
+    await click(container, '[data-im-connect-toggle]');
+    await click(container, '[data-im-setup-mode="matrix"]');
+
+    expect(container.querySelector('[data-im-cap-matrix-unencrypted]')?.textContent).toContain('Unencrypted rooms only');
+    expect(container.querySelector('[data-im-cap-voice="matrix"]')?.textContent).toContain('ordinary audio files are sent as m.audio');
+
+    await input(container, '[data-im-matrix-server]', '@bot:example.test');
+    await click(container, '[data-im-matrix-discover-btn]');
+    expect(fixture.calls.at(-1)).toEqual({
+      operation: 'setup',
+      body: { action: 'matrix_discover', server: '@bot:example.test' },
+    });
+    expect(container.querySelector('[data-im-matrix-discovery-result]')?.textContent).toContain('https://matrix.example.test');
+
+    await click(container, '[data-im-matrix-method="sso"]');
+    await click(container, '[data-im-matrix-sso-begin]');
+    expect(fixture.calls.at(-1)).toEqual({
+      operation: 'setup',
+      body: { action: 'matrix_sso_begin', homeserver: 'https://matrix.example.test', redirect_uri: 'http://127.0.0.1/matrix-callback' },
+    });
+
+    await input(container, '[data-im-matrix-login-token]', 'sso-login-token-1');
+    await click(container, '[data-im-matrix-sso-complete]');
+    expect(fixture.calls.at(-1)).toEqual({
+      operation: 'setup',
+      body: {
+        action: 'matrix_sso_complete',
+        attempt_id: 'attempt-matrix-1',
+        callback_uri: 'http://127.0.0.1/matrix-callback?kiki_im_state=fixture-state',
+        login_token: 'sso-login-token-1',
+      },
+    });
+    expect(fixture.calls.some((item) => item.operation === 'listen')).toBe(false);
+    expect(container.querySelector('[data-im-setup-saved-notice]')?.textContent).toContain('Credential saved for account-matrix');
+    expect(container.querySelector('[data-im-account="account-matrix"] [data-im-account-matrix-unencrypted]')?.textContent).toContain('Unencrypted rooms only');
+  });
+
+  it('controls local conversation internal channel independently of reply mode and shows bound media capabilities', async () => {
+    fixture = createImSettingsFixture(imChannelSnapshot('matrix'));
+    const container = await render();
+    const contact = binding(container, 'binding-contact');
+    await click(contact, '[data-im-binding-options-toggle]');
+    await act(settle);
+
+    expect(contact.querySelector('[data-im-binding-text="edit"]')).not.toBeNull();
+    expect(contact.querySelector('[data-im-binding-media]')?.textContent).toContain('Image / File / Audio / Video');
+    expect(contact.querySelector('[data-im-binding-media]')?.textContent).not.toContain('Voice');
+    expect(contact.querySelector('[data-im-binding-voice-note]')?.textContent).toContain('m.audio');
+
+    const internalToggle = contact.querySelector<HTMLInputElement>('#im-internal-binding-contact')!;
+    expect(internalToggle.checked).toBe(true);
+    await click(contact, '#im-internal-binding-contact');
+    await act(settle);
+
+    expect(fixture.calls).toContainEqual({ operation: 'setInternalChannel', id: 'lin-daily', body: false });
+    expect(contact.querySelector<HTMLInputElement>('#im-internal-binding-contact')?.checked).toBe(false);
+    // Reply mode remains independent when internal channel is switched off
+    await click(contact, '[data-im-binding-text="edit"]');
+    expect(fixture.read().bindings[0]?.reply).toBe('edit');
+  });
 });

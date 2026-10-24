@@ -5,6 +5,7 @@ import {
   type ImBinding,
   type ImBindingPatch,
   type ImCatalog,
+  type ImChannelCapability,
   type ImConfirmRequest,
   type ImConnectionDetail,
   type ImDiscovery,
@@ -12,20 +13,41 @@ import {
   type ImPasteResult,
   type ImProviderKind,
   type ImSessionSnapshot,
+  type ImSetupCatalog,
+  type ImSetupProvider,
+  type ImSetupRequest,
 } from '@kiki/protocol';
+import type { I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../../i18n';
 import { useConnection } from '../../../state/connection';
-import { FeedbackLine, Toggle } from '../../controls';
+import { FeedbackLine, Hint, Toggle } from '../../controls';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
-import { SettingField } from '../fields';
+import { AdvancedDetails, SettingField } from '../fields';
 import { SectionCard } from '../SectionCard';
-import { SettingsSegmented, SettingsSelect } from '../SettingsPrimitives';
+import { FORM_LABEL, SettingsSegmented, SettingsSelect } from '../SettingsPrimitives';
 import { wechatQrImage } from './wechatQr';
 
 const KEY = ['im-sessions'] as const;
 type ImInstanceStatus = ImSessionSnapshot['instances'][number];
 type Translator = ReturnType<typeof useI18n>['t'];
+type SetupPlatformEntry = ImSetupCatalog['platforms'][number];
+type ConnectMode = 'paste' | ImSetupProvider;
+
+const SETUP_FIELD_KEYS: Readonly<Record<string, I18nKey>> = {
+  bot_token: 'st.im.setup.field.bot_token',
+  app_token: 'st.im.setup.field.app_token',
+  homeserver: 'st.im.setup.field.homeserver',
+  access_token: 'st.im.setup.field.access_token',
+};
+
+const MEDIA_KIND_KEYS: Readonly<Record<string, I18nKey>> = {
+  image: 'message.media.image',
+  file: 'message.media.file',
+  audio: 'message.media.audio',
+  voice: 'message.media.voice',
+  video: 'message.media.video',
+};
 
 function useImAction() {
   const { t } = useI18n();
@@ -50,6 +72,10 @@ function useImAction() {
   return { saving, error, run };
 }
 
+function isSetupProvider(kind: string | undefined): kind is ImSetupProvider {
+  return kind === 'discord' || kind === 'slack' || kind === 'matrix';
+}
+
 export function ImSessionCard() {
   const { t } = useI18n();
   const { client } = useConnection();
@@ -66,10 +92,18 @@ export function ImSessionCard() {
     queryFn: () => client.imSessions.catalog(),
     enabled: snapshot.data !== undefined,
   });
+  const setupCatalog = useQuery({
+    queryKey: [...KEY, 'setup-catalog'],
+    queryFn: () => client.imSessions.setupCatalog(),
+    enabled: snapshot.data !== undefined && typeof client.imSessions.setupCatalog === 'function',
+    staleTime: 60_000,
+  });
   const [connectOpen, setConnectOpen] = useState(false);
+  const [connectMode, setConnectMode] = useState<ConnectMode>('paste');
   const [text, setText] = useState('');
   const [connectInstanceId, setConnectInstanceId] = useState('');
   const [pasteNote, setPasteNote] = useState<ImPasteResult>();
+  const [savedSetupInstanceId, setSavedSetupInstanceId] = useState<string>();
   const data = snapshot.data;
   const selectedConnectInstance = data?.instances.some((item) => item.id === connectInstanceId) === true ? connectInstanceId : '';
   const checkOnlyInstanceId = selectedConnectInstance || (data?.instances.length === 1 ? data.instances[0]!.id : '');
@@ -86,6 +120,14 @@ export function ImSessionCard() {
     }
     return result;
   }, [data]);
+
+  const setupPlatforms = setupCatalog.data?.platforms ?? [];
+  const activeSetupPlatform = setupPlatforms.find((item) => item.provider_kind === connectMode);
+  const matchingInstances = useMemo(() => {
+    if (data === undefined) return [];
+    if (connectMode === 'paste') return data.instances;
+    return data.instances.filter((item) => item.provider_kind === connectMode);
+  }, [connectMode, data]);
 
   return (
     <SectionCard id="st-card-im-session" title={t('st.im.title')}>
@@ -115,7 +157,7 @@ export function ImSessionCard() {
             <button type="button" className={SECONDARY_BUTTON} onClick={() => { void catalog.refetch(); }}>{t('st.im.retry')}</button>
           </div> : null}
 
-          <div className={showConnectForm ? 'space-y-3 border-y border-hairline py-4' : 'hidden'} data-im-connect-drawer>
+          <div className={showConnectForm ? 'space-y-4 border-y border-hairline py-4' : 'hidden'} data-im-connect-drawer>
             <p className="text-[13px] leading-5 text-ink-soft">{t('st.im.hint')}</p>
             <WechatScan onConfirmed={(id) => {
               setConnectOpen(false);
@@ -130,38 +172,112 @@ export function ImSessionCard() {
                 return client.imSessions.listen(wechat.id, true);
               });
             }} />
-            <label className="block space-y-1 text-[13px] text-ink-soft">
-              <span>{t('st.im.paste')}</span>
-              <textarea data-im-paste value={text} rows={2} placeholder={t('st.im.pastePlaceholder')} className={INPUT} onChange={(event) => { setText(event.target.value); }} />
-            </label>
-            {data.instances.length > 0 ? <SettingField label={t('st.im.instance')} htmlFor="im-instance">
-              <SettingsSelect id="im-instance" variant="form" ariaLabel={t('st.im.instance')} value={selectedConnectInstance} emptyText={t('st.im.newAccount')}
-                choices={[{ value: '', label: t('st.im.newAccount') }, ...data.instances.map((item) => ({ value: item.id, label: `${instanceDisplayName(item, t)} · ${item.account_id ?? item.id}` }))]}
+
+            {setupPlatforms.length > 0 ? (
+              <div className="space-y-2" data-im-setup-platforms>
+                <span className={FORM_LABEL}>{t('st.im.setup.platform')}</span>
+                <SettingsSegmented
+                  ariaLabel={t('st.im.setup.platform')}
+                  value={connectMode}
+                  onChange={(mode) => {
+                    setConnectMode(mode);
+                    setSavedSetupInstanceId(undefined);
+                    if (mode !== 'paste' && selectedConnectInstance !== '') {
+                      const inst = data.instances.find((item) => item.id === selectedConnectInstance);
+                      if (inst?.provider_kind !== mode) setConnectInstanceId('');
+                    }
+                  }}
+                  dataAttr="data-im-setup-mode"
+                  choices={[
+                    { value: 'paste', label: t('st.im.setup.pasteMode') },
+                    ...setupPlatforms.map((item) => ({
+                      value: item.provider_kind,
+                      label: providerDisplayName(item.provider_kind, t),
+                    })),
+                  ]}
+                />
+              </div>
+            ) : null}
+
+            {matchingInstances.length > 0 ? <SettingField label={t('st.im.instance')} htmlFor="im-instance">
+              <SettingsSelect id="im-instance" variant="form" ariaLabel={t('st.im.instance')} value={matchingInstances.some((item) => item.id === selectedConnectInstance) ? selectedConnectInstance : ''} emptyText={t('st.im.newAccount')}
+                choices={[{ value: '', label: t('st.im.newAccount') }, ...matchingInstances.map((item) => ({ value: item.id, label: `${instanceDisplayName(item, t)} · ${item.account_id ?? item.id}` }))]}
                 onChange={setConnectInstanceId} dataAttr="data-im-instance" />
             </SettingField> : null}
-            <button type="button" className={SECONDARY_BUTTON} data-im-check disabled={action.saving || (text.trim() === '' && checkOnlyInstanceId === '')}
-              onClick={() => { void action.run(async () => {
-                let id = checkOnlyInstanceId;
-                if (text.trim() !== '') {
-                  const result = await client.imSessions.paste(text, selectedConnectInstance === '' ? undefined : selectedConnectInstance);
+
+            {activeSetupPlatform === undefined ? (
+              <div className="space-y-3" data-im-paste-panel>
+                <label className="block space-y-1 text-[13px] text-ink-soft">
+                  <span>{t('st.im.paste')}</span>
+                  <textarea data-im-paste value={text} rows={2} placeholder={t('st.im.pastePlaceholder')} className={INPUT} onChange={(event) => { setText(event.target.value); }} />
+                </label>
+                <button type="button" className={SECONDARY_BUTTON} data-im-check disabled={action.saving || (text.trim() === '' && checkOnlyInstanceId === '')}
+                  onClick={() => { void action.run(async () => {
+                    let id = checkOnlyInstanceId;
+                    if (text.trim() !== '') {
+                      const result = await client.imSessions.paste(text, selectedConnectInstance === '' ? undefined : selectedConnectInstance);
+                      setPasteNote(result);
+                      setText('');
+                      id = result.provider_instance_id;
+                      setConnectInstanceId(id);
+                      queryClient.setQueryData(KEY, await client.imSessions.snapshot());
+                    }
+                    const checked = await client.imSessions.check(id);
+                    if (!checked.ok) throw new Error(checked.detail ?? t('st.im.error'));
+                    const next = await client.imSessions.listen(id, true);
+                    setConnectOpen(false);
+                    return next;
+                  }); }}>{t('st.im.check')}</button>
+                {pasteNote !== undefined && pasteNote.ignored_keys.length > 0 ? <p className="text-[13px] text-ink-soft" data-im-ignored>{t('st.im.ignored')}: {pasteNote.ignored_keys.join(', ')}</p> : null}
+                {pasteNote?.chat_hint_ignored === true ? <p className="text-[13px] text-ink-soft" data-im-chat-hint>{t('st.im.chatHint')}</p> : null}
+              </div>
+            ) : (
+              <PlatformSetupForm
+                key={activeSetupPlatform.provider_kind}
+                platform={activeSetupPlatform}
+                instanceId={matchingInstances.some((item) => item.id === selectedConnectInstance) ? selectedConnectInstance : undefined}
+                savedInstanceId={savedSetupInstanceId}
+                onSaved={async (result) => {
                   setPasteNote(result);
-                  setText('');
-                  id = result.provider_instance_id;
-                  setConnectInstanceId(id);
+                  setConnectInstanceId(result.provider_instance_id);
+                  setSavedSetupInstanceId(result.provider_instance_id);
                   queryClient.setQueryData(KEY, await client.imSessions.snapshot());
-                }
-                const checked = await client.imSessions.check(id);
-                if (!checked.ok) throw new Error(checked.detail ?? t('st.im.error'));
-                const next = await client.imSessions.listen(id, true);
-                setConnectOpen(false);
-                return next;
-              }); }}>{t('st.im.check')}</button>
-            {pasteNote !== undefined && pasteNote.ignored_keys.length > 0 ? <p className="text-[13px] text-ink-soft" data-im-ignored>{t('st.im.ignored')}: {pasteNote.ignored_keys.join(', ')}</p> : null}
-            {pasteNote?.chat_hint_ignored === true ? <p className="text-[13px] text-ink-soft" data-im-chat-hint>{t('st.im.chatHint')}</p> : null}
+                }}
+                onCheckAndListen={(id) => {
+                  void action.run(async () => {
+                    const checked = await client.imSessions.check(id);
+                    if (!checked.ok) throw new Error(checked.detail ?? t('st.im.error'));
+                    const next = await client.imSessions.listen(id, true);
+                    setConnectOpen(false);
+                    return next;
+                  });
+                }}
+                busy={action.saving}
+              />
+            )}
           </div>
 
           <div className="space-y-6" data-im-accounts>
-            {accounts.map((account) => <AccountChannels key={account.id} account={account} data={data} catalog={catalog.data} initialTarget={initialTarget} refresh={() => { void snapshot.refetch(); }} reauthorize={() => { setConnectInstanceId(account.id); setConnectOpen(true); }} />)}
+            {accounts.map((account) => (
+              <AccountChannels
+                key={account.id}
+                account={account}
+                data={data}
+                catalog={catalog.data}
+                setupPlatform={setupPlatforms.find((item) => item.provider_kind === account.provider_kind)}
+                initialTarget={initialTarget}
+                refresh={() => { void snapshot.refetch(); }}
+                reauthorize={() => {
+                  setConnectInstanceId(account.id);
+                  if (isSetupProvider(account.provider_kind) && setupPlatforms.some((item) => item.provider_kind === account.provider_kind)) {
+                    setConnectMode(account.provider_kind);
+                  } else {
+                    setConnectMode('paste');
+                  }
+                  setConnectOpen(true);
+                }}
+              />
+            ))}
           </div>
           {accounts.length === 0 ? <p data-im-empty className="text-[13px] text-ink-soft">{t('st.im.empty')}</p> : null}
           {data.strangers.length > 0 ? <p data-im-strangers className="text-[13px] text-ink-soft">{t('st.im.strangers')}: {data.strangers.reduce((sum, item) => sum + item.count, 0)}</p> : null}
@@ -172,8 +288,595 @@ export function ImSessionCard() {
   );
 }
 
-function AccountChannels({ account, data, catalog, initialTarget, refresh, reauthorize }: {
-  account: ImInstanceStatus; data: ImSessionSnapshot; catalog: ImCatalog | undefined; initialTarget: string; refresh: () => void; reauthorize: () => void;
+function PlatformSetupForm({ platform, instanceId, savedInstanceId, onSaved, onCheckAndListen, busy }: {
+  platform: SetupPlatformEntry;
+  instanceId?: string;
+  savedInstanceId?: string;
+  onSaved: (result: ImPasteResult) => Promise<void>;
+  onCheckAndListen: (instanceId: string) => void;
+  busy: boolean;
+}) {
+  const { t } = useI18n();
+  const { client } = useConnection();
+  const [fields, setFields] = useState<Record<string, string>>({});
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string>();
+  const [generatedLink, setGeneratedLink] = useState<string>();
+
+  // Discord helper state
+  const [discordAppId, setDiscordAppId] = useState('');
+  const [discordGuildId, setDiscordGuildId] = useState('');
+
+  // Slack helper state
+  const [slackAppName, setSlackAppName] = useState('');
+  const [slackClientId, setSlackClientId] = useState('');
+  const [slackClientSecret, setSlackClientSecret] = useState('');
+  const [slackRedirectUri, setSlackRedirectUri] = useState('http://127.0.0.1/slack-callback');
+  const [slackAttemptId, setSlackAttemptId] = useState<string>();
+  const [slackCode, setSlackCode] = useState('');
+  const [slackState, setSlackState] = useState('');
+
+  // Matrix helper state
+  const [matrixMethod, setMatrixMethod] = useState<'token' | 'password' | 'sso'>('token');
+  const [matrixServerInput, setMatrixServerInput] = useState('');
+  const [matrixDiscovery, setMatrixDiscovery] = useState<{ homeserver: string; login_types: string[]; sso: boolean }>();
+  const [matrixUser, setMatrixUser] = useState('');
+  const [matrixPassword, setMatrixPassword] = useState('');
+  const [matrixRedirectUri, setMatrixRedirectUri] = useState('http://127.0.0.1/matrix-callback');
+  const [matrixIdpId, setMatrixIdpId] = useState('');
+  const [matrixAttemptId, setMatrixAttemptId] = useState<string>();
+  const [matrixCallbackUri, setMatrixCallbackUri] = useState('');
+  const [matrixLoginToken, setMatrixLoginToken] = useState('');
+
+  const runSetup = async (request: ImSetupRequest) => {
+    setSubmitting(true);
+    setError(undefined);
+    try {
+      const res = await client.imSessions.setup(request);
+      if (res.kind === 'saved') {
+        await onSaved(res.result);
+      } else if (res.kind === 'link') {
+        setGeneratedLink(res.url);
+        if (request.action === 'slack_oauth_begin') {
+          setSlackAttemptId(res.attempt_id);
+        } else if (request.action === 'matrix_sso_begin') {
+          setMatrixAttemptId(res.attempt_id);
+          if (res.callback_uri !== undefined) setMatrixCallbackUri(res.callback_uri);
+        }
+      } else if (res.kind === 'discovery') {
+        setMatrixDiscovery({ homeserver: res.homeserver, login_types: res.login_types, sso: res.sso });
+        setFields((prev) => ({ ...prev, homeserver: res.homeserver }));
+      }
+    } catch (caught) {
+      setError(caught instanceof Error && caught.message.length > 0 ? caught.message : t('st.im.error'));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const canSaveDirect = platform.fields.every((field) => !field.required || (fields[field.key]?.trim() ?? '').length > 0);
+  const checkTargetId = savedInstanceId ?? instanceId;
+
+  return (
+    <div className="space-y-3" data-im-platform-setup={platform.provider_kind}>
+      <div className="flex flex-wrap items-center justify-between gap-2 text-[12px] text-ink-soft">
+        <CapabilitySummary capabilities={platform.capabilities} providerKind={platform.provider_kind} />
+        <a
+          href={platform.portal_url}
+          target="_blank"
+          rel="noreferrer"
+          data-im-setup-portal={platform.provider_kind}
+          className="underline-offset-2 hover:text-ink hover:underline"
+        >
+          {t('st.im.setup.portalLink')}
+        </a>
+      </div>
+
+      {platform.provider_kind === 'discord' && platform.methods.includes('oauth_install') ? (
+        <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end" data-im-discord-install>
+          <label className="block space-y-1">
+            <span className={FORM_LABEL}>{t('st.im.setup.discord.appId')}</span>
+            <input
+              data-im-discord-app-id
+              value={discordAppId}
+              placeholder="123456789012345678"
+              className={`${INPUT} font-mono`}
+              onChange={(event) => { setDiscordAppId(event.target.value); }}
+            />
+          </label>
+          <label className="block space-y-1">
+            <span className={FORM_LABEL}>{t('st.im.setup.discord.guildId')}</span>
+            <input
+              data-im-discord-guild-id
+              value={discordGuildId}
+              className={`${INPUT} font-mono`}
+              onChange={(event) => { setDiscordGuildId(event.target.value); }}
+            />
+          </label>
+          <button
+            type="button"
+            className={SECONDARY_BUTTON}
+            data-im-discord-install-btn
+            disabled={submitting || !/^\d{1,22}$/u.test(discordAppId.trim())}
+            onClick={() => {
+              const guild = discordGuildId.trim();
+              void runSetup({
+                action: 'discord_install',
+                application_id: discordAppId.trim(),
+                ...(guild === '' ? {} : { guild_id: guild }),
+              });
+            }}
+          >
+            {t('st.im.setup.discord.installLink')}
+          </button>
+        </div>
+      ) : null}
+
+      {platform.provider_kind === 'slack' ? (
+        <div className="space-y-3" data-im-slack-helpers>
+          {platform.methods.includes('manifest') ? (
+            <div className="flex flex-wrap items-end gap-2">
+              <label className="min-w-[12rem] flex-1 space-y-1">
+                <span className={FORM_LABEL}>{t('st.im.setup.slack.appName')}</span>
+                <input
+                  data-im-slack-app-name
+                  value={slackAppName}
+                  placeholder="Kiki"
+                  className={INPUT}
+                  onChange={(event) => { setSlackAppName(event.target.value); }}
+                />
+              </label>
+              <button
+                type="button"
+                className={SECONDARY_BUTTON}
+                data-im-slack-manifest-btn
+                disabled={submitting}
+                onClick={() => {
+                  const name = slackAppName.trim();
+                  void runSetup({ action: 'slack_manifest', ...(name === '' ? {} : { name }) });
+                }}
+              >
+                {t('st.im.setup.slack.manifestLink')}
+              </button>
+            </div>
+          ) : null}
+
+          {platform.methods.includes('oauth_install') ? (
+            <AdvancedDetails summary={t('st.im.setup.slack.oauthToggle')} data-im-slack-oauth>
+              <div className="space-y-3 pt-1">
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <label className="block space-y-1">
+                    <span className={FORM_LABEL}>{t('st.im.setup.slack.clientId')}</span>
+                    <input
+                      data-im-slack-client-id
+                      value={slackClientId}
+                      className={`${INPUT} font-mono`}
+                      onChange={(event) => { setSlackClientId(event.target.value); }}
+                    />
+                  </label>
+                  <label className="block space-y-1">
+                    <span className={FORM_LABEL}>{t('st.im.setup.slack.redirectUri')}</span>
+                    <input
+                      data-im-slack-redirect-uri
+                      value={slackRedirectUri}
+                      className={`${INPUT} font-mono`}
+                      onChange={(event) => { setSlackRedirectUri(event.target.value); }}
+                    />
+                  </label>
+                </div>
+                <button
+                  type="button"
+                  className={SECONDARY_BUTTON}
+                  data-im-slack-oauth-begin
+                  disabled={submitting || slackClientId.trim() === '' || slackRedirectUri.trim() === ''}
+                  onClick={() => {
+                    void runSetup({
+                      action: 'slack_oauth_begin',
+                      client_id: slackClientId.trim(),
+                      redirect_uri: slackRedirectUri.trim(),
+                      ...(instanceId === undefined ? {} : { instance_id: instanceId }),
+                    });
+                  }}
+                >
+                  {t('st.im.setup.slack.oauthBegin')}
+                </button>
+                {slackAttemptId !== undefined ? (
+                  <div className="space-y-2 border-t border-hairline pt-2" data-im-slack-oauth-complete-form>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <label className="block space-y-1">
+                        <span className={FORM_LABEL}>{t('st.im.setup.slack.clientSecret')}</span>
+                        <input
+                          type="password"
+                          data-im-slack-client-secret
+                          value={slackClientSecret}
+                          className={`${INPUT} font-mono`}
+                          onChange={(event) => { setSlackClientSecret(event.target.value); }}
+                        />
+                      </label>
+                      <label className="block space-y-1">
+                        <span className={FORM_LABEL}>{t('st.im.setup.field.app_token')}</span>
+                        <input
+                          type="password"
+                          data-im-slack-oauth-app-token
+                          value={fields['app_token'] ?? ''}
+                          className={`${INPUT} font-mono`}
+                          onChange={(event) => { setFields((prev) => ({ ...prev, app_token: event.target.value })); }}
+                        />
+                      </label>
+                      <label className="block space-y-1">
+                        <span className={FORM_LABEL}>{t('st.im.setup.slack.code')}</span>
+                        <input
+                          data-im-slack-oauth-code
+                          value={slackCode}
+                          className={`${INPUT} font-mono`}
+                          onChange={(event) => { setSlackCode(event.target.value); }}
+                        />
+                      </label>
+                      <label className="block space-y-1">
+                        <span className={FORM_LABEL}>{t('st.im.setup.slack.state')}</span>
+                        <input
+                          data-im-slack-oauth-state
+                          value={slackState}
+                          className={`${INPUT} font-mono`}
+                          onChange={(event) => { setSlackState(event.target.value); }}
+                        />
+                      </label>
+                    </div>
+                    <button
+                      type="button"
+                      className={PRIMARY_BUTTON}
+                      data-im-slack-oauth-complete
+                      disabled={submitting || slackClientSecret.trim() === '' || (fields['app_token']?.trim() ?? '') === '' || slackCode.trim() === '' || slackState.trim() === ''}
+                      onClick={() => {
+                        void runSetup({
+                          action: 'slack_oauth_complete',
+                          attempt_id: slackAttemptId,
+                          state: slackState.trim(),
+                          code: slackCode.trim(),
+                          client_secret: slackClientSecret.trim(),
+                          app_token: fields['app_token']!.trim(),
+                        });
+                      }}
+                    >
+                      {t('st.im.setup.slack.oauthComplete')}
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            </AdvancedDetails>
+          ) : null}
+        </div>
+      ) : null}
+
+      {platform.provider_kind === 'matrix' ? (
+        <div className="space-y-3" data-im-matrix-helpers>
+          {platform.methods.includes('discovery') ? (
+            <div className="space-y-1.5">
+              <div className="flex flex-wrap items-end gap-2">
+                <label className="min-w-[14rem] flex-1 space-y-1">
+                  <span className={FORM_LABEL}>{t('st.im.setup.matrix.server')}</span>
+                  <input
+                    data-im-matrix-server
+                    value={matrixServerInput}
+                    placeholder="@bot:example.org / matrix.org"
+                    className={`${INPUT} font-mono`}
+                    onChange={(event) => { setMatrixServerInput(event.target.value); }}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className={SECONDARY_BUTTON}
+                  data-im-matrix-discover-btn
+                  disabled={submitting || matrixServerInput.trim() === ''}
+                  onClick={() => {
+                    void runSetup({ action: 'matrix_discover', server: matrixServerInput.trim() });
+                  }}
+                >
+                  {t('st.im.setup.matrix.discover')}
+                </button>
+              </div>
+              {matrixDiscovery !== undefined ? (
+                <p className="font-mono text-[12px] text-ink-soft" data-im-matrix-discovery-result>
+                  {t('st.im.setup.matrix.discovered', {
+                    homeserver: matrixDiscovery.homeserver,
+                    flows: matrixDiscovery.login_types.join(', '),
+                  })}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+
+          <div className="space-y-1.5">
+            <span className={FORM_LABEL}>{t('st.im.setup.matrix.authMethod')}</span>
+            <SettingsSegmented
+              ariaLabel={t('st.im.setup.matrix.authMethod')}
+              value={matrixMethod}
+              onChange={setMatrixMethod}
+              dataAttr="data-im-matrix-method"
+              choices={[
+                { value: 'token', label: t('st.im.setup.matrix.methodToken') },
+                ...(platform.methods.includes('password') ? [{ value: 'password' as const, label: t('st.im.setup.matrix.methodPassword') }] : []),
+                ...(platform.methods.includes('sso') ? [{ value: 'sso' as const, label: t('st.im.setup.matrix.methodSso') }] : []),
+              ]}
+            />
+          </div>
+
+          {matrixMethod === 'password' ? (
+            <div className="space-y-2" data-im-matrix-password-form>
+              <div className="grid gap-2 sm:grid-cols-3">
+                <label className="block space-y-1">
+                  <span className={FORM_LABEL}>{t('st.im.setup.field.homeserver')}</span>
+                  <input
+                    data-im-matrix-field="homeserver"
+                    value={fields['homeserver'] ?? ''}
+                    placeholder="https://matrix.example.org"
+                    className={`${INPUT} font-mono`}
+                    onChange={(event) => { setFields((prev) => ({ ...prev, homeserver: event.target.value })); }}
+                  />
+                </label>
+                <label className="block space-y-1">
+                  <span className={FORM_LABEL}>{t('st.im.setup.matrix.user')}</span>
+                  <input
+                    data-im-matrix-user
+                    value={matrixUser}
+                    className={`${INPUT} font-mono`}
+                    onChange={(event) => { setMatrixUser(event.target.value); }}
+                  />
+                </label>
+                <label className="block space-y-1">
+                  <span className={FORM_LABEL}>{t('st.im.setup.matrix.password')}</span>
+                  <input
+                    type="password"
+                    data-im-matrix-password
+                    value={matrixPassword}
+                    className={INPUT}
+                    onChange={(event) => { setMatrixPassword(event.target.value); }}
+                  />
+                </label>
+              </div>
+              <button
+                type="button"
+                className={PRIMARY_BUTTON}
+                data-im-matrix-password-submit
+                disabled={submitting || (fields['homeserver']?.trim() ?? '') === '' || matrixUser.trim() === '' || matrixPassword === ''}
+                onClick={() => {
+                  void runSetup({
+                    action: 'matrix_password',
+                    homeserver: fields['homeserver']!.trim(),
+                    user: matrixUser.trim(),
+                    password: matrixPassword,
+                    ...(instanceId === undefined ? {} : { instance_id: instanceId }),
+                  });
+                }}
+              >
+                {t('st.im.setup.matrix.passwordSubmit')}
+              </button>
+            </div>
+          ) : null}
+
+          {matrixMethod === 'sso' ? (
+            <div className="space-y-2" data-im-matrix-sso-form>
+              <div className="grid gap-2 sm:grid-cols-3">
+                <label className="block space-y-1">
+                  <span className={FORM_LABEL}>{t('st.im.setup.field.homeserver')}</span>
+                  <input
+                    data-im-matrix-field="homeserver"
+                    value={fields['homeserver'] ?? ''}
+                    placeholder="https://matrix.example.org"
+                    className={`${INPUT} font-mono`}
+                    onChange={(event) => { setFields((prev) => ({ ...prev, homeserver: event.target.value })); }}
+                  />
+                </label>
+                <label className="block space-y-1">
+                  <span className={FORM_LABEL}>{t('st.im.setup.matrix.redirectUri')}</span>
+                  <input
+                    data-im-matrix-redirect-uri
+                    value={matrixRedirectUri}
+                    className={`${INPUT} font-mono`}
+                    onChange={(event) => { setMatrixRedirectUri(event.target.value); }}
+                  />
+                </label>
+                <label className="block space-y-1">
+                  <span className={FORM_LABEL}>{t('st.im.setup.matrix.idpId')}</span>
+                  <input
+                    data-im-matrix-idp-id
+                    value={matrixIdpId}
+                    className={`${INPUT} font-mono`}
+                    onChange={(event) => { setMatrixIdpId(event.target.value); }}
+                  />
+                </label>
+              </div>
+              <button
+                type="button"
+                className={SECONDARY_BUTTON}
+                data-im-matrix-sso-begin
+                disabled={submitting || (fields['homeserver']?.trim() ?? '') === '' || matrixRedirectUri.trim() === ''}
+                onClick={() => {
+                  const idp = matrixIdpId.trim();
+                  void runSetup({
+                    action: 'matrix_sso_begin',
+                    homeserver: fields['homeserver']!.trim(),
+                    redirect_uri: matrixRedirectUri.trim(),
+                    ...(idp === '' ? {} : { idp_id: idp }),
+                    ...(instanceId === undefined ? {} : { instance_id: instanceId }),
+                  });
+                }}
+              >
+                {t('st.im.setup.matrix.ssoBegin')}
+              </button>
+              {matrixAttemptId !== undefined ? (
+                <div className="space-y-2 border-t border-hairline pt-2" data-im-matrix-sso-complete-form>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <label className="block space-y-1">
+                      <span className={FORM_LABEL}>{t('st.im.setup.matrix.callbackUri')}</span>
+                      <input
+                        data-im-matrix-callback-uri
+                        value={matrixCallbackUri}
+                        className={`${INPUT} font-mono`}
+                        onChange={(event) => { setMatrixCallbackUri(event.target.value); }}
+                      />
+                    </label>
+                    <label className="block space-y-1">
+                      <span className={FORM_LABEL}>{t('st.im.setup.matrix.loginToken')}</span>
+                      <input
+                        type="password"
+                        data-im-matrix-login-token
+                        value={matrixLoginToken}
+                        className={`${INPUT} font-mono`}
+                        onChange={(event) => { setMatrixLoginToken(event.target.value); }}
+                      />
+                    </label>
+                  </div>
+                  <button
+                    type="button"
+                    className={PRIMARY_BUTTON}
+                    data-im-matrix-sso-complete
+                    disabled={submitting || matrixCallbackUri.trim() === '' || matrixLoginToken.trim() === ''}
+                    onClick={() => {
+                      void runSetup({
+                        action: 'matrix_sso_complete',
+                        attempt_id: matrixAttemptId,
+                        callback_uri: matrixCallbackUri.trim(),
+                        login_token: matrixLoginToken.trim(),
+                      });
+                    }}
+                  >
+                    {t('st.im.setup.matrix.ssoComplete')}
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {generatedLink !== undefined ? (
+        <div className="flex flex-wrap items-center gap-2" data-im-setup-link>
+          <input readOnly value={generatedLink} aria-label={t('st.im.setup.generatedLink')} className={`${INPUT} min-w-0 flex-1 font-mono`} data-im-setup-link-input />
+          <a href={generatedLink} target="_blank" rel="noreferrer" className={SECONDARY_BUTTON} data-im-setup-link-open>
+            {t('st.im.setup.openLink')}
+          </a>
+        </div>
+      ) : null}
+
+      {platform.provider_kind !== 'matrix' || matrixMethod === 'token' ? (
+        <div className="space-y-3" data-im-setup-token-fields>
+          <div className={`grid gap-2 ${platform.fields.length > 1 ? 'sm:grid-cols-2' : ''}`}>
+            {platform.fields.map((field) => {
+              const labelKey = SETUP_FIELD_KEYS[field.key];
+              return (
+                <label key={field.key} className="block space-y-1">
+                  <span className={FORM_LABEL}>{labelKey === undefined ? field.label : t(labelKey)}</span>
+                  <input
+                    type={field.secret ? 'password' : 'text'}
+                    data-im-setup-field={field.key}
+                    value={fields[field.key] ?? ''}
+                    spellCheck={false}
+                    autoComplete="off"
+                    className={`${INPUT} font-mono`}
+                    onChange={(event) => {
+                      const val = event.target.value;
+                      setFields((prev) => ({ ...prev, [field.key]: val }));
+                    }}
+                  />
+                </label>
+              );
+            })}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className={PRIMARY_BUTTON}
+              data-im-setup-save
+              disabled={submitting || busy || !canSaveDirect}
+              onClick={() => {
+                const payload: Record<string, string> = {};
+                for (const field of platform.fields) {
+                  const val = fields[field.key]?.trim() ?? '';
+                  if (val !== '') payload[field.key] = val;
+                }
+                void runSetup({
+                  action: 'save',
+                  provider_kind: platform.provider_kind,
+                  ...(instanceId === undefined ? {} : { instance_id: instanceId }),
+                  fields: payload,
+                });
+              }}
+            >
+              {t('st.im.setup.saveSlot')}
+            </button>
+            {checkTargetId !== undefined && checkTargetId !== '' ? (
+              <button
+                type="button"
+                className={SECONDARY_BUTTON}
+                data-im-check
+                disabled={submitting || busy}
+                onClick={() => { onCheckAndListen(checkTargetId); }}
+              >
+                {t('st.im.check')}
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : checkTargetId !== undefined && checkTargetId !== '' ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className={SECONDARY_BUTTON}
+            data-im-check
+            disabled={submitting || busy}
+            onClick={() => { onCheckAndListen(checkTargetId); }}
+          >
+            {t('st.im.check')}
+          </button>
+        </div>
+      ) : null}
+
+      {savedInstanceId !== undefined ? (
+        <p className="text-[13px] text-ink-soft" data-im-setup-saved-notice>
+          {t('st.im.setup.savedNotice', { id: savedInstanceId })}
+        </p>
+      ) : null}
+      <FeedbackLine feedback={error === undefined ? null : { tone: 'error', text: error }} />
+    </div>
+  );
+}
+
+function CapabilitySummary({ capabilities, providerKind }: {
+  capabilities: SetupPlatformEntry['capabilities'];
+  providerKind: ImProviderKind;
+}) {
+  const { t } = useI18n();
+  const mediaLabels = capabilities.outbound
+    .filter((kind) => kind !== 'text')
+    .map((kind) => (MEDIA_KIND_KEYS[kind] !== undefined ? t(MEDIA_KIND_KEYS[kind]!) : kind));
+  return (
+    <div className="space-y-1 text-[12px] text-ink-soft" data-im-platform-capabilities={providerKind}>
+      {mediaLabels.length > 0 ? (
+        <p>{t('st.im.cap.outboundMedia', { kinds: mediaLabels.join(' / ') })}</p>
+      ) : null}
+      {capabilities.voice_rendering === 'unsupported' ? (
+        <p data-im-cap-voice={providerKind}>
+          {t('st.im.cap.voiceUnsupported', { rendering: capabilities.audio_rendering })}
+        </p>
+      ) : null}
+      {providerKind === 'matrix' && !capabilities.encrypted_rooms ? (
+        <p className="text-amber-ink" data-im-cap-matrix-unencrypted>
+          {t('st.im.cap.matrixUnencrypted')}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function AccountChannels({ account, data, catalog, setupPlatform, initialTarget, refresh, reauthorize }: {
+  account: ImInstanceStatus;
+  data: ImSessionSnapshot;
+  catalog: ImCatalog | undefined;
+  setupPlatform?: SetupPlatformEntry;
+  initialTarget: string;
+  refresh: () => void;
+  reauthorize: () => void;
 }) {
   const { t } = useI18n();
   const { client } = useConnection();
@@ -197,6 +900,11 @@ function AccountChannels({ account, data, catalog, initialTarget, refresh, reaut
           <span className="break-all font-mono" data-im-adapter={account.adapter}>{account.account_id ?? account.id}</span>
           <span data-im-instance-state={state.state} data-im-connection={account.connection}>{state.label}</span>
         </div>
+        {account.provider_kind === 'matrix' && setupPlatform?.capabilities.encrypted_rooms === false ? (
+          <p className="text-[12px] text-ink-soft" data-im-account-matrix-unencrypted>
+            {t('st.im.cap.matrixUnencrypted')}
+          </p>
+        ) : null}
       </div>
       <div className="flex flex-wrap gap-2">
         {bindings.length > 0 ? <button type="button" className={SECONDARY_BUTTON} data-im-start-bind={account.id} aria-expanded={showAdd}
@@ -211,7 +919,7 @@ function AccountChannels({ account, data, catalog, initialTarget, refresh, reaut
     {account.adapter === 'missing' ? <p data-im-missing className="mt-2 text-[13px] text-ink-soft">{t('st.im.missing')}</p> : null}
     <FeedbackLine feedback={action.error === undefined ? null : { tone: 'error', text: action.error }} />
     {bindings.length > 0 ? <div data-im-bindings-list className="mt-3 divide-y divide-hairline">
-      {bindings.map((binding) => <BindingRow key={binding.id} binding={binding} policy={data.policy} catalog={catalog} />)}
+      {bindings.map((binding) => <BindingRow key={binding.id} binding={binding} policy={data.policy} catalog={catalog} setupPlatform={setupPlatform} />)}
     </div> : null}
     {showAdd ? <div data-im-bind-flow={account.id} className="mt-3 space-y-2 bg-ink/[0.025] p-3 sm:p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -222,14 +930,20 @@ function AccountChannels({ account, data, catalog, initialTarget, refresh, reaut
       {!account.listening && account.adapter !== 'missing' ? <button type="button" data-im-bind-listen className={SECONDARY_BUTTON} disabled={action.saving} onClick={listen}>{t('st.im.startListenNow')}</button> : null}
     </div> : null}
     {discoveries.length > 0 ? <div className="mt-3 divide-y divide-hairline" data-im-discoveries={account.id}>
-      {discoveries.map((discovery) => <DiscoveryRow key={discovery.id} discovery={discovery} catalog={catalog} initialTarget={initialTarget} />)}
+      {discoveries.map((discovery) => <DiscoveryRow key={discovery.id} discovery={discovery} catalog={catalog} setupPlatform={setupPlatform} initialTarget={initialTarget} />)}
     </div> : null}
   </section>;
 }
 
-function BindingRow({ binding, policy, catalog }: { binding: ImBinding; policy: ImSessionSnapshot['policy']; catalog: ImCatalog | undefined }) {
+function BindingRow({ binding, policy, catalog, setupPlatform }: {
+  binding: ImBinding;
+  policy: ImSessionSnapshot['policy'];
+  catalog: ImCatalog | undefined;
+  setupPlatform?: SetupPlatformEntry;
+}) {
   const { t } = useI18n();
   const { client } = useConnection();
+  const queryClient = useQueryClient();
   const action = useImAction();
   const [expanded, setExpanded] = useState(false);
   const [removing, setRemoving] = useState(false);
@@ -239,12 +953,18 @@ function BindingRow({ binding, policy, catalog }: { binding: ImBinding; policy: 
     queryFn: async () => (await client.listSessions({ q: search.trim(), page_size: 20 })).items,
     enabled: expanded && search.trim() !== '',
   });
+  const targetChannelsQuery = useQuery({
+    queryKey: [...KEY, 'target-channels', binding.session_id],
+    queryFn: () => client.imSessions.channelViews(binding.session_id),
+    enabled: expanded && typeof client.imSessions.channelViews === 'function',
+  });
   const targetCatalog = catalog === undefined ? undefined : { ...catalog, sessions: [...new Map([...catalog.sessions, ...(sessions.data ?? []).map((item) => ({ id: item.id, title: item.title?.trim() || item.id }))].map((item) => [item.id, item])).values()] };
   const identity = identityLabel(binding.identity, t);
   const on = binding.enabled && imSessionAdmitted({ allowed: policy.allowed, defaultEnabled: policy.default_enabled, sessionEnabled: binding.session_enabled });
   const blocked = !policy.allowed || !binding.enabled;
   const update = (patch: ImBindingPatch) => { void action.run(() => client.imSessions.updateBinding(binding.id, patch)); };
   const targetValue = binding.persona_id === undefined ? `session:${binding.session_id}` : `persona:${binding.persona_id}`;
+  const boundChannelView = targetChannelsQuery.data?.channels.find((ch) => ch.id === `im:${binding.id}`);
   return <div data-im-binding={binding.id} aria-busy={action.saving} className="space-y-3 py-4">
     <div className="grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(180px,1fr)_auto] md:items-center">
       <div className="min-w-0 space-y-1">
@@ -274,7 +994,27 @@ function BindingRow({ binding, policy, catalog }: { binding: ImBinding; policy: 
           dataAttr="data-im-binding-policy" choices={[{ value: 'default', label: t('st.im.followDefault') }, { value: 'on', label: t('st.im.on') }, { value: 'off', label: t('st.im.off') }]}
           onChange={(value) => { update({ session_enabled: value === 'default' ? null : value === 'on' }); }} />
       </div>
-      <BindingOptions kind={binding.provider_kind} busy={binding.busy} reply={binding.reply} actions={binding.mobile_interactions} disabled={action.saving} prefix="data-im-binding"
+      {targetChannelsQuery.data !== undefined ? (
+        <div className="space-y-1.5" data-im-internal-channel={binding.session_id}>
+          <SettingField label={t('st.im.internalChannel')} htmlFor={`im-internal-${binding.id}`}>
+            <Toggle
+              id={`im-internal-${binding.id}`}
+              layout="bare"
+              label={t('st.im.internalChannel')}
+              checked={targetChannelsQuery.data.internal_enabled}
+              disabled={action.saving}
+              onChange={(enabled) => {
+                void action.run(async () => {
+                  await client.imSessions.setInternalChannel(binding.session_id, enabled);
+                  await queryClient.invalidateQueries({ queryKey: [...KEY, 'target-channels', binding.session_id] });
+                });
+              }}
+            />
+          </SettingField>
+          <Hint>{t('st.im.internalChannelHint')}</Hint>
+        </div>
+      ) : null}
+      <BindingOptions kind={binding.provider_kind} setupPlatform={setupPlatform} capabilities={boundChannelView?.capabilities} busy={binding.busy} reply={binding.reply} actions={binding.mobile_interactions} disabled={action.saving} prefix="data-im-binding"
         onBusy={(busy) => { update({ busy }); }} onReply={(reply) => { update({ reply }); }} onActions={(mobile_interactions) => { update({ mobile_interactions }); }} />
       <div className="flex flex-wrap items-center gap-2">
         <button type="button" className={SECONDARY_BUTTON} data-im-enabled={binding.id} disabled={action.saving} onClick={() => { update({ enabled: !binding.enabled }); }}>{t(binding.enabled ? 'st.im.disable' : 'st.im.enable')}</button>
@@ -289,7 +1029,12 @@ function BindingRow({ binding, policy, catalog }: { binding: ImBinding; policy: 
   </div>;
 }
 
-function DiscoveryRow({ discovery, catalog, initialTarget }: { discovery: ImDiscovery; catalog: ImCatalog | undefined; initialTarget: string }) {
+function DiscoveryRow({ discovery, catalog, setupPlatform, initialTarget }: {
+  discovery: ImDiscovery;
+  catalog: ImCatalog | undefined;
+  setupPlatform?: SetupPlatformEntry;
+  initialTarget: string;
+}) {
   const { t } = useI18n();
   const { client } = useConnection();
   const queryClient = useQueryClient();
@@ -313,12 +1058,12 @@ function DiscoveryRow({ discovery, catalog, initialTarget }: { discovery: ImDisc
     {!unsupported && selected.startsWith('persona:') ? <label className="flex min-h-8 items-center gap-2 text-[13px] text-ink-soft">
       <input type="checkbox" data-im-also-home checked={alsoHome} disabled={action.saving} onChange={(event) => { setAlsoHome(event.target.checked); }} />{t('st.im.alsoHome')}
     </label> : null}
-    {expanded ? <BindingOptions kind={discovery.provider_kind} busy={busy} reply={reply} actions={actions} disabled={action.saving} prefix="data-im"
+    {expanded ? <BindingOptions kind={discovery.provider_kind} setupPlatform={setupPlatform} busy={busy} reply={reply} actions={actions} disabled={action.saving} prefix="data-im"
       onBusy={setBusy} onReply={setReply} onActions={setActions} /> : null}
     <div className="flex flex-wrap gap-2">
       <button type="button" className={PRIMARY_BUTTON} data-im-confirm={discovery.id} disabled={unsupported || selected.length <= 8 || catalog === undefined || action.saving}
         onClick={() => { void action.run(async () => {
-          const next = await client.imSessions.confirm(discovery.id, { target: parseTarget(selected), busy, reply: liveText(discovery.provider_kind) ? reply : 'final', mobile_interactions: actions, also_home: selected.startsWith('persona:') && alsoHome });
+          const next = await client.imSessions.confirm(discovery.id, { target: parseTarget(selected), busy, reply: liveText(discovery.provider_kind, setupPlatform) ? reply : 'final', mobile_interactions: actions, also_home: selected.startsWith('persona:') && alsoHome });
           void queryClient.invalidateQueries({ queryKey: [...KEY, 'catalog'] });
           return next;
         }); }}>{t('st.im.confirm')}</button>
@@ -357,21 +1102,46 @@ function TargetPicker({ id, value, onChange, catalog, disabled }: { id: string; 
   </div>;
 }
 
-function BindingOptions({ kind, busy, reply, actions, disabled, prefix, onBusy, onReply, onActions }: {
-  kind: ImProviderKind; busy: 'queue' | 'steer'; reply: 'final' | 'edit'; actions: boolean; disabled: boolean; prefix: string;
-  onBusy: (value: 'queue' | 'steer') => void; onReply: (value: 'final' | 'edit') => void; onActions: (value: boolean) => void;
+function BindingOptions({ kind, setupPlatform, capabilities, busy, reply, actions, disabled, prefix, onBusy, onReply, onActions }: {
+  kind: ImProviderKind;
+  setupPlatform?: SetupPlatformEntry;
+  capabilities?: readonly ImChannelCapability[];
+  busy: 'queue' | 'steer';
+  reply: 'final' | 'edit';
+  actions: boolean;
+  disabled: boolean;
+  prefix: string;
+  onBusy: (value: 'queue' | 'steer') => void;
+  onReply: (value: 'final' | 'edit') => void;
+  onActions: (value: boolean) => void;
 }) {
   const { t } = useI18n();
-  return <div className="flex flex-wrap items-start gap-x-6 gap-y-3" data-im-bind-advanced>
-    <div className="space-y-1"><p className="text-[13px] text-ink-soft">{t('st.im.busy')}</p>
-      <SettingsSegmented ariaLabel={t('st.im.busy')} value={busy} onChange={onBusy} disabled={disabled} dataAttr={`${prefix}-busy`} choices={[{ value: 'queue', label: t('st.im.queue') }, { value: 'steer', label: t('st.im.steer') }]} />
+  const mediaLabels = (capabilities ?? [])
+    .map((cap) => cap.kind)
+    .filter((k) => k !== 'text')
+    .map((k) => (MEDIA_KIND_KEYS[k] !== undefined ? t(MEDIA_KIND_KEYS[k]!) : k));
+  return <div className="space-y-2" data-im-bind-advanced>
+    <div className="flex flex-wrap items-start gap-x-6 gap-y-3">
+      <div className="space-y-1"><p className="text-[13px] text-ink-soft">{t('st.im.busy')}</p>
+        <SettingsSegmented ariaLabel={t('st.im.busy')} value={busy} onChange={onBusy} disabled={disabled} dataAttr={`${prefix}-busy`} choices={[{ value: 'queue', label: t('st.im.queue') }, { value: 'steer', label: t('st.im.steer') }]} />
+      </div>
+      <div className="space-y-1"><p className="text-[13px] text-ink-soft">{t('st.im.text')}</p>
+        <ReplyMode kind={kind} setupPlatform={setupPlatform} value={reply} onChange={onReply} disabled={disabled} dataAttr={`${prefix}-text`} />
+      </div>
+      <div className="space-y-1"><p className="text-[13px] text-ink-soft">{t('st.im.actions')}</p>
+        <SettingsSegmented ariaLabel={t('st.im.actions')} value={actions ? 'on' : 'off'} disabled={disabled} dataAttr={`${prefix}-actions`} onChange={(value) => { onActions(value === 'on'); }} choices={[{ value: 'on', label: t('st.im.on') }, { value: 'off', label: t('st.im.off') }]} />
+      </div>
     </div>
-    <div className="space-y-1"><p className="text-[13px] text-ink-soft">{t('st.im.text')}</p>
-      <ReplyMode kind={kind} value={reply} onChange={onReply} disabled={disabled} dataAttr={`${prefix}-text`} />
-    </div>
-    <div className="space-y-1"><p className="text-[13px] text-ink-soft">{t('st.im.actions')}</p>
-      <SettingsSegmented ariaLabel={t('st.im.actions')} value={actions ? 'on' : 'off'} disabled={disabled} dataAttr={`${prefix}-actions`} onChange={(value) => { onActions(value === 'on'); }} choices={[{ value: 'on', label: t('st.im.on') }, { value: 'off', label: t('st.im.off') }]} />
-    </div>
+    {mediaLabels.length > 0 ? (
+      <p className="text-[12px] text-ink-soft" data-im-binding-media>
+        {t('st.im.cap.outboundMedia', { kinds: mediaLabels.join(' / ') })}
+      </p>
+    ) : null}
+    {setupPlatform?.capabilities.voice_rendering === 'unsupported' ? (
+      <p className="text-[12px] text-ink-soft" data-im-binding-voice-note>
+        {t('st.im.cap.voiceUnsupported', { rendering: setupPlatform.capabilities.audio_rendering })}
+      </p>
+    ) : null}
   </div>;
 }
 
@@ -435,13 +1205,21 @@ function ConnectionFailure({ detail }: { detail: ImConnectionDetail }) {
   </details>;
 }
 
-function liveText(kind: ImProviderKind): boolean {
-  return kind === 'telegram' || kind === 'feishu_app';
+function liveText(kind: ImProviderKind, setupPlatform?: SetupPlatformEntry): boolean {
+  if (setupPlatform !== undefined) return setupPlatform.capabilities.edit_text;
+  return kind === 'telegram' || kind === 'feishu_app' || kind === 'discord' || kind === 'slack' || kind === 'matrix';
 }
 
-function ReplyMode({ kind, value, onChange, disabled, dataAttr }: { kind: ImProviderKind; value: 'final' | 'edit'; onChange: (value: 'final' | 'edit') => void; disabled: boolean; dataAttr: string }) {
+function ReplyMode({ kind, setupPlatform, value, onChange, disabled, dataAttr }: {
+  kind: ImProviderKind;
+  setupPlatform?: SetupPlatformEntry;
+  value: 'final' | 'edit';
+  onChange: (value: 'final' | 'edit') => void;
+  disabled: boolean;
+  dataAttr: string;
+}) {
   const { t } = useI18n();
-  if (!liveText(kind)) return <div className="max-w-sm space-y-1 text-[13px] leading-5 text-ink-soft">
+  if (!liveText(kind, setupPlatform)) return <div className="max-w-sm space-y-1 text-[13px] leading-5 text-ink-soft">
     <span className="text-ink" data-im-text-fixed={kind}>{t('st.im.final')}</span>
     <p data-im-text-note>{t(kind === 'onebot_v11' ? 'st.im.qqText' : 'st.im.wechatText')}</p>
     {kind === 'onebot_v11' ? <p data-im-file-note>{t('st.im.fileNote')}</p> : null}

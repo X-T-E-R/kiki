@@ -1,4 +1,4 @@
-import type { ImBindingPatch, ImCatalog, ImConfirmRequest, ImProviderKind, ImSessionSnapshot } from '@kiki/protocol';
+import { imSessionAdmitted, type ImBindingPatch, type ImCatalog, type ImConfirmRequest, type ImProviderKind, type ImSessionSnapshot, type ImSetupCatalog, type ImSetupRequest, type ImSetupResult, type ImTargetChannels } from '@kiki/protocol';
 
 export const imFixtureCatalog: ImCatalog = {
   personas: [
@@ -9,6 +9,80 @@ export const imFixtureCatalog: ImCatalog = {
     { id: 'release-notes', title: 'Release notes' },
     { id: 'reading-list', title: 'Reading list' },
     { id: 'lin-daily', title: 'Lin daily', persona_id: 'lin' },
+  ],
+};
+
+export const imFixtureSetupCatalog: ImSetupCatalog = {
+  platforms: [
+    {
+      provider_kind: 'discord',
+      methods: ['oauth_install', 'token'],
+      portal_url: 'https://discord.com/developers/applications',
+      fields: [{ key: 'bot_token', secret: true, required: true, label: 'Bot token' }],
+      instructions: [
+        'Create an application and copy its bot token once. User-account tokens are not supported.',
+        'Enable Message Content Intent under Bot. Use discordInstallUrl(application_id) to choose a server and install the bot.',
+      ],
+      capabilities: {
+        inbound: ['text', 'image', 'file', 'voice', 'audio', 'video'],
+        outbound: ['text', 'image', 'file', 'audio', 'video'],
+        threads: true,
+        edit_text: true,
+        callbacks: false,
+        encrypted_rooms: false,
+        voice_rendering: 'unsupported',
+        audio_rendering: 'attachment',
+        transport: 'gateway',
+      },
+    },
+    {
+      provider_kind: 'slack',
+      methods: ['manifest', 'oauth_install', 'token'],
+      portal_url: 'https://api.slack.com/apps',
+      fields: [
+        { key: 'bot_token', secret: true, required: true, label: 'Bot token (xoxb)' },
+        { key: 'app_token', secret: true, required: true, label: 'App-level token (xapp)' },
+      ],
+      instructions: [
+        'Open slackManifestInstallUrl() to create the app with scopes, message events and Socket Mode already filled in.',
+        'Generate one app-level token with connections:write in Basic Information. Slack OAuth does not issue this token.',
+      ],
+      capabilities: {
+        inbound: ['text', 'image', 'file', 'audio', 'video'],
+        outbound: ['text', 'image', 'file', 'audio', 'video'],
+        threads: true,
+        edit_text: true,
+        callbacks: false,
+        encrypted_rooms: false,
+        voice_rendering: 'unsupported',
+        audio_rendering: 'attachment',
+        transport: 'socket_mode',
+      },
+    },
+    {
+      provider_kind: 'matrix',
+      methods: ['discovery', 'sso', 'password', 'token'],
+      portal_url: 'https://matrix.org/ecosystem/clients/',
+      fields: [
+        { key: 'homeserver', secret: false, required: true, label: 'Homeserver URL' },
+        { key: 'access_token', secret: true, required: true, label: 'Access token' },
+      ],
+      instructions: [
+        'Pass your Matrix user ID or server domain to discoverMatrix() for .well-known and available login flows.',
+        'Encrypted rooms and encrypted attachments are not supported in this batch; outbound plaintext into encrypted rooms is refused.',
+      ],
+      capabilities: {
+        inbound: ['text', 'image', 'file', 'voice', 'audio', 'video'],
+        outbound: ['text', 'image', 'file', 'audio', 'video'],
+        threads: true,
+        edit_text: true,
+        callbacks: false,
+        encrypted_rooms: false,
+        voice_rendering: 'unsupported',
+        audio_rendering: 'm.audio',
+        transport: 'sync',
+      },
+    },
   ],
 };
 
@@ -46,14 +120,109 @@ export function imSettingsSnapshot(): ImSessionSnapshot {
 /** In-memory fixture only. It never connects an account or sends a platform message. */
 export function createImSettingsFixture(initial: ImSessionSnapshot = imSettingsSnapshot()) {
   let state = structuredClone(initial);
+  const internalOff = new Set<string>();
   const calls: { operation: string; id?: string; body?: unknown }[] = [];
   const clone = () => structuredClone(state);
   const resolve = (target: ImConfirmRequest['target']) => target.kind === 'persona'
     ? { session_id: `${target.persona_id}-daily`, persona_id: target.persona_id }
     : { session_id: target.session_id, persona_id: undefined };
+  const upsertSavedInstance = (providerKind: ImProviderKind, instanceId?: string) => {
+    const id = instanceId ?? `account-${providerKind}`;
+    if (!state.instances.some((item) => item.id === id)) {
+      state.instances.push({
+        id,
+        provider_kind: providerKind,
+        account_id: id,
+        listening: false,
+        configured: true,
+        adapter: 'stopped',
+      });
+    }
+    return { provider_instance_id: id, provider_kind: providerKind, ignored_keys: [], chat_hint_ignored: false };
+  };
   const imSessions = {
     snapshot: async () => clone(),
     catalog: async () => structuredClone(imFixtureCatalog),
+    setupCatalog: async () => structuredClone(imFixtureSetupCatalog),
+    setup: async (request: ImSetupRequest): Promise<ImSetupResult> => {
+      calls.push({ operation: 'setup', body: structuredClone(request) });
+      if (request.action === 'save') {
+        return { kind: 'saved', result: upsertSavedInstance(request.provider_kind, request.instance_id) };
+      }
+      if (request.action === 'discord_install') {
+        return { kind: 'link', url: `https://discord.com/oauth2/authorize?client_id=${request.application_id}&scope=bot` };
+      }
+      if (request.action === 'slack_manifest') {
+        return { kind: 'link', url: `https://api.slack.com/apps?new_app=1&name=${encodeURIComponent(request.name ?? 'Kiki')}` };
+      }
+      if (request.action === 'slack_oauth_begin') {
+        return {
+          kind: 'link',
+          url: `https://slack.com/oauth/v2/authorize?client_id=${encodeURIComponent(request.client_id)}`,
+          attempt_id: 'attempt-slack-1',
+          callback_uri: request.redirect_uri,
+        };
+      }
+      if (request.action === 'slack_oauth_complete') {
+        return { kind: 'saved', result: upsertSavedInstance('slack') };
+      }
+      if (request.action === 'matrix_discover') {
+        return {
+          kind: 'discovery',
+          homeserver: 'https://matrix.example.test',
+          login_types: ['m.login.password', 'm.login.sso', 'm.login.token'],
+          sso: true,
+        };
+      }
+      if (request.action === 'matrix_sso_begin') {
+        return {
+          kind: 'link',
+          url: `${request.homeserver}/_matrix/client/v3/login/sso/redirect`,
+          attempt_id: 'attempt-matrix-1',
+          callback_uri: `${request.redirect_uri}?kiki_im_state=fixture-state`,
+        };
+      }
+      if (request.action === 'matrix_sso_complete') {
+        return { kind: 'saved', result: upsertSavedInstance('matrix') };
+      }
+      return { kind: 'saved', result: upsertSavedInstance('matrix', request.instance_id) };
+    },
+    channelViews: async (sessionId: string): Promise<ImTargetChannels> => {
+      const enabled = !internalOff.has(sessionId);
+      return {
+        internal_enabled: enabled,
+        channels: [
+          {
+            id: 'internal',
+            kind: 'internal',
+            enabled,
+            capabilities: [
+              { kind: 'image' },
+              { kind: 'file' },
+              { kind: 'audio', rendering: 'audio_player' },
+              { kind: 'voice', rendering: 'audio_player' },
+              { kind: 'video', rendering: 'video_player' },
+            ],
+          },
+          ...state.bindings.filter((item) => item.session_id === sessionId).map((item) => ({
+            id: `im:${item.id}`,
+            kind: 'im' as const,
+            enabled: item.enabled && imSessionAdmitted({ allowed: state.policy.allowed, defaultEnabled: state.policy.default_enabled, sessionEnabled: item.session_enabled }),
+            capabilities: item.provider_kind === 'onebot_v11'
+              ? [{ kind: 'image' }, { kind: 'audio' }, { kind: 'voice' }, { kind: 'video' }]
+              : item.provider_kind === 'discord' || item.provider_kind === 'slack' || item.provider_kind === 'matrix'
+                ? [{ kind: 'image' }, { kind: 'file' }, { kind: 'audio', rendering: item.provider_kind === 'matrix' ? 'm.audio' : 'attachment' }, { kind: 'video' }]
+                : [{ kind: 'image' }, { kind: 'file' }, { kind: 'audio' }, { kind: 'voice' }, { kind: 'video' }],
+          })),
+        ],
+      };
+    },
+    setInternalChannel: async (sessionId: string, enabled: boolean) => {
+      calls.push({ operation: 'setInternalChannel', id: sessionId, body: enabled });
+      if (enabled) internalOff.delete(sessionId);
+      else internalOff.add(sessionId);
+      return { enabled };
+    },
     setPolicy: async (policy: ImSessionSnapshot['policy']) => { calls.push({ operation: 'policy', body: policy }); state.policy = policy; return clone(); },
     check: async (id: string) => { calls.push({ operation: 'check', id }); return { ok: true, account_id: id }; },
     listen: async (id: string, listening: boolean) => {
