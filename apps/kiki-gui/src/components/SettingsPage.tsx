@@ -73,6 +73,25 @@ export { mcpConfigFromDraft, parseNamedAgentTools } from '@kiki/session-core/set
 const SCROLL_KEYS: ReadonlySet<string> = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
 
 /**
+ * The card that owns an object section's *list* page (`InstalledPluginsList`'s
+ * `st-card-plugins`, `WorkspacesSection`'s `st-card-workspaces`). That one hash
+ * means "the list", so a bookmark to the leaf still lands there even when the
+ * query names an object.
+ *
+ * Every other hash stays a jump *inside* the page the query names: an object
+ * page's own card hash opens that object and flashes the card, and a hash that
+ * names nothing (a stale anchor from another section, a copied address with a
+ * fragment on it) still opens the object — the query is what the address is
+ * for, and a page that silently fell back to its list would read as a dead
+ * link rather than as a link to a thing.
+ */
+const OBJECT_LIST_CARD_HASH: Readonly<Partial<Record<SectionId, string>>> = {
+  plugins: '#st-card-plugins',
+  extensions: '#st-card-plugins',
+  workspaces: '#st-card-workspaces',
+};
+
+/**
  * Address of the connected server, only when it is somewhere else. The
  * built-in server on this machine (loopback, or the origin serving this
  * page) returns null: its port means nothing to a person, so the settings
@@ -408,17 +427,19 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
 
   const activeGroup = active === null ? undefined : settingsGroupForSection(active);
   const activeLabelKey = active === null ? undefined : SECTIONS.find((candidate) => candidate.id === active)?.labelKey;
-  // One installed plugin's own settings page, or the installed list. The
-  // section's card hash targets the list, so a bookmark to the Plugins leaf
-  // lands on the list even when the query still names a plugin.
-  const activePluginId = (active === 'plugins' || active === 'extensions') && hash.replace(/^#/, '') === ''
+  // One installed plugin's own settings page, or the installed list. Only the
+  // list's own card hash means the list (see `OBJECT_LIST_CARD_HASH`); the
+  // query selects the plugin for every other address, so a copied or bookmarked
+  // link to a plugin opens that plugin instead of quietly showing the list.
+  const onListCard = active !== null && OBJECT_LIST_CARD_HASH[active] === hash;
+  const activePluginId = (active === 'plugins' || active === 'extensions') && !onListCard
     ? pluginSettingsIdFromQuery(search)
     : null;
 
   // One workspace's own page, or the list. A workspace is the unit a reader
   // configures, so it gets a page rather than a dialog; the query selects it,
   // exactly as `?plugin=` selects a plugin's own settings page.
-  const activeWorkspaceId = active === 'workspaces' && hash.replace(/^#/, '') === ''
+  const activeWorkspaceId = active === 'workspaces' && !onListCard
     ? workspaceSettingsIdFromQuery(search)
     : null;
 

@@ -1497,3 +1497,40 @@ describe('SettingsPage mobile drawer', () => {
     expect(document.activeElement).toBe(trigger);
   });
 });
+
+describe('SettingsPage object links survive an address hash', () => {
+  it('opens the plugin a link names even when the address still carries a stale hash', async () => {
+    const container = await renderSettings('/settings/plugins?plugin=kiki-notes#x');
+    await flush();
+    expect(container.querySelector('[data-plugin-settings-missing="kiki-notes"]')).not.toBeNull();
+    expect(container.querySelector('#st-card-plugins')).toBeNull();
+  });
+
+  it('opens the plugin a link names when the hash is one of that page\'s own cards', async () => {
+    const container = await renderSettings('/settings/extensions?tab=plugins&plugin=kiki-notes#st-card-plugin-notes');
+    await flush();
+    expect(container.querySelector('[data-plugin-settings-missing="kiki-notes"]')).not.toBeNull();
+    expect(container.querySelector('#st-card-plugins')).toBeNull();
+  });
+
+  it('keeps the installed list for its own card hash, even when the query names a plugin', async () => {
+    const container = await renderSettings('/settings/plugins?plugin=kiki-notes#st-card-plugins');
+    await flush();
+    expect(container.querySelector('#st-card-plugins')).not.toBeNull();
+    expect(container.querySelector('[data-plugin-settings-missing="kiki-notes"]')).toBeNull();
+  });
+
+  it('opens the workspace a link names when the hash is one of its own cards', async () => {
+    const container = await renderSettings('/settings/workspaces?workspace=ws-alpha#st-card-workspace-trust');
+    await flush();
+    expect(container.querySelector<HTMLInputElement>('[data-workspace-detail-name]')?.value).toBe('Alpha');
+    expect(container.querySelector('#st-card-workspaces')).toBeNull();
+  });
+
+  it('keeps the catalog for the catalog card hash, even when the query names a workspace', async () => {
+    const container = await renderSettings('/settings/workspaces?workspace=ws-alpha#st-card-workspaces');
+    await flush();
+    expect(container.querySelector('#st-card-workspaces')).not.toBeNull();
+    expect(container.querySelector('[data-workspace-detail-name]')).toBeNull();
+  });
+});
