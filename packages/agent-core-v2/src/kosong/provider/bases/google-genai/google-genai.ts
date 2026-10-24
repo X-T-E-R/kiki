@@ -4,6 +4,8 @@ import {
   APIConnectionError,
   APITimeoutError,
   ChatProviderError,
+  markProviderEventError,
+  markProviderHttpError,
   normalizeAPIStatusError,
 } from '#/kosong/contract/errors';
 import type { Message, StreamedMessagePart, ThinkPart, ToolCall } from '#/kosong/contract/message';
@@ -561,6 +563,14 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
   private _finishReason: FinishReason | null = null;
   private _rawFinishReason: string | null = null;
   private readonly _iter: AsyncGenerator<StreamedMessagePart>;
+  private _blocked = false;
+  private _grounded = false;
+
+  get thinkingOnlyRecoveryBlocked(): boolean { return this._blocked || this._grounded; }
+
+  get completionAuthority(): 'normal' | undefined {
+    return this._rawFinishReason === 'STOP' && !this.thinkingOnlyRecoveryBlocked ? 'normal' : undefined;
+  }
 
   constructor(
     response: AsyncIterable<Record<string, unknown>> | Record<string, unknown>,
@@ -598,6 +608,8 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
   }
 
   private _captureFinishReason(response: Record<string, unknown>): void {
+    const blockReason = (response['promptFeedback'] as Record<string, unknown> | undefined)?.['blockReason'];
+    if (blockReason !== undefined && blockReason !== null) this._blocked = true;
     const candidates = response['candidates'] as unknown[] | undefined;
     if (!candidates || candidates.length === 0) {
       return;
@@ -606,6 +618,9 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
     if (first === undefined) {
       return;
     }
+    if (first['groundingMetadata'] !== undefined) this._grounded = true;
+    const safetyRatings = first['safetyRatings'];
+    if (Array.isArray(safetyRatings) && safetyRatings.some(rating => rating?.blocked === true)) this._blocked = true;
     const raw = first['finishReason'] ?? first['finish_reason'];
     if (raw === undefined) {
       return;
@@ -727,7 +742,7 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
       if (error instanceof DOMException && error.name === 'AbortError') {
         throw error;
       }
-      throw convertGoogleGenAIError(error);
+      throw markProviderEventError(convertGoogleGenAIError(error), error instanceof GoogleApiError ? antigravityErrorInfoReason(error.message) : undefined);
     }
   }
 }
@@ -735,13 +750,39 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
 const NETWORK_RE = /network|connection|connect|disconnect|fetch failed/i;
 const TIMEOUT_RE = /timed?\s*out|timeout|deadline/i;
 
+const ANTIGRAVITY_ERROR_DOMAIN = 'sub2api.antigravity';
+
+function antigravityErrorInfoReason(message: string): string | undefined {
+  const jsonStart = message.indexOf('{');
+  if (jsonStart < 0) return undefined;
+  try {
+    const body: unknown = JSON.parse(message.slice(jsonStart));
+    const details = (body as { error?: { details?: unknown } }).error?.details;
+    if (!Array.isArray(details)) return undefined;
+    for (const detail of details) {
+      if (typeof detail !== 'object' || detail === null) continue;
+      const entry = detail as { '@type'?: unknown; domain?: unknown; reason?: unknown };
+      if (typeof entry['@type'] !== 'string' || !entry['@type'].endsWith('google.rpc.ErrorInfo')) continue;
+      if (entry.domain !== ANTIGRAVITY_ERROR_DOMAIN) continue;
+      if (typeof entry.reason !== 'string' || entry.reason.length === 0) continue;
+      return entry.reason;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function convertGoogleGenAIError(error: unknown): ChatProviderError {
   if (error instanceof GoogleApiError) {
-    return normalizeAPIStatusError(
-      error.status,
-      error.message,
-      undefined,
-      parseRetryInfoDelayMs(error.message),
+    return markProviderHttpError(
+      normalizeAPIStatusError(
+        error.status,
+        error.message,
+        undefined,
+        parseRetryInfoDelayMs(error.message),
+      ),
+      antigravityErrorInfoReason(error.message),
     );
   }
   if (error instanceof Error) {

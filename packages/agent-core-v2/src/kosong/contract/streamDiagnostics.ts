@@ -76,7 +76,7 @@ export function safeProviderFailureDetails(value: unknown): Readonly<Record<stri
   if (typeof value !== 'object' || value === null) return {};
   const source = value as Record<string, unknown>;
   const result: Record<string, unknown> = {};
-  if (source['errorSource'] === 'provider_stream' || source['errorSource'] === 'provider_event') result['errorSource'] = source['errorSource'];
+  if (source['errorSource'] === 'provider_stream' || source['errorSource'] === 'provider_event' || source['errorSource'] === 'provider_http') result['errorSource'] = source['errorSource'];
   for (const key of ['upstreamErrorType', 'upstreamErrorCode', 'requestId', 'traceId'] as const) {
     if (source[key] === null) result[key] = null;
     else {

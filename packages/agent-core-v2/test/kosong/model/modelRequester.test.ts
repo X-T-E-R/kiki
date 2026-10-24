@@ -148,7 +148,60 @@ async function collect(stream: AsyncIterable<ModelRequestEvent>): Promise<ModelR
 
 const INPUT = { systemPrompt: 'sys', tools: [], messages: [] };
 
+function promiseGate<T = void>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
 describe('ModelRequesterImpl request execution', () => {
+  it('rejects buffered old parts after abort instead of draining them into a later consumer', async () => {
+    const provider = new FakeChatProvider();
+    provider.handler = async () => streamOf(Array.from({ length: 200 }, (_, index) => ({ type: 'text', text: String(index) })));
+    const release = vi.fn();
+    const controller = new AbortController();
+    const requester = new ModelRequesterImpl(modelWith(staticAuth()), registryReturning(provider), {
+      acquire: async () => ({ release }),
+    });
+    const iterator = requester.request(INPUT, controller.signal)[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toMatchObject({ type: 'part' });
+    await vi.waitFor(() => expect(release).toHaveBeenCalledOnce());
+    controller.abort();
+    await expect(iterator.next()).rejects.toMatchObject({ name: 'AbortError' });
+    await iterator.return!();
+    expect(provider.calls).toHaveLength(1);
+  });
+
+  it('does not refresh or replay an unauthorized request when retry is never', async () => {
+    const provider = new FakeChatProvider();
+    const error = new APIStatusError(401, 'fixture auth failure');
+    provider.handler = async () => { throw error; };
+    const getAuth = vi.fn(async () => ({ apiKey: 'example-key' }));
+    const requester = new ModelRequesterImpl(modelWith({ canRefresh: true, getAuth }), registryReturning(provider));
+    await expect(collect(requester.request(INPUT, undefined, { retry: 'never' }))).rejects.toBe(error);
+    expect(getAuth).toHaveBeenCalledOnce();
+    expect(provider.calls).toHaveLength(1);
+  });
+
+  it('does not refresh or replay an unauthorized request after cancellation', async () => {
+    const provider = new FakeChatProvider();
+    const entered = promiseGate<void>();
+    const finish = promiseGate<StreamedMessage>();
+    provider.handler = () => { entered.resolve(); return finish.promise; };
+    const getAuth = vi.fn(async () => ({ apiKey: 'example-key' }));
+    const requester = new ModelRequesterImpl(modelWith({ canRefresh: true, getAuth }), registryReturning(provider));
+    const controller = new AbortController();
+    const result = collect(requester.request(INPUT, controller.signal));
+    const rejected = expect(result).rejects.toMatchObject({ name: 'AbortError' });
+    await entered.promise;
+    controller.abort();
+    finish.reject(new APIStatusError(401, 'cancelled request'));
+    await rejected;
+    expect(getAuth).toHaveBeenCalledOnce();
+    expect(provider.calls).toHaveLength(1);
+  });
+
   it.each(['openai', 'openai_responses'] as const)('omits speculative %s output fields and preserves real ceilings on the wire', async (protocol) => {
     const payloads: Record<string, unknown>[] = [];
     const client = {

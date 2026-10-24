@@ -7,12 +7,15 @@ import { nativeSearchParameters, nativeFetchParameters } from '#/app/nbSearch/na
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { APIError as AnthropicAPIError } from '@anthropic-ai/sdk';
+import { ApiError as GoogleApiError } from '@google/genai';
 import OpenAI from 'openai';
 import type { Response as OpenAIResponse, ResponseOutputMessage, ResponseOutputText, ResponseStreamEvent } from 'openai/resources/responses/responses';
-import { generate } from '#/kosong/contract/generate';
+import { generate, readGenerateFailureFacts } from '#/kosong/contract/generate';
 import { fromErrorPayload, toErrorPayload } from '#/_base/errors/serialize';
 import { safeProviderFailureDetails } from '#/kosong/contract/streamDiagnostics';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentTaskService } from '#/agent/task/task';
+import { ITaskService } from '#/app/task/task';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 import { createTestAgent, permissionModeServices, appService } from '../../harness';
@@ -24,6 +27,7 @@ import {
   APIProviderRateLimitError,
   APIStatusError,
   isRetryableGenerateError,
+  readProviderEventErrorCode,
 } from '#/kosong/contract/errors';
 import type { Message } from '#/kosong/contract/message';
 import type {
@@ -38,10 +42,11 @@ import {
   resolveDefaultMaxTokens,
 } from '#/kosong/provider/bases/anthropic/anthropic';
 import '#/kosong/provider/bases/google-genai/index';
-import { GoogleGenAIChatProvider } from '#/kosong/provider/bases/google-genai/google-genai';
+import { GoogleGenAIChatProvider, GoogleGenAIStreamedMessage } from '#/kosong/provider/bases/google-genai/google-genai';
 import '#/kosong/provider/bases/openai/index';
-import { OpenAIResponsesChatProvider } from '#/kosong/provider/bases/openai/openai-responses';
-import { OpenAILegacyChatProvider } from '#/kosong/provider/bases/openai/openai-legacy';
+import { OpenAIResponsesChatProvider, OpenAIResponsesStreamedMessage } from '#/kosong/provider/bases/openai/openai-responses';
+import { OpenAILegacyChatProvider, OpenAILegacyStreamedMessage } from '#/kosong/provider/bases/openai/openai-legacy';
+import { ReasoningKeyDialect } from '#/kosong/provider/bases/openai/reasoning-key';
 import {
   mergeProviderRequestAuth,
   mergeRequestHeaders,
@@ -1676,6 +1681,38 @@ async function* anthropicEventStream(): AsyncIterable<unknown> {
   yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 1 } };
 }
 
+async function* anthropicEventStreamWithStop(): AsyncIterable<unknown> {
+  yield* anthropicEventStream();
+  yield { type: 'message_stop' };
+}
+
+async function* anthropicThinkingOnlyStopStream(): AsyncIterable<unknown> {
+  yield {
+    type: 'message_start',
+    message: { id: 'msg_stop', usage: { input_tokens: 11, output_tokens: 3 } },
+  };
+  yield { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } };
+  yield { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'private reasoning' } };
+  yield { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig-example' } };
+  yield { type: 'content_block_stop', index: 0 };
+  yield {
+    type: 'error',
+    error: { type: 'api_error', code: 'antigravity_thinking_only', message: 'clean eof after thinking' },
+  };
+}
+
+async function* anthropicSignedThinkUnnamedErrorStream(): AsyncIterable<unknown> {
+  yield {
+    type: 'message_start',
+    message: { id: 'msg_unnamed', usage: { input_tokens: 7, output_tokens: 2 } },
+  };
+  yield { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } };
+  yield { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'kept thought' } };
+  yield { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig-kept' } };
+  yield { type: 'content_block_stop', index: 0 };
+  yield { type: 'error', error: { type: 'api_error', message: 'upstream reset' } };
+}
+
 async function* anthropicEventStreamWithoutUsage(): AsyncIterable<unknown> {
   yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } };
   yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hello' } };
@@ -3125,13 +3162,13 @@ describe('Responses safe stream diagnostics', () => {
       type: 'internal_server_error', code: 'stream_failed', message: 'fixture SDK failure', api_key: 'sdk-secret', text: 'private SDK body',
     } }]);
     expect(payload.details).toMatchObject({
-      errorSource: 'provider_stream', upstreamErrorType: 'internal_server_error', upstreamErrorCode: 'stream_failed',
+      errorSource: 'provider_event', upstreamErrorType: 'internal_server_error', upstreamErrorCode: 'stream_failed',
       requestId: 'request-fixture', traceId: 'trace-fixture',
       streamDiagnostics: { endSource: 'sdk_error', eventCount: 0, errorEventCount: 0, terminalTextChars: null },
     });
     expect(JSON.stringify(payload)).not.toMatch(/sdk-secret|private SDK body|header-secret/);
     expect(safeProviderFailureDetails(payload.details)).toEqual({
-      errorSource: 'provider_stream', upstreamErrorType: 'internal_server_error', upstreamErrorCode: 'stream_failed',
+      errorSource: 'provider_event', upstreamErrorType: 'internal_server_error', upstreamErrorCode: 'stream_failed',
       requestId: 'request-fixture', traceId: 'trace-fixture', streamDiagnostics: payload.details?.['streamDiagnostics'],
     });
   });
@@ -3247,6 +3284,217 @@ describe('Responses completed silence through the agent loop', () => {
       expect(wire.filter(entry => entry.event === 'usage.record')).toHaveLength(2);
     } finally {
       await ctx.dispose();
+    }
+  });
+});
+
+describe('completion authority from the provider protocol', () => {
+  it('claims normal authority only for a Messages message_stop with a normal stop reason', async () => {
+    const provider = new AnthropicChatProvider({ model: 'example-model', apiKey: 'sk-probe', baseUrl: 'https://api.example.test' });
+    const client = sdkClient(provider) as { messages: { create: unknown } };
+    client.messages.create = vi.fn().mockResolvedValue(anthropicEventStreamWithStop());
+
+    const stream = await provider.generate('', [], PROBE_HISTORY);
+    await drain(stream);
+
+    expect(stream.completionAuthority).toBe('normal');
+  });
+
+  it('claims no authority when the stream ends without message_stop', async () => {
+    const provider = new AnthropicChatProvider({ model: 'example-model', apiKey: 'sk-probe', baseUrl: 'https://api.example.test' });
+    const client = sdkClient(provider) as { messages: { create: unknown } };
+    client.messages.create = vi.fn().mockResolvedValue(anthropicEventStreamWithoutUsage());
+
+    const stream = await provider.generate('', [], PROBE_HISTORY);
+    await drain(stream);
+
+    expect(stream.finishReason).toBe('completed');
+    expect(stream.completionAuthority).toBeUndefined();
+  });
+
+  it('keeps the provider event code exact and exposes thinking facts without claiming a normal completion', async () => {
+    const provider = new AnthropicChatProvider({ model: 'example-model', apiKey: 'sk-probe', baseUrl: 'https://api.example.test' });
+    const client = sdkClient(provider) as { messages: { create: unknown } };
+    client.messages.create = vi.fn().mockResolvedValue(anthropicThinkingOnlyStopStream());
+
+    const failure = await generate(provider, '', [], PROBE_HISTORY).catch((error: unknown) => error);
+
+    expect(readProviderEventErrorCode(failure)).toBe('antigravity_thinking_only');
+    expect(toErrorPayload(failure).details).toMatchObject({
+      errorSource: 'provider_event',
+      upstreamErrorCode: 'antigravity_thinking_only',
+    });
+    expect(safeProviderFailureDetails(toErrorPayload(failure).details)).toMatchObject({
+      errorSource: 'provider_event',
+      upstreamErrorCode: 'antigravity_thinking_only',
+    });
+    const facts = readGenerateFailureFacts(failure);
+    expect(facts?.message.content).toEqual([
+      { type: 'think', think: 'private reasoning', encrypted: 'sig-example' },
+    ]);
+    expect(facts?.message.toolCalls).toEqual([]);
+    expect(facts?.usage).toMatchObject({ inputOther: 11, output: 3 });
+  });
+
+  it('preserves signed thinking for an unnamed api_error without inventing a machine code', async () => {
+    const provider = new AnthropicChatProvider({ model: 'example-model', apiKey: 'sk-probe', baseUrl: 'https://api.example.test' });
+    const client = sdkClient(provider) as { messages: { create: unknown } };
+    client.messages.create = vi.fn().mockResolvedValue(anthropicSignedThinkUnnamedErrorStream());
+
+    const stream = await provider.generate('', [], PROBE_HISTORY);
+    await drain(stream);
+
+    expect(stream.finishReason).toBe('completed');
+    expect(stream.completionAuthority).toBeUndefined();
+  });
+
+  it.each([
+    { name: 'google STOP', authority: 'normal', build: () => new GoogleGenAIStreamedMessage({ candidates: [{ content: { parts: [] }, finishReason: 'STOP' }] }, false, undefined) },
+    { name: 'google SAFETY', authority: undefined, build: () => new GoogleGenAIStreamedMessage({ candidates: [{ content: { parts: [] }, finishReason: 'SAFETY' }] }, false, undefined) },
+    { name: 'google blocked prompt', authority: undefined, build: () => new GoogleGenAIStreamedMessage({ promptFeedback: { blockReason: 'SAFETY' }, candidates: [{ content: { parts: [] }, finishReason: 'STOP' }] }, false, undefined) },
+    { name: 'chat stop', authority: 'normal', build: () => new OpenAILegacyStreamedMessage({ id: 'c1', created: 0, model: 'example', object: 'chat.completion', choices: [{ index: 0, logprobs: null, message: { role: 'assistant', content: 'ok', refusal: null }, finish_reason: 'stop' }] }, false, new ReasoningKeyDialect(undefined), null) },
+    { name: 'chat length', authority: undefined, build: () => new OpenAILegacyStreamedMessage({ id: 'c2', created: 0, model: 'example', object: 'chat.completion', choices: [{ index: 0, logprobs: null, message: { role: 'assistant', content: 'ok', refusal: null }, finish_reason: 'length' }] }, false, new ReasoningKeyDialect(undefined), null) },
+    { name: 'chat refusal', authority: undefined, build: () => new OpenAILegacyStreamedMessage({ id: 'c3', created: 0, model: 'example', object: 'chat.completion', choices: [{ index: 0, logprobs: null, message: { role: 'assistant', content: '', refusal: 'no' }, finish_reason: 'stop' }] }, false, new ReasoningKeyDialect(undefined), null) },
+    { name: 'responses completed', authority: 'normal', build: () => new OpenAIResponsesStreamedMessage({ id: 'r1', status: 'completed', output: [] }, false) },
+    { name: 'responses incomplete', authority: undefined, build: () => new OpenAIResponsesStreamedMessage({ id: 'r2', status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, output: [] }, false) },
+  ])('derives authority from the real finish evidence ($name)', async ({ authority, build }) => {
+    const stream = build();
+    await drain(stream);
+    expect(stream.completionAuthority).toBe(authority);
+  });
+
+  it('cancels the SDK transport a stream owns instead of waiting for another chunk', async () => {
+    const sdkController = new AbortController();
+    const provider = new AnthropicChatProvider({ model: 'example-model', apiKey: 'sk-probe', baseUrl: 'https://api.example.test' });
+    const client = sdkClient(provider) as { messages: { create: unknown } };
+    const held = new Promise<void>(() => {});
+    client.messages.create = vi.fn().mockResolvedValue({
+      controller: sdkController,
+      async *[Symbol.asyncIterator]() {
+        yield { type: 'message_start', message: { id: 'msg_hold', usage: { input_tokens: 1, output_tokens: 0 } } };
+        await held;
+      },
+    });
+
+    const stream = await provider.generate('', [], PROBE_HISTORY);
+    void (async () => { for await (const _part of stream) void _part; })().catch(() => undefined);
+    await vi.waitFor(() => expect(client.messages.create).toHaveBeenCalledOnce());
+    expect(sdkController.signal.aborted).toBe(false);
+    await stream.cancel?.();
+    expect(sdkController.signal.aborted).toBe(true);
+  });
+
+  it('aborts a real Anthropic SDK request against a silent upstream and closes its socket', async () => {
+    let closed!: () => void;
+    const socketClosed = new Promise<void>((resolve) => { closed = resolve; });
+    const server = createServer((request, response) => {
+      request.resume();
+      response.on('close', closed);
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.write(`event: message_start\ndata: ${JSON.stringify({ type: 'message_start', message: { id: 'msg_live', usage: { input_tokens: 5, output_tokens: 1 } } })}\n\n`);
+      response.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'still reasoning' } })}\n\n`);
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('provider did not bind');
+    const provider = new AnthropicChatProvider({ model: 'example-model', apiKey: 'sk-probe', baseUrl: `http://127.0.0.1:${address.port}` });
+    const controller = new AbortController();
+    const parts: string[] = [];
+    try {
+      const consuming = generate(provider, '', [], PROBE_HISTORY, {
+        onMessagePart: (part) => { parts.push(part.type); },
+      }, { signal: controller.signal });
+      const rejected = expect(consuming).rejects.toMatchObject({ name: 'AbortError' });
+      await vi.waitFor(() => expect(parts.length).toBeGreaterThan(0));
+      const abortedAt = performance.now();
+      controller.abort();
+      await rejected;
+      await Promise.race([socketClosed, new Promise((_resolve, reject) => setTimeout(() => reject(new Error('upstream socket stayed open')), 1000))]);
+      expect(performance.now() - abortedAt).toBeLessThanOrEqual(1000);
+      const settled = parts.length;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(parts.length).toBe(settled);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
+
+describe('native Google machine failure contract', () => {
+  it.each(['thinking-only', 'grounding', 'safety', 'partial'] as const)('keeps the ErrorInfo reason and guards local %s facts', async mode => {
+    const code = 'antigravity_thinking_only';
+    const stream = new GoogleGenAIStreamedMessage((async function* () {
+      yield { candidates: [{ content: { parts: [{ thought: true, text: 'private Google thought', thoughtSignature: 'signature-fixture' }] },
+        groundingMetadata: mode === 'grounding' ? { webSearchQueries: ['fixture'] } : undefined,
+        safetyRatings: mode === 'safety' ? [{ blocked: true }] : undefined,
+        finishReason: mode === 'partial' ? 'MAX_TOKENS' : undefined,
+      }], usageMetadata: { promptTokenCount: 7, candidatesTokenCount: 2 } };
+      throw new GoogleApiError({ status: 502, message: JSON.stringify({ error: { code: 502, status: 'UNAVAILABLE', details: [
+        { '@type': 'type.googleapis.com/google.rpc.ErrorInfo', domain: 'sub2api.antigravity', reason: code },
+      ] } }) });
+    })(), true);
+    const provider: ChatProvider = { name: 'google-genai', modelName: 'example-model', thinkingEffort: null, generate: async () => stream };
+    const failure = await generate(provider, '', [], PROBE_HISTORY).catch((error: unknown) => error);
+    expect(toErrorPayload(failure).details).toMatchObject({ errorSource: 'provider_event', upstreamErrorCode: code, statusCode: 502 });
+    const facts = readGenerateFailureFacts(failure);
+    if (mode === 'thinking-only') {
+      expect(facts?.message.content).toEqual([{ type: 'think', think: 'private Google thought', encrypted: 'signature-fixture' }]);
+      expect(facts?.usage).toMatchObject({ inputOther: 7, output: 2 });
+    } else expect(facts).toBeUndefined();
+  });
+});
+
+
+describe('user stop through the real agent and Anthropic SDK', () => {
+  it('settles the current response promptly and preserves detached child work', async () => {
+    let calls = 0;
+    let closed!: () => void;
+    const socketClosed = new Promise<void>(resolve => { closed = resolve; });
+    const server = createServer((request, response) => {
+      calls += 1;
+      request.resume();
+      response.on('close', closed);
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.write(`event: message_start\ndata: ${JSON.stringify({ type: 'message_start', message: { id: 'msg_stop_fixture', usage: { input_tokens: 1, output_tokens: 1 } } })}\n\n`);
+      response.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'waiting for user stop' } })}\n\n`);
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('fixture did not bind');
+    const provider = new AnthropicChatProvider({ model: 'example-model', apiKey: 'YOUR_API_KEY', baseUrl: `http://127.0.0.1:${address.port}` });
+    class FixtureRegistry extends ProtocolAdapterRegistry {
+      override createChatProvider(): ChatProvider { return provider; }
+    }
+    const ctx = createTestAgent(permissionModeServices('yolo'), appService(IProtocolAdapterRegistry, new FixtureRegistry()));
+    const child = ctx.get(ITaskService).defer();
+    const tasks = ctx.get(IAgentTaskService);
+    const tracked = tasks.track(child, { description: 'detached child fixture', detached: true,
+      toInfo: base => ({ ...base, kind: 'agent', agentId: 'child-fixture' }) });
+    try {
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Wait until stopped.' }] });
+      await vi.waitFor(() => expect(ctx.allEvents.some(entry => entry.event === 'thinking.delta')).toBe(true));
+      const start = performance.now();
+      await ctx.rpc.cancel({});
+      expect(performance.now() - start).toBeLessThanOrEqual(200);
+      await ctx.untilTurnEnd();
+      await socketClosed;
+      expect(performance.now() - start).toBeLessThanOrEqual(1000);
+      expect(ctx.allEvents.find(entry => entry.event === 'turn.ended')?.args).toMatchObject({ reason: 'cancelled' });
+      expect(calls).toBe(1);
+      expect(tasks.list().find(task => task.taskId === tracked.taskId)).toMatchObject({ status: 'running', detached: true });
+      expect(child.state).toBe('pending');
+      const partCount = ctx.allEvents.filter(entry => entry.event === 'thinking.delta').length;
+      await new Promise(resolve => setTimeout(resolve, 30));
+      expect(ctx.allEvents.filter(entry => entry.event === 'thinking.delta')).toHaveLength(partCount);
+      await ctx.rpc.cancel({});
+      expect(calls).toBe(1);
+    } finally {
+      child.resolve(undefined);
+      await ctx.dispose();
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
     }
   });
 });

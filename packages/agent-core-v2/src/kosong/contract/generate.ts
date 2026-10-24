@@ -1,4 +1,4 @@
-import { APIEmptyResponseError, createAbortError, isAbortError } from './errors';
+import { APIEmptyResponseError, createAbortError, isAbortError, noteExecutedRequestDelivery, readProviderEventErrorCode } from './errors';
 import { attachStreamDiagnostics, type StreamDiagnostics } from './streamDiagnostics';
 import {
   isContentPart,
@@ -25,6 +25,28 @@ export interface GenerateResult {
   readonly rawFinishReason: string | null;
   readonly traceId?: string | null;
   readonly diagnostics?: StreamDiagnostics;
+  readonly completionAuthority?: 'normal';
+}
+
+export interface GenerateFailureFacts {
+  readonly message: Message;
+  readonly usage: TokenUsage | null;
+}
+
+const THINKING_ONLY_STOP_CODE = 'antigravity_thinking_only';
+const generateFailureFacts = new WeakMap<object, GenerateFailureFacts>();
+
+/** The locally observed message and usage of a stream that already produced output
+ *  before its provider reported a clean thinking-only stop. Content stays out of the
+ *  error and its payload; only a caller recovering this exact failure may read it. */
+export function readGenerateFailureFacts(error: unknown): GenerateFailureFacts | undefined {
+  let current = error;
+  while (typeof current === 'object' && current !== null) {
+    const facts = generateFailureFacts.get(current);
+    if (facts !== undefined) return facts;
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return undefined;
 }
 
 export interface GenerateCallbacks {
@@ -67,12 +89,19 @@ export async function generate(
 
   options?.onRequestStart?.();
   const stream = await provider.generate(systemPrompt, wireTools, history, options);
+  let cancellation: Promise<void> | undefined;
+  const onAbort = (): void => {
+    cancellation ??= cancelStream(stream);
+    void cancellation.catch(() => undefined);
+  };
+  options?.signal?.addEventListener('abort', onAbort, { once: true });
+  if (options?.signal?.aborted) onAbort();
   try {
     if (stream.traceId !== undefined) {
       options?.onTraceId?.(stream.traceId);
     }
 
-    await throwIfAborted(options?.signal, stream);
+    await throwIfAborted(options?.signal);
 
     let serverDecodeMs = 0;
     let clientConsumeMs = 0;
@@ -88,11 +117,11 @@ export async function generate(
       }
 
       try {
-        await throwIfAborted(options?.signal, stream);
+        await throwIfAborted(options?.signal);
 
         if (callbacks?.onMessagePart !== undefined) {
           await callbacks.onMessagePart(deepCopyPart(part));
-          await throwIfAborted(options?.signal, stream);
+          await throwIfAborted(options?.signal);
         }
 
         if (
@@ -130,7 +159,7 @@ export async function generate(
       }
     }
 
-    await throwIfAborted(options?.signal, stream);
+    await throwIfAborted(options?.signal);
     if (firstPartAt !== undefined) {
       serverDecodeMs += Date.now() - lastResumeAt;
     }
@@ -179,12 +208,12 @@ export async function generate(
 
     if (callbacks?.onToolCall !== undefined) {
       for (const toolCall of message.toolCalls) {
-        await throwIfAborted(options?.signal, stream);
+        await throwIfAborted(options?.signal);
         await callbacks.onToolCall(toolCall);
       }
     }
 
-    await throwIfAborted(options?.signal, stream);
+    await throwIfAborted(options?.signal);
     stream.commitMessage?.(message);
 
     let result: GenerateResult = {
@@ -193,6 +222,7 @@ export async function generate(
       usage: stream.usage,
       finishReason: stream.finishReason,
       rawFinishReason: stream.rawFinishReason,
+      completionAuthority: stream.completionAuthority,
     };
     if (stream.diagnostics !== undefined) result = { ...result, diagnostics: stream.diagnostics };
     if (stream.traceId !== undefined) {
@@ -200,37 +230,41 @@ export async function generate(
     }
     return result;
   } catch (error) {
+    flushPending();
+    recordThinkingOnlyFacts(error, message, stream);
+    if (!isAbortError(error) && readGenerateFailureFacts(error) === undefined &&
+      (message.toolCalls.length > 0 || message.content.some(part => !isVacuousContentPart(part)))) {
+      noteExecutedRequestDelivery(error);
+    }
     throw attachStreamDiagnostics(error, stream.diagnostics, isAbortError(error));
+  } finally {
+    options?.signal?.removeEventListener('abort', onAbort);
+    await cancellation;
   }
 }
 
-type CancelableStream = StreamedMessage & {
-  cancel?: () => unknown;
-  return?: () => unknown;
-};
+function recordThinkingOnlyFacts(
+  error: unknown,
+  message: Message,
+  stream: StreamedMessage,
+): void {
+  if (typeof error !== 'object' || error === null) return;
+  if (readProviderEventErrorCode(error) !== THINKING_ONLY_STOP_CODE || stream.thinkingOnlyRecoveryBlocked) return;
+  if (stream.finishReason !== null && stream.finishReason !== 'completed') return;
+  const hasThinking = message.content.some((part) =>
+    part.type === 'think' && (part.think.trim().length > 0 || (part.encrypted?.length ?? 0) > 0));
+  const hasOtherOutput = message.toolCalls.length > 0 ||
+    message.content.some((part) => part.type !== 'think' && !isVacuousContentPart(part));
+  if (!hasThinking || hasOtherOutput) return;
+  generateFailureFacts.set(error, { message, usage: stream.usage });
+}
 
 async function cancelStream(stream: StreamedMessage): Promise<void> {
-  const cancelable = stream as CancelableStream;
-
-  try {
-    await cancelable.cancel?.();
-  } catch {}
-
-  try {
-    await cancelable.return?.();
-  } catch {}
+  await stream.cancel?.();
 }
 
-async function throwIfAborted(signal?: AbortSignal, stream?: StreamedMessage): Promise<void> {
-  if (!signal?.aborted) {
-    return;
-  }
-
-  if (stream !== undefined) {
-    await cancelStream(stream);
-  }
-
-  throw createAbortError();
+async function throwIfAborted(signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw createAbortError();
 }
 
 function isPendingToolCallAtIndex(

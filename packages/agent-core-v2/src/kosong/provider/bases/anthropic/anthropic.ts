@@ -28,6 +28,9 @@ import {
   APITimeoutError,
   ChatProviderError,
   classifyBaseApiError,
+  markProviderEventError,
+  markProviderHttpError,
+  readProviderEventErrorCode,
   normalizeAPIStatusError,
   parseRetryAfterMs,
   parseTraceId,
@@ -541,14 +544,14 @@ export function convertAnthropicError(
   }
   if (error instanceof AnthropicAPIError && typeof error.status === 'number') {
     const reqId = error.requestID ?? null;
-    return normalizeAPIStatusError(
+    return markProviderHttpError(normalizeAPIStatusError(
       error.status,
       error.message,
       reqId,
       parseRetryAfterMs(error.headers),
       undefined,
       error.error,
-    );
+    ), anthropicStreamErrorCode(error.error));
   }
   if (error instanceof AnthropicAPIError) {
     const permanentStatus = permanentAnthropicStreamStatus(anthropicStreamErrorType(error));
@@ -583,6 +586,14 @@ class AnthropicStreamedMessage implements StreamedMessage {
   private _finishReason: FinishReason | null = null;
   private _rawFinishReason: string | null = null;
   private readonly _iter: AsyncGenerator<StreamedMessagePart>;
+  private readonly _controller?: AbortController;
+  private _completedNormally = false;
+  private _continuationBlocked = false;
+
+  get completionAuthority(): 'normal' | undefined { return this._completedNormally && !this._continuationBlocked ? 'normal' : undefined; }
+  get thinkingOnlyRecoveryBlocked(): boolean { return this._continuationBlocked; }
+
+  cancel(): void { this._controller?.abort(); }
 
   constructor(
     response: unknown,
@@ -592,6 +603,7 @@ class AnthropicStreamedMessage implements StreamedMessage {
       | undefined,
   ) {
     if (isStream) {
+      this._controller = (response as { controller?: AbortController }).controller;
       this._iter = this._convertStreamResponse(response as AsyncIterable<MessageStreamEvent>);
     } else {
       this._iter = this._convertNonStreamResponse(
@@ -700,8 +712,10 @@ class AnthropicStreamedMessage implements StreamedMessage {
     this._id = response.id;
     this._extractUsage(response.usage);
     this._captureStopReason(response.stop_reason);
+    this._completedNormally = this._finishReason === 'completed';
 
     for (const block of response.content) {
+      if (!['text', 'thinking', 'redacted_thinking', 'tool_use'].includes(block.type)) this._continuationBlocked = true;
       switch (block.type) {
         case 'text':
           if (block.text !== undefined) {
@@ -770,6 +784,7 @@ class AnthropicStreamedMessage implements StreamedMessage {
           const blockEvt = evt as unknown as RawContentBlockStartEvent;
           const block = blockEvt.content_block;
           const blockIndex = blockEvt.index;
+          if (!['text', 'thinking', 'redacted_thinking', 'tool_use'].includes(block.type)) this._continuationBlocked = true;
           switch (block.type) {
             case 'text': {
               const text = typeof block.text === 'string' ? block.text : '';
@@ -832,8 +847,12 @@ class AnthropicStreamedMessage implements StreamedMessage {
           }
         } else if (eventType === 'error') {
           const streamedError = anthropicApiErrorFromStreamEvent(evt);
-          if (preserveSignedThink(streamedError)) return;
-          throw convertAnthropicError(streamedError, this._convertErrorHook);
+          const streamErrorCode = anthropicStreamErrorCode(evt);
+          if (streamErrorCode === undefined && preserveSignedThink(streamedError)) return;
+          throw markProviderEventError(
+            convertAnthropicError(streamedError, this._convertErrorHook),
+            streamErrorCode,
+          );
         } else if (eventType === 'content_block_stop') {
         } else if (eventType === 'message_delta') {
           const deltaUsage = (evt as { usage?: Record<string, unknown> }).usage;
@@ -863,11 +882,17 @@ class AnthropicStreamedMessage implements StreamedMessage {
               messageDeltaPayload['stop_reason'] as string | null | undefined,
             );
           }
+        } else if (eventType === 'message_stop') {
+          this._completedNormally = this._finishReason === 'completed';
         }
       }
     } catch (error: unknown) {
-      if (preserveSignedThink(error)) return;
-      throw convertAnthropicError(error, this._convertErrorHook);
+      this._completedNormally = false;
+      const code = error instanceof AnthropicAPIError
+        ? anthropicStreamErrorCode(error.error)
+        : readProviderEventErrorCode(error);
+      if (code === undefined && preserveSignedThink(error)) return;
+      throw markProviderEventError(convertAnthropicError(error, this._convertErrorHook), code);
     }
   }
 }
@@ -883,6 +908,14 @@ const PERMANENT_ANTHROPIC_STREAM_STATUS: Readonly<Record<string, number>> = {
 function permanentAnthropicStreamStatus(type: string | undefined): number | undefined {
   if (type === undefined) return undefined;
   return PERMANENT_ANTHROPIC_STREAM_STATUS[type];
+}
+
+function anthropicStreamErrorCode(event: unknown): string | undefined {
+  if (typeof event !== 'object' || event === null) return undefined;
+  const error = (event as { error?: unknown }).error;
+  if (typeof error !== 'object' || error === null) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
 }
 
 function anthropicStreamErrorType(error: unknown): string | undefined {

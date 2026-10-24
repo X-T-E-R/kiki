@@ -516,6 +516,36 @@ function readNestedErrorObject(value: object): object | undefined {
   return typeof raw === 'object' && raw !== null ? raw : undefined;
 }
 
+/** Marks a parsed provider event's own failure, keeping its exact upstream code.
+ *  Only an event the provider itself named qualifies; an HTTP status alone does not. */
+export function markProviderEventError<T>(error: T, upstreamErrorCode?: string | null): T {
+  const code = readProviderErrorIdentifier(upstreamErrorCode) ??
+    providerErrorMetadata(error)['upstreamErrorCode'];
+  if (typeof code !== 'string') return error;
+  return attachErrorDetails(error, { errorSource: 'provider_event', upstreamErrorCode: code });
+}
+
+/** Keeps an HTTP failure's upstream code without treating it as a stream event. */
+export function markProviderHttpError<T>(error: T, upstreamErrorCode?: string | null): T {
+  const code = readProviderErrorIdentifier(upstreamErrorCode);
+  return code === null ? error : attachErrorDetails(error, { errorSource: 'provider_http', upstreamErrorCode: code });
+}
+
+/** The exact upstream code of a provider event failure, when the provider named one. */
+export function readProviderEventErrorCode(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const details = providerErrorMetadata(error);
+  if (details['errorSource'] !== 'provider_event') return undefined;
+  return readProviderErrorIdentifier(details['upstreamErrorCode']) ?? undefined;
+}
+
+function providerErrorMetadata(error: unknown): Readonly<Record<string, unknown>> {
+  if (typeof error !== 'object' || error === null) return {};
+  const attached = readAttachedErrorDetails(error) ?? {};
+  const declared = error instanceof Error2 ? error.details ?? {} : {};
+  return { ...declared, ...attached };
+}
+
 /** Filters a provider identifier without retaining content or credentials. */
 export function readProviderErrorIdentifier(value: unknown): string | null {
   if (typeof value !== 'string' || value.length === 0 || value.length > 200) return null;

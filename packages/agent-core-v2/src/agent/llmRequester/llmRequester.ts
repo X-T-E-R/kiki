@@ -29,6 +29,7 @@ export interface AgentLLMRequestFinish {
   usage: TokenUsage;
   model?: string | undefined;
   providerFinishReason?: FinishReason;
+  completionAuthority?: 'normal';
   rawFinishReason?: string;
   providerMessageId?: string;
   timing?: ModelRequestTiming;
@@ -43,6 +44,7 @@ export interface AgentLLMRequestOverrides {
   systemPrompt?: string;
   source?: AgentLLMRequestSource;
   maxOutputSize?: number;
+  retry?: 'never';
   onAttemptRetry?: () => void;
 }
 

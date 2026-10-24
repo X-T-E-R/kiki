@@ -42,6 +42,7 @@ export type ModelRequestEvent =
       readonly type: 'finish';
       readonly message: Message;
       readonly providerFinishReason?: FinishReason;
+      readonly completionAuthority?: 'normal';
       readonly rawFinishReason?: string;
       readonly id?: string;
       readonly traceId?: string;
@@ -66,6 +67,7 @@ export interface ModelRequestParams {
   readonly requestIdentity?: RequestIdentityWireOptions;
   readonly responsesTransport?: ResponsesRequestTransport;
   readonly attribution?: RequestAttribution;
+  readonly retry?: 'never';
 }
 
 /** The `ModelRequester` contract: per-turn input, the streamed `ModelRequestEvent` output, and the

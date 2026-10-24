@@ -15,7 +15,10 @@ export function guardRequestDelivery(stream: StreamedMessage, enabled: boolean):
     get rawFinishReason() { return stream.rawFinishReason; },
     get traceId() { return stream.traceId; },
     get diagnostics() { return stream.diagnostics; },
+    get completionAuthority() { return stream.completionAuthority; },
+    get thinkingOnlyRecoveryBlocked() { return stream.thinkingOnlyRecoveryBlocked; },
     commitMessage(message) { stream.commitMessage?.(message); },
+    cancel() { return stream.cancel?.(); },
     async *[Symbol.asyncIterator]() {
       let yielded = false;
       try {

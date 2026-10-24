@@ -89,7 +89,19 @@ export class ModelRequesterImpl implements ModelRequester {
       [Symbol.asyncIterator](): AsyncIterator<ModelRequestEvent> {
         let returned = false;
         return {
-          next: () => returned ? Promise.resolve({ done: true, value: undefined }) : queue.next(),
+          next: async () => {
+            if (returned) return { done: true, value: undefined };
+            if (requestSignal.aborted) {
+              await completion;
+              requestSignal.throwIfAborted();
+            }
+            const next = await queue.next();
+            if (requestSignal.aborted) {
+              await completion;
+              requestSignal.throwIfAborted();
+            }
+            return next;
+          },
           return: async () => {
             returned = true;
             controller.abort();
@@ -220,6 +232,7 @@ export class ModelRequesterImpl implements ModelRequester {
         () => {
           if (attemptId !== undefined) queue.push({ type: 'attempt.discarded', responseInstanceId: attemptId });
         },
+        params.retry,
       );
     } catch (error) {
       if (isAbortError(error) || signal?.aborted === true) throw error;
@@ -233,6 +246,7 @@ export class ModelRequesterImpl implements ModelRequester {
       type: 'finish',
       message: result.message,
       providerFinishReason: result.finishReason ?? undefined,
+      completionAuthority: result.completionAuthority,
       rawFinishReason: result.rawFinishReason ?? undefined,
       id: result.id ?? undefined,
       traceId: result.traceId ?? undefined,
@@ -255,16 +269,20 @@ export class ModelRequesterImpl implements ModelRequester {
     run: (auth: ProviderRequestAuth | undefined, signal: AbortSignal | undefined) => Promise<T>,
     signal?: AbortSignal,
     onAttemptDiscarded?: () => void,
+    retry?: 'never',
   ): Promise<T> {
     const auth = await this.authProvider.getAuth();
+    signal?.throwIfAborted();
     try {
       return await run(auth, signal);
     } catch (error) {
-      if (!this.shouldForceRefresh(error)) throw error;
+      signal?.throwIfAborted();
+      if (retry === 'never' || !this.shouldForceRefresh(error)) throw error;
     }
 
     onAttemptDiscarded?.();
     const refreshedAuth = await this.authProvider.getAuth({ force: true });
+    signal?.throwIfAborted();
     try {
       return await run(refreshedAuth, signal);
     } catch (error) {

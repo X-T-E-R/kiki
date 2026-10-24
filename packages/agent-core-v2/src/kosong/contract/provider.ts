@@ -45,7 +45,10 @@ export interface StreamedMessage {
   readonly rawFinishReason: string | null;
   readonly traceId?: string | null;
   readonly diagnostics?: StreamDiagnostics;
+  readonly completionAuthority?: 'normal';
+  readonly thinkingOnlyRecoveryBlocked?: boolean;
   commitMessage?(message: Message): void;
+  cancel?(): void | Promise<void>;
 }
 
 export interface ProviderRequestAuth {

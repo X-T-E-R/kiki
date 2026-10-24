@@ -71,6 +71,8 @@ import {
   requestDeliveryProvenance,
 } from '#/kosong/contract/errors';
 import { emptyUsage, type TokenUsage } from '#/kosong/contract/usage';
+import { readGenerateFailureFacts } from '#/kosong/contract/generate';
+import { toErrorPayload } from '#/_base/errors/serialize';
 import {
   isToolCall,
   type Message,
@@ -2567,5 +2569,71 @@ describe.each([
       vi.unstubAllGlobals();
       vi.useRealTimers();
     }
+  });
+});
+
+
+describe('Agent requester exact thinking-only provider failure', () => {
+  it.each(['anthropic', 'openai', 'openai_responses'] as const)('retains local facts and records %s usage once without a network retry', async protocol => {
+    const code = 'antigravity_thinking_only';
+    const thought = 'locally received private thought';
+    const signature = 'fixture-signature';
+    const frames = protocol === 'anthropic' ? [
+      { type: 'message_start', message: { id: 'msg_fixture', usage: { input_tokens: 7, output_tokens: 2 } } },
+      { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: thought } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature } },
+      { type: 'error', error: { type: 'api_error', code, message: 'clean thinking stop' } },
+    ] : protocol === 'openai' ? [
+      { id: 'chat_fixture', choices: [{ delta: { reasoning_content: thought }, finish_reason: null }], usage: { prompt_tokens: 7, completion_tokens: 2 } },
+      { error: { code, message: 'clean thinking stop', type: 'api_error' } },
+    ] : [
+      { type: 'response.reasoning_summary_text.delta', delta: thought },
+      { type: 'response.output_item.done', output_index: 0, item: { type: 'reasoning', id: 'rs_fixture', summary: [], encrypted_content: signature } },
+      { type: 'response.failed', response: { id: 'resp_fixture', status: 'failed', output: [], usage: { input_tokens: 7, output_tokens: 2 }, error: { code, message: 'clean thinking stop' } } },
+    ];
+    let calls = 0;
+    const server = createServer((request, response) => {
+      calls += 1;
+      request.resume();
+      request.on('end', () => {
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(frames.map(frame => `${protocol === 'anthropic' ? `event: ${(frame as { type: string }).type}\n` : ''}data: ${JSON.stringify(frame)}\n\n`).join(''));
+      });
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const model = { ...createRequester({ value: 0 }, null).model, protocol, baseUrl,
+      authProvider: { getAuth: async () => ({ apiKey: 'YOUR_API_KEY' }) } };
+    const Provider = protocol === 'anthropic' ? AnthropicChatProvider : protocol === 'openai' ? OpenAILegacyChatProvider : OpenAIResponsesChatProvider;
+    const provider = new Provider({ model: model.name, baseUrl, apiKey: 'YOUR_API_KEY' });
+    const requester = new ModelRequesterImpl(model, { createChatProvider: () => provider } as unknown as IProtocolAdapterRegistry);
+    const { service, usageRecords } = createService(requester, undefined, { env: { [KIKI_INFINITE_RETRY_ENV]: '1' } });
+    try {
+      const error = await service.request({ source: { type: 'turn', turnId: 1, step: 1 } }, undefined, AbortSignal.timeout(2_000)).catch((failure: unknown) => failure);
+      expect(toErrorPayload(error).details).toMatchObject({ errorSource: 'provider_event', upstreamErrorCode: code });
+      const facts = readGenerateFailureFacts(error);
+      expect(facts?.message.content).toContainEqual(expect.objectContaining({ type: 'think', think: thought }));
+      if (protocol !== 'openai') expect(facts?.message.content[0]).toHaveProperty('encrypted', signature);
+      expect(usageRecords).toHaveLength(1);
+      expect(usageRecords[0]).toMatchObject({ usage: { inputOther: 7, output: 2 }, context: { usageKnown: true } });
+      expect(calls).toBe(1);
+      expect(JSON.stringify(toErrorPayload(error))).not.toContain(thought);
+      expect(JSON.stringify(toErrorPayload(error))).not.toContain(signature);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+});
+
+
+describe('Agent requester request-scoped retry policy', () => {
+  it.each([new APIStatusError(413, 'request entity too large'), new APIStatusError(503, 'service unavailable')])('preserves the original error without projection or infinite retry when retry is never: $statusCode', async error => {
+    const calls = { value: 0 };
+    const { service } = createService(createRequester(calls, error), undefined, { env: { [KIKI_INFINITE_RETRY_ENV]: '1' } });
+    const onAttemptRetry = vi.fn();
+    await expect(service.request({ retry: 'never', onAttemptRetry })).rejects.toBe(error);
+    expect(calls.value).toBe(1);
+    expect(onAttemptRetry).not.toHaveBeenCalled();
   });
 });

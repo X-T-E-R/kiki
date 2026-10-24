@@ -350,6 +350,16 @@ export class OpenAILegacyStreamedMessage implements StreamedMessage {
   private _finishReason: FinishReason | null = null;
   private _rawFinishReason: string | null = null;
   private readonly _iter: AsyncGenerator<StreamedMessagePart>;
+  private readonly _controller?: AbortController;
+  private _refused = false;
+
+  get completionAuthority(): 'normal' | undefined {
+    return this._rawFinishReason === 'stop' && !this._refused ? 'normal' : undefined;
+  }
+
+  get thinkingOnlyRecoveryBlocked(): boolean { return this._refused; }
+
+  cancel(): void { this._controller?.abort(); }
 
   constructor(
     response: OpenAI.Chat.ChatCompletion | AsyncIterable<OpenAI.Chat.ChatCompletionChunk>,
@@ -364,6 +374,7 @@ export class OpenAILegacyStreamedMessage implements StreamedMessage {
       | undefined,
   ) {
     if (isStream) {
+      this._controller = (response as { controller?: AbortController }).controller;
       this._iter = this._convertStreamResponse(
         response as AsyncIterable<OpenAI.Chat.ChatCompletionChunk>,
         reasoningKeyDialect,
@@ -424,6 +435,7 @@ export class OpenAILegacyStreamedMessage implements StreamedMessage {
 
     const message = response.choices[0]?.message;
     if (!message) return;
+    this._refused = typeof message.refusal === 'string' && message.refusal.length > 0;
 
     const reasoning = reasoningKeyDialect.observe(message);
     if (reasoning !== undefined) {
@@ -473,6 +485,7 @@ export class OpenAILegacyStreamedMessage implements StreamedMessage {
         }
 
         const delta = choice.delta;
+        if (typeof delta.refusal === 'string' && delta.refusal.length > 0) this._refused = true;
 
         const reasoning = reasoningKeyDialect.observe(delta);
         if (reasoning !== undefined) {

@@ -761,7 +761,18 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
   private _finishReason: FinishReason | null = null;
   private _rawFinishReason: string | null = null;
   private readonly _iter: AsyncGenerator<StreamedMessagePart>;
+  private readonly _controller?: AbortController;
   private _diagnostics?: { -readonly [K in keyof StreamDiagnostics]: StreamDiagnostics[K] };
+  private _completedNormally = false;
+  private _continuationBlocked = false;
+
+  get completionAuthority(): 'normal' | undefined {
+    return this._completedNormally && !this._continuationBlocked ? 'normal' : undefined;
+  }
+
+  get thinkingOnlyRecoveryBlocked(): boolean { return this._continuationBlocked; }
+
+  cancel(): void { this._controller?.abort(); }
 
   constructor(
     response: unknown,
@@ -772,6 +783,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
     private readonly _commitMessage?: (responseId: string, message: Message) => void,
   ) {
     if (isStream) {
+      this._controller = (response as { controller?: AbortController }).controller;
       this._diagnostics = createStreamDiagnostics();
       this._iter = this._convertStreamResponse(response as AsyncIterable<RawObject>);
     } else {
@@ -854,6 +866,19 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
     const normalized = normalizeResponsesFinishReason(status, incompleteReason);
     this._finishReason = normalized.finishReason;
     this._rawFinishReason = normalized.rawFinishReason;
+    const output = readObjectArrayField(response, 'output');
+    for (const item of output ?? []) this._observeOutputItem(item);
+    this._completedNormally = status === 'completed' && incomplete === undefined &&
+      readObjectField(response, 'error') === undefined && output !== undefined;
+  }
+
+  private _observeOutputItem(item: RawObject): void {
+    if (!['message', 'reasoning', 'function_call'].includes(String(item['type'])) || item['status'] === 'incomplete') {
+      this._continuationBlocked = true;
+    }
+    if ((readObjectArrayField(item, 'content') ?? []).some(part => part['type'] === 'refusal')) {
+      this._continuationBlocked = true;
+    }
   }
 
   private _extractUsage(usage: RawObject): void {
@@ -1102,6 +1127,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
           }
           case 'response.content_part.added': {
             const part = requireObjectField(chunk, 'part', type);
+            if (part['type'] === 'refusal') this._continuationBlocked = true;
             if (part['type'] === 'output_text') {
               yield* yieldFinalTextSuffix(
                 requireStringField(part, 'text', type),
@@ -1113,6 +1139,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
             break;
           }
           case 'response.output_item.added': {
+            this._observeOutputItem(requireObjectField(chunk, 'item', type));
             const item = readResponseOutputItem(chunk['item'], `${type}.item`);
             const outputIndex = readNumberField(chunk, 'output_index');
             yield* yieldFinalMessageText(item, outputIndex);
@@ -1133,6 +1160,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
             break;
           }
           case 'response.output_item.done': {
+            this._observeOutputItem(requireObjectField(chunk, 'item', type));
             const item = readResponseOutputItem(chunk['item'], `${type}.item`);
             const outputIndex = readNumberField(chunk, 'output_index');
             yield* yieldFinalMessageText(item, outputIndex);
@@ -1180,6 +1208,10 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
           case 'response.reasoning_summary_text.delta':
             yield { type: 'think', think: requireStringField(chunk, 'delta', type) };
             break;
+          case 'response.refusal.delta':
+          case 'response.refusal.done':
+            this._continuationBlocked = true;
+            break;
           case 'response.completed':
           case 'response.incomplete': {
             const responseObject = requireObjectField(chunk, 'response', type);
@@ -1215,6 +1247,9 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
             diagnostics.errorEventCount = addDiagnosticCount(diagnostics.errorEventCount);
             const responseObject = requireObjectField(chunk, 'response', type);
             this._captureTerminalDiagnostics(responseObject, 'failed');
+            const usage = readObjectField(responseObject, 'usage');
+            if (usage !== undefined) this._extractUsage(usage);
+            for (const item of readObjectArrayField(responseObject, 'output') ?? []) this._observeOutputItem(item);
             const error = readResponsesFailedResponseError(responseObject);
             if (error !== undefined) {
               throw errorFromOpenAIResponsesEvent(

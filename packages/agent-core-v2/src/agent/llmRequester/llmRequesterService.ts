@@ -40,11 +40,13 @@ import {
   APIStatusError,
   classifyApiError,
   requestDeliveryProvenance,
+  readProviderEventErrorCode,
   isImageFormatError,
   isRecoverableRequestStructureError,
   isRetryableGenerateError,
 } from '#/kosong/contract/errors';
 import { isToolCall, type Message, type StreamedMessagePart } from '#/kosong/contract/message';
+import { readGenerateFailureFacts } from '#/kosong/contract/generate';
 import type { ResponsesRequestTransport } from '#/kosong/contract/responsesTransport';
 import { type ThinkingEffort } from '#/kosong/contract/provider';
 import { type Tool } from '#/kosong/contract/tool';
@@ -446,6 +448,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           trace.set(traceId);
         },
         overrides.onAttemptRetry,
+        overrides.retry,
       );
     } catch (error) {
       this.logRequestFailure(error, overrides, signal);
@@ -519,6 +522,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     signal: AbortSignal | undefined,
     onRequestTrace: (traceId: string | undefined) => void,
     onAttemptRetry: (() => void) | undefined,
+    retry: 'never' | undefined,
   ): Promise<AgentLLMRequestFinish> {
     const source = request.source;
     const purpose = source?.type === 'operation' ? source.requestKind ?? 'operation' : source?.type ?? 'system';
@@ -606,7 +610,9 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           onTraceId: setTraceId,
           rawResponseObserver,
           attribution,
+          retry,
         })) {
+          signal?.throwIfAborted();
           switch (event.type) {
             case 'attempt.discarded':
               toolCallIds.rollback();
@@ -615,6 +621,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
               break;
             case 'part':
               await onPart(this.normalizeStreamPart(toolCallIds, event.part), event.responseInstanceId);
+              signal?.throwIfAborted();
               break;
             case 'usage':
               usage = event.usage;
@@ -631,6 +638,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
             }
           }
         }
+        signal?.throwIfAborted();
 
         if (message === undefined || finish === undefined) {
           throw new Error2(
@@ -653,6 +661,15 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         }
       } catch (error) {
         toolCallIds.rollback();
+        const facts = readGenerateFailureFacts(error);
+        if (facts?.usage !== undefined && facts.usage !== null) {
+          this.usage.record(request.modelAlias, facts.usage, request.source, {
+            provider: request.model.providerName,
+            modelAlias: request.modelAlias,
+            executorId: 'native',
+            usageKnown: true,
+          });
+        }
         throw error;
       } finally {
         rawResponseObserver?.end('request-finished-without-raw-eof');
@@ -674,6 +691,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         usage: usage ?? emptyUsage(),
         model: request.modelAlias,
         providerFinishReason: finish.providerFinishReason,
+        completionAuthority: finish.completionAuthority,
         rawFinishReason: finish.rawFinishReason,
         providerMessageId: finish.id,
         timing,
@@ -703,7 +721,8 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         if (this.retryAttribution?.value === attribution) this.retryAttribution = undefined;
         return result;
       } catch (error) {
-        if (requestDeliveryProvenance(error) !== undefined) throw error;
+        if (retry === 'never' || requestDeliveryProvenance(error) !== undefined ||
+          readProviderEventErrorCode(error) === 'antigravity_thinking_only') throw error;
         const nextPolicy = this.nextProjectionPolicyForError(
           error,
           policy,
