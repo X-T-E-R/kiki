@@ -184,6 +184,48 @@ describe('SEA native package imports', () => {
     }
   });
 
+  it('keeps zlib-sync optional and preserves both SDK loading fallbacks when it is absent', async () => {
+    mkdirSync(resolve('.tmp'), { recursive: true });
+    const dir = mkdtempSync(resolve('.tmp', 'discord-compression-bundle-'));
+    try {
+      const entry = join(dir, 'entry.ts');
+      writeFileSync(entry, `
+export async function load() {
+  const imported = await import('zlib-sync').then(mod => mod.default).catch(() => null);
+  let required = null;
+  try { required = require('zlib-sync'); } catch {}
+  return { imported, required };
+}
+`);
+      const alwaysBundle = nativeConfig.deps?.alwaysBundle;
+      expect(nativeConfig.deps?.neverBundle).toContain('zlib-sync');
+      if (typeof alwaysBundle !== 'function') throw new Error('Expected the native force-bundle policy');
+      expect(alwaysBundle('zlib-sync', entry)).toBe(false);
+      expect(alwaysBundle('example-required-package', entry)).toBe(true);
+      await build({ ...nativeConfig, config: false, entry: [entry], outDir: join(dir, 'out') });
+      const output = readFileSync(join(dir, 'out/main.cjs'), 'utf8');
+      expect(output).toMatch(/require\(["']zlib-sync["']\)/);
+      expect(output).not.toMatch(/import\(["']zlib-sync["']\)/);
+      const missingRequire = vi.fn(() => {
+        throw Object.assign(new Error("Cannot find module 'zlib-sync'"), { code: 'MODULE_NOT_FOUND' });
+      });
+      const module = { exports: {} };
+      const result = await runInNewContext(`${output}\nmodule.exports.load();`, {
+        require: (id: string) => {
+          expect(id).toBe('node:module');
+          return { createRequire: () => missingRequire };
+        },
+        module,
+        exports: module.exports,
+        process: { execPath: process.execPath },
+      });
+      expect(result).toEqual({ imported: null, required: null });
+      expect(missingRequire.mock.calls).toEqual([['zlib-sync'], ['zlib-sync']]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
   it('keeps node-pty external and routes its dynamic import through regular CJS require', async () => {
     mkdirSync(resolve('.tmp'), { recursive: true });
     const dir = mkdtempSync(resolve('.tmp', 'native-bundle-'));

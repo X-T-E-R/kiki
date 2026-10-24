@@ -16,7 +16,14 @@ const builtins = new Set([
   ...builtinModules,
   ...builtinModules.map((name) => `node:${name}`),
 ]);
-const optionalNativeDependencies = new Set(['cpu-features', '@napi-rs/keyring', 'node-pty', '@kiki/auth-native']);
+const optionalNativeDependencies = new Set([
+  'cpu-features',
+  '@napi-rs/keyring',
+  'node-pty',
+  '@kiki/auth-native',
+  // Discord's SDK catches a missing zlib-sync and works without stream compression.
+  'zlib-sync',
+]);
 
 function shouldAlwaysBundle(id: string): boolean {
   if (builtins.has(id) || id.startsWith('node:')) return false;
