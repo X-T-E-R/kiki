@@ -565,6 +565,22 @@ describe('SettingsPage batch-3 leaves', () => {
     connectionMock.token = 'saved-token';
     const container = await renderSettings('/settings/connection');
     const card = container.querySelector('#st-card-conn-server')!;
+    expect(card.querySelector('[data-conn-url]')?.textContent).toBe('http://127.0.0.1:8080');
+    expect(card.querySelector('[data-conn-no-token]')).toBeNull();
+    // In browser host, #st-card-conn-owned shows only the aside and no restart button
+    const ownedCard = container.querySelector('#st-card-conn-owned')!;
+    expect(ownedCard.textContent).toContain('This action is only available in the desktop app.');
+    expect(ownedCard.querySelector('button')).toBeNull();
+
+    await click(card.querySelector('[data-conn-edit]')!);
+    const urlInput = card.querySelector<HTMLInputElement>('#st-conn-url')!;
+    await setInput(urlInput, 'http://127.0.0.1:9090');
+    expect(card.querySelector('[data-settings-draft="connection-endpoint"]')?.getAttribute('data-dirty')).toBe('true');
+    await click(card.querySelector('[data-settings-discard="connection-endpoint"]')!);
+    expect(card.querySelector('form')).toBeNull();
+    expect(card.querySelector('[data-conn-url]')?.textContent).toBe('http://127.0.0.1:8080');
+
+    await click(card.querySelector('[data-conn-edit]')!);
     const token = card.querySelector<HTMLInputElement>('#st-conn-token')!;
     // Stored and masked: the field never carries the value until asked.
     expect(token.value).not.toContain('saved-token');

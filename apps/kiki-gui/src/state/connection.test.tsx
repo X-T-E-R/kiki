@@ -617,10 +617,13 @@ describe('ConnectionProvider desktop backend recovery', () => {
       dangerous_bypass_auth: false, server_version: '0.1.0', build_id: 'test-build', build_channel: 'stable',
     } : { server_version: '0.1.0', server_id: 'local' }));
     const container = await mountProvider(false, true);
+    expect(container.querySelector('[data-conn-edit]')).not.toBeNull();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-conn-edit]')!.click(); });
     expect(container.querySelector('#st-conn-token')).not.toBeNull();
     expect(container.querySelector('#st-card-conn-owned')).not.toBeNull();
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-switch-ssh]')!.click(); });
     await flush();
+    expect(container.querySelector('[data-conn-edit]')).toBeNull();
     expect(container.querySelector('#st-conn-token')).toBeNull();
     expect(container.querySelector('#st-card-conn-owned')).toBeNull();
     expect(container.textContent).toContain('Its agent and provider settings live there');
