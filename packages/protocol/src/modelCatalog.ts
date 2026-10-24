@@ -771,6 +771,7 @@ export const catalogProviderItemSchema = z.object({
   wire_type: providerWireTypeSchema.nullable(),
   guessed: z.boolean(),
   needs_base_url: z.boolean(),
+  base_url: z.string().nullable().optional(),
   rejected: z.boolean(),
   /** Absent from older servers and from entries that were not rejected. */
   reject_code: modelsDevRejectCodeSchema.nullable().optional(),

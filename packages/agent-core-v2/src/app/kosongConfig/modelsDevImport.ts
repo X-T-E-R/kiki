@@ -18,6 +18,7 @@ export interface ModelsDevProviderItem {
   readonly wire_type: string | null;
   readonly guessed: boolean;
   readonly needs_base_url: boolean;
+  readonly base_url: string | null;
   readonly rejected: boolean;
   /** Machine-readable reason for `rejected`; the wire code clients localize. */
   readonly reject_code: ModelsDevRejectCode | null;
