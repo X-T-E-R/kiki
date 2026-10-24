@@ -11920,4 +11920,8 @@ export const zh = {
   'st.settingsTransfer.catalogLoading': '正在加载设置目录',
   'st.settingsTransfer.catalogFailed': '无法加载设置目录，请重试。',
   'st.settingsTransfer.retry': '重试',
+  'transcript.noReply': '本轮未产生回复',
+  'transcript.noReplyBackground': '后台工作仍在执行',
+  'transcript.noReplyIdle': '当前没有执行中的工作',
+  'transcript.noReplyUnknown': '后台执行状态未知',
 };

@@ -12015,4 +12015,8 @@ export const en = {
   'st.settingsTransfer.catalogLoading': 'Loading the settings catalog',
   'st.settingsTransfer.catalogFailed': 'We could not load the settings catalog. Try again.',
   'st.settingsTransfer.retry': 'Retry',
+  'transcript.noReply': 'No reply in this turn',
+  'transcript.noReplyBackground': 'Background work is still running',
+  'transcript.noReplyIdle': 'No work is executing now',
+  'transcript.noReplyUnknown': 'Background activity unknown',
 } as const;
