@@ -8,11 +8,16 @@
  *  - Build: the script builds its own production bundle (`.tmp/r1-proof/dist`,
  *    `--no-build` to reuse the last one) and prints the provenance (asset
  *    names + sha256 of the bundle and of the sources it covers).
- *  - Theme: dark/light go through the app's real preference (`.kiki.settings`
- *    + the storage event the shell listens to, `src/lib/theme.ts`), and each
- *    dark shot asserts the resolved token actually changed. Writing
- *    `classList.add('dark')` does nothing — the palette follows
- *    `<html data-theme>`.
+ *  - Theme: dark/light go through the preference the shell resolves.
+ *    `theme` is space-portable, and once that bridge is installed
+ *    `readSettings` uses it over the device `kiki.settings` key. A
+ *    same-window storage event therefore republishes the old space theme,
+ *    `<html data-theme>` never moves, and the wait used to expire at 10s.
+ *    The switch posts `pref:theme` through the fixture settings preview/apply
+ *    (the contract the Appearance control posts), mirrors the device boot
+ *    value, and has the mounted preference frame re-read. The wait is still
+ *    `data-theme` at 10s, and each dark shot still asserts `--color-paper`.
+ *    Writing `classList.add('dark')` does nothing.
  *  - K06 runs on the `send-timing` fixture: the turn parks on a release gate,
  *    so the composer really is busy without a pending interaction. The
  *    `basic-stream` fixture used before gates the same turn on an approval;
@@ -41,11 +46,22 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
 import { FIXTURE_TOKEN, startFixtureServer } from './fixture-server.mjs';
+import { applyFixtureTheme } from './lib/theme-preference.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = resolve(join(ROOT, '.tmp', 'r1-proof'));
 const DIST = resolve(process.env['R1_DIST'] ?? join(OUT, 'dist'));
 const BUILD = !process.argv.includes('--no-build');
+const SCENARIO_NAMES = ['k01', 'k06', 'k02', 'k07'];
+const onlyIndex = process.argv.indexOf('--only');
+const ONLY = onlyIndex === -1 ? null : new Set((process.argv[onlyIndex + 1] ?? '').split(',').filter(Boolean));
+if (ONLY !== null && ONLY.size === 0) throw new Error('--only needs a scenario name: k01, k06, k02, k07');
+if (ONLY !== null) {
+  for (const name of ONLY) {
+    if (!SCENARIO_NAMES.includes(name)) throw new Error(`--only unknown scenario ${name} (${SCENARIO_NAMES.join(', ')})`);
+  }
+}
+const wants = (name) => ONLY === null || ONLY.has(name);
 
 if (!existsSync(OUT)) {
   mkdirSync(OUT, { recursive: true });
@@ -145,8 +161,9 @@ const governance = (sessionId) => ({
 });
 
 const PAPER_DARK = '#1b2226';
+let activeFixtureUrl = '';
 
-async function setTheme(page, theme) {
+async function alignDeviceTheme(page, theme) {
   await page.evaluate((next) => {
     const key = 'kiki.settings';
     const oldValue = localStorage.getItem(key);
@@ -155,7 +172,63 @@ async function setTheme(page, theme) {
     localStorage.setItem(key, newValue);
     window.dispatchEvent(new StorageEvent('storage', { key, oldValue, newValue, storageArea: localStorage }));
   }, theme);
-  await page.waitForFunction((next) => document.documentElement.dataset['theme'] === next, theme, { timeout: 10_000 });
+}
+
+/** The preference frame lives under the mounted shell. Re-read its detail. */
+async function refreshSpacePreference(page) {
+  return page.evaluate(async () => {
+    const root = document.querySelector('#root');
+    if (root === null) return false;
+    const containerKey = Object.keys(root).find((name) => name.startsWith('__reactContainer$'));
+    const stored = containerKey === undefined ? undefined : root[containerKey];
+    const host = stored?.child ? stored : stored?.current;
+    const seen = new Set();
+    const stack = host ? [host] : [];
+    while (stack.length > 0) {
+      const current = stack.pop();
+      if (current == null || seen.has(current)) continue;
+      seen.add(current);
+      const props = current.memoizedProps ?? current.pendingProps;
+      const candidate = props?.client ?? props?.value;
+      if (candidate !== null && typeof candidate === 'object' && typeof candidate.getQueryCache === 'function') {
+        const matches = candidate.getQueryCache().findAll({ queryKey: ['space-settings', 'detail'] });
+        if (matches.length > 0) {
+          await candidate.invalidateQueries({ queryKey: ['space-settings', 'detail'] });
+          return true;
+        }
+      }
+      if (current.child) stack.push(current.child);
+      if (current.sibling) stack.push(current.sibling);
+    }
+    return false;
+  });
+}
+
+async function setTheme(page, theme) {
+  const fixtureUrl = activeFixtureUrl;
+  if (fixtureUrl === '') throw new Error('theme switch needs the fixture server for this capture');
+  // Device boot value first, so the re-read does not treat the new space theme as a foreign look.
+  await alignDeviceTheme(page, theme);
+  await applyFixtureTheme(fixtureUrl, theme, FIXTURE_TOKEN);
+  const refreshed = await refreshSpacePreference(page);
+  if (!refreshed) {
+    const already = await page.evaluate((next) => document.documentElement.dataset['theme'] === next, theme);
+    if (!already) throw new Error('space preference was saved but the open shell has no space-settings query to re-read');
+  }
+  try {
+    await page.waitForFunction((next) => document.documentElement.dataset['theme'] === next, theme, { timeout: 10_000 });
+  } catch (error) {
+    const actual = await page.evaluate(() => document.documentElement.dataset['theme'] ?? null);
+    throw new Error(`theme did not resolve to ${theme} (data-theme=${actual})`, { cause: error });
+  }
+  // A late device import can publish the previous detail. The server already
+  // holds this theme, so one more re-read is the same contract, not a longer wait.
+  await page.waitForTimeout(300);
+  const held = await page.evaluate((next) => document.documentElement.dataset['theme'] === next, theme);
+  if (!held) {
+    if (!await refreshSpacePreference(page)) throw new Error(`theme ${theme} rolled back and the shell query was gone`);
+    await page.waitForFunction((next) => document.documentElement.dataset['theme'] === next, theme, { timeout: 10_000 });
+  }
   // Prove the palette followed, not just the attribute.
   const paper = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--color-paper').trim());
   if (theme === 'dark') return paper.toLowerCase() === PAPER_DARK;
@@ -178,6 +251,7 @@ async function capture() {
   const fixture = await startFixtureServer({ port: 0, scenario: 'basic-stream' });
   const fixturePort = fixture.http.address().port;
   const fixtureUrl = `http://127.0.0.1:${fixturePort}`;
+  activeFixtureUrl = fixtureUrl;
 
   console.log('Starting static server on', DIST);
   const web = await startStatic(DIST);
@@ -240,8 +314,8 @@ async function capture() {
     // ----------------------------------------------------
     // Scenario 1: K01 - Plan Mode in Auto vs Manual
     // ----------------------------------------------------
-    console.log('\n--- Scenario 1: K01 Plan Mode in Auto vs Manual ---');
-    {
+    if (wants('k01')) console.log('\n--- Scenario 1: K01 Plan Mode in Auto vs Manual ---');
+    if (wants('k01')) {
       const { context, page } = await newPage(browser, { width: 1440, height: 900 });
       await page.goto(link('/s/session_fixture_basic'), { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('textarea:not([disabled])', { timeout: 15_000 });
@@ -301,8 +375,8 @@ async function capture() {
     // ----------------------------------------------------
     // Scenario 2: K06 - Working Line "排队中" + Inline Details
     // ----------------------------------------------------
-    console.log('\n--- Scenario 2: K06 Working Line Queued & Details ---');
-    {
+    if (wants('k06')) console.log('\n--- Scenario 2: K06 Working Line Queued & Details ---');
+    if (wants('k06')) {
       await control({ action: 'scenario', name: 'send-timing' });
       const SESSION = 'session_fixture_send_timing';
       const DRAFT = '排队期间继续打草稿，不受打扰';
@@ -378,8 +452,8 @@ async function capture() {
     // ----------------------------------------------------
     // Scenario 3: K02 - SpaceSwitcher in Local & Remote Modes
     // ----------------------------------------------------
-    console.log('\n--- Scenario 3: K02 SpaceSwitcher in Local & Remote Modes ---');
-    {
+    if (wants('k02')) console.log('\n--- Scenario 3: K02 SpaceSwitcher in Local & Remote Modes ---');
+    if (wants('k02')) {
       await control({ action: 'scenario', name: 'basic-stream' });
       // Real multi-space state through the product's own API (what the spaces
       // settings page posts), so the list and shortcut hints are not staged.
@@ -442,8 +516,8 @@ async function capture() {
     // ----------------------------------------------------
     // Scenario 4: K07 - Agent Panel Hooks Section
     // ----------------------------------------------------
-    console.log('\n--- Scenario 4: K07 Agent Panel Injected Rules ---');
-    {
+    if (wants('k07')) console.log('\n--- Scenario 4: K07 Agent Panel Injected Rules ---');
+    if (wants('k07')) {
       await control({ action: 'scenario', name: 'basic-stream' });
 
       const { context, page } = await newPage(browser, { width: 1440, height: 900 });
