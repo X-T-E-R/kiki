@@ -338,10 +338,11 @@ export class ImSessionBridge {
     return channels;
   }
 
-  private messageQueue: Promise<unknown> = Promise.resolve();
+  private readonly messageQueues = new Map<string, Promise<SendMessageReceipt>>();
 
   sendUserMessage(input: UserMessageInput): Promise<SendMessageReceipt> {
-    const operation = this.messageQueue.catch(() => undefined).then(async () => {
+    const previous = this.messageQueues.get(input.sessionId) ?? Promise.resolve();
+    const operation = previous.catch(() => undefined).then(async () => {
       await this.ready;
       const key = JSON.stringify([input.sessionId, input.toolCallId]);
       const stored = this.state.messageReceipts ??= {};
@@ -363,8 +364,11 @@ export class ImSessionBridge {
       }));
       return routeUserMessage(input, channels, { allowChannelBorrowing: this.state.policy.allowChannelBorrowing === true });
     });
-    this.messageQueue = operation;
-    return operation;
+    const queued: Promise<SendMessageReceipt> = operation.finally(() => {
+      if (this.messageQueues.get(input.sessionId) === queued) this.messageQueues.delete(input.sessionId);
+    });
+    this.messageQueues.set(input.sessionId, queued);
+    return queued;
   }
 
   async testBinding(id: string): Promise<ImBindingTestResult> {
@@ -696,8 +700,12 @@ export class ImSessionBridge {
     await this.markOrphans();
   }
 
-  private async persist(): Promise<void> {
-    await this.ports.save(JSON.stringify(this.state));
+  private persistenceQueue: Promise<void> = Promise.resolve();
+
+  private persist(): Promise<void> {
+    const operation = this.persistenceQueue.catch(() => undefined).then(() => this.ports.save(JSON.stringify(this.state)));
+    this.persistenceQueue = operation;
+    return operation;
   }
 
   private copy(key: keyof typeof COPY.en): string {

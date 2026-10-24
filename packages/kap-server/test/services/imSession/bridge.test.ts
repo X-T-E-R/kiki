@@ -704,6 +704,94 @@ it('binds notification channels explicitly, borrows only by policy, and respects
   } finally { await harness.bridge.close(); }
 });
 
+it('lets another session finish while an IM send is blocked and preserves session order and concurrent receipt reuse', async () => {
+  const adapter = new FakeImAdapter('telegram', '42');
+  const harness = bridgeFor(adapter);
+  let release: () => void = () => undefined;
+  let entered: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const pending: Promise<unknown>[] = [];
+  const attempts: string[] = [];
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await harness.bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
+    await harness.bridge.setListening('inst', true);
+    for (const [chatId, sessionId] of [['chat-a', 'sess'], ['chat-b', 'home']] as const) {
+      await adapter.emit({ eventId: chatId, identity: { ...identity, chatId }, kind: 'text', text: 'pair' });
+      await harness.bridge.confirm((await harness.bridge.snapshot()).discoveries[0]!.id, { target: { kind: 'session', session_id: sessionId } });
+    }
+    const bindings = (await harness.bridge.snapshot()).bindings;
+    const first = bindings.find((binding) => binding.session_id === 'sess')!;
+    const second = bindings.find((binding) => binding.session_id === 'home')!;
+    const send = adapter.sendTextParts.bind(adapter);
+    adapter.sendTextParts = async (message) => {
+      attempts.push(`${message.identity.chatId}:${message.parts.join('')}`);
+      if (message.identity.chatId === 'chat-a' && attempts.length === 1) {
+        entered();
+        await gate;
+      }
+      return send(message);
+    };
+    const inputA = { sessionId: 'sess', toolCallId: 'shared-call', channel: `im:${first.id}`, text: 'first', attachments: [] };
+    const inputB = { sessionId: 'home', toolCallId: 'shared-call', channel: `im:${second.id}`, text: 'independent', attachments: [] };
+    const blocked = harness.bridge.sendUserMessage(inputA);
+    pending.push(blocked);
+    await started;
+    const duplicate = harness.bridge.sendUserMessage(inputA);
+    const next = harness.bridge.sendUserMessage({ ...inputA, toolCallId: 'next-call', text: 'next' });
+    const independent = harness.bridge.sendUserMessage(inputB);
+    pending.push(duplicate, next, independent);
+    const independentReceipt = await Promise.race([
+      independent,
+      new Promise<never>((_resolve, reject) => { timeout = setTimeout(() => reject(new Error('unrelated_session_blocked')), 1000); }),
+    ]);
+    expect(independentReceipt.channels).toEqual([expect.objectContaining({ channelId: inputB.channel, status: 'delivered' })]);
+    expect(attempts).toEqual(['chat-a:first', 'chat-b:independent']);
+    release();
+    const [firstReceipt, repeatedReceipt] = await Promise.all([blocked, duplicate]);
+    expect(repeatedReceipt).toEqual(firstReceipt);
+    await next;
+    expect(attempts).toEqual(['chat-a:first', 'chat-b:independent', 'chat-a:next']);
+    const restored = bridgeFor(new FakeImAdapter('telegram', '42'), harness).bridge;
+    try {
+      expect(await restored.sendUserMessage(inputA)).toEqual(firstReceipt);
+      expect(await restored.sendUserMessage(inputB)).toEqual(independentReceipt);
+    } finally { await restored.close(); }
+    expect(attempts).toEqual(['chat-a:first', 'chat-b:independent', 'chat-a:next']);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+    release();
+    await Promise.allSettled(pending);
+    await harness.bridge.close();
+  }
+});
+
+it('serializes receipt snapshot writes across sessions without losing either receipt', async () => {
+  const harness = ports();
+  const save = harness.ports.save;
+  let active = 0;
+  let maximum = 0;
+  let stored = '';
+  harness.ports.save = async (value) => {
+    active += 1;
+    maximum = Math.max(maximum, active);
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await save(value);
+      stored = value;
+    } finally { active -= 1; }
+  };
+  const bridge = bridgeFor(new FakeImAdapter('telegram', '42'), harness).bridge;
+  try {
+    await Promise.all(['sess', 'home'].map((sessionId) => bridge.sendUserMessage({ sessionId, toolCallId: 'same-call', text: sessionId, attachments: [] })));
+    expect(maximum).toBe(1);
+    const receipts = (JSON.parse(stored) as { messageReceipts: Record<string, { channels: { internal: { status: string } } }> }).messageReceipts;
+    expect(Object.keys(receipts)).toHaveLength(2);
+    for (const sessionId of ['sess', 'home']) expect(receipts[JSON.stringify([sessionId, 'same-call'])]?.channels.internal.status).toBe('delivered');
+  } finally { await bridge.close(); }
+});
+
 it('persists one receipt per requested target and never retries an unknown result', async () => {
   const adapter = new FakeImAdapter('telegram', '42');
   let imAttempts = 0;
@@ -724,8 +812,7 @@ it('persists one receipt per requested target and never retries an unknown resul
     const im = (await harness.bridge.channelViews('sess')).find((item) => item.kind === 'im')!;
     adapter.sendTextParts = async () => { imAttempts += 1; throw new Error('timeout'); };
     const input = { sessionId: 'sess', toolCallId: 'per-target', channels: [im.id, 'notify:mail'], text: 'once', attachments: [] } as const;
-    const first = await harness.bridge.sendUserMessage(input);
-    const second = await harness.bridge.sendUserMessage(input);
+    const [first, second] = await Promise.all([harness.bridge.sendUserMessage(input), harness.bridge.sendUserMessage(input)]);
     expect(first.channels).toEqual([
       expect.objectContaining({ channelId: im.id, status: 'unknown' }),
       expect.objectContaining({ channelId: 'notify:mail', status: 'delivered' }),
