@@ -411,6 +411,7 @@ advertise_as_kimi_code = false
 [loop_control]
 # max_steps_per_turn: integer
 # max_attempts_per_step: integer
+thinking_only_continuation = true
 # max_ralph_iterations: integer
 # reserved_context_size: integer
 # context_strategy: "summarize" | "auto" | "fresh"

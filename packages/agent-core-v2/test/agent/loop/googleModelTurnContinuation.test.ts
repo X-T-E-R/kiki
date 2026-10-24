@@ -20,9 +20,9 @@ const SIGNATURE = 'sig-fixture';
 const PROMPT = 'Complete the task and report the result.';
 
 describe('google model-turn continuation', () => {
-  it('retries a gemini-4 think-only STOP from the original snapshot', async () => {
+  it.each([true, false])('keeps the gemini-4 original-snapshot retry when explicit continuation is %s', async (thinkingOnlyContinuation) => {
     const generateContentStream = scriptedStream([thinkChunk(), textChunk('Visible answer')]);
-    const local = googleAgent('gemini-4-argon', generateContentStream);
+    const local = googleAgent('gemini-4-argon', generateContentStream, 'manual', thinkingOnlyContinuation);
     const warnings: WarningIssued[] = [];
     const retries: TurnStepRetrying[] = [];
     local.get(IEventBus).subscribe(WarningIssued, (event) => warnings.push(event));
@@ -137,6 +137,28 @@ describe('google model-turn continuation', () => {
     }
   });
 
+  it('fails an empty second snapshot response without a third request', async () => {
+    const empty = async function* () {
+      yield {
+        candidates: [{ content: { role: 'model', parts: [] }, finishReason: 'STOP' }],
+        usageMetadata: { promptTokenCount: 6, candidatesTokenCount: 0 },
+        responseId: 'resp-empty',
+      };
+    };
+    const generateContentStream = scriptedStream([thinkChunk(), empty, textChunk('too late')]);
+    const local = googleAgent('gemini-4-argon', generateContentStream);
+    try {
+      const terminal = await (await prompt(local)).completion;
+      expect(terminal.state).toBe('failed');
+      expect(generateContentStream).toHaveBeenCalledTimes(2);
+      expect(promptCount(local, 'Continue.')).toBe(0);
+      expect(storedThink(local)).toEqual([{ type: 'think', think: THINKING, encrypted: SIGNATURE }]);
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
   it('stops a gemini-4 CONTINUATION instead of completing the turn', async () => {
     const generateContentStream = scriptedStream([continuationChunk(), textChunk('should not send')]);
     const local = googleAgent('gemini-4-argon', generateContentStream);
@@ -173,7 +195,8 @@ describe('google model-turn continuation', () => {
       expect(generateContentStream).toHaveBeenCalledTimes(2);
       expect(warnings.some((warning) => warning.code === 'google-model-turn-prefill')).toBe(false);
       const second = generateContentStream.mock.calls[1]?.[0];
-      expect(contentsOf(second).at(-1)?.['role']).toBe('model');
+      expect(contentsOf(second).at(-1)?.['role']).toBe('user');
+      expect(promptCount(local, 'Continue.')).toBe(1);
       expect(signaturesOf(second)).toEqual([SIGNATURE]);
       expect(retries).toEqual([]);
       expect(promptCount(local, PROMPT)).toBe(1);
@@ -182,12 +205,78 @@ describe('google model-turn continuation', () => {
       await local.dispose();
     }
   });
+
+  it.each(['gemini-2.5-flash', 'gemini-4-argon'])('fails grounded thinking without an answer instead of silently completing (%s)', async (model) => {
+    const generateContentStream = scriptedStream([thinkChunk(true), textChunk('should not run')]);
+    const local = googleAgent(model, generateContentStream);
+    try {
+      const terminal = await (await prompt(local)).completion;
+      expect(terminal).toMatchObject({
+        state: 'failed',
+        result: { type: 'failed', error: { message: expect.stringMatching(/\S/) } },
+      });
+      expect(generateContentStream).toHaveBeenCalledTimes(1);
+      expect(promptCount(local, 'Continue.')).toBe(0);
+      expect(storedThink(local)).toEqual([{ type: 'think', think: THINKING, encrypted: SIGNATURE }]);
+      expect((await local.persistedWireRecords()).filter((record) => record.type === 'usage.record')).toHaveLength(1);
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it('does not renew the snapshot budget after a tool step', async () => {
+    const generateContentStream = scriptedStream([thinkChunk(), toolChunk(), thinkChunk(), textChunk('too late')]);
+    const local = googleAgent('gemini-4-argon', generateContentStream, 'yolo');
+    let toolRuns = 0;
+    local.get(IAgentToolRegistryService).register({
+      name: 'FinishWork', description: 'Complete work.', parameters: { type: 'object' },
+      resolveExecution: () => ({ approvalRule: 'FinishWork', execute: async () => { toolRuns += 1; return { output: 'saved' }; } }),
+    });
+    local.get(IAgentProfileService).update({ activeToolNames: ['FinishWork'] });
+    try {
+      const terminal = await (await prompt(local)).completion;
+      expect(terminal.state).toBe('failed');
+      expect(generateContentStream).toHaveBeenCalledTimes(3);
+      expect(toolRuns).toBe(1);
+      expect(promptCount(local, 'Continue.')).toBe(0);
+      expect((await local.persistedWireRecords()).filter((record) => record.type === 'usage.record')).toHaveLength(3);
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it('stops after a failed snapshot retry even with infinite retry enabled', async () => {
+    vi.stubEnv('KIKI_INFINITE_RETRY', 'true');
+    const generateContentStream = vi.fn(async () => {
+      if (generateContentStream.mock.calls.length === 1) return thinkChunk()();
+      throw new Error('synthetic second request failure');
+    });
+    const local = googleAgent('gemini-4-argon', generateContentStream);
+    try {
+      const handle = await local.get(IAgentPromptService).enqueue({
+        message: { role: 'user', content: [{ type: 'text', text: PROMPT }], toolCalls: [] },
+        signal: AbortSignal.timeout(2_000),
+      });
+      const terminal = await handle.completion;
+      expect(terminal.state).toBe('failed');
+      expect(generateContentStream).toHaveBeenCalledTimes(2);
+      expect(promptCount(local, 'Continue.')).toBe(0);
+      expect(storedThink(local)).toEqual([{ type: 'think', think: THINKING, encrypted: SIGNATURE }]);
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+      vi.unstubAllEnvs();
+    }
+  });
 });
 
 function googleAgent(
   model: string,
   generateContentStream: ReturnType<typeof vi.fn>,
   permission: 'manual' | 'yolo' = 'manual',
+  thinkingOnlyContinuation?: boolean,
 ): TestAgentContext {
   const provider = new GoogleGenAIChatProvider({
     model,
@@ -203,6 +292,7 @@ function googleAgent(
   const local = createTestAgent(
     permissionModeServices(permission),
     appService(IProtocolAdapterRegistry, new FixtureRegistry()),
+    { initialConfig: { loopControl: { thinkingOnlyContinuation } } },
   );
   local.configureRuntimeModel({ type: 'google-genai', model, apiKey: 'gk-local-fixture' });
   return local;
@@ -274,7 +364,7 @@ function continuationChunk(): () => AsyncGenerator<Record<string, unknown>> {
   };
 }
 
-function thinkChunk(): () => AsyncGenerator<Record<string, unknown>> {
+function thinkChunk(grounded = false): () => AsyncGenerator<Record<string, unknown>> {
   return async function* think() {
     yield {
       candidates: [{
@@ -283,6 +373,7 @@ function thinkChunk(): () => AsyncGenerator<Record<string, unknown>> {
           parts: [{ thought: true, text: THINKING, thoughtSignature: SIGNATURE }],
         },
         finishReason: 'STOP',
+        groundingMetadata: grounded ? { webSearchQueries: ['example query'] } : undefined,
       }],
       usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 2 },
       responseId: 'resp-think',

@@ -1,4 +1,5 @@
 import { isRetryableGenerateError } from '#/kosong/contract/errors';
+import { unwrapErrorCause } from '#/errors';
 
 import type { RetryConfig, RetryPolicy } from './configSection';
 
@@ -60,10 +61,11 @@ export function resolveRetryPolicy(
   error: unknown,
   binding: RetryBindingSource = {},
 ): RetryPolicyDecision {
-  const policy = findRetryPolicy(config?.policies, error, binding);
+  if (!isRetryableGenerateError(error)) return { retry: false };
+  const policy = findRetryPolicy(config?.policies, unwrapErrorCause(error), binding);
   if (policy?.retry === false) return { retry: false };
   return {
-    retry: isRetryableGenerateError(error),
+    retry: true,
     maxAttempts: policy?.maxAttempts,
     backoffMs: policy?.backoff,
   };

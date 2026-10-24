@@ -522,6 +522,7 @@ confirm = false
 | --- | --- | --- | --- |
 | `max_steps_per_turn` | `integer` | — | 单轮最大步数；不设或设为 `0` 则无上限 |
 | `max_attempts_per_step` | `integer` | `5` | 单步失败后的最大总尝试次数（含首次尝试） |
+| `thinking_only_continuation` | `boolean` | `true` | 模型正常结束且只有非空思考时，显式发送一次 `Continue.` User 消息 |
 | `reserved_context_size` | `integer` | `50000` | 自动压缩点以上为模型输出预留的 token 数 |
 | `auto_compact` | `string` | — | 全局默认自动压缩点，按模型可用窗口写百分比，如 `"85%"`。全局不接受 token 数；模型、profile、会话用正整数 token |
 | `compaction_trigger_ratio` | `number` | `0.85` | 旧版触发比例，仅在各层都没有设置 `auto_compact` 时使用 |
@@ -532,7 +533,11 @@ confirm = false
 
 `max_steps_per_turn` 可被环境变量 `KIKI_LOOP_MAX_STEPS_PER_TURN` 覆盖，`max_attempts_per_step` 可被 `KIKI_LOOP_MAX_ATTEMPTS_PER_STEP` 覆盖，优先级均高于配置文件。
 
-重试仅针对瞬时故障——连接错误、超时、HTTP 429 限流，以及所有 HTTP 500–599 服务端错误。账户额度耗尽或余额不足导致的 429 不会重试，会立即失败：在充值之前重试不可能成功。
+重试仅针对瞬时故障——连接错误、超时、HTTP 429 限流，以及符合重试条件的 HTTP 500–599 服务端错误。已有部分输出、安全拒绝或额度耗尽时会停止，不重放请求。
+
+当供应商确认模型正常结束，且只有非空思考、没有正文、工具调用或拒绝时，Kiki 会保留思考及原始签名，每轮最多显式发送一条 `Continue.` User 消息。网关的精确 `antigravity_thinking_only` 事件也可触发续接，但 Kiki 必须实际保留了思考，并确认没有其它输出、外部信息检索（grounding）或拒绝。取消、缺少终态事件、流中断、token 上限导致的停止均不符合条件。续接算一次真实模型请求，用量单独记录。第二次仍为空或请求失败时停止本轮；这次续接即使遇到 HTTP 429 或临时服务端错误，也不重试。
+
+设置 `[loop_control] thinking_only_continuation = false` 可关闭这条自动消息，从下一个 step 边界起生效。拒绝尾部 Model 消息的 Google 模型仍保留原有的原始快照重试，它与显式续接共用每轮一次的恢复预算，不受该设置关闭。Google `CONTINUATION` 终态仍需此 SDK 无法发送的 continuation token。
 
 ### 连续性提醒设置
 
@@ -607,7 +612,7 @@ max_attempts = 20
 backoff = 15000
 ```
 
-请把 `gemini-4-argon` 和 `google-native` 替换成 `[models]` 与 `[providers]` 表中的精确配置键。仅当 provider 未返回 `Retry-After` 时才使用 `backoff`。该策略不会让 HTTP 400、额度耗尽、部分输出、送达状态不明或已经执行的失败变成可重试；`retry = true` 不会越过 Kiki 的不可重试判定。
+请把 `gemini-4-argon` 和 `google-native` 替换成 `[models]` 与 `[providers]` 表中的精确配置键。仅当 provider 未返回 `Retry-After` 时才使用 `backoff`。该策略不会让 HTTP 400、额度耗尽、部分输出或已经执行的失败变成可重试；`retry = true` 不会越过 Kiki 的不可重试判定。
 
 ## `transcript_memory`
 

@@ -99,6 +99,17 @@ export class MessageStepRequest extends StepRequest {
   }
 }
 
+export class ThinkingOnlyContinuationStepRequest extends MessageStepRequest {
+  constructor() {
+    super({
+      role: 'user',
+      content: [{ type: 'text', text: 'Continue.' }],
+      toolCalls: [],
+      origin: { kind: 'retry', trigger: 'thinking_only' },
+    }, { kind: 'thinking-only-continuation', admission: 'activeTurnOnly', deliveryOrigin: 'recovery' });
+  }
+}
+
 export class ContinuationStepRequest extends StepRequest {
   readonly kind: string;
 

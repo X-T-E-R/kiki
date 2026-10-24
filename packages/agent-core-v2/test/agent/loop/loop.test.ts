@@ -777,6 +777,36 @@ describe('Agent loop', () => {
     ]);
   });
 
+  it('fences output when cancellation occurs in the first response callback', async () => {
+    ctx.mockNextResponse({ type: 'think', think: 'must not escape' });
+    const events: ThinkingDelta[] = [];
+    const subscription = ctx.get(IEventBus).subscribe(ThinkingDelta, (event) => events.push(event));
+    const controller = new AbortController();
+    loop.enqueue(new ContinuationStepRequest());
+    const result = await loop.run({ turnId: 1, signal: controller.signal, onStarted: () => controller.abort() });
+    expect(result.type).toBe('cancelled');
+    expect(events).toEqual([]);
+    expect(wireLoopEvents(ctx, 'content.part')).toEqual([]);
+    await subscription.dispose();
+  });
+
+  it('does not append a completed response returned after the request was cancelled', async () => {
+    const requester = ctx.get(IAgentLLMRequesterService);
+    const start = requester.start.bind(requester);
+    const controller = new AbortController();
+    vi.spyOn(requester, 'start').mockImplementation((...args) => {
+      const request = start(...args);
+      return { trace: request.trace, result: request.result.then((response) => { controller.abort(); return response; }) };
+    });
+    ctx.mockNextResponse({ type: 'think', think: 'observed before cancellation' });
+    loop.enqueue(new ContinuationStepRequest());
+    const result = await loop.run({ turnId: 1, signal: controller.signal });
+    await ctx.dispatcher.flush();
+    expect(result.type).toBe('cancelled');
+    expect(wireLoopEvents(ctx, 'content.part')).toEqual([expect.objectContaining({ part: { type: 'think', think: 'observed before cancellation' } })]);
+    expect(wireLoopEvents(ctx, 'step.end')).toEqual([expect.objectContaining({ finishReason: 'interrupted' })]);
+  });
+
   it('does not run loop error handlers for aborted turns', async () => {
     let called = false;
     loop.registerLoopErrorHandler({
@@ -2147,7 +2177,7 @@ describe('native empty provider completion', () => {
     }
   });
 
-  it('continues a completed thinking-only subagent step to visible text', async () => {
+  it('does not infer completion authority from a synthetic finish reason and thinking', async () => {
     const local = createTestAgent(permissionModeServices('manual'));
     Reflect.set(local.get(IAgentScopeContext), 'parentAgentId', 'example-parent');
     try {
@@ -2157,14 +2187,14 @@ describe('native empty provider completion', () => {
         role: 'user', content: [{ type: 'text', text: 'Do not add a public reply.' }], toolCalls: [],
       } });
       expect(await handle.completion).toMatchObject({ state: 'completed', result: { type: 'completed' } });
-      expect(local.llmCalls).toHaveLength(2);
-      const second = local.llmCalls[1];
-      expect(second?.history.filter((message) => message.role === 'user' && message.content.some((part) => part.type === 'text' && part.text === 'Do not add a public reply.'))).toHaveLength(1);
-      expect(second?.history.at(-1)).toMatchObject({
+      expect(local.llmCalls).toHaveLength(1);
+      expect(local.contextData().history.at(-1)).toMatchObject({
         role: 'assistant',
         content: [{ type: 'think', think: 'deliberate silent completion' }],
         toolCalls: [],
       });
+      expect(local.contextData().history.some((message) => message.role === 'user' &&
+        message.content.some((part) => part.type === 'text' && part.text === 'Continue.'))).toBe(false);
     } finally {
       await local.dispose();
     }

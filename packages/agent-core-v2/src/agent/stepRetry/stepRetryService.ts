@@ -17,7 +17,6 @@ import { IConfigService } from '#/app/config/config';
 import { IEventBus } from '#/app/event/eventBus';
 import { Event2, registerEvent2Class } from '#/app/event/event2';
 import { unwrapErrorCause } from '#/errors';
-import { requestDeliveryProvenance } from '#/kosong/contract/errors';
 import {
   IAgentLoopService,
   type LoopErrorContext,
@@ -152,14 +151,14 @@ export class AgentStepRetryService extends Disposable implements IAgentStepRetry
   }
 
   private shouldRetry(error: unknown): boolean {
-    if (requestDeliveryProvenance(error) !== undefined) return false;
     return resolveRetryPolicy(
-      this.retryConfig(), unwrapErrorCause(error), () => this.retryBinding(),
+      this.retryConfig(), error, () => this.retryBinding(),
     ).retry;
   }
 
   private async recover(context: LoopErrorContext): Promise<boolean> {
-    if (requestDeliveryProvenance(context.error) !== undefined) return false;
+    const decision = resolveRetryPolicy(this.retryConfig(), context.error, () => this.retryBinding());
+    if (!decision.retry) return false;
     const driver = context.failedDriver;
     if (driver === undefined || context.step === undefined) return false;
 
@@ -171,7 +170,6 @@ export class AgentStepRetryService extends Disposable implements IAgentStepRetry
 
     const error = unwrapErrorCause(context.error);
     const retryConfig = this.retryConfig();
-    const decision = resolveRetryPolicy(retryConfig, error, () => this.retryBinding());
     const maxAttempts = Math.max(
       decision.maxAttempts ??
         retryConfig?.maxAttempts ??

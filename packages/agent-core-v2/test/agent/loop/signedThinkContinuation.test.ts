@@ -1,4 +1,4 @@
-import { APIError as AnthropicAPIError } from '@anthropic-ai/sdk';
+import Anthropic, { APIError as AnthropicAPIError } from '@anthropic-ai/sdk';
 import { describe, expect, it, vi } from 'vitest';
 
 import { IAgentProfileService } from '#/index';
@@ -18,6 +18,7 @@ const THINKING = 'deliberate signed thought';
 const SIGNATURE = 'sig-example';
 const THINK_OUTPUT = 1765;
 const PROMPT = 'Complete the task and report the result.';
+const CONTINUE = 'Continue.';
 
 const NO_USABLE_ANSWER = 'Upstream completed without a usable answer. Please retry the request.';
 
@@ -30,8 +31,9 @@ describe('thinking-only continuation', () => {
       expect(terminal).toMatchObject({ state: 'completed', result: { type: 'completed' } });
       expect(create).toHaveBeenCalledTimes(2);
       expect(signaturesOf(create.mock.calls[1]?.[0])).toEqual([SIGNATURE]);
-      expect(tailRole(create.mock.calls[1]?.[0])).toBe('assistant');
+      expect(tailRole(create.mock.calls[1]?.[0])).toBe('user');
       expect(promptCount(create.mock.calls[1]?.[0], PROMPT)).toBe(1);
+      expect(promptCount(create.mock.calls[1]?.[0], CONTINUE)).toBe(1);
       expect(local.get(IAgentUsageService).status().currentTurn).toMatchObject({
         inputOther: 30189 + 4,
         output: THINK_OUTPUT + 8,
@@ -59,25 +61,18 @@ describe('thinking-only continuation', () => {
     }
   });
 
-  it.each(['thrown', 'yielded'] as const)('retries a signed think followed by Messages api_error inside the same turn (%s)', async (delivery) => {
+  it.each(['thrown', 'yielded'] as const)('does not continue a signed think followed by an unclassified api_error (%s)', async (delivery) => {
     const create = scriptedCreate([
       delivery === 'thrown' ? signedThinkThenThrow('api_error', 'upstream reset') : signedThinkThenYieldError('api_error', 'upstream reset'),
-      textStream('Recovered answer'),
+      textStream('should not run'),
     ]);
     const local = anthropicAgent(create);
     try {
-      const terminal = await (await prompt(local)).completion;
-      expect(terminal).toMatchObject({ state: 'completed', result: { type: 'completed' } });
-      expect(create).toHaveBeenCalledTimes(2);
-      expect(signaturesOf(create.mock.calls[1]?.[0])).toEqual([SIGNATURE]);
-      expect(tailRole(create.mock.calls[1]?.[0])).toBe('assistant');
-      expect(promptCount(create.mock.calls[1]?.[0], PROMPT)).toBe(1);
-      expect(local.get(IAgentUsageService).status().currentTurn).toMatchObject({
-        output: THINK_OUTPUT + 8,
-        inputOther: 30189 + 4,
-        inputCacheRead: 20677,
-      });
-      expect((await local.persistedWireRecords()).some((record) => record.type === 'turn.step.retrying')).toBe(false);
+      await (await prompt(local)).completion;
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(storedThinking(local)).toContainEqual({ type: 'think', think: THINKING, encrypted: SIGNATURE });
+      expect(local.contextData().history.some((message) =>
+        message.role === 'user' && message.content.some((part) => part.type === 'text' && part.text === CONTINUE))).toBe(false);
       await local.expectResumeMatches();
     } finally {
       await local.dispose();
@@ -93,8 +88,9 @@ describe('thinking-only continuation', () => {
       expect(create).toHaveBeenCalledTimes(2);
       expect(thinkingOf(create.mock.calls[1]?.[0])).toEqual([{ thinking: 'silent completion', signature: undefined }]);
       expect(signaturesOf(create.mock.calls[1]?.[0])).toEqual([]);
-      expect(tailRole(create.mock.calls[1]?.[0])).toBe('assistant');
+      expect(tailRole(create.mock.calls[1]?.[0])).toBe('user');
       expect(promptCount(create.mock.calls[1]?.[0], PROMPT)).toBe(1);
+      expect(promptCount(create.mock.calls[1]?.[0], CONTINUE)).toBe(1);
       expect((await local.persistedWireRecords()).some((record) => record.type === 'turn.step.retrying')).toBe(false);
       await local.expectResumeMatches();
     } finally {
@@ -150,17 +146,21 @@ describe('thinking-only continuation', () => {
     }
   });
 
-  it('stops a repeated unsigned think loop at the step budget', async () => {
+  it('stops a repeated unsigned think loop after the single continuation', async () => {
     const create = scriptedCreate([unsignedThinkStream(), unsignedThinkStream(), textStream('too late')]);
-    const local = anthropicAgent(create, { initialConfig: { loopControl: { maxStepsPerTurn: 2 } } });
+    const local = anthropicAgent(create);
     try {
       const terminal = await (await prompt(local)).completion;
       expect(terminal).toMatchObject({
         state: 'failed',
-        result: { type: 'failed', error: { code: 'loop.max_steps_exceeded' } },
+        result: { type: 'failed', error: {
+          code: 'loop.empty_completion',
+          details: { thinking_only: 'continuation_exhausted' },
+        } },
       });
       expect(create).toHaveBeenCalledTimes(2);
       expect(signaturesOf(create.mock.calls[1]?.[0])).toEqual([]);
+      expect(promptCount(create.mock.calls[1]?.[0], CONTINUE)).toBe(1);
       await local.expectResumeMatches();
     } finally {
       await local.dispose();
@@ -189,7 +189,7 @@ describe('thinking-only continuation', () => {
       expect(create).toHaveBeenCalledTimes(2);
       expect(signaturesOf(create.mock.calls[1]?.[0])).toEqual(['sig-plan']);
       expect(thinkingOf(create.mock.calls[1]?.[0])).toEqual([{ thinking: 'plan', signature: 'sig-plan' }]);
-      expect(tailRole(create.mock.calls[1]?.[0])).toBe('assistant');
+      expect(tailRole(create.mock.calls[1]?.[0])).toBe('user');
       expect(promptCount(create.mock.calls[1]?.[0], PROMPT)).toBe(1);
       expect(local.get(IAgentUsageService).status().currentTurn).toMatchObject({
         output: 5 + 8,
@@ -248,6 +248,30 @@ describe('thinking-only continuation', () => {
       await local.expectResumeMatches();
     } finally {
       await local.dispose();
+    }
+  });
+
+  it.each([413, 429, 502] as const)('never retries a failed second call through projection, infinite retry, or step retry (%s)', async (status) => {
+    vi.stubEnv('KIKI_INFINITE_RETRY', 'true');
+    const create = vi.fn(async (..._args: unknown[]) => {
+      if (create.mock.calls.length === 1) return signedThinkStream('end_turn')();
+      throw AnthropicAPIError.generate(status, { type: 'error', error: { type: 'api_error', message: 'synthetic second request failure' } }, 'Failure', new Headers());
+    });
+    const local = anthropicAgent(create);
+    try {
+      const handle = await local.get(IAgentPromptService).enqueue({
+        message: { role: 'user', content: [{ type: 'text', text: PROMPT }], toolCalls: [] },
+        signal: AbortSignal.timeout(2_000),
+      });
+      const terminal = await handle.completion;
+      expect(terminal).toMatchObject({ state: 'failed', result: { type: 'failed', error: { statusCode: status } } });
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(signaturesOf(create.mock.calls[1]?.[0])).toEqual([SIGNATURE]);
+      expect((await local.persistedWireRecords()).filter((record) => record.type === 'usage.record')).toHaveLength(1);
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+      vi.unstubAllEnvs();
     }
   });
 
@@ -326,6 +350,191 @@ describe('thinking-only continuation', () => {
       await local.dispose();
     }
   });
+
+  it('keeps the explicit off choice and the stored signed thinking', async () => {
+    const create = scriptedCreate([signedThinkStream('end_turn'), textStream('should not run')]);
+    const local = anthropicAgent(create, { initialConfig: { loopControl: { thinkingOnlyContinuation: false } } });
+    try {
+      await (await prompt(local)).completion;
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(storedThinking(local)).toEqual([{ type: 'think', think: THINKING, encrypted: SIGNATURE }]);
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it.each(['none', 'max_tokens', 'refusal', 'missing_stop'] as const)('does not continue thinking without a normal authoritative terminal (%s)', async (kind) => {
+    const stream = kind === 'none' ? signedThinkStream('none') : async function* () {
+      yield* thinkPrefix();
+      if (kind !== 'missing_stop') yield { type: 'message_delta', delta: { stop_reason: kind }, usage: { output_tokens: THINK_OUTPUT } };
+      if (kind === 'max_tokens' || kind === 'refusal') yield { type: 'message_stop' };
+    };
+    const create = scriptedCreate([stream, textStream('should not run')]);
+    const local = anthropicAgent(create);
+    try {
+      await (await prompt(local)).completion;
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(storedThinking(local)).toContainEqual({ type: 'think', think: THINKING, encrypted: SIGNATURE });
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it.each(['antigravity_empty_response', 'antigravity_missing_terminal', 'antigravity_max_tokens', 'antigravity_safety', 'antigravity_malformed_function_call', 'antigravity_malformed_response', 'antigravity_upstream_terminal_error', 'antigravity_stream_read_error'])('does not continue the ineligible gateway code %s', async (code) => {
+    const create = scriptedCreate([gatewayNoUsableAnswerStream(code), textStream('should not run')]);
+    const local = anthropicAgent(create);
+    try {
+      await (await prompt(local)).completion;
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(storedThinking(local)).toContainEqual({ type: 'think', think: 'plan', encrypted: 'sig-plan' });
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it.each(['normal', 'classified'] as const)('does not obtain a third call after a second %s thinking-only response', async (second) => {
+    const create = scriptedCreate([signedThinkStream('end_turn'), second === 'normal' ? signedThinkStream('end_turn') : gatewayNoUsableAnswerStream(), textStream('too late')]);
+    const local = anthropicAgent(create);
+    try {
+      const terminal = await (await prompt(local)).completion;
+      expect(terminal.state).toBe('failed');
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(promptCount(create.mock.calls[1]?.[0], CONTINUE)).toBe(1);
+      expect(storedThinking(local)).toHaveLength(2);
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it('renews the one-continuation budget only in a new turn and keeps one usage fact per model call', async () => {
+    const create = scriptedCreate([signedThinkStream('end_turn'), textStream('first result'), signedThinkStream('end_turn'), textStream('second result')]);
+    const local = anthropicAgent(create);
+    try {
+      await (await prompt(local)).completion;
+      await (await prompt(local, 'Another task.')).completion;
+      expect(create).toHaveBeenCalledTimes(4);
+      const facts = (await local.persistedWireRecords()).filter((record) => record.type === 'usage.record');
+      expect(facts).toHaveLength(4);
+      expect(local.get(IAgentUsageService).status().total?.output).toBe((THINK_OUTPUT + 8) * 2);
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it.each(['normal', 'classified'] as const)('runs the real Messages SDK and requester path for %s thinking-only output', async (kind) => {
+    const bodies: unknown[] = [];
+    const streams = [kind === 'normal' ? signedThinkStream('end_turn') : gatewayNoUsableAnswerStream(), textStream('SDK result')];
+    const sdkFetch: typeof fetch = async (_input, init) => {
+      if (typeof init?.body !== 'string') throw new Error('Expected the SDK JSON request body');
+      bodies.push(JSON.parse(init.body));
+      const stream = streams[bodies.length - 1];
+      if (stream === undefined) throw new Error('unexpected SDK HTTP attempt');
+      const events: string[] = [];
+      for await (const event of stream()) events.push(`event: ${String(event['type'])}\ndata: ${JSON.stringify(event)}\n\n`);
+      return new Response(events.join(''), { headers: { 'Content-Type': 'text/event-stream' } });
+    };
+    const local = anthropicAgent(undefined, { sdkFetch });
+    try {
+      const terminal = await (await prompt(local)).completion;
+      expect(terminal).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 2 } });
+      expect(bodies).toHaveLength(2);
+      expect(tailRole(bodies[1])).toBe('user');
+      expect(promptCount(bodies[1], CONTINUE)).toBe(1);
+      expect(thinkingOf(bodies[1])).toEqual([kind === 'normal'
+        ? { thinking: THINKING, signature: SIGNATURE }
+        : { thinking: 'plan', signature: 'sig-plan' }]);
+      const history = local.contextData().history;
+      const continuation = history.findIndex((message) => message.role === 'user' &&
+        message.content.some((part) => part.type === 'text' && part.text === CONTINUE));
+      expect(history[continuation - 1]?.role).toBe('assistant');
+      expect(history[continuation + 1]?.content).toContainEqual({ type: 'text', text: 'SDK result' });
+      const facts = (await local.persistedWireRecords()).filter((record) => record.type === 'usage.record');
+      expect(facts).toHaveLength(2);
+      expect(local.get(IAgentUsageService).status().total?.output).toBe((kind === 'normal' ? THINK_OUTPUT : 5) + 8);
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it.each(['no_thought', 'refusal'] as const)('requires real SDK generate facts, not merely the classified code (%s)', async (kind) => {
+    const stream = async function* () {
+      if (kind === 'refusal') {
+        yield* thinkPrefix();
+        yield { type: 'content_block_start', index: 1, content_block: { type: 'refusal', refusal: 'Declined' } };
+        yield { type: 'content_block_stop', index: 1 };
+      }
+      yield { type: 'error', error: { type: 'api_error', code: 'antigravity_thinking_only', message: NO_USABLE_ANSWER } };
+    };
+    const sdkFetch = vi.fn<typeof fetch>(async () => {
+      const events: string[] = [];
+      for await (const event of stream()) events.push(`event: ${String(event['type'])}\ndata: ${JSON.stringify(event)}\n\n`);
+      return new Response(events.join(''), { headers: { 'Content-Type': 'text/event-stream' } });
+    });
+    const local = anthropicAgent(undefined, { sdkFetch });
+    try {
+      const terminal = await (await prompt(local)).completion;
+      expect(terminal.state).toBe('failed');
+      expect(sdkFetch).toHaveBeenCalledTimes(1);
+      expect(local.contextData().history.some((message) => message.role === 'user' &&
+        message.content.some((part) => part.type === 'text' && part.text === CONTINUE))).toBe(false);
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it('does not treat a signature without real thinking as a continuation candidate', async () => {
+    const stream = async function* () {
+      yield { type: 'message_start', message: { id: 'signature-only', usage: { input_tokens: 4, output_tokens: 0 } } };
+      yield { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } };
+      yield { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: SIGNATURE } };
+      yield { type: 'content_block_stop', index: 0 };
+      yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 2 } };
+      yield { type: 'message_stop' };
+    };
+    const create = scriptedCreate([stream, textStream('should not run')]);
+    const local = anthropicAgent(create);
+    try {
+      await (await prompt(local)).completion;
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(storedThinking(local)).toContainEqual({ type: 'think', think: '', encrypted: SIGNATURE });
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it('does not enqueue Continue when the initial thinking request is cancelled', async () => {
+    const controller = new AbortController();
+    const stream = async function* () {
+      yield* thinkPrefix();
+      controller.abort();
+      yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: THINK_OUTPUT } };
+      yield { type: 'message_stop' };
+    };
+    const create = scriptedCreate([stream, textStream('should not run')]);
+    const local = anthropicAgent(create);
+    try {
+      const handle = await local.get(IAgentPromptService).enqueue({
+        message: { role: 'user', content: [{ type: 'text', text: PROMPT }], toolCalls: [] },
+        signal: controller.signal,
+      });
+      expect(await handle.completion).toMatchObject({ state: 'cancelled' });
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(storedThinking(local)).toContainEqual({ type: 'think', think: THINKING, encrypted: SIGNATURE });
+      expect(local.contextData().history.some((message) => message.role === 'user' &&
+        message.content.some((part) => part.type === 'text' && part.text === CONTINUE))).toBe(false);
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
 });
 
 function anthropicAgent(
@@ -334,14 +543,17 @@ function anthropicAgent(
     readonly parent?: boolean;
     readonly permission?: 'manual' | 'yolo';
     readonly model?: string;
-    readonly initialConfig?: { readonly loopControl?: { readonly maxStepsPerTurn: number } };
+    readonly sdkFetch?: typeof fetch;
+    readonly initialConfig?: { readonly loopControl?: { readonly maxStepsPerTurn?: number; readonly thinkingOnlyContinuation?: boolean } };
   } = {},
 ): TestAgentContext {
   const provider = new AnthropicChatProvider({
     model: options.model ?? 'example-model',
     apiKey: 'YOUR_API_KEY',
     baseUrl: 'https://api.example.test',
-    clientFactory: () => ({ messages: { create } }) as unknown as import('@anthropic-ai/sdk').default,
+    clientFactory: () => options.sdkFetch === undefined
+      ? ({ messages: { create } }) as unknown as Anthropic
+      : new Anthropic({ apiKey: 'YOUR_API_KEY', baseURL: 'https://api.example.test', fetch: options.sdkFetch, maxRetries: 0 }),
   });
   class FixtureRegistry extends ProtocolAdapterRegistry {
     override createChatProvider(): ChatProvider {
@@ -376,6 +588,11 @@ async function prompt(local: TestAgentContext, text = PROMPT) {
   return local.get(IAgentPromptService).enqueue({
     message: { role: 'user', content: [{ type: 'text', text }], toolCalls: [] },
   });
+}
+
+function storedThinking(local: TestAgentContext) {
+  return local.contextData().history.flatMap((message) =>
+    message.role === 'assistant' ? message.content.filter((part) => part.type === 'think') : []);
 }
 
 function signaturesOf(body: unknown): string[] {
@@ -481,7 +698,7 @@ function unsignedThinkStream(think = 'silent completion'): () => AsyncGenerator<
   };
 }
 
-function gatewayNoUsableAnswerStream(): () => AsyncGenerator<Record<string, unknown>> {
+function gatewayNoUsableAnswerStream(code = 'antigravity_thinking_only'): () => AsyncGenerator<Record<string, unknown>> {
   return async function* noUsableAnswer() {
     yield { type: 'message_start', message: { id: 'plan-1', usage: { input_tokens: 11, output_tokens: 0 } } };
     yield { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } };
@@ -489,7 +706,7 @@ function gatewayNoUsableAnswerStream(): () => AsyncGenerator<Record<string, unkn
     yield { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig-plan' } };
     yield { type: 'content_block_stop', index: 0 };
     yield { type: 'message_delta', delta: { stop_reason: null }, usage: { output_tokens: 5 } };
-    yield { type: 'error', error: { type: 'api_error', message: NO_USABLE_ANSWER } };
+    yield { type: 'error', error: { type: 'api_error', code, message: NO_USABLE_ANSWER } };
   };
 }
 

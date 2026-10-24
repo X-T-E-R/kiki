@@ -536,6 +536,7 @@ A partial update changes only the fields you send. `POST /api/config` with `{ "m
 | --- | --- | --- | --- |
 | `max_steps_per_turn` | `integer` | — | Maximum steps per turn; unset or `0` means unlimited |
 | `max_attempts_per_step` | `integer` | `5` | Maximum total attempts for a failing step, including the initial attempt |
+| `thinking_only_continuation` | `boolean` | `true` | Send one explicit `Continue.` user message when a model ends normally with only non-empty thinking |
 | `reserved_context_size` | `integer` | `50000` | Tokens reserved above the automatic compaction point for model output |
 | `auto_compact` | `string` | — | Global default compaction point as a percentage of the model's usable context (e.g. `"85%"`). This layer does not accept token counts; model, profile, and session settings use positive integer tokens |
 | `compaction_trigger_ratio` | `number` | `0.85` | Legacy trigger ratio, used only when no `auto_compact` is set at any layer |
@@ -546,7 +547,11 @@ The compaction point resolves in this order: the session's per-model token overr
 
 `max_steps_per_turn` can be overridden by the `KIKI_LOOP_MAX_STEPS_PER_TURN` environment variable, and `max_attempts_per_step` by `KIKI_LOOP_MAX_ATTEMPTS_PER_STEP`; both take higher priority than the config file.
 
-Retries only apply to transient failures — connection errors, timeouts, HTTP 429 rate limits, and all HTTP 500–599 server errors. A 429 caused by an exhausted quota or insufficient account balance is not retried and fails immediately, since it cannot succeed until the account is recharged.
+Retries only apply to transient failures — connection errors, timeouts, HTTP 429 rate limits, and eligible HTTP 500–599 server errors. Partial output, safety refusals, and exhausted quota stop rather than replaying the request.
+
+When a provider confirms a normal end with non-empty thinking but no answer, tool call, or refusal, Kiki keeps the thinking and its signature and sends a `Continue.` user message at most once per turn. A gateway's exact `antigravity_thinking_only` event can also qualify, but only when Kiki retained the actual thinking and confirmed that no other output, grounding, or refusal occurred. Cancellation, missing terminal events, interrupted streams, and token-limit stops do not qualify. The follow-up counts as a real model request with its own usage. A second empty response or failure stops the turn—even HTTP 429 or a temporary server error is not retried for this follow-up.
+
+Set `[loop_control] thinking_only_continuation = false` to disable this automatic message. Changes apply at the next step boundary. Google models that reject a trailing model turn keep their existing original-snapshot retry; it shares the same one-recovery-per-turn budget and is not disabled by this setting. Google `CONTINUATION` stops still require a continuation token that this SDK cannot send.
 
 ### Continuity reminder settings
 
@@ -621,7 +626,7 @@ max_attempts = 20
 backoff = 15000
 ```
 
-Replace `gemini-4-argon` and `google-native` with the exact keys used in your `[models]` and `[providers]` tables. The `backoff` applies only when the provider does not send `Retry-After`. The policy does not make HTTP 400, exhausted quota, partial output, unknown-delivery, or already-executed failures retryable; `retry = true` never overrides Kiki's non-retryable classification.
+Replace `gemini-4-argon` and `google-native` with the exact keys used in your `[models]` and `[providers]` tables. The `backoff` applies only when the provider does not send `Retry-After`. The policy does not make HTTP 400, exhausted quota, partial output, or already-executed failures retryable; `retry = true` never overrides Kiki's non-retryable classification.
 
 ## `transcript_memory`
 

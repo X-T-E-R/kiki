@@ -826,7 +826,7 @@ describe('stepRetry plugin', () => {
     ]);
   });
 
-  it('does not replay an unknown connection drop even when a policy would retry that cause', async () => {
+  it('bounds retries for an unknown connection drop with no observed output', async () => {
     vi.useFakeTimers();
     const failure = await caughtDelivery(deliveryStream(new APIConnectionError('terminated')));
     let calls = 0;
@@ -835,18 +835,38 @@ describe('stepRetry plugin', () => {
         calls += 1;
         throw failure;
       }),
-      { initialConfig: { retry: { policies: [{ match: 'APIConnectionError', maxAttempts: 5 }] } } },
+      { initialConfig: { retry: { policies: [{ match: 'APIConnectionError', maxAttempts: 2 }] } } },
     );
 
     const result = await runTurn(1);
 
     expect(result.type).toBe('failed');
     if (result.type !== 'failed') throw new Error('Expected the turn to fail');
-    expect(calls).toBe(1);
-    expect(rpcEvents('turn.step.retrying')).toEqual([]);
+    expect(calls).toBe(2);
+    expect(rpcEvents('turn.step.retrying')).toHaveLength(1);
     expect(requestDeliveryProvenance(result.error)).toBe('unknown');
     expect(requestDeliveryProvenance(unwrapErrorCause(result.error))).toBe('unknown');
     expect(unwrapErrorCause(result.error)).toMatchObject({ name: 'APIConnectionError', message: 'terminated' });
+  });
+
+  it('retries a parsed temporary provider event with no output using the shared classification', async () => {
+    vi.useFakeTimers();
+    const parsed = attachErrorDetails(new APIStatusError(429, 'slow down', 'req-temporary'), {
+      errorSource: 'provider_event', upstreamErrorCode: 'rate_limit_exceeded',
+    });
+    const failure = await caughtDelivery(deliveryStream(parsed));
+    let calls = 0;
+    ctx = createRetryTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        if (calls === 1) throw failure;
+        return { id: 'recovered', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }], toolCalls: [] }, usage: emptyUsage(), finishReason: 'completed', rawFinishReason: 'stop' };
+      }),
+    );
+    const result = await runTurn(1);
+    expect(result.type).toBe('completed');
+    expect(calls).toBe(2);
+    expect(rpcEvents('turn.step.retrying')).toHaveLength(1);
   });
 
   it('does not replay a parsed 429 after output, and keeps the provider status', async () => {
@@ -1101,8 +1121,8 @@ describe('stepRetry binding lookup', () => {
     expect(logError).not.toHaveBeenCalled();
   });
 
-  it('does not resolve selectors or retry when delivery is unknown', async () => {
-    const failure = await caughtDelivery(deliveryStream(new APIConnectionError('terminated')));
+  it('does not resolve selectors or retry after observed partial output', async () => {
+    const failure = await caughtDelivery(deliveryStream(new APIConnectionError('terminated'), { parts: [{ type: 'text', text: 'partial' }] }));
     context = { ...context, error: failure };
     config.setSilent(RETRY_SECTION, { policies: [{
       match: 'APIConnectionError', models: ['model-alias'], providers: ['test-provider'], retry: true,
@@ -1110,9 +1130,17 @@ describe('stepRetry binding lookup', () => {
 
     expect(handler.match(context)).toBe(false);
     expect(await handler.handle(context)).toBe(false);
-    expect(requestDeliveryProvenance(context.error)).toBe('unknown');
+    expect(requestDeliveryProvenance(context.error)).toBe('executed');
     expect(getModel).not.toHaveBeenCalled();
     expect(context.retry).not.toHaveBeenCalled();
+  });
+
+  it('keeps an explicit retry false on the wrapper when matching its unwrapped cause', () => {
+    const failure = attachErrorDetails(new Error('wrapper', {
+      cause: new APIProviderRateLimitError('slow down'),
+    }), { retry: false });
+    expect(resolveRetryPolicy({ policies: [{ match: 'provider.rate_limit', retry: true }] }, failure))
+      .toEqual({ retry: false });
   });
 
   it('preserves selector-free policy calls without a binding argument', () => {

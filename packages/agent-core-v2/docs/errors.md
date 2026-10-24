@@ -30,8 +30,18 @@ unified `ErrorCodes` const.
 - **Translation is idempotent.** A translator (`toHostFsError`, `toStorageIoError`, …) returns its input unchanged when it is already the domain's error type, so layered boundaries never double-wrap. The original error always goes to `cause`.
 - **`details` is structured and JSON-serializable; `message` is a short human sentence.** Paths, errnos, syscalls, scope/key, line numbers go into `details`; the message must stay readable without them.
 - **Cancellation passes through untranslated.** A translation boundary that can see a cancellation-class error (`UserCancellationError` from `_base/utils/abort`) rethrows it as-is. fs/process translation never encounters cancellation, so those translators do not check for it — apply the rule only at boundaries that actually can.
-- **Classify wrapped foreign errors via `unwrapErrorCause`.** Predicates that branch on raw shapes (errno, provider status) test `unwrapErrorCause(error)`, since boundary-translated errors carry the raw error as `cause`.
+- **Keep the original error for recovery decisions.** Generation recovery calls `isRetryableGenerateError(error)` before unwrapping so wrapper and cause-chain facts remain available. Use `unwrapErrorCause(error)` for raw-shape matching (errno, provider status), retry-policy selectors, and diagnostics, not as a replacement input to the recovery classifier.
 - **Branch on `code`, never `instanceof`, across the wire.** Class identity does not survive serialization. In-process, `instanceof Error2` / `isCodedError` are fine.
+
+## Generation retry and thinking-only recovery
+
+`kosong/contract/errors.ts` owns `isRetryableGenerateError(error)`. Step retry passes the original error through this classifier before applying a matching policy. An uncertain delivery mark alone does not forbid a bounded retry; observed output or tool execution, cancellation, an explicit `retry: false`, and non-retryable provider classifications do. A temporary provider error event with no output remains eligible. Translators preserve the error or its `cause`, so recovery does not erase those facts.
+
+The loop's thinking-only recovery has a separate one-use budget per turn. A successful response needs `completionAuthority: 'normal'`, non-empty thinking, and no answer, tool call, or partial response. The provider adapters withhold that authority for refusals, grounding, and unobserved terminal states. Grounded thinking without an answer fails explicitly; `readGenerateFailureUsage(error)` preserves its known usage independently of continuation eligibility. The error path instead needs the exact trusted `antigravity_thinking_only` provider event, local `readGenerateFailureFacts(error)`, and thinking actually retained by the loop collector. A machine code alone cannot create history or justify resending the original prompt.
+
+`ThinkingOnlyContinuationStepRequest` appends a real `Continue.` user message after the retained thinking, including its original signature. Its provider request uses `retry: 'never'`; any second empty response or failure, including HTTP 429, ends the turn without projection fallback, infinite retry, or step retry. Google models without assistant-prefill support keep their original-snapshot recovery under the same budget and the same second-request restriction. Tool steps do not replenish that budget. `[loop_control] thinking_only_continuation = false` disables the explicit message, not the existing Google snapshot path.
+
+`test/agent/loop/signedThinkContinuation.test.ts` exercises the real Messages SDK through generate, requester, history, usage and loop completion. `test/agent/loop/googleModelTurnContinuation.test.ts` covers both Google continuation paths and their shared budget; `test/agent/stepRetry/stepRetry.test.ts` verifies original-error classification and policy precedence.
 
 ## Adding a domain error (recipe)
 
