@@ -89,46 +89,6 @@ describe('usage JSON byte selection', () => {
   });
 });
 
-describe('usage-only JSON selection', () => {
-  it('opts in to fact fields while the default preserves the complete record', () => {
-    const value = { ...usage, model: '模型🙂', profileName: 'example-profile', prompt: 'x'.repeat(4000), tool: { args: ['private-body'] }, attachments: ['private-body'] };
-    const text = JSON.stringify(value);
-    for (const input of [text, Buffer.from(text)]) {
-      expect(parseUsageJson(input)).toEqual(value);
-      const selected = parseUsageJson(input, 'usage-only')!;
-      expect(normalizeUsageFact(selected)).toEqual(normalizeUsageFact(value));
-      expect(selected).not.toHaveProperty('prompt');
-      expect(selected).not.toHaveProperty('tool');
-      expect(selected).not.toHaveProperty('attachments');
-    }
-    const native = JSON.parse;
-    const parsed: string[] = [];
-    const spy = vi.spyOn(JSON, 'parse').mockImplementation((input: string) => { parsed.push(input); return native(input) as unknown; });
-    try {
-      expect(normalizeUsageFact(parseUsageJson(text, 'usage-only')!)).toEqual(normalizeUsageFact(value));
-      expect(parsed.every((input) => input.length < 100)).toBe(true);
-    } finally { spy.mockRestore(); }
-  });
-
-  it('matches native fact normalization for optional, invalid and duplicate fields at every parsing path', () => {
-    const values = [null, true, false, 0, -1, 1.25, '', '中文😀\\n', {}, [], usage.usage];
-    const fields = ['time', 'model', 'usage', 'usageKnown', 'turnId', 'agentId', 'parentAgentId', 'provider', 'modelAlias', 'profileName', 'upstreamModelId'];
-    for (const field of fields) for (const value of values) {
-      const text = `${JSON.stringify(usage).slice(0, -1)},${JSON.stringify(field)}:${JSON.stringify(value)}}`;
-      const expected = normalizeUsageFact(JSON.parse(text) as WireRecord);
-      for (const input of [text, Buffer.from(text)]) expect(normalizeUsageFact(parseUsageJson(input, 'usage-only')!)).toEqual(expected);
-      for (const chunk of [1, 7, text.length]) {
-        const stream = new UsageJsonStream();
-        for (let start = 0; start < text.length; start += chunk) stream.write(text.slice(start, start + chunk));
-        expect(normalizeUsageFact(stream.finish()!)).toEqual(expected);
-      }
-    }
-    for (const text of ['{"type":"other","skipped":[1,]}', '{"type":"usage.record","skipped":"\\x20"}', 'null', '[] trailing']) {
-      expect(() => parseUsageJson(text, 'usage-only')).toThrow(SyntaxError);
-    }
-  });
-});
-
 describe('streaming usage JSON', () => {
   function parse(text: string, chunk = 1) {
     const stream = new UsageJsonStream();

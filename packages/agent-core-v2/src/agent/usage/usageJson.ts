@@ -3,14 +3,9 @@ import type { WireRecord } from '#/wire/record';
 const stringRun = /(?:[^"\\\u0000-\u001f]+|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})){1,256}/y;
 const numberToken = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y;
 
-/** Validates the whole JSON value. The default preserves every field of a matching usage record; usage-only mode retains only fact fields without materializing unrelated bodies. Duplicate keys follow JSON.parse's last-key-wins rule. */
-export function parseUsageJson(input: string | Uint8Array, mode?: 'usage-only'): WireRecord | undefined {
+/** Validates the whole JSON value without materializing large non-usage bodies. Byte input validates ASCII syntax before decoding a matching usage record as UTF-8. Duplicate keys follow JSON.parse's last-key-wins rule. */
+export function parseUsageJson(input: string | Uint8Array): WireRecord | undefined {
   const bytes = typeof input === 'string' ? undefined : Buffer.from(input.buffer, input.byteOffset, input.byteLength);
-  if (mode === 'usage-only') {
-    const parser = new UsageJsonStream();
-    parser.write(typeof input === 'string' ? input : bytes!.toString('utf8'));
-    return parser.finish();
-  }
   const text = typeof input === 'string' ? input : bytes!.toString(input.byteLength <= 2048 ? 'utf8' : 'latin1');
   if (text.length <= 2048) {
     const raw = JSON.parse(text) as WireRecord;
@@ -109,7 +104,6 @@ const usageFields = new Set(['type', 'time', 'model', 'usage', 'usageKnown', 'tu
 const tokenFields = new Set(['inputOther', 'output', 'inputCacheRead', 'inputCacheCreation']);
 const batchFields = new Set(['version', 'start', 'checkpoint', 'records']);
 const checkpointFields = new Set(['generation', 'offset', 'size', 'mtimeMs', 'boundaryHash', 'valid']);
-const captureFields = [[], [...usageFields], [...tokenFields], [...batchFields], [...checkpointFields], [], [...usageFields]];
 const stringFields = new Set(['type', 'model', 'agentId', 'parentAgentId', 'provider', 'modelAlias', 'profileName', 'upstreamModelId', 'sourceAgentId', 'generation', 'boundaryHash']);
 const plainStringRun = /[^"\\\u0000-\u001F]+/y;
 const digitRun = /[0-9]+/y;
@@ -193,7 +187,7 @@ export class UsageJsonStream {
             const frame = this.stack.at(-1)!;
             frame.key = value;
             frame.state = 2;
-          } else this.finishValue(value ?? (this.target === undefined ? undefined : null));
+          } else this.finishValue(value);
         } else if (char === '\\') { this.escape = true; position++; }
         else {
           plainStringRun.lastIndex = position;
@@ -240,7 +234,8 @@ export class UsageJsonStream {
       if (frame?.state === 0 || frame?.state === 1) {
         if (char === '}' && frame.state === 0) { this.close(); position++; continue; }
         if (char !== '"') this.fail();
-        position = this.beginString(text, position, undefined, true, frame.capture !== 0);
+        this.beginString(undefined, true, frame.capture !== 0);
+        position++;
         continue;
       }
       if (frame?.state === 2) {
@@ -259,7 +254,7 @@ export class UsageJsonStream {
       if (frame?.state === 5 && char === ']') { this.close(); position++; continue; }
       if (frame === undefined && this.started) this.fail();
       const fields = frame?.capture === 1 || frame?.capture === 6 ? usageFields : frame?.capture === 2 ? tokenFields : frame?.capture === 3 ? batchFields : frame?.capture === 4 ? checkpointFields : undefined;
-      const target = frame?.key !== undefined && fields?.has(frame.key) ? frame as JsonTarget : undefined;
+      const target = frame?.key !== undefined && fields?.has(frame.key) ? { object: frame.object!, key: frame.key } : undefined;
       if (frame?.capture === 5 && char !== '{') this.fail();
       if (frame !== undefined) frame.state = frame.state === 3 ? 4 : 7;
       const isRoot = !this.started;
@@ -278,7 +273,8 @@ export class UsageJsonStream {
         this.stack.push({ state: char === '{' ? 0 : 5, capture, object });
         position++;
       } else if (char === '"') {
-        position = this.beginString(text, position, target, false, target !== undefined && stringFields.has(target.key));
+        this.beginString(target, false, target !== undefined && stringFields.has(target.key));
+        position++;
       } else if (char === 't' || char === 'f' || char === 'n') {
         this.target = target;
         this.literal = char === 't' ? 'true' : char === 'f' ? 'false' : 'null';
@@ -287,12 +283,6 @@ export class UsageJsonStream {
         position++;
       } else if (char === '-' || (char >= '0' && char <= '9')) {
         this.target = target;
-        numberToken.lastIndex = position;
-        if (numberToken.test(text) && numberToken.lastIndex < text.length && ',]} \t\r\n'.includes(text[numberToken.lastIndex]!)) {
-          this.finishValue(target === undefined ? undefined : Number(text.slice(position, numberToken.lastIndex)));
-          position = numberToken.lastIndex;
-          continue;
-        }
         this.token = 'number';
         this.numberState = 0;
         this.negative = false;
@@ -312,32 +302,13 @@ export class UsageJsonStream {
     return this.rootObject && this.root['type'] === 'usage.record' ? this.root as WireRecord : undefined;
   }
 
-  private beginString(text: string, start: number, target: JsonTarget | undefined, key: boolean, capture: boolean): number {
-    plainStringRun.lastIndex = start + 1;
-    const end = plainStringRun.test(text) ? plainStringRun.lastIndex : start + 1;
-    if (text[end] === '"') {
-      if (key) {
-        const frame = this.stack.at(-1)!;
-        frame.key = undefined;
-        const fields = captureFields[frame.capture]!;
-        if (end - start <= 19) for (let i = 0; i < fields.length; i++) {
-          const field = fields[i]!;
-          if (field.length === end - start - 1 && text.startsWith(field, start + 1)) { frame.key = field; break; }
-        }
-        frame.state = 2;
-      } else {
-        this.target = target;
-        this.finishValue(capture && (target?.key !== 'type' || end - start <= 13) ? JSON.parse(text.slice(start, end + 1)) : target === undefined ? undefined : null);
-      }
-      return end + 1;
-    }
+  private beginString(target: JsonTarget | undefined, key: boolean, capture: boolean): void {
     this.target = target;
     this.keyToken = key;
     this.captureString = capture;
     this.stringParts = [];
     this.stringLength = 0;
     this.token = 'string';
-    return start + 1;
   }
 
   private addString(value: string): void {
