@@ -1,4 +1,4 @@
-import type { ComputerUsagePreference, ConfigResponse, PatchConfigRequest } from '@kiki/protocol';
+import { CUA_COMPUTER_CONNECTION, type ComputerUsagePreference, type ConfigResponse, type PatchConfigRequest } from '@kiki/protocol';
 import type { KikiConfigPatch } from '../transport';
 
 export const DEFAULT_COMPUTER_USAGE_PREFERENCE: ComputerUsagePreference = 'avoid';
@@ -27,6 +27,15 @@ export function computerControlEnabledPatch(enabled: boolean | null): KikiConfig
   };
 }
 
+export function computerControlConnection(config: Pick<ConfigResponse, 'computer_control'>): string | undefined {
+  const value = config.computer_control?.connection;
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+export function computerControlConnectionPatch(connection: string | null): Pick<PatchConfigRequest, 'computer_control'> {
+  return { computer_control: { connection } };
+}
+
 function extractDisabledToolNames(config: unknown): string[] {
   if (config === null || typeof config !== 'object') return [];
   const c = config as Record<string, unknown>;
@@ -45,13 +54,22 @@ function extractDisabledToolNames(config: unknown): string[] {
   return [...names];
 }
 
-export function isComputerToolPolicyDenied(config: unknown): boolean {
+export function isComputerToolPolicyDenied(config: unknown, connection?: string | null): boolean {
   const disabled = extractDisabledToolNames(config);
-  return disabled.some((name) => name === 'mcp__kiki-computer__*' || name === 'kiki-computer' || name === 'ComputerControl');
+  if (connection === undefined) {
+    return disabled.some((name) => name === 'mcp__kiki-computer__*' || name === 'kiki-computer' || name === 'ComputerControl');
+  }
+  const server = connection === null || connection.trim() === '' ? CUA_COMPUTER_CONNECTION : connection.trim();
+  return disabled.some((name) => name === 'ComputerControl' || name === server || name === `mcp__${server}__*`);
 }
 
-export function isComputerToolPolicyPartiallyDenied(config: unknown): boolean {
-  if (isComputerToolPolicyDenied(config)) return false;
+export function isComputerToolPolicyPartiallyDenied(config: unknown, connection?: string | null): boolean {
+  if (isComputerToolPolicyDenied(config, connection)) return false;
   const disabled = extractDisabledToolNames(config);
-  return disabled.some((name) => name.startsWith('mcp__kiki-computer__') || name.startsWith('ComputerControl__') || name === 'mcp__kiki-computer');
+  if (connection === undefined) {
+    return disabled.some((name) => name.startsWith('mcp__kiki-computer__') || name.startsWith('ComputerControl__') || name === 'mcp__kiki-computer');
+  }
+  const server = connection === null || connection.trim() === '' ? CUA_COMPUTER_CONNECTION : connection.trim();
+  const prefix = `mcp__${server}__`;
+  return disabled.some((name) => name.startsWith(prefix) || name === `mcp__${server}`);
 }

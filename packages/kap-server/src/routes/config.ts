@@ -225,7 +225,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
         for (const domain of Object.keys(camelPatch)) {
           if (domain === TASK_BOARD_SECTION) {
             await config.replaceSections({ [TASK_BOARD_SECTION]: camelPatch[domain] }, ConfigTarget.User);
-          } else if (domain === COMPUTER_CONFIG_SECTION && isPlainObject(camelPatch[domain]) && (camelPatch[domain]['usagePreference'] === null || camelPatch[domain]['enabled'] === null)) {
+          } else if (domain === COMPUTER_CONFIG_SECTION && isPlainObject(camelPatch[domain]) && (camelPatch[domain]['usagePreference'] === null || camelPatch[domain]['enabled'] === null || camelPatch[domain]['connection'] === null)) {
             const patch = { ...camelPatch[domain] };
             if (patch['usagePreference'] === null) {
               await config.removeOverride(COMPUTER_CONFIG_SECTION, ['usagePreference']);
@@ -234,6 +234,10 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
             if (patch['enabled'] === null) {
               await config.removeOverride(COMPUTER_CONFIG_SECTION, ['enabled']);
               delete patch['enabled'];
+            }
+            if (patch['connection'] === null) {
+              await config.removeOverride(COMPUTER_CONFIG_SECTION, ['connection']);
+              delete patch['connection'];
             }
             if (Object.keys(patch).length > 0) await config.set(domain, patch);
           } else if (domain === SUBAGENT_SECTION && isSubagentDefaultModelClear(camelPatch[domain])) {
@@ -533,13 +537,19 @@ function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigSer
   wire['browser_control'] = projection?.browser ?? { enabled: true, enabledSource: 'default', allowedBrowsers: [], allowedBrowsersConfigured: false, allowedBrowsersSource: 'default' };
   delete wire['optional_capabilities'];
   if (capabilities !== undefined) wire['optional_capabilities'] = capabilities;
-  wire['computer_control'] = {
+  const computerWire = {
     enabled: computerToolsEnabled(computer),
     enabledSource: projection?.computerEnabledSource ?? 'default',
     usagePreference: computer?.usagePreference ?? DEFAULT_COMPUTER_USAGE_PREFERENCE,
     usagePreferenceSource: computerPreferenceSource,
-    appliesOn: 'next-model-request',
-    toolsApplyOn: 'next-step',
+    appliesOn: 'next-model-request' as const,
+    toolsApplyOn: 'next-step' as const,
+  };
+  const connection = computer?.connection;
+  wire['computer_control'] = connection === undefined ? computerWire : {
+    ...computerWire,
+    connection,
+    connectionSource: config?.origins(COMPUTER_CONFIG_SECTION)['connection'] ?? 'home',
   };
   return configResponseWireSchema.parse(wire);
 }

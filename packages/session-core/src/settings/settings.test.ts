@@ -2,7 +2,7 @@ import { globSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { computerControlPreference, computerControlPreferencePatch, isComputerControlEnabled, computerControlEnabledPatch, isComputerToolPolicyDenied, isComputerToolPolicyPartiallyDenied } from './computerControl';
+import { computerControlPreference, computerControlPreferencePatch, computerControlConnection, computerControlConnectionPatch, isComputerControlEnabled, computerControlEnabledPatch, isComputerToolPolicyDenied, isComputerToolPolicyPartiallyDenied } from './computerControl';
 import { isBrowserControlEnabled, browserControlEnabledPatch, isBrowserToolPolicyDenied, isBrowserToolPolicyPartiallyDenied, isBrowserConnectionEffectiveAllowed, effectiveAllowedBrowserCount, browserSourceOfConnectionType } from './browserControl';
 import { patchConfigRequestSchema } from '@kiki/protocol';
 
@@ -2226,6 +2226,13 @@ describe('computer-use preference settings', () => {
     expect(isComputerToolPolicyDenied({ tools: { disabled: ['Bash'] } })).toBe(false);
     expect(isComputerToolPolicyPartiallyDenied({ tools: { disabled: ['mcp__kiki-computer__click'] } })).toBe(true);
     expect(isComputerToolPolicyDenied({ tools: { disabled: ['mcp__kiki-computer__click'] } })).toBe(false);
+    expect(computerControlConnection({})).toBeUndefined();
+    expect(computerControlConnectionPatch('kiki-windows-mcp')).toEqual({ computer_control: { connection: 'kiki-windows-mcp' } });
+    expect(computerControlConnectionPatch(null)).toEqual({ computer_control: { connection: null } });
+    expect(isComputerToolPolicyDenied({ tools: { disabled: ['mcp__kiki-windows-mcp__*'] } })).toBe(false);
+    expect(isComputerToolPolicyDenied({ tools: { disabled: ['mcp__kiki-windows-mcp__*'] } }, 'kiki-windows-mcp')).toBe(true);
+    expect(isComputerToolPolicyPartiallyDenied({ tools: { disabled: ['mcp__kiki-computer__click'] } }, 'kiki-windows-mcp')).toBe(false);
+    expect(isComputerToolPolicyDenied({ tools: { disabled: ['mcp__kiki-windows-mcp__Click'] } }, 'kiki-windows-mcp')).toBe(false);
   });
 });
 

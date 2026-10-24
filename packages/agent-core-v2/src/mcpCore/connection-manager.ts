@@ -10,7 +10,8 @@ import { HttpMcpClient } from './client-http';
 import { isRemoteMcpConfig } from './client-remote';
 import { SseMcpClient } from './client-sse';
 import type { UnexpectedCloseReason } from './client-shared';
-import { StdioMcpClient } from './client-stdio';
+import { computerSpawnHeld, StdioMcpClient } from './client-stdio';
+import { COMPUTER_ADMISSION_HELD, computerExecutorKind, onComputerAdmissionChange } from './computer';
 import type { McpOAuthService } from '#/mcpCore/oauth/service';
 import { assertMcpInputSchema, type MCPClient, type MCPToolDefinition } from './types';
 
@@ -117,6 +118,8 @@ export class McpConnectionManager implements McpConnectionView {
   private initialLoadAttemptId = 0;
   private initialLoadStartedAt: number | undefined;
   private initialLoadFinishedAt: number | undefined;
+  private reconcileQueue: Promise<void> = Promise.resolve();
+  private admissionWatch: (() => void) | undefined;
 
   readonly oauthService: McpOAuthService | undefined;
   private readonly log: Logger;
@@ -124,6 +127,10 @@ export class McpConnectionManager implements McpConnectionView {
   constructor(private readonly options: McpConnectionManagerOptions = {}) {
     this.oauthService = options.oauthService;
     this.log = options.log ?? defaultLog;
+    this.admissionWatch = onComputerAdmissionChange(() => {
+      if (this.stopping) return;
+      void this.reconcileComputerAdmission();
+    });
   }
 
   getRemoteServerUrl(name: string): string | undefined {
@@ -384,6 +391,8 @@ export class McpConnectionManager implements McpConnectionView {
   shutdown(): Promise<void> {
     if (this.shutdownWork !== undefined) return this.shutdownWork;
     this.stopping = true;
+    this.admissionWatch?.();
+    this.admissionWatch = undefined;
     for (const entry of this.entries.values()) entry.accepting = false;
     this.shutdownWork = this.closeAll();
     void this.shutdownWork.then(() => {
@@ -409,7 +418,57 @@ export class McpConnectionManager implements McpConnectionView {
     return work;
   }
 
+  private reconcileComputerAdmission(): Promise<void> {
+    const run = this.reconcileQueue.catch(() => undefined).then(() => this.reconcileComputerAdmissionNow());
+    this.reconcileQueue = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  private async reconcileComputerAdmissionNow(): Promise<void> {
+    if (this.stopping) return;
+    const computerEntries = [...this.entries.values()].filter((entry) => computerExecutorKind(entry.config) !== undefined);
+    for (const entry of computerEntries) {
+      if (this.stopping || !computerSpawnHeld(entry.name, entry.config)) continue;
+      entry.accepting = false;
+      if (entry.calls.size > 0) await Promise.all([...entry.calls]);
+      if (this.stopping || this.entries.get(entry.name) !== entry) continue;
+      if (entry.client !== undefined) {
+        try {
+          await this.closeClient(entry);
+        } catch {
+          entry.error = entry.error ?? 'computer-stop-unconfirmed';
+          this.emit(entry);
+          return;
+        }
+      }
+      if (this.entries.get(entry.name) !== entry || entry.status === 'removed') continue;
+      entry.status = 'disabled';
+      entry.error = 'computer-admission-held';
+      entry.tools = undefined;
+      entry.enabledNames = undefined;
+      entry.rawTools = undefined;
+      this.emit(entry);
+    }
+    for (const entry of computerEntries) {
+      if (this.stopping || entry.config.enabled === false) continue;
+      if (computerSpawnHeld(entry.name, entry.config)) continue;
+      if (entry.status !== 'disabled' || entry.error !== 'computer-admission-held') continue;
+      entry.accepting = true;
+      entry.error = undefined;
+      entry.status = 'pending';
+      this.emit(entry);
+      await this.connectOne(entry, this.beginConnectAttempt(entry));
+    }
+  }
+
   private async connectOneNow(entry: InternalEntry, attemptId: number): Promise<void> {
+    if (computerSpawnHeld(entry.name, entry.config)) {
+      entry.accepting = false;
+      entry.status = 'disabled';
+      entry.error = 'computer-admission-held';
+      if (this.isCurrent(entry, attemptId)) this.emit(entry);
+      return;
+    }
     const timeoutMs =
       entry.config.startupTimeoutMs ??
       this.options.resolveDefaultTimeouts?.().startupTimeoutMs ??
@@ -449,6 +508,17 @@ export class McpConnectionManager implements McpConnectionView {
         if (client !== undefined) {
           await this.closeRuntimeClient(client);
         }
+        return;
+      }
+      if (error instanceof Error && error.message === COMPUTER_ADMISSION_HELD) {
+        entry.accepting = false;
+        entry.status = 'disabled';
+        entry.error = 'computer-admission-held';
+        entry.tools = undefined;
+        entry.enabledNames = undefined;
+        entry.rawTools = undefined;
+        if (client !== undefined) await this.closeClient(entry).catch(() => undefined);
+        if (this.isCurrent(entry, attemptId)) this.emit(entry);
         return;
       }
       if (this.shouldMarkNeedsAuth(entry, error)) {

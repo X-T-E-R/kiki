@@ -9,7 +9,7 @@ import { IFlagService } from '#/app/flag/flag';
 import { MEMORY_SECTION, type MemoryConfig } from '#/app/memory/configSection';
 import { THREAD_COMMUNICATION_SECTION, type ThreadCommunicationConfig } from '#/app/threadCommunication/configSection';
 import { Error2, ErrorCodes } from '#/errors';
-import { isComputerMcpConfig } from '#/mcpCore/computer';
+import { isComputerMcpConfig, setComputerConnectionSelection } from '#/mcpCore/computer';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 
@@ -69,11 +69,23 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
     @IAtomicDocumentStore private readonly store: IAtomicDocumentStore,
   ) {
     super();
+    this.publishComputerSelection();
     if (this.settings.onDidSectionChange !== undefined) {
       this._register(this.settings.onDidSectionChange(() => {
+        this.publishComputerSelection();
         this.changes.fire({});
       }));
     }
+  }
+
+  private publishComputerSelection(): void {
+    let connection: string | undefined;
+    try {
+      connection = this.settings.get<ComputerConfig>(COMPUTER_CONFIG_SECTION)?.connection;
+    } catch {
+      connection = undefined;
+    }
+    setComputerConnectionSelection(connection);
   }
 
   globalState(id: OptionalCapabilityId): OptionalCapabilityGlobalState {

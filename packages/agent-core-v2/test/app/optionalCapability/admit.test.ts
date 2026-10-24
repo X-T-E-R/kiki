@@ -62,6 +62,10 @@ describe('admitOptionalCapability', () => {
     expect(namesOptionalCapability('computer', ['*'], ['desktop'])).toBe(false);
     expect(namesOptionalCapability('computer', ['mcp__kiki-computer__*'])).toBe(false);
     expect(namesOptionalCapability('computer', ['mcp__desktop__*'], ['desktop'])).toBe(true);
+    expect(namesOptionalCapability('computer', ['mcp__kiki-windows-mcp__Screenshot'], ['kiki-windows-mcp'])).toBe(true);
+    expect(namesOptionalCapability('computer', ['mcp__kiki-windows-mcp__*'], ['kiki-windows-mcp'])).toBe(true);
+    expect(namesOptionalCapability('computer', ['mcp__kiki-computer__click'], ['kiki-windows-mcp'])).toBe(false);
+    expect(optionalCapabilityForTool('mcp__kiki-windows-mcp__Click', ['kiki-windows-mcp'])).toBe('computer');
   });
 
   it('treats only a clean shipped default profile as the builtin list', () => {

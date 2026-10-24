@@ -259,6 +259,7 @@ builtin_product_skills = true
 [computer_control]
 usage_preference = "avoid"
 # enabled: boolean
+# connection: string
 
 # ##########################################################################
 # cron

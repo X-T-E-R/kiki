@@ -9,7 +9,16 @@ import type { IRuntimeResolver } from '#/workspace/workspaceInstance/workspaceIn
 import { proxyEnvForChild, reconcileChildNoProxy } from '#/_base/utils/proxy';
 import { abortable } from '#/_base/utils/abort';
 import { canonicalWorkspaceRoot } from '#/_base/utils/paths';
-import { isComputerMcpConfig, isDirectComputerMcpConfig, type ComputerMcpStopResult } from './computer';
+import {
+  COMPUTER_ADMISSION_HELD,
+  computerExecutorKind,
+  computerSelectionAdmits,
+  isComputerMcpConfig,
+  isDirectComputerMcpConfig,
+  isWindowsMcpServeReady,
+  notifyComputerAdmission,
+  type ComputerMcpStopResult,
+} from './computer';
 
 import {
   buildRequestOptions,
@@ -22,7 +31,7 @@ import {
   type UnexpectedCloseListener,
   type UnexpectedCloseReason,
 } from './client-shared';
-import type { McpServerStdioConfig } from './config-schema';
+import type { McpServerConfig, McpServerStdioConfig } from './config-schema';
 import type { MCPClient, MCPToolCallContext, MCPToolDefinition, MCPToolResult } from './types';
 
 export interface StdioMcpClientOptions {
@@ -56,6 +65,24 @@ export function allowComputerMcp(name: string, config: McpServerStdioConfig): vo
   stoppedComputerConfigs.delete(computerKey(name, config));
 }
 
+export function computerForeignProcessOccupied(except?: StdioMcpClient): boolean {
+  for (const client of unconfirmedComputerClients) {
+    if (client !== except) return true;
+  }
+  for (const client of computerClients.keys()) {
+    if (client !== except && client.occupiesComputerProcess()) return true;
+  }
+  return false;
+}
+
+export function computerSpawnHeld(name: string, config: McpServerConfig, except?: StdioMcpClient): boolean {
+  const kind = computerExecutorKind(config);
+  if (kind === undefined) return false;
+  if (kind === 'windows-mcp' && !isWindowsMcpServeReady(config)) return true;
+  if (!computerSelectionAdmits(name, config)) return true;
+  return computerForeignProcessOccupied(except);
+}
+
 export function captureComputerMcpStop(name: string, config: McpServerStdioConfig, cwd?: string): () => Promise<ComputerMcpStopResult> {
   const key = computerKey(name, config);
   const clients = [...computerClients].filter(([, entry]) => entry.key === key &&
@@ -70,8 +97,8 @@ export function captureComputerMcpStop(name: string, config: McpServerStdioConfi
         ? result.reason instanceof Error ? result.reason.message : String(result.reason) : '').join('\n') };
     }
     return clients.length === 0
-      ? { state: 'idle', output: 'No matching cua MCP child is running in this Kiki service process. This is not a statement about the whole desktop.' }
-      : { state: 'stopped', output: 'Admission is closed and all matching directly owned cua MCP children have exited.' };
+      ? { state: 'idle', output: 'No matching computer MCP child is running in this Kiki service process. This is not a statement about the whole desktop.' }
+      : { state: 'stopped', output: 'Admission is closed and all matching directly owned computer MCP children have exited.' };
   };
 }
 
@@ -94,6 +121,7 @@ export class StdioMcpClient implements MCPClient {
   private lastTransportError: Error | undefined;
   private pendingUnexpectedClose: UnexpectedCloseReason | undefined;
   private readonly elicitationEnabled: boolean;
+  private exitConfirmed = false;
   private activeElicitation: MCPToolCallContext | undefined;
   private activeElicitationSignal: AbortSignal | undefined;
   private readonly elicitationLifetime = new AbortController();
@@ -116,13 +144,15 @@ export class StdioMcpClient implements MCPClient {
     this.transport = new RuntimeStdioTransport(config, options, this.stderrBuffer, this.computerControl,
       !this.computerControl || this.directlyOwned, () => {
         if (!this.computerControl || this.directlyOwned) {
+          this.exitConfirmed = true;
           if (computerOwner?.client === this) computerOwner = undefined;
           computerClients.delete(this);
           unconfirmedComputerClients.delete(this);
         } else if (computerOwner?.client !== this && !unconfirmedComputerClients.has(this)) {
           computerClients.delete(this);
         }
-      });
+        if (computerExecutorKind(config) !== undefined) notifyComputerAdmission();
+      }, this);
     this.elicitationEnabled = options.elicitation === true;
     this.client = new Client({
       name: options.clientName ?? KIMI_MCP_CLIENT_NAME,
@@ -161,6 +191,10 @@ export class StdioMcpClient implements MCPClient {
       throw new Error2(ErrorCodes.MCP_STARTUP_FAILED, 'MCP stdio client was closed during startup');
     }
     this.ready = true;
+  }
+
+  occupiesComputerProcess(): boolean {
+    return this.computerControl && this.started && !this.exitConfirmed;
   }
 
   blockCalls(): void {
@@ -298,11 +332,15 @@ class RuntimeStdioTransport implements Transport {
     private readonly computerControl: boolean,
     private readonly ownedProcessTree: boolean,
     private readonly confirmedExit: () => void,
+    private readonly owner: StdioMcpClient,
   ) {}
 
   async start(): Promise<void> {
     if (this.started) throw new Error('Runtime stdio transport is already started');
     if (this.closed) throw new Error('Runtime stdio transport is closed');
+    if (this.config.transport === 'stdio' && computerSpawnHeld(this.options.serverName ?? '', this.config, this.owner)) {
+      throw new Error2(ErrorCodes.MCP_SERVER_DISABLED, COMPUTER_ADMISSION_HELD);
+    }
     this.started = true;
     const lease = this.options.runtimeResolver.acquire(
       { workspaceId: this.options.workspaceId, runtimeId: this.options.runtimeId },

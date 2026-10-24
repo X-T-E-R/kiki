@@ -8,6 +8,7 @@ export type ComputerUsagePreference = z.infer<typeof ComputerUsagePreferenceSche
 export const ComputerConfigSchema = z.object({
   usagePreference: ComputerUsagePreferenceSchema.optional(),
   enabled: z.boolean().optional(),
+  connection: z.string().trim().min(1).optional(),
 }).strict();
 export type ComputerConfig = z.infer<typeof ComputerConfigSchema>;
 export const DEFAULT_COMPUTER_USAGE_PREFERENCE: ComputerUsagePreference = 'avoid';

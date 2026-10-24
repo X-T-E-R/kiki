@@ -258,6 +258,18 @@ describe('server-v2 /api/config', () => {
     expect(await readFile(join(home as string, 'config.toml'), 'utf-8')).not.toContain('usage_preference');
     expect(await readFile(join(home as string, 'mcp.json'), 'utf-8').catch(() => undefined)).toBeUndefined();
     expect(sharedPatchConfigRequestSchema.safeParse({ computer_control: { usage_preference: false } }).success).toBe(false);
+    expect(sharedPatchConfigRequestSchema.safeParse({ computer_control: { connection: '' } }).success).toBe(false);
+    expect(sharedPatchConfigRequestSchema.safeParse({ computer_control: { connection: 'kiki-windows-mcp' } }).success).toBe(true);
+    const selected = await patchConfig({ computer_control: { connection: 'kiki-windows-mcp' } });
+    expect(selected.computer_control).toEqual({ ...computerBase, connection: 'kiki-windows-mcp', connectionSource: 'home' });
+    expect(sharedConfigResponseSchema.parse(selected).computer_control).toEqual(selected.computer_control);
+    expect(selected.permission).toEqual(edited.permission);
+    expect(await readFile(join(home as string, 'config.toml'), 'utf-8')).toContain('connection = "kiki-windows-mcp"');
+    expect(await readFile(join(home as string, 'mcp.json'), 'utf-8').catch(() => undefined)).toBeUndefined();
+    const clearedConnection = await patchConfig({ computer_control: { connection: null } });
+    expect(clearedConnection.computer_control).toEqual(computerBase);
+    expect(clearedConnection.permission).toEqual(edited.permission);
+    expect(await readFile(join(home as string, 'config.toml'), 'utf-8')).not.toContain('connection');
   });
 
   it('saves browser allow-set and computer enabled through POST /config and hot configuration, without installing MCP', async () => {

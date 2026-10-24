@@ -42,7 +42,7 @@ import type { McpServerConfig } from '#/mcpCore/config-schema';
 import { IAgentMcpService } from './mcp';
 import { qualifyMcpToolName } from '#/mcpCore/tool-naming';
 import { IMcpConfigStore } from '#/app/mcpConfig/configStore';
-import { isComputerMcpConfig } from '#/mcpCore/computer';
+import { computerSelectionAdmits, isComputerMcpConfig, setComputerConnectionSelection } from '#/mcpCore/computer';
 import { IConfigService } from '#/app/config/config';
 import { COMPUTER_CONFIG_SECTION, computerToolsEnabled, type ComputerConfig } from '#/app/computer/configSection';
 import { capabilityToolsSource } from '#/app/optionalCapability/admit';
@@ -124,6 +124,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     if (this.configService.onDidSectionChange !== undefined) {
       this._register(this.configService.onDidSectionChange((event) => {
         if (event.domain !== COMPUTER_CONFIG_SECTION) return;
+        setComputerConnectionSelection(this.configService.get<ComputerConfig>(COMPUTER_CONFIG_SECTION)?.connection);
         this.reopenComputerSessions();
       }));
     }
@@ -607,7 +608,9 @@ export class AgentMcpService extends Service implements IAgentMcpService {
       resolved.enabledNames,
       resolved.admitCall,
     );
-    if (isComputerMcpConfig(this.mcpHandle.connectionManager.configOf(entry.name)) && !this.computerAdmitted()) {
+    const serverConfig = this.mcpHandle.connectionManager.configOf(entry.name);
+    const connection = this.configService.get<ComputerConfig>(COMPUTER_CONFIG_SECTION)?.connection;
+    if (isComputerMcpConfig(serverConfig) && (!this.computerAdmitted() || !computerSelectionAdmits(entry.name, serverConfig, connection))) {
       void this.dispatcher.dispatch(new ToolListUpdated({ reason: 'mcp.disconnected', serverName: entry.name }));
       return;
     }
@@ -653,10 +656,12 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     readonly registered: readonly string[];
     readonly collisions: readonly McpToolCollision[];
   } {
-    const computer = isComputerMcpConfig(this.mcpHandle.connectionManager.configOf(serverName));
+    const serverConfig = this.mcpHandle.connectionManager.configOf(serverName);
+    const computer = isComputerMcpConfig(serverConfig);
+    const connection = this.configService.get<ComputerConfig>(COMPUTER_CONFIG_SECTION)?.connection;
     if (computer) this.computerSessions.set(serverName, { client, tools, enabledNames: enabledTools, admitCall });
     this.unregisterMcpServer(serverName);
-    if (computer && !this.computerAdmitted()) {
+    if (computer && (!this.computerAdmitted() || !computerSelectionAdmits(serverName, serverConfig, connection))) {
       return { registered: [], collisions: [] };
     }
     const callAdmission = computer ? this.gateComputerCall(admitCall) : admitCall;
@@ -697,7 +702,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
             attachmentStore: () =>
               this.instantiation.invokeFunction((accessor) => accessor.get(ISessionMediaStore)),
             providerType: () => this.profile.getModelProviderType(),
-            computerControl: isComputerMcpConfig(this.mcpHandle.connectionManager.configOf(serverName)),
+            computerControl: computer,
             computerUsagePreference: () => this.configService.get<ComputerConfig>(COMPUTER_CONFIG_SECTION)?.usagePreference ?? 'avoid',
             reconnect: (signal) => this.reconnectForToolCall(serverName, client, signal),
             isRemoved: () =>

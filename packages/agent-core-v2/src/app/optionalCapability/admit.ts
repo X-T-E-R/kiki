@@ -123,8 +123,10 @@ function namesComputer(pattern: string, servers: readonly string[]): boolean {
   if (pattern === '*' || servers.length === 0) return false;
   return servers.some((name) => {
     const qualified = sanitizeMcpNamePart(name);
+    const prefix = `mcp__${qualified}__`;
+    if (pattern === `mcp__${qualified}` || pattern === `${prefix}*`) return true;
+    if (pattern.startsWith(prefix) && !GLOB_MAGIC.test(pattern.slice(prefix.length))) return true;
     const sample = qualifyMcpToolName(name, 'screenshot');
-    if (pattern === sample || pattern === `mcp__${qualified}` || pattern === `mcp__${qualified}__*`) return true;
     return pattern.startsWith('mcp__') && GLOB_MAGIC.test(pattern) && picomatch.isMatch(sample, pattern);
   });
 }

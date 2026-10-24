@@ -10,6 +10,10 @@ import { spaceUiConfigSchema, spaceUiConfigPatchSchema } from './space';
 
 export const computerUsagePreferenceSchema = z.enum(['avoid', 'prefer']);
 export type ComputerUsagePreference = z.infer<typeof computerUsagePreferenceSchema>;
+export const CUA_COMPUTER_CONNECTION = 'kiki-computer';
+export const WINDOWS_MCP_COMPUTER_CONNECTION = 'kiki-windows-mcp';
+export const computerExecutorKindSchema = z.enum(['cua', 'windows-mcp']);
+export type ComputerExecutorKind = z.infer<typeof computerExecutorKindSchema>;
 export const computerControlConfigResponseSchema = z.object({
   enabled: z.boolean().optional(),
   enabledSource: z.enum(['default', 'preset', 'base', 'home', 'env', 'memory']).optional(),
@@ -17,10 +21,13 @@ export const computerControlConfigResponseSchema = z.object({
   usagePreferenceSource: z.enum(['default', 'preset', 'base', 'home', 'env', 'memory']),
   appliesOn: z.literal('next-model-request'),
   toolsApplyOn: z.literal('next-step').optional(),
+  connection: z.string().trim().min(1).optional(),
+  connectionSource: z.enum(['default', 'preset', 'base', 'home', 'env', 'memory']).optional(),
 }).strict();
 export const computerControlConfigPatchSchema = z.object({
   enabled: z.boolean().nullable().optional(),
   usage_preference: computerUsagePreferenceSchema.nullable().optional(),
+  connection: z.string().trim().min(1).nullable().optional(),
 }).strict();
 
 export const modelSwitchModeSchema = z.enum(['direct', 'compact', 'fresh']);
