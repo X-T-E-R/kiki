@@ -175,11 +175,13 @@ function SessionChannelsRailBody({
   const smLoading = sessionCapQuery.isLoading;
   const smQueryFailed = sessionCapQuery.isError || (sessionCapQuery.isSuccess && smRow === undefined);
   const smUnresolved = smQueryFailed || (smRow?.unresolved ?? false);
-  const smAllowed = smRow ? smRow.allowed : false;
+  const smToolPolicyDeny = smRow?.reason === 'tool_policy';
+  const smAllowed = smRow ? (smRow.allowed && !smToolPolicyDeny) : false;
   const smHostLocked = smRow?.host_locked ?? false;
-  const smEffective = smRow?.effective === true; // ONLY authoritative effective can be true
+  // If query is in error, never treat cached data as currently effective
+  const smEffective = !sessionCapQuery.isError && smRow?.effective === true && !smToolPolicyDeny;
   const smChoice = smRow?.choice ?? 'inherit';
-  const smSwitchDisabled = !smAllowed || smHostLocked || smUnresolved || smLoading || busyId === 'send_message_tool';
+  const smSwitchDisabled = !smAllowed || smHostLocked || smUnresolved || smLoading || smToolPolicyDeny || busyId === 'send_message_tool';
 
   // Compute active counts
   const inboundCount = useMemo(() => policy ? bindings.filter((b) => isBindingAdmittedInbound(b, policy, sessionId)).length : 0, [bindings, policy, sessionId]);
@@ -274,33 +276,22 @@ function SessionChannelsRailBody({
   // R4: Handle Candidate Confirmation
   const onConfirmCandidate = (candidate: RebindCandidate) => {
     if (!connection) return;
-    if (candidate.isOccupied) {
+    if (candidate.source === 'binding' || candidate.isOccupied) {
+      // Any existing binding (whether occupied, orphan, or pending reanchor) requires explicit confirmation modal
       setRebindCandidate(candidate);
       setRebindConflict(undefined);
       setRebindModalOpen(true);
       return;
     }
 
-    if (candidate.source === 'binding') {
-      // Source is existing binding (orphan or pending reanchor) -> updateBinding with rebind: true
-      runAction(candidate.id, () =>
-        connection.client.imSessions.updateBinding(candidate.id, {
-          session_id: sessionId,
-          rebind: true,
-          input_enabled: true,
-          output_enabled: true,
-        })
-      );
-    } else {
-      // Source is discovery -> confirm(id)
-      runAction(candidate.id, () =>
-        connection.client.imSessions.confirm(candidate.id, {
-          target: { kind: 'session', session_id: sessionId },
-          input_enabled: true,
-          output_enabled: true,
-        })
-      );
-    }
+    // Source is new discovery -> confirm(id) directly
+    runAction(candidate.id, () =>
+      connection.client.imSessions.confirm(candidate.id, {
+        target: { kind: 'session', session_id: sessionId },
+        input_enabled: true,
+        output_enabled: true,
+      })
+    );
   };
 
   // R4: Execute Rebind from Modal
@@ -359,12 +350,12 @@ function SessionChannelsRailBody({
   let smStatusText: string;
   if (smLoading) {
     smStatusText = t('st.im.sm.loading');
-  } else if (!smAllowed && smHostLocked) {
-    smStatusText = t('st.im.sm.hostLocked');
-  } else if (!smAllowed) {
-    smStatusText = t('st.im.sm.hardOff');
   } else if (smUnresolved) {
     smStatusText = t('st.im.sm.unresolved');
+  } else if (!smAllowed && smHostLocked) {
+    smStatusText = t('st.im.sm.hostLocked');
+  } else if (!smAllowed || smToolPolicyDeny) {
+    smStatusText = t('st.im.sm.hardOff');
   } else if (smEffective) {
     if (personaId !== undefined && personaId !== '') {
       smStatusText = t('st.im.sm.personaActive', { count: outboundTotal, name: personaName || t('st.im.personaDefault') });

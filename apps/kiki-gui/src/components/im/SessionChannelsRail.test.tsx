@@ -369,12 +369,12 @@ describe('SessionChannelsRail', () => {
   it('respects authoritative row.effective=false even when persona is present (no guessing)', async () => {
     mockImSessions.snapshot.mockResolvedValue(createSnapshot([]));
     mockImSessions.channelViews.mockResolvedValue({ internal_enabled: true, channels: [] });
-    // Persona exists, but row.effective is false (e.g. tool_policy denied)
+    // Persona exists, row has allowed=true, but reason='tool_policy' and effective=false
     mockClient.getSessionOptionalCapabilities.mockResolvedValue({
       host_id: 'host-1',
       sessionId: 'sess-1',
       revision: 1,
-      rows: [{ id: 'send_message', choice: 'inherit', allowed: false, host_locked: false, default_on: false, unresolved: false, effective: false, reason: 'tool_policy', source: 'off', applies: 'next-step' }],
+      rows: [{ id: 'send_message', choice: 'inherit', allowed: true, host_locked: false, default_on: false, unresolved: false, effective: false, reason: 'tool_policy', source: 'off', applies: 'next-step' }],
     } as unknown as OptionalCapabilitySessionResponse);
     mockClient.getConfig.mockResolvedValue({});
 
@@ -386,9 +386,29 @@ describe('SessionChannelsRail', () => {
 
     const subText = container.querySelector('[data-rail-sm-sub]');
     expect(subText?.textContent).not.toMatch(/已开启|Enabled/);
+    expect(subText?.textContent).toMatch(/策略不允许|does not allow/);
   });
 
-  it('confirms pending_reanchor candidate via updateBinding without calling confirm(discovery)', async () => {
+  it('shows unavailable status when query rejects or row is missing without reporting strategy forbidden', async () => {
+    mockImSessions.snapshot.mockResolvedValue(createSnapshot([]));
+    mockImSessions.channelViews.mockResolvedValue({ internal_enabled: true, channels: [] });
+    // Query rejects
+    mockClient.getSessionOptionalCapabilities.mockRejectedValue(new Error('service_down'));
+    mockClient.getConfig.mockResolvedValue({});
+
+    const container = await renderRail({ sessionId: 'sess-1' });
+
+    const smSwitch = container.querySelector('[data-rail-sendmessage-switch]') as HTMLButtonElement;
+    expect(smSwitch.getAttribute('aria-checked')).toBe('false');
+    expect(smSwitch.disabled).toBe(true);
+
+    const subText = container.querySelector('[data-rail-sm-sub]');
+    // Must show unavailable (unresolved), NOT hard off / strategy forbidden
+    expect(subText?.textContent).toMatch(/状态暂不可用|unavailable/i);
+    expect(subText?.textContent).not.toMatch(/策略不允许|does not allow/);
+  });
+
+  it('requires explicit confirmation modal before updating pending_reanchor binding and preserves zero-mutation on cancel', async () => {
     const bindings = [
       {
         id: 'b-orphan-pending',
@@ -397,6 +417,7 @@ describe('SessionChannelsRail', () => {
         account_id: 'bot-1',
         identity: { chat_id: '-1001', topic_id: '99', sender_id: 'u-1', chat_title: 'Orphan Chat', sender_name: 'Bob' },
         enabled: true,
+        session_id: 'sess-prev-other',
         pending_reanchor: true,
       },
     ];
@@ -422,14 +443,51 @@ describe('SessionChannelsRail', () => {
     const picker = container.querySelector('[data-rail-channel-picker]');
     expect(picker?.textContent).toContain('Orphan Chat');
 
-    // Click to confirm candidate
+    // Click candidate -> modal must open without calling updateBinding or confirm
     const actionBtn = picker!.querySelector('[data-candidate-action="bind"]') as HTMLButtonElement;
     await act(async () => {
       actionBtn.click();
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    // Must call updateBinding (NOT confirm)
+    expect(mockImSessions.updateBinding).not.toHaveBeenCalled();
+    expect(mockImSessions.confirm).not.toHaveBeenCalled();
+
+    // Check modal contents
+    const dialog = document.body.querySelector('[role="alertdialog"], [role="dialog"]')!;
+    expect(dialog).not.toBeNull();
+    expect(dialog.textContent).toContain('sess-prev-other');
+
+    // 1. Cancel modal -> zero mutation
+    const cancelBtn = Array.from(dialog.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('取消') || b.textContent?.includes('Cancel')
+    );
+    expect(cancelBtn).toBeDefined();
+    await act(async () => {
+      cancelBtn!.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(mockImSessions.updateBinding).not.toHaveBeenCalled();
+    expect(mockImSessions.confirm).not.toHaveBeenCalled();
+
+    // 2. Open modal again and confirm -> exactly one updateBinding call with rebind: true
+    await act(async () => {
+      actionBtn.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const dialogAgain = document.body.querySelector('[role="alertdialog"], [role="dialog"]')!;
+    const confirmBtn = Array.from(dialogAgain.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('确认转移并开启') || b.textContent?.includes('Confirm transfer') || b.textContent?.includes('Confirm and transfer')
+    );
+    expect(confirmBtn).toBeDefined();
+
+    await act(async () => {
+      confirmBtn!.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    // Must call updateBinding with target session sess-1 and rebind: true (NOT confirm)
+    expect(mockImSessions.updateBinding).toHaveBeenCalledTimes(1);
     expect(mockImSessions.updateBinding).toHaveBeenCalledWith('b-orphan-pending', expect.objectContaining({
       session_id: 'sess-1',
       rebind: true,
