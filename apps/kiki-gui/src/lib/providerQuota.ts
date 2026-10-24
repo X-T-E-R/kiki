@@ -64,9 +64,7 @@ export function isSourceRefreshable(source: ProviderQuotaSource, now = Date.now(
 export function meterUtilization(meter: ProviderQuotaMeter): number | undefined {
   if (meter.unit === 'percent') {
     if (meter.used !== null) return meter.used;
-    if (meter.remaining !== null && meter.limit !== null && meter.limit > 0) {
-      return Math.round((1 - meter.remaining / meter.limit) * 100);
-    }
+    return undefined;
   }
   if (meter.used !== null && meter.limit !== null && meter.limit > 0) {
     return Math.round((meter.used / meter.limit) * 100);

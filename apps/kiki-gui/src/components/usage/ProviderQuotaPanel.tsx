@@ -287,7 +287,7 @@ function RowActionsMenu({ source, settingsHref, localUsageHref, onDisable }: {
       <button
         type="button"
         data-quota-menu-trigger={source.id}
-        aria-label={t('usage.quota.toggleEnable', { name: source.label })}
+        aria-label={t('st.spaces.menuAria', { name: source.label })}
         aria-expanded={menuPos !== null}
         onClick={(event) => {
           const rect = event.currentTarget.getBoundingClientRect();
@@ -450,7 +450,9 @@ function LedgerQuotaRow({ source, status, signedOut, settingsHref, localUsageHre
   };
 
   const canRefresh = source.supported && source.enabled && !signedOut;
-  const unqueried = status === 'unknown' && source.meters.length === 0;
+  const hasBeenQueried = status !== 'unknown' || source.checked_at !== undefined || source.data_as_of !== undefined;
+  const unqueried = !hasBeenQueried && source.meters.length === 0;
+  const emptyStatusMessage = source.message ?? source.reason;
 
   return (
     <section data-quota-item={source.id} className="space-y-2 px-4 py-3">
@@ -475,7 +477,7 @@ function LedgerQuotaRow({ source, status, signedOut, settingsHref, localUsageHre
             <div className="space-y-2">
               {source.meters.map((meter) => <QuotaMeterRow key={meter.id} meter={meter} sourceStatus={status} />)}
             </div>
-          ) : (
+          ) : unqueried ? (
             <div className="flex flex-wrap items-center gap-2 py-0.5 text-[12px] text-ink-soft" data-quota-not-queried={source.id}>
               <span>{t('usage.quota.notQueried')}</span>
               {canRefresh ? (
@@ -493,9 +495,13 @@ function LedgerQuotaRow({ source, status, signedOut, settingsHref, localUsageHre
                 </>
               ) : null}
             </div>
+          ) : (
+            <p className="py-0.5 text-[12px] text-ink-soft" data-quota-no-meters={source.id}>
+              {emptyStatusMessage ?? t(status === 'ready' || status === 'stale' ? 'st.quota.none' : 'usage.quota.status.unknown')}
+            </p>
           )}
-          {source.message && !unqueried ? <p className="mt-1 text-[11.5px] text-ink-soft">{source.message}</p> : null}
-          {source.reason && !source.message && !unqueried ? <p className="mt-1 text-[11px] text-ink-faint">{source.reason}</p> : null}
+          {source.message && source.meters.length > 0 ? <p className="mt-1 text-[11.5px] text-ink-soft">{source.message}</p> : null}
+          {source.reason && !source.message && source.meters.length > 0 ? <p className="mt-1 text-[11px] text-ink-faint">{source.reason}</p> : null}
         </div>
 
         <div className="flex shrink-0 items-center justify-end gap-1.5 max-md:order-2">

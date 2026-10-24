@@ -259,27 +259,37 @@ describe('ProviderQuotaPanel', () => {
   it('separates attention band from ledger, offers local usage link only when provider_id matches catalog, and retries snapshot error', async () => {
     client.listProviders.mockResolvedValue({ items: [{ id: 'openrouter' }] });
     show([
-      source({ id: 'src-unknown', provider_id: 'openrouter', status: 'unknown', meters: [] }),
-      source({ id: 'src-managed', provider_id: 'managed:kimi-code', status: 'ready', meters: [meter({ unit: 'percent', unit_label: '%', remaining: 52 })] }),
+      source({ id: 'src-unknown', label: 'OpenRouter', provider_id: 'openrouter', status: 'unknown', meters: [] }),
+      source({ id: 'src-ready-empty', label: 'Queried Empty', provider_id: 'kimi', status: 'ready', checked_at: '2026-10-10T11:55:00Z', meters: [] }),
+      source({ id: 'src-managed', provider_id: 'managed:kimi-code', status: 'ready', meters: [meter({ unit: 'percent', unit_label: '%', used: null, remaining: 52, limit: 100 })] }),
       source({ id: 'src-err', provider_id: 'tavily', kind: 'external_service', status: 'error', message: 'Upstream timeout' }),
     ]);
     const container = await mount();
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
 
-    // Attention band contains src-err; ledger contains src-unknown and src-managed
+    // Attention band contains src-err; ledger contains src-unknown, src-ready-empty, and src-managed
     expect(container.querySelector('[data-quota-attention] [data-quota-item="src-err"]')).not.toBeNull();
     expect(container.querySelector('[data-quota-ledger] [data-quota-item="src-unknown"]')).not.toBeNull();
+    expect(container.querySelector('[data-quota-ledger] [data-quota-item="src-ready-empty"]')).not.toBeNull();
     expect(container.querySelector('[data-quota-ledger] [data-quota-item="src-managed"]')).not.toBeNull();
 
-    // Remaining percent is explicitly labeled 'Remaining 52%' with no progress bar
+    // Remaining percent (even with limit: 100) is explicitly labeled 'Remaining 52%' with no inferred used progress bar
     const managedRow = container.querySelector('[data-quota-item="src-managed"]')!;
     expect(managedRow.textContent).toContain('Remaining 52%');
     expect(managedRow.querySelector('[data-quota-progress]')).toBeNull();
 
-    // Never-queried source shows 'Not queried yet' + 'Query' button
+    // Never-queried source (status='unknown', no checked_at, empty meters) shows 'Not queried yet' + 'Query' button
     expect(container.querySelector('[data-quota-not-queried="src-unknown"]')?.textContent).toContain('Not queried yet');
+    expect(container.querySelector('[data-quota-no-meters="src-unknown"]')).toBeNull();
     await click(container, '[data-quota-query-now="src-unknown"]');
     expect(refreshSource).toHaveBeenCalledWith('src-unknown');
+
+    // Already-queried source with empty meters (status='ready') shows truthful empty-limit copy instead of 'Not queried yet'
+    expect(container.querySelector('[data-quota-not-queried="src-ready-empty"]')).toBeNull();
+    expect(container.querySelector('[data-quota-no-meters="src-ready-empty"]')?.textContent).toContain('The account reports no limits.');
+
+    // Menu trigger aria-label uses 'More actions for {name}' rather than toggle switch label
+    expect(container.querySelector('[data-quota-menu-trigger="src-unknown"]')?.getAttribute('aria-label')).toBe('More actions for OpenRouter');
 
     // Local usage menu entry is present for openrouter (exact match in listProviders)
     await click(container, '[data-quota-menu-trigger="src-unknown"]');
