@@ -1070,8 +1070,8 @@ describe('SDKRpcClient workspace trust', () => {
       const info = await harness.getWorkspaceTrustInfo(workDir);
       expect(info.trusted).toBe(false);
       expect(info.gatedMcpServers).toEqual([
-        { name: 'http-server', transport: 'http', url: 'https://example.test/mcp' },
-        { name: 'nested-server', transport: 'stdio', command: 'nested-cmd' },
+        { name: 'http-server', transport: 'http', url: 'https://example.test/mcp', origin: join(workDir, '.mcp.json').replaceAll('\\', '/') },
+        { name: 'nested-server', transport: 'stdio', command: 'nested-cmd', origin: join(workDir, '.kiki', 'mcp.json').replaceAll('\\', '/') },
         {
           name: 'root-server',
           transport: 'stdio',
@@ -1079,7 +1079,8 @@ describe('SDKRpcClient workspace trust', () => {
           args: ['--safe'],
           // The engine's config loader hands back a host-absolute cwd, which on
           // Windows means the declared root-relative path gains a drive letter.
-          cwd: resolve('/tmp/root').replaceAll('\\', '/'),
+          cwd: resolve(workDir, '/tmp/root').replaceAll('\\', '/'),
+          origin: join(workDir, '.mcp.json').replaceAll('\\', '/'),
         },
       ]);
       const serialized = JSON.stringify(info);
@@ -1099,7 +1100,8 @@ describe('SDKRpcClient workspace trust', () => {
     await writeFile(join(workDir, '.mcp.json'), '{not json', 'utf-8');
     try {
       const info = await harness.getWorkspaceTrustInfo(workDir);
-      expect(info).toEqual({ trusted: false, gatedMcpServers: [] });
+      expect(info).toMatchObject({ trusted: false, gatedMcpServers: [] });
+      expect(info.warnings).toEqual([expect.stringContaining('Could not inspect MCP configuration')]);
     } finally {
       await harness.close();
     }

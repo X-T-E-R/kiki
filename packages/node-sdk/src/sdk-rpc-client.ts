@@ -132,6 +132,8 @@ import { noopTelemetryClient } from '#/protocol/telemetry';
 import { limitAgentReplayByTurns } from '#/wire/replay-turns';
 import { encodeWorkDirKey } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
 import { loadMcpServers } from '@kiki/agent-core-v2/app/mcpConfig/configLoader';
+import { describeWorkspaceTrustSources } from '@kiki/agent-core-v2/workspace/workspaceTrust/mcpDisclosure';
+import { IProjectLocalConfigService } from '@kiki/agent-core-v2/app/projectLocalConfig/projectLocalConfig';
 import { IAppendLogStore } from '@kiki/agent-core-v2/persistence/interface/appendLogStore';
 import { SessionIndexErrors } from '@kiki/agent-core-v2/app/sessionIndex/errors';
 import { AgentStatusUpdated } from '@kiki/agent-core-v2/agent/usage/usageEvents';
@@ -636,11 +638,8 @@ export class SDKRpcClient extends SDKRpcClientBase {
    * klient has no workspace-trust facade; composed directly from the engine
    * via {@link engineAccessor} — the same `handlerFor({ root })` path
    * `createSession` takes (materializing the workspace handler is a no-op
-   * cost here: session creation does it anyway). The gated-server list is
-   * what the pure config loader sees with project files included vs skipped
-   * (the workspaceTrust gate inside the engine's `workspaceMcpConfig`),
-   * computed best-effort: an unreadable/invalid project file degrades to an
-   * empty list rather than failing the caller.
+   * cost here: session creation does it anyway). Source inspection never
+   * connects MCP servers. Failed inspection remains visible in warnings.
    */
   override async getWorkspaceTrustInfo(workDir: string): Promise<WorkspaceTrustInfo> {
     const handler = await this.retryWhileSessionIndexBuilding(() =>
@@ -648,20 +647,13 @@ export class SDKRpcClient extends SDKRpcClientBase {
     );
     const trusted = await handler.program.trust.get();
     if (trusted) return { trusted: true, gatedMcpServers: [] };
-    try {
-      const fs = this.engineAccessor.get(IHostFileSystem);
-      const [withProject, userOnly] = await Promise.all([
-        loadMcpServers({ fs, cwd: workDir, homeDir: this.homeDir, includeProject: true }),
-        loadMcpServers({ fs, cwd: workDir, homeDir: this.homeDir, includeProject: false }),
-      ]);
-      const gatedMcpServers = Object.entries(withProject)
-        .filter(([name]) => !(name in userOnly))
-        .map(([name, config]) => describeWorkspaceMcpServer(name, config))
-        .toSorted((a, b) => a.name.localeCompare(b.name));
-      return { trusted: false, gatedMcpServers };
-    } catch {
-      return { trusted: false, gatedMcpServers: [] };
-    }
+    const localConfig = this.engineAccessor.get(IProjectLocalConfigService);
+    const disclosure = await describeWorkspaceTrustSources({
+      fs: this.engineAccessor.get(IHostFileSystem), cwd: workDir, homeDir: this.homeDir,
+      osHomeDir: this.engineAccessor.get(IBootstrapService).osHomeDir,
+      readAdditionalDirs: (cwd) => localConfig.readAdditionalDirs(cwd),
+    });
+    return { trusted: false, ...disclosure };
   }
 
   /**
@@ -2885,20 +2877,4 @@ function toManagedServerInfo(server: McpManagedServer): McpManagedServerInfo {
     mutable: server.mutable,
     plugin: server.plugin,
   } as McpManagedServerInfo;
-}
-
-function describeWorkspaceMcpServer(
-  name: string,
-  config: WorkspaceMcpServerConfig,
-): WorkspaceTrustInfo['gatedMcpServers'][number] {
-  if (config.transport === 'stdio') {
-    return {
-      name,
-      transport: config.transport,
-      command: config.command,
-      args: config.args,
-      cwd: config.cwd,
-    };
-  }
-  return { name, transport: config.transport, url: config.url };
 }

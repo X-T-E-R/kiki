@@ -43,7 +43,7 @@ MCP server 配置写在 `mcp.json` 中，分两层：
 
 从配置中删除某个 server 不会打断进行中的会话：该 server 在 `/mcp` 中仍显示为 `removed`，其工具在这些会话中保持可见，但调用会失败并返回移除提示；新会话则完全不会注册这些工具。反过来，会话进行中新增的 server——无论是编辑 `mcp.json` 还是安装 plugin——都不会注册到已打开的会话中，只会加入之后创建的会话。
 
-当 Kiki 在不受信任的文件夹中发现项目级 MCP server 时，工作区信任提示会显示每个 server 的传输方式和启动目标。提示默认选中 `Trust this folder`；请在确认前核对列出的命令与参数或远程 URL。信任文件夹后，该工作区的项目级 MCP server 才会启用。
+信任文件夹前，TUI 会显示项目级 MCP 启动目标及其配置文件、已配置的额外目录及其来源，以及可用的 AGENTS.md、Skill 和 Agent Profile 来源。检查这些来源时不会连接 MCP server。读取失败时，提示会显示警告，而不会让空列表看起来像没有配置。提示默认选中 `Trust this folder`；请在确认前核对命令、参数、远程 URL 和路径。信任后，该文件夹的项目级 MCP server 和已配置的额外目录才会启用。
 
 `mcp.json` 的结构：
 

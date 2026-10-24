@@ -43,7 +43,7 @@ Run `/kiki-ops help me configure MCP` in the TUI to interactively add, edit, or 
 
 Deleting a server from the configuration does not interrupt open sessions: the server stays listed in `/mcp` as `removed`, its tools remain visible there, and calls to them fail with a removal notice, while new sessions do not register the tools at all. Conversely, a server added mid-session — by editing `mcp.json` or installing a plugin — is not registered in already-open sessions; it only joins sessions created later.
 
-When Kiki finds project-level MCP servers in an untrusted folder, it shows each server's transport and launch target in the workspace trust prompt. The prompt defaults to `Trust this folder`; review the listed command and arguments or remote URL before confirming. Trusting the folder enables the project-level MCP servers for that workspace.
+Before trusting a folder, the TUI shows project MCP launch targets and their defining configuration files, configured additional directories and their source, and available AGENTS.md, skill and agent-profile sources. It inspects these sources without connecting MCP servers. If inspection fails, the prompt shows a warning rather than implying that no configuration exists. The prompt defaults to `Trust this folder`; review the commands, arguments, remote URLs and paths before confirming. Trusting the folder enables its project-level MCP servers and configured additional directories.
 
 Structure of `mcp.json`:
 

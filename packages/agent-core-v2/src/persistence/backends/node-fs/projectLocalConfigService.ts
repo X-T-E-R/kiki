@@ -35,21 +35,8 @@ export class FileProjectLocalConfigService implements IProjectLocalConfigService
     @IHostFileSystem private readonly fs: IHostFileSystem,
   ) {}
 
-  async readAdditionalDirs(workDir: string): Promise<ProjectAdditionalDirsLoadResult> {
-    const projectRoot = await this.findProjectRoot(workDir);
-    const configPath = this.getProjectLocalConfigPath(projectRoot);
-    const file = await this.readProjectLocalToml(configPath);
-
-    const additionalDirs = file?.parsed.workspace?.additional_dir;
-    if (additionalDirs === undefined) {
-      return { projectRoot, configPath, additionalDirs: [] };
-    }
-
-    return {
-      projectRoot,
-      configPath,
-      additionalDirs: await this.resolveAdditionalDirs(projectRoot, additionalDirs),
-    };
+  readAdditionalDirs(workDir: string): Promise<ProjectAdditionalDirsLoadResult> {
+    return readProjectAdditionalDirs(this.fs, workDir, this.bootstrap.osHomeDir);
   }
 
   resolveAdditionalDirs(baseDir: string, additionalDirs: readonly string[]): Promise<string[]> {
@@ -89,55 +76,12 @@ export class FileProjectLocalConfigService implements IProjectLocalConfigService
     return join(projectRoot, '.kiki', 'local.toml');
   }
 
-  private async findProjectRoot(workDir: string): Promise<string> {
-    const initial = normalize(workDir);
-    let current = initial;
-
-    while (true) {
-      if (await this.pathExists(join(current, '.git'))) return current;
-      const parent = dirname(current);
-      if (parent === current) return initial;
-      current = parent;
-    }
+  private findProjectRoot(workDir: string): Promise<string> {
+    return findProjectRoot(this.fs, workDir);
   }
 
-  private async readProjectLocalToml(
-    configPath: string,
-  ): Promise<ProjectLocalTomlFile | undefined> {
-    let text: string;
-    try {
-      text = await this.fs.readText(configPath);
-    } catch (error: unknown) {
-      if (isPathMissing(error)) {
-        return undefined;
-      }
-      throw toStorageIoError(error, { path: configPath, op: 'read' });
-    }
-
-    if (text.trim().length === 0) return { raw: {}, parsed: {} };
-
-    let raw: unknown;
-    try {
-      raw = parseToml(text);
-    } catch (error: unknown) {
-      throw new StorageError(
-        StorageErrors.codes.STORAGE_DECODE_FAILED,
-        `Invalid TOML in ${configPath}`,
-        {
-          details: { path: configPath, format: 'toml' },
-          cause: error,
-        },
-      );
-    }
-
-    if (!isPlainObject(raw)) {
-      throw new Error2(
-        ErrorCodes.CONFIG_INVALID,
-        `Invalid project local config in ${configPath}`,
-      );
-    }
-
-    return { raw: cloneRecord(raw), parsed: parseProjectLocalToml(raw) };
+  private readProjectLocalToml(configPath: string): Promise<ProjectLocalTomlFile | undefined> {
+    return readProjectLocalToml(this.fs, configPath);
   }
 
   private async resolveAdditionalDirsInternal(
@@ -170,62 +114,87 @@ export class FileProjectLocalConfigService implements IProjectLocalConfigService
     return resolvedDirs;
   }
 
-  private async resolveAdditionalDir(
-    baseDir: string,
-    additionalDir: string,
-  ): Promise<string> {
-    const normalizedInput = normalizeAdditionalDirInput(additionalDir);
-    const resolvedDir = this.resolvePath(baseDir, normalizedInput);
-    await this.assertDirectory(resolvedDir);
-    return resolvedDir;
+  private resolveAdditionalDir(baseDir: string, additionalDir: string): Promise<string> {
+    return resolveAdditionalDir(this.fs, baseDir, additionalDir, this.bootstrap.osHomeDir);
   }
 
   private resolvePath(baseDir: string, additionalDir: string): string {
-    const expanded = this.expandHome(additionalDir);
-    return isAbsolute(expanded) ? normalize(expanded) : resolve(baseDir, expanded);
-  }
-
-  private expandHome(value: string): string {
-    if (value === '~') return this.bootstrap.osHomeDir;
-    if (value.startsWith('~/')) return join(this.bootstrap.osHomeDir, value.slice(2));
-    return value;
+    return resolveAdditionalDirPath(baseDir, additionalDir, this.bootstrap.osHomeDir);
   }
 
   private hasSameAdditionalDir(dirs: readonly string[], target: string): boolean {
     const normalizedTarget = normalize(target);
     return dirs.some((dir) => normalize(dir) === normalizedTarget);
   }
+}
 
-  private async assertDirectory(filePath: string): Promise<void> {
-    let stat: Awaited<ReturnType<IHostFileSystem['stat']>>;
-    try {
-      stat = await this.fs.stat(filePath);
-    } catch (error: unknown) {
-      if (isPathMissing(error)) {
-        throw new Error2(
-          ErrorCodes.CONFIG_INVALID,
-          'workspace.additional_dir must exist and be a directory',
-        );
-      }
-      throw toStorageIoError(error, { path: filePath, op: 'stat' });
-    }
-
-    if (!stat.isDirectory) {
-      throw new Error2(
-        ErrorCodes.CONFIG_INVALID,
-        'workspace.additional_dir must exist and be a directory',
-      );
-    }
+export async function readProjectAdditionalDirs(
+  fs: IHostFileSystem,
+  workDir: string,
+  osHomeDir: string,
+): Promise<ProjectAdditionalDirsLoadResult> {
+  const projectRoot = await findProjectRoot(fs, workDir);
+  const configPath = join(projectRoot, '.kiki', 'local.toml');
+  const file = await readProjectLocalToml(fs, configPath);
+  const additionalDirs: string[] = [];
+  for (const dir of normalizeAdditionalDirs(file?.parsed.workspace?.additional_dir ?? [])) {
+    const resolved = await resolveAdditionalDir(fs, projectRoot, dir, osHomeDir);
+    if (!additionalDirs.includes(resolved)) additionalDirs.push(resolved);
   }
+  return { projectRoot, configPath, additionalDirs };
+}
 
-  private async pathExists(filePath: string): Promise<boolean> {
+async function findProjectRoot(fs: IHostFileSystem, workDir: string): Promise<string> {
+  const initial = normalize(workDir);
+  let current = initial;
+  while (true) {
     try {
-      await this.fs.lstat(filePath);
-      return true;
-    } catch {
-      return false;
-    }
+      await fs.lstat(join(current, '.git'));
+      return current;
+    } catch {}
+    const parent = dirname(current);
+    if (parent === current) return initial;
+    current = parent;
   }
+}
+
+async function readProjectLocalToml(fs: IHostFileSystem, configPath: string): Promise<ProjectLocalTomlFile | undefined> {
+  let text: string;
+  try {
+    text = await fs.readText(configPath);
+  } catch (error: unknown) {
+    if (isPathMissing(error)) return undefined;
+    throw toStorageIoError(error, { path: configPath, op: 'read' });
+  }
+  if (text.trim().length === 0) return { raw: {}, parsed: {} };
+  let raw: unknown;
+  try {
+    raw = parseToml(text);
+  } catch (error: unknown) {
+    throw new StorageError(StorageErrors.codes.STORAGE_DECODE_FAILED, `Invalid TOML in ${configPath}`, {
+      details: { path: configPath, format: 'toml' }, cause: error,
+    });
+  }
+  if (!isPlainObject(raw)) throw new Error2(ErrorCodes.CONFIG_INVALID, `Invalid project local config in ${configPath}`);
+  return { raw: cloneRecord(raw), parsed: parseProjectLocalToml(raw) };
+}
+
+async function resolveAdditionalDir(fs: IHostFileSystem, baseDir: string, dir: string, osHomeDir: string): Promise<string> {
+  const path = resolveAdditionalDirPath(baseDir, normalizeAdditionalDirInput(dir), osHomeDir);
+  let stat: Awaited<ReturnType<IHostFileSystem['stat']>>;
+  try {
+    stat = await fs.stat(path);
+  } catch (error: unknown) {
+    if (isPathMissing(error)) throw new Error2(ErrorCodes.CONFIG_INVALID, 'workspace.additional_dir must exist and be a directory');
+    throw toStorageIoError(error, { path, op: 'stat' });
+  }
+  if (!stat.isDirectory) throw new Error2(ErrorCodes.CONFIG_INVALID, 'workspace.additional_dir must exist and be a directory');
+  return path;
+}
+
+function resolveAdditionalDirPath(baseDir: string, dir: string, osHomeDir: string): string {
+  const expanded = dir === '~' ? osHomeDir : dir.startsWith('~/') ? join(osHomeDir, dir.slice(2)) : dir;
+  return isAbsolute(expanded) ? normalize(expanded) : resolve(baseDir, expanded);
 }
 
 function normalizeAdditionalDirs(additionalDirs: readonly string[]): string[] {

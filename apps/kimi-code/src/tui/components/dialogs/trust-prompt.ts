@@ -7,7 +7,7 @@ import {
   type Focusable,
 } from '@kiki/pi-tui';
 
-import type { WorkspaceTrustMcpServerInfo } from '@kiki/node-sdk';
+import type { WorkspaceTrustInfo, WorkspaceTrustMcpServerInfo } from '@kiki/node-sdk';
 
 import { SELECT_POINTER } from '#/tui/constant/symbols';
 import { currentTheme } from '#/tui/theme';
@@ -45,6 +45,7 @@ export class TrustPromptComponent implements Component, Focusable {
   focused = false;
   private selectedIndex = 0;
   private gatedMcpServers: readonly WorkspaceTrustMcpServerInfo[];
+  private disclosure: Omit<WorkspaceTrustInfo, 'trusted'> | undefined;
 
   constructor(private readonly opts: TrustPromptOptions) {
     this.gatedMcpServers = opts.gatedMcpServers;
@@ -57,6 +58,10 @@ export class TrustPromptComponent implements Component, Focusable {
    */
   setGatedMcpServers(servers: readonly WorkspaceTrustMcpServerInfo[]): void {
     this.gatedMcpServers = servers;
+  }
+
+  setDisclosure(disclosure: Omit<WorkspaceTrustInfo, 'trusted'>): void {
+    this.disclosure = disclosure;
   }
 
   /** Re-render hook the gate calls after `setGatedMcpServers`. */
@@ -111,6 +116,32 @@ export class TrustPromptComponent implements Component, Focusable {
         for (const line of wrapTextWithAnsi(details, Math.max(20, width - 4))) {
           lines.push(`   ${currentTheme.fg('warning', line)}`);
         }
+        if (server.origin !== undefined) {
+          for (const line of wrapTextWithAnsi(sanitizeForDisplay(`Config: ${server.origin}`), Math.max(20, width - 4))) {
+            lines.push(`   ${currentTheme.fg('textMuted', line)}`);
+          }
+        }
+      }
+    }
+    const sources: readonly [string, readonly string[] | undefined][] = [
+      ['Additional directories:', this.disclosure?.additionalDirs],
+      ['Directory configuration:', this.disclosure?.additionalDirSources],
+      ['AGENTS.md sources:', this.disclosure?.instructionSources?.agentsMdPaths],
+      ['Workspace skill sources:', this.disclosure?.instructionSources?.skills],
+      ['Workspace agent profile sources:', this.disclosure?.instructionSources?.agentProfiles],
+    ];
+    for (const [label, paths] of sources) {
+      if (paths === undefined || paths.length === 0) continue;
+      lines.push(` ${currentTheme.fg('textStrong', label)}`);
+      for (const path of paths) {
+        for (const line of wrapTextWithAnsi(sanitizeForDisplay(path), Math.max(20, width - 4))) {
+          lines.push(`   ${currentTheme.fg('textMuted', line)}`);
+        }
+      }
+    }
+    for (const warning of this.disclosure?.warnings ?? []) {
+      for (const line of wrapTextWithAnsi(sanitizeForDisplay(warning), Math.max(20, width - 2))) {
+        lines.push(` ${currentTheme.fg('warning', line)}`);
       }
     }
     lines.push('');

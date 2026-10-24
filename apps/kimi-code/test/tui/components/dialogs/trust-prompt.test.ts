@@ -55,6 +55,20 @@ describe('TrustPromptComponent', () => {
     expect(text).not.toContain('\u001B]8;;https://evil.test');
   });
 
+  it('renders inspected sources and warnings without terminal escapes or overflow', () => {
+    const prompt = new TrustPromptComponent({ workDir: '/tmp/demo-workspace', gatedMcpServers: [], onSelect: vi.fn() });
+    prompt.setDisclosure({
+      gatedMcpServers: [],
+      additionalDirs: ['/tmp/extra'], additionalDirSources: ['/tmp/project/.kiki/local.toml'],
+      instructionSources: { agentsMdPaths: ['/tmp/project/AGENTS.md'], skills: ['/tmp/project/.agents/skills'], agentProfiles: ['/tmp/project/.kiki/agents'] },
+      warnings: ['Could not inspect MCP configuration.\u001B[2J'],
+    });
+    const lines = prompt.render(60).map(strip);
+    const text = lines.join('\n');
+    for (const source of ['Additional directories:', '/tmp/extra', 'local.toml', 'AGENTS.md', '.agents/skills', '.kiki/agents', 'Could not inspect MCP']) expect(text).toContain(source);
+    expect(text).not.toContain('\u001B[2J');
+  });
+
   it('defaults to Trust this folder', () => {
     const onSelect = vi.fn();
     const prompt = new TrustPromptComponent({
