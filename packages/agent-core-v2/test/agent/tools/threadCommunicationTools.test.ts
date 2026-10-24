@@ -108,7 +108,33 @@ describe('thread communication tools', () => {
       expect(description).toContain('turns: []');
       expect(description).toContain('incomplete: "history_preparing"');
       expect(description).toContain('opaque `nextCursor`');
+      expect(description).toContain('stable contentRefs');
+      expect(description).toContain('16,384 UTF-16 units');
       expect(description).toContain('history rewrite or generation change can invalidate a cursor');
+    } finally { await ix.dispose(); }
+  });
+
+  it('forwards content_ref and preserves a bounded local continuation segment', async () => {
+    const ix = new TestInstantiationService();
+    const contentRef = { source: { kind: 'turn' as const, id: '7' }, revision: 'wire-generation-span', path: ['output'], kind: 'text' as const, offset: 0, total: 32768 };
+    const next = { ...contentRef, offset: 16384 };
+    const readThread = vi.fn(async (input: Parameters<IThreadCommunicationService['readThread']>[0]) => ({
+      thread: input.thread,
+      turns: [],
+      view: { segment: { ref: contentRef, value: 'x'.repeat(16384), next, contentRefs: [] } },
+    }));
+    try {
+      ix.stub(IThreadCommunicationService, { isWorkspaceEnabled: async () => true, readThread });
+      ix.stub(ISessionContext, { sessionId: 'thread-a', workspaceId: 'workspace-a' });
+      ix.set(IReadThreadTool, new SyncDescriptor(ReadThreadTool));
+      const execution = ix.get(IReadThreadTool).resolveExecution(ReadThreadToolInputSchema.parse({
+        thread: { host_id: 'local', workspace_id: 'workspace-b', session_id: 'thread-b' }, content_ref: contentRef,
+      }));
+      if (!('execute' in execution)) throw new Error('Expected executable read tool.');
+      const result = JSON.parse((await execution.execute({ signal: new AbortController().signal } as never)).output as string);
+      expect(readThread).toHaveBeenCalledWith(expect.objectContaining({ contentRef, thread: { hostId: 'local', workspaceId: 'workspace-b', sessionId: 'thread-b' } }));
+      expect(result.view.segment.value).toHaveLength(16384);
+      expect(result.view.segment.next).toEqual(next);
     } finally { await ix.dispose(); }
   });
 

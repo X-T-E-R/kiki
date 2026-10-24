@@ -1,3 +1,4 @@
+import { contentRefSchema } from '@kiki/transcript';
 import { z } from 'zod';
 
 import {
@@ -24,6 +25,7 @@ export type ListThreadsResponse = z.infer<typeof listThreadsResponseSchema>;
 
 export const readThreadRequestSchema = z.object({
   thread: threadRefSchema,
+  content_ref: contentRefSchema.optional(),
   cursor: z.string().min(1).optional(),
   limit: z.number().int().min(1).max(100).optional(),
 });

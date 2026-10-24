@@ -74,7 +74,7 @@ Peer-thread communication lets a main agent coordinate other Kiki sessions on th
 
 A thread reference identifies a host, workspace and session. `ThreadList` returns the references later calls need, `ThreadRead` reads completed main-agent turns without resuming a cold session, `ThreadSend` derives the source from the current main-agent session, and `ThreadWait` waits up to 60 seconds for activity from up to eight threads. Messages cannot cross hosts.
 
-During local history preparation, `ThreadRead` may return `turns: []` and `incomplete: "history_preparing"`; that state is not an empty thread. Continue with the returned `nextCursor` in the same scope; [Collaboration Tools](../reference/tools.md#collaboration-tools) documents cursor compatibility, ordering, and rewrite invalidation.
+During local history preparation, `ThreadRead` may return `turns: []` and `incomplete: "history_preparing"`; that state is not an empty thread. Continue with the returned `nextCursor` in the same scope. Large local input or output can also be previewed with `contentRefs`; use `content_ref` to continue its bounded segment read. [Collaboration Tools](../reference/tools.md#collaboration-tools) documents cursor compatibility, ordering, rewrite invalidation, and segment limits.
 
 A message is recorded as coming from a peer only when the source thread's own main agent calls `ThreadSend`. REST and the `global.threads` Klient facade take target-addressed input only and record it as external-client input, so an external client cannot claim a source thread or a direct human origin.
 

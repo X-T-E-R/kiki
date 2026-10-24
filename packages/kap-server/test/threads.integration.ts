@@ -96,8 +96,10 @@ function reply() {
 
 describe('peer-thread routes', () => {
   it('keeps public and server schema mirrors behaviorally aligned', () => {
+    const contentRef = { source: { kind: 'turn', id: '7' }, revision: 'wire-generation-span', path: ['output'], kind: 'text', offset: 0, total: 5000 };
     const corpus = [
       { thread: targetWire, limit: 100 },
+      { thread: targetWire, content_ref: contentRef },
       { thread: { ...targetWire, host_id: '' } },
       { thread: targetWire, cursor: '' },
     ];
@@ -134,6 +136,7 @@ describe('peer-thread routes', () => {
 
   it('preserves all produced thread origins in the public and server response schemas', async () => {
     const origins = ['user', 'peer', 'bridged_peer', 'external', 'mixed', 'unknown', 'thread_created'] as const;
+    const contentRef = { source: { kind: 'turn' as const, id: '0' }, revision: 'wire-generation-span', path: ['output'], kind: 'text' as const, offset: 0, total: 5000 };
     const service = makeService();
     vi.mocked(service.readThread).mockResolvedValue({
       thread: targetCore,
@@ -144,6 +147,7 @@ describe('peer-thread routes', () => {
         origin,
         input: 'request',
         output: 'response',
+        contentRefs: turnId === 0 ? [contentRef] : undefined,
       })),
     });
     const { route } = setup(service);
@@ -154,6 +158,7 @@ describe('peer-thread routes', () => {
     );
     const data = publicReadThreadResponseSchema.parse(response.send.mock.calls[0]?.[0]?.data);
     expect(data.turns.map((turn) => turn.origin)).toEqual(origins);
+    expect(data.turns[0]?.content_refs).toEqual([contentRef]);
     expect(serverReadThreadResponseSchema.parse(data)).toEqual(data);
     const invalid = { ...data, turns: [{ ...data.turns[0], origin: 'not-an-origin' }] };
     expect(publicReadThreadResponseSchema.safeParse(invalid).success).toBe(false);
@@ -204,7 +209,15 @@ describe('peer-thread routes', () => {
       request({ body: { thread: targetWire, limit: 4 } }),
       readReply,
     );
-    expect(service.readThread).toHaveBeenCalledWith({ thread: targetCore, cursor: undefined, limit: 4 });
+    expect(service.readThread).toHaveBeenCalledWith({ thread: targetCore, contentRef: undefined, cursor: undefined, limit: 4 });
+
+    const contentRef = { source: { kind: 'turn' as const, id: '7' }, revision: 'wire-generation-span', path: ['output'], kind: 'text' as const, offset: 0, total: 5000 };
+    const segmentReply = reply();
+    await route('post', '/threads::read').handler(
+      request({ body: { thread: targetWire, content_ref: contentRef } }),
+      segmentReply,
+    );
+    expect(service.readThread).toHaveBeenLastCalledWith({ thread: targetCore, contentRef, cursor: undefined, limit: undefined });
 
     const sendReply = reply();
     await route('post', '/threads::send').handler(

@@ -166,6 +166,7 @@ export function registerThreadsRoutes(
         const body = req.body;
         const result = await service.readThread({
           thread: fromRefWire(body.thread),
+          contentRef: body.content_ref,
           cursor: body.cursor,
           limit: body.limit,
         });
@@ -391,6 +392,7 @@ function toTurnWire(turn: ThreadTurn) {
         : { source: toRefWire(turn.peer.source), message_id: turn.peer.messageId },
     input: turn.input,
     output: turn.output,
+    content_refs: turn.contentRefs,
   };
 }
 

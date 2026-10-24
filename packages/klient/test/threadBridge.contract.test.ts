@@ -22,6 +22,15 @@ describe('thread bridge read contract', () => {
     expect(wireToEngine(readThreadResultSchema.parse(JSON.parse(JSON.stringify(engineToWire(result)))))).toEqual(result);
   });
 
+  it('preserves long-turn previews and their continuation references', () => {
+    const ref = { source: { kind: 'turn' as const, id: '7' }, revision: 'wire-generation-span', path: ['output'], kind: 'text' as const, offset: 0, total: 5000 };
+    const result: MutableDeep<ReadThreadResult> = {
+      thread: { hostId: 'host-target', workspaceId: 'workspace-target', sessionId: 'same-session' },
+      turns: [{ turnId: 7, endedAt: 2, reason: 'completed', origin: 'user', input: 'preview', output: 'preview', contentRefs: [ref] }],
+    };
+    expect(wireToEngine(readThreadResultSchema.parse(JSON.parse(JSON.stringify(engineToWire(result)))))).toEqual(result);
+  });
+
   it('preserves sender labels and every public completed-turn origin across JSON validation', () => {
     const origins: ReadThreadResult['turns'][number]['origin'][] = ['user', 'peer', 'bridged_peer', 'external', 'mixed', 'unknown', 'thread_created'];
     for (const origin of origins) {

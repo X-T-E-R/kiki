@@ -52,6 +52,7 @@ export interface ThreadTurn {
   };
   readonly input: string;
   readonly output: string;
+  readonly contentRefs?: readonly import('@kiki/protocol').BridgeContentRef[];
 }
 
 export interface ReadThreadInput {

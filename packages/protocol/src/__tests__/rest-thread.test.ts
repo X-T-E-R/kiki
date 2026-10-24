@@ -31,6 +31,12 @@ describe('peer-thread REST schemas', () => {
     expect(readThreadResponseSchema.safeParse({ ...page, incomplete: 'scan_budget' }).success).toBe(false);
   });
 
+  it('preserves long-turn content references in the REST response', () => {
+    const contentRef = { source: { kind: 'turn', id: '7' }, revision: 'wire-generation-span', path: ['output'], kind: 'text', offset: 0, total: 5000 };
+    const page = { thread: ref, turns: [{ turn_id: 7, ended_at: 2, reason: 'completed', origin: 'user', input: 'preview', output: 'preview', content_refs: [contentRef] }] };
+    expect(readThreadResponseSchema.parse(page)).toEqual(page);
+  });
+
   it('bounds list and wait inputs', () => {
     expect(listThreadsQuerySchema.parse({ limit: '8' }).limit).toBe(8);
     expect(listThreadsQuerySchema.safeParse({ limit: '101' }).success).toBe(false);

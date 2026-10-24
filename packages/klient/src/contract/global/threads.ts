@@ -69,6 +69,7 @@ export const threadTurnSchema = z.object({
     .optional(),
   input: z.string(),
   output: z.string(),
+  contentRefs: z.array(contentRefSchema).optional(),
 });
 
 export const readThreadInputSchema = z.object({

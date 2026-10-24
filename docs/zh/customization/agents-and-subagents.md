@@ -74,7 +74,7 @@ Peer thread 通信让 main agent 协调同一台本地主机上的其他 Kiki �
 
 Thread 引用标识主机、工作区和会话。`ThreadList` 返回后续调用所需的引用；`ThreadRead` 读取已完成的主 Agent turn，不恢复冷会话；`ThreadSend` 从当前主 Agent 会话派生来源；`ThreadWait` 最多等待 8 条 thread 的活动，最长 60 秒。消息不能跨主机。
 
-准备本地历史投影时，`ThreadRead` 可能返回 `turns: []` 和 `incomplete: "history_preparing"`，这表示正在准备而不是没有对话；请使用返回的 `nextCursor` 继续。游标、旧版兼容、顺序和重写失效规则见[协作类工具](../reference/tools.md#协作类)。
+准备本地历史投影时，`ThreadRead` 可能返回 `turns: []` 和 `incomplete: "history_preparing"`，这表示正在准备而不是没有对话；请使用返回的 `nextCursor` 继续。较大的本地 input 或 output 也可能以预览和 `contentRefs` 返回，可使用 `content_ref` 继续读取有界片段。游标、旧版兼容、顺序、重写失效和分段限制见[协作类工具](../reference/tools.md#协作类)。
 
 只有来源 thread 的主 Agent 调用 `ThreadSend` 才会记为 peer 来源。REST 和 Klient 的 `global.threads` facade 只接受目标 thread，消息记为外部客户端输入，不能自行声明来源 thread 或直接人类来源。
 
