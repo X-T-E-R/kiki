@@ -3043,13 +3043,20 @@ describe('Responses finalized text', () => {
   });
 });
 
-function diagnosticFixtureProvider(events: readonly unknown[], convertError?: ConstructorParameters<typeof OpenAIResponsesChatProvider>[0]['convertError']) {
+function diagnosticFixtureProvider(events: readonly unknown[], convertError?: ConstructorParameters<typeof OpenAIResponsesChatProvider>[0]['convertError'], tailFailure?: Error) {
   const body = events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('');
+  let sent = false;
+  const responseBody = tailFailure === undefined ? body : new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (sent) controller.error(tailFailure);
+      else { sent = true; controller.enqueue(new TextEncoder().encode(body)); }
+    },
+  }, { highWaterMark: 0 });
   return new OpenAIResponsesChatProvider({
     apiKey: 'fixture-only', model: 'gpt-5', convertError,
     clientFactory: () => new OpenAI({
       apiKey: 'fixture-only', baseURL: 'https://example.test/v1', maxRetries: 0,
-      fetch: async () => new Response(body, { status: 200, headers: {
+      fetch: async () => new Response(responseBody, { status: 200, headers: {
         'content-type': 'text/event-stream', 'x-request-id': 'request-fixture', 'x-trace-id': 'trace-fixture',
         authorization: 'Bearer header-secret',
       } }),
@@ -3084,7 +3091,7 @@ describe('Responses safe stream diagnostics', () => {
 
   it('rejects EOF even after a text delta instead of accepting a truncated answer', async () => {
     const error = await generate(diagnosticFixtureProvider([{ type: 'response.output_text.delta', delta: 'partial' }]), 'synthetic fixture', [], []).catch((error: unknown) => error);
-    expect(isRetryableGenerateError(error)).toBe(true);
+    expect(isRetryableGenerateError(error)).toBe(false);
     const payload = toErrorPayload(error);
     expect(payload.name).toBe('ChatProviderError');
     expect(payload.details?.['streamDiagnostics']).toMatchObject({ endSource: 'eof', emittedTextChars: 7, terminalEventCount: 0 });
@@ -3105,13 +3112,39 @@ describe('Responses safe stream diagnostics', () => {
     expect(payload.details).toMatchObject({ finishReason: 'completed', streamDiagnostics: { terminalStatus: 'incomplete' } });
   });
 
-  it('does not hide an explicit error after a completed event', async () => {
+  it('commits a normally completed response when the HTTP body fails only after its terminal event', async () => {
+    const provider = diagnosticFixtureProvider(finalizedTextEvents([['complete answer']], 'delta'), undefined, new TypeError('terminated'));
+    const result = await generate(provider, 'synthetic fixture', [], []);
+    expect(result.message.content).toEqual([{ type: 'text', text: 'complete answer' }]);
+    expect(result.completionAuthority).toBe('normal');
+    expect(result.usage?.output).toBe(2);
+    expect(result.diagnostics).toMatchObject({ endSource: 'terminal', terminalStatus: 'completed', terminalEventCount: 1 });
+  });
+
+  it.each(['incomplete', 'cancelled'] as const)('does not suppress %s when the HTTP body fails after a terminal event', async mode => {
+    const controller = new AbortController();
+    const events = mode === 'incomplete'
+      ? [{ type: 'response.incomplete', response: finalizedResponse([], 'incomplete') }]
+      : finalizedTextEvents([['complete answer']], 'delta');
+    const provider = diagnosticFixtureProvider(events, undefined, new TypeError('terminated'));
+    const error = await generate(provider, 'synthetic fixture', [], [], {
+      onMessagePart: () => { if (mode === 'cancelled') controller.abort(); },
+    }, { signal: controller.signal }).catch((error: unknown) => error);
+    expect(toErrorPayload(error)).toMatchObject(mode === 'cancelled'
+      ? { name: 'AbortError', details: { streamDiagnostics: { endSource: 'cancelled' } } }
+      : { name: 'APIConnectionError', details: { streamDiagnostics: { endSource: 'sdk_error', terminalStatus: 'incomplete' } } });
+  });
+
+  it.each(['error', 'sdk-error'] as const)('does not hide an explicit %s after a completed event', async mode => {
     const payload = await diagnosticFailure([
       { type: 'response.completed', response: finalizedResponse([], 'completed') },
-      { type: 'error', code: 'stream_failed', message: 'fixture failure' },
+      mode === 'error' ? { type: 'error', code: 'stream_failed', message: 'fixture failure' }
+        : { error: { type: 'internal_server_error', code: 'stream_failed', message: 'fixture failure' } },
     ]);
     expect(payload.name).toBe('ChatProviderError');
-    expect(payload.details?.['streamDiagnostics']).toMatchObject({ endSource: 'event_error', errorEventCount: 1 });
+    expect(payload.details?.['streamDiagnostics']).toMatchObject({
+      endSource: mode === 'error' ? 'event_error' : 'sdk_error', errorEventCount: mode === 'error' ? 1 : 0,
+    });
   });
 
   it('keeps unknown terminal counts distinct from zero when EOF has no terminal event', async () => {

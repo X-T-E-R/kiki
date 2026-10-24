@@ -1,4 +1,4 @@
-import OpenAI, { OpenAIError } from 'openai';
+import OpenAI, { APIError as OpenAIAPIError, OpenAIError } from 'openai';
 
 import { Error2, attachErrorDetails } from '#/_base/errors/errors';
 import { addDiagnosticCount, attachStreamDiagnostics, createStreamDiagnostics, safeProviderFailureDetails, safeStreamDiagnostics, type StreamDiagnostics } from '#/kosong/contract/streamDiagnostics';
@@ -765,6 +765,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
   private _diagnostics?: { -readonly [K in keyof StreamDiagnostics]: StreamDiagnostics[K] };
   private _completedNormally = false;
   private _continuationBlocked = false;
+  private _cancelled = false;
 
   get completionAuthority(): 'normal' | undefined {
     return this._completedNormally && !this._continuationBlocked ? 'normal' : undefined;
@@ -772,7 +773,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
 
   get thinkingOnlyRecoveryBlocked(): boolean { return this._continuationBlocked; }
 
-  cancel(): void { this._controller?.abort(); }
+  cancel(): void { this._cancelled = true; this._controller?.abort(); }
 
   constructor(
     response: unknown,
@@ -1226,6 +1227,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
               this._extractUsage(usage);
             }
             this._captureFinishReasonFromResponse(responseObject);
+            if (type !== 'response.completed') this._completedNormally = false;
             for (const [outputIndex, item] of (readObjectArrayField(responseObject, 'output') ?? []).entries()) {
               yield* yieldFinalMessageText(readResponseOutputItem(item, `${type}.output item`), outputIndex);
             }
@@ -1274,10 +1276,12 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
         throw new ChatProviderError('OpenAI Responses stream ended before a terminal response event.');
       }
     } catch (error: unknown) {
-      if (isAbortError(error)) {
+      if (this._cancelled || isAbortError(error)) {
         diagnostics.endSource = 'cancelled';
         throw attachStreamDiagnostics(createAbortError(), diagnostics);
       }
+      if (readingEvent && diagnostics.endSource === 'terminal' && this.completionAuthority === 'normal' &&
+        !(error instanceof OpenAIAPIError && error.error !== undefined)) return;
       if (diagnostics.endSource !== 'event_error' && diagnostics.endSource !== 'eof') diagnostics.endSource = readingEvent ? 'sdk_error' : 'local_error';
       throw attachStreamDiagnostics(transportStatusError(error) ?? convertOpenAIError(error, this._convertErrorHook), diagnostics);
     } finally {
