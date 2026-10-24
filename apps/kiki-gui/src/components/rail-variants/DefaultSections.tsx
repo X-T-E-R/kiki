@@ -232,8 +232,13 @@ export function profileEffortDisplay(profile: {
   const isExternal = profile.executor !== undefined && profile.executor !== '' && profile.executor !== 'native';
   if (isExternal) {
     const isOff = String(profile.thinking_effort).toLowerCase() === 'off';
-    if (isOff && profile.thinking_effort_explicit !== true) {
-      return undefined;
+    if (isOff) {
+      const isExplicit = profile.thinking_effort_explicit === true;
+      const isReportedByExecutor = profile.effort_source === 'executor';
+      const isForcedOrAdjusted = profile.thinking_effort_source === 'forced' || profile.thinking_effort_source === 'adjusted';
+      if (!isExplicit && !isReportedByExecutor && !isForcedOrAdjusted) {
+        return undefined;
+      }
     }
   }
   return t('subagent.effort', { effort: String(profile.thinking_effort) });

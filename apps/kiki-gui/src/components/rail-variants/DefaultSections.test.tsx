@@ -764,4 +764,72 @@ describe('profileEffortDisplay external vs native thinking effort', () => {
     }, t);
     expect(result).toBe('effort · high');
   });
+
+  it('displays off when reported directly by executor (executor-reported off)', () => {
+    const result = profileEffortDisplay({
+      executor: 'codex-app-server',
+      thinking_effort: 'off',
+      thinking_effort_explicit: false,
+      effort_source: 'executor',
+    }, t);
+    expect(result).toBe('effort · off');
+  });
+
+  it('displays non-off when reported directly by executor (executor-reported non-off)', () => {
+    const result = profileEffortDisplay({
+      executor: 'codex-app-server',
+      thinking_effort: 'low',
+      thinking_effort_explicit: false,
+      effort_source: 'executor',
+    }, t);
+    expect(result).toBe('effort · low');
+  });
+
+  it('displays off when forced or adjusted by engine', () => {
+    const forced = profileEffortDisplay({
+      executor: 'codex-app-server',
+      thinking_effort: 'off',
+      thinking_effort_explicit: false,
+      thinking_effort_source: 'forced',
+    }, t);
+    expect(forced).toBe('effort · off');
+
+    const adjusted = profileEffortDisplay({
+      executor: 'codex-app-server',
+      thinking_effort: 'off',
+      thinking_effort_explicit: false,
+      thinking_effort_source: 'adjusted',
+    }, t);
+    expect(adjusted).toBe('effort · off');
+  });
+
+  it('maintains synonym consistency across live and cold profiles', () => {
+    const liveProfile = {
+      executor: 'codex-app-server',
+      thinking_effort: 'off',
+      thinking_effort_explicit: false,
+      effort_source: 'config',
+    };
+    const coldProfile = {
+      executor: 'codex-app-server',
+      thinking_effort: 'off',
+      thinking_effort_explicit: false,
+      effort_source: 'config',
+    };
+    expect(profileEffortDisplay(liveProfile, t)).toBe(profileEffortDisplay(coldProfile, t));
+
+    const liveExplicit = {
+      executor: 'codex-app-server',
+      thinking_effort: 'off',
+      thinking_effort_explicit: true,
+      effort_source: 'profile',
+    };
+    const coldExplicit = {
+      executor: 'codex-app-server',
+      thinking_effort: 'off',
+      thinking_effort_explicit: true,
+      effort_source: 'profile',
+    };
+    expect(profileEffortDisplay(liveExplicit, t)).toBe(profileEffortDisplay(coldExplicit, t));
+  });
 });

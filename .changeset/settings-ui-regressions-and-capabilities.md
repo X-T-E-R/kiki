@@ -2,4 +2,4 @@
 "@kiki/gui": patch
 ---
 
-Fix Antigravity sign-in tri-state display, default model cross-tab selection queue, and external thinking effort display in settings.
+Fix settings sign-in status display, default model cross-tab selection, and external thinking effort indicators.
