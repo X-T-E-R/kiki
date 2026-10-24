@@ -8,7 +8,7 @@ import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { ILogService } from '#/_base/log/log';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService, type ISessionScopeHandle } from '#/_base/di/scope';
-import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import { IThreadTurnStore, type ThreadTurnSource } from './threadTurnStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
@@ -17,13 +17,8 @@ import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilityS
 import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
 import { ISessionIndex, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
-import type { ContentPart } from '#/kosong/contract/message';
 import { IAgentPromptService, type PromptHandle } from '#/agent/prompt/prompt';
-import {
-  type PeerThreadOrigin,
-  type PromptOrigin,
-} from '#/agent/contextMemory/types';
-import type { LoopRecordedEvent } from '#/agent/contextMemory/loopEventFold';
+import { type PeerThreadOrigin, type PromptOrigin } from '#/agent/contextMemory/types';
 import { Error2, ErrorCodes, fromErrorPayload, isError2, toErrorPayload, type ErrorPayload } from '#/errors';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
@@ -35,7 +30,6 @@ import {
   workspacePersistenceScope,
 } from '#/workspace/sessionLifecycle/internal/addressing';
 import { IWireService } from '#/wire/wire';
-import { AGENT_WIRE_RECORD_KEY, type WireRecord } from '#/wire/record';
 
 import {
   IThreadCommunicationService,
@@ -57,7 +51,6 @@ import {
   type ThreadCaller,
   type ThreadRef,
   type ThreadSummary,
-  type ThreadTurn,
   type WaitThreadResult,
   type WaitThreadsInput,
   type WaitThreadsResult,
@@ -110,6 +103,7 @@ interface ReadCursor {
   readonly kind: 'read';
   readonly beforeTurnId: number;
   readonly thread: string;
+  readonly source?: ThreadTurnSource;
 }
 
 interface ActivityCursor {
@@ -118,14 +112,6 @@ interface ActivityCursor {
   readonly epoch: string;
   readonly seq: number;
   readonly thread: string;
-}
-
-interface MutableTurn {
-  readonly turnId: number;
-  readonly origin: PromptOrigin;
-  readonly input: string;
-  readonly startedAt?: number;
-  readonly output: string[];
 }
 
 interface TargetDrainState {
@@ -226,7 +212,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     @ISessionIndex private readonly sessions: ISessionIndex,
     @ISessionManager private readonly sessionManager: ISessionManager,
     @IThreadMailboxStore private readonly mailbox: IThreadMailboxStore,
-    @IAppendLogStore private readonly appendLog: IAppendLogStore,
+    @IThreadTurnStore private readonly turns: IThreadTurnStore,
     @IAtomicDocumentStore private readonly documents: IAtomicDocumentStore,
     @ILogService private readonly log: ILogService,
     @IInstantiationService private readonly instantiation: IInstantiationService,
@@ -418,19 +404,20 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     if (decoded !== undefined && decoded.thread !== identity) {
       throw cursorError('Read cursor does not match the requested thread.');
     }
-    await this.flushLiveMain(summary.id);
-    const turns = await this.readCompletedTurns(summary);
+    const handlerScope = workspacePersistenceScope(this.bootstrap.scope('sessions'), summary.workspaceId);
+    const wireScope = agentScopeOf(sessionScopeOf(handlerScope, summary.id), MAIN_AGENT_ID);
+    if (input.contentRef !== undefined) return { thread: input.thread, turns: [], view: { segment: await this.turns.content(wireScope, input.contentRef, input.signal) } };
+    await waitWithSignal(this.flushLiveMain(summary.id), input.signal);
     const beforeTurnId = decoded?.beforeTurnId ?? Number.MAX_SAFE_INTEGER;
-    const eligible = turns.filter((turn) => turn.turnId < beforeTurnId);
-    const page = eligible.slice(Math.max(0, eligible.length - limit));
-    const hasOlder = eligible.length > page.length;
+    const page = await this.turns.read(wireScope, beforeTurnId, limit, decoded?.source, input.signal);
+    const nextBefore = page.preparing ? beforeTurnId : page.turns[0]?.turnId;
     return {
       thread: input.thread,
-      turns: page,
-      nextCursor:
-        hasOlder && page[0] !== undefined
-          ? encodeCursor({ v: 1, kind: 'read', beforeTurnId: page[0].turnId, thread: identity })
-          : undefined,
+      turns: page.turns,
+      incomplete: page.preparing ? 'history_preparing' : undefined,
+      nextCursor: page.hasMore && nextBefore !== undefined
+        ? encodeCursor({ v: 1, kind: 'read', beforeTurnId: nextBefore, thread: identity, source: page.source })
+        : undefined,
     };
   }
 
@@ -1128,83 +1115,6 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     await main?.accessor.get(IWireService).flush();
   }
 
-  private async readCompletedTurns(summary: SessionSummary): Promise<ThreadTurn[]> {
-    const handlerScope = workspacePersistenceScope(
-      this.bootstrap.scope('sessions'),
-      summary.workspaceId,
-    );
-    const wireScope = agentScopeOf(sessionScopeOf(handlerScope, summary.id), MAIN_AGENT_ID);
-    const turns = new Map<number, MutableTurn>();
-    const completed: ThreadTurn[] = [];
-    let nextTurnId = 0;
-    const cancelledTurnIds = new Set<number>();
-    for await (const record of this.appendLog.read<WireRecord>(wireScope, AGENT_WIRE_RECORD_KEY)) {
-      if (record.type === 'turn.cancel') {
-        const cancelled = readNumber(record, 'turnId');
-        if (
-          cancelled !== undefined &&
-          typeof record['target'] === 'string' &&
-          (record['target'] === 'active' || record['target'] === 'queued') &&
-          cancelled >= nextTurnId
-        ) {
-          cancelledTurnIds.add(cancelled);
-          nextTurnId = advanceReadTurnClock(nextTurnId, cancelledTurnIds);
-        }
-        continue;
-      }
-      if (record.type === 'turn.prompt') {
-        const origin = readPromptOrigin(record['origin']);
-        const input = readContentText(record['input']);
-        if (origin !== undefined) {
-          turns.set(nextTurnId, {
-            turnId: nextTurnId,
-            origin,
-            input,
-            startedAt: readNumber(record, 'time'),
-            output: [],
-          });
-        }
-        nextTurnId = advanceReadTurnClock(nextTurnId + 1, cancelledTurnIds);
-        continue;
-      }
-      if (record.type === 'context.append_loop_event') {
-        const event = record['event'] as LoopRecordedEvent | undefined;
-        if (event?.type !== 'tool.result' && event?.turnId !== undefined) {
-          const observedTurnId = Number.parseInt(event.turnId, 10);
-          if (Number.isInteger(observedTurnId) && observedTurnId >= nextTurnId) {
-            nextTurnId = advanceReadTurnClock(observedTurnId + 1, cancelledTurnIds);
-          }
-        }
-        if (event?.type !== 'content.part' || event.part.type !== 'text') continue;
-        const turnId = event.turnId === undefined ? undefined : Number.parseInt(event.turnId, 10);
-        if (turnId === undefined || !Number.isInteger(turnId)) continue;
-        turns.get(turnId)?.output.push(event.part.text);
-        continue;
-      }
-      if (record.type !== 'turn.ended') continue;
-      const turnId = readNumber(record, 'turnId');
-      const reason = readTurnReason(record['reason']);
-      if (turnId === undefined || reason === undefined) continue;
-      const turn = turns.get(turnId);
-      turns.delete(turnId);
-      if (turn === undefined) continue;
-      const origin = publicTurnOrigin(turn.origin);
-      if (origin === undefined) continue;
-      completed.push({
-        turnId,
-        startedAt: turn.startedAt,
-        endedAt: readNumber(record, 'time') ?? turn.startedAt ?? 0,
-        reason,
-        origin: origin.kind,
-        peer: origin.peer,
-        bridgedPeer: origin.bridgedPeer,
-        input: turn.input,
-        output: turn.output.join(''),
-      });
-    }
-    return completed.toSorted((left, right) => left.turnId - right.turnId);
-  }
-
   private followLifecycle(lifecycle: ISessionManager): DisposableStore {
     const store = new DisposableStore();
     for (const session of lifecycle.list()) this.observeSession(session);
@@ -1403,52 +1313,6 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
 
 }
 
-function publicTurnOrigin(
-  origin: PromptOrigin,
-): { readonly kind: ThreadTurn['origin']; readonly peer?: ThreadTurn['peer']; readonly bridgedPeer?: ThreadTurn['bridgedPeer'] } | undefined {
-  if (origin.kind === 'bridged_peer') return { kind: 'bridged_peer', bridgedPeer: origin };
-  if (origin.kind === 'peer_thread') {
-    return { kind: 'peer', peer: { source: origin.source, messageId: origin.messageId } };
-  }
-  if (origin.kind === 'user') return { kind: 'user' };
-  if (origin.kind === 'external_thread') return { kind: 'external' };
-  if (origin.kind === 'merged') return { kind: 'mixed' };
-  if (origin.kind === 'unknown') return { kind: 'unknown' };
-  if (origin.kind === 'system_trigger' && origin.name === 'thread_create') return { kind: 'thread_created' };
-  if (
-    (origin.kind === 'skill_activation' || origin.kind === 'plugin_command') &&
-    origin.trigger === 'user-slash'
-  ) {
-    return { kind: 'user' };
-  }
-  return undefined;
-}
-
-function readPromptOrigin(value: unknown): PromptOrigin | undefined {
-  if (value === null || typeof value !== 'object') return undefined;
-  return value as PromptOrigin;
-}
-
-function readContentText(value: unknown): string {
-  if (!Array.isArray(value)) return '';
-  return value
-    .filter((part): part is ContentPart => part !== null && typeof part === 'object' && 'type' in part)
-    .filter((part) => part.type === 'text')
-    .map((part) => part.text)
-    .join('');
-}
-
-function readNumber(record: WireRecord, key: string): number | undefined {
-  const value = record[key];
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-}
-
-function readTurnReason(value: unknown): ThreadTurn['reason'] | undefined {
-  return value === 'completed' || value === 'cancelled' || value === 'failed' || value === 'blocked'
-    ? value
-    : undefined;
-}
-
 function boundedLimit(value: number | undefined, fallback: number, max: number): number {
   const resolved = value ?? fallback;
   if (!Number.isInteger(resolved) || resolved < 1 || resolved > max) {
@@ -1508,12 +1372,13 @@ function decodeCursor<K extends CursorPayload['kind']>(
     const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as CursorPayload;
     if (parsed.v !== 1 || parsed.kind !== kind) throw new Error('kind');
     if (kind === 'list' && typeof (parsed as ListCursor).before !== 'string') throw new Error('list');
-    if (
-      kind === 'read' &&
-      (!Number.isSafeInteger((parsed as ReadCursor).beforeTurnId) ||
-        typeof (parsed as ReadCursor).thread !== 'string')
-    ) {
-      throw new Error('read');
+    if (kind === 'read') {
+      const read = parsed as ReadCursor;
+      if (!Number.isSafeInteger(read.beforeTurnId) || typeof read.thread !== 'string') throw new Error('read');
+      const source = read.source;
+      if (source !== undefined && (source === null || typeof source !== 'object' ||
+        typeof source.generation !== 'string' || typeof source.epoch !== 'string' ||
+        !Number.isSafeInteger(source.watermark) || source.watermark < 0 || typeof source.proof !== 'string')) throw new Error('read source');
     }
     if (
       kind === 'activity' &&
@@ -1540,14 +1405,6 @@ function parseThreadIdentity(value: string): ThreadRef {
 
 function sameThread(left: ThreadRef, right: ThreadRef): boolean {
   return threadIdentity(left) === threadIdentity(right);
-}
-
-function advanceReadTurnClock(nextTurnId: number, cancelledTurnIds: Set<number>): number {
-  for (const cancelled of cancelledTurnIds) {
-    if (cancelled < nextTurnId) cancelledTurnIds.delete(cancelled);
-  }
-  while (cancelledTurnIds.delete(nextTurnId)) nextTurnId++;
-  return nextTurnId;
 }
 
 function isTerminalPromptState(state: PromptHandle['state']): boolean {

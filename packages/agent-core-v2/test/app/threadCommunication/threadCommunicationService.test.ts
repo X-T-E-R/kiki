@@ -59,6 +59,11 @@ import type {
 } from '#/workspace/sessionLifecycle/sessionLifecycle';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { IQueryStore } from '#/persistence/interface/queryStore';
+import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
+import { MiniDbQueryStore, drainQueryStoreDisposals } from '#/persistence/backends/minidb/miniDbQueryStore';
+import { IThreadTurnStore, ThreadTurnStore } from '#/app/threadCommunication/threadTurnStore';
 import type { WireRecord } from '#/wire/record';
 import { stubLog } from '../../_base/log/stubs';
 import { Error2, ErrorCodes } from '#/errors';
@@ -214,6 +219,7 @@ describe('ThreadCommunicationService', () => {
     ix.stub(IBootstrapService, {
       homeDir,
       storeDir: join(homeDir, 'store'),
+      cacheDir: join(homeDir, 'cache'),
       scope: (name: string) => name,
     });
     ix.stub(IConfigService, {
@@ -236,11 +242,18 @@ describe('ThreadCommunicationService', () => {
       onDidArchiveSession: Event.None,
       onDidCloseSession: Event.None,
     } as unknown as ISessionManager);
+    const wireStorage = new InMemoryStorageService();
+    ix.stub(IFileSystemStorageService, wireStorage);
+    ix.set(IQueryStore, new SyncDescriptor(MiniDbQueryStore));
+    ix.set(IThreadTurnStore, new SyncDescriptor(ThreadTurnStore));
     ix.stub(IAppendLogStore, {
-      read: <R>() =>
-        (async function* (): AsyncGenerator<R> {
-          for (const record of wireRecords) yield record as R;
-        })(),
+      generation: async () => 'legacy',
+      flush: async (scope?: string, key?: string) => {
+        if (scope === undefined || key === undefined) return;
+        const bytes = Buffer.from(wireRecords.map((record) => JSON.stringify(record)).join('\n') + '\n');
+        const previous = await wireStorage.read(scope, key);
+        if (previous === undefined || !Buffer.from(previous).equals(bytes)) await wireStorage.write(scope, key, bytes);
+      },
     });
     const receiptDocs = new Map<string, unknown>();
     ix.stub(IAtomicDocumentStore, {
@@ -318,6 +331,7 @@ describe('ThreadCommunicationService', () => {
 
   afterEach(async () => {
     await disposables.dispose();
+    await drainQueryStoreDisposals();
     await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
@@ -407,25 +421,37 @@ describe('ThreadCommunicationService', () => {
       await active.launched;
       const receipt = await service.sendRoomMessage({ target, roomId: 'room-example', content: 'Review the room contract', idempotencyKey: 'room-test', targeted: true, queueWhenBusy, requireCommunication: true });
       expect(resume).toHaveBeenCalledWith('target');
+      expect(receipt.delivery).toBe('pending');
+      expect(prompts.list().active?.id).toBe('original-task');
+      expect(prompts.list().pending.map((item) => item.id)).toContain(receipt.messageId);
+      expect(ctx.get(IAgentContextMemoryService).get().some((message) => message.origin?.kind === 'room_message')).toBe(false);
       if (queueWhenBusy) {
-        expect(receipt.delivery).toBe('pending');
-        expect(prompts.list().active?.id).toBe('original-task');
-        expect(prompts.list().pending.map((item) => item.id)).toContain(receipt.messageId);
         expect(steer).not.toHaveBeenCalled();
-        expect(ctx.get(IAgentContextMemoryService).get().some((message) => message.origin?.kind === 'room_message')).toBe(false);
       } else {
-        expect(receipt.delivery).toBe('delivered');
-        expect(steer).toHaveBeenCalledWith([receipt.messageId]);
+        expect(steer).toHaveBeenCalledExactlyOnceWith([receipt.messageId]);
       }
       release();
       expect((await active.completion).state).toBe('completed');
       await service.waitRoomDelivery({ target, messageId: receipt.messageId });
       await loop.settled();
       const history = ctx.get(IAgentContextMemoryService).get();
-      expect(history.filter((message) => message.origin?.kind === 'room_message')).toHaveLength(1);
+      expect(history.filter((message) => message.origin?.kind === 'room_message')).toMatchObject([
+        { origin: { kind: 'room_message', messageId: receipt.messageId } },
+      ]);
       const projected = await service.listMessages({ sessionId: 'target' });
       expect(projected.items).toMatchObject([{ messageId: receipt.messageId, source: { kind: 'room', roomId: 'room-example' }, delivery: 'delivered' }]);
-      if (queueWhenBusy) expect(ctx.llmCalls).toHaveLength(2);
+      const originalTurnId = (await active.launched)?.id;
+      if (queueWhenBusy) {
+        expect(steer).not.toHaveBeenCalled();
+        expect(ctx.llmCalls).toHaveLength(2);
+        const queuedTurnId = prompts.lookup(receipt.messageId)?.turnId;
+        expect(queuedTurnId).toEqual(expect.any(Number));
+        expect(queuedTurnId).not.toBe(originalTurnId);
+      } else {
+        expect(steer).toHaveBeenCalledExactlyOnceWith([receipt.messageId]);
+        const [steered] = await steer.mock.results[0]!.value;
+        expect((await steered!.launched)?.id).toBe(originalTurnId);
+      }
       await ctx.expectResumeMatches();
     } finally {
       release();
@@ -1140,6 +1166,52 @@ describe('ThreadCommunicationService', () => {
       { turnId: 4, input: 'four' },
       { turnId: 6, input: 'six' },
     ]);
+  });
+
+  it('preserves a legacy older-turn boundary through preparation and an append-pinned cursor', async () => {
+    const service = ix.get(IThreadCommunicationService);
+    const thread = ref(service.hostId, 'workspace-b', 'target');
+    wireRecords = [
+      ...Array.from({ length: 10_001 }, () => ({ type: 'fixture.padding' })),
+      ...[0, 1, 2].flatMap((turnId) => [
+        { type: 'turn.prompt', input: [{ type: 'text', text: `Input ${turnId}` }], origin: { kind: 'user' } },
+        { type: 'turn.ended', turnId, reason: 'completed' },
+      ]),
+    ];
+    const legacy = Buffer.from(JSON.stringify({ v: 1, kind: 'read', beforeTurnId: 2, thread: [service.hostId, 'workspace-b', 'target'].join('\u0000') })).toString('base64url');
+    const preparing = await service.readThread({ thread, limit: 1, cursor: legacy });
+    expect(preparing).toMatchObject({ turns: [], incomplete: 'history_preparing', nextCursor: expect.any(String) });
+    const first = await service.readThread({ thread, limit: 1, cursor: preparing.nextCursor });
+    expect(first.incomplete).toBeUndefined();
+    expect(first.turns.map((turn) => turn.turnId)).toEqual([1]);
+    wireRecords.push(
+      { type: 'turn.prompt', input: [{ type: 'text', text: 'new input' }], origin: { kind: 'user' } },
+      { type: 'turn.ended', turnId: 3, reason: 'completed' },
+    );
+    const next = await service.readThread({ thread, limit: 1, cursor: first.nextCursor });
+    expect(next.turns.map((turn) => turn.turnId)).toEqual([0]);
+    expect(next.nextCursor).toBeUndefined();
+    expect((await service.readThread({ thread, limit: 1 })).turns.map((turn) => turn.turnId)).toEqual([3]);
+  });
+
+  it('serves local content refs without resuming the thread or dropping the bounded continuation', async () => {
+    const service = ix.get(IThreadCommunicationService);
+    const thread = ref(service.hostId, 'workspace-b', 'target');
+    const output = 'z'.repeat(20_000);
+    wireRecords = [
+      { type: 'turn.prompt', input: [{ type: 'text', text: 'input' }], origin: { kind: 'user' } },
+      { type: 'context.append_loop_event', event: { type: 'content.part', turnId: '0', part: { type: 'text', text: output } } },
+      { type: 'turn.ended', turnId: 0, reason: 'completed' },
+    ];
+    const page = await service.readThread({ thread, limit: 1 });
+    const turn = page.turns[0]!;
+    const first = await service.readThread({ thread, contentRef: turn.contentRefs![0] });
+    expect(first.turns).toEqual([]);
+    expect(first.view?.segment?.value).toBe(output.slice(512, 512 + 16_384));
+    const last = await service.readThread({ thread, contentRef: first.view!.segment!.next });
+    expect(last.view?.segment?.next).toBeUndefined();
+    expect([turn.output, first.view!.segment!.value, last.view!.segment!.value].join('')).toBe(output);
+    expect(resume).not.toHaveBeenCalled();
   });
 
   it('baselines a missing activity cursor and suppresses repeated terminal output', async () => {
