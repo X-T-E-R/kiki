@@ -215,6 +215,30 @@ export const NeedsYouList = memo(function NeedsYouList({
  * name opens the profile drawer. Capabilities live in their own block below.
  * Reads the same agent-panel answer as the other slices (same query key).
  */
+/**
+ * Resolves the thinking effort line for the profile head.
+ * For external executors, an inherited default 'off' must not be shown as the
+ * engine's actual level (preserving API configuration semantics and distinguishing
+ * explicit choice vs inherited default/unknown).
+ */
+export function profileEffortDisplay(profile: {
+  executor?: string;
+  thinking_effort?: string;
+  thinking_effort_explicit?: boolean;
+  effort_source?: string;
+  thinking_effort_source?: string;
+} | undefined, t: (key: string, params?: Record<string, string | number>) => string): string | undefined {
+  if (profile?.thinking_effort === undefined) return undefined;
+  const isExternal = profile.executor !== undefined && profile.executor !== '' && profile.executor !== 'native';
+  if (isExternal) {
+    const isOff = String(profile.thinking_effort).toLowerCase() === 'off';
+    if (isOff && profile.thinking_effort_explicit !== true) {
+      return undefined;
+    }
+  }
+  return t('subagent.effort', { effort: String(profile.thinking_effort) });
+}
+
 export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspaceId, cwd, externalDriver }: {
   sessionId: string;
   agentId: string;
@@ -245,17 +269,21 @@ export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspac
   const profile = read.data?.profile;
   const profileName = profile?.name !== undefined && profile.name !== '' && profile.name !== 'unknown' ? profile.name : undefined;
   const model = profile?.model ?? fallbackModel;
+  const effortText = profileEffortDisplay(profile, t);
   // A driven main has no model of its own. A sub agent under it still does, and
   // keeps its real model and effort, because that model did run.
   const modelLine = externalDriver !== undefined
     ? t('rail.external.driver', { client: externalDriver })
-    : [model, profile?.thinking_effort !== undefined ? t('subagent.effort', { effort: String(profile.thinking_effort) }) : undefined]
+    : [model, effortText]
       .filter((part): part is string => part !== undefined && part !== '')
       .join(' · ');
   const source = capabilitySourceLabel(t, { source: profile?.source, sourceFile: profile?.source_file });
   const identity: AgentIdentity = {
     id: agentId, sessionId, profile: profileName ?? '', label, model,
-    thinkingEffort: profile?.thinking_effort, status: 'unknown',
+    thinkingEffort: effortText !== undefined ? profile?.thinking_effort : undefined,
+    thinkingEffortExplicit: profile?.thinking_effort_explicit,
+    executorId: profile?.executor,
+    status: 'unknown',
     summary: profile?.description, description: profile?.description,
     source: profile?.source, sourceFile: profile?.source_file,
     context: read.data?.context ?? 'live', isMain: agentId === MAIN_AGENT_ID, rawProfile: profile,

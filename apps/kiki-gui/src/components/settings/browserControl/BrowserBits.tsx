@@ -155,7 +155,7 @@ export function BrowserRuntimeDetails({ id, type, status }: {
         <dd className="min-w-0 break-all font-mono text-ink-soft" data-browser-execution-host>{status.executionHost}</dd>
         <dt className="text-ink-faint">{t('st.browser.detail.ownership')}</dt>
         <dd className="text-ink-soft" data-browser-ownership={status.ownership ?? 'unknown'}>
-          {type === 'kimi-webbridge' ? t('st.browser.ownership.webbridge')
+          {type === 'kimi-webbridge' || type === 'webbridge-command' ? t('st.browser.ownership.webbridge')
             : status.ownership === undefined ? t('st.browser.ownership.unknown')
               : status.ownership === 'managed-profile' ? t('st.browser.ownership.managedProfile')
                 : t('st.browser.ownership.externalBrowser')}
@@ -174,12 +174,12 @@ export function BrowserRuntimeDetails({ id, type, status }: {
         )}
         <dt className="text-ink-faint">{t('st.browser.detail.generation')}</dt>
         <dd className="text-ink-soft tabular-nums" data-browser-generation>{status.generation}</dd>
-        <dt className="text-ink-faint">{t(type === 'kimi-webbridge' ? 'st.browser.detail.bridgeVersion' : 'st.browser.detail.driverVersion')}</dt>
+        <dt className="text-ink-faint">{t(type === 'kimi-webbridge' || type === 'webbridge-command' ? 'st.browser.detail.bridgeVersion' : 'st.browser.detail.driverVersion')}</dt>
         <dd className="text-ink-soft" data-browser-driver-version>
           {status.driverVersion ?? t('st.browser.detail.driverUnknown')}
           {/* The managed build is a real requirement of the agent-browser driver;
               the bridge answers for itself, so nothing is demanded of it here. */}
-          {type === 'kimi-webbridge' ? null : (
+          {type === 'kimi-webbridge' || type === 'webbridge-command' ? null : (
             <span className="text-ink-faint"> · {t('st.browser.detail.driverRequirement', { version: AGENT_BROWSER_VERSION, markers: AGENT_BROWSER_MARKERS })}</span>
           )}
         </dd>
@@ -233,7 +233,7 @@ export function BrowserRuntimeDetails({ id, type, status }: {
         <p className="font-medium">{t('st.browser.catalog.title')}</p>
         {!readCatalog ? (
           <>
-            <p className="max-w-[62ch]">{t(type === 'kimi-webbridge' ? 'st.browser.catalog.readHintWebbridge' : live ? 'st.browser.catalog.readHint' : 'st.browser.catalog.readHintIdle')}</p>
+            <p className="max-w-[62ch]">{t(type === 'kimi-webbridge' || type === 'webbridge-command' ? 'st.browser.catalog.readHintWebbridge' : live ? 'st.browser.catalog.readHint' : 'st.browser.catalog.readHintIdle')}</p>
             <button type="button" className={SECONDARY_BUTTON} data-browser-catalog-read
               onClick={() => { setReadCatalog(true); }}>
               {t('st.browser.catalog.read')}

@@ -16,7 +16,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, assert, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { patchModelRequestSchema, type GetModelResponse, type ModelCatalogItem, type ProviderCatalogItem } from '@kiki/protocol';
-import type { ServerConnection } from '@kiki/session-core/settings';
+import { readSettings, writeSettings, type ServerConnection } from '@kiki/session-core/settings';
 
 import { translate } from '@kiki/session-core/i18n';
 import { I18nProvider } from '../../i18n';
@@ -890,6 +890,115 @@ describe('GlobalDefaultsCard', () => {
     await act(async () => { option.click(); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(setDefaultModel).toHaveBeenCalledWith('kimi-code/kimi-k1');
+  });
+});
+
+describe('default model cross-tab selection ownership', () => {
+  const modelA: ModelCatalogItem = { ...MODELS[0]!, id: 'gateway/model-a', provider_id: 'gateway', display_name: 'Model A' };
+  const modelB = MODELS[0]!;
+
+  async function renderTabs() {
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const show = async (tab: 'models' | 'defaults') => {
+      await act(async () => {
+        root.render(
+          <MemoryRouter>
+            <QueryClientProvider client={queryClient}>
+              <I18nProvider>
+                <DirtyGuardContext.Provider value={{ dirty: false, reportDirty: () => {}, navigate: () => {} }}>
+                  {tab === 'models' ? (
+                    <ModelCatalogCard />
+                  ) : (
+                    <>
+                      <DefaultModelBar />
+                      <GlobalDefaultsCard />
+                    </>
+                  )}
+                </DirtyGuardContext.Provider>
+              </I18nProvider>
+            </QueryClientProvider>
+          </MemoryRouter>,
+        );
+      });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    };
+    listModels.mockResolvedValue({ items: [modelA, modelB] });
+    writeSettings({ defaultModel: modelB.id, defaultEffort: 'high' });
+    return { container, queryClient, show };
+  }
+
+  it('finishes the old server write chain before applying the last cross-tab pick, including the original default in DefaultModelBar', async () => {
+    const initial = { default_model: modelB.id, default_provider: modelB.provider_id, session_title: { model: 'title-model' }, thinking: { effort: 'high' } };
+    let server = { ...initial };
+    const modelGate = Promise.withResolvers<void>();
+    const providerGate = Promise.withResolvers<void>();
+    const writes: string[] = [];
+    getConfig.mockImplementation(async () => ({ ...server }));
+    setDefaultModel.mockImplementation(async (id: string) => {
+      if (id === modelA.id) await modelGate.promise;
+      server = { ...server, default_model: id };
+      writes.push(`model:${id}`);
+      return { default_model: id };
+    });
+    patchConfig.mockImplementation(async ({ default_model, default_provider }: { default_model?: string; default_provider?: string }) => {
+      if (default_provider === modelA.provider_id) await providerGate.promise;
+      server = { ...server, ...(default_model !== undefined ? { default_model } : {}), ...(default_provider !== undefined ? { default_provider } : {}) };
+      if (default_provider !== undefined) writes.push(`provider:${default_provider}`);
+      return { ...server };
+    });
+    const { container, queryClient, show } = await renderTabs();
+    await show('models');
+    await act(async () => { container.querySelector<HTMLButtonElement>(`[data-model-row="${modelA.id}"] button[aria-pressed]`)!.click(); });
+    await show('defaults');
+    await pickValue(container.querySelector('#st-default-model')!, '', modelB.id);
+    expect(setDefaultModel.mock.calls.map(([id]) => id)).toEqual([modelA.id]);
+    await act(async () => { modelGate.resolve(); });
+    expect(patchConfig).toHaveBeenCalledWith({ default_model: modelA.id, default_provider: modelA.provider_id });
+    expect(setDefaultModel.mock.calls.map(([id]) => id)).toEqual([modelA.id]);
+    expect(queryClient.getQueryData(['config'])).toEqual(initial);
+    expect(readSettings().defaultModel).toBe(modelB.id);
+    await act(async () => { providerGate.resolve(); });
+    expect(writes).toEqual([`model:${modelA.id}`, `provider:${modelA.provider_id}`, `model:${modelB.id}`, `provider:${modelB.provider_id}`]);
+    expect(server).toEqual(initial);
+    expect(queryClient.getQueryData(['config'])).toEqual(server);
+    expect(readSettings()).toMatchObject({ defaultModel: modelB.id, defaultEffort: 'high' });
+    expect(container.querySelector('#st-default-model')!.textContent).toContain('Kimi K2');
+  });
+
+  it('lets the latest catalog pick run after an older DefaultModelBar request rejects, without stale error recovery', async () => {
+    let server = { default_model: 'initial-model', default_provider: 'initial-provider', fast_model: 'fast-model' };
+    const modelGate = Promise.withResolvers<void>();
+    getConfig.mockImplementation(async () => ({ ...server }));
+    setDefaultModel.mockImplementation(async (id: string) => {
+      if (id === modelA.id) await modelGate.promise;
+      server = { ...server, default_model: id };
+      return { default_model: id };
+    });
+    patchConfig.mockImplementation(async ({ default_model, default_provider }: { default_model?: string; default_provider?: string }) => {
+      server = { ...server, ...(default_model !== undefined ? { default_model } : {}), ...(default_provider !== undefined ? { default_provider } : {}) };
+      return { ...server };
+    });
+    const { container, queryClient, show } = await renderTabs();
+    await show('defaults');
+    await pickValue(container.querySelector('#st-default-model')!, '', modelA.id);
+    await show('models');
+    await act(async () => { container.querySelector<HTMLButtonElement>(`[data-model-row="${modelB.id}"] button[aria-pressed]`)!.click(); });
+    expect(setDefaultModel.mock.calls.map(([id]) => id)).toEqual([modelA.id]);
+    const reads = getConfig.mock.calls.length;
+    await act(async () => { modelGate.reject(new Error('old selection failed')); });
+    expect(setDefaultModel.mock.calls.map(([id]) => id)).toEqual([modelA.id, modelB.id]);
+    expect(patchConfig.mock.calls).toEqual([[{ default_model: modelB.id, default_provider: modelB.provider_id }]]);
+    expect(getConfig).toHaveBeenCalledTimes(reads + 1);
+    expect(server).toEqual({ default_model: modelB.id, default_provider: modelB.provider_id, fast_model: 'fast-model' });
+    expect(queryClient.getQueryData(['config'])).toEqual(server);
+    expect(readSettings().defaultModel).toBe(modelB.id);
+    expect(container.textContent).not.toContain('old selection failed');
+    expect(container.querySelector(`[data-model-row="${modelB.id}"]`)!.getAttribute('data-default')).toBe('true');
   });
 });
 

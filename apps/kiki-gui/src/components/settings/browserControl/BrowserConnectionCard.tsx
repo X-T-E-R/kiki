@@ -85,7 +85,7 @@ const NATIVE_BROWSER_FLAG_TRIP = `/settings/${NATIVE_BROWSER_FLAG_HOME}#${experi
 
 function typeLabel(t: ReturnType<typeof useI18n>['t'], type: BrowserConnectionType): string {
   if (type === 'ego-lite') return t('st.browser.type.ego-lite');
-  if (type === 'kimi-webbridge') return t('st.browser.type.kimi-webbridge');
+  if (type === 'kimi-webbridge' || type === 'webbridge-command') return t('st.browser.type.kimi-webbridge');
   return t(type === 'codex-extension' ? 'st.browser.type.codex-extension' : type === 'agent-browser-cdp' ? 'st.browser.type.cdp' : 'st.browser.type.profile');
 }
 
@@ -113,6 +113,9 @@ function typeChoices(
   if (original?.type === 'kimi-webbridge') {
     return [{ value: 'kimi-webbridge', label: t('st.browser.type.kimi-webbridge'), hint: t('st.browser.type.webbridgeHint') }];
   }
+  if (original?.type === 'webbridge-command') {
+    return [{ value: 'webbridge-command', label: t('st.browser.type.kimi-webbridge'), hint: t('st.browser.type.webbridgeHint') }];
+  }
   return [
     { value: 'agent-browser-profile', label: t('st.browser.type.profileLong'), hint: t('st.browser.type.profileHint') },
     { value: 'agent-browser-cdp', label: t('st.browser.type.cdpLong'), hint: t('st.browser.type.cdpHint') },
@@ -131,7 +134,7 @@ function runtimeLabels(t: ReturnType<typeof useI18n>['t'], type: BrowserConnecti
   if (type === 'ego-lite') {
     return { check: t('st.browser.checkEgo'), checkHint: t('st.browser.checkHintEgo'), connect: t('st.browser.connectEgo') };
   }
-  if (type === 'kimi-webbridge') {
+  if (type === 'kimi-webbridge' || type === 'webbridge-command') {
     return { check: t('st.browser.checkWebbridge'), checkHint: t('st.browser.checkHintWebbridge'), connect: t('st.browser.connectWebbridge') };
   }
   if (type === 'agent-browser-cdp') {
@@ -144,7 +147,7 @@ function runtimeLabels(t: ReturnType<typeof useI18n>['t'], type: BrowserConnecti
 function deleteConsequenceKey(type: BrowserConnectionType): I18nKey {
   if (type === 'agent-browser-cdp') return 'st.browser.deleteConsequenceCdp';
   if (type === 'ego-lite') return 'st.browser.deleteConsequenceEgo';
-  if (type === 'kimi-webbridge') return 'st.browser.deleteConsequenceWebbridge';
+  if (type === 'kimi-webbridge' || type === 'webbridge-command') return 'st.browser.deleteConsequenceWebbridge';
   return 'st.browser.deleteConsequenceProfile';
 }
 
@@ -159,7 +162,7 @@ function locationLabel(t: ReturnType<typeof useI18n>['t'], row: BrowserConnectio
   if (row.type === 'codex-extension') return row.browserId ?? t('st.browser.location.unknown');
   if (row.type === 'ego-lite') return row.cliPath ?? t('st.browser.type.ego-lite');
   if (row.type === 'agent-browser-profile') return t('st.browser.location.server');
-  if (row.type === 'kimi-webbridge') return t('st.browser.location.webbridge');
+  if (row.type === 'kimi-webbridge' || row.type === 'webbridge-command') return t('st.browser.location.webbridge');
   return endpointHost(row.endpointDisplay) ?? t('st.browser.location.unknown');
 }
 
@@ -377,7 +380,7 @@ export function BrowserConnectionCard({ summary }: {
 
   /** What releasing this connection does to the browser itself. */
   const ownershipText = (ownership: BrowserOwnership | undefined, type: BrowserConnectionType): string =>
-    type === 'kimi-webbridge' ? t('st.browser.disconnectMeaningWebbridge')
+    type === 'kimi-webbridge' || type === 'webbridge-command' ? t('st.browser.disconnectMeaningWebbridge')
       : ownership === 'external-browser' ? t('st.browser.disconnectMeaningExternal')
         : ownership === 'managed-profile' ? t('st.browser.disconnectMeaningManaged')
           : t('st.browser.disconnectMeaningUnknown');
@@ -677,7 +680,7 @@ export function BrowserConnectionCard({ summary }: {
               </div>
             </AdvancedDetails>
           </div>
-        ) : draft.type === 'kimi-webbridge' ? (
+        ) : draft.type === 'kimi-webbridge' || draft.type === 'webbridge-command' ? (
           <div data-browser-bridge>
             <Hint>{t('st.browser.bridgeHint')}</Hint>
           </div>

@@ -167,6 +167,9 @@ export function browserConnectionInput(draft: BrowserDraft): BrowserConnectionIn
     // the write shape is the type plus the common fields and no endpoint at all.
     return { name, enabled: draft.enabled, driverPath: driver, type: 'kimi-webbridge' };
   }
+  if (draft.type === 'webbridge-command') {
+    return { name, enabled: draft.enabled, type: 'webbridge-command' };
+  }
   return { name, enabled: draft.enabled, driverPath: driver, type: 'agent-browser-cdp', endpoint: endpointEdit(draft.endpoint) };
 }
 

@@ -2303,6 +2303,7 @@ describe('browser-control settings helpers', () => {
   it('attributes the bridge source the way the server does, and keeps the other switches apart', () => {
     // The public type belongs to the bridge whatever its id is.
     expect(browserSourceOfConnectionType('kimi-webbridge', 'daily-edge')).toBe('kimi-webbridge');
+    expect(browserSourceOfConnectionType('webbridge-command', 'daily-edge')).toBe('kimi-webbridge');
     // A record still stored as CDP under the preset id runs over the bridge, so
     // classifying it by type first would report it allowed while the server refuses it.
     expect(browserSourceOfConnectionType('agent-browser-cdp', 'kimi-webbridge')).toBe('kimi-webbridge');

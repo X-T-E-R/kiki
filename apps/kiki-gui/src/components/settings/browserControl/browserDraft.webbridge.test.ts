@@ -19,4 +19,13 @@ describe('kimi-webbridge connection draft', () => {
     expect(browserConnectionInput(draft)).toMatchObject({ type: 'kimi-webbridge', driverPath: 'C:\\kiki\\bridge.exe' });
     expect(draftIssues({ ...draft, driverPath: 'bridge.exe' }, []).driverPath).toBe('st.browser.pathInvalid');
   });
+
+  it('writes webbridge-command strictly with name and enabled without endpoint or driverPath', () => {
+    const draft = draftOf({ id: 'webbridge-command', name: 'Kimi Command Bridge', enabled: true, type: 'webbridge-command' });
+    const input = parseBrowserInput(browserConnectionInput(draft));
+    expect(input).toEqual({ type: 'webbridge-command', name: 'Kimi Command Bridge', enabled: true });
+    expect(input).not.toHaveProperty('driverPath');
+    expect(input).not.toHaveProperty('endpoint');
+    expect(draftIssues(draft, ['webbridge-command'])).toEqual({});
+  });
 });

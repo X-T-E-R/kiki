@@ -23,7 +23,7 @@ import { buildAgentForest, type NoticeBlock } from '@kiki/session-core/session';
 import { translate } from '@kiki/session-core/i18n';
 import { OptionalCapabilityRows } from '../capabilities/optionalCapabilityUi';
 import { clearPendingNewSessionCapabilities } from '../capabilities/newSessionCapabilities';
-import { ActivityFeed, CapabilitiesBlock } from './DefaultSections';
+import { ActivityFeed, CapabilitiesBlock, profileEffortDisplay } from './DefaultSections';
 
 const { readCapabilities, getUsage, getConfig, getSessionCaps, setSessionCap } = vi.hoisted(() => ({
   readCapabilities: vi.fn(),
@@ -720,5 +720,48 @@ describe('OptionalCapabilityRows', () => {
     expect(container.querySelector('[data-optional-capability="memory"]')?.getAttribute('data-optional-effective')).toBe('true');
     expect(container.querySelector('[data-optional-capability="web"]')?.getAttribute('data-optional-choice')).toBe('off');
     expect(container.querySelector('[data-optional-capability="web"]')?.getAttribute('data-optional-effective')).toBe('false');
+  });
+});
+
+describe('profileEffortDisplay external vs native thinking effort', () => {
+  const t = (key: string, params?: Record<string, string | number>) =>
+    key === 'subagent.effort' ? `effort · ${params?.effort}` : key;
+
+  it('hides inherited off for external executors (external inheritedoff)', () => {
+    const result = profileEffortDisplay({
+      executor: 'codex-app-server',
+      thinking_effort: 'off',
+      thinking_effort_explicit: false,
+      effort_source: 'config',
+    }, t);
+    expect(result).toBeUndefined();
+  });
+
+  it('displays off for native executor even if not explicit (nativeoff)', () => {
+    const result = profileEffortDisplay({
+      executor: 'native',
+      thinking_effort: 'off',
+      thinking_effort_explicit: false,
+    }, t);
+    expect(result).toBe('effort · off');
+  });
+
+  it('displays off when explicitly chosen for external executor (externalexplicitoff)', () => {
+    const result = profileEffortDisplay({
+      executor: 'codex-app-server',
+      thinking_effort: 'off',
+      thinking_effort_explicit: true,
+      effort_source: 'profile',
+    }, t);
+    expect(result).toBe('effort · off');
+  });
+
+  it('displays reported actual effort level for external executor', () => {
+    const result = profileEffortDisplay({
+      executor: 'codex-app-server',
+      thinking_effort: 'high',
+      thinking_effort_explicit: false,
+    }, t);
+    expect(result).toBe('effort · high');
   });
 });

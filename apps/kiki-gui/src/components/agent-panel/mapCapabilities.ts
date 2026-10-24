@@ -35,6 +35,10 @@ export const CAPABILITY_REASON_LABEL_KEYS: Readonly<Record<AgentCapabilityReason
   research_readonly_dispatch_forbidden: 'capabilityReason.research_readonly_dispatch_forbidden',
   plan_resume_forbidden: 'capabilityReason.plan_resume_forbidden',
   native_executor_required: 'capabilityReason.native_executor_required',
+  tool_not_registered: 'capabilityReason.tool_not_registered',
+  plugin_catalog_failed: 'capabilityReason.plugin_catalog_failed',
+  plugin_usage_disabled: 'capabilityReason.plugin_usage_disabled',
+  plugin_usage_unavailable: 'capabilityReason.plugin_usage_unavailable',
 };
 
 const AGENT_CAPABILITIES_ERROR_KEYS: Readonly<Record<number, I18nKey>> = {
@@ -183,6 +187,8 @@ export function mapPanelTools(
     ...tool,
     unavailableReason: tool.unavailable_reason,
     unavailableReasonCode: tool.unavailable_reason_code,
+    policyAllowed: tool.policy_allowed,
+    requestState: tool.request_state,
     parametersSchema: tool.parameters ? JSON.stringify(tool.parameters, null, 2) : undefined,
     readOnly: tool.read_only,
   }));

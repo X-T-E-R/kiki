@@ -483,6 +483,10 @@ function ExportView({
   readonly onCredentials: (value: boolean) => void;
 }) {
   const { t } = useI18n();
+  const notices = useMemo(() => {
+    const list = catalog?.notices ?? [];
+    return credentials ? list.filter((item) => item !== 'omittedCredentials') : list;
+  }, [catalog?.notices, credentials]);
   return (
     <div className="space-y-4" data-settings-transfer-export-view>
       {catalogState === 'loading' ? <Hint>{t('st.settingsTransfer.catalogLoading')}</Hint> : null}
@@ -500,7 +504,7 @@ function ExportView({
           <span className="mt-0.5 block text-[12px] leading-5 text-ink-faint">{t('st.settingsTransfer.credentialsHint')}</span>
         </span>
       </label>
-      <NoticeList notices={catalog?.notices ?? []} />
+      <NoticeList notices={notices} />
       <FeedbackLine feedback={feedback} />
     </div>
   );

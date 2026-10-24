@@ -56,7 +56,7 @@ export function DefaultModelBar({ tab: _tab }: { tab?: AiSettingsTab } = {}) {
 
   const pick = async (modelId: string) => {
     const item = models.find((candidate) => candidate.id === modelId);
-    if (item === undefined || item.id === defaultModel) return;
+    if (item === undefined) return;
     setBusy(true);
     setFeedback(null);
     const selection = selectGlobalDefaultModel(client, queryClient, item);

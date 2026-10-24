@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { settingsTransferPackageSchema, settingsTransferPreferencesSchema } from '@kiki/protocol';
+import { translate } from '@kiki/session-core/i18n';
 import { I18nProvider } from '../../../i18n';
 import { SettingsTransferPanel } from './SettingsTransferPanel';
 
@@ -149,11 +150,34 @@ describe('SettingsTransferPanel', () => {
     expect(document.querySelectorAll('[data-settings-transfer-category]:checked')).toHaveLength(7);
   });
 
+  it('filters out omittedCredentials notice when credentials checkbox is opted in', async () => {
+    fixture.api.catalog.mockResolvedValue({
+      ...catalog,
+      notices: ['localScope', 'omittedCredentials'],
+    });
+    await renderPanel();
+    const noticesList = () => document.querySelector('[data-settings-transfer-notices]');
+    expect(noticesList()?.textContent).toContain(translate('en', 'st.settingsTransfer.notice.omittedCredentials'));
+
+    const credentialCheckbox = document.querySelector('[data-settings-transfer-export-credentials]') as HTMLInputElement;
+    await act(async () => { credentialCheckbox.click(); });
+    await settle();
+
+    expect(credentialCheckbox.checked).toBe(true);
+    expect(noticesList()?.textContent).not.toContain(translate('en', 'st.settingsTransfer.notice.omittedCredentials'));
+    expect(noticesList()?.textContent).toContain(translate('en', 'st.settingsTransfer.notice.localScope'));
+
+    await act(async () => { credentialCheckbox.click(); });
+    await settle();
+    expect(credentialCheckbox.checked).toBe(false);
+    expect(noticesList()?.textContent).toContain(translate('en', 'st.settingsTransfer.notice.omittedCredentials'));
+  });
+
   it('rejects invalid packages before preview and never calls apply', async () => {
     await renderPanel();
     await click('[role="tab"]:nth-of-type(2)');
     await selectFile({ format: 'not-kiki' });
-    expect(document.body.textContent).toContain('st.settingsTransfer.fileInvalid');
+    expect(document.body.textContent).toContain(translate('en', 'st.settingsTransfer.fileInvalid'));
     expect(fixture.api.preview).not.toHaveBeenCalled();
     expect(fixture.api.apply).not.toHaveBeenCalled();
   });
@@ -223,7 +247,7 @@ describe('SettingsTransferPanel', () => {
     expect(fixture.onClose).not.toHaveBeenCalled();
     resolveApply!({ status: 'complete', scope: catalog.scope, items: [], timing: 'settingsReloaded' });
     await settle();
-    expect(document.querySelector('[data-settings-transfer-apply-result]')?.textContent).toContain('st.settingsTransfer.imported');
+    expect(document.querySelector('[data-settings-transfer-apply-result]')?.textContent).toContain(translate('en', 'st.settingsTransfer.imported'));
   });
 
   it('reports partial backend results and item statuses without exposing backend error text', async () => {
@@ -240,7 +264,7 @@ describe('SettingsTransferPanel', () => {
     await click('[data-settings-transfer-apply]');
     expect(fixture.api.apply).toHaveBeenCalledWith({ previewId: 'preview-1' });
     expect(document.querySelector('[data-settings-transfer-apply-result]')?.textContent).toContain('spaceUi.font');
-    expect(document.querySelector('[data-settings-transfer-apply-result]')?.textContent).toContain('st.settingsTransfer.failure.writeFailed');
+    expect(document.querySelector('[data-settings-transfer-apply-result]')?.textContent).toContain(translate('en', 'st.settingsTransfer.failure.writeFailed'));
     expect(document.body.textContent).not.toContain('secret');
   });
 
