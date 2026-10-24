@@ -5,6 +5,15 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createKlient } from '@kiki/klient/http';
 import { ConfigTarget, IConfigService } from '@kiki/agent-core-v2/app/config/config';
 import { IMcpConfigStore } from '@kiki/agent-core-v2/app/mcpConfig/configStore';
+import { IMcpRegistryService } from '@kiki/agent-core-v2/app/mcpRegistry/mcpRegistry';
+import { McpRegistryService } from '@kiki/agent-core-v2/app/mcpRegistry/mcpRegistryService';
+import { IBootstrapService } from '@kiki/agent-core-v2/app/bootstrap/bootstrap';
+import { IPluginService } from '@kiki/agent-core-v2/app/plugin/plugin';
+import { IInstantiationService } from '@kiki/agent-core-v2/_base/di/instantiation';
+import { ServiceCollection } from '@kiki/agent-core-v2/_base/di/serviceCollection';
+import { SyncDescriptor } from '@kiki/agent-core-v2/_base/di/descriptors';
+import { INbSearchService } from '@kiki/agent-core-v2/app/nbSearch/nbSearch';
+import { NbSearchConfigSchema } from '@kiki/agent-core-v2/app/nbSearch/configSection';
 import { DEFAULT_NOTIFICATIONS_CONFIG } from '@kiki/agent-core-v2/app/notifications/configSection';
 import { ISettingsProfileResources } from '@kiki/agent-core-v2/app/settingsTransfer/profileResources';
 import { SETTINGS_TRANSFER_CATEGORIES, type SettingsTransferPackage } from '@kiki/protocol';
@@ -26,6 +35,8 @@ let to: ReturnType<typeof createKlient>;
 
 beforeAll(async () => {
   root = await mkdtemp(join(tmpdir(), 'kiki-settings-transfer-'));
+  for (const key of Object.keys(process.env)) if (key.toUpperCase().startsWith('NB_SEARCH_')) vi.stubEnv(key, undefined);
+  vi.stubEnv('NB_SEARCH_HOME', join(root, 'isolated-nb-search'));
   const sourceHome = join(root, 'source');
   const targetHome = join(root, 'target');
   await mkdir(join(sourceHome, 'agents'), { recursive: true });
@@ -58,6 +69,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await from?.close(); await to?.close();
   await source?.close(); await target?.close();
+  vi.unstubAllEnvs();
   if (root !== undefined) await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 }, 30_000);
 
@@ -147,7 +159,7 @@ describe('settings transfer through the authenticated klient HTTP host', () => {
 
   it('omits inline MCP credentials unless explicitly selected and rejects changed prompt dependencies', async () => {
     const mcpStore = source.core.accessor.get(IMcpConfigStore);
-    await mcpStore.add({ name: 'inline-example', command: 'example-tool', args: ['--token', credential], enabled: false });
+    await mcpStore.add({ name: 'inline-example', transport: 'stdio', command: 'example-tool', args: ['--token', credential], enabled: false });
     try {
       const plain = await from.global.settingsTransfer.export({ categories: ['tools'], includeCredentials: false });
       expect(plain.resources.some((resource) => resource.key === 'inline-example')).toBe(false);
@@ -212,6 +224,162 @@ describe('settings transfer through the authenticated klient HTTP host', () => {
       expect(JSON.stringify(result)).not.toContain(credential);
       expect(target.core.accessor.get(IConfigService).get('defaultPermissionMode')).toBe('auto');
     } finally { spy.mockRestore(); }
+  });
+
+  it('R1 omits credential-bearing MCP arguments and preserves unchecked target credentials', async () => {
+    const forms = [
+      ['mcp-remote', 'https://mcp.example.test', '--header', `Authorization: Bearer ${credential}`],
+      ['--header', `X-Api-Key: ${credential}`],
+      ['-H', `Authorization:Bearer ${credential}`],
+      [`--headers=Authorization: Bearer ${credential}`],
+      ['--access-token', credential],
+      [`--api-key=${credential}`],
+    ];
+    const sourceMcp = source.core.accessor.get(IMcpConfigStore);
+    const targetMcp = target.core.accessor.get(IMcpConfigStore);
+    for (const [index, args] of forms.entries()) {
+      const name = `credential-args-${index}`;
+      await sourceMcp.add({ name, transport: 'stdio', command: 'example-tool', args, enabled: false });
+      await targetMcp.add({ name, transport: 'stdio', command: 'target-tool', args: ['--token', 'FAKE_TARGET_ONLY'], enabled: false });
+    }
+    try {
+      const plain = await from.global.settingsTransfer.export({ categories: ['tools'], includeCredentials: false });
+      expect(plain.resources.some((entry) => entry.key.startsWith('credential-args-'))).toBe(false);
+      expect(JSON.stringify(plain)).not.toContain(credential);
+      const privateBundle = await from.global.settingsTransfer.export({ categories: ['tools'], includeCredentials: true });
+      expect(privateBundle.resources.filter((entry) => entry.key.startsWith('credential-args-'))).toHaveLength(forms.length);
+      const unchecked = await to.global.settingsTransfer.preview({ bundle: privateBundle, categories: ['tools'], mode: 'overwrite', includeCredentials: false });
+      expect((await to.global.settingsTransfer.apply({ previewId: unchecked.previewId })).status).toBe('complete');
+      for (const index of forms.keys()) expect(await targetMcp.get(`credential-args-${index}`)).toMatchObject({ command: 'target-tool', args: ['--token', 'FAKE_TARGET_ONLY'] });
+    } finally {
+      for (const index of forms.keys()) { await sourceMcp.remove(`credential-args-${index}`); await targetMcp.remove(`credential-args-${index}`); }
+    }
+  });
+
+  it('R2 append preserves inherited global MCP restrictions and guards their defining layer', async () => {
+    const base = join(root, 'mcp-base');
+    await mkdir(base, { recursive: true });
+    const writeBase = (enabled: boolean) => writeFile(join(base, 'mcp.json'), JSON.stringify({ mcpServers: { inherited: { transport: 'http', url: 'https://keep.example.test', enabled } } }));
+    await writeBase(false);
+    const store = target.core.accessor.get(IMcpConfigStore);
+    const registry = target.core.accessor.get(IMcpRegistryService);
+    const child = target.core.accessor.get(IInstantiationService).createChild(new ServiceCollection(
+      [IMcpRegistryService, new SyncDescriptor(McpRegistryService)],
+      [IBootstrapService, { homeDir: join(root, 'target'), baseHomeDir: base } as IBootstrapService],
+      [IPluginService, { mcpServerEntries: async () => [{ name: 'plugin-collision', pluginId: 'example', serverName: 'collision', config: { transport: 'http', url: 'https://plugin.example.test', enabled: true } }] } as unknown as IPluginService],
+    ));
+    const inherited = child.invokeFunction((accessor) => accessor.get(IMcpRegistryService));
+    const spy = vi.spyOn(registry, 'list').mockImplementation(() => inherited.list());
+    const bundle: SettingsTransferPackage = { format: 'kiki.settings', version: 1, createdAt: new Date().toISOString(), categories: ['tools'], includesCredentials: false, config: {}, resources: [{ kind: 'mcp', key: 'inherited', value: { transport: 'http', url: 'https://incoming.example.test', enabled: true } }], notices: [] };
+    try {
+      const preview = await to.global.settingsTransfer.preview({ bundle, categories: ['tools'], mode: 'append', includeCredentials: false });
+      expect(preview.categories[0]).toMatchObject({ added: 0, conflicts: 1, skipped: 1 });
+      expect(await to.global.settingsTransfer.apply({ previewId: preview.previewId })).toMatchObject({ status: 'complete', items: [] });
+      expect((await store.list()).some((entry) => entry.name === 'inherited')).toBe(false);
+      expect(await inherited.resolveRuntimeTarget('inherited')).toMatchObject({ config: { enabled: false }, mutable: false });
+      const stale = await to.global.settingsTransfer.preview({ bundle, categories: ['tools'], mode: 'append', includeCredentials: false });
+      await writeBase(true);
+      expect(await to.global.settingsTransfer.apply({ previewId: stale.previewId })).toMatchObject({ status: 'failed', failure: 'changed', items: [] });
+      const pluginBundle = { ...bundle, resources: [{ kind: 'mcp' as const, key: 'plugin-collision', value: { transport: 'http', url: 'https://incoming.example.test', enabled: false } }] };
+      const pluginPreview = await to.global.settingsTransfer.preview({ bundle: pluginBundle, categories: ['tools'], mode: 'append', includeCredentials: false });
+      expect(pluginPreview.categories[0]).toMatchObject({ added: 1, conflicts: 0 });
+      expect((await to.global.settingsTransfer.apply({ previewId: pluginPreview.previewId })).status).toBe('complete');
+      expect(await inherited.resolveRuntimeTarget('plugin-collision')).toMatchObject({ source: 'global', config: { enabled: false } });
+    } finally { spy.mockRestore(); await store.remove('plugin-collision'); await child.dispose(); }
+  });
+
+  it('R3 preserves NBSearch slot environment names in a credential-free self-import', async () => {
+    const config = source.core.accessor.get(IConfigService);
+    const original = config.inspect('nbSearch').userValue;
+    const patch = { credential_slots: { review: { provider_id: 'exa', env: 'REVIEW_EXA_API_KEY' } }, provider_instances: { review: { provider_id: 'exa', credential_slot_id: 'review', enabled: false, options: {} } } };
+    try {
+      await config.replace('nbSearch', patch);
+      const bundle = await from.global.settingsTransfer.export({ categories: ['tools', 'permissions'], includeCredentials: false });
+      expect(bundle.config['nbSearch']).toMatchObject(patch);
+      expect(NbSearchConfigSchema.safeParse(bundle.config['nbSearch']).success).toBe(true);
+      for (const selectedCategories of [['tools'], ['permissions']] as const) {
+        const preview = await from.global.settingsTransfer.preview({ bundle, categories: [...selectedCategories], mode: 'append', includeCredentials: false });
+        await from.global.settingsTransfer.cancel({ previewId: preview.previewId });
+      }
+    } finally { await config.replace('nbSearch', original); }
+  });
+
+  it('R4 round-trips Kiki-managed NBSearch keys only with opt-in and protects binding, version and cancellation', async () => {
+    const sourceConfig = source.core.accessor.get(IConfigService);
+    const targetConfig = target.core.accessor.get(IConfigService);
+    const search = source.core.accessor.get(INbSearchService);
+    const targetSearch = target.core.accessor.get(INbSearchService);
+    const patch = { credential_slots: { transfer: { provider_id: 'exa', env: 'TRANSFER_EXA_API_KEY' } }, provider_instances: { transfer: { provider_id: 'exa', credential_slot_id: 'transfer', enabled: false, options: {}, base_url: 'https://search.example.test' } } };
+    await sourceConfig.replaceSections({ nbSearch: patch, nbSearchSource: { reuse_local_config: false } });
+    await targetConfig.replaceSections({ nbSearch: {}, nbSearchSource: { reuse_local_config: false } });
+    vi.stubEnv('NB_SEARCH_EXA_API_KEY', 'FAKE_PROCESS_ONLY');
+    const localHome = join(root, 'isolated-nb-search');
+    await mkdir(localHome, { recursive: true });
+    await writeFile(join(localHome, 'secrets.json'), JSON.stringify({ schema_version: '1', values: { NB_SEARCH_EXA_API_KEY: 'FAKE_CLI_ONLY' } }));
+    const save = async (service: INbSearchService, value: string) => { const view = await service.readManagedCredential('transfer', false); return service.writeManagedCredential('transfer', value, view.version, view.binding_version); };
+    await save(search, credential);
+    const plain = await from.global.settingsTransfer.export({ categories: ['tools'], includeCredentials: false });
+    expect(plain.resources.some((entry) => entry.kind === 'nbSearchCredential')).toBe(false);
+    expect(JSON.stringify(plain)).not.toContain(credential);
+    await sourceConfig.replace('nbSearchSource', { reuse_local_config: true });
+    const external = await from.global.settingsTransfer.export({ categories: ['tools'], includeCredentials: true });
+    expect(JSON.stringify(external)).not.toContain('FAKE_PROCESS_ONLY');
+    expect(JSON.stringify(external)).not.toContain('FAKE_CLI_ONLY');
+    await sourceConfig.replace('nbSearchSource', { reuse_local_config: false });
+    const bundle = await from.global.settingsTransfer.export({ categories: ['tools'], includeCredentials: true });
+    expect(bundle.resources.find((entry) => entry.kind === 'nbSearchCredential')).toMatchObject({ key: 'transfer', value: credential });
+    vi.stubEnv('TRANSFER_EXA_API_KEY', 'FAKE_TARGET_ENV_ONLY');
+    const environment = await to.global.settingsTransfer.preview({ bundle, categories: ['tools'], mode: 'append', includeCredentials: true });
+    const environmentResult = await to.global.settingsTransfer.apply({ previewId: environment.previewId });
+    expect(environmentResult.status, JSON.stringify(environmentResult)).toBe('complete');
+    expect(await targetSearch.readManagedCredential('transfer', true)).toMatchObject({ stored: false, source: 'environment', value: 'FAKE_TARGET_ENV_ONLY' });
+    vi.stubEnv('TRANSFER_EXA_API_KEY', undefined);
+    const first = await to.global.settingsTransfer.preview({ bundle, categories: ['tools'], mode: 'append', includeCredentials: true });
+    expect((await to.global.settingsTransfer.apply({ previewId: first.previewId })).status).toBe('complete');
+    expect(await targetSearch.readManagedCredential('transfer', true)).toMatchObject({ stored: true, active: true, source: 'managed', value: credential });
+    await save(targetSearch, 'FAKE_TARGET_ONLY');
+    for (const mode of ['append', 'overwrite'] as const) {
+      const preview = await to.global.settingsTransfer.preview({ bundle, categories: ['tools'], mode, includeCredentials: mode === 'append' });
+      expect((await to.global.settingsTransfer.apply({ previewId: preview.previewId })).status).toBe('complete');
+      expect((await targetSearch.readManagedCredential('transfer', true)).value).toBe('FAKE_TARGET_ONLY');
+    }
+    const cancelled = await to.global.settingsTransfer.preview({ bundle, categories: ['tools'], mode: 'overwrite', includeCredentials: true });
+    await to.global.settingsTransfer.cancel({ previewId: cancelled.previewId });
+    expect(await to.global.settingsTransfer.apply({ previewId: cancelled.previewId })).toMatchObject({ failure: 'expired', items: [] });
+    expect((await targetSearch.readManagedCredential('transfer', true)).value).toBe('FAKE_TARGET_ONLY');
+    const stale = await to.global.settingsTransfer.preview({ bundle, categories: ['tools'], mode: 'overwrite', includeCredentials: true });
+    await save(targetSearch, 'FAKE_NEW_TARGET_ONLY');
+    expect(await to.global.settingsTransfer.apply({ previewId: stale.previewId })).toMatchObject({ status: 'failed', failure: 'changed', items: [] });
+    const rebound = structuredClone(bundle);
+    const resource = rebound.resources.find((entry) => entry.kind === 'nbSearchCredential');
+    if (resource?.kind !== 'nbSearchCredential') throw new Error('missing credential fixture');
+    resource.binding.consumers[0]!.baseUrl = 'https://different.example.test';
+    await expect(to.global.settingsTransfer.preview({ bundle: rebound, categories: ['tools'], mode: 'overwrite', includeCredentials: true })).rejects.toThrow('searchCredentialBinding');
+    const overwrite = await to.global.settingsTransfer.preview({ bundle, categories: ['tools'], mode: 'overwrite', includeCredentials: true });
+    expect((await to.global.settingsTransfer.apply({ previewId: overwrite.previewId })).status).toBe('complete');
+    expect((await targetSearch.readManagedCredential('transfer', true)).value).toBe(credential);
+    const configStale = await to.global.settingsTransfer.preview({ bundle, categories: ['tools'], mode: 'overwrite', includeCredentials: true });
+    await targetConfig.replace('nbSearch', { ...patch, provider_instances: { transfer: { ...patch.provider_instances.transfer, base_url: 'https://rebound.example.test' } } });
+    expect(await to.global.settingsTransfer.apply({ previewId: configStale.previewId })).toMatchObject({ status: 'failed', failure: 'changed', items: [] });
+    await save(targetSearch, credential);
+    const rebind = await to.global.settingsTransfer.preview({ bundle, categories: ['tools'], mode: 'overwrite', includeCredentials: true });
+    expect((await to.global.settingsTransfer.apply({ previewId: rebind.previewId })).status).toBe('complete');
+    expect(await targetSearch.readManagedCredential('transfer', true)).toMatchObject({ active: true, value: credential });
+    await save(targetSearch, 'FAKE_PRE_CAS_TARGET');
+    const race = await to.global.settingsTransfer.preview({ bundle, categories: ['tools'], mode: 'overwrite', includeCredentials: true });
+    const originalWrite = targetSearch.writeManagedCredential.bind(targetSearch);
+    const spy = vi.spyOn(targetSearch, 'writeManagedCredential').mockImplementation(async (...args) => {
+      const current = await targetSearch.readManagedCredential('transfer', false);
+      await originalWrite('transfer', 'FAKE_CONCURRENT_TARGET', current.version, current.binding_version);
+      return originalWrite(...args);
+    });
+    try {
+      const result = await to.global.settingsTransfer.apply({ previewId: race.previewId });
+      expect(result.status).not.toBe('complete');
+      expect(result.failure).toBe('writeFailed');
+      expect((await targetSearch.readManagedCredential('transfer', true)).value).toBe('FAKE_CONCURRENT_TARGET');
+    } finally { spy.mockRestore(); }
+    expect(await readFile(join(root, 'target', 'config.toml'), 'utf8')).not.toContain(credential);
   });
 
   it('keeps secret-export and settings writes local-owner-only', () => {

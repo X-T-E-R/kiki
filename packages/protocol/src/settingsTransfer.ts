@@ -36,9 +36,21 @@ export const settingsTransferPreferencesSchema = z.object({
 export type SettingsTransferPreferences = z.infer<typeof settingsTransferPreferencesSchema>;
 
 const dataSchema = z.record(z.string().min(1).max(256), z.json());
+export const settingsTransferNbSearchCredentialSchema = z.object({
+  kind: z.literal('nbSearchCredential'),
+  key: z.string().min(1).max(256),
+  binding: z.object({
+    providerId: z.string().min(1).max(256),
+    env: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+    consumers: z.array(z.object({ id: z.string().min(1).max(256), baseUrl: z.string().nullable() }).strict()).min(1).max(1024),
+  }).strict(),
+  value: z.string().min(1).max(8192),
+}).strict();
+export type SettingsTransferNbSearchCredential = z.infer<typeof settingsTransferNbSearchCredentialSchema>;
 export const settingsTransferResourceSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('profile'), key: z.string().min(1).max(512), text: z.string().max(1_048_576), category: z.enum(['agents', 'models']).optional() }).strict(),
   z.object({ kind: z.literal('mcp'), key: z.string().min(1).max(256), value: dataSchema }).strict(),
+  settingsTransferNbSearchCredentialSchema,
 ]);
 export type SettingsTransferResource = z.infer<typeof settingsTransferResourceSchema>;
 

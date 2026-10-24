@@ -1,5 +1,6 @@
 export * from './app/settingsTransfer/settingsTransfer';
 import './app/settingsTransfer/settingsTransferService';
+import './app/nbSearch/transferCredentials';
 import './os/backends/node-fs/settingsProfileResources';
 export * from './app/outputLayer/index';
 export * from './app/recipes/recipes';

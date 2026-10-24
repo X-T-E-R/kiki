@@ -87,7 +87,7 @@ export function portableValue(value: unknown, credentials: boolean): unknown {
     const out: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(entry)) {
       if (key === 'oauth' || key === 'source') continue;
-      if (!credentials && (['env', 'headers', 'customHeaders', 'credential_values'].includes(key) || unsafeUrl(child))) continue;
+      if (!credentials && ((key === 'env' && isPlainObject(child)) || ['headers', 'customHeaders', 'credential_values'].includes(key) || unsafeUrl(child))) continue;
       out[key] = walk(child);
     }
     return out;

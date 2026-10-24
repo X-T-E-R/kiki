@@ -23,6 +23,9 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { ConfigTarget, IConfigRegistry, IConfigService } from '#/app/config/config';
 import { deepEqual, isPlainObject } from '#/app/config/configPure';
 import { IMcpConfigStore, type GlobalMcpServerConfig } from '#/app/mcpConfig/configStore';
+import { IMcpRegistryService, type McpRegistryEntry } from '#/app/mcpRegistry/mcpRegistry';
+import type { NbSearchConfig } from '#/app/nbSearch/configSection';
+import { INbSearchTransferCredentials, type NbSearchTransferCredentialState } from '#/app/nbSearch/transferCredentials';
 import { LifecycleScope } from '#/app/scopes';
 import { Error2, ErrorCodes } from '#/errors';
 import { McpServerConfigSchema } from '#/mcpCore/config-schema';
@@ -30,11 +33,19 @@ import { ISettingsProfileResources } from './profileResources';
 import { ISettingsTransferService } from './settingsTransfer';
 import { assertSafeKeys, atPath, categoryForDomain, categoryForUnit, classifyUnit, configUnits, mergeSelected, portableValue, projectConfig, setPath, unsafeUrl } from './transferData';
 
+type FileResource = Exclude<SettingsTransferResource, { kind: 'nbSearchCredential' }>;
 interface ResourcePlan {
-  readonly resource: SettingsTransferResource;
+  readonly resource: FileResource;
   readonly category: SettingsTransferCategory;
   readonly before: unknown;
   readonly next: unknown;
+}
+interface CredentialPlan {
+  readonly resource: Extract<SettingsTransferResource, { kind: 'nbSearchCredential' }>;
+  readonly before: NbSearchTransferCredentialState;
+  readonly config: NbSearchConfig | undefined;
+  readonly reuseLocalConfig: boolean;
+  readonly write: boolean;
 }
 interface Plan {
   readonly expires: number;
@@ -43,6 +54,8 @@ interface Plan {
   readonly sections: Record<string, unknown>;
   readonly resources: readonly ResourcePlan[];
   readonly guards: readonly ResourcePlan[];
+  readonly mcpBefore: ReadonlyMap<string, McpRegistryEntry | undefined>;
+  readonly credentials: readonly CredentialPlan[];
 }
 const NOTICES: SettingsTransferNotice[] = ['localScope', 'externalLogins', 'localPaths', 'pluginCode', 'profileScope'];
 const extraScalars = new Set(['defaultModel', 'defaultProvider']);
@@ -59,6 +72,8 @@ export class SettingsTransferService extends Disposable implements ISettingsTran
     @IMcpConfigStore private readonly mcp: IMcpConfigStore,
     @ISettingsProfileResources private readonly profiles: ISettingsProfileResources,
     @ConfigWriteValidatorContribution private readonly validators: CollectionView<ConfigWriteValidator>,
+    @IMcpRegistryService private readonly mcpRegistry: IMcpRegistryService,
+    @INbSearchTransferCredentials private readonly searchCredentials: INbSearchTransferCredentials,
   ) { super(); this._register({ dispose: () => { this.previews.clear(); } }); }
 
   private scope() { return { home: this.bootstrap.homeDir, spaceId: this.bootstrap.spaceId }; }
@@ -76,6 +91,7 @@ export class SettingsTransferService extends Disposable implements ISettingsTran
   async export(rawInput: SettingsTransferExportInput): Promise<SettingsTransferPackage> {
     const input = safeParse(settingsTransferExportInputSchema, rawInput);
     await this.config.ready;
+    await this.config.reload();
     const notices = new Set<SettingsTransferNotice>(NOTICES);
     if (!input.includeCredentials) notices.add('omittedCredentials');
     const config: Record<string, unknown> = {};
@@ -113,6 +129,10 @@ export class SettingsTransferService extends Disposable implements ISettingsTran
         const value = portableValue(entry, input.includeCredentials);
         if (isPlainObject(value)) resources.push({ kind: 'mcp', key: name, value: value as Extract<SettingsTransferResource, {kind: 'mcp'}>['value'] });
       }
+      if (input.includeCredentials) {
+        try { resources.push(...await this.searchCredentials.export(this.config.get<NbSearchConfig | undefined>('nbSearch'), this.reuseLocalSearch())); }
+        catch { throw invalid('searchCredentials'); }
+      }
     }
     const bundle = safeParse(settingsTransferPackageSchema, {
       format: 'kiki.settings', version: 1, createdAt: new Date().toISOString(), categories: [...new Set(input.categories)],
@@ -130,6 +150,7 @@ export class SettingsTransferService extends Disposable implements ISettingsTran
     if (input.categories.some((category) => !input.bundle.categories.includes(category))) throw invalid();
     if (input.includeCredentials && !input.bundle.includesCredentials) throw invalid();
     await this.config.ready;
+    await this.config.reload();
     if (this.bootstrap.configReadOnly || this.config.diagnostics().some((entry) => entry.severity === 'error')) throw invalid('targetConfiguration');
     const summaries = SETTINGS_TRANSFER_CATEGORIES.filter((category) => input.bundle.categories.includes(category)).map(summary);
     const before: Record<string, unknown> = {};
@@ -177,9 +198,12 @@ export class SettingsTransferService extends Disposable implements ISettingsTran
     const keys = new Set<string>();
     const profileKeys = new Map<string, Extract<SettingsTransferResource, { kind: 'profile' }>>();
     const currentMcp = await this.mcp.list();
+    const effectiveMcp = await this.globalMcp();
+    const mcpBefore = new Map<string, McpRegistryEntry | undefined>();
+    const credentials: CredentialPlan[] = [];
     for (const resource of input.bundle.resources) {
       const category = resourceCategory(resource);
-      const key = this.resourceKey(resource.key);
+      const key = resource.kind === 'profile' ? this.resourceKey(resource.key) : resource.key;
       const identity = `${resource.kind}:${category}:${key}`;
       if (keys.has(identity)) throw invalid('duplicateResource');
       keys.add(identity);
@@ -189,6 +213,31 @@ export class SettingsTransferService extends Disposable implements ISettingsTran
         profileKeys.set(key, resource);
       }
       if (!input.bundle.categories.includes(category)) throw invalid();
+      const stats = summaries.find((entry) => entry.id === category)!;
+      stats.items += 1;
+      if (resource.kind === 'nbSearchCredential') {
+        if (!input.categories.includes(category) || !input.includeCredentials) {
+          stats.skipped += 1;
+          if (!input.includeCredentials) notices.add('omittedCredentials');
+          continue;
+        }
+        for (const domain of ['nbSearch', 'nbSearchSource']) {
+          if (!Object.hasOwn(before, domain)) before[domain] = structuredClone(this.config.inspect(domain).userValue);
+          effectiveBefore[domain] = structuredClone(this.config.get(domain));
+        }
+        const config = mergeSelected(this.config.get('nbSearch'), sections['nbSearch'] ?? {}, 'overwrite') as NbSearchConfig | undefined;
+        const reuseLocalConfig = this.reuseLocalSearch(sections['nbSearchSource']);
+        let state: NbSearchTransferCredentialState;
+        try { state = await this.searchCredentials.inspect(config, reuseLocalConfig, resource.key); }
+        catch { throw invalid('searchCredentialBinding'); }
+        const classification = !state.occupied ? 'added' : state.active && state.value === resource.value ? 'unchanged' : 'conflicts';
+        stats[classification] += 1;
+        const write = classification !== 'unchanged' && (input.mode === 'overwrite' || !state.occupied);
+        if (write && !deepEqual(state.binding, resource.binding)) throw invalid('searchCredentialBinding');
+        if (!write) stats.skipped += 1;
+        credentials.push({ resource, before: state, config, reuseLocalConfig, write });
+        continue;
+      }
       let incoming: unknown;
       let current: unknown;
       if (resource.kind === 'profile') {
@@ -200,8 +249,7 @@ export class SettingsTransferService extends Disposable implements ISettingsTran
         incoming = resource.text;
       } else {
         if (!input.includeCredentials && mcpInlineCredentials(resource.value)) {
-          const stats = summaries.find((entry) => entry.id === category)!;
-          stats.items += 1; stats.skipped += 1;
+          stats.skipped += 1;
           notices.add('omittedCredentials');
           continue;
         }
@@ -210,13 +258,14 @@ export class SettingsTransferService extends Disposable implements ISettingsTran
         current = currentMcp.find((entry) => entry.name === resource.key);
         if (current !== undefined) { const { name: _name, ...entry } = current as GlobalMcpServerConfig; current = entry; }
       }
-      const stats = summaries.find((entry) => entry.id === category)!;
-      stats.items += 1;
       if (!input.categories.includes(category)) { stats.skipped += 1; continue; }
-      const classification = classifyUnit(current, incoming);
+      const effective = resource.kind === 'mcp' ? effectiveMcp.get(resource.key) : undefined;
+      if (resource.kind === 'mcp') mcpBefore.set(resource.key, effective);
+      const existing = resource.kind === 'mcp' && input.mode === 'append' ? effective?.config : current;
+      const classification = classifyUnit(existing, incoming);
       stats[classification] += 1;
       guards.push({ resource, category, before: current, next: incoming });
-      if (classification === 'unchanged' || (input.mode === 'append' && current !== undefined)) { stats.skipped += 1; continue; }
+      if (classification === 'unchanged' || (input.mode === 'append' && existing !== undefined)) { stats.skipped += 1; continue; }
       const next = resource.kind === 'mcp' ? mergeSelected(current, incoming, 'overwrite') : incoming;
       if (!resources.some((entry) => entry.resource.kind === resource.kind && this.resourceKey(entry.resource.key) === key)) resources.push({ resource, category, before: current, next });
     }
@@ -239,7 +288,7 @@ export class SettingsTransferService extends Disposable implements ISettingsTran
     for (const [key, plan] of this.previews) if (plan.expires < Date.now()) this.previews.delete(key);
     while (this.previews.size >= 4) this.previews.delete(this.previews.keys().next().value!);
     const previewId = randomUUID();
-    this.previews.set(previewId, { expires: Date.now() + 10 * 60_000, before, effectiveBefore, sections, resources, guards });
+    this.previews.set(previewId, { expires: Date.now() + 10 * 60_000, before, effectiveBefore, sections, resources, guards, mcpBefore, credentials });
     return { scope: this.scope(), categories: summaries, notices: [...notices], previewId, includesCredentials: input.bundle.includesCredentials, credentialsSelected: input.includeCredentials, mode: input.mode };
   }
 
@@ -266,6 +315,12 @@ export class SettingsTransferService extends Disposable implements ISettingsTran
       }
       for (const entry of plan.guards) {
         if (!deepEqual(await this.readResource(entry.resource), entry.before)) return { ...result, failure: 'changed' };
+      }
+      const effectiveMcp = await this.globalMcp();
+      for (const [key, entry] of plan.mcpBefore) if (!deepEqual(effectiveMcp.get(key), entry)) return { ...result, failure: 'changed' };
+      for (const entry of plan.credentials) {
+        const current = await this.searchCredentials.inspect(entry.config, entry.reuseLocalConfig, entry.resource.key);
+        if (current.version !== entry.before.version || current.bindingVersion !== entry.before.bindingVersion || current.occupied !== entry.before.occupied) return { ...result, failure: 'changed' };
       }
     } catch { return { ...result, failure: 'readbackFailed' }; }
     let failure: SettingsTransferApplyResult['failure'];
@@ -304,11 +359,36 @@ export class SettingsTransferService extends Disposable implements ISettingsTran
         }
       }
     }
+    if (failure === undefined) for (const entry of plan.credentials) {
+      if (!entry.write) continue;
+      try {
+        await this.searchCredentials.write(entry.resource, entry.before.version, entry.before.bindingVersion);
+        result.items.push({ category: 'tools', key: entry.resource.key, status: 'applied' });
+      } catch {
+        let status: 'applied' | 'failed' | 'unverified' = 'unverified';
+        try {
+          const actual = await this.searchCredentials.inspect(this.config.get<NbSearchConfig | undefined>('nbSearch'), this.reuseLocalSearch(), entry.resource.key);
+          status = actual.active && actual.value === entry.resource.value ? 'applied' : actual.version === entry.before.version ? 'failed' : 'unverified';
+        } catch {}
+        result.items.push({ category: 'tools', key: entry.resource.key, status });
+        failure = 'writeFailed';
+        break;
+      }
+    }
     const applied = result.items.some((item) => item.status === 'applied' || item.status === 'unverified');
     return { ...result, status: failure === undefined ? 'complete' : applied ? 'partial' : 'failed', failure };
   }
 
-  private async readResource(resource: SettingsTransferResource): Promise<unknown> {
+  private async globalMcp(): Promise<Map<string, McpRegistryEntry>> {
+    return new Map((await this.mcpRegistry.list()).filter((entry) => entry.source === 'global').map((entry) => [entry.name, entry]));
+  }
+
+  private reuseLocalSearch(patch?: unknown): boolean {
+    const source = mergeSelected(this.config.get('nbSearchSource'), patch ?? {}, 'overwrite');
+    return isPlainObject(source) && typeof source['reuse_local_config'] === 'boolean' ? source['reuse_local_config'] : true;
+  }
+
+  private async readResource(resource: FileResource): Promise<unknown> {
     if (resource.kind === 'profile') return this.profiles.read(resource.key);
     const server = (await this.mcp.list()).find((entry) => entry.name === resource.key);
     if (server === undefined) return undefined;
@@ -360,7 +440,9 @@ function recordConfigResult(result: SettingsTransferApplyResult, domain: string,
 function mcpInlineCredentials(value: unknown): boolean {
   if (!isPlainObject(value)) return false;
   if (unsafeUrl(value['url'])) return true;
-  return Array.isArray(value['args']) && value['args'].some((arg) => typeof arg === 'string' && (unsafeUrl(arg) || /(?:api[-_]?key|access[-_]?key|token|secret|password|authorization)(?:=|$)/i.test(arg)));
+  return Array.isArray(value['args']) && value['args'].some((arg) => typeof arg === 'string' && (unsafeUrl(arg)
+    || /^-H|^--(?:headers?|auth)(?:[=\s]|$)/u.test(arg)
+    || /(?:api[-_]?key|access[-_]?key|token|secret|password|authorization|bearer)(?:[\s:=]|$)/iu.test(arg)));
 }
 function promptReferences(value: unknown): readonly string[] {
   const refs = new Set<string>();
