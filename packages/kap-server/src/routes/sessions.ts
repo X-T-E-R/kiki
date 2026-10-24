@@ -5,7 +5,6 @@ import { IPersonaStore } from '@kiki/agent-core-v2/app/persona/personaStore';
 import type { AgentMeta, SessionMeta } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
 import type { NegotiatedExecutorCapabilities } from '@kiki/agent-core-v2/app/agentExecutor/capabilities';
 import { PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET, readPersistedAgentProfileSnapshot } from '@kiki/agent-core-v2/session/agentProfileSnapshot';
-import { IAtomicDocumentStore } from '@kiki/agent-core-v2';
 import { ISessionDeliveryService } from '@kiki/agent-core-v2/session/delivery/delivery';
 import { rmdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -25,6 +24,7 @@ import {
   IAgentLoopService,
   IAgentLifecycleService,
   IAgentUsageService,
+  IAtomicDocumentStore,
   IAuthSummaryService,
   ILogService,
   ISessionActivityView,
@@ -125,6 +125,13 @@ import { updateSessionProfile } from './sessionProfile';
 import { registerPersonaSettingsRoutes } from './personaSettings';
 import { boundedListPreview } from '../transport/klient/boundedContent';
 import { jsonBytes } from '@kiki/transcript';
+import {
+  SessionCreateReceiptError,
+  SessionCreateReceiptStore,
+  sessionCreateConnectionScope,
+} from '../services/sessionCreateReceipt';
+import { peerAudience } from '../services/connections/audience';
+import { webPrincipal } from '../services/webAccess';
 
 interface SessionRouteHost {
   post(
@@ -289,6 +296,7 @@ export function registerSessionsRoutes(
   registerPersonaSettingsRoutes(app, core);
   const overlayResourcesBySession = new Map<string, Set<string>>();
   const pendingOverlayCleanups = new Set<Promise<void>>();
+  const createReceipts = new SessionCreateReceiptStore(core);
   const log = core.accessor.get(ILogService);
   const trackOverlayCleanup = (result: void | Promise<void>): void => {
     if (!(result instanceof Promise)) return;
@@ -342,209 +350,263 @@ export function registerSessionsRoutes(
         [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
         [ErrorCode.WORKSPACE_NOT_FOUND]: {},
         [ErrorCode.FS_PATH_NOT_FOUND]: {},
+        [ErrorCode.SESSION_CREATE_IDEMPOTENCY_CONFLICT]: {},
+        [ErrorCode.SESSION_CREATE_OUTCOME_UNKNOWN]: {},
       },
       description: 'Create a new session',
       tags: ['sessions'],
     },
     async (req, reply) => {
       const body = req.body;
-      const callerCwd = typeof body.metadata?.cwd === 'string' ? body.metadata.cwd : undefined;
-      const workspaceId = body.workspace_id;
-      const registry = core.accessor.get(IWorkspaceService);
-      let workDir = callerCwd;
-      if (workspaceId !== undefined) {
-        const workspace = await registry.get(workspaceId);
-        if (workspace === undefined) {
-          reply.send(
-            errEnvelope(
-              ErrorCode.WORKSPACE_NOT_FOUND,
-              `workspace ${workspaceId} does not exist`,
-              req.id,
-            ),
-          );
-          return;
-        }
-        if (callerCwd !== undefined && canonicalWorkspaceRoot(callerCwd) !== canonicalWorkspaceRoot(workspace.root)) {
-          reply.send(
-            buildValidationEnvelope(
-              [
-                {
-                  path: 'metadata.cwd',
-                  message: `metadata.cwd (${callerCwd}) must equal workspace root (${workspace.root})`,
-                },
-              ],
-              req.id,
-            ),
-          );
-          return;
-        }
-        workDir = workspace.root;
-      }
-
-      let autoRoot: string | undefined;
-      let registeredAutoWorkspace: Workspace | undefined;
-      let sessionCreated = false;
-      let worktreeId: string | undefined;
-      let createdSessionId: string | undefined;
-      let externalConnectionId: string | undefined;
-      try {
-        const externalMark = body.metadata?.['externalClient'];
-        if (externalMark !== undefined) {
-          if (externalClients === undefined || externalMark === null || typeof externalMark !== 'object'
-            || !('driver' in externalMark) || externalMark.driver !== 'external'
-            || !('connectionId' in externalMark) || typeof externalMark.connectionId !== 'string') {
-            throw new Error2(ErrorCodes.REQUEST_INVALID, 'Select an available external client connection.');
-          }
-          externalConnectionId = externalMark.connectionId;
-        }
-        const persona = body.persona === undefined ? undefined : await core.accessor.get(IPersonaStore).get(body.persona);
-        if (body.persona !== undefined && (await core.accessor.get(IPersonaStore).getState(body.persona)).archived) {
-          throw new Error2(ErrorCodes.REQUEST_INVALID, 'Restore the archived persona before starting a conversation.');
-        }
-        if (workDir === undefined && persona !== undefined) {
-          const configured = persona.definition.homeWorkspace;
-          workDir = configured === undefined
-            ? join(core.accessor.get(IBootstrapService).homeDir, 'bots', persona.definition.id)
-            : (await registry.get(configured))?.root ?? configured;
-          if (persona.definition.homeWorkspace === undefined) await core.accessor.get(IHostFileSystem).mkdir(workDir, { recursive: true });
-        }
-        let autoWorkspaceName: string | undefined;
-        if (workDir === undefined) {
-          const date = new Date().toISOString().slice(0, 10);
-          const id = randomUUID();
-          const root = join(core.accessor.get(IBootstrapService).homeDir, 'workspaces');
-          const hostFs = core.accessor.get(IHostFileSystem);
-          await hostFs.mkdir(root, { recursive: true });
-          workDir = join(root, `${date}-${id}`);
-          autoWorkspaceName = `Untitled workspace ${date} ${id.slice(0, 8)}`;
-          await hostFs.mkdir(workDir);
-          autoRoot = workDir;
-        }
-        const touched = await registry.createOrTouch(workDir, autoWorkspaceName);
-        if (autoRoot === undefined) await onWorkspaceServed?.(touched.root);
-        else registeredAutoWorkspace = touched;
-        let worktree: Awaited<ReturnType<IWorktreeService['create']>> | undefined;
-        if (body.isolation !== undefined) {
-          const lease = await core.accessor.get(IWorkspaceInstanceManager).acquire({ workspaceId: touched.id });
-          try {
-            createdSessionId = `session_${randomUUID()}`;
-            worktree = await core.accessor.get(IWorktreeService).create({
-              sessionId: createdSessionId, workspaceId: touched.id, sourceRoot: touched.root,
-              title: body.title, isolation: body.isolation,
-            });
-            worktreeId = worktree.id;
-            workDir = worktree.path;
-          } finally { lease.dispose(); }
-        }
-        if (externalConnectionId !== undefined) {
-          createdSessionId ??= `session_${randomUUID()}`;
-          await externalClients!.prepareOwnerSession(externalConnectionId, createdSessionId, workDir,
-            body.agent_config?.permission_mode ?? 'manual',
-            body.agent_config?.profile ?? body.agent_config?.execution?.profile,
-            body.agent_config?.execution?.profile_file).catch((error: unknown) => {
-              throw new Error2(ErrorCodes.REQUEST_INVALID, toErrorMessage(error));
-            });
-        }
-        const handle = await core.accessor.get(ISessionManager).create({
-          workspaceId: touched.id,
-          workDir,
-          sessionId: createdSessionId,
-          ephemeral: body.ephemeral,
-          delivery: body.delivery ?? persona?.definition.delivery,
-          worktree: worktree === undefined ? undefined : {
-            worktreeId: worktree.id, branch: worktree.branch,
-            sourceRoot: worktree.repo.sourceRoot, baseRef: worktree.base.ref,
-          },
-          mainAgentBinding: externalConnectionId !== undefined
-            ? { driver: 'external', persona: body.persona, profile: body.agent_config?.profile,
-                execution: body.agent_config?.execution }
-            : body.persona === undefined
-              && body.agent_config?.execution === undefined
-              && body.agent_config?.model === undefined
-              && body.agent_config?.profile === undefined
-              && body.agent_config?.thinking === undefined
-              ? undefined
-              : {
-                  execution: body.agent_config?.execution === undefined ? undefined : { ...body.agent_config.execution, overrides: {
-                    ...body.agent_config.execution.overrides,
-                    permission_mode: body.agent_config.permission_mode ?? body.agent_config.execution.overrides?.permission_mode,
-                  } },
-                  persona: body.persona,
-                  profile: body.agent_config?.profile
-                    ?? (body.persona === undefined ? DEFAULT_AGENT_PROFILE_NAME : undefined),
-                  model: body.agent_config?.model,
-                  thinking: body.agent_config?.thinking,
-                  strictThinking: body.agent_config?.thinking !== undefined,
-                },
-        });
-        sessionCreated = true;
-        if (autoRoot !== undefined) {
-          try {
-            await onWorkspaceServed?.(touched.root);
-          } catch (error) {
-            await core.accessor.get(ISessionManager).delete(handle.id);
-            sessionCreated = false;
-            throw error;
-          }
-        }
-        if (typeof body.title === 'string') {
-          await handle.accessor.get(ISessionMetadata).setTitle(body.title);
-        }
-        if (
-          body.agent_config?.permission_mode !== undefined
-          || body.agent_config?.plan_mode !== undefined
-        ) {
-          await applyAgentRuntimeControls(await ensureMainAgent(handle), body.agent_config);
-        }
-        if (body.metadata !== undefined) {
-          const metadata = handle.accessor.get(ISessionMetadata);
-          const current = externalConnectionId === undefined ? undefined : await metadata.read();
-          const custom = externalConnectionId === undefined ? body.metadata : {
-            ...current?.custom, ...body.metadata, externalClient: current?.custom?.['externalClient'],
-          };
-          await metadata.update({ custom });
-        }
-        if (body.persona !== undefined && body.persona_home === true && body.ephemeral !== true) {
-          await core.accessor.get(IBotService).claimHomeSession(body.persona, handle.id).catch((error) => {
-            requestLog(req)?.warn({ session_id: handle.id, error: toErrorMessage(error) }, 'daily chat claim skipped; conversation retained');
-          });
-        }
-        const meta = await handle.accessor.get(ISessionMetadata).read();
-        const session = toWireSession(
-          { ...meta, workspaceId: touched.id },
-          workDir,
-          resolveSessionFacts(core, meta.id),
-          undefined,
-          body.ephemeral === true,
-        );
-        core.accessor.get(IEventService).publish(
-          new SessionCreated({ payload: { agentId: 'main', sessionId: session.id, session } }),
-        );
-        reply.send(okEnvelope(session, req.id));
-      } catch (error) {
-        if (!sessionCreated && externalConnectionId !== undefined && createdSessionId !== undefined) {
-          externalClients?.cancelPreparedSession(createdSessionId);
-        }
-        if (worktreeId !== undefined) {
-          if (sessionCreated && createdSessionId !== undefined) {
-            await core.accessor.get(ISessionManager).delete(createdSessionId).catch(() => {
-              requestLog(req)?.warn({ session_id: createdSessionId, event_type: 'worktree_rollback_failed' }, 'worktree session rollback failed');
-            });
-          }
-          const result = await core.accessor.get(IWorktreeService).remove(worktreeId).catch(() => undefined);
-          if (result?.outcome !== 'removed') requestLog(req)?.warn({ worktree_id: worktreeId, outcome: result?.outcome }, 'worktree rollback retained its checkout');
-        }
-        if (autoRoot !== undefined && !sessionCreated) {
-          try {
-            await removeUnusedAutoWorkspace(core, autoRoot, registeredAutoWorkspace);
-          } catch {
-            requestLog(req)?.warn(
-              { event_type: 'automatic_workspace_cleanup_failed' },
-              'automatic workspace cleanup failed',
+      const createSession = async (forcedSessionId?: string): Promise<Session> => {
+        if (forcedSessionId !== undefined) {
+          const manager = core.accessor.get(ISessionManager);
+          if (manager.get(forcedSessionId) !== undefined || await core.accessor.get(ISessionIndex).get(forcedSessionId) !== undefined) {
+            throw new SessionCreateReceiptError(
+              ErrorCode.SESSION_CREATE_IDEMPOTENCY_CONFLICT,
+              `The reserved session id ${forcedSessionId} already exists.`,
+              { creation_id: body.creation_id, reason: 'session_id_exists' },
             );
           }
         }
-        sendMappedError(reply, req, error);
+        const callerCwd = typeof body.metadata?.cwd === 'string' ? body.metadata.cwd : undefined;
+        const workspaceId = body.workspace_id;
+        const registry = core.accessor.get(IWorkspaceService);
+        let workDir = callerCwd;
+        if (workspaceId !== undefined) {
+          const workspace = await registry.get(workspaceId);
+          if (workspace === undefined) {
+            throw new SessionCreateReceiptError(
+              ErrorCode.WORKSPACE_NOT_FOUND,
+              `workspace ${workspaceId} does not exist`,
+            );
+          }
+          if (callerCwd !== undefined && canonicalWorkspaceRoot(callerCwd) !== canonicalWorkspaceRoot(workspace.root)) {
+            throw new SessionCreateReceiptError(
+              ErrorCode.VALIDATION_FAILED,
+              `metadata.cwd: metadata.cwd (${callerCwd}) must equal workspace root (${workspace.root})`,
+              [{ path: 'metadata.cwd', message: `metadata.cwd (${callerCwd}) must equal workspace root (${workspace.root})` }],
+            );
+          }
+          workDir = workspace.root;
+        }
+
+        let autoRoot: string | undefined;
+        let registeredAutoWorkspace: Workspace | undefined;
+        let sessionCreated = false;
+        let worktreeId: string | undefined;
+        let createdSessionId: string | undefined = forcedSessionId;
+        let externalConnectionId: string | undefined;
+        try {
+          const externalMark = body.metadata?.['externalClient'];
+          if (externalMark !== undefined) {
+            if (externalClients === undefined || externalMark === null || typeof externalMark !== 'object'
+              || !('driver' in externalMark) || externalMark.driver !== 'external'
+              || !('connectionId' in externalMark) || typeof externalMark.connectionId !== 'string') {
+              throw new Error2(ErrorCodes.REQUEST_INVALID, 'Select an available external client connection.');
+            }
+            externalConnectionId = externalMark.connectionId;
+          }
+          const persona = body.persona === undefined ? undefined : await core.accessor.get(IPersonaStore).get(body.persona);
+          if (body.persona !== undefined && (await core.accessor.get(IPersonaStore).getState(body.persona)).archived) {
+            throw new Error2(ErrorCodes.REQUEST_INVALID, 'Restore the archived persona before starting a conversation.');
+          }
+          if (workDir === undefined && persona !== undefined) {
+            const configured = persona.definition.homeWorkspace;
+            workDir = configured === undefined
+              ? join(core.accessor.get(IBootstrapService).homeDir, 'bots', persona.definition.id)
+              : (await registry.get(configured))?.root ?? configured;
+            if (persona.definition.homeWorkspace === undefined) await core.accessor.get(IHostFileSystem).mkdir(workDir, { recursive: true });
+          }
+          let autoWorkspaceName: string | undefined;
+          if (workDir === undefined) {
+            const date = new Date().toISOString().slice(0, 10);
+            const id = randomUUID();
+            const root = join(core.accessor.get(IBootstrapService).homeDir, 'workspaces');
+            const hostFs = core.accessor.get(IHostFileSystem);
+            await hostFs.mkdir(root, { recursive: true });
+            workDir = join(root, `${date}-${id}`);
+            autoWorkspaceName = `Untitled workspace ${date} ${id.slice(0, 8)}`;
+            await hostFs.mkdir(workDir);
+            autoRoot = workDir;
+          }
+          const touched = await registry.createOrTouch(workDir, autoWorkspaceName);
+          if (autoRoot === undefined) await onWorkspaceServed?.(touched.root);
+          else registeredAutoWorkspace = touched;
+          let worktree: Awaited<ReturnType<IWorktreeService['create']>> | undefined;
+          if (body.isolation !== undefined) {
+            const lease = await core.accessor.get(IWorkspaceInstanceManager).acquire({ workspaceId: touched.id });
+            try {
+              createdSessionId ??= `session_${randomUUID()}`;
+              worktree = await core.accessor.get(IWorktreeService).create({
+                sessionId: createdSessionId, workspaceId: touched.id, sourceRoot: touched.root,
+                title: body.title, isolation: body.isolation,
+              });
+              worktreeId = worktree.id;
+              workDir = worktree.path;
+            } finally { lease.dispose(); }
+          }
+          if (externalConnectionId !== undefined) {
+            createdSessionId ??= `session_${randomUUID()}`;
+            await externalClients!.prepareOwnerSession(externalConnectionId, createdSessionId, workDir,
+              body.agent_config?.permission_mode ?? 'manual',
+              body.agent_config?.profile ?? body.agent_config?.execution?.profile,
+              body.agent_config?.execution?.profile_file).catch((error: unknown) => {
+                throw new Error2(ErrorCodes.REQUEST_INVALID, toErrorMessage(error));
+              });
+          }
+          const handle = await core.accessor.get(ISessionManager).create({
+            workspaceId: touched.id,
+            workDir,
+            sessionId: createdSessionId,
+            ephemeral: body.ephemeral,
+            delivery: body.delivery ?? persona?.definition.delivery,
+            worktree: worktree === undefined ? undefined : {
+              worktreeId: worktree.id, branch: worktree.branch,
+              sourceRoot: worktree.repo.sourceRoot, baseRef: worktree.base.ref,
+            },
+            mainAgentBinding: externalConnectionId !== undefined
+              ? { driver: 'external', persona: body.persona, profile: body.agent_config?.profile,
+                  execution: body.agent_config?.execution }
+              : body.persona === undefined
+                && body.agent_config?.execution === undefined
+                && body.agent_config?.model === undefined
+                && body.agent_config?.profile === undefined
+                && body.agent_config?.thinking === undefined
+                ? undefined
+                : {
+                    execution: body.agent_config?.execution === undefined ? undefined : { ...body.agent_config.execution, overrides: {
+                      ...body.agent_config.execution.overrides,
+                      permission_mode: body.agent_config.permission_mode ?? body.agent_config.execution.overrides?.permission_mode,
+                    } },
+                    persona: body.persona,
+                    profile: body.agent_config?.profile
+                      ?? (body.persona === undefined ? DEFAULT_AGENT_PROFILE_NAME : undefined),
+                    model: body.agent_config?.model,
+                    thinking: body.agent_config?.thinking,
+                    strictThinking: body.agent_config?.thinking !== undefined,
+                  },
+          });
+          sessionCreated = true;
+          if (autoRoot !== undefined) {
+            try {
+              await onWorkspaceServed?.(touched.root);
+            } catch (error) {
+              await core.accessor.get(ISessionManager).delete(handle.id);
+              sessionCreated = false;
+              throw error;
+            }
+          }
+          if (typeof body.title === 'string') {
+            await handle.accessor.get(ISessionMetadata).setTitle(body.title);
+          }
+          if (
+            body.agent_config?.permission_mode !== undefined
+            || body.agent_config?.plan_mode !== undefined
+          ) {
+            await applyAgentRuntimeControls(await ensureMainAgent(handle), body.agent_config);
+          }
+          if (body.metadata !== undefined) {
+            const metadata = handle.accessor.get(ISessionMetadata);
+            const current = externalConnectionId === undefined ? undefined : await metadata.read();
+            const custom = externalConnectionId === undefined ? body.metadata : {
+              ...current?.custom, ...body.metadata, externalClient: current?.custom?.['externalClient'],
+            };
+            await metadata.update({ custom });
+          }
+          if (body.persona !== undefined && body.persona_home === true && body.ephemeral !== true) {
+            await core.accessor.get(IBotService).claimHomeSession(body.persona, handle.id).catch((error) => {
+              requestLog(req)?.warn({ session_id: handle.id, error: toErrorMessage(error) }, 'daily chat claim skipped; conversation retained');
+            });
+          }
+          const meta = await handle.accessor.get(ISessionMetadata).read();
+          const session = toWireSession(
+            { ...meta, workspaceId: touched.id },
+            workDir,
+            resolveSessionFacts(core, meta.id),
+            undefined,
+            body.ephemeral === true,
+          );
+          core.accessor.get(IEventService).publish(
+            new SessionCreated({ payload: { agentId: 'main', sessionId: session.id, session } }),
+          );
+          return session;
+        } catch (error) {
+          if (!sessionCreated && externalConnectionId !== undefined && createdSessionId !== undefined) {
+            externalClients?.cancelPreparedSession(createdSessionId);
+          }
+          if (worktreeId !== undefined) {
+            if (sessionCreated && createdSessionId !== undefined) {
+              await core.accessor.get(ISessionManager).delete(createdSessionId).catch(() => {
+                requestLog(req)?.warn({ session_id: createdSessionId, event_type: 'worktree_rollback_failed' }, 'worktree session rollback failed');
+              });
+            }
+            const result = await core.accessor.get(IWorktreeService).remove(worktreeId).catch(() => undefined);
+            if (result?.outcome !== 'removed') requestLog(req)?.warn({ worktree_id: worktreeId, outcome: result?.outcome }, 'worktree rollback retained its checkout');
+          }
+          if (autoRoot !== undefined && !sessionCreated) {
+            try {
+              await removeUnusedAutoWorkspace(core, autoRoot, registeredAutoWorkspace);
+            } catch {
+              requestLog(req)?.warn(
+                { event_type: 'automatic_workspace_cleanup_failed' },
+                'automatic workspace cleanup failed',
+              );
+            }
+          }
+          throw error;
+        }
+      };
+
+      if (body.creation_id === undefined) {
+        try {
+          reply.send(okEnvelope(await createSession(), req.id));
+        } catch (error) {
+          sendMappedError(reply, req, error);
+        }
+        return;
+      }
+
+      const audience = peerAudience(req);
+      const principal = webPrincipal(req);
+      const connectionScope = sessionCreateConnectionScope({ peer: audience?.grantId, web: principal?.sessionId });
+      let cancelled = false;
+      try {
+        const session = await withReplyCloseSignal(
+          reply as unknown as Parameters<typeof withReplyCloseSignal>[0],
+          async (signal) => {
+            try {
+              const result = await createReceipts.run(
+                connectionScope,
+                body,
+                createSession,
+                (error) => {
+                  const mapped = mapSessionError(req, error);
+                  return { code: mapped.code, message: mapped.msg, details: mapped.details };
+                },
+                async (sessionId) => {
+                  const manager = core.accessor.get(ISessionManager);
+                  if (manager.get(sessionId) !== undefined) return 'present';
+                  return (await core.accessor.get(ISessionIndex).get(sessionId)) === undefined ? 'absent' : 'present';
+                },
+                signal,
+              );
+              if (signal.aborted) {
+                cancelled = true;
+                return undefined;
+              }
+              return result;
+            } catch (error) {
+              if (signal.aborted) cancelled = true;
+              throw error;
+            }
+          },
+          req,
+        );
+        if (!cancelled && session !== undefined) reply.send(okEnvelope(session, req.id));
+      } catch (error) {
+        if (cancelled) return;
+        reply.send(mapSessionError(req, error));
       }
     },
   );
@@ -1942,60 +2004,57 @@ function buildValidationEnvelope(
   };
 }
 
-function sendMappedError(
-  reply: { send(payload: unknown): unknown },
-  req: { id: string },
-  err: unknown,
-): void {
+interface SessionErrorEnvelope {
+  readonly code: number;
+  readonly msg: string;
+  readonly data: unknown;
+  readonly request_id: string;
+  readonly details?: unknown;
+  readonly stack?: string;
+}
+
+function mapSessionError(req: { id: string }, err: unknown): SessionErrorEnvelope {
   const requestId = req.id;
-  const log = requestLog(req);
+  if (err instanceof SessionCreateReceiptError) {
+    return { ...errEnvelope(err.code, err.message, requestId), details: err.details };
+  }
   if (err instanceof ProfileError) {
-    reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, err.message, requestId, err.stack));
-    return;
+    return errEnvelope(ErrorCode.VALIDATION_FAILED, err.message, requestId, err.stack);
   }
   if (isError2(err)) {
-    switch (err.code) {
+    switch (err.code as unknown as string) {
       case 'session.not_found':
       case 'agent.not_found':
-        reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, err.message, requestId, err.stack));
-        return;
+        return errEnvelope(ErrorCode.SESSION_NOT_FOUND, err.message, requestId, err.stack);
       case ErrorCodes.SESSION_TITLE_GENERATION_FAILED:
-        reply.send(errEnvelope(ErrorCode.SESSION_TITLE_UNAVAILABLE, err.message, requestId));
-        return;
+        return errEnvelope(ErrorCode.SESSION_TITLE_UNAVAILABLE, err.message, requestId);
       case 'session.fork_active_turn':
       case ErrorCodes.SESSION_BUSY:
-        reply.send({
+        return {
           code: ErrorCode.SESSION_BUSY,
           msg: err.message,
           data: null,
           request_id: requestId,
           details: err.details,
           stack: err.stack,
-        });
-        return;
+        };
       case ErrorCodes.STORAGE_LOCKED:
-        reply.send(errEnvelope(ErrorCode.SESSION_LOCKED, err.message, requestId, err.stack));
-        return;
+        return errEnvelope(ErrorCode.SESSION_LOCKED, err.message, requestId, err.stack);
       case ErrorCodes.SESSION_INDEX_BUILDING:
-        reply.send(
-          errEnvelope(ErrorCode.SESSION_INDEX_BUILDING, err.message, requestId, err.stack),
-        );
-        return;
+        return errEnvelope(ErrorCode.SESSION_INDEX_BUILDING, err.message, requestId, err.stack);
       case 'compaction.unable':
-        reply.send(errEnvelope(ErrorCode.COMPACTION_UNABLE, err.message, requestId, err.stack));
-        return;
+        return errEnvelope(ErrorCode.COMPACTION_UNABLE, err.message, requestId, err.stack);
       case 'session.undo_unavailable':
-        reply.send({
+        return {
           code: ErrorCode.SESSION_UNDO_UNAVAILABLE,
           msg: err.message,
           data: (err as { details?: unknown }).details ?? null,
           request_id: requestId,
           stack: err.stack,
-        });
-        return;
+        };
       case 'message.action_unavailable':
       case 'session.cursor_mismatch':
-        reply.send({
+        return {
           code: err.code === 'message.action_unavailable'
             ? ErrorCode.MESSAGE_ACTION_UNAVAILABLE
             : ErrorCode.SESSION_CURSOR_MISMATCH,
@@ -2004,31 +2063,21 @@ function sendMappedError(
           request_id: requestId,
           details: err.details,
           stack: err.stack,
-        });
-        return;
+        };
       case ErrorCodes.GOAL_ALREADY_EXISTS:
-        reply.send(errEnvelope(ErrorCode.GOAL_ALREADY_EXISTS, err.message, requestId, err.stack));
-        return;
+        return errEnvelope(ErrorCode.GOAL_ALREADY_EXISTS, err.message, requestId, err.stack);
       case ErrorCodes.GOAL_NOT_FOUND:
-        reply.send(errEnvelope(ErrorCode.GOAL_NOT_FOUND, err.message, requestId, err.stack));
-        return;
+        return errEnvelope(ErrorCode.GOAL_NOT_FOUND, err.message, requestId, err.stack);
       case ErrorCodes.GOAL_STATUS_INVALID:
-        reply.send(errEnvelope(ErrorCode.GOAL_STATUS_INVALID, err.message, requestId, err.stack));
-        return;
+        return errEnvelope(ErrorCode.GOAL_STATUS_INVALID, err.message, requestId, err.stack);
       case ErrorCodes.GOAL_NOT_RESUMABLE:
-        reply.send(errEnvelope(ErrorCode.GOAL_NOT_RESUMABLE, err.message, requestId, err.stack));
-        return;
+        return errEnvelope(ErrorCode.GOAL_NOT_RESUMABLE, err.message, requestId, err.stack);
       case ErrorCodes.GOAL_OBJECTIVE_EMPTY:
-        reply.send(errEnvelope(ErrorCode.GOAL_OBJECTIVE_EMPTY, err.message, requestId, err.stack));
-        return;
+        return errEnvelope(ErrorCode.GOAL_OBJECTIVE_EMPTY, err.message, requestId, err.stack);
       case ErrorCodes.GOAL_OBJECTIVE_TOO_LONG:
-        reply.send(
-          errEnvelope(ErrorCode.GOAL_OBJECTIVE_TOO_LONG, err.message, requestId, err.stack),
-        );
-        return;
+        return errEnvelope(ErrorCode.GOAL_OBJECTIVE_TOO_LONG, err.message, requestId, err.stack);
       case ErrorCodes.FS_PATH_NOT_FOUND:
-        reply.send(errEnvelope(ErrorCode.FS_PATH_NOT_FOUND, err.message, requestId, err.stack));
-        return;
+        return errEnvelope(ErrorCode.FS_PATH_NOT_FOUND, err.message, requestId, err.stack);
       case 'request.invalid':
       case 'validation.failed':
       case ErrorCodes.CONFIG_INVALID:
@@ -2039,17 +2088,25 @@ function sendMappedError(
       case ErrorCodes.ROUTE_BINDING_CONFLICT:
       case ErrorCodes.ROUTE_MODEL_ALIAS_MISSING:
       case ErrorCodes.ROUTE_SWITCH_FORBIDDEN:
-        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, err.message, requestId, err.stack));
-        return;
+        return errEnvelope(ErrorCode.VALIDATION_FAILED, err.message, requestId, err.stack);
+      default:
+        requestLog(req)?.error({ request_id: requestId, error_type: err.name }, 'session request failed');
+        return errEnvelope(ErrorCode.INTERNAL_ERROR, err.message, requestId, err.stack);
     }
   }
-  log?.error({ request_id: requestId, error_type: err instanceof Error ? err.name : typeof err }, 'session request failed');
-  reply.send(
-    errEnvelope(
-      ErrorCode.INTERNAL_ERROR,
-      err instanceof Error ? err.message : String(err),
-      requestId,
-      err instanceof Error ? err.stack : undefined,
-    ),
+  requestLog(req)?.error({ request_id: requestId, error_type: err instanceof Error ? err.name : typeof err }, 'session request failed');
+  return errEnvelope(
+    ErrorCode.INTERNAL_ERROR,
+    err instanceof Error ? err.message : String(err),
+    requestId,
+    err instanceof Error ? err.stack : undefined,
   );
+}
+
+function sendMappedError(
+  reply: { send(payload: unknown): unknown },
+  req: { id: string },
+  err: unknown,
+): void {
+  reply.send(mapSessionError(req, err));
 }

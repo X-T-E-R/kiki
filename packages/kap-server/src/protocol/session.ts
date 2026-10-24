@@ -100,6 +100,7 @@ export const sessionSchema = z.object({
 export type Session = z.infer<typeof sessionSchema>;
 
 export const sessionCreateSchema = z.object({
+  creation_id: z.string().uuid().transform((value) => value.toLowerCase()).optional(),
   title: z.string().min(1).optional(),
   persona: z.string().min(1).optional(),
   persona_home: z.boolean().optional(),

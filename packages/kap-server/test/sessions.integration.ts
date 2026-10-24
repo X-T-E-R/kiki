@@ -61,6 +61,14 @@ import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
 import { createKlient as createMemoryKlient } from '@kiki/klient/memory';
+import {
+  SessionCreateReceiptStore,
+  sessionCreateConnectionScope,
+  sessionCreateReceiptFingerprint,
+  sessionCreateReceiptHomeScope,
+  sessionCreateReceiptIdentity,
+  sessionCreateReceiptStorageScope,
+} from '../src/services/sessionCreateReceipt';
 
 interface Envelope<T> {
   code: number;
@@ -189,6 +197,20 @@ describe('server-v2 /api/sessions', () => {
     const res = await fetch(`${base}${path}`, {
       method: 'DELETE',
       headers: authHeaders(server as RunningServer),
+    } as never);
+    return { status: res.status, body: (await res.json()) as Envelope<T> };
+  }
+
+  async function postJsonWithSignal<T>(
+    path: string,
+    body: unknown,
+    signal: AbortSignal,
+  ): Promise<{ status: number; body: Envelope<T> }> {
+    const res = await fetch(`${base}${path}`, {
+      method: 'POST',
+      headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
+      body: JSON.stringify(body),
+      signal,
     } as never);
     return { status: res.status, body: (await res.json()) as Envelope<T> };
   }
@@ -611,6 +633,292 @@ describe('server-v2 /api/sessions', () => {
     expect(body.data.message_count).toBe(0);
     expect(body.data.last_seq).toBe(0);
     expect(Number.isNaN(Date.parse(body.data.created_at))).toBe(false);
+  });
+
+  it('shares a durable in-flight creation across a timed-out waiter and replays its completion', async () => {
+    const creationId = '4e2c2d72-2d24-4d7e-9f5e-8d7c0a1b2c3d';
+    const body = { creation_id: creationId, title: 'in-flight', metadata: { cwd: home as string } };
+    const manager = (server as RunningServer).core.accessor.get(ISessionManager);
+    const originalCreate = manager.create.bind(manager);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const enteredPromise = new Promise<void>((resolve) => { entered = resolve; });
+    const create = vi.spyOn(manager, 'create').mockImplementation(async (options) => {
+      if (options.sessionId === `session_${creationId}`) {
+        entered();
+        await gate;
+      }
+      return originalCreate(options);
+    });
+    const controller = new AbortController();
+    const first = postJsonWithSignal<SessionWire>('/api/sessions', body, controller.signal).catch((error: unknown) => error);
+    try {
+      await enteredPromise;
+      const second = postJson<SessionWire>('/api/sessions', body);
+      controller.abort();
+      expect(await first).toBeInstanceOf(Error);
+      release();
+      const replayed = await second;
+      expect(replayed.body.code, JSON.stringify(replayed.body)).toBe(0);
+      expect(replayed.body.data.id).toBe(`session_${creationId}`);
+      expect(create).toHaveBeenCalledTimes(1);
+      const lateReplay = await postJson<SessionWire>('/api/sessions', body);
+      expect(lateReplay.body.code).toBe(0);
+      expect(lateReplay.body.data).toEqual(replayed.body.data);
+      expect(create).toHaveBeenCalledTimes(1);
+    } finally {
+      release();
+      create.mockRestore();
+    }
+  });
+
+  it('returns a 40948 business conflict when a creation_id is reused with another body', async () => {
+    const creationId = '4e2c2d72-2d24-4d7e-9f5e-8d7c0a1b2c3e';
+    const first = await postJson<SessionWire>('/api/sessions', {
+      creation_id: creationId,
+      title: 'first body',
+      metadata: { cwd: home as string },
+    });
+    expect(first.body.code).toBe(0);
+    const conflict = await postJson<null>('/api/sessions', {
+      creation_id: creationId.toUpperCase(),
+      title: 'different body',
+      metadata: { cwd: home as string },
+    });
+    expect(conflict.body.code).toBe(40948);
+    expect(conflict.body.details).toEqual({ creation_id: creationId, reason: 'body_mismatch' });
+  });
+
+  it('replays a durable creation failure instead of retrying lifecycle side effects', async () => {
+    const creationId = '4e2c2d72-2d24-4d7e-9f5e-8d7c0a1b2c3a';
+    const body = {
+      creation_id: creationId,
+      metadata: { cwd: home as string },
+      agent_config: { profile: 'missing-profile' },
+    };
+    const first = await postJson<null>('/api/sessions', body);
+    expect(first.body.code).toBe(40001);
+    const second = await postJson<null>('/api/sessions', body);
+    expect(second.body.code).toBe(first.body.code);
+    expect(second.body.msg).toBe(first.body.msg);
+    expect((server as RunningServer).core.accessor.get(ISessionManager).list()).toEqual([]);
+  });
+
+  it('replays a completed receipt after a server restart without creating again', async () => {
+    const creationId = '4e2c2d72-2d24-4d7e-9f5e-8d7c0a1b2c3f';
+    const body = { creation_id: creationId, title: 'restart replay', metadata: { cwd: home as string } };
+    const first = await postJson<SessionWire>('/api/sessions', body);
+    expect(first.body.code).toBe(0);
+    await server!.close();
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home as string,
+      logLevel: 'silent',
+      debugEndpoints: true,
+    });
+    base = `http://127.0.0.1:${server.port}`;
+    const manager = server.core.accessor.get(ISessionManager);
+    const create = vi.spyOn(manager, 'create');
+    const replay = await postJson<SessionWire>('/api/sessions', body);
+    expect(replay.body.code).toBe(0);
+    expect(replay.body.data).toEqual(first.body.data);
+    expect(create).not.toHaveBeenCalled();
+    create.mockRestore();
+  });
+
+  it('releases the receipt lock when a raced read finds a completed receipt', async () => {
+    const creationId = '4e2c2d72-2d24-4d7e-9f5e-8d7c0a1b2c44';
+    const body = { creation_id: creationId, title: 'terminal race', metadata: { cwd: home as string } };
+    const first = await postJson<SessionWire>('/api/sessions', body);
+    expect(first.body.code).toBe(0);
+    const core = (server as RunningServer).core.accessor;
+    const bootstrap = core.get(IBootstrapService);
+    const docs = core.get(IAtomicDocumentStore);
+    const receiptScope = sessionCreateReceiptStorageScope(
+      bootstrap.scope('store'),
+      sessionCreateReceiptHomeScope(bootstrap.homeDir, bootstrap.spaceId),
+      sessionCreateConnectionScope({}),
+    );
+    const get = docs.get.bind(docs);
+    let firstRead = true;
+    const read = vi.spyOn(docs, 'get').mockImplementation(async (scope, key) => {
+      if (firstRead && scope === receiptScope && key === `${creationId}.json`) {
+        firstRead = false;
+        return undefined;
+      }
+      return get(scope, key);
+    });
+    const manager = core.get(ISessionManager);
+    const create = vi.spyOn(manager, 'create');
+    const raced = await postJson<SessionWire>('/api/sessions', body);
+    expect(raced.body.data).toEqual(first.body.data);
+    read.mockRestore();
+    const replay = await postJson<SessionWire>('/api/sessions', body);
+    expect(replay.body.data).toEqual(first.body.data);
+    expect(create).not.toHaveBeenCalled();
+    create.mockRestore();
+  });
+
+  it('releases the receipt lock when a raced read resolves a pending receipt to unknown', async () => {
+    const creationId = '4e2c2d72-2d24-4d7e-9f5e-8d7c0a1b2c45';
+    const body = { creation_id: creationId, title: 'unknown race', metadata: { cwd: home as string } };
+    const core = (server as RunningServer).core.accessor;
+    const bootstrap = core.get(IBootstrapService);
+    const docs = core.get(IAtomicDocumentStore);
+    const homeScope = sessionCreateReceiptHomeScope(bootstrap.homeDir, bootstrap.spaceId);
+    const connectionScope = sessionCreateConnectionScope({});
+    const receiptScope = sessionCreateReceiptStorageScope(bootstrap.scope('store'), homeScope, connectionScope);
+    const identity = sessionCreateReceiptIdentity(homeScope, connectionScope);
+    await docs.set(receiptScope, `${creationId}.json`, {
+      version: 1, scope: identity, creation_id: creationId, session_id: `session_${creationId}`,
+      fingerprint: sessionCreateReceiptFingerprint(body), body, status: 'pending',
+    });
+    const get = docs.get.bind(docs);
+    let firstRead = true;
+    const read = vi.spyOn(docs, 'get').mockImplementation(async (scope, key) => {
+      if (firstRead && scope === receiptScope && key === `${creationId}.json`) {
+        firstRead = false;
+        return undefined;
+      }
+      return get(scope, key);
+    });
+    try {
+      const first = await postJson<null>('/api/sessions', body);
+      expect(first.body.code).toBe(50006);
+      expect(first.body.details).toEqual({
+        creation_id: creationId,
+        session_id: `session_${creationId}`,
+        evidence: 'session_absent',
+      });
+    } finally {
+      read.mockRestore();
+    }
+    const replay = await postJson<null>('/api/sessions', body);
+    expect(replay.body.code).toBe(50006);
+    expect(replay.body.details).toEqual({
+      creation_id: creationId,
+      session_id: `session_${creationId}`,
+      evidence: 'session_absent',
+    });
+  });
+
+  it('lets separate receipt-store instances join an existing durable flight', async () => {
+    const creationId = '4e2c2d72-2d24-4d7e-9f5e-8d7c0a1b2c46';
+    const body = { creation_id: creationId, metadata: { cwd: home as string } };
+    const seed = await postJson<SessionWire>('/api/sessions', { metadata: { cwd: home as string } });
+    const result = seed.body.data as unknown as import('../src/protocol/session').Session;
+    const store1 = new SessionCreateReceiptStore((server as RunningServer).core);
+    const store2 = new SessionCreateReceiptStore((server as RunningServer).core);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const enteredPromise = new Promise<void>((resolve) => { entered = resolve; });
+    const operation = async () => {
+      entered();
+      await gate;
+      return result;
+    };
+    const mapError = (error: unknown) => ({ code: 50001, message: error instanceof Error ? error.message : String(error) });
+    const probe = async () => 'absent' as const;
+    const first = store1.run('local', body, operation, mapError, probe);
+    await enteredPromise;
+    const second = store2.run('local', body, async () => { throw new Error('second store executed side effects'); }, mapError, probe);
+    release();
+    await expect(first).resolves.toEqual(result);
+    await expect(second).resolves.toEqual(result);
+  });
+
+  it('marks pending partial and absent receipts unknown instead of recreating a session', async () => {
+    const core = (server as RunningServer).core.accessor;
+    const bootstrap = core.get(IBootstrapService);
+    const docs = core.get(IAtomicDocumentStore);
+    const homeScope = sessionCreateReceiptHomeScope(bootstrap.homeDir, bootstrap.spaceId);
+    const connectionScope = sessionCreateConnectionScope({});
+    const receiptScope = sessionCreateReceiptStorageScope(bootstrap.scope('store'), homeScope, connectionScope);
+    const identity = sessionCreateReceiptIdentity(homeScope, connectionScope);
+    const partialId = '4e2c2d72-2d24-4d7e-9f5e-8d7c0a1b2c40';
+    const partialBody = { creation_id: partialId, title: 'partial', metadata: { cwd: home as string } };
+    await core.get(ISessionManager).create({ sessionId: `session_${partialId}`, workDir: home as string });
+    await docs.set(receiptScope, `${partialId}.json`, {
+      version: 1, scope: identity, creation_id: partialId, session_id: `session_${partialId}`,
+      fingerprint: sessionCreateReceiptFingerprint(partialBody), body: partialBody, status: 'pending',
+    });
+    const absentId = '4e2c2d72-2d24-4d7e-9f5e-8d7c0a1b2c41';
+    const absentBody = { creation_id: absentId, title: 'absent', metadata: { cwd: home as string } };
+    await docs.set(receiptScope, `${absentId}.json`, {
+      version: 1, scope: identity, creation_id: absentId, session_id: `session_${absentId}`,
+      fingerprint: sessionCreateReceiptFingerprint(absentBody), body: absentBody, status: 'pending',
+    });
+
+    await server!.close();
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home as string,
+      logLevel: 'silent',
+      debugEndpoints: true,
+    });
+    base = `http://127.0.0.1:${server.port}`;
+    const manager = server.core.accessor.get(ISessionManager);
+    const create = vi.spyOn(manager, 'create');
+    const partial = await postJson<null>('/api/sessions', partialBody);
+    expect(partial.body.code).toBe(50006);
+    expect(partial.body.details).toEqual({
+      creation_id: partialId,
+      session_id: `session_${partialId}`,
+      evidence: 'session_present_without_completion',
+    });
+    const absent = await postJson<null>('/api/sessions', absentBody);
+    expect(absent.body.code).toBe(50006);
+    expect(absent.body.details).toEqual({
+      creation_id: absentId,
+      session_id: `session_${absentId}`,
+      evidence: 'session_absent',
+    });
+    expect(create).not.toHaveBeenCalled();
+    expect(await server.core.accessor.get(ISessionIndex).get(`session_${partialId}`)).toBeDefined();
+    create.mockRestore();
+  });
+
+  it('distinguishes an unreadable receipt from a missing receipt', async () => {
+    const missingId = '4e2c2d72-2d24-4d7e-9f5e-8d7c0a1b2c42';
+    const missing = await postJson<SessionWire>('/api/sessions', {
+      creation_id: missingId,
+      metadata: { cwd: home as string },
+    });
+    expect(missing.body.code).toBe(0);
+
+    const unreadableId = '4e2c2d72-2d24-4d7e-9f5e-8d7c0a1b2c43';
+    const unreadableBody = { creation_id: unreadableId, metadata: { cwd: home as string } };
+    const bootstrap = (server as RunningServer).core.accessor.get(IBootstrapService);
+    const receiptScope = sessionCreateReceiptStorageScope(
+      bootstrap.scope('store'),
+      sessionCreateReceiptHomeScope(bootstrap.homeDir, bootstrap.spaceId),
+      sessionCreateConnectionScope({}),
+    );
+    const docs = (server as RunningServer).core.accessor.get(IAtomicDocumentStore);
+    const get = docs.get.bind(docs);
+    const read = vi.spyOn(docs, 'get').mockImplementation(async (scope, key) => {
+      if (scope === receiptScope && key === `${unreadableId}.json`) throw new Error('receipt read failed');
+      return get(scope, key);
+    });
+    const manager = (server as RunningServer).core.accessor.get(ISessionManager);
+    const create = vi.spyOn(manager, 'create');
+    const unreadable = await postJson<null>('/api/sessions', unreadableBody);
+    expect(unreadable.body.code).toBe(50006);
+    expect(unreadable.body.details).toEqual({
+      creation_id: unreadableId,
+      session_id: `session_${unreadableId}`,
+      evidence: 'receipt_read_error',
+    });
+    expect(unreadable.body.msg).toContain('receipt read failed');
+    expect(create).not.toHaveBeenCalled();
+    create.mockRestore();
+    read.mockRestore();
   });
 
   it('returns persisted thread creators in paged and unpaged session lists without attributing forks', async () => {
