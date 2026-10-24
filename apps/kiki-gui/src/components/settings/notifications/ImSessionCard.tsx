@@ -364,6 +364,21 @@ export function ImSessionCard() {
               <Toggle id="im-default" layout="bare" label={t('st.im.default')} checked={data.policy.default_enabled} disabled={action.saving}
                 onChange={(default_enabled) => { void action.run(() => client.imSessions.setPolicy({ ...data.policy, default_enabled })); }} />
             </SettingField>
+            <SettingField label={t('st.im.allowBorrowing')} htmlFor="im-allow-borrowing">
+              <Toggle
+                id="im-allow-borrowing"
+                layout="bare"
+                label={t('st.im.allowBorrowing')}
+                checked={(data.policy as unknown as { allow_channel_borrowing?: boolean }).allow_channel_borrowing ?? false}
+                disabled={action.saving}
+                onChange={(allow_channel_borrowing) => {
+                  void action.run(() => client.imSessions.setPolicy({
+                    ...data.policy,
+                    allow_channel_borrowing,
+                  } as unknown as Parameters<typeof client.imSessions.setPolicy>[0]));
+                }}
+              />
+            </SettingField>
           </div>
           <FeedbackLine feedback={action.error === undefined ? null : { tone: 'error', text: action.error }} />
           {catalog.isError ? <div className="flex flex-wrap items-center gap-2" data-im-catalog-error>

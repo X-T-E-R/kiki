@@ -65,6 +65,7 @@ import { ActivityFeed, CapabilitiesBlock, NeedsYouList, ProfileHead } from './De
 import { RailTodos } from './DefaultRail';
 import { SessionCronSection } from './SessionCronSection';
 import { ImSessionRailSwitch } from '../im/ImSessionRailSwitch';
+import { SessionChannelsRail } from '../im/SessionChannelsRail';
 import { PersonaSettingsUpdate } from '../persona/PersonaSettingsUpdate';
 import { useEntityPage } from '../transcriptDetail';
 
@@ -610,7 +611,16 @@ export function Rail({
   const personaSection = (
     <div className={`${SECTION} empty:hidden`}>
       <PersonaSettingsUpdate sessionId={state.sessionId} />
-      <ImSessionRailSwitch sessionId={state.sessionId} />
+    </div>
+  );
+  const channelsSection = (
+    <div className={`${SECTION}`}>
+      <SessionChannelsRail
+        sessionId={state.sessionId}
+        sessionTitle={session?.title}
+        personaId={session?.persona_id}
+        onOpenSettings={() => { void navigate('/settings/notifications'); }}
+      />
     </div>
   );
   const needsYouSection = sessionPending !== undefined && sessionPending.length > 0 ? (
@@ -710,6 +720,7 @@ export function Rail({
       ['todos', todosSection],
       ['cron', cronSection],
       ['persona', personaSection],
+      ['channels', channelsSection],
     ] as const
     : [
       ['needsYou', needsYouSection],
@@ -719,6 +730,7 @@ export function Rail({
       ['tasks', tasksSection],
       ['cron', cronSection],
       ['persona', personaSection],
+      ['channels', channelsSection],
     ] as const
   ).filter(([, section]) => section !== null);
   return (
