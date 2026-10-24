@@ -8,6 +8,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../i18n';
 import { MediaLightbox } from './MediaLightbox';
+import { clearToasts, getToasts } from '../lib/toasts';
 import { renderAnnotatedImage, type ImageAnnotation } from './ImageViewportAnnotations';
 
 let root: Root;
@@ -251,7 +252,7 @@ describe('lightbox zoom controls and details', () => {
     renderLightbox({ name: 'long.png', mime: 'image/png', size: 155769, linkUrl: 'https://example.test/shot.png?token=secret' });
     loadImage(1940, 5170);
     expect(document.querySelector('[data-lightbox-info]')).toBeNull();
-    const toggle = document.querySelector<HTMLButtonElement>('[aria-label="Details"]')!;
+    const toggle = document.querySelector<HTMLButtonElement>('[aria-label="Image details"]')!;
     act(() => { toggle.click(); });
     expect(toggle.getAttribute('aria-pressed')).toBe('true');
     const info = document.querySelector('[data-lightbox-info]')!;
@@ -265,12 +266,12 @@ describe('lightbox zoom controls and details', () => {
   it('does not present a remote path as a local one and shows a real local path', () => {
     renderLightbox({ name: 'shot.png', sourcePath: '/C:/fixture/viewer/shot.png' });
     loadImage(80, 90);
-    act(() => { document.querySelector<HTMLButtonElement>('[aria-label="Details"]')!.click(); });
+    act(() => { document.querySelector<HTMLButtonElement>('[aria-label="Image details"]')!.click(); });
     expect(document.querySelector('[data-lightbox-source]')?.textContent).toBe('/C:/fixture/viewer/shot.png');
 
     renderLightbox({ name: 'shot.png', identity: 'remote', remote: true, sourcePath: '/srv/images/shot.png' });
     loadImage(80, 90);
-    act(() => { document.querySelector<HTMLButtonElement>('[aria-label="Details"]')!.click(); });
+    act(() => { document.querySelector<HTMLButtonElement>('[aria-label="Image details"]')!.click(); });
     expect(document.querySelector('[data-lightbox-info]')?.textContent).not.toContain('/srv/images');
     expect(document.querySelector('[data-lightbox-source]')).toBeNull();
   });
@@ -285,6 +286,29 @@ describe('lightbox zoom controls and details', () => {
     expect(onRetry).toHaveBeenCalledOnce();
     const reloaded = loadImage(300, 150);
     expect((reloaded.parentElement as HTMLElement).style.width).toBe(`${Math.min(300, 1024 * 0.92)}px`);
+  });
+
+  it('reports a refused clipboard write in the reader words and keeps the cause beneath it', async () => {
+    clearToasts();
+    const denied = new Error('Write permission denied.');
+    renderLightbox({ name: 'shot.png', src: 'https://example.test/shot.png' });
+    loadImage(400, 200);
+    vi.stubGlobal('fetch', vi.fn(async () => { throw denied; }));
+    vi.stubGlobal('Image', class { crossOrigin: string | null = null; src = ''; decode() { return Promise.reject(denied); } });
+    try {
+      act(() => { document.querySelector('[data-lightbox-viewport]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 4, clientY: 4 })); });
+      await act(async () => {
+        document.querySelector<HTMLButtonElement>('[data-menu-item="copy-image"]')!.click();
+        await Promise.resolve();
+      });
+      const toasts = getToasts();
+      expect(toasts).toHaveLength(1);
+      expect(toasts[0]?.text).toBe('Could not copy the image. Try downloading it instead.');
+      expect(toasts[0]?.detail).toContain('Write permission denied.');
+      expect(toasts[0]?.retry).toBeDefined();
+    } finally {
+      clearToasts();
+    }
   });
 });
 

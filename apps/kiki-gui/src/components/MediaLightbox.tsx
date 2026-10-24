@@ -12,6 +12,8 @@ import { copyImageBitmap, httpImageLink, imageMenuEntries, noteMediaReady } from
 import { imagePreviewDownloadName, imagePreviewLabel } from './imagePreviewName';
 import { useDevicePixelRatio, useDragPan, MAX_ZOOM, MIN_ZOOM, ZOOM_STEPS, zoomPercentOf } from './ImageViewport';
 import { ImageViewportAnnotations, renderAnnotatedImage, type AnnotationTool, type ImageAnnotation } from './ImageViewportAnnotations';
+import { errorToText } from '@kiki/session-core/util';
+import { pushToast } from '../lib/toasts';
 
 const controlClass = 'rounded-full border border-shell-hairline bg-shell-hover px-3 py-1 text-[11.5px] font-medium text-shell-ink transition-colors hover:bg-shell-hover disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink';
 const zoomButtonClass = 'flex h-6 w-6 items-center justify-center rounded-full text-shell-ink transition-colors hover:bg-shell-hairline disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink';
@@ -233,6 +235,24 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
     anchor.click();
     anchor.remove();
   };
+  /**
+   * A refused clipboard write is reported in the reader's terms; the actual
+   * failure stays one level down in the toast's details so it is still
+   * diagnosable without becoming the message.
+   */
+  const copyImage = async () => {
+    if (src === undefined) return;
+    try {
+      await copyImageBitmap(src);
+    } catch (error) {
+      pushToast({
+        tone: 'error',
+        text: t('media.copyFailed'),
+        detail: errorToText(error),
+        retry: { run: () => { void copyImage(); } },
+      });
+    }
+  };
   const menuEntries: MiniMenuEntry[] = imageMenuEntries({
     t,
     src,
@@ -244,7 +264,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
     canCopyImage: src !== undefined && !loading && !failed && !sourceFailed,
     canSave: true,
     annotated: marks.length > 0,
-    onCopyImage: async () => { if (src !== undefined) await copyImageBitmap(src); },
+    onCopyImage: copyImage,
     onSave: () => save(false),
     onSaveAnnotated: () => save(true),
   });
@@ -303,17 +323,17 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
         </> : null}
         <div role="group" aria-label={t('preview.zoomGroup')} data-lightbox-zoom-controls
           className="flex items-center gap-1 rounded-full border border-shell-hairline bg-shell-hover px-1.5 py-1">
-          <button type="button" aria-label={t('persona.avatarZoomOut')} title={t('persona.avatarZoomOut')} disabled={!zoomable || percent <= sliderMin} onClick={zoomOut} className={zoomButtonClass}><Icon name="dash" size={14} /></button>
+          <button type="button" aria-label={t('media.zoomOut')} title={t('media.zoomOut')} disabled={!zoomable || percent <= sliderMin} onClick={zoomOut} className={zoomButtonClass}><Icon name="dash" size={14} /></button>
           <input type="range" min={sliderMin} max={MAX_ZOOM} step={1} value={Math.min(MAX_ZOOM, Math.max(sliderMin, percent))}
             aria-label={t('preview.zoomGroup')} aria-valuetext={`${percent}%`} data-lightbox-zoom-slider disabled={!zoomable}
             onChange={(event) => { applyZoom(Number(event.currentTarget.value)); }}
             className="h-1 w-24 cursor-pointer accent-accent disabled:cursor-default disabled:opacity-40" />
-          <button type="button" aria-label={t('persona.avatarZoomIn')} title={t('persona.avatarZoomIn')} disabled={!zoomable || percent >= MAX_ZOOM} onClick={zoomIn} className={zoomButtonClass}><Icon name="plus" size={14} /></button>
+          <button type="button" aria-label={t('media.zoomIn')} title={t('media.zoomIn')} disabled={!zoomable || percent >= MAX_ZOOM} onClick={zoomIn} className={zoomButtonClass}><Icon name="plus" size={14} /></button>
           <span data-lightbox-zoom className="w-10 shrink-0 text-right font-mono text-[11px] text-shell-ink">{percent}%</span>
         </div>
         <button type="button" data-autofocus disabled={!zoomable} onClick={() => { switchZoom(); }} className={controlClass}>{zoom === 'fit' ? t('media.zoomActual') : t('media.zoomFit')}</button>
         {details.length === 0 && shownSource === undefined ? null : (
-          <button type="button" aria-pressed={info} aria-label={t('agentPanel.viewDetails')} title={t('agentPanel.viewDetails')}
+          <button type="button" aria-pressed={info} aria-label={t('media.details')} title={t('media.details')}
             onClick={() => { setInfo((value) => !value); }} className={`${controlClass} ${info ? '!border-accent !text-accent' : ''}`}>
             <Icon name="info" />
           </button>
@@ -321,7 +341,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
       </div>
 
       {info && (details.length > 0 || shownSource !== undefined) ? (
-        <div data-lightbox-info role="group" aria-label={t('agentPanel.viewDetails')}
+        <div data-lightbox-info role="group" aria-label={t('media.details')}
           className="flex max-w-[min(92vw,640px)] flex-wrap items-center justify-center gap-x-3 gap-y-1 rounded-full border border-shell-hairline bg-shell/80 px-3.5 py-1.5 font-mono text-[11px] text-shell-ink shadow-sm backdrop-blur-md">
           {details.map((part) => <span key={part}>{part}</span>)}
           {shownSource === undefined ? null : (
