@@ -263,14 +263,19 @@ describe('FileSessionIndex (legacy)', () => {
     await seedSession('existing', { title: 'unchanged' });
     const storage = new FileStorageService(homeDir);
     const stat = vi.spyOn(storage, 'mtime');
+    const read = vi.spyOn(storage, 'read');
     const store = build(storage);
     await expect(store.get(id)).resolves.toBeUndefined();
+    await expect(store.get(id, workspaceId)).resolves.toBeUndefined();
     expect(stat).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
   });
 
   it.each(['custom-session_001', ...(sep === '/' ? ['legacy\\name', 'legacy:name'] : [])])('preserves valid custom single-entry ids: %j', async (id) => {
     await seedSession(id, { title: 'custom identifier' });
-    await expect(build().get(id)).resolves.toMatchObject({ id, title: 'custom identifier' });
+    const store = build();
+    await expect(store.get(id)).resolves.toMatchObject({ id, title: 'custom identifier' });
+    await expect(store.get(id, workspaceId)).resolves.toMatchObject({ id, title: 'custom identifier' });
   });
 
   it('projects persisted aggregate usage from the authoritative metadata document', async () => {
