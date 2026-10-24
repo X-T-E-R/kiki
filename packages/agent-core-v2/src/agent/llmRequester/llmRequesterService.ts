@@ -22,6 +22,8 @@ import type { ISubagentTool } from '#/agent/tools/agent/agent';
 import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
 import { IAgentMediaResolverService } from '#/agent/media/mediaResolver';
 import { IAgentUsageService } from '#/agent/usage/usage';
+import { RETRY_SECTION, type RetryConfig } from '#/agent/stepRetry/configSection';
+import { findRetryPolicy } from '#/agent/stepRetry/retryPolicy';
 import { IConfigService } from '#/app/config/config';
 import { IEventBus } from '#/app/event/eventBus';
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
@@ -46,7 +48,7 @@ import {
   isRetryableGenerateError,
 } from '#/kosong/contract/errors';
 import { isToolCall, type Message, type StreamedMessagePart } from '#/kosong/contract/message';
-import { readGenerateFailureFacts } from '#/kosong/contract/generate';
+import { readGenerateFailureUsage } from '#/kosong/contract/generate';
 import type { ResponsesRequestTransport } from '#/kosong/contract/responsesTransport';
 import { type ThinkingEffort } from '#/kosong/contract/provider';
 import { type Tool } from '#/kosong/contract/tool';
@@ -143,7 +145,7 @@ import {
 } from './llmRequestOps';
 import { isAbortError } from '#/_base/utils/abort';
 import { parseBooleanEnv } from '#/_base/utils/env';
-import { ErrorCodes, Error2, unwrapErrorCause } from '#/errors';
+import { ErrorCodes, Error2, readAttachedErrorDetails, unwrapErrorCause } from '#/errors';
 import {
   readRetryAfterMs,
   retryBackoffDelay,
@@ -159,6 +161,18 @@ const EMPTY_TOOL_PARAMETERS: Record<string, unknown> = {
 const noopOnPart: AgentLLMRequestPartHandler = () => {};
 
 export const KIKI_INFINITE_RETRY_ENV = 'KIKI_INFINITE_RETRY';
+
+function hasExplicitRetryVeto(error: unknown): boolean {
+  const visited = new Set<object>();
+  let current = error;
+  while (typeof current === 'object' && current !== null && !visited.has(current)) {
+    visited.add(current);
+    if (readAttachedErrorDetails(current)?.['retry'] === false ||
+      (current instanceof Error2 && current.details?.['retry'] === false)) return true;
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return false;
+}
 
 interface RequestIdentityAttemptContext {
   readonly policy: ResolvedRequestIdentityPolicy;
@@ -661,9 +675,9 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         }
       } catch (error) {
         toolCallIds.rollback();
-        const facts = readGenerateFailureFacts(error);
-        if (facts?.usage !== undefined && facts.usage !== null) {
-          this.usage.record(request.modelAlias, facts.usage, request.source, {
+        const failureUsage = readGenerateFailureUsage(error);
+        if (failureUsage !== undefined) {
+          this.usage.record(request.modelAlias, failureUsage, request.source, {
             provider: request.model.providerName,
             modelAlias: request.modelAlias,
             executorId: 'native',
@@ -721,7 +735,11 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         if (this.retryAttribution?.value === attribution) this.retryAttribution = undefined;
         return result;
       } catch (error) {
-        if (retry === 'never' || requestDeliveryProvenance(error) !== undefined ||
+        const retryPolicy = findRetryPolicy(this.config.get<RetryConfig>(RETRY_SECTION)?.policies, unwrapErrorCause(error), {
+          model: request.model.id, provider: request.model.providerName,
+        });
+        if (retry === 'never' || retryPolicy?.retry === false || hasExplicitRetryVeto(error) ||
+          (requestDeliveryProvenance(error) !== undefined && !isRetryableGenerateError(error)) ||
           readProviderEventErrorCode(error) === 'antigravity_thinking_only') throw error;
         const nextPolicy = this.nextProjectionPolicyForError(
           error,
@@ -738,7 +756,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         }
         const raw = unwrapErrorCause(error);
         if (
-          requestDeliveryProvenance(error) !== undefined ||
+          (requestDeliveryProvenance(error) !== undefined && !isRetryableGenerateError(error)) ||
           !this.infiniteRetryEnabled ||
           isRequestGovernanceError(error) ||
           isAbortError(error) ||
@@ -776,7 +794,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     signal: AbortSignal | undefined,
     captureMediaStripPolicy: () => { readonly strip: MediaStripSnapshot },
   ): ProjectionPolicy | undefined {
-    if (signal?.aborted === true || requestDeliveryProvenance(error) !== undefined) return undefined;
+    if (signal?.aborted === true || (requestDeliveryProvenance(error) !== undefined && !isRetryableGenerateError(error))) return undefined;
     const raw = unwrapErrorCause(error);
     const media = policy?.media;
     if (

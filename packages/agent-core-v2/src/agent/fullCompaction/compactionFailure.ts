@@ -4,7 +4,6 @@ import {
   APIProviderQuotaExhaustedError,
   APIStatusError,
   isRetryableGenerateError,
-  requestDeliveryProvenance,
 } from '#/kosong/contract/errors';
 import { isAbortError } from '#/_base/utils/abort';
 import { isCodedError, unwrapErrorCause } from '#/errors';
@@ -23,13 +22,13 @@ export function compactionFailureKind(error: unknown): 'filtered' | 'auth' | 'qu
 }
 
 export function isRetryableCompactionError(error: unknown): boolean {
-  if (requestDeliveryProvenance(error) !== undefined) return false;
+  if (!isRetryableGenerateError(error)) return false;
   const cause = unwrapErrorCause(error);
   if (isAbortError(cause)) return false;
   const kind = compactionFailureKind(error);
   if (kind === 'filtered' || kind === 'auth' || kind === 'quota') return false;
   if (cause instanceof APIStatusError && cause.statusCode === 400 && !(cause instanceof APIContextOverflowError)) return false;
-  return isRetryableGenerateError(cause);
+  return true;
 }
 
 export function describeCompactionFailure(error: unknown, provider: string, model: string, attempts: number, source: 'manual' | 'auto' = 'auto'): string {

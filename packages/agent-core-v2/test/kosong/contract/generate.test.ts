@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { APIEmptyResponseError, ChatProviderError, isRetryableGenerateError, markProviderEventError } from '#/kosong/contract/errors';
-import { generate, readGenerateFailureFacts, type GenerateResult } from '#/kosong/contract/generate';
+import { generate, readGenerateFailureFacts, readGenerateFailureUsage, type GenerateResult } from '#/kosong/contract/generate';
 import type { Message, StreamedMessagePart, ToolCall } from '#/kosong/contract/message';
 import type {
   ChatProvider,
@@ -361,7 +361,6 @@ describe('generate() abort contract', () => {
     const consumerDone = promiseGate<void>();
     const cancel = vi.fn(() => closed.resolve());
     const stream: StreamedMessage & { cancel(): void } = {
-      ...new FakeStreamedMessage([]),
       id: null, usage: null, finishReason: null, rawFinishReason: null,
       cancel,
       async *[Symbol.asyncIterator]() {
@@ -392,7 +391,9 @@ describe('generate() abort contract', () => {
     let settled = false;
     const stream: StreamedMessage = {
       id: null, usage: null, finishReason: null, rawFinishReason: null,
-      async *[Symbol.asyncIterator]() { waiting.resolve(); await release.promise; },
+      [Symbol.asyncIterator](): AsyncIterator<StreamedMessagePart> {
+        return { next: async () => { waiting.resolve(); await release.promise; return { done: true, value: undefined }; } };
+      },
     };
     const { provider } = createFakeProvider(stream);
     const result = generate(provider, SYSTEM_PROMPT, NO_TOOLS, HISTORY, undefined, { signal: controller.signal });
@@ -493,5 +494,21 @@ describe('locally observed thinking-only failure facts', () => {
     const { provider } = createFakeProvider(stream);
     await expect(generate(provider, SYSTEM_PROMPT, NO_TOOLS, HISTORY)).rejects.toBe(error);
     expect(readGenerateFailureFacts(error)).toBeUndefined();
+    expect(readGenerateFailureUsage(error)).toBe(USAGE);
+  });
+
+  it.each([USAGE, null])('retains known failure usage without granting a blocked thinking-only completion recovery facts', async usage => {
+    const stream: StreamedMessage = {
+      id: null, usage, finishReason: 'completed', rawFinishReason: 'STOP',
+      thinkingOnlyRecoveryBlocked: true,
+      async *[Symbol.asyncIterator]() { yield { type: 'think', think: 'private thought', encrypted: 'signature-fixture' }; },
+    };
+    const { provider } = createFakeProvider(stream);
+    const error = await generate(provider, SYSTEM_PROMPT, NO_TOOLS, HISTORY).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(APIEmptyResponseError);
+    expect(isRetryableGenerateError(error)).toBe(false);
+    expect(readGenerateFailureFacts(error)).toBeUndefined();
+    expect(readGenerateFailureUsage(error)).toBe(usage ?? undefined);
+    expect(JSON.stringify(error)).not.toMatch(/private thought|signature-fixture/);
   });
 });

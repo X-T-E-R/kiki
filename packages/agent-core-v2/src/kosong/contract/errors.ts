@@ -292,12 +292,6 @@ function explicitDeliveryMark(error: object): 'unknown' | 'executed' | undefined
   return undefined;
 }
 
-function hasProviderEvent(error: object): boolean {
-  const attached = readAttachedErrorDetails(error)?.['errorSource'];
-  const details = error instanceof Error2 ? error.details?.['errorSource'] : undefined;
-  return attached === 'provider_event' || details === 'provider_event';
-}
-
 function noteRequestDelivery(error: unknown, mark: 'ambiguous' | 'executed'): void {
   const visited = new Set<unknown>();
   let current: unknown = error;
@@ -306,15 +300,16 @@ function noteRequestDelivery(error: unknown, mark: 'ambiguous' | 'executed'): vo
     if (!(mark === 'executed' && explicitDeliveryMark(current) === 'unknown')) {
       attachErrorDetails(current, { request_delivery: mark });
     }
+    if (mark === 'executed') attachErrorDetails(current, { request_output: 'observed' });
     current = current instanceof Error ? current.cause : undefined;
   }
 }
 
-/** Facts that forbid sending the same generation or its tool work again.
+/** Delivery observations retained for generation recovery decisions.
  *
- * `unknown` means the outcome was not observed. `executed` means a parsed provider
- * event, response id, partial output, or tool was already observed. `undefined`
- * means neither fact is present, so a pre-stream HTTP retry and the one explicit
+ * `unknown` means the outcome was not observed. `executed` means actual output or
+ * tool execution was observed. A failure event or response id alone is neither.
+ * `undefined` means neither fact is present, so a pre-stream HTTP retry and the one explicit
  * HTTP 401 refresh stay available. The walk includes causes, and the marks are
  * stored on that chain, so `unwrapErrorCause` does not remove them. Call this on
  * the original error before unwrapping.
@@ -327,7 +322,7 @@ export function requestDeliveryProvenance(error: unknown): 'unknown' | 'executed
     visited.add(current);
     const mark = explicitDeliveryMark(current);
     if (mark === 'unknown') return 'unknown';
-    if (mark === 'executed' || hasProviderEvent(current)) executed = true;
+    if (mark === 'executed') executed = true;
     current = current instanceof Error ? current.cause : undefined;
   }
   return executed ? 'executed' : undefined;
@@ -339,7 +334,7 @@ export function isAmbiguousRequestDelivery(error: unknown): boolean {
 
 export function ambiguousRequestDelivery(error: unknown): ChatProviderError {
   noteRequestDelivery(error, 'ambiguous');
-  const wrapped = new ChatProviderError('Request delivery is uncertain; generation was not retried.', undefined, {
+  const wrapped = new ChatProviderError('The provider request ended without an observed outcome.', undefined, {
     cause: error,
     details: { request_delivery: 'ambiguous' },
   });
@@ -352,8 +347,29 @@ export function noteExecutedRequestDelivery(error: unknown): void {
   noteRequestDelivery(error, 'executed');
 }
 
+const NON_RETRYABLE_PROVIDER_CODES: ReadonlySet<string> = new Set([
+  'antigravity_thinking_only',
+  'antigravity_safety',
+  'antigravity_malformed_function_call',
+  'antigravity_malformed_response',
+  'antigravity_upstream_terminal_error',
+]);
+
 export function isRetryableGenerateError(error: unknown): boolean {
-  if (requestDeliveryProvenance(error) !== undefined) return false;
+  if (isAbortError(error) || requestDeliveryProvenance(error) === 'executed') return false;
+  const visited = new Set<object>();
+  let current = error;
+  let providerError = error;
+  while (typeof current === 'object' && current !== null && !visited.has(current)) {
+    visited.add(current);
+    const details = providerErrorMetadata(current);
+    if (details['retry'] === false || details['request_output'] === 'observed') return false;
+    const code = details['upstreamErrorCode'];
+    if (typeof code === 'string' && NON_RETRYABLE_PROVIDER_CODES.has(code)) return false;
+    if (current instanceof ChatProviderError) providerError = current;
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  error = providerError;
   if (error instanceof APIConnectionError || error instanceof APITimeoutError) {
     return true;
   }
@@ -522,13 +538,16 @@ export function markProviderEventError<T>(error: T, upstreamErrorCode?: string |
   const code = readProviderErrorIdentifier(upstreamErrorCode) ??
     providerErrorMetadata(error)['upstreamErrorCode'];
   if (typeof code !== 'string') return error;
+  if (NON_RETRYABLE_PROVIDER_CODES.has(code)) attachErrorDetails(error, { retry: false });
   return attachErrorDetails(error, { errorSource: 'provider_event', upstreamErrorCode: code });
 }
 
 /** Keeps an HTTP failure's upstream code without treating it as a stream event. */
 export function markProviderHttpError<T>(error: T, upstreamErrorCode?: string | null): T {
   const code = readProviderErrorIdentifier(upstreamErrorCode);
-  return code === null ? error : attachErrorDetails(error, { errorSource: 'provider_http', upstreamErrorCode: code });
+  if (code === null) return error;
+  if (NON_RETRYABLE_PROVIDER_CODES.has(code)) attachErrorDetails(error, { retry: false });
+  return attachErrorDetails(error, { errorSource: 'provider_http', upstreamErrorCode: code });
 }
 
 /** The exact upstream code of a provider event failure, when the provider named one. */

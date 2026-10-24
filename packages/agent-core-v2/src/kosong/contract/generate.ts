@@ -35,6 +35,18 @@ export interface GenerateFailureFacts {
 
 const THINKING_ONLY_STOP_CODE = 'antigravity_thinking_only';
 const generateFailureFacts = new WeakMap<object, GenerateFailureFacts>();
+const generateFailureUsage = new WeakMap<object, TokenUsage>();
+
+/** Provider-reported usage retained on a failed attempt without exposing response content. */
+export function readGenerateFailureUsage(error: unknown): TokenUsage | undefined {
+  let current = error;
+  while (typeof current === 'object' && current !== null) {
+    const usage = generateFailureUsage.get(current);
+    if (usage !== undefined) return usage;
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return undefined;
+}
 
 /** The locally observed message and usage of a stream that already produced output
  *  before its provider reported a clean thinking-only stop. Content stays out of the
@@ -191,7 +203,8 @@ export async function generate(
     const hasText = message.content.some((p) => p.type === 'text' && p.text.trim().length > 0);
     const hasToolCalls = message.toolCalls.length > 0;
 
-    if (!googleContinuation && !normallyCompleted && hasThink && !hasText && !hasToolCalls) {
+    const blockedThinking = stream.thinkingOnlyRecoveryBlocked === true && message.content.some(part => part.type === 'think' && !isVacuousContentPart(part));
+    if (!googleContinuation && (!normallyCompleted || blockedThinking) && hasThink && !hasText && !hasToolCalls) {
       throw new APIEmptyResponseError(
         'The API returned a response containing only thinking content ' +
           'without any text or tool calls. This usually indicates the ' +
@@ -231,6 +244,7 @@ export async function generate(
     return result;
   } catch (error) {
     flushPending();
+    if (typeof error === 'object' && error !== null && stream.usage !== null) generateFailureUsage.set(error, stream.usage);
     recordThinkingOnlyFacts(error, message, stream);
     if (!isAbortError(error) && readGenerateFailureFacts(error) === undefined &&
       (message.toolCalls.length > 0 || message.content.some(part => !isVacuousContentPart(part)))) {

@@ -14,6 +14,7 @@ import {
   requestIdentityToToml,
 } from '#/app/kosongConfig/configSection';
 import { generate } from '#/kosong/contract/generate';
+import { toErrorPayload } from '#/_base/errors/serialize';
 import { APITimeoutError, isAbortError, isRetryableGenerateError, requestDeliveryProvenance } from '#/kosong/contract/errors';
 import { isRetryableCompactionError } from '#/agent/fullCompaction/compactionFailure';
 import type { Message } from '#/kosong/contract/message';
@@ -149,7 +150,7 @@ describe('request compression', () => {
     fetchImpl.mockRejectedValueOnce(new TypeError('synthetic disconnect'));
     const failure = await compress('https://example.test/messages', { ...init, body: 'x'.repeat(2048), signal: undefined }).catch((error: unknown) => error);
     expect(failure).toMatchObject({ details: { request_delivery: 'ambiguous' } });
-    expect(isRetryableGenerateError(failure)).toBe(false);
+    expect(isRetryableGenerateError(failure)).toBe(true);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 });
@@ -159,6 +160,26 @@ const timeoutProviders = [
   { name: 'Chat', Provider: OpenAILegacyChatProvider },
   { name: 'Responses HTTP', Provider: OpenAIResponsesChatProvider },
 ] as const;
+
+describe.each(timeoutProviders)('$name coded HTTP rejection', ({ Provider }) => {
+  it.each([429, 503])('preserves HTTP %i and its code without marking a provider event or execution', async status => {
+    const code = status === 429 ? 'rate_limit_exceeded' : 'provider_infrastructure_unavailable';
+    const fetchImpl = vi.fn<typeof fetch>(async () => Response.json({ type: 'error', error: {
+      type: 'api_error', code, message: 'temporary service failure',
+    } }, { status }));
+    vi.stubGlobal('fetch', fetchImpl);
+    try {
+      const baseUrl = 'https://example.test/v1';
+      const provider = new Provider({ model: 'synthetic', apiKey: 'YOUR_API_KEY', baseUrl,
+        requestCompression: { encoding: 'gzip', targets: [baseUrl], minBytes: 0 } });
+      const error = await generate(provider, 'synthetic fixture', [], history).catch((error: unknown) => error);
+      expect(toErrorPayload(error)).toMatchObject({ details: { statusCode: status, errorSource: 'provider_http', upstreamErrorCode: code } });
+      expect(requestDeliveryProvenance(error)).toBeUndefined();
+      expect(isRetryableGenerateError(error)).toBe(true);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    } finally { vi.unstubAllGlobals(); }
+  });
+});
 
 async function productionTimeout(
   Provider: typeof AnthropicChatProvider | typeof OpenAILegacyChatProvider | typeof OpenAIResponsesChatProvider,
@@ -217,8 +238,8 @@ describe.each(timeoutProviders)('$name SDK timeout delivery', ({ Provider }) => 
     expect(sent[0]?.decodedBytes).toBeGreaterThan(1024);
     expect(requestDeliveryProvenance(error)).toBe('unknown');
     expect(isAbortError(error)).toBe(false);
-    expect(isRetryableGenerateError(error)).toBe(false);
-    expect(isRetryableCompactionError(error)).toBe(false);
+    expect(isRetryableGenerateError(error)).toBe(true);
+    expect(isRetryableCompactionError(error)).toBe(true);
     expect(causeMessages(error).some((message) => message.includes('Request timed out'))).toBe(true);
   });
 
@@ -264,7 +285,7 @@ it('keeps simultaneous SDK attempt provenance isolated when one SDK discards its
   ]);
   if (encoded.status !== 'rejected' || ordinary.status !== 'rejected') throw new Error('Expected both attempts to fail');
   expect(requestDeliveryProvenance(encoded.reason)).toBe('unknown');
-  expect(isRetryableGenerateError(encoded.reason)).toBe(false);
+  expect(isRetryableGenerateError(encoded.reason)).toBe(true);
   expect(requestDeliveryProvenance(ordinary.reason)).toBeUndefined();
   expect(isRetryableGenerateError(ordinary.reason)).toBe(true);
 });

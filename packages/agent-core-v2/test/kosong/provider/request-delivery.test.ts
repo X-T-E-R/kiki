@@ -28,7 +28,7 @@ describe('guardRequestDelivery', () => {
     for (const error of [dropped, eof]) {
       expect(requestDeliveryProvenance(error)).toBe('unknown');
       expect(requestDeliveryProvenance(unwrapErrorCause(error))).toBe('unknown');
-      expect((error as Error).message).toBe('Request delivery is uncertain; generation was not retried.');
+      expect((error as Error).message).toBe('The provider request ended without an observed outcome.');
     }
     expect(unwrapErrorCause(dropped)).toMatchObject({ message: 'terminated' });
   });
@@ -49,7 +49,7 @@ describe('guardRequestDelivery', () => {
     expect(afterResponse).toBe(parsed);
     expect(parsedFirst).toBe(parsed);
     expect(parsed).toMatchObject({ statusCode: 401, message: 'unauthorized', requestId: 'req-auth' });
-    expect(requestDeliveryProvenance(parsed)).toBe('executed');
+    expect(requestDeliveryProvenance(parsed)).toBeUndefined();
     expect((parsed as { details?: { request_delivery?: unknown } }).details?.['request_delivery']).not.toBe('ambiguous');
   });
 

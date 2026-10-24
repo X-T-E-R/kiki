@@ -5,6 +5,8 @@ import {
   requestDeliveryProvenance,
 } from '#/kosong/contract/errors';
 import type { StreamedMessage } from '#/kosong/contract/provider';
+import { isContentPart, isToolCall, isToolCallPart, isVacuousContentPart } from '#/kosong/contract/message';
+import { isError2, readAttachedErrorDetails } from '#/_base/errors/errors';
 
 export function guardRequestDelivery(stream: StreamedMessage, enabled: boolean): StreamedMessage {
   if (!enabled) return stream;
@@ -23,16 +25,18 @@ export function guardRequestDelivery(stream: StreamedMessage, enabled: boolean):
       let yielded = false;
       try {
         for await (const part of stream) {
-          yielded = true;
+          yielded ||= isToolCall(part) || isToolCallPart(part) || (isContentPart(part) && !isVacuousContentPart(part));
           yield part;
         }
       } catch (error) {
         if (isAbortError(error)) throw error;
-        if (requestDeliveryProvenance(error) === 'unknown') throw error;
-        if (requestDeliveryProvenance(error) === 'executed' || yielded || stream.id !== null) {
+        if (requestDeliveryProvenance(error) === 'executed' || yielded) {
           noteExecutedRequestDelivery(error);
           throw error;
         }
+        const attached = typeof error === 'object' && error !== null ? readAttachedErrorDetails(error) : undefined;
+        const source = attached?.['errorSource'] ?? (isError2(error) ? error.details?.['errorSource'] : undefined);
+        if (source === 'provider_event' || source === 'provider_stream' || source === 'provider_http' || requestDeliveryProvenance(error) === 'unknown') throw error;
         throw ambiguousRequestDelivery(error);
       }
     },

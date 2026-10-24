@@ -83,7 +83,7 @@ dictionary = true
 
 `dictionary = true` asks the gateway to cache exact request bytes, which can include messages, media, tool results, and signatures. Kiki keeps acknowledged dictionaries only in bounded process memory, for up to ten minutes. A dictionary acknowledgement confirms cached bytes, not completed model generation. Every request is still built from the full local history; a changed or compacted history is never reconstructed from guessed model output.
 
-Only a marked, pre-execution decoding rejection permits an encoding fallback, with at most three attempts. A lost response or uncertain delivery does not trigger a second generation. If a target does not support compression, disable it before starting a new request rather than relying on automatic format probing.
+Only a marked, pre-execution decoding rejection permits an encoding fallback, with at most three attempts. Transport failures and temporary provider errors before any output use the existing [request retry policy](./config-files.md#retry), even when delivery is uncertain. Partial output or observed tool execution prevents resending that generation; completed tool results remain in local history. If a target does not support compression, disable it before starting a new request rather than relying on automatic format probing.
 
 ## Incremental Responses over WebSocket
 
@@ -107,7 +107,7 @@ The target must match the origin and path boundary of the Responses endpoint. A 
 
 The gateway temporarily retains native request and response items on the connection. Unlike HTTP request dictionaries, this state follows completed generation, not dictionary acknowledgements. Unknown output fields are retained in an in-memory sidecar and sent in full rather than used for an incremental request.
 
-If the gateway explicitly reports missing history before execution, Kiki sends the full current history once. A pre-execution unsupported upstream format or prompt policy can fall back to a full HTTP request. Access denials and uncertain or partial responses are not replayed. This path supports `response.create` generation only; it does not enable background generation, steering, or `generate:false` warmup.
+If the gateway explicitly reports missing history before execution, Kiki sends the full current history once. A pre-execution unsupported upstream format or prompt policy can fall back to a full HTTP request. The transport does not use this fallback for access denials or partial responses. A connection loss or temporary provider failure with no observed output uses the same request retry policy as HTTP; uncertain delivery alone does not block that recovery. This path supports `response.create` generation only; it does not enable background generation, steering, or `generate:false` warmup.
 
 ## `/provider` — interactive provider management
 

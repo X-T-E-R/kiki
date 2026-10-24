@@ -33,13 +33,13 @@ describe('compaction-only retry classification', () => {
     expect(describeCompactionFailure(error, 'fixture', 'model', 1, 'auto')).toMatch(/^Automatic compaction failed/);
   });
 
-  it('does not retry unknown delivery or a parsed event after the cause is unwrapped', () => {
+  it('classifies no-output unknown delivery and parsed failures through the shared retry policy', () => {
     const unknown = ambiguousRequestDelivery(new APIConnectionError('terminated'));
     const timedOut = ambiguousRequestDelivery(new APITimeoutError('timed out'));
     const parsed = attachErrorDetails(new APIStatusError(429, 'slow down'), { errorSource: 'provider_event' });
     for (const error of [unknown, timedOut, parsed]) {
-      expect(isRetryableCompactionError(error)).toBe(false);
-      expect(isRetryableCompactionError(unwrapErrorCause(error))).toBe(false);
+      expect(isRetryableCompactionError(error)).toBe(true);
+      expect(isRetryableCompactionError(unwrapErrorCause(error))).toBe(true);
     }
     expect(requestDeliveryProvenance(unknown)).toBe('unknown');
     expect(parsed).toMatchObject({ statusCode: 429, message: 'slow down' });

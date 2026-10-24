@@ -68,7 +68,10 @@ import {
   APIProviderRateLimitError,
   APIRequestTooLargeError,
   APIStatusError,
-  requestDeliveryProvenance,
+  ChatProviderError,
+  ambiguousRequestDelivery,
+  markProviderEventError,
+  noteExecutedRequestDelivery,
 } from '#/kosong/contract/errors';
 import { emptyUsage, type TokenUsage } from '#/kosong/contract/usage';
 import { readGenerateFailureFacts } from '#/kosong/contract/generate';
@@ -98,7 +101,8 @@ import {
 } from '#/kosong/model/modelRequester';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { ILogService } from '#/_base/log/log';
-import { Error2, ErrorCodes } from '#/errors';
+import { Error2, ErrorCodes, attachErrorDetails } from '#/errors';
+import type { RetryConfig } from '#/agent/stepRetry/configSection';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import type { WireRecord } from '#/wire/record';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -249,6 +253,7 @@ function createService(
     readonly identityCatalogDocument?: unknown;
     readonly hostRequestHeaders?: Readonly<Record<string, string>>;
     readonly env?: Record<string, string>;
+    readonly retryConfig?: RetryConfig;
     readonly nativeWebSearch?: boolean;
     readonly nbSearch?: Partial<INbSearchService>;
     readonly promptConfig?: { value: PromptConfig };
@@ -362,6 +367,7 @@ function createService(
       if (section === 'prompt') return options.promptConfig?.value;
       if (section === 'providers') return options.providers;
       if (section === 'requestIdentity') return options.globalRequestIdentity?.value;
+      if (section === 'retry') return options.retryConfig;
       return undefined;
     }) as IConfigService['get'],
     onDidSectionChange: options.sectionChanges?.event,
@@ -1735,6 +1741,50 @@ describe('AgentLLMRequesterService infinite retry', () => {
     vi.useRealTimers();
   });
 
+  it.each(['provider-failed', 'unknown-websocket'] as const)('uses the existing backoff for no-output %s and succeeds on the next attempt', async mode => {
+    vi.useFakeTimers();
+    const calls = { value: 0 };
+    const error = mode === 'provider-failed'
+      ? markProviderEventError(new ChatProviderError('service unavailable'), 'provider_infrastructure_unavailable')
+      : ambiguousRequestDelivery(new APIConnectionError('websocket closed before terminal event (code 1012)'));
+    const { service } = createService(createRequester(calls, error), undefined, { env: { [KIKI_INFINITE_RETRY_ENV]: '1' } });
+    const onAttemptRetry = vi.fn();
+    const pending = service.request({ onAttemptRetry });
+    await vi.runAllTimersAsync();
+    expect((await pending).message.content).toEqual([{ type: 'text', text: 'ok' }]);
+    expect(calls.value).toBe(2);
+    expect(onAttemptRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['output', 'explicit-false', 'policy-false', 'thinking-only'] as const)('does not bypass %s while infinite retry is enabled', async mode => {
+    const calls = { value: 0 };
+    const error = mode === 'thinking-only'
+      ? markProviderEventError(new ChatProviderError('thinking-only stop'), 'antigravity_thinking_only')
+      : new APIStatusError(503, 'service unavailable');
+    if (mode === 'output') noteExecutedRequestDelivery(error);
+    if (mode === 'explicit-false') attachErrorDetails(error, { retry: false });
+    const { service } = createService(createRequester(calls, error), undefined, {
+      env: { [KIKI_INFINITE_RETRY_ENV]: '1' },
+      retryConfig: mode === 'policy-false' ? { policies: [{ match: 'APIStatusError', retry: false }] } : undefined,
+    });
+    await expect(service.request()).rejects.toBe(error);
+    expect(calls.value).toBe(1);
+  });
+
+  it('cancels during the existing backoff after a no-output provider failure', async () => {
+    vi.useFakeTimers();
+    const calls = { value: 0 };
+    const error = markProviderEventError(new ChatProviderError('service unavailable'), 'provider_infrastructure_unavailable');
+    const { service } = createService(createRequester(calls, error), undefined, { env: { [KIKI_INFINITE_RETRY_ENV]: '1' } });
+    const controller = new AbortController();
+    const pending = service.request({}, undefined, controller.signal);
+    const assertion = expect(pending).rejects.toThrow('stop');
+    setTimeout(() => { controller.abort(new Error('stop')); }, 100);
+    await vi.runAllTimersAsync();
+    await assertion;
+    expect(calls.value).toBe(1);
+  });
+
   it('retries every request error while KIKI_INFINITE_RETRY is set', async () => {
     vi.useFakeTimers();
     const calls = { value: 0 };
@@ -2475,10 +2525,11 @@ describe('Anthropic raw capture management port', () => {
 describe('AgentLLMRequesterService production delivery provenance', () => {
   it.each([
     { kind: 'unknown connection', status: undefined, message: 'terminated' },
+    { kind: 'provider infrastructure failure', status: undefined, message: 'temporary service failure' },
     { kind: 'partial rate limit', status: 429, message: 'rate limit after partial output' },
     { kind: 'partial media rejection', status: 413, message: 'request entity too large' },
     { kind: 'partial structure rejection', status: 400, message: 'messages: `tool_use` ids must be unique' },
-  ])('does not replay $kind through projection or infinite retry', async ({ status, message }) => {
+  ])('classifies $kind by actual output before projection or infinite retry', async ({ kind, status, message }) => {
     let calls = 0;
     const server = createServer((request, response) => {
       calls += 1;
@@ -2486,8 +2537,15 @@ describe('AgentLLMRequesterService production delivery provenance', () => {
       request.on('end', () => {
         response.writeHead(200, { 'content-type': 'text/event-stream' });
         if (status === undefined) {
-          response.write(': connected\n\n');
-          setImmediate(() => response.destroy());
+          if (calls === 1) {
+            if (kind === 'provider infrastructure failure') response.end(`data: ${JSON.stringify({ type: 'response.failed', response: {
+              id: 'resp_failed', status: 'failed', output: [], error: { code: 'provider_infrastructure_unavailable', message },
+            } })}\n\n`);
+            else { response.write(': connected\n\n'); setImmediate(() => response.destroy()); }
+          } else response.end(`data: ${JSON.stringify({ type: 'response.completed', response: {
+            id: 'resp_recovered', status: 'completed', output: [{ type: 'message', id: 'msg_recovered', role: 'assistant',
+              content: [{ type: 'output_text', text: 'recovered', annotations: [] }] }],
+          } })}\n\n`);
           return;
         }
         const events = [
@@ -2515,9 +2573,13 @@ describe('AgentLLMRequesterService production delivery provenance', () => {
     const { service } = createService(requester, undefined, { env: { [KIKI_INFINITE_RETRY_ENV]: '1' } });
     try {
       const result = service.request({ source: { type: 'turn', turnId: 1, step: 1 } }, undefined, AbortSignal.timeout(2_000));
-      if (status === undefined) await expect(result).rejects.toThrow('Request delivery is uncertain');
-      else await expect(result).rejects.toMatchObject({ statusCode: status, message });
-      expect(calls).toBe(1);
+      if (status === undefined) {
+        expect((await result).message.content).toEqual([{ type: 'text', text: 'recovered' }]);
+        expect(calls).toBe(2);
+      } else {
+        await expect(result).rejects.toMatchObject({ statusCode: status, message });
+        expect(calls).toBe(1);
+      }
     } finally {
       server.closeAllConnections();
       await new Promise<void>((resolve) => { server.close(() => resolve()); });
@@ -2525,12 +2587,53 @@ describe('AgentLLMRequesterService production delivery provenance', () => {
   });
 });
 
+it('recovers an actual no-output WebSocket 1012 close through the existing requester budget', async () => {
+  const handshake = readFileSync(new URL('../../kosong/provider/fixtures/responses-ws-capabilities.json', import.meta.url), 'utf8').trim();
+  const server = createServer();
+  const webSockets = new WebSocketServer({ server });
+  const sockets = new Set<WebSocket>();
+  let calls = 0;
+  webSockets.on('headers', headers => { headers.push(`X-Responses-WebSocket-Capabilities: ${handshake}`); });
+  webSockets.on('connection', socket => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+    socket.on('message', () => {
+      calls++;
+      if (calls === 1) { socket.close(1012, 'fixture service restart'); return; }
+      socket.send(JSON.stringify({ type: 'response.completed', sequence_number: 0, response: {
+        id: 'resp_recovered', status: 'completed', output: [{ type: 'message', id: 'msg_recovered', role: 'assistant',
+          status: 'completed', content: [{ type: 'output_text', text: 'recovered', annotations: [] }] }],
+      } }));
+    });
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+  const model = { ...createRequester({ value: 0 }, null).model, protocol: 'openai_responses' as const, baseUrl,
+    responsesWebSocket: { targets: [baseUrl] }, authProvider: { getAuth: async () => ({ apiKey: 'YOUR_API_KEY' }) } };
+  const provider = new OpenAIResponsesChatProvider({ model: model.name, baseUrl, apiKey: 'YOUR_API_KEY', responsesWebSocket: { targets: [baseUrl] } });
+  const requester = new ModelRequesterImpl(model, { createChatProvider: () => provider } as unknown as IProtocolAdapterRegistry);
+  const { service } = createService(requester, undefined, { env: { [KIKI_INFINITE_RETRY_ENV]: '1' } });
+  const onAttemptRetry = vi.fn();
+  try {
+    const result = await service.request({ source: { type: 'turn', turnId: 1, step: 1 }, onAttemptRetry }, undefined, AbortSignal.timeout(2000));
+    expect(result.message.content).toEqual([{ type: 'text', text: 'recovered' }]);
+    expect(calls).toBe(2);
+    expect(onAttemptRetry).toHaveBeenCalledTimes(1);
+  } finally {
+    await (service as AgentLLMRequesterService).dispose();
+    for (const socket of sockets) socket.terminate();
+    await new Promise<void>(resolve => { webSockets.close(() => { resolve(); }); });
+    server.closeAllConnections();
+    await new Promise<void>(resolve => { server.close(() => { resolve(); }); });
+  }
+});
+
 describe.each([
   { protocol: 'anthropic', Provider: AnthropicChatProvider },
   { protocol: 'openai', Provider: OpenAILegacyChatProvider },
   { protocol: 'openai_responses', Provider: OpenAIResponsesChatProvider },
 ] as const)('Agent requester $protocol SDK timeout', ({ protocol, Provider }) => {
-  it.each(['gzip', 'zstd'] as const)('sends %s once through the production SDK/provider/requester with infinite retry enabled', async (encoding) => {
+  it.each(['gzip', 'zstd'] as const)('recovers a no-output %s SDK timeout through the existing infinite retry', async (encoding) => {
     const sent: Array<string | null> = [];
     let entered!: () => void;
     const didSend = new Promise<void>((resolve) => { entered = resolve; });
@@ -2539,6 +2642,21 @@ describe.each([
       const request = new Request(input, init);
       sent.push(request.headers.get('content-encoding'));
       entered();
+      if (sent.length > 1) {
+        const frames = protocol === 'anthropic' ? [
+          { type: 'message_start', message: { id: 'msg_recovered', usage: { input_tokens: 7, output_tokens: 0 } } },
+          { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'recovered' } },
+          { type: 'content_block_stop', index: 0 },
+          { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 2 } },
+          { type: 'message_stop' },
+        ] : protocol === 'openai' ? [
+          { id: 'chat_recovered', choices: [{ delta: { content: 'recovered' }, finish_reason: 'stop' }], usage: { prompt_tokens: 7, completion_tokens: 2 } },
+        ] : [{ type: 'response.completed', response: { id: 'resp_recovered', status: 'completed', output: [
+          { type: 'message', id: 'msg_recovered', role: 'assistant', content: [{ type: 'output_text', text: 'recovered', annotations: [] }] },
+        ], usage: { input_tokens: 7, output_tokens: 2 } } }];
+        return new Response(frames.map(frame => `${protocol === 'anthropic' ? `event: ${(frame as { type: string }).type}\n` : ''}data: ${JSON.stringify(frame)}\n\n`).join(''),
+          { headers: { 'content-type': 'text/event-stream' } });
+      }
       return new Promise<Response>((_resolve, reject) => {
         const abort = (): void => { reject(new DOMException('The operation was aborted.', 'AbortError')); };
         if (request.signal.aborted) abort();
@@ -2554,16 +2672,17 @@ describe.each([
     const requester = new ModelRequesterImpl(model, { createChatProvider: () => provider } as unknown as IProtocolAdapterRegistry);
     const { service } = createService(requester, undefined, { env: { [KIKI_INFINITE_RETRY_ENV]: '1' } });
     try {
-      const result = service.request({ source: { type: 'turn', turnId: 1, step: 1 },
-        messages: [{ role: 'user', content: [{ type: 'text', text: 'synthetic-timeout-history '.repeat(4000) }], toolCalls: [] }] })
-        .then(() => { throw new Error('Expected the request to time out'); }, (error: unknown) => error);
+      const onAttemptRetry = vi.fn();
+      const result = service.request({ source: { type: 'turn', turnId: 1, step: 1 }, onAttemptRetry,
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'synthetic-timeout-history '.repeat(4000) }], toolCalls: [] }] });
       await didSend;
       await vi.advanceTimersByTimeAsync(600_001);
-      const error = await result;
-      expect(requestDeliveryProvenance(error)).toBe('unknown');
-      expect(error).toMatchObject({ message: 'Request delivery is uncertain; generation was not retried.' });
-      expect(sent).toEqual([encoding]);
-      expect(getAuth).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => { expect(onAttemptRetry).toHaveBeenCalledTimes(1); });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect((await result).message.content).toEqual([{ type: 'text', text: 'recovered' }]);
+      expect(sent).toEqual([encoding, encoding]);
+      expect(onAttemptRetry).toHaveBeenCalledTimes(1);
+      expect(getAuth).toHaveBeenCalledTimes(2);
     } finally {
       await (service as AgentLLMRequesterService).dispose();
       vi.unstubAllGlobals();
