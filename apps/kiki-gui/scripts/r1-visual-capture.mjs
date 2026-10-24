@@ -15,8 +15,11 @@
  *    `<html data-theme>` never moves, and the wait used to expire at 10s.
  *    The switch posts `pref:theme` through the fixture settings preview/apply
  *    (the contract the Appearance control posts), mirrors the device boot
- *    value, and has the mounted preference frame re-read. The wait is still
- *    `data-theme` at 10s, and each dark shot still asserts `--color-paper`.
+ *    value, and reloads. Permission, plan, and the plan gate live in
+ *    in-memory composer chrome, and the open panel unmounts with the page,
+ *    so the scenario opens that state again with the same controls. The wait
+ *    is still `data-theme` at 10s, and each dark shot still asserts
+ *    `--color-paper`.
  *    Writing `classList.add('dark')` does nothing.
  *  - K06 runs on the `send-timing` fixture: the turn parks on a release gate,
  *    so the composer really is busy without a pending interaction. The
@@ -166,73 +169,85 @@ let activeFixtureUrl = '';
 async function alignDeviceTheme(page, theme) {
   await page.evaluate((next) => {
     const key = 'kiki.settings';
-    const oldValue = localStorage.getItem(key);
-    const settings = oldValue === null ? {} : JSON.parse(oldValue);
-    const newValue = JSON.stringify({ ...settings, theme: next });
-    localStorage.setItem(key, newValue);
-    window.dispatchEvent(new StorageEvent('storage', { key, oldValue, newValue, storageArea: localStorage }));
+    const raw = localStorage.getItem(key);
+    const settings = raw === null ? {} : JSON.parse(raw);
+    localStorage.setItem(key, JSON.stringify({ ...settings, theme: next }));
   }, theme);
-}
-
-/** The preference frame lives under the mounted shell. Re-read its detail. */
-async function refreshSpacePreference(page) {
-  return page.evaluate(async () => {
-    const root = document.querySelector('#root');
-    if (root === null) return false;
-    const containerKey = Object.keys(root).find((name) => name.startsWith('__reactContainer$'));
-    const stored = containerKey === undefined ? undefined : root[containerKey];
-    const host = stored?.child ? stored : stored?.current;
-    const seen = new Set();
-    const stack = host ? [host] : [];
-    while (stack.length > 0) {
-      const current = stack.pop();
-      if (current == null || seen.has(current)) continue;
-      seen.add(current);
-      const props = current.memoizedProps ?? current.pendingProps;
-      const candidate = props?.client ?? props?.value;
-      if (candidate !== null && typeof candidate === 'object' && typeof candidate.getQueryCache === 'function') {
-        const matches = candidate.getQueryCache().findAll({ queryKey: ['space-settings', 'detail'] });
-        if (matches.length > 0) {
-          await candidate.invalidateQueries({ queryKey: ['space-settings', 'detail'] });
-          return true;
-        }
-      }
-      if (current.child) stack.push(current.child);
-      if (current.sibling) stack.push(current.sibling);
-    }
-    return false;
-  });
 }
 
 async function setTheme(page, theme) {
   const fixtureUrl = activeFixtureUrl;
   if (fixtureUrl === '') throw new Error('theme switch needs the fixture server for this capture');
-  // Device boot value first, so the re-read does not treat the new space theme as a foreign look.
+  // Boot value only. The space preference is what the reloaded shell resolves.
   await alignDeviceTheme(page, theme);
   await applyFixtureTheme(fixtureUrl, theme, FIXTURE_TOKEN);
-  const refreshed = await refreshSpacePreference(page);
-  if (!refreshed) {
-    const already = await page.evaluate((next) => document.documentElement.dataset['theme'] === next, theme);
-    if (!already) throw new Error('space preference was saved but the open shell has no space-settings query to re-read');
-  }
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('textarea:not([disabled])', { timeout: 20_000 });
   try {
     await page.waitForFunction((next) => document.documentElement.dataset['theme'] === next, theme, { timeout: 10_000 });
   } catch (error) {
     const actual = await page.evaluate(() => document.documentElement.dataset['theme'] ?? null);
     throw new Error(`theme did not resolve to ${theme} (data-theme=${actual})`, { cause: error });
   }
-  // A late device import can publish the previous detail. The server already
-  // holds this theme, so one more re-read is the same contract, not a longer wait.
-  await page.waitForTimeout(300);
-  const held = await page.evaluate((next) => document.documentElement.dataset['theme'] === next, theme);
-  if (!held) {
-    if (!await refreshSpacePreference(page)) throw new Error(`theme ${theme} rolled back and the shell query was gone`);
-    await page.waitForFunction((next) => document.documentElement.dataset['theme'] === next, theme, { timeout: 10_000 });
-  }
-  // Prove the palette followed, not just the attribute.
   const paper = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--color-paper').trim());
   if (theme === 'dark') return paper.toLowerCase() === PAPER_DARK;
   return paper.toLowerCase() !== PAPER_DARK;
+}
+
+/**
+ * Reload drops the open panel and the in-memory permission / plan / plan-gate
+ * chrome. The promise line renders only for manual permission with the gate
+ * off, and the gate switch itself is present in other modes, so this repeats
+ * the same control sequence as the first manual shot.
+ */
+async function showManualPlanCaveat(page) {
+  await page.waitForSelector('textarea:not([disabled])', { timeout: 15_000 });
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+  await page.locator('[data-permission-tone]').click();
+  await page.waitForSelector('[data-permission-panel]', { timeout: 5_000 });
+  await page.locator('[data-permission-mode="manual"]').click();
+  await page.waitForTimeout(300);
+  await page.locator('textarea').focus();
+  await page.keyboard.press('Control+Shift+M');
+  await page.waitForSelector('[data-run-mode-panel]', { timeout: 10_000 });
+  const plan = page.locator('[data-mode-switch="plan"]');
+  if (await plan.getAttribute('aria-checked') !== 'true') {
+    await plan.click();
+    await page.waitForTimeout(300);
+  }
+  const gate = page.locator('[data-mode-switch="planGate"]');
+  await gate.waitFor({ timeout: 5_000 });
+  if (await gate.getAttribute('aria-checked') === 'true') {
+    await gate.click();
+    await page.waitForTimeout(300);
+  }
+  await page.waitForSelector('[data-plan-gate-effective]', { timeout: 5_000 });
+}
+
+/** A reload closes the queued popover. The trigger and the saved draft open it again. */
+async function showQueuedPopover(page, draft) {
+  await page.waitForSelector('textarea:not([disabled])', { timeout: 20_000 });
+  const trigger = page.locator('[data-composer-queued-trigger]');
+  await trigger.waitFor({ timeout: 15_000 });
+  if ((await page.inputValue('textarea')) !== draft) await page.fill('textarea', draft);
+  if (await page.locator('[data-composer-queued-popover]').count() === 0) {
+    await trigger.click();
+    await page.waitForSelector('[data-composer-queued-popover]', { timeout: 5_000 });
+  }
+}
+
+/** A reload folds the rail section. The same toggle opens the rows again. */
+async function showUnfoldedHooks(page) {
+  await page.waitForSelector('[data-rail-toggle]', { timeout: 15_000 });
+  const railToggle = page.locator('[data-rail-toggle]');
+  if (await railToggle.count() > 0 && await railToggle.getAttribute('aria-expanded') === 'false') {
+    await railToggle.click();
+  }
+  const hooksSection = page.locator('[data-agent-hooks-section]');
+  await hooksSection.waitFor({ timeout: 10_000 });
+  const toggle = hooksSection.locator('button[aria-expanded]');
+  if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
 }
 
 async function enterWorkingSession(page, link, sessionId, prompt) {
@@ -302,9 +317,13 @@ async function capture() {
     const page = await context.newPage();
     await page.addInitScript(() => {
       try {
-        localStorage.setItem('kiki.locale', 'zh');
-        localStorage.setItem('kiki.settings', JSON.stringify({ theme: 'light' }));
-        localStorage.setItem('kiki.onboarding', JSON.stringify({ completedAt: '2026-01-01T00:00:00.000Z' }));
+        if (localStorage.getItem('kiki.locale') === null) localStorage.setItem('kiki.locale', 'zh');
+        if (localStorage.getItem('kiki.settings') === null) {
+          localStorage.setItem('kiki.settings', JSON.stringify({ theme: 'light' }));
+        }
+        if (localStorage.getItem('kiki.onboarding') === null) {
+          localStorage.setItem('kiki.onboarding', JSON.stringify({ completedAt: '2026-01-01T00:00:00.000Z' }));
+        }
       } catch { /* ignore */ }
     });
     return { context, page };
@@ -353,19 +372,19 @@ async function capture() {
       await shot(page, 'k01-plan-mode-manual-light-1440');
 
       expect(await setTheme(page, 'dark'), 'K01 dark: palette switched to the dark paper token');
-      await page.waitForTimeout(300);
+      await showManualPlanCaveat(page);
       await shot(page, 'k01-plan-mode-manual-dark-1440');
 
       expect(await setTheme(page, 'light'), 'K01: palette restored to light');
+      await showManualPlanCaveat(page);
 
       await page.setViewportSize({ width: 390, height: 844 });
-      await page.waitForTimeout(300);
       const narrowVisible = await page.locator('[data-plan-gate-effective]').isVisible();
       expect(narrowVisible, 'K01 narrow 390: promise line still rendered');
       await shot(page, 'k01-plan-mode-manual-narrow-390');
 
       // Negative control: switching the gate back on removes the caveat again.
-      await gateSwitch.click();
+      await page.locator('[data-mode-switch="planGate"]').click();
       await page.waitForTimeout(300);
       expect(await page.locator('[data-plan-gate-effective]').count() === 0, 'K01: caveat disappears when the gate is switched back on');
 
@@ -431,13 +450,13 @@ async function capture() {
       await shot(page, 'k06-queued-details-popover-light-1440');
 
       expect(await setTheme(page, 'dark'), 'K06 dark: palette switched to the dark paper token');
-      await page.waitForTimeout(200);
+      await showQueuedPopover(page, DRAFT);
       await shot(page, 'k06-queued-details-popover-dark-1440');
 
       expect(await setTheme(page, 'light'), 'K06: palette restored to light');
       await page.setViewportSize({ width: 390, height: 844 });
-      await page.waitForTimeout(200);
-      expect(await popover.isVisible(), 'K06 narrow 390: popover stays on screen');
+      await showQueuedPopover(page, DRAFT);
+      expect(await page.locator('[data-composer-queued-popover]').isVisible(), 'K06 narrow 390: popover stays on screen');
       await shot(page, 'k06-queued-details-popover-narrow-390');
 
       // The details link is a real route, not decoration.
@@ -595,12 +614,12 @@ async function capture() {
       await shot(page, 'k07-hooks-section-unfolded-light-1440');
 
       expect(await setTheme(page, 'dark'), 'K07 dark: palette switched to the dark paper token');
-      await page.waitForTimeout(300);
+      await showUnfoldedHooks(page);
       await shot(page, 'k07-hooks-section-unfolded-dark-1440');
 
       expect(await setTheme(page, 'light'), 'K07: palette restored to light');
       await page.setViewportSize({ width: 390, height: 844 });
-      await page.waitForTimeout(300);
+      await showUnfoldedHooks(page);
       await shot(page, 'k07-hooks-section-unfolded-narrow-390');
 
       await context.close();
