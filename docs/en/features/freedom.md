@@ -1,12 +1,12 @@
 ---
-title: Every layer is yours
+title: Models, Prompts & Permissions
 ---
 
-# Every layer is yours
+# Models, Prompts & Permissions
 
 Nothing about an agent is fixed by the tool. In Kiki, the model it runs on, the prompt it starts from, the tools it may call, the sign-in it uses, and what happens when it wants to act are all yours to set — as files, as settings, or as a rule you write. This page walks that stack from the bottom up: agent files, prompt overrides, connections and OAuth, permission modes, and hooks.
 
-## The agent is a Markdown file
+## Markdown agents
 
 Every agent — the main one and each subagent — is a single Markdown file. The **frontmatter** declares its name, description, tool allowlist, model binding, and more; the **body** is the agent's system prompt. A profile is not just tools and permissions: it also carries which model and thinking effort the role runs on, the execution settings around it, and the prompt it starts from. Editing a file changes all of it, because they are all in the same place.
 
@@ -16,7 +16,7 @@ You do not have to write one from scratch. In the app, a new profile starts by c
 
 See [Agent profiles: concepts and design](/en/customization/agent-profiles) and [Agent file format](/en/customization/agents-and-subagents#agent-file-format).
 
-## Prompts down to one tool description
+## Prompt field overrides
 
 You do not need a fork of a profile to change a sentence. **Prompt field overrides** replace named text units in the built-in prompt — the system sections, a tool description, a delegation notice — globally, per model, or per agent. A useful field id is as small as `tool.web-search.description`. Field values replace; they do not append or wrap.
 
@@ -24,7 +24,7 @@ You do not need a fork of a profile to change a sentence. **Prompt field overrid
 
 ![Prompt field overrides, down to one tools description, beside a live preview of the resulting prompt.](/shots/freedom/ce-20261005-freedom-prompt-overrides.en.png)
 
-## Connections: one list, one row each
+## Connections & OAuth
 
 **Settings → Models & providers → Providers & accounts** is a single list, and every way Kiki reaches a model is a **connection** — an account you sign in to, a hosted API you hold a key for, or a server on this machine. Each connection is one row saying how it is reached, what it carries, and whether it works. How a connection authenticates is part of that row, not a second list you have to keep in step.
 
@@ -46,7 +46,7 @@ A sign-in that completes adds that account's models to the catalog. **Available 
 
 ![Reusing a sign-in this machine already holds: what was found and where it is kept, with the action that adopts it.](/shots/freedom/ce-20261005-freedom-oauth-reuse.en.png)
 
-## Permission modes: how often it asks
+## Permission modes
 
 `/permission` switches among Manual, Auto, Approve for me, and YOLO. In the default Auto mode, routine tool calls run without asking, but sensitive-file and external-link access still request approval. Manual asks before shell commands and workspace-external writes, while trusted-workspace `Write` / `Edit` calls run without per-file approval. YOLO skips sensitive-file prompts unless a rule explicitly denies them. An explicit deny always wins, and the agent can still ask you questions in any mode.
 
@@ -54,7 +54,7 @@ A sign-in that completes adds that account's models to the catalog. **Available 
 
 Plan mode is a separate axis: the agent produces a plan and waits for your approval before modifying files. Exiting Plan mode requires confirmation even in YOLO, except in Auto and Approve for me, where plan exits are auto-approved and marked as such. See [Interaction and input](/en/guides/interaction#permission-modes) and [`/permission` in the config reference](/en/configuration/config-files#permission).
 
-## Hooks: your own script at the right moment
+## Lifecycle hooks
 
 A **hook** runs your script on a lifecycle event — a tool call, a session event, a subagent completion. You can use one to block a dangerous shell command, to add context when a message is submitted, or to get a notification when a task finishes. Hooks are declarative rules in configuration, and `Inspecting effective rules` shows what is actually in force.
 
@@ -64,4 +64,4 @@ Hooks also run for external harnesses that act as a main agent, where Kiki's nat
 
 - [Agent profiles: concepts and design](/en/customization/agent-profiles) — the customization mechanism map
 - [Connections](/en/guides/settings#connections) — the connections list in full
-- [Bring your history, meet other tools](/en/features/ecosystem) — where Kiki meets other tools
+- [History Import, IDEs & Engines](/en/features/ecosystem) — where Kiki meets other tools

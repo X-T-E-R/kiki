@@ -1,12 +1,12 @@
 ---
-title: The daily driver
+title: Timeline, Approvals & Usage
 ---
 
-# The daily driver
+# Timeline, Approvals & Usage
 
 The workbench is one window, but the work is not: a turn runs, a subagent finishes, something needs your approval, and the cost adds up. This page is about the parts of that window you look at every day — the timeline that stays readable, annotations you can leave on a message, the tray that collects what needs you, the right rail that follows whichever agent you are focused on, and the usage page that tells you what it cost, what is holding a request up, and where those numbers can go.
 
-## A timeline that stays readable
+## Step-folding timeline
 
 A long agent turn is mostly tool calls, thinking, and shell output. The conversation view folds finished stretches of it into one line such as "Worked · 8 steps", and you can expand any fold back in its original order. The live turn and finished subagents fold the same way, image results keep a row of their own, and failed or cancelled entries always stay visible on their own.
 
@@ -14,19 +14,19 @@ Resolved questions, approvals, markers, and completion notices stay inline at th
 
 Long tool output loads by itself as you scroll: Kiki keeps reading the next segment in the background and the row under the body shows the progress. If a segment fails, it stops there and offers **Retry**, and where the server keeps an original for that field the same row offers **Download original** to save the field's full content to your machine. See [Interface overview](/en/guides/interface#conversation-view).
 
-## Annotations: say something about a message
+## Message annotations
 
 You can attach an annotation to a message in the timeline and send it along with your next message, rather than interrupting with a separate turn. The composer keeps a count of the notes you are carrying, and the note markers stay on the messages they belong to, so a later reader can see what you pointed at and why. Reopening a note brings up the same anchored editor you wrote it in.
 
 Annotations are for the desktop and browser composer; the terminal equivalent is a normal message or a `!` shell command in the same turn. See [Interface overview](/en/guides/interface#input-box).
 
-## "Needs you" collects what is waiting
+## "Needs you" tray
 
 Approvals and questions do not scatter across the timeline as they arrive. They collect in a tray above the composer: an approval you can act on, and non-blocking questions folded into a "one more item" line until you open them. When something is waiting, the composer card gives it over, and your unsent draft comes back intact when it is resolved.
 
 That is also where the "send timing" menu lives while the agent is busy, so a decision and a queue adjustment are in the same place. Approvals themselves — the modes and what each one allows — are covered in [Interaction and input](/en/guides/interaction#permission-modes).
 
-## The right rail follows the agent you are focused on
+## Focus-following rail
 
 The right panel describes one agent at a time: whichever you last clicked into or focused. The main agent and every subagent get the same page, and the same rail follows you into a subagent's transcript.
 
@@ -38,7 +38,7 @@ See [Interface overview](/en/guides/interface#right-rail) and [Session controls]
 
 **Usage** in the sidebar opens on **Live**. The tabs are **Live**, **History**, **Quotas**, and **External sync**, in that order. **Live** answers why nothing is moving, **History** answers what a date range cost, **Quotas** answers what a configured provider account still has, and **External sync** answers where you want the numbers to go. An address that already filters history opens **History**. See [Usage](/en/guides/settings#usage).
 
-### History: what the range cost
+### History & cost
 
 **History** is the date-range view: token usage and estimated cost, starting at today. The filter bar drives it — range first, then workspace, bucket size, and what the chart is broken down by — and every choice rides the URL, so a view you settled on is a link you can paste. Under the four totals, the trend chart stacks by the breakdown axis, a bucket opens into the sessions and turns behind it, and the tabs below rank sessions by cost so the expensive one is the first row.
 
@@ -46,7 +46,7 @@ The number it will not give you is a confident wrong one. Token usage and cost c
 
 ![The usage page on its History tab: cost, token, and cache-hit totals for the range, a seven-day trend, and the per-session breakdown below.](/shots/daily/daily-usage.en.png)
 
-### Live: who is running, who is waiting, and which rule is holding them
+### Live rules & queues
 
 **Live** is the other half of the same page, and it answers the question a spending page raises the moment something feels slow. It counts what this Kiki service is running and what it is holding, and **Request details** breaks those counts down by model, provider, or role.
 
@@ -58,7 +58,7 @@ Two boundaries worth knowing before you tune this. The cap counts **requests**, 
 
 ![The usage page on its Live tab: running and queued counts by model, a waiting request naming the kimi-cap rule that holds it, and the concurrency rules below with one enabled and one paused.](/shots/daily/ux-usage-live.en.png)
 
-### External sync: send the numbers somewhere you chose
+### External sync
 
 **External sync** sends this server's own usage to a destination you pick, on a schedule you pick. It is the tab for a person who wants their token counts somewhere other than this app: a team warehouse, a personal script, or a hosted service. Three kinds of destination are available:
 
@@ -78,4 +78,4 @@ The same destinations can be managed from the terminal with [`kiki usage-export`
 
 - [Interface overview](/en/guides/interface) — the full tour of the window
 - [Settings pages](/en/guides/settings) — where each control lives
-- [One workbench, many lines](/en/features/workbench) — what the agents in the rail are doing
+- [Subagents & Multi-Model](/en/features/workbench) — what the agents in the rail are doing

@@ -8,7 +8,7 @@ An **agent** is the thing that actually does the work: it reads files, runs comm
 
 This page explains what an agent is, how the main agent and subagents differ, and how to choose and combine profiles. The full field reference lives in [Agents and Sub-Agents](/en/customization/agents-and-subagents) and [Agent profiles: concepts and design](/en/customization/agent-profiles).
 
-## The main agent and its subagents
+## Main agent & subagents
 
 You talk to one agent per session: the **main agent**. It receives your messages, plans, calls tools, and produces the replies you see. When a piece of work is worth isolating, the main agent dispatches a **subagent** to handle it — a coding change that needs exploring first, several implementations to review in parallel, a large refactor to plan without loading the main context.
 
@@ -18,7 +18,7 @@ A subagent is given a task description and works in its own isolated context. It
 
 Each subagent spends model tokens of its own, so handing over a task the main agent could finish in one step is pure extra cost. Whether the remaining work is separable enough to hand off is the main agent's own judgment, and naming a role yourself overrides it.
 
-### How a profile becomes a main agent
+### Main agent binding
 
 A profile is not a main agent or a subagent by itself. Which one it is depends on how it is bound:
 
@@ -32,13 +32,13 @@ The `main: true` frontmatter flag marks a profile as a *candidate* for the sessi
 
 The session's main agent runs on the model you pick for the session, which overrides whatever its profile pins. A subagent resolves its own model separately, in order: an explicit `model_alias` on the dispatch, then the pin or model menu of the profile it runs as, then `[subagent].default_model`. A profile left without a pin and no default configured fails the dispatch with `model.not_configured` rather than silently inheriting the caller's model — except for the templates that set `model_alias: inherit` on purpose. So the model you choose in the menu governs the agent you are talking to, and what a profile pins governs every agent dispatched as that role.
 
-### One model, shared settings, differences only where you want them
+### Model overrides
 
 When the same model serves both roles, you do not define it twice. A model is defined once — its alias, provider, credentials, context window, and supported efforts — and the roles share the usual operating settings such as default effort, service tier, when the context compresses, and the context budget. The main agent can override just the ones that should differ, and anything it leaves unset is inherited; a subagent simply uses the shared values.
 
 So a single model can be set to a high effort for the agent you talk to and the default elsewhere, or compress at a tighter point for the main agent while subagents keep the shared trigger. Everything not named stays shared, and an explicitly chosen model or effort in a session still wins. Prompt fields follow the same split between shared, main, and independent: parameters are inherited field by field, while the old prompt identity blocks still replace as a whole. See [`models` in the config reference](/en/configuration/config-files#models) and [Model menus and hard boundaries](/en/customization/agent-profiles#model-menus-and-hard-boundaries) for the exact rules.
 
-## One file describes the role
+## One file per role
 
 The **frontmatter** carries the configuration — the name, the description the dispatcher reads, the model and thinking effort, the tool allowlist, and which subagents the role may itself dispatch. The **body** is the system prompt the agent starts from. Nothing else is required: a profile is plain text you can read, diff, and keep in version control.
 
@@ -48,7 +48,7 @@ Fresh installs ship three roles you can use immediately: the main `agent` that d
 
 ![The Settings > Agents list, with main agents and subagents grouped and each role's model, effort, and permitted child agents on its row.](/shots/agents/agents-profiles.en.png)
 
-## The roles worth writing
+## Shipped & custom roles
 
 Two more ship as templates, because most work divides into the same two shapes:
 
@@ -63,7 +63,7 @@ Editing one opens its own page. The form covers the fields that matter — the i
 
 Writing your own pays off when a kind of work recurs and has house rules: a reviewer that must cite file and line, a tester that always runs the suite before reporting, an implementer that must not touch generated files. Starting from a copy of a role that already works, or from a shipped template, beats starting blank.
 
-## Deciding which one runs
+## Dispatch & model rules
 
 You rarely pick a profile by hand. The main agent dispatches on the `description` and `whenToUse` each profile declares, so those two lines decide the work — write them for the dispatcher, not for yourself. You can still steer: ask for a role by name ("use `explore` to map the files first"). Whether a dispatch stops for your approval depends on the session's [permission mode](/en/guides/interaction#permission-modes) — under `manual` each one is a request you read and accept or reject, while `auto` and `yolo` let routine dispatches proceed.
 
@@ -79,5 +79,5 @@ A profile is execution configuration: tools, permissions, model, effort, and the
 
 - [Agents and Sub-Agents](/en/customization/agents-and-subagents) — the field reference and dispatch contract
 - [Agent profiles: concepts and design](/en/customization/agent-profiles) — where profiles live and when changes take effect
-- [One workbench, many lines](/en/features/workbench) — what the main session does with a dispatched tree
-- [Every layer is yours](/en/features/freedom) — prompt overrides, connections, permission modes, and hooks
+- [Subagents & Multi-Model](/en/features/workbench) — what the main session does with a dispatched tree
+- [Models, Prompts & Permissions](/en/features/freedom) — prompt overrides, connections, permission modes, and hooks

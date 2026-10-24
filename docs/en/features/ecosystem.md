@@ -1,8 +1,8 @@
 ---
-title: Bring your history, meet other tools
+title: History Import, IDEs & Engines
 ---
 
-# Bring your history, meet other tools
+# History Import, IDEs & Engines
 
 Kiki meets other tools in more than one direction, and the directions are not the same promise. This page keeps them apart, because the honest way to describe each one is different:
 
@@ -10,7 +10,7 @@ Kiki meets other tools in more than one direction, and the directions are not th
 2. **Letting other tools use Kiki** — Kiki runs as a service an external tool calls: an IDE drives your sessions over ACP, and a tool like Cursor, Claude Code, or Codex calls it over a fixed seat.
 3. **Letting Kiki use other tools as engines** — another agent harness runs one of your subagents, and can in turn call Kiki's own context back.
 
-## Bring your history in
+## History import
 
 Kiki's built-in history import turns another tool's text conversation into a **Kiki session you can keep working in**, or saves it as a read-only archive. Claude Code, Codex, Pi, Grok Build, and OpenCode export files, plus a custom JSON or script, need no plugin, no trust, and no activation. Import runs on the Kiki server without a model, and leaves the source files where they were.
 
@@ -22,7 +22,7 @@ History import is on by default, but it does not scan folders or import anything
 
 ![Import history: the six readable sources, and a preview of one conversation saying what will not be carried over.](/shots/ecosystem/ecosystem-history-import.en.png)
 
-## Let other tools use Kiki
+## IDEs & MCP seats
 
 This is Kiki as a service, and it comes in two shapes.
 
@@ -32,7 +32,7 @@ This is Kiki as a service, and it comes in two shapes.
 
 See [Using Kiki in IDEs](/en/server/ide), [`kiki acp`](/en/server/acp), and [`kiki seat`](/en/reference/command#kiki-seat).
 
-## Let Kiki use other tools as engines
+## External engines
 
 The direction reverses: another agent harness runs *your* subagent. An agent profile can carry an `executor` and run on Claude Code, Codex, Cursor, Gemini CLI, Kimi CLI, OpenCode, or Grok Build over ACP or the Codex app-server. Settings → Models & providers → Providers & accounts → External engines checks whether each one is installed and shows the setup steps that remain.
 

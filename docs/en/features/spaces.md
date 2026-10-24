@@ -1,20 +1,20 @@
 ---
-title: Your data, your machines
+title: Spaces, Remote Links & SSH
 ---
 
-# Your data, your machines
+# Spaces, Remote Links & SSH
 
 Kiki runs where you run it, and the things it can reach are yours to decide. This page covers the four places that reach: **spaces**, which model the Kikis you open; **remote connections**, which point one Kiki at another with an approval on each side; **thread bridges**, which let one Kiki send messages into another without being able to browse it; and **Web access**, which opens this Kiki in a browser. It ends with in-session SSH, the one reach that is just a session's own resource.
 
 Nothing here is a relay through someone else's server. Sessions live under your Kiki home on the machine the server runs on; a remote connection or a web link is a door you open, with a credential you can revoke.
 
-## Spaces: the Kikis you open
+## Spaces & work modes {#spaces-the-kikis-you-open}
 
 A **space** is one Kiki you work in. The main space manages the list; the spaces themselves are what you open. Each one can have its own shortcuts, its own window behavior, and its own credential scope, so a work Kiki and a personal Kiki can sit side by side without sharing what they can sign in to.
 
 Credentials are the decision each subspace makes. **Shared** means the subspace reuses the main space's credentials; **isolated** means it keeps its own, so signing into a personal account in one subspace does not change the other. The space settings detail also shows, per item, what the space follows and what it fixes, so you can see whether a value is inherited or pinned. You can copy SSH profiles from one space into another, or copy one here, without moving anything by hand.
 
-Change the credential scope on the subspace's own card in **Settings → Spaces**. See [Settings pages](/en/guides/settings) for the other sections of that dialog, and [Every layer is yours](/en/features/freedom) for what those credentials reach.
+Change the credential scope on the subspace's own card in **Settings → Spaces**. See [Settings pages](/en/guides/settings) for the other sections of that dialog, and [Models, Prompts & Permissions](/en/features/freedom) for what those credentials reach.
 
 A **work mode** is a working surface inside a space, not another data boundary. The mode picker offers Kiki and Work by default; explicitly setting `KIKI_EXPERIMENTAL_WORK_PRESETS=false` or `[experimental] work_presets = false` keeps it off. Each space has its own Work setup, name and preferred task. Selecting Work offers Office, writing, extraction and table-check starters; its setup shows the packages that are actually installed and asks before installing missing packages or OfficeCLI. A failed setup retains the packages that succeeded so you can retry the rest. Switching modes does not change an existing session's model, profile or permissions, and removing a mode keeps its documents, sessions and shared plugins.
 
@@ -26,7 +26,7 @@ On desktop, **Open in new window** opens another mode in the same space. Its rou
 
 ![Choosing a space's credential scope: share the main space's accounts and keys, or keep this space's separate.](/shots/spaces/ps-20261005-spaces-credentials.en.png)
 
-## Remote connections: one Kiki, pointed at another
+## Remote connections
 
 A remote connection is a directed link from this Kiki's home to another Kiki home on another machine. It is not a shared login: the target has its own identity, and it must approve the source before anything flows.
 
@@ -42,7 +42,7 @@ See [`kiki connections`](/en/reference/command#kiki-connections) and [`kiki brid
 
 ![This Kiki's identity string, and the gate deciding which other Kikis may connect to it — off by default, with each allowed one listed and revocable.](/shots/spaces/ps-20261005-spaces-inbound.en.png)
 
-## Thread bridges: talk without browsing
+## Thread bridges
 
 A thread bridge is a one-way channel for thread messages between two homes. It is deliberately narrower than a remote connection: the target home approves the exact source and target scopes, the operations — `read`, `send`, `wait`, and `wake` only if you ask for it — and an expiry, and the bridge carries nothing else. Without `wake`, sends stay pending rather than starting a model turn on the other side.
 
@@ -50,7 +50,7 @@ A bridge never grants GUI browsing access, and GUI tokens and SSH logins do not 
 
 See [`kiki bridges`](/en/reference/command#kiki-bridges).
 
-## Web access: this Kiki, in a browser
+## Web access
 
 Web access opens **this** Kiki from a browser on another device. Whoever holds the link can use it in full, with the same access you have — it is not a read-only share, and a temporary entry is temporary only in how long it stays open.
 

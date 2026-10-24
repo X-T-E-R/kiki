@@ -1,8 +1,8 @@
 ---
-title: 带过来，也接得进外面
+title: 历史导入、IDE 与外部引擎
 ---
 
-# 带过来，也接得进外面
+# 历史导入、IDE 与外部引擎
 
 Kiki 和别的工具相接的方向不止一个，而这些方向承诺的并不是同一件事。这一页把它们分开，因为每一种诚实的说法都不一样：
 
@@ -10,7 +10,7 @@ Kiki 和别的工具相接的方向不止一个，而这些方向承诺的并不
 2. **让别的工具用 Kiki**——Kiki 作为一个可被调用的服务存在：编辑器通过 ACP 驱动你的会话，Cursor、Claude Code、Codex 这样的工具通过固定席位调用它。
 3. **让 Kiki 把别的工具当引擎用**——另一个智能体 harness 跑你的某个子智能体，并且反过来还能调用 Kiki 自己的上下文。
 
-## 把你的历史带进来
+## 导入对话历史
 
 Kiki 内置的历史导入把另一个工具的文本对话变成**你能接着用的 Kiki 会话**，或者存成只读归档。Claude Code、Codex、Pi、Grok Build、OpenCode 的导出文件，以及自定义 JSON 或脚本，都不需要插件、不需要信任、不需要启用。导入在 Kiki 服务端运行，不调用模型，源文件原地不动。
 
@@ -22,7 +22,7 @@ Kiki 内置的历史导入把另一个工具的文本对话变成**你能接着�
 
 ![导入历史：六个可读的来源，以及一段对话的预览，写明哪些内容不会带过来。](/shots/ecosystem/ecosystem-history-import.zh.png)
 
-## 让别的工具用 Kiki
+## IDE 接入与 MCP 席位
 
 这就是 Kiki 作为一个服务，有两种形态。
 
@@ -32,7 +32,7 @@ Kiki 内置的历史导入把另一个工具的文本对话变成**你能接着�
 
 见[在 IDE 中使用](/zh/server/ide)、[`kiki acp`](/zh/server/acp)和 [`kiki seat`](/zh/reference/command#kiki-seat)。
 
-## 让 Kiki 把别的工具当引擎用
+## 调用外部执行引擎
 
 方向反过来：另一个智能体 harness 跑**你的**子智能体。一个 agent profile 可以带 `executor`，通过 ACP 或 Codex app-server 跑在 Claude Code、Codex、Cursor、Gemini CLI、Kimi CLI、OpenCode 或 Grok Build 上。设置 → 模型与提供商 → 服务与账号 → 外部引擎会检查每个引擎是否已安装，并列出还差哪些配置步骤。
 

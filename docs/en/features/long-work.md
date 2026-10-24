@@ -1,18 +1,18 @@
 ---
-title: Work that runs long
+title: Goals, Queues, Cron & Memory
 ---
 
-# Work that runs long
+# Goals, Queues, Cron & Memory
 
 Some work does not fit in one turn. It spans a morning, or a week, or it depends on a schedule. This page covers the parts of Kiki built for that: goals that carry across turns, the queue for what you type while the agent is busy, scheduled tasks for work that outlives a session, the optional task board plugin, the context window that decides what happens when a conversation fills up, and memory for the facts that should survive all of it.
 
-## Goals keep the target in view
+## Cross-turn goals (/goal)
 
 A normal prompt says what to do next; a goal says what must become true. Start one with `/goal` and the agent keeps working toward it across turns, checking the goal's own states after each turn — complete, blocked, paused, or still active. You can edit, pause, and cancel the goal as it runs.
 
 Goals work best when the objective names the result and the evidence that proves it — including when the first clue turns out not to be the root cause, because the goal describes the outcome and the agent adapts on the way. They are worth avoiding for broad topics with no finish line, for work already known to be impossible, and for objectives too ambiguous to judge complete. See [Using goals](/en/guides/goals) for when to use them and how to manage the lifecycle.
 
-## The queue holds what you type while it works
+## Message queue & timing
 
 While the agent is busy, a new message joins a queue above the input box instead of interrupting. Each queued message carries its own send timing: **when idle** (as soon as the agent finishes its turn), **after subagents** (once the running subagents finish), or **after tasks** (once all background tasks finish). You can change the timing, edit the text, reorder, or send one right away from its row.
 
@@ -26,7 +26,7 @@ A scheduled task set to **Queue** joins this queue alongside your own messages, 
 
 ![The queue expanded under a running goal, with each queued message's own send timing and its edit, send-now, and remove actions.](/shots/long-work/wl-20261005-longwork-goal-queue.en.png)
 
-## Work that outlives the session
+## Scheduled tasks & board
 
 Scheduled tasks carry work beyond a single conversation. They are listed globally rather than per session. The task board is not that list: it is an optional plugin, and its cards are workspace requirements.
 
@@ -34,7 +34,7 @@ Scheduled tasks carry work beyond a single conversation. They are listed globall
 
 ![The scheduled tasks panel, with enabled one-shot and recurring entries above a paused one, and run-now, pause, resume, and delete per entry.](/shots/long-work/wl-20261005-longwork-scheduled.en.png)
 
-### Managing a schedule by hand
+### Editing schedules
 
 The scheduled-tasks page is also where you change a schedule yourself. Every entry leads with when it runs, in words rather than a cron expression: "every hour on the hour", "every day at 09:00", "every Monday at 08:30". The expression is still there, one click away in the entry's detail panel, along with the prompt in full, the owning conversation, and the moment the server computed for the next run.
 
@@ -48,7 +48,7 @@ A schedule more specific than those controls — several times a day, a day of t
 
 **The task board.** Install the optional official plugin `kiki-task-board` to keep workspace requirements as cards. Existing cards stay in their original storage location; reading a card does not change it. Without the plugin there is no board entry, but conversations that used it still open and accept ordinary messages. See [Task board](/en/guides/sessions#task-board).
 
-## The context window: when it fills up
+## Context renewal
 
 As a conversation grows, Kiki compresses the history when the context approaches the window limit. You decide where that point is, and what happens when it is reached.
 
@@ -70,7 +70,7 @@ For the manual side, `/compact` compresses on demand and accepts a hint about wh
 
 ![The context details card opened over a running session, with Fresh start selected and this session's cumulative token counts below it.](/shots/long-work/wl-20261005-longwork-context.en.png)
 
-## Memory keeps the facts across sessions
+## Cross-session memory {#memory-keeps-the-facts-across-sessions}
 
 A session ends. Memory is what does not. The agent saves user preferences, feedback, verified project facts, and reference pointers, and finds them again later. On the `/memory` page you choose which body of memory you are looking at — **Global**, one **Workspace**, or one **Persona**. Persona-specific entries are isolated from other personas; by default a persona can also read the shared global and workspace memory.
 
@@ -85,4 +85,4 @@ Agents write memory with `MemoryWrite` and read it with `MemorySearch` and `Memo
 - [Memory](/en/guides/memory) — choosing between scopes, the review inbox, and undoable history
 - [Using goals](/en/guides/goals) — writing and managing goals
 - [Task board](/en/guides/sessions#task-board) — persistent requirement cards per workspace
-- [The daily driver](/en/features/daily) — the window you use while all of this runs
+- [Timeline, Approvals & Usage](/en/features/daily) — the window you use while all of this runs
