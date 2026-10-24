@@ -685,18 +685,32 @@ Klient 提供 `rest.rooms.listItems()` 和 `global.rooms.listItems()`。`klient.
 
 ### IM 账号与信道绑定
 
-[双向消息](../features/phone.md)分开管理账号、发现的信道和绑定；每条绑定有独立目标与启用状态。
+[双向消息](../features/phone.md)将每个输入或输出信道绑定到明确的会话。角色可选；切换或清除角色不会迁移该会话的绑定。
 
 | 方法与路径 | 说明 |
 | --- | --- |
 | `GET /api/im/sessions` | 读取 policy、instances、discoveries、bindings、strangers 与 voice_fallbacks 快照 |
 | `GET /api/im/sessions/catalog` | 可作为绑定目标的角色与会话 |
+| `PUT /api/im/sessions/policy` | 设置 `allowed`、`default_enabled` 和可选的 `allow_channel_borrowing`（默认 `false`） |
 | `POST /api/im/sessions/instances/{id}/listen` | 设置 `{ listening: true \| false }`；传 `true` 明确重试已停止的监听 |
-| `POST /api/im/sessions/discoveries/{id}/confirm` | 将这条发现绑定到 `target`；可选 `busy`、`reply`、`mobile_interactions`、`also_home` |
-| `PATCH /api/im/sessions/bindings/{id}` | 只修改这条绑定的目标、启用状态或选项 |
-| `DELETE /api/im/sessions/bindings/{id}` | 移除这条绑定 |
+| `POST /api/im/sessions/discoveries/{id}/confirm` | 绑定到 `target`；可选 `rebind`、`input_enabled`、`output_enabled`、`busy`、`reply`、`mobile_interactions`、`also_home` |
+| `PATCH /api/im/sessions/bindings/{id}` | 修改这条绑定的目标、方向开关或选项 |
+| `DELETE /api/im/sessions/bindings/{id}` | 移除这条 IM 绑定 |
+| `GET /api/im/sessions/targets/{session_id}/channels` | 读取输出信道及候选，包含真实媒体能力 |
+| `PUT /api/im/sessions/targets/{session_id}/notify/{channel_id}` | 用 `{ enabled: boolean }` 绑定单向通知输出，或调整其会话开关 |
+| `DELETE /api/im/sessions/targets/{session_id}/notify/{channel_id}` | 只移除该会话的通知绑定 |
+| `GET /api/sessions/{session_id}/optional-capabilities` | 读取含 `send_message` 的权威能力状态 |
+| `POST /api/sessions/{session_id}/optional-capabilities` | 设置 `{ id: "send_message", choice: "on" \| "off" \| "inherit" }`，下一步热生效，无需重启 |
 
-`target` 为 `{ kind: "persona", persona_id }` 或 `{ kind: "session", session_id }`。PATCH 也接受旧的 `session_id`，但它与 `target` 互斥；`also_home` 仅用于确认绑定。重新确认已有绑定保留 `enabled` 和 `session_enabled`；恢复时通过 PATCH 明确启用。`session_enabled: null` 删除局部覆盖，跟随 `policy.default_enabled`。
+`target` 使用 `{ kind: "session", session_id }`；也保留 `{ kind: "persona", persona_id }`，作为绑定到该角色日常会话的快捷方式。PATCH 仍接受旧的 `session_id`，但它与 `target` 互斥；`also_home` 仅用于确认绑定。重新确认保留已有 `enabled`、`session_enabled`、`input_enabled` 和 `output_enabled`，除非请求明确修改。`session_enabled: null` 跟随 `policy.default_enabled`；方向设为 `null` 则删除该方向覆盖。入站、出站仍受绑定总开关与会话准入限制。
+
+同一输入身份同时只归属一个会话。跨会话转绑未带 `rebind: true` 时，返回业务码 `40949`、`msg: "im_identity_already_bound"`，`details` 包含 `existing_binding_id`、`previous_session_id`、`target_session_id` 和 `variant_key`。显示这些身份供用户二次确认，再携带 `rebind: true` 重发请求；取消时不发修改请求。旧交互票据不会作用于新会话，旧回复监听在转绑时过期。手机端 `:target` 可列出目标，但转绑必须在 Kiki 中确认。缺少有效会话的旧绑定保留原身份与角色来源，显示 `pending_reanchor: true`，显式确认归属前暂停路由。
+
+输出响应包含 `internal_enabled: true` 和 `channels`。每个信道含 `id`、`kind`（`internal`、`im`、`notify`）、`enabled`、`capabilities` 和可选 `bound`；`bound: false` 是候选，不是当前会话绑定。`internal` 常驻开启，旧内部信道开关接口拒绝 `{ enabled: false }`。Klient 方法为 `rest.imSessions.channelViews`、`setNotificationChannel` 和 `removeNotificationChannel`。
+
+绑定信道不会授予 `SendMessage`。普通回复线程默认关闭；`[optionalCapabilities.defaults] send_message = true` 可改变全局默认，全局默认关闭时仍能通过会话 `on` 开启。角色消息模式保留隐式开启，显式会话 `off` 和工具策略硬拒绝优先。关闭工具既不解绑信道，也不隐藏普通最终回复。
+
+工具获准后，省略 `channel`/`channels` 只发送到已绑且启用的输出，包含 `internal`；显式 ID 可点名一个或多个输出。借用未绑定信道要求 `allow_channel_borrowing: true`，且目标仍须启用并获授权。`to: "user"`、`to: "@Bot"` 与 Room 路由保留原收件人含义；信道 ID 不能与 Room 或 `@Bot` 路由混用。逐信道收据区分 `delivered`、`partial`、`unsupported`、`failed` 和 `unknown`，并标记借用目标。通知输出当前只承载文本。遇到部分成功或结果未知时先检查收据，不自动重发；供应商接受请求不等于收件人已收到消息。
 
 实例的 `listening` 记录用户要求的监听状态。`adapter` 为 `missing`、`running`、`shared` 或 `stopped`；可选 `connection` 为 `starting`、`reconnecting`、`auth_expired` 或 `stopped`，正常运行时不填。`auth_expired` 需通过配置流程重新授权；连接停止后可明确重试监听。可选 `connection_detail` 含有限的 `code`（`transport_error`、`http_error`、`api_error`、`invalid_response`、`auth_expired`、`loop_failed`），以及可选数字 `http_status`、`ret`、`errcode`、`failure_count`、`retry_in_ms`。重连成功会清除该详情；缺少详情时不推断失败原因。
 

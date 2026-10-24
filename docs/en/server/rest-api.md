@@ -689,18 +689,32 @@ Pages are sorted by score descending, then path; an empty query lists the root d
 
 ### IM account and channel bindings
 
-[Two-way messaging](../features/phone.md) keeps accounts, discovered channels and bindings separate. Each binding has its own target and enabled state.
+[Two-way messaging](../features/phone.md) binds each input or output channel to a session. A Persona is optional; changing or clearing it does not move the session's bindings.
 
 | Method and path | Description |
 | --- | --- |
 | `GET /api/im/sessions` | Snapshot of policy, instances, discoveries, bindings, strangers and voice fallbacks |
 | `GET /api/im/sessions/catalog` | Personas and sessions available as binding targets |
+| `PUT /api/im/sessions/policy` | Set `allowed`, `default_enabled`, and optional `allow_channel_borrowing` (default `false`) |
 | `POST /api/im/sessions/instances/{id}/listen` | Set `{ listening: true \| false }`; retry a stopped listener with `true` |
-| `POST /api/im/sessions/discoveries/{id}/confirm` | Bind that discovery to a `target`; optional `busy`, `reply`, `mobile_interactions`, `also_home` |
-| `PATCH /api/im/sessions/bindings/{id}` | Update only that binding's target, enabled state or options |
-| `DELETE /api/im/sessions/bindings/{id}` | Remove that binding |
+| `POST /api/im/sessions/discoveries/{id}/confirm` | Bind to `target`; optional `rebind`, `input_enabled`, `output_enabled`, `busy`, `reply`, `mobile_interactions`, `also_home` |
+| `PATCH /api/im/sessions/bindings/{id}` | Update this binding's target, direction switches or options |
+| `DELETE /api/im/sessions/bindings/{id}` | Remove this IM binding |
+| `GET /api/im/sessions/targets/{session_id}/channels` | Read output channels and candidates with their actual media capabilities |
+| `PUT /api/im/sessions/targets/{session_id}/notify/{channel_id}` | Bind a notification output or change its session switch with `{ enabled: boolean }` |
+| `DELETE /api/im/sessions/targets/{session_id}/notify/{channel_id}` | Remove only this session's notification binding |
+| `GET /api/sessions/{session_id}/optional-capabilities` | Read authoritative capability rows, including `send_message` |
+| `POST /api/sessions/{session_id}/optional-capabilities` | Set `{ id: "send_message", choice: "on" \| "off" \| "inherit" }`; applies at the next step without restarting |
 
-A `target` is `{ kind: "persona", persona_id }` or `{ kind: "session", session_id }`. PATCH also accepts the legacy `session_id`, but not together with `target`; `also_home` belongs only to confirmation. Reconfirming an existing binding preserves `enabled` and `session_enabled`. Explicitly enable it with PATCH; `session_enabled: null` removes the local override and follows `policy.default_enabled`.
+A `target` is `{ kind: "session", session_id }`, or the compatible `{ kind: "persona", persona_id }` shortcut to that Persona's home session. PATCH also accepts legacy `session_id`, but not together with `target`; `also_home` belongs only to confirmation. Reconfirming preserves existing `enabled`, `session_enabled`, `input_enabled` and `output_enabled` unless explicitly changed. `session_enabled: null` follows `policy.default_enabled`; a direction set to `null` removes that direction override. Both directions still require the binding and session allowance to be enabled.
+
+An input identity belongs to one session at a time. Moving a binding to another session without `rebind: true` returns business code `40949`, `msg: "im_identity_already_bound"`, and `details` containing `existing_binding_id`, `previous_session_id`, `target_session_id` and `variant_key`. Show these identities for confirmation, then repeat the request with `rebind: true`; cancelling sends no mutation. Old interaction tickets cannot act on the new session, and old reply watchers expire on transfer. The mobile `:target` command lists targets but requires confirmation in Kiki to transfer them. A legacy binding with a missing session stays visible as `pending_reanchor: true`, retaining its old identity and Persona provenance without routing until explicitly reanchored.
+
+The output response contains `internal_enabled: true` and `channels`. Each channel has `id`, `kind` (`internal`, `im`, `notify`), `enabled`, `capabilities`, and optional `bound`; `bound: false` is a candidate, not a session binding. `internal` stays enabled; the legacy internal-switch endpoint rejects `{ enabled: false }`. Klient exposes `rest.imSessions.channelViews`, `setNotificationChannel` and `removeNotificationChannel`.
+
+Binding channels does not grant `SendMessage`. Ordinary reply threads default to off; `[optionalCapabilities.defaults] send_message = true` changes the global default, while a session choice of `on` works even when the default is off. Persona message mode retains its implicit-on behavior; explicit session `off` and hard tool-policy denies take precedence. Turning the tool off neither unbinds channels nor hides ordinary final replies.
+
+With the tool admitted, omit `channel`/`channels` to send only to enabled bound outputs, including `internal`; explicit IDs select one or more outputs. Borrowing an unbound channel requires `allow_channel_borrowing: true` and an enabled, authorized target. `to: "user"`, `to: "@Bot"` and Room routing retain their recipient meaning; channel IDs cannot be combined with Room or `@Bot` routing. Per-channel receipts distinguish `delivered`, `partial`, `unsupported`, `failed` and `unknown`, and mark borrowed targets. Notification outputs currently carry text only. Inspect partial or unknown receipts instead of resending automatically; an accepted provider response does not prove a person received the message.
 
 An instance's `listening` records the requested state. Its `adapter` is `missing`, `running`, `shared` or `stopped`; optional `connection` is `starting`, `reconnecting`, `auth_expired` or `stopped`. Normal running omits `connection`. For `auth_expired`, renew authorization through setup; for a stopped connection, retry listening explicitly. Optional `connection_detail` contains a finite `code` (`transport_error`, `http_error`, `api_error`, `invalid_response`, `auth_expired`, `loop_failed`) and optional numeric `http_status`, `ret`, `errcode`, `failure_count`, `retry_in_ms`. A successful reconnect clears that detail; an absent detail does not identify a failure cause.
 
