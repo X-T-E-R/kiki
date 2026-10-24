@@ -611,6 +611,30 @@ function MemoryScopeView({
     </div>
   ) : null;
 
+  const consoleRef = useRef<HTMLDivElement | null>(null);
+  const detailPaneRef = useRef<HTMLDivElement | null>(null);
+  const listColumnRef = useRef<HTMLDivElement | null>(null);
+  /** Where the list was left, while one entry's detail covers it under `lg`. */
+  const listOffset = useRef(0);
+  const detailOpen = selected !== undefined || creating;
+  // The two panes scroll on their own, so an entry always opens at its own
+  // top. Below `lg` one column covers the other, so the offset the list had
+  // before it was covered is handed back on the way out.
+  useEffect(() => {
+    const pane = detailPaneRef.current;
+    if (pane !== null) pane.scrollTop = 0;
+    const page = consoleRef.current;
+    if (page !== null) page.scrollTop = detailOpen ? 0 : listOffset.current;
+  }, [selectedId, creating, detailOpen]);
+  /** Remembered while the list is the visible column; a hidden list keeps the
+   *  offset it had instead of the one the browser clamps it to. */
+  const rememberListOffset = () => {
+    const page = consoleRef.current;
+    const list = listColumnRef.current;
+    if (page === null || list === null || list.getClientRects().length === 0) return;
+    listOffset.current = page.scrollTop;
+  };
+
   const reviewTabs = review ? (
     <div role="tablist" aria-label={t('memory.tab.aria')} className="mb-3 flex gap-1 border-b border-hairline">
       {(['entries', 'inbox'] as const).map((candidate) => {
@@ -639,9 +663,17 @@ function MemoryScopeView({
     </div>
   ) : null;
 
+  /** The entries tab is a two-pane ledger; the inbox is one reading column. */
+  const ledger = !(review && tab === 'inbox');
+
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-3 pb-8 lg:px-6" data-memory-console>
-      <div className={`mx-auto ${PAGE_WIDTH.split}`}>
+    <div
+      ref={consoleRef}
+      onScroll={rememberListOffset}
+      data-memory-console
+      className={`min-h-0 flex-1 overflow-y-auto px-4 pt-3 pb-8 lg:px-6 ${ledger ? 'lg:flex lg:flex-col lg:overflow-hidden' : ''}`}
+    >
+      <div className={`mx-auto w-full ${PAGE_WIDTH.split} ${ledger ? 'lg:flex lg:min-h-0 lg:flex-1 lg:flex-col' : ''}`}>
         {!enabled ? (
           <p data-memory-scope-off role="status" className="mb-4 rounded-lg border border-hairline bg-panel px-3 py-2 text-[13px] leading-relaxed text-ink-soft">
             {t('memory.ws.offNotice')}
@@ -673,104 +705,119 @@ function MemoryScopeView({
             <MemoryInbox target={target} entries={inbox} loading={inboxQuery.isPending && inbox.length === 0 || readingInbox && inbox.length === 0 && !readError} incomplete={coverageIncomplete || Boolean(readError)} linkedEntry={linkedEntry} onChanged={refresh} />
           </>
         ) : (
-          <div className="grid min-w-0 gap-8 lg:grid-cols-[340px_minmax(0,1fr)]" data-memory-list-detail>
-            <div data-memory-list className={`min-w-0 space-y-4 lg:border-r lg:border-hairline lg:pr-6 ${detail !== null ? 'max-lg:hidden' : ''}`}>
-              {reviewTabs}
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <input
-                    type="search"
-                    data-memory-search
-                    value={search}
-                    onChange={(event) => { setSearch(event.target.value); }}
-                    placeholder={t('memory.search.placeholder')}
-                    aria-label={t('memory.search.aria')}
-                    className="h-8 min-w-0 flex-1 rounded-md bg-ink/[0.04] px-3 text-[13px] text-ink placeholder:text-ink-faint focus-visible:outline-2 focus-visible:outline-selected-ink"
-                  />
-                  <button
-                    type="button"
-                    data-memory-new
-                    onClick={() => { leaveEditor(() => { setSelectedId(null); setCreating(true); }); }}
-                    className={SECONDARY_BUTTON}
-                  >
-                    {t('memory.new')}
-                  </button>
-                </div>
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-                  <div role="group" aria-label={t('memory.filter.aria')} className="flex flex-wrap items-center gap-1">
-                    {(['all', ...MEMORY_TYPES] as const).map((candidate) => {
-                      const active = candidate === typeFilter;
-                      return (
-                        <button
-                          key={candidate}
-                          type="button"
-                          data-memory-type-filter={candidate}
-                          aria-pressed={active}
-                          onClick={() => { setTypeFilter(candidate as MemoryType | 'all'); }}
-                          className={`h-7 rounded-md px-2 text-[12.5px] focus-visible:outline-2 focus-visible:outline-selected-ink ${active ? 'bg-ink/[0.06] font-medium text-ink' : 'text-ink-soft hover:text-ink'}`}
-                        >
-                          {t(`memory.type.${candidate}`)}
-                        </button>
-                      );
-                    })}
+          <div className="grid min-w-0 gap-8 lg:min-h-0 lg:flex-1 lg:grid-cols-[340px_minmax(0,1fr)] lg:grid-rows-[minmax(0,1fr)]" data-memory-list-detail>
+            <div ref={listColumnRef} data-memory-list className={`min-w-0 space-y-4 lg:border-r lg:border-hairline lg:pr-6 ${detail !== null ? 'max-lg:hidden' : ''} ${ledger ? 'lg:flex lg:min-h-0 lg:flex-col' : ''}`}>
+              {/* The filters hold still while the rows scroll: on a list that
+                  runs to hundreds, the control a reader reaches for next must
+                  not be the one that scrolled away. */}
+              <div className="space-y-4 lg:shrink-0 lg:border-b lg:border-hairline lg:pb-3">
+                {reviewTabs}
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="search"
+                      data-memory-search
+                      value={search}
+                      onChange={(event) => { setSearch(event.target.value); }}
+                      placeholder={t('memory.search.placeholder')}
+                      aria-label={t('memory.search.aria')}
+                      className="h-8 min-w-0 flex-1 rounded-md bg-ink/[0.04] px-3 text-[13px] text-ink placeholder:text-ink-faint focus-visible:outline-2 focus-visible:outline-selected-ink"
+                    />
+                    <button
+                      type="button"
+                      data-memory-new
+                      onClick={() => { leaveEditor(() => { setSelectedId(null); setCreating(true); }); }}
+                      className={SECONDARY_BUTTON}
+                    >
+                      {t('memory.new')}
+                    </button>
                   </div>
-                  <span data-memory-show-inactive><Toggle label={t('memory.showInactive')} checked={showInactive} onChange={setShowInactive} /></span>
-                  {listQuery.data !== undefined ? (
-                    <span data-memory-count className="ml-auto text-[12px] text-ink-faint tabular-nums">
-                      {tp('memory.count', entries.length)}
-                    </span>
-                  ) : null}
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+                    <div role="group" aria-label={t('memory.filter.aria')} className="flex flex-wrap items-center gap-1">
+                      {(['all', ...MEMORY_TYPES] as const).map((candidate) => {
+                        const active = candidate === typeFilter;
+                        return (
+                          <button
+                            key={candidate}
+                            type="button"
+                            data-memory-type-filter={candidate}
+                            aria-pressed={active}
+                            onClick={() => { setTypeFilter(candidate as MemoryType | 'all'); }}
+                            className={`h-7 rounded-md px-2 text-[12.5px] focus-visible:outline-2 focus-visible:outline-selected-ink ${active ? 'bg-ink/[0.06] font-medium text-ink' : 'text-ink-soft hover:text-ink'}`}
+                          >
+                            {t(`memory.type.${candidate}`)}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <span data-memory-show-inactive><Toggle label={t('memory.showInactive')} checked={showInactive} onChange={setShowInactive} /></span>
+                    {listQuery.data !== undefined ? (
+                      <span data-memory-count className="ml-auto text-[12px] text-ink-faint tabular-nums">
+                        {tp('memory.count', entries.length)}
+                      </span>
+                    ) : null}
+                  </div>
                 </div>
               </div>
 
-              {listQuery.isPending || readingEntries && entries.length === 0 && !listQuery.isError ? (
-                <p role="status" className="flex items-center gap-2 py-8 text-[13px] text-ink-faint">
-                  <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
-                  {t('memory.loading')}
-                </p>
-              ) : entries.length === 0 && (listQuery.isError || coverageIncomplete) ? null : entries.length === 0 && !creating ? (
-                <div data-memory-empty className="py-8">
-                  {filtersActive ? (
-                    <>
-                      <p className="text-[13px] text-ink-soft">{t('memory.empty.filtered')}</p>
-                      <button
-                        type="button"
-                        onClick={() => { setSearch(''); setTypeFilter('all'); setShowInactive(false); }}
-                        className="mt-1 text-[13px] font-medium text-ink underline underline-offset-2"
-                      >
-                        {t('memory.empty.clear')}
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <p className="font-display text-[18px] text-ink">{t('memory.empty.title')}</p>
-                      <p className="mt-1 max-w-[46ch] text-[13px] leading-relaxed text-ink-soft">{t('memory.empty.body')}</p>
-                    </>
-                  )}
-                </div>
-              ) : (
-                <div className="space-y-6 pt-1">
-                  {groups.filter((group) => group.entries.length > 0).map((group) => (
-                    <section key={targetKey(group.target)} data-memory-source={targetKey(group.target)} aria-label={group.label}>
-                      <h2 className="mb-2 flex items-center gap-2 text-[12px] font-medium text-ink-soft">
-                        {group.label}<span className="font-mono text-[11px] font-normal text-ink-faint">{group.entries.length}</span>
-                      </h2>
-                      <ul className="-mx-3 space-y-1">
-                        {group.entries.map((entry) => {
-                          const key = `${targetKey(group.target)}:${entry.id}`;
-                          return (
-                            <li key={key}>
-                              <MemoryListRow entry={entry} active={key === selectedId} now={now} onOpen={() => { leaveEditor(() => { setCreating(false); setSelectedId(key); }); }} />
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    </section>
-                  ))}
-                </div>
-              )}
+              {/* The rows hold their own offset. `overflow-x` is stated `hidden`
+                  because a row's hover bleeds past the column by design, and a
+                  single-axis scroller computes the other axis to `auto` — that
+                  would add a scrollbar nobody can use. */}
+              <div data-memory-rows className="lg:min-h-0 lg:flex-1 lg:overflow-x-hidden lg:overflow-y-auto lg:overscroll-y-contain">
+                {listQuery.isPending || readingEntries && entries.length === 0 && !listQuery.isError ? (
+                  <p role="status" className="flex items-center gap-2 py-8 text-[13px] text-ink-faint">
+                    <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
+                    {t('memory.loading')}
+                  </p>
+                ) : entries.length === 0 && (listQuery.isError || coverageIncomplete) ? null : entries.length === 0 && !creating ? (
+                  <div data-memory-empty className="py-8">
+                    {filtersActive ? (
+                      <>
+                        <p className="text-[13px] text-ink-soft">{t('memory.empty.filtered')}</p>
+                        <button
+                          type="button"
+                          onClick={() => { setSearch(''); setTypeFilter('all'); setShowInactive(false); }}
+                          className="mt-1 text-[13px] font-medium text-ink underline underline-offset-2"
+                        >
+                          {t('memory.empty.clear')}
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <p className="font-display text-[18px] text-ink">{t('memory.empty.title')}</p>
+                        <p className="mt-1 max-w-[46ch] text-[13px] leading-relaxed text-ink-soft">{t('memory.empty.body')}</p>
+                      </>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-6 pt-1">
+                    {groups.filter((group) => group.entries.length > 0).map((group) => (
+                      <section key={targetKey(group.target)} data-memory-source={targetKey(group.target)} aria-label={group.label}>
+                        <h2 className="mb-2 flex items-center gap-2 text-[12px] font-medium text-ink-soft">
+                          {group.label}<span className="font-mono text-[11px] font-normal text-ink-faint">{group.entries.length}</span>
+                        </h2>
+                        <ul className="-mx-3 space-y-1">
+                          {group.entries.map((entry) => {
+                            const key = `${targetKey(group.target)}:${entry.id}`;
+                            return (
+                              <li key={key}>
+                                <MemoryListRow entry={entry} active={key === selectedId} now={now} onOpen={() => { leaveEditor(() => { setCreating(false); setSelectedId(key); }); }} />
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </section>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
-            <div className={`min-w-0 ${detail === null ? 'max-lg:hidden' : ''}`}>
+            <div
+              ref={detailPaneRef}
+              data-memory-detail-pane
+              className={`min-w-0 ${detail === null ? 'max-lg:hidden' : ''} ${ledger ? 'lg:min-h-0 lg:overflow-x-hidden lg:overflow-y-auto lg:overscroll-y-contain lg:pr-1 lg:pb-4' : ''}`}
+            >
               {selected !== undefined || creating ? (
                 <button
                   type="button"

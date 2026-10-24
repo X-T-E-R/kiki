@@ -1860,6 +1860,39 @@ it('MemoryPage M1 layout places status in header, keeps fixed split columns with
   expect(coverage.className).not.toContain('text-danger');
 });
 
+it('MemoryPage keeps the list and the detail in separate scroll panes instead of moving both together', async () => {
+  seedMemories({ 'global::': [fixtureEntry({ id: 'm_first' }), fixtureEntry({ id: 'm_second' })] });
+  const container = await renderPage('/memory');
+  const consolePane = container.querySelector<HTMLElement>('[data-memory-console]')!;
+  const rows = container.querySelector<HTMLElement>('[data-memory-rows]')!;
+  const detailPane = container.querySelector<HTMLElement>('[data-memory-detail-pane]')!;
+  // The console stops scrolling once the ledger is split, so neither column can
+  // drag the other, and the filters sit above the rows pane instead of inside
+  // it, so a long list cannot carry them away.
+  expect(consolePane.className).toContain('lg:overflow-hidden');
+  expect(rows.className).toContain('lg:overflow-y-auto');
+  expect(detailPane.className).toContain('lg:overflow-y-auto');
+  expect(rows.contains(container.querySelector('[data-memory-search]'))).toBe(false);
+  expect(consolePane.contains(rows)).toBe(true);
+  expect(consolePane.contains(detailPane)).toBe(true);
+  // jsdom lays nothing out, so each pane's offset is stated here to observe
+  // which element a selection moves. Real scrolling is proven on a real build
+  // by scripts/visual-proof-memory-scroll.mjs.
+  let listOffset = 240;
+  Object.defineProperty(rows, 'scrollTop', { configurable: true, get: () => listOffset, set: (value: number) => { listOffset = value; } });
+  let paneOffset = 120;
+  Object.defineProperty(detailPane, 'scrollTop', { configurable: true, get: () => paneOffset, set: (value: number) => { paneOffset = value; } });
+  await click(container, '[data-memory-row="m_first"]');
+  expect(container.querySelector('[data-memory-detail]')?.getAttribute('data-memory-detail')).toBe('m_first');
+  expect(paneOffset).toBe(0);
+  expect(listOffset).toBe(240);
+  paneOffset = 96;
+  await click(container, '[data-memory-row="m_second"]');
+  expect(container.querySelector('[data-memory-detail]')?.getAttribute('data-memory-detail')).toBe('m_second');
+  expect(paneOffset).toBe(0);
+  expect(listOffset).toBe(240);
+});
+
 it('MemoryPage discovery anchor exposes the scope group as the memory-scope tour target', async () => {
   seedMemories({ 'global::': [] });
   const container = await renderPage('/memory');
