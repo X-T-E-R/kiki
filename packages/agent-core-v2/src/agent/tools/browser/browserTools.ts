@@ -58,7 +58,7 @@ export type BrowserTabsInput = z.infer<typeof BrowserTabsInputSchema>;
 export const BrowserEgoRunInputSchema = z.object({ browser: BrowserIdSchema.optional(), script: z.string().min(1) }).strict();
 export type BrowserEgoRunInput = z.infer<typeof BrowserEgoRunInputSchema>;
 const selectionDropped = 'The previously selected tab is not in the current list. It was not replaced. Select a listed target before the next page action.';
-const registeredNamesNote = 'loaded lists registered names only. The next step announces them. SelectTools accepts an exact registered name; its schema arrives on the following step. A direct call before SelectTools stays unavailable. Unload drops the registration.';
+const registeredNamesNote = 'loaded lists registered names only. When SelectTools is available, the next step announces those names, SelectTools loads an exact registered name, and its schema arrives on the following step; a direct call before that selection stays unavailable, and the names stay off the top-level tool list. When SelectTools is unavailable, a registered name joins the top-level tool list the next time that list is built for a user turn. Unload drops the registration.';
 
 export function egoRunExecution(script: string, runtime: Runtime, execute: (ctx: ExecutableToolContext) => Promise<ExecutableToolResult>): ToolExecution {
   return { display: { kind: 'command', command: script, language: 'bash' }, approvalRule: toolApprovalRule('browser__ego_run', script, runtime), execute };
@@ -246,7 +246,6 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
             reason: 'Donor-wide installation, plugins, credential or cross-session administration is outside a selected page execution lease.' })),
           loaded: allowed && listed.connections.some((entry) => entry.id === browser && entry.enabled)
             ? [...retained.keys()].map((name) => this.modelName(name)).filter((name) => this.registrations.has(name)) : [],
-          ...(backend === 'ego-lite' ? {} : { callable: false }),
           allowed, status: await this.control.status(browser),
           note: !allowed
             ? 'This connection is visible but not in the allowed set, so its operation tools were not registered. List and discover stay available.'
@@ -573,7 +572,7 @@ export const IBrowserConnectionsTool = createDecorator<IBrowserConnectionsTool>(
 export class BrowserConnectionsTool implements IBrowserConnectionsTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'BrowserConnections';
-  readonly description = 'Discover saved browser connections and an installed Ego Lite CLI. Check, select, or connect one explicitly, inspect its real execution state, or disconnect it. A check does not replay a timed-out command or stop the browser. Connecting after that check reattaches when the browser is still running: the command is not replayed and a replacement browser is not opened. A selected tab that is no longer listed is cleared and is not replaced by another tab. Loading groups or tools registers those typed operations. Registration is not a call: the next step announces them, SelectTools loads an exact registered name, and the schema arrives on the following step. They stay off the top-level tool list. Omitted browser uses only this agent\'s selected connection or the new-session default; never a guessed ready browser.';
+  readonly description = 'Discover saved browser connections and an installed Ego Lite CLI. Check, select, or connect one explicitly, inspect its real execution state, or disconnect it. A check does not replay a timed-out command or stop the browser. Connecting after that check reattaches when the browser is still running: the command is not replayed and a replacement browser is not opened. A selected tab that is no longer listed is cleared and is not replaced by another tab. Loading groups or tools registers those typed operations. When SelectTools is available, the next step announces them, SelectTools loads an exact registered name, and the schema arrives on the following step; until that selection they stay off the top-level tool list. When SelectTools is unavailable, a registered name joins the top-level tool list the next time that list is built for a user turn. Omitted browser uses only this agent\'s selected connection or the new-session default; never a guessed ready browser.';
   readonly parameters = toInputJsonSchema(BrowserConnectionsInputSchema);
   constructor(@IAgentBrowserService private readonly browser: IAgentBrowserService) {}
   resolveExecution(input: BrowserConnectionsInput): ToolExecution {

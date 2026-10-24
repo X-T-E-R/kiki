@@ -569,15 +569,21 @@ describe('native browser agent selection, schema and local file channel', () => 
       tabs: async () => [{ tabId: 't2', targetId: 'live-target' }],
     });
     ix.set(IAgentBrowserService, new SyncDescriptor(AgentBrowserService));
-    const read = async () => JSON.parse((await ix.get(IAgentBrowserService).connections({ action: 'tools', browser: 'independent', groups: ['page'] })).output as string) as { loaded: string[]; callable?: boolean; allowed: boolean; note: string };
+    const read = async () => JSON.parse((await ix.get(IAgentBrowserService).connections({ action: 'tools', browser: 'independent', groups: ['page'] })).output as string) as { loaded: string[]; allowed: boolean; note: string };
     try {
       const service = ix.get(IAgentBrowserService);
       const registry = ix.get(IAgentToolRegistryService);
+      const described = new BrowserConnectionsTool(undefined as never).description;
+      expect(described).toContain('When SelectTools is available');
+      expect(described).toContain('joins the top-level tool list the next time that list is built for a user turn');
       const main = await read();
       expect(main.loaded).toEqual([modelName]);
-      expect(main.callable).toBe(false);
+      expect(main).not.toHaveProperty('callable');
       expect(main.allowed).toBe(true);
       expect(main.note).toContain('registered names only');
+      expect(main.note).toContain('When SelectTools is available');
+      expect(main.note).toContain('a direct call before that selection stays unavailable');
+      expect(main.note).toContain('joins the top-level tool list the next time that list is built for a user turn');
       expect(registry.list()).toEqual([expect.objectContaining({ name: modelName, source: 'builtin', disclosure: 'deferred' })]);
       await service.connections({ action: 'connect', browser: 'independent' });
       expect(connect).toHaveBeenCalledOnce();
@@ -588,7 +594,7 @@ describe('native browser agent selection, schema and local file channel', () => 
       expect(registry.resolve(modelName)).toBeUndefined();
       const childStar = await read();
       expect(childStar.loaded).toEqual([]);
-      expect(childStar.callable).toBe(false);
+      expect(childStar).not.toHaveProperty('callable');
       expect(childStar.allowed).toBe(true);
 
       layers = { profile: { tools: ['*'] }, subagent: { explicitProfileTools: ['*', 'browser__*'] } };
@@ -610,8 +616,9 @@ describe('native browser agent selection, schema and local file channel', () => 
       const sourceOff = await read();
       expect(sourceOff.allowed).toBe(false);
       expect(sourceOff.loaded).toEqual([]);
-      expect(sourceOff.callable).toBe(false);
+      expect(sourceOff).not.toHaveProperty('callable');
       expect(sourceOff.note).toContain('not in the allowed set');
+      expect(sourceOff.note).not.toContain('When SelectTools is available');
 
       browser.config.disabledSources = undefined;
       browser.config.allowedBrowsers = ['other'];
@@ -627,9 +634,9 @@ describe('native browser agent selection, schema and local file channel', () => 
       native = true;
       publishBrowser(browser.sections, browser.config);
       expect(registry.resolve(modelName)).toBeDefined();
-      const unloaded = JSON.parse((await service.connections({ action: 'tools', browser: 'independent', unload: ['agent_browser_snapshot'] })).output as string) as { loaded: string[]; callable?: boolean };
+      const unloaded = JSON.parse((await service.connections({ action: 'tools', browser: 'independent', unload: ['agent_browser_snapshot'] })).output as string) as { loaded: string[] };
       expect(unloaded.loaded).toEqual([]);
-      expect(unloaded.callable).toBe(false);
+      expect(unloaded).not.toHaveProperty('callable');
       expect(registry.resolve(modelName)).toBeUndefined();
     } finally { await ix.dispose(); }
   });
