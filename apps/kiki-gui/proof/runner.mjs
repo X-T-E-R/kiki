@@ -29,7 +29,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { basename, dirname, extname, join, normalize, resolve, sep } from 'node:path';
+import { basename, dirname, extname, join, normalize, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { chromium } from 'playwright';
@@ -174,7 +174,7 @@ function pruneRuns(outputRoot, current) {
  * unchanged tree reuses the previous build for free; any edit (even one that
  * keeps the file size) bumps an mtime and rebuilds.
  */
-function buildCacheKey(root) {
+export function buildCacheKey(root) {
   const git = (args) => {
     const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
     return result.status === 0 ? result.stdout.trim() : null;
@@ -182,8 +182,15 @@ function buildCacheKey(root) {
   const head = git(['rev-parse', 'HEAD']);
   if (head === null) return null;
   const hash = createHash('sha1').update(head);
-  hash.update(git(['status', '--porcelain=v1', '--', 'src', 'index.html', 'vite.config.ts', 'public']) ?? '');
-  const inputs = [join(root, 'src'), join(root, 'index.html'), join(root, 'vite.config.ts'), join(root, 'public')];
+  const workspaceRoot = resolve(root, '../..');
+  const inputs = [
+    ...['src', 'index.html', 'vite.config.ts', 'public', 'vite', 'package.json', 'tsconfig.json'].map((input) => join(root, input)),
+    ...['agent-profiles', 'klient', 'protocol', 'session-core', 'transcript'].flatMap((name) =>
+      ['src', 'package.json'].map((input) => join(workspaceRoot, 'packages', name, input))),
+    ...['src', 'dist', 'package.json'].map((input) => join(workspaceRoot, 'packages/plugin-sdk', input)),
+    ...['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'tsconfig.json'].map((input) => join(workspaceRoot, input)),
+  ];
+  hash.update(git(['status', '--porcelain=v1', '--', ...inputs]) ?? '');
   const walk = (path) => {
     let info;
     try {
@@ -195,7 +202,7 @@ function buildCacheKey(root) {
       for (const child of readdirSync(path).sort()) walk(join(path, child));
       return;
     }
-    hash.update(`\n${path.slice(root.length)}:${info.size}:${info.mtimeMs}`);
+    hash.update(`\n${relative(workspaceRoot, path)}:${info.size}:${info.mtimeMs}`);
   };
   for (const input of inputs) walk(input);
   return hash.digest('hex');
