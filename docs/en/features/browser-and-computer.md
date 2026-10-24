@@ -32,10 +32,6 @@ For desktop apps without a CLI or API, cross-app data entry, or visual UI walkth
 - **Built-in computer control ([Settings → Capabilities → Browser & computer → Computer control](/en/guides/settings#computer-control))**: downloads and verifies a pinned open-source executor on the Kiki server and registers a desktop control connection. **Model usage preference** defaults to **Avoid** (models prefer existing CLI, API, MCP, short-script, and browser tools unless you or your rules explicitly ask for desktop control) and can be switched to **Prefer** for interactive desktop tasks. The session's main agent can use the desktop tools under your permission rules, while subagents require an explicit opt-in.
 - **[Kimi Computer Use plugin](/en/customization/plugins#kimi-computer-use)**: an official desktop plugin installed from a direct URL for clicking, dragging, scrolling, and typing in desktop apps. On macOS it runs silently in the background without taking over your mouse once you grant Accessibility and Screen Recording permissions in System Settings; on Windows (WinCU) it runs in an interactive desktop session without extra OS permission prompts, briefly activating the target window and using your real mouse and keyboard while acting.
 
-::: warning Note
-Keep payments and transfers, password changes, deleting important files, and public posting to yourself. Desktop control works best when you can verify the result, undo mistakes easily, and the cost of an error is low.
-:::
-
 ## Next steps
 
 - [Settings pages: Browser control](/en/guides/settings#browser-control) and [Computer control](/en/guides/settings#computer-control): route setup and status checks

@@ -85,7 +85,7 @@ const config = withMermaid(defineConfig({
               items: [
                 { text: 'Kiki 能做什么（总览）', link: '/zh/features/index' },
                 { text: '子智能体与多模型分工', link: '/zh/features/workbench' },
-                { text: 'Agent Profiles', link: '/zh/features/agent-workflows' },
+                { text: '智能体配置与复用', link: '/zh/features/agent-workflows' },
                 { text: '目标、队列、定时与记忆', link: '/zh/features/long-work' },
                 { text: '常驻角色与讨论房间', link: '/zh/features/people' },
                 { text: '浏览器与电脑控制', link: '/zh/features/browser-and-computer' },

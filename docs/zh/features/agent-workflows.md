@@ -1,8 +1,8 @@
 ---
-title: Agent Profiles
+title: 智能体配置与复用
 ---
 
-# Agent Profiles
+# 智能体配置与复用
 
 **Agent（智能体）**是真正干活的那个东西：读文件、跑命令、调工具、给答案。Kiki 里每个 agent 都由一份 **profile** 定义——一份 Markdown，写明它跑在哪个模型和思考档位上、被怎么指示、可以调用哪些工具、能把手上的活交给谁。写一次，之后每次派发这类 agent 都复用它。
 
