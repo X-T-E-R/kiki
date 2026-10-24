@@ -70,6 +70,7 @@ import {
   APIStatusError,
   ChatProviderError,
   ambiguousRequestDelivery,
+  isRetryableGenerateError,
   markProviderEventError,
   noteExecutedRequestDelivery,
 } from '#/kosong/contract/errors';
@@ -2587,7 +2588,7 @@ describe('AgentLLMRequesterService production delivery provenance', () => {
   });
 });
 
-it.each(['1012', 'connection-limit', 'partial-limit', 'tool-limit'] as const)('recovers WebSocket %s only before output and replaces the failed connection', async mode => {
+it.each(['1012', 'empty-message-1012', 'empty-reasoning-1012', 'thinking-1012', 'connection-limit', 'partial-limit', 'tool-limit'] as const)('recovers WebSocket %s only before output and replaces the failed connection', async mode => {
   const handshake = readFileSync(new URL('../../kosong/provider/fixtures/responses-ws-capabilities.json', import.meta.url), 'utf8').trim();
   const server = createServer();
   const webSockets = new WebSocketServer({ server });
@@ -2607,8 +2608,26 @@ it.each(['1012', 'connection-limit', 'partial-limit', 'tool-limit'] as const)('r
       const frameBytes = Array.isArray(bytes) ? Buffer.concat(bytes) : bytes instanceof ArrayBuffer ? Buffer.from(bytes) : bytes;
       frames.push(JSON.parse(frameBytes.toString()) as Record<string, unknown>);
       if (calls === 1) {
-        if (mode === '1012') socket.close(1012, 'fixture service restart');
-        else {
+        if (mode.endsWith('1012')) {
+          if (mode !== '1012') {
+            const message = mode === 'empty-message-1012';
+            const item = message
+              ? { type: 'message', id: 'msg_fixture', role: 'assistant', status: 'in_progress', content: [] }
+              : { type: 'reasoning', id: 'rs_fixture', status: 'in_progress', summary: [] };
+            const events = [
+              { type: 'response.created', response: { id: 'resp_metadata', status: 'in_progress', output: [] } },
+              { type: 'response.in_progress', response: { id: 'resp_metadata', status: 'in_progress', output: [] } },
+              { type: 'response.output_item.added', output_index: 0, item },
+              message
+                ? { type: 'response.content_part.added', item_id: item.id, output_index: 0, content_index: 0, part: { type: 'output_text', text: '', annotations: [] } }
+                : mode === 'thinking-1012'
+                  ? { type: 'response.reasoning_summary_text.delta', item_id: item.id, output_index: 0, summary_index: 0, delta: 'fixture thought' }
+                  : { type: 'response.reasoning_summary_part.added', item_id: item.id, output_index: 0, summary_index: 0, part: { type: 'summary_text', text: '' } },
+            ];
+            for (const [sequence_number, event] of events.entries()) socket.send(JSON.stringify({ ...event, sequence_number }));
+          }
+          socket.close(1012, 'fixture service restart');
+        } else {
           if (mode === 'partial-limit') socket.send(JSON.stringify({ type: 'response.output_text.delta', delta: 'partial answer' }));
           if (mode === 'tool-limit') socket.send(JSON.stringify({ type: 'response.output_item.added', output_index: 0,
             item: { type: 'function_call', id: 'fc_fixture', call_id: 'call_fixture', name: 'Lookup', arguments: '{}' } }));
@@ -2630,15 +2649,25 @@ it.each(['1012', 'connection-limit', 'partial-limit', 'tool-limit'] as const)('r
     responsesWebSocket: { targets: [baseUrl] }, authProvider: { getAuth: async () => ({ apiKey: 'YOUR_API_KEY' }) } };
   const provider = new OpenAIResponsesChatProvider({ model: model.name, baseUrl, apiKey: 'YOUR_API_KEY', responsesWebSocket: { targets: [baseUrl] } });
   const requester = new ModelRequesterImpl(model, { createChatProvider: () => provider } as unknown as IProtocolAdapterRegistry);
+  const failures: unknown[] = [];
+  const request = requester.request.bind(requester);
+  requester.request = async function* (input, signal, params) {
+    try { yield* request(input, signal, params); }
+    catch (error) { failures.push(error); throw error; }
+  };
   const { service } = createService(requester, undefined, { env: { [KIKI_INFINITE_RETRY_ENV]: '1' } });
   const onAttemptRetry = vi.fn();
   const parts: StreamedMessagePart[] = [];
+  const hasOutput = mode === 'partial-limit' || mode === 'tool-limit' || mode === 'thinking-1012';
   try {
     const pending = service.request({ source: { type: 'turn', turnId: 1, step: 1 }, onAttemptRetry }, part => { parts.push(part); }, AbortSignal.timeout(2000));
-    if (mode === 'partial-limit' || mode === 'tool-limit') {
+    if (hasOutput) {
       const error = await pending.catch((error: unknown) => error);
-      expect(toErrorPayload(error).details).toMatchObject({ errorSource: 'provider_event', upstreamErrorCode: code, request_delivery: 'executed' });
-      expect(parts).toContainEqual(expect.objectContaining(mode === 'partial-limit' ? { type: 'text', text: 'partial answer' } : { type: 'function', name: 'Lookup' }));
+      expect(error).toBe(failures[0]);
+      expect(toErrorPayload(error).details).toMatchObject({ request_delivery: 'executed', request_output: 'observed' });
+      if (mode !== 'thinking-1012') expect(toErrorPayload(error).details).toMatchObject({ errorSource: 'provider_event', upstreamErrorCode: code });
+      expect(parts).toContainEqual(expect.objectContaining(mode === 'partial-limit' ? { type: 'text', text: 'partial answer' }
+        : mode === 'thinking-1012' ? { type: 'think', think: 'fixture thought' } : { type: 'function', name: 'Lookup' }));
       expect(calls).toBe(1);
       expect(onAttemptRetry).not.toHaveBeenCalled();
     } else {
@@ -2648,6 +2677,19 @@ it.each(['1012', 'connection-limit', 'partial-limit', 'tool-limit'] as const)('r
       expect(frames[1]?.['input']).toEqual(frames[0]?.['input']);
       expect(frames[1]).not.toHaveProperty('previous_response_id');
       expect(onAttemptRetry).toHaveBeenCalledTimes(1);
+      expect(toErrorPayload(failures[0]).details).not.toHaveProperty('request_output', 'observed');
+      expect(toErrorPayload(failures[0]).details).not.toHaveProperty('request_delivery', 'executed');
+    }
+    expect(failures).toHaveLength(1);
+    expect(isRetryableGenerateError(failures[0])).toBe(!hasOutput);
+    expect(readGenerateFailureFacts(failures[0])).toBeUndefined();
+    if (mode === 'empty-message-1012' || mode === 'empty-reasoning-1012' || mode === 'thinking-1012') {
+      const payload = toErrorPayload(failures[0]);
+      expect(payload.details?.['streamDiagnostics']).toMatchObject({
+        endSource: 'sdk_error', eventCount: 4, outputItemAddedCount: 1, outputItemDoneCount: 0,
+        terminalEventCount: 0, emittedTextChars: 0, emittedToolHeaders: 0,
+      });
+      expect(JSON.stringify(payload)).not.toContain('fixture thought');
     }
     await vi.waitFor(() => { expect(closedSockets.has(requestSockets[0]!)).toBe(true); });
   } finally {
