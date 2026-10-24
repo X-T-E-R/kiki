@@ -166,6 +166,7 @@ function makeMergeHistory(count: number, textSize: number): ContextMessage[] {
     content: [{ type: 'text' as const, text: `${i} ${text}` }],
     toolCalls: [],
     origin: { kind: 'user' as const },
+    source: { turnId: 0, stepId: 'benchmark-step' },
   }));
 }
 

@@ -9,6 +9,7 @@ import type { GoalFollowUpTiming } from '#/agent/goal/types';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import type { PlanGate } from '#/features/plan/configSection';
 
+/** One hook invocation per consumed input batch; promptMessage summarizes the batch while original messages retain their identities. */
 export interface PromptSubmitContext {
   readonly promptMessage: ContextMessage;
   readonly isSteer: boolean;
@@ -230,8 +231,8 @@ export interface IAgentPromptService {
   submitSteer(payload: SteerPayload): Promise<PromptLaunchResult | undefined>;
   /**
    * The queue as callers may act on it: `active` is the running prompt,
-   * `pending` the prompts still queued for their own turn, and `launching` the
-   * one admission has taken out of the queue and not yet assigned a turn. A
+   * `pending` the prompts awaiting a compatible input batch, and `launching`
+   * the leading prompt preparing that batch before turn assignment. A
    * launching prompt accepts `abort` only; replace/move/timing/steer cannot
    * address it.
    */
@@ -254,7 +255,7 @@ export interface IAgentPromptService {
    * queue. Explicit steer still bypasses it.
    */
   setEditHold(promptId: string, held: boolean): void;
-  /** Send selected prompts now: join the active turn, or launch their own turns while idle, bypassing timing and recovery holds only for those prompts. */
+  /** Send selected prompts at the next safe boundary; compatible native inputs share one batch and submit hook while keeping their own handles. Timing and recovery holds are bypassed only for selected prompts. */
   steer(promptIds: readonly string[]): Promise<readonly PromptHandle[]>;
   /**
    * Cancels one prompt and returns whether this call cancelled something.

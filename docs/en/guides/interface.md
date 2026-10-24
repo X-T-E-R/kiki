@@ -42,7 +42,9 @@ Waiting prompts set to **Insert when idle** share one group at the front of the 
 
 To pick the timing for a message you submit, hover the send button or focus it and press `↓`. Besides the default, you can send the message into the current turn so the agent reads it at its next safe step (`Ctrl-Enter` with the default send shortcut), start it after the running subagents finish, or start it after all background tasks finish. The timing you choose applies to that one message. The menu only appears while the agent is busy.
 
-A profile or engine change needs a separate turn even with **Send now**. If the message stays queued, Kiki explains the reported reason.
+With the native executor, compatible queued messages ready at the same safe step are sent together as one model input. Steering and submit hooks run once for that batch; each original message keeps its own history entry and result. A message added after that step has begun stays in a later batch.
+
+A profile or engine change needs a separate turn even with **Send now**. Messages with different execution settings are not batched together. If the message stays queued, Kiki explains the reported reason.
 
 When the main agent is blocked waiting on a foreground `AgentRun`, **Send now** moves that wait to the background without stopping the child, which still reports back when it completes; plain queueing does not.
 

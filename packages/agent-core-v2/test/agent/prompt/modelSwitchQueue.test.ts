@@ -51,6 +51,118 @@ afterEach(async () => {
 });
 
 describe('model switch control queue with real engine', () => {
+  it('delivers simultaneous native steers as one model user batch and restores each distinct request receipt', async () => {
+    const scripted = createScriptedGenerate();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const batchEntered = deferred<void>();
+    const releaseBatch = deferred<void>();
+    let calls = 0;
+    const ctx = await host(async (...args) => {
+      if (++calls === 1) { entered.resolve(); await release.promise; }
+      else { batchEntered.resolve(); await releaseBatch.promise; }
+      return scripted.generate(...args);
+    });
+    scripted.mockNextResponse({ type: 'text', text: 'First response.' });
+    scripted.mockNextResponse({ type: 'text', text: 'Batch response.' });
+    const svc = ctx.get(IAgentPromptService);
+    const makeInput = (id: string) => ({ id: `request-${id}`, userMessageId: `message-${id}`,
+      message: { role: 'user' as const, content: [{ type: 'text' as const, text: `correction ${id}` }], toolCalls: [], origin: { kind: 'user' as const } } });
+    try {
+      const active = await svc.enqueue(makeInput('active'));
+      await entered.promise;
+      const inputs = [makeInput('one'), makeInput('two')];
+      const handles = await Promise.all(inputs.map(input => svc.enqueue(input)));
+      const hooks: string[] = [];
+      svc.hooks.onBeforeSubmitPrompt.register('batch-count', async (event, next) => { hooks.push(event.promptMessage.id!); await next(); });
+      const sending = Promise.all(handles.map(handle => svc.steer([handle.id])));
+      release.resolve();
+      await sending;
+      await batchEntered.promise;
+      expect(hooks).toHaveLength(1);
+      const unknown = await host();
+      await unknown.restore(await records(ctx));
+      for (const input of inputs) expect(unknown.get(IAgentPromptService).lookup(input.id)).toMatchObject({ phase: 'launched', turnId: 0 });
+      expect(unknown.get(IAgentPromptService).list().pending).toEqual([]);
+      expect(unknown.llmCalls).toEqual([]);
+      const laterInput = makeInput('later');
+      const later = await svc.enqueue(laterInput);
+      scripted.mockNextResponse({ type: 'text', text: 'Later correction response.' });
+      const laterSending = svc.steer([later.id]);
+      releaseBatch.resolve();
+      await laterSending;
+      await Promise.all([active.completion, later.completion, ...handles.map(handle => handle.completion)]);
+      expect(hooks).toHaveLength(2);
+      expect(scripted.calls).toHaveLength(3);
+      const corrections = scripted.calls[1]!.history.filter(message => message.role === 'user' && JSON.stringify(message.content).includes('correction one'));
+      expect(corrections).toHaveLength(1);
+      expect(JSON.stringify(corrections[0]!.content)).toContain('correction two');
+      const originals = ctx.get(IAgentContextMemoryService).get().filter(message => handles.some(handle => handle.userMessageId === message.id));
+      expect(originals.map(message => message.id)).toEqual(['message-one', 'message-two']);
+      expect(originals[0]!.source?.stepId).toBe(originals[1]!.source?.stepId);
+      const laterMessage = ctx.get(IAgentContextMemoryService).get().find(message => message.id === laterInput.userMessageId)!;
+      expect(laterMessage.source?.turnId).toBe(originals[0]!.source?.turnId);
+      expect(laterMessage.source?.stepId).not.toBe(originals[0]!.source?.stepId);
+      expect(JSON.stringify(corrections[0]!.content)).not.toContain('correction later');
+      const laterCorrections = scripted.calls[2]!.history.filter(message => message.role === 'user' && /correction (one|later)/.test(JSON.stringify(message.content)));
+      expect(laterCorrections).toHaveLength(2);
+      const journal = await records(ctx);
+      expect(journal.filter(record => record.type === 'turn.steer')).toHaveLength(2);
+      expect(journal.filter(record => record.type === 'prompt.steered')).toMatchObject([
+        { promptIds: handles.map(handle => handle.id) }, { promptIds: [later.id] },
+      ]);
+      const cold = await host();
+      await cold.restore(journal);
+      for (const input of [...inputs, laterInput]) {
+        expect(cold.get(IAgentPromptService).lookup(input.id)).toMatchObject({ phase: 'terminal', turnId: 0, terminal: { state: 'completed' } });
+        const retry = await cold.get(IAgentPromptService).enqueue(input);
+        expect(retry.userMessageId).toBe(input.userMessageId);
+        expect((await retry.completion).state).toBe('completed');
+      }
+      expect(cold.llmCalls).toEqual([]);
+    } finally { release.resolve(); releaseBatch.resolve(); }
+  });
+
+  it('recovers compatible queued messages into one batch and keeps a post-boundary prompt separate', async () => {
+    const source = await host();
+    vi.spyOn(source.get(IAgentTaskService), 'list').mockReturnValue([{ kind: 'agent', taskId: 'child', status: 'running' } as never]);
+    const makeInput = (id: string) => ({ id: `queued-${id}`, userMessageId: `logical-${id}`, appendTiming: 'subagents_done' as const,
+      message: { role: 'user' as const, content: [{ type: 'text' as const, text: `queued ${id}` }], toolCalls: [], origin: { kind: 'user' as const } } });
+    const inputs = [makeInput('one'), makeInput('cancelled'), makeInput('two')];
+    for (const input of inputs) await source.get(IAgentPromptService).enqueue(input);
+    source.get(IAgentPromptService).abort(inputs[1]!.id);
+    const cold = await host();
+    await cold.restore(await records(source));
+    const svc = cold.get(IAgentPromptService);
+    const one = await svc.enqueue(inputs[0]!);
+    const two = await svc.enqueue(inputs[2]!);
+    expect(svc.list().hold).toEqual({ reason: 'recovery', count: 2 });
+    cold.mockNextResponse({ type: 'text', text: 'Recovered batch.' });
+    const hooks: string[] = [];
+    svc.hooks.onBeforeSubmitPrompt.register('batch-count', async (event, next) => { hooks.push(event.promptMessage.id!); await next(); });
+    svc.resumeRecoveredQueue();
+    await Promise.all([one.completion, two.completion]);
+    expect(await one.launched).toBe(await two.launched);
+    expect(hooks).toHaveLength(1);
+    expect(cold.llmCalls).toHaveLength(1);
+    const projected = cold.llmCalls[0]!.history.filter(message => message.role === 'user' && JSON.stringify(message.content).includes('queued one'));
+    expect(projected).toHaveLength(1);
+    expect(JSON.stringify(projected[0]!.content)).toContain('queued two');
+    expect(JSON.stringify(cold.llmCalls)).not.toContain('queued cancelled');
+    cold.mockNextResponse({ type: 'text', text: 'Later batch.' });
+    const later = await svc.enqueue(makeInput('later'));
+    await later.completion;
+    expect(hooks).toHaveLength(2);
+    expect((await later.launched)?.id).not.toBe((await one.launched)?.id);
+    const restored = await host();
+    await restored.restore(await records(cold));
+    for (const input of [inputs[0]!, inputs[2]!, makeInput('later')]) {
+      expect((await (await restored.get(IAgentPromptService).enqueue(input)).completion).state).toBe('completed');
+    }
+    expect(restored.llmCalls).toEqual([]);
+    await source.get(IAgentPromptService).drain(new Error('Fixture closed'), 'preserve-pending');
+  });
+
   it('prompt-bound fresh survives reopen and retries without a control-only queue row', async () => {
     const ctx = await host();
     vi.spyOn(ctx.get(IAgentTaskService), 'list').mockReturnValue([{ kind: 'agent', taskId: 'child', status: 'running' } as never]);
@@ -900,7 +1012,7 @@ describe('model switch control queue with real engine', () => {
       expect((await selected.completion).state).toBe(interruption === 'stop' ? 'cancelled' : 'failed');
       const journal = await records(ctx);
       expect(journal.filter(record => record.type === 'llm.request')).toMatchObject([{ modelAlias: OLD }, { modelAlias: NEW, thinkingEffort: 'max' }]);
-      expect(journal.filter(record => record.type === 'turn.steer' && record['promptId'] === input.userMessageId)).toHaveLength(1);
+      expect(journal.filter(record => record.type === 'turn.steer' && record['promptId'] === input.id)).toHaveLength(1);
       expect(journal.filter(record => record.type === 'prompt.steered')).toMatchObject([{ promptIds: [input.id] }]);
       const coldTerminal = await host();
       await coldTerminal.restore(journal);

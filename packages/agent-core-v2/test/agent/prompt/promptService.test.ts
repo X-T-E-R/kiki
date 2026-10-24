@@ -1248,8 +1248,9 @@ describe('AgentPromptService', () => {
     prompt.resumeRecoveredQueue();
     await vi.waitFor(() => expect(loop.launches).toEqual([0, 1]));
     expect(prompt.list().active?.id).toBe('recovered-a');
-    expect(prompt.list().pending.map((item) => item.id)).toEqual(['recovered-b']);
-    prompt.abort('recovered-b');
+    expect(prompt.list().pending).toEqual([]);
+    expect(prompt.lookup('recovered-b')?.phase).toBe('launched');
+    expect(prompt.abort('recovered-b')).toBe(true);
     loop.settleActive();
   });
 
@@ -1473,7 +1474,9 @@ describe('AgentPromptService', () => {
     prompt.replace('edited', [{ type: 'text', text: 'edited, better' }]);
     prompt.setEditHold('edited', false);
     await edited.launched;
-    expect(prompt.list().pending.map((item) => item.id)).toEqual(['after', 'late']);
+    expect(prompt.list().pending).toEqual([]);
+    expect(prompt.lookup('after')?.phase).toBe('launched');
+    expect(prompt.lookup('late')?.phase).toBe('launched');
   });
 
   it('releases an edit hold when the held prompt leaves the queue, and on its own after the lapse', async () => {
@@ -1846,8 +1849,10 @@ describe('AgentPromptService', () => {
     const error = await settledSend;
     if (concurrentDrain) {
       expect(error).toMatchObject({ code: ErrorCodes.PROMPT_NOT_FOUND });
-      expect(prompt.list().pending.map(item => item.id)).toEqual([second.id, immediate.id]);
-      expect(steered).toEqual([]);
+      expect(prompt.list().pending.map(item => item.id)).toEqual([immediate.id]);
+      expect(second.state).toBe('running');
+      expect(await second.launched).toBe(await original.launched);
+      expect(steered).toEqual([second.id]);
     } else {
       expect(error).toBeUndefined();
       expect(prompt.list().pending.map(item => item.id)).toEqual([original.id, second.id]);
@@ -2443,6 +2448,121 @@ describe('AgentPromptService', () => {
     expect(toolPolicy.setSessionDisabledTools).toHaveBeenCalledExactlyOnceWith(['Write']);
   });
 
+  it('groups concurrent idle admissions without holding admission behind model launch', async () => {
+    const { prompt, context, loop } = harness({ manualTurnResult: true });
+    const hooks: ContextMessage[] = [];
+    prompt.hooks.onBeforeSubmitPrompt.register('batch-count', async (ctx, next) => { hooks.push(ctx.promptMessage); await next(); });
+    const [one, two] = await Promise.all([
+      prompt.enqueue({ id: 'idle-one', message: message('one') }),
+      prompt.enqueue({ id: 'idle-two', message: message('two') }),
+    ]);
+    await Promise.all([one.launched, two.launched]);
+    expect(loop.launches).toEqual([0]);
+    expect(hooks).toHaveLength(1);
+    loop.drainNextBatch(context);
+    expect(context.get()).toEqual([one.message, two.message]);
+    loop.settleActive();
+    await Promise.all([one.completion, two.completion]);
+  });
+
+  it('submits one hook for a steer batch while retaining every original message and receipt', async () => {
+    const { prompt, context, loop, eventBus } = harness({ manualTurnResult: true });
+    await prompt.enqueue({ id: 'active', message: message('active') });
+    loop.drainNextBatch(context);
+    const one = await prompt.enqueue({ id: 'request-one', userMessageId: 'message-one', message: message('one') });
+    const attachment: ContentPart = { type: 'image_url', imageUrl: { url: 'https://example.test/two.png' } };
+    const two = await prompt.enqueue({ id: 'request-two', userMessageId: 'message-two', message: { ...message('two'), content: [...message('two').content, attachment] } });
+    const hooks: ContextMessage[] = [];
+    prompt.hooks.onBeforeSubmitPrompt.register('batch-count', async (ctx, next) => { hooks.push(ctx.promptMessage); await next(); });
+    const outcomes: string[] = [];
+    eventBus.subscribe(PromptOutcomeCommitted, event => outcomes.push(event.terminal.promptId));
+    await prompt.steer([two.id, one.id]);
+    loop.drainNextBatch(context);
+    expect(hooks).toHaveLength(1);
+    expect(hooks[0]!.content).toEqual([...one.message.content, ...two.message.content]);
+    expect(context.get().slice(-2)).toEqual([one.message, two.message]);
+    expect(prompt.lookup(one.id)).toMatchObject({ phase: 'launched', turnId: 0 });
+    expect(prompt.lookup(two.id)).toMatchObject({ phase: 'launched', turnId: 0 });
+    loop.settleActive();
+    await Promise.all([one.completion, two.completion]);
+    await vi.waitFor(() => { expect(outcomes).toEqual(expect.arrayContaining([one.id, two.id])); });
+  });
+
+  it('coalesces separate steer calls at one boundary and closes the batch before the next boundary', async () => {
+    const { prompt, context, loop } = harness({ manualTurnResult: true });
+    await prompt.enqueue({ id: 'active', message: message('active') });
+    loop.drainNextBatch(context);
+    const one = await prompt.enqueue({ id: 'one', message: message('one') });
+    const two = await prompt.enqueue({ id: 'two', message: message('two') });
+    const boundary = deferred<void>();
+    const entered = deferred<void>();
+    vi.spyOn(loop, 'atStepBoundary').mockImplementation(async run => { entered.resolve(); await boundary.promise; await run(undefined); });
+    const hooks: string[] = [];
+    prompt.hooks.onBeforeSubmitPrompt.register('batch-count', async (ctx, next) => { hooks.push(turnPromptText(ctx.promptMessage.content, ctx.promptMessage.origin) ?? ''); await next(); });
+    const first = prompt.steer([one.id]);
+    const second = prompt.steer([two.id]);
+    await entered.promise;
+    boundary.resolve();
+    await Promise.all([first, second]);
+    expect(hooks).toEqual(['onetwo']);
+    expect(loop.atStepBoundary).toHaveBeenCalledTimes(1);
+    loop.drainNextBatch(context);
+    const three = await prompt.enqueue({ id: 'three', message: message('three') });
+    await prompt.steer([three.id]);
+    expect(hooks).toEqual(['onetwo', 'three']);
+  });
+
+  it('cancels one scheduled steer call without stranding another call at the shared boundary', async () => {
+    const { prompt, context, loop } = harness({ manualTurnResult: true });
+    await prompt.enqueue({ id: 'active', message: message('active') });
+    loop.drainNextBatch(context);
+    const one = await prompt.enqueue({ id: 'cancelled-steer', message: message('cancelled correction') });
+    const two = await prompt.enqueue({ id: 'surviving-steer', message: message('surviving correction') });
+    const boundary = deferred<void>();
+    const entered = deferred<void>();
+    vi.spyOn(loop, 'atStepBoundary').mockImplementation(async run => { entered.resolve(); await boundary.promise; await run(undefined); });
+    const hooks: ContextMessage[] = [];
+    prompt.hooks.onBeforeSubmitPrompt.register('batch-count', async (ctx, next) => { hooks.push(ctx.promptMessage); await next(); });
+    const first = prompt.steer([one.id]);
+    const cancelled = expect(first).rejects.toMatchObject({ code: ErrorCodes.PROMPT_NOT_FOUND });
+    const second = prompt.steer([two.id]);
+    await entered.promise;
+    expect(prompt.abort(one.id)).toBe(true);
+    boundary.resolve();
+    await cancelled;
+    expect(await second).toEqual([two]);
+    loop.drainNextBatch(context);
+    expect(hooks).toHaveLength(1);
+    expect(hooks[0]!.content).toEqual(two.message.content);
+    expect(context.get().at(-1)).toEqual(two.message);
+    expect((await one.completion).state).toBe('cancelled');
+  });
+
+  it('launches ready queued user prompts as one batch without swallowing cancelled or differently bound prompts', async () => {
+    const { prompt, context, loop } = harness({ manualTurnResult: true });
+    await prompt.enqueue({ id: 'active', message: message('active') });
+    loop.drainNextBatch(context);
+    const one = await prompt.enqueue({ id: 'one', message: message('one') });
+    const cancelled = await prompt.enqueue({ id: 'cancelled', message: message('cancelled') });
+    const two = await prompt.enqueue({ id: 'two', message: message('two') });
+    const bound = await prompt.enqueue({ id: 'bound', message: message('bound'), execution: { model: 'other-model' } });
+    prompt.abort(cancelled.id);
+    const hooks: ContextMessage[] = [];
+    prompt.hooks.onBeforeSubmitPrompt.register('batch-count', async (ctx, next) => { hooks.push(ctx.promptMessage); await next(); });
+    loop.settleActive();
+    await one.launched;
+    expect(two.state).toBe('running');
+    expect(await two.launched).toBe(await one.launched);
+    expect(bound.state).toBe('pending');
+    expect(hooks).toHaveLength(1);
+    loop.drainNextBatch(context);
+    expect(context.get().slice(-2)).toEqual([one.message, two.message]);
+    loop.settleActive();
+    await bound.launched;
+    expect(hooks).toHaveLength(2);
+    expect((await cancelled.completion).state).toBe('cancelled');
+  });
+
   it('steers selected prompts in FIFO order', async () => {
     const { prompt, context, loop } = harness();
     const active = await prompt.enqueue({ message: message('active') });
@@ -2490,12 +2610,14 @@ describe('AgentPromptService', () => {
     prompt.hooks.onBeforeSubmitPrompt.register('block-steer', async (ctx, next) => { if (ctx.isSteer) { ctx.block = true; ctx.appendMessage!(feedback); } await next(); });
     let boundary: (() => Promise<void>) | undefined;
     vi.spyOn(loop, 'atStepBoundary').mockImplementation((run) => { boundary = () => run(undefined); return Promise.resolve(); });
-    await prompt.steer([queued.id]);
-    expect((await queued.completion).state).toBe('blocked');
+    const steering = prompt.steer([queued.id]);
+    await vi.waitFor(() => { expect(boundary).toBeDefined(); });
+    expect(queued.state).toBe('pending');
     expect(context.get()).not.toContainEqual(feedback);
     expect(loop.queue.pendingKinds()).not.toContain('steer');
-    expect(boundary).toBeDefined();
     await boundary!();
+    await steering;
+    expect((await queued.completion).state).toBe('blocked');
     expect(context.get()).toContainEqual(feedback);
   });
 
@@ -2764,16 +2886,11 @@ describe('AgentPromptService', () => {
     await prompt.steer([one.id, two.id]);
     loop.drainNextBatch(context);
 
-    const merged = context
-      .get()
-      .find(
-        (entry) => entry.origin?.kind === 'user' && entry.origin.skillActivations !== undefined,
-      );
-    expect(merged?.content).toEqual([
+    const materialized = context.get().filter(entry => entry.origin?.kind === 'user' && entry.origin.skillActivations !== undefined);
+    expect(materialized).toEqual([one.message, two.message]);
+    expect(materialized.map(entry => entry.content[0])).toEqual([
       { type: 'text', text: '<skill>review</skill>' },
       { type: 'text', text: '<skill>security</skill>' },
-      { type: 'text', text: 'user A' },
-      { type: 'text', text: 'user B' },
     ]);
   });
 
@@ -2804,10 +2921,12 @@ describe('AgentPromptService', () => {
     const one = await prompt.enqueue({ message: peer });
     const two = await prompt.enqueue({ message: human });
 
+    let merged: ContextMessage | undefined;
+    prompt.hooks.onBeforeSubmitPrompt.register('mixed-batch', async (ctx, next) => { merged = ctx.promptMessage; await next(); });
     await prompt.steer([one.id, two.id]);
     loop.drainNextBatch(context);
 
-    const merged = context.get().findLast((entry) => entry.origin?.kind === 'merged');
+    expect(context.get().slice(-2)).toEqual([one.message, two.message]);
     expect(merged?.origin).toEqual({ kind: 'merged', origins: [peer.origin, human.origin] });
     expect(merged?.content).toEqual([
       { type: 'text', text: '<skill>review</skill>' },
@@ -2859,7 +2978,7 @@ describe('AgentPromptService', () => {
     const active = await prompt.enqueue({ message: message('active') });
     await active.launched;
     const a = await prompt.enqueue({ id: 'a', message: message('a') });
-    await prompt.enqueue({ id: 'b', message: message('b') });
+    const b = await prompt.enqueue({ id: 'b', message: message('b') });
     let steerEnqueued!: () => void;
     const enqueued = new Promise<void>((resolve) => {
       steerEnqueued = resolve;
@@ -2891,7 +3010,8 @@ describe('AgentPromptService', () => {
     await expect(steerPromise).rejects.toMatchObject({ code: 'prompt.not_found' });
     await expect(a.launched).resolves.toBeDefined();
     expect(prompt.list().active?.id).toBe('a');
-    expect(prompt.list().pending.map((item) => item.id)).toEqual(['b']);
+    expect(prompt.list().pending).toEqual([]);
+    expect(await b.launched).toBe(await a.launched);
   });
 
   it('cancels a restored pending prompt by its durable id and releases the recovery hold', async () => {
