@@ -368,6 +368,8 @@ const RAW_STORAGE_ALLOWLIST = new Set<string>([
   'packages/session-core/src/settings/settings.ts',
   // Global: `kiki.layout`.
   'packages/session-core/src/settings/layoutPrefs.ts',
+  // Global: settings transfer package export/import.
+  'packages/session-core/src/settings/settingsTransfer.ts',
   // Global: `kiki.terminalPanel.v1`.
   'packages/session-core/src/settings/terminalPrefs.ts',
   // Global: `kiki.locale`.

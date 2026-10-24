@@ -4,7 +4,7 @@ import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { sessionCreateSchema, type SessionCreate } from '@kiki/protocol';
+import { sessionCreateSchema, ErrorCode, type SessionCreate } from '@kiki/protocol';
 
 import { I18nProvider } from '../i18n';
 import { ApiError, type NamedAgentProfile } from '../lib/client';
@@ -2557,3 +2557,155 @@ describe('workspace list failures on /new', () => {
     expect(state.effectiveWorkspace?.id).toBe('wd_alpha');
   });
 });
+
+describe('new-session idempotent creation_id intent and error recovery', () => {
+  const profile = (name: string, model?: string, thinking?: string): NamedAgentProfile => ({
+    name,
+    source: 'builtin',
+    main: true,
+    pinned_model_alias: model,
+    thinking_effort: thinking,
+    disabled: false,
+    routes: [],
+  });
+  const model = (id: string, effort: string) => ({
+    id,
+    provider_id: 'fixture',
+    remote_id: id.slice(id.lastIndexOf('/') + 1),
+    max_context_size: 128000,
+    support_efforts: [effort],
+    default_effort: effort,
+  });
+
+  beforeEach(() => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent')] });
+    client.listModels.mockResolvedValue({ items: [model('provider/model', 'high')] });
+  });
+
+  it('sends lowercase UUID creation_id on create and cleans up intent on successful handoff', async () => {
+    await renderDraft();
+    const state = await settleDraft((value) => value.selectionReady);
+    await act(async () => { await state.send('Normal creation', []); });
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+    const sent = client.createSession.mock.calls[0]![0] as SessionCreate;
+    expect(sent.creation_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    expect(readDraft('session-new')).toBe('Normal creation');
+    expect(navigate).toHaveBeenCalledWith('/s/session-new', expect.anything());
+    expect(localStorage.getItem('kiki.draft.new.intent.local')).toBeNull();
+  });
+
+  it('preserves draft, shows unknown notice, and reuses identical creation_id on retry after timeout or 50006', async () => {
+    client.createSession.mockRejectedValueOnce(new ApiError({
+      code: ErrorCode.SESSION_CREATE_OUTCOME_UNKNOWN,
+      msg: 'Creation outcome unknown',
+      data: null,
+      details: { evidence: 'session_present_without_completion' },
+    }));
+
+    await renderDraft();
+    let state = await settleDraft((value) => value.selectionReady);
+    await act(async () => { state.updateDraft('Recover after unknown outcome'); });
+    state = latestDraftState!;
+
+    await act(async () => { await state.send(state.draft, []); });
+    state = latestDraftState!;
+    expect(state.busy).toBe(false);
+    expect(state.creationPending).toBe(false);
+    expect(state.draft).toBe('Recover after unknown outcome');
+    expect(state.creationNotice).toBe('Creation could not be confirmed. Your draft is kept. Check the session list before trying again to avoid creating a second session.');
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+    const firstCreationId = client.createSession.mock.calls[0]![0].creation_id;
+    expect(state.createdSessionId).toBe(`session_${firstCreationId}`);
+
+    // Retry sending with same body reuses identical creation_id
+    client.createSession.mockResolvedValueOnce({ id: `session_${firstCreationId}` });
+    await act(async () => { await state.send(state.draft, []); });
+    expect(client.createSession).toHaveBeenCalledTimes(2);
+    expect(client.createSession.mock.calls[1]![0].creation_id).toBe(firstCreationId);
+    expect(navigate).toHaveBeenCalledWith(`/s/session_${firstCreationId}`, expect.anything());
+  });
+
+  it('survives refresh after timeout or 50006 and provides openCreatedSession without duplicate create', async () => {
+    client.createSession.mockRejectedValueOnce(new ApiError({
+      code: -2,
+      msg: 'Request timed out',
+      data: null,
+    }));
+
+    await renderDraft();
+    let state = await settleDraft((value) => value.selectionReady);
+    await act(async () => { state.updateDraft('Preserve through reload'); });
+    state = latestDraftState!;
+
+    await act(async () => { await state.send(state.draft, []); });
+    state = latestDraftState!;
+    const creationId = client.createSession.mock.calls[0]![0].creation_id;
+    expect(state.creationNotice).toContain('Creation could not be confirmed');
+
+    // Simulate page refresh / remounting /new
+    await unmountDraft();
+    await renderDraft();
+    state = await settleDraft((value) => value.selectionReady);
+
+    expect(state.draft).toBe('Preserve through reload');
+    expect(state.creationNotice).toContain('Creation could not be confirmed');
+    expect(state.createdSessionId).toBe(`session_${creationId}`);
+
+    // Opening created session navigates to the exact session without creating again
+    await act(async () => { state.openCreatedSession(); });
+    expect(navigate).toHaveBeenCalledWith(`/s/session_${creationId}`);
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks creating a duplicate session when user changes body under an unconfirmed intent', async () => {
+    client.createSession.mockRejectedValueOnce(new ApiError({
+      code: ErrorCode.SESSION_CREATE_OUTCOME_UNKNOWN,
+      msg: 'Outcome unknown',
+      data: null,
+      details: { evidence: 'session_absent' },
+    }));
+
+    await renderDraft();
+    let state = await settleDraft((value) => value.selectionReady);
+    await act(async () => { state.updateDraft('Initial draft'); });
+    state = latestDraftState!;
+
+    await act(async () => { await state.send(state.draft, []); });
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+
+    // Modify draft and cwd to change the body
+    await act(async () => {
+      state.setCwd('/workspace/different');
+      state.updateDraft('Changed draft');
+    });
+    state = latestDraftState!;
+
+    // Send attempt is blocked to prevent silently generating a new ID or duplicate session
+    await act(async () => { await state.send(state.draft, []); });
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+    expect(state.creationNotice).toContain('Creation could not be confirmed');
+    expect(state.draft).toBe('Changed draft');
+  });
+
+  it('preserves draft and intent without auto-recreation on 40948 conflict', async () => {
+    client.createSession.mockRejectedValueOnce(new ApiError({
+      code: ErrorCode.SESSION_CREATE_IDEMPOTENCY_CONFLICT,
+      msg: 'Idempotency conflict',
+      data: null,
+      details: { creation_id: '5d4f1b95-5ad5-4b7f-9a14-28ad2f8d1c42', reason: 'body_mismatch' },
+    }));
+
+    await renderDraft();
+    let state = await settleDraft((value) => value.selectionReady);
+    await act(async () => { state.updateDraft('Conflict body'); });
+    state = latestDraftState!;
+
+    await act(async () => { await state.send(state.draft, []); });
+    state = latestDraftState!;
+    expect(state.error).toContain('40948');
+    expect(state.draft).toBe('Conflict body');
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+    expect(navigate).not.toHaveBeenCalled();
+  });
+});
+

@@ -13,13 +13,14 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type {
-  AuthSummary,
-  NamedAgentProfile,
-  PermissionMode,
-  PersonaSnapshot,
-  SessionCreate,
-  WorkspaceCatalogEntry,
+import {
+  ErrorCode,
+  type AuthSummary,
+  type NamedAgentProfile,
+  type PermissionMode,
+  type PersonaSnapshot,
+  type SessionCreate,
+  type WorkspaceCatalogEntry,
 } from '@kiki/protocol';
 
 import {
@@ -150,6 +151,84 @@ function writeScopedNewSessionDraft(scopeId: string, draft: PersistedNewSessionD
   }
 }
 
+export interface PersistedCreationIntent {
+  readonly creationId: string;
+  readonly sessionId: string;
+  readonly bodyKey: string;
+  readonly status: 'pending' | 'accepted' | 'unknown' | 'conflict';
+  readonly evidence?: string;
+  readonly reason?: string;
+}
+
+function creationIntentStorageKey(scopeKey: string): string {
+  return `kiki.draft.new.intent.${scopeKey}`;
+}
+
+export function readPersistedCreationIntent(scopeKey: string): PersistedCreationIntent | undefined {
+  if (!readSettings().draftPersistence) return undefined;
+  try {
+    const raw = spaceStorage.getItem(creationIntentStorageKey(scopeKey));
+    if (raw === null) return undefined;
+    const parsed = JSON.parse(raw) as unknown;
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined;
+    const record = parsed as Record<string, unknown>;
+    const creationId = typeof record['creationId'] === 'string' ? record['creationId'] : undefined;
+    const sessionId = typeof record['sessionId'] === 'string' ? record['sessionId'] : undefined;
+    const bodyKey = typeof record['bodyKey'] === 'string' ? record['bodyKey'] : undefined;
+    const status = record['status'] === 'pending' || record['status'] === 'accepted' || record['status'] === 'unknown' || record['status'] === 'conflict'
+      ? record['status'] : undefined;
+    if (!creationId || !sessionId || !bodyKey || !status) return undefined;
+    return {
+      creationId,
+      sessionId,
+      bodyKey,
+      status,
+      evidence: typeof record['evidence'] === 'string' ? record['evidence'] : undefined,
+      reason: typeof record['reason'] === 'string' ? record['reason'] : undefined,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+export function writePersistedCreationIntent(scopeKey: string, intent: PersistedCreationIntent): void {
+  if (!readSettings().draftPersistence) return;
+  try {
+    spaceStorage.setItem(creationIntentStorageKey(scopeKey), JSON.stringify(intent));
+  } catch {
+    return;
+  }
+}
+
+export function clearPersistedCreationIntent(scopeKey: string): void {
+  try {
+    spaceStorage.removeItem(creationIntentStorageKey(scopeKey));
+  } catch {
+    return;
+  }
+}
+
+function isUnknownCreationError(cause: unknown): boolean {
+  if (cause instanceof ApiError) {
+    return cause.code < 0 || cause.code === ErrorCode.SESSION_CREATE_OUTCOME_UNKNOWN;
+  }
+  if (typeof cause === 'object' && cause !== null && 'code' in cause) {
+    const code = (cause as { code: unknown }).code;
+    return typeof code === 'number' && (code < 0 || code === ErrorCode.SESSION_CREATE_OUTCOME_UNKNOWN);
+  }
+  return false;
+}
+
+function isConflictCreationError(cause: unknown): boolean {
+  if (cause instanceof ApiError) {
+    return cause.code === ErrorCode.SESSION_CREATE_IDEMPOTENCY_CONFLICT;
+  }
+  if (typeof cause === 'object' && cause !== null && 'code' in cause) {
+    return (cause as { code: unknown }).code === ErrorCode.SESSION_CREATE_IDEMPOTENCY_CONFLICT;
+  }
+  return false;
+}
+
 function clearScopedNewSessionDraft(scopeId: string): void {
   if (scopeId === 'local') return clearNewSessionDraft();
   try { spaceStorage.removeItem(remoteDraftStorageKey(scopeId)); } catch { return; }
@@ -258,6 +337,7 @@ export function buildNewSessionCreate(input: {
   readonly modelTouched?: boolean;
   readonly effortTouched?: boolean;
   readonly permissionTouched?: boolean;
+  readonly creation_id?: string;
 }): SessionCreate {
   const persona = input.persona === undefined ? {} : { persona: input.persona, ...(input.personaHome ? { persona_home: true } : {}) };
   // Native with the picked profile is what the legacy fields already say; the
@@ -297,6 +377,7 @@ export function buildNewSessionCreate(input: {
     ? { cwd: input.cwd, externalClient }
     : externalClient === undefined ? undefined : { externalClient };
   return {
+    ...(input.creation_id !== undefined ? { creation_id: input.creation_id } : {}),
     metadata,
     workspace_id: input.cwd === '' ? input.workspaceId : undefined,
     ...persona, agent_config, ...isolation, ephemeral: input.ephemeral,
@@ -394,7 +475,6 @@ export function useNewSessionDraft({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [creationPending, setCreationPending] = useState(false);
-  const [creationNotice, setCreationNotice] = useState<string | null>(null);
 
   const [workspaceId, setWorkspaceId] = useState(
     (applyPrefill ? initialWorkspaceId : undefined) ?? initialRestoredDraft.workspaceId ?? '',
@@ -756,12 +836,58 @@ export function useNewSessionDraft({
     persona,
   };
 
+  const scopeIntentKey = dailySettingsKey ?? draftScopeId;
+  const initialIntent = useMemo(() => readPersistedCreationIntent(scopeIntentKey), [scopeIntentKey]);
+
   const selectionReady = !selectionBlocked && !personaPending && !unresolvedPersona;
-  const createdForRetry = useRef<{ body: string; sessionId: string } | undefined>(undefined);
-  const [createdSessionId, setCreatedSessionId] = useState<string | undefined>(undefined);
+  const createdForRetry = useRef<{
+    body: string;
+    sessionId: string;
+    creationId: string;
+    status: 'accepted' | 'unknown' | 'conflict';
+  } | undefined>(
+    initialIntent !== undefined && (initialIntent.status === 'accepted' || initialIntent.status === 'unknown' || initialIntent.status === 'conflict')
+      ? { body: initialIntent.bodyKey, sessionId: initialIntent.sessionId, creationId: initialIntent.creationId, status: initialIntent.status }
+      : undefined,
+  );
+  const [createdSessionId, setCreatedSessionId] = useState<string | undefined>(
+    initialIntent?.status === 'accepted' || initialIntent?.status === 'unknown' ? initialIntent.sessionId : undefined,
+  );
+  const [creationNotice, setCreationNotice] = useState<string | null>(
+    initialIntent?.status === 'accepted'
+      ? t('new.creationAccepted')
+      : initialIntent?.status === 'unknown' || initialIntent?.status === 'pending'
+      ? t('new.creationUnknown')
+      : null,
+  );
   const creationIntent = useRef<{ cancelled: boolean } | undefined>(undefined);
   const draftRef = useRef(draft);
   draftRef.current = draft;
+
+  useEffect(() => {
+    const saved = readPersistedCreationIntent(scopeIntentKey);
+    if (saved !== undefined && (saved.status === 'accepted' || saved.status === 'unknown' || saved.status === 'conflict')) {
+      createdForRetry.current = {
+        body: saved.bodyKey,
+        sessionId: saved.sessionId,
+        creationId: saved.creationId,
+        status: saved.status,
+      };
+      setCreatedSessionId(saved.status === 'accepted' || saved.status === 'unknown' ? saved.sessionId : undefined);
+      setCreationNotice(
+        saved.status === 'accepted'
+          ? t('new.creationAccepted')
+          : saved.status === 'unknown' || saved.status === 'pending'
+          ? t('new.creationUnknown')
+          : null,
+      );
+    } else {
+      createdForRetry.current = undefined;
+      setCreatedSessionId(undefined);
+      setCreationNotice(null);
+    }
+  }, [scopeIntentKey, t]);
+
   const cancelCreation = useCallback(() => {
     if (creationIntent.current === undefined) return;
     creationIntent.current.cancelled = true;
@@ -805,7 +931,7 @@ export function useNewSessionDraft({
       return;
     }
     if (context.busy || profileCatalogTransitionRef.current) return;
-    const body = buildNewSessionCreate({
+    const bodyWithoutCreation = buildNewSessionCreate({
       cwd: trimmedCwd,
       workspaceId: (context.workspaceId !== '' && context.workspaceId !== AUTO_WORKSPACE_ID) ? context.workspaceId : context.effectiveWorkspace?.id,
       profile: context.agentProfile,
@@ -826,12 +952,20 @@ export function useNewSessionDraft({
     // Returned so the composer's send latch rides the create round trip: a
     // second trigger while this is in flight is ignored, and a failed create
     // releases the latch for retry.
-    const bodyKey = JSON.stringify([draftScopeId, body]);
+    const bodyKey = JSON.stringify([draftScopeId, bodyWithoutCreation]);
     const retry = createdForRetry.current;
     if (retry !== undefined && retry.body !== bodyKey) {
-      setCreationNotice(t('new.creationAccepted'));
+      setCreationNotice(retry.status === 'unknown' ? t('new.creationUnknown') : t('new.creationAccepted'));
       return;
     }
+
+    const creationId = retry?.creationId ?? crypto.randomUUID().toLowerCase();
+    const targetSessionId = retry?.sessionId ?? `session_${creationId}`;
+    const body: SessionCreate = {
+      ...bodyWithoutCreation,
+      creation_id: creationId,
+    };
+
     const intent = { cancelled: false };
     creationIntent.current = intent;
     const submittedDraft = draftRef.current;
@@ -843,13 +977,28 @@ export function useNewSessionDraft({
     setCreationPending(true);
     setCreationNotice(null);
     setError(null);
-    const creation = retry !== undefined ? Promise.resolve({ id: retry.sessionId }) : client.createSession(body);
+    writePersistedCreationIntent(scopeIntentKey, {
+      creationId,
+      sessionId: targetSessionId,
+      bodyKey,
+      status: 'pending',
+    });
+
+    const creation = (retry !== undefined && retry.status === 'accepted')
+      ? Promise.resolve({ id: retry.sessionId })
+      : client.createSession(body);
     return creation
       .then(async (session) => {
         void queryClient.invalidateQueries({ queryKey: ['workspaces'] });
         void queryClient.invalidateQueries({ queryKey: ['sessions'] });
-        createdForRetry.current = { body: bodyKey, sessionId: session.id };
+        createdForRetry.current = { body: bodyKey, sessionId: session.id, creationId, status: 'accepted' };
         setCreatedSessionId(session.id);
+        writePersistedCreationIntent(scopeIntentKey, {
+          creationId,
+          sessionId: session.id,
+          bodyKey,
+          status: 'accepted',
+        });
         if (intent.cancelled) {
           setCreationNotice(t('new.creationAccepted'));
           return;
@@ -874,6 +1023,7 @@ export function useNewSessionDraft({
         await applyPendingNewSessionCapabilities(client, session.id, { scopeId, spaceKey, connectionId, draftKey });
         if (intent.cancelled) return;
         createdForRetry.current = undefined;
+        clearPersistedCreationIntent(scopeIntentKey);
 
         // Persist the first prompt or skill into the new session's own draft before clearing /new,
         // so that if activation, navigation, or target mounting stalls and the user refreshes,
@@ -940,9 +1090,45 @@ export function useNewSessionDraft({
       .catch((cause: unknown) => {
         setBusy(false);
         setError(errorText(locale, cause));
-        setCreationNotice(createdForRetry.current !== undefined
-          ? t('new.creationAccepted')
-          : cause instanceof ApiError && cause.code < 0 ? t('new.creationUnknown') : null);
+        if (isConflictCreationError(cause)) {
+          const details = cause instanceof ApiError ? (cause.details as { creation_id?: string; reason?: string } | undefined) : undefined;
+          createdForRetry.current = {
+            body: bodyKey,
+            sessionId: targetSessionId,
+            creationId,
+            status: 'conflict',
+          };
+          writePersistedCreationIntent(scopeIntentKey, {
+            creationId,
+            sessionId: targetSessionId,
+            bodyKey,
+            status: 'conflict',
+            reason: details?.reason,
+          });
+          setCreationNotice(null);
+        } else if (isUnknownCreationError(cause)) {
+          const details = cause instanceof ApiError ? (cause.details as { creation_id?: string; session_id?: string; evidence?: string } | undefined) : undefined;
+          const unknownSessionId = details?.session_id ?? targetSessionId;
+          createdForRetry.current = {
+            body: bodyKey,
+            sessionId: unknownSessionId,
+            creationId,
+            status: 'unknown',
+          };
+          setCreatedSessionId(unknownSessionId);
+          setCreationNotice(t('new.creationUnknown'));
+          writePersistedCreationIntent(scopeIntentKey, {
+            creationId,
+            sessionId: unknownSessionId,
+            bodyKey,
+            status: 'unknown',
+            evidence: details?.evidence,
+          });
+        } else {
+          setCreationNotice(createdForRetry.current !== undefined
+            ? t('new.creationAccepted')
+            : null);
+        }
       })
       .finally(() => {
         if (creationIntent.current !== intent) return;
@@ -950,7 +1136,7 @@ export function useNewSessionDraft({
         setCreationPending(false);
         if (intent.cancelled && createdForRetry.current !== undefined) setCreationNotice(t('new.creationAccepted'));
       });
-  }, [client, connectionId, draftKey, draftScopeId, locale, scopeId, spaceKey, sshLabel, navigate, queryClient, t]);
+  }, [client, connectionId, draftKey, draftScopeId, locale, scopeId, scopeIntentKey, spaceKey, sshLabel, navigate, queryClient, t]);
 
   const send = useCallback((
     text: string,
