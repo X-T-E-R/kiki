@@ -79,7 +79,7 @@ ACP 客户端在 `session/new`、`session/load` 或 `session/resume` 中提供 `
 
 ### 外部 harness 中的 Kiki 工具
 
-上面的转发是入站连接：IDE 向 `kiki acp` 提供 MCP 服务器。Kiki 运行外部 harness 时，可以提供绑定到该 Kiki 会话和 Agent 的会话级工具桥。Adapter 必须接受 stdio MCP；模型设置、厂商登录和权限仍沿用 harness 自身配置，无需把受管工具桥的临时凭证复制到厂商配置中。
+上面的转发是入站连接：IDE 向 `kiki acp` 提供 MCP 服务器。Kiki 运行外部 harness 时，可以提供绑定到该 Kiki 会话和 Agent 的会话级工具桥。Adapter 必须接受 stdio MCP；OpenClaw 和 Pi 无法接收这个工具桥。模型设置、厂商登录和权限仍沿用 harness 自身配置，无需把受管工具桥的临时凭证复制到厂商配置中。
 
 在 `[agent_executor_overrides.<executor-id>.defaults]` 下设置 `inject_kiki_mcp`，作为引擎默认值。Profile 的 `inject_kiki_mcp` 优先于引擎默认，会话的 `execution.overrides.inject_kiki_mcp` 再覆盖 Profile。将会话值设为 `null` 即恢复继承。这些选择在下一次绑定生效，也适用于具名外部子 Agent；冷恢复保留已保存的选择。Agent 绑定 `false` 后，现有工具桥凭证也不能继续列出或调用其工具。
 

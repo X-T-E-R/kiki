@@ -205,9 +205,16 @@ void test('real ACP early exits retain bounded safe diagnostics without mixing s
 
 void test('cancel settles the owned session after the injected process stopper and never implicitly resumes', async () => {
   const b = bridge(); const id = await session(b); const messages = [];
-  const pending = turn(b, id, 'tool-hang', messages);
+  let toolStarted;
+  const started = new Promise(done => { toolStarted = done; });
+  const pending = b.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'tool-hang' }] }, {
+    notify: async (_method, event) => {
+      messages.push(event);
+      if (event.update?.sessionUpdate === 'tool_call') toolStarted();
+    },
+  });
   pending.catch(() => {});
-  await new Promise(done => setTimeout(done, 100));
+  await started;
   await b.cancel({ sessionId: id });
   assert.equal((await pending).stopReason, 'cancelled');
   const updates = messages.filter(message => message.update?.sessionUpdate === 'tool_call_update');

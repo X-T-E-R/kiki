@@ -1,4 +1,4 @@
-import { harnessCapabilities, IHarnessMcpService, type HarnessMcpLease } from '#/app/agentExecutor/harnessMcp';
+import { harnessCapabilities, kikiMcpSupport, IHarnessMcpService, type HarnessMcpLease } from '#/app/agentExecutor/harnessMcp';
 import type { AgentExecutorContext } from '#/app/agentExecutor/agentExecutor';
 import { Error2, ErrorCodes } from '#/errors';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -22,7 +22,7 @@ export async function acquireHarnessMcp(context: AgentExecutorContext, cwd: stri
     if (injection === true || requested) throw new Error2(ErrorCodes.CONFIG_INVALID, 'This harness cannot receive the Kiki stdio MCP bridge');
     return undefined;
   }
-  if (injection !== true && !requested && (context.descriptor.supportsMcp !== true ||
+  if (injection !== true && !requested && (kikiMcpSupport(context.descriptor).state !== 'supported' ||
     context.agent.accessor.get(IAgentScopeContext).parentAgentId === undefined)) return undefined;
   const session = context.agent.accessor.get(ISessionContext);
   return context.agent.accessor.get(IHarnessMcpService).acquire({

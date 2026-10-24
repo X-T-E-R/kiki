@@ -231,6 +231,7 @@ function createHarness(options: HarnessOptions = {}) {
   const negotiatedRegistry = vi.fn();
   const services = new Map<unknown, unknown>([
     [IAgentStateService, states],
+    [IAgentScopeContext, { parentAgentId: undefined }],
     [IAgentPermissionModeService, Object.assign(options.permissionMode ?? { mode: 'manual' }, { setMode: vi.fn() })],
     [IAgentPermissionRulesService, { rules: [] }],
     [IAgentPermissionGate, { authorize: options.permissionGate }],

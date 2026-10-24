@@ -541,13 +541,17 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     },
   ): Promise<{ readonly summary: string; readonly usage?: TokenUsage }> {
     const pump = (async () => {
-      for await (const event of handle.events) {
-        await recorder.record(event as ExternalExecutorEvent);
+      try {
+        for await (const event of handle.events) {
+          await recorder.record(event as ExternalExecutorEvent);
+        }
+      } catch (error) {
+        await handle.cancel(error);
+        throw error;
       }
     })();
     try {
-      const completed = await handle.completion;
-      await pump;
+      const [completed] = await Promise.all([handle.completion, pump]);
       if (completed.response._meta?.['usage'] !== undefined) await recorder.reportedUsage(completed.response._meta['usage']);
       const turnResult = turnResultFromAcp(completed);
       if (turnResult.type === 'completed') {

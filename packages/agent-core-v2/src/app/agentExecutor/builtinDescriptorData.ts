@@ -110,6 +110,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     protocol: 'acp-v1',
     command: 'codex-acp',
     args: [],
+    supportsMcp: true,
     env: { DISABLE_MCP_CONFIG_FILTERING: 'true' },
     diagnostics: [
       { kind: 'dependency', command: 'codex', args: ['--version'], unavailable: 'Vendor codex CLI is not installed or not executable.', failed: 'codex --version exited with code {code}.' },
@@ -148,6 +149,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     shutdownGraceMs: 3_000,
     modelBinding: 'argv',
     modelArgs: ['--model', '{model}'],
+    supportsMcp: true,
     diagnostics: [{ kind: 'message', severity: 'info', message: 'Only cursor-agent is admitted; the unrelated agent shim is never probed.' }],
     revision: '2026-08-31.1',
   },
@@ -186,6 +188,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     revision: '2026-10-16.1',
   },
   'gemini-acp': {
+    supportsMcp: true,
     label: 'Gemini CLI',
     protocol: 'acp-v1',
     command: 'gemini',
@@ -226,6 +229,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     revision: '2026-08-30.1',
   },
   'opencode-acp': {
+    supportsMcp: true,
     label: 'OpenCode',
     protocol: 'acp-v1',
     command: 'opencode',
@@ -247,12 +251,14 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     revision: '2026-09-30.1',
   },
   'cline-acp': {
+    supportsMcp: true,
     label: 'Cline', protocol: 'acp-v1', command: 'cline', args: ['--acp'],
     shutdownGraceMs: 3_000,
     installHint: 'npm install -g cline',
     revision: '2026-09-30.1',
   },
   'codebuddy-acp': {
+    supportsMcp: true,
     label: 'CodeBuddy', protocol: 'acp-v1', command: 'codebuddy', args: ['--acp'],
     shutdownGraceMs: 3_000,
     installHint: 'npm install -g @tencent-ai/codebuddy-code',
@@ -268,6 +274,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     revision: '2026-09-30.1',
   },
   'deepseek-acp': {
+    supportsMcp: true,
     label: 'DeepSeek Harness', protocol: 'acp-v1', command: 'deepseek-acp', args: [],
     homeEnv: 'DSH_HOME', shutdownGraceMs: 3_000, mcpTransports: ['stdio', 'http'],
     installHint: 'Install a compatible deepseek-acp adapter and configure DeepSeek authentication',
@@ -276,6 +283,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     revision: '2026-09-30.1',
   },
   'qoder-acp': {
+    supportsMcp: true,
     label: 'Qoder', protocol: 'acp-v1', command: 'qodercli', args: ['--acp'],
     homeEnv: 'QODER_CONFIG_DIR', shutdownGraceMs: 3_000,
     installHint: 'Install Qoder CLI and complete its vendor sign-in flow',

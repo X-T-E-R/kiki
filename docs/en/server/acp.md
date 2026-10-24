@@ -79,7 +79,7 @@ To use an IDE that sends stdio MCP servers, explicitly start Kiki with `kiki acp
 
 ### Kiki tools in an external harness
 
-The forwarding above is inbound: an IDE supplies MCP servers to `kiki acp`. When Kiki runs an external harness, it can supply a session-local bridge bound to the exact Kiki session and agent. The adapter must accept stdio MCP; its model settings, vendor login and permissions remain its own. You do not copy the managed bridge's temporary credentials into vendor configuration.
+The forwarding above is inbound: an IDE supplies MCP servers to `kiki acp`. When Kiki runs an external harness, it can supply a session-local bridge bound to the exact Kiki session and agent. The adapter must accept stdio MCP; OpenClaw and Pi cannot receive this bridge. Model settings, vendor login and permissions remain the harness's own. You do not copy the managed bridge's temporary credentials into vendor configuration.
 
 Set `inject_kiki_mcp` under `[agent_executor_overrides.<executor-id>.defaults]` to choose the engine default. A Profile's `inject_kiki_mcp` overrides it, and `execution.overrides.inject_kiki_mcp` overrides the Profile for a session. Set the session value to `null` to inherit again. These choices take effect on the next binding, including named external child profiles; cold restore keeps the saved choice. Once an agent binds `false`, existing bridge credentials can no longer list or call its tools.
 

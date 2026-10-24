@@ -711,6 +711,27 @@ const mappingEvents: NormalizedExecutorEvent[] = [
 ];
 
 describe('ACP external executor', () => {
+  it('cancels the active remote prompt when recording fails instead of leaving execution running', async () => {
+    const harness = createHarness({
+      deferTurnCompletion: true,
+      events: [{ type: 'message.delta', role: 'assistant', content: { type: 'text', text: 'answer' } }],
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+    const dispatch = harness.dispatcher.dispatch.bind(harness.dispatcher);
+    harness.dispatcher.dispatch = async (event) => {
+      if (event instanceof AssistantDelta) throw new Error('fixture recording failed');
+      return dispatch(event);
+    };
+    try {
+      const run = await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+      await expect(run.completion).rejects.toThrow('fixture recording failed');
+      expect(await run.turn.result).toMatchObject({ type: 'failed' });
+      await harness.session.settled();
+      expect(harness.turnCancel).toHaveBeenCalledOnce();
+      expect(harness.session.status().state).toBe('idle');
+    } finally { await harness.session.shutdown(); }
+  });
+
   it('keeps permission overrides and clear within the same execution context', () => {
     const first = resolveExecutionBinding({ executor: 'example-acp', overrides: { permission_mode: 'yolo' } }, undefined, undefined, undefined);
     const next = resolveExecutionBinding({ executor: 'example-acp', overrides: { permission_mode: 'auto' } }, undefined, undefined, first);
