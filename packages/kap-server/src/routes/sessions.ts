@@ -1600,6 +1600,7 @@ export function toWireSession(
     archived_at:
       fields.archivedAt === undefined ? undefined : new Date(fields.archivedAt).toISOString(),
     busy: facts.busy,
+    executing: facts.executing,
     main_turn_active: facts.mainTurnActive,
     pending_interaction: facts.pendingInteraction,
     last_turn_reason:
@@ -1626,6 +1627,7 @@ export function toWireSession(
 /** Live activity and interaction facts projected onto the wire `Session`. */
 export interface SessionFacts {
   readonly busy: boolean;
+  readonly executing?: boolean;
   readonly mainTurnActive: boolean;
   readonly pendingInteraction: SessionPendingInteraction;
   readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
@@ -1683,6 +1685,7 @@ export function resolveSessionFacts(
   if (handle === undefined) {
     return {
       busy: false,
+      executing: false,
       mainTurnActive: false,
       pendingInteraction: 'none',
       usage:

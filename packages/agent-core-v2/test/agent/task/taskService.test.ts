@@ -2276,9 +2276,9 @@ describe('running subagent status', () => {
     ] };
 
     expect(runningSubagentStatus(tasks, lifecycle, 'main', undefined, 'en'))
-      .toBe('2 subagents still running: agent-live, named');
+      .toBe('1 subagent still running: agent-live');
     expect(runningSubagentStatus(tasks, lifecycle, 'main', 'agent-live', 'en'))
-      .toBe('1 subagent still running: named');
+      .toBeUndefined();
     await disposables.dispose();
   });
 

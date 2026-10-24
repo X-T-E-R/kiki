@@ -634,6 +634,7 @@ export const workspaceDeletedEventSchema = z.object({
 export const sessionWorkChangedEventSchema = z.object({
   type: z.literal('event.session.work_changed'),
   busy: z.boolean(),
+  executing: z.boolean().optional(),
   main_turn_active: z.boolean().optional(),
   pending_interaction: sessionPendingInteractionSchema.optional(),
   last_turn_reason: z.enum(['completed', 'cancelled', 'failed']).optional(),

@@ -133,8 +133,11 @@ describe('AgentExecutionService', () => {
     const registry = { resolveExecutable: async () => ({ descriptor: { id: 'external-example', protocol: 'acp-v1', args: [], revision: 'r1' }, options: {}, provider: { create: () => session } }) } as unknown as IAgentExecutorRegistry;
     const service = executionService(ix, scope('main'), profile({ executorId: 'external-example', executorProtocol: 'acp-v1', executorDescriptorRevision: 'r1' }), registry, states());
     const governance = ix.get(IRequestGovernance);
+    const statuses: string[] = [];
+    const subscription = service.onDidChangeStatus((status) => statuses.push(status.state));
     try {
       const running = service.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+      expect(statuses).toEqual(['starting']);
       if (failure === 'launch_failure') {
         await expect(running).rejects.toThrow('fixture launch failed');
       } else {
@@ -146,7 +149,50 @@ describe('AgentExecutionService', () => {
         await service.settled();
       }
       expect(governance.agentSnapshot()).toMatchObject({ active: 0, queued: 0 });
-    } finally { await service.dispose(); await ix.dispose(); }
+      expect(statuses.at(-1)).not.toBe('running');
+      expect(statuses.at(-1)).not.toBe('starting');
+    } finally { subscription.dispose(); await service.dispose(); await ix.dispose(); }
+  });
+  it.each(['completed', 'cancelled'] as const)('publishes idle only after an external %s run has settled', async (outcome) => {
+    const ix = new TestInstantiationService();
+    const completion = deferred<{ summary: string }>();
+    const finalization = deferred<void>();
+    const finalizing = deferred<void>();
+    let active = true;
+    const session: AgentExecutorSession = {
+      run: async () => ({ agentId: 'main', completion: completion.promise, turn: {
+        id: 1, signal: new AbortController().signal, ready: Promise.resolve(),
+        result: Promise.resolve({ type: 'completed', steps: 1, truncated: false }), cancel: () => true,
+      } }),
+      status: () => active ? { state: 'running', turnId: 1 } : { state: 'idle' },
+      cancel: () => true,
+      settled: async () => { finalizing.resolve(); await finalization.promise; active = false; },
+      shutdown: async () => {}, hooks: createHooks(['onWillRun']),
+    };
+    const registry = { resolveExecutable: async () => ({ descriptor: { id: 'external-example', protocol: 'acp-v1', args: [], revision: 'r1' }, options: {}, provider: { create: () => session } }) } as unknown as IAgentExecutorRegistry;
+    const service = executionService(ix, scope('main'), profile({ executorId: 'external-example', executorProtocol: 'acp-v1', executorDescriptorRevision: 'r1' }), registry, states());
+    const statuses: string[] = [];
+    const subscription = service.onDidChangeStatus((status) => statuses.push(status.state));
+    try {
+      const handle = await service.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+      expect(statuses).toEqual(['starting', 'running']);
+      if (outcome === 'cancelled') {
+        service.cancel();
+        const rejected = expect(handle.completion).rejects.toThrow('cancelled');
+        completion.reject(new Error('cancelled'));
+        await rejected;
+      } else {
+        completion.resolve({ summary: 'done' });
+        await handle.completion;
+      }
+      await finalizing.promise;
+      expect(statuses.at(-1)).toBe(outcome === 'cancelled' ? 'cancelling' : 'running');
+      expect(ix.get(IRequestGovernance).agentSnapshot().active).toBe(1);
+      finalization.resolve();
+      await service.settled();
+      expect(statuses.at(-1)).toBe('idle');
+      expect(ix.get(IRequestGovernance).agentSnapshot().active).toBe(0);
+    } finally { finalization.resolve(); subscription.dispose(); await service.dispose(); await ix.dispose(); }
   });
   it('gates a real native main prompt before model work and releases at terminal', async () => {
     const ix = new TestInstantiationService();

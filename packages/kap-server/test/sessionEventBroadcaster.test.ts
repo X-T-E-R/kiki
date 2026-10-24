@@ -359,6 +359,7 @@ class FakeSessionActivityView {
     const pending = this.interactions.listPending();
     return {
       busy,
+      executing: busy,
       mainTurnActive: this.folds.get(MAIN_AGENT_ID)?.turnActive ?? false,
       pendingInteraction: pending.some((i) => i.kind === 'approval')
         ? 'approval'
@@ -2282,6 +2283,25 @@ describe('SessionEventBroadcaster', () => {
       { busy: true, last_turn_reason: undefined },
       { busy: false, last_turn_reason: 'failed' },
     ]);
+  });
+
+  it('forwards execution-only changes while unfinished delivery keeps busy true', async () => {
+    const lc = new FakeLifecycle();
+    lc.addAgent('main');
+    const changes: Array<(change: SessionActivityChangedEvent) => void> = [];
+    vi.spyOn(lc.workView, 'onDidChange').mockImplementation((listener) => {
+      changes.push(listener);
+      return { dispose: () => {} };
+    });
+    sessions.set('s1', lc);
+    const { target, envelopes } = collectingTarget();
+    await bc.subscribe('s1', target);
+    for (const executing of [true, false]) {
+      changes[0]!({ state: { busy: true, executing, mainTurnActive: false, pendingInteraction: 'none' }, cause: 'background' });
+      await bc.getCursor('s1');
+    }
+    expect(envelopes.filter((event) => event.type === 'event.session.work_changed').map((event) => event.payload))
+      .toMatchObject([{ busy: true, executing: true }, { busy: true, executing: false }]);
   });
 
   it('flips busy from background tasks alone (no turn involved)', async () => {

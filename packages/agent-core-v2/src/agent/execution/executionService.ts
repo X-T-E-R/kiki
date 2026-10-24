@@ -1,5 +1,6 @@
 import { IInstantiationService, type ServicesAccessor } from '#/_base/di/instantiation';
 import { markAsDisposed, trackDisposable } from '#/_base/di/lifecycle';
+import { Emitter } from '#/_base/event';
 import {
   registerScopedService,
   ScopeActivation,
@@ -64,6 +65,8 @@ export class AgentExecutionService implements IAgentExecutionService {
     'onWillRun',
   ]);
 
+  private readonly statusChanged = new Emitter<AgentExecutionStatus>();
+  readonly onDidChangeStatus = this.statusChanged.event;
   private readonly agent: AgentExecutorAgentContext;
   private readonly runs = new Set<ActiveRun>();
   private readonly deliveredHints = new Set<string>();
@@ -117,6 +120,7 @@ export class AgentExecutionService implements IAgentExecutionService {
     };
     this.runs.add(active);
     this.cancelling = false;
+    this.statusChanged.fire(this.status());
     const afterStartCallbacks: Array<() => Promise<void>> = [];
     const runContext: AgentExecutionRunContext = {
       signal: controller.signal,
@@ -168,13 +172,14 @@ export class AgentExecutionService implements IAgentExecutionService {
       this.broken = undefined;
       const handle = await session.run(outbound, { ...options, signal: controller.signal });
       active.turnId = handle.turn.id;
+      this.statusChanged.fire(this.status());
       void handle.completion.then(
-        () => { this.finishRun(active); },
+        () => { this.finishRunWhenSettled(active, session); },
         (error: unknown) => {
           if (this.isFailedExternalRun(session, active)) {
             void this.finishFailedExternalRun(active, session, error);
           } else {
-            this.finishRun(active);
+            this.finishRunWhenSettled(active, session);
           }
         },
       );
@@ -224,6 +229,7 @@ export class AgentExecutionService implements IAgentExecutionService {
     };
     this.runs.add(active);
     this.cancelling = false;
+    this.statusChanged.fire(this.status());
     void completion.then(() => this.finishRun(active), () => this.finishRun(active));
     return controller.signal;
   }
@@ -270,7 +276,9 @@ export class AgentExecutionService implements IAgentExecutionService {
         cancelled = true;
       }
     }
-    return this.session?.cancel(reason) === true || cancelled;
+    const sessionCancelled = this.session?.cancel(reason) === true;
+    if (cancelled || sessionCancelled) this.statusChanged.fire(this.status());
+    return sessionCancelled || cancelled;
   }
 
   async settled(): Promise<void> {
@@ -293,6 +301,7 @@ export class AgentExecutionService implements IAgentExecutionService {
     try {
       await this.shutdown(new Error('Agent execution service disposed'));
     } finally {
+      this.statusChanged.dispose();
       markAsDisposed(this);
     }
   }
@@ -310,6 +319,8 @@ export class AgentExecutionService implements IAgentExecutionService {
       this.shutdownFailed = true;
       if (this.broken === undefined) this.broken = error;
       throw error;
+    } finally {
+      this.statusChanged.fire(this.status());
     }
   }
 
@@ -415,7 +426,7 @@ export class AgentExecutionService implements IAgentExecutionService {
 
   private async finishFailedExternalRun(active: ActiveRun, session: AgentExecutorSession, error: unknown): Promise<void> {
     await this.cleanupFailedExternalSession(session, error);
-    this.finishRun(active);
+    this.finishRunWhenSettled(active, session);
   }
 
   private async cleanupFailedExternalSession(session: AgentExecutorSession, error: unknown): Promise<boolean> {
@@ -484,11 +495,23 @@ export class AgentExecutionService implements IAgentExecutionService {
     });
   }
 
+  private finishRunWhenSettled(active: ActiveRun, session: AgentExecutorSession | undefined): void {
+    if (session === undefined || session instanceof NativeAgentExecutorSession) {
+      this.finishRun(active);
+      return;
+    }
+    void session.settled().then(() => this.finishRun(active), (error: unknown) => {
+      this.broken ??= error;
+      this.finishRun(active);
+    });
+  }
+
   private finishRun(active: ActiveRun): void {
     if (!this.runs.delete(active)) return;
     active.unlink();
     active.resolveSettled();
     if (this.runs.size === 0) this.cancelling = false;
+    this.statusChanged.fire(this.status());
   }
 }
 

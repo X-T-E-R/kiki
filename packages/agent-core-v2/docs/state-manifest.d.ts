@@ -530,6 +530,7 @@ export interface SessionStateSnapshot {
   // src/session/sessionActivity/sessionActivityService.ts
   'sessionActivity.current': /* SessionActivityState — packages/agent-core-v2/src/session/sessionActivity/sessionActivity.ts */ {
     readonly busy: boolean;
+    readonly executing?: boolean;
     readonly mainTurnActive: boolean;
     readonly pendingInteraction: /* SessionPendingInteraction — packages/agent-core-v2/src/session/sessionActivity/sessionActivity.ts */ 'approval' | 'question' | 'none';
     readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
@@ -2273,6 +2274,7 @@ export interface AgentStateSnapshot {
         readonly parentAgentId?: undefined;
         readonly purpose: 'connectivity_probe';
       });
+      readonly retry?: 'never';
     };
     readonly systemPrompt: string;
     readonly promptFields: /* ResolvedPromptFieldOverrides — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ {

@@ -651,6 +651,8 @@ export interface WorkspaceDeletedEvent {
 export interface SessionWorkChangedEvent {
   readonly type: 'event.session.work_changed';
   readonly busy: boolean;
+  /** Current execution, excluding queued work and terminal task receipts awaiting delivery. */
+  readonly executing?: boolean;
   /** Main-agent turn liveness, excluding background and sub-agent work. */
   readonly main_turn_active?: boolean;
   /** Highest-priority pending interaction for clients without a session subscription. */
@@ -1837,6 +1839,7 @@ export const workspaceDeletedEventSchema = z.object({
 export const sessionWorkChangedEventSchema = z.object({
   type: z.literal('event.session.work_changed'),
   busy: z.boolean(),
+  executing: z.boolean().optional(),
   main_turn_active: z.boolean().optional(),
   pending_interaction: sessionPendingInteractionSchema.optional(),
   last_turn_reason: z.enum(['completed', 'cancelled', 'failed']).optional(),

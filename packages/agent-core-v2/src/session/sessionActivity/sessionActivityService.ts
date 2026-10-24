@@ -1,4 +1,4 @@
-import { Disposable, toDisposable, type IDisposable } from '#/_base/di/lifecycle';
+import { Disposable, DisposableStore, toDisposable, type IDisposable } from '#/_base/di/lifecycle';
 import { isPromiseLike } from '#/_base/lifecycle/disposer';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { LifecycleScope } from '#/app/scopes';
@@ -47,6 +47,7 @@ export const sessionActivityFoldsKey = defineState<Map<string, AgentWorkFold>>(
 );
 export const sessionActivityCurrentKey = defineState<SessionActivityState>('sessionActivity.current', () => ({
   busy: false,
+  executing: false,
   mainTurnActive: false,
   pendingInteraction: 'none',
   lastTurnReason: undefined,
@@ -113,10 +114,15 @@ export class SessionActivityView extends Disposable implements ISessionActivityV
     if (this.folds.has(handle.id)) return;
     const view = handle.accessor.get(IAgentActivityView) as IAgentActivityView | undefined;
     this.folds.set(handle.id, foldOf(handle.id, view?.state()));
+    const subscriptions = new DisposableStore();
+    this.agentSubscriptions.set(handle.id, subscriptions);
+    const execution = handle.accessor.get(IAgentExecutionService);
+    if (execution?.onDidChangeStatus !== undefined) {
+      subscriptions.add(execution.onDidChangeStatus(() => this.recompute('background')));
+    }
     const bus = handle.accessor.get(IEventBus) as IEventBus | undefined;
     if (bus === undefined) return;
-    this.agentSubscriptions.set(
-      handle.id,
+    subscriptions.add(
       bus.subscribe((event) => {
         if (event.type === AgentActivityUpdated.type) this.onActivity(handle.id, event as AgentActivityUpdated);
         if (!/^(turn\.|task\.|prompt\.|goal\.|compaction\.)/u.test(event.type)) return;
@@ -161,6 +167,7 @@ export class SessionActivityView extends Disposable implements ISessionActivityV
 
   private aggregate(): SessionActivityState {
     let busy = false;
+    let executing = false;
     for (const handle of this.agents.list()) {
       const fold = this.folds.get(handle.id);
       const tasks = handle.accessor.get(IAgentTaskService);
@@ -172,17 +179,22 @@ export class SessionActivityView extends Disposable implements ISessionActivityV
       const execution = handle.accessor.get(IAgentExecutionService)?.status();
       const state = handle.accessor.get(IAgentStateService);
       const goalActive = state?.has(goalKey) === true && state.get(goalKey)?.status === 'active';
+      const executorActive = execution?.state === 'starting' || execution?.state === 'running' || execution?.state === 'cancelling';
+      const turnExecuting = execution === undefined ? fold?.turnActive === true : executorActive;
+      const taskExecuting = tasks?.list(true).some((task) => task.status === 'running' &&
+        task.lifetime !== 'service' && task.kind !== 'agent' && task.kind !== 'question') === true;
+      executing ||= turnExecuting || background || taskExecuting || loop?.state === 'running' || loop?.finalizing === true;
       if (fold?.turnActive || background || tasks?.hasUnfinishedWork() || goalActive ||
         loop?.state === 'running' || loop?.finalizing || loop?.persistenceFailure || loop?.hasPendingRequests ||
         (loop?.pendingTurnIds.length ?? 0) > 0 || prompt?.active !== undefined || prompt?.launching !== undefined ||
         (prompt?.pending.length ?? 0) > 0 || execution?.state === 'starting' ||
         execution?.state === 'running' || execution?.state === 'cancelling') {
         busy = true;
-        break;
       }
     }
     return {
       busy,
+      executing,
       mainTurnActive: this.folds.get(MAIN_AGENT_ID)?.turnActive ?? false,
       pendingInteraction: resolvePendingInteraction(this.interactions.listPending()),
       lastTurnReason: this.folds.get(MAIN_AGENT_ID)?.lastTurnReason,
@@ -217,6 +229,7 @@ function resolvePendingInteraction(pending: readonly Interaction[]): SessionPend
 function activityEquals(a: SessionActivityState, b: SessionActivityState): boolean {
   return (
     a.busy === b.busy &&
+    a.executing === b.executing &&
     a.mainTurnActive === b.mainTurnActive &&
     a.pendingInteraction === b.pendingInteraction &&
     a.lastTurnReason === b.lastTurnReason
