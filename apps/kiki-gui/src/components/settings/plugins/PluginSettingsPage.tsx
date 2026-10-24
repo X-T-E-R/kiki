@@ -237,10 +237,16 @@ function PluginEffectiveScope({ plugin }: { readonly plugin: PluginSummary }) {
  * The plugin's own settings panel when it ships one and the master switch
  * still allows the document. Otherwise the generic schema form, which is also
  * what a turned-off plugin keeps: its document route refuses a disabled plugin.
+ *
+ * A manifest read that failed is reported in place instead of being read as
+ * "this plugin declares no settings" — the page does not know yet, and saying
+ * otherwise would send the reader away from a form that exists. Its retry asks
+ * both reads again, so one click repairs the whole body.
  */
 function PluginSettingsBody({ plugin }: { readonly plugin: PluginSummary }) {
   const { t } = useI18n();
   const { scopeId, meta } = useConnection();
+  const queryClient = useQueryClient();
   const info = usePluginInfo(plugin.id);
   const panel = settingsPanelOf(info.data?.manifest);
   const canOpen = plugin.enabled && plugin.state === 'ok' && panel !== undefined;
@@ -257,12 +263,28 @@ function PluginSettingsBody({ plugin }: { readonly plugin: PluginSummary }) {
       />
     );
   }
+  const manifestUnread = info.isError;
   return (
     <div className="space-y-2">
+      {manifestUnread ? (
+        <div className="space-y-2" data-plugin-settings-manifest-error>
+          <InlineError error={info.error} />
+          <button
+            type="button"
+            className={SECONDARY_BUTTON}
+            onClick={() => {
+              void info.refetch();
+              void queryClient.invalidateQueries({ queryKey: ['plugin-settings', plugin.id] });
+            }}
+          >
+            {t('common.retry')}
+          </button>
+        </div>
+      ) : null}
       {panel !== undefined && !plugin.enabled ? (
         <p className="text-[13px] text-ink-faint" data-plugin-settings-panel-off>{t('cap.settings.panelOff')}</p>
       ) : null}
-      <PluginSettingsForm pluginId={plugin.id} showEmptyNote={panel === undefined} />
+      <PluginSettingsForm pluginId={plugin.id} showEmptyNote={panel === undefined && !manifestUnread} />
     </div>
   );
 }

@@ -778,4 +778,29 @@ describe('the settings page chooses the declared panel or the generic schema for
     expect(getPluginPanelDocument).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain('super-secret');
   });
+
+  it('reports a failed plugin detail instead of reading it as "no settings", and one retry repairs the body', async () => {
+    listPlugins.mockResolvedValue({ plugins: [INSTALLED] });
+    getPlugin.mockRejectedValueOnce(new Error('plugin detail unavailable'));
+    getPluginSettings.mockResolvedValue({ schema: undefined, values: {}, secretsConfigured: [] });
+    const container = await renderSettingsPage();
+    await until(() => container.querySelector('[data-plugin-settings-manifest-error]') !== null);
+    // The page does not know whether a panel exists, so it must not claim the plugin declares nothing.
+    expect(container.querySelector('[data-plugin-settings-none]')).toBeNull();
+    expect(container.textContent).toContain('plugin detail unavailable');
+
+    getPlugin.mockResolvedValue({
+      ...INSTALLED,
+      manifest: manifest('kiki', [{ slot: 'settings', id: 'prefs', label: 'Preferences' }]),
+    });
+    const retry = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Retry');
+    expect(retry).toBeDefined();
+    await act(async () => {
+      retry!.click();
+      await new Promise((done) => setTimeout(done, 0));
+    });
+    await until(() => container.querySelector('iframe') !== null);
+    expect(container.querySelector('[data-plugin-settings-manifest-error]')).toBeNull();
+    expect(getPluginPanelDocument).toHaveBeenCalledWith('field-notes', 'prefs');
+  });
 });
