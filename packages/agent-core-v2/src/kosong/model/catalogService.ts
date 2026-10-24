@@ -29,6 +29,7 @@ import {
 import {
   explainProviderEndpoint,
   getProviderDefinition,
+  resolveProviderApiKey,
 } from '../provider/providerDefinition';
 import { resolveImagePolicy } from '../provider/providerImagePolicy';
 import { resolveRequestCompression, resolveResponsesWebSocket } from '../provider/requestCompression';
@@ -42,7 +43,6 @@ import {
   type ProviderCatalogItem,
   type ProviderCredentialState,
   type SetDefaultModelResponse,
-  providerCredentialFields,
   StaticAuthProvider,
   toProtocolModel,
   toProtocolModelFallback,
@@ -633,18 +633,18 @@ export function resolveOutboundHeaders(
 }
 
 /**
- * Connection state shared by catalog reads and config mutations. Inline API
- * keys and declared environment sources are both treated as configured; a
- * cached OAuth token independently marks an OAuth connection as active.
+ * Connection state shared by catalog reads and config mutations. An API key
+ * is configured only when its inline or environment value resolves; a cached
+ * OAuth token independently marks an OAuth connection as active.
  */
 export async function resolveProviderCredentialState(
   providerId: string,
   provider: ProviderConfig,
   oauth: Pick<IModelOAuthTokens, 'hasCachedAccessToken'>,
 ): Promise<ProviderCredentialState> {
-  const key = providerCredentialFields(providerId, provider);
+  const key = resolveProviderApiKey(provider);
   return {
-    hasApiKey: key.api_key !== undefined || key.api_key_env !== undefined,
+    hasApiKey: key.apiKey !== undefined,
     hasOAuthToken:
       provider.oauth === undefined
         ? false

@@ -17,7 +17,7 @@ The `type` field in the `providers` table sets the default request format (the A
 
 All providers communicate with models in streaming mode by default. Capabilities such as thinking, vision, and tool use are matched automatically by model name prefix — you typically do not need to declare them manually.
 
-**Credential priority**: `api_key` direct field > `[providers.<name>.env]` sub-table key > if both are absent, startup fails with an error. Both are read from the config files — `credentials.toml` overlays `config.toml` — and the CLI does not fall back to shell environment variables for credentials. See [Config overrides: provider credentials](./overrides.md#provider-credentials).
+**Credential priority**: a model's own credential wins; otherwise Kiki uses the provider's `api_key`, then its explicitly configured `api_key_env` variable. Without `api_key_env`, the existing `[providers.<name>.env]` credential fallback remains unchanged. Shell variables are not read automatically. See [Config overrides: provider credentials](./overrides.md#provider-credentials) for the full priority and an environment-variable example.
 
 ### Model request format overrides
 

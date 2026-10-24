@@ -4,12 +4,10 @@ Kiki 通过环境变量控制少数运行时行为——迁移数据目录，以
 
 Kiki 自有运行时开关统一使用 `KIKI_*` 前缀。`KIMI_API_KEY` 和 `KIMI_BASE_URL` 等供应商凭证键属于上游生态，单独在下文说明。以本页列出的确切变量名为准。
 
-::: warning 重要：API 密钥不在这里配置
-`KIMI_API_KEY`、`ANTHROPIC_API_KEY`、`OPENAI_API_KEY` 等密钥变量**不会**从 shell 环境变量自动读取。在终端里 `export KIMI_API_KEY=xxx` 不会让任何供应商获得密钥——必须写在配置文件的 `[providers.<name>]` 段或其 `[providers.<name>.env]` 子表里。API 密钥放在配套的 `credentials.toml` 里，`config.toml` 不会存明文凭证。
+::: warning 注意
+供应商的 API 密钥变量**不会**自动读取。要使用环境变量，在 `config.toml` 的供应商表里设置 `api_key_env = "YOUR_PROVIDER_KEY"`，并把该变量传给 Kiki 进程。见[凭证优先级与示例](./overrides.md#供应商凭证)。保存的密钥值仍放在 `credentials.toml`；环境引用只保存变量名。
 
-唯一的例外是 `KIKI_MODEL_*` 系列，它是一个显式通道，*确实*会从 shell 读取凭证——详见[用环境变量定义模型](#用环境变量定义模型-kiki-model)。
-
-背景说明见[配置覆盖：供应商凭证](./overrides.md#供应商凭证)。
+独立的 `KIKI_MODEL_*` 系列也能提供临时模型与密钥——详见[用环境变量定义模型](#用环境变量定义模型-kiki-model)。
 :::
 
 ## 核心路径
@@ -36,7 +34,7 @@ export KIKI_HOME="/path/to/custom/kiki"
 
 ## 供应商凭证键
 
-下面这些键名不从 shell 读取。它们写在 `[providers.<name>.env]` 子表里，作为 `api_key` / `base_url` 的备用来源。密钥键放进配套的 `credentials.toml`，非密钥的 `*_BASE_URL` 键留在 `config.toml`。
+下面是 `[providers.<name>.env]` 子表惯用的键名，作为 `api_key` / `base_url` 的备用来源。密钥键放进配套的 `credentials.toml`，非密钥的 `*_BASE_URL` 键留在 `config.toml`。要改从进程环境读取 API 密钥，请用 [`api_key_env`](./overrides.md#供应商凭证) 显式引用变量名。
 
 ```toml
 # ~/.kiki/credentials/credentials.toml
@@ -68,7 +66,7 @@ KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 | `GOOGLE_CLOUD_LOCATION` | Vertex AI，与 `GOOGLE_CLOUD_PROJECT` 一起设置 | 无 |
 
 ::: warning
-`GOOGLE_APPLICATION_CREDENTIALS`（服务账号 JSON 路径）是唯一走系统环境变量的例外——它由 Google SDK 自身通过 ADC 流程读取，CLI 不参与。其他所有键名都必须写在 `[providers.<name>.env]` 子表里——密钥键在 `credentials.toml`，`*_BASE_URL` 键在 `config.toml`。
+`GOOGLE_APPLICATION_CREDENTIALS`（服务账号 JSON 路径）由 Google SDK 自身通过标准 ADC 流程读取。项目、位置和基础 URL 仍来自供应商的配置子表；`api_key_env` 只允许读取指定的 API 密钥，不会同时启用其他 shell 变量。
 :::
 
 供应商类型与字段的完整说明见[平台与模型](./providers.md)。

@@ -113,6 +113,7 @@ const ProviderConfigObjectSchema = z.object({
 
   type: ProviderTypeSchema.optional(),
   apiKey: z.string().optional(),
+  apiKeyEnv: z.string().trim().min(1).optional(),
   oauth: OAuthRefSchema.optional(),
   env: StringRecordSchema.optional(),
   source: z.record(z.string(), z.unknown()).optional(),

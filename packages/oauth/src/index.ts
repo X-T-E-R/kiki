@@ -179,6 +179,8 @@ export type {
   KimiOAuthToolkitOptions,
 } from './toolkit';
 
+export { resolveConfiguredProviderApiKey } from './provider-api-key';
+export type { ProviderApiKeyConfig, ResolvedProviderApiKey } from './provider-api-key';
 export { refreshProviderModels } from './refreshProviderModels';
 export { probeProviderModels } from './probeProviderModels';
 export type { DraftProviderProbe, DraftProviderProbeResult } from './probeProviderModels';

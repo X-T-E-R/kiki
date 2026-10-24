@@ -4,12 +4,10 @@ Kiki uses environment variables to control a small number of runtime behaviors �
 
 Kiki-owned runtime controls use the `KIKI_*` prefix. Provider credential key names such as `KIMI_API_KEY` and `KIMI_BASE_URL` remain upstream-facing and are documented separately. Treat the exact names listed on this page as authoritative.
 
-::: warning Important: API keys are not configured here
-Credential variables such as `KIMI_API_KEY`, `ANTHROPIC_API_KEY`, and `OPENAI_API_KEY` are **not** read automatically from shell environment variables. Running `export KIMI_API_KEY=xxx` in the terminal does not give any provider its key — they must be written in the config files under `[providers.<name>]` or its `[providers.<name>.env]` sub-table. API keys live in the companion `credentials.toml`; `config.toml` never carries a plaintext credential.
+::: warning
+Provider API key variables are **not** read automatically. To use one, set `api_key_env = "YOUR_PROVIDER_KEY"` in the provider's `config.toml` table and supply that variable to the Kiki process. See [credential priority and example](./overrides.md#provider-credentials). Stored key values remain in `credentials.toml`; the environment reference stores only the variable name.
 
-The only exception is the `KIKI_MODEL_*` family, which is an explicit channel that *does* read credentials from the shell — see [Define a model from environment variables](#define-a-model-from-environment-variables-kiki-model).
-
-For background, see [Config overrides: provider credentials](./overrides.md#provider-credentials).
+The separate `KIKI_MODEL_*` family can supply a temporary model and key — see [Define a model from environment variables](#define-a-model-from-environment-variables-kiki-model).
 :::
 
 ## Core paths
@@ -36,7 +34,7 @@ Switch models temporarily without modifying `config.toml` — when `KIKI_MODEL_N
 
 ## Provider credential key names
 
-The key names below are not read from the shell. They are keys written inside the `[providers.<name>.env]` sub-table, used as fallback values for `api_key` / `base_url`. Secret keys go in the companion `credentials.toml`; the non-secret `*_BASE_URL` keys stay in `config.toml`.
+The names below are the conventional keys for the `[providers.<name>.env]` sub-table, used as fallback values for `api_key` / `base_url`. Secret keys go in the companion `credentials.toml`; the non-secret `*_BASE_URL` keys stay in `config.toml`. To read an API key from the process instead, explicitly reference its variable name with [`api_key_env`](./overrides.md#provider-credentials).
 
 ```toml
 # ~/.kiki/credentials/credentials.toml
@@ -68,7 +66,7 @@ Key names per provider:
 | `GOOGLE_CLOUD_LOCATION` | Vertex AI, together with `GOOGLE_CLOUD_PROJECT` | None |
 
 ::: warning
-`GOOGLE_APPLICATION_CREDENTIALS` (path to a service account JSON file) is the only exception that goes through the system environment variable mechanism — it is read by the Google SDK directly via the standard ADC flow, and the CLI does not participate. All other key names must be placed in the `[providers.<name>.env]` sub-table to take effect — the secret ones in `credentials.toml`, the `*_BASE_URL` ones in `config.toml`.
+`GOOGLE_APPLICATION_CREDENTIALS` (path to a service account JSON file) is read directly by the Google SDK through the standard ADC flow. Project, location, and base URL values still come from the provider's config sub-table; `api_key_env` opts in only the named API key, not other shell variables.
 :::
 
 For the full provider type and field reference, see [Providers and models](./providers.md).

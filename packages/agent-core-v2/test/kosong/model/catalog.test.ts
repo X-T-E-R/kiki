@@ -236,6 +236,32 @@ describe('Model assembly (pure data)', () => {
     } finally { factory.mockRestore(); await host.dispose(); }
   });
 
+  it.each([
+    { label: 'explicit runtime variable', provider: { apiKeyEnv: 'EXAMPLE_PROVIDER_KEY' }, model: {}, expected: 'runtime-fixture' },
+    { label: 'provider env bag', provider: { apiKeyEnv: 'EXAMPLE_PROVIDER_KEY', env: { EXAMPLE_PROVIDER_KEY: 'bag-fixture' } }, model: {}, expected: 'bag-fixture' },
+    { label: 'inline provider precedence', provider: { apiKey: 'inline-fixture', apiKeyEnv: 'EXAMPLE_PROVIDER_KEY' }, model: {}, expected: 'inline-fixture' },
+    { label: 'model precedence', provider: { apiKey: 'inline-fixture', apiKeyEnv: 'EXAMPLE_PROVIDER_KEY' }, model: { apiKey: 'model-fixture' }, expected: 'model-fixture' },
+  ])('resolves $label through the normal model request sink', async ({ provider, model, expected }) => {
+    vi.stubEnv('EXAMPLE_PROVIDER_KEY', 'runtime-fixture');
+    const { host, catalog } = createHost({
+      providers: { gateway: { type: 'openai', baseUrl: 'https://gateway.example.test/v1', ...provider } },
+      models: { m1: { provider: 'gateway', model: 'remote', maxContextSize: 4096, ...model } },
+    });
+    const generate = vi.fn(async (..._args: unknown[]) => { throw new Error('fake network sink'); });
+    const factory = vi.spyOn(host.app.accessor.get(IProtocolAdapterRegistry), 'createChatProvider').mockReturnValue({
+      name: 'fake', modelName: 'remote', thinkingEffort: null, generate,
+    } as unknown as ChatProvider);
+    try {
+      await expect(async () => {
+        for await (const event of catalog.getRequester('m1').request({ systemPrompt: '', tools: [], messages: [] }, undefined, { attribution: { logicalRequestId: 'fixture', purpose: 'connectivity_probe', waitBudget: { waitedMs: 0 } } })) void event;
+      }).rejects.toThrow('fake network sink');
+      expect(generate.mock.calls[0]?.[3]).toMatchObject({ auth: { apiKey: expected } });
+      const wire = (await catalog.listModels())[0];
+      expect(wire).toMatchObject({ auth_source: model.apiKey === undefined ? provider.apiKey === undefined ? 'env' : 'provider' : 'model' });
+      expect(JSON.stringify(wire)).not.toContain(expected);
+    } finally { factory.mockRestore(); await host.dispose(); vi.unstubAllEnvs(); }
+  });
+
   it('suppresses process environment API keys when composing a model without configured auth', async () => {
     const previous = process.env['OPENAI_API_KEY'];
     process.env['OPENAI_API_KEY'] = 'sk-process-env-must-not-leak';
@@ -1146,10 +1172,14 @@ describe('ModelCatalog inspect', () => {
         maxCompletionTokens: _maxCompletionTokens,
         requestParams: _requestParams,
         usageParameters: _usageParameters,
+        requestCompression: _requestCompression,
+        responsesWebSocket: _responsesWebSocket,
         ...rest
       } = model;
       expect(model.usageParameters).toHaveProperty('main.values');
       expect(view.resolved).not.toHaveProperty('usageParameters');
+      expect(view.resolved).not.toHaveProperty('requestCompression');
+      expect(view.resolved).not.toHaveProperty('responsesWebSocket');
       expect(view.resolved).toMatchObject({ ...rest, wireName: name });
       expect(view.sources['resolved.maxContextSize']).toEqual(view.sources['model.effective.maxContextSize']);
       expect(view.sources['resolved.maxContextSize']).toMatchObject({ kind: 'config' });
@@ -2007,18 +2037,28 @@ describe('ModelCatalog enumeration', () => {
     }
   });
 
-  it('reports an actual declared process environment key by name, never by value', async () => {
-    vi.stubEnv('KIMI_API_KEY', 'sk-shell-only');
-    const { host, catalog } = createHost({ providers: { kimi: { type: 'kimi' } }, models: {} });
+  it('reports only resolved explicit runtime keys as configured and never exposes their values', async () => {
+    vi.stubEnv('KIMI_API_KEY', 'undeclared-fixture');
+    vi.stubEnv('EXAMPLE_PROVIDER_KEY', 'runtime-fixture');
+    vi.stubEnv('EXAMPLE_MISSING_KEY', undefined);
+    const { host, catalog } = createHost({
+      providers: {
+        declared: { type: 'kimi', apiKeyEnv: 'EXAMPLE_PROVIDER_KEY' },
+        missing: { type: 'kimi', apiKeyEnv: 'EXAMPLE_MISSING_KEY', env: { KIMI_API_KEY: 'legacy-fixture' } },
+        empty: { type: 'kimi', apiKeyEnv: 'EXAMPLE_PROVIDER_KEY', env: { EXAMPLE_PROVIDER_KEY: '' } },
+        undeclared: { type: 'kimi' },
+      },
+      models: {},
+    });
     try {
-      expect(await catalog.listProviders()).toEqual([expect.objectContaining({
-        id: 'kimi', api_key_env: 'KIMI_API_KEY', has_api_key: true, status: 'connected',
-      })]);
-      expect((await catalog.getProvider('kimi')).api_key).toBeUndefined();
-    } finally {
-      await host.dispose();
-      vi.unstubAllEnvs();
-    }
+      const byId = Object.fromEntries((await catalog.listProviders()).map((provider) => [provider.id, provider]));
+      expect(byId['declared']).toMatchObject({ api_key_env: 'EXAMPLE_PROVIDER_KEY', has_api_key: true, status: 'connected' });
+      expect(byId['missing']).toMatchObject({ api_key_env: 'EXAMPLE_MISSING_KEY', has_api_key: false, status: 'unconfigured' });
+      expect(byId['empty']).toMatchObject({ api_key_env: 'EXAMPLE_PROVIDER_KEY', has_api_key: false, status: 'unconfigured' });
+      expect(byId['undeclared']).toMatchObject({ has_api_key: false, status: 'unconfigured' });
+      expect(byId['undeclared']?.api_key_env).toBeUndefined();
+      expect(JSON.stringify(byId)).not.toMatch(/runtime-fixture|undeclared-fixture|legacy-fixture/);
+    } finally { await host.dispose(); vi.unstubAllEnvs(); }
   });
 
   it('marks an OAuth provider connected when a cached token exists', async () => {

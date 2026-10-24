@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
@@ -18,6 +18,47 @@ import { ModelCatalogMutationService } from '#/app/kosongConfig/modelCatalogMuta
 import { IModelOAuthTokens } from '#/kosong/model/modelOAuth';
 
 import { StubConfigService, stubModelOAuthTokens } from '../../kosong/stubs';
+
+describe('provider environment credential mutations', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('creates, cold-reads, changes and clears the variable name without persisting its runtime value', async () => {
+    vi.stubEnv('EXAMPLE_MISSING_PROVIDER_KEY', undefined);
+    vi.stubEnv('EXAMPLE_NEXT_PROVIDER_KEY', 'runtime-fixture');
+    const storage = new InMemoryStorageService(); const store = new TomlAtomicDocumentStore(storage);
+    await store.setText('', 'config.toml', '[providers.sibling]\ntype="openai"\nbase_url="https://sibling.example.test/v1"\n[providers.managed]\ntype="openai"\n[providers.managed.oauth]\nstorage="file"\nkey="oauth/example"\n');
+    const host = () => {
+      const ix = new TestInstantiationService();
+      ix.stub(ILogService, stubLog()); ix.stub(IBootstrapService, stubBootstrap('/scratch/home'));
+      ix.stub(IFileSystemStorageService, storage); ix.stub(IAtomicTomlDocumentStore, store); ix.stub(IModelOAuthTokens, stubModelOAuthTokens());
+      ix.set(IConfigRegistry, new SyncDescriptor(ConfigRegistry)); ix.set(IConfigService, new SyncDescriptor(ConfigService)); ix.set(IModelCatalogMutationService, new SyncDescriptor(ModelCatalogMutationService));
+      return ix;
+    };
+    const first = host();
+    try {
+      const catalog = first.get(IModelCatalogMutationService);
+      const created = await catalog.createProvider({ id: 'edge', type: 'openai', api_key_env: 'EXAMPLE_MISSING_PROVIDER_KEY', base_url: 'https://edge.example.test/v1' });
+      expect(created).toMatchObject({ api_key_env: 'EXAMPLE_MISSING_PROVIDER_KEY', has_api_key: false, status: 'unconfigured' });
+      expect(await store.getText('', 'config.toml')).toContain('api_key_env = "EXAMPLE_MISSING_PROVIDER_KEY"');
+      const edited = await catalog.updateProvider('edge', { base_revision: created.revision, api_key_env: 'EXAMPLE_NEXT_PROVIDER_KEY' });
+      await expect(catalog.updateProvider('edge', { base_revision: created.revision, api_key_env: null })).rejects.toMatchObject({ code: 'model_catalog.revision_conflict' });
+      expect(edited).toMatchObject({ api_key_env: 'EXAMPLE_NEXT_PROVIDER_KEY', has_api_key: true, status: 'connected' });
+      expect(await store.getText('', 'config.toml')).not.toContain('runtime-fixture');
+      await expect(catalog.updateProvider('edge', { api_key_env: '' })).rejects.toMatchObject({ code: 'config.invalid' });
+      await expect(catalog.updateProvider('managed', { api_key_env: 'EXAMPLE_NEXT_PROVIDER_KEY' })).rejects.toMatchObject({ code: 'provider.oauth_managed' });
+      await expect(catalog.updateProvider('managed', { api_key_env: null })).rejects.toMatchObject({ code: 'provider.oauth_managed' });
+    } finally { await first.dispose(); }
+    const cold = host();
+    try {
+      const catalog = cold.get(IModelCatalogMutationService);
+      const saved = await catalog.readProvider('edge');
+      expect(saved.api_key_env).toBe('EXAMPLE_NEXT_PROVIDER_KEY');
+      expect((await catalog.updateProvider('edge', { base_revision: saved.revision, api_key_env: null })).api_key_env).toBeUndefined();
+      expect(await store.getText('', 'config.toml')).not.toContain('api_key_env');
+      expect((await catalog.readProvider('sibling')).base_url).toBe('https://sibling.example.test/v1');
+    } finally { await cold.dispose(); }
+  });
+});
 
 describe('generation parameter entity mutations', () => {
   it('CAS-merges source modes and saved custom leaves without erasing user bodies or model/profile fields', async () => {

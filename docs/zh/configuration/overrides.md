@@ -25,7 +25,7 @@ Kiki 有三个地方可以影响运行参数：配置文件、命令行选项、
 少数环境变量明确覆盖特定配置字段，例如 `KIKI_BACKGROUND_KEEP_ALIVE_ON_EXIT` 的优先级高于 `[background].keep_alive_on_exit`。这类例外在[环境变量](./env-vars.md)和[配置文件](./config-files.md)对应字段里都有标注。
 
 ::: warning
-**普通运行参数不会从 shell 环境变量取后备值。** 供应商的 `api_key` / `base_url` 只从配置文件读取——密钥在 `credentials.toml`，其余在 `config.toml`——不会回退到 shell 里 `export` 的变量。唯一的例外是显式的 `KIKI_MODEL_*` 通道——详见[用环境变量定义模型](./env-vars.md#用环境变量定义模型-kiki-model)。
+**普通运行参数不会从 shell 环境变量取后备值。** 供应商只有在你通过 `api_key_env` 显式指定变量名时才读取 shell 密钥，具体规则见下文。独立的 `KIKI_MODEL_*` 通道也能提供临时模型与密钥——详见[用环境变量定义模型](./env-vars.md#用环境变量定义模型-kiki-model)。
 :::
 
 CLI 从 `KIKI_HOME`（默认 `~/.kiki`）读取用户级配置，并从 `<项目根目录>/.kiki/local.toml` 读取项目级设置。旧的 `.kimi-code/local.toml` 路径不会读取。需要在不同项目间隔离配置时，用 `KIKI_HOME` 指向不同的数据目录——见下文[典型场景](#典型场景)。
@@ -36,15 +36,26 @@ CLI 从 `KIKI_HOME`（默认 `~/.kiki`）读取用户级配置，并从 `<项目
 
 供应商的 API 密钥存放在数据根目录下的 `credentials/credentials.toml`。Kiki 把两个文件当作一份文档读取，同一条 TOML 路径上 `credentials.toml` 的值优先；`config.toml` 不会保存明文凭证。文件位置、权限以及首次加载迁移见[供应商凭证](./config-files.md#供应商凭证)。
 
-对单个供应商，凭证按以下顺序解析：
+模型自身的 API 密钥或 OAuth 引用优先于供应商凭证。对于使用 API 密钥的供应商，其余来源按以下顺序解析：
 
-1. `[providers.<name>].api_key` — 存放在 `credentials.toml` 里的密钥，优先级最高
-2. `[providers.<name>.env]` 子表里的对应键（`KIMI_API_KEY`、`ANTHROPIC_API_KEY` 等）— `api_key` 为空时才读这里；这些密钥值同样存放在 `credentials.toml`
-3. 两者都缺 → 启动报错，提示该供应商缺少凭证
+1. `[providers.<name>].api_key`——已保存的密钥；非空值优先于环境来源。
+2. 已设置 `api_key_env` 时，若 `[providers.<name>.env]` 中存在同名项，就读该项；否则读取 Kiki 进程的同名环境变量。子表中的显式空值不会回退到进程环境。变量缺失或为空白时，API 密钥仍为未配置状态，也不会改试其他变量。
+3. 未设置 `api_key_env` 时，沿用供应商类型在 `[providers.<name>.env]` 中的原有密钥键（`KIMI_API_KEY`、`ANTHROPIC_API_KEY` 等）。这些已保存的密钥值同样放在 `credentials.toml` 中，不会隐式回退到 shell。
 
-`base_url` 的解析方式相同：先读 `[providers.<name>].base_url`，再读 `[providers.<name>.env]` 里的 `*_BASE_URL` 键。`base_url` 不是密钥，仍留在 `config.toml`。
+若要把密钥保留在环境中，只在 `config.toml` 中保存变量名：
 
-> `[providers.<name>.env]` 子表只是配置文件里的一段 TOML，不会真正写入 shell 环境变量。仅当对应的直接字段（`api_key` / `base_url`）为空时，CLI 才会查这里。
+```toml
+[providers.gateway]
+type = "openai"
+base_url = "https://api.example.com/v1"
+api_key_env = "YOUR_PROVIDER_KEY"
+```
+
+从已经设置 `YOUR_PROVIDER_KEY` 的进程启动 Kiki。通过快捷方式启动的桌面应用不一定继承终端里的变量。已有供应商若要改用环境密钥，请先清除 `api_key`，否则仍优先使用已保存的密钥。Kiki 不会把解析出的环境值复制到凭证存储。供应商就绪状态、模型请求和模型发现使用同一解析规则；就绪只表示有可用值，不表示远端服务已接受该密钥。
+
+供应商的 OAuth 引用仍走原有令牌流程。与已保存的密钥一样，解析成功的环境密钥不能与同一供应商层的 OAuth 同时使用。
+
+`base_url` 保持原规则：先读 `[providers.<name>].base_url`，再读 `[providers.<name>.env]` 中的 `*_BASE_URL` 键。它不是密钥，仍留在 `config.toml`。`env` 子表不会向 shell 环境写入值。
 
 完整的凭证键名列表见[环境变量：供应商凭证键](./env-vars.md#供应商凭证键)。
 
@@ -107,7 +118,7 @@ profile 绑定时——新建主会话、新建 subagent、切换模型，或原
 KIKI_HOME="$PWD/.kiki-sandbox" kiki
 ```
 
-**一次性使用测试密钥**——由于供应商凭证只从配置文件读，把测试密钥写进 `credentials.toml`：
+**在配置文件中保存测试密钥**——把密钥写进 `credentials.toml`。若只想通过环境传入密钥，使用上文的 `api_key_env` 示例：
 
 ```toml
 # ~/.kiki/credentials/credentials.toml

@@ -585,7 +585,7 @@ export type CreateModelRequest = z.infer<typeof createModelRequestSchema>;
 /**
  * Sparse provider patch. It never carries a model list: models are edited as
  * their own entities (`/models`), so saving one field of a connection can no
- * longer rebuild or drop its models. `base_url`, `default_model` and
+ * longer rebuild or drop its models. `api_key_env`, `base_url`, `default_model`,
  * `request_identity`, `request_compression` and `responses_web_socket` accept
  * `null` to clear; `api_key` stays tri-state (absent keeps the stored key,
  * `""` clears, any other value replaces).
@@ -595,6 +595,7 @@ export const patchProviderRequestSchema = z
     base_revision: z.string().min(1).optional(),
     type: z.string().min(1).optional(),
     api_key: z.string().optional(),
+    api_key_env: z.string().trim().min(1).nullable().optional(),
     base_url: z.string().trim().nullable().optional(),
     default_model: z.string().min(1).nullable().optional(),
     defaults: generationParametersPatchSchema.nullable().optional(),
@@ -700,6 +701,7 @@ export const createProviderRequestSchema = z
     id: providerIdSchema,
     type: z.string().min(1),
     api_key: z.string().optional(),
+    api_key_env: z.string().trim().min(1).optional(),
     base_url: z.string().trim().optional(),
     default_model: z.string().min(1).optional(),
     defaults: generationParametersSchema.optional(),

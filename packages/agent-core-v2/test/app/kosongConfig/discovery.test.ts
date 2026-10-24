@@ -91,6 +91,19 @@ afterEach(() => {
 });
 
 describe('manual provider discovery', () => {
+  it('refreshes with an explicit runtime variable through the service without copying it into config', async () => {
+    vi.stubEnv('EXAMPLE_PROVIDER_KEY', 'runtime-fixture');
+    const fetchMock = vi.fn(async () => catalogResponse('remote-new'));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = { type: 'openai', baseUrl: connection.baseUrl, apiKeyEnv: 'EXAMPLE_PROVIDER_KEY' };
+    const { host, discovery, config } = await createHost({ ...sections, providers: { gateway: provider } });
+    try {
+      await discovery.refreshProviderModels({ providerId: 'gateway' });
+      expect(fetchMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer runtime-fixture' }) }));
+      expect(config.get('providers')).toEqual({ gateway: provider });
+    } finally { await host.dispose(); }
+  });
+
   it('uses a persisted provider key for user-directed refresh and probe', async () => {
     const fetchMock = vi.fn(async () => catalogResponse('remote-new'));
     vi.stubGlobal('fetch', fetchMock);

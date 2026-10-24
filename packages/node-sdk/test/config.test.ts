@@ -213,6 +213,21 @@ backoff = 15000
     expect(() => parseConfigString('[models.example]\nprovider="example"\nmodel="remote"\nmax_context_size=8192\n[models.example.cognition]\noverlay={text=42}\n')).toThrow();
   });
 
+  it('round-trips an explicit provider variable name without storing the runtime credential', async () => {
+    vi.stubEnv('EXAMPLE_PROVIDER_KEY', 'runtime-fixture');
+    const path = join(await makeTempDir(), 'config.toml');
+    const config = parseConfigString('[providers.edge]\ntype="openai"\napi_key_env="EXAMPLE_PROVIDER_KEY"\nbase_url="https://edge.example.test/v1"\n');
+    expect(config.providers['edge']?.apiKeyEnv).toBe('EXAMPLE_PROVIDER_KEY');
+    expect(KimiConfigPatchSchema.parse({ providers: { edge: { apiKeyEnv: 'EXAMPLE_PROVIDER_KEY' } } }).providers?.['edge']?.apiKeyEnv).toBe('EXAMPLE_PROVIDER_KEY');
+    await writeConfigFile(path, config);
+    expect(readConfigFile(path).providers['edge']?.apiKeyEnv).toBe('EXAMPLE_PROVIDER_KEY');
+    const text = await readFile(path, 'utf8');
+    expect(text).toContain('api_key_env = "EXAMPLE_PROVIDER_KEY"');
+    expect(text).not.toContain('runtime-fixture');
+    await expect(stat(join(path, '..', 'credentials', 'credentials.toml'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(() => parseConfigString('[providers.edge]\ntype="openai"\napi_key_env=" "\n')).toThrow();
+  });
+
   it.each(['openai', 'openai_responses', 'anthropic', 'google-genai'] as const)('round-trips model protocol %s without changing its provider', async (protocol) => {
     const path = join(await makeTempDir(), 'config.toml');
     const config = parseConfigString(`[providers.edge]\ntype="openai"\napi_key="fixture-key"\n[models.example]\nprovider="edge"\nmodel="remote-example"\nmax_context_size=8192\nprotocol="${protocol}"\n`);
@@ -646,7 +661,7 @@ describe('KimiHarness config API', () => {
       nbSearchSource: { reuse_local_config: true },
       mergeAllAvailableSkills: true,
       extraSkillDirs: [],
-      loopControl: { compactionSoftContextSize: 0 },
+      loopControl: { compactionSoftContextSize: 0, thinkingOnlyContinuation: true },
       background: {},
       subagent: { timeoutMs: 7_200_000, maxDirectChildren: 16, maxTotalSubagents: 0, defaultProfile: 'general', allowedTools: [] },
       mcp: {},

@@ -38,6 +38,7 @@ const StringRecordSchema = z.record(z.string(), z.string());
 export const ProviderConfigSchema = z.object({
   type: ProviderTypeSchema,
   apiKey: z.string().optional(),
+  apiKeyEnv: z.string().trim().min(1).optional(),
   baseUrl: z.string().optional(),
   defaultModel: z.string().optional(),
   oauth: OAuthRefSchema.optional(),

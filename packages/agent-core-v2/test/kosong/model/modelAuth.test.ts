@@ -52,6 +52,14 @@ describe('resolveModelAuthMaterial', () => {
     ).toThrowError(expect.objectContaining({ code: ConfigErrors.codes.CONFIG_INVALID }));
   });
 
+  it('keeps model credentials and same-layer OAuth conflicts unchanged for explicit environment keys', () => {
+    const provider: ProviderConfig = { type: 'openai', apiKeyEnv: 'EXAMPLE_PROVIDER_KEY', env: { EXAMPLE_PROVIDER_KEY: 'bag-fixture' }, oauth: { storage: 'file', key: 'oauth/example' } };
+    expect(() => authMaterial({ model: { model: 'm' }, provider })).toThrowError(expect.objectContaining({ code: ConfigErrors.codes.CONFIG_INVALID }));
+    expect(authMaterial({ model: { model: 'm', apiKey: 'model-fixture' }, provider })).toEqual({ apiKey: 'model-fixture' });
+    expect(authMaterial({ model: { model: 'm', oauth: { storage: 'file', key: 'oauth/model' }, providerId: 'edge' }, provider })).toEqual({ oauth: { storage: 'file', key: 'oauth/model' }, oauthProviderKey: 'edge' });
+    expect(authMaterial({ model: { model: 'm' }, provider: { ...provider, env: { EXAMPLE_PROVIDER_KEY: '' } } })).toEqual({ oauth: provider.oauth, oauthProviderKey: undefined });
+  });
+
   it('reads env-bag credentials through the vendor endpoint declarations', () => {
     expect(
       authMaterial({
@@ -101,6 +109,10 @@ describe('resolveModelAuthMaterial', () => {
         provider: { type: 'vertexai', env: { GOOGLE_API_KEY: 'google-env-key' } },
       }),
     ).toEqual({});
+  });
+
+  it('does not fall back to a legacy key when the explicit variable is empty', () => {
+    expect(authMaterial({ model: { model: 'm' }, provider: { type: 'openai', apiKeyEnv: 'EXAMPLE_PROVIDER_KEY', env: { EXAMPLE_PROVIDER_KEY: '', OPENAI_API_KEY: 'legacy-fixture' } } })).toEqual({});
   });
 
   it('returns empty material when nothing is configured', () => {

@@ -1,3 +1,5 @@
+import { resolveConfiguredProviderApiKey, type ResolvedProviderApiKey } from '@kiki/oauth';
+
 import { BugIndicatingError } from '#/_base/errors/errors';
 import type { Protocol, ProtocolAdapterConfig } from '#/kosong/protocol/protocol';
 import type {
@@ -6,7 +8,7 @@ import type {
   TraitContext,
 } from '#/kosong/protocol/protocolTrait';
 
-import type { ModelSource } from './provider';
+import type { ModelSource, ProviderConfig } from './provider';
 
 export interface ProviderDefinition {
   readonly id: string;
@@ -79,6 +81,13 @@ export interface ExplainedProviderEndpoint {
   readonly baseUrl?: string;
   readonly baseUrlEnvName?: string;
   readonly baseUrlIsDefault?: boolean;
+}
+
+export function resolveProviderApiKey(
+  provider: Pick<ProviderConfig, 'type' | 'apiKey' | 'apiKeyEnv' | 'env'>,
+): ResolvedProviderApiKey {
+  const fallback: ExplainedProviderEndpoint = provider.type === undefined ? {} : explainProviderEndpoint(provider.type, provider.env ?? {});
+  return resolveConfiguredProviderApiKey(provider, { apiKey: fallback.apiKey, envName: fallback.apiKeyEnvName });
 }
 
 export function explainProviderEndpoint(

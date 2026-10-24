@@ -237,18 +237,19 @@ api_key = "YOUR_API_KEY"
 
 ## `providers`
 
-`providers` 表的每一项定义一个 API 供应商，以唯一名称为 key。供应商的 `api_key` 放在 [`credentials.toml`](#供应商凭证)，CLI **不会**从 shell 环境变量自动取后备值——在终端里 `export KIMI_API_KEY` 不会让供应商自动获得密钥，请写在 `credentials.toml` 里。
+`providers` 表的每一项定义一个 API 供应商，以唯一名称为 key。可以把 API 密钥存入 [`credentials.toml`](#供应商凭证)，也可以在 `config.toml` 中设置 `api_key_env`，读取 Kiki 进程里的指定环境变量。没有这个显式引用时，在 shell 中导出密钥变量不会生效。
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `type` | `string` | 是 | 供应商类型：`kimi`、`anthropic`、`openai`、`openai_responses`、`google-genai`、`vertexai` |
 | `api_key` | `string` | 否 | API 密钥。存放在 `credentials.toml`；仅当 `credentials.toml` 中没有该供应商的值时，才使用 `config.toml` 里的值 |
+| `api_key_env` | `string` | 否 | 非空的环境变量名，不是密钥值。存放在 `config.toml`；仅当 `api_key` 为空时读取。见[凭证优先级与示例](./overrides.md#供应商凭证) |
 | `base_url` | `string` | 否 | API 基础 URL |
 | `oauth` | `table` | 否 | OAuth 凭据引用（`storage`、`key` 两个字段），由登录流程自动注入，通常无需手写 |
-| `env` | `table<string, string>` | 否 | 供应商凭证的备用来源，详见下文 |
+| `env` | `table<string, string>` | 否 | 供应商环境值，详见下文 |
 | `custom_headers` | `table<string, string>` | 否 | 每次请求附加的自定义 HTTP 头 |
 
-**`env` 子表**：可以把供应商惯用的键名（如 `KIMI_API_KEY`）写在 `[providers.<name>.env]` 里，作为 `api_key` / `base_url` 的备用来源。这个子表**只在配置文件里读取**，不会修改 shell 环境：
+**`env` 子表**：可以把供应商惯用的键名（如 `KIMI_API_KEY`）写在 `[providers.<name>.env]` 里，作为 `api_key` / `base_url` 的备用来源。对于 `api_key_env` 指定的变量，此表中的同名值优先于进程环境，包括显式空值。这个子表**只在配置文件里读取**，不会修改 shell 环境：
 
 ```toml
 [providers.kimi.env]
@@ -256,7 +257,7 @@ KIMI_API_KEY = "sk-xxx"
 KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 ```
 
-优先级：`api_key` 字段 > `env` 子表键 > 两者都缺时启动报错。`type = "vertexai"` 可以不填 `api_key`，只要 env 子表同时写了 `GOOGLE_CLOUD_PROJECT` 和 `GOOGLE_CLOUD_LOCATION`。如果同时还填了 `api_key`，该密钥仍会发送。见 [Vertex AI](./providers.md#vertexai)。
+`api_key_env` 指定的变量缺失或为空时，不会再尝试其他凭证变量。完整解析顺序见[配置覆盖](./overrides.md#供应商凭证)。`type = "vertexai"` 可以不填 `api_key`，只要 env 子表同时写了 `GOOGLE_CLOUD_PROJECT` 和 `GOOGLE_CLOUD_LOCATION`。如果同时还设置了 API 密钥，该密钥仍会发送。见 [Vertex AI](./providers.md#vertexai)。
 
 ## `models`
 

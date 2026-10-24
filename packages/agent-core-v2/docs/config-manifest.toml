@@ -795,6 +795,7 @@ enter_approval_timeout_ms = 60000
     # convert_unsupported: "off" | "auto" | "png" | "jpeg"
   # type: string
   # api_key: string
+  # api_key_env: string
   # oauth: object
     # storage: "file" | "keyring"
     # key: string

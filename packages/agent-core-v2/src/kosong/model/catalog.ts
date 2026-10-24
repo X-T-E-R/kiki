@@ -10,7 +10,7 @@ import type { ResponsesWebSocketConfig } from '#/kosong/contract/responsesTransp
 import { ProtocolSchema, type Protocol, type ProtocolProviderOptions } from '#/kosong/protocol/protocol';
 
 import { ENV_MODEL_PROVIDER_KEY, type ProviderConfig } from '../provider/provider';
-import { explainProviderEndpoint } from '../provider/providerDefinition';
+import { resolveProviderApiKey } from '../provider/providerDefinition';
 import {
   IMAGE_MIME_TYPES,
   type ImagePolicyConfig,
@@ -172,22 +172,20 @@ export interface ProviderCredentialState {
 
 export function providerCredentialFields(
   providerId: string,
-  provider: Pick<ProviderConfig, 'type' | 'apiKey' | 'env'>,
+  provider: Pick<ProviderConfig, 'type' | 'apiKey' | 'apiKeyEnv' | 'env'>,
 ): { api_key?: string; api_key_env?: string } {
   if (providerId === ENV_MODEL_PROVIDER_KEY) {
     return { api_key_env: provider.apiKey?.trim() ? 'KIKI_MODEL_API_KEY' : undefined };
   }
   if (provider.apiKey?.trim()) return { api_key: provider.apiKey };
-  if (provider.type === undefined) return {};
-  const bag = explainProviderEndpoint(provider.type, provider.env ?? {});
-  return { api_key_env: bag.apiKeyEnvName ?? explainProviderEndpoint(provider.type).apiKeyEnvName };
+  return { api_key_env: resolveProviderApiKey(provider).envName };
 }
 
 export function toProtocolModel(
   model: Model,
   record: ModelRecord,
   providerType?: string,
-  provider?: Pick<ProviderConfig, 'baseUrl' | 'type' | 'env' | 'apiKey' | 'oauth'>,
+  provider?: Pick<ProviderConfig, 'baseUrl' | 'type' | 'env' | 'apiKey' | 'apiKeyEnv' | 'oauth'>,
 ): ModelCatalogItem {
   const effective = effectiveModelConfig(record, providerType ?? model.providerType);
   const explained = explainModelProtocol(record, providerOf(providerType ?? model.providerType));
@@ -224,7 +222,7 @@ export function toProtocolModelFallback(
   modelId: string,
   record: ModelRecord,
   providerType?: string,
-  provider?: Pick<ProviderConfig, 'baseUrl' | 'type' | 'env' | 'apiKey' | 'oauth'>,
+  provider?: Pick<ProviderConfig, 'baseUrl' | 'type' | 'env' | 'apiKey' | 'apiKeyEnv' | 'oauth'>,
 ): ModelCatalogItem {
   const effective = effectiveModelConfig(record, providerType);
   const explained = explainModelProtocol(record, providerOf(providerType));
@@ -259,7 +257,7 @@ function providerOf(providerType: string | undefined): { readonly type: string }
 
 export function modelBindingOriginFields(
   record: ModelRecord,
-  provider?: Pick<ProviderConfig, 'baseUrl' | 'type' | 'env' | 'apiKey' | 'oauth'>,
+  provider?: Pick<ProviderConfig, 'baseUrl' | 'type' | 'env' | 'apiKey' | 'apiKeyEnv' | 'oauth'>,
 ): Pick<ModelCatalogItem, 'endpoint_source' | 'endpoint_env' | 'auth_source' | 'auth_env'> {
   const endpoint = explainModelEndpointOrigin(record, provider);
   const auth = explainModelAuthOrigin(record, provider);

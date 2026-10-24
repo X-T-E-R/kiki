@@ -3122,6 +3122,7 @@ export interface AgentStateSnapshot {
       };
       type?: string;
       apiKey?: string;
+      apiKeyEnv?: string;
       oauth?: /* OAuthRef — packages/agent-core-v2/src/kosong/provider/provider.ts */ {
         storage: 'file' | 'keyring';
         key: string;

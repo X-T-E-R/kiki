@@ -394,6 +394,7 @@ function connectionFingerprint(provider: ManagedKimiConfigShape['providers'][str
     type: provider.type,
     baseUrl: provider.baseUrl,
     apiKey: provider.apiKey,
+    apiKeyEnv: provider['apiKeyEnv'],
     env: provider['env'],
     customHeaders: provider['customHeaders'],
     oauth: provider.oauth,

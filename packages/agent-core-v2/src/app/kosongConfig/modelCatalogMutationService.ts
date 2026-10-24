@@ -528,6 +528,10 @@ function applyProviderPatch(provider: ProviderConfig, patch: PatchProviderReques
     if (env === undefined) setCleared(next, 'env');
     else next.env = env;
   }
+  if (patch.api_key_env !== undefined) {
+    if (patch.api_key_env === null) setCleared(next, 'apiKeyEnv');
+    else next.apiKeyEnv = patch.api_key_env;
+  }
   if (patch.api_key !== undefined) {
     if (patch.api_key === '') {
       setCleared(next, 'apiKey');
@@ -781,6 +785,7 @@ export class ModelCatalogMutationService
       }
       const provider: ProviderConfig = { type: request.type };
       if (request.api_key !== undefined && request.api_key !== '') provider.apiKey = request.api_key;
+      if (request.api_key_env !== undefined) provider.apiKeyEnv = request.api_key_env;
       const baseUrl = request.base_url === undefined ? undefined : nonEmpty(request.base_url);
       if (baseUrl !== undefined) provider.baseUrl = baseUrl;
       if (request.defaults !== undefined) provider.defaults = parametersFromWire(request.defaults);
@@ -852,7 +857,7 @@ export class ModelCatalogMutationService
         if (request.type !== undefined && request.type !== provider.type) {
           throw oauthManagedError(id, 'use POST /oauth/logout to change it');
         }
-        if (request.api_key !== undefined) {
+        if (request.api_key !== undefined || request.api_key_env !== undefined) {
           throw oauthManagedError(id, 'use POST /oauth/logout to replace its credential');
         }
       }

@@ -237,18 +237,19 @@ The following sections detail the nested tables listed above.
 
 ## `providers`
 
-Each entry in the `providers` table defines an API provider, keyed by a unique name. The provider's `api_key` lives in [`credentials.toml`](#provider-credentials), and the CLI does **not** fall back to shell environment variables automatically. Running `export KIMI_API_KEY` in the terminal does not give any provider its key — write it in `credentials.toml` instead.
+Each entry in the `providers` table defines an API provider, keyed by a unique name. Store an API key in [`credentials.toml`](#provider-credentials), or set `api_key_env` in `config.toml` to read a named environment variable from the Kiki process. Without that explicit reference, exporting a provider key in the shell has no effect.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `type` | `string` | Yes | Provider type: `kimi`, `anthropic`, `openai`, `openai_responses`, `google-genai`, `vertexai` |
 | `api_key` | `string` | No | API key. Stored in `credentials.toml`; a value in `config.toml` is used only when `credentials.toml` has none for that provider |
+| `api_key_env` | `string` | No | Non-empty environment variable name, not a key value. Stored in `config.toml`; consulted only when `api_key` is empty. See [credential priority and example](./overrides.md#provider-credentials) |
 | `base_url` | `string` | No | API base URL |
 | `oauth` | `table` | No | OAuth credential reference (`storage` and `key` fields); injected automatically by the login flow — normally no need to write this by hand |
-| `env` | `table<string, string>` | No | Fallback source for provider credentials; see below |
+| `env` | `table<string, string>` | No | Provider environment values; see below |
 | `custom_headers` | `table<string, string>` | No | Custom HTTP headers attached to each request |
 
-**`env` sub-table**: You can write provider-conventional key names (such as `KIMI_API_KEY`) inside `[providers.<name>.env]` as a fallback source for `api_key` / `base_url`. This sub-table is **read only from the config file** and does not modify the shell environment:
+**`env` sub-table**: You can write provider-conventional key names (such as `KIMI_API_KEY`) inside `[providers.<name>.env]` as a fallback source for `api_key` / `base_url`. It also takes priority over the process environment for the variable named by `api_key_env`, including an explicitly empty value. This sub-table is **read only from the config file** and does not modify the shell environment:
 
 ```toml
 [providers.kimi.env]
@@ -256,7 +257,7 @@ KIMI_API_KEY = "sk-xxx"
 KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 ```
 
-Priority: `api_key` field > `env` sub-table key > if both are absent, startup fails with an error. `type = "vertexai"` can omit `api_key` when the env sub-table sets both `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION`. An `api_key` set alongside those coordinates is still sent. See [Vertex AI](./providers.md#vertexai).
+If the variable named by `api_key_env` is missing or empty, Kiki does not fall back to another credential variable. See [Config overrides](./overrides.md#provider-credentials) for the full resolution order. `type = "vertexai"` can omit `api_key` when the env sub-table sets both `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION`. An API key set alongside those coordinates is still sent. See [Vertex AI](./providers.md#vertexai).
 
 ## `models`
 
