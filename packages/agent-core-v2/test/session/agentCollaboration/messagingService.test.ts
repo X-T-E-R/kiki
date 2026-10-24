@@ -1702,22 +1702,61 @@ describe('agent collaboration safe-boundary delivery', () => {
     await service.dispose();
   });
 
-  it('queues user-authored mail to a running external child until its next run', async () => {
+  it('continues user-authored mail on the same external binding after a missed steer', async () => {
     const store = mailboxStore(tempDir());
     const target = agentHandle('agent-target', { executorId: 'grok-acp' });
     target.setRunning(true);
-    const dispatch = dispatchHarness();
+    let release!: () => void;
+    const settled = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(target.execution, 'settled').mockReturnValue(settled);
+    const dispatch = dispatchHarness(async (child, request, options) => ({
+      child,
+      request: request as AgentRunRequest,
+      started: target.execution.run(request as AgentRunRequest, options),
+    }));
     const service = messagingService(store, lifecycleHarness([target.handle]).service, sessionContext(),
       metadataHarness({ 'agent-target': { type: 'sub', parentAgentId: 'main', executor: 'grok-acp' } }), dispatch);
 
     await expect(service.sendUserMessage({ targetAgentId: 'agent-target', content: 'next step', idempotencyKey: 'running-user' }))
-      .resolves.toMatchObject({ delivery: 'queued' });
+      .resolves.toMatchObject({ delivery: 'queued', resumed: undefined });
     expect(target.pendingSteers()).toBe(0);
     expect(dispatch.runOnExisting).not.toHaveBeenCalled();
     target.setRunning(false);
-    await target.execution.run({ kind: 'prompt', prompt: 'ordinary resume' }, { signal });
-    expect(target.remoteRequests).toEqual([{ kind: 'prompt', prompt: 'next step\n\nordinary resume' }]);
-    expect(target.messages).toMatchObject([{ origin: { kind: 'user' } }]);
+    release();
+    await vi.waitFor(() => { expect(target.remoteRequests).toHaveLength(1); });
+    expect(target.remoteRequests).toEqual([{
+      kind: 'mailbox',
+      prompt: 'next step',
+      message: expect.objectContaining({ origin: { kind: 'user' }, content: [{ type: 'text', text: 'next step' }] }),
+    }]);
+    expect(dispatch.runOnExisting).toHaveBeenCalledTimes(1);
+    expect(target.messages).toMatchObject([{ origin: { kind: 'user' }, content: [{ type: 'text', text: 'next step' }] }]);
+    expect(await store.nextQueued('session-1', 'agent-target')).toBeUndefined();
+    await service.dispose();
+  });
+
+  it('does not continue a user message whose external steer outcome is unknown', async () => {
+    const store = mailboxStore(tempDir());
+    const target = agentHandle('agent-target', { executorId: 'claude-acp', externalSteerResult: 'unknown' });
+    target.setRunning(true);
+    let release!: () => void;
+    const settled = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(target.execution, 'settled').mockReturnValue(settled);
+    const dispatch = dispatchHarness(async (child, request, options) => ({
+      child,
+      request: request as AgentRunRequest,
+      started: target.execution.run(request as AgentRunRequest, options),
+    }));
+    const service = messagingService(store, lifecycleHarness([target.handle]).service, sessionContext(),
+      metadataHarness({ 'agent-target': { type: 'sub', parentAgentId: 'main', executor: 'claude-acp' } }), dispatch);
+    await expect(service.sendUserMessage({ targetAgentId: 'agent-target', content: 'maybe sent', idempotencyKey: 'unknown-user' }))
+      .resolves.toMatchObject({ delivery: 'queued' });
+    target.setRunning(false);
+    release();
+    await drain();
+    expect(dispatch.runOnExisting).not.toHaveBeenCalled();
+    await target.execution.run({ kind: 'prompt', prompt: 'explicit resume' }, { signal });
+    expect(target.remoteRequests).toEqual([{ kind: 'prompt', prompt: 'maybe sent\n\nexplicit resume' }]);
     expect(await store.nextQueued('session-1', 'agent-target')).toBeUndefined();
     await service.dispose();
   });
@@ -1732,7 +1771,6 @@ describe('agent collaboration safe-boundary delivery', () => {
       }));
     const content = '文'.repeat(1_500_000);
     const input = { targetAgentId: 'agent-target', content, idempotencyKey: 'long-user-message' };
-
     const first = await service.sendUserMessageReceipt(input);
     expect(first).toMatchObject({
       deduplicated: false,
@@ -3504,6 +3542,7 @@ function agentHandle(
     readonly recoverableBroken?: boolean;
     readonly retryableBroken?: boolean;
     readonly acceptExternalSteer?: boolean;
+    readonly externalSteerResult?: 'unknown';
     readonly pauseWhileRunning?: () => Promise<void>;
     readonly allowKikiSubagents?: boolean;
     readonly delegationSource?: 'harness-default' | 'profile' | 'session' | 'harness-settings';
@@ -3619,8 +3658,9 @@ function agentHandle(
           : state === 'broken'
             ? { state: 'broken' as const }
             : { state: 'idle' as const },
-    steer: (message: ContextMessage) => {
+    steer: (message: ContextMessage): Promise<boolean | 'unknown'> => {
       if (state !== 'running') return Promise.resolve(false);
+      if (options.externalSteerResult === 'unknown') return Promise.resolve('unknown');
       if (options.acceptExternalSteer === true) {
         steeredTexts.push(message.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n'));
         return Promise.resolve(true);

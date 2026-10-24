@@ -382,6 +382,33 @@ describe('AgentPromptService', () => {
     await queued.completion;
   });
 
+  it('holds an unknown external steer until the queue is explicitly released', async () => {
+    const { prompt, setExecutor, externalSteer, externalRun, externalTurns, eventBus } = harness();
+    const deliveries: ExecutorHintDelivery[] = [];
+    eventBus.subscribe(ExecutorHintDelivery, (event) => deliveries.push(event));
+    setExecutor('claude-acp');
+    externalSteer.mockResolvedValue('unknown' as never);
+    const active = await prompt.enqueue({ id: 'active', message: message('work') });
+    const queued = await prompt.enqueue({ id: 'queued', message: message('maybe sent') });
+    await prompt.steer([queued.id]);
+    expect(queued.state).toBe('pending');
+    expect(queued.deliveryReason).toBe('external_retry');
+    expect(prompt.list().hold).toMatchObject({ reason: 'recovery' });
+    expect(deliveries).toEqual([expect.objectContaining({ method: 'undelivered', status: 'undelivered' })]);
+    externalTurns[0]!.finish();
+    await active.completion;
+    expect(externalRun).toHaveBeenCalledTimes(1);
+    expect(queued.state).toBe('pending');
+    prompt.resumeRecoveredQueue();
+    expect((await queued.launched)?.id).toBe(201);
+    expect(deliveries).toEqual([
+      expect.objectContaining({ status: 'undelivered' }),
+      expect.objectContaining({ turnId: 201, method: 'next_turn_preamble', status: 'delivered' }),
+    ]);
+    externalTurns[1]!.finish();
+    await queued.completion;
+  });
+
   it('routes a queued profile switch to the external executor without entering the native loop', async () => {
     const { prompt, loop, externalRun, externalTurns } = harness();
     const queued = await prompt.enqueue({

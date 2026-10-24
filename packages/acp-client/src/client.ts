@@ -626,7 +626,7 @@ export class AcpProcessClient {
     };
   }
 
-  async steer(prompt: readonly import('@agentclientprotocol/sdk').ContentBlock[]): Promise<boolean> {
+  async steer(prompt: readonly import('@agentclientprotocol/sdk').ContentBlock[]): Promise<boolean | 'unknown'> {
     const active = this.#activeTurn;
     const connection = this.#connection;
     const session = this.#openResult;
@@ -634,11 +634,18 @@ export class AcpProcessClient {
     if (active === undefined || active.signal.aborted || connection === undefined || session === undefined ||
         steering?.['supported'] !== true || this.#steeringDetached) return false;
     try {
-      const response = await connection.agent.request('_session/steering', {
-        sessionId: session.sessionId,
-        prompt,
-        _meta: { steering: { idleBehavior: 'promptRequired' } },
-      }, { cancellationSignal: active.signal });
+      const closed = connection.closed.then(() => {
+        throw this.#disconnectError('ACP connection closed during steering');
+      });
+      void closed.catch(() => undefined);
+      const response = await Promise.race([
+        connection.agent.request('_session/steering', {
+          sessionId: session.sessionId,
+          prompt,
+          _meta: { steering: { idleBehavior: 'promptRequired' } },
+        }, { cancellationSignal: active.signal }),
+        closed,
+      ]);
       const outcome = objectValue(response)?.['outcome'];
       if (outcome === 'injected') return true;
       if (outcome === 'startedNewTurn') {
@@ -647,8 +654,9 @@ export class AcpProcessClient {
       }
       return false;
     } catch (error) {
-      if (active.signal.aborted || error instanceof AcpClientError || error instanceof AcpProtocolError ||
-          error instanceof RequestError || (error instanceof Error && error.name === 'AbortError')) return false;
+      if (error instanceof RequestError && error.code !== RequestError.requestCancelled().code) return false;
+      if (error instanceof RequestError || active.signal.aborted || connection.signal.aborted ||
+          error instanceof AcpClientError || (error instanceof Error && error.name === 'AbortError')) return 'unknown';
       throw error;
     }
   }

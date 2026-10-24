@@ -94,7 +94,7 @@ interface AcpClientLike {
   startTurn(
     request: Parameters<AcpProcessClientType['startTurn']>[0],
   ): Promise<AcpTurnHandle<NormalizedExecutorEvent>>;
-  steer?(prompt: Parameters<AcpProcessClientType['steer']>[0]): Promise<boolean>;
+  steer?(prompt: Parameters<AcpProcessClientType['steer']>[0]): Promise<boolean | 'unknown'>;
   cancel(reason?: unknown): Promise<boolean>;
   shutdown(reason?: unknown): Promise<void>;
 }
@@ -480,7 +480,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     return negotiated?.resume !== false || negotiated?.load !== false;
   }
 
-  async steer(message: ContextMessage): Promise<boolean> {
+  async steer(message: ContextMessage): Promise<boolean | 'unknown'> {
     const active = this.#active;
     if (active === undefined || active.turn.signal.aborted || this.#client.steer === undefined) return false;
     const text = message.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');

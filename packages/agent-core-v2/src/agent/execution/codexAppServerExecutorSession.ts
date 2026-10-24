@@ -403,7 +403,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     this.context = { ...this.context, binding };
   }
 
-  async steer(message: import('#/agent/contextMemory/types').ContextMessage): Promise<boolean> {
+  async steer(message: import('#/agent/contextMemory/types').ContextMessage): Promise<boolean | 'unknown'> {
     const active = this.#active;
     const remote = this.#client.status();
     if (active === undefined || active.turn.signal.aborted || remote.threadId !== this.#threadId || !remote.turnId) return false;
@@ -418,7 +418,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       }, active.turn.signal);
       return typeof response === 'object' && response !== null && 'turnId' in response && response.turnId === remote.turnId;
     } catch (error) {
-      if (error instanceof CodexRemoteError || error instanceof CodexClientError || active.turn.signal.aborted) return false;
+      if (error instanceof CodexRemoteError || error instanceof CodexClientError || active.turn.signal.aborted) return 'unknown';
       throw error;
     }
   }

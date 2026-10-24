@@ -2076,9 +2076,22 @@ export class AgentPromptService implements IAgentPromptService {
       const message = mergeSteerMessages(selected);
       const execution = this.instantiation.invokeFunction((accessor) => accessor.get(IAgentExecutionService));
       const textOnly = message.content.every((part) => part.type === 'text');
-      const delivered = active !== undefined && textOnly &&
-        await (execution.steer?.(message) ?? Promise.resolve(false));
-      if (delivered && selected.every((item) => this.pending.includes(item))) {
+      const outcome = active !== undefined && textOnly
+        ? await (execution.steer?.(message) ?? false)
+        : false;
+      if (outcome === 'unknown' && selected.every((item) => this.pending.includes(item))) {
+        for (const item of selected) {
+          item.deliveryReason = 'external_retry';
+          this.recoveryPendingIds.add(item.id);
+          this.queuedExternalSteerIds.add(item.id);
+          await this.dispatcher.dispatch(new ExecutorHintDelivery({
+            executorId: this.profile.data().executorId, promptId: item.id, origin: item.message.origin?.kind ?? 'user',
+            method: 'undelivered', status: 'undelivered',
+          }));
+        }
+        this.recoveryHold = true;
+        this.publishQueueHoldChanged();
+      } else if (outcome === true && active !== undefined && selected.every((item) => this.pending.includes(item))) {
         for (const item of selected) {
           this.pending.splice(this.pending.indexOf(item), 1);
           item.state = 'steered';

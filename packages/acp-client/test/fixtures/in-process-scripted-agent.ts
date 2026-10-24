@@ -28,7 +28,7 @@ export interface InProcessAgentScript {
   readonly modeUpdate?: string;
   readonly sessionResponseMeta?: Record<string, unknown>;
   readonly initializeMeta?: Record<string, unknown>;
-  readonly steeringOutcome?: 'injected' | 'promptRequired' | 'startedNewTurn' | 'unknown' | 'reject';
+  readonly steeringOutcome?: 'injected' | 'promptRequired' | 'startedNewTurn' | 'unknown' | 'reject' | 'abort' | 'hang';
 }
 
 export interface InProcessAgentHistory {
@@ -180,10 +180,16 @@ export function createInProcessScriptedAgent(
       }
       return { stopReason: script.stopReason ?? 'end_turn' };
     })
-    .onRequest('_session/steering', (params: unknown) => params, ({ params }) => {
+    .onRequest('_session/steering', (params: unknown) => params, async ({ params }) => {
       history.methods.push('_session/steering');
       history.steeringParams.push(params);
       if (script.steeringOutcome === 'reject') throw RequestError.methodNotFound('_session/steering');
+      if (script.steeringOutcome === 'abort') {
+        const error = new Error('steering aborted');
+        error.name = 'AbortError';
+        throw error;
+      }
+      if (script.steeringOutcome === 'hang') await new Promise<void>(() => undefined);
       return { outcome: script.steeringOutcome ?? 'injected' };
     })
     .onNotification(methods.agent.session.cancel, () => {

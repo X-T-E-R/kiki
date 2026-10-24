@@ -474,7 +474,14 @@ describe('AcpProcessClient steering consumption', () => {
     }
   });
 
-  it.each(['promptRequired', 'unknown', 'reject'] as const)('leaves %s unconsumed', async (outcome) => {
+  it('reports a steering request lost when the connection closes as unknown', async () => {
+    const { client } = await duringPrompt('hang');
+    const pending = client.steer([{ type: 'text', text: 'later' }]);
+    await client.shutdown();
+    await expect(pending).resolves.toBe('unknown');
+  });
+
+  it.each(['promptRequired', 'unknown', 'reject', 'abort'] as const)('leaves %s unconsumed', async (outcome) => {
     const { client, turn } = await duringPrompt(outcome);
     try {
       await expect(client.steer([{ type: 'text', text: 'later' }])).resolves.toBe(false);

@@ -256,7 +256,7 @@ export class AgentExecutionService implements IAgentExecutionService {
       this.session === undefined && (this.profile.data().executorId ?? 'native') !== 'native';
   }
 
-  steer(message: ContextMessage): Promise<boolean> {
+  steer(message: ContextMessage): Promise<boolean | 'unknown'> {
     if (this.status().state !== 'running') return Promise.resolve(false);
     return this.session?.steer?.(message) ?? Promise.resolve(false);
   }

@@ -105,7 +105,7 @@ export interface PromptSnapshot {
 }
 
 export interface PromptHandle extends PromptSnapshot {
-  readonly deliveryReason?: 'model_switch_boundary' | 'no_active_turn' | 'executor_deferred';
+  readonly deliveryReason?: 'model_switch_boundary' | 'no_active_turn' | 'executor_deferred' | 'external_retry';
   readonly launched: Promise<Turn | undefined>;
   readonly completion: Promise<PromptCompletion>;
 }
