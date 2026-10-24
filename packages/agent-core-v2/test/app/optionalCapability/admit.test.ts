@@ -58,6 +58,11 @@ describe('admitOptionalCapability', () => {
     expect(optionalCapabilityForTool('mcp__other__tool', ['desktop'])).toBeUndefined();
     expect(optionalCapabilityForTool('MemoryWrite')).toBe('memory');
     expect(optionalCapabilityForTool('FetchURL')).toBe('web');
+    for (const name of ['RoomRead', 'RoomAdd']) {
+      expect(optionalCapabilityForTool(name)).toBe('thread');
+      expect(namesOptionalCapability('thread', [name])).toBe(true);
+      expect(admitOptionalCapability('thread', input({ sessionChoice: 'off', declaredTools: [name], toolsSource: 'declared' })).admitted).toBe(false);
+    }
     expect(namesOptionalCapability('web', ['*'])).toBe(false);
     expect(namesOptionalCapability('computer', ['*'], ['desktop'])).toBe(false);
     expect(namesOptionalCapability('computer', ['mcp__kiki-computer__*'])).toBe(false);

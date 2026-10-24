@@ -19,7 +19,7 @@ import {
   peerSendCapability,
 } from '#/app/threadCommunication/peerThreadCapability';
 import { Error2, ErrorCodes } from '#/errors';
-import { IRoomService } from '#/app/room/room';
+import { IRoomService, roomMemberId, type RoomDocument } from '#/app/room/room';
 
 const ThreadRefSchema = z
   .object({
@@ -80,6 +80,31 @@ export const WaitThreadsToolInputSchema = z
     timeout_ms: z.number().int().min(0).max(60_000).optional(),
   })
   .strict();
+
+export const RoomReadToolInputSchema = z.object({
+  room: z.string().min(1).max(128),
+  after_id: z.string().min(1).max(256).optional(),
+  limit: z.number().int().min(1).max(100).optional(),
+}).strict();
+
+export const RoomAddToolInputSchema = z.object({
+  room: z.string().min(1).max(128),
+  session_id: z.string().min(1).max(256).describe('An existing unarchived top-level thread to add. No session or persona is created.'),
+}).strict();
+
+type RoomReadToolInput = z.infer<typeof RoomReadToolInputSchema>;
+type RoomAddToolInput = z.infer<typeof RoomAddToolInputSchema>;
+
+export interface IRoomReadTool extends AgentTool<RoomReadToolInput> {
+  readonly _serviceBrand: undefined;
+}
+
+export interface IRoomAddTool extends AgentTool<RoomAddToolInput> {
+  readonly _serviceBrand: undefined;
+}
+
+export const IRoomReadTool = createDecorator<IRoomReadTool>('roomReadTool');
+export const IRoomAddTool = createDecorator<IRoomAddTool>('roomAddTool');
 
 type ListThreadsToolInput = z.infer<typeof ListThreadsToolInputSchema>;
 type ReadThreadToolInput = z.infer<typeof ReadThreadToolInputSchema>;
@@ -305,6 +330,81 @@ export class WaitThreadsTool extends ThreadToolBase implements IWaitThreadsTool 
   }
 }
 
+abstract class RoomToolBase extends ThreadToolBase {
+  constructor(
+    threads: IThreadCommunicationService,
+    session: ISessionContext,
+    protected readonly rooms: IRoomService,
+    private readonly agent: IAgentScopeContext,
+  ) {
+    super(threads, session, undefined, agent.agentId);
+  }
+
+  protected async requireMember(roomId: string): Promise<RoomDocument> {
+    if (this.agent.agentId !== 'main') throw new Error2(ErrorCodes.REQUEST_INVALID, 'Only main agents can read or manage rooms.');
+    await this.requireCallerEnabled();
+    const room = await this.rooms.get(roomId);
+    if (room === undefined || !room.members.some((member) => member.sessionId === this.session.sessionId)) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'This thread is not a member of the room.');
+    }
+    return room;
+  }
+
+  protected roster(room: RoomDocument) {
+    return { roomId: room.id, name: room.name, host: room.host, members: room.members.map((member) => ({ ...member, id: roomMemberId(member) })),
+      paused: room.paused, pauseReason: room.pauseReason, archived: room.archived === true };
+  }
+}
+
+export class RoomReadTool extends RoomToolBase implements IRoomReadTool {
+  declare readonly _serviceBrand: undefined;
+  readonly name = 'RoomRead';
+  readonly description = 'Read the roster, host and saved messages of a room this main thread belongs to, without waking members. Member ids are the exact ids ThreadSend mentions. Returns at most 100 log entries (default 50); pass nextCursor as after_id to read the next page. Empty entries mean no new saved messages, not that members have exited. Does not mark notifications read or change room membership.';
+  readonly parameters = toInputJsonSchema(RoomReadToolInputSchema);
+
+  constructor(
+    @IThreadCommunicationService threads: IThreadCommunicationService,
+    @ISessionContext session: ISessionContext,
+    @IRoomService rooms: IRoomService,
+    @IAgentScopeContext agent: IAgentScopeContext,
+  ) {
+    super(threads, session, rooms, agent);
+  }
+
+  resolveExecution(input: RoomReadToolInput): ToolExecution {
+    return { approvalRule: this.name, description: 'Reading room members and messages', execute: async () => {
+      const room = await this.requireMember(input.room);
+      const log = await this.rooms.log(input.room, { afterId: input.after_id, limit: input.limit ?? 50 });
+      return { output: JSON.stringify({ ...this.roster(room), ...log }, null, 2) };
+    } };
+  }
+}
+
+export class RoomAddTool extends RoomToolBase implements IRoomAddTool {
+  declare readonly _serviceBrand: undefined;
+  readonly name = 'RoomAdd';
+  readonly description = 'Add an existing unarchived top-level thread to a room this main thread already belongs to, only when the user asks. Use ThreadList for the existing session_id. Keeps the host, existing member settings, workspace permissions and the room limit of six members. An already joined thread is returned unchanged. Does not create a room, persona or session, and does not send a message.';
+  readonly parameters = toInputJsonSchema(RoomAddToolInputSchema);
+
+  constructor(
+    @IThreadCommunicationService threads: IThreadCommunicationService,
+    @ISessionContext session: ISessionContext,
+    @IRoomService rooms: IRoomService,
+    @IAgentScopeContext agent: IAgentScopeContext,
+  ) {
+    super(threads, session, rooms, agent);
+  }
+
+  resolveExecution(input: RoomAddToolInput): ToolExecution {
+    return { approvalRule: this.name, description: 'Adding an existing thread to a room', execute: async () => {
+      const room = await this.requireMember(input.room);
+      const duplicate = room.members.some((member) => member.sessionId === input.session_id);
+      const updated = duplicate ? room : await this.rooms.addMember(input.room, { kind: 'thread', sessionId: input.session_id });
+      return { output: JSON.stringify({ ...this.roster(updated), added: !duplicate }, null, 2) };
+    } };
+  }
+}
+
 function fromToolRef(ref: z.infer<typeof ThreadRefSchema>): ThreadRef {
   return { hostId: ref.host_id ?? 'local', workspaceId: ref.workspace_id, sessionId: ref.session_id, bridgeId: ref.bridge_id, connectionId: ref.connection_id };
 }
@@ -329,4 +429,14 @@ registerAgentToolService(ISendMessageToThreadTool, SendMessageToThreadTool, {
 registerAgentToolService(IWaitThreadsTool, WaitThreadsTool, {
   name: 'ThreadWait',
   domain: 'threadCommunication',
+});
+registerAgentToolService(IRoomReadTool, RoomReadTool, {
+  name: 'RoomRead',
+  domain: 'threadCommunication',
+  when: mainAgentOnly,
+});
+registerAgentToolService(IRoomAddTool, RoomAddTool, {
+  name: 'RoomAdd',
+  domain: 'threadCommunication',
+  when: mainAgentOnly,
 });

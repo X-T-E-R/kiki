@@ -30,6 +30,8 @@ const TOOL_GROUP_BY_NAME: Readonly<Record<string, ToolGroupId>> = {
   SendMessage: 'message',
   Read: 'fsRead',
   ReadMediaFile: 'fsRead',
+  RoomRead: 'thread',
+  RoomAdd: 'thread',
   SelectTools: 'toolSelect',
   SetGoalBudget: 'goal',
   Skill: 'skill',

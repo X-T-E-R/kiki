@@ -15,7 +15,7 @@ export function optionalCapabilityDocumentKey(hostId: string, sessionId: string)
 }
 
 const MEMORY_TOOLS = new Set(['MemoryRead', 'MemorySearch', 'MemoryWrite']);
-const THREAD_TOOLS = new Set(['ThreadList', 'ThreadRead', 'ThreadSend', 'ThreadWait']);
+const THREAD_TOOLS = new Set(['ThreadList', 'ThreadRead', 'ThreadSend', 'ThreadWait', 'RoomRead', 'RoomAdd']);
 const WEB_TOOLS = new Set(['WebSearch', 'FetchURL']);
 const GLOB_MAGIC = /[*?[\]{}]/;
 

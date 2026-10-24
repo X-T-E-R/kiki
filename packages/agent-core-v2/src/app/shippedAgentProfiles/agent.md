@@ -20,6 +20,8 @@ tools:
   - ThreadRead
   - ThreadSend
   - ThreadWait
+  - RoomRead
+  - RoomAdd
   - TaskWait
   - Cron
   - MemoryRead

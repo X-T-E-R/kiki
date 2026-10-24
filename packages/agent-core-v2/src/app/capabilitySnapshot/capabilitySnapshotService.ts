@@ -7,7 +7,7 @@ import { THREAD_COMMUNICATION_SECTION, type ThreadCommunicationConfig } from '#/
 import { ICapabilitySnapshotService, type CapabilitySnapshotChange } from './capabilitySnapshot';
 
 const MEMORY_TOOLS = new Set(['MemoryWrite', 'MemorySearch', 'MemoryRead']);
-const THREAD_TOOLS = new Set(['ThreadList', 'ThreadRead', 'ThreadSend', 'ThreadWait']);
+const THREAD_TOOLS = new Set(['ThreadList', 'ThreadRead', 'ThreadSend', 'ThreadWait', 'RoomRead', 'RoomAdd']);
 
 interface SessionSnapshot {
   readonly workspaceId: string;
