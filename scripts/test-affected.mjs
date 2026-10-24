@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { PROMOTE_TEST_COMMANDS, pnpmLaunch, pnpmSpawnOptions } from './run-promote-tests.mjs';
+import { PROMOTE_TEST_COMMANDS, pnpmLaunch, pnpmSpawnArgs, pnpmSpawnOptions } from './run-promote-tests.mjs';
 
 const ROOT = resolve(import.meta.dirname, '..');
 const SHARED_PREFIXES = [
@@ -188,6 +188,7 @@ function owningPackage(path, packages) {
 
 function incompleteReason(path) {
   const normalized = slash(path);
+  if (/[\r\n\"&|<>^%!]/.test(normalized)) return `path contains unsafe Windows shell characters: ${normalized}`;
   if (FULL_FILES.has(normalized)) return `global repository input changed: ${normalized}`;
   const prefix = SHARED_PREFIXES.find(entry => normalized.startsWith(entry));
   if (prefix) return `shared repository area changed: ${normalized}`;
@@ -393,7 +394,7 @@ export async function runCommands(commands, { root, env, logDirectory, spawnImpl
     log.write(`$ ${displayPnpm(entry.args)}\n`);
     let child;
     try {
-      child = spawnImpl(launch.command, launch.args, {
+      child = spawnImpl(launch.command, pnpmSpawnArgs(launch.args, env), {
         cwd: root,
         env,
         stdio: ['ignore', 'pipe', 'pipe'],

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
 
-import { PROMOTE_TEST_COMMANDS, pnpmLaunch, pnpmSpawnOptions, runPromoteTests } from './run-promote-tests.mjs';
+import { PROMOTE_TEST_COMMANDS, pnpmLaunch, pnpmSpawnArgs, pnpmSpawnOptions, runPromoteTests } from './run-promote-tests.mjs';
 import {
   collectBaseChanges,
   fullCommands,
@@ -242,4 +242,7 @@ test('uses pnpm.cmd directly when npm_execpath is absent on Windows', () => {
   assert.equal(launch.command, process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm');
   assert.deepEqual(launch.args, ['--version']);
   assert.deepEqual(pnpmSpawnOptions({ npm_execpath: undefined }), process.platform === 'win32' ? { shell: true } : {});
+  assert.deepEqual(pnpmSpawnArgs(['exec', 'node', 'file with space.mjs'], { npm_execpath: undefined }), process.platform === 'win32'
+    ? ['exec', 'node', '"file with space.mjs"']
+    : ['exec', 'node', 'file with space.mjs']);
 });
