@@ -798,7 +798,16 @@ export class UsageAggregationService {
       const summaries = new Map(listed?.items.map((summary) => [sessionKey(summary), summary]));
       const sessions: SessionRecords[] = (head?.sessions ?? []).map((session) => ({ summary: summaries.get(sessionKey(session.summary)) ?? session.summary, records: [], complete: session.prepared && session.sources?.every((source) => source.done) === true && !session.invalid, deleted: false }));
       const response = await this.aggregate(query, [...sessions, ...retained], fingerprint, cursor, budget, ephemeral, fold);
-      if (persistProjection && response.reliability.complete && head?.complete === true && listed !== undefined) await this.saveFoldProjection(query, fingerprint, listed.items, head, fold);
+      if (persistProjection && response.reliability.complete && head?.complete === true && listed !== undefined) {
+        const corrections = await this.saveFoldProjection(query, fingerprint, listed.items, head, fold);
+        if (corrections !== undefined) {
+          for (const bucket of response.trend) {
+            const delta = corrections.get(bucket.key);
+            const turnCount = bucket.turn_count;
+            if (delta !== undefined && turnCount !== undefined) bucket.turn_count = turnCount + delta;
+          }
+        }
+      }
       return response;
     } finally { clearTimeout(timer); }
   }
@@ -1796,7 +1805,7 @@ export class UsageAggregationService {
     return sources;
   }
 
-  private async saveFoldProjection(query: NormalizedQuery, fingerprint: string, listed: readonly SessionSummary[], head: RangeFoldHead, fold: UsageRangeFold): Promise<void> {
+  private async saveFoldProjection(query: NormalizedQuery, fingerprint: string, listed: readonly SessionSummary[], head: RangeFoldHead, fold: UsageRangeFold): Promise<ReadonlyMap<string, number> | undefined> {
     try {
       const storage = this.core.accessor.get(IFileSystemStorageService);
       const logs = this.core.accessor.get(IAppendLogStore);
@@ -1836,7 +1845,9 @@ export class UsageAggregationService {
       const stored = keys.size === 0 ? new Map<string, FoldBucketView>() : await fold.buckets([...keys]);
       const proved = [...stored.values()].filter((bucket): bucket is FoldBucketView => bucket !== undefined && typeof bucket.key === 'string');
       if (proved.length !== keys.size || proved.some((bucket) => bucket.turnAgents !== true || bucket.sessions.some((session) => !Array.isArray(session.agents)))) return;
+      const corrections = new Map<string, number>();
       for (const bucket of proved) {
+        const previous = bucket.turnCount;
         let changed = false;
         let uniqueTurns = 0;
         for (const session of bucket.sessions) {
@@ -1856,6 +1867,7 @@ export class UsageAggregationService {
           bucket.turnCount = uniqueTurns;
           changed = true;
         }
+        if (bucket.turnCount !== previous) corrections.set(bucket.key, bucket.turnCount - previous);
         if (changed) await fold.putBucket(bucket);
       }
       const rowsByScope = new Map<string, FoldedUsageRecord[]>();
@@ -1910,6 +1922,7 @@ export class UsageAggregationService {
         agents: agents.map((agent) => ({ ...agent, rows: rowsByScope.get(agent.scope) ?? [], turns: turnsByScope.get(agent.scope) ?? [] })),
       };
       await this.writeProjection(fingerprint, projection);
+      return corrections;
     } catch {}
   }
 
