@@ -621,6 +621,26 @@ describe('TranscriptWireAdapter', () => {
     return transcript;
   };
 
+  it('omits hidden reasoning summaries and opaque detail records from cold frames', () => {
+    const part = (uuid: string, value: Record<string, unknown>): TranscriptWireRecord => ({
+      type: 'context.append_loop_event',
+      event: { type: 'content.part', turnId: 0, stepUuid: 'step-1', uuid, part: value },
+      time: 2_500,
+    });
+    const transcript = replay([
+      ...records.slice(0, 3),
+      part('primary', { type: 'think', think: 'Primary thinking', reasoningKey: 'reasoning_content' }),
+      part('summary', { type: 'think', think: 'Duplicate summary', hidden: true, reasoningDetails: [{ type: 'reasoning.summary', summary: 'Duplicate summary' }] }),
+      part('ciphertext', { type: 'think', think: '', hidden: true, reasoningDetails: [{ type: 'reasoning.encrypted', data: 'opaque' }] }),
+      ...records.slice(3),
+    ]);
+    const thinking = transcript.getItems().flatMap((item) => item.kind === 'turn' ? item.steps.flatMap((step) => step.frames.filter((frame) => frame.kind === 'thinking')) : []);
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0]).toMatchObject({ text: 'Primary thinking' });
+    expect(JSON.stringify(transcript.snapshot())).not.toContain('Duplicate summary');
+    expect(JSON.stringify(transcript.snapshot())).not.toContain('opaque');
+  });
+
   it('retains recorded display and latest progress without fabricating missing or orphan facts', () => {
     const event = (value: Record<string, unknown>): TranscriptWireRecord => ({ type: 'context.append_loop_event', event: value });
     const call = records[3]!;

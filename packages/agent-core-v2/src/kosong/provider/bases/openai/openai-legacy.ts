@@ -53,6 +53,7 @@ import {
   toolToOpenAI,
 } from './openai-common';
 import { ReasoningKeyDialect } from './reasoning-key';
+import { readReasoningParts, writeReasoningParts } from './reasoning-details';
 import {
   mergeProviderRequestAuth,
   requestIdentityFetchForAuth,
@@ -193,14 +194,12 @@ function convertMessage(
   preserveThinking: boolean,
   allowToolResultExtraction: boolean,
 ): OpenAIMessage {
-  let reasoningContent = '';
-  let hasReasoningPart = false;
+  const reasoningParts: Extract<ContentPart, { type: 'think' }>[] = [];
   const nonThinkParts: ContentPart[] = [];
 
   for (const part of message.content) {
     if (part.type === 'think') {
-      hasReasoningPart = true;
-      reasoningContent += part.think;
+      reasoningParts.push(part);
     } else {
       nonThinkParts.push(part);
     }
@@ -254,7 +253,7 @@ function convertMessage(
 
   if (
     message.role === 'assistant' &&
-    hasReasoningPart &&
+    reasoningParts.length > 0 &&
     result.content === undefined &&
     result.tool_calls === undefined
   ) {
@@ -265,8 +264,9 @@ function convertMessage(
     result.content = null;
   }
 
-  if (hasReasoningPart || (preserveThinking && message.role === 'assistant')) {
-    result[reasoningKey] = reasoningContent;
+  Object.assign(result, writeReasoningParts(reasoningParts, reasoningKey));
+  if (reasoningParts.length === 0 && preserveThinking && message.role === 'assistant') {
+    result[reasoningKey] = '';
   }
 
   return result;
@@ -437,10 +437,7 @@ export class OpenAILegacyStreamedMessage implements StreamedMessage {
     if (!message) return;
     this._refused = typeof message.refusal === 'string' && message.refusal.length > 0;
 
-    const reasoning = reasoningKeyDialect.observe(message);
-    if (reasoning !== undefined) {
-      yield { type: 'think', think: reasoning } satisfies StreamedMessagePart;
-    }
+    yield* readReasoningParts(message, reasoningKeyDialect);
 
     if (message.content) {
       yield { type: 'text', text: message.content } satisfies StreamedMessagePart;
@@ -464,6 +461,8 @@ export class OpenAILegacyStreamedMessage implements StreamedMessage {
     reasoningKeyDialect: ReasoningKeyDialect,
   ): AsyncGenerator<StreamedMessagePart> {
     const bufferedToolCalls = new Map<number | string, BufferedChatCompletionToolCall>();
+    const details: Extract<ContentPart, { type: 'think' }>[] = [];
+    let visibleReasoningKey: string | undefined;
 
     try {
       for await (const chunk of response) {
@@ -487,9 +486,14 @@ export class OpenAILegacyStreamedMessage implements StreamedMessage {
         const delta = choice.delta;
         if (typeof delta.refusal === 'string' && delta.refusal.length > 0) this._refused = true;
 
-        const reasoning = reasoningKeyDialect.observe(delta);
-        if (reasoning !== undefined) {
-          yield { type: 'think', think: reasoning } satisfies StreamedMessagePart;
+        for (const part of readReasoningParts(delta, reasoningKeyDialect)) {
+          if (part.reasoningDetails !== undefined) {
+            details.push(part);
+            yield { ...part, think: '', hidden: true };
+          } else {
+            if (part.think.length > 0) visibleReasoningKey ??= part.reasoningKey;
+            yield { ...part, hidden: part.think.length > 0 && part.reasoningKey !== visibleReasoningKey || undefined };
+          }
         }
 
         if (delta.content) {
@@ -501,6 +505,10 @@ export class OpenAILegacyStreamedMessage implements StreamedMessage {
             yield part;
           }
         }
+      }
+      if (visibleReasoningKey === undefined) {
+        const text = details.map((part) => part.think).join('');
+        if (text.length > 0) yield { type: 'think', think: text, reasoningDetails: [] };
       }
     } catch (error: unknown) {
       throw convertOpenAIError(error, this._convertErrorHook);

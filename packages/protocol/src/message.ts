@@ -117,7 +117,11 @@ export const assistantStreamPartSchema = z.discriminatedUnion('type', [
       size: z.number().optional(), title: z.string().optional(), description: z.string().optional(),
     }).optional(),
   }),
-  z.object({ type: z.literal('think'), think: z.string(), encrypted: z.string().optional() }),
+  z.object({
+    type: z.literal('think'), think: z.string(), encrypted: z.string().optional(),
+    reasoningKey: z.string().optional(), reasoningDetails: z.array(z.record(z.string(), z.unknown())).optional(),
+    hidden: z.boolean().optional(),
+  }),
   z.object({ type: z.literal('image_url'), imageUrl: streamMediaUrlSchema }),
   z.object({ type: z.literal('audio_url'), audioUrl: streamMediaUrlSchema }),
   z.object({ type: z.literal('video_url'), videoUrl: streamMediaUrlSchema }),

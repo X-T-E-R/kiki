@@ -1771,7 +1771,7 @@ export class TranscriptWireAdapter {
             presentation: readTextPresentation(part?.['presentation']),
           },
         });
-      } else if (type === 'think') {
+      } else if (type === 'think' && part?.['hidden'] !== true) {
         operations.push({
           op: 'frame.upsert',
           turnId,
@@ -1962,6 +1962,7 @@ export class TranscriptWireAdapter {
       ];
     }
     if (type === 'think') {
+      if (part['hidden'] === true) return [];
       return [
         {
           op: 'frame.upsert',

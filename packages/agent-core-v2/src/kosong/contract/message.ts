@@ -30,6 +30,12 @@ export interface ThinkPart {
   type: 'think';
   think: string;
   encrypted?: string;
+  /** Original string field name to echo on subsequent provider requests. */
+  reasoningKey?: string;
+  /** Opaque provider detail fragments; an empty array marks display-only summary text. */
+  reasoningDetails?: readonly Record<string, unknown>[];
+  /** Suppresses display without removing provider round-trip material. */
+  hidden?: boolean;
 }
 
 export interface ImageURLPart {
@@ -107,7 +113,8 @@ export function mergeInPlace(target: StreamedMessagePart, source: StreamedMessag
   }
 
   if (target.type === 'think' && source.type === 'think') {
-    if (target.encrypted !== undefined) {
+    if (target.encrypted !== undefined || target.reasoningDetails !== undefined || source.reasoningDetails !== undefined ||
+      target.reasoningKey !== source.reasoningKey || target.hidden !== source.hidden) {
       return false;
     }
     target.think += source.think;
@@ -135,7 +142,7 @@ export function isVacuousContentPart(part: ContentPart): boolean {
     case 'text':
       return part.text.trim().length === 0 && part.attachment === undefined && part.resourceLink === undefined;
     case 'think':
-      return part.encrypted === undefined && part.think.trim().length === 0;
+      return part.encrypted === undefined && (part.reasoningDetails?.length ?? 0) === 0 && part.think.trim().length === 0;
     case 'image_url':
     case 'audio_url':
     case 'video_url':

@@ -1615,6 +1615,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
             beginResponseEvent();
             if (isVacuousContentPart(part) && partialContent.at(-1)?.part.type === 'text') return;
             const partId = accumulate(part);
+            if (part.hidden === true) return;
             void this.dispatcher.dispatch(
               new ThinkingDelta({ turnId, step, stepId, partId, delta: part.think, responseInstanceId }),
             );

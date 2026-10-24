@@ -199,7 +199,7 @@ api_key = "sk-ant-xxxxx"
 
 用于对接 OpenAI Chat Completions 协议，也可连接任何兼容该协议的第三方服务（覆盖 `base_url` 即可）。
 
-第三方推理模型（DeepSeek、Qwen、One API 等）开箱即用：CLI 自动处理 `reasoning_content` 字段和 `reasoning_effort` 注入。如果你的网关用非标准字段名返回推理内容，在模型别名上设 `reasoning_key` 覆盖。
+第三方推理模型（DeepSeek、Qwen、One API 等）开箱即用：CLI 自动处理 `reasoning_content` 字段和 `reasoning_effort` 注入。OpenAI 兼容 Chat 连接还会在恢复会话和后续请求中保留结构化 `reasoning_details`，包括加密记录。只有没有返回非空字符串推理内容时才显示摘要；加密记录不会显示在时间线中。如果你的网关用非标准字段名返回推理内容，在模型别名上设 `reasoning_key` 覆盖。
 
 对 `openai` 和 `openai_responses`，当你没有设过输出上限、模型能力也未知时，Kiki 不再自己发输出长度限制——请求里不会带 `max_tokens`、`max_completion_tokens` 或 `max_output_tokens`，由服务端自己的默认决定。你自己设的上限、已知的模型输出能力、session 或 profile 上更紧的限制，以及剩余窗口预算都照常生效；上下文窗口大小本身不被当作输出上限。这个最大值是天花板，不是对回答长度的保证——模型实际返回多少还取决于任务本身和它何时停止——费用按你实际得到的响应计算。
 

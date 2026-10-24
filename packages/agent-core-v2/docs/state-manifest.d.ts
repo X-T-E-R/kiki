@@ -1010,6 +1010,9 @@ export interface AgentStateSnapshot {
           type: 'think';
           think: string;
           encrypted?: string;
+          reasoningKey?: string;
+          reasoningDetails?: readonly Record<string, unknown>[];
+          hidden?: boolean;
         } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
           type: 'image_url';
           imageUrl: {
@@ -1287,6 +1290,9 @@ export interface AgentStateSnapshot {
         type: 'think';
         think: string;
         encrypted?: string;
+        reasoningKey?: string;
+        reasoningDetails?: readonly Record<string, unknown>[];
+        hidden?: boolean;
       } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
         type: 'image_url';
         imageUrl: {
@@ -1496,6 +1502,9 @@ export interface AgentStateSnapshot {
           type: 'think';
           think: string;
           encrypted?: string;
+          reasoningKey?: string;
+          reasoningDetails?: readonly Record<string, unknown>[];
+          hidden?: boolean;
         } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
           type: 'image_url';
           imageUrl: {
@@ -1719,6 +1728,9 @@ export interface AgentStateSnapshot {
       type: 'think';
       think: string;
       encrypted?: string;
+      reasoningKey?: string;
+      reasoningDetails?: readonly Record<string, unknown>[];
+      hidden?: boolean;
     } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
       type: 'image_url';
       imageUrl: {
@@ -1825,6 +1837,9 @@ export interface AgentStateSnapshot {
         type: 'think';
         think: string;
         encrypted?: string;
+        reasoningKey?: string;
+        reasoningDetails?: readonly Record<string, unknown>[];
+        hidden?: boolean;
       } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
         type: 'image_url';
         imageUrl: {
@@ -3207,6 +3222,9 @@ export interface AgentStateSnapshot {
     type: 'think';
     think: string;
     encrypted?: string;
+    reasoningKey?: string;
+    reasoningDetails?: readonly Record<string, unknown>[];
+    hidden?: boolean;
   } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
     type: 'image_url';
     imageUrl: {
@@ -6883,6 +6901,9 @@ export interface AgentStateSnapshot {
           type: 'think';
           think: string;
           encrypted?: string;
+          reasoningKey?: string;
+          reasoningDetails?: readonly Record<string, unknown>[];
+          hidden?: boolean;
         } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
           type: 'image_url';
           imageUrl: {
@@ -6989,6 +7010,9 @@ export interface AgentStateSnapshot {
             type: 'think';
             think: string;
             encrypted?: string;
+            reasoningKey?: string;
+            reasoningDetails?: readonly Record<string, unknown>[];
+            hidden?: boolean;
           } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
             type: 'image_url';
             imageUrl: {
