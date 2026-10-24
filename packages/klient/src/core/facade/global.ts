@@ -6,6 +6,8 @@
  * code never sees service tokens, scope routing, or transport details.
  */
 
+import { createGlobalSettingsTransfer, type GlobalSettingsTransferFacade } from './settingsTransfer.js';
+export type { GlobalSettingsTransferFacade } from './settingsTransfer.js';
 export type { PersonaAvatarData } from '@kiki/protocol';
 import { createGlobalBots, createGlobalRooms, type GlobalBotsFacade, type GlobalRoomsFacade } from './botRooms.js';
 export type { GlobalBotsFacade, GlobalRoomsFacade } from './botRooms.js';
@@ -501,6 +503,7 @@ export interface GlobalAgentPanelFacade {
 }
 
 export interface GlobalFacade {
+  readonly settingsTransfer: GlobalSettingsTransferFacade;
   readonly board: BoardOverviewClient;
   readonly agentPanel: GlobalAgentPanelFacade;
   readonly sessions: GlobalSessionsFacade;
@@ -585,6 +588,7 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
   };
 
   return {
+    settingsTransfer: createGlobalSettingsTransfer(call),
     board: {
       read: (input, options) => call('taskBoardService', 'read', [input], options) as ReturnType<BoardClient['read']>,
       write: (input) => call('taskBoardService', 'write', [input]) as ReturnType<BoardClient['write']>,

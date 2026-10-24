@@ -14,6 +14,7 @@ The settings sidebar groups twenty entries under seven headings: **App**, **Mode
 | Agent profiles, prompt-field overrides | **Models & agents → Agents → Agent profiles** |
 | Low-frequency long-term memory reminders | [`loop_control.continuity_cadence.memory_maintenance`](../configuration/config-files.md#continuity-reminder-settings) in `config.toml` |
 | Whether input drafts are remembered | **App → General** |
+| Move selected settings to another home or device | **App → General → Settings transfer** |
 | Background-task limits and scheduled tasks | **Sessions & work → Sessions** |
 | Search and retrieval configuration source | **Capabilities → Search & retrieval** |
 | Installed plugins, skills, and MCP servers | **Capabilities → Extensions & tools** |
@@ -28,6 +29,16 @@ The settings sidebar groups twenty entries under seven headings: **App**, **Mode
 | Model/provider request concurrency | **Usage → Live → Concurrency limits** |
 | Send usage to another service | **Usage → External sync** |
 | TUI theme, editor, and other CLI-side preferences | The `/config` commands in the terminal, see [CLI counterpart](#cli-counterpart) |
+
+## Import and export settings
+
+Open **Settings → App → General → Settings transfer**, then **Import or export**. Export lets you select several categories, with item counts: models and providers, agents and prompts, permissions and sessions, tools/MCP/plugins, browser and computer, notifications/IM, and appearance/device preferences. **Include credentials** is off by default. Turn it on only when the downloaded JSON file will stay private; the file contains the stored credentials, not masked placeholders. External account sign-ins are not transferred.
+
+On the target, choose **Import** and select a `kiki.settings` JSON file up to 8 MiB. Check the target home and space, select the categories, then review the new, conflicting and skipped counts. **Keep existing**, the default, preserves existing IDs, keys and resources, including explicit inherited restrictions. **Replace selected** replaces only keys and resources present in the selected categories, retaining everything else. Importing without credentials also retains the target's existing credentials. **Cancel** writes nothing.
+
+The package contains explicit settings from the source home, valid user Profiles and `SYSTEM.md`, referenced prompt TOML files, user MCP definitions, and saved device preferences. It does not copy inherited defaults, environment variables, project or system-wide profile directories, chat history, caches, installed plugin/Recipe packages, or skin assets. Install required components separately and check machine-specific paths and commands on the target. A missing or unsafe referenced prompt file prevents the package from being exported or applied.
+
+After **Apply**, Kiki reads the saved values back and reports each changed item's status. A partial result means some items were saved; review the statuses and preview again before retrying. Configuration is reloaded after saving. Profile changes and settings that apply only to new sessions take effect in a new session; an existing conversation keeps its bound prompt sources until you [rebuild its context](../customization/agents-and-subagents.md#rebuilding-a-session-context).
 
 ## Connections
 

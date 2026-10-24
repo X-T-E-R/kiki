@@ -6,6 +6,7 @@
  * their payload schemas.
  */
 
+import { settingsTransferContract } from './global/settingsTransfer.js';
 import type { KlientContract } from './types.js';
 import { boardContract } from './board/schemas.js';
 import { agentPanelContract } from './global/agentPanel.js';
@@ -72,6 +73,7 @@ import { sessionCronContract } from './session/cron.js';
 import { sessionInitContract } from './session/init.js';
 import { sessionTodoContract } from './session/todo.js';
 export const globalContract: KlientContract = {
+  settingsTransferService: settingsTransferContract,
   agentGoalService: agentGoalContract,
   agentLifecycleService: agentLifecycleContract,
   sessionCronService: sessionCronContract,

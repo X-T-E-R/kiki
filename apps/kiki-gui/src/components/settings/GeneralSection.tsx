@@ -24,6 +24,7 @@ import { SettingField } from './fields';
 import { SettingsSegmented, SettingsSelect } from './SettingsPrimitives';
 import { AppendTimingField } from './CommunicationSection';
 import { SpacePrefOrigin } from './spaces/SpacePrefOrigin';
+import { SettingsTransferCard } from './settingsTransfer/SettingsTransferCard';
 
 /**
  * General: preferences of this device only. Every control writes the local
@@ -70,6 +71,8 @@ export function GeneralSection() {
           />
         </SettingField>
       </SectionCard>
+
+      <SettingsTransferCard />
 
       <SectionCard id="st-card-composer" title={t('st.composer.title')}>
         <div className="space-y-1">

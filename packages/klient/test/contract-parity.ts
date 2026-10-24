@@ -410,6 +410,12 @@ import {
 import type { AssertWire, MutableDeep } from './helpers/typeAssert.js';
 import type { AgentFacade } from '../src/core/facade/agent.js';
 import type { ManagedUsageResult as EngineManagedUsageResult } from '@kiki/agent-core-v2/app/auth/oauthProtocol';
+import type { ISettingsTransferService } from '@kiki/agent-core-v2/app/settingsTransfer/settingsTransfer';
+import { settingsTransferContract } from '../src/contract/global/settingsTransfer.js';
+type SettingsTransferOutput<Method extends keyof typeof settingsTransferContract> = Awaited<ReturnType<ISettingsTransferService[Method]>> extends void ? undefined : Awaited<ReturnType<ISettingsTransferService[Method]>>;
+const _settingsTransferOutputs: { [Method in keyof typeof settingsTransferContract]: AssertWire<(typeof settingsTransferContract)[Method]['output'], SettingsTransferOutput<Method>> } = {
+  catalog: true, export: true, preview: true, apply: true, cancel: true,
+};
 import type { IPluginImportService } from '@kiki/agent-core-v2/app/pluginImport/pluginImport';
 import { importsContract } from '../src/contract/global/imports.js';
 import type { IPluginMediaService } from '@kiki/agent-core-v2/app/pluginMedia/pluginMedia';

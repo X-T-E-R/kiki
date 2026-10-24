@@ -5,6 +5,7 @@
  * beyond what the host already bootstrapped.
  */
 
+import { ISettingsTransferService } from '@kiki/agent-core-v2/app/settingsTransfer/settingsTransfer';
 import type { ServiceIdentifier } from '@kiki/agent-core-v2/_base/di/instantiation';
 import { IAgentPanelService } from '../agentPanelService.js';
 import { ISessionIndex } from '@kiki/agent-core-v2/app/sessionIndex/sessionIndex';
@@ -90,6 +91,7 @@ export const pluginServiceTokens: Readonly<Record<string, ServiceIdentifier<unkn
 
 /** Wire service name (decorator id string) → token. */
 export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>> = {
+  settingsTransferService: ISettingsTransferService,
   agentGoalService: IAgentGoalService,
   agentLifecycleService: IAgentLifecycleService,
   sessionCronService: ISessionCronService,

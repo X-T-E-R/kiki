@@ -103,6 +103,27 @@ export function defineKlientConformance(
       await target.cleanup();
     });
 
+    it('transfers selected settings through a validated preview and a zero-write cancellation', async () => {
+      const transfer = target.klient.global.settingsTransfer;
+      const catalog = await transfer.catalog();
+      expect(catalog.categories.map((entry) => entry.id)).toContain('permissions');
+      const bundle = await transfer.export({ categories: ['permissions'], includeCredentials: false });
+      expect(bundle).toMatchObject({ format: 'kiki.settings', version: 1, includesCredentials: false, categories: ['permissions'] });
+      const original = await target.klient.global.config.inspect('defaultPlanMode');
+      const input = { ...bundle, config: { defaultPlanMode: original.userValue !== true }, resources: [] };
+      const cancelled = await transfer.preview({ bundle: input, categories: ['permissions'], mode: 'overwrite', includeCredentials: false });
+      await transfer.cancel({ previewId: cancelled.previewId });
+      expect(await transfer.apply({ previewId: cancelled.previewId })).toMatchObject({ status: 'failed', failure: 'expired', items: [] });
+      expect((await target.klient.global.config.inspect('defaultPlanMode')).userValue).toEqual(original.userValue);
+      try {
+        const preview = await transfer.preview({ bundle: input, categories: ['permissions'], mode: 'overwrite', includeCredentials: false });
+        expect((await transfer.apply({ previewId: preview.previewId })).status).toBe('complete');
+        expect(await target.klient.global.config.get('defaultPlanMode')).toBe(original.userValue !== true);
+      } finally {
+        await target.klient.global.config.replace({ domain: 'defaultPlanMode', value: original.userValue });
+      }
+    });
+
     it('forwards plugin changes on the global bus without requiring a plugin reload', async () => {
       const received: Record<string, never>[] = [];
       const sub = target.klient.events.on('plugins.changed', (event) => { received.push(event); });
