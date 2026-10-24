@@ -48,6 +48,7 @@ import { SessionIndexProjector } from './sessionIndexProjector';
 import {
   listSessionIds,
   listWorkspaceIds,
+  probeSessionSummaryResult,
   readSessionSummaryResult,
   summaryMatchesChildOf,
 } from './sessionIndexSource';
@@ -56,6 +57,7 @@ const READ_MODEL_FLAG = 'persistence_minidb_readmodel';
 const RECONCILE_INTERVAL_MS = 10 * 60_000;
 const WATCH_BATCH_MS = 1_000;
 const WATCH_BATCH_SIZE = 16;
+const POINT_PROBE_CONCURRENCY = 16;
 const WATCH_PENDING_LIMIT = 1024;
 const RECONCILE_MAX_ATTEMPTS = 2;
 const RECONCILE_RETRY_BASE_MS = 5_000;
@@ -1083,22 +1085,18 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       let authoritative: SessionSummary | undefined;
       const workspaceIds =
         knownWorkspaceIds ?? await listWorkspaceIds(this.storage, this.sessionsScope, this.log);
-      for (const workspaceId of workspaceIds) {
-        if (knownWorkspaceIds === undefined) {
-          const sessionIds = await listSessionIds(this.storage, this.sessionsScope, workspaceId, this.log);
-          if (!sessionIds.includes(id)) continue;
-        }
-        const result = await readSessionSummaryResult(
-          this.docs,
-          this.sessionsScope,
-          workspaceId,
-          id,
-          this.log,
-        );
-        if (result.kind === 'error') throw result.error;
-        if (result.kind === 'found') {
-          authoritative = result.summary;
-          break;
+      for (let offset = 0; offset < workspaceIds.length && authoritative === undefined; offset += POINT_PROBE_CONCURRENCY) {
+        const results = await Promise.all(workspaceIds.slice(offset, offset + POINT_PROBE_CONCURRENCY).map((workspaceId) =>
+          knownWorkspaceIds === undefined
+            ? probeSessionSummaryResult(this.storage, this.docs, this.sessionsScope, workspaceId, id, this.log)
+            : readSessionSummaryResult(this.docs, this.sessionsScope, workspaceId, id, this.log),
+        ));
+        for (const result of results) {
+          if (result.kind === 'error') throw result.error;
+          if (result.kind === 'found') {
+            authoritative = result.summary;
+            break;
+          }
         }
       }
       if (!this.readModelEnabled()) return authoritative;

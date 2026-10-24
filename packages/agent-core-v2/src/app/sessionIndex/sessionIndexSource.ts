@@ -254,6 +254,26 @@ export type SessionSummaryReadResult =
   | { readonly kind: 'missing' }
   | { readonly kind: 'error'; readonly error: unknown };
 
+export async function probeSessionSummaryResult(
+  storage: IFileSystemStorageService,
+  docs: IAtomicDocumentStore,
+  sessionsScope: string,
+  workspaceId: string,
+  sessionId: string,
+  log?: ILogService,
+): Promise<SessionSummaryReadResult> {
+  try {
+    if (await storage.mtime(`${sessionsScope}/${workspaceId}`, sessionId) === undefined) return { kind: 'missing' };
+  } catch (error) {
+    if (isNonDirectoryEntry(error)) {
+      warnSkippedEntry(error, log);
+      return { kind: 'missing' };
+    }
+    return { kind: 'error', error };
+  }
+  return readSessionSummaryResult(docs, sessionsScope, workspaceId, sessionId, log);
+}
+
 export async function readSessionSummaryResult(
   docs: IAtomicDocumentStore,
   sessionsScope: string,

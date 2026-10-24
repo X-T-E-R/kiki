@@ -124,8 +124,7 @@ describe('FileSessionIndex (legacy)', () => {
     await fsp.rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
-  function build(): ISessionIndex {
-    const fileStorage = new FileStorageService(homeDir);
+  function build(fileStorage: FileStorageService = new FileStorageService(homeDir)): ISessionIndex {
     const host = createScopedTestHost([
       stubPair(IFileSystemStorageService, fileStorage),
       stubPair(IAtomicDocumentStore, new JsonAtomicDocumentStore(fileStorage)),
@@ -197,6 +196,67 @@ describe('FileSessionIndex (legacy)', () => {
     expect(summary?.id).toBe('active');
     expect(summary?.title).toBe('hello');
     expect(await store.get('missing')).toBeUndefined();
+  });
+
+  it('probes a new session id across workspaces with bounded concurrency and no session inventories', async () => {
+    const firstBatch = deferred<void>();
+    const release = deferred<void>();
+    const workspaces = Array.from({ length: 40 }, (_, index) => `workspace-${index}`);
+    let active = 0;
+    let maximum = 0;
+    let probes = 0;
+    class PointStorage extends FileStorageService {
+      override async list(scope: string): Promise<readonly string[]> {
+        if (scope === 'sessions') return workspaces;
+        if (scope.startsWith('sessions/')) throw new Error('point reads must not enumerate session inventories');
+        return super.list(scope);
+      }
+      override async mtime(scope: string, key: string): Promise<number | undefined> {
+        if (scope.startsWith('sessions/') && key === 'new-session-id') {
+          probes++;
+          maximum = Math.max(maximum, ++active);
+          if (probes === 16) firstBatch.resolve();
+          try {
+            await release.promise;
+            return undefined;
+          } finally { active--; }
+        }
+        return super.mtime(scope, key);
+      }
+    }
+    const store = build(new PointStorage(homeDir));
+    const reading = store.get('new-session-id');
+    try {
+      await firstBatch.promise;
+      expect(probes).toBe(16);
+      expect(maximum).toBe(16);
+    } finally { release.resolve(); }
+    await expect(reading).resolves.toBeUndefined();
+    expect(probes).toBe(40);
+    expect(maximum).toBe(16);
+  });
+
+  it('keeps global point probe errors distinct from absence and skips stray workspace files', async () => {
+    const failure = new StorageError(StorageErrors.codes.STORAGE_PERMISSION_DENIED, 'point stat denied');
+    class PointStorage extends FileStorageService {
+      override async list(scope: string): Promise<readonly string[]> {
+        if (scope.startsWith('sessions/')) throw new Error('point reads must not enumerate session inventories');
+        return super.list(scope);
+      }
+      override async mtime(scope: string, key: string): Promise<number | undefined> {
+        if (key === 'denied' && scope === `sessions/${workspaceId}`) throw failure;
+        return super.mtime(scope, key);
+      }
+    }
+    await seedSession('found', { title: 'kept' });
+    await fsp.writeFile(join(sessionsDir, 'stray.json'), '{}');
+    await fsp.mkdir(join(sessionsDir, workspaceId, 'bad'), { recursive: true });
+    await fsp.writeFile(join(sessionsDir, workspaceId, 'bad', 'state.json'), '');
+    const store = build(new PointStorage(homeDir));
+    await expect(store.get('found')).resolves.toMatchObject({ id: 'found', title: 'kept' });
+    await expect(store.get('missing')).resolves.toBeUndefined();
+    await expect(store.get('denied')).rejects.toBe(failure);
+    await expect(store.get('bad')).rejects.toMatchObject({ code: StorageErrors.codes.STORAGE_DECODE_FAILED });
   });
 
   it('projects persisted aggregate usage from the authoritative metadata document', async () => {
@@ -1607,6 +1667,44 @@ describe('FileSessionIndex (read model)', () => {
     expect(mirror.pending().map((s) => s.id)).toContain('fresh');
   });
 
+  it.each(['unready', 'dirty', 'cache-miss'] as const)('serves authoritative point reads while %s inventory work is stalled', async (mode) => {
+    const release = deferred<void>();
+    let blockInventories = false;
+    let enabled = true;
+    class GatedStorage extends FileStorageService {
+      override async list(scope: string, prefix?: string): Promise<readonly string[]> {
+        if (blockInventories && scope.startsWith('sessions/')) await release.promise;
+        return super.list(scope, prefix);
+      }
+    }
+    await seedSession('existing', { title: 'recover this prompt target', createdAt: 1, updatedAt: 2 });
+    const store = build(new GatedStorage(homeDir), () => enabled);
+    if (mode !== 'unready') await store.prepare();
+    if (mode === 'cache-miss') {
+      await seedSession('late', { title: 'unmirrored', createdAt: 3, updatedAt: 4 });
+    } else if (mode === 'dirty') {
+      enabled = false;
+      mirror.record(summary('existing'));
+      enabled = true;
+    }
+    blockInventories = true;
+    let found: SessionSummary | undefined;
+    let settled = false;
+    const reading = store.get(mode === 'cache-miss' ? 'late' : 'existing').then((value) => {
+      found = value;
+      settled = true;
+    });
+    try {
+      await vi.waitFor(() => { expect(settled).toBe(true); });
+      expect(found).toMatchObject({ id: mode === 'cache-miss' ? 'late' : 'existing' });
+      await expect(store.get('absent')).resolves.toBeUndefined();
+    } finally {
+      blockInventories = false;
+      release.resolve();
+      await reading;
+    }
+  });
+
   it('get prefers a queued summary over the published record', async () => {
     await seedSession('a', { title: 'published', createdAt: 1, updatedAt: 2 });
     const store = build();
@@ -1795,7 +1893,7 @@ describe('FileSessionIndex (read model)', () => {
     await store.remove('a');
     releaseRead();
     await expect(deletingScan).resolves.toBeUndefined();
-    expect(fileStorage.sessionListReads - beforeDeleteLists).toBeGreaterThanOrEqual(2);
+    expect(fileStorage.sessionListReads - beforeDeleteLists).toBe(0);
     expect((await store.listRecent({ workspaceIds: [workspaceId] })).items).toMatchObject([
       { id: 'b' },
     ]);
