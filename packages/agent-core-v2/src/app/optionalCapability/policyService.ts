@@ -132,9 +132,9 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
     return task;
   }
 
-  async readSession(sessionId: string, workspaceId = ''): Promise<SessionCapabilityView> {
+  async readSession(sessionId: string, workspaceId = '', deliveryMode?: 'reply' | 'message'): Promise<SessionCapabilityView> {
     await this.load(sessionId);
-    return this.view(sessionId, workspaceId);
+    return this.view(sessionId, workspaceId, deliveryMode);
   }
 
   noteComputerServers(servers: readonly { readonly name: string; readonly transport?: string; readonly command?: string; readonly args?: readonly string[] }[]): void {
@@ -151,7 +151,14 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
   }
 
   retain(sessionId: string, agentId: string, context: AgentCapabilityContext): void {
-    this.agents.set(this.agentKey(sessionId, agentId), context);
+    const key = this.agentKey(sessionId, agentId);
+    const previous = this.agents.get(key);
+    this.agents.set(key, {
+      ...previous,
+      ...context,
+      deliveryMode: context.deliveryMode ?? previous?.deliveryMode,
+      sendMessageActive: context.sendMessageActive ?? previous?.sendMessageActive,
+    });
   }
 
   release(sessionId: string, agentId: string): void {
@@ -180,9 +187,9 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
     });
   }
 
-  setChoice(sessionId: string, id: OptionalCapabilityId, choice: CapabilityChoice, workspaceId = ''): Promise<SessionCapabilityView> {
+  setChoice(sessionId: string, id: OptionalCapabilityId, choice: CapabilityChoice, workspaceId = '', deliveryMode?: 'reply' | 'message'): Promise<SessionCapabilityView> {
     const previous = this.queues.get(sessionId) ?? Promise.resolve();
-    const write = previous.catch(() => undefined).then(() => this.applyChoice(sessionId, id, choice, workspaceId));
+    const write = previous.catch(() => undefined).then(() => this.applyChoice(sessionId, id, choice, workspaceId, deliveryMode));
     this.queues.set(sessionId, write);
     return write;
   }
@@ -217,7 +224,7 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
     }
   }
 
-  private async applyChoice(sessionId: string, id: OptionalCapabilityId, choice: CapabilityChoice, workspaceId: string): Promise<SessionCapabilityView> {
+  private async applyChoice(sessionId: string, id: OptionalCapabilityId, choice: CapabilityChoice, workspaceId: string, deliveryMode?: 'reply' | 'message'): Promise<SessionCapabilityView> {
     await this.load(sessionId);
     const state = this.globalState(id);
     if (choice === 'on') {
@@ -239,16 +246,16 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
       throw error;
     }
     this.changes.fire({ sessionId });
-    return this.view(sessionId, workspaceId);
+    return this.view(sessionId, workspaceId, deliveryMode);
   }
 
-  private view(sessionId: string, workspaceId: string): SessionCapabilityView {
+  private view(sessionId: string, workspaceId: string, deliveryMode?: 'reply' | 'message'): SessionCapabilityView {
     const document = this.cache.get(this.key(sessionId)) ?? this.normalize(undefined);
-    const rows = OPTIONAL_CAPABILITY_IDS.map((id) => this.row(sessionId, id, document, workspaceId));
+    const rows = OPTIONAL_CAPABILITY_IDS.map((id) => this.row(sessionId, id, document, workspaceId, deliveryMode));
     return { revision: document.revision, hostId: document.hostId, rows };
   }
 
-  private row(sessionId: string, id: OptionalCapabilityId, document: StoredCapabilityDocument, workspaceId: string): SessionCapabilityRow {
+  private row(sessionId: string, id: OptionalCapabilityId, document: StoredCapabilityDocument, workspaceId: string, deliveryMode?: 'reply' | 'message'): SessionCapabilityRow {
     const state = this.globalState(id);
     const choice = document.overrides[id] ?? 'inherit';
     const main = this.agents.get(this.agentKey(sessionId, 'main'));
@@ -257,12 +264,23 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
       workspaceId: main?.workspaceId ?? workspaceId,
       agentId: main === undefined ? undefined : 'main',
     });
-    const reason = main === undefined && decision.reason === 'default_off' ? 'unbound' : decision.reason;
+    const effectiveDelivery = deliveryMode ?? main?.deliveryMode;
+    let effective = decision.admitted;
+    let reason: string = main === undefined && decision.reason === 'default_off' ? 'unbound' : decision.reason;
+    if (id === 'send_message' && choice !== 'off') {
+      if (main?.sendMessageActive !== undefined && decision.admitted) {
+        effective = main.sendMessageActive;
+        reason = effective ? 'admitted' : 'tool_policy';
+      } else if (effectiveDelivery === 'message' && decision.reason === 'default_off') {
+        effective = main?.sendMessageActive ?? true;
+        reason = effective ? 'admitted' : 'tool_policy';
+      }
+    }
     const source: CapabilitySource = !state.allowed || state.unresolved ? 'off' : choice === 'inherit' ? 'default' : 'session';
     return {
       id,
       choice,
-      effective: decision.admitted,
+      effective,
       source,
       reason,
       allowed: state.allowed,

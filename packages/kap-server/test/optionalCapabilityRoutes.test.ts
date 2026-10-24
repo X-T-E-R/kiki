@@ -70,7 +70,7 @@ describe('optional capability session routes', () => {
     const sessionFor = (sessionId: string) => {
       const existing = sessions.get(sessionId);
       if (existing !== undefined) return existing;
-      const created = new SessionOptionalCapabilityService({ sessionId } as ISessionContext, policy);
+      const created = new SessionOptionalCapabilityService({ sessionId } as ISessionContext, { effectiveMode: () => 'reply' } as never, policy);
       sessions.set(sessionId, created);
       return created;
     };

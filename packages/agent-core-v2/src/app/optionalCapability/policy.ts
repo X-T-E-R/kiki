@@ -35,6 +35,8 @@ export interface AgentCapabilityContext {
   readonly toolsSource?: ProfileToolsSource;
   readonly declaredTools?: readonly string[];
   readonly taskTools?: readonly string[];
+  readonly deliveryMode?: 'reply' | 'message';
+  readonly sendMessageActive?: boolean;
 }
 
 export interface CapabilityAdmitRequest {
@@ -69,11 +71,11 @@ export interface IOptionalCapabilityPolicy {
   wireProjection(): Record<OptionalCapabilityId, OptionalCapabilityWireState>;
   choice(sessionId: string, id: OptionalCapabilityId): CapabilityChoice;
   load(sessionId: string): Promise<void>;
-  readSession(sessionId: string, workspaceId?: string): Promise<SessionCapabilityView>;
+  readSession(sessionId: string, workspaceId?: string, deliveryMode?: 'reply' | 'message'): Promise<SessionCapabilityView>;
   retain(sessionId: string, agentId: string, context: AgentCapabilityContext): void;
   release(sessionId: string, agentId: string): void;
   admit(id: OptionalCapabilityId, request: CapabilityAdmitRequest): CapabilityAdmission;
-  setChoice(sessionId: string, id: OptionalCapabilityId, choice: CapabilityChoice, workspaceId?: string): Promise<SessionCapabilityView>;
+  setChoice(sessionId: string, id: OptionalCapabilityId, choice: CapabilityChoice, workspaceId?: string, deliveryMode?: 'reply' | 'message'): Promise<SessionCapabilityView>;
   anyMayUse(id: OptionalCapabilityId): boolean;
   noteComputerServers(servers: readonly { readonly name: string; readonly transport?: string; readonly command?: string; readonly args?: readonly string[] }[]): void;
   computerServerNames(): readonly string[];

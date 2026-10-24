@@ -25,6 +25,7 @@ import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStor
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { ISessionOptionalCapabilityService, SessionOptionalCapabilityService } from '#/session/optionalCapability/sessionOptionalCapabilityService';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionDeliveryService } from '#/session/delivery/delivery';
 
 type OriginMap = Record<string, ConfigOrigin>;
 
@@ -81,6 +82,7 @@ describe('OptionalCapabilityPolicyService', () => {
           get: ((domain: string) => values[domain]) as IConfigService['get'],
         });
         reg.definePartialInstance(IFlagService, { explain: () => flagState() });
+        reg.definePartialInstance(ISessionDeliveryService, { effectiveMode: () => 'reply' });
         reg.definePartialInstance(IAtomicDocumentStore, {
           get: (async (_scope: string, key: string) => {
             if (readFailure !== undefined) throw readFailure;
@@ -213,6 +215,21 @@ describe('OptionalCapabilityPolicyService', () => {
     expect(policy().admit('send_message', { sessionId: 's1', workspaceId: 'w' })).toMatchObject({ admitted: true, reason: 'admitted' });
     await policy().setChoice('s1', 'send_message', 'off');
     expect(policy().admit('send_message', { sessionId: 's1', workspaceId: 'w' })).toMatchObject({ admitted: false, reason: 'session_off' });
+  });
+
+  it('projects message delivery and the live SendMessage hard policy into the session row', async () => {
+    policy().retain('message-session', 'main', {
+      workspaceId: 'w',
+      agentKind: 'main',
+      deliveryMode: 'message',
+      sendMessageActive: true,
+    });
+    expect(await row('message-session', 'send_message')).toMatchObject({ effective: true, reason: 'admitted', choice: 'inherit' });
+    await policy().setChoice('message-session', 'send_message', 'off');
+    expect(await row('message-session', 'send_message')).toMatchObject({ effective: false, reason: 'session_off', choice: 'off' });
+    await policy().setChoice('message-session', 'send_message', 'on');
+    policy().retain('message-session', 'main', { workspaceId: 'w', agentKind: 'main', sendMessageActive: false });
+    expect(await row('message-session', 'send_message')).toMatchObject({ effective: false, reason: 'tool_policy', choice: 'on' });
   });
 
   it('rejects session on when the capability is hard-off and does not write', async () => {

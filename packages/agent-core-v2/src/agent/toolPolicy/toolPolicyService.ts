@@ -130,7 +130,10 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
       const admission = capability === 'send_message'
         ? admitSendMessageCapability(policy, request, this.delivery.current?.effectiveMode() ?? 'reply')
         : policy.admit(capability, request);
-      if (!admission.admitted) return false;
+      if (!admission.admitted) {
+        if (name === 'SendMessage') this.note(policy, session.sessionId, session.workspaceId, false);
+        return false;
+      }
       if (name === 'SendMessage') {
         const choice = policy.choice(session.sessionId, 'send_message');
         sendMessageAllowListOverride = choice === 'on' ||
@@ -148,7 +151,7 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
       this.delivery.current?.effectiveMode() ?? 'reply',
       (path) => this.cleanDefaultPath(path),
     )) ? { ...profile, tools: undefined, toolAllowPolicies: undefined } : profile;
-    return isToolActiveComposed(
+    const active = isToolActiveComposed(
       {
         workspaceDisabledTools: this.toolPolicyGate.disabledTools,
         profile: effectiveProfile,
@@ -160,6 +163,10 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
       name,
       source,
     );
+    if (policy !== undefined && session !== undefined && name === 'SendMessage') {
+      this.note(policy, session.sessionId, session.workspaceId, active);
+    }
+    return active;
   }
 
   private optionalPolicy(): IOptionalCapabilityPolicy | undefined {
@@ -178,7 +185,7 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     }
   }
 
-  private note(policy: IOptionalCapabilityPolicy, sessionId: string, workspaceId: string): void {
+  private note(policy: IOptionalCapabilityPolicy, sessionId: string, workspaceId: string, sendMessageActive?: boolean): void {
     const profile = this.profile.data();
     const bound = profile.boundProfile;
     const source = capabilityToolsSource(bound?.toolsSource, bound, (path) => this.cleanDefaultPath(path));
@@ -188,6 +195,8 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
       toolsSource: source,
       declaredTools: source === 'declared' ? [...(profile.toolPolicyBase?.tools ?? bound?.tools ?? [])] : undefined,
       taskTools: profile.toolOverride?.tools === undefined ? undefined : [...profile.toolOverride.tools],
+      deliveryMode: this.delivery.current?.effectiveMode() ?? 'reply',
+      sendMessageActive,
     });
     if (this.noted) return;
     this.noted = true;

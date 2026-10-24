@@ -24,8 +24,8 @@ export function isLegacyShippedMessageBinding(
 }
 
 export function isSendMessageCapabilityAdmitted(accessor: ServicesAccessor): boolean {
-  const delivery = accessor.get(ISessionDeliveryService);
   try {
+    const delivery = accessor.get(ISessionDeliveryService);
     const session = accessor.get(ISessionContext);
     const agent = accessor.get(IAgentScopeContext);
     const policy = accessor.get(IOptionalCapabilityPolicy);
@@ -35,7 +35,7 @@ export function isSendMessageCapabilityAdmitted(accessor: ServicesAccessor): boo
       agentId: agent.agentId,
     }, delivery.effectiveMode()).admitted;
   } catch {
-    return delivery.effectiveMode() === 'message';
+    return false;
   }
 }
 
@@ -44,6 +44,6 @@ export function isSendMessageToolActive(accessor: ServicesAccessor): boolean {
   try {
     return accessor.get(IAgentToolPolicyService).isToolActive('SendMessage');
   } catch {
-    return true;
+    return false;
   }
 }

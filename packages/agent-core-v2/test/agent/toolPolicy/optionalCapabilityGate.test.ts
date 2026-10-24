@@ -5,6 +5,7 @@ import { TestInstantiationService } from '#/_base/di/test';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentProfileService, type ProfileData } from '#/agent/profile/profile';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
+import { isSendMessageCapabilityAdmitted, isSendMessageToolActive } from '#/agent/toolPolicy/sendMessageAdmission';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
 import { AgentToolPolicyService } from '#/agent/toolPolicy/toolPolicyService';
@@ -44,6 +45,7 @@ function policy(options: {
       globalState: () => ({ allowed: true, hostLocked: false, defaultOn: false, origin: 'default', unresolved: false }),
       retain() {},
       release() {},
+      load: async () => {},
     });
   }
   ix.stub(ISessionContext, { sessionId: 's1', workspaceId: 'w' });
@@ -103,6 +105,13 @@ describe('optional capability tool gate', () => {
     expect(denied.sut.isToolActive('SendMessage')).toBe(false);
     const workspaceDenied = policy({ admit: () => false, deliveryMode: 'message', workspaceDisabledTools: ['SendMessage'] });
     expect(workspaceDenied.sut.isToolActive('SendMessage')).toBe(false);
+  });
+
+  it('fails closed when the SendMessage policy or guard dependency is unavailable', () => {
+    const delivery = { effectiveMode: () => 'message' as const };
+    const accessor = { get: (id: unknown) => id === ISessionDeliveryService ? delivery : undefined } as never;
+    expect(isSendMessageCapabilityAdmitted(accessor)).toBe(false);
+    expect(isSendMessageToolActive(accessor)).toBe(false);
   });
 
   it('lets an admission replace the snapshot for web and leaves Bash on the snapshot', () => {

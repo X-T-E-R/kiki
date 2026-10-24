@@ -18,6 +18,7 @@ import { THREAD_COMMUNICATION_SECTION } from '#/app/threadCommunication/configSe
 import { ThreadCommunicationService } from '#/app/threadCommunication/threadCommunicationService';
 import { SendMessageToThreadTool } from '#/agent/tools/thread-communication/threadCommunicationTools';
 import { SessionOptionalCapabilityService } from '#/session/optionalCapability/sessionOptionalCapabilityService';
+import { ISessionDeliveryService } from '#/session/delivery/delivery';
 
 const BODY = 'PRIVATE_REVIEW_FIXTURE_BODY';
 
@@ -61,7 +62,7 @@ describe('optional capability review follow-up', () => {
     let finishRead!: (value: unknown) => void;
     const pending = new Promise((resolve) => { finishRead = resolve; });
     const restoring = new OptionalCapabilityPolicyService(config as never, flags as never, { get: () => pending } as never);
-    new SessionOptionalCapabilityService({ sessionId: 'restoring', workspaceId: 'open' } as never, restoring);
+    new SessionOptionalCapabilityService({ sessionId: 'restoring', workspaceId: 'open' } as never, { effectiveMode: () => 'reply' } as never, restoring);
     expect(restoring.admit('web', { sessionId: 'restoring', workspaceId: 'open', agentId: 'main' })).toEqual({ admitted: false, reason: 'origin_unreadable' });
     finishRead({ revision: 3, hostId: 'local', overrides: { web: 'off' } });
     await restoring.load('restoring');
@@ -97,6 +98,7 @@ describe('optional capability review follow-up', () => {
           if (id === IOptionalCapabilityPolicy) return policy;
           if (id === IMemoryStore) return memoryStore;
           if (id === IAgentScopeContext) return { agentId: 'main' };
+          if (id === ISessionDeliveryService) return { effectiveMode: () => 'reply' };
           if (id === IInstantiationService) return instantiation;
           throw new Error('missing service');
         },
@@ -156,6 +158,7 @@ describe('optional capability review follow-up', () => {
           if (id === IOptionalCapabilityPolicy) return policy;
           if (id === toolId) return tool;
           if (id === IAgentScopeContext) return { agentId: 'main', sessionId: 'hot-session', workspaceId: 'open' };
+          if (id === ISessionDeliveryService) return { effectiveMode: () => 'reply' };
           throw new Error('missing service');
         },
       }),
@@ -165,7 +168,7 @@ describe('optional capability review follow-up', () => {
       registered,
       { data: () => ({}) } as never,
       { isToolActiveForDisclosure: (name: string) => policy.admit(name === 'ThreadRead' ? 'thread' : 'web', { sessionId: 'hot-session', workspaceId: 'open', agentId: 'main' }).admitted } as never,
-      { disabledTools: [] } as never,
+      { disabledTools: [], onDidChange: Event.None } as never,
       { isAvailable: () => true, onDidChange: Event.None } as never,
       { subscribe: () => ({ dispose() {} }) } as never,
       config as never,

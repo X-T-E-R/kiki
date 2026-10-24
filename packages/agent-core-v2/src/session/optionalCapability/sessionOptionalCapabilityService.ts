@@ -9,6 +9,7 @@ import {
 import type { CapabilityChoice, OptionalCapabilityId } from '#/app/optionalCapability/admit';
 import { onUnexpectedError } from '#/errors';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionDeliveryService } from '#/session/delivery/delivery';
 
 export interface ISessionOptionalCapabilityService {
   readonly _serviceBrand: undefined;
@@ -22,6 +23,7 @@ export class SessionOptionalCapabilityService extends Service implements ISessio
   declare readonly _serviceBrand: undefined;
   constructor(
     @ISessionContext private readonly session: ISessionContext,
+    @ISessionDeliveryService private readonly delivery: ISessionDeliveryService,
     @IOptionalCapabilityPolicy private readonly policy: IOptionalCapabilityPolicy,
   ) {
     super();
@@ -29,11 +31,11 @@ export class SessionOptionalCapabilityService extends Service implements ISessio
   }
 
   read(): Promise<SessionCapabilityView> {
-    return this.policy.readSession(this.session.sessionId, this.session.workspaceId);
+    return this.policy.readSession(this.session.sessionId, this.session.workspaceId, this.delivery.effectiveMode());
   }
 
   set(id: OptionalCapabilityId, choice: CapabilityChoice): Promise<SessionCapabilityView> {
-    return this.policy.setChoice(this.session.sessionId, id, choice, this.session.workspaceId);
+    return this.policy.setChoice(this.session.sessionId, id, choice, this.session.workspaceId, this.delivery.effectiveMode());
   }
 }
 
