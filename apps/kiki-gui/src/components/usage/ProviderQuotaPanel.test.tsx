@@ -15,6 +15,7 @@ vi.mock('../../lib/providerQuota', async (importOriginal) => ({
 }));
 const client = {
   listOAuthMethods: vi.fn(), startOAuthLogin: vi.fn(), getOAuthStatus: vi.fn(), cancelOAuthLogin: vi.fn(),
+  listProviders: vi.fn(), getConfig: vi.fn(), listExecutors: vi.fn(),
 };
 vi.mock('../../state/connection', () => ({ useConnection: () => ({ client }) }));
 vi.mock('../../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
@@ -41,7 +42,7 @@ function show(sources: ProviderQuotaSource[], stale = false) {
   mockUseProviderQuotas.mockReturnValue({ snapshot, loading: false, isError: false, stale, refetch, isRefetching: false,
     refreshSource, setSourceEnabled, refreshingSourceId: undefined });
 }
-function Location() { const location = useLocation(); return <output data-location>{location.pathname}{location.hash}</output>; }
+function Location() { const location = useLocation(); return <><output data-location>{location.pathname}{location.hash}</output><output data-location-full>{location.pathname}{location.search}{location.hash}</output></>; }
 async function mount() {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   const query = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -60,6 +61,9 @@ async function click(container: Element, selector: string) {
 beforeEach(() => {
   vi.resetAllMocks(); localStorage.setItem('kiki.locale', 'en');
   refreshSource.mockResolvedValue(undefined); setSourceEnabled.mockResolvedValue(undefined);
+  client.listProviders.mockResolvedValue({ items: [] });
+  client.getConfig.mockResolvedValue({ raw: {} });
+  client.listExecutors.mockResolvedValue({ items: [] });
   client.listOAuthMethods.mockResolvedValue([{ id: 'openai-codex', provider: 'managed:openai-codex', label: 'ChatGPT' }]);
   client.startOAuthLogin.mockResolvedValue(pending);
   client.getOAuthStatus.mockResolvedValue(pending);
@@ -108,7 +112,11 @@ describe('ProviderQuotaPanel', () => {
     await click(container, '[data-quota-source-refresh="account-1"]');
     expect(refreshSource).toHaveBeenCalledExactlyOnceWith('account-1');
     expect(container.querySelector('[data-quota-source-refresh="off"]')).toBeNull();
-    await click(container, '[data-quota-item="account-1"] input[type="checkbox"]');
+    await click(container, '[data-quota-menu-trigger="account-1"]');
+    const disableBtn = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[data-quota-row-menu] button'))
+      .find((btn) => btn.textContent?.includes('Turn off quota check'))!;
+    expect(disableBtn).toBeDefined();
+    await act(async () => { disableBtn.click(); await new Promise((resolve) => setTimeout(resolve, 5)); });
     expect(setSourceEnabled).toHaveBeenCalledExactlyOnceWith('account-1', false);
     refreshSource.mockRejectedValueOnce(new Error('offline'));
     await click(container, '[data-quota-source-refresh="account-1"]');
@@ -173,5 +181,128 @@ describe('ProviderQuotaPanel', () => {
     const container = await mount(); await click(container, '[data-quota-auth-action]');
     expect(container.querySelector('[data-location]')?.textContent).toBe(target);
     expect(client.startOAuthLogin).not.toHaveBeenCalled();
+  });
+  it('lists enabled and configured engines, retaining unavailable engines and hiding explicit off choices', async () => {
+    const engine = (id: string) => source({ id: `executor:${id}`, provider_id: id, label: id, kind: 'executor', supported: false, status: 'unsupported' });
+    show(['grok-acp', 'custom-acp', 'off-acp', 'unused-acp'].map(engine));
+    client.getConfig.mockResolvedValue({ raw: {
+      agent_executor_overrides: { 'grok-acp': { show_in_profile_list: true }, 'off-acp': { show_in_profile_list: false } },
+      agent_executors: { 'custom-acp': {}, 'off-acp': {} },
+    } });
+    client.listExecutors.mockResolvedValue({ items: [{ id: 'grok-acp', status: 'unavailable' }] });
+    const container = await mount();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+    expect(container.querySelector('[data-quota-engine="grok-acp"]')).not.toBeNull();
+    expect(container.querySelector('[data-quota-engine="custom-acp"]')).not.toBeNull();
+    expect(container.querySelector('[data-quota-engine="off-acp"]')).toBeNull();
+    expect(container.querySelector('[data-quota-engine="unused-acp"]')).toBeNull();
+    expect(container.querySelector('[data-quota-hidden-engines]')?.getAttribute('data-quota-hidden-engines')).toBe('2');
+    expect(container.querySelector('[data-quota-engine-settings="grok-acp"]')).not.toBeNull();
+    expect(refreshSource).not.toHaveBeenCalled();
+    expect(setSourceEnabled).not.toHaveBeenCalled();
+  });
+  it('honors the global external visibility switch without deleting sources', async () => {
+    show([source({ id: 'executor:grok-acp', provider_id: 'grok-acp', kind: 'executor' })]);
+    client.getConfig.mockResolvedValue({ raw: { agent_executor_display: { externals_visible: false }, agent_executor_overrides: { 'grok-acp': { show_in_profile_list: true } } } });
+    const container = await mount();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+    expect(container.querySelector('[data-quota-engine]')).toBeNull();
+    expect(container.querySelector('[data-quota-hidden-engines]')?.textContent).toContain('1');
+    expect(setSourceEnabled).not.toHaveBeenCalled();
+  });
+  it('keeps connection failures visible and retries engine preferences', async () => {
+    show([source({ id: 'executor:grok-acp', provider_id: 'grok-acp', kind: 'executor' })]);
+    client.getConfig.mockRejectedValueOnce(new Error('offline')).mockResolvedValue({ raw: {} });
+    const container = await mount();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+    expect(container.querySelector('[data-quota-engine-config-error]')?.textContent).toContain('could not be loaded');
+    expect(container.querySelector('[data-quota-engine="grok-acp"]')).not.toBeNull();
+    await click(container, '[data-quota-engine-config-error] button');
+    expect(container.querySelector('[data-quota-engine-config-error]')).toBeNull();
+    expect(container.querySelector('[data-quota-engine]')).toBeNull();
+  });
+  it('keeps signed-out accounts actionable and preserves account identity and known metrics', async () => {
+    show([source({ meters: [meter({ remaining: 0 })], auth: { action: 'oauth_login', provider: 'example' } })]);
+    client.listProviders.mockResolvedValue({ items: [{ id: 'example', oauth: { signed_in: false } }] });
+    const container = await mount();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+    expect(container.querySelector('[data-quota-status="auth_required"]')).not.toBeNull();
+    expect(container.textContent).toContain('person@example.test');
+    expect(container.textContent).toContain('0.00 USD');
+    expect(container.querySelector('[data-quota-source-refresh]')).toBeNull();
+    expect(container.querySelector('[data-quota-settings-link]')?.getAttribute('href')).toBe('/settings/ai?tab=providers');
+    await click(container, '[data-quota-refresh-button]');
+    expect(refreshSource).not.toHaveBeenCalled();
+  });
+  it('folds unsupported connections and links each source to its existing configuration', async () => {
+    show([source({ id: 'api', supported: false, status: 'unsupported' }), source({ id: 'service', kind: 'external_service', supported: false, status: 'unsupported' })]);
+    const container = await mount();
+    const section = container.querySelector<HTMLDetailsElement>('[data-quota-unsupported]')!;
+    expect(section.open).toBe(false);
+    expect(section.querySelectorAll('[data-quota-unsupported-item]')).toHaveLength(2);
+    expect(container.querySelector('[data-quota-settings-link="api"]')?.getAttribute('href')).toBe('/settings/ai#st-card-providers');
+    expect(container.querySelector('[data-quota-settings-link="service"]')?.getAttribute('href')).toBe('/settings/search#st-card-search-providers');
+    expect(container.querySelector('[data-quota-source-refresh]')).toBeNull();
+  });
+  it('shows enable failures and server-retained off state without fabricating a successful save', async () => {
+    const off = source({ id: 'off', enabled: false, status: 'off' });
+    show([off]);
+    setSourceEnabled.mockRejectedValueOnce(new Error('save unavailable'));
+    const container = await mount();
+    await click(container, '[data-quota-off-item="off"] input');
+    expect(container.textContent).toContain('save unavailable');
+    setSourceEnabled.mockResolvedValueOnce({ sources: [off] });
+    await click(container, '[data-quota-off-item="off"] input');
+    expect(container.textContent).toContain('still off');
+    expect(container.querySelector<HTMLInputElement>('[data-quota-off-item="off"] input')?.checked).toBe(false);
+  });
+  it('separates attention band from ledger, offers local usage link only when provider_id matches catalog, and retries snapshot error', async () => {
+    client.listProviders.mockResolvedValue({ items: [{ id: 'openrouter' }] });
+    show([
+      source({ id: 'src-unknown', provider_id: 'openrouter', status: 'unknown', meters: [] }),
+      source({ id: 'src-managed', provider_id: 'managed:kimi-code', status: 'ready', meters: [meter({ unit: 'percent', unit_label: '%', remaining: 52 })] }),
+      source({ id: 'src-err', provider_id: 'tavily', kind: 'external_service', status: 'error', message: 'Upstream timeout' }),
+    ]);
+    const container = await mount();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+
+    // Attention band contains src-err; ledger contains src-unknown and src-managed
+    expect(container.querySelector('[data-quota-attention] [data-quota-item="src-err"]')).not.toBeNull();
+    expect(container.querySelector('[data-quota-ledger] [data-quota-item="src-unknown"]')).not.toBeNull();
+    expect(container.querySelector('[data-quota-ledger] [data-quota-item="src-managed"]')).not.toBeNull();
+
+    // Remaining percent is explicitly labeled 'Remaining 52%' with no progress bar
+    const managedRow = container.querySelector('[data-quota-item="src-managed"]')!;
+    expect(managedRow.textContent).toContain('Remaining 52%');
+    expect(managedRow.querySelector('[data-quota-progress]')).toBeNull();
+
+    // Never-queried source shows 'Not queried yet' + 'Query' button
+    expect(container.querySelector('[data-quota-not-queried="src-unknown"]')?.textContent).toContain('Not queried yet');
+    await click(container, '[data-quota-query-now="src-unknown"]');
+    expect(refreshSource).toHaveBeenCalledWith('src-unknown');
+
+    // Local usage menu entry is present for openrouter (exact match in listProviders)
+    await click(container, '[data-quota-menu-trigger="src-unknown"]');
+    const localUsageBtn = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[data-quota-row-menu] button'))
+      .find((btn) => btn.textContent?.includes('View local usage'));
+    expect(localUsageBtn).toBeDefined();
+    await act(async () => { localUsageBtn!.click(); await new Promise((resolve) => setTimeout(resolve, 5)); });
+    expect(container.querySelector('[data-location-full]')?.textContent).toBe('/usage?panel=history&provider=openrouter');
+
+    // Local usage menu entry is NOT present for managed:kimi-code (not in listProviders with same id)
+    await click(container, '[data-quota-menu-trigger="src-managed"]');
+    const managedLocalBtn = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[data-quota-row-menu] button'))
+      .find((btn) => btn.textContent?.includes('View local usage'));
+    expect(managedLocalBtn).toBeUndefined();
+  });
+  it('renders a retry button when the quota snapshot query fails', async () => {
+    mockUseProviderQuotas.mockReturnValue({
+      snapshot: undefined, loading: false, isError: true, stale: true, refetch, isRefetching: false,
+      refreshSource, setSourceEnabled, refreshingSourceId: undefined,
+    });
+    const container = await mount();
+    expect(container.querySelector('[data-quota-snapshot-error]')).not.toBeNull();
+    await click(container, '[data-quota-snapshot-retry]');
+    expect(refetch).toHaveBeenCalledOnce();
   });
 });
