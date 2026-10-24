@@ -115,7 +115,7 @@ export class UsageWireFramer {
       try {
         if (this.parser !== undefined) {
           if (!this.invalid) { this.parser.write(Buffer.from(this.utf8).toString('utf8')); raw = this.parser.finish(); }
-        } else if (end > start) raw = parseUsageJson(bytes.subarray(start, end));
+        } else if (end > start) raw = parseUsageJson(bytes.subarray(start, end), 'usage-only');
       } catch { this.invalid = true; }
       const fact = this.invalid || raw !== undefined;
       if (!allowance.takeRecord(fact)) {
