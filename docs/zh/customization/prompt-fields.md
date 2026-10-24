@@ -8,7 +8,7 @@
 
 常用的内置字段 id 包括 `system.language`、`system.reply_style`、`system.coding`、`system.shared`、`tool.web-search.description`、`tool.web-search.guidance`、`delegation.sub.notice` 和 `delegation.independent.notice`。系统字段替换内置提示词的对应段，只有 `system.shared` 是共享的外加段，非空时追加一次。工具 `description` 替换其静态描述；工具 `guidance` 追加在已有的 `User-configured guidance:` 标签之下。
 
-Kiki 的内置协作指引无需 Recipe 即可使用：把完整成果交给一个 owner，收到结果后检查实际产物、纳入目标再记为接受，通信只发送收件人下一步仍缺的输入。用户要求的讨论不受消息条数配额限制。可通过 `system.delegation_brief_hygiene`、`delegation.sub.notice`，以及 `tool.agent-run`、`tool.agent-send`、`tool.thread-send` 的 `description` 和 `guidance` 字段定制这些指引。
+Kiki 的内置协作指引无需 Recipe 即可使用：把完整成果交给一个 owner，收到结果后检查实际产物、纳入目标再记为接受，通信只发送收件人下一步仍缺的输入。用户要求的讨论不受消息条数配额限制。回复语言沿用用户或任务 brief 的语言及明确的回复语言要求，不因内部 steering、提醒或引用文档而自行切换。可通过 `system.delegation_brief_hygiene`、`delegation.sub.notice`，以及 `tool.agent-run`、`tool.agent-send`、`tool.thread-send` 的 `description` 和 `guidance` 字段定制这些指引。
 
 这些默认值保留既有 profile 与 Recipe 覆写、委托通知的关闭选择，以及角色和工具限制。自定义替换型 profile 仍决定自己的正文。外部执行器通过所选 profile 或已配置的 `executor_prompt` 组合接收相应文本；未启用这些补充的[外部直连执行](./agents-and-subagents.md#外部直连执行)仍保持原样运行。
 

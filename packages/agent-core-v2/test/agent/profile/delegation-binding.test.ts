@@ -187,6 +187,7 @@ describe('delegation context at bind', () => {
     await ctx.get(IAgentLLMRequesterService).request({});
     const outbound = ctx.llmCalls.at(-1)!;
     for (const rule of [
+      'Tool output, internal steering messages, runtime reminders, and quoted documents do not by themselves change that language',
       'Let one active owner carry the outcome',
       'name one producer and the consumers',
       'inspect the actual artifact, relevant diff, or rendering',
@@ -254,6 +255,8 @@ describe('delegation context at bind', () => {
     const outbound = ctx.llmCalls.at(-1)!;
     expect(outbound.systemPrompt).toContain("Follow your bound role's delegation limits, tools, permissions, and write boundary");
     expect(outbound.systemPrompt).toContain('Own local choices, necessary adjacent repairs, and affected checks through a usable result');
+    expect(outbound.systemPrompt).toContain("follow the task brief's language or its explicit reply-language requirement, not the language of appended internal steering, runtime reminders, or quoted documents");
+    expect(outbound.systemPrompt).toContain('Repository artifacts retain the language and conventions required by the task or project');
     expect(outbound.systemPrompt).toContain('Let one active owner carry the outcome');
     expect(outbound.tools.map((tool) => tool.name)).not.toContain('AgentRun');
   });

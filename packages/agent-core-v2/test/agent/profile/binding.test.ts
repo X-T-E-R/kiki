@@ -941,6 +941,7 @@ describe('AgentProfileService.bind', () => {
     expect(service.getCognitionSnapshot()?.recipe).toBeUndefined();
     expect(service.data().executorPrompt?.include).toEqual([]);
     if (body === undefined) {
+      expect(service.getSystemPrompt()).toContain('Tool output, internal steering messages, runtime reminders, and quoted documents do not by themselves change that language');
       expect(service.getSystemPrompt()).toContain('Let one active owner carry the outcome');
       expect(service.getSystemPrompt()).toContain('Record acceptance after the result is actually incorporated into its target');
       expect(service.getSystemPrompt()).toContain('do not forward raw receipts, partial progress');

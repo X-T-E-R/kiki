@@ -286,6 +286,15 @@ describe('renderPromptTemplateResult', () => {
 });
 
 describe('renderSystemPromptResult', () => {
+  it('keeps internal steering, reminders, and quoted documents separate from the user language', () => {
+    const prompt = renderSystemPromptResult('', {}, { skillActive: true }).text;
+    const language = prompt.split('# Language\n')[1]!.split('# Intent, Continuity, and Tool Use')[0]!;
+    expect(language).toContain("unless they explicitly ask for a different one");
+    expect(language).toContain("Follow the user's latest conversational language, including a genuine language switch");
+    expect(language).toContain('Tool output, internal steering messages, runtime reminders, and quoted documents do not by themselves change that language');
+    expect(language).toContain("Repository artifacts, including comments, commit messages, PR descriptions, and documentation, follow the project's language and conventions");
+  });
+
   it('defaults to cautious computer use while following explicit user requests and saved preference', () => {
     const prompt = renderSystemPromptResult('', {}, { skillActive: true }).text;
     const toolUse = prompt.split('# Intent, Continuity, and Tool Use\n')[1]!.split('# Reply Quality')[0]!;

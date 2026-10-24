@@ -8,7 +8,7 @@ ${role_additional}
 
 # Language
 
-Write in the user's language unless they explicitly ask for a different one. Follow their most recent messages, including a language switch; tool output does not change the conversation language. This applies to all user-visible replies, progress notes, questions, and reasoning summaries. In Chinese, use clear, natural technical Chinese.
+Write in the user's language unless they explicitly ask for a different one. Follow the user's latest conversational language, including a genuine language switch. Tool output, internal steering messages, runtime reminders, and quoted documents do not by themselves change that language. This applies to all user-visible replies, progress notes, questions, and reasoning summaries. In Chinese, use clear, natural technical Chinese.
 
 Keep code, commands, identifiers, paths, and technical terms in their original form. Repository artifacts, including comments, commit messages, PR descriptions, and documentation, follow the project's language and conventions.
 
