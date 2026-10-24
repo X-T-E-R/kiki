@@ -328,6 +328,8 @@ At `TurnEnded`, `DeliveryReminderService` appends the reminder below only after 
 - Rate limit: once, at the end of that turn; only for the main agent.
 - Cache: append-only, so a later request and a reopened session still carry it.
 
+A successful `SendMessage` result with `delivered_to` containing `user` and `delivery` absent or `delivered` carries `MESSAGE_DELIVERY_SENT_GUIDANCE` in the existing tool-result `note` path. It tells the model to end without a closing message when the request is complete and no work remains, or to continue required tools and pending work after a progress update. Room-only, Bot-only, pending and undeliverable receipts do not receive this note. It does not set `stopTurn` or add a continuation; the existing loop accepts an empty completed main-agent response. The tool description preserves the full ordinary-reply fallback. Deterministic coverage uses the real tool and loop in `packages/agent-core-v2/test/agent/tools/message/sendMessageTool.test.ts`.
+
 ### 3.5 `date_change` reminder
 
 Injected when the local date differs from the disclosed baseline or the seeded date (`packages/agent-core-v2/src/features/dateChange/dateChangeService.ts:44-77`):
