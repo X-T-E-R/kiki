@@ -68,6 +68,8 @@ export interface UserBlock {
     readonly messageId?: string;
   };
   readonly peerThread?: {
+    readonly hostId?: string;
+    readonly workspaceId?: string;
     readonly sessionId?: string;
     readonly personaId?: string;
     readonly senderName?: string;

@@ -5,10 +5,10 @@
  * catalog from the query cache, and fetches a record once for an id none of
  * them carries (an archived thread, another workspace outside the current filter).
  *
- * The fetch is opt-in (`fetchSession`): the composer, which owns a client,
- * passes it; read-only surfaces (the transcript) read the cache only, which
- * the composer's fetches also fill. Without a query client every id resolves
- * to nothing and chips fall back to the short id.
+ * The fetch is opt-in (`fetchSession`): the composer and injected-source
+ * labels share metadata-only lookups within the connection's query cache.
+ * A source with a known host is resolved only after that host matches the
+ * connection. Without a query client, chips fall back to the short id.
  */
 
 import { useCallback, useContext, useEffect, useMemo, useSyncExternalStore } from 'react';
@@ -32,6 +32,7 @@ export interface ThreadRefEntry {
 }
 
 export interface ThreadRefDirectory {
+  readonly hostId?: string;
   readonly lookup: (sessionId: string) => ThreadRefEntry;
   readonly info: (sessionId: string) => ThreadRefInfo;
 }
@@ -79,6 +80,7 @@ export function useThreadRefDirectory(
   ids: readonly string[] = [],
   fetchSession?: (sessionId: string) => Promise<Session>,
   fetchHostId?: () => Promise<string>,
+  sourceHostId?: string,
 ): ThreadRefDirectory {
   const client = useContext(QueryClientContext);
   // Re-render on cache changes; the version counter keeps the snapshot stable.
@@ -92,19 +94,21 @@ export function useThreadRefDirectory(
     () => 0,
   );
   const snapshot = useMemo(() => snapshotOf(client), [client, version]);
+  const knownHostId = client?.getQueryData<string>(['thread-host-id']);
+  const sourceMatches = sourceHostId === undefined || sourceHostId === knownHostId;
   const missing = useMemo(
     () => [...new Set(ids)].filter((id) => !snapshot.sessions.has(id)),
     [ids, snapshot],
   );
   useEffect(() => {
-    if (client === undefined || fetchSession === undefined) return;
+    if (client === undefined || fetchSession === undefined || !sourceMatches) return;
     for (const id of missing) {
       // One attempt per id: a failed lookup (deleted, other host) stays a
       // short-id chip rather than retrying on every render.
       if (client.getQueryState(['thread-ref', id]) !== undefined) continue;
       void client.prefetchQuery({ queryKey: ['thread-ref', id], queryFn: () => fetchSession(id), staleTime: 60_000, retry: false });
     }
-  }, [client, fetchSession, missing]);
+  }, [client, fetchSession, missing, sourceMatches]);
   const hasRefs = ids.length > 0;
   useEffect(() => {
     if (client === undefined || fetchHostId === undefined || !hasRefs) return;
@@ -117,11 +121,12 @@ export function useThreadRefDirectory(
       return { session, workspace: session === undefined ? undefined : snapshot.workspaces.get(session.workspace_id) };
     };
     return {
+      hostId: knownHostId,
       lookup,
       info: (sessionId) => {
         const entry = lookup(sessionId);
         return threadRefInfoOf(sessionId, entry.session, entry.workspace, hostId);
       },
     };
-  }, [snapshot, hostId]);
+  }, [snapshot, hostId, knownHostId]);
 }

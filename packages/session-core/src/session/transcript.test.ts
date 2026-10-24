@@ -267,7 +267,10 @@ describe('classifyTranscriptText', () => {
       expect.objectContaining({
         kind: 'user',
         text: 'Message from thread "Design review" (sess-source):\n\nping',
-        peerThread: { sessionId: 'sess-source', messageId: 'thread-message-1', personaId: undefined, senderName: undefined },
+        peerThread: {
+          hostId: 'local', workspaceId: 'ws-a', sessionId: 'sess-source',
+          messageId: 'thread-message-1', personaId: undefined, senderName: undefined,
+        },
       }),
     ]);
   });
@@ -1278,7 +1281,24 @@ describe('transcript authority projection', () => {
     }]).byId[CHILD_AGENT_ID]).toMatchObject({ status: 'background', busy: true });
     expect(sessionAgentForestFromAgentSnapshots(snapshots, [{ ...row,
       activity_status: 'idle', status_source: 'runtime', live: true,
-    }]).byId[CHILD_AGENT_ID]).toMatchObject({ status: 'completed', busy: false });
+    }]).byId[CHILD_AGENT_ID]).toMatchObject({ status: 'idle', busy: false });
+  });
+
+  it('lets current runtime idle outrank a running subagent dispatch task', () => {
+    const running = emptySnapshot({
+      meta: { agent: { phase: { kind: 'idle' } } },
+      tasks: [{
+        taskId: 'subagent-dispatch', kind: 'subagent', state: 'running', detached: false,
+        agentId: 'agent-38', description: 'delegated work', outputTail: '', startedAt: FIXED_AT_1,
+      }],
+    });
+    const idle = compactSnapshotSubagent({
+      id: 'agent-38', agent_id: 'agent-38', status: 'running', activity_status: 'idle',
+      status_source: 'runtime', live: true, started_at: FIXED_AT_1,
+    });
+    expect(sessionAgentForestFromAgentSnapshots(new Map([['main', running]]), [idle]).byId['agent-38']).toMatchObject({
+      status: 'idle', busy: false,
+    });
   });
 
   it('keeps a finite background task busy when the runtime row is idle', () => {
@@ -1323,7 +1343,7 @@ describe('transcript authority projection', () => {
     });
     expect(sessionAgentForestFromAgentSnapshots(snapshots, [{ ...row,
       started_at: startedAt, completed_at: '2026-01-01T00:00:04.000Z',
-    }]).byId[CHILD_AGENT_ID]).toMatchObject({ status: 'background', busy: true });
+    }]).byId[CHILD_AGENT_ID]).toMatchObject({ status: 'idle', busy: false });
   });
 
   it('lets a run that starts after the retained row revive the forest node', () => {
@@ -3423,6 +3443,57 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
   });
 
   describe('subagent lifecycle event blocks', () => {
+    const lifecycleSnapshot = (assistantText?: string, endedAt?: string): AgentTranscriptSnapshot => emptySnapshot({
+      items: [
+        { kind: 'taskref', refId: 'ref-agent-1', taskId: 'task-agent-1', at: FIXED_AT_1 },
+        {
+          kind: 'turn', turnId: 't1', ordinal: 1, state: 'running', origin: { kind: 'user' },
+          prompt: 'delegate', startedAt: FIXED_AT,
+          steps: [{
+            kind: 'step', stepId: 't1.1', turnId: 't1', ordinal: 1, state: 'running', startedAt: FIXED_AT_1,
+            frames: [
+              {
+                kind: 'tool', frameId: 'spawn-frame', toolCallId: 'spawn-call', name: 'AgentRun', state: 'done',
+                input: { profile: 'Researcher', prompt: 'map the surface' },
+                agentRefs: [{ agentId: 'agent-1', role: 'child' }], startedAt: FIXED_AT_1,
+              },
+              ...(assistantText === undefined ? [] : [{ kind: 'text' as const, frameId: 'assistant-current', role: 'assistant' as const, text: assistantText }]),
+            ],
+          }],
+        },
+      ],
+      tasks: [{
+        taskId: 'task-agent-1', kind: 'subagent', state: 'completed', detached: false,
+        subagentName: 'Researcher', agentId: 'agent-1', description: 'map the surface', outputTail: '',
+        startedAt: FIXED_AT_1, endedAt,
+      }],
+    });
+
+    it('places a timestamped terminal event before an undated latest assistant in its running turn', () => {
+      let projected = projectAgentTranscriptView(createViewState('session_test'), 'main', lifecycleSnapshot(undefined, FIXED_AT_2));
+      for (const text of ['first current answer', 'second current answer', 'latest current answer']) {
+        projected = projectAgentTranscriptView(projected, 'main', lifecycleSnapshot(text, FIXED_AT_2));
+        const terminalIndex = projected.blocks.findIndex((block) => block.id === 'subagent-event-agent-1-completed-task-agent-1');
+        const latestAssistantIndex = projected.blocks.findLastIndex((block) => block.kind === 'assistant');
+        expect(terminalIndex).toBeGreaterThanOrEqual(0);
+        expect(latestAssistantIndex).toBeGreaterThanOrEqual(0);
+        expect(terminalIndex).toBeLessThan(latestAssistantIndex);
+      }
+    });
+
+    it('keeps a timestamp-less terminal event beside its card across appends', () => {
+      let projected = createViewState('session_test');
+      for (const text of ['first current answer', 'latest current answer']) {
+        projected = projectAgentTranscriptView(projected, 'main', lifecycleSnapshot(text));
+        const cardIndex = projected.blocks.findIndex((block) => block.id === 'subagent-agent-1');
+        const terminalIndex = projected.blocks.findIndex((block) => block.id === 'subagent-event-agent-1-completed-task-agent-1');
+        expect(cardIndex).toBeGreaterThanOrEqual(0);
+        expect(terminalIndex).toBe(cardIndex + 1);
+        expect(projected.blocks[terminalIndex]).toMatchObject({ kind: 'subagent-event', at: undefined });
+        expect(projected.blocks.find((block) => block.id === 'subagent-agent-1')).toMatchObject({ endedAt: undefined });
+      }
+    });
+
     it('emits in-place spawned and terminal compact entries for a taskref-backed subagent', () => {
       const projected = projectAgentTranscriptView(
         createViewState('session_test'),

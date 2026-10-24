@@ -141,6 +141,7 @@ import {
   landAtEnd,
   measureTranscriptRow,
   noteReaderDisclosure,
+  observeRowMutations,
   reconcileMountedRows,
 } from './transcriptVirtualizer';
 import { ApprovalCard, InteractionRecord, QuestionCard, useInteractionPlacement } from './Interactions';
@@ -184,6 +185,7 @@ import { InvocationContext, useInvocationDetails } from './timeline/SubagentInvo
 import { AgentTurnOutcomeLine } from './timeline/AgentTurnOutcomeLine';
 import { MessageLinkContext, MessageRowActions, messageLinkHref, UserMessageEditor, useMessageLink, useMessageRowTapActions } from './RowActions';
 import { ThreadRefText } from './ThreadRefChip';
+import { PeerThreadSource } from './PeerThreadSource';
 import { useThreadRefDirectory } from '../lib/threadRefs';
 import { resolveSubagentToolCalls, type SubagentToolCalls } from './subagentToolCalls';
 import { activityOutcomeLabels, DURATION_WORTH_SHOWING_MS, ToolCard } from './ToolCard';
@@ -327,6 +329,7 @@ export interface TranscriptRowActions {
  * roster has no row for that sender yet.
  */
 export interface SenderIdentity {
+  readonly title?: string;
   readonly profile?: string;
   readonly model?: string;
 }
@@ -394,28 +397,11 @@ const UserMessage = memo(function UserMessage({
       continuation.request(serverRef);
     }
   }, [clipped, toggle, serverRemaining, serverRef, continuation]);
-  const agentMessageLabel =
-    block.agentMessage === undefined
-      ? undefined
-      : block.agentMessage.senderAgentId === 'main'
-        ? t('agentMessage.fromMain')
-        : t('agentMessage.fromAgent', {
-            name:
-              block.agentMessage.senderTaskName ??
-              block.agentMessage.senderAgentId ??
-              t('agentMessage.agent'),
-          });
-  const peerThreadLabel =
-    block.peerThread === undefined
-      ? undefined
-      : t('agentMessage.fromThread', { id: block.peerThread.sessionId ?? '?' });
-  const senderLabel = agentMessageLabel ?? peerThreadLabel;
-  // The sender's role profile and model come from the session roster, keyed by
-  // the sender's agent id: the prompt origin carries no profile/model of its
-  // own. A sender with no roster row keeps the plain "{name} injected" label.
   const senderAgentId = block.agentMessage?.senderAgentId;
-  const senderIdentity =
-    senderAgentId === undefined ? undefined : senderIdentities?.get(senderAgentId);
+  const senderIdentity = senderAgentId === undefined ? undefined : senderIdentities?.get(senderAgentId);
+  const senderLabel = block.agentMessage === undefined ? undefined
+    : senderAgentId === 'main' ? t('agentMessage.fromMain')
+    : t('agentMessage.fromAgent', { name: senderIdentity?.title ?? block.agentMessage.senderTaskName ?? senderAgentId ?? t('agentMessage.agent') });
   const senderMeta = [
     senderIdentity?.profile === undefined
       ? undefined
@@ -430,12 +416,13 @@ const UserMessage = memo(function UserMessage({
   const senderDetails =
     senderAgentId === undefined
       ? undefined
-      : t('agentMessage.senderDetails', {
+      : [senderIdentity?.title !== block.agentMessage?.senderTaskName ? senderIdentity?.title : undefined,
+        t('agentMessage.senderDetails', {
           agentId: senderAgentId,
           profile: senderIdentity?.profile ?? unknownDetail,
           model: senderIdentity?.model ?? unknownDetail,
           task: block.agentMessage?.senderTaskName ?? unknownDetail,
-        });
+        })].filter((part) => part !== undefined).join('\n');
   // The sender's name is the line's one control: it opens the sender's own
   // timeline through the same entry the subagent rows use, so a message
   // another agent injected leads straight to that agent. It carries the
@@ -541,7 +528,8 @@ const UserMessage = memo(function UserMessage({
       {/* Meta line: the sender shows only when it is not the user (agent or
           peer-thread messages); the time stays quiet until hover/focus so the
           bubble reads as the user's own voice. */}
-      <span className="mb-1 flex min-h-[18px] items-baseline gap-1.5 pr-1">
+      <span className="mb-1 flex min-h-[18px] max-w-full items-baseline gap-1.5 pr-1">
+        {block.agentMessage === undefined && block.peerThread !== undefined ? <PeerThreadSource source={block.peerThread} /> : null}
         {senderLabel === undefined ? null : senderOpen === undefined ? (
           <span
             {...senderAttrs}
@@ -578,7 +566,7 @@ const UserMessage = memo(function UserMessage({
         <span
           data-user-time
           className={`text-[12px] text-ink-faint transition-opacity duration-[var(--kiki-motion-quick)] ${
-            senderLabel !== undefined
+            senderLabel !== undefined || block.peerThread !== undefined
               ? ''
               : 'opacity-0 group-hover/msg:opacity-100 group-focus-within/msg:opacity-100 [@media(hover:none)]:opacity-100'
           }`}
@@ -3985,14 +3973,18 @@ export function Transcript({
   // referentially stable props across ordinary deltas.
   const senderIdentities = useMemo(() => {
     const map = new Map<string, SenderIdentity>();
+    for (const [agentId, name] of agentNames) {
+      if (name !== agentId) map.set(agentId, { title: name });
+    }
     for (const row of state.snapshotSubagents) {
-      const profile = row.profile === undefined || row.profile === '' ? undefined : row.profile;
-      const model = row.model === undefined || row.model === '' ? undefined : row.model;
-      if (profile === undefined && model === undefined) continue;
-      map.set(snapshotSubagentAgentId(row), { profile, model });
+      const agentId = snapshotSubagentAgentId(row);
+      const profile = row.profile?.trim() || undefined;
+      const model = row.model?.trim() || undefined;
+      const title = row.label?.trim() || row.description?.trim() || map.get(agentId)?.title;
+      map.set(agentId, { title, profile, model });
     }
     return map;
-  }, [state.snapshotSubagents]);
+  }, [state.snapshotSubagents, agentNames]);
   // The gallery's one ordering source: a block's place in the session's own
   // blocks. Built here (not from the display nodes) so a block keeps that
   // place inside a fold or a merged run, and stable across deltas that do not
@@ -4354,6 +4346,14 @@ export function Transcript({
       if (timer !== null) clearTimeout(timer);
     };
   }, [loaded, loadError, virtualizer]);
+  // Content that grows a mounted row after it painted (a tool card's output,
+  // a code block finishing highlighting, a nested disclosure) is re-measured
+  // in the same frame as the mutation, so the rows below it never paint inside
+  // it while the size observer catches up a frame later.
+  useLayoutEffect(() => {
+    if (!loaded || loadError !== undefined) return;
+    return observeRowMutations(scrollRef.current, virtualizer);
+  }, [loadError, loaded, virtualizer]);
 
   useLayoutEffect(() => {
     if (!loaded || loadError !== undefined) return;

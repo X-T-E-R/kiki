@@ -20,6 +20,66 @@ function canonicalService(snapshot: AgentTranscriptSnapshot): TranscriptService 
 const empty = (): AgentTranscriptSnapshot => ({ items: [], tasks: [], attachments: [], prompts: [], interactions: [], todos: [], meta: {} });
 
 describe('bounded session-view canonical reads', () => {
+  it('returns a valid item page before extending a window that would evict its anchor', async () => {
+    const turn = (ordinal: number): TranscriptTurn => ({ kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' }, steps: [] });
+    const ref = { kind: 'taskref' as const, refId: 'window-ref', taskId: 'example-task' };
+    const window = { ...empty(), items: [turn(6), turn(7), ref, turn(8)], hasMoreOlder: true };
+    let extended = false;
+    const service = {
+      forSessionLive: () => undefined,
+      readColdPageSnapshot: async (_sessionId: string, _agentId: string, _project: unknown, _signal: unknown, extend: boolean) => {
+        if (extend) extended = true;
+        return extend ? { ...empty(), items: [turn(4), turn(5)], hasMoreOlder: true } : window;
+      },
+      coldHistoryTruncated: async () => true, readColdRoster: async () => [],
+      reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value,
+    } as unknown as TranscriptService;
+    const page = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: 'taskref:window-ref' });
+    expect(page?.items).toEqual([turn(6), turn(7)]);
+    expect(page?.has_more).toBe(true);
+    expect(extended).toBe(false);
+  });
+  it('keeps a pending item-anchor seek preparing even when turn headers cover its neighbourhood', async () => {
+    const turn = (ordinal: number): TranscriptTurn => ({ kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' }, steps: [] });
+    const ref = { kind: 'taskref' as const, refId: 'leading-ref', taskId: 'example-task' };
+    const tail = { ...empty(), items: [ref, turn(7), turn(8)], hasMoreOlder: true };
+    const pending = { ...empty(), hasMoreOlder: true };
+    const recovered = { ...empty(), items: [turn(6), ref, turn(7)], hasMoreOlder: false };
+    let seeks = 0;
+    const service = {
+      forSessionLive: () => undefined, readColdPageSnapshot: async () => tail,
+      readAnchoredColdSnapshot: async () => ++seeks === 1 ? pending : recovered,
+      anchorReadState: (snapshot: AgentTranscriptSnapshot) => snapshot === pending ? 'pending' : snapshot === recovered ? 'window' : undefined,
+      readColdRoster: async () => [], reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value,
+    } as unknown as TranscriptService;
+    const cursor = Buffer.from(JSON.stringify({ v: 2, agentId: 'main', source: 'cold', anchor: 'taskref:leading-ref', seekTurn: 't8' })).toString('base64url');
+    const preparing = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: cursor });
+    expect(preparing).toMatchObject({ items: [], has_more: true, read: { readiness: 'preparing' } });
+    const older = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: preparing!.next_cursor });
+    expect(older?.items).toEqual([turn(6)]);
+    expect(older?.has_more).toBe(false);
+  });
+  it('seeks a taskref boundary by its neighbouring turn without repeating the anchor', async () => {
+    const turn = (ordinal: number): TranscriptTurn => ({ kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' }, steps: [] });
+    const ref = { kind: 'taskref' as const, refId: 'task-ref', taskId: 'task-example' };
+    const tail = { ...empty(), items: [ref, turn(8), turn(9)], hasMoreOlder: true };
+    const older = { ...empty(), items: [turn(6), turn(7), ref, turn(8)], hasMoreOlder: false };
+    const seeks: string[] = [];
+    const service = {
+      forSessionLive: () => undefined, readColdPageSnapshot: async () => tail,
+      anchorReadState: (snapshot: AgentTranscriptSnapshot) => snapshot === tail ? 'continues' : 'window',
+      readAnchoredColdSnapshot: async (_sessionId: string, _agentId: string, beforeTurn: string) => { seeks.push(beforeTurn); return older; },
+      readColdRoster: async () => [], reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value,
+    } as unknown as TranscriptService;
+    const first = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: 'turn:t9', pageSize: 20 });
+    expect(first?.items).toEqual([ref, turn(8)]);
+    expect(JSON.parse(Buffer.from(first!.next_cursor!, 'base64url').toString())).toMatchObject({ anchor: 'taskref:task-ref', seekTurn: 't8' });
+    const next = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: first!.next_cursor, pageSize: 20 });
+    expect(seeks).toEqual(['t8']);
+    expect(next?.items).toEqual([turn(6), turn(7)]);
+    expect(next?.has_more).toBe(false);
+    expect(next?.next_cursor).toBeUndefined();
+  });
   it('continues empty cold preparation through a same-anchor orphan repair and stops at unverified EOF', async () => {
     const orphan: TranscriptTurn = { kind: 'turn', turnId: 't7', ordinal: 7, state: 'completed', origin: { kind: 'other' },
       steps: [{ kind: 'step', stepId: 's7', turnId: 't7', ordinal: 1, state: 'completed', frames: [] }] };
@@ -46,7 +106,7 @@ describe('bounded session-view canonical reads', () => {
     const preparing = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: cursor });
     expect(preparing).toMatchObject({ items: [], has_more: true, next_cursor: cursor, read: { source: 'cold', readiness: 'partial' } });
     const repair = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: preparing!.next_cursor });
-    expect(repair).toMatchObject({ items: [{ turnId: 't7', prompt: 'Recovered opening' }], has_more: true, next_cursor: cursor });
+    expect(repair).toMatchObject({ items: [], has_more: true, next_cursor: cursor });
     const eof = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: repair!.next_cursor });
     expect(eof).toMatchObject({ items: [{ turnId: 't6' }], has_more: false, coverage: { kind: 'unknown' }, read: { readiness: 'partial' } });
     expect(eof!.next_cursor).toBeUndefined();
@@ -147,7 +207,7 @@ describe('bounded session-view canonical reads', () => {
       cursor = page.next_cursor;
       expect(page.has_more).toBe(cursor !== undefined);
       if (cursor !== undefined) expect(JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'))).toEqual({
-        v: 2, agentId: 'main', source: 'cold', anchor: `marker:${seen.at(-1)}`, epoch: 'cold:fixture-session:main',
+        v: 2, agentId: 'main', source: 'cold', anchor: `marker:${seen.at(-1)}`, epoch: 'cold:fixture-session:main', seekTurn: 't2',
       });
     } while (cursor !== undefined);
     expect(seen).toEqual(['t1', ...Array.from({ length: 220 }, (_, index) => `marker-${index}`)]);

@@ -284,6 +284,7 @@ interface DraftNode {
   statusStartedAt: number | undefined;
   statusEndedAt: number | undefined;
   taskId: string | undefined;
+  taskKind: string | undefined;
   disposedAt: number | undefined;
   busy: boolean | undefined;
   toolCallCount: number;
@@ -782,6 +783,7 @@ function ensureDraft(drafts: Map<string, DraftNode>, agentId: string): DraftNode
     statusStartedAt: undefined,
     statusEndedAt: undefined,
     taskId: undefined,
+    taskKind: undefined,
     disposedAt: undefined,
     busy: undefined,
     toolCallCount: 0,
@@ -823,6 +825,7 @@ function applyTaskFallback(draft: DraftNode, task: AgentTaskItem): void {
     draft.parentToolCallId ?? cleanId(task.parentToolCallId ?? task.parent_tool_call_id);
   draft.name = draft.name ?? firstPresent(task.name, task.description);
   draft.description = firstPresent(task.description) ?? draft.description;
+  draft.taskKind = task.kind ?? draft.taskKind;
   const accepted =
     status === undefined
       ? draft.status === undefined && draft.disposedAt === undefined
@@ -878,9 +881,14 @@ function applyRoster(draft: DraftNode, entry: AgentRosterDescriptor): void {
   const inactiveAt = parseStatusTimestamp(entry.endedAt ?? entry.startedAt);
   const inactiveIsOlder = inactiveAt !== undefined && draft.statusStartedAt !== undefined && inactiveAt < draft.statusStartedAt;
   const inactive = entry.statusSource !== undefined && !metadataIdentityOnly && !inactiveIsOlder && (status === 'idle' || status === 'unknown');
+  const runtimeSubagentInactive =
+    inactive &&
+    status === 'idle' &&
+    entry.statusSource === 'runtime' &&
+    draft.taskKind === 'subagent';
   const taskOpen = draft.taskId !== undefined && isActiveStatus(draft.status ?? 'unknown');
   const taskEnded = draft.status === 'completed' || draft.status === 'failed' || draft.status === 'cancelled';
-  const idleSuppressed = inactive && (taskOpen || taskEnded);
+  const idleSuppressed = inactive && (taskOpen || taskEnded) && !runtimeSubagentInactive;
   if (inactive && !idleSuppressed) {
     draft.status = status;
     draft.statusAuthority = authority;

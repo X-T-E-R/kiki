@@ -294,6 +294,41 @@ export function landAtEnd(instance: TranscriptVirtualizer): void {
 }
 
 /**
+ * Reconcile asynchronously hydrated content at the DOM mutation boundary,
+ * rather than leaving mounted neighbours positioned from the preceding height
+ * until the size-observer delivery. ResizeObserver still owns image/font and
+ * viewport-driven changes. Position writes are excluded to avoid observing the
+ * virtualizer's own output.
+ */
+export function observeRowMutations(
+  scroll: HTMLElement | null,
+  instance: TranscriptVirtualizer,
+): () => void {
+  if (scroll === null) return () => undefined;
+  let queued = false;
+  let active = true;
+  const observer = new MutationObserver(() => {
+    if (queued) return;
+    queued = true;
+    queueMicrotask(() => {
+      queued = false;
+      if (active && scroll.isConnected) reconcileMountedRows(instance);
+    });
+  });
+  observer.observe(scroll, {
+    childList: true,
+    characterData: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['class', 'hidden', 'open'],
+  });
+  return () => {
+    active = false;
+    observer.disconnect();
+  };
+}
+
+/**
  * Re-read every mounted row and correct the model where it diverged. Rows that
  * are disconnected or hidden keep their last real size.
  */

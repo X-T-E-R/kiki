@@ -2016,8 +2016,20 @@ describe('live and event chrome', () => {
       'axon/gpt-5.6-luna',
     );
     expect(container.querySelector('[data-agent-message-sender="agent-900"]')?.getAttribute('title')).toBe(
-      'Sender Agent: agent-900\nProfile: unknown\nModel: axon/gpt-5.6-luna\nTask: probe',
+      'worker\nSender Agent: agent-900\nProfile: unknown\nModel: axon/gpt-5.6-luna\nTask: probe',
     );
+  });
+
+  it('uses short roster titles without requiring model or profile and keeps same-name sender ids separate', async () => {
+    const open = vi.fn();
+    const blocks = ['agent-source-a', 'agent-source-b'].map((id) => userBlock({ id: `user-${id}`, text: 'Message from agent "wire_slug":\n\nResult', agentMessage: { senderAgentId: id, senderTaskName: 'wire_slug' } }));
+    const container = await renderTranscript(blocks, undefined, { snapshotSubagents: ['agent-source-a', 'agent-source-b'].map((id) => ({ id, agent_id: id, session_id: 'session_test', kind: 'subagent' as const, description: 'Check history anchors', status: 'completed' as const })) }, { onOpenAgent: open });
+    const senders = container.querySelectorAll<HTMLButtonElement>('[data-agent-message-sender]');
+    expect([...senders].map((sender) => sender.textContent)).toEqual(['Check history anchors injected', 'Check history anchors injected']);
+    expect(senders[0]?.title).toContain('Check history anchors');
+    expect(container.querySelector('[data-agent-message-sender-meta]')).toBeNull();
+    await act(async () => { senders[1]!.click(); });
+    expect(open).toHaveBeenCalledWith('agent-source-b');
   });
 
   it('labels a subagent-injected bubble it has no roster row for', async () => {
@@ -2050,7 +2062,7 @@ describe('live and event chrome', () => {
       },
     ]);
     expect(container.querySelector('[data-peer-thread="sess-source"]')?.textContent).toBe(
-      'From thread sess-source',
+      'From thread sess-sou',
     );
   });
 
@@ -2231,7 +2243,8 @@ describe('live and event chrome', () => {
     ]);
     expect(container.querySelector('[data-source-block-id="user-peer-body-1"]')?.textContent).toBe('ping');
     expect(container.textContent).not.toContain('Message from thread');
-    expect(container.querySelector('[data-peer-thread="sess-source"]')?.textContent).toBe('From thread sess-source');
+    expect(container.querySelector('[data-peer-thread="sess-source"]')?.textContent).toBe('From thread sess-sou');
+    expect(container.querySelector('[data-peer-thread="sess-source"]')?.getAttribute('title')).toContain('sess-source');
   });
 
   it('keeps a literal "Message from" the user typed verbatim: the text alone is never source evidence', async () => {

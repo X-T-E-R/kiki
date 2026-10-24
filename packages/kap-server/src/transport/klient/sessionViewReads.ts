@@ -86,8 +86,11 @@ export async function readSessionViewTranscriptPage(
     if (response === undefined) return undefined;
     const bounded = boundedTranscriptResponse(response, args[2].afterTurn !== undefined || args[2].afterItem !== undefined ? 'head' : 'tail', 64 * 1024);
     const aligned = await alignSingleBeforeTurn(args[0], args[1], args[2], bounded);
-    return { ...aligned, next_cursor: aligned.next_cursor === undefined || response.read === undefined ? aligned.next_cursor
-      : encodePageCursor(aligned.next_cursor, response.agent_id, response.read.source, response.cursor?.epoch) };
+    const anchor = looseAnchor(aligned.next_cursor, response.agent_id);
+    const seekTurn = anchor === undefined ? undefined : seekTurnForAnchor(response.items, anchor)
+      ?? cursorSeekTurn(args[2].beforeItem ?? args[2].afterItem, response.agent_id);
+    return { ...aligned, next_cursor: anchor === undefined || response.read === undefined ? aligned.next_cursor
+      : encodePageCursor(anchor, response.agent_id, response.read.source, response.cursor?.epoch, seekTurn) };
   } catch (error) {
     if (!(error instanceof TranscriptSourceChangedError)) throw error;
     return {
@@ -530,13 +533,34 @@ interface PageCursor {
   readonly source: TranscriptRead['source'];
   readonly anchor: string;
   readonly epoch?: string;
+  readonly seekTurn?: string;
 }
 
-function encodePageCursor(anchor: string, agentId: string, source: TranscriptRead['source'], epoch?: string): string {
-  const encode = (value: string) => Buffer.from(JSON.stringify({ v: 2, agentId, source, anchor: value, epoch } satisfies PageCursor), 'utf8').toString('base64url');
+function encodePageCursor(anchor: string, agentId: string, source: TranscriptRead['source'], epoch?: string, seekTurn?: string): string {
+  const encode = (value: string) => Buffer.from(JSON.stringify({ v: 2, agentId, source, anchor: value, epoch, seekTurn } satisfies PageCursor), 'utf8').toString('base64url');
   const direct = encode(anchor);
   if (direct.length <= 512) return direct;
   return encode(anchor.startsWith('~') ? anchor : historyDigestAnchor(anchor));
+}
+
+function seekTurnForAnchor(items: readonly TranscriptItem[], anchor: string): string | undefined {
+  const index = items.findIndex((item) => historyAnchorMatches(itemKey(item), anchor));
+  if (index < 0 || items[index]?.kind === 'turn') return undefined;
+  const next = items.slice(index + 1).find((item) => item.kind === 'turn');
+  if (next?.kind === 'turn') return next.turnId;
+  const previous = items.slice(0, index).findLast((item) => item.kind === 'turn');
+  return previous?.kind === 'turn' && Number.isSafeInteger(previous.ordinal) ? `t${previous.ordinal + 1}` : undefined;
+}
+
+function cursorSeekTurn(value: string | undefined, agentId: string): string | undefined {
+  if (value === undefined) return undefined;
+  let parsed: Partial<PageCursor>;
+  try { parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as Partial<PageCursor>; }
+  catch { return undefined; }
+  if (parsed.v !== 2) return undefined;
+  if (parsed.agentId !== agentId) throw new TranscriptDetailCursorError();
+  if (parsed.seekTurn !== undefined && (typeof parsed.seekTurn !== 'string' || !/^t\d+$/.test(parsed.seekTurn))) throw new TranscriptDetailCursorError();
+  return parsed.seekTurn;
 }
 
 function isTranscriptSource(source: unknown): source is TranscriptRead['source'] {
@@ -566,17 +590,18 @@ async function readColdTranscriptPage(
   const anchor = requestedAnchor(input);
   const orphan = snapshot.items.find(item => item.kind === 'turn' && itemKey(item) === anchor &&
     item.origin.kind === 'other' && item.message === undefined && item.promptId === undefined && item.startedAt === undefined);
-  const turnAnchor = input.beforeTurn ?? (query.beforeItem?.startsWith('turn:') === true ? query.beforeItem.slice(5) : undefined);
+  const turnAnchor = input.beforeTurn ?? (query.beforeItem?.startsWith('turn:') === true ? query.beforeItem.slice(5) : undefined)
+    ?? cursorSeekTurn(input.beforeItem, input.agentId) ?? (anchor === undefined ? undefined : seekTurnForAnchor(snapshot.items, anchor));
   const anchorInWindow = turnAnchor !== undefined && snapshot.items.some((item) => item.kind === 'turn' && item.turnId === turnAnchor);
   let anchorPending: AgentTranscriptSnapshot | undefined;
-  if (turnAnchor !== undefined && (!anchorInWindow || orphan !== undefined) && !coldWindowCovers(snapshot.items, turnAnchor) && snapshot.hasMoreOlder === true &&
+  if (turnAnchor !== undefined && (!anchorInWindow || located.missing || located.page.items.length === 0 || orphan !== undefined) && snapshot.hasMoreOlder === true &&
       typeof transcriptService.readAnchoredColdSnapshot === 'function') {
     const anchoredSnapshot = await transcriptService.readAnchoredColdSnapshot(sessionId, input.agentId, turnAnchor, input.signal);
     const anchorState = anchoredSnapshot === undefined || typeof transcriptService.anchorReadState !== 'function'
       ? undefined : transcriptService.anchorReadState(anchoredSnapshot);
     if (anchoredSnapshot !== undefined && anchorState !== 'pending' && (anchoredSnapshot.items.length > 0 || anchorState === 'window')) {
       snapshot = anchoredSnapshot;
-      located = locateColdPage(snapshot.items, turnAnchor === input.beforeTurn ? query : { ...query, beforeTurn: turnAnchor, beforeItem: undefined });
+      located = locateColdPage(snapshot.items, query);
     } else if (anchorState === 'pending' && anchoredSnapshot !== undefined) anchorPending = anchoredSnapshot;
   }
   if (anchorPending === undefined && anchored && snapshot.hasMoreOlder === true && !coldWindowCovers(snapshot.items, turnAnchor ?? '')) {
@@ -590,19 +615,9 @@ async function readColdTranscriptPage(
       if (!changed || !located.missing) break;
     }
   }
-  if (anchorPending !== undefined && turnAnchor !== undefined && !coldWindowCovers(snapshot.items, turnAnchor)) {
+  if (anchorPending !== undefined) {
     snapshot = anchorPending;
-    located = locateColdPage(snapshot.items, { ...query, beforeTurn: turnAnchor, beforeItem: undefined });
-  } else if ((typeof transcriptService.anchorReadState !== 'function' || transcriptService.anchorReadState(snapshot) === undefined) && anchored && !located.missing && located.page.items.length > 0 && !located.page.hasMore && snapshot.hasMoreOlder === true) {
-    const truncated = typeof transcriptService.coldHistoryTruncated === 'function'
-      ? await transcriptService.coldHistoryTruncated(sessionId, input.agentId) : false;
-    if (truncated) {
-      const next = await extendColdPage(transcriptService, sessionId, input.agentId, project, input.signal, snapshot, false);
-      if (next !== undefined) {
-        snapshot = next.snapshot;
-        located = locateColdPage(snapshot.items, query);
-      }
-    }
+    located = { page: { items: [], hasMore: true }, missing: false };
   }
   if (anchored && !located.missing && located.page.items.length > 0 && !located.page.hasMore && snapshot.hasMoreOlder === true &&
       typeof transcriptService.coldWindowReachedStart === 'function' &&
@@ -610,14 +625,6 @@ async function readColdTranscriptPage(
     snapshot = { ...snapshot, hasMoreOlder: false };
   }
   if (located.missing && snapshot.hasMoreOlder !== true) throw new TranscriptDetailCursorError();
-  if (orphan !== undefined && anchored) {
-    const recovered = snapshot.items.find(item => item.kind === 'turn' && itemKey(item) === anchor && item.startedAt !== undefined);
-    if (recovered !== undefined) {
-      const clipped = located.page.items.length >= query.pageSize;
-      return { snapshot, page: { items: [...(clipped ? located.page.items.slice(1) : located.page.items), recovered],
-        hasMore: clipped || located.page.hasMore } };
-    }
-  }
   return { snapshot, page: located.page };
 }
 

@@ -205,7 +205,9 @@ function classifiedTextToBlocks(input: {
           } : undefined,
           peerThread:
             classified.origin?.kind === 'peer_thread'
-              ? { sessionId: classified.origin.source?.sessionId,
+              ? { hostId: classified.origin.source?.hostId,
+                  workspaceId: classified.origin.source?.workspaceId,
+                  sessionId: classified.origin.source?.sessionId,
                   personaId: classified.origin.source?.personaId,
                   senderName: classified.origin.source?.name,
                   messageId: classified.origin.messageId }
@@ -1289,6 +1291,18 @@ function subagentBlocksFromSnapshot(
   // entries are emitted for admitted runs only — the global roster must not
   // leak off-page history into this page.
   const admittedTaskIds = new Set<string>();
+  const taskTurns = new Map<string, string | undefined>();
+  const eventTurn = (at: string | undefined, fallback?: string): string | undefined => {
+    const time = timestampMs(at);
+    if (time === undefined) return fallback;
+    let nearest: { turnId: string; at: number } | undefined;
+    for (const item of response.items) {
+      if (item.kind !== 'turn') continue;
+      const started = timestampMs(item.startedAt);
+      if (started !== undefined && started <= time && (nearest === undefined || started > nearest.at)) nearest = { turnId: item.turnId, at: started };
+    }
+    return nearest?.turnId ?? fallback;
+  };
   const nameToAgentId = new Map(
     tasks.flatMap((task) =>
       task.agentId === undefined || task.name === undefined
@@ -1333,6 +1347,7 @@ function subagentBlocksFromSnapshot(
         transcript: [],
       });
       admittedTaskIds.add(task.taskId);
+      taskTurns.set(task.taskId, previousTurnId);
       // "spawned" describes only the agent's globally-first run: a taskref for
       // a later resume run on a fresh page window must not mint a fake spawn.
       if (!spawnMarked.has(task.agentId) && earliestTaskIdByAgent.get(task.agentId) === task.taskId) {
@@ -1447,6 +1462,7 @@ function subagentBlocksFromSnapshot(
         subagentId: agentId,
         event: terminal,
         at: task.endedAt,
+        turnId: eventTurn(task.endedAt, taskTurns.get(task.taskId)),
         error: task.error ?? task.stateReason,
       });
     }
@@ -1462,6 +1478,7 @@ function subagentBlocksFromSnapshot(
       subagentId: block.subagentId,
       event: terminal,
       at: block.endedAt,
+      turnId: eventTurn(block.endedAt, block.parentTurnId),
       error: block.error,
     });
   }
@@ -1615,8 +1632,9 @@ function insertSubagentBlocks(
 
 /**
  * Lifecycle compact entries land by their own event timestamp (in-place
- * accounting); a timestamp-less event keeps its previous position when the
- * last publish already placed it, else sinks to the live edge. sent/resumed
+ * accounting). Terminal entries belong to the turn containing their event;
+ * without a timestamp they keep their previous position or their dispatch card.
+ * Other timestamp-less entries fall back to the live edge. sent/resumed
  * entries carry the tool call that triggered them: while that ToolBlock is on
  * the page the entry anchors immediately after it — the timeline tiebreak
  * (`subagent-event-…` < `tool-…`) would otherwise park the effect in front of
@@ -1651,8 +1669,14 @@ function insertSubagentEventBlocks(
         continue;
       }
     }
-    if (blockTimelineMs(event) === undefined && insertAtPreviousPosition(blocks, event, previous)) {
-      continue;
+    const terminal = event.event === 'completed' || event.event === 'failed' || event.event === 'cancelled';
+    if (terminal && event.turnId !== undefined && insertWithinTurnByTime(blocks, event, event.turnId)) continue;
+    if (blockTimelineMs(event) === undefined) {
+      if (insertAtPreviousPosition(blocks, event, previous)) continue;
+      if (terminal) {
+        const dispatch = blocks.findIndex((block) => block.kind === 'subagent' && block.subagentId === event.subagentId);
+        if (dispatch >= 0) { blocks.splice(dispatch + 1, 0, event); continue; }
+      }
     }
     insertByTimeline(blocks, event);
   }

@@ -262,7 +262,9 @@ export function overlayLiveSourcesWithSnapshotSubagents(
       label: source.label ?? snapshot.label,
       model: source.model ?? snapshot.model,
       thinkingEffort: source.thinkingEffort ?? snapshot.thinkingEffort,
-      status: source.status === 'unknown' ? snapshot.status ?? source.status : source.status,
+      status: snapshot.statusSource === 'runtime'
+        ? snapshot.status ?? source.status
+        : source.status === 'unknown' ? snapshot.status ?? source.status : source.status,
       disposedAt: source.disposedAt ?? snapshot.disposedAt,
       description: source.description ?? snapshot.description,
       summary: source.summary ?? snapshot.summary,
