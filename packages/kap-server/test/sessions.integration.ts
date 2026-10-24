@@ -751,10 +751,22 @@ describe('server-v2 /api/sessions', () => {
       }
       return get(scope, key);
     });
+    const storage = core.get(IFileSystemStorageService);
+    const acquireLock = storage.acquireLock.bind(storage);
+    const lockCalls: { scope: string; key: string }[] = [];
+    const lockSpy = vi.spyOn(storage, 'acquireLock').mockImplementation(async (scope, key, options) => {
+      if (scope.includes('/session-create-locks/') && key === `${creationId}.lock`) lockCalls.push({ scope, key });
+      return acquireLock(scope, key, options);
+    });
     const manager = core.get(ISessionManager);
     const create = vi.spyOn(manager, 'create');
     const raced = await postJson<SessionWire>('/api/sessions', body);
     expect(raced.body.data).toEqual(first.body.data);
+    const racedLock = lockCalls.at(-1);
+    expect(racedLock).toBeDefined();
+    const proofLock = await acquireLock(racedLock!.scope, racedLock!.key, { waitForMs: 0 });
+    await proofLock.release();
+    lockSpy.mockRestore();
     read.mockRestore();
     const replay = await postJson<SessionWire>('/api/sessions', body);
     expect(replay.body.data).toEqual(first.body.data);
@@ -785,6 +797,13 @@ describe('server-v2 /api/sessions', () => {
       }
       return get(scope, key);
     });
+    const storage = core.get(IFileSystemStorageService);
+    const acquireLock = storage.acquireLock.bind(storage);
+    const lockCalls: { scope: string; key: string }[] = [];
+    const lockSpy = vi.spyOn(storage, 'acquireLock').mockImplementation(async (scope, key, options) => {
+      if (scope.includes('/session-create-locks/') && key === `${creationId}.lock`) lockCalls.push({ scope, key });
+      return acquireLock(scope, key, options);
+    });
     try {
       const first = await postJson<null>('/api/sessions', body);
       expect(first.body.code).toBe(50006);
@@ -793,7 +812,12 @@ describe('server-v2 /api/sessions', () => {
         session_id: `session_${creationId}`,
         evidence: 'session_absent',
       });
+      const racedLock = lockCalls.at(-1);
+      expect(racedLock).toBeDefined();
+      const proofLock = await acquireLock(racedLock!.scope, racedLock!.key, { waitForMs: 0 });
+      await proofLock.release();
     } finally {
+      lockSpy.mockRestore();
       read.mockRestore();
     }
     const replay = await postJson<null>('/api/sessions', body);
