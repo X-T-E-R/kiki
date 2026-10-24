@@ -225,12 +225,41 @@ async function showManualPlanCaveat(page) {
   await page.waitForSelector('[data-plan-gate-effective]', { timeout: 5_000 });
 }
 
-/** A reload closes the queued popover. The trigger and the saved draft open it again. */
+/**
+ * A reload closes the queued popover. The typed draft is the contract under
+ * test: it must still be in the composer. Reopen only the popover. Do not
+ * fill the textarea back to the expected text.
+ */
 async function showQueuedPopover(page, draft) {
   await page.waitForSelector('textarea:not([disabled])', { timeout: 20_000 });
   const trigger = page.locator('[data-composer-queued-trigger]');
   await trigger.waitFor({ timeout: 15_000 });
-  if ((await page.inputValue('textarea')) !== draft) await page.fill('textarea', draft);
+  let kept = '';
+  let stored = '';
+  try {
+    await page.waitForFunction((expected) => {
+      const field = document.querySelector('textarea');
+      return field instanceof HTMLTextAreaElement && field.value === expected;
+    }, draft, { timeout: 5_000 });
+    kept = draft;
+  } catch {
+    kept = await page.inputValue('textarea');
+    stored = await page.evaluate(() => {
+      const rows = [];
+      for (let index = 0; index < localStorage.length; index += 1) {
+        const key = localStorage.key(index);
+        if (key !== null && (key.includes('draft') || key.includes('composer'))) {
+          rows.push(`${key}=${localStorage.getItem(key)}`);
+        }
+      }
+      return rows.join(' | ');
+    });
+  }
+  expect(
+    kept === draft,
+    'K06: queued draft still in the composer after reload',
+    stored === '' ? undefined : `textarea=${JSON.stringify(kept)} stored=${stored}`,
+  );
   if (await page.locator('[data-composer-queued-popover]').count() === 0) {
     await trigger.click();
     await page.waitForSelector('[data-composer-queued-popover]', { timeout: 5_000 });
@@ -427,7 +456,8 @@ async function capture() {
         trigger: document.querySelector('[data-composer-queued-trigger]')?.textContent?.trim() ?? '',
         draft: document.querySelector('textarea')?.value ?? '',
       }));
-      expect(concise.trigger === '排队中', 'K06 concise: status reads 排队中', concise.line);
+      // This dist's button is zh `composer.queued` ("等待限额"), not the older "排队中".
+      expect(concise.trigger === '等待限额', 'K06 concise: status reads 等待限额', concise.trigger);
       expect(!/\d+\s*秒/.test(concise.line), 'K06 concise: no standing second-count noise', concise.line);
       expect(concise.draft === DRAFT, 'K06 concise: draft typed while queued is kept');
       await shot(page, 'k06-queued-concise-light-1440');
