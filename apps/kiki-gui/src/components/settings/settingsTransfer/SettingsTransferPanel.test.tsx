@@ -18,7 +18,7 @@ const fixture = vi.hoisted(() => ({
     cancel: vi.fn(),
   },
   host: {
-    kind: 'browser' as const,
+    kind: 'tauri' as 'tauri' | 'browser',
     openSaveSink: vi.fn(),
     saveBlob: undefined,
   },
@@ -284,5 +284,23 @@ describe('SettingsTransferPanel', () => {
     await click('[data-settings-transfer-apply]');
     expect(JSON.parse(localStorage.getItem('kiki.settings') ?? '{}')).toMatchObject({ theme: 'dark' });
     expect(JSON.parse(localStorage.getItem('kiki.layout') ?? '{}')).toMatchObject({ sidebarWidth: 320 });
+  });
+
+  it('triggers browser anchor download when host.kind is browser without invoking showSaveFilePicker or host.openSaveSink', async () => {
+    fixture.host.kind = 'browser';
+    let blob: Blob | undefined;
+    URL.createObjectURL = vi.fn((value) => { blob = value as Blob; return 'blob:settings-export'; });
+    URL.revokeObjectURL = vi.fn();
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+    await renderPanel();
+    await click('[data-settings-transfer-export]');
+
+    expect(fixture.api.export).toHaveBeenCalledWith({ categories: [...categories], includeCredentials: false });
+    expect(fixture.host.openSaveSink).not.toHaveBeenCalled();
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+    expect(blob).toBeDefined();
+
+    fixture.host.kind = 'tauri';
   });
 });

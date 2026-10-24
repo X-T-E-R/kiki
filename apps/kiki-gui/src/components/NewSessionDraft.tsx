@@ -888,12 +888,14 @@ export function useNewSessionDraft({
         const effectiveAttachments = handoff.initialSkill?.attachments ?? handoff.initialAttachments;
         writeComposerState(session.id, {
           attachments: effectiveAttachments ?? [],
+          annotations: [],
+          permissionMode: sendsLegacyControl(context.execution, 'permission_mode', permissionTouched.current) ? context.permissionMode : undefined,
+          planMode: context.planMode,
+          planGate: undefined,
+          goalObjective: handoff.goalObjectiveOverride ?? context.goalObjective,
           modelOverride: sendsLegacyControl(context.execution, 'model', modelTouched.current) ? context.modelOverride : undefined,
           effortOverride: sendsLegacyControl(context.execution, 'thinking', effortTouched.current) && context.effectiveEffort !== ''
             ? context.effectiveEffort : undefined,
-          permissionMode: sendsLegacyControl(context.execution, 'permission_mode', permissionTouched.current) ? context.permissionMode : undefined,
-          planMode: context.planMode,
-          goalObjective: handoff.goalObjectiveOverride ?? context.goalObjective,
           execution: context.execution,
         });
 

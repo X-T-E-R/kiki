@@ -25,7 +25,7 @@ import type { I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../../i18n';
 import { useConnection } from '../../../state/connection';
 import { useHost } from '../../../host';
-import { browserSaveSink, bufferedSaveSink } from '../../../host/saveSink';
+import { browserAnchorSaveSink, browserSaveSink, bufferedSaveSink } from '../../../host/saveSink';
 import { getSettingsTransferClient, type SettingsTransferClient } from '../../../lib/settingsTransferClient';
 import { SidePanel } from '../../SidePanel';
 import { FeedbackLine, Hint, type Feedback } from '../../controls';
@@ -90,11 +90,13 @@ async function savePackage(host: ReturnType<typeof useHost>, bundle: SettingsTra
   const filename = transferFilename();
   const bytes = new TextEncoder().encode(JSON.stringify(bundle, null, 2));
   if (bytes.byteLength > SETTINGS_TRANSFER_MAX_BYTES) throw new Error('settings package exceeds the size limit');
-  const sink = host.openSaveSink !== undefined
-    ? await host.openSaveSink(filename)
-    : host.saveBlob !== undefined
-      ? bufferedSaveSink((blob) => host.saveBlob!(blob, filename))
-      : await browserSaveSink(filename);
+  const sink = host.kind === 'browser'
+    ? browserAnchorSaveSink(filename)
+    : host.openSaveSink !== undefined
+      ? await host.openSaveSink(filename)
+      : host.saveBlob !== undefined
+        ? bufferedSaveSink((blob) => host.saveBlob!(blob, filename))
+        : await browserSaveSink(filename);
   if (sink === null) return false;
   try {
     await sink.write(bytes);
