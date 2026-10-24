@@ -813,14 +813,21 @@ export class UsageAggregationService {
         const agents = await waitForSource(storage.list(`${scope}/agents`), signal);
         if (session.sources?.some((source) => !agents.includes(source.agentId)) || (head.complete && agents.length !== session.sources?.length)) return false;
       }
-      for (const source of session.sources ?? []) {
-        signal?.throwIfAborted();
+    }
+    const sources = head.sessions.flatMap((session) => session.sources ?? []);
+    for (let offset = 0; offset < sources.length; offset += PROJECTION_STAT_CONCURRENCY) {
+      signal?.throwIfAborted();
+      const slice = sources.slice(offset, offset + PROJECTION_STAT_CONCURRENCY);
+      const stats = await Promise.all(slice.map(async (source) => {
         const [size, mtime, generation] = await Promise.all([storage.size(source.scope, AGENT_WIRE_RECORD_KEY), storage.mtime(source.scope, AGENT_WIRE_RECORD_KEY), logs.generation(source.scope, AGENT_WIRE_RECORD_KEY)]);
-        const checkpoint = source.checkpoint;
-        if (generation !== (checkpoint.generation ?? 'legacy') || (size ?? 0) < checkpoint.offset) return false;
-        if (head.complete && (size !== checkpoint.size || mtime !== checkpoint.mtimeMs)) return false;
-        if (!head.complete && (size !== checkpoint.size || mtime !== checkpoint.mtimeMs)) {
-          if (size === checkpoint.offset || await this.boundaryHash(storage, source.scope, checkpoint.offset) !== checkpoint.boundaryHash) return false;
+        return { source, size, mtime, generation };
+      }));
+      for (const stat of stats) {
+        const checkpoint = stat.source.checkpoint;
+        if (stat.generation !== (checkpoint.generation ?? 'legacy') || (stat.size ?? 0) < checkpoint.offset) return false;
+        if (head.complete && (stat.size !== checkpoint.size || stat.mtime !== checkpoint.mtimeMs)) return false;
+        if (!head.complete && (stat.size !== checkpoint.size || stat.mtime !== checkpoint.mtimeMs)) {
+          if (stat.size === checkpoint.offset || await this.boundaryHash(storage, stat.source.scope, checkpoint.offset) !== checkpoint.boundaryHash) return false;
         }
       }
     }
