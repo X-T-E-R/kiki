@@ -6,6 +6,8 @@ The desktop app and the browser UI are the same interface, and a session in eith
 
 This is the session timeline: assistant messages, tool calls, approvals, questions, and background-task notices.
 
+If a turn ends without a reply, its footer says whether background work is still running, no work is executing, or the activity is unknown. If **Send again** is available, it restores the original message text to the input box without sending it.
+
 Messages from another agent or conversation show the source title above the body, falling back to its task name or short ID when no title is available. Hover over the label to see its full identity; select it to open the source agent or a conversation available in the current connection. Copying or quoting uses the body without repeating the label; editing keeps the original source prefix. A source label you type yourself stays literal. Context injected after a user message stays after that message when you reopen or continue loading the conversation.
 
 Anything that has been resolved — a question you answered, an approval you granted, a marker — collapses into a compact one-line entry that stays where it happened. Several in a row fold into an **Activity history** row you can expand. Expanding or collapsing a conversation row keeps your reading position; scrolling takes over again. Failed and cancelled entries always stay visible on their own. Repeating markers such as goal updates show the latest one with a count ("Goal updated ×12") when nothing else separates them.
