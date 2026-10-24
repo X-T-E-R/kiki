@@ -355,7 +355,16 @@ interface ColdWireWindow {
 }
 
 function coldWindowCovers(items: AgentTranscriptSnapshot['items'], beforeTurn: string): boolean {
-  return items.some((item) => item.kind === 'turn' && compareTurnIds(item.turnId, beforeTurn) < 0);
+  const ordered = items.flatMap((item) => item.kind === 'turn' ? [item.turnId] : []).sort(compareTurnIds);
+  if (ordered.length === 0) return false;
+  let start = ordered[0]!;
+  for (let index = 1; index < ordered.length; index += 1) {
+    const current = ordered[index]!;
+    if (compareTurnIds(current, ordered[index - 1]!) > 1) start = current;
+  }
+  const end = ordered.at(-1)!;
+  if (compareTurnIds(beforeTurn, end) > 0) return true;
+  return compareTurnIds(beforeTurn, start) > 0;
 }
 
 function coldItemIdentity(item: AgentTranscriptSnapshot['items'][number]): string {

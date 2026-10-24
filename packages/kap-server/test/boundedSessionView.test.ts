@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { AgentTranscript, applyContentSegment, jsonBytes, transcriptDetailListResponseSchema, type AgentTranscriptSnapshot, type TranscriptStep, type TranscriptTask, type TranscriptTurn } from '@kiki/transcript';
+import { sessionViewTranscriptPageInputSchema } from '@kiki/klient';
 import type { TranscriptService } from '../src/services/transcript/transcriptService';
 import { boundedEntity, readContentSegment } from '../src/transport/klient/boundedContent';
 import { boundedTranscriptSnapshot } from '../src/transport/klient/boundedTranscript';
@@ -396,5 +397,137 @@ describe('bounded session-view canonical reads', () => {
     if (ref === undefined) throw new Error('Expected steps continuation');
     expect(() => readContentSegment(turn, ref)).not.toThrow();
     expect(page?.coverage.kind).not.toBe('full');
+  });
+
+  it('seeks an older turn across a disconnected header instead of stopping on that cursor', async () => {
+    const turn = (ordinal: number): TranscriptTurn => ({ kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' }, steps: [] });
+    const tail: AgentTranscriptSnapshot = { ...empty(), items: [turn(0), turn(90), turn(91)], hasMoreOlder: true, toolCallCountKnown: true };
+    const middle: AgentTranscriptSnapshot = { ...empty(), items: Array.from({ length: 16 }, (_, index) => turn(30 + index)), hasMoreOlder: true, toolCallCountKnown: true };
+    const transcript = new AgentTranscript('main');
+    transcript.apply([{ op: 'reset', agentId: 'main', snapshot: tail }]);
+    const sought: string[] = [];
+    const service = {
+      forSessionLive: () => ({ agents: () => [] }),
+      ensureAgentHistory: async () => transcript,
+      verifyTranscriptLiveCoverage: async () => false,
+      isTranscriptLiveCoverageVerified: () => false,
+      getTranscriptCursor: () => ({ seq: 1, epoch: 'gap-epoch' }),
+      reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value,
+      readColdPageSnapshot: async () => tail,
+      readAnchoredColdSnapshot: async (_sessionId: string, _agentId: string, beforeTurn: string) => {
+        sought.push(beforeTurn);
+        return beforeTurn === 't40' ? middle : undefined;
+      },
+      readFullAgentSnapshot: async (_sessionId: string, _agentId: string, _transcript: AgentTranscript, _signal?: AbortSignal, _project?: unknown, _beforeTurn?: string, pageSource?: AgentTranscriptSnapshot) => pageSource ?? tail,
+    } as unknown as TranscriptService;
+    const page = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: 'turn:t40', pageSize: 20 });
+    expect(sought).toEqual(['t40']);
+    expect(page?.items.map((item) => item.kind === 'turn' ? item.turnId : item.kind)).toEqual(Array.from({ length: 10 }, (_, index) => `t${30 + index}`));
+    expect(page?.items.some((item) => item.kind === 'turn' && item.turnId === 't0')).toBe(false);
+    expect(page?.has_more).toBe(true);
+    const again = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: page!.next_cursor, pageSize: 20 });
+    expect(again?.items).toEqual([]);
+    expect(again?.has_more).toBe(true);
+    expect(again?.read?.readiness).toBe('partial');
+    expect(sought).toContain('t30');
+  });
+
+  it('keeps a contiguous cold window on its cursor without seeking backward', async () => {
+    const turn = (ordinal: number): TranscriptTurn => ({ kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' }, steps: [] });
+    const window: AgentTranscriptSnapshot = { ...empty(), items: [0, 1, 2, 3, 4, 5].map(turn), hasMoreOlder: true, toolCallCountKnown: true };
+    const transcript = new AgentTranscript('main');
+    transcript.apply([{ op: 'reset', agentId: 'main', snapshot: window }]);
+    let sought = 0;
+    const service = {
+      forSessionLive: () => ({ agents: () => [] }),
+      ensureAgentHistory: async () => transcript,
+      verifyTranscriptLiveCoverage: async () => true,
+      isTranscriptLiveCoverageVerified: () => true,
+      getTranscriptCursor: () => ({ seq: 6, epoch: 'contiguous-epoch' }),
+      reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value,
+      readColdPageSnapshot: async () => window,
+      readAnchoredColdSnapshot: async () => { sought += 1; return undefined; },
+      readFullAgentSnapshot: async () => window,
+    } as unknown as TranscriptService;
+    const page = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: 'turn:t3', pageSize: 20 });
+    expect(sought).toBe(0);
+    expect(page?.items.map((item) => item.kind === 'turn' ? item.turnId : item.kind)).toEqual(['t0', 't1', 't2']);
+  });
+
+  it('extends past a tail that does not yet contain an older marker cursor', async () => {
+    const turn = (ordinal: number): TranscriptTurn => ({ kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' }, steps: [] });
+    const marker = (markerId: string) => ({ kind: 'marker' as const, markerId, marker: 'compaction' as const });
+    const stages: AgentTranscriptSnapshot[] = [
+      { ...empty(), items: [turn(80), turn(81)], hasMoreOlder: true },
+      { ...empty(), items: [turn(50), turn(80), turn(81)], hasMoreOlder: true },
+      { ...empty(), items: [turn(10), marker('m-old'), turn(11), turn(50), turn(80), turn(81)], hasMoreOlder: true },
+    ];
+    const transcript = new AgentTranscript('main');
+    transcript.apply([{ op: 'reset', agentId: 'main', snapshot: stages[0]! }]);
+    let step = 0;
+    const service = {
+      forSessionLive: () => ({ agents: () => [] }),
+      ensureAgentHistory: async () => transcript,
+      verifyTranscriptLiveCoverage: async () => false,
+      isTranscriptLiveCoverageVerified: () => false,
+      getTranscriptCursor: () => ({ seq: 1, epoch: 'marker-epoch' }),
+      reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value,
+      readColdPageSnapshot: async (_sessionId: string, _agentId: string, project: (source: AgentTranscriptSnapshot) => AgentTranscriptSnapshot, _signal?: AbortSignal, extend?: boolean) => {
+        if (extend) step += 1;
+        return project(stages[Math.min(step, stages.length - 1)]!);
+      },
+      readFullAgentSnapshot: async (_sessionId: string, _agentId: string, _transcript: AgentTranscript, _signal?: AbortSignal, _project?: unknown, _beforeTurn?: string, pageSource?: AgentTranscriptSnapshot) => pageSource ?? stages[0]!,
+    } as unknown as TranscriptService;
+    const page = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: 'marker:m-old', pageSize: 20 });
+    expect(step).toBeGreaterThanOrEqual(2);
+    expect(page?.items.map((item) => item.kind === 'turn' ? item.turnId : item.kind === 'marker' ? item.markerId : item.kind)).toEqual(['t10']);
+    const next = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: page!.next_cursor, pageSize: 20 });
+    expect(next?.items.map((item) => item.kind === 'turn' ? item.turnId : item.kind)).toEqual([]);
+    expect(next?.has_more).toBe(true);
+  });
+
+  it('pages a long item key through a cursor the page input accepts', async () => {
+    const longId = `t${'x'.repeat(400)}`;
+    const turn = (turnId: string, ordinal: number): TranscriptTurn => ({ kind: 'turn', turnId, ordinal, state: 'completed', origin: { kind: 'user' }, steps: [] });
+    const source: AgentTranscriptSnapshot = { ...empty(), toolCallCountKnown: true, items: [turn('t0', 0), turn('t1', 1), turn(longId, 2), turn('t9', 9)] };
+    const cold = {
+      forSessionLive: () => undefined,
+      readColdPageSnapshot: async (_sessionId: string, _agentId: string, project: (snapshot: AgentTranscriptSnapshot) => AgentTranscriptSnapshot) => project(source),
+      readColdRoster: async () => [],
+      reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value,
+    } as unknown as TranscriptService;
+    const first = await readSessionViewTranscriptPage(cold, 'fixture-session', { agentId: 'main', beforeItem: 'turn:t9', pageSize: 1 });
+    expect(first?.items).toMatchObject([{ turnId: longId }]);
+    expect(first?.next_cursor).toBeDefined();
+    expect(first!.next_cursor!.length).toBeLessThanOrEqual(512);
+    expect(sessionViewTranscriptPageInputSchema.safeParse({ agentId: 'main', beforeItem: first!.next_cursor }).success).toBe(true);
+    const decoded = JSON.parse(Buffer.from(first!.next_cursor!, 'base64url').toString('utf8')) as { anchor: string };
+    expect(decoded.anchor.startsWith('~')).toBe(true);
+    expect(decoded.anchor).not.toContain(longId);
+    const second = await readSessionViewTranscriptPage(cold, 'fixture-session', { agentId: 'main', beforeItem: first!.next_cursor, pageSize: 20 });
+    expect(second?.items.map((item) => item.kind === 'turn' ? item.turnId : item.kind)).toEqual(['t0', 't1']);
+    expect(second?.has_more).toBe(false);
+    const longMarkerId = `m-${'y'.repeat(2000)}`;
+    const bounded = boundedTranscriptSnapshot({ ...empty(), hasMoreOlder: true, items: [{ kind: 'marker', markerId: longMarkerId, marker: 'compaction' }, turn('t9', 9)] }, 'main');
+    expect(bounded.olderCursor).toBeDefined();
+    expect(bounded.olderCursor!.length).toBeLessThanOrEqual(512);
+    expect(bounded.olderCursor!.startsWith('~')).toBe(true);
+    expect(bounded.olderCursor).not.toContain(longMarkerId);
+  });
+
+  it('rejects a digest cursor that matches nothing once history is complete', async () => {
+    const snapshot: AgentTranscriptSnapshot = { ...empty(), toolCallCountKnown: true, items: [
+      { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, steps: [] },
+      { kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, steps: [] },
+    ] };
+    const service = canonicalService(snapshot);
+    Object.assign(service, {
+      verifyTranscriptLiveCoverage: async () => true,
+      isTranscriptLiveCoverageVerified: () => true,
+      getTranscriptCursor: () => ({ seq: 2, epoch: 'complete-epoch' }),
+      forSessionLive: () => ({ agents: () => [] }),
+    });
+    await expect(readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: `~${'ab'.repeat(32)}.11` })).rejects.toThrow('invalid transcript detail cursor');
+    await expect(readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: 'marker:missing' })).rejects.toThrow('invalid transcript detail cursor');
   });
 });

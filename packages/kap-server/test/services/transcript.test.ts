@@ -4516,7 +4516,11 @@ it.each([0, 12])('continues a budget-clipped resident baseline from its tail bou
   const items = [...baseline!.snapshot.items];
   expect(items).toEqual(canonical.items.slice(canonical.items.length - items.length));
   expect(items.length).toBeLessThan(canonical.items.length);
-  expect(baseline!.snapshot.olderCursor).toBe(items[0]!.kind === 'turn' ? 'turn:t819' : `marker:${items[0]!.kind === 'marker' ? items[0]!.markerId : ''}`);
+  const expectedAnchor = items[0]!.kind === 'turn' ? 'turn:t819' : `marker:${items[0]!.kind === 'marker' ? items[0]!.markerId : ''}`;
+  const cursorValue = baseline!.snapshot.olderCursor!;
+  expect(cursorValue.length).toBeLessThanOrEqual(512);
+  if (expectedAnchor.length <= 512) expect(cursorValue).toBe(expectedAnchor);
+  else expect(cursorValue.startsWith('~')).toBe(true);
   if (trailingHeaders === 0) expect(baseline!.snapshot.olderCursor).toBe('turn:t819');
   else expect(items.some((item) => item.kind === 'turn')).toBe(false);
   let cursor = baseline!.snapshot.olderCursor;

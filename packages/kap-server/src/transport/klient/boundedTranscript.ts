@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   itemId,
   jsonBytes,
@@ -56,7 +57,7 @@ export function boundedTranscriptSnapshot(snapshot: AgentTranscriptSnapshot, age
     toolCallCount: snapshot.toolCallCount,
     toolCallCountKnown: snapshot.toolCallCountKnown,
     hasMoreOlder: snapshot.hasMoreOlder === true || items.length < snapshot.items.length,
-    olderCursor: (snapshot.hasMoreOlder === true || items.length < snapshot.items.length) && items.length > 0 ? itemKey(items[0]!) : undefined,
+    olderCursor: (snapshot.hasMoreOlder === true || items.length < snapshot.items.length) && items.length > 0 ? wireHistoryAnchor(itemKey(items[0]!)) : undefined,
     globalCoverage: {
       version: 1,
       tasks: collectionCoverage(tasks.length, snapshot.tasks.length),
@@ -86,7 +87,7 @@ export function boundedTranscriptResponse(response: TranscriptResponse, directio
     ...snapshot,
     has_more: response.has_more || snapshot.items.length < response.items.length,
     next_cursor: (response.has_more || snapshot.items.length < response.items.length) && snapshot.items.length > 0
-      ? itemKey(direction === 'head' ? snapshot.items.at(-1)! : snapshot.items[0]!)
+      ? wireHistoryAnchor(itemKey(direction === 'head' ? snapshot.items.at(-1)! : snapshot.items[0]!))
       : response.has_more && snapshot.items.length === 0 ? response.next_cursor : undefined,
     agents,
     pending_interactions: snapshot.interactions.filter((entry) => entry.state === 'pending').map((entry) => entry.interactionId),
@@ -99,6 +100,27 @@ export function boundedTranscriptResponse(response: TranscriptResponse, directio
 }
 
 export function itemKey(item: AgentTranscriptSnapshot['items'][number]): string { return `${item.kind}:${itemId(item)}`; }
+
+const HISTORY_CURSOR_LIMIT = 512;
+
+export function historyDigestAnchor(value: string): string {
+  return `~${createHash('sha256').update(value).digest('hex')}.${value.length}`;
+}
+
+export function wireHistoryAnchor(value: string): string {
+  return value.length <= HISTORY_CURSOR_LIMIT ? value : historyDigestAnchor(value);
+}
+
+export function historyAnchorMatches(itemKeyValue: string, anchor: string): boolean {
+  if (itemKeyValue === anchor) return true;
+  if (!anchor.startsWith('~')) return false;
+  const split = anchor.lastIndexOf('.');
+  if (split <= 1) return false;
+  const hash = anchor.slice(1, split);
+  const length = Number(anchor.slice(split + 1));
+  if (hash.length !== 64 || !Number.isSafeInteger(length) || length !== itemKeyValue.length) return false;
+  return createHash('sha256').update(itemKeyValue).digest('hex') === hash;
+}
 
 function nestedContentWindow(item: AgentTranscriptSnapshot['items'][number]): boolean {
   if (item.kind !== 'turn') return false;
