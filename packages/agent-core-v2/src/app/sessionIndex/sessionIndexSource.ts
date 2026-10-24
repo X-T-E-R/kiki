@@ -1,3 +1,5 @@
+import { basename, sep } from 'node:path';
+
 import type { AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { workspaceRootKey } from '#/_base/utils/workdir-slug';
 import { ILogService } from '#/_base/log/log';
@@ -262,6 +264,8 @@ export async function probeSessionSummaryResult(
   sessionId: string,
   log?: ILogService,
 ): Promise<SessionSummaryReadResult> {
+  if (sessionId === '' || sessionId === '.' || sessionId === '..' || sessionId.includes('\0') ||
+    basename(sessionId) !== sessionId || (sep === '\\' && /:|[. ]$/.test(sessionId))) return { kind: 'missing' };
   try {
     if (await storage.mtime(`${sessionsScope}/${workspaceId}`, sessionId) === undefined) return { kind: 'missing' };
   } catch (error) {

@@ -1,6 +1,6 @@
 import { promises as fsp } from 'node:fs';
 import os from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -257,6 +257,20 @@ describe('FileSessionIndex (legacy)', () => {
     await expect(store.get('missing')).resolves.toBeUndefined();
     await expect(store.get('denied')).rejects.toBe(failure);
     await expect(store.get('bad')).rejects.toMatchObject({ code: StorageErrors.codes.STORAGE_DECODE_FAILED });
+  });
+
+  it.each(['', '.', '..', '../outside', 'nested/session', 'invalid\0name', ...(sep === '\\' ? ['..\\outside', 'nested\\session', 'C:outside', 'existing:stream', 'existing.', 'existing '] : [])])('does not probe a point id that is not one directory entry: %j', async (id) => {
+    await seedSession('existing', { title: 'unchanged' });
+    const storage = new FileStorageService(homeDir);
+    const stat = vi.spyOn(storage, 'mtime');
+    const store = build(storage);
+    await expect(store.get(id)).resolves.toBeUndefined();
+    expect(stat).not.toHaveBeenCalled();
+  });
+
+  it.each(['custom-session_001', ...(sep === '/' ? ['legacy\\name', 'legacy:name'] : [])])('preserves valid custom single-entry ids: %j', async (id) => {
+    await seedSession(id, { title: 'custom identifier' });
+    await expect(build().get(id)).resolves.toMatchObject({ id, title: 'custom identifier' });
   });
 
   it('projects persisted aggregate usage from the authoritative metadata document', async () => {
