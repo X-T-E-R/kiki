@@ -5116,6 +5116,7 @@ boundExecution,
           timeline: {
             view: timelineView,
             state: { ...state, blocks: mainTranscriptBlocks },
+            connected: wsStatus === 'open',
             onLoadOlder: handleLoadOlder,
             onResolveApproval: handleResolveApproval,
             onAnswerQuestion: handleAnswerQuestion,

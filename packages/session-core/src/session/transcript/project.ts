@@ -1038,7 +1038,7 @@ function blockTimelineMs(block: Block): number | undefined {
   }
 }
 
-function normalizeTurnId(value: unknown): string | undefined {
+export function normalizeTurnId(value: unknown): string | undefined {
   if (typeof value === 'number' && Number.isFinite(value)) return `t${value}`;
   if (typeof value !== 'string' || value === '') return undefined;
   return value.startsWith('t') ? value : `t${value}`;

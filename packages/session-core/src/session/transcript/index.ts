@@ -102,7 +102,10 @@ export {
   setSessionRecord,
   setTasks,
   subagentBlocksFromState,
+  turnReplyGap,
   visibleSubagentIdsForParent,
+  type TurnReplyGap,
+  type TurnReplyGapWork,
 } from './selectors';
 export {
   agentStatusFromMeta,

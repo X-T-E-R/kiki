@@ -59,9 +59,14 @@ import {
   SessionAgentForestQuery,
   splitSystemReminders,
   turnExecutionFromItem,
+  turnReplyGap,
   type AssistantBlock,
+  type Block,
+  type MessageBlock,
+  type SessionViewState,
   type SubagentBlock,
   type ToolBlock,
+  type TurnTailInfo,
   type UserBlock,
 } from './transcript';
 
@@ -7177,5 +7182,113 @@ describe('scheduled delivery modes in the queue projection', () => {
     // by the person, so they are not one of their waiting messages.
     expect(isOrdinaryQueueItem(previewOf('idle-1', 'idle'))).toBe(false);
     expect(isOrdinaryQueueItem(previewOf('steer-1', 'steer'))).toBe(false);
+  });
+});
+
+describe('a finished turn that left nothing to read', () => {
+  const tail = (turnId: string, state: TurnTailInfo['state'] = 'completed'): TurnTailInfo => ({
+    turnId, state, endedAt: FIXED_AT_1, durationMs: 1_000, ttftMs: undefined, usage: undefined, tokensPerSecond: undefined,
+  });
+  const view = (
+    blocks: readonly Block[],
+    options: { executing?: boolean; mainTurnActive?: boolean; tail?: TurnTailInfo } = {},
+  ): SessionViewState => ({
+    ...applyTranscriptShell('session_test', {
+      as_of_seq: 1,
+      epoch: 'e1',
+      session: { ...session, executing: options.executing, main_turn_active: options.mainTurnActive ?? false },
+      messages: { items: [], has_more: false },
+      in_flight_turn: null,
+      pending_approvals: [],
+      pending_questions: [],
+    }),
+    blocks,
+    transcriptReady: true,
+    turnTail: options.tail ?? tail('t25'),
+  });
+  const prompt: UserBlock = { kind: 'user', id: 'user-um25', text: '看一下后台进度', turnId: 't25', createdAt: FIXED_AT };
+  const read: ToolBlock = {
+    kind: 'tool', id: 'tool-read', toolCallId: 'call-read', name: 'Read', argsText: '{}', args: {}, display: undefined,
+    description: undefined, status: 'done', output: 'ok', isError: false, durationMs: 40, durationSource: 'frame',
+    progressText: undefined, turnId: 't25',
+  };
+  const reply: AssistantBlock = {
+    kind: 'assistant', id: 'agent-frame-answer', text: '已经看过了。', streaming: false, createdAt: FIXED_AT_1, turnId: 't25',
+  };
+
+  it('names the turn and the work still running when the session still executes', () => {
+    expect(turnReplyGap(view([prompt, read], { executing: true }))).toEqual({
+      turnId: 't25', endedAt: FIXED_AT_1, work: 'running',
+    });
+  });
+
+  it('settles when nothing is executing', () => {
+    expect(turnReplyGap(view([prompt, read], { executing: false }))?.work).toBe('idle');
+  });
+
+  it('keeps the background answer unknown for a host that never reports executing', () => {
+    expect(turnReplyGap(view([prompt, read]))?.work).toBe('unknown');
+    // A window that cannot vouch for live facts does not inherit the last
+    // reading either.
+    expect(turnReplyGap(view([prompt, read], { executing: false }), { connected: false })?.work).toBe('unknown');
+  });
+
+  it('says nothing when the turn left text, media or a message to read', () => {
+    expect(turnReplyGap(view([prompt, read, reply], { executing: false }))).toBeUndefined();
+    expect(turnReplyGap(view([prompt, { ...reply, text: '', media: [{ kind: 'image', url: 'blob:x' }] }], { executing: false })))
+      .toBeUndefined();
+    // A SendMessage reaches the timeline as its own speech row, not as the call.
+    const sent: MessageBlock = {
+      kind: 'message', id: 'message-send', toolCallId: 'call-send', messageId: 'msg_1', origin: 'send_message',
+      status: 'sent', text: '在跑', attachments: [], deliveredTo: ['user'], turnId: 't25',
+    };
+    expect(turnReplyGap(view([prompt, sent], { executing: false }))).toBeUndefined();
+  });
+
+  it('does not borrow another turn’s reply for the empty one', () => {
+    const earlier: AssistantBlock = { ...reply, id: 'agent-frame-earlier', turnId: 't24' };
+    expect(turnReplyGap(view([prompt, earlier], { executing: false }))?.turnId).toBe('t25');
+  });
+
+  it('stays quiet for a failure, a stop, or a turn that is still running', () => {
+    expect(turnReplyGap(view([prompt, read], { tail: tail('t25', 'failed') }))).toBeUndefined();
+    expect(turnReplyGap(view([prompt, read], { tail: tail('t25', 'cancelled') }))).toBeUndefined();
+    expect(turnReplyGap(view([prompt, read], { mainTurnActive: true }))).toBeUndefined();
+  });
+
+  it('reads a legal tool-only turn as a turn with no reply, not as a failure', () => {
+    expect(turnReplyGap(view([prompt, read], { executing: false }))).toMatchObject({ work: 'idle' });
+    expect(turnReplyGap(view([prompt, { ...reply, text: '  \n' }], { executing: false }))?.work).toBe('idle');
+  });
+
+  it('does not confuse undelivered receipts or historical running tasks with execution', () => {
+    const idle = view([prompt], { executing: false });
+    expect(turnReplyGap({ ...idle, session: { ...session, executing: false, busy: true } })?.work).toBe('idle');
+    const historical = { ...idle, tasks: [{ id: 'old-task', status: 'running' }] };
+    expect(turnReplyGap(historical)?.work).toBe('idle');
+    expect(turnReplyGap({ ...idle, session: undefined })?.work).toBe('unknown');
+  });
+
+  it('suppresses the gap for tool media and normalizes turn ids', () => {
+    expect(turnReplyGap(view([prompt, { ...read, media: [{ kind: 'image', url: 'https://example.test/image.png' }] }]))).toBeUndefined();
+    expect(turnReplyGap(view([prompt, { ...reply, turnId: '25' }]))).toBeUndefined();
+  });
+
+  it('does not flash a gap while a session transcript loads or resynchronizes', () => {
+    const ready = view([prompt]);
+    for (const patch of [
+      { loaded: false }, { transcriptReady: false }, { resyncing: true }, { resyncFailed: true }, { loadError: 'offline' },
+    ]) expect(turnReplyGap({ ...ready, ...patch })).toBeUndefined();
+  });
+
+  it('waits for unread reply text and turn structure, not unrelated history or tool output', () => {
+    const ready = view([prompt]);
+    const ref = { source: { kind: 'turn' as const, id: 't25' }, revision: 'r1', path: ['steps'], kind: 'array' as const, offset: 0, total: 1 };
+    expect(turnReplyGap({ ...ready, contentRefs: [ref] })).toBeUndefined();
+    expect(turnReplyGap({ ...ready, contentRefs: [{ ...ref, path: ['steps', 0, 'frames'] }] })).toBeUndefined();
+    const text = { ...ref, source: { kind: 'frame' as const, id: 'answer', turnId: 't25' }, path: ['text'], kind: 'text' as const };
+    expect(turnReplyGap({ ...ready, contentRefs: [text] })).toBeUndefined();
+    expect(turnReplyGap({ ...ready, contentRefs: [{ ...ref, source: { kind: 'turn', id: 't24' } }] })?.work).toBe('unknown');
+    expect(turnReplyGap({ ...ready, contentRefs: [{ ...text, path: ['output'] }] })?.work).toBe('unknown');
   });
 });

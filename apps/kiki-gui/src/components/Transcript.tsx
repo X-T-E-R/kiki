@@ -73,6 +73,7 @@ import {
   snapshotSubagentAgentId,
   stepObject,
   stabilizeAgentForest,
+  turnReplyGap,
   type AgentForest,
   type AgentTreeNode,
   type AssistantBlock,
@@ -93,6 +94,7 @@ import {
   type ToolBlock,
   type ToolGroup,
   type TurnExecutionInfo,
+  type TurnReplyGap,
   type TurnRetryInfo,
   type TurnTailInfo,
   type UserBlock,
@@ -3476,16 +3478,22 @@ const TAIL_ACTION = 'min-h-6 rounded-md px-1.5 text-[12px] font-medium text-ink-
 
 export const TurnTailLine = memo(function TurnTailLine({
   tail,
+  gap: replyGap,
   onResume,
   resumeDisabled = false,
   onRetry,
   retryDisabled = false,
 }: {
   tail: TurnTailInfo;
+  /**
+   * The turn completed without leaving anything to read. The line says so
+   * instead of letting the page end in silence.
+   */
+  gap?: TurnReplyGap;
   /** Present when the stopped turn can be re-run (cancelled tails only). */
   onResume?: () => void;
   resumeDisabled?: boolean;
-  /** Present when the failed turn's message can be sent again (failed tails only). */
+  /** Present when this turn's message can be sent again. */
   onRetry?: () => void;
   retryDisabled?: boolean;
 }) {
@@ -3493,6 +3501,9 @@ export const TurnTailLine = memo(function TurnTailLine({
   const [copied, setCopied] = useState(false);
   const isFailed = tail.state === 'failed';
   const isCancelled = tail.state === 'cancelled';
+  // Failure and a stop each own their line; an empty completion only exists
+  // where the turn actually completed.
+  const gap = isFailed || isCancelled ? undefined : replyGap;
   // Only an explicit stop request reads as "Stopped by you"; engine aborts,
   // restarts and records without provenance say "Interrupted".
   const cancellation = tail.cancellation ?? 'unknown';
@@ -3524,11 +3535,13 @@ export const TurnTailLine = memo(function TurnTailLine({
     <div
       data-turn-tail
       data-turn-tail-state={tail.state}
+      role={gap === undefined ? undefined : 'status'}
+      aria-live={gap === undefined ? undefined : 'polite'}
       className={`anim-enter py-1 ${isCancelled ? 'text-amber-ink' : ''}`}
     >
       <div className="flex items-center gap-3">
         <span className={`h-px flex-1 ${isCancelled ? 'bg-amber-rule/30' : 'bg-hairline'}`} />
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
           {isFailed ? (
             <span className="inline-flex items-center gap-1.5 text-[12px] font-medium text-ink-soft">
               <span aria-hidden data-turn-tail-dot className="h-1.5 w-1.5 rounded-full bg-danger" />
@@ -3538,6 +3551,19 @@ export const TurnTailLine = memo(function TurnTailLine({
             <span data-turn-tail-cancellation={cancellation} className="text-[12px] font-semibold text-amber-ink">
               {t(CANCELLATION_LABEL_KEY[cancellation])}
             </span>
+          ) : gap !== undefined ? (
+            <span data-turn-tail-gap={gap.work} className="text-[12px] font-medium text-ink-soft">
+              {t('transcript.noReply')}
+            </span>
+          ) : null}
+          {gap !== undefined ? (
+            <>
+              <span aria-hidden className="text-[12px] text-ink-faint">·</span>
+              <span data-turn-tail-gap-work className="text-[12px] text-ink-faint">
+                {t(gap.work === 'running' ? 'transcript.noReplyBackground'
+                  : gap.work === 'idle' ? 'transcript.noReplyIdle' : 'transcript.noReplyUnknown')}
+              </span>
+            </>
           ) : null}
           {isCancelled && onResume !== undefined ? (
             <>
@@ -3554,6 +3580,7 @@ export const TurnTailLine = memo(function TurnTailLine({
               </button>
             </>
           ) : null}
+          {gap !== undefined ? <span aria-hidden className="text-[12px] text-ink-faint">·</span> : null}
           <span className={`text-[12px] tabular-nums ${isCancelled ? 'text-amber-ink' : 'text-ink-faint'}`}>
             <RelativeTime at={tail.endedAt} />{facts.length > 0 ? ` · ${facts.join(' · ')}` : ''}
           </span>
@@ -3567,10 +3594,11 @@ export const TurnTailLine = memo(function TurnTailLine({
               {copied ? t('cb.copied') : t('cb.copy')}
             </button>
           ) : null}
-          {isFailed && onRetry !== undefined ? (
+          {(isFailed || (gap !== undefined && gap.work === 'idle')) && onRetry !== undefined ? (
             <button
               type="button"
-              data-turn-tail-retry
+              data-turn-tail-retry={isFailed ? '' : undefined}
+              data-turn-tail-gap-retry={isFailed ? undefined : ''}
               onClick={onRetry}
               disabled={retryDisabled}
               title={t('transcript.promptOutcome.retryTitle')}
@@ -3630,6 +3658,7 @@ export function Transcript({
   onOpenAgent,
   rowActions,
   visible = true,
+  connected,
   view = 'process',
   draftAnnotations,
   onSaveDraftAnnotation,
@@ -3645,6 +3674,11 @@ export function Transcript({
    * place (or the latest message) instead of whatever the hidden box kept.
    */
   visible?: boolean;
+  /**
+   * Whether this window can still vouch for the session's live work facts.
+   * Undefined (or true) trusts them; false keeps unknown facts unknown.
+   */
+  connected?: boolean;
   onLoadOlder: (signal?: AbortSignal) => Promise<boolean>;
   onResolveApproval: (
     approvalId: string,
@@ -3876,6 +3910,23 @@ export function Transcript({
     );
     return user === undefined || user.text.trim() === '' ? undefined : user.text;
   }, [blocks, failedTailTurnId]);
+  // A turn that ended with nothing to read: main only, because this page owns
+  // the session's own last turn. The facts come from the published state, so
+  // switching sessions never shows another session's ending.
+  const replyGap = useMemo(
+    () => (agentId === MAIN_AGENT_ID ? turnReplyGap(state, { connected }) : undefined),
+    [agentId, state, connected],
+  );
+  // Send-again for that turn puts its message back in the composer; it never
+  // dispatches. Only an idle session offers it — unknown background work is
+  // not proof that sending again is safe.
+  const gapTailText = useMemo(() => {
+    if (replyGap === undefined) return undefined;
+    const user = blocks.findLast(
+      (block): block is UserBlock => block.kind === 'user' && sameTurn(block.turnId, replyGap.turnId),
+    );
+    return user === undefined || user.text.trim() === '' ? undefined : user.text;
+  }, [blocks, replyGap]);
   // Settled entries are NOT folded behind a counter: they stay in place at
   // their own timestamp, one quiet activity line each. One subagent is ONE
   // line, though: when its card is on the page, the card absorbs the
@@ -4036,6 +4087,16 @@ export function Transcript({
         : () => { onRetryPrompt(failedTailText); },
     [failedTailText, onRetryPrompt],
   );
+  const retryGap = useMemo(
+    () =>
+      gapTailText === undefined || onRetryPrompt === undefined
+        ? undefined
+        : () => { onRetryPrompt(gapTailText); },
+    [gapTailText, onRetryPrompt],
+  );
+  // One send-again control per tail: the failure's own line first, then an
+  // empty turn that has nothing left running.
+  const tailRetry = state.turnTail?.state === 'failed' ? retryFailed : retryGap;
   // External-executor badges: first display node of each turn that carries
   // `execution` provenance. Entry identity is stabilized upstream (the
   // projection reuses unchanged TurnExecutionInfo objects), so the map — and
@@ -5033,7 +5094,7 @@ export function Transcript({
     readingRestoreFailed === null &&
     (state.hasMoreHistory || state.loadingOlder || state.olderError !== undefined) &&
     (state.historyCoverageKind !== 'unknown' || state.loadingOlder || state.olderError !== undefined);
-  if (timelineBlocks.length === 0 && !state.busy && !showTopEdgeForEmptyHistory) {
+  if (timelineBlocks.length === 0 && !state.busy && replyGap === undefined && !showTopEdgeForEmptyHistory) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 opacity-70">
         <Wordmark size="lg" />
@@ -5199,9 +5260,10 @@ export function Transcript({
                     <div className={AGENT_LANE}>
                       <TurnTailLine
                         tail={state.turnTail}
+                        gap={replyGap}
                         onResume={resumeStopped}
                         resumeDisabled={rowActions?.disabled === true}
-                        onRetry={retryFailed}
+                        onRetry={tailRetry}
                         retryDisabled={promptOutcomeActions.disabled === true}
                       />
                     </div>

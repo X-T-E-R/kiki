@@ -206,6 +206,37 @@ describe('message view (Bot mode)', () => {
     expect(process.container.querySelector('[data-assistant-internal]')).not.toBeNull();
   });
 
+  it('ends a turn that left nothing to read with one quiet status instead of silence', async () => {
+    // The turn completed legally with no content and no text: the page must
+    // not stop at the work summary and say nothing.
+    const blocks: Block[] = [user('u1', '看看后台进度', 't1'), tool('r1', 'Read', 't1')];
+    const { container } = await render(timeline(blocks, 'message', {
+      turnTail: {
+        turnId: 't1', state: 'completed', endedAt: '2026-10-01T09:00:05.000Z',
+        durationMs: 4_000, ttftMs: undefined, usage: undefined, tokensPerSecond: undefined,
+      },
+    }));
+    expect(container.querySelectorAll('[data-turn-tail-gap]')).toHaveLength(1);
+    expect(container.querySelector('[data-turn-tail] [data-turn-tail-gap]')?.getAttribute('data-turn-tail-gap')).toBe('unknown');
+    // The message view's own no-reply line belongs to a turn that wrote text
+    // and stopped; an empty completion is not doubled up here.
+    expect(container.querySelector('[data-message-outcome="no-reply"]')).toBeNull();
+  });
+
+  it('keeps a turn that answered free of the empty-turn status', async () => {
+    const blocks: Block[] = [
+      user('u1', '看看后台进度', 't1'), tool('r1', 'Read', 't1'), assistant('a1', '还在跑。', 't1'),
+    ];
+    const { container } = await render(timeline(blocks, 'message', {
+      turnTail: {
+        turnId: 't1', state: 'completed', endedAt: '2026-10-01T09:00:05.000Z',
+        durationMs: 4_000, ttftMs: undefined, usage: undefined, tokensPerSecond: undefined,
+      },
+    }));
+    expect(container.querySelector('[data-turn-tail-gap]')).toBeNull();
+    expect(container.textContent).toContain('还在跑。');
+  });
+
   it('leaves a turn the transcript reports as failed unsaid, and says once that it failed', async () => {
     // The fact comes from the loaded turn state, so it holds for an older turn
     // whose prompt record is not on the page: no speech, one readable failure

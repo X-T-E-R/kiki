@@ -604,6 +604,182 @@ describe('splitPrefixSegments streaming differential', () => {
     expect(text()).toMatch(/\d+s ago/);
     expect(text()).not.toContain('just now');
   });
+
+  const completedTail = (turnId: string) => ({
+    turnId,
+    state: 'completed' as const,
+    endedAt: new Date().toISOString(),
+    durationMs: 4_000,
+    ttftMs: undefined,
+    usage: undefined,
+    tokensPerSecond: undefined,
+  });
+
+  it('names the turn that ended with nothing to read, and the work still running', async () => {
+    const probe = makeRoot();
+    await renderSettled(probe.root, <TurnTailLine
+      tail={completedTail('t25')}
+      gap={{ turnId: 't25', work: 'running' }}
+      onRetry={() => { throw new Error('a session with work in flight offers no send-again'); }}
+    />);
+    const tail = probe.container.querySelector<HTMLElement>('[data-turn-tail]');
+    expect(tail?.dataset['turnTailState']).toBe('completed');
+    expect(tail?.querySelector('[data-turn-tail-gap="running"]')?.textContent).toBe(translate('en', 'transcript.noReply'));
+    expect(tail?.querySelector('[data-turn-tail-gap-work]')?.textContent)
+      .toBe(translate('en', 'transcript.noReplyBackground'));
+    expect(tail?.querySelector('[data-turn-tail-gap-retry]')).toBeNull();
+  });
+
+  it('offers send-again for an empty turn only once nothing runs, and never sends on its own', async () => {
+    const probe = makeRoot();
+    const retried = vi.fn();
+    await renderSettled(probe.root, <TurnTailLine
+      tail={completedTail('t25')}
+      gap={{ turnId: 't25', work: 'idle' }}
+      onRetry={retried}
+    />);
+    const tail = probe.container.querySelector('[data-turn-tail]');
+    expect(tail?.querySelector('[data-turn-tail-gap="idle"]')).not.toBeNull();
+    expect(tail?.querySelector('[data-turn-tail-gap-work]')?.textContent).toBe(translate('en', 'transcript.noReplyIdle'));
+    expect(retried).not.toHaveBeenCalled();
+    const button = tail?.querySelector<HTMLButtonElement>('[data-turn-tail-gap-retry]');
+    expect(button?.textContent).toBe(translate('en', 'transcript.promptOutcome.retry'));
+    await act(async () => { button?.click(); });
+    expect(retried).toHaveBeenCalledTimes(1);
+  });
+
+  it('claims no background fact and offers no send-again for an empty turn it cannot confirm', async () => {
+    const probe = makeRoot();
+    const retried = vi.fn();
+    await renderSettled(probe.root, <TurnTailLine
+      tail={completedTail('t25')}
+      gap={{ turnId: 't25', work: 'unknown' }}
+      onRetry={retried}
+    />);
+    const tail = probe.container.querySelector('[data-turn-tail]');
+    expect(tail?.querySelector('[data-turn-tail-gap="unknown"]')).not.toBeNull();
+    expect(tail?.querySelector('[data-turn-tail-gap-work]')?.textContent).toBe(translate('en', 'transcript.noReplyUnknown'));
+    expect(tail?.querySelector('[data-turn-tail-gap-retry]')).toBeNull();
+    expect(retried).not.toHaveBeenCalled();
+  });
+
+  it('lets a failure and a stop keep their own ending over an empty-turn fact', async () => {
+    const failed = makeRoot();
+    await renderSettled(failed.root, <TurnTailLine
+      tail={{ ...completedTail('t25'), state: 'failed', error: 'provider filtered the response' }}
+      gap={{ turnId: 't25', work: 'running' }}
+      onRetry={() => undefined}
+    />);
+    expect(failed.container.querySelector('[data-turn-tail]')?.querySelector('[data-turn-tail-gap]')).toBeNull();
+    expect(failed.container.querySelector('[data-turn-tail-retry]')).not.toBeNull();
+
+    const stopped = makeRoot();
+    await renderSettled(stopped.root, <TurnTailLine
+      tail={{ ...completedTail('t25'), state: 'cancelled', cancellation: 'user' }}
+      gap={{ turnId: 't25', work: 'idle' }}
+      onResume={() => undefined}
+      onRetry={() => undefined}
+    />);
+    expect(stopped.container.querySelector('[data-turn-tail]')?.querySelector('[data-turn-tail-gap]')).toBeNull();
+    expect(stopped.container.querySelector('[data-turn-tail-resume]')).not.toBeNull();
+  });
+
+  it('leaves a completed turn that left a reply without any empty-turn line', async () => {
+    const probe = makeRoot();
+    await renderSettled(probe.root, <TurnTailLine tail={completedTail('t25')} onRetry={() => undefined} />);
+    const tail = probe.container.querySelector('[data-turn-tail]');
+    expect(tail?.querySelector('[data-turn-tail-gap]')).toBeNull();
+    // Send-again belongs to a failure or an empty turn, never to a turn that
+    // already answered.
+    expect(tail?.querySelector('[data-turn-tail-retry]')).toBeNull();
+    expect(tail?.querySelector('[data-turn-tail-gap-retry]')).toBeNull();
+  });
+});
+
+describe('completed reply gap integration', () => {
+  function gapState(executing?: boolean): SessionViewState {
+    return transcriptState([userBlock({ id: 'user-gap', text: 'Check the background progress', turnId: 't25' })], {
+      sessionId: 'session_gap_recovery',
+      session: { ...snapshotResponse().session, id: 'session_gap_recovery', busy: true, executing },
+      turnTail: {
+        turnId: 't25', state: 'completed', endedAt: '2026-10-01T09:00:05.000Z',
+        durationMs: 4_000, ttftMs: undefined, usage: undefined, tokensPerSecond: undefined,
+      },
+    });
+  }
+
+  function surface(state: SessionViewState, connected = true, props: Partial<ComponentProps<typeof Transcript>> = {}) {
+    return <Transcript
+      state={state}
+      connected={connected}
+      onLoadOlder={() => Promise.resolve(false)}
+      onResolveApproval={() => noopActions()}
+      onAnswerQuestion={() => noopActions()}
+      onDismissQuestion={() => noopActions()}
+      {...props}
+    />;
+  }
+
+  it('uses execution rather than busy and restores only a draft when the reader asks', async () => {
+    const { root, container } = makeRoot();
+    const draftBefore = readDraft('session_gap_recovery');
+    await renderSettled(root, surface(gapState(true)));
+    expect(container.querySelector('[data-turn-tail-gap="running"]')).not.toBeNull();
+    expect(container.querySelector('[data-turn-tail-gap-retry]')).toBeNull();
+    expect(container.querySelector('[data-turn-status]')).toBeNull();
+    expect(readDraft('session_gap_recovery')).toBe(draftBefore);
+
+    await renderSettled(root, surface(gapState(false)));
+    expect(container.querySelector('[data-turn-tail-gap="idle"]')).not.toBeNull();
+    const retry = container.querySelector<HTMLButtonElement>('[data-turn-tail-gap-retry]');
+    expect(retry).not.toBeNull();
+    expect(readDraft('session_gap_recovery')).toBe(draftBefore);
+    await act(async () => { retry?.click(); });
+    expect(readDraft('session_gap_recovery')).toContain('Check the background progress');
+
+    await renderSettled(root, surface(gapState()));
+    expect(container.querySelector('[data-turn-tail-gap="unknown"]')).not.toBeNull();
+    expect(container.querySelector('[data-turn-tail-gap-retry]')).toBeNull();
+    await renderSettled(root, surface(gapState(true), false));
+    expect(container.querySelector('[data-turn-tail-gap="unknown"]')).not.toBeNull();
+    expect(container.querySelector('[data-turn-tail-gap-retry]')).toBeNull();
+  });
+
+  it('shows the completed gap even when the turn has no prompt or content blocks', async () => {
+    const { root, container } = makeRoot();
+    await renderSettled(root, surface({ ...gapState(true), blocks: [] }));
+    expect(container.querySelector('[data-turn-tail-gap="running"]')).not.toBeNull();
+    expect(container.querySelector('[data-turn-tail-gap-retry]')).toBeNull();
+  });
+
+  it('clears the gap when the automatic notification opens the next turn or a reply arrives', async () => {
+    const { root, container } = makeRoot();
+    const previous = gapState(true);
+    await renderSettled(root, surface(previous));
+    expect(container.querySelector('[data-turn-tail-gap]')).not.toBeNull();
+    await renderSettled(root, surface({ ...previous, busy: true, abortableTurnId: 26, turnTail: undefined }));
+    expect(container.querySelector('[data-turn-tail-gap]')).toBeNull();
+    expect(container.querySelector('[data-turn-status]')).not.toBeNull();
+    await renderSettled(root, surface({
+      ...gapState(false),
+      blocks: [...previous.blocks, assistantBlock('answer', 'The background result is ready.', { turnId: 't25' })],
+    }));
+    expect(container.querySelector('[data-turn-tail-gap]')).toBeNull();
+  });
+
+  it('does not carry a gap through loading or a session switch, or offer recovery in a read-only view', async () => {
+    const { root, container } = makeRoot();
+    const previous = gapState(false);
+    await renderSettled(root, surface(previous, true, { readOnly: true }));
+    expect(container.querySelector('[data-turn-tail-gap="idle"]')).not.toBeNull();
+    expect(container.querySelector('[data-turn-tail-gap-retry]')).toBeNull();
+    await renderSettled(root, surface({ ...previous, transcriptReady: false }));
+    expect(container.querySelector('[data-turn-tail-gap]')).toBeNull();
+    await renderSettled(root, surface(createViewState('session_other')));
+    expect(container.querySelector('[data-turn-tail-gap]')).toBeNull();
+    await renderSettled(root, surface(previous, true, { agentId: 'child-agent' }));
+    expect(container.querySelector('[data-turn-tail-gap]')).toBeNull();
+  });
 });
 
 describe('media preview wiring', () => {
