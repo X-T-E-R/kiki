@@ -525,6 +525,12 @@ maxRunningTasks = 2
     expect(rawProviders['local']?.['unsupported_provider_field']).toBe('raw-only');
     expect(rawModels['camel-model']?.['custom_model_field']).toBe('raw-only');
   });
+
+  it('keeps an explicit zero-output continuation and leaves it unset when omitted', () => {
+    expect(parseConfigString('[loop_control]\nzero_output_continuation = true\n').loopControl?.zeroOutputContinuation).toBe(true);
+    expect(parseConfigString('[loop_control]\nzero_output_continuation = false\n').loopControl?.zeroOutputContinuation).toBe(false);
+    expect(parseConfigString('[loop_control]\nmax_steps_per_turn = 3\n').loopControl?.zeroOutputContinuation).toBeUndefined();
+  });
 });
 
 describe('KimiHarness config API', () => {
@@ -661,7 +667,7 @@ describe('KimiHarness config API', () => {
       nbSearchSource: { reuse_local_config: true },
       mergeAllAvailableSkills: true,
       extraSkillDirs: [],
-      loopControl: { compactionSoftContextSize: 0, thinkingOnlyContinuation: true },
+      loopControl: { compactionSoftContextSize: 0, thinkingOnlyContinuation: true, zeroOutputContinuation: false },
       background: {},
       subagent: { timeoutMs: 7_200_000, maxDirectChildren: 16, maxTotalSubagents: 0, defaultProfile: 'general', allowedTools: [] },
       mcp: {},

@@ -16,6 +16,7 @@ export const LoopControlSchema = z.object({
   maxStepsPerTurn: z.number().int().min(0).optional(),
   maxAttemptsPerStep: z.number().int().min(0).optional(),
   thinkingOnlyContinuation: z.boolean().optional(),
+  zeroOutputContinuation: z.boolean().optional(),
   maxRalphIterations: z.number().int().min(-1).optional(),
   reservedContextSize: z.number().int().min(0).optional(),
   contextStrategy: z.enum(['summarize', 'auto', 'fresh']).optional(),
@@ -87,6 +88,7 @@ registerConfigSection(LOOP_CONTROL_SECTION, LoopControlSchema, {
   defaultValue: {
     compactionSoftContextSize: DEFAULT_COMPACTION_SOFT_CONTEXT_SIZE,
     thinkingOnlyContinuation: true,
+    zeroOutputContinuation: false,
   },
   fromToml: loopControlFromToml,
   toToml: loopControlToToml,

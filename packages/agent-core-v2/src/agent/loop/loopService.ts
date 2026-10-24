@@ -907,6 +907,10 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     return this.config.get<LoopControl>(LOOP_CONTROL_SECTION)?.thinkingOnlyContinuation !== false;
   }
 
+  private zeroOutputContinuationEnabled(): boolean {
+    return this.config.get<LoopControl>(LOOP_CONTROL_SECTION)?.zeroOutputContinuation === true;
+  }
+
   private handleLoopCancellation(
     runtime: LoopRuntime,
     error: unknown,
@@ -1216,6 +1220,15 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
           continuationBudget.thinkingOnlyContinuations += 1;
           this.enqueue(new ThinkingOnlyContinuationStepRequest());
         }
+      }
+      if (
+        !hookStopTurn &&
+        continuationBudget.thinkingOnlyContinuations < 1 &&
+        this.zeroOutputContinuationEnabled() &&
+        isZeroOutputCompletion(response)
+      ) {
+        continuationBudget.thinkingOnlyContinuations += 1;
+        this.enqueue(new ThinkingOnlyContinuationStepRequest());
       }
       await this.runBoundaryRequests(turnId, signal);
       return { stopReason: finishReason, hookStopTurn };
@@ -1747,6 +1760,14 @@ function isThinkOnlyCompletion(response: AgentLLMRequestFinish): boolean {
     return false;
   }
   return realThink;
+}
+
+function isZeroOutputCompletion(response: AgentLLMRequestFinish): boolean {
+  if (response.completionAuthority !== 'normal') return false;
+  if (response.message.partial === true) return false;
+  if (response.providerFinishReason !== 'completed') return false;
+  if (response.message.toolCalls.length > 0) return false;
+  return response.message.content.every((part) => isVacuousContentPart(part));
 }
 
 const THINKING_ONLY_PROVIDER_ERROR_CODE = 'antigravity_thinking_only';

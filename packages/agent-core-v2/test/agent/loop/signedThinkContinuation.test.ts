@@ -537,6 +537,164 @@ describe('thinking-only continuation', () => {
   });
 });
 
+describe('zero-output continuation', () => {
+  it.each([undefined, false] as const)('does not continue an empty end_turn when the switch is %s', async (zeroOutputContinuation) => {
+    const create = scriptedCreate([emptyStream(), textStream('should not run')]);
+    const local = anthropicAgent(create, zeroOutputContinuation === undefined
+      ? {}
+      : { initialConfig: { loopControl: { zeroOutputContinuation } } });
+    try {
+      const terminal = await (await prompt(local)).completion;
+      expect(terminal).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 1 } });
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(continued(local)).toBe(false);
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it('sends one Continue after an empty end_turn when the switch is on', async () => {
+    const create = scriptedCreate([emptyStream(), textStream('Visible answer')]);
+    const local = anthropicAgent(create, { initialConfig: { loopControl: { zeroOutputContinuation: true } } });
+    try {
+      const terminal = await (await prompt(local)).completion;
+      expect(terminal).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 2 } });
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(tailRole(create.mock.calls[1]?.[0])).toBe('user');
+      expect(promptCount(create.mock.calls[1]?.[0], PROMPT)).toBe(1);
+      expect(promptCount(create.mock.calls[1]?.[0], CONTINUE)).toBe(1);
+      expect(blockTypeCount(create.mock.calls[1]?.[0], 'tool_use')).toBe(0);
+      expect((await local.persistedWireRecords()).some((record) => record.type === 'turn.step.retrying')).toBe(false);
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it('does not send a second Continue when the follow-up is also empty', async () => {
+    const create = scriptedCreate([emptyStream(), emptyStream(), textStream('too late')]);
+    const local = anthropicAgent(create, { initialConfig: { loopControl: { zeroOutputContinuation: true } } });
+    try {
+      const terminal = await (await prompt(local)).completion;
+      expect(terminal).toMatchObject({
+        state: 'failed',
+        result: { type: 'failed', error: { code: 'loop.empty_completion', name: 'ThinkingOnlyContinuationError' } },
+      });
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(promptCount(create.mock.calls[1]?.[0], CONTINUE)).toBe(1);
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it('does not use the switch for signed thinking when thinking-only continuation is off', async () => {
+    const create = scriptedCreate([signedThinkStream('end_turn'), textStream('should not run')]);
+    const local = anthropicAgent(create, {
+      initialConfig: { loopControl: { zeroOutputContinuation: true, thinkingOnlyContinuation: false } },
+    });
+    try {
+      const terminal = await (await prompt(local)).completion;
+      expect(terminal).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 1 } });
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(storedThinking(local)).toEqual([{ type: 'think', think: THINKING, encrypted: SIGNATURE }]);
+      expect(continued(local)).toBe(false);
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it('does not use the switch for a signature without thinking text', async () => {
+    const stream = async function* () {
+      yield { type: 'message_start', message: { id: 'signature-only', usage: { input_tokens: 4, output_tokens: 0 } } };
+      yield { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } };
+      yield { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: SIGNATURE } };
+      yield { type: 'content_block_stop', index: 0 };
+      yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 2 } };
+      yield { type: 'message_stop' };
+    };
+    const create = scriptedCreate([stream, textStream('should not run')]);
+    const local = anthropicAgent(create, { initialConfig: { loopControl: { zeroOutputContinuation: true } } });
+    try {
+      await (await prompt(local)).completion;
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(storedThinking(local)).toContainEqual({ type: 'think', think: '', encrypted: SIGNATURE });
+      expect(continued(local)).toBe(false);
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it('does not use the switch for visible text', async () => {
+    const create = scriptedCreate([textStream('Visible answer'), textStream('should not run')]);
+    const local = anthropicAgent(create, { initialConfig: { loopControl: { zeroOutputContinuation: true } } });
+    try {
+      const terminal = await (await prompt(local)).completion;
+      expect(terminal).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 1 } });
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(continued(local)).toBe(false);
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it('does not use the switch for a tool call', async () => {
+    let toolRuns = 0;
+    const create = scriptedCreate([toolStream(), textStream('Work saved.')]);
+    const local = anthropicAgent(create, { permission: 'yolo', initialConfig: { loopControl: { zeroOutputContinuation: true } } });
+    local.get(IAgentToolRegistryService).register({
+      name: 'FinishWork',
+      description: 'Complete work.',
+      parameters: { type: 'object' },
+      resolveExecution: () => ({
+        approvalRule: 'FinishWork',
+        execute: async () => {
+          toolRuns += 1;
+          return { output: 'work saved' };
+        },
+      }),
+    });
+    local.get(IAgentProfileService).update({ activeToolNames: ['FinishWork'] });
+    try {
+      const terminal = await (await prompt(local, 'Complete work.')).completion;
+      expect(terminal).toMatchObject({ state: 'completed' });
+      expect(toolRuns).toBe(1);
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(promptCount(create.mock.calls[0]?.[0], CONTINUE)).toBe(0);
+      expect(promptCount(create.mock.calls[1]?.[0], CONTINUE)).toBe(0);
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it('keeps the subagent empty-completion failure when the switch is on', async () => {
+    const create = scriptedCreate([emptyStream(), textStream('should not run')]);
+    const local = anthropicAgent(create, { parent: true, initialConfig: { loopControl: { zeroOutputContinuation: true } } });
+    try {
+      const terminal = await (await prompt(local)).completion;
+      expect(terminal).toMatchObject({
+        state: 'failed',
+        result: { type: 'failed', error: { code: 'loop.empty_completion' } },
+      });
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(continued(local)).toBe(false);
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+});
+
+function continued(local: TestAgentContext): boolean {
+  return local.contextData().history.some((message) => message.role === 'user' &&
+    message.content.some((part) => part.type === 'text' && part.text === CONTINUE));
+}
+
 function anthropicAgent(
   create: unknown,
   options: {
@@ -544,7 +702,7 @@ function anthropicAgent(
     readonly permission?: 'manual' | 'yolo';
     readonly model?: string;
     readonly sdkFetch?: typeof fetch;
-    readonly initialConfig?: { readonly loopControl?: { readonly maxStepsPerTurn?: number; readonly thinkingOnlyContinuation?: boolean } };
+    readonly initialConfig?: { readonly loopControl?: { readonly maxStepsPerTurn?: number; readonly thinkingOnlyContinuation?: boolean; readonly zeroOutputContinuation?: boolean } };
   } = {},
 ): TestAgentContext {
   const provider = new AnthropicChatProvider({
