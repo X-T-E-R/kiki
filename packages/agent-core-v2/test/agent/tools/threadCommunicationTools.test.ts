@@ -23,6 +23,8 @@ import { IAgentPlanService } from '#/features/plan/plan';
 import { IThreadCreateTool, ThreadCreateTool, ThreadCreateToolInputSchema } from '#/agent/tools/thread-communication/threadCreateTool';
 import {
   ListThreadsToolInputSchema,
+  IReadThreadTool,
+  ReadThreadTool,
   ReadThreadToolInputSchema,
   SendMessageToThreadToolInputSchema,
   SendMessageToThreadTool,
@@ -94,6 +96,20 @@ describe('thread communication tools', () => {
         threads: Array.from({ length: 9 }, () => ({ thread: ref })),
       }).success,
     ).toBe(false);
+  });
+
+  it('describes preparation pages as incomplete rather than an empty thread', async () => {
+    const ix = new TestInstantiationService();
+    try {
+      ix.stub(IThreadCommunicationService, { isWorkspaceEnabled: async () => true });
+      ix.stub(ISessionContext, { sessionId: 'thread-a', workspaceId: 'workspace-a' });
+      ix.set(IReadThreadTool, new SyncDescriptor(ReadThreadTool));
+      const description = ix.get(IReadThreadTool).description;
+      expect(description).toContain('turns: []');
+      expect(description).toContain('incomplete: "history_preparing"');
+      expect(description).toContain('opaque `nextCursor`');
+      expect(description).toContain('history rewrite or generation change can invalidate a cursor');
+    } finally { await ix.dispose(); }
   });
 
   it('reads a member roster and bounded saved log without waking or joining anyone', async () => {

@@ -36,6 +36,7 @@ export const readThreadResponseSchema = z.object({
   thread: threadRefSchema,
   turns: z.array(threadTurnSchema),
   next_cursor: z.string().optional(),
+  incomplete: z.literal('history_preparing').optional(),
 });
 export type ReadThreadResponse = z.infer<typeof readThreadResponseSchema>;
 

@@ -160,6 +160,22 @@ describe('peer-thread routes', () => {
     expect(serverReadThreadResponseSchema.safeParse(invalid).success).toBe(false);
   });
 
+  it('passes a preparing read page and opaque continuation cursor through the REST route', async () => {
+    const service = makeService();
+    vi.mocked(service.readThread).mockResolvedValue({
+      thread: targetCore,
+      turns: [],
+      incomplete: 'history_preparing',
+      nextCursor: 'opaque-preparation-cursor',
+    });
+    const { route } = setup(service);
+    const response = reply();
+    await route('post', '/threads::read').handler(request({ body: { thread: targetWire } }), response);
+    const data = publicReadThreadResponseSchema.parse(response.send.mock.calls[0]?.[0]?.data);
+    expect(data).toEqual({ thread: targetWire, turns: [], incomplete: 'history_preparing', next_cursor: 'opaque-preparation-cursor' });
+    expect(serverReadThreadResponseSchema.parse(data)).toEqual(data);
+  });
+
   it('registers all operations and preserves cross-workspace references', async () => {
     const service = makeService();
     vi.mocked(service.listThreads).mockResolvedValue({

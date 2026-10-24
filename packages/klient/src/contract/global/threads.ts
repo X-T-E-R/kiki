@@ -120,6 +120,7 @@ export const readThreadResultSchema = z.object({
   thread: threadRefSchema,
   turns: z.array(threadTurnSchema),
   nextCursor: z.string().optional(),
+  incomplete: z.literal('history_preparing').optional(),
   view: z.object({ transcript: wireTranscriptPageSchema.optional(), segment: contentSegmentSchema.optional() }).optional(),
 });
 

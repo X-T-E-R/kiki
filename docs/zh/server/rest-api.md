@@ -585,6 +585,12 @@ peer thread 接口用于跨会话协作：以 `{ host_id, workspace_id, session_
 | `PUT /api/workspaces/{workspace_id}/thread-communication` | 持久化该工作区的启用 / 禁用覆盖值 |
 | `DELETE /api/workspaces/{workspace_id}/thread-communication` | 清除覆盖值 |
 
+#### ThreadRead 续读
+
+本地历史投影准备期间，`POST /api/threads:read` 可能返回 `turns: []`、`incomplete: "history_preparing"` 和不透明的 `next_cursor`。这是准备未完成的页面，不是 thread 没有对话的证明。请保留同一 thread 和 bridge 范围，用 `next_cursor` 重复请求。准备游标会绑定投影代次和固定的源水位，同时保留原先的较旧轮次边界；准备完成后，已结束轮次仍使用原有默认 `limit` 20、范围 1–100 和按时间顺序返回。
+
+旧版 read cursor 仍为兼容而接受。历史重写会明确使受影响的游标失效，代次变化也会使游标失效；服务端报告游标无效时，应从首页重新读取，不能把 thread 当作空历史。
+
 #### 沟通记录
 
 `GET /api/threads/messages` 读取已接收的跨线程消息，不会恢复会话。它不包含普通用户输入、外部 REST / Klient 发送，以及父级与子 Agent 的往来。已归档的会话和关闭新 peer 发送后的既有记录仍可读取。

@@ -578,12 +578,18 @@ The peer-thread endpoints support cross-session collaboration: a thread is addre
 | Method and path | Description |
 | --- | --- |
 | `GET /api/threads` | List addressable threads, filterable by `workspace_id`; cursor pagination |
-| `POST /api/threads:read` | Read a thread's completed turns with their recorded origin, optionally continuing from a `cursor` |
+| `POST /api/threads:read` | Read a thread's completed turns with their recorded origin, optionally continuing from a `cursor`; preparation can return an incomplete page with an opaque continuation |
 | `POST /api/threads:send` | Durably accept a message for another thread (requires a non-empty `idempotency_key`; a key maps to a single message) |
 | `POST /api/threads:wait` | Long-poll for activity on up to 8 threads, `timeout_ms` capped at 60 seconds |
 | `GET /api/workspaces/{workspace_id}/thread-communication` | Read the persisted override and effective thread-communication state for the workspace |
 | `PUT /api/workspaces/{workspace_id}/thread-communication` | Persist the workspace's enable/disable override |
 | `DELETE /api/workspaces/{workspace_id}/thread-communication` | Clear the override |
+
+#### ThreadRead continuation
+
+A `POST /api/threads:read` response can contain `turns: []`, `incomplete: "history_preparing"`, and an opaque `next_cursor` while the local history projection is preparing. This is an incomplete preparation page, not proof that the thread has no conversation. Repeat the request with `next_cursor`, keeping the same thread and bridge scope. The preparation cursor binds its projection generation and fixed source watermark while retaining the original older-turn boundary; once preparation completes, ended-turn pages keep the existing default `limit` of 20, 1–100 range, and chronological order.
+
+Existing read cursors remain accepted for compatibility. A history rewrite explicitly invalidates affected cursors, as does a generation change; when the server reports an invalid cursor, restart from the first page rather than treating the thread as empty.
 
 #### Communication history
 

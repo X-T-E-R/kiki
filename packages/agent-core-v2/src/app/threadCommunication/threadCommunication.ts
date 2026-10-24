@@ -67,6 +67,7 @@ export interface ReadThreadResult {
   readonly thread: ThreadRef;
   readonly turns: readonly ThreadTurn[];
   readonly nextCursor?: string;
+  readonly incomplete?: 'history_preparing';
   readonly view?: import('@kiki/protocol').BridgeReadView;
 }
 
