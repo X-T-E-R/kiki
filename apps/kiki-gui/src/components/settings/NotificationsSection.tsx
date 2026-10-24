@@ -1,6 +1,8 @@
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import type { NotificationChannel, NotificationDelivery } from '@kiki/klient';
+import type { ImSessionSnapshot } from '@kiki/protocol';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
@@ -70,6 +72,7 @@ function tabLabelKey(tab: NotifySubTab): I18nKey {
  */
 export function NotificationsSection() {
   const { t, locale } = useI18n();
+  const queryClient = useQueryClient();
   const { settings, providers, deliveries } = useNotificationData();
   const { hash, search } = useLocation();
   const flashId = useContext(SettingsFlashContext);
@@ -99,6 +102,12 @@ export function NotificationsSection() {
   useEffect(() => { if (target) setAdding(true); }, [target]);
 
   const data = settings.data;
+  const imCached = queryClient.getQueryData<ImSessionSnapshot>(['im-sessions']);
+  const imNeedsAttention = imCached !== undefined && (
+    imCached.discoveries.length > 0 ||
+    imCached.instances.some((inst) => inst.connection === 'auth_expired' || (inst.listening && (inst.connection === 'stopped' || inst.adapter === 'stopped' || inst.adapter === 'missing')))
+  );
+  const pushPaused = data !== undefined && !data.global.enabled;
   const registry = useMemo(() => providers.data ?? [], [providers.data]);
   const channels = useMemo<readonly ChannelEntry[]>(() => (data === undefined ? [] : sortedChannels(data)), [data]);
   const byChannel = new Map<string, NotificationDelivery[]>();
@@ -185,6 +194,14 @@ export function NotificationsSection() {
             }`}
           >
             <span>{t(tabLabelKey(tab))}</span>
+            {tab === 'im' && imNeedsAttention ? (
+              <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-amber-ink" data-notify-tab-attention="im" />
+            ) : null}
+            {tab === 'channels' && pushPaused ? (
+              <span className="text-[11px] font-normal text-ink-faint" data-notify-tab-paused>
+                {t('st.notify.pausedShort')}
+              </span>
+            ) : null}
           </button>
         );
       })}
@@ -233,19 +250,23 @@ export function NotificationsSection() {
       </div>
 
       <div id="notify-panel-channels" role="tabpanel" aria-labelledby="notify-tab-channels" className={activeTab === 'channels' ? 'space-y-5' : 'hidden'}>
-        <SectionCard id="st-card-notify-channels" title={t('st.notify.channelsTitle')}>
-          <div className="space-y-3">
+        <NotificationRulesCard global={data.global} part="master" />
+        <SectionCard
+          id="st-card-notify-channels"
+          title={t('st.notify.channelsTitle')}
+          actions={canAdd && !adding ? (
+            <button type="button" data-notify-add-open className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
+              onClick={() => { setAdding(true); }}>
+              <Icon name="plus" size={12} />
+              {t('st.notify.choose')}
+            </button>
+          ) : undefined}
+        >
+          <div className={`space-y-3 ${!data.global.enabled ? 'opacity-60' : ''}`}>
             {channels.length > 0 ? (
               <>
                 <ListToolbar view={view} total={channels.length} filters={filters} sorts={sorts}
-                  searchLabel={t('st.notify.search')} searchPlaceholder={t('st.notify.searchPlaceholder')}
-                  actions={canAdd && !adding ? (
-                    <button type="button" data-notify-add-open className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
-                      onClick={() => { setAdding(true); }}>
-                      <Icon name="plus" size={12} />
-                      {t('st.notify.choose')}
-                    </button>
-                  ) : undefined} />
+                  searchLabel={t('st.notify.search')} searchPlaceholder={t('st.notify.searchPlaceholder')} />
                 {view.visible.length === 0 ? (
                   <ListEmpty kind="no-match" title={t('st.notify.noMatchTitle')}
                     body={view.query.trim() !== '' ? t('st.notify.noMatches', { query: view.query.trim() }) : undefined}
@@ -263,22 +284,13 @@ export function NotificationsSection() {
                 )}
               </>
             ) : !adding ? (
-              <>
-                <div data-notify-empty>
-                  <ListEmpty kind="none" title={t('st.notify.emptyTitle')} body={t('st.notify.emptyBody')} />
-                </div>
-                {canAdd ? (
-                  <button type="button" data-notify-add-open className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
-                    onClick={() => { setAdding(true); }}>
-                    <Icon name="plus" size={12} />
-                    {t('st.notify.choose')}
-                  </button>
-                ) : null}
-              </>
+              <div data-notify-empty>
+                <ListEmpty kind="none" title={t('st.notify.emptyTitle')} body={t('st.notify.emptyBody')} />
+              </div>
             ) : null}
           </div>
         </SectionCard>
-        <NotificationRulesCard global={data.global} />
+        <NotificationRulesCard global={data.global} part="rules" />
       </div>
 
       <div id="notify-panel-away" role="tabpanel" aria-labelledby="notify-tab-away" className={activeTab === 'away' ? 'space-y-5' : 'hidden'}>

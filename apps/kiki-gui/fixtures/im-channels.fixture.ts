@@ -1,4 +1,4 @@
-import { imSessionAdmitted, type ImBindingPatch, type ImCatalog, type ImConfirmRequest, type ImProviderKind, type ImSessionSnapshot, type ImSetupCatalog, type ImSetupRequest, type ImSetupResult, type ImTargetChannels } from '@kiki/protocol';
+import { imSessionAdmitted, type ImBindingPatch, type ImBindingTestResult, type ImCatalog, type ImConfirmRequest, type ImProviderKind, type ImSessionSnapshot, type ImSetupCatalog, type ImSetupRequest, type ImSetupResult, type ImTargetChannels } from '@kiki/protocol';
 
 export const imFixtureCatalog: ImCatalog = {
   personas: [
@@ -255,6 +255,18 @@ export function createImSettingsFixture(initial: ImSessionSnapshot = imSettingsS
     },
     dismiss: async (id: string) => { calls.push({ operation: 'dismiss', id }); state.discoveries = state.discoveries.filter((item) => item.id !== id); return clone(); },
     removeBinding: async (id: string) => { calls.push({ operation: 'removeBinding', id }); state.bindings = state.bindings.filter((item) => item.id !== id); return clone(); },
+    testBinding: async (id: string): Promise<ImBindingTestResult> => {
+      calls.push({ operation: 'testBinding', id });
+      const b = state.bindings.find((item) => item.id === id);
+      if (b === undefined) throw new Error('unknown_binding');
+      const admitted = b.enabled && imSessionAdmitted({ allowed: state.policy.allowed, defaultEnabled: state.policy.default_enabled, sessionEnabled: b.session_enabled });
+      if (!admitted) return { binding_id: id, status: 'failed', message_ids: [], detail: 'binding_disabled' };
+      const inst = state.instances.find((item) => item.id === b.provider_instance_id);
+      if (inst === undefined || !inst.listening || inst.adapter === 'stopped' || inst.adapter === 'missing') {
+        return { binding_id: id, status: 'failed', message_ids: [], detail: 'channel_not_connected' };
+      }
+      return { binding_id: id, status: 'delivered', message_ids: [`msg-${id}`] };
+    },
     paste: async (_text: string, id?: string) => { calls.push({ operation: 'paste', id }); return { provider_instance_id: id ?? 'account-a', provider_kind: 'wechat_bridge' as const, ignored_keys: [], chat_hint_ignored: false }; },
     startWechatQr: async () => { calls.push({ operation: 'startWechatQr' }); return { login_id: 'fixture-login', image: 'fixture-qr-not-for-authorization' }; },
     pollWechatQr: async (_id: string, _code?: string): Promise<{ status: string; provider_instance_id?: string }> => ({ status: 'wait' }),

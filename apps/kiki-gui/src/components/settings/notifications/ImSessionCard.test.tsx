@@ -33,6 +33,9 @@ afterEach(async () => {
 
 async function settle() { await new Promise((resolve) => setTimeout(resolve, 20)); }
 async function render(width = '1100px') {
+  await act(async () => { for (const root of roots.splice(0)) root.unmount(); });
+  for (const container of containers.splice(0)) container.remove();
+  for (const client of clients.splice(0)) client.clear();
   const container = document.createElement('div');
   container.style.width = width;
   document.body.append(container);
@@ -44,7 +47,7 @@ async function render(width = '1100px') {
   await act(async () => { root.render(<QueryClientProvider client={client}><I18nProvider><ImSessionCard /></I18nProvider></QueryClientProvider>); });
   await act(settle);
   await act(settle);
-  return container;
+  return document.body as HTMLDivElement;
 }
 async function click(container: ParentNode, selector: string) {
   const button = container.querySelector<HTMLButtonElement>(selector);
@@ -643,5 +646,122 @@ describe('ImSessionCard channel management', () => {
     expect(container.querySelector('[data-im-setup-mode="discord"]')).not.toBeNull();
     expect(container.querySelector('[data-im-setup-mode="slack"]')).not.toBeNull();
     expect(container.querySelector('[data-im-setup-mode="matrix"]')).not.toBeNull();
+  });
+
+  it('guides connected 0-discovery accounts through step-by-step binding and pre-selects a target from 50+ sessions without false bound state', async () => {
+    const fiftySessions = Array.from({ length: 50 }, (_, idx) => ({
+      id: `session-${idx + 1}`,
+      title: `Session #${idx + 1} · Research Topic ${idx + 1}`,
+    }));
+    const state: ImSessionSnapshot = {
+      policy: { allowed: true, default_enabled: true },
+      instances: [
+        { id: 'wx-live', provider_kind: 'wechat_bridge', label: 'WeChat Live', account_id: 'wx-live', listening: true, configured: true, adapter: 'running', connection: 'listening' },
+      ],
+      bindings: [],
+      discoveries: [],
+      strangers: [],
+      voice_fallbacks: 0,
+    };
+    fixture = createImSettingsFixture(state);
+    vi.spyOn(fixture.client.imSessions, 'catalog').mockResolvedValue({
+      personas: [{ id: 'nia', name: 'Nia' }],
+      sessions: fiftySessions,
+    });
+
+    const container = await render();
+    const flow = container.querySelector<HTMLElement>('[data-im-bind-flow="wx-live"]')!;
+    expect(flow).not.toBeNull();
+    expect(flow.querySelector('[data-im-bind-steps]')?.textContent).toContain('1. Send a message to the bot');
+    expect(flow.querySelector('[data-im-preselect-pending-hint]')?.textContent).toContain(
+      'Waiting for an incoming message to discover the sender identity before binding can be confirmed.',
+    );
+    expect(container.querySelectorAll('[data-im-binding]')).toHaveLength(0);
+
+    // Pre-select a session target from the 50+ session list via search
+    await click(flow, '[data-im-preselect-kind="session"]');
+    await input(flow, '[data-im-preselect-search]', 'Topic 42');
+    await choose(flow, '#im-preselect-wx-live', 'session:session-42');
+    expect(flow.querySelector('[data-im-preselect="session:session-42"]')).not.toBeNull();
+
+    // Still not bound until an inbound discovery arrives and is explicitly confirmed
+    expect(fixture.calls.some((item) => item.operation === 'confirm')).toBe(false);
+
+    // Inbound message arrives -> discovery appears above with the pre-selected session target ready
+    fixture.discover('wx-live', 'wx-inbound-1');
+    await click(flow, '[data-im-refresh-discovery]');
+    const discovery = container.querySelector<HTMLElement>('[data-im-discovery="wx-inbound-1"]')!;
+    expect(discovery).not.toBeNull();
+    expect(discovery.querySelector('[data-im-target="session:session-42"]')).not.toBeNull();
+
+    await click(discovery, '[data-im-confirm="wx-inbound-1"]');
+    expect(fixture.calls.find((item) => item.operation === 'confirm')).toEqual({
+      operation: 'confirm',
+      id: 'wx-inbound-1',
+      body: {
+        target: { kind: 'session', session_id: 'session-42' },
+        busy: 'queue',
+        reply: 'final',
+        mobile_interactions: true,
+        also_home: false,
+      },
+    });
+    expect(container.querySelectorAll('[data-im-binding]')).toHaveLength(1);
+  });
+
+  it.each(['en', 'zh'] as const)('tests a confirmed binding in %s and reports delivered, unknown (without auto-resend), and failed states', async (locale) => {
+    localStorage.setItem('kiki.locale', locale);
+    fixture = createImSettingsFixture(imChannelSnapshot());
+    const testSpy = vi.spyOn(fixture.client.imSessions, 'testBinding');
+    const container = await render();
+    const contact = binding(container, 'binding-contact');
+
+    // 1. Delivered
+    await click(contact, '[data-im-test-binding="binding-contact"]');
+    expect(testSpy).toHaveBeenCalledTimes(1);
+    expect(testSpy).toHaveBeenLastCalledWith('binding-contact');
+    expect(contact.querySelector('[data-im-test-binding-result="binding-contact"]')?.textContent).toContain(
+      locale === 'en' ? 'Test message delivered.' : '测试消息已送达。',
+    );
+
+    // 2. Unknown (must not auto-resend)
+    testSpy.mockResolvedValueOnce({ binding_id: 'binding-contact', status: 'unknown', message_ids: [] });
+    await click(contact, '[data-im-test-binding="binding-contact"]');
+    expect(testSpy).toHaveBeenCalledTimes(2);
+    expect(contact.querySelector('[data-im-test-binding-result="binding-contact"]')?.textContent).toContain(
+      locale === 'en' ? 'do not auto-resend' : '切勿自动重发',
+    );
+
+    // 3. Failed: channel_not_connected
+    testSpy.mockResolvedValueOnce({ binding_id: 'binding-contact', status: 'failed', message_ids: [], detail: 'channel_not_connected' });
+    await click(contact, '[data-im-test-binding="binding-contact"]');
+    expect(testSpy).toHaveBeenCalledTimes(3);
+    expect(contact.querySelector('[data-im-test-binding-result="binding-contact"]')?.textContent).toContain(
+      locale === 'en' ? 'Account is not listening' : '账号当前未开启监听',
+    );
+  });
+
+  it('keeps WeChat QR polling alive when the Connect SidePanel is closed without cancelling', async () => {
+    const state = imChannelSnapshot();
+    state.instances = [{ id: 'wx-bg', provider_kind: 'wechat_bridge', listening: false, configured: true, account_id: 'wx-bg', adapter: 'stopped' }];
+    fixture = createImSettingsFixture(state);
+    const poll = vi.spyOn(fixture.client.imSessions, 'pollWechatQr')
+      .mockResolvedValueOnce({ status: 'wait' })
+      .mockResolvedValueOnce({ status: 'confirmed', provider_instance_id: 'wx-bg' });
+
+    const container = await render();
+    await click(container, '[data-im-connect-toggle]');
+    await click(container, '[data-im-wechat-scan]');
+    expect(container.querySelector('[data-im-wechat-image]')).not.toBeNull();
+
+    // Close the SidePanel via the toggle button without clicking cancel
+    await click(container, '[data-im-connect-toggle]');
+    expect(container.querySelector('[data-im-connect-drawer]')).toBeNull();
+    expect(fixture.calls.some((item) => item.operation === 'cancelWechatQr')).toBe(false);
+
+    // Let two poll intervals fire while the panel is closed
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 3_200)); });
+    expect(poll).toHaveBeenCalled();
+    expect(fixture.calls.filter((item) => item.operation === 'listen')).toEqual([{ operation: 'listen', id: 'wx-bg', body: true }]);
   });
 });
