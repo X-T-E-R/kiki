@@ -227,6 +227,10 @@ describe('settings transfer through the authenticated klient HTTP host', () => {
   });
 
   it('R1 omits credential-bearing MCP arguments and preserves unchecked target credentials', async () => {
+    const compositeFlags = ['auth', 'token', 'bearer'].flatMap((word) => ['-', '_'].flatMap((separator) => {
+      const flag = `${word}${separator}header`;
+      return [flag, flag.toUpperCase()];
+    }));
     const forms = [
       ['mcp-remote', 'https://mcp.example.test', '--header', `Authorization: Bearer ${credential}`],
       ['--header', `X-Api-Key: ${credential}`],
@@ -234,7 +238,12 @@ describe('settings transfer through the authenticated klient HTTP host', () => {
       [`--headers=Authorization: Bearer ${credential}`],
       ['--access-token', credential],
       [`--api-key=${credential}`],
+      ...compositeFlags.flatMap((flag) => [[`--${flag}`, credential], [`--${flag}=${credential}`]]),
+      ['--authHeader', credential],
+      ['--httpAccessKeyHeader', credential],
+      [`--HTTP_ACCESS_KEY_HEADER=${credential}`],
     ];
+    const ordinaryArgs = ['serve', '--transport', 'stdio', '--host=127.0.0.1', '--port', '3000', '--log-level', 'info', '--author', 'Example', '--tokenizer', 'basic', '--headerless', '--secretary-mode', 'off'];
     const sourceMcp = source.core.accessor.get(IMcpConfigStore);
     const targetMcp = target.core.accessor.get(IMcpConfigStore);
     for (const [index, args] of forms.entries()) {
@@ -242,17 +251,22 @@ describe('settings transfer through the authenticated klient HTTP host', () => {
       await sourceMcp.add({ name, transport: 'stdio', command: 'example-tool', args, enabled: false });
       await targetMcp.add({ name, transport: 'stdio', command: 'target-tool', args: ['--token', 'FAKE_TARGET_ONLY'], enabled: false });
     }
+    await sourceMcp.add({ name: 'ordinary-args', transport: 'stdio', command: 'example-tool', args: ordinaryArgs, enabled: false });
     try {
       const plain = await from.global.settingsTransfer.export({ categories: ['tools'], includeCredentials: false });
       expect(plain.resources.some((entry) => entry.key.startsWith('credential-args-'))).toBe(false);
       expect(JSON.stringify(plain)).not.toContain(credential);
+      expect(plain.resources.find((entry) => entry.key === 'ordinary-args')).toMatchObject({ value: { args: ordinaryArgs } });
       const privateBundle = await from.global.settingsTransfer.export({ categories: ['tools'], includeCredentials: true });
       expect(privateBundle.resources.filter((entry) => entry.key.startsWith('credential-args-'))).toHaveLength(forms.length);
+      for (const [index, args] of forms.entries()) expect(privateBundle.resources.find((entry) => entry.key === `credential-args-${index}`)).toMatchObject({ value: { args } });
       const unchecked = await to.global.settingsTransfer.preview({ bundle: privateBundle, categories: ['tools'], mode: 'overwrite', includeCredentials: false });
       expect((await to.global.settingsTransfer.apply({ previewId: unchecked.previewId })).status).toBe('complete');
       for (const index of forms.keys()) expect(await targetMcp.get(`credential-args-${index}`)).toMatchObject({ command: 'target-tool', args: ['--token', 'FAKE_TARGET_ONLY'] });
+      expect(await targetMcp.get('ordinary-args')).toMatchObject({ command: 'example-tool', args: ordinaryArgs });
     } finally {
       for (const index of forms.keys()) { await sourceMcp.remove(`credential-args-${index}`); await targetMcp.remove(`credential-args-${index}`); }
+      await sourceMcp.remove('ordinary-args'); await targetMcp.remove('ordinary-args');
     }
   });
 

@@ -440,9 +440,16 @@ function recordConfigResult(result: SettingsTransferApplyResult, domain: string,
 function mcpInlineCredentials(value: unknown): boolean {
   if (!isPlainObject(value)) return false;
   if (unsafeUrl(value['url'])) return true;
-  return Array.isArray(value['args']) && value['args'].some((arg) => typeof arg === 'string' && (unsafeUrl(arg)
-    || /^-H|^--(?:headers?|auth)(?:[=\s]|$)/u.test(arg)
-    || /(?:api[-_]?key|access[-_]?key|token|secret|password|authorization|bearer)(?:[\s:=]|$)/iu.test(arg)));
+  return Array.isArray(value['args']) && value['args'].some((arg) => typeof arg === 'string' && mcpCredentialArgument(arg));
+}
+function mcpCredentialArgument(arg: string): boolean {
+  if (unsafeUrl(arg) || /(?:api[-_]?key|access[-_]?key|token|secret|password|authorization|bearer)(?:[\s:=]|$)/iu.test(arg)) return true;
+  if (arg === '-H' || (arg.startsWith('-H') && /[:=]/u.test(arg.slice(2)))) return true;
+  const flag = /^--?([^=\s]+)(?:=|$)/u.exec(arg)?.[1];
+  if (flag === undefined) return false;
+  const words = flag.replaceAll(/([a-z0-9])([A-Z])/gu, '$1-$2').replaceAll(/([A-Z]+)([A-Z][a-z])/gu, '$1-$2').toLowerCase().split(/[-_]+/u);
+  return words.some((word, index) => /^(?:auth|authorization|bearer|token|secret|password|headers?|credentials?|apikey|accesskey)$/u.test(word)
+    || ((word === 'api' || word === 'access') && words[index + 1] === 'key'));
 }
 function promptReferences(value: unknown): readonly string[] {
   const refs = new Set<string>();
