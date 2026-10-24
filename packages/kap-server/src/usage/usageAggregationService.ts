@@ -6,6 +6,7 @@ import {
   type UsageFact,
   type UsageFactTotals,
   type UsageFactReadBudget,
+  type UsageFactSnapshot,
   IUsageFactStore,
   UsageFactCursorChangedError,
   IQueryStore,
@@ -264,7 +265,7 @@ interface SessionAccumulator extends AggregateAccumulator {
 
 export class UsagePageTokenMismatchError extends Error {}
 
-/** Incremental usage projection for managed append/rewrite stores. Tracked sources reuse complete verified checkpoints until an event or a ten-minute safety recheck; untracked sources, export and rescan validate inventories, sizes and mtimes. Bounded views never replace full checkpoints. External rewrites preserving size and mtime remain outside the consistency contract. A bounded range does not read a source whose filesystem mtime is an epoch millisecond older than the range start: usage record time is assigned before that write, and a later append moves mtime. A complete bounded query stores an unpriced folded projection; the next process reads it back when every in-range watermark still matches, and a pure append folds only its tail. A default-budget fold replays fact journals from a byte cursor and pages those facts before opening further sources. */
+/** Incremental usage projection for managed append/rewrite stores. Tracked sources reuse complete verified checkpoints until an event or a ten-minute safety recheck; untracked sources, export and rescan validate inventories, sizes and mtimes. Bounded views never replace full checkpoints. External rewrites preserving size and mtime remain outside the consistency contract. A bounded range does not read a source whose filesystem mtime is an epoch millisecond older than the range start: usage record time is assigned before that write, and a later append moves mtime. A complete bounded query stores an unpriced folded projection; the next process reads it back when every in-range watermark still matches, and a pure append folds only its tail. A default-budget fold replays fact journals from a byte cursor and pages those facts before opening further sources. Export replays whole-source fact journals without materializing range indexes, while retaining source verification and canonical recovery. */
 export class UsageAggregationService {
   private readonly cache = new Map<string, SessionCacheEntry>();
   private readonly pendingWireLines = new Map<string, WireLineContinuation>();
@@ -990,7 +991,7 @@ export class UsageAggregationService {
   private async readSession(
     summary: SessionSummary,
     budget: ScanBudget,
-    preserveMissingSources = false,
+    exportRead = false,
     prepared?: PreparedSession,
     range?: RangeBounds,
   ): Promise<SessionRecords | undefined> {
@@ -1013,13 +1014,13 @@ export class UsageAggregationService {
     if (prepared?.current) {
       return { summary, records: prepared.persisted.records, complete: true, deleted: false };
     }
-    if (prepared === undefined && cached?.complete && await this.cacheIsCurrent(summary, cached.persisted, !preserveMissingSources)) {
+    if (prepared === undefined && cached?.complete && await this.cacheIsCurrent(summary, cached.persisted, !exportRead)) {
       return { summary, records: cached.persisted.records, complete: true, deleted: false };
     }
     const revision = this.sessionFlights.has(cacheKey) ? undefined : this.revisionOf(cacheKey);
     let flight = this.sessionFlights.get(cacheKey);
     if (flight === undefined) {
-      flight = this.loadSessionIncremental(summary, budget.remainingRecords, budget.deadlineAt, undefined, preserveMissingSources, prepared?.view ? undefined : prepared?.persisted, undefined, { signal: budget.signal, maxFacts: budget.remainingFacts, factSignal: budget.factSignal, factBudget: budget.factBudget, rangeStart: range?.startAt });
+      flight = this.loadSessionIncremental(summary, budget.remainingRecords, budget.deadlineAt, undefined, exportRead, prepared?.view ? undefined : prepared?.persisted, undefined, { signal: budget.signal, maxFacts: budget.remainingFacts, factSignal: budget.factSignal, factBudget: budget.factBudget, rangeStart: range?.startAt });
       this.sessionFlights.set(cacheKey, flight);
       const clearFlight = (): void => {
         if (this.sessionFlights.get(cacheKey) === flight) this.sessionFlights.delete(cacheKey);
@@ -1034,11 +1035,11 @@ export class UsageAggregationService {
       budget.factSignal?.throwIfAborted();
       if (!(error instanceof Error) || (error.name !== 'AbortError' && error.name !== 'TimeoutError')) throw error;
       if (this.sessionFlights.get(cacheKey) === flight) this.sessionFlights.delete(cacheKey);
-      return this.readSession(summary, budget, preserveMissingSources, undefined, range);
+      return this.readSession(summary, budget, exportRead, undefined, range);
     }
     if (result.targetedAgentIds !== undefined) {
       if (this.sessionFlights.get(cacheKey) === flight) this.sessionFlights.delete(cacheKey);
-      return this.readSession(summary, budget, preserveMissingSources, undefined, range);
+      return this.readSession(summary, budget, exportRead, undefined, range);
     }
     if (result.scannedRecordCount > budget.remainingRecords) {
       budget.incompleteReason = 'record_budget';
@@ -1088,7 +1089,7 @@ export class UsageAggregationService {
     recordLimit: number,
     deadlineAt: number,
     onScannedRecord?: () => void,
-    preserveMissingSources = false,
+    exportRead = false,
     prepared?: PersistentSessionRecords,
     targetedAgentIds?: readonly string[],
     options: AgentUsageReadOptions & { factSignal?: AbortSignal; factBudget?: UsageFactReadBudget; projectionOnly?: boolean } = {},
@@ -1098,13 +1099,14 @@ export class UsageAggregationService {
     const logs = this.core.accessor.get(IAppendLogStore);
     const cacheKey = sessionKey(summary);
     const cached = options.projectionOnly ? undefined : this.readCachedSession(cacheKey)?.persisted;
-    const persisted = cached ?? prepared ?? await this.readPersistentSession(storage, cacheKey, undefined, options.factSignal ?? options.signal, targetedAgentIds, options.factBudget, options.projectionOnly);
+    const exportSnapshots = exportRead ? new Map<string, UsageFactSnapshot>() : undefined;
+    const persisted = cached ?? prepared ?? await this.readPersistentSession(storage, cacheKey, undefined, options.factSignal ?? options.signal, targetedAgentIds, options.factBudget, options.projectionOnly, exportSnapshots);
     if (persisted.readComplete === false) return { session: { summary, records: persisted.records, complete: false, deleted: false }, persisted, scannedRecordCount: 0, incompleteReason: persisted.incompleteReason ?? 'record_budget' };
     const sessionScope = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
     options.signal?.throwIfAborted();
     const agentIds = targetedAgentIds ?? await storage.list(`${sessionScope}/agents`);
     const agentSet = new Set(agentIds);
-    if (preserveMissingSources && Object.keys(persisted.agents).some((agent) => !agentSet.has(agent))) return { session: { summary, records: persisted.records, complete: false, deleted: false }, persisted, scannedRecordCount: 0, incompleteReason: null };
+    if (exportRead && Object.keys(persisted.agents).some((agent) => !agentSet.has(agent))) return { session: { summary, records: persisted.records, complete: false, deleted: false }, persisted, scannedRecordCount: 0, incompleteReason: null };
     const recordsByAgent = new Map<string | undefined, NormalizedUsageRecord[]>();
     for (const record of persisted.records) {
       if (targetedAgentIds === undefined && record.sourceAgentId !== undefined && !agentSet.has(record.sourceAgentId)) continue;
@@ -1161,7 +1163,9 @@ export class UsageAggregationService {
           ? { checkpoint: persisted.agents[agentId], records: recordsByAgent.get(agentId) ?? [], readComplete: true }
           : options.projectionOnly
             ? { ...await facts.summary(wireScope, options.factSignal ?? options.signal, { budget: options.factBudget }), records: [] }
-            : await facts.read(wireScope, undefined, options.factSignal ?? options.signal, { budget: options.factBudget });
+            : exportRead
+              ? exportSnapshots?.get(agentId) ?? await this.readExportFactSnapshot(wireScope, options.factSignal ?? options.signal)
+              : await facts.read(wireScope, undefined, options.factSignal ?? options.signal, { budget: options.factBudget });
       } catch (error) {
         options.signal?.throwIfAborted();
         if (!options.factSignal?.aborted && this.now() < deadlineAt) throw error;
@@ -1186,7 +1190,7 @@ export class UsageAggregationService {
         recordsByAgent.set(agentId, [...snapshot.records]);
         hasFacts = true;
       }
-      if (preserveMissingSources && source.size === undefined && (checkpoint?.size ?? 0) > 0) return { session: { summary, records: persisted.records, complete: false, deleted: false }, persisted, scannedRecordCount, incompleteReason: null };
+      if (exportRead && source.size === undefined && (checkpoint?.size ?? 0) > 0) return { session: { summary, records: persisted.records, complete: false, deleted: false }, persisted, scannedRecordCount, incompleteReason: null };
       let reset = checkpoint !== undefined && (size < checkpoint.offset || (checkpoint.generation ?? 'legacy') !== generation);
       if (checkpoint !== undefined && !reset && (size !== checkpoint.size || mtimeMs !== checkpoint.mtimeMs)) {
         const boundaryHash = await this.boundaryHash(storage, wireScope, checkpoint.offset);
@@ -1272,6 +1276,7 @@ export class UsageAggregationService {
     targetedAgentIds?: readonly string[],
     budget?: UsageFactReadBudget,
     projectionOnly = false,
+    exportSnapshots?: Map<string, UsageFactSnapshot>,
   ): Promise<PersistentSessionRecords> {
     const [workspaceId, sessionId] = cacheKey.split('\0');
     const scope = sessionScopeOf(workspacePersistenceScope('sessions', workspaceId!), sessionId!);
@@ -1292,6 +1297,11 @@ export class UsageAggregationService {
         const wireScope = agentScopeOf(scope, agentId);
         if (range?.startAt !== undefined && mtimeExcludesRange(await storage.mtime(wireScope, AGENT_WIRE_RECORD_KEY) ?? 0, range.startAt)) {
           return { agentId, snapshot: { records: [] as readonly NormalizedUsageRecord[], readComplete: true } };
+        }
+        if (exportSnapshots !== undefined) {
+          const snapshot = await this.readExportFactSnapshot(wireScope, signal);
+          exportSnapshots.set(agentId, snapshot);
+          return { agentId, snapshot };
         }
         return { agentId, snapshot: projectionOnly
           ? this.factJournalReplayEnabled()
@@ -1341,6 +1351,49 @@ export class UsageAggregationService {
       }
     }
     return { version: PERSISTENCE_VERSION, sessionKey: cacheKey, records, agents };
+  }
+
+  private async readExportFactSnapshot(wireScope: string, signal?: AbortSignal): Promise<UsageFactSnapshot> {
+    const records: NormalizedUsageRecord[] = [];
+    let checkpoint: UsageFactSnapshot['checkpoint'];
+    try {
+      const directory = factJournalDirectory(wireScope);
+      const storage = this.core.accessor.get(IFileSystemStorageService);
+      await waitForSource(this.core.accessor.get(IAppendLogStore).flush(directory, FACT_JOURNAL_KEY), signal);
+      const size = await waitForSource(storage.size(directory, FACT_JOURNAL_KEY), signal) ?? 0;
+      if (size === 0) return { records };
+      const consume = (line: string): void => {
+        if (line.trim().length === 0) return;
+        const batch = JSON.parse(line) as { version: number; start: number; checkpoint: UsageFactSnapshot['checkpoint']; records: NormalizedUsageRecord[] };
+        if (batch?.version !== 1 || !Number.isSafeInteger(batch.start) || batch.start < 0 ||
+          !isWireCheckpoint(batch.checkpoint) || typeof batch.checkpoint.generation !== 'string' ||
+          batch.checkpoint.offset < batch.start || !Array.isArray(batch.records) || !batch.records.every(isNormalizedUsageRecord)) throw new Error('Invalid usage fact batch');
+        if (batch.start === 0 || (checkpoint !== undefined && checkpoint.generation !== batch.checkpoint.generation)) {
+          records.length = 0;
+          checkpoint = undefined;
+        }
+        if (batch.start === (checkpoint?.offset ?? 0)) {
+          for (const record of batch.records) records.push(record);
+          checkpoint = { ...batch.checkpoint, valid: (checkpoint?.valid ?? true) && batch.checkpoint.valid };
+        }
+      };
+      const decoder = new TextDecoder();
+      let pending = '';
+      for await (const chunk of storage.readStream(directory, FACT_JOURNAL_KEY, { start: 0, end: size - 1 }, { signal, chunkBytes: 64 * 1024 })) {
+        pending += decoder.decode(chunk, { stream: true });
+        for (let newline = pending.indexOf('\n'); newline >= 0; newline = pending.indexOf('\n')) {
+          consume(pending.slice(0, newline));
+          pending = pending.slice(newline + 1);
+        }
+        await yieldToEventLoop(undefined, { signal });
+      }
+      pending += decoder.decode();
+      if (pending.length > 0) consume(pending);
+      return { checkpoint, records };
+    } catch {
+      signal?.throwIfAborted();
+      return this.core.accessor.get(IUsageFactStore).read(wireScope, undefined, signal);
+    }
   }
 
   private async factJournalCheckpoint(wireScope: string): Promise<WireCheckpoint | undefined> {

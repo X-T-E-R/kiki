@@ -192,6 +192,56 @@ describe('usage export real source → SQLite outbox → loopback receiver → d
     expect(r.observed.join('\n')).not.toContain(SENTINEL); expect(JSON.stringify(f.service.exportLocal(d.id))).not.toContain(SENTINEL);
   });
 
+  it('publishes a complete source transaction before yielding through bounded staging cleanup', async () => {
+    const f = await fixture(); const d = await destination(f.service);
+    for (let i = 0; i < 33; i++) f.store.stage('bounded-cleanup', projectSource({ key: `cleanup-${i}`, workspaceId: 'work', kind: 'session', records: [{ time: T + 1, model: 'gpt-5', usageKnown: true, usage: { inputOther: 1, output: 0, inputCacheRead: 0, inputCacheCreation: 0 } }] }, priced));
+    const db = (f.store as unknown as { db: DatabaseSync }).db;
+    const staged = () => Number(db.prepare('SELECT COUNT(*) AS n FROM temp.staging').get()!['n']);
+    expect(db.prepare("SELECT name FROM main.sqlite_master WHERE name='staging'").get()).toBeUndefined();
+    expect(db.prepare('PRAGMA main.synchronous').get()!['synchronous']).toBe(2);
+    expect(db.prepare('PRAGMA temp_store').get()!['temp_store']).toBe(1);
+    const publish = f.store.publishStage.bind(f.store);
+    const observed: number[] = [];
+    const spy = vi.spyOn(f.store, 'publishStage').mockImplementation((...args) => {
+      publish(...args);
+      expect(staged()).toBe(33);
+      expect(f.store.meta('scan-complete')).toBe('true');
+      expect(f.store.preview(d.id).items[0]!.bucket!.tokens.input_other).toBe(33);
+    });
+    let tick: NodeJS.Immediate;
+    const inspect = () => { observed.push(staged()); expect(f.store.preview(d.id).items[0]!.bucket!.tokens.input_other).toBe(33); tick = setImmediate(inspect); };
+    tick = setImmediate(inspect);
+    try {
+      await f.store.publishStageAsync('bounded-cleanup');
+      expect(staged()).toBe(0);
+      expect(observed).toEqual([17, 1, 0]);
+    } finally { clearImmediate(tick); spy.mockRestore(); }
+  });
+
+  it('replays cold fact journals without materializing a query index, preserving duplicate ordinals, zero quality and rewrite resets', async () => {
+    const f = await fixture({ cacheMaxRecords: 0 }); const s = f.add('journal');
+    const zero = { output: 0, inputCacheRead: 0, inputCacheCreation: 0 };
+    const known = record(T + 1, 2, zero);
+    await f.write(s.id, 'main', [known, known, record(T + 2, 0, zero), { ...record(T + 3, 0, zero), usageKnown: false }, { ...record(T + 4, 0, zero), usageKnown: undefined }]);
+    const read = vi.spyOn(f.core.accessor.get(IUsageFactStore), 'read');
+    const batch = vi.spyOn(f.core.accessor.get(IQueryStore), 'batch');
+    try {
+      const d = await destination(f.service); await f.service.scan();
+      const original = f.store.preview(d.id).items;
+      expect(original[0]!.bucket).toMatchObject({ tokens: { input_other: 4 }, quality: { known_records: 3, missing_records: 1, legacy_zero_records: 1 } });
+      await f.restart(); await f.service.scan();
+      expect(f.store.preview(d.id).items).toEqual(original);
+      await f.storage.append('sessions/work/journal/agents/main', AGENT_WIRE_RECORD_KEY, Buffer.from(JSON.stringify(known) + '\n'));
+      await f.service.scan();
+      expect(f.store.preview(d.id).items[0]!.bucket).toMatchObject({ tokens: { input_other: 6 }, quality: { known_records: 4, missing_records: 1, legacy_zero_records: 1 } });
+      await f.core.accessor.get(IAppendLogStore).rewrite('sessions/work/journal/agents/main', AGENT_WIRE_RECORD_KEY, [record(T + 1, 7, zero)]);
+      await f.service.scan();
+      expect(f.store.preview(d.id).items[0]!.bucket).toMatchObject({ tokens: { input_other: 7 }, quality: { known_records: 1, missing_records: 0, legacy_zero_records: 0 } });
+      expect(f.service.status()).toMatchObject({ scan_complete: true, scan_error: null });
+      expect(read).not.toHaveBeenCalled(); expect(batch).not.toHaveBeenCalled();
+    } finally { read.mockRestore(); batch.mockRestore(); }
+  });
+
   it('retains the previous complete source while budget-limited, then publishes a complete correction; force detects same size/mtime rewrite without resetting ACK', async () => {
     const f = await fixture({ wireRecordBudget: 2 }); const r = await receiverFixture(); const s = f.add('rewrite');
     await f.write(s.id, 'main', [record(T + 1, 10)]); const d = await destination(f.service, r.endpoint, r.port); await enable(f.service, d.id); await f.service.syncNow(d.id);
@@ -434,6 +484,9 @@ it.runIf(process.env['KIKI_USAGE_EXPORT_SCALE'] === '1')('measures 500k records 
   }
   const d = await destination(f.service); const baseline = process.memoryUsage(); let maxHeap = baseline.heapUsed; let maxRss = baseline.rss;
   let publicationMs = 0; const publish = f.store.publishStage.bind(f.store); vi.spyOn(f.store, 'publishStage').mockImplementation((...args) => { const before = performance.now(); publish(...args); publicationMs = Math.max(publicationMs, performance.now() - before); });
+  let stageMs = 0; const stage = f.store.stage.bind(f.store); f.store.stage = (...args) => { const before = performance.now(); stage(...args); stageMs = Math.max(stageMs, performance.now() - before); };
+  let factReadCalls = 0; const facts = f.core.accessor.get(IUsageFactStore); const readFacts = facts.read.bind(facts);
+  facts.read = (...args) => { factReadCalls++; return readFacts(...args); };
   const sample = setInterval(() => { const usage = process.memoryUsage(); maxHeap = Math.max(maxHeap, usage.heapUsed); maxRss = Math.max(maxRss, usage.rss); }, 10);
   mark('baseline'); observer.observe({ entryTypes: ['gc'] });
   const delay = monitorEventLoopDelay({ resolution: 10 }); delay.enable(); const started = performance.now(); let slices = 0;
@@ -446,7 +499,8 @@ it.runIf(process.env['KIKI_USAGE_EXPORT_SCALE'] === '1')('measures 500k records 
   const incrementalStarted = performance.now(); await f.service.scan(); const incrementalMs = performance.now() - incrementalStarted;
   mark('unchanged');
   await new Promise<void>((resolve) => setTimeout(resolve, 20)); clearInterval(sample); delay.disable(); observer.disconnect();
-  process.stdout.write(JSON.stringify({ benchmark: 'usage-export-500k', records: ordinal, wire_files: 2000, sessions: 1000, slices, cold_ms: coldMs, unchanged_ms: incrementalMs, projection_ms: projectionMs, publication_max_ms: publicationMs, cache_records: f.reader.cacheStatus().records, additional_sampled_heap_mib: (maxHeap - baseline.heapUsed) / 1048576, additional_sampled_rss_mib: (maxRss - baseline.rss) / 1048576, event_loop_delay_max_ms: delay.max / 1e6, platform: process.platform, node: process.version, phases, gc_count: gcCount, gc_ms: gcMs, gc_max_ms: gcMaxMs }) + '\n');
+  process.stdout.write(JSON.stringify({ benchmark: 'usage-export-500k', records: ordinal, wire_files: 2000, sessions: 1000, slices, cold_ms: coldMs, unchanged_ms: incrementalMs, projection_ms: projectionMs, publication_max_ms: publicationMs, cache_records: f.reader.cacheStatus().records, additional_sampled_heap_mib: (maxHeap - baseline.heapUsed) / 1048576, additional_sampled_rss_mib: (maxRss - baseline.rss) / 1048576, event_loop_delay_max_ms: delay.max / 1e6, platform: process.platform, node: process.version, phases, gc_count: gcCount, gc_ms: gcMs, gc_max_ms: gcMaxMs, unchanged_scan_error: f.service.status().scan_error, stage_max_ms: stageMs, fact_read_calls: factReadCalls }) + '\n');
+  expect(f.service.status()).toMatchObject({ scan_complete: true, scan_error: null });
 }, 120000);
 
 describe('VibeCafe sign-in → consent → export using a synthetic destination service', () => {
