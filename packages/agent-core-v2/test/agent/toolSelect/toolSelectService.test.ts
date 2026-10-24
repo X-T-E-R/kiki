@@ -1188,6 +1188,60 @@ describe('AgentToolSelectService executor interception', () => {
     expect(h.sut.resolveBridgeCall(toolCall('call-2', CALL_TOOL_NAME, { name: MCP_GONE, arguments: {} })).name).toBe(CALL_TOOL_NAME);
   });
 
+  it('announces a deferred browser operation, keeps the direct call unavailable, then runs it once after SelectTools and the schema step', async () => {
+    const h = createExecutorHarness();
+    const snapshot = new EchoTool('browser__agent_browser_snapshot');
+    const registration = h.registry.register(snapshot, { source: 'builtin', disclosure: 'deferred' });
+    disposables.add(registration);
+    disposables.add(h.registry.register(h.ix.createInstance(SelectToolsTool), { source: 'builtin' }));
+    disposables.add(h.registry.register(h.ix.createInstance(CallTool), { source: 'builtin' }));
+    const resident = () => JSON.stringify(h.sut.shapeTools(h.registry.list()).filter((entry) => entry.deferred !== true));
+    const before = resident();
+    expect(before).not.toContain('browser__agent_browser_snapshot');
+    expect(h.sut.isLoadable('browser__agent_browser_snapshot')).toBe(true);
+
+    const blocked = await execute(h, toolCall('call-direct', 'browser__agent_browser_snapshot'));
+    expect(blocked[0]!.result.output).toContain('is available but not loaded');
+    expect(snapshot.calls).toBe(0);
+    const wrapper = toolCall('call-bridge', CALL_TOOL_NAME, { name: 'browser__agent_browser_snapshot', arguments: { ready: true } });
+    expect(h.sut.resolveBridgeCall(wrapper).name).toBe(CALL_TOOL_NAME);
+
+    const announced = await announce(h);
+    expect(announced).toContain('<tools_added>\nbrowser__agent_browser_snapshot —');
+    expect(await announce(h, 2)).toBeUndefined();
+    expect(h.sut.resolveBridgeCall(wrapper).name).toBe(CALL_TOOL_NAME);
+    expect(resident()).toBe(before);
+
+    const select = h.ix.createInstance(SelectToolsTool);
+    const selected = select.resolveExecution({ names: ['browser__agent_browser_snapshot', 'browser__ego_run'] });
+    if (selected.isError === true) throw new Error('expected a runnable execution');
+    expect(await selected.execute({ turnId: 1, toolCallId: 'select-1', signal: new AbortController().signal })).toEqual({
+      output: [
+        'Loaded: browser__agent_browser_snapshot',
+        'Unknown tool: browser__ego_run. Pick from the latest announced tools list.',
+      ].join('\n'),
+    });
+    expect(h.sut.resolveBridgeCall(wrapper)).toMatchObject({ name: 'browser__agent_browser_snapshot', arguments: '{"ready":true}' });
+    const declared = await declareSchemas(h, 3);
+    expect(declared?.tools?.map((tool) => tool.name)).toEqual(['browser__agent_browser_snapshot']);
+    expect(declared?.origin).toMatchObject({ kind: 'injection', variant: DYNAMIC_TOOL_SCHEMA_VARIANT });
+    expect(resident()).toBe(before);
+    expect(h.sut.shapeTools(h.registry.list()).find((entry) => entry.name === 'browser__agent_browser_snapshot')?.deferred).toBe(true);
+
+    const ran = await execute(h, h.sut.resolveBridgeCall(wrapper));
+    expect(ran[0]).toMatchObject({ toolName: 'browser__agent_browser_snapshot', result: { output: 'echo ok' } });
+    expect(snapshot.calls).toBe(1);
+
+    await registration.dispose();
+    const removed = await announce(h, 4);
+    expect(removed).toContain('<tools_removed>\nbrowser__agent_browser_snapshot\n</tools_removed>');
+    const missing = await execute(h, toolCall('call-gone', 'browser__agent_browser_snapshot'));
+    expect(missing[0]!.result.output).toBe(
+      'Tool "browser__agent_browser_snapshot" was loaded but is no longer registered. Do not retry it unless it becomes available again.',
+    );
+    expect(snapshot.calls).toBe(1);
+  });
+
   it('keeps plugin tools off tools[] and reuses history after unload/reload', async () => {
     const h = createHarness();
     const tool = new EchoTool('plugin__example__read');
@@ -1295,6 +1349,19 @@ describe('AgentToolSelectService loadable-tools announcements', () => {
     expect(first).not.toContain('<tools_removed>');
 
     expect(await announce(h, 2)).toBeUndefined();
+  });
+
+  it('does not reannounce an identical deferred browser operation registered again before the next boundary', async () => {
+    const h = createHarness();
+    disposables.add(h.registry.register(h.ix.createInstance(SelectToolsTool), { source: 'builtin' }));
+    const first = h.registry.register(new EchoTool('browser__agent_browser_snapshot'), { source: 'builtin', disclosure: 'deferred' });
+    disposables.add(first);
+    expect(await announce(h)).toContain('<tools_added>\nbrowser__agent_browser_snapshot —');
+    await first.dispose();
+    disposables.add(h.registry.register(new EchoTool('browser__agent_browser_snapshot'), { source: 'builtin', disclosure: 'deferred' }));
+    expect(await announce(h, 2)).toBeUndefined();
+    expect(h.sut.isLoadable('browser__agent_browser_snapshot')).toBe(true);
+    expect(h.sut.shapeTools(h.registry.list()).map((entry) => entry.name)).not.toContain('browser__agent_browser_snapshot');
   });
 
   it('waits until the next boundary before announcing registry diffs', async () => {

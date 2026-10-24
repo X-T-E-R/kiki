@@ -18,7 +18,7 @@ import { IShippedAgentProfileManager } from '#/app/shippedAgentProfiles/shippedA
 import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
-import { isToolActive } from '#/agent/toolPolicy/evaluate';
+import { isToolActive, isToolActiveComposed } from '#/agent/toolPolicy/evaluate';
 import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
@@ -529,10 +529,108 @@ describe('native browser agent selection, schema and local file channel', () => 
       const registry = ix.get(IAgentToolRegistryService);
       const described = JSON.parse((await service.connections({ action: 'tools', browser: 'ego', groups: ['page'] })).output as string) as Record<string, unknown>;
       expect(described).toMatchObject({ backend: 'ego-lite', namespace: 'ego-lite', backendToolCount: 0, nativeTool: 'browser__ego_run', executionMode: 'native-script', operations: [], loaded: [], allowed: true });
+      expect(described).not.toHaveProperty('callable');
       expect(described['contextIsolation']).toEqual(expect.stringContaining('task'));
       expect(described['contextIsolation']).toEqual(expect.stringContaining('shotDir'));
       expect(described['note']).toEqual(expect.stringContaining('zero typed donor operations'));
       expect(registry.list()).toEqual([]);
+    } finally { await ix.dispose(); }
+  });
+
+  it('keeps a loaded page operation registered until allow, source, or unload removes it', async () => {
+    const modelName = 'browser__agent_browser_snapshot';
+    const snapshot = { name: 'agent_browser_snapshot', description: 'snapshot', inputSchema: { type: 'object', properties: {} } };
+    const ix = new TestInstantiationService();
+    const profile: BrowserConfig['connections'][string] = { type: 'agent-browser-profile', name: 'Independent', enabled: true };
+    const browser = sameBrowserControl({ independent: profile });
+    let native = true;
+    let layers: Parameters<typeof isToolActiveComposed>[0] = { profile: { tools: ['*'] } };
+    const connect = vi.fn(async () => ({ browser: 'independent', state: 'ready' as const, executionHost: 'fixture-host', generation: 3 }));
+    ix.stub(IBrowserConnectionStore, browser.store);
+    ix.stub(defaults, { ready: Promise.resolve(undefined) });
+    ix.stub(IAgentScopeContext, { agentId: 'main' });
+    ix.stub(ISessionContext, { sessionId: 'session', sessionDir: '/fixture/session' });
+    ix.stub(ISessionWorkspaceContext, { workDir: '/fixture', additionalDirs: [] });
+    ix.stub(IAgentRuntimeService, {});
+    ix.stub(ISessionMediaStore, {});
+    ix.stub(ISessionInteractionService, { hasConsumer: () => false });
+    ix.stub(IFlagService, { enabled: () => native });
+    ix.stub(IConfigService, browser.configService);
+    ix.stub(IAgentToolPolicyService, {
+      isToolActiveForDisclosure: (toolName: string, source: 'builtin' | 'user' | 'mcp' | 'plugin' = 'builtin') => isToolActiveComposed(layers, toolName, source),
+    });
+    ix.set(IAgentToolRegistryService, new SyncDescriptor(AgentToolRegistryService));
+    ix.set(IEventBus, new SyncDescriptor(EventBusService));
+    ix.stub(IBrowserControlService, {
+      endTurn: async () => undefined,
+      catalog: async () => [snapshot],
+      connect,
+      status: async () => ({ browser: 'independent', state: 'ready' as const, executionHost: 'fixture-host', generation: 1 }),
+      tabs: async () => [{ tabId: 't2', targetId: 'live-target' }],
+    });
+    ix.set(IAgentBrowserService, new SyncDescriptor(AgentBrowserService));
+    const read = async () => JSON.parse((await ix.get(IAgentBrowserService).connections({ action: 'tools', browser: 'independent', groups: ['page'] })).output as string) as { loaded: string[]; callable?: boolean; allowed: boolean; note: string };
+    try {
+      const service = ix.get(IAgentBrowserService);
+      const registry = ix.get(IAgentToolRegistryService);
+      const main = await read();
+      expect(main.loaded).toEqual([modelName]);
+      expect(main.callable).toBe(false);
+      expect(main.allowed).toBe(true);
+      expect(main.note).toContain('registered names only');
+      expect(registry.list()).toEqual([expect.objectContaining({ name: modelName, source: 'builtin', disclosure: 'deferred' })]);
+      await service.connections({ action: 'connect', browser: 'independent' });
+      expect(connect).toHaveBeenCalledOnce();
+      expect(registry.list()).toEqual([expect.objectContaining({ name: modelName, source: 'builtin', disclosure: 'deferred' })]);
+
+      layers = { profile: { tools: ['*'] }, subagent: { explicitProfileTools: ['*'] } };
+      publishBrowser(browser.sections, browser.config);
+      expect(registry.resolve(modelName)).toBeUndefined();
+      const childStar = await read();
+      expect(childStar.loaded).toEqual([]);
+      expect(childStar.callable).toBe(false);
+      expect(childStar.allowed).toBe(true);
+
+      layers = { profile: { tools: ['*'] }, subagent: { explicitProfileTools: ['*', 'browser__*'] } };
+      publishBrowser(browser.sections, browser.config);
+      expect(registry.list()).toEqual([expect.objectContaining({ name: modelName, source: 'builtin', disclosure: 'deferred' })]);
+      expect((await read()).loaded).toEqual([modelName]);
+
+      layers = { profile: { tools: ['*'], disallowedTools: ['browser__*'] } };
+      publishBrowser(browser.sections, browser.config);
+      expect(registry.resolve(modelName)).toBeUndefined();
+      expect((await read()).loaded).toEqual([]);
+
+      layers = { profile: { tools: ['*'] } };
+      publishBrowser(browser.sections, browser.config);
+      expect(registry.resolve(modelName)).toBeDefined();
+      browser.config.disabledSources = ['independent-browser'];
+      publishBrowser(browser.sections, browser.config);
+      expect(registry.resolve(modelName)).toBeUndefined();
+      const sourceOff = await read();
+      expect(sourceOff.allowed).toBe(false);
+      expect(sourceOff.loaded).toEqual([]);
+      expect(sourceOff.callable).toBe(false);
+      expect(sourceOff.note).toContain('not in the allowed set');
+
+      browser.config.disabledSources = undefined;
+      browser.config.allowedBrowsers = ['other'];
+      publishBrowser(browser.sections, browser.config);
+      expect(registry.resolve(modelName)).toBeUndefined();
+      expect((await read()).allowed).toBe(false);
+
+      browser.config.allowedBrowsers = undefined;
+      native = false;
+      publishBrowser(browser.sections, browser.config);
+      expect(registry.resolve(modelName)).toBeUndefined();
+      expect((await read()).loaded).toEqual([]);
+      native = true;
+      publishBrowser(browser.sections, browser.config);
+      expect(registry.resolve(modelName)).toBeDefined();
+      const unloaded = JSON.parse((await service.connections({ action: 'tools', browser: 'independent', unload: ['agent_browser_snapshot'] })).output as string) as { loaded: string[]; callable?: boolean };
+      expect(unloaded.loaded).toEqual([]);
+      expect(unloaded.callable).toBe(false);
+      expect(registry.resolve(modelName)).toBeUndefined();
     } finally { await ix.dispose(); }
   });
 
