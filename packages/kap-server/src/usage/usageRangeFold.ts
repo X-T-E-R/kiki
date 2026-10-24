@@ -22,6 +22,11 @@ export interface FoldBucketView {
     readonly turnIds: number[];
     turnCount: number;
     unknownTurnRecords: number;
+    agents?: {
+      agentId: string;
+      turnIds: number[];
+      unknownTurnRecords: number;
+    }[];
   }[];
   sessionsTruncated: boolean;
 }
@@ -96,20 +101,32 @@ export class UsageRangeFold {
         bucket = bucket === undefined ? { kind: 'bucket', key: row.bucketKey, turnCount: 0, sessions: [], sessionsTruncated: false } : structuredClone(bucket);
         changed.set(row.bucket, bucket);
       }
-      if (row.turn !== undefined && read(row.turn) === undefined) { changed.set(row.turn, true); bucket!.turnCount++; }
+      const turnIsNew = row.turn !== undefined && read(row.turn) === undefined;
+      if (turnIsNew) { changed.set(row.turn!, true); bucket!.turnCount++; }
       let session = bucket!.sessions.find((value) => value.sessionId === summary.id);
       if (session === undefined && bucket!.sessions.length < this.sessionLimit) {
-        session = { sessionId: summary.id, turnIds: [], turnCount: 0, unknownTurnRecords: 0 };
+        session = { sessionId: summary.id, turnIds: [], turnCount: 0, unknownTurnRecords: 0, agents: [] };
         bucket!.sessions.push(session);
       }
       if (session === undefined) bucket!.sessionsTruncated = true;
-      else if (row.drilldown === undefined) session.unknownTurnRecords++;
-      else if (read(row.drilldown) === undefined) {
-        changed.set(row.drilldown, true);
-        session.turnCount++;
-        const index = session.turnIds.findIndex((value) => value > record.turnId!);
-        session.turnIds.splice(index < 0 ? session.turnIds.length : index, 0, record.turnId!);
-        if (session.turnIds.length > this.turnLimit) session.turnIds.pop();
+      else {
+        const agentId = record.agentId ?? record.sourceAgentId ?? '';
+        const listedAgents = session.agents ?? [];
+        if (session.agents === undefined) session.agents = listedAgents;
+        let agent = listedAgents.find((item) => item.agentId === agentId);
+        if (agent === undefined) {
+          agent = { agentId, turnIds: [], unknownTurnRecords: 0 };
+          listedAgents.push(agent);
+        }
+        if (row.drilldown === undefined) { session.unknownTurnRecords++; agent.unknownTurnRecords++; }
+        else if (read(row.drilldown) === undefined) {
+          changed.set(row.drilldown, true);
+          session.turnCount++;
+          const index = session.turnIds.findIndex((value) => value > record.turnId!);
+          session.turnIds.splice(index < 0 ? session.turnIds.length : index, 0, record.turnId!);
+          if (session.turnIds.length > this.turnLimit) session.turnIds.pop();
+        }
+        if (turnIsNew) agent.turnIds.push(record.turnId!);
       }
     }
     const ops: WriteOp[] = [...changed].map(([key, value]) => ({ kind: 'put', collection: this.collection, key, value, columns: value === true ? undefined : { view: value.kind === 'group' ? 1 : 2 } }));

@@ -34,7 +34,7 @@ import {
 } from '@kiki/agent-core-v2';
 import { Emitter, Event } from '@kiki/agent-core-v2/_base/event';
 import { UsageWireFramer } from '@kiki/agent-core-v2/agent/usage/usageWireFramer';
-import type { UsageQuery } from '@kiki/protocol';
+import type { UsageQuery, UsageResponse } from '@kiki/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { IModelPricingService } from '../src/pricing/modelPricingService';
@@ -305,6 +305,43 @@ function fixture(
 
 function scope(workspaceId: string, sessionId: string): string {
   return `sessions/${workspaceId}/${sessionId}/agents/main`;
+}
+
+async function openRange(sessions: readonly SessionSummary[], wires: Readonly<Record<string, readonly WireRecord[]>>) {
+  const home = mkdtempSync(join(tmpdir(), 'usage-range-buckets-'));
+  const ix = new TestInstantiationService();
+  const storage = new InMemoryStorageService();
+  ix.stub(IBootstrapService, stubBootstrap(home));
+  ix.stub(ILogService, stubLog());
+  ix.stub(IFileSystemStorageService, storage);
+  ix.set(IQueryStore, new SyncDescriptor(MiniDbQueryStore));
+  ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+  ix.set(IUsageFactStore, new SyncDescriptor(UsageFactStore));
+  const store = ix.get(IQueryStore);
+  queryFixtures.push({ home, ix, store });
+  const logs = ix.get(IAppendLogStore);
+  for (const [wireScope, wireRecords] of Object.entries(wires)) {
+    await storage.write(wireScope.slice(0, wireScope.lastIndexOf('/')), wireScope.slice(wireScope.lastIndexOf('/') + 1), new Uint8Array());
+    for (const record of wireRecords) logs.append(wireScope, 'wire.jsonl', record);
+    if (wireRecords.length > 0) await logs.flush(wireScope, 'wire.jsonl');
+  }
+  const pricing = {
+    ready: Promise.resolve(),
+    calculate: (_model: string, usage: { inputOther: number; output: number; inputCacheRead: number; inputCacheCreation: number }) => (usage.inputOther + usage.output + usage.inputCacheRead + usage.inputCacheCreation) / 4,
+  };
+  const core = { accessor: { get: (id: unknown) => {
+    if (id === ISessionIndex) return { listRecent: async () => ({ items: [...sessions] }) };
+    if (id === IRetainedUsageService) return { listDeletedSessions: async () => ({ items: [], scannedRecords: 0, complete: true }) };
+    if (id === IModelPricingService) return pricing;
+    return ix.get(id as typeof IQueryStore);
+  } } } as unknown as Scope;
+  return { logs, store, core };
+}
+
+function withRecords(base: Readonly<Record<string, readonly WireRecord[]>>, extra: Readonly<Record<string, readonly WireRecord[]>>): Record<string, readonly WireRecord[]> {
+  const merged: Record<string, readonly WireRecord[]> = {};
+  for (const key of new Set([...Object.keys(base), ...Object.keys(extra)])) merged[key] = [...(base[key] ?? []), ...(extra[key] ?? [])];
+  return merged;
 }
 
 async function query(service: UsageAggregationService, input: UsageQuery = {}) {
@@ -2118,6 +2155,89 @@ describe('shared agent and history usage projection', () => {
     expect(appended.reliability.complete).toBe(true);
     expect(appended.summary.tokens.output).toBe(3);
     expect(appended.reliability.usage_coverage?.known_records).toBe(3);
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it('keeps every bucket and drilldown when a stored projection appends across sessions, agents and turns', async () => {
+    const day0 = Date.UTC(2026, 9, 1);
+    const day1 = day0 + 86_400_000;
+    const now = day1 + 86_400_000;
+    const s1Main = scope('w', 's1');
+    const s1Child = s1Main.replace(/main$/, 'child');
+    const s2Main = scope('w', 's2');
+    const sessions = [summary('s1', 'w'), summary('s2', 'w')];
+    const initial: Record<string, readonly WireRecord[]> = {
+      [s1Main]: [
+        { ...usageRecord(day0, 1), agentId: 'main' },
+        { ...usageRecord(day0, 1), agentId: 'main' },
+        { ...usageRecord(day0), agentId: 'main' },
+        { ...usageRecord(day1, 3), agentId: 'main' },
+      ],
+      [s1Child]: [
+        { ...usageRecord(day0, 1), agentId: 'child' },
+        { ...usageRecord(day0, 2), agentId: 'child' },
+      ],
+      [s2Main]: [
+        usageRecord(day0, 4),
+        { ...usageRecord(day1, 5), agentId: 'main' },
+      ],
+    };
+    const extra: Record<string, readonly WireRecord[]> = {
+      [s1Main]: [
+        { ...usageRecord(day0, 1), agentId: 'main' },
+        { ...usageRecord(day0, 2), agentId: 'main' },
+        { ...usageRecord(day0), agentId: 'main' },
+        { ...usageRecord(day1, 9), agentId: 'main' },
+      ],
+      [s1Child]: [
+        { ...usageRecord(day0, 2), agentId: 'child' },
+        { ...usageRecord(day1, 3), agentId: 'child' },
+      ],
+      [s2Main]: [{ ...usageRecord(day1, 8), agentId: 'main' }],
+    };
+    const input = { range: 'custom', start_at: 0, end_at: now, dimension: 'model' } as const;
+    const sessionAt = (response: UsageResponse, startAt: number, sessionId: string) => response.trend.find((bucket) => bucket.start_at === startAt)?.drilldown.sessions.find((session) => session.session_id === sessionId);
+    const beforeHome = await openRange(sessions, initial);
+    const before = await new UsageAggregationService(beforeHome.core, () => now).query(input);
+    expect(before.reliability.complete).toBe(true);
+    expect(before.summary.tokens.output).toBe(8);
+    expect(before.trend.find((bucket) => bucket.start_at === day0)?.turn_count).toBe(4);
+    expect(sessionAt(before, day0, 's1')).toMatchObject({ turn_ids: [1, 2], turn_count: 2, unknown_turn_records: 1, turn_ids_truncated: false });
+    expect(sessionAt(before, day0, 's2')).toMatchObject({ turn_ids: [4], turn_count: 1, unknown_turn_records: 0 });
+    expect(before.trend.find((bucket) => bucket.start_at === day1)?.turn_count).toBe(2);
+    expect(before.trend.every((bucket) => bucket.drilldown.sessions_truncated === false)).toBe(true);
+    const afterHome = await openRange(sessions, withRecords(initial, extra));
+    const after = await new UsageAggregationService(afterHome.core, () => now).query(input);
+    expect(after.reliability.complete).toBe(true);
+    expect(after.summary.tokens.output).toBe(15);
+    expect(after.trend.find((bucket) => bucket.start_at === day0)?.turn_count).toBe(5);
+    expect(sessionAt(after, day0, 's1')).toMatchObject({ turn_ids: [1, 2], turn_count: 2, unknown_turn_records: 2 });
+    expect(after.trend.find((bucket) => bucket.start_at === day1)?.turn_count).toBe(5);
+    expect(sessionAt(after, day1, 's1')).toMatchObject({ turn_ids: [3, 9], turn_count: 2, unknown_turn_records: 0 });
+    expect(sessionAt(after, day1, 's2')).toMatchObject({ turn_ids: [5, 8], turn_count: 2, unknown_turn_records: 0 });
+    const saved = await openRange(sessions, initial);
+    expect((await new UsageAggregationService(saved.core, () => now, { usageFactBudget: 1 }).query(input)).reliability.complete).toBe(false);
+    const folded = new UsageAggregationService(saved.core, () => now);
+    let built = await folded.query(input);
+    for (let attempt = 0; attempt < 4 && !built.reliability.complete; attempt += 1) built = await folded.query(input);
+    expect(built.reliability.complete).toBe(true);
+    const get = vi.spyOn(saved.store, 'get');
+    const cold = new UsageAggregationService(saved.core, () => now);
+    const replayed = await cold.query(input);
+    expect(replayed.reliability.complete).toBe(true);
+    expect(replayed.summary).toEqual(before.summary);
+    expect(replayed.trend).toEqual(before.trend);
+    expect(replayed.reliability.usage_coverage).toEqual(before.reliability.usage_coverage);
+    expect(get).not.toHaveBeenCalled();
+    for (const [wireScope, wireRecords] of Object.entries(extra)) {
+      for (const record of wireRecords) saved.logs.append(wireScope, 'wire.jsonl', record);
+      await saved.logs.flush(wireScope, 'wire.jsonl');
+    }
+    const appended = await cold.query(input);
+    expect(appended.reliability.complete).toBe(true);
+    expect(appended.summary).toEqual(after.summary);
+    expect(appended.trend).toEqual(after.trend);
+    expect(appended.reliability.usage_coverage).toEqual(after.reliability.usage_coverage);
     expect(get).not.toHaveBeenCalled();
   });
 });

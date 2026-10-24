@@ -29,7 +29,7 @@ import type { UsageSourceChanges } from './usageSourceTracker';
 import { UsageReadAllowance } from '@kiki/agent-core-v2/agent/usage/usageWireFramer';
 import { readUsageWireTail, usageRecoveryPool, type UsageRecoveryPool, type WireLineContinuation } from './usageRecovery';
 import { UsageRangeFold, type FoldBucketView, type FoldedUsageRecord } from './usageRangeFold';
-import { appendProjectionAgent, bucketsFromAgents, buildRangeProjection, parseUsageRangeProjection, projectionFileName, projectionRows, projectionSessionOf, UsageProjectionFold, type UsageProjectionAgent, type UsageRangeProjection } from './usageRangeProjection';
+import { appendProjectionAgent, appendStoredBuckets, bucketsFromAgents, buildRangeProjection, parseUsageRangeProjection, projectionFileName, projectionRows, projectionSessionOf, UsageProjectionFold, type UsageProjectionAgent, type UsageRangeProjection } from './usageRangeProjection';
 
 const SOURCE_RECHECK_MS = 10 * 60_000;
 
@@ -1614,7 +1614,7 @@ export class UsageAggregationService {
       const updated = await this.updateProjectionAgents(projection, changes, query, listed.items, signal);
       if (updated === undefined) return undefined;
       projection = updated;
-      try { await this.writeProjection(fingerprint, projection); } catch { /* the memory copy still answers this process */ }
+      try { await this.writeProjection(fingerprint, projection); } catch {}
     }
     const response = await this.aggregateProjection(projection, raw, query, fingerprint, signal);
     if (response?.reliability.complete) this.loadedProjection = { fingerprint, projection, epoch: this.replayEpoch, verifiedAt: this.now() };
@@ -1678,6 +1678,7 @@ export class UsageAggregationService {
     if (changes.some((change) => !change.append || change.previous === undefined)) return undefined;
     const storage = this.core.accessor.get(IFileSystemStorageService);
     const facts = this.core.accessor.get(IUsageFactStore);
+    const tails: { scope: string; sessionId: string; records: UsageFact[] }[] = [];
     let next = projection;
     for (const change of changes) {
       const previous = change.previous;
@@ -1687,15 +1688,23 @@ export class UsageAggregationService {
       const tail = await readUsageWireTail(storage, change.scope, previous.watermark.size, change.size, allowance, this.now() + this.limits.deadlineMs, this.now, change.scope.split('/').at(-1), signal, undefined, this.pendingWireLines, JSON.stringify([change.generation, change.size, change.mtimeMs]), undefined, undefined, signal);
       if (!tail.complete || !tail.valid || tail.offset < change.size) return undefined;
       const records = tail.records.filter((record) => !record.invalid && inRange(record.time, query.range) && matchesFilters(record, query));
+      tails.push({ scope: change.scope, sessionId: change.sessionId, records });
       const boundaryHash = await this.boundaryHash(storage, change.scope, change.size);
       const updated = appendProjectionAgent(next, change.scope, { size: change.size, mtimeMs: change.mtimeMs, generation: change.generation, boundaryHash }, records, (record) => resolveBucket(record.time, summary, query).key);
       if (updated === undefined) return undefined;
       next = updated;
       try {
         await facts.commit(change.scope, previous.watermark.size, { generation: change.generation, offset: change.size, size: change.size, mtimeMs: change.mtimeMs, boundaryHash, valid: true }, tail.records);
-      } catch { /* the folded rows already include the tail */ }
+      } catch {}
     }
-    return next.storedBuckets ? { ...next, buckets: bucketsFromAgents(next.agents, this.limits.drilldownSessionLimit, this.limits.drilldownTurnLimit) } : next;
+    if (!next.storedBuckets) return next;
+    return {
+      ...next,
+      buckets: appendStoredBuckets(projection.buckets, projection.agents, tails, (sessionId, record) => {
+        const summary = listed.find((item) => item.id === sessionId) ?? { id: sessionId, workspaceId: '', createdAt: 0, updatedAt: 0, archived: false };
+        return resolveBucket(record.time, summary, query).key;
+      }, this.limits.drilldownSessionLimit, this.limits.drilldownTurnLimit),
+    };
   }
 
   private async aggregateProjection(projection: UsageRangeProjection, raw: UsageQuery, query: NormalizedQuery, fingerprint: string, signal: AbortSignal): Promise<UsageResponse> {
@@ -1835,17 +1844,42 @@ export class UsageAggregationService {
         bucket.push(row.record);
         rowsByScope.set(agent.scope, bucket);
       }
+      const turnsByScope = new Map<string, { bucket: string; turnIds: number[]; unknownTurnRecords: number }[]>();
+      for (const value of stored.values()) {
+        if (value === undefined || typeof value.key !== 'string') continue;
+        for (const session of value.sessions) {
+          for (const entry of session.agents ?? []) {
+            const inSession = agentsBySession.get(session.sessionId) ?? [];
+            const matched = inSession.filter((agent) => agent.scope.slice(agent.scope.lastIndexOf('/') + 1) === entry.agentId);
+            const agent = matched.length === 1 ? matched[0] : undefined;
+            if (agent === undefined) continue;
+            const turns = turnsByScope.get(agent.scope) ?? [];
+            turns.push({ bucket: value.key, turnIds: [...entry.turnIds], unknownTurnRecords: entry.unknownTurnRecords });
+            turnsByScope.set(agent.scope, turns);
+          }
+        }
+      }
       const projection: UsageRangeProjection = {
         version: 1,
         fingerprint,
         folded: true,
         storedBuckets: true,
         sessions: listed.map(projectionSessionOf),
-        buckets: [...stored.values()].filter((bucket): bucket is FoldBucketView => bucket !== undefined && typeof bucket.key === 'string'),
-        agents: agents.map((agent) => ({ ...agent, rows: rowsByScope.get(agent.scope) ?? [] })),
+        buckets: [...stored.values()].flatMap((bucket) => bucket === undefined || typeof bucket.key !== 'string' ? [] : [{
+          key: bucket.key,
+          turnCount: bucket.turnCount,
+          sessionsTruncated: bucket.sessionsTruncated,
+          sessions: bucket.sessions.map((session) => ({
+            sessionId: session.sessionId,
+            turnIds: [...session.turnIds],
+            turnCount: session.turnCount,
+            unknownTurnRecords: session.unknownTurnRecords,
+          })),
+        }]),
+        agents: agents.map((agent) => ({ ...agent, rows: rowsByScope.get(agent.scope) ?? [], turns: turnsByScope.get(agent.scope) ?? [] })),
       };
       await this.writeProjection(fingerprint, projection);
-    } catch { /* the next process repeats the bounded read */ }
+    } catch {}
   }
 
   private async advanceCompleteFold(head: RangeFoldHead, fold: UsageRangeFold, query: NormalizedQuery, budget: ScanBudget): Promise<boolean> {

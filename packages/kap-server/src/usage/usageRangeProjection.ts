@@ -145,6 +145,96 @@ export function projectionRows(projection: UsageRangeProjection): { readonly ses
   return projection.agents.flatMap((agent) => agent.rows.map((record) => ({ sessionId: agent.sessionId, record })));
 }
 
+export function appendStoredBuckets(
+  buckets: readonly FoldBucketView[],
+  agents: readonly UsageProjectionAgent[],
+  tails: readonly { readonly scope: string; readonly sessionId: string; readonly records: readonly UsageFact[] }[],
+  bucketOf: (sessionId: string, record: UsageFact) => string,
+  sessionLimit: number,
+  turnLimit: number,
+): FoldBucketView[] {
+  const next: FoldBucketView[] = buckets.map((bucket) => ({
+    key: bucket.key,
+    turnCount: bucket.turnCount,
+    sessionsTruncated: bucket.sessionsTruncated,
+    sessions: bucket.sessions.map((session) => ({
+      sessionId: session.sessionId,
+      turnIds: [...session.turnIds],
+      turnCount: session.turnCount,
+      unknownTurnRecords: session.unknownTurnRecords,
+    })),
+  }));
+  const byKey = new Map(next.map((bucket) => [bucket.key, bucket]));
+  const agentSeen = new Map<string, Set<number>>();
+  const sessionSeen = new Map<string, Set<number>>();
+  for (const agent of agents) {
+    const agentId = agent.scope.slice(agent.scope.lastIndexOf('/') + 1);
+    for (const turn of agent.turns) {
+      const agentKey = `${agent.sessionId}\0${turn.bucket}\0${agentId}`;
+      const ids = agentSeen.get(agentKey) ?? new Set<number>();
+      for (const id of turn.turnIds) ids.add(id);
+      agentSeen.set(agentKey, ids);
+      const seenKey = `${agent.sessionId}\0${turn.bucket}`;
+      const shared = sessionSeen.get(seenKey) ?? new Set<number>();
+      for (const id of turn.turnIds) shared.add(id);
+      sessionSeen.set(seenKey, shared);
+    }
+  }
+  for (const bucket of next) {
+    for (const session of bucket.sessions) {
+      const seenKey = `${session.sessionId}\0${bucket.key}`;
+      const shared = sessionSeen.get(seenKey) ?? new Set<number>();
+      for (const id of session.turnIds) shared.add(id);
+      sessionSeen.set(seenKey, shared);
+    }
+  }
+  for (const tail of tails) {
+    const scopeAgent = tail.scope.slice(tail.scope.lastIndexOf('/') + 1);
+    for (const record of tail.records) {
+      if (record.invalid) continue;
+      const key = bucketOf(tail.sessionId, record);
+      let bucket = byKey.get(key);
+      if (bucket === undefined) {
+        bucket = { key, turnCount: 0, sessions: [], sessionsTruncated: false };
+        byKey.set(key, bucket);
+        next.push(bucket);
+      }
+      let session = bucket.sessions.find((item) => item.sessionId === tail.sessionId);
+      if (session === undefined && bucket.sessions.length < sessionLimit) {
+        session = { sessionId: tail.sessionId, turnIds: [], turnCount: 0, unknownTurnRecords: 0 };
+        bucket.sessions.push(session);
+      }
+      if (record.turnId === undefined) {
+        if (session === undefined) bucket.sessionsTruncated = true;
+        else session.unknownTurnRecords += 1;
+        continue;
+      }
+      const agentId = record.agentId ?? record.sourceAgentId ?? scopeAgent;
+      const agentKey = `${tail.sessionId}\0${key}\0${agentId}`;
+      const seenAgent = agentSeen.get(agentKey) ?? new Set<number>();
+      if (!seenAgent.has(record.turnId)) {
+        seenAgent.add(record.turnId);
+        agentSeen.set(agentKey, seenAgent);
+        bucket.turnCount += 1;
+      }
+      if (session === undefined) bucket.sessionsTruncated = true;
+      else {
+        const seenKey = `${tail.sessionId}\0${key}`;
+        const seenSession = sessionSeen.get(seenKey) ?? new Set<number>();
+        if (!seenSession.has(record.turnId)) {
+          seenSession.add(record.turnId);
+          sessionSeen.set(seenKey, seenSession);
+          session.turnCount += 1;
+          const index = session.turnIds.findIndex((value) => value > record.turnId!);
+          session.turnIds.splice(index < 0 ? session.turnIds.length : index, 0, record.turnId);
+          if (session.turnIds.length > turnLimit) session.turnIds.pop();
+        }
+      }
+    }
+  }
+  return next;
+}
+
 export function bucketsFromAgents(agents: readonly UsageProjectionAgent[], sessionLimit: number, turnLimit: number): FoldBucketView[] {
   const buckets = new Map<string, FoldBucketView>();
   for (const agent of agents) {
