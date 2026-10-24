@@ -1744,7 +1744,7 @@ export class UsageAggregationService {
         return resolveBucket(record.time, summary, query).key;
       });
       await this.writeProjection(fingerprint, projection);
-    } catch { /* the next process repeats the bounded read */ }
+    } catch {}
   }
 
   private async recordProjectionSources(query: NormalizedQuery, listed: readonly SessionSummary[], sessions: readonly SessionRecords[]): Promise<{ scope: string; sessionId: string; watermark: UsageProjectionAgent['watermark']; records: readonly UsageFact[] }[] | undefined> {
