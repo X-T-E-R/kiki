@@ -224,3 +224,11 @@ export const imSetupResultSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('discovery'), homeserver: z.string().url(), login_types: z.array(z.string()), sso: z.boolean() }).strict(),
 ]);
 export type ImSetupResult = z.infer<typeof imSetupResultSchema>;
+
+export const imBindingTestResultSchema = z.object({
+  binding_id: z.string().min(1),
+  status: z.enum(['delivered', 'failed', 'unknown']),
+  message_ids: z.array(z.string().min(1)),
+  detail: z.string().optional(),
+}).strict();
+export type ImBindingTestResult = z.infer<typeof imBindingTestResultSchema>;

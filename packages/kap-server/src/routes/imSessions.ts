@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
-import { imBindingPatchSchema, imConfirmRequestSchema, imPolicySchema, imSetupRequestSchema, imSetupResultSchema, imTargetChannelsSchema } from '@kiki/protocol';
+import { imBindingPatchSchema, imBindingTestResultSchema, imConfirmRequestSchema, imPolicySchema, imSetupRequestSchema, imSetupResultSchema, imTargetChannelsSchema } from '@kiki/protocol';
 
 import { okEnvelope, errEnvelope } from '../envelope';
 import { ErrorCode } from '../protocol/error-codes';
@@ -56,6 +56,10 @@ export function registerImSessionRoutes(app: FastifyInstance, bridge: ImSessionB
   }));
   app.post('/im/sessions/discoveries/:id/confirm', (req, reply) => respond(req, reply, () => bridge.confirm(routeId(req), imConfirmRequestSchema.parse(req.body))));
   app.post('/im/sessions/discoveries/:id/dismiss', (req, reply) => respond(req, reply, () => bridge.dismiss(routeId(req))));
+  app.post('/im/sessions/bindings/:id/test', (req, reply) => respond(req, reply, async () => {
+    z.object({}).strict().parse(req.body ?? {});
+    return imBindingTestResultSchema.parse(await bridge.testBinding(routeId(req)));
+  }));
   app.patch('/im/sessions/bindings/:id', (req, reply) => respond(req, reply, () => {
     const patch = imBindingPatchSchema.parse(req.body);
     return bridge.updateBinding(routeId(req), {

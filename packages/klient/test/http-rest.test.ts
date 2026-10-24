@@ -1511,7 +1511,8 @@ it('carries IM setup and real channel preferences through authenticated REST', a
   const calls: { path: string; method: string; body: unknown }[] = [];
   const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'fixture-token', fetch: (async (input, init) => {
     expect(init?.headers).toMatchObject({ authorization: 'Bearer fixture-token' });
-    calls.push({ path: new URL(String(input)).pathname, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
+    const inputUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    calls.push({ path: new URL(inputUrl).pathname, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
     return envelope({});
   }) as typeof fetch });
   try {
@@ -1519,11 +1520,13 @@ it('carries IM setup and real channel preferences through authenticated REST', a
     await channel.rest.imSessions.setup({ action: 'save', provider_kind: 'discord', fields: { bot_token: 'example-token' } });
     await channel.rest.imSessions.channelViews('session/example');
     await channel.rest.imSessions.setInternalChannel('session/example', false);
+    await channel.rest.imSessions.testBinding('binding/example');
     expect(calls).toEqual([
       { path: '/api/im/sessions/setup', method: 'GET', body: undefined },
       { path: '/api/im/sessions/setup', method: 'POST', body: { action: 'save', provider_kind: 'discord', fields: { bot_token: 'example-token' } } },
       { path: '/api/im/sessions/targets/session%2Fexample/channels', method: 'GET', body: undefined },
       { path: '/api/im/sessions/targets/session%2Fexample/internal', method: 'PUT', body: { enabled: false } },
+      { path: '/api/im/sessions/bindings/binding%2Fexample/test', method: 'POST', body: {} },
     ]);
   } finally { await channel.close(); }
 });

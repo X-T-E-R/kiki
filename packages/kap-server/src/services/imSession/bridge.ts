@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { basename } from 'node:path';
 
-import { imSessionAdmitted, type ImBinding, type ImCatalog, type ImCheckResult, type ImConfirmRequest, type ImDiscovery, type ImInstanceView, type ImPasteResult, type ImPolicy, type ImProviderKind, type ImSessionSnapshot, type ImStranger, type MessageContent } from '@kiki/protocol';
+import { imSessionAdmitted, type ImBinding, type ImBindingTestResult, type ImCatalog, type ImCheckResult, type ImConfirmRequest, type ImDiscovery, type ImInstanceView, type ImPasteResult, type ImPolicy, type ImProviderKind, type ImSessionSnapshot, type ImStranger, type MessageContent } from '@kiki/protocol';
 import {
   internalMessageChannel,
   routeUserMessage,
@@ -160,6 +160,7 @@ const COPY = {
     crossSession: 'That action belongs to another conversation.',
     rejected: 'That file was not saved.',
     switched: 'Target updated.',
+    bindingTest: 'Kiki binding test: this is a test message.',
     allow: 'Allow',
     refuse: 'Refuse',
     done: 'Done',
@@ -182,6 +183,7 @@ const COPY = {
     crossSession: '这个操作属于另一个会话。',
     rejected: '没有收下这个文件。',
     switched: '已切换目标。',
+    bindingTest: 'Kiki 绑定测试：这是一条测试消息。',
     allow: '同意',
     refuse: '拒绝',
     done: '完成',
@@ -311,6 +313,20 @@ export class ImSessionBridge {
       });
     }
     return routeUserMessage(input, channels);
+  }
+
+  async testBinding(id: string): Promise<ImBindingTestResult> {
+    await this.ready;
+    const binding = this.only(this.state.bindings, id);
+    if (binding === undefined) throw new Error('unknown_binding');
+    if (!this.admitted(binding)) return { binding_id: id, status: 'failed', message_ids: [], detail: 'binding_disabled' };
+    const adapter = this.adapterFor(binding.providerInstanceId);
+    if (adapter === undefined) return { binding_id: id, status: 'failed', message_ids: [], detail: 'channel_not_connected' };
+    const sent = await this.sendToIm(binding, adapter, {
+      sessionId: binding.sessionId, toolCallId: `binding-test:${id}`, attachments: [],
+      text: this.copy('bindingTest'),
+    }, []);
+    return { binding_id: id, status: sent.status === 'unsupported' ? 'failed' : sent.status, message_ids: [...(sent.messageIds ?? [])], detail: sent.detail };
   }
 
   private bindingCapabilities(binding: BindingRecord): readonly MessageMediaCapability[] {

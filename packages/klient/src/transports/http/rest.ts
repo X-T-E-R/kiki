@@ -606,6 +606,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       dismiss: (discoveryId) => transport.json(`/im/sessions/discoveries/${encodeURIComponent(discoveryId)}/dismiss`, { method: 'POST', body: {} }),
       updateBinding: (id, patch) => transport.json(`/im/sessions/bindings/${encodeURIComponent(id)}`, { method: 'PATCH', body: patch }),
       removeBinding: (id) => transport.json(`/im/sessions/bindings/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+      testBinding: (id) => transport.json(`/im/sessions/bindings/${encodeURIComponent(id)}/test`, { method: 'POST', body: {} }),
       channelViews: (sessionId) => transport.json(`/im/sessions/targets/${encodeURIComponent(sessionId)}/channels`),
       setInternalChannel: (sessionId, enabled) => transport.json(`/im/sessions/targets/${encodeURIComponent(sessionId)}/internal`, { method: 'PUT', body: { enabled } }),
       startWechatQr: () => transport.json('/im/sessions/wechat/qrcode', { method: 'POST', body: {} }),

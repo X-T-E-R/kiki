@@ -209,3 +209,28 @@ it('does not replace an uncertain send with a definite failure when its unsuppor
     expect(attempts).toEqual(['text', 'image', 'notice']);
   } finally { await bridge.close(); }
 });
+
+it('tests only an enabled confirmed binding and preserves an uncertain outcome without retry', async () => {
+  const { bridge, adapter } = await boundBridge();
+  try {
+    const binding = (await bridge.snapshot()).bindings[0]!;
+    await expect(bridge.testBinding('missing')).rejects.toThrow('unknown_binding');
+    await bridge.updateBinding(binding.id, { sessionEnabled: false });
+    expect(await bridge.testBinding(binding.id)).toMatchObject({ status: 'failed', detail: 'binding_disabled', message_ids: [] });
+    expect(adapter.sent).toHaveLength(0);
+    await bridge.updateBinding(binding.id, { enabled: false, sessionEnabled: true });
+    expect(await bridge.testBinding(binding.id)).toMatchObject({ status: 'failed', detail: 'binding_disabled' });
+    expect(adapter.sent).toHaveLength(0);
+    await bridge.updateBinding(binding.id, { enabled: true });
+    let attempts = 0;
+    adapter.sendTextParts = async () => { attempts += 1; throw new ImSendError('rejected'); };
+    expect(await bridge.testBinding(binding.id)).toEqual({ binding_id: binding.id, status: 'failed', message_ids: [], detail: 'rejected' });
+    expect(attempts).toBe(1);
+    adapter.sendTextParts = async () => { attempts += 1; throw new ImSendError('timeout', ['accepted-part'], undefined, 'unknown'); };
+    expect(await bridge.testBinding(binding.id)).toEqual({ binding_id: binding.id, status: 'unknown', message_ids: ['accepted-part'], detail: 'timeout' });
+    expect(attempts).toBe(2);
+    await bridge.setListening('inst', false);
+    expect(await bridge.testBinding(binding.id)).toMatchObject({ status: 'failed', detail: 'channel_not_connected' });
+    expect(attempts).toBe(2);
+  } finally { await bridge.close(); }
+});

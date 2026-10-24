@@ -1,5 +1,13 @@
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { bootstrap, IConfigService, ISessionManager, logSeed, resolveLoggingConfig, type Scope } from '@kiki/agent-core-v2';
 import Fastify from 'fastify';
 import { expect, it, vi } from 'vitest';
+import { TEST_HOST_IDENTITY } from '../../helpers/hostIdentity';
+import { createImSessionHost } from '../../../src/services/imSession/host';
+import { FakeImAdapter, fakeAdapterFactory } from '../../../src/services/imSession/fakeAdapter';
+import { NotificationService } from '../../../src/services/notifications/notificationService';
 import { ImSessionSetup } from '../../../src/services/imSession/setup';
 
 import { registerImSessionRoutes } from '../../../src/routes/imSessions';
@@ -135,7 +143,8 @@ it('exchanges a matching Matrix SSO callback once and stores only its returned c
   };
   const setup = new ImSessionSetup(save);
   vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
-    requests.push({ url, body: JSON.parse(String(init.body)) });
+    if (typeof init.body !== 'string') throw new Error('Expected a JSON request body.');
+    requests.push({ url, body: JSON.parse(init.body) });
     return Response.json({ access_token: 'returned-secret', user_id: '@bot:example.test', device_id: 'device' });
   });
   try {
@@ -150,4 +159,62 @@ it('exchanges a matching Matrix SSO callback once and stores only its returned c
     await expect(setup.run(complete)).rejects.toThrow('setup_attempt_expired');
     expect(requests).toHaveLength(1);
   } finally { vi.unstubAllGlobals(); }
+});
+
+it('binds an existing indexed session through native routes and reopens the saved target without a model call', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'kiki-im-binding-route-'));
+  let core: Scope | undefined;
+  let notifications: NotificationService | undefined;
+  let bridge: ImSessionBridge | undefined;
+  let app: ReturnType<typeof Fastify> | undefined;
+  const open = async () => {
+    core = bootstrap({ homeDir: home, cwd: home, osHomeDir: home, userAgentProfileHomeDir: home, modelAccountHomeDir: home, env: {}, clientIdentity: TEST_HOST_IDENTITY }, logSeed(resolveLoggingConfig({ homeDir: home, env: {} }))).app;
+    await core.accessor.get(IConfigService).ready;
+    notifications = new NotificationService(core, home, () => false, () => undefined);
+    await notifications.start();
+    const adapter = new FakeImAdapter('wechat_bridge', 'test-account');
+    bridge = await createImSessionHost({ core, homeDir: home, notifications, logger: { info() {} }, factories: [fakeAdapterFactory(adapter)] });
+    app = Fastify();
+    registerImSessionRoutes(app, bridge);
+    return adapter;
+  };
+  const close = async () => { await app?.close(); await bridge?.close(); await notifications?.close(); await core?.dispose(); };
+  try {
+    await writeFile(join(home, 'desktop.json'), JSON.stringify({ locale: 'en' }));
+    await open();
+    const manager = core!.accessor.get(ISessionManager);
+    await manager.create({ sessionId: 'im-existing', workDir: home });
+    await manager.create({ sessionId: 'im-replacement', workDir: home });
+    const adapter = await (async () => {
+      await close();
+      return open();
+    })();
+    const pasted = await bridge!.paste({ text: 'wechat_token=example-test-token\nwechat_account=test-account' });
+    await bridge!.setListening(pasted.provider_instance_id, true);
+    const identity = { chatId: 'test-chat', senderId: 'test-sender', topicId: '0', chatKind: 'private' as const };
+    await adapter.emit({ eventId: 'test-discovery', identity, kind: 'text', text: 'Kiki binding test' });
+    const catalog = (await app!.inject({ method: 'GET', url: '/im/sessions/catalog' })).json().data;
+    expect(catalog.sessions.map((item: { id: string }) => item.id)).toEqual(expect.arrayContaining(['im-existing', 'im-replacement']));
+    const discoveryId = (await bridge!.snapshot()).discoveries[0]!.id;
+    const confirmed = (await app!.inject({ method: 'POST', url: `/im/sessions/discoveries/${discoveryId}/confirm`, payload: { target: { kind: 'session', session_id: 'im-existing' } } })).json();
+    expect(confirmed.code).toBe(0);
+    const bindingId = confirmed.data.bindings[0].id as string;
+    const changed = (await app!.inject({ method: 'PATCH', url: `/im/sessions/bindings/${bindingId}`, payload: { target: { kind: 'session', session_id: 'im-replacement' } } })).json();
+    expect(changed).toMatchObject({ code: 0, data: { bindings: [{ id: bindingId, session_id: 'im-replacement' }] } });
+    const rejected = (await app!.inject({ method: 'PATCH', url: `/im/sessions/bindings/${bindingId}`, payload: { target: { kind: 'session', session_id: 'missing' }, enabled: false } })).json();
+    expect(rejected).toMatchObject({ code: 40001, msg: 'unknown_session' });
+    const stored = JSON.parse(await readFile(join(home, 'im-session-bridge.json'), 'utf8'));
+    expect(stored.bindings).toEqual([expect.objectContaining({ id: bindingId, sessionId: 'im-replacement', enabled: true })]);
+    await close();
+    const reopenedAdapter = await open();
+    const reread = (await app!.inject({ method: 'GET', url: '/im/sessions' })).json();
+    expect(reread).toMatchObject({ code: 0, data: { bindings: [{ id: bindingId, session_id: 'im-replacement', identity: { chat_id: 'test-chat', sender_id: 'test-sender' } }] } });
+    const test = (await app!.inject({ method: 'POST', url: `/im/sessions/bindings/${bindingId}/test`, payload: {} })).json();
+    expect(test).toMatchObject({ code: 0, data: { binding_id: bindingId, status: 'delivered', message_ids: [expect.any(String)] } });
+    expect(reopenedAdapter.sent).toHaveLength(1);
+    expect(reopenedAdapter.sent[0]).toMatchObject({ identity, text: 'Kiki binding test: this is a test message.' });
+    const invalid = (await app!.inject({ method: 'POST', url: `/im/sessions/bindings/${bindingId}/test`, payload: { text: 'arbitrary', target: 'other' } })).json();
+    expect(invalid.code).toBe(40001);
+    expect(reopenedAdapter.sent).toHaveLength(1);
+  } finally { await close(); await rm(home, { recursive: true, force: true }); }
 });

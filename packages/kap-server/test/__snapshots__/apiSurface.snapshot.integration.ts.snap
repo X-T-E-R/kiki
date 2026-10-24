@@ -1274,6 +1274,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/im/sessions/bindings/{id}/test",
+    ],
+    [
+      "POST",
       "/api/im/sessions/discoveries/{id}/confirm",
     ],
     [

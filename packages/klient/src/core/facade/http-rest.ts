@@ -625,6 +625,7 @@ export interface HttpRestFacade {
     dismiss(discoveryId: string): Promise<import('@kiki/protocol').ImSessionSnapshot>;
     updateBinding(id: string, patch: import('@kiki/protocol').ImBindingPatch): Promise<import('@kiki/protocol').ImSessionSnapshot>;
     removeBinding(id: string): Promise<import('@kiki/protocol').ImSessionSnapshot>;
+    testBinding(id: string): Promise<import('@kiki/protocol').ImBindingTestResult>;
     /** Per-conversation delivery channels: the in-app `internal` channel plus enabled IM bindings, with real media capabilities. */
     channelViews(sessionId: string): Promise<import('@kiki/protocol').ImTargetChannels>;
     /** Explicitly turns the in-app channel on or off for one conversation; independent of reply/message delivery mode. */

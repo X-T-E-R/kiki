@@ -90,6 +90,8 @@ HTTP 客户端通过 `rest.imSessions.setupCatalog()` 和 `setup(...)` 配置这
 
 调用 `setup({ action: "save", provider_kind, fields })` 保存凭据时不会启动监听。接着用返回的 `provider_instance_id` 调用 `check` 和 `listen(id, true)`，在平台给 Bot 发一条消息，再把出现的发现项确认绑定到目标会话或角色。已有 Telegram、飞书、OneBot 和微信连接保留原配置与绑定流程。连接认证见 [REST API 指南](../server/rest-api.md)；上述操作的 HTTP 入口是 `GET` / `POST /api/im/sessions/setup`、`GET /api/im/sessions/targets/{sessionId}/channels` 和 `PUT /api/im/sessions/targets/{sessionId}/internal`。
 
+确认绑定后，调用 `rest.imSessions.testBinding(bindingId)`，会向该绑定的聊天发送一条明确标注测试的固定消息，不会启动模型回复。测试使用现有连接，要求绑定已启用且连接可用。对应 HTTP 请求是 `POST /api/im/sessions/bindings/{bindingId}/test`，正文为 `{}`，不接受自定义正文或目标。结果包含 `binding_id`、`status`、`message_ids` 和可选的 `detail`。`delivered` 表示平台已接收，不代表对方已读；`failed` 时按返回原因修复后再试。`unknown` 时先查看聊天，再决定是否手动重试。
+
 ## 在房间中讨论
 
 创建房间时选择两到六个成员、归类工作区和主持人。角色成员获得独立的消息模式会话；API 也接受现有线程（`kind: "thread"`），沿用其原会话、工作区和权限，该线程须已准入线程通信，且不能是 subagent。出厂设置允许使用线程通信，并默认关闭。把该线程的会话打开，或把默认打开，它才能加入。用户把 `[thread_communication] enabled` 写成 `false` 是完全关闭；会话已关闭时，该线程的 Profile 不能把它打开。GUI 里可以在侧栏按住 Ctrl/⌘ 多选线程后选「拉进新房间」，在线程菜单用「加入房间…」，在房间「添加成员」的「线程」页签里加入，或在线程链接上选「和这些线程开房间」。谁会被唤醒由三条规则决定：
