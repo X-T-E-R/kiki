@@ -1162,7 +1162,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         this.scope.parentAgentId !== undefined &&
         response.providerFinishReason === 'completed' &&
         response.message.content.length === 0 &&
-        response.message.toolCalls.length === 0
+        response.message.toolCalls.length === 0 &&
+        !(this.zeroOutputContinuationEnabled() && isZeroOutputCompletion(response))
       ) {
         markStepStarted();
         this.context.appendLoopEvent({

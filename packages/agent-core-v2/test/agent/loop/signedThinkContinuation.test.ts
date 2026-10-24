@@ -716,8 +716,22 @@ describe('zero-output continuation', () => {
     }
   });
 
-  it('keeps the subagent empty-completion failure when the switch is on', async () => {
-    const create = scriptedCreate([emptyStream(), textStream('should not run')]);
+  it('continues one empty child completion when the switch is on', async () => {
+    const create = scriptedCreate([emptyStream(), textStream('Child receipt')]);
+    const local = anthropicAgent(create, { parent: true, initialConfig: { loopControl: { zeroOutputContinuation: true } } });
+    try {
+      const terminal = await (await prompt(local)).completion;
+      expect(terminal).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 2 } });
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(promptCount(create.mock.calls[1]?.[0], CONTINUE)).toBe(1);
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it('fails a second empty child completion after the one continuation', async () => {
+    const create = scriptedCreate([emptyStream(), emptyStream(), textStream('too late')]);
     const local = anthropicAgent(create, { parent: true, initialConfig: { loopControl: { zeroOutputContinuation: true } } });
     try {
       const terminal = await (await prompt(local)).completion;
@@ -725,8 +739,8 @@ describe('zero-output continuation', () => {
         state: 'failed',
         result: { type: 'failed', error: { code: 'loop.empty_completion' } },
       });
-      expect(create).toHaveBeenCalledTimes(1);
-      expect(continued(local)).toBe(false);
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(promptCount(create.mock.calls[1]?.[0], CONTINUE)).toBe(1);
       await local.expectResumeMatches();
     } finally {
       await local.dispose();

@@ -541,7 +541,7 @@ confirm = false
 
 设置 `[loop_control] thinking_only_continuation = false` 可关闭这条自动消息，从下一个 step 边界起生效。拒绝尾部 Model 消息的 Google 模型仍保留原有的原始快照重试，它与显式续接共用每轮一次的恢复预算，不受该设置关闭。Google `CONTINUATION` 终态仍需此 SDK 无法发送的 continuation token。
 
-未配置或设为 `false` 时，`zero_output_continuation` 保持关闭。设为 `[loop_control] zero_output_continuation = true` 后，供应商确认正常结束，且思考文本、可见回答和工具调用都为空时，Kiki 会在同一轮发送一条 `Continue.` User 消息。附在空思考上的签名不是思考内容，token 用量也不参与判断。非空思考文本仍走 `thinking_only_continuation`。该选择从下一个 step 边界起生效。这次续接是同一轮里的一次模型请求；第二次仍为空或请求失败时停止本轮，不按连接错误或限流重试。取消、供应商错误，以及没有正常停止终态的流，仍走原有路径。
+未配置或设为 `false` 时，`zero_output_continuation` 保持关闭。设为 `[loop_control] zero_output_continuation = true` 后，供应商确认正常结束，且思考文本、可见回答和工具调用都为空时，Kiki 会在同一轮发送一条 `Continue.` User 消息。附在空思考上的签名不是思考内容，并保留在对话里。非空思考文本仍走 `thinking_only_continuation`。子 Agent 使用同一规则；开关关闭时，没有内容的子任务完成仍失败，第二次仍为空也会停止本轮。token 用量不参与判断。该选择从下一个 step 边界起生效。这次续接是同一轮里的一次模型请求，不按连接错误或限流重试。取消、供应商错误，以及没有正常停止终态的流，仍走原有路径。
 
 ### 连续性提醒设置
 
