@@ -535,3 +535,102 @@ describe('request body bytes', () => {
     expect(gunzipSync(wire).toString()).toBe(payload);
   });
 });
+
+
+describe('dictionary decoder rejection recovery', () => {
+  it.each([false, true])('does not select a rejected base before a fresh acknowledgement (fresh ack: %s)', async acknowledge => {
+    const transport = new RequestDictionaryTransport({ dictionary: true });
+    const first = body('model-a', 'primer');
+    const second = body('model-a', 'after rejection');
+    const headers = requestInit({ authorization: 'Bearer fixture' });
+    const primer = fixtureFetch();
+    await transport.fetch(primer.fetch, 'https://example.test/v1/responses', headers, first);
+    const sent: Array<{ encoding: string | null; dictionary?: string }> = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const request = new Request(input, init);
+      const encoding = request.headers.get('content-encoding');
+      const bytes = Buffer.from(await request.arrayBuffer());
+      sent.push({ encoding, dictionary: encoding === 'dcz' ? bytes.subarray(8, 40).toString('hex') : undefined });
+      if (sent.length === 1) return new Response(null, { status: 412, headers: { 'x-portway-decode-error': '1', 'x-dict-miss': '1' } });
+      const stored = acknowledge && sent.length === 2 ? { 'x-dict-stored': digest(second) } : undefined;
+      return new Response(null, { status: 200, headers: stored });
+    };
+    await transport.fetch(fetchImpl, 'https://example.test/v1/responses', headers, second);
+    await transport.fetch(fetchImpl, 'https://example.test/v1/responses', headers, body('model-a', 'next request'));
+    expect(sent.map(value => value.encoding)).toEqual(['dcz', 'zstd', acknowledge ? 'dcz' : 'zstd']);
+    expect(sent[0]?.dictionary).toBe(digest(first));
+    if (acknowledge) expect(sent[2]?.dictionary).toBe(digest(second));
+  });
+
+  it('suspends dictionary reuse after two false storage acknowledgements and reopens after expiry', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    try {
+      const transport = new RequestDictionaryTransport({ dictionary: true, ttlMs: 1000 });
+      const sent: Array<string | null> = [];
+      const fetchImpl: typeof fetch = async (input, init) => {
+        const request = new Request(input, init);
+        const encoding = request.headers.get('content-encoding');
+        sent.push(encoding);
+        if (encoding === 'dcz') return new Response(null, { status: 412, headers: { 'x-portway-decode-error': '1', 'x-dict-miss': '1' } });
+        const wire = Buffer.from(await request.arrayBuffer());
+        const decoded = encoding === 'zstd' ? await decompress(wire) : wire;
+        return new Response(null, { status: 200, headers: { 'x-dict-stored': digest(decoded) } });
+      };
+      for (let index = 0; index < 8; index += 1) {
+        await transport.fetch(fetchImpl, 'https://example.test/v1/responses', requestInit(), body('model-a', String(index)));
+      }
+      expect(sent.filter(encoding => encoding === 'dcz')).toHaveLength(2);
+      expect(sent.slice(-4)).toEqual(['zstd', 'zstd', 'zstd', 'zstd']);
+      await vi.advanceTimersByTimeAsync(1001);
+      await transport.fetch(fetchImpl, 'https://example.test/v1/responses', requestInit(), body('model-a', 'new primer'));
+      await transport.fetch(fetchImpl, 'https://example.test/v1/responses', requestInit(), body('model-a', 'reopened'));
+      expect(sent.filter(encoding => encoding === 'dcz')).toHaveLength(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+
+describe('dictionary response ordering', () => {
+  it.each([1, 2])('does not let an older successful DCZ response clear %s newer rejection epochs', async misses => {
+    const transport = new RequestDictionaryTransport({ dictionary: true });
+    const headers = requestInit({ authorization: 'Bearer ordering-fixture' });
+    const url = 'https://example.test/v1/responses';
+    const primer = fixtureFetch();
+    await transport.fetch(primer.fetch, url, headers, body('model-a', 'primer'));
+    let release!: (response: Response) => void;
+    let entered!: () => void;
+    const held = new Promise<Response>(resolve => { release = resolve; });
+    const sentOld = new Promise<void>(resolve => { entered = resolve; });
+    const oldBody = body('model-a', 'old in-flight acknowledgement');
+    const old = transport.fetch(async () => { entered(); return held; }, url, headers, oldBody);
+    await sentOld;
+    let freshBody = oldBody;
+    for (let index = 0; index < misses; index += 1) {
+      freshBody = body('model-a', `miss-${index}`);
+      const currentBody = freshBody;
+      let attempt = 0;
+      await transport.fetch(async () => {
+        attempt += 1;
+        return attempt === 1
+          ? new Response(null, { status: 412, headers: { 'x-portway-decode-error': '1', 'x-dict-miss': '1' } })
+          : new Response(null, { status: 200, headers: { 'x-dict-stored': digest(currentBody) } });
+      }, url, headers, currentBody);
+      expect(attempt).toBe(2);
+    }
+    release(new Response(null, { status: 200, headers: { 'x-dict-stored': digest(oldBody) } }));
+    await old;
+    const observed: Array<{ encoding: string | null; dictionary?: string }> = [];
+    const fetchNext: typeof fetch = async (input, init) => {
+      const request = new Request(input, init);
+      const encoding = request.headers.get('content-encoding');
+      const wire = Buffer.from(await request.arrayBuffer());
+      observed.push({ encoding, dictionary: encoding === 'dcz' ? wire.subarray(8, 40).toString('hex') : undefined });
+      return new Response(null, { status: 200 });
+    };
+    await transport.fetch(fetchNext, url, headers, body('model-a', 'after old response'));
+    expect(observed[0]?.encoding).toBe(misses === 1 ? 'dcz' : 'zstd');
+    if (misses === 1) expect(observed[0]?.dictionary).toBe(digest(freshBody));
+  });
+});

@@ -142,7 +142,15 @@ interface DictionaryEntry {
 interface EncodedRequest {
   readonly body: Buffer;
   readonly encoding: RequestDictionaryEncoding;
+  readonly dictionaryHash?: string;
   readonly fallback?: EncodedRequest;
+}
+
+interface DictionaryRecovery {
+  readonly rejectedOrder: number;
+  readonly misses: number;
+  readonly expiresAt: number;
+  suspended: boolean;
 }
 
 /** Configuration for the node-local Portway dictionary transport. */
@@ -169,6 +177,7 @@ export class RequestDictionaryTransport {
   private readonly _ttlMs: number;
   private readonly _budget: DictionaryProcessBudget;
   private readonly _entries = new Map<string, Map<string, DictionaryEntry>>();
+  private readonly _recoveries = new Map<string, DictionaryRecovery>();
   private _memoryBytes = 0;
 
   constructor(options: RequestDictionaryTransportOptions = {}) {
@@ -233,9 +242,11 @@ export class RequestDictionaryTransport {
       signal.throwIfAborted();
       const headers = requestHeaders(baseHeaders, current.encoding, this._dictionaryEnabled, current.body);
       const storeRequested = headers.get('x-dict-store') === '1';
+      const sentOrder = this._budget.takeOrder();
       const response = await fetchImpl(input, { ...init, headers, body: bodyInitBytes(current.body) });
       const marked = isMarkedDecoderRejection(response);
       if (marked && current.encoding === 'dcz') {
+        this.rejectDictionary(scopeKey, current.dictionaryHash, Date.now());
         await releaseDecoderResponse(response);
         attempt += 1;
         continue;
@@ -245,7 +256,13 @@ export class RequestDictionaryTransport {
         attempt += 1;
         continue;
       }
-      if (!marked) this.acknowledge(response, storeRequested, body, bodyHash, scopeKey, Date.now());
+      if (!marked) {
+        const recovery = this._recoveries.get(scopeKey);
+        if (current.encoding === 'dcz' && response.status !== 412 && (recovery === undefined || sentOrder > recovery.rejectedOrder)) {
+          this._recoveries.delete(scopeKey);
+        }
+        this.acknowledge(response, storeRequested, body, bodyHash, scopeKey, Date.now(), sentOrder);
+      }
       return response;
     }
     throw new Error('Request dictionary retry state exhausted');
@@ -270,7 +287,7 @@ export class RequestDictionaryTransport {
     const frame = await this._zstd(body, dictionary.bytes, signal);
     const dcz = Buffer.concat([DCZ_MAGIC, Buffer.from(dictionary.hash, 'hex'), frame]);
     if (dcz.length < body.length && dcz.length <= this._maxEncodedBytes && dcz.length < selected.body.length) {
-      selected = { body: dcz, encoding: 'dcz', fallback: plainRequest };
+      selected = { body: dcz, encoding: 'dcz', dictionaryHash: dictionary.hash, fallback: plainRequest };
     }
     return selected;
   }
@@ -307,7 +324,22 @@ export class RequestDictionaryTransport {
     });
   }
 
+  private rejectDictionary(scopeKey: string, hash: string | undefined, now: number): void {
+    if (hash === undefined) return;
+    const entry = this._entries.get(scopeKey)?.get(hash);
+    if (entry !== undefined) this.drop(scopeKey, entry);
+    const misses = (this._recoveries.get(scopeKey)?.misses ?? 0) + 1;
+    this._recoveries.delete(scopeKey);
+    if (this._recoveries.size >= 256) this._recoveries.delete(this._recoveries.keys().next().value!);
+    this._recoveries.set(scopeKey, {
+      rejectedOrder: this._budget.takeOrder(), misses,
+      expiresAt: now + this._ttlMs, suspended: misses >= 2,
+    });
+  }
+
   private _lookup(scopeKey: string, now: number): DictionaryEntry | undefined {
+    const recovery = this._recoveries.get(scopeKey);
+    if (recovery?.suspended) return undefined;
     const entries = this._entries.get(scopeKey);
     if (entries === undefined) return undefined;
     let selected: DictionaryEntry | undefined;
@@ -316,6 +348,7 @@ export class RequestDictionaryTransport {
         this.drop(scopeKey, entry);
         continue;
       }
+      if (recovery !== undefined && entry.storedOrder <= recovery.rejectedOrder) continue;
       if (selected === undefined || entry.storedOrder > selected.storedOrder) selected = entry;
     }
     if (selected !== undefined) this.touch(selected, now);
@@ -329,7 +362,10 @@ export class RequestDictionaryTransport {
     bodyHash: string,
     scopeKey: string,
     now: number,
+    sentOrder: number,
   ): void {
+    const recovery = this._recoveries.get(scopeKey);
+    if (recovery !== undefined && sentOrder <= recovery.rejectedOrder) return;
     if (!storeRequested || this._maxDictionaryBytes === 0 || this._maxEntriesPerScope === 0) return;
     const acknowledged = response.headers.get('x-dict-stored');
     if (acknowledged !== bodyHash || !/^[0-9a-f]{64}$/u.test(acknowledged)) return;
@@ -447,6 +483,9 @@ export class RequestDictionaryTransport {
   }
 
   private prune(now: number): void {
+    for (const [scopeKey, recovery] of this._recoveries) {
+      if (now >= recovery.expiresAt) this._recoveries.delete(scopeKey);
+    }
     for (const [scopeKey, entries] of this._entries) {
       for (const entry of entries.values()) {
         if (now - entry.storedAt >= this._ttlMs) this.drop(scopeKey, entry);
