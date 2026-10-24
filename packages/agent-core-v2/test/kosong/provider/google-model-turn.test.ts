@@ -238,6 +238,40 @@ describe('google-genai trailing model turn', () => {
     expect(history[2]?.content[1]).toMatchObject({ type: 'image_url' });
   });
 
+  it('nests one gemini-4 tool image and its note text inside the function response', async () => {
+    const image = readMediaResult('ReadMediaFile_a', 'fig-a.png', 'simple');
+    const history = [
+      user('go'),
+      {
+        role: 'assistant',
+        content: [],
+        toolCalls: [call('ReadMediaFile_a', 'ReadMediaFile', CALL_SIGNATURE)],
+      },
+      {
+        ...image,
+        content: [...image.content, { type: 'text' as const, text: 'note-fixture' }],
+      },
+    ] satisfies Message[];
+    const seen = installFetch(okSse);
+    await drainGenerate('gemini-4-argon', history);
+    expect(seen).toHaveLength(1);
+    const contents = contentsOf(seen[0]!);
+    expect(contents.map((content) => content['role'])).toEqual(['user', 'model', 'user']);
+    expect(partKinds(contents[2])).toEqual(['function_response']);
+    expect(partsOf(contents[2]).some((part) => part['inlineData'] !== undefined || part['text'] !== undefined)).toBe(false);
+    expect(responseMedia(partsOf(contents[2])[0]!)).toEqual({
+      name: 'ReadMediaFile',
+      output: '<image path="fig-a.png"></image>Read image file.note-fixture',
+      parts: [{ inlineData: { mimeType: 'image/png', data: 'simple' } }],
+    });
+    const response = partsOf(contents[2])[0]?.['functionResponse'] as { id?: unknown; parts?: Array<{ inlineData?: { displayName?: unknown } }> };
+    expect(response.id).toBeUndefined();
+    expect(response.parts?.[0]?.inlineData?.displayName).toBeUndefined();
+    expect(partsOf(contents[1])[0]?.['thoughtSignature']).toBe(CALL_SIGNATURE);
+    expect(mixedUserContents(contents)).toEqual([]);
+    expect(history[2]?.content[1]).toMatchObject({ type: 'image_url' });
+  });
+
   it('keeps gemini-2.5 tool images beside the function response', async () => {
     const history = [
       user('go'),

@@ -6,7 +6,7 @@ import { nativeSearchParameters, nativeFetchParameters } from '#/app/nbSearch/na
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { APIError as AnthropicAPIError } from '@anthropic-ai/sdk';
+import Anthropic, { APIError as AnthropicAPIError } from '@anthropic-ai/sdk';
 import { ApiError as GoogleApiError } from '@google/genai';
 import OpenAI from 'openai';
 import type { Response as OpenAIResponse, ResponseOutputMessage, ResponseOutputText, ResponseStreamEvent } from 'openai/resources/responses/responses';
@@ -2460,6 +2460,38 @@ describe('responseFormat wire encoding (per base)', () => {
         description: undefined,
       },
     });
+  });
+});
+
+describe('Anthropic request tail structure', () => {
+  const user: Message = { role: 'user', content: [{ type: 'text', text: 'go' }], toolCalls: [] };
+  const thinking: Message = { role: 'assistant', content: [{ type: 'think', think: 'thought', encrypted: 'signature-fixture' }], toolCalls: [] };
+  const prefill: Message = { role: 'assistant', content: [{ type: 'text', text: 'partial answer' }], toolCalls: [] };
+  const toolCall: Message = { role: 'assistant', content: [], toolCalls: [{ type: 'function', id: 'call-fixture', name: 'Read', arguments: '{}' }] };
+  const toolResult: Message = { role: 'tool', content: [{ type: 'text', text: 'result' }], toolCallId: 'call-fixture', toolCalls: [] };
+
+  it.each([
+    { shape: 'thinking-only assistant', history: [user, thinking], roles: ['user', 'assistant'], tailTypes: ['thinking'] },
+    { shape: 'nonempty assistant prefill', history: [user, prefill], roles: ['user', 'assistant'], tailTypes: ['text'] },
+    { shape: 'empty trailing user', history: [user, prefill, { role: 'user', content: [], toolCalls: [] }], roles: ['user', 'assistant', 'user'], tailTypes: [] },
+    { shape: 'normal tool result', history: [user, toolCall, toolResult], roles: ['user', 'assistant', 'user'], tailTypes: ['tool_result'] },
+  ] satisfies Array<{ shape: string; history: Message[]; roles: string[]; tailTypes: string[] }>)('serializes $shape without rewriting its role', async ({ history, roles, tailTypes }) => {
+    let sent: { messages: Array<{ role: string; content: Array<{ type: string; tool_use_id?: string }> }> } | undefined;
+    const provider = new AnthropicChatProvider({
+      model: 'gemini-3.8-flash', apiKey: 'YOUR_API_KEY', stream: false,
+      clientFactory: () => new Anthropic({
+        apiKey: 'YOUR_API_KEY', maxRetries: 0,
+        fetch: async (_input, init) => {
+          sent = JSON.parse(String(init?.body));
+          return new Response(JSON.stringify(anthropicMessageResponse()), { status: 200, headers: { 'content-type': 'application/json' } });
+        },
+      }),
+    });
+    await drain(await provider.generate('', [], structuredClone(history), { maxCompletionTokens: 1024 }));
+    expect(sent?.messages.map((message) => message.role)).toEqual(roles);
+    expect(sent?.messages.at(-1)?.content.map((part) => part.type)).toEqual(tailTypes);
+    if (tailTypes[0] === 'tool_result') expect(sent?.messages.at(-1)?.content[0]?.tool_use_id).toBe('call-fixture');
+    expect(history[0]).toEqual(user);
   });
 });
 
