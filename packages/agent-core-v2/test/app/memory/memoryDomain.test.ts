@@ -533,6 +533,52 @@ it('bounds streamed records and charges actual bytes when source size grows afte
 
 
 describe('memory query read reuse and pending-only writes', () => {
+  it('bounds concurrent source scans for searches, capacity checks and catalog refreshes', async () => {
+    const base = pathFor(global);
+    await Promise.all(Array.from({ length: 48 }, async (_, index) => {
+      const id = `m_parallel_${String(index).padStart(3, '0')}`;
+      const entry = { id, type: 'reference', title: `Parallel ${index}`, status: 'active', source, reason: 'Fixture' };
+      await storage.write(base, `entries/${id}.md`, encoder.encode(`---\n${JSON.stringify(entry)}\n---\nNeutral fixture rule.\n`));
+    }));
+    const stream = storage.readStream.bind(storage);
+    const read = storage.read.bind(storage);
+    let streams = 0;
+    let peakStreams = 0;
+    let reads = 0;
+    let peakReads = 0;
+    vi.spyOn(storage, 'readStream').mockImplementation(async function* (...args) {
+      peakStreams = Math.max(peakStreams, ++streams);
+      try {
+        await new Promise<void>((resolve) => { setTimeout(resolve, 4); });
+        yield* stream(...args);
+      } finally { streams--; }
+    });
+    vi.spyOn(storage, 'read').mockImplementation(async (...args) => {
+      if (!args[1].startsWith('entries/')) return read(...args);
+      peakReads = Math.max(peakReads, ++reads);
+      try {
+        await new Promise<void>((resolve) => { setTimeout(resolve, 4); });
+        return await read(...args);
+      } finally { reads--; }
+    });
+    const page = await store.query([global], { query: 'Parallel' });
+    expect(page.items).toHaveLength(8);
+    expect(page.coverage.complete).toBe(true);
+    expect(peakStreams).toBeGreaterThan(1);
+    expect(peakStreams).toBeLessThanOrEqual(16);
+    peakStreams = 0;
+    const saved = await save('After parallel capacity scan', global);
+    expect(saved.entry.status).toBe('active');
+    expect(peakStreams).toBeGreaterThan(1);
+    expect(peakStreams).toBeLessThanOrEqual(16);
+    expect(peakReads).toBeGreaterThan(1);
+    expect(peakReads).toBeLessThanOrEqual(16);
+    const catalog = new TextDecoder().decode(await storage.read(base, 'MEMORY.md'));
+    expect(catalog.match(/^- \[/gm)).toHaveLength(49);
+    expect(catalog).toContain(`[${saved.entry.id}]`);
+    for (let index = 0; index < 48; index++) expect(catalog).toContain(`[m_parallel_${String(index).padStart(3, '0')}]`);
+  });
+
   it('reads each unchanged source once per call and still reads fresh bytes across pages', async () => {
     for (let index = 0; index < 3; index++) await save(`Read reuse ${index}`, global);
     const reads = vi.spyOn(storage, 'readStream');
