@@ -256,6 +256,15 @@ An agent whose saved metadata has no creation time omits `created_at`; treat it 
 
 For automatic allocation, send `{}` to `POST /api/sessions`. The server creates a distinct directory under `$KIKI_HOME/workspaces/`, registers it, and returns its `workspace_id` and `metadata.cwd` in the session response. Supplying an existing `workspace_id` or `metadata.cwd` keeps the existing targeting behavior; an unknown `workspace_id` is still rejected.
 
+For retry-safe creation, generate a UUID once and send it as the optional top-level `creation_id`. Keep that ID and the same request body when retrying after a timeout or disconnect. Concurrent matching requests share the creation; completed requests replay the saved result, including after a server restart. Saved failures are also replayed without repeating creation side effects. The resulting session ID is `session_<creation_id>`, with the UUID normalized to lowercase.
+
+Creation identities belong to the connected home: clients must keep separate pending requests for each home and connection. Omitting `creation_id` retains ordinary creation without retry deduplication. Cancelling a client wait does not delete a session the server has created.
+
+| Creation error code | Recovery |
+| --- | --- |
+| `40948` | The creation identity conflicts. `details.reason` is `body_mismatch` when the same `creation_id` carries a different body, or `session_id_exists` when its mapped session ID is already occupied outside this creation. Keep the pending identity and draft. A collision is not a successful replay; use a new ID only for a deliberately separate creation. |
+| `50006` | The creation outcome is unconfirmed. `details` contains `{ creation_id, session_id, evidence }`. Diagnostic values include `session_present_without_completion`, `session_absent`, `completion_receipt_write_failed`, `session_read_error`, and `receipt_read_error`; clients must also preserve unknown diagnostic values. Keep the draft and creation identity, and inspect the exact session ID. This code never confirms that starting a replacement is safe; the server does not rerun creation or its hooks. |
+
 Set `agent_config.execution` at creation to select a harness independently of a profile:
 
 ```json

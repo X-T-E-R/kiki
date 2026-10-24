@@ -256,6 +256,15 @@ Agent 的持久元数据若未保存创建时间，就省略 `created_at`；客�
 
 要自动分配工作区，可向 `POST /api/sessions` 发送 `{}`。服务端会在 `$KIKI_HOME/workspaces/` 下为该会话新建独立目录并注册工作区；响应中的 `workspace_id` 和 `metadata.cwd` 是新工作区的信息。显式提供已有 `workspace_id` 或 `metadata.cwd` 时仍按原方式定位，未知 `workspace_id` 仍会被拒绝。
 
+要安全重试创建请求，先生成一个 UUID，放入可选的顶层字段 `creation_id`；超时或断连后重试时，保留该 ID 和原请求体。匹配的并发请求共享一次创建；已完成的请求返回保存的结果，服务重启后也不会重新创建。已保存的失败也会原样返回，不会重复执行创建副作用。会话 ID 固定为 `session_<creation_id>`，其中 UUID 统一为小写。
+
+创建身份归属于当前连接的 home，客户端须为不同 home 和连接分别保存待确认请求。不传 `creation_id` 时保留普通创建行为，不对重试去重。取消客户端等待不会删除服务端已经创建的会话。
+
+| 创建错误码 | 恢复方式 |
+| --- | --- |
+| `40948` | 创建身份发生冲突。`details.reason` 为 `body_mismatch` 时，同一个 `creation_id` 携带了不同请求体；为 `session_id_exists` 时，映射出的会话 ID 已被本次创建之外的调用占用。保留待确认身份和草稿，不把冲突当成幂等成功；只有明确要另建会话时才使用新 ID。 |
+| `50006` | 创建结果尚未确认。`details` 为 `{ creation_id, session_id, evidence }`。诊断值包括 `session_present_without_completion`、`session_absent`、`completion_receipt_write_failed`、`session_read_error` 和 `receipt_read_error`；客户端也须保留不认识的新诊断值。保留草稿和创建身份，按准确会话 ID 检查结果。此错误码不代表可以安全另建，服务端不会重新执行创建或其 hooks。 |
+
 创建时设置 `agent_config.execution`，即可独立于 profile 选择 harness：
 
 ```json
