@@ -21,7 +21,7 @@
 // expand structurally; classes render as their public instance shape. The
 // defining source file heads each group.
 //
-// External ambient types referenced but not expanded (from node_modules): Headers, Readable, Uint8Array, Writable
+// External ambient types referenced but not expanded (from node_modules): AbortSignal, Headers, Readable, Uint8Array, Writable
 //
 // snapshot() returns JSON-safe deep copies of these values: Maps become plain
 // objects (or [key, value] entry arrays when a key is not string/number), Sets
@@ -2237,6 +2237,21 @@ export interface AgentStateSnapshot {
         readonly responsesClientMetadata?: Readonly<Record<string, string>>;
         readonly onResponseHeaders?: (headers: Headers) => void;
       };
+      readonly responsesTransport?: /* ResponsesRequestTransport — packages/agent-core-v2/src/kosong/contract/responsesTransport.ts */ {
+        request: (params: Record<string, unknown>, options: {
+          baseUrl: string;
+          apiKey: string;
+          headers: Readonly<Record<string, string>>;
+          signal?: AbortSignal;
+          canonicalOutput?: (nativeOutput: readonly unknown[]) => /* ResponsesOutputProjection — packages/agent-core-v2/src/kosong/contract/responsesTransport.ts */ {
+            readonly input: readonly unknown[];
+            readonly incremental: boolean;
+          } | undefined;
+          onFullInput?: (input: readonly unknown[]) => void;
+        }) => Promise<AsyncIterable<unknown, any, any>>;
+        commitResponse: (responseId: string, canonicalOutput: readonly unknown[]) => void;
+        close: () => void;
+      };
       readonly attribution?: (/* RequestIdentity — packages/agent-core-v2/src/kosong/model/requestAdmission.ts */ {
         readonly logicalRequestId: string;
         readonly waitBudget: {
@@ -3073,6 +3088,16 @@ export interface AgentStateSnapshot {
           };
           responsesMetadata?: 'none' | 'codex';
         };
+      };
+      requestCompression?: {
+        encoding?: 'off' | 'gzip' | 'zstd';
+        targets?: string[];
+        minBytes?: number;
+        dictionary?: boolean;
+      };
+      responsesWebSocket?: {
+        off?: true;
+        targets?: string[];
       };
       images?: /* ImagePolicyConfig — packages/agent-core-v2/src/kosong/provider/providerImagePolicy.ts */ {
         acceptedTypes?: ('image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' | 'image/bmp' | 'image/heic' | 'image/heif' | 'image/avif' | 'image/tiff' | 'image/x-icon')[];

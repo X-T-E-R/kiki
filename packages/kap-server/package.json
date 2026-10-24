@@ -77,13 +77,13 @@
     "semver": "^7.7.4",
     "smol-toml": "^1.9.0",
     "ulid": "^3.0.1",
-    "ws": "^8.21.0",
+    "ws": "^8.22.0",
     "zod": "catalog:"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
     "@types/semver": "^7.7.0",
-    "@types/ws": "^8.18.0",
+    "@types/ws": "^8.18.1",
     "playwright": "1.60.0",
     "tsx": "^4.21.0"
   }

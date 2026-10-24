@@ -235,7 +235,7 @@ importers:
         specifier: ^19.1.2
         version: 19.2.3(@types/react@19.2.14)
       '@types/ws':
-        specifier: ^8.18.0
+        specifier: ^8.18.1
         version: 8.18.1
       '@vitejs/plugin-react':
         specifier: ^4.4.1
@@ -256,7 +256,7 @@ importers:
         specifier: 4.1.4
         version: 4.1.4(@types/node@22.19.17)(@vitest/coverage-v8@4.1.4)(jsdom@25.0.1)(msw@2.15.0(@types/node@22.19.17)(typescript@6.0.2))(vite@6.4.4(@types/node@22.19.17)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.3))
       ws:
-        specifier: ^8.21.0
+        specifier: ^8.22.0
         version: 8.22.0
 
   apps/kimi-code:
@@ -274,7 +274,7 @@ importers:
         specifier: workspace:^
         version: link:../../packages/transcript
       ws:
-        specifier: ^8.21.0
+        specifier: ^8.22.0
         version: 8.22.0
     devDependencies:
       '@kiki/acp-server':
@@ -305,7 +305,7 @@ importers:
         specifier: ^7.7.0
         version: 7.7.1
       '@types/ws':
-        specifier: ^8.18.0
+        specifier: ^8.18.1
         version: 8.18.1
       '@types/yazl':
         specifier: ^2.4.6
@@ -687,7 +687,7 @@ importers:
         specifier: ^3.0.1
         version: 3.0.2
       ws:
-        specifier: ^8.21.0
+        specifier: ^8.22.0
         version: 8.22.0
       zod:
         specifier: 'catalog:'
@@ -700,7 +700,7 @@ importers:
         specifier: ^7.7.0
         version: 7.7.1
       '@types/ws':
-        specifier: ^8.18.0
+        specifier: ^8.18.1
         version: 8.18.1
       playwright:
         specifier: 1.60.0
@@ -725,13 +725,13 @@ importers:
         version: 4.3.6
     devDependencies:
       '@types/ws':
-        specifier: ^8.18.0
+        specifier: ^8.18.1
         version: 8.18.1
       ulid:
         specifier: ^3.0.1
         version: 3.0.2
       ws:
-        specifier: ^8.21.0
+        specifier: ^8.22.0
         version: 8.22.0
 
   packages/minidb: {}
