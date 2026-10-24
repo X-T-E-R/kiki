@@ -143,7 +143,7 @@ describe('message delivery reading', () => {
       channels: channels({ channelId: 'internal', status: 'delivered', unsupported: ['voice'] }),
     }));
     expect(container.querySelector('[data-message-media="image"]')).not.toBeNull();
-    expect(container.querySelector('[data-message-media="audio"]')).toBeNull();
+    expect(container.querySelector<HTMLElement>('[data-message-media="audio"]')).toBeNull();
     expect(container.querySelector('[data-message-delivery-note="internal-unsupported"]')).not.toBeNull();
   });
 
@@ -178,7 +178,7 @@ describe('attachment media kinds', () => {
     expect(media.querySelector('[data-message-media="image"]')).not.toBeNull();
 
     const audio = draw(message({ attachments: [voice] }));
-    const audioSlot = audio.querySelector('[data-message-media="audio"]');
+    const audioSlot = audio.querySelector<HTMLElement>('[data-message-media="audio"]');
     expect(audioSlot).not.toBeNull();
     expect(audioSlot?.dataset['messageVoice']).toBe('');
 
@@ -198,7 +198,7 @@ describe('attachment media kinds', () => {
   it('never presents an audio attachment as a voice note', () => {
     const plainAudio: MessageAttachment = { ...voice, kind: 'audio' };
     const container = draw(message({ attachments: [plainAudio] }));
-    const slot = container.querySelector('[data-message-media="audio"]');
+    const slot = container.querySelector<HTMLElement>('[data-message-media="audio"]');
     expect(slot).not.toBeNull();
     expect(slot?.dataset['messageVoice']).toBeUndefined();
   });
