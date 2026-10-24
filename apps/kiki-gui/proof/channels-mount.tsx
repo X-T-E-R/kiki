@@ -1,9 +1,9 @@
-import { useState, useMemo } from 'react';
+import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 
-import type { ImSessionSnapshot, OptionalCapabilitySessionResponse } from '@kiki/protocol';
+import type { ImSessionSnapshot, OptionalCapabilitySessionResponse, ImTargetChannels } from '@kiki/protocol';
 import { I18nProvider } from '../src/i18n';
 import { ConnectionScope, type ConnectionValue } from '../src/state/connection';
 import { SessionChannelsRail } from '../src/components/im/SessionChannelsRail';
@@ -73,6 +73,21 @@ const initialSnapshot: ImSessionSnapshot = {
       reply: 'final',
       mobile_interactions: true,
     },
+    {
+      id: 'b-orphan-wechat',
+      provider_instance_id: 'wx-main',
+      provider_kind: 'wechat_bridge',
+      account_id: 'wx-1',
+      identity: { chat_id: 'wxid_ops', topic_id: '0', sender_id: 'wxid_ops', chat_title: '运维群', sender_name: 'Ops' },
+      pending_reanchor: true,
+      enabled: true,
+      session_enabled: true,
+      input_enabled: true,
+      output_enabled: true,
+      busy: 'queue',
+      reply: 'final',
+      mobile_interactions: false,
+    },
   ],
   strangers: [],
   voice_fallbacks: 0,
@@ -80,6 +95,7 @@ const initialSnapshot: ImSessionSnapshot = {
 
 let currentSnapshot = structuredClone(initialSnapshot);
 let optionalChoice: 'inherit' | 'on' | 'off' = 'inherit';
+let notifyMailEnabled = false;
 
 function createMockClient() {
   return {
@@ -88,7 +104,7 @@ function createMockClient() {
       updateBinding: async (id: string, patch: any) => {
         currentSnapshot.bindings = currentSnapshot.bindings.map((b) => {
           if (b.id !== id) return b;
-          return { ...b, ...patch };
+          return { ...b, ...patch, pending_reanchor: false };
         });
         return structuredClone(currentSnapshot);
       },
@@ -118,6 +134,55 @@ function createMockClient() {
         currentSnapshot.policy = policy;
         return structuredClone(currentSnapshot);
       },
+      channelViews: async (sessionId: string): Promise<ImTargetChannels> => ({
+        target: { kind: 'session', session_id: sessionId },
+        internal_enabled: true,
+        channels: [
+          {
+            id: 'internal',
+            kind: 'internal',
+            bound: true,
+            enabled: true,
+            title: '会话内 (internal)',
+          },
+          ...currentSnapshot.bindings
+            .filter((b) => b.session_id === sessionId)
+            .map((b) => ({
+              id: `im:${b.id}`,
+              kind: 'im' as const,
+              bound: true,
+              enabled: b.enabled && b.session_enabled !== false,
+              title: b.identity.chat_title || b.identity.chat_id,
+            })),
+          {
+            id: 'notify:feishu-duty',
+            kind: 'notify',
+            bound: true,
+            enabled: true,
+            title: '飞书值班群 Webhook',
+          },
+          {
+            id: 'notify:mail',
+            kind: 'notify',
+            bound: true,
+            enabled: notifyMailEnabled,
+            title: '邮件运维通知 (Mail)',
+          },
+          {
+            id: 'notify:slack-ops',
+            kind: 'notify',
+            bound: false,
+            enabled: false,
+            title: 'Slack 告警推送',
+          },
+        ],
+      }),
+      setNotificationChannel: async (_sessionId: string, channelId: string, enabled: boolean) => {
+        if (channelId === 'mail') {
+          notifyMailEnabled = enabled;
+        }
+      },
+      removeNotificationChannel: async (_sessionId: string, _channelId: string) => {},
     },
     getSessionOptionalCapabilities: async (sessionId: string): Promise<OptionalCapabilitySessionResponse> => ({
       sessionId,
@@ -167,9 +232,11 @@ function createMockClient() {
     }),
     notifications: {
       getSettings: async () => ({
-        channels: [
-          { id: 'notify-feishu-duty', name: '飞书值班群 Webhook', enabled: true },
-        ],
+        channels: {
+          'feishu-duty': { label: '飞书值班群 Webhook', enabled: true },
+          mail: { label: '邮件运维通知 (Mail)', enabled: true },
+          'slack-ops': { label: 'Slack 告警推送', enabled: true },
+        },
       }),
     },
   };
@@ -217,7 +284,8 @@ function ProofApp() {
           <p>• 纯线程: SendMessage 默认关，右栏可临时开启</p>
           <p>• 角色模式: 默认自动开启并扇出</p>
           <p>• 外部 IM: [•入] [•出] 独立胶囊</p>
-          <p>• + 绑定: 包含转绑二次确认</p>
+          <p>• + 绑定: 包含转绑二次确认与待锚定</p>
+          <p>• 通知: 关闭后仍常驻可见并支持重开</p>
         </div>
       </div>
 

@@ -566,12 +566,11 @@ describe('ImSessionCard channel management', () => {
 
     const internalToggle = contact.querySelector<HTMLInputElement>('#im-internal-binding-contact')!;
     expect(internalToggle.checked).toBe(true);
-    await click(contact, '#im-internal-binding-contact');
-    await act(settle);
+    // Internal channel is permanently enabled on backend; UI toggle is disabled with hint
+    expect(internalToggle.disabled).toBe(true);
+    expect(contact.querySelector('[data-im-internal-channel]')?.textContent).toContain('Replies remain visible here');
 
-    expect(fixture.calls).toContainEqual({ operation: 'setInternalChannel', id: 'lin-daily', body: false });
-    expect(contact.querySelector<HTMLInputElement>('#im-internal-binding-contact')?.checked).toBe(false);
-    // Reply mode remains independent when internal channel is switched off
+    // Reply mode remains independent
     await click(contact, '[data-im-binding-text="edit"]');
     expect(fixture.read().bindings[0]?.reply).toBe('edit');
   });
@@ -732,10 +731,16 @@ describe('ImSessionCard channel management', () => {
       locale === 'en' ? 'do not auto-resend' : '切勿自动重发',
     );
 
-    // 3. Failed: channel_not_connected
-    testSpy.mockResolvedValueOnce({ binding_id: 'binding-contact', status: 'failed', message_ids: [], detail: 'channel_not_connected' });
+    // 3. Partial (preserves detail/ids, no invented pending count, no auto-resend)
+    testSpy.mockResolvedValueOnce({ binding_id: 'binding-contact', status: 'partial', message_ids: ['msg-1'], detail: 'timeout on second chunk' });
     await click(contact, '[data-im-test-binding="binding-contact"]');
     expect(testSpy).toHaveBeenCalledTimes(3);
+    expect(contact.querySelector('[data-im-test-binding-result="binding-contact"]')?.textContent).toContain('timeout on second chunk');
+
+    // 4. Failed: channel_not_connected
+    testSpy.mockResolvedValueOnce({ binding_id: 'binding-contact', status: 'failed', message_ids: [], detail: 'channel_not_connected' });
+    await click(contact, '[data-im-test-binding="binding-contact"]');
+    expect(testSpy).toHaveBeenCalledTimes(4);
     expect(contact.querySelector('[data-im-test-binding-result="binding-contact"]')?.textContent).toContain(
       locale === 'en' ? 'Account is not listening' : '账号当前未开启监听',
     );

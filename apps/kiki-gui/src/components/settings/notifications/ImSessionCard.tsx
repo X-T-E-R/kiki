@@ -369,11 +369,11 @@ export function ImSessionCard() {
               <Toggle id="im-default" layout="bare" label={t('st.im.default')} checked={data.policy.default_enabled} disabled={action.saving}
                 onChange={(default_enabled) => { void action.run(() => client.imSessions.setPolicy({ ...data.policy, default_enabled })); }} />
             </SettingField>
-            <SettingField label={t('st.im.allowBorrowing' as any)} htmlFor="im-allow-borrowing">
+            <SettingField label={t('st.im.allowBorrowing')} htmlFor="im-allow-borrowing">
               <Toggle
                 id="im-allow-borrowing"
                 layout="bare"
-                label={t('st.im.allowBorrowing' as any)}
+                label={t('st.im.allowBorrowing')}
                 checked={data.policy.allow_channel_borrowing ?? false}
                 disabled={action.saving}
                 onChange={(allow_channel_borrowing) => {
@@ -384,11 +384,11 @@ export function ImSessionCard() {
                 }}
               />
             </SettingField>
-            <SettingField label={t('st.im.defaultSendMessage' as any)} htmlFor="im-default-send-message">
+            <SettingField label={t('st.im.defaultSendMessage')} htmlFor="im-default-send-message">
               <Toggle
                 id="im-default-send-message"
                 layout="bare"
-                label={t('st.im.defaultSendMessage' as any)}
+                label={t('st.im.defaultSendMessage')}
                 checked={configQuery.data?.optional_capabilities?.send_message?.default_on ?? false}
                 disabled={action.saving || configQuery.isLoading}
                 onChange={(enabled) => {
@@ -1253,8 +1253,7 @@ function BindingRow({ binding, policy, catalog, setupPlatform }: {
       } else if (res.status === 'unknown') {
         setTestFeedback({ tone: 'info', text: t('st.im.testBinding.unknown') });
       } else if (res.status === 'partial') {
-        const deliveredCount = res.message_ids.length;
-        const msg = res.detail ?? (deliveredCount > 0 ? t('st.im.testBinding.partial' as any, { delivered: deliveredCount, pending: 1 }) : t('st.im.error'));
+        const msg = res.detail ?? (res.message_ids.length > 0 ? t('st.im.testBinding.partial') : t('st.im.error'));
         setTestFeedback({ tone: 'info', text: msg });
       } else {
         const text = res.detail === 'binding_disabled'
@@ -1347,17 +1346,11 @@ function BindingRow({ binding, policy, catalog, setupPlatform }: {
               layout="bare"
               label={t('st.im.internalChannel')}
               checked={targetChannelsQuery.data.internal_enabled}
-              disabled={action.saving}
-              onChange={(enabled) => {
-                if (binding.session_id === undefined) return;
-                void action.run(async () => {
-                  await client.imSessions.setInternalChannel(binding.session_id!, enabled);
-                  await queryClient.invalidateQueries({ queryKey: [...KEY, 'target-channels', binding.session_id] });
-                });
-              }}
+              disabled={true}
+              onChange={() => {}}
             />
           </SettingField>
-          <Hint>{t('st.im.internalChannelHint')}</Hint>
+          <Hint>{t('st.im.internalAlwaysOn')}</Hint>
         </div>
       ) : null}
       <BindingOptions kind={binding.provider_kind} setupPlatform={setupPlatform} capabilities={boundChannelView?.capabilities} busy={binding.busy} reply={binding.reply} actions={binding.mobile_interactions} disabled={action.saving} prefix="data-im-binding"
@@ -1534,12 +1527,16 @@ function bindingTargetChoices(catalog: ImCatalog | undefined, binding: ImBinding
     ...(catalog?.personas ?? []).map((item) => ({ value: `persona:${item.id}`, label: `${t('st.im.kindPersona')} · ${item.name}` })),
     ...(catalog?.sessions ?? []).map((item) => ({ value: `session:${item.id}`, label: `${t('st.im.kindSession')} · ${item.title}` })),
   ];
-  const current = binding.persona_id !== undefined
-    ? `persona:${binding.persona_id}`
-    : binding.session_id !== undefined
-      ? `session:${binding.session_id}`
-      : 'unassigned';
-  const fallbackLabel = binding.persona_id ?? binding.session_id ?? t('st.im.pendingReanchor' as any);
+  const current = binding.pending_reanchor
+    ? 'unassigned'
+    : binding.persona_id !== undefined
+      ? `persona:${binding.persona_id}`
+      : binding.session_id !== undefined
+        ? `session:${binding.session_id}`
+        : 'unassigned';
+  const fallbackLabel = binding.pending_reanchor
+    ? t('st.im.pendingReanchor')
+    : binding.persona_id ?? binding.session_id ?? t('st.im.pendingReanchor');
   if (!choices.some((choice) => choice.value === current)) choices.unshift({ value: current, label: fallbackLabel });
   return choices;
 }

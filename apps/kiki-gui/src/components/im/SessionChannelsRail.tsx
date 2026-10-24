@@ -1,15 +1,10 @@
 import { memo, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  imSessionAdmitted,
   type ImBinding,
   type ImBindingPatch,
   type ImChannelView,
-  type ImPolicy,
   type ImProviderKind,
-  type ImSessionSnapshot,
-  type ImTargetChannels,
-  type OptionalCapabilitySessionResponse,
 } from '@kiki/protocol';
 
 import { useChannelsI18n as useI18n } from './channelsI18n';
@@ -24,7 +19,9 @@ import {
   formatIdentityVariant,
   isBindingAdmittedInbound,
   isBindingAdmittedOutbound,
+  isBindingSessionAdmitted,
   isIdentityAlreadyBoundError,
+  stripNotifyPrefix,
   type RebindCandidate,
   type RebindConflictDetails,
 } from './channelTypes';
@@ -66,7 +63,7 @@ function SessionChannelsRailBody({
   const [rebindConflict, setRebindConflict] = useState<RebindConflictDetails | undefined>();
   const [rebindModalOpen, setRebindModalOpen] = useState(false);
 
-  // Home and Connection scoped query keys (Gap 3: Scope isolation)
+  // Home and Connection scoped query keys (R3: Scope isolation)
   const scopeId = connection?.scopeId ?? 'local';
   const spaceKey = connection?.spaceKey ?? 'main';
 
@@ -92,7 +89,7 @@ function SessionChannelsRailBody({
     staleTime: 30_000,
   });
 
-  // Gap 2: Fetch target session channels from authoritative GET /api/im/sessions/targets/:id/channels
+  // R1 / R2: Fetch target session channels from authoritative GET /api/im/sessions/targets/:id/channels
   const targetChannelsQuery = useQuery({
     queryKey: ['target-channels', scopeId, spaceKey, sessionId],
     queryFn: () => connection!.client.imSessions.channelViews(sessionId),
@@ -100,6 +97,14 @@ function SessionChannelsRailBody({
     staleTime: 10_000,
   });
 
+  const notifySettingsQuery = useQuery({
+    queryKey: ['notifications', 'settings', scopeId, spaceKey],
+    queryFn: () => connection!.client.notifications.getSettings(),
+    enabled: connection !== null && typeof connection.client.notifications?.getSettings === 'function',
+    staleTime: 30_000,
+  });
+
+  // R4: Candidates construction
   const candidates: RebindCandidate[] = useMemo(() => {
     if (snapshotQuery.data === undefined) return [];
     const list: RebindCandidate[] = [];
@@ -115,9 +120,8 @@ function SessionChannelsRailBody({
       });
     }
     for (const b of snapshotQuery.data.bindings) {
-      if (b.session_id !== sessionId) {
-        // Pending reanchor or unassigned session_id is not occupied by another session
-        const isOccupied = !b.pending_reanchor && b.session_id !== undefined && b.session_id !== '';
+      // If binding is pending_reanchor, it needs confirmation regardless of current session_id
+      if (b.pending_reanchor) {
         list.push({
           id: b.id,
           source: 'binding',
@@ -125,9 +129,34 @@ function SessionChannelsRailBody({
           provider_kind: b.provider_kind,
           account_id: b.account_id,
           identity: b.identity,
-          isOccupied,
+          isOccupied: false,
           currentSessionId: b.session_id,
-          pendingReanchor: b.pending_reanchor,
+          pendingReanchor: true,
+        });
+      } else if (!b.session_id) {
+        // Orphan binding without session
+        list.push({
+          id: b.id,
+          source: 'binding',
+          provider_instance_id: b.provider_instance_id,
+          provider_kind: b.provider_kind,
+          account_id: b.account_id,
+          identity: b.identity,
+          isOccupied: false,
+          pendingReanchor: false,
+        });
+      } else if (b.session_id !== sessionId) {
+        // Occupied by a different session
+        list.push({
+          id: b.id,
+          source: 'binding',
+          provider_instance_id: b.provider_instance_id,
+          provider_kind: b.provider_kind,
+          account_id: b.account_id,
+          identity: b.identity,
+          isOccupied: true,
+          currentSessionId: b.session_id,
+          pendingReanchor: false,
         });
       }
     }
@@ -136,26 +165,27 @@ function SessionChannelsRailBody({
 
   const data = snapshotQuery.data;
   const policy = data?.policy;
-  const bindings = useMemo(() => data?.bindings.filter((b) => b.session_id === sessionId) ?? [], [data?.bindings, sessionId]);
+  const bindings = useMemo(() => {
+    // Only bindings formally anchored to this session and not pending reanchor belong in active list
+    return data?.bindings.filter((b) => b.session_id === sessionId && !b.pending_reanchor) ?? [];
+  }, [data?.bindings, sessionId]);
 
-  // Gap 1: Authoritative optional row admission
+  // R2: Authoritative optional row admission — NO guessing
   const smRow = findSendMessageRow(sessionCapQuery.data);
-  const smDefaultOn = configQuery.data?.optional_capabilities?.send_message?.default_on ?? false;
-  const hasPersona = personaId !== undefined && personaId !== '';
-
-  const smEffective = smRow?.effective ?? (hasPersona ? true : smDefaultOn);
-  const smAllowed = smRow?.allowed ?? true;
-  const smHostLocked = smRow?.host_locked ?? false;
-  const smUnresolved = smRow?.unresolved ?? false;
-  const smChoice = smRow?.choice ?? 'inherit';
   const smLoading = sessionCapQuery.isLoading;
+  const smQueryFailed = sessionCapQuery.isError || (sessionCapQuery.isSuccess && smRow === undefined);
+  const smUnresolved = smQueryFailed || (smRow?.unresolved ?? false);
+  const smAllowed = smRow ? smRow.allowed : false;
+  const smHostLocked = smRow?.host_locked ?? false;
+  const smEffective = smRow?.effective === true; // ONLY authoritative effective can be true
+  const smChoice = smRow?.choice ?? 'inherit';
   const smSwitchDisabled = !smAllowed || smHostLocked || smUnresolved || smLoading || busyId === 'send_message_tool';
 
   // Compute active counts
-  const inboundCount = useMemo(() => policy ? bindings.filter((b) => isBindingAdmittedInbound(b, policy)).length : 0, [bindings, policy]);
-  const outboundImCount = useMemo(() => policy ? bindings.filter((b) => isBindingAdmittedOutbound(b, policy)).length : 0, [bindings, policy]);
+  const inboundCount = useMemo(() => policy ? bindings.filter((b) => isBindingAdmittedInbound(b, policy, sessionId)).length : 0, [bindings, policy, sessionId]);
+  const outboundImCount = useMemo(() => policy ? bindings.filter((b) => isBindingAdmittedOutbound(b, policy, sessionId)).length : 0, [bindings, policy, sessionId]);
 
-  // Gap 2: Notification channel filtering (bound vs candidate from target channels)
+  // R1 / R2: Notification channel filtering (bound vs candidate from target channels)
   const allTargetChannels = useMemo(() => targetChannelsQuery.data?.channels ?? [], [targetChannelsQuery.data?.channels]);
   const boundNotifyChannels = useMemo(() => {
     return allTargetChannels.filter((c) => c.kind === 'notify' && c.bound !== false);
@@ -213,26 +243,24 @@ function SessionChannelsRailBody({
     }
   };
 
-  // Toggle Input pill on IM binding
+  // Toggle Input pill on IM binding (R3: do not silently mutate session_enabled)
   const toggleBindingInput = (binding: ImBinding) => {
     if (!connection || !policy) return;
-    const current = isBindingAdmittedInbound(binding, policy);
+    const current = isBindingAdmittedInbound(binding, policy, sessionId);
     const next = !current;
     const patch: ImBindingPatch = {
       input_enabled: next,
-      ...(binding.session_enabled === undefined ? { session_enabled: true } : {}),
     };
     runAction(binding.id, () => connection.client.imSessions.updateBinding(binding.id, patch));
   };
 
-  // Toggle Output pill on IM binding
+  // Toggle Output pill on IM binding (R3: do not silently mutate session_enabled)
   const toggleBindingOutput = (binding: ImBinding) => {
     if (!connection || !policy) return;
-    const current = isBindingAdmittedOutbound(binding, policy);
+    const current = isBindingAdmittedOutbound(binding, policy, sessionId);
     const next = !current;
     const patch: ImBindingPatch = {
       output_enabled: next,
-      ...(binding.session_enabled === undefined ? { session_enabled: true } : {}),
     };
     runAction(binding.id, () => connection.client.imSessions.updateBinding(binding.id, patch));
   };
@@ -243,6 +271,7 @@ function SessionChannelsRailBody({
     runAction(bindingId, () => connection.client.imSessions.removeBinding(bindingId));
   };
 
+  // R4: Handle Candidate Confirmation
   const onConfirmCandidate = (candidate: RebindCandidate) => {
     if (!connection) return;
     if (candidate.isOccupied) {
@@ -251,15 +280,30 @@ function SessionChannelsRailBody({
       setRebindModalOpen(true);
       return;
     }
-    runAction(candidate.id, () =>
-      connection.client.imSessions.confirm(candidate.id, {
-        target: { kind: 'session', session_id: sessionId },
-        input_enabled: true,
-        output_enabled: true,
-      })
-    );
+
+    if (candidate.source === 'binding') {
+      // Source is existing binding (orphan or pending reanchor) -> updateBinding with rebind: true
+      runAction(candidate.id, () =>
+        connection.client.imSessions.updateBinding(candidate.id, {
+          session_id: sessionId,
+          rebind: true,
+          input_enabled: true,
+          output_enabled: true,
+        })
+      );
+    } else {
+      // Source is discovery -> confirm(id)
+      runAction(candidate.id, () =>
+        connection.client.imSessions.confirm(candidate.id, {
+          target: { kind: 'session', session_id: sessionId },
+          input_enabled: true,
+          output_enabled: true,
+        })
+      );
+    }
   };
 
+  // R4: Execute Rebind from Modal
   const handleExecuteRebind = async () => {
     if (!connection) return;
     const candidateId = rebindConflict?.existing_binding_id || rebindCandidate?.id;
@@ -286,9 +330,10 @@ function SessionChannelsRailBody({
     });
   };
 
-  // Bind or unbind a notification channel via setNotificationChannel / removeNotificationChannel
-  const toggleNotifyBinding = async (channelId: string, enabled: boolean) => {
+  // R1: Strip 'notify:' prefix so klient sends raw channelId
+  const toggleNotifyBinding = async (fullChannelId: string, enabled: boolean) => {
     if (!connection) return;
+    const channelId = stripNotifyPrefix(fullChannelId);
     if (enabled) {
       await runAction(`notify:${channelId}`, () =>
         connection.client.imSessions.setNotificationChannel(sessionId, channelId, true)
@@ -302,14 +347,15 @@ function SessionChannelsRailBody({
 
   const toggleNotifyEnabled = async (channel: ImChannelView) => {
     if (!connection) return;
-    await runAction(`notify:${channel.id}`, () =>
-      connection.client.imSessions.setNotificationChannel(sessionId, channel.id, !channel.enabled)
+    const channelId = stripNotifyPrefix(channel.id);
+    await runAction(`notify:${channelId}`, () =>
+      connection.client.imSessions.setNotificationChannel(sessionId, channelId, !channel.enabled)
     );
   };
 
   if (connection === null || snapshotQuery.data === undefined || policy === undefined) return null;
 
-  // Gap 1: Status copy calculation based on authoritative effective/allowed
+  // R2: Authoritative status copy based on effective/allowed/reason (never guess)
   let smStatusText: string;
   if (smLoading) {
     smStatusText = t('st.im.sm.loading');
@@ -319,17 +365,28 @@ function SessionChannelsRailBody({
     smStatusText = t('st.im.sm.hardOff');
   } else if (smUnresolved) {
     smStatusText = t('st.im.sm.unresolved');
-  } else if (hasPersona) {
-    smStatusText = smChoice === 'off'
-      ? t('st.im.sm.personaOff')
-      : t('st.im.sm.personaActive', { count: outboundTotal, name: personaName || t('st.im.personaDefault') });
   } else if (smEffective) {
-    smStatusText = smChoice === 'on'
-      ? t('st.im.sm.sessionActive', { count: outboundTotal })
-      : t('st.im.sm.globalActive', { count: outboundTotal });
+    if (personaId !== undefined && personaId !== '') {
+      smStatusText = t('st.im.sm.personaActive', { count: outboundTotal, name: personaName || t('st.im.personaDefault') });
+    } else if (smChoice === 'on') {
+      smStatusText = t('st.im.sm.sessionActive', { count: outboundTotal });
+    } else {
+      smStatusText = t('st.im.sm.globalActive', { count: outboundTotal });
+    }
   } else {
-    smStatusText = t('st.im.sm.defaultOff');
+    if (personaId !== undefined && personaId !== '') {
+      smStatusText = t('st.im.sm.personaOff');
+    } else {
+      smStatusText = t('st.im.sm.defaultOff');
+    }
   }
+
+  // Lookup notify display name
+  const notifyCatalog = notifySettingsQuery.data?.channels ?? {};
+  const getNotifyDisplayName = (channelViewId: string) => {
+    const rawId = stripNotifyPrefix(channelViewId);
+    return notifyCatalog[rawId]?.label || rawId;
+  };
 
   return (
     <section data-rail-channels="" className="border-t border-hairline py-3">
@@ -420,13 +477,15 @@ function SessionChannelsRailBody({
             ) : (
               <ul className="space-y-1" data-rail-im-list>
                 {bindings.map((b) => {
-                  const inOn = isBindingAdmittedInbound(b, policy);
-                  const outOn = isBindingAdmittedOutbound(b, policy);
+                  const isBaseAdmitted = isBindingSessionAdmitted(b, policy, sessionId);
+                  const inOn = isBindingAdmittedInbound(b, policy, sessionId);
+                  const outOn = isBindingAdmittedOutbound(b, policy, sessionId);
                   const tagType = inOn && outOn ? 'bi' : inOn ? 'in' : outOn ? 'out' : 'off';
                   const identityLabel = formatIdentityVariant(b.identity);
                   const channelInfo = formatIdentityChannel(b.identity.chat_id, b.identity.topic_id);
                   const busy = busyId === b.id;
-                  const isBlocked = !policy.allowed || !b.enabled; // Gap 5: disabled state
+                  const isBlocked = !policy.allowed || !b.enabled;
+                  const isRestricted = !isBaseAdmitted;
 
                   return (
                     <li
@@ -448,7 +507,7 @@ function SessionChannelsRailBody({
                             {t(`st.im.tag.${tagType}`)}
                           </span>
                           <span className="text-[12.5px] text-ink truncate" title={identityLabel}>
-                            {providerDisplayName(b.provider_kind, t)} · {identityLabel}
+                            {providerDisplayName(b.provider_kind)} · {identityLabel}
                           </span>
                         </div>
 
@@ -457,15 +516,15 @@ function SessionChannelsRailBody({
                           <button
                             type="button"
                             aria-pressed={inOn}
-                            disabled={busy || isBlocked}
+                            disabled={busy || isBlocked || isRestricted}
                             onClick={() => toggleBindingInput(b)}
                             data-io-pill-in={b.id}
-                            title={isBlocked ? t('st.im.channelDisabledHint') : undefined}
+                            title={isBlocked || isRestricted ? t('st.im.channelDisabledHint') : undefined}
                             className={`inline-flex h-5 items-center gap-1 rounded border px-1.5 text-[11px] font-medium transition-colors ${
                               inOn
                                 ? 'border-selected-ink/40 bg-selected text-selected-ink'
                                 : 'border-hairline-strong bg-paper text-ink-faint hover:text-ink hover:border-ink-soft'
-                            } ${isBlocked ? 'opacity-50 cursor-not-allowed' : ''} ${FOCUS_RING}`}
+                            } ${isBlocked || isRestricted ? 'opacity-50 cursor-not-allowed' : ''} ${FOCUS_RING}`}
                           >
                             <span
                               className={`h-1.5 w-1.5 rounded-full ${
@@ -478,15 +537,15 @@ function SessionChannelsRailBody({
                           <button
                             type="button"
                             aria-pressed={outOn}
-                            disabled={busy || isBlocked}
+                            disabled={busy || isBlocked || isRestricted}
                             onClick={() => toggleBindingOutput(b)}
                             data-io-pill-out={b.id}
-                            title={isBlocked ? t('st.im.channelDisabledHint') : undefined}
+                            title={isBlocked || isRestricted ? t('st.im.channelDisabledHint') : undefined}
                             className={`inline-flex h-5 items-center gap-1 rounded border px-1.5 text-[11px] font-medium transition-colors ${
                               outOn
                                 ? 'border-selected-ink/40 bg-selected text-selected-ink'
                                 : 'border-hairline-strong bg-paper text-ink-faint hover:text-ink hover:border-ink-soft'
-                            } ${isBlocked ? 'opacity-50 cursor-not-allowed' : ''} ${FOCUS_RING}`}
+                            } ${isBlocked || isRestricted ? 'opacity-50 cursor-not-allowed' : ''} ${FOCUS_RING}`}
                           >
                             <span
                               className={`h-1.5 w-1.5 rounded-full ${
@@ -502,6 +561,11 @@ function SessionChannelsRailBody({
                       <div className="flex items-center justify-between text-[11px] text-ink-faint pt-0.5">
                         <span className="font-mono truncate" title={channelInfo}>
                           {channelInfo}
+                          {isRestricted ? (
+                            <span className="text-amber-ink ml-1.5">
+                              ({t('st.im.channelDisabledHint')})
+                            </span>
+                          ) : null}
                         </span>
                         <button
                           type="button"
@@ -530,40 +594,47 @@ function SessionChannelsRailBody({
               <p className="py-1 text-[11.5px] text-ink-faint">{t('st.im.noNotify')}</p>
             ) : (
               <ul className="space-y-1" data-rail-out-list>
-                {boundNotifyChannels.map((c) => (
-                  <li
-                    key={c.id}
-                    className="flex items-center justify-between gap-1.5 rounded-md px-1.5 py-1 text-[12px] hover:bg-ink/[0.035]"
-                  >
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <span className="rounded bg-ink/[0.06] px-1 py-0.2 font-mono text-[10px] text-ink-soft">
-                        {t('st.im.tag.out')}
-                      </span>
-                      <span className="truncate text-ink">{c.id}</span>
-                    </div>
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => toggleNotifyEnabled(c)}
-                        className={`inline-flex h-5 items-center gap-1 rounded border px-1.5 text-[11px] font-medium transition-colors ${
-                          c.enabled
-                            ? 'border-selected-ink/40 bg-selected text-selected-ink'
-                            : 'border-hairline-strong bg-paper text-ink-faint hover:text-ink'
-                        }`}
-                      >
-                        <span className={`h-1.5 w-1.5 rounded-full ${c.enabled ? 'bg-selected-ink' : 'bg-ink-faint'}`} />
-                        {t('st.im.pill.out')}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => toggleNotifyBinding(c.id, false)}
-                        className="text-[11px] text-ink-faint hover:text-danger hover:underline"
-                      >
-                        {t('st.im.removeNotify')}
-                      </button>
-                    </div>
-                  </li>
-                ))}
+                {boundNotifyChannels.map((c) => {
+                  const displayName = getNotifyDisplayName(c.id);
+                  const busy = busyId === `notify:${stripNotifyPrefix(c.id)}`;
+
+                  return (
+                    <li
+                      key={c.id}
+                      className="flex items-center justify-between gap-1.5 rounded-md px-1.5 py-1 text-[12px] hover:bg-ink/[0.035]"
+                    >
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className={`rounded px-1 py-0.2 font-mono text-[10px] ${c.enabled ? 'bg-ink/[0.06] text-ink-soft' : 'bg-ink/[0.06] text-ink-faint'}`}>
+                          {t(c.enabled ? 'st.im.tag.out' : 'st.im.tag.off')}
+                        </span>
+                        <span className={`truncate ${c.enabled ? 'text-ink' : 'text-ink-soft'}`}>{displayName}</span>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => toggleNotifyEnabled(c)}
+                          className={`inline-flex h-5 items-center gap-1 rounded border px-1.5 text-[11px] font-medium transition-colors ${
+                            c.enabled
+                              ? 'border-selected-ink/40 bg-selected text-selected-ink'
+                              : 'border-hairline-strong bg-paper text-ink-faint hover:text-ink'
+                          }`}
+                        >
+                          <span className={`h-1.5 w-1.5 rounded-full ${c.enabled ? 'bg-selected-ink' : 'bg-ink-faint'}`} />
+                          {t('st.im.pill.out')}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => toggleNotifyBinding(c.id, false)}
+                          className="text-[11px] text-ink-faint hover:text-danger hover:underline"
+                        >
+                          {t('st.im.removeNotify')}
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>
@@ -626,7 +697,7 @@ function SessionChannelsRailBody({
                                 [{t('st.im.pendingReanchor')}]
                               </span>
                             ) : null}
-                            {providerDisplayName(c.provider_kind, t)} · {identityText}
+                            {providerDisplayName(c.provider_kind)} · {identityText}
                           </p>
                           <p className="text-[11px] font-mono text-ink-faint truncate">
                             {channelInfo}
@@ -660,30 +731,35 @@ function SessionChannelsRailBody({
                   })}
 
                   {/* Notification channel candidates */}
-                  {candidateNotifyChannels.map((nc) => (
-                    <li
-                      key={nc.id}
-                      className="flex items-center justify-between gap-2 p-1.5 rounded hover:bg-ink/[0.04]"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <p className="text-[12px] font-medium text-ink truncate">
-                          {nc.id}
-                        </p>
-                        <p className="text-[11px] text-ink-faint truncate">
-                          {t('st.im.notifyCandidate')}
-                        </p>
-                      </div>
+                  {candidateNotifyChannels.map((nc) => {
+                    const displayName = getNotifyDisplayName(nc.id);
+                    const busy = busyId === `notify:${stripNotifyPrefix(nc.id)}`;
 
-                      <button
-                        type="button"
-                        disabled={busyId === `notify:${nc.id}`}
-                        onClick={() => toggleNotifyBinding(nc.id, true)}
-                        className={`shrink-0 rounded px-2 py-0.5 text-[11.5px] font-medium border border-hairline-strong bg-paper text-ink hover:bg-ink/[0.04] ${FOCUS_RING}`}
+                    return (
+                      <li
+                        key={nc.id}
+                        className="flex items-center justify-between gap-2 p-1.5 rounded hover:bg-ink/[0.04]"
                       >
-                        {busyId === `notify:${nc.id}` ? t('st.im.railBusy') : t('st.im.bindNotify')}
-                      </button>
-                    </li>
-                  ))}
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[12px] font-medium text-ink truncate">
+                            {displayName}
+                          </p>
+                          <p className="text-[11px] text-ink-faint truncate">
+                            {t('st.im.notifyCandidate')}
+                          </p>
+                        </div>
+
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => toggleNotifyBinding(nc.id, true)}
+                          className={`shrink-0 rounded px-2 py-0.5 text-[11.5px] font-medium border border-hairline-strong bg-paper text-ink hover:bg-ink/[0.04] ${FOCUS_RING}`}
+                        >
+                          {busy ? t('st.im.railBusy') : t('st.im.bindNotify')}
+                        </button>
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </div>
@@ -716,7 +792,7 @@ function SessionChannelsRailBody({
   );
 }
 
-function providerDisplayName(kind: ImProviderKind, t: (k: string) => string): string {
+function providerDisplayName(kind: ImProviderKind): string {
   const map: Record<ImProviderKind, string> = {
     telegram: 'Telegram',
     feishu_app: 'Feishu',
