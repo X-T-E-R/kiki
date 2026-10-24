@@ -598,6 +598,8 @@ peer thread 接口用于跨会话协作：以 `{ host_id, workspace_id, session_
 
 本地历史投影准备期间，`POST /api/threads:read` 可能返回 `turns: []`、`incomplete: "history_preparing"` 和不透明的 `next_cursor`。这是准备未完成的页面，不是 thread 没有对话的证明。请保留同一 thread 和 bridge 范围，用 `next_cursor` 重复请求。准备游标会绑定投影代次和固定的源水位，同时保留原先的较旧轮次边界；准备完成后，已结束轮次仍使用原有默认 `limit` 20、范围 1–100 和按时间顺序返回。
 
+本地轮次的 `input` 和 `output` 字段在不超过 4,096 个 UTF-16 代码单元时直接完整返回。更长的字段返回预览，并在 `content_refs` 中提供对应字段的续读引用。保留同一 thread，将该引用作为 `content_ref` 发送，即可获得 `view.segment`；保留预览，依次追加各段的 `value`，沿 `next` 续读，直到没有 `next`。每段最多包含 16,384 个 UTF-16 代码单元，引用从已返回文本之后开始。分段读取不会恢复该 thread 的执行。
+
 旧版 read cursor 仍为兼容而接受。历史重写会明确使受影响的游标失效，代次变化也会使游标失效；服务端报告游标无效时，应从首页重新读取，不能把 thread 当作空历史。
 
 #### 沟通记录

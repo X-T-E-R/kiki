@@ -598,6 +598,8 @@ The peer-thread endpoints support cross-session collaboration: a thread is addre
 
 A `POST /api/threads:read` response can contain `turns: []`, `incomplete: "history_preparing"`, and an opaque `next_cursor` while the local history projection is preparing. This is an incomplete preparation page, not proof that the thread has no conversation. Repeat the request with `next_cursor`, keeping the same thread and bridge scope. The preparation cursor binds its projection generation and fixed source watermark while retaining the original older-turn boundary; once preparation completes, ended-turn pages keep the existing default `limit` of 20, 1–100 range, and chronological order.
 
+Local turn `input` and `output` fields of at most 4,096 UTF-16 units remain inline. Longer fields return a preview and a field-specific entry in `content_refs`. Send that entry as `content_ref` with the same thread to receive `view.segment`; keep the preview and append each segment's `value`, following `next` until it is absent. Each segment contains at most 16,384 UTF-16 units, and its reference starts after the text already returned. Reading segments does not resume the thread.
+
 Existing read cursors remain accepted for compatibility. A history rewrite explicitly invalidates affected cursors, as does a generation change; when the server reports an invalid cursor, restart from the first page rather than treating the thread as empty.
 
 #### Communication history
